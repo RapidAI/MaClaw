@@ -39,6 +39,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	startedAt := time.Now()
 	history = sanitizeVEGroupExecutorHistory(userID, history)
 	history = fileCompanionStripNoteExcerptHistory(userID, history)
+	history, _ = stampProducedFilesOnLastAssistantEntry(history, resp)
 
 	// Dynamic entry limit: scale MaxConversationTurns proportionally to the
 	// model's effective context window. A 128K model can hold more entries
@@ -498,6 +499,86 @@ func (h *IMMessageHandler) cancelAllBackgroundLLM(reason string) int {
 		log.Printf("[background-llm] cancel_all reason=%s cancelled=%d", strings.TrimSpace(reason), cancelled)
 	}
 	return cancelled
+}
+
+// stampProducedFilesOnLastAssistantEntry records the files a turn delivered
+// (generated documents, images, etc.) on the assistant entry that owns them.
+// The field rides the persisted transcript without reaching the LLM, so
+// remote-control task detail can offer the attachments back to the
+// controlling desktop. When the assistant reply is not yet the last turn —
+// e.g. a follow-up user row was already queued — the entry is left alone so
+// an older turn is never tagged with a file it did not produce. The bool
+// reports whether any entry changed.
+func stampProducedFilesOnLastAssistantEntry(history []agent.ConversationEntry, resp *IMAgentResponse) ([]agent.ConversationEntry, bool) {
+	if resp == nil || len(history) == 0 {
+		return history, false
+	}
+	paths := dedupePaths(append(append([]string{}, resp.LocalFilePaths...), resp.LocalFilePath))
+	if len(paths) == 0 {
+		return history, false
+	}
+	lastAssistant := -1
+	lastUser := -1
+	for i := len(history) - 1; i >= 0 && (lastAssistant < 0 || lastUser < 0); i-- {
+		switch strings.ToLower(strings.TrimSpace(history[i].Role)) {
+		case "assistant":
+			if lastAssistant < 0 {
+				lastAssistant = i
+			}
+		case "user":
+			if lastUser < 0 {
+				lastUser = i
+			}
+		}
+	}
+	if lastAssistant < 0 || lastAssistant < lastUser {
+		return history, false
+	}
+	// Visible history drops planning echoes once the turn has a real reply, so
+	// a stamp on an echo row would hide the files from the transcript and from
+	// fetch_file. Prefer the newest non-echo assistant entry in this turn.
+	target := lastAssistant
+	for i := lastAssistant; i > lastUser; i-- {
+		entry := history[i]
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "assistant") {
+			continue
+		}
+		content := stringifyProjectConversationContent(entry.Content)
+		if !agent.AssistantPlanningEcho(content, entry.ReasoningContent, entry.FinishReason, entry.ToolCalls) {
+			target = i
+			break
+		}
+	}
+	out := append([]agent.ConversationEntry(nil), history...)
+	out[target].LocalFilePaths = dedupePaths(append(append([]string{}, out[target].LocalFilePaths...), paths...))
+	return out, true
+}
+
+// stampProducedFilesIntoConversationMemory writes the delivered file list onto
+// the assistant entry this turn already stored. The loop's last history save
+// runs before attachSharedLoopArtifacts fills the response, so the surgical
+// update happens at response emission — the one place the settled answer and
+// its produced files are both in hand.
+func (a *App) stampProducedFilesIntoConversationMemory(resp *IMAgentResponse) {
+	if a == nil || resp == nil {
+		return
+	}
+	if len(dedupePaths(append(append([]string{}, resp.LocalFilePaths...), resp.LocalFilePath))) == 0 {
+		return
+	}
+	userID := strings.TrimSpace(resp.SessionKey)
+	if userID == "" {
+		return
+	}
+	handler := a.imHandler
+	if handler == nil || handler.memory == nil {
+		return
+	}
+	// UpdateEntries keeps the patch atomic: a plain Load+Save could overwrite
+	// a row another writer (a queued steer, a follow-up) appended in between.
+	handler.memory.UpdateEntries(userID, func(entries []agent.ConversationEntry) ([]agent.ConversationEntry, bool) {
+		return stampProducedFilesOnLastAssistantEntry(entries, resp)
+	})
 }
 
 func sanitizeVEGroupExecutorHistory(userID string, history []agent.ConversationEntry) []agent.ConversationEntry {

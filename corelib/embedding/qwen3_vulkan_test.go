@@ -10,11 +10,13 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // vkTestModel returns the Qwen3 GGUF path when it exists on this machine.
 func vkTestModel(t *testing.T) string {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	// The backend refuses its host-visible weight upload when system free memory
 	// is low. On a busy machine that would turn a Vulkan correctness test into an
 	// unrelated skip (or a wrong rejection reason) — the guard is exercised by

@@ -7,6 +7,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // TestFullSurfaceWeatherPDFRouting is the production-faithful regression for
@@ -23,6 +24,7 @@ import (
 //     replacement empties the surface downstream (covered separately by
 //     TestLegacyAdapterCatalogCoversFullHostSurface).
 func TestFullSurfaceWeatherPDFRouting(t *testing.T) {
+	testenv.SkipModelTests(t)
 	modelPath := os.Getenv("GEMMA_EMB_MODEL")
 	if modelPath == "" {
 		home, _ := os.UserHomeDir()

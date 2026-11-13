@@ -34,6 +34,13 @@
   channel (WM_COPYDATA on the `wails-app-*-sic` message window).
 - `maclaw-data-srv.exe` is an independent long-running service, unrelated to the
   desktop lifecycle.
+- Web tabs (kind "web", e.g. articles, YouTube) have no file grant and no tools.
+  The page body is fetched at open by `fileCompanionPrefetchWebPage` (public-only
+  `paperFetch` + readability extraction, cached in `st.webPages`), and
+  `SendFileCompanionWebMessage` appends it to the turn under the
+  `当前打开的网页正文：` label; `fileCompanionStripNoteExcerptText` cuts that
+  label plus the note-excerpt label back out of history and bubbles, so the body
+  never accumulates across questions.
 
 ## Known test quirks
 
@@ -52,6 +59,24 @@
 - A full-package `guiapp` run can wedge in `ensureRemoteInfra`'s
   `sync.Once` vs `remoteSessionsMu` (ABBA across tests); the same tests pass
   in isolation.
+- Real-model tests are gated by `internal/testenv` (`SkipModelTests` /
+  `ModelTestsEnabled`): they self-skip under `go test -short` or when
+  `MACLAW_TEST_MODELS=off`/`0`/`false`. `go test ./...` on a dev machine
+  with `~/.maclaw/models` installed will otherwise load several GB of
+  weights alongside the running app. Opt back in explicitly with
+  `MACLAW_TEST_MODELS=on`.
+- Local MCP tests must not spawn real servers: `LocalMCPClient.tryStart`
+  refuses any command that is not the `GO_WANT_HELPER_PROCESS` re-exec of
+  the test binary (`errLocalMCPSpawnSuppressedUnderTest`). Without this an
+  imported `{"command":"npx","args":["-y","@playwright/mcp"]}` spends ~3
+  minutes per server in initialize/discovery retries and leaves node
+  children behind — this is what timed out a full `guiapp` run.
+  To exercise the process path, use `newHelperLocalMCPServerEntry`.
+- Beware `-run` regex quoting through `scripts\goheavy.cmd`: `-run 'a^'`
+  arrives as `-run a` (the `.cmd`/`powershell` layers eat the quote), so a
+  "compile-only" selector can silently become "run ~600 tests". Verify the
+  selector survived by checking the first `=== RUN` line, or use
+  `go vet` for a type-check-only pass.
 
 ## Assistant chat event protocol (guiapp)
 
@@ -100,6 +125,31 @@
   put them inside table cells. `\(...\)`/`\[...\]` TeX delimiters are not
   supported (same as the chat renderer); `$`/`$$` are. `==mark==` is kept
   by a tiny remark plugin.
+
+## Heavy Go commands: gate them through `goheavy` (multi-thread safety)
+
+- `guiapp` is ~2,300 Go files (~1,100 test files); a single
+  `go test`/`go build` on it peaks at several GB for compile+link, and the
+  test binary itself can use several GB. Multiple concurrent agent threads
+  each running these have repeatedly pushed this 32 GB machine into an
+  unresponsive overload — ALWAYS route them through the throttle:
+
+  ```bat
+  scripts\goheavy.cmd go test ./guiapp -run TestFoo
+  scripts\goheavy.cmd go test ./...
+  scripts\goheavy.cmd go build -tags production -o dist/MaClaw_amd64.exe ./cmd/maclaw-gui/
+  ```
+
+  Works from git-bash too (`scripts/goheavy.cmd ...`). The wrapper
+  (`scripts/goheavy.ps1`) admits at most `MACLAW_HEAVY_SLOTS` (default 2)
+  heavy commands across ALL processes in this user session and queues the
+  rest; stale slots are reclaimed by owner-PID liveness. It also caps each
+  child's Go runtime via `GOMEMLIMIT` (default `8GiB`) and `GOMAXPROCS`
+  (default `8`) — override with `MACLAW_HEAVY_GOMEMLIMIT` /
+  `MACLAW_HEAVY_GOMAXPROCS` (`off` disables), and exit codes pass through.
+- Cheap commands (`go version`, `go env`, grep/rg, `go test` on small
+  leaf packages) do not need the gate. If a run seems to hang, check
+  `%LOCALAPPDATA%\MaclawHeavyLocks\` for who holds the slots.
 
 ## Logs
 

@@ -130,12 +130,71 @@ func TestResolveLLMRoleProfilePinHonorsProviderID(t *testing.T) {
 	}
 }
 
+func TestResolveLLMRoleProfilePinRecomputesVision(t *testing.T) {
+	cfg := testRoleProviders()
+	cfg.MaclawLLMProviders[2].ID = "prov-claude" // Claude
+	cfg.MaclawLLMProviders[2].SupportsVision = true
+	cfg.MaclawLLMProfiles = &corelib.MaclawLLMProfiles{
+		Foreground: corelib.MaclawLLMRoleAssignment{InheritHub: inheritFalse(), ProviderID: "prov-claude", Model: "claude-text-only"},
+	}
+	fg, err := ResolveLLMRole(cfg, LLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pinned text model must not inherit the flag probed for the
+	// provider's default model.
+	if fg.SupportsVision {
+		t.Fatalf("pinned text model kept the provider default vision flag: %+v", fg)
+	}
+
+	// The official provider keeps vision for its auto band, like the GUI's
+	// ensureHubAutoRoleVision, because Hub picks a vision model server-side.
+	cfg.MaclawLLMProfiles.Foreground = corelib.MaclawLLMRoleAssignment{InheritHub: inheritFalse(), Model: "auto"}
+	fg, err = ResolveLLMRole(cfg, LLMRoleForeground)
+	if err != nil || fg.ProviderName != OfficialHubLLMProviderName || !fg.SupportsVision {
+		t.Fatalf("official auto pin = %+v err=%v", fg, err)
+	}
+}
+
+func TestResolveLLMRoleGrounderPinForcesVision(t *testing.T) {
+	cfg := testRoleProviders()
+	cfg.MaclawLLMProviders[2].ID = "prov-claude" // Claude
+	cfg.MaclawLLMProfiles = &corelib.MaclawLLMProfiles{
+		Grounder: corelib.MaclawLLMRoleAssignment{InheritHub: inheritFalse(), ProviderID: "prov-claude", Model: "claude-text-only"},
+	}
+	got, err := ResolveLLMRole(cfg, LLMRoleGrounder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The grounder always receives the screenshot, matching the GUI.
+	if got.ProviderName != "Claude" || got.Model != "claude-text-only" || !got.SupportsVision {
+		t.Fatalf("pinned grounder = %+v", got)
+	}
+}
+
+func TestResolveLLMRoleProfilePinFallsBackToAssistantProvider(t *testing.T) {
+	cfg := testRoleProviders()
+	cfg.MaclawLLMProviders = cfg.MaclawLLMProviders[1:] // drop the Hub row
+	cfg.MaclawLLMProviders[1].ID = "prov-claude"        // Claude
+	cfg.MaclawLLMProfiles = &corelib.MaclawLLMProfiles{
+		Assistant:  corelib.MaclawLLMProfile{ProviderID: "prov-claude", Model: "claude-sonnet"},
+		Background: corelib.MaclawLLMRoleAssignment{InheritHub: inheritFalse(), Model: "claude-haiku"},
+	}
+	bg, err := ResolveLLMRole(cfg, LLMRoleBackground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bg.ProviderName != "Claude" || bg.Model != "claude-haiku" {
+		t.Fatalf("legacy pin without Hub should land on the assistant provider, got %+v", bg)
+	}
+}
+
 func TestResolveLLMRoleGrounderInheritFollowsDefault(t *testing.T) {
 	cfg := testRoleProviders()
 	cfg.MaclawHubBotRoles.Grounder = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRoleInherit}
 	got, err := ResolveLLMRole(cfg, LLMRoleGrounder)
-	if err != nil || got.ProviderName != "DeepSeek" {
-		t.Fatalf("inherit grounder should follow the default, got %+v err=%v", got, err)
+	if err != nil || got.ProviderName != "DeepSeek" || !got.SupportsVision {
+		t.Fatalf("inherit grounder should follow the default with vision forced, got %+v err=%v", got, err)
 	}
 	cfg.MaclawHubBotRoles.Grounder = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRoleUnused}
 	if _, err := ResolveLLMRole(cfg, LLMRoleGrounder); err != ErrGrounderUnused {

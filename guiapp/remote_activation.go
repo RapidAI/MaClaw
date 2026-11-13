@@ -564,14 +564,15 @@ type RemoteProbeResult struct {
 }
 
 type RemoteActivationStatus struct {
-	Activated  bool   `json:"activated"`
-	HubID      string `json:"hub_id,omitempty"`
-	Email      string `json:"email"`
-	SN         string `json:"sn"`
-	TenantID   string `json:"tenant_id,omitempty"`
-	TenantName string `json:"tenant_name,omitempty"`
-	MachineID  string `json:"machine_id"`
-	HubURL     string `json:"hub_url"`
+	Activated   bool   `json:"activated"`
+	HubID       string `json:"hub_id,omitempty"`
+	Email       string `json:"email"`
+	PhoneNumber string `json:"phone_number,omitempty"`
+	SN          string `json:"sn"`
+	TenantID    string `json:"tenant_id,omitempty"`
+	TenantName  string `json:"tenant_name,omitempty"`
+	MachineID   string `json:"machine_id"`
+	HubURL      string `json:"hub_url"`
 }
 
 func normalizeRemoteRegistrationPhoneNumber(value string) string {
@@ -1517,32 +1518,7 @@ func (a *App) activateRemoteEmail(email string, verifyCode string, invitationCod
 	// If this Hub account already has MaClaw official service entitlement,
 	// make it the active LLM provider immediately after registration. This
 	// handles re-registration to another Hub where official service is available.
-	if freshCfg, loadErr := a.LoadConfig(); loadErr == nil {
-		if strings.TrimSpace(freshCfg.RemoteViewerToken) != "" {
-			if status, statusErr := a.fetchHubLLMServiceStatusWithTimeout(freshCfg, hubServiceStatusTimeout); statusErr == nil {
-				// Update local cache so sidebar shows fresh status immediately.
-				statusChanged := storeHubServiceStatusCache(freshCfg.RemoteHubURL, freshCfg.RemoteViewerToken, status)
-				configChanged, syncErr := a.syncHubLLMServiceStatusToConfig(status, true)
-				a.notifyHubLLMServiceStatusChanged(statusChanged, configChanged)
-				if syncErr != nil {
-					log.Printf("[onboarding] ActivateRemote hub_service_sync_failed err=%v", syncErr)
-				}
-			} else {
-				if isHubLLMServiceAuthorizationError(statusErr) {
-					if _, syncErr := a.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{}, false); syncErr != nil {
-						log.Printf("[onboarding] ActivateRemote hub_service_clear_failed err=%v", syncErr)
-					}
-				}
-				// Invalidate cache on auth error so next fetch tries fresh.
-				clearHubServiceStatusCache()
-				log.Printf("[onboarding] ActivateRemote hub_service_status_failed err=%v", statusErr)
-			}
-		} else if _, syncErr := a.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{}, false); syncErr != nil {
-			log.Printf("[onboarding] ActivateRemote hub_service_clear_failed err=%v", syncErr)
-		}
-	} else {
-		log.Printf("[onboarding] ActivateRemote hub_service_load_config_failed err=%v", loadErr)
-	}
+	a.syncHubLLMServiceStatusAfterEnroll("ActivateRemote")
 
 	// Auto-acquire SkillMarket session token via machine-login.
 	// This allows the user to upload skills immediately after Hub registration
@@ -1610,6 +1586,41 @@ func (a *App) activateRemoteEmail(email string, verifyCode string, invitationCod
 	log.Printf("[onboarding] ActivateRemote total=%s", time.Since(start))
 
 	return result, nil
+}
+
+// syncHubLLMServiceStatusAfterEnroll refreshes the Hub LLM service entitlement
+// right after a registration binds new credentials. It stores the fresh status
+// in the process-local cache, syncs it into config, and notifies the sidebar
+// so surfaces like the daily check-in button reflect the account that just
+// enrolled instead of the previous one. On failure it clears the hub provider
+// (auth errors only) and invalidates the cache so the next probe fetches fresh.
+func (a *App) syncHubLLMServiceStatusAfterEnroll(logTag string) {
+	if freshCfg, loadErr := a.LoadConfig(); loadErr == nil {
+		if strings.TrimSpace(freshCfg.RemoteViewerToken) != "" {
+			if status, statusErr := a.fetchHubLLMServiceStatusWithTimeout(freshCfg, hubServiceStatusTimeout); statusErr == nil {
+				// Update local cache so sidebar shows fresh status immediately.
+				statusChanged := storeHubServiceStatusCache(freshCfg.RemoteHubURL, freshCfg.RemoteViewerToken, status)
+				configChanged, syncErr := a.syncHubLLMServiceStatusToConfig(status, true)
+				a.notifyHubLLMServiceStatusChanged(statusChanged, configChanged)
+				if syncErr != nil {
+					log.Printf("[onboarding] %s hub_service_sync_failed err=%v", logTag, syncErr)
+				}
+			} else {
+				if isHubLLMServiceAuthorizationError(statusErr) {
+					if _, syncErr := a.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{}, false); syncErr != nil {
+						log.Printf("[onboarding] %s hub_service_clear_failed err=%v", logTag, syncErr)
+					}
+				}
+				// Invalidate cache on auth error so next fetch tries fresh.
+				clearHubServiceStatusCache()
+				log.Printf("[onboarding] %s hub_service_status_failed err=%v", logTag, statusErr)
+			}
+		} else if _, syncErr := a.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{}, false); syncErr != nil {
+			log.Printf("[onboarding] %s hub_service_clear_failed err=%v", logTag, syncErr)
+		}
+	} else {
+		log.Printf("[onboarding] %s hub_service_load_config_failed err=%v", logTag, loadErr)
+	}
 }
 
 func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode string, invitationCode string, tenantID string, hubID string) (RemoteActivationResult, error) {
@@ -1725,6 +1736,11 @@ func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode st
 		return RemoteActivationResult{}, err
 	}
 
+	// Same post-enrollment entitlement refresh as the email path: fetch the new
+	// account's status so the sidebar (credits, daily check-in) switches off the
+	// previous account's snapshot instead of waiting for the next poll.
+	a.syncHubLLMServiceStatusAfterEnroll("ActivateRemoteSMS")
+
 	if !a.remoteActivationBackgroundDisabled {
 		go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, phoneNumber), skillMarketContactFromEnroll(&enrollResult, phoneNumber), enrollResult.MachineID, enrollResult.ViewerToken)
 	}
@@ -1839,14 +1855,15 @@ func (a *App) GetRemoteActivationStatus() RemoteActivationStatus {
 		return RemoteActivationStatus{}
 	}
 	return RemoteActivationStatus{
-		Activated:  cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "",
-		HubID:      cfg.RemoteHubID,
-		Email:      cfg.RemoteEmail,
-		SN:         cfg.RemoteSN,
-		TenantID:   cfg.RemoteTenantID,
-		TenantName: cfg.RemoteTenantName,
-		MachineID:  cfg.RemoteMachineID,
-		HubURL:     cfg.RemoteHubURL,
+		Activated:   cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "",
+		HubID:       cfg.RemoteHubID,
+		Email:       cfg.RemoteEmail,
+		PhoneNumber: normalizeRemoteRegistrationPhoneNumber(cfg.RemoteMobile),
+		SN:          cfg.RemoteSN,
+		TenantID:    cfg.RemoteTenantID,
+		TenantName:  cfg.RemoteTenantName,
+		MachineID:   cfg.RemoteMachineID,
+		HubURL:      cfg.RemoteHubURL,
 	}
 }
 
@@ -1917,6 +1934,10 @@ func (a *App) clearMachineCredentials() {
 		cfg.RemoteHubID = ""
 	})
 
+	// The cached hub status belongs to the cleared account; drop it so the
+	// sidebar (credits, check-in) stops showing the previous user right away.
+	clearHubServiceStatusCache()
+	a.emitEvent("hub-llm-service-changed")
 	a.emitRemoteStateChanged()
 }
 
@@ -1946,6 +1967,8 @@ func (a *App) ClearRemoteActivation() error {
 		return err
 	}
 
+	clearHubServiceStatusCache()
+	a.emitEvent("hub-llm-service-changed")
 	a.emitRemoteStateChanged()
 	return nil
 }

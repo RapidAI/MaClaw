@@ -434,6 +434,28 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByTestId("assistant-inline-math").textContent).toContain("x");
     });
 
+    it("renders digit-led formulas like $0.786\\pm0.004$ as math, not currency", () => {
+        render(
+            <div>{renderContentWithCodeBlocks(
+                "硬分类 Macro-F1 约 $0.786\\pm0.004$（trunc@0.1）与 $0.788\\pm0.006$，完整训练达 $0.934$，幂为 $2^n$。",
+                lightTheme,
+            )}</div>,
+        );
+
+        const maths = screen.getAllByTestId("assistant-inline-math");
+        expect(maths).toHaveLength(4);
+        expect(maths[0].textContent).toContain("0.786");
+        expect(maths[2].textContent).toContain("0.934");
+    });
+
+    it("keeps digit-led dollar pairs without TeX structure as currency text", () => {
+        render(<div>{renderContentWithCodeBlocks("预算从 $5 到 $10 之间，公式为 $0.5\\pm0.1$。", lightTheme)}</div>);
+
+        expect(screen.getByText(/预算从 \$5 到 \$10 之间/)).toBeTruthy();
+        expect(screen.getAllByTestId("assistant-inline-math")).toHaveLength(1);
+        expect(screen.getByTestId("assistant-inline-math").textContent).toContain("0.5");
+    });
+
     it("renders several inline formulas in the same Chinese sentence", () => {
         render(<div>{renderContentWithCodeBlocks("设 $X$ 是集合，$d: X \\times X \\to \\mathbb{R}$ 满足条件。", lightTheme)}</div>);
 

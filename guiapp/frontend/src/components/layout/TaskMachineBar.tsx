@@ -252,8 +252,9 @@ export function TaskMachineBar({
             messages: (detail?.messages || []).map(message => {
                 const content = (message.content || '').trim();
                 const reasoning = (message.reasoning_content || '').trim();
-                return { role: message.role, content, reasoning };
-            }).filter(message => message.content !== '' || (message.reasoning || '') !== ''),
+                const localFilePaths = (message.local_file_paths || []).map(path => String(path || '').trim()).filter(Boolean);
+                return { role: message.role, content, reasoning, localFilePaths };
+            }).filter(message => message.content !== '' || (message.reasoning || '') !== '' || (message.localFilePaths?.length || 0) > 0),
         });
         bindRemoteAssistantActions({
             send: text => sendMessage(detailPath, text),
@@ -287,6 +288,9 @@ export function TaskMachineBar({
     };
     const viewOnly = !!selected && selected.permission !== 'operate';
     const remoteActivity = !!selected || remote.state.pending.length > 0 || remote.state.controlled.length > 0;
+    // The hub may omit from_machine on a controlled grant; keep the chip
+    // readable with the established 对方 wording instead of an empty name.
+    const controllerFallback = localizeText(lang, 'the other computer', '对方电脑', '對方電腦');
     // A failure belongs next to the form the person is using. The tab row
     // only keeps it when that form is not open, so the same text is not shown twice.
     const errorInDetail = !!chatError;
@@ -467,32 +471,47 @@ export function TaskMachineBar({
                             : localizeText(lang, 'You can operate. Tasks run on that computer.', '可操作。任务在对方电脑上运行。', '可操作。任務在對方電腦上運行。')}
                 </div>
             ) : null}
+            {/* Live remote sessions (being-controlled, pending invites) render
+                as slim one-line chips instead of a headed card, so the strip
+                costs a single row in the pane. The full context ("这台电脑正在
+                被远控") stays reachable via the section's aria-label. */}
             {remote.state.pending.length > 0 || remote.state.controlled.length > 0 ? (
-                <div className="mc-task-machine-add">
-                    {remote.state.pending.length > 0 ? (
-                        <section data-testid="task-machine-pending">
-                            <h3>{localizeText(lang, 'Waiting for the other person', '等待对方处理', '等待對方處理')}</h3>
-                            {remote.state.pending.map(invite => (
-                                <div key={invite.id} className="mc-task-machine-row">
-                                    <span className="mc-task-machine-row-text">
-                                        <span className="mc-task-machine-row-dot" data-state="pending" aria-hidden="true" />
-                                        {invite.account} · {permissionLabel(lang, invite.permission)}
+                <div className="mc-task-machine-live">
+                    {remote.state.controlled.length > 0 ? (
+                        <section
+                            data-testid="task-machine-controlled"
+                            aria-label={localizeText(lang, 'This computer is being controlled', '这台电脑正在被远控', '這台電腦正在被遠控')}
+                        >
+                            {remote.state.controlled.map(item => {
+                                const controller = item.from_machine || controllerFallback;
+                                return (
+                                <div key={item.id} className="mc-task-machine-session" data-state="active">
+                                    <span className="mc-task-machine-session-dot" data-state="active" aria-hidden="true" />
+                                    <span className="mc-task-machine-session-text">
+                                        <span className="mc-task-machine-session-name" title={controller}>{controller}</span>
+                                        <span className="mc-task-machine-session-label">{localizeText(lang, 'is controlling this PC', '正在远控本机', '正在遠控本機')}</span>
+                                        <span className="mc-task-machine-session-badge">{permissionLabel(lang, item.permission)}</span>
                                     </span>
-                                    <button type="button" data-testid={`task-machine-cancel-${invite.id}`} disabled={acting} onClick={() => void runAction(() => remote.revoke(invite.id))}>{localizeText(lang, 'Cancel', '取消', '取消')}</button>
+                                    <button type="button" className="mc-task-machine-session-btn" data-testid={`task-machine-end-${item.id}`} disabled={acting} onClick={() => void runAction(() => remote.revoke(item.id))}>{localizeText(lang, 'End', '结束', '結束')}</button>
                                 </div>
-                            ))}
+                                );
+                            })}
                         </section>
                     ) : null}
-                    {remote.state.controlled.length > 0 ? (
-                        <section data-testid="task-machine-controlled">
-                            <h3>{localizeText(lang, 'This computer is being controlled', '这台电脑正在被远控', '這台電腦正在被遠控')}</h3>
-                            {remote.state.controlled.map(item => (
-                                <div key={item.id} className="mc-task-machine-row">
-                                    <span className="mc-task-machine-row-text">
-                                        <span className="mc-task-machine-row-dot" data-state="active" aria-hidden="true" />
-                                        {item.from_machine} · {permissionLabel(lang, item.permission)}
+                    {remote.state.pending.length > 0 ? (
+                        <section
+                            data-testid="task-machine-pending"
+                            aria-label={localizeText(lang, 'Waiting for the other person', '等待对方处理', '等待對方處理')}
+                        >
+                            {remote.state.pending.map(invite => (
+                                <div key={invite.id} className="mc-task-machine-session" data-state="pending">
+                                    <span className="mc-task-machine-session-dot" data-state="pending" aria-hidden="true" />
+                                    <span className="mc-task-machine-session-text">
+                                        <span className="mc-task-machine-session-name" title={invite.account}>{invite.account}</span>
+                                        <span className="mc-task-machine-session-label">{localizeText(lang, 'waiting for a reply', '等待对方处理', '等待對方處理')}</span>
+                                        <span className="mc-task-machine-session-badge">{permissionLabel(lang, invite.permission)}</span>
                                     </span>
-                                    <button type="button" data-testid={`task-machine-end-${item.id}`} disabled={acting} onClick={() => void runAction(() => remote.revoke(item.id))}>{localizeText(lang, 'End', '结束', '結束')}</button>
+                                    <button type="button" className="mc-task-machine-session-btn" data-testid={`task-machine-cancel-${invite.id}`} disabled={acting} onClick={() => void runAction(() => remote.revoke(invite.id))}>{localizeText(lang, 'Cancel', '取消', '取消')}</button>
                                 </div>
                             ))}
                         </section>

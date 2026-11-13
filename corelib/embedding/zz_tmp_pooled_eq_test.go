@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 func TestZZPooledLastEqualsEmbed(t *testing.T) {
+	testenv.SkipModelTests(t)
 	p := os.Getenv("MACLAW_EMBED_MODEL_PATH")
 	if p == "" {
 		home, _ := os.UserHomeDir()

@@ -1885,6 +1885,11 @@ func TestFileCompanionCancelledWriteKeepsPreviousNote(t *testing.T) {
 			}
 			open := strings.LastIndex(trim, "](")
 			imagePath = trim[open+2 : len(trim)-1]
+			// Windows targets are written as ](<C:\...>) because a bare ':'
+			// breaks the link; unwrap the angle brackets for the compare.
+			if strings.HasPrefix(imagePath, "<") && strings.HasSuffix(imagePath, ">") {
+				imagePath = imagePath[1 : len(imagePath)-1]
+			}
 		}
 		if imagePath == "" {
 			t.Fatal("published note has no frame")

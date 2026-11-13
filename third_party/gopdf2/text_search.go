@@ -77,6 +77,7 @@ func searchTextOnPage(parser *rawPDFParser, pageIndex int, query string, caseIns
 		fonts:    fonts,
 		xobjs:    page.resources.xobjs,
 		mediaBox: page.mediaBox,
+		rotate:   page.rotate,
 		visited:  map[int]bool{},
 	}, stream)
 

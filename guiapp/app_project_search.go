@@ -259,6 +259,10 @@ type ProjectConversationHistoryItem struct {
 	TerminalClass string `json:"terminal_class,omitempty"`
 	// ResultStatus is the display outcome of that turn: incomplete or completed.
 	ResultStatus string `json:"result_status,omitempty"`
+	// LocalFilePaths are files this turn delivered on this machine, such as a
+	// generated document. A remote controller uses them as fetch_file handles;
+	// they are not readable paths on any other machine.
+	LocalFilePaths []string `json:"local_file_paths,omitempty"`
 	// planningEcho is a tool turn whose content only repeats reasoning.
 	// Visible history can omit it. The desktop payload does not include it.
 	planningEcho bool `json:"-"`
@@ -6262,13 +6266,14 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 		}
 		content := stringifyProjectConversationContent(entry.Content)
 		reasoning := strings.TrimSpace(entry.ReasoningContent)
-		if content == "" && reasoning == "" {
+		if content == "" && reasoning == "" && len(entry.LocalFilePaths) == 0 {
 			continue
 		}
 		items = append(items, withConversationHistoryOutcome(ProjectConversationHistoryItem{
 			Role:             role,
 			Content:          content,
 			ReasoningContent: reasoning,
+			LocalFilePaths:   append([]string{}, entry.LocalFilePaths...),
 			planningEcho:     agent.AssistantPlanningEcho(content, reasoning, entry.FinishReason, entry.ToolCalls),
 			hostContinuation: entry.HostContinuation,
 		}, entry.TerminalClass, ""))
@@ -6375,6 +6380,10 @@ func projectConversationHistoryFromTabSession(conversation []interface{}) []Proj
 			ToolCalls         interface{} `json:"tool_calls"`
 			ToolCallsCamel    interface{} `json:"toolCalls"`
 			HostContinuation  bool        `json:"host_continuation"`
+			LocalFilePath     string      `json:"localFilePath"`
+			LocalFilePathAlt  string      `json:"local_file_path"`
+			LocalFilePaths    []string    `json:"localFilePaths"`
+			LocalFilePathsAlt []string    `json:"local_file_paths"`
 		}
 		if json.Unmarshal(data, &entry) != nil {
 			continue
@@ -6390,7 +6399,10 @@ func projectConversationHistoryFromTabSession(conversation []interface{}) []Proj
 		if reasoning == "" {
 			reasoning = stringifyProjectConversationContent(entry.Reasoning)
 		}
-		if content == "" && reasoning == "" {
+		localPaths := dedupePaths(append(append(append([]string{},
+			entry.LocalFilePaths...), entry.LocalFilePathsAlt...),
+			entry.LocalFilePath, entry.LocalFilePathAlt))
+		if content == "" && reasoning == "" && len(localPaths) == 0 {
 			continue
 		}
 		status := entry.ResultStatus
@@ -6409,6 +6421,7 @@ func projectConversationHistoryFromTabSession(conversation []interface{}) []Proj
 			Role:             role,
 			Content:          content,
 			ReasoningContent: reasoning,
+			LocalFilePaths:   localPaths,
 			planningEcho:     agent.AssistantPlanningEcho(content, reasoning, finish, calls),
 			hostContinuation: entry.HostContinuation,
 		}, entry.TerminalClass, status))
@@ -8246,6 +8259,7 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	// Local Tab: update global config.
 	if tabID == "" {
 		if err := os.MkdirAll(newDir, 0o755); err != nil {
+			log.Printf("[SetTabWorkingDir] local tab mkdir %q failed: %v", newDir, err)
 			return fmt.Errorf("cannot create directory %s: %w", newDir, err)
 		}
 		corelib.SetWorkspaceDir(newDir)
@@ -8259,12 +8273,17 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	ownerID, projectPath := a.assistantOwnerForTab(tabID)
 	if ownerID == "" {
 		a.tabWorkingDirMu.Unlock()
+		// A tab whose session binding is not registered yet (freshly opened or
+		// restored task) lands here. Log it: the chip swallows the error and a
+		// silent rejection looks like "the switch did not take".
+		log.Printf("[SetTabWorkingDir] tab=%s has no associated assistant session; dir=%q rejected", tabID, newDir)
 		return fmt.Errorf("tab %s has no associated assistant session", tabID)
 	}
 	if a.projectPathIsLocalCodingWorkbench(projectPath) && isLocalCodingIdentityOrSandbox(projectPath, newDir) {
 		replacement := normalizeProjectSessionPath(a.EffectiveDesktopWorkingDir())
 		if replacement == "" || isLocalCodingIdentityOrSandbox(projectPath, replacement) {
 			a.tabWorkingDirMu.Unlock()
+			log.Printf("[SetTabWorkingDir] tab=%s project=%q dir=%q rejected: coding work root cannot be the task identity directory", tabID, projectPath, newDir)
 			return fmt.Errorf("coding work root cannot be the task identity directory")
 		}
 		newDir = replacement
@@ -8279,6 +8298,7 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	}
 	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		a.tabWorkingDirMu.Unlock()
+		log.Printf("[SetTabWorkingDir] tab=%s mkdir %q failed: %v", tabID, newDir, err)
 		return fmt.Errorf("cannot create directory %s: %w", newDir, err)
 	}
 	// The expert tab is shared. A directory that belongs to another task of
@@ -8302,6 +8322,7 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	// on its previous directory rather than creating a hidden transient override.
 	if err := a.persistAssistantTabWorkingDir(tabID, projectPath, newDir); err != nil {
 		a.tabWorkingDirMu.Unlock()
+		log.Printf("[SetTabWorkingDir] tab=%s persist dir=%q failed: %v", tabID, newDir, err)
 		return err
 	}
 	// Tools resolve by owner while the UI and persistence resolve by tab ID, so

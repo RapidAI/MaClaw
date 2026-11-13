@@ -103,6 +103,30 @@ describe('AssistantTitleBar', () => {
         expect(screen.queryByTestId('notification-bell-btn')).toBeNull();
     });
 
+    it('hides the bell button on the home view while the notification host stays event-driven', () => {
+        // The sidebar status row owns the visible bell now; the title-bar host
+        // must keep listening (panel/toasts) without rendering a duplicate bell.
+        render(
+            <AssistantTitleBar
+                clearHistory={vi.fn()}
+                bellHidden
+                inline={false}
+                lang="zh"
+                maximized={false}
+                onClose={vi.fn()}
+                refreshNews={vi.fn()}
+                showMaximizeToggle={false}
+                theme={overlayTheme}
+                themeMode="light"
+                title="默认任务"
+                trialReflectEnabled={false}
+            />,
+        );
+        expect(screen.queryByTestId('notification-bell-btn')).toBeNull();
+        window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications'));
+        expect(notificationState.current.togglePanel).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps primary actions directly after the assistant title', () => {
         render(
             <AssistantTitleBar

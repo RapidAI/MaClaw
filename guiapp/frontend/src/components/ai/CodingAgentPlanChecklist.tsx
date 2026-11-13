@@ -39,6 +39,8 @@ export type CodingAgentPlanChecklistProps = {
     executionLive?: boolean;
     /** Header status shown on the current step when the run is not live. */
     executionStatusLabel?: string;
+    /** Clicking a changed-file row focuses it in the code preview. */
+    onOpenFile?: (path: string) => void;
     onApprove?: () => void;
     onSkip?: () => void;
     onReject?: () => void;
@@ -111,6 +113,56 @@ function PlanStepIcon({ status, live = true }: { status: string; live?: boolean 
     );
 }
 
+/** One changed-file row; interactive only when a preview handler exists. */
+function ChecklistFileRow({
+    row,
+    addColor,
+    delColor,
+    onOpenFile,
+}: {
+    row: CodingAgentFileChange;
+    addColor: string;
+    delColor: string;
+    onOpenFile?: (path: string) => void;
+}) {
+    // An empty path can never resolve to a preview file — keep the row inert
+    // instead of looking clickable and doing nothing.
+    const openable = !!onOpenFile && !!row.path;
+    return (
+        <li
+            className="capc-file-row"
+            data-testid="coding-agent-plan-file"
+            title={row.path}
+            role={openable ? "button" : undefined}
+            tabIndex={openable ? 0 : undefined}
+            data-preview-path={openable ? row.path : undefined}
+            // Same as the toggle: keep the caret in the composer; the click
+            // still opens.
+            onMouseDown={openable ? (event) => { event.preventDefault(); } : undefined}
+            onClick={openable ? () => { onOpenFile?.(row.path); } : undefined}
+            onKeyDown={openable ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onOpenFile?.(row.path);
+                    return;
+                }
+                // Blur runs through the wrapper onBlur and closes the list,
+                // same as the toggle.
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                }
+            } : undefined}
+        >
+            <span className="capc-file-path">{compactCodingTrailPath(row.path) || row.path}</span>
+            <span className="capc-file-stat">
+                <span style={{ color: addColor }}>+{row.added || 0}</span>
+                <span style={{ color: delColor }}>-{row.removed || 0}</span>
+            </span>
+        </li>
+    );
+}
+
 export function CodingAgentPlanChecklist({
     lang,
     theme,
@@ -122,6 +174,7 @@ export function CodingAgentPlanChecklist({
     ready = true,
     executionLive = true,
     executionStatusLabel = "",
+    onOpenFile,
     onApprove,
     onSkip,
     onReject,
@@ -496,6 +549,14 @@ export function CodingAgentPlanChecklist({
                     data-testid="coding-agent-plan-files"
                     onMouseEnter={showFiles}
                     onMouseLeave={hideFiles}
+                    // Focus tracking lives on the wrapper so tabbing from the
+                    // toggle into a file row does not collapse the list.
+                    onFocus={() => setFilesFocused(true)}
+                    onBlur={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                            setFilesFocused(false);
+                        }
+                    }}
                 >
                     <button
                         type="button"
@@ -505,8 +566,6 @@ export function CodingAgentPlanChecklist({
                         aria-controls="coding-agent-plan-files-body"
                         title={localizeText(lang, "Hover to see changed files", "悬停查看修改的文件", "懸停查看修改的檔案")}
                         onMouseDown={(event) => { event.preventDefault(); }}
-                        onFocus={() => setFilesFocused(true)}
-                        onBlur={() => setFilesFocused(false)}
                         onKeyDown={(event) => {
                             if (event.key !== "Escape") return;
                             event.preventDefault();
@@ -536,13 +595,13 @@ export function CodingAgentPlanChecklist({
                             <div className="capc-files-title" style={{ color: chrome.accentStrong }}>{fileLabel}</div>
                             <ul className="capc-file-rows">
                                 {fileChanges.map((row) => (
-                                    <li key={row.path} className="capc-file-row" data-testid="coding-agent-plan-file" title={row.path}>
-                                        <span className="capc-file-path">{compactCodingTrailPath(row.path) || row.path}</span>
-                                        <span className="capc-file-stat">
-                                            <span style={{ color: addColor }}>+{row.added || 0}</span>
-                                            <span style={{ color: delColor }}>-{row.removed || 0}</span>
-                                        </span>
-                                    </li>
+                                    <ChecklistFileRow
+                                        key={row.path}
+                                        row={row}
+                                        addColor={addColor}
+                                        delColor={delColor}
+                                        onOpenFile={onOpenFile}
+                                    />
                                 ))}
                             </ul>
                         </div>

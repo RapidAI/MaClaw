@@ -10,6 +10,7 @@ import {
     withRemoteWorkspace,
     withTaskType,
     withWorkflow,
+    withWorkspace,
     WORKFLOW_AUTO,
 } from '../taskDraft';
 import { LATEX_BLANK_TEMPLATE_ID, LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
@@ -179,6 +180,33 @@ describe('runTaskConfigSend interception', () => {
         expect(bindings.openExpert).not.toHaveBeenCalled();
     });
 
+    it('coding × local without a directory is blocked before creating', async () => {
+        const bindings = makeBindings();
+        const draft = withTaskType(defaultTaskDraft(), 'coding');
+        const result = await runTaskConfigSend({ text: '修复登录 bug', draft, bindings, isZh: true });
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain('工作目录');
+        expect(bindings.createTaskUnified).not.toHaveBeenCalled();
+        expect(bindings.openTaskLaunch).not.toHaveBeenCalled();
+        expect(bindings.openExpert).not.toHaveBeenCalled();
+    });
+
+    it('coding × local with a blank directory is blocked too (trim guard)', async () => {
+        const bindings = makeBindings();
+        // withWorkspace 直塞空白路径（绕过 withLocalWorkspace 的 trim）也应拦下。
+        const draft = withWorkspace(withTaskType(defaultTaskDraft(), 'coding'), { kind: 'local', localPath: '   ' });
+        const result = await runTaskConfigSend({ text: '修复登录 bug', draft, bindings });
+        expect(result.ok).toBe(false);
+        expect(bindings.createTaskUnified).not.toHaveBeenCalled();
+    });
+
+    it('chat without a directory still sends (default directory stays allowed for chat)', async () => {
+        const bindings = makeBindings();
+        const result = await runTaskConfigSend({ text: '随便聊聊', draft: defaultTaskDraft(), bindings, force: true });
+        expect(result.ok).toBe(true);
+        expect(bindings.createTaskUnified).toHaveBeenCalledTimes(1);
+    });
+
     it('non-default draft calls CreateTaskUnified with mapped options and opens the task launch', async () => {
         const bindings = makeBindings();
         const draft = withLocalWorkspace(withTaskType(defaultTaskDraft(), 'coding'), 'D:/repo/app');
@@ -303,7 +331,7 @@ describe('runTaskConfigSend interception', () => {
         const bindings = makeBindings({
             createTaskUnified: vi.fn().mockRejectedValue(new Error('端口被占用')),
         });
-        const draft = withTaskType(defaultTaskDraft(), 'coding');
+        const draft = withLocalWorkspace(withTaskType(defaultTaskDraft(), 'coding'), 'D:/repo/app');
         const result = await runTaskConfigSend({ text: '改代码', draft, bindings, isZh: true });
         expect(result.ok).toBe(false);
         if (!result.ok) expect(result.error).toContain('端口被占用');
@@ -313,7 +341,7 @@ describe('runTaskConfigSend interception', () => {
 
     it('empty path result is treated as a failure', async () => {
         const bindings = makeBindings({ createTaskUnified: vi.fn().mockResolvedValue({ projectPath: '  ' }) });
-        const draft = withTaskType(defaultTaskDraft(), 'coding');
+        const draft = withLocalWorkspace(withTaskType(defaultTaskDraft(), 'coding'), 'D:/repo/app');
         const result = await runTaskConfigSend({ text: '改代码', draft, bindings, isZh: true });
         expect(result.ok).toBe(false);
     });
@@ -362,7 +390,7 @@ describe('runTaskConfigSend interception', () => {
     it('workflow 无 (null) marks the first message to skip workflow interception', async () => {
         const bindings = makeBindings();
         // 非默认 draft（编程类型），工作流保持「无」
-        const draft = withTaskType(defaultTaskDraft(), 'coding');
+        const draft = withLocalWorkspace(withTaskType(defaultTaskDraft(), 'coding'), 'D:/repo/app');
         const result = await runTaskConfigSend({ text: '修复登录 bug', draft, bindings });
         expect(result.ok).toBe(true);
         expect(bindings.openTaskLaunch).toHaveBeenCalledWith(expect.objectContaining({
@@ -372,7 +400,7 @@ describe('runTaskConfigSend interception', () => {
 
     it('workflow 自动判断 does NOT set the skip-interception flag', async () => {
         const bindings = makeBindings();
-        const draft = withTaskType(withWorkflow(defaultTaskDraft(), WORKFLOW_AUTO), 'coding');
+        const draft = withLocalWorkspace(withTaskType(withWorkflow(defaultTaskDraft(), WORKFLOW_AUTO), 'coding'), 'D:/repo/app');
         const result = await runTaskConfigSend({ text: '做个报表', draft, bindings });
         expect(result.ok).toBe(true);
         const nav = bindings.openTaskLaunch.mock.calls[0][0] as { noWorkflowInterception?: boolean };
@@ -412,6 +440,17 @@ describe('remote machine target', () => {
         const draft = withMachine(withMachine(defaultTaskDraft(), machine), null);
         expect(draft.machine).toBeNull();
         expect(isDraftDefault(draft)).toBe(true);
+    });
+
+    it('a machine-target coding task is not blocked by the local-directory rule (create_task carries no directory)', async () => {
+        const createRemoteMachineTask = vi.fn().mockResolvedValue({ projectPath: 'D:/remote/t1' });
+        const openRemoteMachineTask = vi.fn();
+        const bindings = makeBindings({ createRemoteMachineTask, openRemoteMachineTask });
+        const draft = withMachine(withTaskType(defaultTaskDraft(), 'coding'), machine);
+        const result = await runTaskConfigSend({ text: '整理这个仓库', draft, bindings });
+        expect(result.ok).toBe(true);
+        expect(createRemoteMachineTask).toHaveBeenCalledTimes(1);
+        expect(bindings.createTaskUnified).not.toHaveBeenCalled();
     });
 
     it('creates on the remote machine and opens it without touching local create', async () => {

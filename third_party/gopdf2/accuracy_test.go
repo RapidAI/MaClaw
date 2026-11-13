@@ -239,3 +239,253 @@ func TestFormatWordsRealPositions(t *testing.T) {
 		}
 	}
 }
+
+// TestParagraphReconstruction generates a page with wrapped paragraphs
+// (hyphenated splits, indents, paragraph spacing) and verifies the
+// paragraph API reconstructs the original text.
+func TestParagraphReconstruction(t *testing.T) {
+	pdf := &GoPdf{}
+	pdf.Start(Config{PageSize: *PageSizeA4})
+	pdf.AddPage()
+	if err := pdf.AddTTFFont("lib", "test/res/LiberationSerif-Regular.ttf"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.SetFont("lib", "", 11); err != nil {
+		t.Fatal(err)
+	}
+
+	// Paragraph 1: two wrapped lines ending with a hyphenated split.
+	p1a := "Recurrent neural networks are difficult to train because their sequential na-"
+	p1b := "ture precludes parallelization within training examples."
+	// Paragraph 2: first-line indent + terminal punctuation on previous line.
+	p2a := "Attention mechanisms read entire sequences at once."
+	p2b := "They model dependencies without regard to distance."
+
+	pdf.SetXY(50, 60)
+	_ = pdf.Cell(nil, p1a)
+	pdf.SetXY(50, 76)
+	_ = pdf.Cell(nil, p1b)
+	pdf.SetXY(66, 100) // indented first line, extra spacing above
+	_ = pdf.Cell(nil, p2a)
+	pdf.SetXY(50, 116)
+	_ = pdf.Cell(nil, p2b)
+
+	path := filepath.Join(t.TempDir(), "para.pdf")
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	paras, err := ExtractPageParagraphs(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// p2a ends with terminal punctuation, so it deliberately starts its own
+	// paragraph: expect [p1 wrapped], [p2a], [p2b].
+	if len(paras) != 3 {
+		for i, p := range paras {
+			t.Logf("para %d: %q", i, p.Text)
+		}
+		t.Fatalf("got %d paragraphs, want 3", len(paras))
+	}
+	// the hyphenated split "na-/ture" joins into "nature"
+	wantP1 := p1a[:len(p1a)-1] + p1b
+	if paras[0].Text != wantP1 {
+		t.Errorf("paragraph 1 = %q, want %q", paras[0].Text, wantP1)
+	}
+	if paras[1].Text != p2a {
+		t.Errorf("paragraph 2 = %q", paras[1].Text)
+	}
+	if paras[2].Text != p2b {
+		t.Errorf("paragraph 3 = %q", paras[2].Text)
+	}
+}
+
+// TestParagraphHyphenJoin verifies a hyphenated line split joins into one
+// word across the paragraph boundary.
+func TestParagraphHyphenJoin(t *testing.T) {
+	lines := []TextLine{
+		{Y: 100, Text: "paralleliza-", Words: []TextWord{{X: 50, Y: 100, Width: 60, Height: 11, Text: "paralleliza-"}}},
+		{Y: 114, Text: "tion improves throughput.", Words: []TextWord{{X: 50, Y: 114, Width: 120, Height: 11, Text: "tion improves throughput."}}},
+	}
+	paras := ParagraphsFromLines(lines)
+	if len(paras) != 1 {
+		t.Fatalf("got %d paragraphs, want 1", len(paras))
+	}
+	want := "parallelization improves throughput."
+	if paras[0].Text != want {
+		t.Errorf("text = %q, want %q", paras[0].Text, want)
+	}
+}
+
+// TestRotateExtraction verifies /Rotate 90: extraction coordinates map to
+// the visual (rotated) page space and the rendered canvas swaps dimensions.
+func TestRotateExtraction(t *testing.T) {
+	pdf := &GoPdf{}
+	pdf.Start(Config{PageSize: *PageSizeA4}) // 595 x 842
+	pdf.AddPage()
+	if err := pdf.AddTTFFont("lib", "test/res/LiberationSerif-Regular.ttf"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.SetFont("lib", "", 12); err != nil {
+		t.Fatal(err)
+	}
+	pdf.SetXY(50, 100)
+	_ = pdf.Cell(nil, "Rotated marker")
+	if err := pdf.SetPageRotation(1, 90); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), "rot90.pdf")
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+
+	texts, err := ExtractTextFromPage(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// /Rotate 90: (x, y) -> (h - y, x); unrotated (50, 100) -> (742, 50)
+	found := false
+	for _, tx := range texts {
+		if strings.Contains(tx.Text, "Rotated") {
+			found = true
+			// the cell baseline sits 8.32pt below the requested top,
+			// so visual X = h - (100 + 8.32)
+			wantX := 842.0 - 108.32
+			if dx := tx.X - wantX; dx < -2 || dx > 2 {
+				t.Errorf("X = %.1f, want ~%.1f", tx.X, wantX)
+			}
+			if dy := tx.Y - 50; dy < -14 || dy > 14 {
+				t.Errorf("Y = %.1f, want ~50 (baseline range)", tx.Y)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("rotated marker text not extracted")
+	}
+
+	// rendered canvas swaps to landscape
+	img, err := RenderPageToImage(data, 0, RenderOption{DPI: 72})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := img.Bounds()
+	if b.Dx() <= b.Dy() {
+		t.Errorf("rendered %dx%d, want landscape (842x612)", b.Dx(), b.Dy())
+	}
+}
+
+// TestRotateInheritedFromPagesTree verifies /Rotate on a /Pages node is
+// inherited by child pages (hand-crafted PDF).
+func TestRotateInheritedFromPagesTree(t *testing.T) {
+	// minimal PDF: one page inheriting /Rotate 180 from the Pages node
+	pdfBytes := []byte(`%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 595 842] /Rotate 180 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 44 >>
+stream
+BT /F1 12 Tf 50 770 Td (Inherited) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+trailer
+<< /Root 1 0 R >>
+`)
+	// The tolerant scanner recovers objects without a valid xref, so hand
+	// the raw object stream to ExtractTextFromPage.
+	texts, err := ExtractTextFromPage(pdfBytes, 0)
+	if err != nil {
+		t.Fatalf("extraction: %v", err)
+	}
+	// /Rotate 180: (x, y) -> (w - x, h - y); (50, 770 y-down? no —
+	// content Td 50 770 is y-up: y-down = 842-770 = 72)
+	// -> visual (595-50, 842-72) = (545, 770)
+	found := false
+	for _, tx := range texts {
+		if strings.Contains(tx.Text, "Inherited") {
+			found = true
+			if dx := tx.X - 545; dx < -2 || dx > 2 {
+				t.Errorf("X = %.1f, want ~545", tx.X)
+			}
+			if dy := tx.Y - 770; dy < -14 || dy > 14 {
+				t.Errorf("Y = %.1f, want ~770", tx.Y)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("inherited-rotation text not extracted")
+	}
+}
+
+// TestThreeColumnReadingOrder verifies recursive gutter detection orders
+// three-column pages column by column.
+func TestThreeColumnReadingOrder(t *testing.T) {
+	pdf := &GoPdf{}
+	pdf.Start(Config{PageSize: Rect{W: 842, H: 595}}) // landscape A4: fits 3 columns
+	pdf.AddPage()
+	if err := pdf.AddTTFFont("lib", "test/res/LiberationSerif-Regular.ttf"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.SetFont("lib", "", 10); err != nil {
+		t.Fatal(err)
+	}
+	pdf.SetXY(40, 40)
+	_ = pdf.Cell(nil, "A Wide Title Spanning All Three Columns Of The Page")
+
+	colXs := []float64{40, 310, 580}
+	var want []string
+	for ci, cx := range colXs {
+		tag := []string{"C1", "C2", "C3"}[ci]
+		for i := 0; i < 4; i++ {
+			txt := tag + " line " + itoa(i) + " lorem ipsum dolor"
+			w, err := pdf.MeasureTextWidth(txt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cx+w >= cx+250 && ci < 2 {
+				t.Fatalf("column %d too wide: %.0f", ci, cx+w)
+			}
+			pdf.SetXY(cx, float64(100+i*18))
+			_ = pdf.Cell(nil, txt)
+			want = append(want, txt)
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "threecol.pdf")
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	lines, err := ExtractPageLines(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, ln := range lines {
+		got = append(got, ln.Text)
+	}
+	// expected: title first, then C1 0..3, C2 0..3, C3 0..3
+	if len(got) != len(want)+1 {
+		t.Fatalf("got %d lines, want %d", len(got), len(want)+1)
+	}
+	if !strings.Contains(got[0], "A Wide Title") {
+		t.Errorf("line 0 = %q, want the spanning title", got[0])
+	}
+	for i, w := range want {
+		if got[i+1] != w {
+			t.Errorf("line %d = %q, want %q", i+1, got[i+1], w)
+		}
+	}
+}

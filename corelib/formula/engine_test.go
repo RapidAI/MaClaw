@@ -7,9 +7,11 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/onnxrt"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 func TestRecognizeSmoke(t *testing.T) {
+	testenv.SkipModelTests(t)
 	dir := formulaModelDir()
 	if dir == "" {
 		t.Skip("formula models not present (set FORMULA_MODEL_DIR or keep .tmp/formula-models)")

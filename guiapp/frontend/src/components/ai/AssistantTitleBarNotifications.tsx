@@ -15,11 +15,16 @@ import { useShareActions } from "./AssistantTitleBarNotifications.shareActions";
 export function AssistantTitleBarNotifications({
     active = true,
     inline,
+    bellHidden = false,
     lang,
     theme: t,
 }: {
     active?: boolean;
     inline: boolean;
+    /** Hide the bell button but keep this host mounted: the panel, urgent
+     * toasts and the open-system-notifications listener live here, and the
+     * sidebar status row now owns the visible bell. */
+    bellHidden?: boolean;
     lang: string;
     theme: Theme;
 }) {
@@ -224,14 +229,16 @@ export function AssistantTitleBarNotifications({
     return (
         <>
             <div data-notification-anchor="true" className="atbn-anchor" ref={anchorRef}>
-                <NotificationBell
-                    unreadCount={hubUnreadCount + inviteCount}
-                    onClick={handleTogglePanel}
-                    theme={t}
-                    inline={inline}
-                    open={active && panelOpen}
-                    lang={lang}
-                />
+                {bellHidden ? null : (
+                    <NotificationBell
+                        unreadCount={hubUnreadCount + inviteCount}
+                        onClick={handleTogglePanel}
+                        theme={t}
+                        inline={inline}
+                        open={active && panelOpen}
+                        lang={lang}
+                    />
+                )}
             </div>
             {panelOpen && (
                 <NotificationPanel

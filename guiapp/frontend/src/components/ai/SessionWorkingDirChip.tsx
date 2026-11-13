@@ -21,6 +21,8 @@ export interface SessionWorkingDirChipProps {
     onWorkingDirChange?: (path: string) => void;
     /** Fired whenever the resolved working directory is known, including first load. */
     onWorkingDirResolved?: (path: string, tabId: string) => void;
+    /** Fired when a directory switch fails, so the panel can surface it visibly. */
+    onSwitchError?: (message: string) => void;
     /** Cloud workspace: reopen the in-app file browser instead of Explorer. */
     onOpenCloudFiles?: () => void;
     /** Remote coding: tooltip and copy use SSH host + remote directory. The chip text stays 远程. */
@@ -43,6 +45,18 @@ async function readTabWorkingDir(tabId: string): Promise<DirState | null> {
     const result = await GetTabWorkingDir(tabId) as { path?: string; is_default?: boolean };
     if (typeof result?.path !== "string" || !result.path.trim()) return null;
     return { path: result.path, isDefault: !!result.is_default };
+}
+
+/** One localized line for a failed switch; the backend detail is appended for diagnosis. */
+export function switchDirFailureMessage(lang: string | undefined, err: unknown): string {
+    const detail = err instanceof Error && err.message.trim() ? err.message.trim() : "";
+    const base = chromeText(
+        lang,
+        "Failed to switch the working directory. The tab keeps its current directory.",
+        "工作目录切换失败，本次仍使用原目录。",
+        "工作目錄切換失敗，本次仍使用原目錄。",
+    );
+    return detail ? `${base} (${detail})` : base;
 }
 
 /** Truncates a path in the middle: D:\very\long\...\final\dir */
@@ -222,7 +236,7 @@ function composerExpertBadge(
     );
 }
 
-export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles, remoteHost, remoteWorkDir, remotePort, expert }: SessionWorkingDirChipProps) {
+export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onSwitchError, onOpenCloudFiles, remoteHost, remoteWorkDir, remotePort, expert }: SessionWorkingDirChipProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
     const cloudWorkspaceId = isCloudWorkspacePath(dirState?.path) ? cloudWorkspaceIdFromPath(dirState?.path) : "";
     const cloudName = useCloudWorkspaceDisplayName(cloudWorkspaceId);
@@ -375,12 +389,21 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
             onWorkingDirResolved?.(path, tabId);
         } catch (e) {
             console.error("[SessionWorkingDirChip] switch dir failed:", e);
+            // A failed SetTabWorkingDir leaves the backend on the old directory.
+            // Surface that (console-only errors made a rejected switch look like
+            // "the switch did not take"), then read the directory back so chip
+            // and header reflect where the session actually is.
+            onSwitchError?.(switchDirFailureMessage(lang, e));
+            const current = await readTabWorkingDir(tabId).catch(() => null);
+            if (!mountedRef.current || !current) return;
+            setDirState(current);
+            onWorkingDirResolved?.(current.path, tabId);
         } finally {
             directorySelectionInFlightRef.current = false;
             if (mountedRef.current) setSelectingDirectory(false);
             setMenuOpen(false);
         }
-    }, [tabId, onWorkingDirChange, onWorkingDirResolved]);
+    }, [tabId, lang, onSwitchError, onWorkingDirChange, onWorkingDirResolved]);
 
     // Tooltip, aria, and copy share one location. Cloud must stay the workspace
     // name: the cache directory is not a location the user is shown.

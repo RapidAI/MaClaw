@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
 	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
 )
@@ -103,6 +104,7 @@ func (a *App) FileCompanionOpenReference(input string) (FileCompanionOpenResult,
 		}
 		st.webSessions[sessionID] = frame
 		st.mu.Unlock()
+		a.fileCompanionPrefetchWebPage(sessionID, frame)
 	}
 	return FileCompanionOpenResult{Kind: "web", URL: frame, FrameURL: frame, SessionID: sessionID}, nil
 }
@@ -499,8 +501,177 @@ func (a *App) FileCompanionOpenWebPage(raw string) (FileCompanionOpenResult, err
 		}
 		st.webSessions[sessionID] = frame
 		st.mu.Unlock()
+		a.fileCompanionPrefetchWebPage(sessionID, frame)
 	}
 	return FileCompanionOpenResult{Kind: "web", URL: frame, FrameURL: frame, SessionID: sessionID}, nil
+}
+
+// fileCompanionWebPage is one web tab's extracted body. done closes when the
+// fetch settles; title, text, and err are written before that close, so a
+// reader that waits on done sees a finished entry.
+type fileCompanionWebPage struct {
+	url   string
+	title string
+	text  string
+	err   string
+	tries int
+	done  chan struct{}
+}
+
+const (
+	// One page body rides on the turn the way the open file's context does.
+	// The cap matches the web_fetch tool page so a long article costs the
+	// same budget either way.
+	fileCompanionWebPageMaxRunes = fileCompanionWebFetchMaxChars
+	// The tab already shows the page; this read only feeds the chat. A page
+	// slower than this answers without its body.
+	fileCompanionWebPageFetchTimeout = 25 * time.Second
+	// A turn waits at most this long across retries before answering anyway.
+	fileCompanionWebPageWait = 30 * time.Second
+	// A failed read gets one retry total, not one per question.
+	fileCompanionWebPageMaxTries = 2
+)
+
+// fileCompanionWebPageLabel marks the fetched page body inside a user turn.
+// fileCompanionStripNoteExcerptText cuts it back out of stored turns and
+// visible bubbles, so it does not accumulate across questions.
+const fileCompanionWebPageLabel = "当前打开的网页正文："
+
+func fileCompanionAppendWebPageText(base, title, body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return base
+	}
+	if title = strings.Join(strings.Fields(title), " "); title != "" {
+		body = "《" + title + "》\n\n" + body
+	}
+	return base + "\n\n" + fileCompanionWebPageLabel + "\n" + body
+}
+
+// fileCompanionPrefetchWebPage warms the page-body cache at open so the
+// first question rarely waits on the network.
+func (a *App) fileCompanionPrefetchWebPage(sessionID, frame string) {
+	a.fileCompanionWebPageEntry(sessionID, frame)
+}
+
+// fileCompanionWebPageEntry returns the cached page for this session or
+// registers a new fetch for it. A reopened URL replaces the entry.
+func (a *App) fileCompanionWebPageEntry(sessionID, frame string) *fileCompanionWebPage {
+	if a == nil || sessionID == "" || frame == "" {
+		return nil
+	}
+	st := a.companionRuntime()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.webPages == nil {
+		st.webPages = map[string]*fileCompanionWebPage{}
+	}
+	if page := st.webPages[sessionID]; page != nil && page.url == frame {
+		return page
+	}
+	page := &fileCompanionWebPage{url: frame, tries: 1, done: make(chan struct{})}
+	st.webPages[sessionID] = page
+	go a.fileCompanionFetchWebPage(page)
+	return page
+}
+
+// fileCompanionWebPageContext is the turn's copy of the page body. It waits
+// for a fetch already in flight and retries a failure once; a page that
+// still has no text after the wait answers without it.
+func (a *App) fileCompanionWebPageContext(sessionID, frame string) (title, text string) {
+	deadline := time.Now().Add(fileCompanionWebPageWait)
+	for {
+		page := a.fileCompanionWebPageEntry(sessionID, frame)
+		if page == nil {
+			return "", ""
+		}
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			return "", ""
+		}
+		wait := time.NewTimer(remain)
+		select {
+		case <-page.done:
+			wait.Stop()
+		case <-wait.C:
+			return "", ""
+		}
+		if page.text != "" {
+			return page.title, page.text
+		}
+		if !a.fileCompanionWebPageRetry(sessionID, page) {
+			return "", ""
+		}
+	}
+}
+
+// fileCompanionWebPageRetry schedules one more read of a page whose fetch
+// failed. false means this entry is finished and the turn answers anyway.
+func (a *App) fileCompanionWebPageRetry(sessionID string, prev *fileCompanionWebPage) bool {
+	if a == nil || prev == nil || prev.tries >= fileCompanionWebPageMaxTries {
+		return false
+	}
+	st := a.companionRuntime()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.webPages[sessionID] != prev {
+		// Another turn already replaced it; read that entry instead.
+		return true
+	}
+	page := &fileCompanionWebPage{url: prev.url, tries: prev.tries + 1, done: make(chan struct{})}
+	st.webPages[sessionID] = page
+	go a.fileCompanionFetchWebPage(page)
+	return true
+}
+
+// fileCompanionFetchWebPage reads the page the tab shows. Playback pages
+// fetch the top-level document, not the embed frame the tab keeps. paperFetch
+// is the same public-network client the paper pipeline uses: no cookies, no
+// browser profile, no Hub route, and private hosts are refused.
+func (a *App) fileCompanionFetchWebPage(page *fileCompanionWebPage) {
+	defer close(page.done)
+	defer func() {
+		if r := recover(); r != nil {
+			page.err = "page read panicked"
+			logFileCompanion("web page fetch panic url=%s: %v", page.url, r)
+		}
+	}()
+	parent := context.Background()
+	if a != nil && a.ctx != nil {
+		parent = a.ctx
+	}
+	// A test app without a fetch stub must not reach the network. The entry
+	// still settles as a failed read, so a turn answers without a body and a
+	// later turn can retry once a hook exists.
+	if a != nil && a.testHomeDir != "" && paperFetchHook == nil {
+		page.err = "test app has no fetch stub"
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, fileCompanionWebPageFetchTimeout)
+	defer cancel()
+	result, err := paperFetch(ctx, fileCompanionTopLevelPlaybackURL(page.url), &websearch.FetchOptions{
+		MaxBytes: companionPaperHTMLMaxBytes,
+		MaxChars: fileCompanionWebPageMaxRunes,
+		TimeoutS: int(fileCompanionWebPageFetchTimeout / time.Second),
+	})
+	if err != nil {
+		page.err = err.Error()
+		logFileCompanion("web page fetch failed url=%s err=%s", page.url, page.err)
+		return
+	}
+	if result == nil || strings.TrimSpace(result.Content) == "" {
+		page.err = "empty page body"
+		logFileCompanion("web page fetch empty url=%s", page.url)
+		return
+	}
+	page.title = strings.TrimSpace(result.Title)
+	page.text = strings.TrimSpace(result.Content)
+	// The model cannot fetch the rest itself, so a clipped body is flagged
+	// rather than presented as the whole article.
+	if result.Truncated || result.HasMore || result.ResponseClipped {
+		page.text += "\n\n（正文未抓全，以上内容已截断）"
+	}
+	logFileCompanion("web page ready url=%s title=%q", page.url, page.title)
 }
 
 // CancelFileCompanionTurn cancels the in-flight note and leaves the chat generation alone.
@@ -654,10 +825,21 @@ func (a *App) SendFileCompanionWebMessage(req FileCompanionWebTurnRequest) error
 	if err := a.ensureFileCompanionHandler(userID, sessionID); err != nil {
 		return err
 	}
-	prompt := "你是文件伴读。当前打开的是网页：" + frame + "。不要使用工具。不要下载视频。用中文直接回答。不要声称已经生成了笔记或 PDF。如果用户想要笔记，告诉他们点「记笔记」。不要要求先全屏。" + fileCompanionTeXMathRule
+	pageTitle, pageText := a.fileCompanionWebPageContext(sessionID, frame)
+	if a.fileCompanionChatStopped(requestID) {
+		return a.fileCompanionFinishCancelledTurn(sessionID, userID, requestID, nil)
+	}
+	prompt := "你是文件伴读。当前打开的是网页：" + frame + "。"
+	if pageText != "" {
+		prompt += "网页正文已附在这条用户消息末尾，结合正文回答；正文没有的信息就说页面里没有，不要编造。"
+	} else {
+		prompt += "这次没有抓到网页正文；问题依赖页面内容时，如实说明没有读到页面内容。"
+	}
+	prompt += "不要使用工具。不要下载视频。用中文直接回答。不要声称已经生成了笔记或 PDF。如果用户想要笔记，告诉他们点「记笔记」。不要要求先全屏。" + fileCompanionTeXMathRule
 	if excerpt := a.fileCompanionLoadSessionNoteExcerpt(sessionID); excerpt != "" {
 		text = fileCompanionAppendNoteExcerpt(text, excerpt)
 	}
+	text = fileCompanionAppendWebPageText(text, pageTitle, pageText)
 	cancelCtx := a.ctx
 	if cancelCtx == nil {
 		cancelCtx = context.Background()

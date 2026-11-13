@@ -12,6 +12,7 @@ import {
 import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
 import { IconAlert } from '../ai/WorkbenchIcons';
 import {
+    centeredDropdownLeft,
     computeProviderDropdownPos,
     providerDropdownPosEqual,
     type ProviderDropdownPos,
@@ -151,6 +152,11 @@ const STATUS_DOT = String.fromCharCode(0x25cf);
 const CREDIT_SEPARATOR = ` ${String.fromCharCode(0x00b7)} `;
 /** Check mark (✓) for selected provider / council rows — not the literal "OK". */
 const DROPDOWN_CHECK = '\u2713';
+
+/* Collapsed status line + popover knobs (module scope: used inside stable callbacks). */
+const STATUS_LINE_MIN_WIDTH = 280;
+const STATUS_LINE_MIN_ABOVE = 200;
+const STATUS_LINE_CLOSE_DELAY = 200;
 
 const textForLang = localizeText;
 
@@ -354,6 +360,28 @@ export const SidebarSystemStatus = ({
     const codingSummary = profileSummaries?.coding;
     const onlineText = textForLang(lang, 'Online', '\u5728\u7ebf', '\u5728\u7dda');
     const offlineText = textForLang(lang, 'Offline', '\u79bb\u7ebf', '\u96e2\u7dda');
+    // Collapsed account line: prefer the email, fall back to the phone number.
+    // "Online" here is account-level (machine bound to the hub), not the LLM probe.
+    const accountEmail = String(remoteActivationStatus?.email || '').trim();
+    const accountPhone = String(remoteActivationStatus?.phone_number || '').trim();
+    const accountIdentity = accountEmail || accountPhone;
+    const accountOnline = !!remoteActivationStatus?.activated;
+    const accountInitial = accountIdentity ? accountIdentity.charAt(0).toUpperCase() : '';
+    const notSignedInText = textForLang(lang, 'Not signed in', '未登录', '未登入');
+    const accountStateText = accountIdentity ? (accountOnline ? onlineText : offlineText) : notSignedInText;
+    const accountLineAria = accountIdentity
+        ? textForLang(
+            lang,
+            `${accountIdentity}, ${accountOnline ? 'online' : 'offline'}. Hover for system status`,
+            `${accountIdentity}${accountOnline ? '在线' : '离线'}，悬停查看系统状态`,
+            `${accountIdentity}${accountOnline ? '在線' : '離線'}，懸停查看系統狀態`,
+        )
+        : textForLang(
+            lang,
+            'Not signed in. Hover for system status',
+            '未登录，悬停查看系统状态',
+            '未登入，懸停查看系統狀態',
+        );
     const profileHealthText = (health?: string) => {
         switch (health) {
             case 'configured': return textForLang(lang, 'Available', '可用', '可用');
@@ -417,6 +445,146 @@ export const SidebarSystemStatus = ({
     // Fixed position for the dropdown (calculated from usage-row / chevron anchor).
     const [dropdownPos, setDropdownPos] = useState<ProviderDropdownPos | null>(null);
     const repositionRafRef = useRef<number | null>(null);
+
+    // ── Collapsed status line + hover popover state ──
+    // The workbench card collapsed to a single account line; the full card
+    // renders in a fixed-position popover above the line. Fixed positioning is
+    // required because the sidebar scroll wrapper clips absolute overlays —
+    // same reason the provider menu is fixed. The popover stays mounted and
+    // hidden (CSS visibility) so tests can still query the card structure.
+    const [statusPopOpen, setStatusPopOpen] = useState(false);
+    const statusPopOpenRef = useRef(false);
+    const statusPopPinnedRef = useRef(false);
+    const statusPopTimerRef = useRef<number | null>(null);
+    // Escape refocuses the line; without this guard the line's onFocus would
+    // immediately reopen the popover it just dismissed.
+    const statusLineSuppressOpenRef = useRef(false);
+    const statusRowRef = useRef<HTMLDivElement>(null);
+    const statusLineRef = useRef<HTMLButtonElement>(null);
+    const statusPopRef = useRef<HTMLDivElement>(null);
+    const [statusPopPos, setStatusPopPos] = useState<ProviderDropdownPos | null>(null);
+    // Popover width tracks the row width so both edges stay aligned with it.
+    const [statusPopWidth, setStatusPopWidth] = useState<number | null>(null);
+    const statusPopRafRef = useRef<number | null>(null);
+
+    const cancelStatusPopClose = useCallback(() => {
+        if (statusPopTimerRef.current != null) {
+            window.clearTimeout(statusPopTimerRef.current);
+            statusPopTimerRef.current = null;
+        }
+    }, []);
+
+    const closeStatusPop = useCallback(() => {
+        cancelStatusPopClose();
+        statusPopOpenRef.current = false;
+        statusPopPinnedRef.current = false;
+        setStatusPopOpen(false);
+        setStatusPopPos(null);
+        setStatusPopWidth(null);
+    }, [cancelStatusPopClose]);
+
+    const openStatusPop = useCallback(() => {
+        if (statusLineSuppressOpenRef.current) return;
+        cancelStatusPopClose();
+        if (!statusPopOpenRef.current) {
+            statusPopOpenRef.current = true;
+            setStatusPopOpen(true);
+        }
+    }, [cancelStatusPopClose]);
+
+    const scheduleStatusPopClose = useCallback(() => {
+        cancelStatusPopClose();
+        statusPopTimerRef.current = window.setTimeout(() => {
+            statusPopTimerRef.current = null;
+            closeStatusPop();
+        }, STATUS_LINE_CLOSE_DELAY);
+    }, [cancelStatusPopClose, closeStatusPop]);
+
+    const handleStatusLineClick = useCallback(() => {
+        // Click pins the popover so it survives the pointer leaving; second
+        // click dismisses (also works for touch / keyboard Enter).
+        if (statusPopPinnedRef.current) {
+            closeStatusPop();
+            return;
+        }
+        statusPopPinnedRef.current = true;
+        openStatusPop();
+    }, [closeStatusPop, openStatusPop]);
+
+    // Notification bell moved here from the main top header. The shared
+    // notification center listens on the window event; keep the same toggle
+    // payload the header bell used.
+    const handleStatusBellClick = useCallback(() => {
+        window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications', { detail: { toggle: true } }));
+    }, []);
+
+    const updateStatusPopPosition = useCallback(() => {
+        const anchorEl = statusRowRef.current;
+        if (!anchorEl) return;
+        const anchorRect = anchorEl.getBoundingClientRect();
+        // Track the row width so the popover's edges align with it.
+        const width = Math.max(Math.round(anchorRect.width), STATUS_LINE_MIN_WIDTH);
+        const next = computeProviderDropdownPos(anchorRect, {
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            menuWidth: width,
+            minAbove: STATUS_LINE_MIN_ABOVE,
+        });
+        // Center the popover on the row (viewport-clamped), so a wider floor
+        // width spreads evenly instead of overflowing the right edge.
+        const centered = { ...next, left: centeredDropdownLeft(anchorRect, width, window.innerWidth) };
+        setStatusPopWidth(width);
+        setStatusPopPos(prev => (providerDropdownPosEqual(prev, centered) ? prev : centered));
+    }, []);
+
+    useEffect(() => () => {
+        // Unmount: drop the pending close timer (it would setState on a dead tree).
+        cancelStatusPopClose();
+    }, [cancelStatusPopClose]);
+
+    // While open: outside click / Escape dismiss (Escape refocuses the line);
+    // resize / scroll reposition through a rAF-throttled pass.
+    useEffect(() => {
+        if (!statusPopOpen) return;
+        const handlePointerDownOutside = (e: MouseEvent) => {
+            const target = e.target as Node;
+            if (statusPopRef.current?.contains(target)) return;
+            if (statusLineRef.current?.contains(target)) return;
+            closeStatusPop();
+        };
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                closeStatusPop();
+                // Refocus the line, but suppress the focus-triggered reopen
+                // (focus fires synchronously inside focus()).
+                statusLineSuppressOpenRef.current = true;
+                statusLineRef.current?.focus();
+                window.setTimeout(() => { statusLineSuppressOpenRef.current = false; }, 0);
+            }
+        };
+        const scheduleReposition = () => {
+            if (statusPopRafRef.current != null) return;
+            statusPopRafRef.current = requestAnimationFrame(() => {
+                statusPopRafRef.current = null;
+                updateStatusPopPosition();
+            });
+        };
+        document.addEventListener('mousedown', handlePointerDownOutside);
+        document.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('resize', scheduleReposition);
+        window.addEventListener('scroll', scheduleReposition, true);
+        return () => {
+            document.removeEventListener('mousedown', handlePointerDownOutside);
+            document.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('resize', scheduleReposition);
+            window.removeEventListener('scroll', scheduleReposition, true);
+            if (statusPopRafRef.current != null) {
+                cancelAnimationFrame(statusPopRafRef.current);
+                statusPopRafRef.current = null;
+            }
+        };
+    }, [statusPopOpen, updateStatusPopPosition, closeStatusPop]);
 
     const closeDropdown = useCallback(() => {
         dropdownOpenRef.current = false;
@@ -886,8 +1054,113 @@ export const SidebarSystemStatus = ({
     const legacyTokenLabel = formatSidebarTokens(sidebarCurrentProviderTokenUsage.total);
     const legacyTokenText = String(legacyTokenLabel).split('').join('\u200B');
 
+    // Position the status popover once open (and re-measure when the card's
+    // content height drivers change while it stays open).
+    useLayoutEffect(() => {
+        if (!statusPopOpen) return;
+        updateStatusPopPosition();
+    }, [statusPopOpen, updateStatusPopPosition, workbenchModelLabel, newUserLimitCardLines.length, workbenchTaskCountText]);
+
     return (
         <div className="sidebar-system-status">
+            <div
+                ref={statusRowRef}
+                className="mc-workbench-status-row"
+                data-testid="workbench-status-row"
+                data-online={accountOnline ? 'true' : 'false'}
+                onMouseEnter={openStatusPop}
+                // Pin check here too: a pinned popover must survive the pointer
+                // leaving the row without ever entering the popover.
+                onMouseLeave={() => { if (!statusPopPinnedRef.current) scheduleStatusPopClose(); }}
+            >
+                <button
+                    ref={statusLineRef}
+                    type="button"
+                    className="mc-workbench-status-line"
+                    data-testid="workbench-status-line"
+                    data-online={accountOnline ? 'true' : 'false'}
+                    aria-label={accountLineAria}
+                    aria-expanded={statusPopOpen}
+                    aria-controls="mc-workbench-status-popover"
+                    onFocus={openStatusPop}
+                    onBlur={scheduleStatusPopClose}
+                    onClick={handleStatusLineClick}
+                >
+                    <span className="mc-workbench-status-line__avatar" aria-hidden="true">
+                        {accountIdentity ? accountInitial : (
+                            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" focusable="false">
+                                <circle cx="8" cy="5.4" r="2.7" />
+                                <path d="M2.6 13.6c.9-2.7 3-4.2 5.4-4.2s4.5 1.5 5.4 4.2z" />
+                            </svg>
+                        )}
+                    </span>
+                    <span className="mc-workbench-status-line__name">{accountIdentity || accountStateText}</span>
+                </button>
+                <button
+                    type="button"
+                    className="mc-workbench-status-bell"
+                    data-testid="workbench-status-notifications"
+                    aria-label={textForLang(lang, 'Notifications', '通知', '通知')}
+                    title={textForLang(lang, 'Notifications', '通知', '通知')}
+                    onFocus={openStatusPop}
+                    onBlur={scheduleStatusPopClose}
+                    onClick={handleStatusBellClick}
+                >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+                        <path d="M10 21h4" />
+                    </svg>
+                </button>
+                {accountIdentity ? (
+                    <span className="mc-workbench-status-line__state" data-online={accountOnline ? 'true' : 'false'}>
+                        <i aria-hidden="true" />
+                        {accountStateText}
+                    </span>
+                ) : null}
+            </div>
+            <div
+                ref={statusPopRef}
+                id="mc-workbench-status-popover"
+                className="mc-workbench-status-popover"
+                data-testid="workbench-status-popover"
+                data-open={statusPopOpen ? 'true' : 'false'}
+                // Closed: CSS [data-open='false'] hides it (kept a11y-queryable in jsdom,
+                // which does not load stylesheet files). Open: fixed coords; the hidden
+                // branch only covers the pre-layout frame before useLayoutEffect pins it.
+                style={statusPopOpen
+                    ? (statusPopPos ? {
+                        position: 'fixed',
+                        left: statusPopPos.left,
+                        top: statusPopPos.top == null ? 'auto' : statusPopPos.top,
+                        bottom: statusPopPos.bottom == null ? 'auto' : statusPopPos.bottom,
+                        maxHeight: statusPopPos.maxHeight,
+                        width: statusPopWidth == null ? undefined : statusPopWidth,
+                    } : {
+                        position: 'fixed',
+                        left: 0,
+                        top: 0,
+                        visibility: 'hidden',
+                        pointerEvents: 'none',
+                    })
+                    : {
+                        position: 'fixed',
+                        left: 0,
+                        top: 0,
+                    }}
+                onMouseEnter={cancelStatusPopClose}
+                // Pinned popover survives the pointer leaving; hover-open closes
+                // on leave (reading the ref keeps this from needing pinned state).
+                onMouseLeave={() => { if (!statusPopPinnedRef.current) scheduleStatusPopClose(); }}
+                onFocus={cancelStatusPopClose}
+                // Keyboard: when focus leaves the popover entirely, close it.
+                // (The line's blur only covers the line → popover hop.)
+                onBlur={(e) => {
+                    const next = e.relatedTarget as Node | null;
+                    if (next && statusPopRef.current?.contains(next)) return;
+                    if (next && statusLineRef.current?.contains(next)) return;
+                    scheduleStatusPopClose();
+                }}
+            >
             <section className="mc-workbench-status-card" data-testid="workbench-status-card" aria-label={textForLang(lang, 'Workspace status', '状态', '狀態')}>
                 <div className="mc-workbench-status-card__heading">
                     <strong>{textForLang(lang, 'Status', '状态', '狀態')}</strong>
@@ -999,6 +1272,7 @@ export const SidebarSystemStatus = ({
                     )}
                 </button>
             </section>
+            </div>
             <div className="sidebar-system-status__panel">
                 <div className="sidebar-system-status__signals" aria-label="System status">
                     {renderStatusSignal(llmSignalLabel, profileSummaries ? activeProfileOnline : maclawLLMOnline, undefined, llmSignalAriaLabel, 'llm')}

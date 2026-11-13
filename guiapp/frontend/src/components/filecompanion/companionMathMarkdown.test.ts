@@ -278,6 +278,173 @@ describe("companionCodeMathToTex", () => {
         expect(companionCodeMathToTex("项 x_{i_{j_{k}}} 保持原样")).toBe("项 x_{i_{j_{k}}} 保持原样");
     });
 
+    it("typesets a bare TeX command written into prose", () => {
+        expect(companionCodeMathToTex("概率过置信（τ \\approx 1），实际覆盖率 \\geq 0.997。"))
+            .toBe("概率过置信（$τ$ $\\approx$ 1），实际覆盖率 $\\geq$ 0.997。");
+        expect(companionCodeMathToTex("误差 0.786\\pm0.004 与 0.725\\pm0.0205。"))
+            .toBe("误差 $0.786\\pm0.004$ 与 $0.725\\pm0.0205$。");
+        expect(companionCodeMathToTex("参数 \\lambda_i 与 \\frac{a}{b} 与 \\sqrt[3]{x}。"))
+            .toBe("参数 $\\lambda_i$ 与 $\\frac{a}{b}$ 与 $\\sqrt[3]{x}$。");
+        expect(companionCodeMathToTex("方差 \\sigma_i^2 不变。")).toBe("方差 $\\sigma_i^2$ 不变。");
+        expect(companionCodeMathToTex("命令 \\alpha\\beta 连用。")).toBe("命令 $\\alpha\\beta$ 连用。");
+    });
+
+    it("keeps paired TeX delimiters and environments whole", () => {
+        expect(companionCodeMathToTex("区间 \\left(0, 1\\right) 与 \\big(x。"))
+            .toBe("区间 $\\left(0, 1\\right)$ 与 $\\big($x。");
+        expect(companionCodeMathToTex("环境 \\begin{aligned} a &= b \\\\ c &= d \\end{aligned} 结束。"))
+            .toBe("环境 $\\begin{aligned} a &= b \\\\ c &= d \\end{aligned}$ 结束。");
+    });
+
+    it("leaves a command whose arguments hold an inner $...$ formula alone", () => {
+        const text = "见 \\frac{$x$}{y} 与 \\left(a $+$ b\\right) 保持原样。";
+        expect(companionCodeMathToTex(text)).toBe(text);
+    });
+
+    it("leaves a multi-line environment or pair literal ($ cannot cross lines)", () => {
+        const env = "环境：\n\\begin{aligned}\na &= b\n\\end{aligned}\n完。";
+        expect(companionCodeMathToTex(env)).toBe(env);
+        expect(companionCodeMathToTex("式 \\left(a\nb\\right) 保持原样。"))
+            .toBe("式 \\left(a\nb\\right) 保持原样。");
+    });
+
+    it("tolerates whitespace inside \\begin / \\end environment names", () => {
+        expect(companionCodeMathToTex("环境 \\begin { aligned } a &= b \\end { aligned } 结束。"))
+            .toBe("环境 $\\begin { aligned } a &= b \\end { aligned }$ 结束。");
+        expect(companionCodeMathToTex("环境 \\begin{aligned } a &= b \\end{aligned} 结束。"))
+            .toBe("环境 $\\begin{aligned } a &= b \\end{aligned}$ 结束。");
+    });
+
+    it("leaves environments KaTeX cannot typeset as prose", () => {
+        const text = "环境 \\begin{align} a &= b \\end{align} 与 \\begin{equation} x \\end{equation} 保持原样。";
+        expect(companionCodeMathToTex(text)).toBe(text);
+    });
+
+    it("pairs nested \\left..\\right and same-name environments correctly", () => {
+        expect(companionCodeMathToTex("见 \\left(a \\left(b \\right) c \\right) 即可。"))
+            .toBe("见 $\\left(a \\left(b \\right) c \\right)$ 即可。");
+        expect(companionCodeMathToTex("见 \\begin{matrix} a \\begin{matrix} x \\end{matrix} \\end{matrix} 即可。"))
+            .toBe("见 $\\begin{matrix} a \\begin{matrix} x \\end{matrix} \\end{matrix}$ 即可。");
+        // The inner balanced pair still promotes; the unbalanced outer opener
+        // stays literal.
+        expect(companionCodeMathToTex("见 \\left(a \\left(b \\right) 保持原样。"))
+            .toBe("见 \\left(a $\\left(b \\right)$ 保持原样。");
+    });
+
+    it("accepts \\{ as a delimiter but not a bare {", () => {
+        expect(companionCodeMathToTex("集合 \\left\\{ x \\right\\} 完。"))
+            .toBe("集合 $\\left\\{ x \\right\\}$ 完。");
+        const bare = "见 \\left{ x \\right} 完。";
+        expect(companionCodeMathToTex(bare)).toBe(bare);
+    });
+
+    it("rejects a pair whose body has a delimiter-less \\left or \\right", () => {
+        const innerRight = "见 \\left(a \\right x \\right) 完。";
+        expect(companionCodeMathToTex(innerRight)).toBe(innerRight);
+        const innerLeft = "见 \\left(a \\left x \\right) y \\right) 完。";
+        expect(companionCodeMathToTex(innerLeft)).toBe(innerLeft);
+    });
+
+    it("rejects an environment whose delimiters do not balance", () => {
+        const strayRight = "见 \\begin{matrix} a \\right) \\end{matrix} 完。";
+        expect(companionCodeMathToTex(strayRight)).toBe(strayRight);
+        const openLeft = "见 \\begin{matrix} \\left(a \\end{matrix} 完。";
+        expect(companionCodeMathToTex(openLeft)).toBe(openLeft);
+        expect(companionCodeMathToTex("见 \\begin{aligned} a &= \\left(x \\middle| y\\right) \\end{aligned} 完。"))
+            .toBe("见 $\\begin{aligned} a &= \\left(x \\middle| y\\right) \\end{aligned}$ 完。");
+    });
+
+    it("handles a \\left..\\right pair that spans an environment boundary", () => {
+        // A pair opened inside the env and closed outside is a KaTeX error.
+        const insideOut = "见 \\begin{aligned} \\begin{matrix} \\left(a \\end{matrix} b\\right) \\end{aligned} 完。";
+        expect(companionCodeMathToTex(insideOut)).toBe(insideOut);
+        // A pair opened before the env and closed after is legal KaTeX.
+        expect(companionCodeMathToTex("见 \\begin{aligned} \\left(a \\begin{matrix} x \\end{matrix} \\right) \\end{aligned} 完。"))
+            .toBe("见 $\\begin{aligned} \\left(a \\begin{matrix} x \\end{matrix} \\right) \\end{aligned}$ 完。");
+    });
+
+    it("rejects an environment whose body has a malformed \\begin / \\end", () => {
+        const text = "见 \\begin{aligned} a \\begin b \\end{aligned} 完。";
+        expect(companionCodeMathToTex(text)).toBe(text);
+    });
+
+    it("rejects an environment whose body has a stray or unsupported \\end", () => {
+        const stray = "见 \\begin{aligned} a \\end{matrix} b \\end{aligned} 完。";
+        expect(companionCodeMathToTex(stray)).toBe(stray);
+        const badNested = "见 \\begin{aligned} \\begin{foo} x \\end{foo} \\end{aligned} 完。";
+        expect(companionCodeMathToTex(badNested)).toBe(badNested);
+        // A properly nested different-name environment is legal KaTeX.
+        expect(companionCodeMathToTex("见 \\begin{aligned} a &= \\begin{matrix} x \\end{matrix} \\end{aligned} 完。"))
+            .toBe("见 $\\begin{aligned} a &= \\begin{matrix} x \\end{matrix} \\end{aligned}$ 完。");
+    });
+
+    it("accepts \\lbrace / \\rbrace as pair delimiters", () => {
+        expect(companionCodeMathToTex("集合 \\left\\lbrace x \\right\\rbrace 完。"))
+            .toBe("集合 $\\left\\lbrace x \\right\\rbrace$ 完。");
+    });
+
+    it("leaves a command glued to an unclosed \\( or \\[ opener alone", () => {
+        for (const text of ["见 \\(\\approx 未完。", "见 \\[\\approx 未完。"]) {
+            expect(companionCodeMathToTex(text)).toBe(text);
+        }
+    });
+
+    it("requires the column argument on array-like environments", () => {
+        expect(companionCodeMathToTex("表 \\begin{array}{cc} a & b \\end{array} 完。"))
+            .toBe("表 $\\begin{array}{cc} a & b \\end{array}$ 完。");
+        const missing = "表 \\begin{array} a & b \\end{array} 完。";
+        expect(companionCodeMathToTex(missing)).toBe(missing);
+    });
+
+    it("leaves a lone \\middle as prose (it needs an enclosing \\left)", () => {
+        const text = "中间 \\middle| 与 \\middle|x\\right) 保持原样。";
+        expect(companionCodeMathToTex(text)).toBe(text);
+        expect(companionCodeMathToTex("区间 \\left(a \\middle| b\\right) 即可。"))
+            .toBe("区间 $\\left(a \\middle| b\\right)$ 即可。");
+    });
+
+    it("requires the full argument arity on two-argument commands", () => {
+        for (const text of [
+            "见 \\frac{a} 保持原样。",
+            "见 \\overset{a} 保持原样。",
+            "见 \\sqrt[3] 保持原样。",
+            "见 \\binom{n} 保持原样。",
+        ]) {
+            expect(companionCodeMathToTex(text)).toBe(text);
+        }
+        expect(companionCodeMathToTex("见 \\frac{a}{b} 与 \\overset{*}{x} 即可。"))
+            .toBe("见 $\\frac{a}{b}$ 与 $\\overset{*}{x}$ 即可。");
+    });
+
+    it("leaves a command that cannot stand alone as prose", () => {
+        const text = "命令 \\frac 与 \\left( 与 \\end{aligned} 与 \\big 保持原样。";
+        expect(companionCodeMathToTex(text)).toBe(text);
+        // `\rightarrow` inside the body is not the `\right` closer.
+        expect(companionCodeMathToTex("见 \\left(a \\rightarrow b\\right) 即可。"))
+            .toBe("见 $\\left(a \\rightarrow b\\right)$ 即可。");
+    });
+
+    it("leaves stray backslashes, paths and unknown commands alone", () => {
+        for (const text of [
+            "路径 C:\\new\\file 保持原样。",
+            "名字 foo\\bar 保持原样。",
+            "命令 \\notacommand 保持原样。",
+            "见 https://example.com/a\\b 保持原样。",
+            "转义 \\\\approx 保持原样。",
+        ]) {
+            expect(companionCodeMathToTex(text)).toBe(text);
+        }
+    });
+
+    it("treats a digit-led dollar span as math when it carries TeX", () => {
+        const text = "达 $0.905\\pm0.013$ 与 $0.934$，而 $5 到 $10 是价格。";
+        expect(companionCodeMathToTex(text)).toBe(text);
+        // The span is opaque: atoms inside it are not promoted again.
+        expect(companionCodeMathToTex("达 $0.5 F^l_0$ 与 L_ce。")).toBe("达 $0.5 F^l_0$ 与 $L_ce$。");
+        // Currency is still not math, and a later atom still promotes.
+        expect(companionCodeMathToTex("价格 $5 到 $10 与 L_ce。")).toBe("价格 $5 到 $10 与 $L_ce$。");
+    });
+
     it("wraps a backtick TeX atom once", () => {
         expect(companionCodeMathToTex("`F^l_{0,c}`")).toBe("$F^l_{0,c}$");
         expect(companionCodeMathToTex(companionCodeMathToTex("`F^l_{0,c}`"))).toBe("$F^l_{0,c}$");
@@ -288,6 +455,18 @@ describe("companionCodeMathToTex", () => {
         const once = companionCodeMathToTex(input);
         expect(once).not.toBe(input);
         expect(companionCodeMathToTex(once)).toBe(once);
+    });
+
+    it("is idempotent on promoted commands, pairs and environments", () => {
+        for (const input of [
+            "误差 0.786\\pm0.004 与 τ \\approx 1。",
+            "环境 \\begin{aligned} a &= b \\end{aligned} 与 \\left(x\\right) 完。",
+            "式 \\frac{a}{b} + \\sigma_i^2 + \\sqrt[3]{x} 即可。",
+        ]) {
+            const once = companionCodeMathToTex(input);
+            expect(once).toContain("$");
+            expect(companionCodeMathToTex(once)).toBe(once);
+        }
     });
 });
 

@@ -350,7 +350,7 @@ func providerVisionTestStatus(provider corelib.MaclawLLMProvider, model string) 
 	if model == "" {
 		return "untested"
 	}
-	if providerSupportsVisionForModel(provider, model) {
+	if corelib.ProviderSupportsVisionForModel(provider, model) {
 		return "supported"
 	}
 	if provider.IsHubService {
@@ -1925,7 +1925,7 @@ func (a *App) materializeEffectiveMaclawLLMProfile(profile string, cfg corelib.A
 func (a *App) materializeMaclawLLMSelection(profile string, provider corelib.MaclawLLMProvider, model string) corelib.MaclawLLMConfig {
 	resolved := a.materializeMaclawLLMProvider(provider)
 	resolved.Model = model
-	resolved.SupportsVision = providerSupportsVisionForModel(provider, model)
+	resolved.SupportsVision = corelib.ProviderSupportsVisionForModel(provider, model)
 	resolved.Profile = profile
 	resolved.RouteSource = "base"
 	return applyOpenCodeResponsesWire(resolved)
@@ -2355,31 +2355,9 @@ func profileSummaryFromResolved(app *App, profile string, inherit bool, resolved
 	return summary
 }
 
-// providerSupportsVisionForModel only confirms image input for the provider's
-// model that was actually probed. A profile can select another catalog model,
-// so carrying the provider-default result forward would create a false badge.
-func providerSupportsVisionForModel(provider corelib.MaclawLLMProvider, model string) bool {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return false
-	}
-	// A populated history is authoritative. Once a provider has been probed for
-	// multiple models, never fall back to its currently selected default.
-	if len(provider.VisionModels) > 0 {
-		for _, visionModel := range provider.VisionModels {
-			if strings.EqualFold(strings.TrimSpace(visionModel), model) {
-				return true
-			}
-		}
-		return false
-	}
-	// Legacy files persisted a single result tied to provider.Model.
-	return provider.SupportsVision && strings.EqualFold(strings.TrimSpace(provider.Model), model)
-}
-
 func profileSupportsVisionForModel(providers []corelib.MaclawLLMProvider, providerID, model string) bool {
 	provider, ok := resolveMaclawLLMProviderByID(providers, providerID)
-	return ok && providerSupportsVisionForModel(provider, model)
+	return ok && corelib.ProviderSupportsVisionForModel(provider, model)
 }
 
 // maclawLLMAssignmentProviders returns saved providers in saved order, using
@@ -2954,7 +2932,7 @@ func (a *App) TestMaclawLLMProfile(profile, providerID, model string) (MaclawLLM
 			provider = refreshedProvider
 			resolved = a.materializeMaclawLLMProvider(provider)
 			resolved.Model = model
-			resolved.SupportsVision = providerSupportsVisionForModel(provider, model)
+			resolved.SupportsVision = corelib.ProviderSupportsVisionForModel(provider, model)
 			resolved.Profile = profile
 			resolved.RouteSource = "base"
 		}

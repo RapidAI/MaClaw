@@ -3,6 +3,7 @@ import { AIAssistantAttachmentFullDataURL, PptxPreviewEnsure, PptxSlideThumbnail
 import type { CodePreviewTheme } from "./FileTabBar";
 import { PREVIEW_BAR_DELAY_MS, PreviewLoadingStatus } from "./PreviewProgressBar";
 import { tailText } from "../../i18n/mnTail"
+import { CompanionPptxAnnotator } from "../filecompanion/CompanionPptxAnnotator";
 
 type PptxPreviewResult = {
     file_path?: string;
@@ -27,6 +28,8 @@ export interface PptxPreviewPanelProps {
     revision?: string;
     theme: CodePreviewTheme;
     lang: string;
+    /** Companion document path: enables mark/note/draw annotations on slides. */
+    docAnnotate?: string;
 }
 
 /**
@@ -35,7 +38,7 @@ export interface PptxPreviewPanelProps {
  * default. Rendering happens on demand in the Go backend (cached next to the
  * deck); slide images stream in as data URLs.
  */
-export function PptxPreviewPanel({ absPath, revision = "", theme, lang }: PptxPreviewPanelProps) {
+export function PptxPreviewPanel({ absPath, revision = "", theme, lang, docAnnotate = "" }: PptxPreviewPanelProps) {
     const isZh = lang.startsWith("zh");
     // Messages captured inside the fetch effect read lang through a ref so a
     // language toggle does not re-render every slide.
@@ -245,7 +248,36 @@ export function PptxPreviewPanel({ absPath, revision = "", theme, lang }: PptxPr
             </div>
             <div className="pptx-main-col">
                 <div className="pptx-stage">
-                    {currentUrl ? (
+                    {docAnnotate ? (
+                        <CompanionPptxAnnotator
+                            path={docAnnotate}
+                            page={current + 1}
+                            lang={lang}
+                            onJumpSlide={(target) => setSelected(Math.max(0, Math.min(images.length - 1, target - 1)))}
+                        >
+                            {currentUrl ? (
+                                <img
+                                    src={currentUrl}
+                                    alt={tailText(lang, `Slide ${current + 1}`, `第 ${current + 1} 页`)}
+                                    draggable={false}
+                                    data-testid="pptx-preview-slide"
+                                    className="pptx-slide-img"
+                                />
+                            ) : thumbs.get(current) ? (
+                                <img
+                                    src={thumbs.get(current)}
+                                    alt={tailText(lang, `Slide ${current + 1} (preview)`, `第 ${current + 1} 页（预览）`)}
+                                    draggable={false}
+                                    data-testid="pptx-preview-slide-placeholder"
+                                    className="pptx-slide-img pptx-slide-img--placeholder"
+                                />
+                            ) : (
+                                <span data-testid="pptx-preview-slide-loading" role="status" style={{ color: theme.textMuted, fontSize: 12 }}>
+                                    {tailText(lang, "Loading slide…", "正在加载页面…")}
+                                </span>
+                            )}
+                        </CompanionPptxAnnotator>
+                    ) : currentUrl ? (
                         <img
                             src={currentUrl}
                             alt={tailText(lang, `Slide ${current + 1}`, `第 ${current + 1} 页`)}

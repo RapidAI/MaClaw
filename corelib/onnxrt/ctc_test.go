@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // ctcTestModel builds MatMul -> Add(bias) -> Softmax(axis=-1) -> y over a
@@ -210,6 +212,7 @@ func TestCTCHeadNegative(t *testing.T) {
 // TestCTCHeadRealRec checks the fused decode against the full-run decode on
 // the real rec model with a deterministic pseudo-random input.
 func TestCTCHeadRealRec(t *testing.T) {
+	testenv.SkipModelTests(t)
 	model := filepath.Join("..", "..", ".tmp", "ocr-models", "ppocrv6_small_rec.onnx")
 	g, err := LoadGraph(model)
 	if err != nil {
@@ -235,6 +238,7 @@ func TestCTCHeadRealRec(t *testing.T) {
 // TestCTCHeadRealRecGolden compares the fused decode against per-row
 // argmax/max-prob derived from the onnxruntime golden output.
 func TestCTCHeadRealRecGolden(t *testing.T) {
+	testenv.SkipModelTests(t)
 	dir := filepath.Join("testdata", "real_rec")
 	if _, err := os.Stat(filepath.Join(dir, "outputs.json")); err != nil {
 		t.Skip("golden not generated")

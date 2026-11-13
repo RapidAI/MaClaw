@@ -52,7 +52,15 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
     // "busy" is awaitingReply-or-running, but paused / review-needed are the
     // attention states worth keeping on screen after the run itself idles.
     // The loading splash owns the surface until the transcript lands.
-    const showPanel = (busy || paused || review) && !session.loading;
+    // A mirrored round that is still streaming keeps the panel up too — the
+    // live working trail arrives over remote_control.stream before the task
+    // poll can report the run.
+    const liveProgress = (session.live?.parts || [])
+        .filter(part => part.kind === "progress" && part.text)
+        .map(part => part.text)
+        .slice(-12);
+    const hasLive = !!session.live && !session.live.responded && session.live.parts.length > 0;
+    const showPanel = (busy || paused || review || hasLive) && !session.loading;
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
         // The elapsed/heartbeat meta only renders while busy — ticking in a
@@ -92,7 +100,7 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
     return (
         <div className="aap-remote-activity" data-testid="remote-activity">
             <AssistantReasoningPanel
-                live={busy}
+                live={busy || hasLive}
                 // A paused/review row cannot expand (no body); preview keeps
                 // the object name visible under the label instead.
                 preview={busy ? undefined : liveObject}
@@ -103,7 +111,13 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
                 theme={t}
                 contentKey={`remote-live|${session.grantId}|${session.projectPath}`}
             >
-                {null}
+                {liveProgress.length ? (
+                    <div className="aap-remote-progress" data-testid="remote-progress">
+                        {liveProgress.map((line, index) => (
+                            <div key={index} className="aap-remote-progress-line">{line}</div>
+                        ))}
+                    </div>
+                ) : null}
             </AssistantReasoningPanel>
             {busy && meta ? (
                 <div className="aap-remote-activity-meta" data-testid="remote-activity-meta">{meta}</div>

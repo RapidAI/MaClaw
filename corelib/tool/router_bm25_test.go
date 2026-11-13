@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	uicintent "github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 type sshBiasedEmbedder struct{}
@@ -52,6 +53,7 @@ func sshBiasedVector(text string) []float32 {
 // semantic classification. Returns nil if the model is not available.
 func loadTestEmbedder(t *testing.T) embedding.Embedder {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	modelPath := ""
 	if p := os.Getenv("GEMMA_EMB_MODEL"); p != "" {
 		modelPath = p

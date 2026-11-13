@@ -188,6 +188,8 @@ headers (`opt.RepeatTableHeaders`) and an `opt.OnPageBreak` callback.
 
 **Table pagination:** `InsertHTMLPaginated` keeps rows joined by rowspan cells together across page breaks (row-group keep-together; oversized groups fall back to row-level breaking) and repeats `<thead>` rows when `RepeatTableHeaders` is set.
 
+**Block keep-together:** blocks styled `break-inside: avoid` / `page-break-inside: avoid` move wholly to the next page when they would straddle a boundary (own lines plus nested blocks are estimated, including default paragraph margins).
+
 **Color formats:** `#RGB`, `#RRGGBB`, `rgb(r,g,b)`, `rgba(r,g,b,a)` (alpha ignored), CSS named colors
 
 **Font size formats:** `12pt`, `16px`, `1.5em`, `150%`, named sizes (small, medium, large, etc.)
@@ -1071,6 +1073,116 @@ type TextLine struct {
     Text  string     // The line text with spacing between words
 }
 ```
+
+## Document Handle (parse once, query many)
+
+```go
+doc, err := gopdf.OpenPDFDocument(pdfData)   // or OpenPDFDocumentFromFile(path)
+defer nil
+n := doc.PageCount()
+info := doc.Info()                            // PdfInfo (cached)
+toc := doc.TOC()                              // outline tree (cached)
+lines, _ := doc.Lines(0)                      // reading-order lines (cached)
+paras, _ := doc.Paragraphs(0)                 // reconstructed paragraphs (cached)
+words, _ := doc.Words(0)                      // position-aware words (cached)
+drawings, _ := doc.Drawings(0)                // vector graphics (cached)
+tables, _ := doc.Tables(0)                    // detected tables (cached; reuses drawings+lines)
+images, _ := doc.Images(0)                    // image placements (cached)
+text, _ := doc.Text(0)                        // newline-joined line text
+txt, _ := doc.TextInRect(0, gopdf.ClipRect{...})
+res := doc.Search("query", gopdf.SearchOptions{Dehyphenate: true})
+```
+
+`PDFDoc` parses the file once and caches every per-page result, so
+walking pages through several APIs decompresses each content stream
+exactly once — measured 42× faster than three package-level calls per
+page on a graphics-heavy corpus document.
+
+### Paragraphs, Regions and Vector Graphics
+
+```go
+func ExtractPageParagraphs(pdfData []byte, pageIndex int) ([]TextParagraph, error)
+func ExtractAllPagesParagraphs(pdfData []byte) (map[int][]TextParagraph, error)
+func ExtractTextInRect(pdfData []byte, pageIndex int, clip ClipRect) (string, error)
+func ExtractTextWordsInRect(pdfData []byte, pageIndex int, clip ClipRect) ([]TextWord, error)
+func WordsInRect(words []TextWord, clip ClipRect) []TextWord
+func ExtractPageDrawings(pdfData []byte, pageIndex int) ([]Drawing, error)
+func ExtractDrawingsFromFile(path string, pageIndex int) ([]Drawing, error)
+```
+
+### Table Detection
+
+```go
+func ExtractTablesFromPage(pdfData []byte, pageIndex int) ([]Table, error)
+func ExtractTablesFromFile(path string, pageIndex int) ([]Table, error)
+
+type TableCell struct {
+    X, Y, W, H float64
+    Text       string
+}
+type Table struct {
+    X, Y, W, H float64 // bounding box
+    ColCount   int
+    Rows       [][]TableCell
+}
+func (t *Table) ToCSV() string
+```
+
+`ToCSV` renders the detected table as RFC 4180 CSV.
+
+Detects ruled tables (PyMuPDF `find_tables` parity): border lines are grouped into crossing-connected components (each component is a candidate table), clustered into row/column grids, and cells are filled with position-aware words. Coordinates honor `/Rotate`. Borderless tables are not detected — there is no grid to cluster.
+
+- `ExtractPageParagraphs` — the highest-level text API: merges reading-order lines back into paragraphs. Line wraps join with spaces, hyphenated splits join without the hyphen (`"transduc-" + "tion"` → `"transduction"`), first-line indents and terminal punctuation start new paragraphs.
+- `ExtractTextInRect` / `ExtractTextWordsInRect` — region-scoped extraction; coordinates are visual page points (top-down, honoring `/Rotate`).
+- `ExtractPageDrawings` — vector graphics extraction: lines, polylines, rects and bezier curves with stroke/fill colors (RGB and DeviceCMYK), stroke width and paint op. Bezier curves are flattened. Walks form XObjects and honors `/Rotate`.
+
+### Text Search with Options
+
+```go
+func SearchTextWithOptions(pdfData []byte, query string, opt SearchOptions) ([]TextSearchResult, error)
+func SearchTextOnPageWithOptions(pdfData []byte, pageIndex int, query string, opt SearchOptions) ([]TextSearchResult, error)
+
+type SearchOptions struct {
+    CaseInsensitive bool
+    Dehyphenate     bool // match across hyphenated line wraps
+}
+```
+
+With `Dehyphenate: true`, a query like "computational" matches text wrapped as `"computa-"` / `"tional"`; the reported rectangle is the line containing the match start.
+
+### Document Metadata (read)
+
+```go
+func GetPDFInfo(pdfData []byte) (PdfInfo, error)
+func GetPDFInfoFromFile(path string) (PdfInfo, error)
+```
+
+Reads the `/Info` dictionary: title, author, subject, keywords, creator, producer, creation and modification dates. The writer side is `SetInfo(PdfInfo)`.
+
+### TOC of Existing PDFs (read)
+
+```go
+func ExtractTOC(pdfData []byte) ([]TOCEntry, error)
+func ExtractTOCFromFile(path string) ([]TOCEntry, error)
+
+type TOCEntry struct {
+    Level int     // hierarchy depth (1 = top)
+    Title string
+    Page  int     // 1-based destination page (0 when unresolved)
+    Y     float64 // destination position in points from the page top
+}
+```
+
+Walks the outline tree of an existing PDF. (The writer side is `SetTOC` / `AddOutline` / `GetTOC` on a GoPdf instance.)
+
+### Clipped Rendering
+
+```go
+opt := gopdf.RenderOption{DPI: 150, Clip: &gopdf.ClipRect{X: 100, Y: 100, W: 200, H: 120}}
+img, err := gopdf.RenderPageToImage(data, 0, opt)
+```
+
+`Clip` restricts rendering to a region of the page in visual points; rendering honors `/Rotate` (the output canvas matches the visual page orientation, and 2× supersampling is applied for hairline fidelity).
 
 ---
 

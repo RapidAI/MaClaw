@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // TestSteadyProfile warms up 2 iterations, then CPU-profiles 4 measured
 // Transcribe iterations so the profile reflects steady state only.
 func TestSteadyProfile(t *testing.T) {
+	testenv.SkipModelTests(t)
 	modelPath := filepath.Join("..", "..", "sensevoice-small-q8.gguf")
 	m, err := NewSenseVoice(modelPath)
 	if err != nil {
@@ -39,6 +41,7 @@ func TestSteadyProfile(t *testing.T) {
 // TestRound2AB interleaves parallel pack on/off within one process (prebuilt
 // panels default off — see q8PrebuiltAPanels).
 func TestRound2AB(t *testing.T) {
+	testenv.SkipModelTests(t)
 	modelPath := filepath.Join("..", "..", "sensevoice-small-q8.gguf")
 	m, err := NewSenseVoice(modelPath)
 	if err != nil {

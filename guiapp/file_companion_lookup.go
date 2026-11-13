@@ -71,10 +71,12 @@ func fileCompanionWebToolDefinitions() []map[string]interface{} {
 	}
 }
 
-// fileCompanionLiteratureSearchStrategy keeps the user's search engines and
-// turns off the managed browser. A companion turn looks up public pages; it
-// does not open the browser profile.
-func fileCompanionLiteratureSearchStrategy(strategy corelib.WebSearchStrategy) corelib.WebSearchStrategy {
+// webSearchStrategyNoBrowser keeps the user's configured engine order and
+// turns off every browser transport. Background jobs (file-companion
+// literature lookups, ambient device weather) run without user attention;
+// they must never pop a managed browser tab, so they search only through the
+// configured HTTP/API channels in order.
+func webSearchStrategyNoBrowser(strategy corelib.WebSearchStrategy) corelib.WebSearchStrategy {
 	strategy.BrowserFallbackEnabled = false
 	strategy.BrowserHumanAssistEnabled = false
 	strategy.Engines = append([]corelib.WebSearchEngineConfig(nil), strategy.Engines...)
@@ -100,7 +102,7 @@ func (h *IMMessageHandler) fileCompanionWebSearch(args map[string]interface{}) (
 	}
 	ctx, cancel := h.imToolContext()
 	defer cancel()
-	response, err := websearch.SearchWithStrategyCtx(ctx, query, maxResults, fileCompanionLiteratureSearchStrategy(h.getWebSearchStrategy()))
+	response, err := websearch.SearchWithStrategyCtx(ctx, query, maxResults, webSearchStrategyNoBrowser(h.getWebSearchStrategy()))
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %s", err.Error()), false
 	}

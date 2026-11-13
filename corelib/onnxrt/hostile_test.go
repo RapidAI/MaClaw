@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // TestCheckedShape covers the load-time shape validation: negative dims,
@@ -173,6 +175,7 @@ func TestNewGraphInitializerDataMismatchStillOK(t *testing.T) {
 // parse/load cleanly or return an error — never panic. Skipped when the model
 // file is not present.
 func TestLoadTruncatedRealModel(t *testing.T) {
+	testenv.SkipModelTests(t)
 	data, err := os.ReadFile("../../.tmp/ocr-models/ppocrv6_small_det.onnx")
 	if err != nil {
 		t.Skip("real det model not available:", err)

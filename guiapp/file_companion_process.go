@@ -161,6 +161,11 @@ type fileCompanionRuntime struct {
 	// webSessions maps a web playback session id to its normalized page URL.
 	// Those tabs have no filesystem grant.
 	webSessions map[string]string
+	// webPages caches the readable body of each web tab, keyed by the same
+	// session id. The chat reads this text the way a file turn reads the open
+	// document. Entries are prefetched at open so the first question does not
+	// wait on the network.
+	webPages map[string]*fileCompanionWebPage
 	// appearanceWatch is set once the companion process is watching the shared
 	// UI appearance file. The main process writes that file; this process does not.
 	appearanceWatch bool

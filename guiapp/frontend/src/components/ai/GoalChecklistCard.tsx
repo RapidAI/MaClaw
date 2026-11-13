@@ -7,6 +7,7 @@
  * glyph dump. A body that parses to nothing recognizable returns null and the
  * caller keeps the legacy pre-wrap card, so unusual stored text never breaks.
  */
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { localizeText } from "./aiAssistantI18n";
 
 export type GoalStepMark = "done" | "progress" | "failed" | "pending";
@@ -172,7 +173,7 @@ function GoalStepIcon({ mark }: { mark: GoalStepMark }) {
     );
 }
 
-function GoalTitleGlyph() {
+export function GoalTitleGlyph() {
     return (
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" strokeWidth="1.4" />
@@ -182,7 +183,14 @@ function GoalTitleGlyph() {
     );
 }
 
-export function GoalChecklistCard({ lang, body }: { lang?: string; body: GoalChecklistBody }) {
+export function GoalChecklistCard({ lang, body, headEnd, onHeadPointerDown }: {
+    lang?: string;
+    body: GoalChecklistBody;
+    /** Overlay chrome: extra control pinned at the header's right end (e.g. the float card's collapse button). */
+    headEnd?: ReactNode;
+    /** Overlay chrome: the header doubles as the floating card's drag handle. */
+    onHeadPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
+}) {
     const doneCount = goalChecklistDoneCount(body.steps);
     const percent = body.steps.length > 0
         ? Math.round(Math.min(100, Math.max(0, (doneCount / body.steps.length) * 100)))
@@ -214,7 +222,11 @@ export function GoalChecklistCard({ lang, body }: { lang?: string; body: GoalChe
     const soloActivity = body.activity && body.steps.length === 0 && !body.statusReason;
     return (
         <section className="gkc-card" aria-label={localizeText(lang, "Goal checklist", "目标清单", "目標清單")}>
-            <div className="gkc-head">
+            <div
+                className="gkc-head"
+                onPointerDown={onHeadPointerDown}
+                style={onHeadPointerDown ? { cursor: "grab", userSelect: "none", touchAction: "none" } : undefined}
+            >
                 <span className="gkc-title">
                     <span className="gkc-title-icon" aria-hidden="true"><GoalTitleGlyph /></span>
                     {localizeText(lang, "Goal checklist", "目标清单", "目標清單")}
@@ -234,6 +246,7 @@ export function GoalChecklistCard({ lang, body }: { lang?: string; body: GoalChe
                             {statusChip.label}
                         </span>
                     ) : null}
+                    {headEnd}
                 </span>
             </div>
             {showBar ? (

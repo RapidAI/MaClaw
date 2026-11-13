@@ -8,12 +8,14 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // shippedArtifacts returns the installed head and embedding model, skipping
 // when either is absent (CI).
 func shippedArtifacts(t *testing.T) (headPath, modelPath string) {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("home dir: %v", err)

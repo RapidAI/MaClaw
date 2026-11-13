@@ -77,3 +77,29 @@ describe("chat marks", () => {
         expect(loadChatMarks("/tmp/fail.md")).toEqual([mark]);
     });
 });
+
+describe("chat mark styles", () => {
+    it("keeps underline and strike styles through a save/load", () => {
+        saveChatMarks("/tmp/s.md", [
+            { ...mark, style: "underline" },
+            { ...mark, style: "strike", color: "blue" },
+        ]);
+        const marks = loadChatMarks("/tmp/s.md");
+        expect(marks[0].style).toBe("underline");
+        expect(marks[1]).toMatchObject({ style: "strike", color: "blue" });
+    });
+
+    it("keeps the mark but drops an unknown style", () => {
+        saveChatMarks("/tmp/s.md", [{ ...mark, style: "box" as "underline" }]);
+        const marks = loadChatMarks("/tmp/s.md");
+        expect(marks).toHaveLength(1);
+        expect(marks[0].style).toBeUndefined();
+    });
+
+    it("loads a mark stored before styles existed as a plain highlight", () => {
+        hydrateChatMarks({ "/tmp/old.md": [{ message: 2, color: "green", start: 1, end: 4, text: "abc" }] });
+        const marks = loadChatMarks("/tmp/old.md");
+        expect(marks).toHaveLength(1);
+        expect(marks[0].style).toBeUndefined();
+    });
+});

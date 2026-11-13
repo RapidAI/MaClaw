@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // TestRealModelLiveDataDocumentCompositeRegression exercises the installed
@@ -14,9 +15,7 @@ import (
 // on a remote classifier response.  It deliberately checks semantic labels and
 // their declared dependency rather than matching words in the user message.
 func TestRealModelLiveDataDocumentCompositeRegression(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-model regression skipped in short mode")
-	}
+	testenv.SkipModelTests(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("resolve home directory: %v", err)

@@ -39,6 +39,23 @@ export function clampDropdownLeft(
 }
 
 /**
+ * Center a menu of `menuWidth` on the horizontal midpoint of an anchor rect,
+ * clamped to the viewport. The status popover hangs off the account row: with
+ * equal widths this is the row's own left edge, and when the menu is wider
+ * (min-width floor, narrow sidebar) it stays centered instead of hugging one
+ * edge and overflowing the other.
+ */
+export function centeredDropdownLeft(
+    anchor: AnchorRect,
+    menuWidth: number,
+    viewportWidth: number,
+    edgePad: number = DROPDOWN_EDGE_PAD,
+): number {
+    const centerX = anchor.left + anchor.width / 2;
+    return clampDropdownLeft(centerX - Math.max(0, menuWidth) / 2, menuWidth, viewportWidth, edgePad);
+}
+
+/**
  * Place the provider menu relative to an anchor rect.
  * Prefer opening above (status bar sits at the bottom); fall back below when needed.
  * Left-aligns with the anchor and clamps using `menuWidth` (or an estimate).

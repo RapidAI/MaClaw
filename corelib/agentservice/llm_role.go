@@ -71,7 +71,7 @@ func resolveCustomBotRole(cfg corelib.AppConfig, role string) (corelib.MaclawLLM
 		if err != nil {
 			return corelib.MaclawLLMConfig{}, err
 		}
-		return pinned, nil
+		return roleVisionOverride(cfg, role, pinned), nil
 	}
 	return resolveServiceBotRole(cfg, role)
 }
@@ -87,7 +87,7 @@ func resolveServiceBotRole(cfg corelib.AppConfig, role string) (corelib.MaclawLL
 	if mode == corelib.MaclawHubBotRolePin {
 		resolved, err := resolveNamedProvider(cfg, assignment.Provider)
 		if err == nil {
-			return resolved, nil
+			return roleVisionOverride(cfg, role, resolved), nil
 		}
 		// A stale pin must not fail the turn. Grounder stays unused rather
 		// than silently borrowing the chat model.
@@ -98,7 +98,26 @@ func resolveServiceBotRole(cfg corelib.AppConfig, role string) (corelib.MaclawLL
 	if role == LLMRoleGrounder && mode != corelib.MaclawHubBotRoleInherit {
 		return corelib.MaclawLLMConfig{}, ErrGrounderUnused
 	}
-	return ResolveLLMConfig(cfg)
+	resolved, err := ResolveLLMConfig(cfg)
+	if err != nil {
+		return resolved, err
+	}
+	return roleVisionOverride(cfg, role, resolved), nil
+}
+
+// roleVisionOverride finalizes SupportsVision the way the GUI role path does:
+// the grounder always receives the screenshot, and every other role borrows
+// vision on the official provider's auto/default band because Hub picks a
+// vision-capable model server-side.
+func roleVisionOverride(cfg corelib.AppConfig, role string, resolved corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if role == LLMRoleGrounder {
+		resolved.SupportsVision = true
+		return resolved
+	}
+	if provider, ok := findMaclawProviderByName(cfg.MaclawLLMProviders, resolved.ProviderName); ok {
+		resolved.SupportsVision = rolePinSupportsVision(provider, resolved.Model)
+	}
+	return resolved
 }
 
 func hubBotRole(roles corelib.MaclawHubBotRoles, role string) corelib.MaclawHubBotRole {
@@ -141,57 +160,90 @@ func resolveProfileRolePin(cfg corelib.AppConfig, role string) (corelib.MaclawLL
 	if assignment.InheritsHub() || model == "" {
 		return corelib.MaclawLLMConfig{}, false, nil
 	}
+	resolve := func(provider corelib.MaclawLLMProvider) (corelib.MaclawLLMConfig, error) {
+		resolved, err := ResolveLLMConfig(configWithCurrentProvider(cfg, provider.Name))
+		if err != nil {
+			return corelib.MaclawLLMConfig{}, err
+		}
+		return applyRolePinModel(resolved, provider, model), nil
+	}
 	// A pin that names a provider runs on it, like the GUI's
 	// materializePinnedRole. A missing provider fails the role rather than
 	// silently rerouting it.
 	if providerID := strings.TrimSpace(assignment.ProviderID); providerID != "" {
-		for _, provider := range cfg.MaclawLLMProviders {
-			if strings.TrimSpace(provider.ID) != providerID && corelib.MaclawLLMLegacyProviderID(provider.Name) != providerID {
-				continue
-			}
-			resolved, err := ResolveLLMConfig(configWithCurrentProvider(cfg, provider.Name))
-			if err != nil {
-				return corelib.MaclawLLMConfig{}, true, err
-			}
-			resolved.Model = model
-			resolved.SupportsVision = providerSupportsVisionForModel(provider, model)
+		provider, ok := findMaclawProviderByID(cfg.MaclawLLMProviders, providerID)
+		if !ok {
+			return corelib.MaclawLLMConfig{}, true, fmt.Errorf("LLM role %q references an unavailable provider", role)
+		}
+		resolved, err := resolve(provider)
+		return resolved, true, err
+	}
+	// Same as the GUI pin: stay on the official provider when one is listed,
+	// otherwise the assistant profile's provider. The default current
+	// provider is the last resort so a stale assistant pin cannot fail a turn.
+	if provider, ok := findOfficialHubProvider(cfg.MaclawLLMProviders); ok {
+		if resolved, rerr := resolve(provider); rerr == nil {
 			return resolved, true, nil
 		}
-		return corelib.MaclawLLMConfig{}, true, fmt.Errorf("LLM role %q references an unavailable provider", role)
+	}
+	if providerID := strings.TrimSpace(cfg.MaclawLLMProfiles.Assistant.ProviderID); providerID != "" {
+		if provider, ok := findMaclawProviderByID(cfg.MaclawLLMProviders, providerID); ok {
+			if resolved, rerr := resolve(provider); rerr == nil {
+				return resolved, true, nil
+			}
+		}
 	}
 	base, err := ResolveLLMConfig(cfg)
 	if err != nil {
 		return corelib.MaclawLLMConfig{}, true, err
 	}
-	// Same as the GUI pin: stay on the official provider when one is listed,
-	// otherwise keep the default current provider and only override the model.
-	if provider, ok := findOfficialHubProvider(cfg.MaclawLLMProviders); ok {
-		if resolved, rerr := ResolveLLMConfig(configWithCurrentProvider(cfg, provider.Name)); rerr == nil {
-			resolved.Model = model
-			return resolved, true, nil
-		}
+	if provider, ok := findMaclawProviderByName(cfg.MaclawLLMProviders, base.ProviderName); ok {
+		return applyRolePinModel(base, provider, model), true, nil
 	}
-	base.Model = model
+	base.Model = corelib.MigrateZhipuCodingModel(base.ProviderName, model)
 	return base, true, nil
 }
 
-// providerSupportsVisionForModel mirrors the GUI helper: once a provider has
-// a probed vision list it is authoritative; otherwise SupportsVision belongs
-// to the provider's stored default model only.
-func providerSupportsVisionForModel(provider corelib.MaclawLLMProvider, model string) bool {
+// applyRolePinModel mirrors the GUI's materializeResolvedRole: the pinned
+// model replaces the provider default and image capability is recomputed for
+// that model rather than carried over from the provider's default.
+func applyRolePinModel(resolved corelib.MaclawLLMConfig, provider corelib.MaclawLLMProvider, model string) corelib.MaclawLLMConfig {
+	resolved.Model = corelib.MigrateZhipuCodingModel(provider.Name, model)
+	resolved.SupportsVision = rolePinSupportsVision(provider, resolved.Model)
+	return resolved
+}
+
+// rolePinSupportsVision recomputes the probed flag for the pinned model and,
+// like the GUI's ensureHubAutoRoleVision, keeps vision on the official
+// provider's auto/default band because Hub picks a vision-capable model
+// server-side.
+func rolePinSupportsVision(provider corelib.MaclawLLMProvider, model string) bool {
+	if corelib.ProviderSupportsVisionForModel(provider, model) {
+		return true
+	}
+	if !provider.IsHubService && !strings.EqualFold(strings.TrimSpace(provider.Name), OfficialHubLLMProviderName) {
+		return false
+	}
 	model = strings.TrimSpace(model)
-	if model == "" {
-		return false
-	}
-	if len(provider.VisionModels) > 0 {
-		for _, visionModel := range provider.VisionModels {
-			if strings.EqualFold(strings.TrimSpace(visionModel), model) {
-				return true
-			}
+	return strings.EqualFold(model, "auto") || strings.EqualFold(model, "default")
+}
+
+func findMaclawProviderByID(providers []corelib.MaclawLLMProvider, providerID string) (corelib.MaclawLLMProvider, bool) {
+	for _, provider := range providers {
+		if strings.TrimSpace(provider.ID) == providerID || corelib.MaclawLLMLegacyProviderID(provider.Name) == providerID {
+			return provider, true
 		}
-		return false
 	}
-	return provider.SupportsVision && strings.EqualFold(strings.TrimSpace(provider.Model), model)
+	return corelib.MaclawLLMProvider{}, false
+}
+
+func findMaclawProviderByName(providers []corelib.MaclawLLMProvider, name string) (corelib.MaclawLLMProvider, bool) {
+	for _, provider := range providers {
+		if corelib.MaclawLLMProviderNameEqual(provider.Name, name) {
+			return provider, true
+		}
+	}
+	return corelib.MaclawLLMProvider{}, false
 }
 
 func findOfficialHubProvider(providers []corelib.MaclawLLMProvider) (corelib.MaclawLLMProvider, bool) {

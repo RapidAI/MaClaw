@@ -72,11 +72,6 @@ export const MainTopHeader = ({
     handleWindowMaximizeToggle,
     windowMaximized,
 }: MainTopHeaderProps) => {
-    const openNotifications = () => {
-        // The title-bar bell is a toggle.  Sidebar notification rows still
-        // dispatch the plain event below to open the panel without closing it.
-        window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications', { detail: { toggle: true } }));
-    };
     const safeActiveTool = normalizeToolTab(activeTool);
     const toolOptions = getAllToolOptions();
     const showToolSwitcher = isToolTab(navTab);
@@ -120,7 +115,6 @@ export const MainTopHeader = ({
                 />
             </h2>
             <div className="top-header-window-controls mth-window-controls">
-                <button className="mc-header-notification" data-testid="main-header-notifications" type="button" onClick={openNotifications} aria-label={localizeText(lang, 'Notifications', '通知')} title={localizeText(lang, 'Notifications', '通知')}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></button>
                 <span className="mc-header-ready"><i aria-hidden="true" />{localizeText(lang, 'Ready', '准备就绪')}</span>
                 <button
                     onMouseDown={handleWindowHide}

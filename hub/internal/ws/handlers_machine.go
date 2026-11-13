@@ -692,6 +692,11 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			g.handleNotificationAck(ctx, msg)
 		case "remote_control.result":
 			deliverRemoteControlResult(ctx.MachineID, msg.RequestID, msg.Payload)
+		case "remote_control.stream":
+			// Fire-and-forget relay to the controlling machine. It is read on
+			// the machine read loop, so the relay itself must stay cheap; the
+			// HTTP layer enforces the per-grant rate limit and payload cap.
+			deliverRemoteControlStream(ctx.MachineID, msg.Payload)
 		default:
 			_ = writeWSError(conn, "UNKNOWN_MESSAGE", "Unsupported message type")
 		}

@@ -2,7 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateRunWindowTask, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir, SuggestNewTaskExpert, SuggestNewTaskType } from '../../../../../wailsjs/go/main/App';
 import { useTaskConfigWiring, type TaskConfigWiringOptions } from '../useTaskConfigWiring';
-import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withMachine, withRemoteWorkspace, withRunWindow, withWorkflow, WORKFLOW_AUTO } from '../taskDraft';
+import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withMachine, withRemoteWorkspace, withRunWindow, withTaskType, withWorkflow, WORKFLOW_AUTO } from '../taskDraft';
 import { bindRemoteTaskOpener, publishRemoteMachineTarget } from '../../../layout/remoteAssistantSession';
 import { LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH } from '../../../../constants/events';
@@ -630,6 +630,33 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
             '定时任务「夜间整理笔记」已经创建，将于 2099-01-02 01:00 启动。\n2099-01-02 06:30 如果任务未完成，将暂停。',
             '定时任务已创建',
         );
+    });
+
+    it('refuses to schedule a coding task without a local directory', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        const schedule = CreateRunWindowTask as unknown as ReturnType<typeof vi.fn>;
+        create.mockClear();
+        schedule.mockReset();
+        schedule.mockResolvedValue('rw-1');
+        const showAlert = vi.fn();
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            localGuideVisible: true,
+            inputValue: '夜间重构模块',
+            showAlert,
+        })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withRunWindow(withTaskType(defaultTaskDraft(), 'coding'), {
+                mode: 'scheduled',
+                startAt: '2099-01-02T01:00',
+                endAt: '',
+            }));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        expect(schedule).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+        expect(result.current.taskConfig.error).toContain('工作目录');
     });
 
     it('does not create another scheduled task while the confirmation is open', async () => {
@@ -1334,6 +1361,9 @@ describe('useTaskConfigWiring task type suggestion', () => {
         const create = vi.mocked(CreateTaskUnified);
         create.mockResolvedValue({ projectPath: 'D:/tasks/fix' } as never);
         const { result } = renderHook(() => useTaskConfigWiring(guide({ showConfirm })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withLocalWorkspace(defaultTaskDraft(), 'D:/repo'));
+        });
         await act(async () => {
             result.current.handleSendWithTaskConfig();
         });
@@ -1391,7 +1421,7 @@ describe('useTaskConfigWiring task type suggestion', () => {
         expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ mode: 'chat' }));
     });
 
-    it('drops the cloud workspace when a coding switch is accepted', async () => {
+    it('drops the cloud workspace when a coding switch is accepted, then needs a directory', async () => {
         suggest.mockResolvedValue({ suggested: 'coding', confident: true, source: 'local' });
         const showConfirm = vi.fn().mockResolvedValue(true);
         const create = vi.mocked(CreateTaskUnified);
@@ -1403,12 +1433,11 @@ describe('useTaskConfigWiring task type suggestion', () => {
         await act(async () => {
             result.current.handleSendWithTaskConfig();
         });
-        await waitFor(() => expect(create).toHaveBeenCalled());
         expect(showConfirm.mock.calls[0]?.[0]).toContain('云端工作区');
-        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
-            mode: 'coding_dev',
-            cloudWorkspaceId: '',
-        }));
+        // 云端退回本地默认后没有目录：编程任务被目录规则拦下，草稿落在本地。
+        expect(create).not.toHaveBeenCalled();
+        expect(result.current.taskConfig.error).toContain('工作目录');
+        expect(result.current.taskConfig.draft.workspace).toEqual({ kind: 'local' });
     });
 
     it('switches a coding draft to chat and keeps the chosen directory', async () => {
@@ -1450,6 +1479,9 @@ describe('useTaskConfigWiring task type suggestion', () => {
             inputValue: '/goal 修复登录空指针',
             showConfirm,
         })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withLocalWorkspace(defaultTaskDraft(), 'D:/repo'));
+        });
         await act(async () => {
             result.current.handleSendWithTaskConfig();
         });
@@ -1522,11 +1554,14 @@ describe('useTaskConfigWiring task type suggestion', () => {
             showAlert: vi.fn(),
         })));
         act(() => {
-            result.current.taskConfig.onDraftChange(withRunWindow(defaultTaskDraft(), {
-                mode: 'scheduled',
-                startAt: '2099-01-02T01:00',
-                endAt: '',
-            }));
+            result.current.taskConfig.onDraftChange(withRunWindow(
+                withLocalWorkspace(defaultTaskDraft(), 'D:/repo'),
+                {
+                    mode: 'scheduled',
+                    startAt: '2099-01-02T01:00',
+                    endAt: '',
+                },
+            ));
         });
         await act(async () => {
             result.current.handleSendWithTaskConfig();
@@ -1547,6 +1582,9 @@ describe('useTaskConfigWiring task type suggestion', () => {
         const create = vi.mocked(CreateTaskUnified);
         create.mockResolvedValue({ projectPath: 'D:/tasks/one' } as never);
         const { result } = renderHook(() => useTaskConfigWiring(guide({ showConfirm })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withLocalWorkspace(defaultTaskDraft(), 'D:/repo'));
+        });
         await act(async () => {
             result.current.handleSendWithTaskConfig();
         });

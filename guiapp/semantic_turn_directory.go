@@ -744,6 +744,12 @@ func (c *sharedAgentLoopCallbacks) projectSemanticDirectoryPrompt() {
 	if c == nil || strings.TrimSpace(c.systemPrompt) == "" || c.semanticSurface == nil || c.semanticSurface.replan == nil || c.semanticSurface.replan.Classification.Primary == "" {
 		return
 	}
+	// A light lookup turn keeps its thin fence: when the prompt never
+	// carried a directory, a mid-turn sync must not grow one. A prompt
+	// that already has the section still gets it refreshed in place.
+	if c.semanticLightLookup() && !strings.Contains(c.systemPrompt, semanticTurnDirectoryHeading) {
+		return
+	}
 	// semanticDirectoryExposure already filled Catalog from the same
 	// observation that marked granted names. A second lookup here can see
 	// a server finish tools/list and print a different set.

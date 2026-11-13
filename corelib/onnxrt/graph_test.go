@@ -5,11 +5,14 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // TestGraphRealModelsShape loads the real OCR models (skipping when they are
 // not downloaded) and checks output shapes and finiteness on zero input.
 func TestGraphRealModelsShape(t *testing.T) {
+	testenv.SkipModelTests(t)
 	cases := []struct {
 		name     string
 		model    string

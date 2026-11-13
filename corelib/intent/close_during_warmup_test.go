@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // TestCloseEmbedderDuringAnchorWarmupRealModel reproduces the old SIGSEGV:
@@ -19,9 +20,7 @@ import (
 // warmup with ErrEmbedderClosed instead of crashing the process.
 // MACLAW_CLOSE_RACE_ITERS controls the repetitions (default 3).
 func TestCloseEmbedderDuringAnchorWarmupRealModel(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-model test skipped in -short mode")
-	}
+	testenv.SkipModelTests(t)
 	modelPath := embedding.DefaultModelPath()
 	if modelPath == "" {
 		if home, err := os.UserHomeDir(); err == nil {

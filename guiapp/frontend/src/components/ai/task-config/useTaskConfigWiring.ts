@@ -32,7 +32,7 @@ import { builtinExpertIcon, expertDefinitionFromInstallResult, expertTabId, over
 import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, goalCreateCommand, hopCreateCommand, isBtwCommandText, isConversationBranchCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
-import { defaultTaskDraft, draftFromWizardSeed, hasWizardSeedContent, isDraftDefault, withCloudWorkspace, withExpert, withMachine, withTaskType, type MachineTarget, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { codingDirectoryRequired, defaultTaskDraft, draftFromWizardSeed, hasWizardSeedContent, isDraftDefault, withCloudWorkspace, withExpert, withMachine, withTaskType, type MachineTarget, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
 import { remoteMachineTargetSnapshot, remoteOpenTask, useRemoteMachineTarget } from "../../layout/remoteAssistantSession";
 import { suggestedExpertForDraft, type NewTaskExpertSuggestion } from "./taskExpertSuggest";
 import { mismatchedTaskType, taskTypeMismatchCopy, type NewTaskTypeSuggestion } from "./taskTypeSuggest";
@@ -773,6 +773,15 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         try {
             const expertDraft = await alignTaskExpertWithCommand(classifyText, taskConfigDraftRef.current);
             const draft = await alignTaskTypeWithCommand(classifyText, expertDraft);
+            // 定时同样要求编程任务先选工作目录：保存时就拦下，而不是到点启动才失败。
+            if (codingDirectoryRequired(draft)) {
+                setTaskConfigError(tailText(
+                    lang ?? "",
+                    "Coding tasks need a working directory. Choose one under Workspace before scheduling.",
+                    "编程任务必须先选择工作目录：请点开「工作空间」选择目录后再定时",
+                ));
+                return false;
+            }
             startAt = draft.runWindow?.startAt || "";
             endAt = draft.runWindow?.endAt;
             await CreateRunWindowTask(runWindowCreateRequest(named, named, initialMessage, draft) as unknown as Parameters<typeof CreateRunWindowTask>[0]);

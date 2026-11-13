@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetCloudWorkspaceDisplayNamesForTests, rememberCloudWorkspaceDisplayName } from '../codingTaskMode';
-import { composerExpertForOpenTab, composerExpertFromTab, composerWorkspaceKindLabel, projectSendExpertId, SessionWorkingDirChip, truncatePathMiddle, workingDirDisplayLabel } from '../SessionWorkingDirChip';
+import { composerExpertForOpenTab, composerExpertFromTab, composerWorkspaceKindLabel, projectSendExpertId, SessionWorkingDirChip, switchDirFailureMessage, truncatePathMiddle, workingDirDisplayLabel } from '../SessionWorkingDirChip';
 
 const getTabWorkingDir = vi.fn();
 const setTabWorkingDir = vi.fn();
@@ -101,6 +101,30 @@ describe('SessionWorkingDirChip', () => {
         // Listeners (e.g. the execution header meta row) must hear the new path
         // immediately, not only after a remount refetch.
         await waitFor(() => expect(onWorkingDirResolved).toHaveBeenCalledWith('D:/work/other', 'proj-2'));
+    });
+
+    it('surfaces a failed switch and re-reads the tab directory', async () => {
+        getTabWorkingDir.mockResolvedValue({ path: 'D:/work/app', is_default: false });
+        selectWorkingDir.mockResolvedValue('D:/work/other');
+        setTabWorkingDir.mockRejectedValue(new Error('tab proj-fail has no associated assistant session'));
+        const onSwitchError = vi.fn();
+        const onWorkingDirResolved = vi.fn();
+        render(<SessionWorkingDirChip tabId="proj-fail" theme={theme} lang="zh" onSwitchError={onSwitchError} onWorkingDirResolved={onWorkingDirResolved} />);
+        await waitFor(() => expect(screen.getByText('本地')).toBeTruthy());
+        fireEvent.click(screen.getByTestId('working-dir-chip'));
+        fireEvent.click(await screen.findByLabelText('选择其他工作目录'));
+        await waitFor(() => expect(onSwitchError).toHaveBeenCalledTimes(1));
+        expect(onSwitchError.mock.calls[0][0]).toContain('工作目录切换失败');
+        expect(onSwitchError.mock.calls[0][0]).toContain('no associated assistant session');
+        // The chip reads the directory back so it keeps showing what the
+        // session really uses, instead of trusting the pre-switch state.
+        await waitFor(() => expect(getTabWorkingDir).toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId('working-dir-chip').getAttribute('title')).toBe('D:/work/app');
+    });
+
+    it('formats the switch failure message per language', () => {
+        expect(switchDirFailureMessage('en', new Error('boom'))).toBe('Failed to switch the working directory. The tab keeps its current directory. (boom)');
+        expect(switchDirFailureMessage('zh', null)).toBe('工作目录切换失败，本次仍使用原目录。');
     });
 
     it('reports the resolved directory with the tab that owns it', async () => {

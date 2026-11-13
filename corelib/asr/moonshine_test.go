@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // findModel searches for the moonshine GGUF model in common locations.
 func findModel(t *testing.T) string {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	home, _ := os.UserHomeDir()
 	candidates := []string{
 		filepath.Join(home, ".maclaw", "models", "moonshine-base-zh.gguf"),

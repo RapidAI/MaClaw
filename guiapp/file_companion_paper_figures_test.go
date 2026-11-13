@@ -1094,6 +1094,29 @@ func TestPaperPageMentionsClipCaptionAfterARunningHeader(t *testing.T) {
 	}
 }
 
+// paperPreviewPages reads the first pages of a PDF through the parse-once
+// document handle. A page whose text cannot be read is an empty string so the
+// indexes stay aligned with the file.
+func paperPreviewPages(data []byte, limit int) ([]string, error) {
+	doc, err := gopdf2.OpenPDFDocument(data)
+	if err != nil {
+		return nil, err
+	}
+	n := doc.PageCount()
+	if limit > 0 && n > limit {
+		n = limit
+	}
+	pages := make([]string, n)
+	for i := 0; i < n; i++ {
+		text, err := doc.Text(i)
+		if err != nil {
+			text = ""
+		}
+		pages[i] = text
+	}
+	return pages, nil
+}
+
 func TestPaperFigureClipPagesReadsTheFileOnce(t *testing.T) {
 	font := `C:\Windows\Fonts\arial.ttf`
 	if _, err := os.Stat(font); err != nil {
@@ -1106,7 +1129,7 @@ func TestPaperFigureClipPagesReadsTheFileOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	preview, previewErr := gopdf2.PlainTextByPage(data, 2)
+	preview, previewErr := paperPreviewPages(data, 2)
 	if previewErr != nil || len(preview) == 0 || !strings.Contains(preview[0], "Figure") {
 		t.Skip("caption text was not extracted from the generated pdf")
 	}
@@ -1145,7 +1168,7 @@ func TestPaperFigureClipPagesReadsPastTheRasterBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	preview, previewErr := gopdf2.PlainTextByPage(data, pages)
+	preview, previewErr := paperPreviewPages(data, pages)
 	if previewErr != nil || len(preview) < pages {
 		t.Skip("caption text was not extracted from the generated pdf")
 	}

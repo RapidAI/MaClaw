@@ -10,6 +10,7 @@ import { MarkdownPreview } from '../ai/CodePreviewMarkdown';
 import type { CodePreviewTheme } from '../ai/FileTabBar';
 import { LatexPreviewPanel } from '../ai/LatexPreviewPanel';
 import { CompanionPdfReader } from '../ai/CompanionPdfReader';
+import { CompanionDocAnnotator } from '../filecompanion/CompanionDocAnnotator';
 import { PdfPreviewPanel } from '../ai/PdfPreviewPanel';
 import { DocxPreviewPanel } from '../ai/DocxPreviewPanel';
 import { PptxPreviewPanel } from '../ai/PptxPreviewPanel';
@@ -56,6 +57,10 @@ export type FilePreviewViewProps = {
     onLatexSourceChange?: (content: string) => void;
     /** Companion PDF reader. Other callers keep the iframe. */
     pdfAnnotate?: boolean;
+    /** Companion document annotations for markdown / office extracts: the
+     *  preview gets highlights, placed notes, and bookmarks keyed to this
+     *  document path. Other callers leave it unset and keep a plain render. */
+    docAnnotate?: string;
     matchLineIndexes?: number[];
     activeMatchLine?: number;
     children?: React.ReactNode;
@@ -454,6 +459,7 @@ function OfficePreviewPanel({
     content,
     theme,
     lang,
+    docAnnotate,
     matchLineIndexes,
     activeMatchLine,
 }: {
@@ -461,6 +467,7 @@ function OfficePreviewPanel({
     content?: string;
     theme: CodePreviewTheme;
     lang: string;
+    docAnnotate?: string;
     matchLineIndexes?: number[];
     activeMatchLine?: number;
 }) {
@@ -489,12 +496,23 @@ function OfficePreviewPanel({
     }
     return (
         <div data-testid="office-preview-panel">
-            <MarkdownPreview
-                content={text}
-                theme={theme}
-                matchLineIndexes={matchLineIndexes}
-                activeMatchLine={activeMatchLine}
-            />
+            {docAnnotate ? (
+                <CompanionDocAnnotator path={docAnnotate} lang={lang}>
+                    <MarkdownPreview
+                        content={text}
+                        theme={theme}
+                        matchLineIndexes={matchLineIndexes}
+                        activeMatchLine={activeMatchLine}
+                    />
+                </CompanionDocAnnotator>
+            ) : (
+                <MarkdownPreview
+                    content={text}
+                    theme={theme}
+                    matchLineIndexes={matchLineIndexes}
+                    activeMatchLine={activeMatchLine}
+                />
+            )}
         </div>
     );
 }
@@ -542,6 +560,7 @@ export const FilePreviewView = React.memo(function FilePreviewView({
     projectPath = '',
     onLatexSourceChange,
     pdfAnnotate = false,
+    docAnnotate = '',
     matchLineIndexes = EMPTY_MATCHES,
     activeMatchLine = -1,
     children,
@@ -562,13 +581,13 @@ export const FilePreviewView = React.memo(function FilePreviewView({
     if (yieldToParent) return <>{children}</>;
 
     if (kind === 'pptx' && file.absPath) {
-        return <PptxPreviewPanel key={fileKey} absPath={file.absPath} revision={file.previewRevision || ""} theme={theme} lang={lang} />;
+        return <PptxPreviewPanel key={fileKey} absPath={file.absPath} revision={file.previewRevision || ""} theme={theme} lang={lang} docAnnotate={docAnnotate} />;
     }
     if (kind === 'docx' && file.absPath) {
-        return <DocxPreviewPanel key={fileKey} absPath={file.absPath} theme={theme} lang={lang} />;
+        return <DocxPreviewPanel key={fileKey} absPath={file.absPath} theme={theme} lang={lang} docAnnotate={docAnnotate} />;
     }
     if (kind === 'xlsx' && file.absPath) {
-        return (
+        const sheet = (
             <XlsxPreviewPanel
                 key={fileKey}
                 absPath={file.absPath}
@@ -577,6 +596,9 @@ export const FilePreviewView = React.memo(function FilePreviewView({
                 fallbackContent={file.content}
             />
         );
+        return docAnnotate ? (
+            <CompanionDocAnnotator path={docAnnotate} lang={lang}>{sheet}</CompanionDocAnnotator>
+        ) : sheet;
     }
     const latexProject = String(file.projectPath || projectPath || '').trim();
     if (kind === 'latex' && file.latexWorkbench && latexProject && file.filePath) {
@@ -638,19 +660,34 @@ export const FilePreviewView = React.memo(function FilePreviewView({
                 content={file.content}
                 theme={theme}
                 lang={lang}
+                docAnnotate={docAnnotate}
                 matchLineIndexes={matchLineIndexes}
                 activeMatchLine={activeMatchLine}
             />
         );
     }
     if (kind === 'markdown') {
-        return (
+        const preview = (
             <MarkdownPreview
                 content={file.content || ''}
                 theme={theme}
                 matchLineIndexes={matchLineIndexes}
                 activeMatchLine={activeMatchLine}
             />
+        );
+        return docAnnotate ? (
+            <CompanionDocAnnotator key={fileKey} path={docAnnotate} lang={lang}>
+                {preview}
+            </CompanionDocAnnotator>
+        ) : preview;
+    }
+    // Plain text reads like a document page in the companion: read-only, so
+    // the annotator can paint marks the same way it does on markdown.
+    if (kind === 'text' && docAnnotate) {
+        return (
+            <CompanionDocAnnotator key={fileKey} path={docAnnotate} lang={lang}>
+                <pre className="companion-doc-text" data-testid="doc-text-view">{file.content || ''}</pre>
+            </CompanionDocAnnotator>
         );
     }
     return <>{children}</>;

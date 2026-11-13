@@ -16118,21 +16118,23 @@ export namespace main {
 	    activated: boolean;
 	    hub_id?: string;
 	    email: string;
+	    phone_number?: string;
 	    sn: string;
 	    tenant_id?: string;
 	    tenant_name?: string;
 	    machine_id: string;
 	    hub_url: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RemoteActivationStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.activated = source["activated"];
 	        this.hub_id = source["hub_id"];
 	        this.email = source["email"];
+	        this.phone_number = source["phone_number"];
 	        this.sn = source["sn"];
 	        this.tenant_id = source["tenant_id"];
 	        this.tenant_name = source["tenant_name"];

@@ -19,6 +19,10 @@ type RenderOption struct {
 
 	// Background is the background color. Default: white.
 	Background color.Color
+
+	// Clip restricts rendering to a region of the page, in visual points
+	// (top-down; honoring /Rotate). nil renders the full page.
+	Clip *ClipRect
 }
 
 func (o *RenderOption) defaults() {
@@ -74,6 +78,10 @@ func RenderAllPagesToImages(pdfData []byte, opt RenderOption) ([]image.Image, er
 }
 
 // renderParsedPage renders one page of an already-parsed document.
+//
+// The page is rasterized at 2× the requested resolution and box-filtered
+// down (supersampling): thin strokes (hairlines, $-bars, fraction rules)
+// and curve edges survive at low DPI instead of vanishing.
 func renderParsedPage(parser *rawPDFParser, pageIndex int, opt RenderOption) (image.Image, error) {
 	if pageIndex < 0 || pageIndex >= len(parser.pages) {
 		return nil, fmt.Errorf("page index %d out of range (0..%d)", pageIndex, len(parser.pages)-1)
@@ -83,7 +91,14 @@ func renderParsedPage(parser *rawPDFParser, pageIndex int, opt RenderOption) (im
 	pageW := mediaBox[2] - mediaBox[0]
 	pageH := mediaBox[3] - mediaBox[1]
 
-	scale := opt.DPI / 72.0
+	// supersample at low DPI where hairlines ($ bars, fraction rules)
+	// would otherwise vanish; at >= 144 DPI lines already span multiple
+	// pixels, so skip the 4x cost
+	ss := 1
+	if opt.DPI < 144 {
+		ss = 2
+	}
+	scale := opt.DPI / 72.0 * float64(ss)
 	imgW := int(math.Ceil(pageW * scale))
 	imgH := int(math.Ceil(pageH * scale))
 	if imgW < 1 {
@@ -105,8 +120,124 @@ func renderParsedPage(parser *rawPDFParser, pageIndex int, opt RenderOption) (im
 	if len(stream) > 0 {
 		renderContentStream(img, stream, parser, page, scale, pageH)
 	}
-	return img, nil
+
+	// /Rotate: rotate the composed page — a rigid transform of the whole
+	// bitmap is exactly equivalent to rotating the page before drawing.
+	switch page.rotate {
+	case 90, 180, 270:
+		img = rotateImageRGBA(img, page.rotate)
+	}
+
+	// box-filter downsample by ss×
+	if ss > 1 {
+		// dims may have changed if the page was rotated above
+		rb := img.Bounds()
+		outW := rb.Dx() / ss
+		outH := rb.Dy() / ss
+		if outW < 1 {
+			outW = 1
+		}
+		if outH < 1 {
+			outH = 1
+		}
+		out := image.NewRGBA(image.Rect(0, 0, outW, outH))
+		for y := 0; y < outH; y++ {
+			for x := 0; x < outW; x++ {
+				var r, g, b float64
+				for dy := 0; dy < ss; dy++ {
+					sy := y*ss + dy
+					if sy >= imgH {
+						sy = imgH - 1
+					}
+					for dx := 0; dx < ss; dx++ {
+						sx := x*ss + dx
+						if sx >= imgW {
+							sx = imgW - 1
+						}
+						c := img.RGBAAt(sx, sy)
+						r += float64(c.R)
+						g += float64(c.G)
+						b += float64(c.B)
+					}
+				}
+				n := float64(ss * ss)
+				out.SetRGBA(x, y, color.RGBA{
+					R: uint8(r/n + 0.5), G: uint8(g/n + 0.5), B: uint8(b/n + 0.5), A: 255,
+				})
+			}
+		}
+		return cropToClip(out, opt), nil
+	}
+	return cropToClip(img, opt), nil
 }
+
+// cropToClip restricts the rendered page to opt.Clip (visual points).
+func cropToClip(img *image.RGBA, opt RenderOption) *image.RGBA {
+	if opt.Clip == nil {
+		return img
+	}
+	scale := opt.DPI / 72.0
+	b := img.Bounds()
+	x0 := int(opt.Clip.X * scale)
+	y0 := int(opt.Clip.Y * scale)
+	x1 := int((opt.Clip.X + opt.Clip.W) * scale)
+	y1 := int((opt.Clip.Y + opt.Clip.H) * scale)
+	if x0 < 0 {
+		x0 = 0
+	}
+	if y0 < 0 {
+		y0 = 0
+	}
+	if x1 > b.Max.X {
+		x1 = b.Max.X
+	}
+	if y1 > b.Max.Y {
+		y1 = b.Max.Y
+	}
+	if x1 <= x0 || y1 <= y0 {
+		return img
+	}
+	out := image.NewRGBA(image.Rect(0, 0, x1-x0, y1-y0))
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			out.SetRGBA(x-x0, y-y0, img.RGBAAt(x, y))
+		}
+	}
+	return out
+}
+
+// rotateImageRGBA returns img rotated clockwise by 90/180/270 degrees.
+func rotateImageRGBA(img *image.RGBA, deg int) *image.RGBA {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	switch deg {
+	case 90, 270:
+		out := image.NewRGBA(image.Rect(0, 0, h, w))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				c := img.RGBAAt(b.Min.X+x, b.Min.Y+y)
+				if deg == 90 {
+					out.SetRGBA(h-1-y, x, c)
+				} else {
+					out.SetRGBA(y, w-1-x, c)
+				}
+			}
+		}
+		return out
+	case 180:
+		out := image.NewRGBA(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				out.SetRGBA(w-1-x, h-1-y, img.RGBAAt(b.Min.X+x, b.Min.Y+y))
+			}
+		}
+		return out
+	}
+	return img
+}
+
+// debugRender enables pixmap_render diagnostics via GOPDF_DEBUG_RENDER.
+var debugRender = os.Getenv("GOPDF_DEBUG_RENDER") != ""
 
 func min2(a, b float64) float64 {
 	if a < b {
@@ -134,6 +265,10 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 	ctmA, ctmD := 1.0, 1.0
 	ctmE, ctmF := 0.0, 0.0
 
+	// path construction (m/l) in device pixels, stroked by S/s
+	var pathPts [][2]float64
+	lineWidth := 1.0
+
 	// text state
 	fontResources := resolveRenderFonts(parser, page)
 	ts := &renderTextState{
@@ -152,6 +287,8 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 		case "BT":
 			inText = true
 			ts.tmX, ts.tmY = 0, 0
+			ts.tmA, ts.tmB = 1, 0
+			ts.lineA, ts.lineB = 1, 0
 			ts.tlmX, ts.tlmY = 0, 0
 		case "ET":
 			inText = false
@@ -163,6 +300,7 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 				ts.tlmX += stack[len(stack)-2]
 				ts.tlmY += stack[len(stack)-1]
 				ts.tmX, ts.tmY = ts.tlmX, ts.tlmY
+				ts.tmA, ts.tmB = ts.lineA, ts.lineB
 				stack = stack[:len(stack)-2]
 			}
 		case "TD":
@@ -171,10 +309,14 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 				ts.tlmX += stack[len(stack)-2]
 				ts.tlmY += stack[len(stack)-1]
 				ts.tmX, ts.tmY = ts.tlmX, ts.tlmY
+				ts.tmA, ts.tmB = ts.lineA, ts.lineB
 				stack = stack[:len(stack)-2]
 			}
 		case "Tm":
 			if inText && len(stack) >= 6 {
+				ts.tmA = stack[len(stack)-6]
+				ts.tmB = stack[len(stack)-5]
+				ts.lineA, ts.lineB = ts.tmA, ts.tmB
 				ts.tmX = stack[len(stack)-2]
 				ts.tmY = stack[len(stack)-1]
 				ts.tlmX, ts.tlmY = ts.tmX, ts.tmY
@@ -185,6 +327,7 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 			if inText {
 				ts.tlmY -= ts.leading
 				ts.tmX, ts.tmY = ts.tlmX, ts.tlmY
+				ts.tmA, ts.tmB = ts.lineA, ts.lineB
 			}
 		case "'":
 			// next line + show
@@ -215,13 +358,14 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 				if start := findArrayStart(tokens, i); start >= 0 {
 					var run []byte
 					kern := 0.0
+					effSize := ts.effFontSize()
 					flushRun := func() {
 						if len(run) == 0 {
 							return
 						}
 						penX := ts.tmX + kern
 						penY := pageH - ts.tmY
-						drawTextRun(img, ts.font, run, ts.fontSize, penX*scale, penY*scale, ts.fill, ts.charSpacing*scale, ts.wordSpacing*scale)
+						drawTextRun(img, ts.font, run, effSize*scale, penX*scale, penY*scale, ts.fill, ts.charSpacing*scale, ts.wordSpacing*scale)
 						run = run[:0]
 					}
 					for _, item := range tokens[start+1 : i] {
@@ -240,7 +384,7 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 							// flush before the displacement so the next string
 							// starts at the shifted position
 							flushRun()
-							kern += -v / 1000.0 * ts.fontSize
+							kern += -v / 1000.0 * effSize
 						}
 					}
 					flushRun()
@@ -277,27 +421,37 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 				dy := (pageH - max2(y1, y2)) * scale
 				dw := math.Abs(x2-x1) * scale
 				dh := math.Abs(y2-y1) * scale
-				col := strokeColor
 				next := ""
 				if i+1 < len(tokens) {
 					next = string(tokens[i+1])
 				}
-				if next == "f" || next == "f*" || next == "B" {
-					col = fillColor
+				filled := next == "f" || next == "f*" || next == "B" || next == "b"
+				stroked := next == "S" || next == "s" || next == "B" || next == "b"
+				if filled {
+					// paint the interior (cell/line backgrounds, shading)
+					drawRectFill(img, dx, dy, dw, dh, fillColor)
 				}
-				drawRectOnImage(img, dx, dy, dw, dh, 1.0, col)
+				if stroked {
+					drawRectOnImage(img, dx, dy, dw, dh, 1.0, strokeColor)
+				}
 			}
 
 		case "m":
-			// moveto — just consume coordinates
+			// moveto — start a subpath
 			if len(stack) >= 2 {
+				x := stack[len(stack)-2]
+				y := stack[len(stack)-1]
 				stack = stack[:len(stack)-2]
+				pathPts = append(pathPts, [2]float64{ctmA*x + ctmE, ctmD*y + ctmF})
 			}
 
 		case "l":
-			// lineto — draw line from last point
+			// lineto — extend the path
 			if len(stack) >= 2 {
+				x := stack[len(stack)-2]
+				y := stack[len(stack)-1]
 				stack = stack[:len(stack)-2]
+				pathPts = append(pathPts, [2]float64{ctmA*x + ctmE, ctmD*y + ctmF})
 			}
 
 		case "RG":
@@ -344,11 +498,24 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 			}
 
 		case "S", "s":
-			// Stroke path — already handled inline
+			// Stroke the constructed path (lines/polylines). Points are in
+			// PDF space (y-up): convert to device pixels (y-down).
+			if len(pathPts) >= 2 {
+				dev := make([][2]float64, len(pathPts))
+				for i, p := range pathPts {
+					dev[i] = [2]float64{p[0] * scale, (pageH - p[1]) * scale}
+				}
+				if debugRender {
+					fmt.Printf("DBG stroke n=%d pts=%v w=%.1f\n", len(dev), dev, lineWidth*scale)
+				}
+				strokePolyline(img, dev, lineWidth*scale, strokeColor)
+			}
+			pathPts = pathPts[:0]
 			stack = stack[:0]
 
 		case "f", "F", "f*":
 			// Fill path
+			pathPts = pathPts[:0]
 			stack = stack[:0]
 
 		case "B", "B*", "b", "b*":
@@ -358,6 +525,16 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 		case "n":
 			// End path without fill/stroke
 			stack = stack[:0]
+
+		case "w":
+			// Line width
+			if len(stack) >= 1 {
+				lineWidth = stack[len(stack)-1]
+				if lineWidth <= 0 {
+					lineWidth = 1
+				}
+				stack = stack[:len(stack)-1]
+			}
 
 		case "q":
 			// Save graphics state
@@ -378,6 +555,68 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 }
 
 // drawRectOnImage draws a rectangle outline on the image.
+// strokePolyline draws connected segments with a simple thickness model:
+// hairlines get a 1px Bresenham, wider widths get 2-3 px coverage.
+func strokePolyline(img *image.RGBA, pts [][2]float64, wPx float64, c color.RGBA) {
+	thick := int(wPx + 0.5)
+	if thick < 1 {
+		thick = 1
+	}
+	bounds := img.Bounds()
+	for i := 0; i+1 < len(pts); i++ {
+		x0, y0 := pts[i][0], pts[i][1]
+		x1, y1 := pts[i+1][0], pts[i+1][1]
+		drawThickLine(img, x0, y0, x1, y1, thick, c, bounds)
+	}
+}
+
+// drawThickLine rasterizes one segment with integer thickness.
+func drawThickLine(img *image.RGBA, x0, y0, x1, y1 float64, thick int, c color.RGBA, bounds image.Rectangle) {
+	dx := x1 - x0
+	dy := y1 - y0
+	steps := int(math.Abs(dx))
+	if int(math.Abs(dy)) > steps {
+		steps = int(math.Abs(dy))
+	}
+	if steps < 1 {
+		steps = 1
+	}
+	half := thick / 2
+	for i := 0; i <= steps; i++ {
+		t := float64(i) / float64(steps)
+		px := int(x0 + dx*t)
+		py := int(y0 + dy*t)
+		for oy := -half; oy < thick-half; oy++ {
+			for ox := -half; ox < thick-half; ox++ {
+				x, y := px+ox, py+oy
+				if x >= 0 && x < bounds.Max.X && y >= 0 && y < bounds.Max.Y {
+					img.SetRGBA(x, y, c)
+				}
+			}
+		}
+	}
+}
+
+// drawRectFill paints the interior of a rectangle (device-pixel coords).
+func drawRectFill(img *image.RGBA, x, y, w, h float64, c color.RGBA) {
+	ix := int(x)
+	iy := int(y)
+	iw := int(w)
+	ih := int(h)
+	bounds := img.Bounds()
+	for py := iy; py < iy+ih; py++ {
+		if py < 0 || py >= bounds.Max.Y {
+			continue
+		}
+		for px := ix; px < ix+iw; px++ {
+			if px < 0 || px >= bounds.Max.X {
+				continue
+			}
+			img.SetRGBA(px, py, c)
+		}
+	}
+}
+
 func drawRectOnImage(img *image.RGBA, x, y, w, h, scale float64, c color.RGBA) {
 	ix := int(x * scale)
 	iy := int(y * scale)
@@ -437,23 +676,20 @@ func renderXObject(img *image.RGBA, parser *rawPDFParser, page rawPDFPage, name 
 		return
 	}
 
-	filter := extractFilterValue(obj.dict)
 	if obj.stream == nil {
 		return
 	}
 
-	var srcImg image.Image
-	var err error
-
-	switch filter {
-	case "DCTDecode":
+	// Raw 8-bit sample bitmaps (DeviceRGB/DeviceGray — how GoPdf embeds PNG
+	// inputs) cannot go through image.Decode; build the image directly and
+	// fall back to the generic decoder for JPEG/PNG payload streams.
+	srcImg := rawSampleImage(&obj, parser)
+	if srcImg == nil {
+		var err error
 		srcImg, _, err = image.Decode(strings.NewReader(string(obj.stream)))
-	default:
-		// Try generic decode
-		srcImg, _, err = image.Decode(strings.NewReader(string(obj.stream)))
-	}
-	if err != nil || srcImg == nil {
-		return
+		if err != nil || srcImg == nil {
+			return
+		}
 	}
 
 	// Calculate destination rectangle
@@ -484,7 +720,23 @@ func renderXObject(img *image.RGBA, parser *rawPDFParser, page rawPDFPage, name 
 			dx := dstX + px
 			dy := dstY + py
 			if dx >= 0 && dx < img.Bounds().Max.X && dy >= 0 && dy < img.Bounds().Max.Y {
-				img.Set(dx, dy, srcImg.At(sx, sy))
+				// alpha-composite over the existing pixel (SMask
+				// transparency must blend with the page, not replace it)
+				sc := color.RGBAModel.Convert(srcImg.At(sx, sy)).(color.RGBA)
+				if sc.A == 255 {
+					img.SetRGBA(dx, dy, sc)
+				} else if sc.A > 0 {
+					d := img.RGBAAt(dx, dy)
+					a := uint32(sc.A)
+					inv := 255 - a
+					out := color.RGBA{
+						R: uint8((uint32(sc.R)*255 + uint32(d.R)*inv) / 255),
+						G: uint8((uint32(sc.G)*255 + uint32(d.G)*inv) / 255),
+						B: uint8((uint32(sc.B)*255 + uint32(d.B)*inv) / 255),
+						A: 255,
+					}
+					img.SetRGBA(dx, dy, out)
+				}
 			}
 		}
 	}
@@ -498,6 +750,73 @@ func findArrayStart(tokens [][]byte, opIdx int) int {
 		}
 	}
 	return -1
+}
+
+// rawSampleImage builds an image from an image XObject whose stream holds
+// uncompressed 8-bit samples (DeviceRGB or DeviceGray). Returns nil when the
+// dict/stream don't match that layout. An /SMask supplies the alpha channel.
+func rawSampleImage(obj *rawPDFObject, parser *rawPDFParser) image.Image {
+	w := int(extractNumValue(obj.dict, "/Width"))
+	h := int(extractNumValue(obj.dict, "/Height"))
+	bpc := int(extractNumValue(obj.dict, "/BitsPerComponent"))
+	if w <= 0 || h <= 0 || bpc != 8 || obj.stream == nil || len(obj.stream) == 0 {
+		return nil
+	}
+	channels := 0
+	switch {
+	case strings.Contains(obj.dict, "/DeviceRGB"):
+		channels = 3
+	case strings.Contains(obj.dict, "/DeviceGray"):
+		channels = 1
+	default:
+		return nil
+	}
+	if len(obj.stream) < w*h*channels {
+		return nil
+	}
+	m := image.NewRGBA(image.Rect(0, 0, w, h))
+	if channels == 3 {
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				off := (y*w + x) * 3
+				m.SetRGBA(x, y, color.RGBA{
+					R: obj.stream[off], G: obj.stream[off+1], B: obj.stream[off+2], A: 255,
+				})
+			}
+		}
+	} else {
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				v := obj.stream[y*w+x]
+				m.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
+			}
+		}
+	}
+	// soft mask: 8-bit gray samples -> alpha channel
+	if smRef := extractRef(obj.dict, "/SMask"); smRef > 0 && parser != nil {
+		if smObj, ok := parser.objects[smRef]; ok && smObj.stream != nil &&
+			strings.Contains(smObj.dict, "/DeviceGray") {
+			sw := int(extractNumValue(smObj.dict, "/Width"))
+			sh := int(extractNumValue(smObj.dict, "/Height"))
+			if sw > 0 && sh > 0 && len(smObj.stream) >= sw*sh {
+				for y := 0; y < h; y++ {
+					for x := 0; x < w; x++ {
+						sy := y * sh / h
+						sx := x * sw / w
+						c := m.RGBAAt(x, y)
+						// image.RGBA is premultiplied — scale RGB by alpha
+						a := uint32(smObj.stream[sy*sw+sx])
+						c.A = uint8(a)
+						c.R = uint8(uint16(c.R) * uint16(a) / 255)
+						c.G = uint8(uint16(c.G) * uint16(a) / 255)
+						c.B = uint8(uint16(c.B) * uint16(a) / 255)
+						m.SetRGBA(x, y, c)
+					}
+				}
+			}
+		}
+	}
+	return m
 }
 
 func clamp01(v float64) float64 {

@@ -7,7 +7,7 @@ require (
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20261110213740-d7496429564d
 	github.com/VantageDataChat/GoPDF2 v0.0.0-20261107035633-bbd33747e5b9
-	github.com/Vantagics/GoPPT v0.0.0-20261107035927-beb3aba0f510
+	github.com/Vantagics/GoPPT v0.0.0-20261111231545-296b21989382
 	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
 	github.com/braheezy/shine-mp3 v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0
@@ -22,6 +22,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hajimehoshi/go-mp3 v0.3.4
+	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mattn/go-isatty v0.0.20
@@ -49,7 +50,6 @@ require (
 	golang.org/x/text v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.46.1
-	github.com/hashicorp/yamux v0.1.2
 	pgregory.net/rapid v1.2.0
 )
 

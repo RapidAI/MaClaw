@@ -47,6 +47,13 @@ export type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 
 type ConfigMenu = 'machine' | 'type' | 'expert' | 'workflow' | 'workspace' | 'latex' | 'window';
 
+/**
+ * 提示态（编程任务缺工作目录等）值文本的柔和砖红：仍然醒目引起注意，
+ * 但不像 errorText 那样刺眼（用户反馈「太扎眼」）。真正的错误仍用 errorText。
+ */
+const WARN_VALUE_COLOR_LIGHT = "#d05656";
+const WARN_VALUE_COLOR_DARK = "#e58f8f";
+
 /** 远控被控机器候选（远控 grant；operate=false 的机器只能查看）。 */
 export interface RemoteMachineOption {
     grantId: string;
@@ -232,6 +239,7 @@ export function TaskConfigBar({
     };
 
     const accent = t.btnColor;
+    const warnValueColor = t.isDark ? WARN_VALUE_COLOR_DARK : WARN_VALUE_COLOR_LIGHT;
     const REMOTE_LOCKED_TITLE = tailText(lang ?? "", "Not configurable for a task on that computer", "远程机器上的任务不可配置此项");
     const leadIconSize = bare ? 13 : 14;
     const leadIconStyle: CSSProperties = { color: t.textMuted };
@@ -279,7 +287,7 @@ export function TaskConfigBar({
         value: ReactNode,
         options: { active?: boolean; locked?: boolean; warning?: boolean; title?: string; noMenu?: boolean } = {},
     ) => {
-        const valueColor = options.warning ? (t.errorText || "#ef4444") : options.active ? accent : t.text;
+        const valueColor = options.warning ? warnValueColor : options.active ? accent : t.text;
         const lead = configLeadIcon(key, draft, workflowLocked);
         return (
             <button

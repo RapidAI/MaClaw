@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // goldenTensor mirrors the JSON format written by testdata/run_golden.py.
@@ -135,6 +137,7 @@ func TestGoldenKernels(t *testing.T) {
 				if realPath == "" {
 					t.Fatalf("no model for case %s", e.Name())
 				}
+				testenv.SkipModelTests(t)
 				if _, statErr := os.Stat(realPath); statErr != nil {
 					t.Skipf("real model %s missing", realPath)
 				}

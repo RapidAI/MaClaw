@@ -92,7 +92,7 @@ import { loadPdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks } from "./pdfMarks"
 import { loadPdfTranslations, PDF_ANNOTATIONS_CHANGED_EVENT, savePdfTranslations } from "./pdfTranslations";
 import { loadPdfDrawings, PDF_DRAWINGS_CHANGED_EVENT, savePdfDrawings } from "./pdfDrawings";
 import { CHAT_ANNOTATIONS_CHANGED_EVENT, clipPdfAnnotationBody, clipPdfAnnotationName, loadChatAnnotations, mergeSharedChatAnnotations, newChatAnnotationId, saveChatAnnotations, type ChatAnnotation, type ChatAnnotationPlace, type ChatAnnotationSize } from "./chatAnnotations";
-import { CHAT_MARKS_CHANGED_EVENT, CHAT_MARK_TEXT_MAX, loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor } from "./chatMarks";
+import { CHAT_MARKS_CHANGED_EVENT, CHAT_MARK_TEXT_MAX, loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor, type ChatMarkStyle } from "./chatMarks";
 import { CompanionChatAnnotationLayer } from "./CompanionChatAnnotations";
 import { applyChatHighlights, chatHighlightsSupported, chatMarkAtOffset, chatMessageIndexAt, chatMessageRoot, chatOffsetForPoint, chatSelectionSlices, chatTextSpans, clearChatHighlights, type ChatSelectionSlice } from "./chatMarkAnchors";
 import { CompanionChatMarkMenu } from "./CompanionChatMarkMenu";
@@ -4621,7 +4621,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         setChatMenu({ x: event.clientX, y: event.clientY, slices: [], hit: -1, selected: note.text, annotationId: id });
     };
 
-    const paintChatMarks = (color: ChatMarkColor) => {
+    const paintChatMarks = (color: ChatMarkColor, style?: ChatMarkStyle) => {
         const menu = chatMenuRef.current;
         if (!menu || menu.slices.length === 0) return;
         // A new colour replaces whatever covered the same range, so repeated
@@ -4630,7 +4630,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             // One mark is one quote: a longer range is cut to the text the
             // store keeps, so the painted range and the re-anchor agree.
             const text = slice.text.slice(0, CHAT_MARK_TEXT_MAX);
-            return { message: slice.message, color, start: slice.start, end: slice.start + text.length, text };
+            return style
+                ? { message: slice.message, color, start: slice.start, end: slice.start + text.length, text, style }
+                : { message: slice.message, color, start: slice.start, end: slice.start + text.length, text };
         });
         const overlaps = (mark: ChatMark, slice: ChatMark) => mark.message === slice.message && mark.start < slice.end && mark.end > slice.start;
         const kept = chatMarksRef.current.filter((mark) => !painted.some((slice) => overlaps(mark, slice)));
@@ -4929,10 +4931,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // Markdown reads rendered-only in the companion — it is a preview kind, not
     // an editable kind. The content check keeps a file that failed the text
     // sniff on the unsupported notice instead of a blank pane.
-    const textEditorKind = kind === "text" || kind === "code" || kind === "html";
+    const textEditorKind = kind === "code" || kind === "html";
     const showEditor = Boolean(activeTab && !isWebTab && !activeTab.error && textEditorKind && (activeTab.editable || activeTab.content || activeTab.readOnlyReason));
     const previewToggleKind = kind === "html";
-    const showPreview = Boolean(activeTab && !isWebTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "latex" || (kind === "markdown" && Boolean(activeTab.content)) || (previewToggleKind && showEditor)));
+    const showPreview = Boolean(activeTab && !isWebTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "latex" || kind === "text" || (kind === "markdown" && Boolean(activeTab.content)) || (previewToggleKind && showEditor)));
     const emptyFile = Boolean(activeTab && !isWebTab && !activeTab.error && !showEditor && activeTab.size <= 0 && !activeTab.content);
     const renderedPreviewing = Boolean(activeTab && previewToggleKind && activeTab.preview);
     const showSource = showEditor && !renderedPreviewing;
@@ -7007,13 +7009,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             </div>
                         ) : null}
                         {!holdPlayer && showPreviewPane ? (
-                            <div data-testid="file-companion-preview" style={{ flex: 1, minHeight: 160, overflow: kind === "markdown" || kind === "office" || kind === "xlsx" ? "auto" : undefined }}>
+                            <div data-testid="file-companion-preview" data-doc-scroller="" style={{ flex: 1, minHeight: 160, overflow: kind === "markdown" || kind === "office" || kind === "xlsx" || kind === "text" ? "auto" : undefined }}>
                                 <FilePreviewView
                                     key={`${activeTab.path}:${activeTab.previewEpoch}`}
                                     file={previewFile}
                                     theme={appearance.previewTheme}
                                     lang={uiLang}
                                     pdfAnnotate={kind === "pdf"}
+                                    docAnnotate={kind === "markdown" || kind === "office" || kind === "xlsx" || kind === "docx" || kind === "pptx" || kind === "text" ? activeTab.path : undefined}
                                 />
                             </div>
                         ) : null}

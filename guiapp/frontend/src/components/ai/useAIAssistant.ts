@@ -606,6 +606,13 @@ export interface ChatMessage {
     recordingSession?: ChatRecordingSession;
     localFilePath?: string;
     localFilePaths?: string[];
+    /**
+     * Remote-control transcript: localFilePaths live on the controlled
+     * machine, so opening one fetches the bytes through this callback
+     * instead of touching the local filesystem. Resolves to the saved
+     * local path on this computer.
+     */
+    remoteFileFetch?: (filePath: string) => Promise<string>;
     thumbnailBase64?: string;
     imageKey?: string;
     /**

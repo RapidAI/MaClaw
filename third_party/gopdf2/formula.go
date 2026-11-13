@@ -1,6 +1,7 @@
 package gopdf
 
 import (
+	"math"
 	"strings"
 )
 
@@ -275,14 +276,23 @@ func (gp *GoPdf) measureFormulaLayout(tokens []*formulaToken, fontSize float64) 
 				w = w * fontSize / gp.curr.FontSize
 			}
 			m.width += w
+			// text glyphs occupy vertical space too; without this the
+			// sqrt overline and fraction bars anchor to a zero ascent and
+			// cut through superscripts and tall glyphs
+			if a := fontSize * 0.72; a > m.ascent {
+				m.ascent = a
+			}
+			if d := fontSize * 0.22; d > m.descent {
+				m.descent = d
+			}
 		case '^', '_':
 			sm := gp.measureFormulaLayout(tok.children, scriptSize)
 			m.width += sm.width
-			if tok.kind == '^' && sm.ascent+fontSize*0.35 > m.ascent {
-				m.ascent = sm.ascent + fontSize*0.35
+			if tok.kind == '^' && sm.ascent+fontSize*0.55 > m.ascent {
+				m.ascent = sm.ascent + fontSize*0.55
 			}
-			if tok.kind == '_' && sm.descent+fontSize*0.25 > m.descent {
-				m.descent = sm.descent + fontSize*0.25
+			if tok.kind == '_' && sm.descent+fontSize*0.05 > m.descent {
+				m.descent = sm.descent + fontSize*0.05
 			}
 		case 'f':
 			var num, den []*formulaToken
@@ -305,8 +315,8 @@ func (gp *GoPdf) measureFormulaLayout(tokens []*formulaToken, fontSize float64) 
 				w = dm.width
 			}
 			m.width += w + fontSize*0.15
-			asc := fontSize*0.55 + nm.descent
-			desc := fontSize*0.55 + dm.ascent
+			asc := fontSize*0.75 + nm.descent
+			desc := fontSize*0.35 + dm.ascent
 			if asc > m.ascent {
 				m.ascent = asc
 			}
@@ -420,24 +430,25 @@ func (gp *GoPdf) renderFormulaTokens(tokens []*formulaToken, x, baselineY, fontS
 		case 't':
 			// Activate this level's font size (scripts render smaller).
 			// The content writer reads curr.FontSize at append time.
+			// Text() anchors at the baseline — the same convention the
+			// bars (frac/sqrt) and lines use, so they align exactly.
 			gp.curr.FontSize = fontSize
 			w, _ := gp.MeasureTextWidth(tok.text)
-			gp.SetXY(cur, baselineY-fontSize)
-			rect := &Rect{W: w + 2, H: fontSize * 1.3}
-			if err := gp.CellWithOption(rect, tok.text, CellOption{Align: Left | Top}); err != nil {
+			gp.SetXY(cur, baselineY)
+			if err := gp.Text(tok.text); err != nil {
 				return err
 			}
 			cur += w
 		case '^':
 			sm := gp.measureFormulaLayout(tok.children, scriptSize)
-			if err := gp.renderFormulaTokens(tok.children, cur, baselineY-fontSize*0.35, scriptSize); err != nil {
+			if err := gp.renderFormulaTokens(tok.children, cur, baselineY-fontSize*0.55, scriptSize); err != nil {
 				return err
 			}
 			gp.curr.FontSize = fontSize
 			cur += sm.width
 		case '_':
 			sm := gp.measureFormulaLayout(tok.children, scriptSize)
-			if err := gp.renderFormulaTokens(tok.children, cur, baselineY+fontSize*0.25, scriptSize); err != nil {
+			if err := gp.renderFormulaTokens(tok.children, cur, baselineY+fontSize*0.05, scriptSize); err != nil {
 				return err
 			}
 			gp.curr.FontSize = fontSize
@@ -463,40 +474,38 @@ func (gp *GoPdf) renderFormulaTokens(tokens []*formulaToken, x, baselineY, fontS
 				w = dm.width
 			}
 			// numerator: its baseline sits above the bar
-			numBaseline := baselineY - fontSize*0.55
+			numBaseline := baselineY - fontSize*0.75
 			if err := gp.renderFormulaTokens(num, cur+(w-nm.width)/2, numBaseline, scriptSize); err != nil {
 				return err
 			}
 			// bar
-			barY := baselineY - fontSize*0.12
+			barY := baselineY - fontSize*0.32
 			gp.SetLineWidth(0.6)
 			gp.Line(cur, barY, cur+w, barY)
 			// denominator
-			denBaseline := baselineY + fontSize*0.55
+			denBaseline := baselineY + fontSize*0.35
 			if err := gp.renderFormulaTokens(den, cur+(w-dm.width)/2, denBaseline, scriptSize); err != nil {
 				return err
 			}
 			cur += w + fontSize*0.15
 		case 'q':
 			sm := gp.measureFormulaLayout(tok.children, fontSize)
-			// radical glyph
-			wR, _ := gp.MeasureTextWidth("√")
-			if gp.curr.FontSize > 0 {
-				wR = wR * fontSize / gp.curr.FontSize
-			}
-			gp.SetXY(cur, baselineY-fontSize)
-			rect := &Rect{W: wR + 2, H: fontSize * 1.3}
-			if err := gp.CellWithOption(rect, "√", CellOption{Align: Left | Top}); err != nil {
-				return err
-			}
-			cur += wR * 0.6
+			// radical drawn as a path sized to the content box: hook,
+			// bottom notch, diagonal up, then the overline across the top.
+			// Text is baseline-anchored, so these lines align exactly.
+			radW := fontSize * 0.62
+			// render space is y-down: above the baseline is NEGATIVE
+			topY := baselineY - sm.ascent - fontSize*0.15
+			botY := baselineY + sm.descent
+			gp.SetLineWidth(math.Max(fontSize*0.055, 0.5))
+			gp.Line(cur, topY-(topY-botY)*0.45, cur+radW*0.30, botY)
+			gp.Line(cur+radW*0.30, botY, cur+radW, topY)
+			gp.Line(cur+radW, topY, cur+radW+sm.width, topY)
+			cur += radW
 			if err := gp.renderFormulaTokens(tok.children, cur, baselineY, fontSize); err != nil {
 				return err
 			}
-			// overline across the content
-			gp.SetLineWidth(0.6)
-			gp.Line(cur, baselineY-sm.ascent-fontSize*0.15, cur+sm.width, baselineY-sm.ascent-fontSize*0.15)
-			cur += sm.width + wR*0.4
+			cur += sm.width + fontSize*0.12
 		case 'b':
 			var top, bot []*formulaToken
 			seenSep := false

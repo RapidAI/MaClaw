@@ -125,6 +125,7 @@ func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.Identi
 	}
 	ws.OnRemoteControlResult = svc.Complete
 	h := remoteControlHandler{svc: svc, devices: devices, identity: identity}
+	ws.OnRemoteControlStream = h.relayControlledStream
 	svc.RelayFederatedRevoke = func(ctx context.Context, grant remotecontrol.Grant) {
 		if err := h.relayTargetDecision(ctx, grant, "revoke"); err != nil {
 			log.Printf("[remote-control] federated revoke relay failed grant=%s hub=%s: %v", grant.ID, grant.ControllerHub, err)
@@ -143,6 +144,7 @@ func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.Identi
 	mux.HandleFunc("POST /api/remote-control/federation/proof", h.federationProof)
 	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/decision", h.federationDecision)
 	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/op", h.federationOp)
+	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/stream", h.federationStream)
 	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/status", h.federationStatus)
 }
 

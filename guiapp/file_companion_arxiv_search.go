@@ -364,8 +364,9 @@ func (a *App) arxivFetchFeed(ctx context.Context, searchURL string) ([]FileCompa
 		strategy = a.imHandler.getWebSearchStrategy()
 	}
 	result, err := websearch.FetchWithStrategyCtx(ctx, searchURL, &websearch.FetchOptions{
-		TimeoutS: arxivSearchTimeoutS,
-		MaxBytes: 2 * 1024 * 1024,
+		TimeoutS:                   arxivSearchTimeoutS,
+		MaxBytes:                   2 * 1024 * 1024,
+		DisableBrowserAuthFallback: true,
 		Headers: map[string]string{
 			"Accept": "application/atom+xml, application/xml;q=0.9, */*;q=0.1",
 		},

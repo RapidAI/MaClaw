@@ -3,6 +3,8 @@ package onnxrt
 import (
 	"os"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 func TestConvTransposeBatchNormReluFold(t *testing.T) {
@@ -146,6 +148,7 @@ func TestStandaloneBatchNormRelu(t *testing.T) {
 }
 
 func TestWiredUNETBNFolded(t *testing.T) {
+	testenv.SkipModelTests(t)
 	path := `C:\Users\ma139\.maclaw\models\table\unet.onnx`
 	if _, err := os.Stat(path); err != nil {
 		t.Skip(err)

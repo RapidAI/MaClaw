@@ -1,5 +1,5 @@
 ﻿// @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { MainTopHeader } from '../MainTopHeader';
 
@@ -42,18 +42,9 @@ describe('MainTopHeader', () => {
             'kilo',
         ]);
     });
-    it('routes the global bell to the shared system notification center', () => {
-        const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
-        try {
-            render(<MainTopHeader {...baseProps} />);
-            fireEvent.click(screen.getByTestId('main-header-notifications'));
-            expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({
-                type: 'maclaw:open-system-notifications',
-                detail: { toggle: true },
-            }));
-        } finally {
-            dispatchSpy.mockRestore();
-        }
+    it('keeps the notification bell out of the main header (it moved to the sidebar status row)', () => {
+        render(<MainTopHeader {...baseProps} />);
+        expect(screen.queryByTestId('main-header-notifications')).toBeNull();
     });
 
     it('renders the MaClaw wordmark without a duplicate M mark in the main header', () => {

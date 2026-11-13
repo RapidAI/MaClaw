@@ -3,7 +3,6 @@ package gopdf
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 )
 
@@ -151,6 +150,7 @@ func extractTextFromPageWithParser(parser *rawPDFParser, pdfData []byte, pageInd
 		fonts:    fonts,
 		xobjs:    page.resources.xobjs,
 		mediaBox: page.mediaBox,
+		rotate:   page.rotate,
 		visited:  map[int]bool{},
 	}, stream), nil
 }
@@ -169,67 +169,25 @@ func formatAsText(texts []ExtractedText) string {
 	return sb.String()
 }
 
-// formatAsBlocks groups text items into blocks (paragraphs).
+// formatAsBlocks groups text items into blocks (paragraphs) — delegated to
+// the paragraph reconstruction logic so blocks break on indents, terminal
+// punctuation and paragraph spacing (previously vertical gap only).
 func formatAsBlocks(texts []ExtractedText) []TextBlock {
 	if len(texts) == 0 {
 		return nil
 	}
-
-	// Group by Y coordinate into lines.
-	lines := groupIntoLines(texts)
-
-	// Group lines into blocks based on vertical spacing.
-	var blocks []TextBlock
-	var currentBlock *TextBlock
-
-	for i, line := range lines {
-		if len(line.Words) == 0 {
-			continue
-		}
-		if currentBlock == nil || (i > 0 && len(lines[i-1].Words) > 0 &&
-			math.Abs(line.Y-lines[i-1].Y) > lines[i-1].Words[0].Height*2) {
-			// Start new block.
-			blocks = append(blocks, TextBlock{
-				X: line.Words[0].X,
-				Y: line.Y,
-			})
-			currentBlock = &blocks[len(blocks)-1]
-		}
-		currentBlock.Lines = append(currentBlock.Lines, line)
+	paras := ParagraphsFromLines(GroupIntoTextLines(texts))
+	blocks := make([]TextBlock, 0, len(paras))
+	for _, p := range paras {
+		blocks = append(blocks, TextBlock{
+			X:     p.X,
+			Y:     p.Y,
+			Width: p.Width,
+			// Height covers through the last line's bottom
+			Height: p.Height,
+			Lines:  p.Lines,
+		})
 	}
-
-	// Compute block dimensions.
-	for i := range blocks {
-		b := &blocks[i]
-		if len(b.Lines) == 0 {
-			continue
-		}
-		minX := math.MaxFloat64
-		maxX := -math.MaxFloat64
-		lastLineHeight := 0.0
-		for _, line := range b.Lines {
-			for _, w := range line.Words {
-				if w.X < minX {
-					minX = w.X
-				}
-				if w.X+w.Width > maxX {
-					maxX = w.X + w.Width
-				}
-			}
-		}
-		b.X = minX
-		if minX == math.MaxFloat64 {
-			b.X = 0
-		}
-		b.Width = maxX - b.X
-		// Use the last line's first word height for block height calculation.
-		lastLine := b.Lines[len(b.Lines)-1]
-		if len(lastLine.Words) > 0 {
-			lastLineHeight = lastLine.Words[0].Height
-		}
-		b.Height = lastLine.Y - b.Y + lastLineHeight
-	}
-
 	return blocks
 }
 

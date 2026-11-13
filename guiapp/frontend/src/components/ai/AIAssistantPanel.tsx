@@ -99,11 +99,12 @@ import { codingLiveHeaderProgress, codingTimelineForDisplay, progressMessagesFor
 import { codingTimelineOwnedProgressTexts, compactCodingAgentProgressMessages, latestCodingToolTrailAt, retainAssistantProgressText } from "./compactCodingAgentProgressMessages";
 import { CodingAgentPreviewFocusContext } from "./CodingAgentProgressStatus";
 import { CodingAgentProcessTimeline } from "./CodingAgentProcessTimeline";
+import { GoalChecklistOverlay } from "./GoalChecklistOverlay";
 
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, logAIPanelDiagnostic, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, isHostGoalChecklistText, logAIPanelDiagnostic, rewriteHostGoalChecklistBody, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
 import { expertTabId } from "./expertTypes";
 import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
@@ -5414,29 +5415,99 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [displayMessages]);
+    // The goal card stays in history (collapseHostGoalChecklist keeps exactly
+    // one) but the floating overlay owns its on-screen spot, top-right.
+    const goalChecklistOverlayText = useMemo(() => {
+        if (remoteChat) return "";
+        for (let index = otherMessages.length - 1; index >= 0; index -= 1) {
+            const message = otherMessages[index];
+            if (message.kind === "goalChecklist") return String(message.content || "");
+            // Same conversion renderMessage applied inline: a host continuation
+            // stored as a user row still feeds the float.
+            if (message.role === "user" && isHostGoalChecklistText(message.content || "")) {
+                return rewriteHostGoalChecklistBody(message.content || "");
+            }
+        }
+        return "";
+    }, [otherMessages, remoteChat]);
+    // A remote transcript file lives on the controlled machine. Opening one
+    // asks that desktop for the bytes (fetch_file op), saves them into this
+    // computer's Downloads folder, and returns the local path for the card.
+    const remoteFileFetch = useCallback(async (filePath: string): Promise<string> => {
+        const chat = remoteChat;
+        if (!chat) return '';
+        const bindings = (window as unknown as { go?: { main?: { App?: Record<string, unknown> } } }).go?.main?.App;
+        const op = bindings?.['RemoteControlOp'] as ((...args: unknown[]) => Promise<unknown>) | undefined;
+        const save = bindings?.['SaveRemoteControlFile'] as ((...args: unknown[]) => Promise<unknown>) | undefined;
+        if (typeof op !== 'function' || typeof save !== 'function') {
+            throw new Error(localizeText(lang, 'Remote control is not ready', '远控尚未就绪'));
+        }
+        const raw = String(await op(chat.grantId, 'fetch_file', JSON.stringify({ project_path: chat.projectPath, path: filePath })) || '{}');
+        let parsed: { name?: string; data_base64?: string; error?: string };
+        try {
+            parsed = JSON.parse(raw) as { name?: string; data_base64?: string; error?: string };
+        } catch {
+            throw new Error(localizeText(lang, 'The remote file could not be read', '远端文件暂时无法读取'));
+        }
+        if (parsed.error) throw new Error(parsed.error);
+        if (!parsed.data_base64) {
+            throw new Error(localizeText(lang, 'The remote file could not be read', '远端文件暂时无法读取'));
+        }
+        const saved = String(await save(parsed.name || 'remote-file', parsed.data_base64) || '');
+        if (!saved) {
+            throw new Error(localizeText(lang, 'The file could not be saved', '文件保存失败'));
+        }
+        return saved;
+    }, [remoteChat, lang]);
     const remoteTranscript = useMemo(() => {
         if (!remoteChat) return [];
         return remoteChat.messages.map((message, index): ChatMessage => {
             let role: ChatMessage["role"] = "assistant";
             if (message.role === "user" || message.role === "system" || message.role === "error") role = message.role;
+            const localFilePaths = (message.localFilePaths || []).map(path => String(path || '').trim()).filter(Boolean);
             return {
                 id: `remote-${remoteChat.grantId}-${index}`,
                 role,
                 content: message.content || '',
                 reasoning: message.reasoning || '',
+                localFilePaths: localFilePaths.length ? localFilePaths : undefined,
+                remoteFileFetch: localFilePaths.length ? remoteFileFetch : undefined,
                 timestamp: index + 1,
             };
         });
-    }, [remoteChat]);
+    }, [remoteChat, remoteFileFetch]);
     const remoteRenderedMessages = useMemo(() => {
         if (!remoteTranscript.length) return null;
         const last = remoteTranscript.length - 1;
-        return remoteTranscript.map((message, index) => (
-            <Fragment key={message.id}>
-                {renderMessage(message, () => undefined, t, index === last && message.role === "assistant", "", lang)}
-            </Fragment>
-        ));
-    }, [lang, remoteTranscript, t]);
+        const live = remoteChat?.live;
+        return remoteTranscript.map((message, index) => {
+            const isLastAssistant = index === last && message.role === "assistant";
+            // The mirrored round streams like a local one: tokens land live
+            // and the thinking panel shows a live box until the block closes.
+            const streaming = isLastAssistant && !!live && !live.responded;
+            const liveThinking = streaming && live.parts.some(part => part.kind === "thinking" && !part.done);
+            return (
+                <Fragment key={message.id}>
+                    {renderMessage(
+                        message,
+                        () => undefined,
+                        t,
+                        isLastAssistant,
+                        "",
+                        lang,
+                        streaming,
+                        undefined,
+                        undefined,
+                        false,
+                        undefined,
+                        liveThinking ? localizeText(lang, "Thinking on the other computer…", "对方正在思考…", "對方正在思考…") : undefined,
+                        undefined,
+                        streaming,
+                    )}
+                </Fragment>
+            );
+        });
+    }, [lang, remoteChat?.live, remoteTranscript, t]);
     const remoteEmptyContent = useMemo(() => {
         if (!remoteChat) return undefined;
         if (remoteChat.loading) {
@@ -6658,6 +6729,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const coveredOther = coveredOtherNodesRef.current;
         if (taskConfigWiring.wizardOverlay && coveredOther && coveredOther.length > 0) return coveredOther;
         const coveredNodes = transcriptMessages.map((msg: ChatMessage, idx: number) => {
+            // The floating GoalChecklistOverlay owns the 目标清单 card; the
+            // transcript row stays in history but out of the scroll feed.
+            if (msg.kind === "goalChecklist" || (msg.role === "user" && isHostGoalChecklistText(msg.content || ""))) return null;
             const isLast = idx === lastAssistantIdx;
             // Settled rows keep their object across token flushes. The live assistant follows the round.
             const settled = cache.get(msg.id);
@@ -6938,7 +7012,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 aria-hidden={!newTaskHome ? true : undefined}
                 style={!newTaskHome ? executionSecondaryChromeStyle : undefined}
             >
-                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} hideNotifications={!newTaskHome} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onReturnToCoveredConversation={wizardScreen ? taskConfigWiring.dismissWizardOverlay : undefined} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !newTaskHome ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !newTaskHome ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment || latexPaperTab || hasTaskResult} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} hideNotifications={!newTaskHome} bellHidden inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onReturnToCoveredConversation={wizardScreen ? taskConfigWiring.dismissWizardOverlay : undefined} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !newTaskHome ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !newTaskHome ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment || latexPaperTab || hasTaskResult} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
             </div>
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both (quick-settings / status strip spans into the code-preview column). */}
             <div className="aap-panel-main" data-testid="ai-panel-main">
@@ -7539,8 +7613,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? remoteChat.machineName : remoteWorkspaceLabel} title={title} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
                         <div className="mc-task-notification-slot" data-notification-tree="true" data-testid="task-notification-slot" {...windowNoDragRegionProps()}>
-                            {/* The new-task wizard covers this header and shows the title-bar bell instead. */}
-                            <AssistantTitleBarNotifications active={panelActive && !wizardScreen} inline={false} lang={lang} theme={t} />
+                            {/* The visible bell lives on the sidebar status row; this
+                                host stays mounted (hidden bell) so the panel, urgent
+                                toasts and the open-system-notifications listener keep
+                                working from there. */}
+                            <AssistantTitleBarNotifications active={panelActive && !wizardScreen} inline={false} bellHidden lang={lang} theme={t} />
                         </div>
                         {remoteChat ? <>
                         <button className="task-pause-btn" data-action="cancel" type="button" onClick={() => { void handleCancel(); }} disabled={!remoteChat.canSend || !!remoteChat.activity?.stopping} aria-busy={!!remoteChat.activity?.stopping} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{remoteChat.activity?.stopping ? localizeText(lang, "Stopping…", "正在停止…", "正在停止…") : localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
@@ -7616,6 +7693,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ready={codingTaskReadyForIntents}
                         executionLive={taskExecutionLive}
                         executionStatusLabel={taskExecutionStatus.label}
+                        onOpenFile={codingPreviewAllowed ? focusCodeFile : undefined}
                         onApprove={() => { void handleCodingPlanGate("approve"); }}
                         onSkip={() => { void handleCodingPlanGate("skip"); }}
                         onReject={() => { void handleCodingPlanGate("reject"); }}
@@ -7628,6 +7706,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {!showWelcomeView && !remoteChat && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
                 {!showWelcomeView && !remoteChat && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => chatTaskInSession(task.sessionKey, activeSessionKey))} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
                 {!showWelcomeView && !remoteChat && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} />}
+                {!showWelcomeView && !wizardScreen && !projectSearch.open && ready && goalChecklistOverlayText ? (
+                    <GoalChecklistOverlay
+                        lang={lang}
+                        theme={t}
+                        text={goalChecklistOverlayText}
+                        // Rest under the coding workbench chip when it shares the top-right corner.
+                        defaultTop={isPureCodingEnvironment && !remoteChat ? 124 : 80}
+                    />
+                ) : null}
                 {!showWelcomeView && !wizardScreen && remoteChat && (!remoteChat.canSend || !!remoteChat.error) ? <div data-testid={remoteChat.canSend ? "ai-remote-error" : "ai-remote-readonly"} role="alert" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: remoteChat.error ? "var(--theme-danger, #b42318)" : "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}>{remoteChat.canSend ? null : <span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀")}</span>}<span style={{ fontWeight: 500 }}>{remoteChat.error || (remoteChat.offline ? localizeText(lang, "This computer is offline. You cannot operate it from here.", "对方离线，暂时不能操作。", "對方離線，暫時不能操作。") : localizeText(lang, "This remote task is read-only", "此远控任务为只读", "此遠控任務為唯讀"))}</span></div> : !showWelcomeView && !wizardScreen && cloudShareReadOnly ? <div data-testid="ai-cloud-share-readonly" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}><span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, "Read-only", "只读", "唯讀")}</span><span style={{ fontWeight: 500 }}>{localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")}</span><button type="button" data-testid="ai-cloud-share-copy-local" onClick={() => { const source = String(activeTab?.projectPath || "").trim(); if (source) window.dispatchEvent(new CustomEvent("maclaw:copy-read-share-as-local", { detail: { projectPath: source } })); }} style={{ marginLeft: "auto", border: 0, background: "transparent", color: "inherit", font: "inherit", fontWeight: 600, cursor: "pointer", padding: 0 }}>{localizeText(lang, "Copy as local task", "复制为本地任务", "複製為本機任務")}</button></div> : null}
                 {!showWelcomeView && !wizardScreen && <AssistantInputStack active={panelActive} browseFile={remoteChat ? () => undefined : browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={cloudShareReadOnly || remoteChat ? () => undefined : handleVoiceClick} handleVoicePointerDown={cloudShareReadOnly || remoteChat ? () => undefined : handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive || cloudShareReadOnly || (!!remoteChat && !remoteChat.canSend)} inputRef={inputRef} inputValue={composerValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={remoteChat ? [] : pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment && !remoteChat} placeholderText={placeholderText} queue={remoteChat ? [] : queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={remoteChat ? [] : selectedFilePaths} setPendingAttachments={remoteChat ? () => undefined : setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} theme={t} themeMode={themeMode} toolbarEndContent={remoteChat ? null : <AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={!remoteChat && (activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
                     // Working-directory chip inside the composer toolbar, after the
@@ -7643,6 +7730,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         lang={lang}
                         onWorkingDirChange={bumpLocalWorkspaceRefresh}
                         onWorkingDirResolved={handleWorkingDirResolved}
+                        onSwitchError={(message) => { void showAlert(message, localizeText(lang, "Working directory", "工作目录", "工作目錄")); }}
                         remoteHost={remoteWorkspace.host}
                         remoteWorkDir={remoteWorkspace.workDir}
                         remotePort={remoteWorkspace.port}

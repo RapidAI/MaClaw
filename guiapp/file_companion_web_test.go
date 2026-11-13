@@ -129,7 +129,7 @@ func TestFileCompanionLiteratureSearchKeepsAPIEngines(t *testing.T) {
 			{ID: "browser", Enabled: true, Transport: corelib.WebSearchTransportBrowser},
 		},
 	}
-	out := fileCompanionLiteratureSearchStrategy(in)
+	out := webSearchStrategyNoBrowser(in)
 	if out.BrowserFallbackEnabled || out.BrowserHumanAssistEnabled {
 		t.Fatal("browser fallback stayed on")
 	}
@@ -284,6 +284,95 @@ func TestFileCompanionWebFetchRefusesAFakePaperAndAParticipantDownload(t *testin
 	}
 	if _, exists := props["save_path"]; exists {
 		t.Fatal("web_fetch advertises save_path")
+	}
+}
+
+func TestFileCompanionWebTurnSeesPageBody(t *testing.T) {
+	app := newVideoNoteTestApp(t)
+	fetches := 0
+	prevFetch := paperFetchHook
+	paperFetchHook = func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		fetches++
+		if !opts.PublicNetworkOnly || opts.HubDownload != nil {
+			t.Fatalf("web page fetch opts=%+v", opts)
+		}
+		return &websearch.FetchResult{
+			URL:         rawURL,
+			Title:       "FlashState让吞吐翻三倍",
+			ContentType: "text/html",
+			Content:     "FlashState 是给推理引擎挂的一层前缀缓存，书签对上就不再重算。",
+		}, nil
+	}
+	t.Cleanup(func() { paperFetchHook = prevFetch })
+	var got IMUserMessage
+	prev := fileCompanionTurnModelHook
+	fileCompanionTurnModelHook = func(msg IMUserMessage) *IMAgentResponse {
+		got = msg
+		return &IMAgentResponse{Text: "前缀缓存。"}
+	}
+	t.Cleanup(func() { fileCompanionTurnModelHook = prev })
+	opened, err := app.FileCompanionOpenWebPage("https://mp.weixin.qq.com/s/abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SendFileCompanionWebMessage(FileCompanionWebTurnRequest{SessionID: opened.SessionID, Text: "flashstate 的本质是什么"}); err != nil {
+		t.Fatal(err)
+	}
+	if fetches == 0 {
+		t.Fatal("the opened page was never read")
+	}
+	text := got.Text
+	if !strings.Contains(text, "flashstate 的本质是什么") || !strings.Contains(text, fileCompanionWebPageLabel) || !strings.Contains(text, "前缀缓存") || !strings.Contains(text, "FlashState让吞吐翻三倍") {
+		t.Fatalf("turn text = %q", text)
+	}
+	if got.AssistantBinding == nil || !strings.Contains(got.AssistantBinding.InitialPrompt, "网页正文已附在") {
+		t.Fatalf("prompt = %+v", got.AssistantBinding)
+	}
+	if stripped := fileCompanionStripNoteExcerptText(text); stripped != "flashstate 的本质是什么" {
+		t.Fatalf("stored turn keeps the page body: %q", stripped)
+	}
+	// A later turn reuses the cached body instead of fetching again.
+	if err := app.SendFileCompanionWebMessage(FileCompanionWebTurnRequest{SessionID: opened.SessionID, Text: "第二问"}); err != nil {
+		t.Fatal(err)
+	}
+	if fetches != 1 {
+		t.Fatalf("page refetched: %d", fetches)
+	}
+}
+
+func TestFileCompanionWebTurnWithoutPageBody(t *testing.T) {
+	app := newVideoNoteTestApp(t)
+	fetches := 0
+	prevFetch := paperFetchHook
+	paperFetchHook = func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		fetches++
+		return nil, context.DeadlineExceeded
+	}
+	t.Cleanup(func() { paperFetchHook = prevFetch })
+	var got IMUserMessage
+	prev := fileCompanionTurnModelHook
+	fileCompanionTurnModelHook = func(msg IMUserMessage) *IMAgentResponse {
+		got = msg
+		return &IMAgentResponse{Text: "没读到。"}
+	}
+	t.Cleanup(func() { fileCompanionTurnModelHook = prev })
+	opened, err := app.FileCompanionOpenWebPage("https://example.com/article")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SendFileCompanionWebMessage(FileCompanionWebTurnRequest{SessionID: opened.SessionID, Text: "这页讲了什么"}); err != nil {
+		t.Fatal(err)
+	}
+	text := got.Text
+	if strings.Contains(text, fileCompanionWebPageLabel) {
+		t.Fatalf("failed fetch still injected a body: %q", text)
+	}
+	if got.AssistantBinding == nil || !strings.Contains(got.AssistantBinding.InitialPrompt, "没有抓到网页正文") {
+		t.Fatalf("prompt = %+v", got.AssistantBinding)
+	}
+	// The first turn retried the failed prefetch once, then stopped.
+	if fetches != fileCompanionWebPageMaxTries {
+		t.Fatalf("fetches = %d, want %d", fetches, fileCompanionWebPageMaxTries)
 	}
 }
 

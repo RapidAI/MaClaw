@@ -99,6 +99,10 @@ func (a *App) RefreshDeviceAmbientWeather() (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Interactive entry point: keep the whole resolve bounded so the settings
+	// panel cannot spin for the full multi-engine strategy budget.
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
 	weather, err := a.resolveDeviceAmbientWeather(ctx)
 	if err != nil {
 		return "", err
@@ -128,8 +132,16 @@ func (a *App) resolveDeviceAmbientWeather(ctx context.Context) (deviceAmbientWea
 		return normalizeDeviceAmbientWeather(weather, city)
 	}
 	strategy := websearch.MigrateLegacyWebSearchStrategy(cfg.WebSearchStrategy, cfg.WebSearchProviders, cfg.WebSearchCurrentProvider)
+	// The ambient refresh runs unattended on a 45-minute loop: it must go
+	// through the configured web_search channels in order but never launch
+	// the managed browser on the user's desktop.
+	strategy = webSearchStrategyNoBrowser(strategy)
 	query := fmt.Sprintf("%s 当前天气 实时温度 摄氏度", city)
-	searchCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	// SearchWithStrategyCtx enforces the per-strategy engine budget itself;
+	// this outer timeout is only a safety net above its largest budget — the
+	// authenticated MaClaw Hub channel is allowed up to
+	// WebSearchMaclawHubTimeout, and a tighter cap here would truncate it.
+	searchCtx, cancel := context.WithTimeout(ctx, websearch.WebSearchMaclawHubTimeout+30*time.Second)
 	search, searchErr := websearch.SearchWithStrategyCtx(searchCtx, query, 6, strategy)
 	cancel()
 
@@ -140,11 +152,10 @@ func (a *App) resolveDeviceAmbientWeather(ctx context.Context) (deviceAmbientWea
 		}
 		searchErr = parseErr
 	}
-
-	if searchErr != nil {
-		return deviceAmbientWeather{}, fmt.Errorf("structured weather: %v; search fallback: %w", structuredErr, searchErr)
+	if searchErr == nil {
+		searchErr = fmt.Errorf("no results")
 	}
-	return deviceAmbientWeather{}, structuredErr
+	return deviceAmbientWeather{}, fmt.Errorf("structured weather: %v; search fallback: %w", structuredErr, searchErr)
 }
 
 func (a *App) extractDeviceAmbientWeather(ctx context.Context, city string, results []websearch.SearchResult) (deviceAmbientWeather, error) {

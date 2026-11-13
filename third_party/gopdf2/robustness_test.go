@@ -90,3 +90,34 @@ func TestLargePDFStress(t *testing.T) {
 		t.Errorf("render page 50: %v", err)
 	}
 }
+
+// TestRobust_NewAPIsMalformed feeds malformed and degenerate inputs to the
+// newer extraction APIs — no panics, graceful empty results.
+func TestRobust_NewAPIsMalformed(t *testing.T) {
+	inputs := [][]byte{
+		nil,
+		{},
+		[]byte("not a pdf at all"),
+		[]byte("%PDF-1.4\n%%EOF"),
+		[]byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Outlines 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Outlines >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"),
+		[]byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Outlines 2 0 R >>\nendobj\n2 0 obj\n<< /First 2 0 R /Next 2 0 R >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"),
+		[]byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 /Rotate 137 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n4 0 obj\n<< /Length 30 >>\nstream\n100 100 re W n\nq Q q Q\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF"),
+	}
+	for i, data := range inputs {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("input %d panicked: %v", i, r)
+				}
+			}()
+			_, _ = GetPDFInfo(data)
+			_, _ = ExtractTOC(data)
+			_, _ = ExtractPageParagraphs(data, 0)
+			_, _ = ExtractTextInRect(data, 0, ClipRect{X: 0, Y: 0, W: 100, H: 100})
+			_, _ = ExtractTextWordsInRect(data, -1, ClipRect{})
+			_, _ = ExtractPageDrawings(data, 0)
+			_, _ = ExtractPageDrawings(data, 99)
+			_, _ = ExtractImagesFromPage(data, 0)
+		}()
+	}
+}

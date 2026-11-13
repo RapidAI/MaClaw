@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 func findModel(t *testing.T) string {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	if p := os.Getenv("GEMMA_EMB_MODEL"); p != "" {
 		return p
 	}
@@ -156,6 +158,7 @@ func TestGemmaEmbedder_PrintVec(t *testing.T) {
 
 func findModelBench(b *testing.B) string {
 	b.Helper()
+	testenv.SkipModelTests(b)
 	if p := os.Getenv("GEMMA_EMB_MODEL"); p != "" {
 		return p
 	}

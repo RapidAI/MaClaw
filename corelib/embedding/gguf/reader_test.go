@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 func TestBufferedHeaderKeepsDataOffset(t *testing.T) {
@@ -44,6 +46,7 @@ func TestBufferedHeaderKeepsDataOffset(t *testing.T) {
 }
 
 func TestRealModelHeaderParse(t *testing.T) {
+	testenv.SkipModelTests(t)
 	home, _ := os.UserHomeDir()
 	path := filepath.Join(home, ".maclaw", "models", "embeddinggemma-300M-Q8_0.gguf")
 	if _, err := os.Stat(path); err != nil {

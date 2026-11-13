@@ -972,6 +972,28 @@ func SkillVisibleInExperienceDomain(skillDomain, agentDomain string) bool {
 	return skillDomain == agentDomain
 }
 
+// ProviderSupportsVisionForModel only confirms image input for the provider's
+// model that was actually probed. Once a provider has been probed for
+// multiple models, never fall back to its currently selected default.
+func ProviderSupportsVisionForModel(provider MaclawLLMProvider, model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	// A populated history is authoritative. Once a provider has been probed for
+	// multiple models, never fall back to its currently selected default.
+	if len(provider.VisionModels) > 0 {
+		for _, visionModel := range provider.VisionModels {
+			if strings.EqualFold(strings.TrimSpace(visionModel), model) {
+				return true
+			}
+		}
+		return false
+	}
+	// Legacy files persisted a single result tied to provider.Model.
+	return provider.SupportsVision && strings.EqualFold(strings.TrimSpace(provider.Model), model)
+}
+
 // MaclawLLMProvider 描述一个 MaClaw LLM 提供商配置。
 type MaclawLLMProvider struct {
 	// ID is a stable opaque provider identifier. Name remains a user-editable

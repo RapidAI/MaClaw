@@ -1088,14 +1088,14 @@ describe('TaskConfigBar variant', () => {
     });
 
     it('bare variant keeps active-state and warning-state coloring', () => {
-        // 编程类型 → 类型 chip 激活；编程任务缺少本地路径 → 工作空间值红色告警。
+        // 编程类型 → 类型 chip 激活；编程任务缺少本地路径 → 工作空间值用柔和砖红提示（不刺眼）。
         const draft = { ...defaultTaskDraft(), taskType: 'coding' as const };
         renderBar(draft, vi.fn(), { variant: 'bare' });
         const typeChip = screen.getByTestId('task-config-chip-type');
         // jsdom 将十六进制颜色规范化为 rgb()。
         expect(typeChip.style.color).toBe('rgb(23, 105, 232)');
         const workspaceChip = screen.getByTestId('task-config-chip-workspace');
-        expect(screen.getByTestId('task-config-chip-workspace-value').style.color).toBe('rgb(239, 68, 68)');
+        expect(screen.getByTestId('task-config-chip-workspace-value').style.color).toBe('rgb(208, 86, 86)');
         const labelIcon = workspaceChip.querySelector('[data-testid="task-config-chip-workspace-label"] [data-icon="monitor"]') as SVGElement;
         expect(labelIcon).toBeTruthy();
         expect(labelIcon.style.color).toBe('rgb(138, 148, 166)');

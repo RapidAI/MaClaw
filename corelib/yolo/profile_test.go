@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // convProfile records per-layer timing.
@@ -33,6 +35,7 @@ func init() {
 
 // TestProfileForward runs forward with per-layer timing instrumentation.
 func TestProfileForward(t *testing.T) {
+	testenv.SkipModelTests(t)
 	weightsPath := "weights/omniparser-v2.yolow"
 	if _, err := os.Stat(weightsPath); os.IsNotExist(err) {
 		t.Skip("weights not found")

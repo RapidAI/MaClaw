@@ -59,8 +59,18 @@ func TestFormula_RoundTrip(t *testing.T) {
 	if !strings.Contains(text, "mc") {
 		t.Errorf("basic formula text missing: %q", text)
 	}
-	if !strings.Contains(text, "√") {
-		t.Errorf("sqrt glyph missing: %q", text)
+	// the radical is drawn as a path (hook + diagonal + overline), not a
+	// glyph — verify the radicand text survives the round trip instead
+	// (extraction spaces out separately-positioned glyphs, so compare
+	// with all whitespace stripped)
+	compact := strings.Map(func(r rune) rune {
+		if r == ' ' {
+			return -1
+		}
+		return r
+	}, text)
+	if !strings.Contains(compact, "x2+y2") {
+		t.Errorf("sqrt radicand text missing: %q", text)
 	}
 	if !strings.Contains(text, "α") {
 		t.Errorf("greek glyph missing: %q", text)

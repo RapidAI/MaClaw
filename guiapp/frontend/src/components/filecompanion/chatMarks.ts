@@ -17,6 +17,15 @@ export const CHAT_MARK_COLORS = [
 
 export type ChatMarkColor = (typeof CHAT_MARK_COLORS)[number]["id"];
 
+// How a mark is painted. Missing means the classic colour fill; underline and
+// strike are the 画线 styles a reader paints under or through the quote.
+export type ChatMarkStyle = "underline" | "strike";
+
+export const CHAT_MARK_STYLES = [
+    { id: "underline" as const, label: "下划线" },
+    { id: "strike" as const, label: "删除线" },
+];
+
 export type ChatMark = {
     /** Index of the message in the tab transcript. A markdown or office
      *  document is not a transcript: its body marks keep DOC_MARK_MESSAGE so
@@ -28,6 +37,7 @@ export type ChatMark = {
     end: number;
     /** The text that was selected, so a re-rendered answer can re-anchor. */
     text: string;
+    style?: ChatMarkStyle;
 };
 
 // A mark on the document body itself, not on any chat message. The preview
@@ -102,9 +112,13 @@ function oneColor(value: unknown): ChatMarkColor | null {
     return null;
 }
 
+function oneStyle(value: unknown): ChatMarkStyle | undefined {
+    return value === "underline" || value === "strike" ? value : undefined;
+}
+
 function oneMark(value: unknown): ChatMark | null {
     if (!value || typeof value !== "object") return null;
-    const raw = value as { message?: unknown; color?: unknown; start?: unknown; end?: unknown; text?: unknown };
+    const raw = value as { message?: unknown; color?: unknown; start?: unknown; end?: unknown; text?: unknown; style?: unknown };
     const message = Math.floor(Number(raw.message));
     if (!Number.isFinite(message) || message < DOC_MARK_MESSAGE || message > 100000) return null;
     const color = oneColor(raw.color);
@@ -114,7 +128,8 @@ function oneMark(value: unknown): ChatMark | null {
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return null;
     const text = String(raw.text ?? "").trim().slice(0, CHAT_MARK_TEXT_MAX);
     if (!text) return null;
-    return { message, color, start, end, text };
+    const style = oneStyle(raw.style);
+    return style ? { message, color, start, end, text, style } : { message, color, start, end, text };
 }
 
 /** Returns null when the value is not a list. An empty list is a real import. */

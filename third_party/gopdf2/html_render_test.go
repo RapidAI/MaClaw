@@ -526,3 +526,89 @@ func TestHTML_TableRowspanPagination(t *testing.T) {
 	}
 	_ = groupPage
 }
+
+// TestPageBreakInsideAvoid verifies break-inside:avoid moves a whole block
+// to the next page instead of splitting it across the boundary.
+func TestPageBreakInsideAvoid(t *testing.T) {
+	// filler paragraphs then a multi-line avoid block; the block starts near
+	// the page bottom so it would split without the flag.
+	build := func(avoid bool, fillers int) []byte {
+		pdf := &GoPdf{}
+		pdf.Start(Config{PageSize: *PageSizeA4})
+		pdf.AddTTFFont("lib", "test/res/LiberationSerif-Regular.ttf")
+		pdf.SetFont("lib", "", 12)
+		pdf.AddPage()
+		var sb strings.Builder
+		for i := 0; i < fillers; i++ {
+			sb.WriteString(`<p>filler line </p>`)
+		}
+		style := ""
+		if avoid {
+			style = ` style="break-inside:avoid"`
+		}
+		sb.WriteString(`<div` + style + `><p>AVOIDMARK-start lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore</p><p>AVOIDMARK-middle line</p><p>AVOIDMARK-end line</p></div>`)
+		sb.WriteString(`<p>after the block</p>`)
+		_, err := pdf.InsertHTMLPaginated(50, 50, 495, sb.String(), HTMLBoxOption{
+			DefaultFontFamily: "lib",
+			DefaultFontSize:   12,
+			PageTop:           50,
+			PageBottom:        742,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "avoid.pdf")
+		if err := pdf.WritePdf(path); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(path)
+		return data
+	}
+
+	pageOf := func(data []byte, marker string) int {
+		count, _ := GetSourcePDFPageCountFromBytes(data)
+		for p := 0; p < count; p++ {
+			lines, err := ExtractPageLines(data, p)
+			if err != nil {
+				continue
+			}
+			for _, ln := range lines {
+				if strings.Contains(ln.Text, marker) {
+					return p
+				}
+			}
+		}
+		return -1
+	}
+
+	// self-tuning: find a filler count where the UNPROTECTED block splits
+	// across pages, then verify the protected block stays whole at the same
+	// filler count.
+	found := false
+	for n := 30; n <= 60; n++ {
+		control := build(false, n)
+		cs := pageOf(control, "AVOIDMARK-start")
+		ce := pageOf(control, "AVOIDMARK-end")
+		if cs < 0 || ce < 0 || cs == ce {
+			continue
+		}
+		// control splits here: avoid must keep it together
+		protected := build(true, n)
+		ps := pageOf(protected, "AVOIDMARK-start")
+		pm := pageOf(protected, "AVOIDMARK-middle")
+		pe := pageOf(protected, "AVOIDMARK-end")
+		if ps < 0 || pm < 0 || pe < 0 {
+			t.Fatalf("n=%d: markers missing %d %d %d", n, ps, pm, pe)
+		}
+		if ps != pm || pm != pe {
+			t.Errorf("n=%d: break-inside:avoid did not hold: %d %d %d", n, ps, pm, pe)
+		} else {
+			t.Logf("n=%d: control split %d/%d, avoid kept the block on page %d", n, cs, ce, ps)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Skip("no filler count in range produced a split")
+	}
+}

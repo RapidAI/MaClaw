@@ -11,8 +11,42 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/gorilla/websocket"
 )
+
+// The ambient weather sync is a background job: its web_search fallback must
+// keep the configured engine order but never reach a browser transport, so a
+// periodic refresh cannot pop a managed browser tab on the user's desktop.
+func TestDeviceAmbientWeatherStrategyDropsBrowserChannels(t *testing.T) {
+	in := corelib.WebSearchStrategy{
+		BrowserFallbackEnabled:    true,
+		BrowserHumanAssistEnabled: true,
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "bing_cn", Enabled: true, Transport: corelib.WebSearchTransportHTTPHTML},
+			{ID: "google", Enabled: true, Transport: corelib.WebSearchTransportBrowser},
+			{ID: "brave", Enabled: true, Transport: corelib.WebSearchTransportAPI, APIKey: "key"},
+			{ID: "duckduckgo", Enabled: true, Transport: corelib.WebSearchTransportHTTPHTML},
+		},
+	}
+	out := webSearchStrategyNoBrowser(in)
+	if out.BrowserFallbackEnabled || out.BrowserHumanAssistEnabled {
+		t.Fatal("browser fallback stayed on for ambient refresh")
+	}
+	wantOrder := []string{"bing_cn", "google", "brave", "duckduckgo"}
+	wantEnabled := []bool{true, false, true, true}
+	if len(out.Engines) != len(wantOrder) {
+		t.Fatalf("engines = %+v", out.Engines)
+	}
+	for i, engine := range out.Engines {
+		if engine.ID != wantOrder[i] || engine.Enabled != wantEnabled[i] {
+			t.Fatalf("engine %d = %+v, want %s enabled=%v", i, engine, wantOrder[i], wantEnabled[i])
+		}
+	}
+	if !in.Engines[1].Enabled {
+		t.Fatal("input strategy was mutated")
+	}
+}
 
 func TestFetchOpenMeteoWeatherIncludesCurrentTemperature(t *testing.T) {
 	originalTransport := http.DefaultTransport

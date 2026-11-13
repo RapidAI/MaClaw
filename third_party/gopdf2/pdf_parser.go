@@ -14,7 +14,7 @@ import (
 var (
 	reObjHeader = regexp.MustCompile(`(\d+)\s+0\s+obj\b`)
 	reRootRef   = regexp.MustCompile(`/Root\s+(\d+)\s+0\s+R`)
-	reObjRef    = regexp.MustCompile(`(\d+)\s+0\s+R`)
+	reInfoRef   = regexp.MustCompile(`/Info\s+(\d+)\s+0\s+R`)
 	reNamedRef  = regexp.MustCompile(`/(\w+)\s+(\d+)\s+0\s+R`)
 	reMediaBox  = regexp.MustCompile(`/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]`)
 )
@@ -30,6 +30,8 @@ type rawPDFParser struct {
 	objects map[int]rawPDFObject // objNum -> object
 	pages   []rawPDFPage
 	root    int // root catalog obj number
+	info    int    // /Info metadata dict obj number (0 = none)
+	infoDict string // inline trailer /Info dict (when not an indirect ref)
 
 	// form caches (per parser instance = per extraction call): form streams
 	// recur on every page (stamps, watermarks) — fonts, nested XObjects and
@@ -46,12 +48,16 @@ type rawPDFObject struct {
 	num    int
 	dict   string // dictionary content between << >>
 	stream []byte // decompressed stream content (nil if not a stream)
+	// body holds the object content for objects with no dictionary and no
+	// stream (arrays, numbers, names — e.g. an indirect /Widths array).
+	body string
 }
 
 // rawPDFPage holds parsed page info.
 type rawPDFPage struct {
 	objNum    int
 	mediaBox  [4]float64
+	rotate    int // /Rotate degrees clockwise (0/90/180/270)
 	contents  []int // content stream obj numbers
 	resources rawPDFResources
 }
@@ -185,6 +191,9 @@ func (p *rawPDFParser) parseObjects() {
 		// extract dictionary
 		if dictStart := bytes.Index(objData, []byte("<<")); dictStart >= 0 {
 			obj.dict = extractDict(objData[dictStart:])
+		} else if bytes.Index(objData, []byte("stream")) < 0 {
+			// no dict and no stream: keep the body (array/number/name objects)
+			obj.body = trimObjBody(objData)
 		}
 		// extract stream
 		if streamStart := bytes.Index(objData, []byte("stream")); streamStart >= 0 {
@@ -205,6 +214,17 @@ func (p *rawPDFParser) parseObjects() {
 		}
 		p.objects[num] = obj
 	}
+}
+
+// trimObjBody strips the "N 0 obj" header and "endobj" trailer, returning the
+// bare object content (used for array/number/name objects).
+func trimObjBody(objData []byte) string {
+	if m := reObjHeader.FindSubmatchIndex(objData); m != nil && m[0] == 0 {
+		objData = objData[m[1]:]
+	}
+	objData = bytes.TrimSpace(objData)
+	objData = bytes.TrimSuffix(objData, []byte("endobj"))
+	return string(bytes.TrimSpace(objData))
 }
 
 // extractDict extracts the outermost <<...>> from data.
@@ -304,6 +324,9 @@ func (p *rawPDFParser) parseInnerObject(num int, body []byte) rawPDFObject {
 	}
 	if dictStart := strings.Index(s, "<<"); dictStart >= 0 {
 		res.dict = extractDict(body[dictStart:])
+	} else if strings.Index(s, "stream") < 0 {
+		// no dict and no stream: keep the body (array/number/name objects)
+		res.body = trimObjBody(body)
 	}
 	if streamStart := strings.Index(s, "stream"); streamStart >= 0 {
 		streamData := body[streamStart+6:]
@@ -591,11 +614,35 @@ func zlibDecompress(data []byte) ([]byte, error) {
 }
 
 func (p *rawPDFParser) findRoot() {
-	// Look for /Root N 0 R in trailer or xref stream
-	m := reRootRef.FindSubmatch(p.data)
-	if m != nil {
-		p.root, _ = strconv.Atoi(string(m[1]))
+	// Look for /Root N 0 R in trailer or xref stream. With incremental
+	// updates the LAST trailer wins; scan trailer keyword occurrences
+	// backwards. Xref-stream PDFs have no "trailer" keyword — fall back to
+	// the first /Root match anywhere (existing behavior).
+	last := -1
+	for pos := 0; ; {
+		i := bytes.Index(p.data[pos:], []byte("trailer"))
+		if i < 0 {
+			break
+		}
+		pos += i
+		last = pos
+		pos += 7
+	}
+	if last >= 0 {
+		seg := p.data[last:]
+		if m := reRootRef.FindSubmatch(seg); m != nil {
+			p.root, _ = strconv.Atoi(string(m[1]))
+		}
+		if m := reInfoRef.FindSubmatch(seg); m != nil {
+			p.info, _ = strconv.Atoi(string(m[1]))
+		} else if i := bytes.Index(seg, []byte("/Info <<")); i >= 0 {
+			// inline /Info dict in the trailer (GoPdf's own writer)
+			p.infoDict = extractDict(seg[i:])
+		}
 		return
+	}
+	if m := reRootRef.FindSubmatch(p.data); m != nil {
+		p.root, _ = strconv.Atoi(string(m[1]))
 	}
 }
 
@@ -613,12 +660,12 @@ func (p *rawPDFParser) parsePages() {
 }
 
 func (p *rawPDFParser) collectPages(objNum int) {
-	p.collectPagesInherited(objNum, [4]float64{})
+	p.collectPagesInherited(objNum, [4]float64{}, 0)
 }
 
 // collectPagesInherited walks the page tree, propagating inherited
 // attributes (MediaBox) from Pages nodes down to their Page leaves.
-func (p *rawPDFParser) collectPagesInherited(objNum int, inherited [4]float64) {
+func (p *rawPDFParser) collectPagesInherited(objNum int, inherited [4]float64, inheritedRotate int) {
 	obj, ok := p.objects[objNum]
 	if !ok {
 		return
@@ -631,6 +678,10 @@ func (p *rawPDFParser) collectPagesInherited(objNum int, inherited [4]float64) {
 			// page lacks its own MediaBox — inherit from the Pages tree
 			page.mediaBox = inherited
 		}
+		page.rotate = extractPageRotate(obj.dict)
+		if page.rotate == 0 {
+			page.rotate = inheritedRotate
+		}
 		page.contents = extractContentRefs(obj.dict)
 		page.resources = p.extractResources(obj.dict, objNum)
 		p.pages = append(p.pages, page)
@@ -640,11 +691,26 @@ func (p *rawPDFParser) collectPagesInherited(objNum int, inherited [4]float64) {
 		if inheritedMedia == [4]float64{0, 0, 612, 792} && inherited != [4]float64{} {
 			inheritedMedia = inherited
 		}
+		inheritedRot := extractPageRotate(obj.dict)
+		if inheritedRot == 0 {
+			inheritedRot = inheritedRotate
+		}
 		kids := extractRefArray(obj.dict, "/Kids")
 		for _, kid := range kids {
-			p.collectPagesInherited(kid, inheritedMedia)
+			p.collectPagesInherited(kid, inheritedMedia, inheritedRot)
 		}
 	}
+}
+
+// extractPageRotate parses /Rotate (0/90/180/270) from a page or Pages dict.
+// Non-multiples of 90 are ignored (returns 0).
+func extractPageRotate(dict string) int {
+	v := int(extractNumValue(dict, "/Rotate"))
+	switch v {
+	case 90, 180, 270:
+		return v
+	}
+	return 0
 }
 
 // pdfObjectType extracts the /Type value from a dict string with proper token
@@ -682,6 +748,43 @@ func isNameChar(c byte) bool {
 		c != '(' && c != ')' && c != '%' && c != '{' && c != '}'
 }
 
+// parseObjRefAt scans a "N 0 R" reference at the start of s (after optional
+// whitespace). Returns the object number and the index just past 'R', or -1.
+// Hand-rolled: extractRef runs on every dictionary key lookup, and the regex
+// cost showed up at ~10% of extraction CPU profiles.
+func parseObjRefAt(s string) (int, int) {
+	isWS := func(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == 0 }
+	i := 0
+	for i < len(s) && isWS(s[i]) {
+		i++
+	}
+	start := i
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == start {
+		return 0, -1
+	}
+	n, err := strconv.Atoi(s[start:i])
+	if err != nil {
+		return 0, -1
+	}
+	for i < len(s) && isWS(s[i]) {
+		i++
+	}
+	// "0" ws "R"
+	if i+1 < len(s) && s[i] == '0' && isWS(s[i+1]) {
+		i += 2
+		for i < len(s) && isWS(s[i]) {
+			i++
+		}
+		if i < len(s) && s[i] == 'R' {
+			return n, i + 1
+		}
+	}
+	return 0, -1
+}
+
 // extractRef extracts a single "N 0 R" reference for a given key.
 // Also accepts array-wrapped values (e.g. /DescendantFonts [9 0 R]), taking
 // the first reference. Uses string search + pre-compiled regex.
@@ -698,19 +801,13 @@ func extractRef(dict, key string) int {
 		if end < 0 {
 			return 0
 		}
-		if m := reObjRef.FindStringSubmatch(rest[1:end]); m != nil {
-			n, _ := strconv.Atoi(m[1])
+		if n, _ := parseObjRefAt(rest[1:end]); n > 0 {
 			return n
 		}
 		return 0
 	}
-	m := reObjRef.FindStringSubmatch(rest)
-	if m != nil {
-		// Verify the match starts at the beginning (the ref follows the key directly)
-		if strings.HasPrefix(rest, m[0]) {
-			n, _ := strconv.Atoi(m[1])
-			return n
-		}
+	if n, _ := parseObjRefAt(rest); n > 0 {
+		return n
 	}
 	return 0
 }
@@ -732,11 +829,15 @@ func extractRefArray(dict, key string) []int {
 		return nil
 	}
 	arr := rest[start+1 : start+end]
-	matches := reObjRef.FindAllStringSubmatch(arr, -1)
 	var refs []int
-	for _, m := range matches {
-		n, _ := strconv.Atoi(m[1])
+	for pos := 0; pos < len(arr); {
+		n, next := parseObjRefAt(arr[pos:])
+		if next < 0 {
+			pos++
+			continue
+		}
 		refs = append(refs, n)
+		pos += next
 	}
 	return refs
 }
@@ -811,9 +912,7 @@ func (p *rawPDFParser) extractNamedRefs(dict, key string, out map[string]int) {
 		}
 	} else {
 		// reference to another object
-		m := reObjRef.FindStringSubmatch(rest)
-		if m != nil {
-			n, _ := strconv.Atoi(m[1])
+		if n, _ := parseObjRefAt(rest); n > 0 {
 			if obj, ok := p.objects[n]; ok {
 				matches := reNamedRef.FindAllStringSubmatch(obj.dict, -1)
 				for _, mm := range matches {

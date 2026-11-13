@@ -30,6 +30,9 @@ const (
 	OpStopTask    = "stop_task"
 	OpRenameTask  = "rename_task"
 	OpPinTask     = "pin_task"
+	OpFetchFile   = "fetch_file"
+	OpWatchTask   = "watch_task"
+	OpUnwatchTask = "unwatch_task"
 
 	inviteTTL = 7 * 24 * time.Hour
 	callWait  = 20 * time.Second
@@ -184,9 +187,10 @@ type Service struct {
 	// cross-Hub calls live outside this package.
 	RelayFederatedRevoke func(ctx context.Context, grant Grant)
 
-	mu         sync.Mutex
-	waiters    map[string]waiter
-	activateMu sync.Mutex
+	mu            sync.Mutex
+	waiters       map[string]waiter
+	activateMu    sync.Mutex
+	streamBuckets map[string]*streamBucket
 }
 
 type waiter struct {
@@ -704,6 +708,60 @@ func (s *Service) Exec(ctx context.Context, tenantID, userID, controllerMachineI
 	return s.call(ctx, grant.TargetMachineID, grant.ID, op, body)
 }
 
+// StreamGrant validates one remote_control.stream envelope sent by a target
+// (controlled) machine and returns the grant it belongs to. The envelope must
+// name a grant whose controlled machine is the sender and which is still
+// active; anything else is dropped by the caller without a reply.
+func (s *Service) StreamGrant(ctx context.Context, grantID, fromMachineID string) (Grant, error) {
+	if err := s.ready(); err != nil {
+		return Grant{}, err
+	}
+	grant, err := s.load(ctx, grantID)
+	if err != nil || grant.TargetMachineID != strings.TrimSpace(fromMachineID) || grant.Status != StatusActive {
+		return Grant{}, ErrNotFound
+	}
+	return grant, nil
+}
+
+// AllowStream is a small per-grant token bucket for remote_control.stream
+// relay. Coalesced token events top out around a handful per second; the
+// bucket leaves headroom for progress bursts while still bounding a target
+// that misbehaves.
+func (s *Service) AllowStream(grantID string) bool {
+	grantID = strings.TrimSpace(grantID)
+	if grantID == "" {
+		return false
+	}
+	const ratePerSec = 30.0
+	const burst = 60.0
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.streamBuckets == nil {
+		s.streamBuckets = map[string]*streamBucket{}
+	}
+	b, ok := s.streamBuckets[grantID]
+	if !ok {
+		b = &streamBucket{tokens: burst, at: now}
+		s.streamBuckets[grantID] = b
+	}
+	b.tokens += now.Sub(b.at).Seconds() * ratePerSec
+	if b.tokens > burst {
+		b.tokens = burst
+	}
+	b.at = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+type streamBucket struct {
+	tokens float64
+	at     time.Time
+}
+
 // Complete delivers the desktop's reply to the waiting call.
 func (s *Service) Complete(machineID, requestID string, payload json.RawMessage) {
 	if s == nil {
@@ -1058,7 +1116,7 @@ func normalizePermission(permission string) (string, error) {
 
 func permissionAllows(permission, op string) bool {
 	switch op {
-	case OpListTasks, OpGetTask:
+	case OpListTasks, OpGetTask, OpFetchFile, OpWatchTask, OpUnwatchTask:
 		return permission == PermView || permission == PermOperate
 	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask:
 		return permission == PermOperate
@@ -1069,7 +1127,7 @@ func permissionAllows(permission, op string) bool {
 
 func allowedOp(op string) bool {
 	switch op {
-	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask:
+	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask:
 		return true
 	default:
 		return false

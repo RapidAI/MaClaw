@@ -121,10 +121,10 @@ func (gp *GoPdf) collectTOCItems(
 //	})
 func (gp *GoPdf) SetTOC(items []TOCItem) error {
 	if len(items) == 0 {
-		// Clear outlines.
-		gp.outlines = &OutlinesObj{}
-		gp.outlines.init(func() *GoPdf { return gp })
-		gp.outlines.SetIndexObjOutlines(gp.indexOfOutlinesObj + 1)
+		// Clear outlines in place — replacing the object would orphan the
+		// registered OutlinesObj that the catalog still points at.
+		gp.outlines.first, gp.outlines.last, gp.outlines.count = -1, -1, 0
+		gp.outlines.lastObj = nil
 		return nil
 	}
 
@@ -151,10 +151,9 @@ func (gp *GoPdf) SetTOC(items []TOCItem) error {
 		}
 	}
 
-	// Reset outlines.
-	gp.outlines = &OutlinesObj{}
-	gp.outlines.init(func() *GoPdf { return gp })
-	gp.outlines.SetIndexObjOutlines(gp.indexOfOutlinesObj + 1)
+	// Reset outlines in place (the registered object is what gets written).
+	gp.outlines.first, gp.outlines.last, gp.outlines.count = -1, -1, 0
+	gp.outlines.lastObj = nil
 
 	// For a flat (level-1 only) TOC, use the simple AddOutline approach.
 	// For hierarchical TOC, we need to build the tree structure.
@@ -172,8 +171,9 @@ func (gp *GoPdf) SetTOC(items []TOCItem) error {
 			if dest == 0 {
 				continue
 			}
+			// item.Y is top-down; the outline stores PDF-up
 			if item.Y > 0 {
-				gp.outlines.AddOutlinesWithPosition(dest, item.Title, item.Y)
+				gp.outlines.AddOutlinesWithPosition(dest, item.Title, gp.config.PageSize.H-item.Y)
 			} else {
 				gp.outlines.AddOutline(dest, item.Title)
 			}
@@ -196,7 +196,7 @@ func (gp *GoPdf) SetTOC(items []TOCItem) error {
 			continue
 		}
 
-		oo := gp.outlines.AddOutlinesWithPosition(dest, item.Title, item.Y)
+		oo := gp.outlines.AddOutlinesWithPosition(dest, item.Title, gp.config.PageSize.H-item.Y)
 		node := &OutlineNode{Obj: oo}
 
 		// Pop stack until we find the parent level.

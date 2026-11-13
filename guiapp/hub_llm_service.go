@@ -171,7 +171,11 @@ func storeHubServiceStatusCache(hubURL, viewerToken string, status HubLLMService
 	sameIdentity := hubServiceStatusCache.valid &&
 		hubServiceStatusCache.hubURL == hubURL &&
 		hubServiceStatusCache.viewerTok == viewerToken
-	changed := sameIdentity && !hubLLMServiceStatusDisplayEqual(hubServiceStatusCache.status, status)
+	// An identity switch (re-registration, hub move) always changes which
+	// account the sidebar displays, even when the two snapshots compare equal.
+	// A first-ever entry still reports no change: there is no prior view.
+	changed := hubServiceStatusCache.valid &&
+		(!sameIdentity || !hubLLMServiceStatusDisplayEqual(hubServiceStatusCache.status, status))
 	hubServiceStatusCache.status = status
 	hubServiceStatusCache.fetchedAt = time.Now()
 	hubServiceStatusCache.valid = true

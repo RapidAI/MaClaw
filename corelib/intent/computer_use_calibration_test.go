@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // TestComputerUseCalibrationWithRealModel validates the LabelComputerUse
@@ -14,9 +15,7 @@ import (
 // originally failed to activate Computer Use. Skipped in -short mode or when
 // the embedding model is not installed locally.
 func TestComputerUseCalibrationWithRealModel(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-model calibration skipped in -short mode")
-	}
+	testenv.SkipModelTests(t)
 	modelPath := embedding.DefaultModelPath()
 	if modelPath == "" {
 		// BaseDirFunc is only wired in the running app; fall back to the

@@ -997,7 +997,7 @@ func TestNormalizeMaclawLLMProviderDeduplicatesVisionModelIDs(t *testing.T) {
 	if !reflect.DeepEqual(provider.VisionModels, []string{"alternate", "Vision-Default"}) {
 		t.Fatalf("VisionModels = %#v", provider.VisionModels)
 	}
-	if !provider.SupportsVision || !providerSupportsVisionForModel(provider, "ALTERNATE") || providerSupportsVisionForModel(provider, "text-only") {
+	if !provider.SupportsVision || !corelib.ProviderSupportsVisionForModel(provider, "ALTERNATE") || corelib.ProviderSupportsVisionForModel(provider, "text-only") {
 		t.Fatalf("normalized capability lookup is incorrect: %#v", provider)
 	}
 }

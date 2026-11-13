@@ -3841,6 +3841,9 @@
 .capc-files.capc-open .capc-files-popover { pointer-events: auto; visibility: visible; }
 .capc-file-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .capc-file-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 2px 0; }
+.capc-file-row[data-preview-path] { cursor: pointer; margin: 0 -4px; padding-left: 4px; padding-right: 4px; border-radius: 6px; }
+.capc-file-row[data-preview-path]:hover { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 7%, transparent); }
+.capc-file-row[data-preview-path]:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: -2px; }
 .capc-file-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .capc-file-stat { display: inline-flex; align-items: baseline; gap: 6px; flex-shrink: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
 .capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }

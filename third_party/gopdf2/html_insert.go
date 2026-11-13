@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -83,6 +84,24 @@ type htmlRenderState struct {
 	marginTop  float64 // block margin, units
 	marginBot  float64
 	vAlign     int // table cell vertical alignment: Top/Middle/Bottom
+
+	// block-level borders (blockquote rules, callout accents, boxes)
+	borderT, borderR, borderB, borderL htmlBlockBorder
+	blockX                             float64 // outer box anchor for top/bottom rules
+	blockW                             float64
+	padTop                             float64 // block padding, units
+	padBot                             float64
+	padLeft                            float64
+	padRight                           float64
+	pageBreakAvoid                     bool // break-inside/page-break-inside: avoid
+}
+
+// htmlBlockBorder is one side of a block-level border.
+type htmlBlockBorder struct {
+	has     bool
+	w       float64 // units
+	r, g, b uint8
+	x       float64 // absolute anchor for the left/right vertical rules
 }
 
 // htmlRenderer handles the rendering of HTML nodes into the PDF.
@@ -104,6 +123,7 @@ type htmlRenderer struct {
 	// imgCache memoizes <img> resolution per renderer (avoid re-reading and
 	// re-decoding the same image file); created lazily by newImageFragment
 	imgCache map[string]imageHolderCacheEntry
+	inTableCell int // >0 while drawing inside a table cell (disables legacy clip)
 }
 
 // imageHolderCacheEntry memoizes an <img> src resolution.
@@ -478,6 +498,73 @@ func (r *htmlRenderer) applyCSSProps(css map[string]string, state htmlRenderStat
 		if cr, cg, cb, cok := parseCSSColor(color); cok {
 			state.bgR, state.bgG, state.bgB = cr, cg, cb
 			state.hasBg = true
+		}
+	}
+	if pbi, ok := css["page-break-inside"]; ok && strings.TrimSpace(pbi) == "avoid" {
+		state.pageBreakAvoid = true
+	}
+	if pbi, ok := css["break-inside"]; ok && strings.TrimSpace(pbi) == "avoid" {
+		state.pageBreakAvoid = true
+	}
+	if b, ok := css["border"]; ok {
+		r.applyBlockBorder(&state.borderT, b)
+		r.applyBlockBorder(&state.borderR, b)
+		r.applyBlockBorder(&state.borderB, b)
+		r.applyBlockBorder(&state.borderL, b)
+	}
+	if b, ok := css["border-top"]; ok {
+		r.applyBlockBorder(&state.borderT, b)
+	}
+	if b, ok := css["border-right"]; ok {
+		r.applyBlockBorder(&state.borderR, b)
+	}
+	if b, ok := css["border-bottom"]; ok {
+		r.applyBlockBorder(&state.borderB, b)
+	}
+	if b, ok := css["border-left"]; ok {
+		r.applyBlockBorder(&state.borderL, b)
+	}
+	if p, ok := css["padding-left"]; ok {
+		if v, ok2 := parseCSSLenPx(p); ok2 {
+			state.padLeft = v / r.unitConversion()
+		}
+	}
+	if p, ok := css["padding"]; ok {
+		// CSS order: top right bottom left (1-4 values)
+		fields := strings.Fields(p)
+		vals := make([]float64, 0, 4)
+		for _, f := range fields {
+			if v, ok2 := parseCSSLenPx(f); ok2 {
+				vals = append(vals, v/r.unitConversion())
+			}
+		}
+		switch len(vals) {
+		case 1:
+			state.padTop, state.padRight, state.padBot, state.padLeft = vals[0], vals[0], vals[0], vals[0]
+		case 2:
+			state.padTop, state.padBot = vals[0], vals[0]
+			state.padRight, state.padLeft = vals[1], vals[1]
+		case 3:
+			state.padTop = vals[0]
+			state.padRight, state.padLeft = vals[1], vals[1]
+			state.padBot = vals[2]
+		case 4:
+			state.padTop, state.padRight, state.padBot, state.padLeft = vals[0], vals[1], vals[2], vals[3]
+		}
+	}
+	if p, ok := css["padding-top"]; ok {
+		if v, ok2 := parseCSSLenPx(p); ok2 {
+			state.padTop = v / r.unitConversion()
+		}
+	}
+	if p, ok := css["padding-right"]; ok {
+		if v, ok2 := parseCSSLenPx(p); ok2 {
+			state.padRight = v / r.unitConversion()
+		}
+	}
+	if p, ok := css["padding-bottom"]; ok {
+		if v, ok2 := parseCSSLenPx(p); ok2 {
+			state.padBot = v / r.unitConversion()
 		}
 	}
 	if fs, ok := css["font-size"]; ok {
@@ -1025,6 +1112,27 @@ func (r *htmlRenderer) flowBlock(children []*htmlNode, state htmlRenderState, de
 	if depth > 32 {
 		return nil
 	}
+	// block padding: shift the content box inside the block's box and add
+	// vertical padding space; borders anchor at the outer box
+	state.blockX = r.boxX
+	state.blockW = r.boxW
+	if state.borderL.has {
+		state.borderL.x = r.boxX + state.borderL.w*0.5
+	}
+	if state.borderR.has {
+		state.borderR.x = r.boxX + r.boxW - state.borderR.w*0.5
+	}
+	if state.padLeft > 0 {
+		r.boxX += state.padLeft
+		r.boxW -= state.padLeft
+	}
+	if state.padRight > 0 {
+		r.boxW -= state.padRight
+	}
+	if state.padTop > 0 {
+		r.cursorY += state.padTop
+	}
+
 	var frags []textFragment
 	var blocks []blockItem
 	r.collectInlineFragments(children, state, &frags, &blocks)
@@ -1032,6 +1140,39 @@ func (r *htmlRenderer) flowBlock(children []*htmlNode, state htmlRenderState, de
 	// apply block margins
 	if state.marginTop > 0 {
 		r.cursorY += state.marginTop
+	}
+
+	// break-inside: avoid — when the block (own lines plus nested blocks)
+	// would straddle a page break, move the whole block to the next page
+	if state.pageBreakAvoid && r.paginate && (len(frags) > 0 || len(blocks) > 0) {
+		estH := 0.0
+		if len(frags) > 0 {
+			lines := r.layoutLines(frags, r.boxW, state.textIndent)
+			estH += float64(len(lines)) * r.lineHeightOf(state)
+		}
+		estH += state.padTop + state.padBot
+		for _, b := range blocks {
+			if h, err := r.measureWrappedTextHeight(extractHTMLNodeText(b.node), b.state, r.boxW); err == nil {
+				estH += h
+			}
+			// block margins: the ~0.5 em paragraph default is applied at
+			// render time (renderBlock), not in the collected state
+			mt, mb := b.state.marginTop, b.state.marginBot
+			if b.node.Tag == "p" && mt == 0 && mb == 0 {
+				def := b.state.fontSize * 0.5 / r.unitConversion()
+				mt, mb = def, def
+			}
+			estH += mt + mb + b.state.padTop + b.state.padBot
+		}
+		if debugPBAvoid {
+			fmt.Printf("DBG avoid: cursorY=%.1f estH=%.1f limit=%.1f blocks=%d frags=%d\n",
+				r.cursorY, estH, r.boxY+r.boxH, len(blocks), len(frags))
+		}
+		if ok, err := r.ensureVerticalSpace(estH); err != nil {
+			return err
+		} else if !ok {
+			return nil
+		}
 	}
 
 	if err := r.renderTextFragments(frags, state, state.textIndent); err != nil {
@@ -1042,6 +1183,13 @@ func (r *htmlRenderer) flowBlock(children []*htmlNode, state htmlRenderState, de
 	if r.cursorX > r.boxX {
 		r.cursorX = r.boxX
 		r.cursorY += r.lineHeightOf(state)
+	}
+	if state.padBot > 0 {
+		r.cursorY += state.padBot
+	}
+	if state.padLeft > 0 {
+		r.boxX -= state.padLeft
+		r.boxW += state.padLeft
 	}
 	if state.marginBot > 0 {
 		r.cursorY += state.marginBot
@@ -1218,7 +1366,11 @@ func (r *htmlRenderer) renderTextLines(lines [][]textFragment, state htmlRenderS
 			// a line that starts past the bottom is clipped. The restored
 			// <p> margins must not swallow the first line of a tight box
 			// (a brand <p> under an 18pt cover strip).
-			if r.cursorY-r.boxY >= r.boxH {
+			//
+			// inside a table cell the inner box is smaller than one line
+			// height (row height minus padding) — clipping here would drop
+			// all cell text, so cells are exempt from the legacy clip
+			if r.inTableCell == 0 && r.cursorY-r.boxY >= r.boxH {
 				return nil // clip (legacy box behavior)
 			}
 		} else {
@@ -1229,10 +1381,56 @@ func (r *htmlRenderer) renderTextLines(lines [][]textFragment, state htmlRenderS
 			}
 		}
 
-		// block-level background: full-width band behind the line
+		// block-level background: band behind the line across the outer
+		// box (background covers padding, CSS-like)
 		if state.hasBg {
+			ox, ow := r.boxX, r.boxW
+			if state.padLeft > 0 {
+				ox -= state.padLeft
+				ow += state.padLeft
+			}
+			if state.padRight > 0 {
+				ow += state.padRight
+			}
 			r.gp.SetFillColor(state.bgR, state.bgG, state.bgB)
-			r.gp.RectFromUpperLeftWithStyle(r.boxX, r.cursorY, r.boxW, lh, "F")
+			r.gp.RectFromUpperLeftWithStyle(ox, r.cursorY, ow, lh, "F")
+		}
+		// block borders: left/right as vertical segments per line band (the
+		// contiguous segments form continuous rules); top on the first
+		// line and bottom on the last, spanning the outer box
+		if state.borderL.has || state.borderR.has || state.borderT.has || state.borderB.has {
+			if state.borderL.has {
+				r.gp.SetStrokeColor(state.borderL.r, state.borderL.g, state.borderL.b)
+				r.gp.SetLineWidth(state.borderL.w)
+				r.gp.Line(state.borderL.x, r.cursorY, state.borderL.x, r.cursorY+lh)
+			}
+			if state.borderR.has {
+				r.gp.SetStrokeColor(state.borderR.r, state.borderR.g, state.borderR.b)
+				r.gp.SetLineWidth(state.borderR.w)
+				r.gp.Line(state.borderR.x, r.cursorY, state.borderR.x, r.cursorY+lh)
+			}
+			if state.borderT.has && li == 0 {
+				r.gp.SetStrokeColor(state.borderT.r, state.borderT.g, state.borderT.b)
+				r.gp.SetLineWidth(state.borderT.w)
+				r.gp.Line(state.blockX, r.cursorY+state.borderT.w*0.5, state.blockX+state.blockW, r.cursorY+state.borderT.w*0.5)
+			}
+			if state.borderB.has && li == len(lines)-1 {
+				r.gp.SetStrokeColor(state.borderB.r, state.borderB.g, state.borderB.b)
+				r.gp.SetLineWidth(state.borderB.w)
+				r.gp.Line(state.blockX, r.cursorY+lh-state.borderB.w*0.5, state.blockX+state.blockW, r.cursorY+lh-state.borderB.w*0.5)
+			}
+		}
+
+		// the line band already painted the block background across the
+		// full width; a fragment repainting the same color would cover the
+		// block's left border, so drop duplicates
+		if state.hasBg {
+			for i := range line {
+				fs := &line[i].state
+				if fs.hasBg && fs.bgR == state.bgR && fs.bgG == state.bgG && fs.bgB == state.bgB {
+					fs.hasBg = false
+				}
+			}
 		}
 
 		lineW := 0.0
@@ -1839,6 +2037,10 @@ func (r *htmlRenderer) renderTable(node *htmlNode, state htmlRenderState) error 
 
 	r.addVerticalSpace(state.fontSize * 0.2)
 	curY := r.cursorY
+	if debugTable {
+		fmt.Printf("DBG tbl: rows=%d cols=%d colWidths=%v rowHeights=%v boxY=%.1f boxH=%.1f curY=%.1f pag=%v\n",
+			grid.rows, grid.cols, colWidths, rowHeights, r.boxY, r.boxH, curY, r.paginate)
+	}
 
 	// draw cells row by row so page breaks happen between rows
 	cellsByRow := make(map[int][]htmlTableCell, grid.rows)
@@ -1971,6 +2173,10 @@ func (r *htmlRenderer) renderTable(node *htmlNode, state htmlRenderState) error 
 	return nil
 }
 
+// debugTable enables renderTable diagnostics via GOPDF_DEBUG_TABLE.
+var debugPBAvoid = os.Getenv("GOPDF_DEBUG_PB") != ""
+var debugTable = os.Getenv("GOPDF_DEBUG_TABLE") != ""
+
 // buildTableGrid builds the table cell grid, resolving colspan/rowspan.
 func (r *htmlRenderer) buildTableGrid(node *htmlNode, state htmlRenderState) *htmlGrid {
 	grid := &htmlGrid{}
@@ -2025,7 +2231,9 @@ func (r *htmlRenderer) buildTableGrid(node *htmlNode, state htmlRenderState) *ht
 					if rowspan < 1 {
 						rowspan = 1
 					}
-					cellState := state
+					// resolve the cell's own styles (inline style, classes)
+					// so background-color, color, text-align apply per cell
+					cellState := r.styleState(cellNode, state)
 					if cellNode.Tag == "th" {
 						cellState.fontStyle |= Bold
 						cellState.align = Center
@@ -2284,7 +2492,13 @@ func (r *htmlRenderer) tableBorder(node *htmlNode, state htmlRenderState) htmlBo
 		}
 	}
 	if css := r.style.resolve(node); css != nil {
-		if b, ok := css["border"]; ok {
+		if pbi, ok := css["page-break-inside"]; ok && strings.TrimSpace(pbi) == "avoid" {
+		state.pageBreakAvoid = true
+	}
+	if pbi, ok := css["break-inside"]; ok && strings.TrimSpace(pbi) == "avoid" {
+		state.pageBreakAvoid = true
+	}
+	if b, ok := css["border"]; ok {
 			spec.has = true
 			if w, _ := parseCSSBorderWidth(b); w > 0 {
 				spec.width = w / r.unitConversion()
@@ -2298,6 +2512,54 @@ func (r *htmlRenderer) tableBorder(node *htmlNode, state htmlRenderState) htmlBo
 	}
 	_ = state
 	return spec
+}
+
+// applyBlockBorder parses a border shorthand ("4px solid #1a3c6e") into one
+// side of the block state.
+func (r *htmlRenderer) applyBlockBorder(side *htmlBlockBorder, spec string) {
+	if w, col, ok := parseCSSBorderSide(spec); ok {
+		side.has = true
+		side.w = w / r.unitConversion()
+		side.r, side.g, side.b = col[0], col[1], col[2]
+	}
+}
+
+// parseCSSBorderSide parses a border-left shorthand like "4px solid #1a3c6e",
+// returning the width and color. The style keyword is ignored.
+func parseCSSBorderSide(s string) (float64, [3]uint8, bool) {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return 0, [3]uint8{}, false
+	}
+	w, err := strconv.ParseFloat(strings.TrimSuffix(fields[0], "px"), 64)
+	if err != nil || w <= 0 {
+		return 0, [3]uint8{}, false
+	}
+	for _, f := range fields[1:] {
+		if cr, cg, cb, ok := parseCSSColor(f); ok {
+			return w, [3]uint8{cr, cg, cb}, true
+		}
+	}
+	return w, [3]uint8{0, 0, 0}, true
+}
+
+// parseCSSLenPx parses a CSS length like "8px", "0.5em" or "50%" (relative
+// to 16px base) into pixel-ish units.
+func parseCSSLenPx(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "px") {
+		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "px"), 64)
+		return v, err == nil
+	}
+	if strings.HasSuffix(s, "em") {
+		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "em"), 64)
+		return v * 16, err == nil
+	}
+	if strings.HasSuffix(s, "%") {
+		v, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+		return v / 100 * 16, err == nil
+	}
+	return 0, false
 }
 
 // parseCSSBorderWidth extracts a leading width from a border shorthand.
@@ -2345,7 +2607,9 @@ func (r *htmlRenderer) drawHTMLTableCell(x, y, w, h float64, cell htmlTableCell,
 		r.gp.RectFromUpperLeftWithStyle(x, y, w, h, "F")
 	}
 
-	// borders
+	// borders — border-collapse semantics: shared edges are painted once.
+	// Each cell paints its bottom and right edges; top/left only on the
+	// table's outer edges (row 0 / column 0), so no edge is drawn twice.
 	if cellState.hasBg || cell.header || tblBorder.has {
 		borderR, borderG, borderB := uint8(0), uint8(0), uint8(0)
 		if tblBorder.has {
@@ -2357,10 +2621,14 @@ func (r *htmlRenderer) drawHTMLTableCell(x, y, w, h float64, cell htmlTableCell,
 		}
 		r.gp.SetStrokeColor(borderR, borderG, borderB)
 		r.gp.SetLineWidth(bwCell)
-		r.gp.Line(x, y, x+w, y)
-		r.gp.Line(x+w, y, x+w, y+h)
 		r.gp.Line(x, y+h, x+w, y+h)
-		r.gp.Line(x, y, x, y+h)
+		r.gp.Line(x+w, y, x+w, y+h)
+		if cell.row == 0 {
+			r.gp.Line(x, y, x+w, y)
+		}
+		if cell.col == 0 {
+			r.gp.Line(x, y, x, y+h)
+		}
 	}
 
 	// content
@@ -2394,7 +2662,9 @@ func (r *htmlRenderer) drawHTMLTableCell(x, y, w, h float64, cell htmlTableCell,
 			}
 		}
 	}
+	r.inTableCell++
 	err := r.flowBlock(cell.node.Children, cellState, 0)
+	r.inTableCell--
 
 	r.cursorX, r.cursorY = prevX, prevY
 	r.boxX, r.boxY, r.boxW, r.boxH = prevBoxX, prevBoxY, prevBoxW, prevBoxH

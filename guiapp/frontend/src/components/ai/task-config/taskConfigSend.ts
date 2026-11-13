@@ -11,7 +11,7 @@
  */
 import { describeTaskTitle } from "../describeTaskTitle";
 import { isLatexExpertId, LATEX_BLANK_TEMPLATE_ID } from "../../../utils/latexTemplates";
-import { isDraftDefault, WORKFLOW_AUTO, type RemoteTarget, type TaskDraft } from "./taskDraft";
+import { codingDirectoryRequired, isDraftDefault, WORKFLOW_AUTO, type RemoteTarget, type TaskDraft } from "./taskDraft";
 import { tailText } from "../../../i18n/mnTail"
 
 /** 与 wailsjs main.TaskCreateOptions 字段对齐（普通对象，直接可序列化）。 */
@@ -224,6 +224,17 @@ export async function runTaskConfigSend(args: {
     const trimmed = (text || "").trim();
     const initialMessage = (args.initialMessage || "").trim() || trimmed;
     if (!trimmed) return { ok: false, error: tailText(lang, "Enter a task first", "请先输入任务内容") };
+    // 编程任务必须显式选择本地工作目录（硬要求；远控机器目标豁免）。
+    if (codingDirectoryRequired(draft)) {
+        return {
+            ok: false,
+            error: tailText(
+                lang,
+                "Coding tasks need a working directory. Choose one under Workspace before creating.",
+                "编程任务必须先选择工作目录：请点开「工作空间」选择目录后再创建",
+            ),
+        };
+    }
     if (!shouldCreateUnifiedTask(draft) && args.force !== true) return { ok: true };
     const opts = draftToTaskCreateOptions(trimmed, draft);
     // 远控被控机器目标：remote_control create_task 建任务 + send_message 发

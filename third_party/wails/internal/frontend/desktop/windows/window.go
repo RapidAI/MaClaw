@@ -47,6 +47,12 @@ type Window struct {
 	// is enough to catch a hide that lands after the first restore.
 	cursorRestoreArmed atomic.Bool
 
+	// cursorWatchArmed is set while a sustained-restore tick is queued. A
+	// maximized or fullscreen window re-arms it on every restore, so a hide
+	// that lands after both early posts still gets raised; the chain stops
+	// when the window leaves that state.
+	cursorWatchArmed atomic.Bool
+
 	// isMinimizing indicates whether the window is currently being minimized
 	// 标识窗口是否处于最小化状态,用于解决最小化/恢复时的闪屏问题
 	// This flag is used to prevent unnecessary redraws during minimize/restore transitions for frameless windows
@@ -84,13 +90,21 @@ const (
 	scRestore  = 0xF120
 )
 
-// wmKeepCursorVisible is posted after a maximise or fullscreen size change.
-// WebView2 can call ShowCursor(FALSE) while handling that change and skip the
-// matching ShowCursor(TRUE). The display count then stays negative, and the
-// pointer is invisible over this window until a later focus message raises it.
-// The posted handler runs after the size change returns, on the UI thread that
-// owns the count.
+// wmKeepCursorVisible is posted after a size, show, or controller-bounds
+// change that can hide the pointer, and again by the sustained watch while a
+// maximized or fullscreen state holds. WebView2 can call ShowCursor(FALSE)
+// while handling such a change and skip the matching ShowCursor(TRUE). The
+// display count then stays negative, and the pointer is invisible over this
+// window until a later focus message raises it. The posted handler runs
+// after the triggering message returns, on the UI thread that owns the count.
 const wmKeepCursorVisible = w32.WM_APP + 73
+
+// cursorWatchInterval paces the sustained restore while the window stays
+// maximized or fullscreen. WebView2 — and in the companion its second
+// controller — can hide the pointer well after the change the first posts
+// answered, or on a bounds update of its own; a one-shot retry leaves the
+// count negative until the next activation.
+const cursorWatchInterval = time.Second
 
 type obscureUpdate int
 
@@ -172,6 +186,13 @@ func (w *Window) contentShown() bool {
 	return !w.IsMinimised() && w.IsVisible()
 }
 
+// cursorRestoreLogNanos throttles the recovery log. The sustained watch calls
+// the restore every second while a stuck state holds; without a cap a count
+// that keeps getting re-hidden would write a line on every tick.
+var cursorRestoreLogNanos atomic.Int64
+
+const cursorRestoreLogInterval = int64(15 * time.Second)
+
 // restoreCursorDisplayCount raises a cursor display count that WebView2 left
 // below zero. Runtime 152-156 hide the pointer for the Windows "Hide pointer
 // while typing" setting, but can skip the matching ShowCursor(TRUE). The
@@ -183,6 +204,10 @@ func (w *Window) contentShown() bool {
 // which is also where WebView2 updates the cursor.
 func restoreCursorDisplayCount() {
 	if original := restoreCursorDisplayCountWith(w32.ShowCursor); original < 0 {
+		now := time.Now().UnixNano()
+		if last := cursorRestoreLogNanos.Load(); now-last < cursorRestoreLogInterval || !cursorRestoreLogNanos.CompareAndSwap(last, now) {
+			return
+		}
 		log.Printf("[cursor] display count was %d; raised toward zero", original)
 	}
 }
@@ -190,6 +215,8 @@ func restoreCursorDisplayCount() {
 // cursorRestoreOnSize reports a size change that can leave the pointer hidden:
 // OS maximise, or fullscreen (which sizes the popup without WS_MAXIMIZE).
 // Minimise is excluded so a hidden window does not touch the cursor count.
+// The restore back to normal is covered by the watch's in-flight tick and by
+// WebView2's own paired show on the resize back.
 func cursorRestoreOnSize(msg uint32, wparam uintptr, fullscreen bool) bool {
 	if msg != w32.WM_SIZE || wparam == uintptr(w32.SIZE_MINIMIZED) {
 		return false
@@ -197,8 +224,15 @@ func cursorRestoreOnSize(msg uint32, wparam uintptr, fullscreen bool) bool {
 	return wparam == uintptr(w32.SIZE_MAXIMIZED) || fullscreen
 }
 
+// cursorRestoreOnShow reports a show message that can also surface a hidden
+// pointer: the stuck count survives hide/show, and a re-shown window gets no
+// activation of its own.
+func cursorRestoreOnShow(msg uint32, wparam uintptr) bool {
+	return msg == w32.WM_SHOWWINDOW && wparam != 0
+}
+
 // postCursorRestore queues restoreCursorDisplayCount on the UI thread, after
-// the size change that may have hidden the pointer. Invoke would run inline
+// the transition that may have hidden the pointer. Invoke would run inline
 // on that thread and lose the race to WebView2's hide.
 func (w *Window) postCursorRestore() {
 	if w == nil || w.Handle() == 0 {
@@ -219,11 +253,113 @@ func (w *Window) postCursorRestore() {
 	})
 }
 
+// cursorWatchActive reports whether a state that can keep hiding the pointer
+// still holds. A hidden or minimized window drops the watch; the next show
+// posts a restore of its own.
+func (w *Window) cursorWatchActive() bool {
+	if w == nil || w.Handle() == 0 || !w.contentShown() {
+		return false
+	}
+	return w.Form.IsFullScreen() || w.IsFullScreen() || w.IsMaximised()
+}
+
+// scheduleCursorWatch re-arms a slow restore while the risky state holds. The
+// timer posts back onto this window's procedure, so each tick raises the
+// count on the thread that owns it; when the window returns to normal the
+// handler stops re-arming and the chain ends on the next tick.
+func (w *Window) scheduleCursorWatch() {
+	if !w.cursorWatchActive() {
+		return
+	}
+	if !w.cursorWatchArmed.CompareAndSwap(false, true) {
+		return
+	}
+	hwnd := w.Handle()
+	time.AfterFunc(cursorWatchInterval, func() {
+		w.cursorWatchArmed.Store(false)
+		w32.PostMessage(hwnd, wmKeepCursorVisible, 0, 0)
+	})
+}
+
+// cursorRetMsg mirrors CWPRETSTRUCT for the WH_CALLWNDPRORET hook.
+type cursorRetMsg struct {
+	lResult uintptr
+	lParam  uintptr
+	wParam  uintptr
+	message uint32
+	hwnd    uintptr
+}
+
+// cursorWatchHook is the WH_CALLWNDPRORET hook installed while the watch
+// holds. In that state the runtime can hide the pointer on every
+// WM_SETCURSOR, so a once-a-second restore loses the race the moment the
+// pointer next moves; the hook raises the count immediately after each
+// message that can lower it. Installed and removed on the window procedure
+// thread only, which is also the thread it watches.
+var cursorWatchHook w32.HHOOK
+
+// WM_POINTER messages reach the WebView in parallel with the legacy mouse
+// messages (Chromium registers for pointer input), so a hide can ride on
+// them instead of WM_MOUSEMOVE.
+const (
+	wmPointerUpdate = 0x0245
+	wmPointerDown   = 0x0246
+	wmPointerUp     = 0x0247
+	wmPointerEnter  = 0x0249
+)
+
+// cursorRetWatchMessage reports an input message whose processing can hide
+// the pointer. The set covers the legacy cursor/mouse path and the parallel
+// pointer path; after any of them the display count is worth re-checking.
+func cursorRetWatchMessage(msg uint32) bool {
+	switch msg {
+	case w32.WM_SETCURSOR, w32.WM_MOUSEACTIVATE, w32.WM_NCHITTEST,
+		w32.WM_NCMOUSEMOVE, w32.WM_NCLBUTTONDOWN,
+		w32.WM_MOUSEMOVE, w32.WM_LBUTTONDOWN,
+		wmPointerUpdate, wmPointerDown, wmPointerUp, wmPointerEnter:
+		return true
+	}
+	return false
+}
+
+// cursorRetHook restores the display count right after a mouse message that
+// WebView2 may have answered by hiding the pointer.
+func cursorRetHook(nCode int, wParam w32.WPARAM, lParam w32.LPARAM) w32.LRESULT {
+	if nCode >= 0 {
+		if s := (*cursorRetMsg)(unsafe.Pointer(lParam)); s != nil && cursorRetWatchMessage(s.message) {
+			restoreCursorDisplayCount()
+		}
+	}
+	return w32.CallNextHookEx(cursorWatchHook, nCode, wParam, lParam)
+}
+
+// updateCursorHook installs the per-message restore while the risky state
+// holds and removes it when the window leaves that state. Runs only on the
+// window procedure thread.
+func (w *Window) updateCursorHook() {
+	if w.cursorWatchActive() {
+		if cursorWatchHook == 0 {
+			cursorWatchHook = w32.SetWindowsHookEx(w32.WH_CALLWNDPROCRET, cursorRetHook, 0, w32.DWORD(w32.GetCurrentThreadId()))
+		}
+		return
+	}
+	if cursorWatchHook != 0 {
+		w32.UnhookWindowsHookEx(cursorWatchHook)
+		cursorWatchHook = 0
+	}
+}
+
 // restoreCursorDisplayCountWith is restoreCursorDisplayCount with the Win32
 // call injected, so the probe-and-undo sequence is testable. showCursor must
 // increment on true and decrement on false, returning the new count. The
 // return value is the count before the probe, so the caller can log a real
 // recovery without changing the helper's behavior.
+// cursorRestoreMaxShow bounds the recovery loop. A hide repeated on every
+// mouse message can push the deficit far below -32 before the first restore,
+// so the bound is generous; it exists only to keep a non-incrementing
+// ShowCursor from spinning forever.
+const cursorRestoreMaxShow = 4096
+
 func restoreCursorDisplayCountWith(showCursor func(bool) int32) int32 {
 	count := showCursor(true)
 	original := count - 1
@@ -234,7 +370,7 @@ func restoreCursorDisplayCountWith(showCursor func(bool) int32) int32 {
 		return original
 	}
 	// Repeated hides can leave the count more than one below zero.
-	for i := 0; i < 32 && count < 0; i++ {
+	for i := 0; i < cursorRestoreMaxShow && count < 0; i++ {
 		count = showCursor(true)
 	}
 	return original
@@ -399,10 +535,10 @@ func (w *Window) IsVisible() bool {
 }
 
 func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
-	// After this call returns, including DefWindowProc. A maximise or
-	// fullscreen size change can hide the pointer inside that call.
+	// After this call returns, including DefWindowProc. A maximise,
+	// fullscreen, or show transition can hide the pointer inside that call.
 	defer func() {
-		if cursorRestoreOnSize(msg, wparam, w.Form.IsFullScreen()) {
+		if cursorRestoreOnSize(msg, wparam, w.Form.IsFullScreen()) || cursorRestoreOnShow(msg, wparam) {
 			w.postCursorRestore()
 		}
 	}()
@@ -422,6 +558,8 @@ func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
 	switch msg {
 	case wmKeepCursorVisible:
 		restoreCursorDisplayCount()
+		w.scheduleCursorWatch()
+		w.updateCursorHook()
 		return 0
 	case win32.WM_POWERBROADCAST:
 		switch wparam {
@@ -473,6 +611,10 @@ func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
 
 	case w32.WM_DESTROY:
 		unregisterSessionNotification(uintptr(w.Handle()))
+		if cursorWatchHook != 0 {
+			w32.UnhookWindowsHookEx(cursorWatchHook)
+			cursorWatchHook = 0
+		}
 
 	case 0x02E0: //w32.WM_DPICHANGED
 		newWindowSize := (*w32.RECT)(unsafe.Pointer(lparam))

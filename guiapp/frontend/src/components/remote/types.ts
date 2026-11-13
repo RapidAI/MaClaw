@@ -200,6 +200,7 @@ export interface RemoteSuggestedAction {
 export interface RemoteActivationStatus {
     activated?: boolean;
     email?: string;
+    phone_number?: string;
     tenant_id?: string;
     tenant_name?: string;
     machine_id?: string;

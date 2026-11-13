@@ -7,6 +7,7 @@ import { PREVIEW_BAR_DELAY_MS, PREVIEW_HEAVY_PARSE_BYTES, PreviewLoadingStatus, 
 import { tailText } from "../../i18n/mnTail"
 import { DocumentFindBar } from "./DocumentFindBar";
 import { activateDomFindMark, clearDomFindMarks, collectFindSources, findInFolded, foldFindSources, paintDomFindMarks, scrollMatchIntoScroller, type FoldedText, type TextRun } from "./documentFind";
+import { CompanionDocAnnotator } from "../filecompanion/CompanionDocAnnotator";
 
 /** .docx is the OOXML word processor file the in-app renderer can lay out. */
 export function isDocxFileName(name: string): boolean {
@@ -17,6 +18,8 @@ export interface DocxPreviewPanelProps {
     absPath: string;
     theme: CodePreviewTheme;
     lang: string;
+    /** Companion document path: enables highlight/note/draw annotations. */
+    docAnnotate?: string;
 }
 
 function foldedDocument(
@@ -48,7 +51,7 @@ function foldedDocument(
  * out pages, styles, tables, and images. The text extract used to drop all
  * of that and show a line-numbered dump.
  */
-export function DocxPreviewPanel({ absPath, theme, lang }: DocxPreviewPanelProps) {
+export function DocxPreviewPanel({ absPath, theme, lang, docAnnotate = "" }: DocxPreviewPanelProps) {
     const langRef = useRef(lang);
     useEffect(() => {
         langRef.current = lang;
@@ -274,6 +277,7 @@ export function DocxPreviewPanel({ absPath, theme, lang }: DocxPreviewPanelProps
             <div
                 ref={scrollRef}
                 data-testid="docx-preview-scroll"
+                data-doc-scroller=""
                 style={{ flex: 1, minHeight: 0, width: "100%", minWidth: 0, overflow: "auto" }}
             >
             {loading ? (
@@ -290,7 +294,13 @@ export function DocxPreviewPanel({ absPath, theme, lang }: DocxPreviewPanelProps
                     }}
                 />
             ) : null}
-            <div ref={hostRef} />
+            {docAnnotate ? (
+                <CompanionDocAnnotator path={docAnnotate} lang={lang}>
+                    <div ref={hostRef} />
+                </CompanionDocAnnotator>
+            ) : (
+                <div ref={hostRef} />
+            )}
             </div>
         </div>
     );

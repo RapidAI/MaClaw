@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 func TestInflightGuardCloseWaitsAndRejects(t *testing.T) {
@@ -73,6 +75,7 @@ func closeRaceIters() int {
 
 func gemmaTestModel(t testing.TB) string {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	p := DefaultModelPath()
 	if p == "" {
 		if home, err := os.UserHomeDir(); err == nil {

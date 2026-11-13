@@ -27,6 +27,11 @@ import {
     type PdfBookmark,
     type PdfBookmarkColor,
 } from "./pdfBookmarks";
+import {
+    loadPdfDrawings,
+    savePdfDrawings,
+    type PdfDrawing,
+} from "./pdfDrawings";
 
 export { CHAT_ANNOTATIONS_CHANGED_EVENT, DOC_MARK_MESSAGE };
 
@@ -73,6 +78,25 @@ export function saveDocBookmarks(path: string, bookmarks: PdfBookmark[], announc
 
 export function newDocBookmarkId(): string {
     return newPdfBookmarkId();
+}
+
+// Freehand strokes on the document body share the pdfDrawings store: the file
+// is one kind, so a .md path never owns real PDF page drawings. The body is
+// "one page", page 1, with points normalized to the whole scrolled box.
+export const DOC_DRAWING_PAGE = 1;
+
+export function loadDocDrawings(path: string): PdfDrawing[] {
+    return loadPdfDrawings(path).filter((drawing) => drawing.page === DOC_DRAWING_PAGE);
+}
+
+/** Replaces only this path's page-1 drawings. announce mirrors savePdfDrawings:
+ *  true means "the reader did this", which is what the share uploader listens
+ *  for. */
+export function saveDocDrawings(path: string, drawings: PdfDrawing[], announce = false): PdfDrawing[] {
+    const kept = loadPdfDrawings(path).filter((drawing) => drawing.page !== DOC_DRAWING_PAGE);
+    const body = drawings.map((drawing) => ({ ...drawing, page: DOC_DRAWING_PAGE }));
+    const saved = savePdfDrawings(path, [...kept, ...body], announce);
+    return saved.filter((drawing) => drawing.page === DOC_DRAWING_PAGE);
 }
 
 /** Bookmark anchor as a character offset into the document's rendered text. */

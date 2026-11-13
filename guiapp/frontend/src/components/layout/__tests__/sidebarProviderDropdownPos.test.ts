@@ -3,10 +3,36 @@ import {
     DROPDOWN_EDGE_PAD,
     DROPDOWN_EST_MAX_WIDTH,
     DROPDOWN_GAP,
+    centeredDropdownLeft,
     clampDropdownLeft,
     computeProviderDropdownPos,
     providerDropdownPosEqual,
 } from '../sidebarProviderDropdownPos';
+
+describe('centeredDropdownLeft', () => {
+    it('matches the anchor left edge when the menu width equals the anchor width', () => {
+        const anchor = { left: 100, top: 700, bottom: 730, right: 400, width: 300, height: 30 };
+        expect(centeredDropdownLeft(anchor, 300, 800)).toBe(100);
+    });
+
+    it('centers a wider menu on the anchor midpoint', () => {
+        // Midpoint 250; menu 300 → left 100, no clamp needed.
+        expect(centeredDropdownLeft({ left: 200, top: 700, bottom: 730, right: 300, width: 100, height: 30 }, 300, 800)).toBe(100);
+        // Midpoint 150; menu 300 → left 0, clamped to the edge pad.
+        expect(centeredDropdownLeft({ left: 100, top: 700, bottom: 730, right: 200, width: 100, height: 30 }, 300, 800)).toBe(DROPDOWN_EDGE_PAD);
+    });
+
+    it('clamps inside a narrow viewport', () => {
+        const anchor = { left: 10, top: 700, bottom: 730, right: 30, width: 20, height: 30 };
+        // Menu 300 in a 200px viewport: midpoint 20 → left -130 → pad.
+        expect(centeredDropdownLeft(anchor, 300, 200)).toBe(DROPDOWN_EDGE_PAD);
+    });
+
+    it('returns integer pixels', () => {
+        const anchor = { left: 10.4, top: 700, bottom: 730, right: 110.4, width: 100, height: 30 };
+        expect(Number.isInteger(centeredDropdownLeft(anchor, 60, 800))).toBe(true);
+    });
+});
 
 describe('clampDropdownLeft', () => {
     it('keeps left when the menu fits', () => {

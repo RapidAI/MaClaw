@@ -434,9 +434,10 @@ func (a *App) openArxivPaper(input string, openOpts arxivOpenOptions) (string, e
 	parent := context.Background()
 	fetchTimeout := time.Duration(arxivDownloadTimeoutS)*time.Second + arxivDownloadSlack
 	opts := &websearch.FetchOptions{
-		SavePath: staged,
-		MaxBytes: maxWebFetchDownloadBytes,
-		TimeoutS: arxivDownloadTimeoutS,
+		SavePath:                   staged,
+		MaxBytes:                   maxWebFetchDownloadBytes,
+		TimeoutS:                   arxivDownloadTimeoutS,
+		DisableBrowserAuthFallback: true,
 	}
 	if openOpts.PublicNetworkOnly {
 		parent = context.Background()

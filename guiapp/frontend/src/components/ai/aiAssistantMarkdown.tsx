@@ -37,7 +37,7 @@ import { contentAuditForMessage, reasoningCleanedForMessage, replyBodyForDisplay
 import { completedAssistantSummary, assistantTaskSettledIncomplete, isProgressOnlyToolAction, parseAssistantToolStatus, stripAssistantToolCallMarkers } from "./assistantToolCall";
 import { AssistantToolCallRow, renderAssistantBodyWithToolCalls } from "./assistantToolCallRow";
 import { AssistantToolFlipTicker } from "./AssistantToolFlipTicker";
-import { TaskResultArtifacts } from "./assistantTaskArtifacts";
+import { RemoteTaskArtifacts, TaskResultArtifacts } from "./assistantTaskArtifacts";
 import { ChatTaskCard } from "./ChatTaskCard";
 import { localizeHelperReport } from "./chatTaskModel";
 import {
@@ -515,6 +515,19 @@ function findUnescapedDelimiter(text: string, delimiter: string, from: number): 
 }
 
 /**
+ * A `$` followed by a digit is usually a price, not TeX — but a formula can
+ * start with a number: `$0.786\pm0.004$`, `$2^n$`, `$0.934$`. A digit-led span
+ * counts as math only when the inside carries TeX structure, or is nothing but
+ * a number the author still wrapped as a formula. "$5 to $10" stays currency.
+ */
+function digitLedSpanIsMath(inner: string): boolean {
+    // A span holding another delimiter or Han prose is a currency pair that
+    // ran into a later formula, not mathematics ("$5 到 $10，公式为 $x$").
+    if (inner.includes("$") || /\p{Script=Han}/u.test(inner)) return false;
+    return /[\\^_{}]/.test(inner) || /^\s*[-+]?\d[\d.,\s]*$/.test(inner);
+}
+
+/**
  * Split only the two inline LaTex forms we support. Backtick code spans remain
  * opaque here so `$...$` in source code is never interpreted as mathematics.
  */
@@ -578,11 +591,12 @@ function splitInlineMath(text: string): InlineMathSegment[] {
             && text[index + 1] !== "$"
             && !/\s/u.test(text[index + 1] || "")
             && isInlineMathBoundaryBefore(text, index)
-            // A dollar amount ("$5" / "$1,200") is prose, not TeX. Requiring
-            // an explicit closing delimiter already avoids most false positives;
-            // this keeps currency with a trailing "$" legible as well.
-            && !/\d/u.test(text[index + 1] || "")
         ) {
+            // A dollar amount ("$5" / "$1,200") is prose, not TeX. Requiring an
+            // explicit closing delimiter already avoids most false positives;
+            // digit-led spans must also carry TeX structure (or be a bare
+            // number the author still wrapped, like `$0.934$`).
+            const digitLed = /\d/u.test(text[index + 1] || "");
             let close = index + 1;
             while (close < text.length && text[close] !== "\n") {
                 if (
@@ -593,7 +607,12 @@ function splitInlineMath(text: string): InlineMathSegment[] {
                 ) break;
                 close++;
             }
-            if (close < text.length && close > index + 1 && !/\s/u.test(text[close - 1])) {
+            if (
+                close < text.length
+                && close > index + 1
+                && !/\s/u.test(text[close - 1])
+                && (!digitLed || digitLedSpanIsMath(text.slice(index + 1, close)))
+            ) {
                 pushMath(close + 1, text.slice(index + 1, close));
                 continue;
             }
@@ -692,9 +711,9 @@ function skipDelimitedMathSpan(text: string, index: number): number {
         && !isEscapedAt(text, index)
         && text[index + 1] !== "$"
         && !/\s/u.test(text[index + 1] || "")
-        && !/\d/u.test(text[index + 1] || "")
         && isInlineMathBoundaryBefore(text, index)
     ) {
+        const digitLed = /\d/u.test(text[index + 1] || "");
         let close = index + 1;
         while (close < text.length && text[close] !== "\n") {
             if (
@@ -703,7 +722,9 @@ function skipDelimitedMathSpan(text: string, index: number): number {
                 && text[close + 1] !== "$"
                 && isInlineMathBoundaryAfter(text, close)
                 && !/\s/u.test(text[close - 1] || "")
-            ) return close + 1;
+            ) {
+                return digitLed && !digitLedSpanIsMath(text.slice(index + 1, close)) ? -1 : close + 1;
+            }
             close++;
         }
     }
@@ -2199,7 +2220,10 @@ export function renderMessage(
                                 }}
                             />
                         )}
-                        {savedPaths.length > 0 && (
+                        {savedPaths.length > 0 && msg.remoteFileFetch && (
+                            <RemoteTaskArtifacts paths={savedPaths} messageId={msg.id} lang={lang} onFetch={msg.remoteFileFetch} />
+                        )}
+                        {savedPaths.length > 0 && !msg.remoteFileFetch && (
                             <TaskResultArtifacts paths={savedPaths} messageId={msg.id} lang={lang} onOpen={openFileInFolder} latexSourceBundle={latexSourceBundle} />
                         )}
                         {(() => {

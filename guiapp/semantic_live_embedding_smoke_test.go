@@ -10,10 +10,12 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 func liveGemmaIntentClassifier(t *testing.T) (*intent.UnifiedIntentClassifier, *atomic.Int32) {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip(err)

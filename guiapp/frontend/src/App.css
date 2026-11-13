@@ -26882,6 +26882,9 @@ button.tbk-pill {
 .capc-files.capc-open .capc-files-popover { pointer-events: auto; visibility: visible; }
 .capc-file-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .capc-file-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 2px 0; }
+.capc-file-row[data-preview-path] { cursor: pointer; margin: 0 -4px; padding-left: 4px; padding-right: 4px; border-radius: 6px; }
+.capc-file-row[data-preview-path]:hover { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 7%, transparent); }
+.capc-file-row[data-preview-path]:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: -2px; }
 .capc-file-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .capc-file-stat { display: inline-flex; align-items: baseline; gap: 6px; flex-shrink: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
 .capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
@@ -30889,6 +30892,117 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   font-size: 11.5px;
   line-height: 1.35;
 }
+/* Live remote sessions (being-controlled / pending invites): slim one-line
+   chips instead of the headed card, so the strip costs a single row. */
+.mc-task-pane .mc-task-machine-live {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 5px 2px 2px;
+}
+.mc-task-pane .mc-task-machine-session {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 4px 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border-subtle));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--theme-primary) 6%, var(--theme-surface));
+  font-size: 12px;
+  line-height: 1.2;
+}
+.mc-task-pane .mc-task-machine-session[data-state='pending'] {
+  border-color: color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border-subtle));
+  background: color-mix(in srgb, var(--theme-warning) 7%, var(--theme-surface));
+}
+.mc-task-pane .mc-task-machine-session-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--theme-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary) 18%, transparent);
+  animation: mc-task-machine-live-pulse 2.2s ease-in-out infinite;
+}
+.mc-task-pane .mc-task-machine-session-dot[data-state='pending'] {
+  background: var(--theme-warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-warning) 22%, transparent);
+  animation: none;
+}
+@keyframes mc-task-machine-live-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary) 18%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--theme-primary) 9%, transparent); }
+}
+.mc-task-pane .mc-task-machine-session-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.mc-task-pane .mc-task-machine-session-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-primary);
+  font-weight: 600;
+}
+.mc-task-pane .mc-task-machine-session-label {
+  flex: none;
+  color: var(--theme-text-muted);
+  font-size: 11.5px;
+}
+.mc-task-pane .mc-task-machine-session-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--theme-primary) 12%, transparent);
+  color: var(--theme-primary-strong);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.mc-task-pane .mc-task-machine-session[data-state='pending'] .mc-task-machine-session-badge {
+  background: color-mix(in srgb, var(--theme-warning) 16%, transparent);
+  color: color-mix(in srgb, var(--theme-warning) 65%, var(--theme-text-primary));
+}
+.mc-task-pane .mc-task-machine-session-btn {
+  flex: none;
+  appearance: none;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--theme-text-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.mc-task-pane .mc-task-machine-session-btn:hover:not(:disabled) {
+  color: var(--theme-text-primary);
+  background: color-mix(in srgb, var(--theme-text-primary) 6%, transparent);
+}
+.mc-task-pane .mc-task-machine-session[data-state='active'] .mc-task-machine-session-btn:hover:not(:disabled) {
+  color: var(--theme-danger, #b42318);
+  background: color-mix(in srgb, var(--theme-danger, #b42318) 8%, transparent);
+}
+.mc-task-pane .mc-task-machine-session-btn:active:not(:disabled) {
+  opacity: 0.72;
+}
+.mc-task-pane .mc-task-machine-session-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.mc-task-pane .mc-task-machine-session-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-task-pane .mc-task-machine-session-dot { animation: none; }
+}
 .mc-task-pane .mc-task-machine-add .mc-task-machine-error,
 .mc-task-pane .mc-task-machine-create .mc-task-machine-error,
 .mc-task-pane .mc-task-machine-detail .mc-task-machine-error {
@@ -31079,8 +31193,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   outline: none;
   box-shadow: 0 0 0 2px var(--theme-primary-soft);
 }
-.mc-task-pane .mc-task-machine-add .mc-task-machine-own-dot,
-.mc-task-pane .mc-task-machine-add .mc-task-machine-row-dot {
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-dot {
   flex: none;
   width: 8px;
   height: 8px;
@@ -31136,30 +31249,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   color: var(--theme-text-muted);
   font-size: 12px;
   text-align: center;
-}
-/* Pending / being-controlled rows: text left with a state dot, action right. */
-.mc-task-pane .mc-task-machine-add .mc-task-machine-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 4px 0;
-}
-.mc-task-pane .mc-task-machine-add .mc-task-machine-row button { flex: none; }
-.mc-task-pane .mc-task-machine-add .mc-task-machine-row-text {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.mc-task-pane .mc-task-machine-add .mc-task-machine-row-dot[data-state='pending'] {
-  background: var(--theme-warning);
-  box-shadow: 0 0 0 3px var(--theme-warning-bg);
-}
-.mc-task-pane .mc-task-machine-add .mc-task-machine-row-dot[data-state='active'] {
-  background: var(--theme-primary);
-  box-shadow: 0 0 0 3px var(--theme-primary-soft);
 }
 /* Cross-account invite: icon-led input plus a full-width primary CTA. */
 .mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field {
@@ -31516,6 +31605,151 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   box-sizing: border-box;
 }
 .mc-workbench-status-card + .sidebar-system-status__panel { display: none !important; }
+
+/* Collapsed account status row. The full workbench card moved into a hover
+   popover above the row; the sidebar scroll wrapper clips absolute overlays,
+   so the popover is position: fixed (see SidebarSystemStatus). */
+/* The container sheds its outer band (its own background, insets and top
+   divider): the row sits straight on the sidebar and stretches to the full
+   width the band used to occupy. The light-theme selector must be matched so
+   the tinted band background loses to transparent. */
+.sidebar-system-status,
+.sidebar[data-ai-theme='light'] .sidebar-system-status {
+  margin: 0 !important;
+  padding: 0 !important;
+  border-top: 0 !important;
+  background: transparent !important;
+}
+.mc-workbench-status-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  margin: 8px 0 10px;
+  padding: 3px 10px;
+  border: 1px solid var(--theme-border, #dce6f2);
+  border-radius: 0;
+  background: var(--theme-surface);
+  box-shadow: none;
+  color: var(--theme-text-primary);
+  box-sizing: border-box;
+  transition: border-color .15s ease, background .15s ease;
+}
+.mc-workbench-status-row:hover {
+  border-color: var(--mc-accent, #2e75cb);
+  background: var(--theme-surface-muted, rgba(0, 0, 0, .03));
+}
+.mc-workbench-status-line {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.mc-workbench-status-line:focus-visible { outline: 2px solid var(--mc-accent, #2e75cb); outline-offset: 1px; border-radius: 8px; }
+.mc-workbench-status-line__avatar {
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #2e75cb, #5b8def);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+.mc-workbench-status-line[data-online='false'] .mc-workbench-status-line__avatar {
+  background: var(--theme-surface-muted, #e8eef6);
+  color: var(--theme-text-muted, #8a97a5);
+}
+.mc-workbench-status-line__name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-primary);
+  font-weight: 600;
+}
+.mc-workbench-status-line[data-online='false'] .mc-workbench-status-line__name { color: var(--theme-text-secondary); font-weight: 500; }
+.mc-workbench-status-line__state {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--theme-success-bg, rgba(17, 129, 58, .12));
+  color: var(--theme-success, #11813a);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.mc-workbench-status-line__state i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--theme-success, #11813a);
+}
+.mc-workbench-status-line__state[data-online='false'] {
+  background: var(--theme-surface-muted, #e8eef6);
+  color: var(--theme-text-muted, #8a97a5);
+}
+.mc-workbench-status-line__state[data-online='false'] i { background: var(--theme-text-muted, #8a97a5); }
+.mc-workbench-status-bell {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+}
+.mc-workbench-status-bell:hover { background: var(--theme-surface-muted, rgba(0, 0, 0, .05)); color: var(--mc-accent, #2e75cb); }
+.mc-workbench-status-bell:focus-visible { outline: 2px solid var(--mc-accent, #2e75cb); outline-offset: 1px; }
+
+.mc-workbench-status-popover {
+  /* position: fixed applied via inline style with computed coordinates;
+     inline width tracks the row width so the edges stay aligned. */
+  width: 320px;
+  padding: 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-lg);
+  background: var(--theme-surface);
+  box-shadow: 0 12px 30px rgba(27, 56, 93, .14);
+  color: var(--theme-text-primary);
+  box-sizing: border-box;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 99999;
+}
+.mc-workbench-status-popover[data-open='false'] { visibility: hidden; pointer-events: none; }
+/* The embedded card sheds its own chrome; the popover surface provides it.
+   #App prefix outranks the #App .mc-workbench-status-card theme overrides. */
+#App .mc-workbench-status-popover .mc-workbench-status-card,
+.mc-workbench-status-popover .mc-workbench-status-card {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.mc-workbench-status-popover + .sidebar-system-status__panel { display: none !important; }
 .mc-workbench-status-card__heading,
 .mc-workbench-status-card__row {
   display: flex;
@@ -35747,6 +35981,242 @@ mark.companion-preview-find[data-find-active="true"] {
 }
 ::highlight(companion-chat-pink) {
   background-color: #f6c1d8;
+}
+/* Document body highlights use the same API and the same palette, under a
+   separate name prefix so the transcript's buckets are not overwritten. */
+::highlight(companion-doc-yellow) {
+  background-color: #ffe08a;
+}
+::highlight(companion-doc-green) {
+  background-color: #b6e7c3;
+}
+::highlight(companion-doc-blue) {
+  background-color: #b9d4f5;
+}
+::highlight(companion-doc-pink) {
+  background-color: #f6c1d8;
+}
+/* 画线 styles: a mark can carry underline or strike instead of the colour
+   fill. The stroke uses the stronger ink palette so a 2px line stays readable
+   over every text colour, matching the freehand pen. */
+::highlight(companion-doc-underline-yellow),
+::highlight(companion-chat-underline-yellow) {
+  text-decoration: underline solid #c9930a 2px;
+  text-underline-offset: 2px;
+}
+::highlight(companion-doc-underline-green),
+::highlight(companion-chat-underline-green) {
+  text-decoration: underline solid #2f8f5b 2px;
+  text-underline-offset: 2px;
+}
+::highlight(companion-doc-underline-blue),
+::highlight(companion-chat-underline-blue) {
+  text-decoration: underline solid #2f6bbd 2px;
+  text-underline-offset: 2px;
+}
+::highlight(companion-doc-underline-pink),
+::highlight(companion-chat-underline-pink) {
+  text-decoration: underline solid #c74884 2px;
+  text-underline-offset: 2px;
+}
+::highlight(companion-doc-strike-yellow),
+::highlight(companion-chat-strike-yellow) {
+  text-decoration: line-through solid #c9930a 2px;
+}
+::highlight(companion-doc-strike-green),
+::highlight(companion-chat-strike-green) {
+  text-decoration: line-through solid #2f8f5b 2px;
+}
+::highlight(companion-doc-strike-blue),
+::highlight(companion-chat-strike-blue) {
+  text-decoration: line-through solid #2f6bbd 2px;
+}
+::highlight(companion-doc-strike-pink),
+::highlight(companion-chat-strike-pink) {
+  text-decoration: line-through solid #c74884 2px;
+}
+/* A document bookmark hangs on the page's right edge, not its left. */
+.companion-doc-bookmark-tick {
+  left: auto;
+}
+/* The annotator is a flex row: a PDF-style rail of bookmarks and notes on the
+   left, the rendered document body on the right. The rail only mounts when the
+   document has entries, so un-annotated files keep the full width. */
+.companion-doc-annotator {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+.companion-doc-annotator-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 100%;
+}
+/* The pen toggle and tool panel pin to the pane top while the document
+   scrolls under them. height:0 keeps them out of the text flow. */
+.companion-doc-draw {
+  position: sticky;
+  top: 8px;
+  z-index: 8;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 8px;
+  height: 0;
+  padding-right: 10px;
+  overflow: visible;
+  --wails-draggable: no-drag;
+}
+/* Plain-text files render read-only inside the annotator, like a document
+   page rather than an editor. */
+.companion-doc-text {
+  margin: 0;
+  padding: 16px 20px 24px;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  font: 13px/1.65 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--theme-text-primary, #1c2834);
+}
+/* PPTX: the annotator shrink-wraps the slide image so normalized rect marks,
+   strokes, and note pins stay on the picture when the pane resizes. */
+.companion-pptx-annotator {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+  max-height: 100%;
+}
+.companion-pptx-annotator > .pptx-slide-img {
+  display: block;
+}
+.companion-pptx-mark {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid transparent;
+  border-radius: 3px;
+  pointer-events: none;
+}
+.companion-pptx-mark--draft {
+  border-style: dashed;
+}
+/* A note pin hangs on the anchored rect's top-right corner; the card opens
+   beside it. */
+.companion-pptx-note-pin {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: 50% 50% 50% 4px;
+  background: var(--theme-surface, #fff);
+  color: var(--theme-primary, #2e75cb);
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.2);
+  transform: translate(-50%, -50%);
+}
+.companion-pptx-note-pin svg {
+  width: 11px;
+  height: 11px;
+}
+.companion-pptx-note-card {
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  width: 220px;
+  max-width: 90%;
+  max-height: 70%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface, #fff);
+  box-shadow: var(--shadow-lg, 0 8px 28px -6px rgba(30, 58, 95, 0.18));
+  overflow: hidden;
+}
+.companion-pptx-note-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--theme-border-subtle, #e2e9f3);
+  cursor: grab;
+  touch-action: none;
+}
+.companion-pptx-note-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 12px/1.3 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--theme-text-primary, #1c2834);
+}
+.companion-pptx-note-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--theme-text-primary, #1c2834);
+}
+.companion-pptx-note-card textarea {
+  flex: 1 1 auto;
+  min-height: 72px;
+  resize: none;
+  margin: 8px;
+  padding: 6px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  font: 12px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--theme-text-primary, #1c2834);
+  background: var(--theme-surface, #fff);
+}
+.companion-pptx-note-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+.companion-pptx-note-card-actions button {
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #1c2834);
+  font: 12px/1.4 "Segoe UI", "Microsoft YaHei", sans-serif;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.companion-pptx-note-card-actions button[data-accent="true"] {
+  background: var(--theme-primary, #2e75cb);
+  border-color: var(--theme-primary, #2e75cb);
+  color: #fff;
+}
+.companion-pptx-note-card-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.companion-pptx-bookmark-tick {
+  position: absolute;
+  z-index: 3;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  filter: drop-shadow(0 1px 1.5px rgba(40, 24, 8, 0.32));
+}
+.companion-pptx-bookmark-tick svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 .companion-pdf-translation {
   position: absolute;

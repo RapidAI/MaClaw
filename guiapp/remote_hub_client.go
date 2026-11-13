@@ -1231,14 +1231,15 @@ func (c *RemoteHubClient) SendSessionImage(img ImageTransferMessage) error {
 
 func (c *RemoteHubClient) handleRemoteControlExec(msg inboundHubEnvelope) {
 	var payload struct {
-		Op   string          `json:"op"`
-		Body json.RawMessage `json:"body"`
+		GrantID string          `json:"grant_id"`
+		Op      string          `json:"op"`
+		Body    json.RawMessage `json:"body"`
 	}
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		c.sendRemoteControlResult(msg.RequestID, nil, "远控请求无效")
 		return
 	}
-	result, err := c.executeRemoteControlRecovered(payload.Op, payload.Body)
+	result, err := c.executeRemoteControlRecovered(payload.Op, payload.Body, payload.GrantID)
 	errText := ""
 	if err != nil {
 		errText = err.Error()
@@ -1246,9 +1247,20 @@ func (c *RemoteHubClient) handleRemoteControlExec(msg inboundHubEnvelope) {
 	c.sendRemoteControlResult(msg.RequestID, result, errText)
 }
 
+// handleRemoteControlStream mirrors a controlled desktop's live stream event
+// to this desktop's panel as a Wails event. The payload already carries
+// grant_id/session_key/request_id, so the frontend routes it to the matching
+// remote session without any decode here.
+func (c *RemoteHubClient) handleRemoteControlStream(msg inboundHubEnvelope) {
+	if c == nil || c.app == nil || len(msg.Payload) == 0 {
+		return
+	}
+	c.app.emitEvent("remote-control:stream", string(msg.Payload))
+}
+
 // executeRemoteControlRecovered turns a panic into an error result. Without
 // this the controller waits until the hub call times out.
-func (c *RemoteHubClient) executeRemoteControlRecovered(op string, body json.RawMessage) (result any, err error) {
+func (c *RemoteHubClient) executeRemoteControlRecovered(op string, body json.RawMessage, grantID string) (result any, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			log.Printf("remote control exec panic: %v", rec)
@@ -1259,7 +1271,27 @@ func (c *RemoteHubClient) executeRemoteControlRecovered(op string, body json.Raw
 	if c == nil || c.app == nil {
 		return nil, errors.New("远控尚未就绪")
 	}
-	return c.app.executeRemoteControl(op, body)
+	return c.app.executeRemoteControl(op, body, grantID)
+}
+
+// sendRemoteControlStream pushes one live-mirror event to the Hub for the
+// grants listed inside payload. Fire-and-forget like preview deltas: a dead
+// connection drops the event and the controller's transcript poll catches up.
+func (c *RemoteHubClient) sendRemoteControlStream(payload map[string]any) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return
+	}
+	_ = c.conn.WriteJSON(HubEnvelope{
+		Type:      "remote_control.stream",
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload:   payload,
+	})
 }
 
 func (c *RemoteHubClient) sendRemoteControlResult(requestID string, result any, errText string) {
@@ -1597,6 +1629,8 @@ func (c *RemoteHubClient) readLoop() {
 			go c.app.handleNotificationPush(msg.Payload)
 		case hubInboundMessageRemoteControlExec:
 			go c.handleRemoteControlExec(msg)
+		case hubInboundMessageRemoteControlStream:
+			c.handleRemoteControlStream(msg)
 		case hubInboundMessageMobileDigitalEmployeeTask:
 			// Hub push: claim immediately instead of waiting for the poll timer.
 			go c.handleMobileDigitalEmployeeTaskPush(msg)

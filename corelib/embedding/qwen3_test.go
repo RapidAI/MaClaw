@@ -8,12 +8,14 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // qwen3TestModel returns the Qwen3-Embedding GGUF path or skips.
 // MACLAW_QWEN3_MODEL overrides; default is <models dir>/Qwen3-Embedding-0.6B-Q8_0.gguf.
 func qwen3TestModel(t testing.TB) string {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	p := os.Getenv("MACLAW_QWEN3_MODEL")
 	if p == "" {
 		if home, err := os.UserHomeDir(); err == nil {

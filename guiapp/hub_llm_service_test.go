@@ -496,3 +496,30 @@ func TestHubServiceStatusCacheDetectsHeldCreditsChanges(t *testing.T) {
 		t.Fatal("held-credits change must mark the status as changed so the sidebar refreshes")
 	}
 }
+
+func TestHubServiceStatusCacheDetectsIdentitySwitch(t *testing.T) {
+	clearHubServiceStatusCache()
+	t.Cleanup(clearHubServiceStatusCache)
+
+	status := HubLLMServiceStatus{
+		Active:  true,
+		Checkin: &HubLLMCheckinInfo{Enabled: true, CheckedInToday: true},
+	}
+	if changed := storeHubServiceStatusCache("https://hub.example.com", "token-a", status); changed {
+		t.Fatal("first store should report no change")
+	}
+	if changed := storeHubServiceStatusCache("https://hub.example.com", "token-a", status); changed {
+		t.Fatal("same identity with identical status should report no change")
+	}
+	// Switching viewer token replaces the account even when the snapshot itself
+	// compares equal: the sidebar (check-in, credits) must re-render for the new
+	// user instead of keeping the previous account's display.
+	if changed := storeHubServiceStatusCache("https://hub.example.com", "token-b", status); !changed {
+		t.Fatal("viewer-token switch must report a change so the sidebar refreshes")
+	}
+	// Switching hub URL (same token value, different hub) is also an identity
+	// change.
+	if changed := storeHubServiceStatusCache("https://other.example.com", "token-b", status); !changed {
+		t.Fatal("hub switch must report a change so the sidebar refreshes")
+	}
+}

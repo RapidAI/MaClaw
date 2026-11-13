@@ -276,7 +276,9 @@ func fileCompanionCleanChatMarks(raw json.RawMessage) (json.RawMessage, error) {
 		default:
 			continue
 		}
-		if item.Message < 0 || item.Message > 100000 || item.Start < 0 || item.End <= item.Start {
+		// Message -1 is the document body itself: markdown and office previews
+		// carry their own highlights in this list, so the floor is -1, not 0.
+		if item.Message < -1 || item.Message > 100000 || item.Start < 0 || item.End <= item.Start {
 			continue
 		}
 		text := strings.TrimSpace(item.Text)
@@ -397,7 +399,9 @@ func fileCompanionCleanChatAnnotation(item fileCompanionChatAnnotationIn) (fileC
 	if id == "" || len(id) > 80 {
 		return fileCompanionChatAnnotation{}, false
 	}
-	if item.Message < 0 || item.Message > 100000 || item.Start < 0 || item.End <= item.Start {
+	// Message -1 is the document body itself, the same convention the marks
+	// cleaner above keeps. A markdown note anchors to the page, not a bubble.
+	if item.Message < -1 || item.Message > 100000 || item.Start < 0 || item.End <= item.Start {
 		return fileCompanionChatAnnotation{}, false
 	}
 	text := strings.TrimSpace(item.Text)

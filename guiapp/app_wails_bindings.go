@@ -3432,6 +3432,8 @@ func (a *App) emitAIAssistantStreamEvent(name string, event AIAssistantStreamEve
 		return
 	}
 	a.emitEvent(name, string(payload))
+	// Remote-control mirror: watchers get the same event over the Hub.
+	a.relayRemoteStreamEvent(name, event)
 }
 
 // emitAIAssistantForegroundRoundStarted announces a backend-initiated turn so
@@ -3480,6 +3482,7 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 		}
 		BrowserDiagFileDelivery("wails-event", resp.Text, fileNames, paths, resp.ResponseSource)
 	}
+	a.stampProducedFilesIntoConversationMemory(resp)
 	payload, err := json.Marshal(resp)
 	if err != nil {
 		log.Printf("[emitAIAssistantResponse] marshal failed: %v", err)
@@ -3499,6 +3502,7 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 		}
 	}()
 	a.emitEvent("ai-assistant-response", string(payload))
+	a.relayRemoteAssistantResponse(requestID, resp)
 	return true
 }
 

@@ -59,6 +59,12 @@ func extractTextRawPage(pdfData []byte, pageIndex int) ([]ExtractedText, error) 
 	if err != nil {
 		return nil, err
 	}
+	return extractRunsWithParser(parser, pageIndex)
+}
+
+// extractRunsWithParser extracts raw runs for a page using an existing
+// parser (no re-parse).
+func extractRunsWithParser(parser *rawPDFParser, pageIndex int) ([]ExtractedText, error) {
 	if pageIndex < 0 || pageIndex >= len(parser.pages) {
 		return nil, fmt.Errorf("page index %d out of range (0..%d)", pageIndex, len(parser.pages)-1)
 	}
@@ -73,6 +79,7 @@ func extractTextRawPage(pdfData []byte, pageIndex int) ([]ExtractedText, error) 
 		fonts:    fonts,
 		xobjs:    page.resources.xobjs,
 		mediaBox: page.mediaBox,
+		rotate:   page.rotate,
 		visited:  map[int]bool{},
 	}, stream), nil
 }
@@ -96,6 +103,7 @@ func ExtractTextFromAllPages(pdfData []byte) (map[int][]ExtractedText, error) {
 				fonts:    fonts,
 				xobjs:    page.resources.xobjs,
 				mediaBox: page.mediaBox,
+				rotate:   page.rotate,
 				visited:  map[int]bool{},
 			}, stream)
 			if len(texts) > 0 {
@@ -129,12 +137,6 @@ func ExtractPageText(pdfData []byte, pageIndex int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return joinExtractedPlain(texts), nil
-}
-
-// joinExtractedPlain is the line break ExtractPageText uses: a new line when
-// the baseline moves, a space when the next run stays on that baseline.
-func joinExtractedPlain(texts []ExtractedText) string {
 	var sb strings.Builder
 	lastY := math.MaxFloat64
 	for _, t := range texts {
@@ -146,28 +148,7 @@ func joinExtractedPlain(texts []ExtractedText) string {
 		sb.WriteString(t.Text)
 		lastY = t.Y
 	}
-	return sb.String()
-}
-
-// rawPagePlainText reads one page from an already-open raw parser.
-// pageIndex is 0-based. A page with no content stream is empty.
-func rawPagePlainText(parser *rawPDFParser, pageIndex int) string {
-	if parser == nil || pageIndex < 0 || pageIndex >= len(parser.pages) {
-		return ""
-	}
-	stream := parser.getPageContentStream(pageIndex)
-	if len(stream) == 0 {
-		return ""
-	}
-	page := parser.pages[pageIndex]
-	fonts := buildFontMap(parser, page)
-	return joinExtractedPlain(parseTextOperatorsCtx(&extractionContext{
-		parser:   parser,
-		fonts:    fonts,
-		xobjs:    page.resources.xobjs,
-		mediaBox: page.mediaBox,
-		visited:  map[int]bool{},
-	}, stream))
+	return sb.String(), nil
 }
 
 // fontInfo holds decoded font information for text extraction.
@@ -456,12 +437,25 @@ func parseFontWidths(parser *rawPDFParser, dict string) (map[int]float64, float6
 	first := int(extractNumValue(dict, "/FirstChar"))
 	last := int(extractNumValue(dict, "/LastChar"))
 	if last >= first && last-first < 65536 {
-		if wArr := extractNumberArray(dict, "/Widths"); len(wArr) > 0 {
-			for i, w := range wArr {
-				code := first + i
-				if code >= 0 && code <= 0xFFFF {
-					widths[code] = w
+		wArr := extractNumberArray(dict, "/Widths")
+		if len(wArr) == 0 {
+			// /Widths is often an indirect reference to the array object
+			// (LaTeX/pdfTeX output: "/Widths 5858 0 R"). The referenced
+			// object has no dictionary — its content lives in .body.
+			if wRef := extractRef(dict, "/Widths"); wRef > 0 {
+				if wObj, ok := parser.objects[wRef]; ok {
+					src := wObj.dict
+					if src == "" {
+						src = wObj.body
+					}
+					wArr = extractNumberArray(src, "")
 				}
+			}
+		}
+		for i, w := range wArr {
+			code := first + i
+			if code >= 0 && code <= 0xFFFF {
+				widths[code] = w
 			}
 		}
 	}
@@ -727,10 +721,28 @@ type extractionContext struct {
 	fonts    map[string]*fontInfo
 	xobjs    map[string]int // resource name -> object number
 	mediaBox [4]float64
+	rotate   int     // /Rotate degrees clockwise (0/90/180/270)
 	offX     float64 // Do translation offset already applied within this ctx
 	offY     float64
 	depth    int
 	visited  map[int]bool
+}
+
+// pageRotateCoords maps unrotated top-down page coordinates to visual
+// coordinates for a page with /Rotate 90/180/270. With /Rotate 90 the page
+// displays rotated clockwise, so the visual width/height swap.
+func (ctx *extractionContext) pageRotateCoords(x, y float64) (float64, float64) {
+	w := ctx.mediaBox[2] - ctx.mediaBox[0]
+	h := ctx.mediaBox[3] - ctx.mediaBox[1]
+	switch ctx.rotate {
+	case 90:
+		return h - y, x
+	case 180:
+		return w - x, h - y
+	case 270:
+		return y, w - x
+	}
+	return x, y
 }
 
 const maxFormDepth = 4
@@ -813,6 +825,8 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 		fontSize float64
 		// Text matrix components
 		tmX, tmY float64
+		tmA, tmB float64 = 1, 0 // rotation/scale components
+		tmC, tmD float64 = 0, 1
 		// Line matrix
 		tlmX, tlmY float64
 		// CTM (simplified — only tracking translation)
@@ -860,6 +874,11 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 			continue
 		}
 
+		// Effective rendered size: Tf sets the nominal size, the Tm matrix
+		// carries the scale (e.g. "1 Tf" + Tm with a=9.96). Text operators
+		// in this iteration emit runs with this size.
+		effSize := fontSize * math.Hypot(tmA, tmB)
+
 		switch string(tok) {
 		case "BT":
 			inText = true
@@ -905,13 +924,18 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 				continue
 			}
 			args := popN(6)
-			// args = [a b c d e f]
+			// args = [a b c d e f] — store full rotation/scale matrix
+			tmA = args[0]
+			tmB = args[1]
+			tmC = args[2]
+			tmD = args[3]
 			tmX = args[4]
 			tmY = args[5]
 			tlmX, tlmY = tmX, tmY
-			if args[0] != 0 {
-				fontSize = math.Abs(args[0])
-			}
+			// Rendered size stays Tf-only: effective size is computed per
+			// show op as fontSize × |Tm scale|. Overwriting fontSize from
+			// Tm-a here corrupted PDFs whose Tm was translation-only
+			// ("1 0 0 1 x y" → fontSize=1) — e.g. arXiv/pdflatex pages.
 		case "T*":
 			if !inText {
 				continue
@@ -931,18 +955,25 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 				raw := findStringBefore(tokens, i)
 				text := decodeTextString(string(raw), curFont)
 				if text != "" {
-					x := ctx.offX + ctmA*tmX + ctmE
-					y := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
+					xRaw := ctx.offX + ctmA*tmX + ctmE
+					yRaw := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
+					x, y := ctx.pageRotateCoords(xRaw, yRaw)
 					results = append(results, ExtractedText{
 						Text:     text,
 						X:        x,
 						Y:        y,
 						FontName: fontDisplayName(curFont),
-						FontSize: fontSize,
+						FontSize: effSize,
+						Width:    shownWidth(raw, curFont, fontSize) * math.Hypot(tmA, tmB),
 					})
 				}
-				// Advance the text position by the glyph widths shown.
-				tmX += shownAdvance(raw, curFont, fontSize)
+				// Advance the text position by the glyph widths shown,
+				// projected onto the x axis using the Tm rotation.
+				adv := shownAdvance(raw, curFont, fontSize)
+				tmX += adv * tmA
+				tmY += adv * tmB
+				_ = tmC
+				_ = tmD
 			}
 		case "TJ":
 			if !inText {
@@ -972,18 +1003,20 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 			}
 			text := combined.String()
 			if text != "" {
-				x := ctx.offX + ctmA*tmX + ctmE
-				y := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
+				xRaw := ctx.offX + ctmA*tmX + ctmE
+				yRaw := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
+				x, y := ctx.pageRotateCoords(xRaw, yRaw)
 				results = append(results, ExtractedText{
 					Text:     text,
 					X:        x,
 					Y:        y,
 					FontName: fontDisplayName(curFont),
-					FontSize: fontSize,
-					Width:    tjWidth(arr, curFont, fontSize),
+					FontSize: effSize,
+					Width:    tjWidth(arr, curFont, fontSize) * math.Hypot(tmA, tmB),
 				})
 			}
-			tmX += advance
+			tmX += advance * tmA
+			tmY += advance * tmB
 		case "'":
 			// Move to next line and show string
 			if !inText {
@@ -995,12 +1028,13 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 				raw := findStringBefore(tokens, i)
 				text := decodeTextString(string(raw), curFont)
 				if text != "" {
-					x := ctx.offX + ctmA*tmX + ctmE
-					y := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
+					xRaw := ctx.offX + ctmA*tmX + ctmE
+					yRaw := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
+					x, y := ctx.pageRotateCoords(xRaw, yRaw)
 					results = append(results, ExtractedText{
 						Text: text, X: x, Y: y,
-						FontName: fontDisplayName(curFont), FontSize: fontSize,
-						Width: shownWidth(raw, curFont, fontSize),
+						FontName: fontDisplayName(curFont), FontSize: effSize,
+						Width: shownWidth(raw, curFont, fontSize) * math.Hypot(tmA, tmB),
 					})
 				}
 				tmX += shownAdvance(raw, curFont, fontSize)
@@ -1017,12 +1051,13 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 				raw := findStringBefore(tokens, i)
 				text := decodeTextString(string(raw), curFont)
 				if text != "" {
-					x := ctx.offX + ctmA*tmX + ctmE
-					y := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
+					xRaw := ctx.offX + ctmA*tmX + ctmE
+					yRaw := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
+					x, y := ctx.pageRotateCoords(xRaw, yRaw)
 					results = append(results, ExtractedText{
 						Text: text, X: x, Y: y,
-						FontName: fontDisplayName(curFont), FontSize: fontSize,
-						Width: shownWidth(raw, curFont, fontSize),
+						FontName: fontDisplayName(curFont), FontSize: effSize,
+						Width: shownWidth(raw, curFont, fontSize) * math.Hypot(tmA, tmB),
 					})
 				}
 				tmX += shownAdvance(raw, curFont, fontSize)
@@ -1077,6 +1112,7 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 					fonts:    cachedFormFonts(ctx.parser, objNum, obj.dict),
 					xobjs:    cachedFormXObjects(ctx.parser, objNum, obj.dict),
 					mediaBox: ctx.mediaBox,
+					rotate:   ctx.rotate,
 					visited:  subVisited,
 				}
 				baseRuns = parseTextOperatorsCtx(sub, obj.stream)
@@ -1196,11 +1232,17 @@ func tokenizeBytes(data []byte) [][]byte {
 		}
 		// regular token (name, number, operator)
 		start := i
+		if data[i] == '/' {
+			// name token: the leading '/' is part of the token; PDF
+			// delimiters are self-terminating, so "TJ/F27" (no whitespace,
+			// as pdfTeX emits) splits into "TJ" and "/F27".
+			i++
+		}
 		for i < n && data[i] != ' ' && data[i] != '\t' && data[i] != '\r' &&
 			data[i] != '\n' && data[i] != '\f' && data[i] != 0 &&
 			data[i] != '(' && data[i] != ')' &&
 			data[i] != '<' && data[i] != '>' && data[i] != '[' &&
-			data[i] != ']' && data[i] != '%' {
+			data[i] != ']' && data[i] != '%' && data[i] != '/' {
 			i++
 		}
 		if i > start {

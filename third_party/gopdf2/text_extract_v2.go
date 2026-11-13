@@ -12,6 +12,19 @@ import (
 
 // extractTextV2FromPage extracts text from a specific page (0-based index)
 // using the ledongthuc/pdf library for robust PDF parsing.
+// patchPDF2Header rewrites a %PDF-2.x header to %PDF-1.7 for the legacy
+// v2 parser, which only accepts 1.0-1.7. PDF 2.0 documents parse fine
+// apart from that header check.
+func patchPDF2Header(data []byte) []byte {
+	if len(data) >= 9 && bytes.HasPrefix(data, []byte("%PDF-2.")) {
+		out := make([]byte, len(data))
+		copy(out, data)
+		copy(out[5:8], []byte("1.7"))
+		return out
+	}
+	return data
+}
+
 func extractTextV2FromPage(pdfData []byte, pageIndex int) (result []ExtractedText, retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -19,7 +32,7 @@ func extractTextV2FromPage(pdfData []byte, pageIndex int) (result []ExtractedTex
 		}
 	}()
 
-	reader, err := lpdf.NewReader(bytes.NewReader(pdfData), int64(len(pdfData)))
+	reader, err := lpdf.NewReader(bytes.NewReader(patchPDF2Header(pdfData)), int64(len(pdfData)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open PDF: %w", err)
 	}
@@ -46,7 +59,7 @@ func extractTextV2FromAllPages(pdfData []byte) (result map[int][]ExtractedText, 
 		}
 	}()
 
-	reader, err := lpdf.NewReader(bytes.NewReader(pdfData), int64(len(pdfData)))
+	reader, err := lpdf.NewReader(bytes.NewReader(patchPDF2Header(pdfData)), int64(len(pdfData)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open PDF: %w", err)
 	}
@@ -70,103 +83,6 @@ func extractTextV2FromAllPages(pdfData []byte) (result map[int][]ExtractedText, 
 	return result, nil
 }
 
-// PlainTextByPage reads the first pages with one PDF open.
-// limit <= 0 reads every page. A page with no text, or a page whose text
-// cannot be read, is an empty string so the indexes stay aligned with the file.
-func PlainTextByPage(pdfData []byte, limit int) ([]string, error) {
-	return PlainTextByPageUntil(pdfData, limit, nil)
-}
-
-// PlainTextByPageUntil is PlainTextByPage with an early stop.
-// stop is called with the 1-based page number after that page is read.
-// A true result keeps the page and does not read the rest.
-// When ledongthuc/pdf returns no text for the whole window, one raw parse
-// retries those pages. stop may then run again, so a caller must ignore empty
-// page text. A nil stop reads the window.
-func PlainTextByPageUntil(pdfData []byte, limit int, stop func(page int, text string) bool) (pages []string, retErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			retErr = fmt.Errorf("pdf text extraction panic: %v", r)
-		}
-	}()
-
-	pages, stopped, err := plainTextV2Until(pdfData, limit, stop)
-	if err != nil {
-		raw, rawErr := plainTextRawUntil(pdfData, limit, stop)
-		if rawErr != nil {
-			return nil, err
-		}
-		return raw, nil
-	}
-	if stopped || plainTextAny(pages) {
-		return pages, nil
-	}
-	raw, rawErr := plainTextRawUntil(pdfData, limit, stop)
-	if rawErr != nil || !plainTextAny(raw) {
-		return pages, nil
-	}
-	return raw, nil
-}
-
-func plainTextAny(pages []string) bool {
-	for _, page := range pages {
-		if strings.TrimSpace(page) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func plainTextV2Until(pdfData []byte, limit int, stop func(page int, text string) bool) (pages []string, stopped bool, err error) {
-	reader, err := lpdf.NewReader(bytes.NewReader(pdfData), int64(len(pdfData)))
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to open PDF: %w", err)
-	}
-	n := reader.NumPage()
-	if limit > 0 && n > limit {
-		n = limit
-	}
-	pages = make([]string, n)
-	for i := 1; i <= n; i++ {
-		pages[i-1] = textOfV2Page(reader.Page(i))
-		if stop != nil && stop(i, pages[i-1]) {
-			return pages[:i], true, nil
-		}
-	}
-	return pages, false, nil
-}
-
-func textOfV2Page(page lpdf.Page) (text string) {
-	defer func() { _ = recover() }()
-	if page.V.IsNull() {
-		return ""
-	}
-	text, err := getPlainTextFromPage(page)
-	if err != nil {
-		return ""
-	}
-	return text
-}
-
-func plainTextRawUntil(pdfData []byte, limit int, stop func(page int, text string) bool) (pages []string, err error) {
-	parser, err := newRawPDFParser(pdfData)
-	if err != nil {
-		return nil, err
-	}
-	n := len(parser.pages)
-	if limit > 0 && n > limit {
-		n = limit
-	}
-	pages = make([]string, n)
-	for i := 0; i < n; i++ {
-		pages[i] = rawPagePlainText(parser, i)
-		if stop != nil && stop(i+1, pages[i]) {
-			return pages[:i+1], nil
-		}
-	}
-	return pages, nil
-}
-
 // extractPageTextV2 extracts plain text from a single page (0-based)
 // using ledongthuc/pdf, returning a single string with lines separated by newlines.
 func extractPageTextV2(pdfData []byte, pageIndex int) (result string, retErr error) {
@@ -176,7 +92,7 @@ func extractPageTextV2(pdfData []byte, pageIndex int) (result string, retErr err
 		}
 	}()
 
-	reader, err := lpdf.NewReader(bytes.NewReader(pdfData), int64(len(pdfData)))
+	reader, err := lpdf.NewReader(bytes.NewReader(patchPDF2Header(pdfData)), int64(len(pdfData)))
 	if err != nil {
 		return "", fmt.Errorf("failed to open PDF: %w", err)
 	}
@@ -267,7 +183,7 @@ func GetSourcePDFPageCountV2(pdfData []byte) (n int, retErr error) {
 		}
 	}()
 
-	reader, err := lpdf.NewReader(bytes.NewReader(pdfData), int64(len(pdfData)))
+	reader, err := lpdf.NewReader(bytes.NewReader(patchPDF2Header(pdfData)), int64(len(pdfData)))
 	if err != nil {
 		return 0, fmt.Errorf("failed to open PDF: %w", err)
 	}
@@ -290,7 +206,7 @@ func ExtractAllPagesText(pdfData []byte) (result string, retErr error) {
 		}
 	}()
 
-	reader, err := lpdf.NewReader(bytes.NewReader(pdfData), int64(len(pdfData)))
+	reader, err := lpdf.NewReader(bytes.NewReader(patchPDF2Header(pdfData)), int64(len(pdfData)))
 	if err != nil {
 		return "", fmt.Errorf("failed to open PDF: %w", err)
 	}
@@ -323,9 +239,10 @@ func ExtractAllPagesText(pdfData []byte) (result string, retErr error) {
 // from the PDF. This is a convenience wrapper around ledongthuc/pdf's
 // Reader.GetPlainText().
 func GetPlainTextReader(pdfData []byte) (io.Reader, error) {
-	reader, err := lpdf.NewReader(bytes.NewReader(pdfData), int64(len(pdfData)))
+	reader, err := lpdf.NewReader(bytes.NewReader(patchPDF2Header(pdfData)), int64(len(pdfData)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open PDF: %w", err)
 	}
 	return reader.GetPlainText()
 }
+

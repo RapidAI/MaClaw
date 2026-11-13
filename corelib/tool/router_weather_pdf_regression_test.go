@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // Regression tests for the semantic tool-routing miss observed in production
@@ -102,6 +103,7 @@ func TestRouter_WeatherPDFTaskKeepsNeededTools(t *testing.T) {
 // embedding channel: with the real embedding model, the fused ranking must
 // place the task-relevant tools ahead of the former noise winner git_status.
 func TestRouter_WeatherPDFFusedRanking(t *testing.T) {
+	testenv.SkipModelTests(t)
 	modelPath := os.Getenv("GEMMA_EMB_MODEL")
 	if modelPath == "" {
 		home, _ := os.UserHomeDir()

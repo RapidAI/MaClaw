@@ -435,13 +435,19 @@ func fileCompanionAppendNoteExcerpt(base, excerpt string) string {
 	return base + "\n\n" + fileCompanionNoteExcerptLabel + "\n" + excerpt
 }
 
-// fileCompanionStripNoteExcerptText removes the host note quote from one
-// user utterance. A later question reads the note file again, so a regenerated
-// note cannot stay behind in an older question.
+// fileCompanionStripNoteExcerptText removes host context from one user
+// utterance: the note quote and the fetched web-page body. A later question
+// reads both again, so a regenerated note or an updated page cannot stay
+// behind in an older question.
 func fileCompanionStripNoteExcerptText(text string) string {
-	marker := "\n\n" + fileCompanionNoteExcerptLabel
-	if idx := strings.Index(text, marker); idx >= 0 {
-		return strings.TrimSpace(text[:idx])
+	cut := -1
+	for _, label := range []string{fileCompanionNoteExcerptLabel, fileCompanionWebPageLabel} {
+		if idx := strings.Index(text, "\n\n"+label); idx >= 0 && (cut < 0 || idx < cut) {
+			cut = idx
+		}
+	}
+	if cut >= 0 {
+		return strings.TrimSpace(text[:cut])
 	}
 	return text
 }

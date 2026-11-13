@@ -196,7 +196,7 @@ func (a *App) fileCompanionPaperLookupCtx(ctx context.Context, query string) (st
 	if a == nil || a.imHandler == nil || ctx == nil {
 		return "", ""
 	}
-	response, err := websearch.SearchWithStrategyCtx(ctx, query, 5, a.imHandler.getWebSearchStrategy())
+	response, err := websearch.SearchWithStrategyCtx(ctx, query, 5, webSearchStrategyNoBrowser(a.imHandler.getWebSearchStrategy()))
 	if err != nil {
 		return "", ""
 	}

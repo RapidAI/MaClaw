@@ -230,6 +230,46 @@ describe('TaskMachineBar', () => {
         expect(screen.getByTestId('task-machine-pending').textContent).not.toContain('已忽略');
     });
 
+    it('renders a compact being-controlled chip with an end action', async () => {
+        const control = remote({
+            state: {
+                machine_id: 'mac-a',
+                machines: [],
+                grants: [],
+                pending: [],
+                invites: [],
+                controlled: [{ id: 'c1', from_machine: 'znsoftpc', permission: 'operate', status: 'active' }],
+            },
+        });
+        render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
+        const section = screen.getByTestId('task-machine-controlled');
+        expect(section.textContent).toContain('znsoftpc');
+        expect(section.textContent).toContain('正在远控本机');
+        expect(section.textContent).toContain('可操作');
+        // The headed card is gone: the full context lives on the section's
+        // accessible name instead of a visible heading.
+        expect(section.getAttribute('aria-label')).toContain('被远控');
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('task-machine-end-c1'));
+        });
+        expect(control.revoke).toHaveBeenCalledWith('c1');
+    });
+
+    it('falls back to a generic controller name when from_machine is missing', () => {
+        const control = remote({
+            state: {
+                machine_id: 'mac-a',
+                machines: [],
+                grants: [],
+                pending: [],
+                invites: [],
+                controlled: [{ id: 'c2', permission: 'view', status: 'active' }],
+            },
+        });
+        render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
+        expect(screen.getByTestId('task-machine-controlled').textContent).toContain('对方电脑');
+    });
+
     it('shows offline and hides sending when the grant cannot operate', () => {
         const control = remote({
             selected: { id: 'g1', machine_name: '家里', permission: 'view', status: 'active', online: false },

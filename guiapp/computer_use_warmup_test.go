@@ -12,6 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/guiautomation"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 func TestGetComputerUseLastWarmupEmpty(t *testing.T) {
@@ -605,6 +606,7 @@ func TestRegisterComputerUseToolsReusesWarmYOLO(t *testing.T) {
 		globalComputerUse.mu.Unlock()
 	})
 	// Only meaningful when weights exist.
+	testenv.SkipModelTests(t)
 	p := findYOLOWeights()
 	if p == "" {
 		t.Skip("no YOLO weights")

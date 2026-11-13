@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/ocr"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // TestNativeOCRProviderSetModelPathsRace hammers SetModelPaths concurrently
@@ -27,6 +28,7 @@ import (
 //
 // Skipped when the PP-OCRv6 models are not present.
 func TestNativeOCRProviderSetModelPathsRace(t *testing.T) {
+	testenv.SkipModelTests(t)
 	dir := filepath.Join("..", "..", ".tmp", "ocr-models")
 	detA := filepath.Join(dir, "ppocrv6_small_det.onnx")
 	recA := filepath.Join(dir, "ppocrv6_small_rec.onnx")

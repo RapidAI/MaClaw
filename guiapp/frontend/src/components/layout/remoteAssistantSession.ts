@@ -1,9 +1,40 @@
 import { useSyncExternalStore } from 'react';
+import { EventsOn } from '../../../wailsjs/runtime';
 
 export type RemoteAssistantTranscriptMessage = {
     role: string;
     content: string;
     reasoning?: string;
+    /** Files this turn produced on the controlled machine; not local paths. */
+    localFilePaths?: string[];
+    /** Synthetic row built from the live mirror — not in the transcript yet. */
+    remoteLive?: boolean;
+    /** The live row's thinking is still open on the controlled machine. */
+    liveThinking?: boolean;
+};
+
+/** One ordered piece of a mirrored round; identical to remoteStreamPart in guiapp. */
+export type RemoteLivePart = {
+    kind: 'text' | 'thinking' | 'progress';
+    seq: number;
+    text: string;
+    done?: boolean;
+};
+
+/** The in-flight round mirrored from the controlled machine over remote_control.stream. */
+export type RemoteLiveRound = {
+    requestId: string;
+    displayText: string;
+    parts: RemoteLivePart[];
+    streamDone: boolean;
+    responded: boolean;
+    /** Transcript length when the round was first seen; growth past it settles the round. */
+    baseline: number;
+    startedAt?: number;
+    /** Local receive time of the last stream event; stale rounds are dropped. */
+    lastEventAt: number;
+    /** Settled answer text carried by the response event, for transcript dedupe. */
+    responseText?: string;
 };
 
 /** Compact workflow snapshot mirrored from the remote task row. */
@@ -48,6 +79,8 @@ export type RemoteAssistantSession = {
     busy?: boolean;
     /** Live status mirrored from the remote task snapshot. */
     activity?: RemoteAssistantActivity;
+    /** The in-flight round mirrored live; absent when nothing streams. */
+    live?: RemoteLiveRound | null;
     messages: RemoteAssistantTranscriptMessage[];
 };
 
@@ -91,8 +124,225 @@ function markKey(session: RemoteAssistantSession | null) {
     return session ? `${session.grantId}${session.projectPath}` : '';
 }
 
+// --- Live mirror (remote_control.stream) ---
+//
+// The controlled desktop relays its assistant stream events while a task is
+// watched. This store folds them into one RemoteLiveRound per session, and
+// withEchoes projects the round onto the transcript as a synthetic assistant
+// row: streamed text plus the finished thinking blocks. Reasoning deltas are
+// never held live — the controlled side ships a thinking block only when it
+// closes, so the 思考 box appears first and fills in afterwards.
+
+const liveRounds = new Map<string, RemoteLiveRound>();
+
+function liveKey(grantId: string, projectPath: string) {
+    return grantId && projectPath ? `${grantId}${projectPath}` : '';
+}
+
+/** External-origin user rows carry a 〔远控〕/〔…〕 prefix — strip it for dedupe and display. */
+function stripRemoteOriginMarker(text: string) {
+    return String(text || '').replace(/^〔[^〕]*〕/, '').trim();
+}
+
+function closeLiveThinking(round: RemoteLiveRound) {
+    for (const part of round.parts) {
+        if (part.kind === 'thinking' && !part.done) part.done = true;
+    }
+}
+
+function ensureLiveRound(key: string, requestId: string): RemoteLiveRound {
+    let round = liveRounds.get(key);
+    if (!round || (requestId && round.requestId && round.requestId !== requestId)) {
+        round = {
+            requestId: requestId || '',
+            displayText: '',
+            parts: [],
+            streamDone: false,
+            responded: false,
+            baseline: -1,
+            lastEventAt: 0,
+        };
+        liveRounds.set(key, round);
+    }
+    if (requestId && !round.requestId) round.requestId = requestId;
+    return round;
+}
+
+type RemoteStreamPayload = {
+    grant_id?: string;
+    project_path?: string;
+    request_id?: string;
+    event?: string;
+    seq?: number;
+    text?: string;
+    state?: string;
+    display_text?: string;
+    response?: { text?: string } | null;
+};
+
+/** Folds one remote_control.stream event into the session's live round. */
+export function applyRemoteStreamPayload(payload: unknown) {
+    const parsed = typeof payload === 'string' ? (() => { try { return JSON.parse(payload); } catch { return null; } })() : payload;
+    const p = (parsed && typeof parsed === 'object' ? parsed : {}) as RemoteStreamPayload;
+    const key = liveKey(String(p.grant_id || '').trim(), String(p.project_path || '').trim());
+    const eventName = String(p.event || '');
+    if (!key || !eventName) return;
+    const requestId = String(p.request_id || '');
+    const seq = typeof p.seq === 'number' ? p.seq : 0;
+    let round: RemoteLiveRound | undefined;
+    switch (eventName) {
+        case 'round_started': {
+            round = ensureLiveRound(key, requestId);
+            round.displayText = String(p.display_text || '');
+            break;
+        }
+        case 'token': {
+            round = ensureLiveRound(key, requestId);
+            const text = String(p.text || '');
+            if (text.startsWith('\x02')) {
+                // Rejected-round reset: drop the trailing draft text run, keep
+                // whatever follows the marker as the fresh content.
+                while (round.parts.length && round.parts[round.parts.length - 1].kind === 'text') round.parts.pop();
+                const body = text.slice(1);
+                if (body) round.parts.push({ kind: 'text', seq, text: body });
+            } else if (text) {
+                const tail = round.parts[round.parts.length - 1];
+                if (tail && tail.kind === 'text') tail.text += text;
+                else round.parts.push({ kind: 'text', seq, text });
+            }
+            break;
+        }
+        case 'thinking': {
+            round = ensureLiveRound(key, requestId);
+            if (p.state === 'done') {
+                const tail = round.parts[round.parts.length - 1];
+                if (tail && tail.kind === 'thinking' && !tail.done) {
+                    tail.text = String(p.text || '');
+                    tail.done = true;
+                } else {
+                    round.parts.push({ kind: 'thinking', seq, text: String(p.text || ''), done: true });
+                }
+            } else {
+                round.parts.push({ kind: 'thinking', seq, text: '', done: false });
+            }
+            break;
+        }
+        case 'progress': {
+            round = ensureLiveRound(key, requestId);
+            const text = String(p.text || '');
+            if (text) round.parts.push({ kind: 'progress', seq, text });
+            break;
+        }
+        case 'new_round': {
+            round = ensureLiveRound(key, requestId);
+            closeLiveThinking(round);
+            break;
+        }
+        case 'stream_done': {
+            round = ensureLiveRound(key, requestId);
+            closeLiveThinking(round);
+            round.streamDone = true;
+            break;
+        }
+        case 'response': {
+            round = ensureLiveRound(key, requestId);
+            closeLiveThinking(round);
+            round.streamDone = true;
+            round.responded = true;
+            // A turn that streamed nothing still has an answer to show.
+            const text = p.response && typeof p.response.text === 'string' ? p.response.text : '';
+            if (text) round.responseText = text;
+            if (text && !round.parts.some(part => part.kind === 'text' && part.text)) {
+                round.parts.push({ kind: 'text', seq, text });
+            }
+            break;
+        }
+        default:
+            return;
+    }
+    round.lastEventAt = Date.now();
+    emit();
+}
+
+type RemoteWatchSnapshot = {
+    request_id?: string;
+    project_path?: string;
+    display_text?: string;
+    parts?: RemoteLivePart[];
+    stream_done?: boolean;
+    responded?: boolean;
+    started_at?: number;
+};
+
+/** Installs the in-flight turn a watch_task reply carried (mid-turn catch-up). */
+export function applyRemoteWatchSnapshot(grantId: string, live: unknown) {
+    const p = (live && typeof live === 'object' ? live : null) as RemoteWatchSnapshot | null;
+    if (!p || !String(p.request_id || '')) return;
+    const key = liveKey(grantId, String(p.project_path || '').trim());
+    if (!key) return;
+    liveRounds.set(key, {
+        requestId: String(p.request_id || ''),
+        displayText: String(p.display_text || ''),
+        parts: Array.isArray(p.parts) ? p.parts.filter(part => part && typeof part === 'object') : [],
+        streamDone: !!p.stream_done,
+        responded: !!p.responded,
+        baseline: raw ? raw.messages.length : -1,
+        startedAt: typeof p.started_at === 'number' && p.started_at > 0 ? p.started_at : undefined,
+        lastEventAt: Date.now(),
+    });
+    emit();
+}
+
+// Settles the live round against the polled transcript. The response having
+// landed plus a fresh non-user tail means the transcript now owns the turn.
+// The timeout path covers answers the transcript never grows for (stopped or
+// unwritten turns), so a mirrored draft cannot outlive its round forever.
+function settleLiveRounds() {
+    if (!raw) {
+        liveRounds.clear();
+        return;
+    }
+    const key = markKey(raw);
+    for (const roundKey of [...liveRounds.keys()]) {
+        if (roundKey !== key) liveRounds.delete(roundKey);
+    }
+    const round = liveRounds.get(key);
+    if (!round) return;
+    if (round.baseline < 0) round.baseline = raw.messages.length;
+    const staleMs = round.responded ? 90_000 : 180_000;
+    if (Date.now() - (round.lastEventAt || 0) > staleMs) {
+        liveRounds.delete(key);
+        return;
+    }
+    if (!round.responded) return;
+    const tail = raw.messages[raw.messages.length - 1];
+    if (!tail || tail.role === 'user') return;
+    // The transcript owns the turn once it grows past the round's baseline,
+    // or when its tail already carries this answer — a response can land
+    // between polls and baseline counts whatever was fetched, not what the
+    // round saw, so the content check is the real arbiter.
+    const roundText = (round.responseText || round.parts.filter(part => part.kind === 'text').map(part => part.text).join('')).trim();
+    const tailText = (tail.content || '').trim();
+    const covered = raw.messages.length > round.baseline
+        || (roundText !== '' && tailText !== '' && tailText.startsWith(roundText.slice(0, Math.min(60, roundText.length))));
+    if (covered) liveRounds.delete(key);
+}
+
+let remoteStreamBound = false;
+
+/** Starts forwarding remote-control:stream Wails events into the live store. */
+export function bindRemoteStreamEvents() {
+    if (remoteStreamBound) return;
+    remoteStreamBound = true;
+    try {
+        EventsOn('remote-control:stream', (payload: unknown) => applyRemoteStreamPayload(payload));
+    } catch {
+        remoteStreamBound = false;
+    }
+}
+
 function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSession | null {
-    if (!session || marks.length === 0) return session;
+    if (!session) return session;
     const key = markKey(session);
     let merged: RemoteAssistantTranscriptMessage[] | null = null;
     // Two sends can share one anchor (the transcript did not move between
@@ -106,6 +356,30 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
         const at = mark.at < 0 ? merged.length : Math.min(mark.at + offset, merged.length);
         merged.splice(at, 0, { role: 'user', content: mark.text });
         offset += 1;
+    }
+    const round = liveRounds.get(key);
+    if (round) {
+        merged = merged ?? session.messages.slice();
+        // A round the controller did not send (started on the other machine,
+        // or by a second controller) still owns its user row until the
+        // transcript echoes it.
+        const displayText = stripRemoteOriginMarker(round.displayText);
+        if (displayText && !merged.some(message => message.role === 'user' && message.content.trim() === displayText)) {
+            merged.push({ role: 'user', content: displayText });
+        }
+        const thinking = round.parts
+            .filter(part => part.kind === 'thinking' && part.text)
+            .map(part => part.text)
+            .join('\n\n');
+        const content = round.parts
+            .filter(part => part.kind === 'text')
+            .map(part => part.text)
+            .join('');
+        const liveThinking = round.parts.some(part => part.kind === 'thinking' && !part.done);
+        if (content || thinking || liveThinking) {
+            merged.push({ role: 'assistant', content, reasoning: thinking || undefined, remoteLive: true, liveThinking });
+        }
+        return { ...session, messages: merged, live: round };
     }
     return merged ? { ...session, messages: merged } : session;
 }
@@ -123,7 +397,8 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.taskName,
         session.error,
         session.activity ? JSON.stringify(session.activity) : '',
-        session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}`).join('\n--\n'),
+        session.live ? JSON.stringify(session.live.parts) + (session.live.responded ? 'r' : '') : '',
+        session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}`).join('\n--\n'),
     ].join('\n');
 }
 
@@ -161,6 +436,7 @@ export function publishRemoteAssistantSession(next: RemoteAssistantSession | nul
         marks = marks.filter(mark => mark.key !== key);
     }
     raw = next;
+    settleLiveRounds();
     emit();
 }
 

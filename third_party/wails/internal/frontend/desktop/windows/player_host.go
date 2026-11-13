@@ -112,6 +112,9 @@ func (h *playerHost) parentMoved() {
 	h.mu.Unlock()
 	if ctrl != nil {
 		_ = ctrl.NotifyParentWindowPositionChanged()
+		// This controller's repositioning is another point where the runtime
+		// can hide the pointer on the shared UI thread.
+		h.win.postCursorRestore()
 	}
 }
 
@@ -430,6 +433,9 @@ func (h *playerHost) putRect(ctrl *edge.ICoreWebView2Controller, r rectLTRB) {
 	} else {
 		// Popups, including the sign-in window, are placed from this screen origin.
 		_ = ctrl.NotifyParentWindowPositionChanged()
+		// A second controller's bounds change can hide the pointer on the
+		// shared UI thread well after the window's own size change.
+		h.win.postCursorRestore()
 	}
 	// PutBounds does not change z-order when the rectangle is unchanged.
 	// Resizing the app WebView raises that window, which then covers the player.

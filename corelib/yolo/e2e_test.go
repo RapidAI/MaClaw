@@ -5,9 +5,12 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 func TestLoadModel_OmniParserV2(t *testing.T) {
+	testenv.SkipModelTests(t)
 	weightsPath := "weights/omniparser-v2.yolow"
 	if _, err := os.Stat(weightsPath); os.IsNotExist(err) {
 		t.Skip("weights not found, run convert_weights.py first")
@@ -47,6 +50,7 @@ func TestLoadModel_OmniParserV2(t *testing.T) {
 }
 
 func TestForward_SmallInput(t *testing.T) {
+	testenv.SkipModelTests(t)
 	weightsPath := "weights/omniparser-v2.yolow"
 	if _, err := os.Stat(weightsPath); os.IsNotExist(err) {
 		t.Skip("weights not found")
@@ -85,6 +89,7 @@ func TestForward_SmallInput(t *testing.T) {
 }
 
 func TestDetect_SyntheticScreenshot(t *testing.T) {
+	testenv.SkipModelTests(t)
 	weightsPath := "weights/omniparser-v2.yolow"
 	b64Path := "weights/test_screenshot.b64"
 	if _, err := os.Stat(weightsPath); os.IsNotExist(err) {

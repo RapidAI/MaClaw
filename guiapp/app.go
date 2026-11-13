@@ -262,6 +262,7 @@ type App struct {
 	toolLockMutex                      sync.Mutex      // Mutex for toolInstallLocks map
 	remoteSessions                     *RemoteSessionManager
 	remoteInfraMu                      sync.RWMutex // publishes remote infrastructure pointers after initialization
+	remoteWatches                      *remoteWatchRegistry // remote-control live mirror watches; nil until first watch_task op
 	remoteActivationBackgroundDisabled bool         // test-only: skip post-activation background connect
 	browserSessions                    *BrowserAgentManager
 	powerStateMutex                    sync.Mutex

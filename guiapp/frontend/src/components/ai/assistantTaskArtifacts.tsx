@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { ExportLatexSourceBundle, ShowItemInFolder } from "../../../wailsjs/go/main/App";
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ExportLatexSourceBundle, OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { TaskResultUploadButton, taskResultUploadSupported } from "./TaskResultUploadButton";
 import { TaskResultExportButton } from "./TaskResultExportButton";
 import { dispatchPreviewTaskResult, localizeTaskResultExportError, taskResultPreviewKindFromPath } from "./taskResultPreview";
@@ -191,6 +191,144 @@ export function TaskResultArtifacts({
                     <LatexSourceBundleButton anchorPath={bundleAnchor} lang={lang} />
                 </div>
             ) : null}
+        </div>
+    );
+}
+
+type RemoteArtifactState = {
+    status: "idle" | "busy" | "saved" | "error";
+    localPath?: string;
+    detail?: string;
+};
+
+// A missing binding throws synchronously — the saved file must not read as a
+// failed fetch just because the shell opener is unavailable.
+function openLocalArtifactPath(path: string) {
+    try {
+        void OpenFileOrShowInFolder(path).catch(() => {});
+    } catch {
+        // no-op: the saved path stays on the card either way
+    }
+}
+
+/**
+ * Remote-control transcript card: the listed files live on the controlled
+ * machine. Opening one fetches the bytes through onFetch, saves them into
+ * this computer's Downloads folder, and opens the local copy.
+ */
+export function RemoteTaskArtifacts({
+    paths,
+    messageId,
+    lang,
+    onFetch,
+}: {
+    paths: string[];
+    messageId: string;
+    lang: string;
+    /** Fetches the file from the controlled machine; resolves to the saved local path. */
+    onFetch: (filePath: string) => Promise<string>;
+}) {
+    const [states, setStates] = useState<Record<string, RemoteArtifactState>>({});
+    // A click races the state update: track in-flight fetches so a double
+    // click cannot issue the same remote request twice.
+    const inflight = useRef(new Set<string>());
+    const files: string[] = [];
+    const seen = new Set<string>();
+    for (const path of paths) {
+        const trimmed = path.trim();
+        const key = artifactIdentity(trimmed);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        files.push(trimmed);
+    }
+    if (!files.length) return null;
+    const open = (filePath: string) => {
+        const key = artifactIdentity(filePath);
+        const state = states[key];
+        if (state?.status === "busy" || inflight.current.has(key)) return;
+        if (state?.status === "saved" && state.localPath) {
+            openLocalArtifactPath(state.localPath);
+            return;
+        }
+        inflight.current.add(key);
+        setStates(prev => ({ ...prev, [key]: { status: "busy" } }));
+        void onFetch(filePath).then(localPath => {
+            const saved = String(localPath || "").trim();
+            if (!saved) {
+                setStates(prev => ({ ...prev, [key]: { status: "error", detail: chromeText(lang, "The file could not be fetched", "文件取回失败") } }));
+                return;
+            }
+            setStates(prev => ({ ...prev, [key]: { status: "saved", localPath: saved } }));
+            openLocalArtifactPath(saved);
+        }).catch((err: unknown) => {
+            const detail = err instanceof Error && err.message.trim()
+                ? err.message
+                : String(err || "").trim() || chromeText(lang, "The file could not be fetched", "文件取回失败");
+            setStates(prev => ({ ...prev, [key]: { status: "error", detail } }));
+        }).finally(() => {
+            inflight.current.delete(key);
+        });
+    };
+    return (
+        <div className="mc-task-artifacts" data-testid={`remote-task-result-card-${messageId}`}>
+            <div className="mc-task-artifacts__head">
+                <span className="mc-task-artifacts__glyph" aria-hidden="true">◈</span>
+                <span className="mc-task-artifacts__label">{chromeText(lang, "Artifacts", "产出物", "產出物")}</span>
+                <span className="mc-task-artifacts__count">{files.length}</span>
+            </div>
+            <div className="mc-task-artifacts__row">
+                {files.map((filePath, index) => {
+                    const file = artifactLabel(filePath, lang);
+                    const state = states[artifactIdentity(filePath)];
+                    const suffix = index > 0 ? `-${index}` : "";
+                    const busy = state?.status === "busy";
+                    const label = busy
+                        ? chromeText(lang, "Fetching...", "取回中...", "取回中...")
+                        : state?.status === "saved"
+                            ? chromeText(lang, "Open", "打开", "打開")
+                            : state?.status === "error"
+                                ? chromeText(lang, "Retry", "重试", "重試")
+                                : chromeText(lang, "Fetch & open", "取回并打开", "取回並打開");
+                    const title = state?.status === "error" && state.detail
+                        ? state.detail
+                        : state?.status === "saved" && state.localPath
+                            ? state.localPath
+                            : file.title;
+                    return (
+                        <div key={`${filePath}-${index}`} className="mc-task-artifact-item">
+                            <div className="mc-task-artifact-item__head">
+                                <a
+                                    className="mc-task-artifact"
+                                    href="#"
+                                    title={title}
+                                    data-testid={`remote-task-artifact${suffix}`}
+                                    onClick={(event) => { event.preventDefault(); event.stopPropagation(); open(filePath); }}
+                                >
+                                    <ArtifactFileIcon path={filePath} />
+                                    <span className="mc-task-artifact__name">{file.name}</span>
+                                    <span className="mc-task-artifact__open" aria-hidden="true">{busy ? "…" : "↗"}</span>
+                                </a>
+                            </div>
+                            <div className="mc-task-result-card__actions mc-task-artifact-item__actions">
+                                <button
+                                    type="button"
+                                    data-testid={`remote-task-fetch-btn${suffix}`}
+                                    title={title}
+                                    disabled={busy}
+                                    onClick={(event) => { event.preventDefault(); event.stopPropagation(); open(filePath); }}
+                                >
+                                    {label}
+                                </button>
+                            </div>
+                            {state?.status === "error" && state.detail && (
+                                <div data-testid={`remote-task-fetch-error${suffix}`} style={{ color: "var(--maclaw-error, #c0392b)", fontSize: 12, marginTop: 4, wordBreak: "break-word" }}>
+                                    {state.detail}
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
         </div>
     );
 }

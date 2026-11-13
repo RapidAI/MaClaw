@@ -231,28 +231,43 @@ func paperFigureCaptionPages(data []byte) []paperFigurePage {
 // A whole-page raster passes paperFigureMaxCount, because each extra page
 // is rendered in full. kind reports whether that page's text names a
 // caption, and whether every caption on it is an appendix caption.
-func paperFigurePagesFromText(data []byte, limit int, kind func(string) (appendix bool, ok bool), maxBody int) []paperFigurePage {
+func paperFigurePagesFromText(data []byte, limit int, kind func(string) (appendix bool, ok bool), maxBody int) (found []paperFigurePage) {
 	if len(data) == 0 || kind == nil || limit == 0 {
 		return nil
 	}
-	var found []paperFigurePage
+	defer func() {
+		if r := recover(); r != nil && len(found) == 0 {
+			found = nil
+		}
+	}()
+	doc, err := gopdf2.OpenPDFDocument(data)
+	if err != nil {
+		return nil
+	}
+	n := doc.PageCount()
+	if limit > 0 && n > limit {
+		n = limit
+	}
 	body := 0
-	_, err := gopdf2.PlainTextByPageUntil(data, limit, func(page int, text string) bool {
+	for i := 0; i < n; i++ {
+		text, err := doc.Text(i)
+		if err != nil {
+			text = "" // failed page reads as empty so the indexes stay aligned
+		}
 		appendix, ok := kind(text)
 		if !ok {
-			return false
+			continue
 		}
-		found = append(found, paperFigurePage{page: page, appendix: appendix})
+		found = append(found, paperFigurePage{page: i + 1, appendix: appendix})
 		// Later body figures sort ahead of these and are cut by the reply cap.
 		// Appendix figures only fill slots the body did not take.
 		if appendix {
-			return false
+			continue
 		}
 		body++
-		return maxBody > 0 && body >= maxBody
-	})
-	if err != nil && len(found) == 0 {
-		return nil
+		if maxBody > 0 && body >= maxBody {
+			break
+		}
 	}
 	return found
 }

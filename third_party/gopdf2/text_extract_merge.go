@@ -447,9 +447,12 @@ func lineSpan(words []mergedRun) (x0, x1 float64) {
 	return x0, x1
 }
 
-// classifyWord returns where a word sits relative to the gutter:
-// -1 left, +1 right, 0 overlapping the gutter interior.
-func classifyWord(x0, x1, gl, gr float64) int {
+// debugGutter enables one-line diagnostics for gutter detection.
+var debugGutter = os.Getenv("GOPDF_DEBUG_GUTTER") != ""
+
+// gutterHit classifies a word against one gutter: -1 left of it, +1 right
+// of it, 0 overlapping the gutter interior.
+func gutterHit(x0, x1, gl, gr float64) int {
 	switch {
 	case x1 <= gl+2:
 		return -1
@@ -460,24 +463,25 @@ func classifyWord(x0, x1, gl, gr float64) int {
 	}
 }
 
-// detectColumnGutter looks for a vertical gutter splitting the text into
-// two columns. It returns the gutter's left and right edges and whether a
-// trustworthy split was found.
+// detectColumnGutters finds ALL vertical gutters splitting the text into
+// column bands. Returns the gutters left to right as [left, right] edges,
+// and whether the split is trustworthy.
 //
-// Detection and validation work at word level: a baseline row may carry
-// words on both sides of the gutter (as in two-column text typeset on a
-// shared grid), and only words actually overlapping the gutter interior
-// count as crossing it — a spanning title contributes those.
+// A candidate strip qualifies when only crossing lines (full-width titles)
+// cover it — words tile each line horizontally so a crossing line
+// contributes ~1 word per candidate, while column interiors add at least
+// columnMinLinesPerSide rows on top. The threshold sits just above the
+// page's minimum coverage.
 //
-// A candidate is accepted only when:
-//   - few words overlap the strip (<= 25% of all words),
-//   - the clean part of the strip is at least columnGutterMin wide,
-//   - at least columnMinLinesPerSide rows contribute words to each side,
-//   - each side's rows span most (>=55%) of the page's vertical text range,
-//     which rules out figures and ragged-right paragraphs.
-func detectColumnGutter(lines [][]mergedRun) (gutterL, gutterR float64, ok bool) {
-	if len(lines) < 2*columnMinLinesPerSide {
-		return 0, 0, false
+// Validation across all bands:
+//   - every band feeds at least columnMinLinesPerSide rows,
+//   - every band's rows span >= 35% of the vertical text range,
+//   - rows overlapping gutter interiors are <= 25% of all rows.
+func detectColumnGutters(lines [][]mergedRun) ([][2]float64, bool) {
+	// small floor; the per-band row/span validations below carry the
+	// real protection
+	if len(lines) < 4 {
+		return nil, false
 	}
 	gmin, gmax := math.MaxFloat64, -math.MaxFloat64
 	ymin, ymax := math.MaxFloat64, -math.MaxFloat64
@@ -500,11 +504,10 @@ func detectColumnGutter(lines [][]mergedRun) (gutterL, gutterR float64, ok bool)
 	}
 	ySpan := ymax - ymin
 	if ySpan <= 0 || gmax-gmin < 200 {
-		// too narrow to plausibly be two columns
-		return 0, 0, false
+		return nil, false
 	}
 
-	// Count how many words cover each candidate x (2pt granularity).
+	// word coverage per candidate x (2pt granularity)
 	const step = 2.0
 	n := int((gmax-gmin)/step) + 1
 	cross := make([]int, n)
@@ -523,14 +526,6 @@ func detectColumnGutter(lines [][]mergedRun) (gutterL, gutterR float64, ok bool)
 			}
 		}
 	}
-
-	// A candidate can be a gutter when only crossing lines (full-width
-	// titles) cover it. Words tile each line horizontally, so a crossing
-	// line contributes ~1 word per candidate; column interiors add at
-	// least columnMinLinesPerSide rows on top. Setting the threshold just
-	// above the page's minimum coverage separates the two: the minimum
-	// occurs in the gutter (or at sparse text edges, which are too narrow
-	// to qualify once the width rule below applies).
 	minCross := n
 	for c := 0; c < n; c++ {
 		if cross[c] < minCross {
@@ -538,121 +533,163 @@ func detectColumnGutter(lines [][]mergedRun) (gutterL, gutterR float64, ok bool)
 		}
 	}
 	maxCross := minCross + 2
-	bestStart, bestEnd := -1, -1
+
+	// all qualifying runs wide enough to be gutters
+	type gutter struct{ l, r float64 }
+	var gutters []gutter
 	runStart := -1
-	for c := 0; c < n; c++ {
-		if cross[c] <= maxCross {
-			if runStart < 0 {
-				runStart = c
+	for c := 0; c <= n; c++ {
+		ok := c < n && cross[c] <= maxCross
+		if ok && runStart < 0 {
+			runStart = c
+		}
+		if (!ok || c == n) && runStart >= 0 {
+			if w := float64(c-runStart) * step; w >= columnGutterMin {
+				gutters = append(gutters, gutter{
+					gmin + float64(runStart)*step,
+					gmin + float64(c)*step,
+				})
 			}
-			if c-runStart > bestEnd-bestStart {
-				bestStart, bestEnd = runStart, c
-			}
-		} else {
 			runStart = -1
 		}
 	}
-	if bestStart < 0 || float64(bestEnd-bestStart+1)*step < columnGutterMin {
-		return 0, 0, false
+	if len(gutters) == 0 {
+		return nil, false
 	}
 
-	gl := gmin + float64(bestStart)*step
-	gr := gmin + float64(bestEnd+1)*step
-
-	// Validate the split: enough rows feeding each side, both sides
-	// spanning most of the vertical range, few crossing rows.
-	var leftN, rightN, crossN int
-	leftYmin, leftYmax := math.MaxFloat64, -math.MaxFloat64
-	rightYmin, rightYmax := math.MaxFloat64, -math.MaxFloat64
+	// validate bands between the gutters
+	bands := len(gutters) + 1
+	bandRows := make([]int, bands)
+	bandYmin := make([]float64, bands)
+	bandYmax := make([]float64, bands)
+	for i := range bandYmin {
+		bandYmin[i] = math.MaxFloat64
+		bandYmax[i] = -math.MaxFloat64
+	}
+	crossRows := 0
 	for _, ln := range lines {
-		var hasLeft, hasRight, interior bool
+		counts := make([]int, bands)
+		interior := false
+	wordLoop:
 		for _, w := range ln {
-			switch classifyWord(w.x, w.x+w.width, gl, gr) {
-			case -1:
-				hasLeft = true
-			case 1:
-				hasRight = true
-			default:
-				interior = true
+			for gi, g := range gutters {
+				switch gutterHit(w.x, w.x+w.width, g.l, g.r) {
+				case -1:
+					// fully left of this gutter: band is final
+					counts[gi]++
+					continue wordLoop
+				case 1:
+					// right of it: refine against the next gutter
+				default:
+					interior = true
+					break wordLoop
+				}
 			}
-			if interior {
-				break
-			}
+			// right of all gutters: last band
+			counts[bands-1]++
 		}
 		if interior {
-			crossN++
+			crossRows++
 			continue
 		}
-		if hasLeft {
-			leftN++
-			leftYmin = math.Min(leftYmin, ln[0].y)
-			leftYmax = math.Max(leftYmax, ln[0].y)
+		fed := false
+		for b := 0; b < bands; b++ {
+			if counts[b] > 0 {
+				bandRows[b]++
+				fed = true
+				y := ln[0].y
+				if y < bandYmin[b] {
+					bandYmin[b] = y
+				}
+				if y > bandYmax[b] {
+					bandYmax[b] = y
+				}
+			}
 		}
-		if hasRight {
-			rightN++
-			rightYmin = math.Min(rightYmin, ln[0].y)
-			rightYmax = math.Max(rightYmax, ln[0].y)
+		if !fed {
+			crossRows++
 		}
 	}
-	if leftN < columnMinLinesPerSide || rightN < columnMinLinesPerSide {
-		return 0, 0, false
+	for b := 0; b < bands; b++ {
+		if bandRows[b] < columnMinLinesPerSide {
+			return nil, false
+		}
+		if bandYmax[b]-bandYmin[b] < 0.35*ySpan {
+			return nil, false
+		}
 	}
-	if crossN > len(lines)/4 {
-		return 0, 0, false
+	if crossRows > len(lines)/4 {
+		return nil, false
 	}
-	if leftYmax-leftYmin < 0.35*ySpan || rightYmax-rightYmin < 0.35*ySpan {
-		return 0, 0, false
+
+	out := make([][2]float64, len(gutters))
+	for i, g := range gutters {
+		out[i] = [2]float64{g.l, g.r}
 	}
-	return gl, gr, true
+	return out, true
 }
 
-// orderLineGroups reorders merged line groups into reading order. Without a
-// column gutter the Y-sorted input passes through unchanged; with one, each
-// section between full-width lines is emitted left column first, top-down.
-// Rows are split at word granularity so a row carrying words on both sides
-// of the gutter feeds both columns.
+// bandOfClass maps a word to its column band given the gutter edges, or -1
+// when the word overlaps a gutter interior.
+func bandOfClass(x0, x1 float64, gutters [][2]float64) int {
+	band := len(gutters)
+	for gi, g := range gutters {
+		switch gutterHit(x0, x1, g[0], g[1]) {
+		case -1:
+			return gi
+		case 1:
+			band = gi + 1
+		default:
+			return -1
+		}
+	}
+	return band
+}
+
+// orderLineGroups reorders merged line groups into reading order. Without
+// column gutters the Y-sorted input passes through unchanged; with them,
+// each section between full-width lines is emitted band by band, top-down.
+// Rows are split at word granularity so a row carrying words in several
+// bands feeds each of them.
 func orderLineGroups(lines [][]mergedRun) [][]mergedRun {
-	if len(lines) < 2*columnMinLinesPerSide {
+	if len(lines) < 4 {
 		return lines
 	}
-	gl, gr, ok := detectColumnGutter(lines)
+	gutters, ok := detectColumnGutters(lines)
 	if !ok {
 		return lines
 	}
+	bands := len(gutters) + 1
 	var out [][]mergedRun
-	var secL, secR [][]mergedRun
+	bandLines := make([][][]mergedRun, bands)
 	flush := func() {
-		out = append(out, secL...)
-		out = append(out, secR...)
-		secL, secR = nil, nil
+		// recurse: a band may itself contain a finer gutter
+		for _, b := range bandLines {
+			out = append(out, orderLineGroups(b)...)
+		}
+		bandLines = make([][][]mergedRun, bands)
 	}
 	for _, ln := range lines { // lines arrive Y-sorted from buildMergedRuns
-		var leftWords, rightWords []mergedRun
+		groups := make([][]mergedRun, bands)
 		interior := false
 		for _, w := range ln {
-			switch classifyWord(w.x, w.x+w.width, gl, gr) {
-			case -1:
-				leftWords = append(leftWords, w)
-			case 1:
-				rightWords = append(rightWords, w)
-			default:
+			band := bandOfClass(w.x, w.x+w.width, gutters)
+			if band < 0 {
 				interior = true
-			}
-			if interior {
 				break
 			}
+			groups[band] = append(groups[band], w)
 		}
-		if interior {
+		if interior || (len(groups) == 1 && len(groups[0]) == len(ln)) {
 			// full-width line: emit the section built so far, then itself
 			flush()
 			out = append(out, ln)
 			continue
 		}
-		if len(leftWords) > 0 {
-			secL = append(secL, leftWords)
-		}
-		if len(rightWords) > 0 {
-			secR = append(secR, rightWords)
+		for bi := range groups {
+			if len(groups[bi]) > 0 {
+				bandLines[bi] = append(bandLines[bi], groups[bi])
+			}
 		}
 	}
 	flush()

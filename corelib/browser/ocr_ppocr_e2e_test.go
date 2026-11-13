@@ -10,11 +10,13 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/ocr"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // providerStressModels returns the local PP-OCRv6 small models or skips.
 func providerStressModels(t *testing.T) (det, rec string) {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	dir := filepath.Join("..", "..", ".tmp", "ocr-models")
 	det = filepath.Join(dir, "ppocrv6_small_det.onnx")
 	rec = filepath.Join(dir, "ppocrv6_small_rec.onnx")

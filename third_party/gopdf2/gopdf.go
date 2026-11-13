@@ -2542,6 +2542,13 @@ func (gp *GoPdf) writeInfo(w io.Writer) {
 		fmt.Fprintf(w, "/Producer <FEFF%s>\n", encodeUtf8(gp.info.Producer))
 	}
 
+	if gp.info.Keywords != "" {
+		fmt.Fprintf(w, "/Keywords <FEFF%s>\n", encodeUtf8(gp.info.Keywords))
+	}
+
+	if !zerotime.Equal(gp.info.ModDate) {
+		fmt.Fprintf(w, "/ModDate(D:%s)\n", infodate(gp.info.ModDate))
+	}
 	if !zerotime.Equal(gp.info.CreationDate) {
 		fmt.Fprintf(w, "/CreationDate(D:%s)\n", infodate(gp.info.CreationDate))
 	}

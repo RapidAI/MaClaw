@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // TestRealModelOfficeLookupCompositeRegression pins the 2026-08-25 production
@@ -19,9 +20,7 @@ import (
 // escalate to the tree with the companion attached — never ship locally, and
 // never collapse to a plain office verdict.
 func TestRealModelOfficeLookupCompositeRegression(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-model regression skipped in short mode")
-	}
+	testenv.SkipModelTests(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("resolve home directory: %v", err)

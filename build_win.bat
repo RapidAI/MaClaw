@@ -384,6 +384,8 @@ REM built GUI.  Leaving build\bin or guiapp\gui.exe stale makes a successful
 REM build appear to have no frontend changes when the user starts the legacy
 REM shortcut instead of dist\MaClaw.exe.
 echo [INFO] Syncing legacy GUI launch copies...
+REM build\bin is an untracked legacy launch location; recreate it if a cleanup removed it.
+if not exist "%~dp0build\bin" mkdir "%~dp0build\bin"
 copy /Y "%OUTPUT_DIR%\%APP_NAME%.exe" "%~dp0build\bin\%APP_NAME%.exe" >nul
 if errorlevel 1 (
     echo [ERROR] Failed to sync build\bin\%APP_NAME%.exe.

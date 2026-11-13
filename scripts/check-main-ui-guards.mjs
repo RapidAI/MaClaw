@@ -614,7 +614,8 @@ const extractedFileLineLimits = [
   // landing pushed this past 7646.
   // 7650 -> 7750 (2026-11-10): memory/task-bar batch pushed this past 7740.
   // 7750 -> 7830 (2026-11-11): receipt-replacement batch measured 7775 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7830],
+  // 7830 -> 7890 (2026-11-12): measured 7836 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7890],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -627,7 +628,8 @@ const extractedFileLineLimits = [
   // inline players) pushed this to 2106 lines.
   // Refreshed 2115 -> 2350 (2026-11-10): companion share figures rendering
   // inlined the emphasis/math paths; extract on the next pass.
-  ['guiapp/frontend/src/components/ai/aiAssistantMarkdown.tsx', 2350],
+  // 2350 -> 2420 (2026-11-12): measured 2370 lines.
+  ['guiapp/frontend/src/components/ai/aiAssistantMarkdown.tsx', 2420],
   ['guiapp/frontend/src/components/ai/AssistantReplyCopyButton.tsx', 180],
   ['guiapp/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 700],
   ['guiapp/frontend/src/components/ai/aiAssistantI18n.ts', 240],

@@ -6,11 +6,21 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { companionFill, companionSay, getCompanionUiLang } from "../../i18n/mnCompanion";
 import { capPdfAnnotationDraft } from "./chatAnnotations";
-import { CHAT_MARK_COLORS, type ChatMarkColor } from "./chatMarks";
+import { CHAT_MARK_COLORS, CHAT_MARK_STYLES, type ChatMarkColor, type ChatMarkStyle } from "./chatMarks";
+
+// The stroke ink under the 画线 swatches — the same stronger palette the
+// painted lines use, so the menu previews the line, not just the fill.
+const CHAT_LINE_INK: Record<ChatMarkColor, string> = {
+    yellow: "#c9930a",
+    green: "#2f8f5b",
+    blue: "#2f6bbd",
+    pink: "#c74884",
+};
+import { PDF_BOOKMARK_COLORS, type PdfBookmarkColor } from "./pdfBookmarks";
 
 export type ChatMenuState = { x: number; y: number };
 
-type ChatMenuGlyphKind = "copy" | "highlight" | "erase" | "note" | "pen" | "trash";
+type ChatMenuGlyphKind = "copy" | "highlight" | "erase" | "note" | "pen" | "trash" | "bookmark";
 
 function ChatMenuGlyph({ kind }: { kind: ChatMenuGlyphKind }) {
     if (kind === "highlight") {
@@ -50,6 +60,13 @@ function ChatMenuGlyph({ kind }: { kind: ChatMenuGlyphKind }) {
             </svg>
         );
     }
+    if (kind === "bookmark") {
+        return (
+            <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M7 4h10a1 1 0 0 1 1 1v15l-6-3.2L6 20V5a1 1 0 0 1 1-1z" />
+            </svg>
+        );
+    }
     if (kind === "pen") {
         return (
             <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -84,12 +101,22 @@ export function CompanionChatMarkMenu({
     canRenameAnnotation,
     canDeleteAnnotation,
     annotationName,
+    canBookmark,
+    canRenameBookmark,
+    canDeleteBookmark,
+    bookmarkName,
+    bookmarkColorId,
+    drawActive,
+    onToggleDraw,
     onCopy,
     onPaint,
     onClear,
     onAnnotate,
     onRenameAnnotation,
     onDeleteAnnotation,
+    onAddBookmark,
+    onRenameBookmark,
+    onDeleteBookmark,
     onClose,
     lang,
 }: {
@@ -102,12 +129,23 @@ export function CompanionChatMarkMenu({
     canRenameAnnotation: boolean;
     canDeleteAnnotation: boolean;
     annotationName: string;
+    canBookmark?: boolean;
+    canRenameBookmark?: boolean;
+    canDeleteBookmark?: boolean;
+    bookmarkName?: string;
+    bookmarkColorId?: PdfBookmarkColor;
+    /** When the host supports freehand drawing, the menu offers 手绘. */
+    drawActive?: boolean;
+    onToggleDraw?: () => void;
     onCopy: () => void;
-    onPaint: (color: ChatMarkColor) => void;
+    onPaint: (color: ChatMarkColor, style?: ChatMarkStyle) => void;
     onClear: () => void;
     onAnnotate: (body: string) => void;
     onRenameAnnotation: (name: string) => void;
     onDeleteAnnotation: () => void;
+    onAddBookmark?: (name: string, color: PdfBookmarkColor) => void;
+    onRenameBookmark?: (name: string, color: PdfBookmarkColor) => void;
+    onDeleteBookmark?: () => void;
     onClose: () => void;
     lang?: string;
 }) {
@@ -119,7 +157,10 @@ export function CompanionChatMarkMenu({
     const [annotationText, setAnnotationText] = useState("");
     const [noteEditor, setNoteEditor] = useState(false);
     const [noteDraft, setNoteDraft] = useState("");
-    const editorOpen = annotationOpen || noteEditor;
+    const [bookmarkEditor, setBookmarkEditor] = useState<"" | "add" | "rename">("");
+    const [bookmarkDraft, setBookmarkDraft] = useState("");
+    const [bookmarkColor, setBookmarkColor] = useState<PdfBookmarkColor>("yellow");
+    const editorOpen = annotationOpen || noteEditor || bookmarkEditor !== "";
 
     useLayoutEffect(() => {
         const root = rootRef.current;
@@ -245,6 +286,77 @@ export function CompanionChatMarkMenu({
         if (!name) return;
         onRenameAnnotation(name);
     };
+    const submitBookmark = () => {
+        const name = bookmarkDraft.trim();
+        if (!name) return;
+        if (bookmarkEditor === "rename") onRenameBookmark?.(name, bookmarkColor);
+        else onAddBookmark?.(name, bookmarkColor);
+    };
+    const openBookmarkAdd = () => {
+        setBookmarkEditor("add");
+        const seed = Array.from(quote.replace(/\s+/g, " ").trim()).slice(0, 40).join("");
+        setBookmarkDraft(seed);
+        setBookmarkColor("yellow");
+    };
+    const openBookmarkRename = () => {
+        setBookmarkEditor("rename");
+        setBookmarkDraft(bookmarkName || "");
+        setBookmarkColor(bookmarkColorId || "yellow");
+    };
+    const bookmarkForm = bookmarkEditor === "" ? null : (
+        <div data-testid="doc-bookmark-editor" className="companion-pdf-bookmark-editor">
+            <input
+                data-testid="doc-bookmark-name"
+                value={bookmarkDraft}
+                autoFocus
+                maxLength={40}
+                placeholder={say("书签名")}
+                aria-label={say("书签名")}
+                onChange={(event) => setBookmarkDraft(event.target.value)}
+                onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                        if (imeKey(event)) {
+                            event.stopPropagation();
+                            return;
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setBookmarkEditor("");
+                        return;
+                    }
+                    if (event.key === "Enter") {
+                        if (imeKey(event)) return;
+                        event.preventDefault();
+                        submitBookmark();
+                    }
+                }}
+            />
+            <div className="companion-pdf-menu-colors companion-pdf-menu-colors--bookmarks" role="group" aria-label={say("书签颜色")}>
+                {PDF_BOOKMARK_COLORS.map((color) => {
+                    const label = companionFill(shownLang, "${color}书签", { color: say(color.label) });
+                    return (
+                        <button
+                            key={color.id}
+                            type="button"
+                            data-testid={`doc-bookmark-color-${color.id}`}
+                            className="companion-pdf-menu-color"
+                            aria-label={label}
+                            aria-pressed={bookmarkColor === color.id}
+                            title={label}
+                            onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                            onClick={() => setBookmarkColor(color.id)}
+                        >
+                            <span style={{ background: color.fill }} />
+                        </button>
+                    );
+                })}
+            </div>
+            <div className="companion-pdf-bookmark-editor-actions">
+                <button type="button" className="companion-pdf-menu-btn" data-testid="doc-bookmark-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setBookmarkEditor("")}>{say("取消")}</button>
+                <button type="button" className="companion-pdf-menu-btn companion-pdf-menu-btn--accent" data-testid="doc-bookmark-save" disabled={!bookmarkDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitBookmark}>{say("确定")}</button>
+            </div>
+        </div>
+    );
 
     return (
         <div
@@ -357,6 +469,34 @@ export function CompanionChatMarkMenu({
                             );
                         })}
                     </div>
+                    {CHAT_MARK_STYLES.map((style) => (
+                        <div className="companion-pdf-menu-colors" role="group" aria-label={say(style.label)} key={style.id}>
+                            {CHAT_MARK_COLORS.map((color) => {
+                                const colorName = say(color.label);
+                                const colorTitle = companionFill(shownLang, "${color}${style}", { color: colorName, style: say(style.label) });
+                                return (
+                                <button
+                                    key={color.id}
+                                    type="button"
+                                    role="menuitem"
+                                    data-testid={`chat-line-${style.id}-${color.id}`}
+                                    className="companion-pdf-menu-color"
+                                    aria-label={colorTitle}
+                                    title={colorTitle}
+                                    {...activate(() => onPaint(color.id, style.id))}
+                                >
+                                    <span
+                                        style={
+                                            style.id === "strike"
+                                                ? { background: `linear-gradient(to bottom, ${color.fill} 42%, ${CHAT_LINE_INK[color.id]} 42%, ${CHAT_LINE_INK[color.id]} 62%, ${color.fill} 62%)` }
+                                                : { background: color.fill, boxShadow: `inset 0 -4px 0 0 ${CHAT_LINE_INK[color.id]}` }
+                                        }
+                                    />
+                                </button>
+                                );
+                            })}
+                        </div>
+                    ))}
                 </div>
             ) : null}
             {canClear ? (
@@ -371,6 +511,56 @@ export function CompanionChatMarkMenu({
                         <ChatMenuGlyph kind="erase" />
                         <span className="companion-pdf-menu-item-label">{say("取消高亮")}</span>
                     </button>
+                </div>
+            ) : null}
+            {onToggleDraw ? (
+                <div className="companion-pdf-menu-group">
+                    <button
+                        type="button"
+                        role="menuitem"
+                        data-testid="chat-menu-draw"
+                        className="companion-pdf-menu-item"
+                        aria-pressed={drawActive === true}
+                        {...activate(() => onToggleDraw())}
+                    >
+                        <ChatMenuGlyph kind="pen" />
+                        <span className="companion-pdf-menu-item-label">{drawActive ? say("退出手绘") : say("手绘")}</span>
+                    </button>
+                </div>
+            ) : null}
+            {canBookmark || canRenameBookmark || canDeleteBookmark ? (
+                <div className="companion-pdf-menu-group">
+                    {bookmarkForm}
+                    {bookmarkEditor === "" && canRenameBookmark ? (
+                        <button
+                            type="button"
+                            role="menuitem"
+                            data-testid="doc-bookmark-rename"
+                            className="companion-pdf-menu-item"
+                            {...activate(openBookmarkRename)}
+                        >
+                            <ChatMenuGlyph kind="pen" />
+                            <span className="companion-pdf-menu-item-label">{say("重命名书签")}</span>
+                        </button>
+                    ) : null}
+                    {bookmarkEditor === "" && canDeleteBookmark ? (
+                        <button type="button" role="menuitem" data-testid="doc-bookmark-delete" className="companion-pdf-menu-item companion-pdf-menu-item--danger" {...activate(() => onDeleteBookmark?.())}>
+                            <ChatMenuGlyph kind="trash" />
+                            <span className="companion-pdf-menu-item-label">{say("删除书签")}</span>
+                        </button>
+                    ) : null}
+                    {bookmarkEditor === "" && canBookmark ? (
+                        <button
+                            type="button"
+                            role="menuitem"
+                            data-testid="doc-bookmark-add"
+                            className="companion-pdf-menu-item"
+                            {...activate(openBookmarkAdd)}
+                        >
+                            <ChatMenuGlyph kind="bookmark" />
+                            <span className="companion-pdf-menu-item-label">{say("加书签")}</span>
+                        </button>
+                    ) : null}
                 </div>
             ) : null}
             {canRenameAnnotation || canDeleteAnnotation ? (

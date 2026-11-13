@@ -88,6 +88,11 @@ type ConversationEntry struct {
 	CompactionSource string `json:"compaction_source,omitempty"`
 	// CompactionFiles is the cumulative read/modified list carried on the checkpoint.
 	CompactionFiles string `json:"compaction_files,omitempty"`
+	// LocalFilePaths records files this turn delivered to the user, such as a
+	// generated document. It is host metadata only: ToMessage omits it, so it
+	// is never sent to the LLM. Remote-control task detail projects it so the
+	// controlling desktop can offer the attachments for download.
+	LocalFilePaths []string `json:"local_file_paths,omitempty"`
 }
 
 // ResolveAssistantFinishReason returns the LLM finish reason for trajectory/history
@@ -1084,24 +1089,69 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 		// an earlier call makes an unreported send look settled.
 		noteMailboxLatchBaselineAfterHistorySave(s)
 		sh.mu.Unlock()
-		if cm.sqliteActive() {
-			if _, detached := cm.detachedPath(userID); detached {
-				if err := cm.writeDetachedUser(userID); err != nil {
-					log.Printf("[conversation_memory] detached save failed user=%q err=%v", userID, err)
-				}
-			} else {
-				cm.markSQLiteSessionDirty(userID)
-			}
-			return
-		}
+		cm.persistSavedEntries(userID)
+	})
+}
+
+// persistSavedEntries schedules the write-behind for a session whose entries
+// were just stored. Callers must already hold checkpointMu.
+func (cm *ConversationMemory) persistSavedEntries(userID string) {
+	if cm.sqliteActive() {
 		if _, detached := cm.detachedPath(userID); detached {
 			if err := cm.writeDetachedUser(userID); err != nil {
 				log.Printf("[conversation_memory] detached save failed user=%q err=%v", userID, err)
 			}
+		} else {
+			cm.markSQLiteSessionDirty(userID)
+		}
+		return
+	}
+	if _, detached := cm.detachedPath(userID); detached {
+		if err := cm.writeDetachedUser(userID); err != nil {
+			log.Printf("[conversation_memory] detached save failed user=%q err=%v", userID, err)
+		}
+		return
+	}
+	cm.markDirtyAndScheduleFlush()
+}
+
+// UpdateEntries rewrites a session's active-branch entries through update in
+// one locked step — the atomic form of Load+Save for patching a stored entry
+// after the turn that owns it already wrote its history. Without this the
+// read-modify-write window can overwrite rows another writer just appended.
+// It reports whether update changed the list; an unchanged result saves
+// nothing. update runs under the mutation lock — it must be pure and must
+// not call back into ConversationMemory (Save inside it would deadlock).
+func (cm *ConversationMemory) UpdateEntries(userID string, update func(entries []ConversationEntry) ([]ConversationEntry, bool)) bool {
+	if cm == nil || update == nil {
+		return false
+	}
+	changed := false
+	cm.checkpointLockedMutation(func() {
+		next, did := update(cm.LoadActiveBranch(userID))
+		if !did {
 			return
 		}
-		cm.markDirtyAndScheduleFlush()
+		entries := deduplicateAdjacentAssistantEntriesForActiveBranch(next)
+		now := time.Now()
+		cm.ensureSessionEntriesLoaded(userID)
+		sh := cm.shardNoWait(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			s = &conversationSession{entriesLoaded: true}
+			sh.sessions[userID] = s
+		}
+		if s != nil {
+			entries = adoptCompletedCompactionSummaries(s.entries, entries)
+		}
+		cm.saveEntriesLocked(s, entries, now)
+		noteMailboxLatchBaselineAfterHistorySave(s)
+		sh.mu.Unlock()
+		cm.persistSavedEntries(userID)
+		changed = true
 	})
+	return changed
 }
 
 // FinishHandoffCompaction clears a pending summarizer source and leaves the

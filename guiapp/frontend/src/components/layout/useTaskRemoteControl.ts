@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
-import { publishRemoteMachineTarget } from './remoteAssistantSession';
+import { applyRemoteWatchSnapshot, bindRemoteStreamEvents, publishRemoteMachineTarget } from './remoteAssistantSession';
 import { taskStatusBucketFor, type TaskManagementItem } from './SidebarTaskManagement';
 
 export type RemotePermission = 'view' | 'operate';
@@ -36,6 +36,8 @@ export type RemoteTaskMessage = {
     role: string;
     content: string;
     reasoning_content?: string;
+    /** Files this turn produced on the controlled machine. Fetch bytes via the fetch_file op; they are not local paths. */
+    local_file_paths?: string[];
 };
 
 export type RemoteTaskArtifact = {
@@ -120,6 +122,10 @@ export function useTaskRemoteControl() {
     const detailFetchedAt = useRef(0);
     const detailFollowRef = useRef(0);
     const opRefreshGen = useRef(0);
+    // The live mirror subscription of the open task: "grantId|projectPath".
+    // A watch the Hub or the peer cannot serve fails silently — the transcript
+    // poll stays the fallback and nothing regresses.
+    const watchKey = useRef('');
     const detailRef = useRef<RemoteTaskDetail | null>(null);
     // After a send/stop the next reply can take a while through the Hub. Poll
     // the conversation fast inside this window so the chat shows progress
@@ -259,6 +265,7 @@ export function useTaskRemoteControl() {
     }, []);
 
     useEffect(() => {
+        bindRemoteStreamEvents();
         void refresh();
         const timer = window.setInterval(() => {
             if (document.hidden) return;
@@ -293,6 +300,38 @@ export function useTaskRemoteControl() {
     const selected = state.grants.find(grant => grant.id === selectedId) || null;
     const online = !!selected && selected.online !== false;
     const operate = selected?.permission === 'operate' && online;
+
+    // Live mirror: watch the open task so the other computer's stream events
+    // reach this panel; unwatch when the conversation or machine changes. A
+    // failed watch quietly falls back to the get_task poll.
+    useEffect(() => {
+        const next = selectedId && detailPath && online ? `${selectedId}|${detailPath}` : '';
+        if (watchKey.current === next) return;
+        const prev = watchKey.current;
+        watchKey.current = next;
+        if (prev) {
+            const splitAt = prev.indexOf('|');
+            const prevGrant = prev.slice(0, splitAt);
+            const prevPath = prev.slice(splitAt + 1);
+            void callBinding<string>('RemoteControlOp', '', prevGrant, 'unwatch_task', JSON.stringify({ project_path: prevPath })).catch(() => undefined);
+        }
+        if (next && selectedId && detailPath) {
+            const grantId = selectedId;
+            const path = detailPath;
+            void callBinding<string>('RemoteControlOp', '', grantId, 'watch_task', JSON.stringify({ project_path: path }))
+                .then(raw => {
+                    if (watchKey.current !== next) return;
+                    let parsed: { live?: unknown } = {};
+                    try {
+                        parsed = JSON.parse(raw || '{}') as { live?: unknown };
+                    } catch {
+                        parsed = {};
+                    }
+                    applyRemoteWatchSnapshot(grantId, parsed.live);
+                })
+                .catch(() => undefined);
+        }
+    }, [detailPath, online, selectedId]);
 
     // Publish controlled machines as new-task destinations for the wizard.
     useEffect(() => {

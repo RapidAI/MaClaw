@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { isLansengerChannelEnabled, SidebarSystemStatus } from '../SidebarSystemStatus';
 import type { SidebarHubCredits } from '../../../types/appShell';
 
@@ -1471,5 +1471,191 @@ describe('SidebarSystemStatus IM status', () => {
         const row = screen.getByTestId('workbench-im-status');
         expect(row.tagName).toBe('SPAN');
         expect(row.hasAttribute('disabled')).toBe(false);
+    });
+});
+
+describe('SidebarSystemStatus collapsed account line', () => {
+    it('shows the email with an online state on one line', () => {
+        const { unmount } = render(
+            <SidebarSystemStatus
+                lang="zh-Hans" maclawLLMOnline remoteActivationStatus={{ activated: true, email: ' znsoft@163.com ', phone_number: '13800001111' }}
+                qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw官方', isHubService: true, input: 0, output: 0, total: 0 }}
+                sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="无限" noHubAuthorizationText="无" showHubCreditAction={false} openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        const row = screen.getByTestId('workbench-status-row');
+        const line = screen.getByTestId('workbench-status-line');
+        expect(line.dataset.online).toBe('true');
+        expect(line.textContent).toContain('znsoft@163.com');
+        // The status pill sits at the row level, after the bell.
+        expect(row.textContent).toContain('在线');
+        // Email leads when both identity kinds exist.
+        expect(row.textContent).not.toContain('13800001111');
+        unmount();
+    });
+
+    it('falls back to the phone number when no email exists', () => {
+        const { unmount } = render(
+            <SidebarSystemStatus
+                lang="zh-Hans" maclawLLMOnline remoteActivationStatus={{ activated: true, phone_number: '13800001111' }}
+                qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw官方', isHubService: true, input: 0, output: 0, total: 0 }}
+                sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="无限" noHubAuthorizationText="无" showHubCreditAction={false} openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        const row = screen.getByTestId('workbench-status-row');
+        const line = screen.getByTestId('workbench-status-line');
+        expect(line.dataset.online).toBe('true');
+        expect(line.textContent).toContain('13800001111');
+        expect(row.textContent).toContain('在线');
+        unmount();
+    });
+
+    it('marks the line offline and not signed in without an account identity', () => {
+        const { unmount } = renderStatus(baseCredits);
+
+        const row = screen.getByTestId('workbench-status-row');
+        const line = screen.getByTestId('workbench-status-line');
+        expect(line.dataset.online).toBe('false');
+        expect(line.textContent).toContain('未登录');
+        expect(row.textContent).not.toContain('在线');
+        unmount();
+    });
+
+    it('opens the full status popover on hover and closes it after the pointer leaves', () => {
+        vi.useFakeTimers();
+        try {
+            const { unmount } = renderStatus(baseCredits, { onOpenBackgroundTasks: vi.fn() });
+            const row = screen.getByTestId('workbench-status-row');
+            const popover = screen.getByTestId('workbench-status-popover');
+            expect(popover.dataset.open).toBe('false');
+
+            fireEvent.mouseEnter(row);
+            expect(popover.dataset.open).toBe('true');
+            // The full card lives inside the popover and keeps its controls.
+            expect(popover.contains(screen.getByTestId('workbench-status-card'))).toBe(true);
+            expect(popover.contains(screen.getByTestId('workbench-task-counts'))).toBe(true);
+
+            fireEvent.mouseLeave(row);
+            // Close is delayed so the pointer can travel into the popover.
+            expect(popover.dataset.open).toBe('true');
+            act(() => { vi.advanceTimersByTime(250); });
+            expect(popover.dataset.open).toBe('false');
+            unmount();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('keeps the popover open while the pointer is over it and on click pin', () => {
+        vi.useFakeTimers();
+        try {
+            const { unmount } = renderStatus(baseCredits);
+            const row = screen.getByTestId('workbench-status-row');
+            const popover = screen.getByTestId('workbench-status-popover');
+            const line = screen.getByTestId('workbench-status-line');
+
+            fireEvent.mouseEnter(row);
+            fireEvent.mouseLeave(row);
+            // Entering the popover cancels the pending close (hover bridge).
+            fireEvent.mouseEnter(popover);
+            act(() => { vi.advanceTimersByTime(400); });
+            expect(popover.dataset.open).toBe('true');
+
+            // Click pins the popover; leaving it no longer schedules a close.
+            fireEvent.click(line);
+            fireEvent.mouseLeave(popover);
+            act(() => { vi.advanceTimersByTime(400); });
+            expect(popover.dataset.open).toBe('true');
+            unmount();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('closes the pinned popover on outside pointer down and Escape', () => {
+        const { unmount } = renderStatus(baseCredits);
+        const line = screen.getByTestId('workbench-status-line');
+        const popover = screen.getByTestId('workbench-status-popover');
+
+        fireEvent.click(line);
+        expect(popover.dataset.open).toBe('true');
+
+        fireEvent.mouseDown(document.body);
+        expect(popover.dataset.open).toBe('false');
+
+        fireEvent.click(line);
+        expect(popover.dataset.open).toBe('true');
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(popover.dataset.open).toBe('false');
+        unmount();
+    });
+
+    it('keeps a pinned popover open when the pointer leaves the row without entering it', () => {
+        vi.useFakeTimers();
+        try {
+            const { unmount } = renderStatus(baseCredits);
+            const row = screen.getByTestId('workbench-status-row');
+            const line = screen.getByTestId('workbench-status-line');
+            const popover = screen.getByTestId('workbench-status-popover');
+
+            fireEvent.mouseEnter(row);
+            // Pin by click, then move the pointer away — never into the popover.
+            fireEvent.click(line);
+            fireEvent.mouseLeave(row);
+            act(() => { vi.advanceTimersByTime(400); });
+            expect(popover.dataset.open).toBe('true');
+
+            // Second click still dismisses the pinned popover.
+            fireEvent.click(line);
+            expect(popover.dataset.open).toBe('false');
+            unmount();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('routes the status-row bell to the shared system notification center', () => {
+        const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+        try {
+            const { unmount } = renderStatus(baseCredits);
+            fireEvent.click(screen.getByTestId('workbench-status-notifications'));
+            expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'maclaw:open-system-notifications',
+                detail: { toggle: true },
+            }));
+            unmount();
+        } finally {
+            dispatchSpy.mockRestore();
+        }
+    });
+
+    it('keeps the popover open when focus moves from the line into the popover content', () => {
+        vi.useFakeTimers();
+        try {
+            const { unmount } = renderStatus(baseCredits);
+            const row = screen.getByTestId('workbench-status-row');
+            const line = screen.getByTestId('workbench-status-line');
+            const popover = screen.getByTestId('workbench-status-popover');
+            const taskRow = screen.getByTestId('workbench-task-counts');
+
+            fireEvent.mouseEnter(row);
+            fireEvent.focus(line);
+            fireEvent.blur(line, { relatedTarget: taskRow });
+            // Focus lands inside the popover: the pending close must be cancelled.
+            fireEvent.focus(taskRow);
+            act(() => { vi.advanceTimersByTime(400); });
+            expect(popover.dataset.open).toBe('true');
+            unmount();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

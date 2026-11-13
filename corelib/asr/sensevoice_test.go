@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // findSenseVoiceModel searches for the SenseVoice GGUF model.
@@ -14,6 +16,7 @@ import (
 // Also works with: FunAudioLLM/SenseVoiceSmall-GGUF (requires FunASR runtime projection - lossy in Go).
 func findSenseVoiceModel(t *testing.T) string {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	home, _ := os.UserHomeDir()
 	candidates := []string{
 		// Current working directory (workspace root)

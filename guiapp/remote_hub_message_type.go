@@ -27,6 +27,7 @@ const (
 	hubInboundMessageNicknameAssigned          hubInboundMessageType = "machine.nickname_assigned"
 	hubInboundMessageNotificationPush          hubInboundMessageType = "notification.push"
 	hubInboundMessageRemoteControlExec         hubInboundMessageType = "remote_control.exec"
+	hubInboundMessageRemoteControlStream       hubInboundMessageType = "remote_control.stream"
 	hubInboundMessageMobileDigitalEmployeeTask hubInboundMessageType = "mobile.digital_employee_task"
 	hubInboundMessageAck                       hubInboundMessageType = "ack"
 	hubInboundMessageVEEvent                   hubInboundMessageType = "ve_event" // sentinel for all ve:* events
@@ -75,6 +76,8 @@ func normalizeHubInboundMessageType(messageType string) hubInboundMessageType {
 		return hubInboundMessageNotificationPush
 	case hubInboundMessageRemoteControlExec:
 		return hubInboundMessageRemoteControlExec
+	case hubInboundMessageRemoteControlStream:
+		return hubInboundMessageRemoteControlStream
 	case hubInboundMessageMobileDigitalEmployeeTask:
 		return hubInboundMessageMobileDigitalEmployeeTask
 	case hubInboundMessageAck:

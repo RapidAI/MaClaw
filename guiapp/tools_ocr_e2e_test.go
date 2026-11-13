@@ -10,12 +10,14 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/ocr"
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 // ocrRealModelsSourceDir locates the PP-OCRv6 small det/rec models captured
 // during engine bring-up. Tests needing the real engine skip when absent.
 func ocrRealModelsSourceDir(t *testing.T) string {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	src := filepath.Join("..", ".tmp", "ocr-models")
 	for _, name := range []string{ocr.DetModelFilename("small"), ocr.RecModelFilename("small")} {
 		if _, err := os.Stat(filepath.Join(src, name)); err != nil {

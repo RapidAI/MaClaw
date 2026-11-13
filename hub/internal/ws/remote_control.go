@@ -12,3 +12,15 @@ func deliverRemoteControlResult(machineID, requestID string, payload json.RawMes
 	}
 	OnRemoteControlResult(machineID, requestID, payload)
 }
+
+// OnRemoteControlStream receives a controlled desktop's live mirror event.
+// The HTTP layer installs it; delivery is fire-and-forget, so a nil hook or a
+// slow relay simply drops the event.
+var OnRemoteControlStream func(machineID string, payload json.RawMessage)
+
+func deliverRemoteControlStream(machineID string, payload json.RawMessage) {
+	if OnRemoteControlStream == nil {
+		return
+	}
+	OnRemoteControlStream(machineID, payload)
+}

@@ -83,11 +83,75 @@ func TestCursorRestoreOnSize(t *testing.T) {
 	}
 }
 
+func TestCursorRestoreOnShow(t *testing.T) {
+	cases := []struct {
+		name   string
+		msg    uint32
+		wparam uintptr
+		want   bool
+	}{
+		{name: "shown", msg: w32.WM_SHOWWINDOW, wparam: 1, want: true},
+		{name: "hidden", msg: w32.WM_SHOWWINDOW, wparam: 0, want: false},
+		{name: "other message", msg: w32.WM_SIZE, wparam: 1, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cursorRestoreOnShow(tc.msg, tc.wparam); got != tc.want {
+				t.Fatalf("cursorRestoreOnShow() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCursorWatchWithoutHandle keeps the watch helpers safe on a window that
+// was never realized: no handle means no risky state and no queued tick.
+func TestCursorWatchWithoutHandle(t *testing.T) {
+	var nilWindow *Window
+	if nilWindow.cursorWatchActive() {
+		t.Fatal("nil window must not report an active watch")
+	}
+	w := &Window{}
+	if w.cursorWatchActive() {
+		t.Fatal("a handle-less window must not report an active watch")
+	}
+	w.scheduleCursorWatch()
+	if w.cursorWatchArmed.Load() {
+		t.Fatal("an inactive watch must not arm a tick")
+	}
+}
+
+func TestCursorRetWatchMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  uint32
+		want bool
+	}{
+		{name: "set cursor", msg: w32.WM_SETCURSOR, want: true},
+		{name: "mouse activate", msg: w32.WM_MOUSEACTIVATE, want: true},
+		{name: "nc hit test", msg: w32.WM_NCHITTEST, want: true},
+		{name: "nc move", msg: w32.WM_NCMOUSEMOVE, want: true},
+		{name: "nc button", msg: w32.WM_NCLBUTTONDOWN, want: true},
+		{name: "move", msg: w32.WM_MOUSEMOVE, want: true},
+		{name: "button", msg: w32.WM_LBUTTONDOWN, want: true},
+		{name: "pointer update", msg: 0x0245, want: true},
+		{name: "pointer down", msg: 0x0246, want: true},
+		{name: "size", msg: w32.WM_SIZE, want: false},
+		{name: "paint", msg: w32.WM_PAINT, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cursorRetWatchMessage(tc.msg); got != tc.want {
+				t.Fatalf("cursorRetWatchMessage() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRestoreCursorDisplayCountStopsAtTheBound keeps an absurdly negative
 // count from spinning forever. The helper gives up and leaves the count as it
 // found it plus the bounded number of increments.
 func TestRestoreCursorDisplayCountStopsAtTheBound(t *testing.T) {
-	count := int32(-100)
+	count := int32(-cursorRestoreMaxShow - 1000)
 	calls := 0
 	original := restoreCursorDisplayCountWith(func(show bool) int32 {
 		calls++
@@ -98,13 +162,33 @@ func TestRestoreCursorDisplayCountStopsAtTheBound(t *testing.T) {
 		}
 		return count
 	})
-	if original != -100 {
-		t.Fatalf("original = %d, want -100", original)
+	if original != -cursorRestoreMaxShow-1000 {
+		t.Fatalf("original = %d, want %d", original, -cursorRestoreMaxShow-1000)
 	}
-	if calls > 33 {
-		t.Fatalf("calls = %d, want at most 33", calls)
+	if calls > cursorRestoreMaxShow+1 {
+		t.Fatalf("calls = %d, want at most %d", calls, cursorRestoreMaxShow+1)
 	}
 	if count >= 0 {
 		t.Fatalf("count = %d, want it still hidden after the bound", count)
+	}
+}
+
+// TestRestoreCursorDisplayCountDeepDeficit makes sure a deficit deepened by a
+// hide on every mouse message is still raised all the way back to zero.
+func TestRestoreCursorDisplayCountDeepDeficit(t *testing.T) {
+	count := int32(-700)
+	original := restoreCursorDisplayCountWith(func(show bool) int32 {
+		if show {
+			count++
+		} else {
+			count--
+		}
+		return count
+	})
+	if original != -700 {
+		t.Fatalf("original = %d, want -700", original)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
 	}
 }

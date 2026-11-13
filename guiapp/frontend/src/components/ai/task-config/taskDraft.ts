@@ -298,11 +298,19 @@ export function normalizeDraftForTaskType(draft: TaskDraft): TaskDraft {
     return draft;
 }
 
-/** 编程 + 本地且未选目录 → 需要用户补目录（chip 高亮「请选择目录」）。 */
+/** 编程 + 本地且未选目录（空白路径也算未选）→ 需要用户补目录（chip 高亮「请选择目录」）。 */
 export function needsLocalPath(draft: TaskDraft): boolean {
     return draft.taskType === 'coding'
         && draft.workspace.kind === 'local'
-        && !draft.workspace.localPath;
+        && !(draft.workspace.localPath || '').trim();
+}
+
+/**
+ * 创建/定时编程任务前的目录硬校验：本地目录必须显式选择——不选会落到默认
+ * home 目录。远控机器目标（draft.machine）在本机没有目录概念，豁免。
+ */
+export function codingDirectoryRequired(draft: TaskDraft): boolean {
+    return needsLocalPath(draft) && !draft.machine?.grantId;
 }
 
 /** 工作空间 chip 上显示的摘要值。 */

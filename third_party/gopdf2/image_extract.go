@@ -32,6 +32,11 @@ func ExtractImagesFromPage(pdfData []byte, pageIndex int) ([]ExtractedImage, err
 	if err != nil {
 		return nil, err
 	}
+	return extractImagesWithParser(parser, pageIndex)
+}
+
+// extractImagesWithParser extracts image placements using an existing parser.
+func extractImagesWithParser(parser *rawPDFParser, pageIndex int) ([]ExtractedImage, error) {
 	if pageIndex < 0 || pageIndex >= len(parser.pages) {
 		return nil, fmt.Errorf("page index %d out of range (0..%d)", pageIndex, len(parser.pages)-1)
 	}
@@ -169,12 +174,25 @@ func extractPageImages(parser *rawPDFParser, page rawPDFPage, placements []image
 			// For DCTDecode (JPEG), the raw stream IS the JPEG data.
 			img.Data = obj.stream
 		}
-		// Apply placement info
+		// Apply placement info; /Rotate maps to visual page space
 		if p, ok := placementMap[name]; ok {
-			img.X = p.e
-			img.Y = pageHeight - p.f - p.d
-			img.DisplayWidth = p.a
-			img.DisplayHeight = p.d
+			x := p.e
+			y := pageHeight - p.f - p.d
+			w, h := page.mediaBox[2]-page.mediaBox[0], pageHeight
+			switch page.rotate {
+			case 90:
+				x, y = h-y-p.d, x
+				img.DisplayWidth, img.DisplayHeight = p.d, p.a
+			case 180:
+				x, y = w-x-p.a, h-y-p.d
+				img.DisplayWidth, img.DisplayHeight = p.a, p.d
+			case 270:
+				x, y = y, w-x-p.a
+				img.DisplayWidth, img.DisplayHeight = p.d, p.a
+			default:
+				img.DisplayWidth, img.DisplayHeight = p.a, p.d
+			}
+			img.X, img.Y = x, y
 		}
 		images = append(images, img)
 	}

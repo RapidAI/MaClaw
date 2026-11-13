@@ -14,6 +14,11 @@
  * (`F^l_{0,c}`, `L_ce`, `O^l`). Those carets and underscores are not Markdown,
  * and the chat column will break them mid-symbol. Wrap each such atom in
  * `$...$` so KaTeX typesets it. Words, snake_case names and URLs stay text.
+ *
+ * Bare TeX commands get the same treatment (`τ \approx 1`, `0.786\pm0.004`):
+ * a run of known command names — with their arguments, scripts, `\left..\right`
+ * pairs and `\begin..\end` environments — is wrapped in `$...$`. Commands that
+ * cannot stand alone (`\frac` with no group, a lone `\left`) stay prose.
  */
 
 const MATH_FENCE_INFO = /^(?:math|latex|tex|katex|mathjax|amsmath)\b/i;
@@ -679,7 +684,9 @@ function readExistingMath(text: string, index: number): number {
     }
     if (text[index] !== "$" || text[index + 1] === "$") return -1;
     const next = text[index + 1] || "";
-    if (!next || /\s/u.test(next) || /\d/u.test(next) || !plainMathLeftBoundary(text, index)) return -1;
+    if (!next || /\s/u.test(next) || !plainMathLeftBoundary(text, index)) return -1;
+    // `$5` is a price; `$0.786\pm0.004$` is a formula that starts with a number.
+    const digitLed = /\d/u.test(next);
     for (let close = index + 1; close < text.length; close++) {
         if (text[close] === "\n") return -1;
         if (
@@ -688,9 +695,24 @@ function readExistingMath(text: string, index: number): number {
             && !isEscapedAt(text, close)
             && !/\s/u.test(text[close - 1] || "")
             && plainMathRightBoundary(text, close)
-        ) return close + 1;
+        ) {
+            if (digitLed && !digitLedSpanIsMath(text.slice(index + 1, close))) return -1;
+            return close + 1;
+        }
     }
     return -1;
+}
+
+/**
+ * A digit-led `$...$` span is math when the inside carries TeX structure, or
+ * is nothing but a number the author still wrapped (`$0.934$`). Mirrors the
+ * renderer's rule so both sides agree on what is a formula.
+ */
+function digitLedSpanIsMath(inner: string): boolean {
+    // A span holding another delimiter or Han prose is a currency pair that
+    // ran into a later formula, not mathematics ("$5 到 $10，公式为 $x$").
+    if (inner.includes("$") || /\p{Script=Han}/u.test(inner)) return false;
+    return /[\\^_{}]/.test(inner) || /^\s*[-+]?\d[\d.,\s]*$/.test(inner);
 }
 
 function plainMathRightBoundary(text: string, index: number): boolean {
@@ -705,6 +727,429 @@ function findUnescaped(text: string, delimiter: string, from: number): number {
     return index;
 }
 
+/**
+ * TeX names a reply may write without delimiters (`τ \approx 1`,
+ * `0.786\pm0.004`). The list matters: only a name on it is promoted, so
+ * `\new\file` in a path fragment and other stray backslashes stay text.
+ */
+const BARE_TEX_COMMANDS = new Set([
+    "alpha", "beta", "gamma", "delta", "epsilon", "varepsilon", "zeta", "eta",
+    "theta", "vartheta", "iota", "kappa", "lambda", "mu", "nu", "xi", "pi",
+    "varpi", "rho", "varrho", "sigma", "varsigma", "tau", "upsilon", "phi",
+    "varphi", "chi", "psi", "omega",
+    "Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi", "Sigma", "Upsilon", "Phi",
+    "Psi", "Omega",
+    "pm", "mp", "times", "div", "cdot", "cdots", "ast", "star", "circ", "bullet",
+    "oplus", "ominus", "otimes", "oslash", "odot", "dagger", "ddagger", "amalg",
+    "approx", "sim", "simeq", "cong", "equiv", "propto", "neq", "ne", "leq", "le",
+    "geq", "ge", "ll", "gg", "prec", "succ", "preceq", "succeq", "subset",
+    "supset", "subseteq", "supseteq", "sqsubseteq", "sqsupseteq", "in", "notin",
+    "ni", "cup", "cap", "setminus", "smallsetminus", "mid", "nmid", "parallel",
+    "nparallel", "models", "vdash", "dashv", "perp", "bot", "top", "asymp",
+    "doteq", "to", "gets", "rightarrow", "leftarrow", "Rightarrow", "Leftarrow",
+    "leftrightarrow", "Leftrightarrow", "mapsto", "longmapsto", "longrightarrow",
+    "longleftarrow", "Longrightarrow", "Longleftarrow", "uparrow", "downarrow",
+    "updownarrow", "nearrow", "searrow", "swarrow", "nwarrow", "hookrightarrow",
+    "hookleftarrow", "rightharpoonup", "leftharpoonup", "rightleftharpoons",
+    "partial", "nabla", "infty", "ell", "hbar", "hslash", "imath", "jmath", "Re",
+    "Im", "wp", "aleph", "beth", "gimel", "prime", "backprime", "emptyset",
+    "varnothing", "forall", "exists", "nexists", "neg", "lnot", "angle",
+    "measuredangle", "triangle", "triangledown", "square", "blacksquare",
+    "diamond", "lozenge", "surd", "checkmark", "sum", "prod", "coprod", "int",
+    "iint", "iiint", "oint", "oiint", "bigcup", "bigcap", "bigsqcup", "bigoplus",
+    "bigotimes", "bigodot", "biguplus", "bigvee", "bigwedge", "log", "lg", "ln",
+    "exp", "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan",
+    "sinh", "cosh", "tanh", "coth", "lim", "limsup", "liminf", "sup", "inf",
+    "max", "min", "arg", "deg", "det", "dim", "gcd", "hom", "ker", "Pr", "bmod",
+    "pmod", "mod", "sqrt", "frac", "dfrac", "tfrac", "cfrac", "binom", "dbinom",
+    "tbinom", "hat", "widehat", "tilde", "widetilde", "bar", "overline",
+    "underline", "vec", "overrightarrow", "overleftarrow", "overbrace",
+    "underbrace", "dot", "ddot", "dddot", "breve", "check", "grave", "acute",
+    "mathring", "not", "stackrel", "overset", "underset", "operatorname",
+    "mathrm", "mathbf", "mathit", "mathsf", "mathtt", "mathcal", "mathbb",
+    "mathfrak", "mathscr", "boldsymbol", "bm", "text", "textbf", "textit",
+    "textrm", "textsf", "texttt", "boxed", "fbox", "phantom", "hphantom",
+    "vphantom", "quad", "qquad", "thinspace", "medspace", "thickspace", "hspace",
+    "mkern", "kern", "displaystyle", "textstyle", "scriptstyle", "limits",
+    "nolimits", "left", "big", "Big", "bigg", "Bigg", "bigl", "bigr",
+    "Bigl", "Bigr", "biggl", "biggr", "Biggl", "Biggr", "bigm", "Bigm", "biggm",
+    "Biggm", "lfloor", "rfloor", "lceil", "rceil", "langle",
+    "rangle", "lvert", "rvert", "lVert", "rVert", "vert", "Vert", "ldots",
+    "dots", "dotsc", "dotsb", "dotsi", "vdots", "ddots", "begin",
+    "implies", "iff", "impliedby", "colon", "smallint", "xrightarrow",
+    "xleftarrow", "xRightarrow", "xLeftarrow", "substack", "mathop", "mathbin",
+    "mathrel", "mathord", "mathopen", "mathclose", "mathpunct", "mathinner",
+    "therefore", "because", "triangleq", "color",
+]);
+
+/**
+ * Commands that only make sense with arguments: name → required `{...}`
+ * group count. A lone `\frac` or a one-group `\frac{a}` is prose about TeX —
+ * promoting it would paint a KaTeX error. `[...]` options are extra and do
+ * not count: `\sqrt[3]{x}` needs the `{x}`.
+ */
+const TEX_ARG_COMMANDS = new Map([
+    ["frac", 2], ["dfrac", 2], ["tfrac", 2], ["cfrac", 2], ["binom", 2],
+    ["dbinom", 2], ["tbinom", 2], ["overset", 2], ["underset", 2],
+    ["stackrel", 2],
+    ["sqrt", 1], ["text", 1], ["textbf", 1], ["textit", 1], ["textrm", 1],
+    ["textsf", 1], ["texttt", 1], ["mathrm", 1], ["mathbf", 1], ["mathit", 1],
+    ["mathsf", 1], ["mathtt", 1], ["mathcal", 1], ["mathbb", 1], ["mathfrak", 1],
+    ["mathscr", 1], ["boldsymbol", 1], ["bm", 1], ["operatorname", 1],
+    ["hat", 1], ["widehat", 1], ["tilde", 1], ["widetilde", 1], ["bar", 1],
+    ["overline", 1], ["underline", 1], ["vec", 1], ["overrightarrow", 1],
+    ["overleftarrow", 1], ["overbrace", 1], ["underbrace", 1], ["dot", 1],
+    ["ddot", 1], ["dddot", 1], ["breve", 1], ["check", 1], ["grave", 1],
+    ["acute", 1], ["mathring", 1], ["boxed", 1], ["fbox", 1], ["phantom", 1],
+    ["hphantom", 1], ["vphantom", 1], ["hspace", 1], ["mkern", 1], ["kern", 1],
+    ["xrightarrow", 1], ["xleftarrow", 1], ["xRightarrow", 1],
+    ["xLeftarrow", 1], ["substack", 1], ["mathop", 1], ["color", 1], ["not", 1],
+]);
+
+/** `\big(`-style sizers need exactly one delimiter token, or they error out. */
+const TEX_DELIM_COMMANDS = new Set([
+    "big", "Big", "bigg", "Bigg", "bigl", "bigr", "Bigl", "Bigr",
+    "biggl", "biggr", "Biggl", "Biggr", "bigm", "Bigm", "biggm", "Biggm",
+]);
+
+/** Environments KaTeX typesets. `\begin{env}` only promotes with its `\end`. */
+const MATH_ENVIRONMENTS = new Set([
+    "aligned", "gathered", "cases", "dcases", "rcases", "matrix", "pmatrix",
+    "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix", "array",
+    "subarray", "darray", "alignedat", "matrix*", "pmatrix*", "bmatrix*",
+    "Bmatrix*", "vmatrix*", "Vmatrix*",
+]);
+
+/**
+ * Environments whose `\begin{env}` must be followed by a `{cols}`/`{n}`
+ * argument — `\begin{array}` without one is a KaTeX error, not math.
+ */
+const TEX_ENV_ARG_REQUIRED = new Set(["array", "darray", "subarray", "alignedat"]);
+
+/** End of a `_x` / `^{...}` script glued at `index`, or `index` when none. */
+function scriptTailEnd(text: string, index: number, limit: number): number {
+    const mark = text[index];
+    if (mark !== "_" && mark !== "^") return index;
+    const next = text[index + 1];
+    if (next === "{") {
+        let depth = 0;
+        for (let cursor = index + 1; cursor < limit && cursor - index < 200; cursor++) {
+            const ch = text[cursor];
+            if (ch === "{") depth++;
+            else if (ch === "}") {
+                depth--;
+                if (depth === 0) return cursor + 1;
+            } else if (ch === "\n") return index;
+        }
+        return index;
+    }
+    return next && /[A-Za-z0-9*+-]/.test(next) ? index + 2 : index;
+}
+
+/** End of the balanced `{...}` opened at `index`, or `index` when unbalanced. */
+function braceGroupEnd(text: string, index: number, limit: number): number {
+    let depth = 0;
+    for (let cursor = index; cursor < limit && cursor - index < 500; cursor++) {
+        const ch = text[cursor];
+        if (ch === "{") depth++;
+        else if (ch === "}") {
+            depth--;
+            if (depth === 0) return cursor + 1;
+        } else if (ch === "\n") return index;
+    }
+    return index;
+}
+
+/** One `_x` and one `^x` in either order (`\sigma_i^2`, `\lambda^2_i`). */
+function scriptTailsEnd(text: string, index: number, limit: number): number {
+    let sub = false;
+    let sup = false;
+    let end = index;
+    while (end < limit) {
+        const mark = text[end];
+        if (mark !== "_" && mark !== "^") break;
+        if ((mark === "_" && sub) || (mark === "^" && sup)) break;
+        const next = scriptTailEnd(text, end, limit);
+        if (next === end) break;
+        if (mark === "_") sub = true;
+        else sup = true;
+        end = next;
+    }
+    return end;
+}
+
+/** Commands valid as a `\left` / `\right` / `\big` delimiter. */
+const TEX_DELIM_NAMES = new Set([
+    "vert", "Vert", "lvert", "rvert", "lVert", "rVert", "langle", "rangle",
+    "lfloor", "rfloor", "lceil", "rceil", "lbrace", "rbrace", "backslash",
+    "uparrow", "downarrow",
+    "Uparrow", "Downarrow", "updownarrow", "Updownarrow", "lmoustache",
+    "rmoustache", "lgroup", "rgroup", "bracevert", "arrowvert", "Arrowvert",
+]);
+// `{` and `}` are group tokens, not delimiters — `\left{` errors; `\left\{` is the form.
+const TEX_DELIM_CHARS = new Set(["(", ")", "[", "]", "|", ".", "<", ">", "/"]);
+
+/** One delimiter token after `\left` / `\big`: `(`, `\vert`, `\{`, `.` … */
+function delimTokenEnd(text: string, index: number, limit: number): number {
+    if (index >= limit) return index;
+    if (text[index] === "\\") {
+        const next = text[index + 1] || "";
+        if (!next || index + 1 >= limit) return index;
+        if (/[A-Za-z]/.test(next)) {
+            let end = index + 2;
+            while (end < limit && /[A-Za-z]/.test(text[end])) end++;
+            return TEX_DELIM_NAMES.has(text.slice(index + 1, end)) ? end : index;
+        }
+        return Math.min(index + 2, limit);
+    }
+    return TEX_DELIM_CHARS.has(text[index]) ? index + 1 : index;
+}
+
+/**
+ * End of `...\right<delim>` searched from `from`, or -1. `\rightarrow` is
+ * not a closer, nested `\left` openers must close before ours does
+ * (`\left(a \left(b \right) c \right)` pairs with the second `\right`), and
+ * a `\begin` / `\end` or a delimiter-less token inside means the span is
+ * not math.
+ */
+function rightDelimitedEnd(text: string, from: number, limit: number): number {
+    let search = from;
+    let depth = 0;
+    while (search < limit) {
+        const at = text.indexOf("\\", search);
+        if (at === -1 || at >= limit) return -1;
+        if (isEscapedAt(text, at)) {
+            search = at + 1;
+            continue;
+        }
+        const word = /^\\(left|right|middle|begin|end)/.exec(text.slice(at, at + 8));
+        if (!word || /[A-Za-z]/.test(text[at + word[0].length] || "")) {
+            search = at + 1;
+            continue;
+        }
+        const name = word[1];
+        // An environment cannot sit inside a `\left..\right` pair.
+        if (name === "begin" || name === "end") return -1;
+        const delimStart = skipInlineSpaces(text, at + word[0].length, limit);
+        const delimEnd = delimTokenEnd(text, delimStart, limit);
+        // A `\left` / `\right` / `\middle` without a delimiter is invalid TeX.
+        if (delimEnd === delimStart) return -1;
+        if (name === "left") {
+            depth++;
+            search = delimEnd;
+            continue;
+        }
+        if (name === "middle") {
+            search = delimEnd;
+            continue;
+        }
+        // The promoted span is wrapped in `$...$`, which cannot cross a line.
+        if (text.slice(from, at).includes("\n")) return -1;
+        if (depth > 0) {
+            depth--;
+            search = delimEnd;
+            continue;
+        }
+        return delimEnd;
+    }
+    return -1;
+}
+
+/**
+ * Parse `\begin` / `\end` + optional spaces + `{name}` at `at`. Returns the
+ * trimmed name and the index just past `}`, or null when the token is a
+ * different command (`\endnote`) or has no name group.
+ */
+function envTokenAt(text: string, at: number, limit: number): { name: string; end: number } | null {
+    const isBegin = text.startsWith("\\begin", at);
+    const wordEnd = at + (isBegin ? 6 : 4);
+    if (!isBegin && !text.startsWith("\\end", at)) return null;
+    const after = text[wordEnd] || "";
+    if (/[A-Za-z]/.test(after)) return null;
+    const open = skipInlineSpaces(text, wordEnd, limit);
+    if (text[open] !== "{") return null;
+    const end = braceGroupEnd(text, open, limit);
+    if (end === open) return null;
+    return { name: text.slice(open + 1, end - 1).trim(), end };
+}
+
+/**
+ * End of `\end{env}` — tolerating `\end { env }` whitespace — searched from
+ * `from`, or -1. An escaped `\\end` is not a closer. Nested environments of
+ * any name must balance (`\begin{matrix}` inside `aligned` is legal, but a
+ * stray `\end{matrix}` or a mismatched closer means the span is not math),
+ * and `\left` / `\right` / `\middle` inside the body must carry delimiters
+ * and balance before the closer.
+ */
+function envCloseEnd(text: string, env: string, from: number, limit: number): number {
+    let search = from;
+    // Each open environment remembers the delimiter depth it started at:
+    // a `\left..\right` pair cannot cross a `\begin` / `\end` boundary.
+    const stack: { name: string; delimiters: number }[] = [];
+    let delimiters = 0;
+    while (search < limit) {
+        const at = text.indexOf("\\", search);
+        if (at === -1 || at >= limit) return -1;
+        if (isEscapedAt(text, at)) {
+            search = at + 1;
+            continue;
+        }
+        const word = /^\\(begin|end|left|right|middle)/.exec(text.slice(at, at + 8));
+        if (word && !/[A-Za-z]/.test(text[at + word[0].length] || "")) {
+            const name = word[1];
+            if (name === "begin" || name === "end") {
+                const token = envTokenAt(text, at, limit);
+                // A `\begin` / `\end` word without a `{name}` group is a parse
+                // error waiting to happen — the whole span stays prose.
+                if (!token) return -1;
+                search = token.end;
+                if (name === "begin") {
+                    // An environment KaTeX cannot typeset fails the whole span.
+                    if (!MATH_ENVIRONMENTS.has(token.name)) return -1;
+                    stack.push({ name: token.name, delimiters });
+                    continue;
+                }
+                if (stack.length === 0) {
+                    // `env` opened before `from`, so the stack is empty here
+                    // only for our own closer — anything else is a stray `\end`.
+                    return token.name === env && delimiters === 0 ? token.end : -1;
+                }
+                const top = stack[stack.length - 1];
+                // The env closes only if the pairs it opened inside did too.
+                if (top.name !== token.name || top.delimiters !== delimiters) return -1;
+                stack.pop();
+                continue;
+            }
+            // `\left` / `\right` / `\middle` each need a delimiter token.
+            const delimStart = skipInlineSpaces(text, at + word[0].length, limit);
+            const delimEnd = delimTokenEnd(text, delimStart, limit);
+            if (delimEnd === delimStart) return -1;
+            search = delimEnd;
+            if (name === "left") delimiters++;
+            else if (name === "right") {
+                if (delimiters === 0) return -1;
+                delimiters--;
+            } else if (delimiters === 0) return -1;
+            continue;
+        }
+        search = at + 1;
+    }
+    return -1;
+}
+
+/**
+ * A run of TeX commands written straight into the sentence, without `$`
+ * (`τ \approx 1`, `0.786\pm0.004`, `\frac{a}{b}`). Every command name must sit
+ * in BARE_TEX_COMMANDS; a script (`\lambda_i`) travels with its command.
+ * Commands that cannot stand alone only promote with their payload:
+ * `\frac{a}{b}` needs its groups, `\big(` its delimiter, `\left...\right` the
+ * pair, and `\begin{env}...\end{env}` the whole environment.
+ *
+ * The left boundary rejects a letter (`foo\bar`), a colon (`C:\docs`), an
+ * underscore, a quote and a backslash — but not a digit, so `0.786\pm0.004`
+ * still typesets. Han prose counts as a boundary, matching the atom rules.
+ */
+/** Spaces and tabs TeX tolerates between a command and its argument. */
+function skipInlineSpaces(text: string, index: number, limit: number): number {
+    while (index < limit && (text[index] === " " || text[index] === "\t")) index++;
+    return index;
+}
+
+function matchBareTexCommands(text: string, index: number, limit: number): { end: number; tex: string } | null {
+    if (text[index] !== "\\" || isEscapedAt(text, index)) return null;
+    const prev = text[index - 1] || "";
+    if (prev && !/\d/u.test(prev) && (
+        prev === "_" || prev === ":" || prev === "'" || prev === "\\" || prev === "~"
+        || (/\p{L}/u.test(prev) && !/\p{Script=Han}/u.test(prev))
+    )) return null;
+    let cursor = index;
+    let matched = false;
+    while (cursor < limit && text[cursor] === "\\") {
+        let nameEnd = cursor + 1;
+        while (nameEnd < limit) {
+            const code = text.charCodeAt(nameEnd);
+            if (!((code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a))) break;
+            nameEnd++;
+        }
+        const name = text.slice(cursor + 1, nameEnd);
+        if (!BARE_TEX_COMMANDS.has(name)) break;
+        if (name === "begin") {
+            const envOpen = skipInlineSpaces(text, nameEnd, limit);
+            const envEnd = text[envOpen] === "{" ? braceGroupEnd(text, envOpen, limit) : nameEnd;
+            if (envEnd === nameEnd) break;
+            const env = text.slice(envOpen + 1, envEnd - 1).trim();
+            if (!MATH_ENVIRONMENTS.has(env)) break;
+            let bodyStart = envEnd;
+            if (TEX_ENV_ARG_REQUIRED.has(env)) {
+                const argOpen = skipInlineSpaces(text, envEnd, limit);
+                const argEnd = text[argOpen] === "{" ? braceGroupEnd(text, argOpen, limit) : envEnd;
+                if (argEnd === envEnd) break;
+                bodyStart = argEnd;
+            }
+            const closeEnd = envCloseEnd(text, env, bodyStart, limit);
+            if (
+                closeEnd === -1
+                || closeEnd - envEnd > 4000
+                // `$...$` cannot cross a line, so only a one-line env promotes.
+                || text.slice(envEnd, closeEnd).includes("\n")
+            ) break;
+            matched = true;
+            cursor = scriptTailsEnd(text, closeEnd, limit);
+            continue;
+        }
+        if (name === "left") {
+            const delimStart = skipInlineSpaces(text, nameEnd, limit);
+            const delimEnd = delimTokenEnd(text, delimStart, limit);
+            if (delimEnd === delimStart) break;
+            const end = rightDelimitedEnd(text, delimEnd, limit);
+            if (end === -1) break;
+            matched = true;
+            cursor = scriptTailsEnd(text, end, limit);
+            continue;
+        }
+        if (TEX_DELIM_COMMANDS.has(name)) {
+            const delimStart = skipInlineSpaces(text, nameEnd, limit);
+            const end = delimTokenEnd(text, delimStart, limit);
+            if (end === delimStart) break;
+            matched = true;
+            cursor = scriptTailsEnd(text, end, limit);
+            continue;
+        }
+        let cmdEnd = nameEnd;
+        const required = TEX_ARG_COMMANDS.get(name);
+        if (required !== undefined) {
+            let braces = 0;
+            while (cmdEnd < limit) {
+                const open = skipInlineSpaces(text, cmdEnd, limit);
+                const mark = text[open];
+                if (mark === "{") {
+                    const end = braceGroupEnd(text, open, limit);
+                    if (end === open) break;
+                    cmdEnd = end;
+                    braces++;
+                    continue;
+                }
+                if (mark === "[") {
+                    const close = text.indexOf("]", open + 1);
+                    if (close === -1 || close >= limit || close - open > 200 || text.slice(open, close).includes("\n")) break;
+                    cmdEnd = close + 1;
+                    continue;
+                }
+                break;
+            }
+            if (braces < required) break;
+        }
+        matched = true;
+        cursor = scriptTailsEnd(text, cmdEnd, limit);
+    }
+    if (!matched) return null;
+    const tex = text.slice(index, cursor);
+    // A `$` inside arguments or a pair body is an inner formula. Wrapping it
+    // would nest delimiters; the inner `$...$` renders better left alone.
+    if (tex.includes("$")) return null;
+    return { end: cursor, tex };
+}
+
 function isEscapedAt(text: string, index: number): boolean {
     let slashCount = 0;
     for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor--) slashCount++;
@@ -712,13 +1157,13 @@ function isEscapedAt(text: string, index: number): boolean {
 }
 
 /**
- * Wrap bare TeX atoms in `$...$`. Regions that are already math, code, a URL,
- * or a Markdown destination are copied through. An inline link label is
- * scanned. Text with neither `^`, `_`, a Greek letter, nor a unicode script
- * is returned as-is.
+ * Wrap bare TeX atoms and known bare TeX commands in `$...$`. Regions that
+ * are already math, code, a URL, or a Markdown destination are copied through.
+ * An inline link label is scanned. Text with neither `^`, `_`, `\`, a Greek
+ * letter, nor a unicode script is returned as-is.
  */
 function promoteCompanionPlainMath(text: string): string {
-    if (!text.includes("^") && !text.includes("_") && !textMayContainUnicodeMath(text)) return text;
+    if (!text.includes("^") && !text.includes("_") && !text.includes("\\") && !textMayContainUnicodeMath(text)) return text;
     const braces = text.includes("{");
     const parts: string[] = [];
     let cursor = 0;
@@ -798,6 +1243,38 @@ function promoteCompanionPlainMath(text: string): string {
                 continue;
             }
             if (ch === 0x24 && isUnclosedSingleDollar(text, index)) dollarOpen = true;
+            // A bare TeX command in prose (`τ \approx 1`) is promoted like an
+            // atom. Inside an unclosed `$` / `\(` span it is already math.
+            if (ch === 0x5c && scriptDepth === 0 && !dollarOpen && !followsUnclosedMathOpener(text, index)) {
+                const limit = labelStop === -1 ? text.length : labelStop;
+                const run = matchBareTexCommands(text, index, limit);
+                if (run) {
+                    let start = index;
+                    let end = run.end;
+                    // `0.786\pm0.004` is one formula. Wrapping only `\pm`
+                    // (`0.786$\pm$0.004`) puts `$` right after a digit, which
+                    // the renderer treats as currency and leaves literal —
+                    // the number travels inside the span instead.
+                    if (/\d/u.test(text[index - 1] || "")) {
+                        while (start > 0) {
+                            const ch2 = text[start - 1];
+                            if (/\d/u.test(ch2) || ((ch2 === "." || ch2 === ",") && /\d/u.test(text[start - 2] || ""))) start--;
+                            else break;
+                        }
+                        while (end < limit) {
+                            const ch2 = text[end];
+                            if (/\d/u.test(ch2) || ((ch2 === "." || ch2 === ",") && /\d/u.test(text[end + 1] || ""))) end++;
+                            else break;
+                        }
+                    }
+                    if (start > cursor) parts.push(text.slice(cursor, start));
+                    parts.push("$", text.slice(start, end), "$");
+                    index = end;
+                    cursor = index;
+                    changed = true;
+                    continue;
+                }
+            }
         } else if (ch === 0x68 || ch === 0x48) {
             const url = readUrl(text, index);
             if (url !== -1) {

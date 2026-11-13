@@ -645,7 +645,7 @@ func (h *IMMessageHandler) routedConfigSupportsVision(primary, cfg corelib.Macla
 			!strings.EqualFold(strings.TrimRight(cfg.URL, "/"), strings.TrimRight(provider.URL, "/")) {
 			return false
 		}
-		return providerSupportsVisionForModel(provider, cfg.Model)
+		return corelib.ProviderSupportsVisionForModel(provider, cfg.Model)
 	}
 	return cfg.SupportsVision && cfg.Model == primary.Model && cfg.URL == primary.URL
 }

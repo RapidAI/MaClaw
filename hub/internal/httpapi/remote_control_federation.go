@@ -249,6 +249,89 @@ func (h remoteControlHandler) federationOp(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"result": json.RawMessage(result)})
 }
 
+// remoteControlStreamPayloadLimit bounds one mirrored stream event. Token
+// batches are tiny; the terminal response can be larger but stays far below
+// this. Oversized envelopes are dropped rather than truncated — a cut JSON
+// body would surface as a confusing parse failure on the controller.
+const remoteControlStreamPayloadLimit = 256 << 10
+
+// remoteControlStreamEnvelope wraps a controlled desktop's stream payload for
+// delivery to the controlling machine's WebSocket.
+func remoteControlStreamEnvelope(targetMachineID string, payload json.RawMessage) map[string]any {
+	return map[string]any{
+		"type":       "remote_control.stream",
+		"ts":         time.Now().Unix(),
+		"machine_id": targetMachineID,
+		"payload":    payload,
+	}
+}
+
+// relayControlledStream is installed as ws.OnRemoteControlStream. The payload
+// is the opaque body produced by the controlled desktop; this layer only
+// authenticates the grant it rides on and routes it to the controller —
+// locally over WebSocket, or to the controller's own Hub when the grant is
+// federated.
+func (h remoteControlHandler) relayControlledStream(machineID string, payload json.RawMessage) {
+	if len(payload) == 0 || len(payload) > remoteControlStreamPayloadLimit {
+		return
+	}
+	var head struct {
+		GrantID string `json:"grant_id"`
+	}
+	if err := json.Unmarshal(payload, &head); err != nil || head.GrantID == "" {
+		return
+	}
+	if !h.svc.AllowStream(head.GrantID) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	grant, err := h.svc.StreamGrant(ctx, head.GrantID, machineID)
+	if err != nil {
+		return
+	}
+	if grant.ControllerHub == "" {
+		_ = (remoteControlMachines{devices: h.devices}).Send(grant.ControllerMachineID, remoteControlStreamEnvelope(grant.TargetMachineID, payload))
+		return
+	}
+	// Federated grant: this Hub cannot reach the controller's machine. Hand
+	// the event to the controller's Hub over the federation channel; loss is
+	// acceptable (fire-and-forget mirror, transcript poll is the fallback).
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := remoteControlRelayPost(ctx, grant.ControllerHub+"/api/remote-control/federation/grants/"+grant.ID+"/stream", remoteControlFederationRequest{
+			GrantID: grant.ID, OriginHub: grant.TargetHub, Secret: grant.FederationSecret, Body: payload,
+		}); err != nil {
+			log.Printf("[remote-control] federated stream relay failed grant=%s hub=%s: %v", grant.ID, grant.ControllerHub, err)
+		}
+	}()
+}
+
+// federationStream receives a mirrored stream event from the target's Hub and
+// pushes it to the controller machine on this Hub. Unlike federationOp it
+// never blocks on the target: the answer is always ok.
+func (h remoteControlHandler) federationStream(w http.ResponseWriter, r *http.Request) {
+	body, origin, ok := decodeRemoteControlFederation(w, r)
+	if !ok {
+		return
+	}
+	grant, err := h.svc.FederationGrant(r.Context(), body.GrantID, body.Secret)
+	if err != nil || grant.TargetHub != origin || grant.Status != remotecontrol.StatusActive {
+		writeRemoteControlError(w, remotecontrol.ErrNotFound)
+		return
+	}
+	if len(body.Body) == 0 || len(body.Body) > remoteControlStreamPayloadLimit || !h.svc.AllowStream(grant.ID) {
+		writeError(w, http.StatusBadRequest, "INVALID", "远控流事件无效")
+		return
+	}
+	if err := (remoteControlMachines{devices: h.devices}).Send(grant.ControllerMachineID, remoteControlStreamEnvelope(grant.TargetMachineID, body.Body)); err != nil {
+		writeRemoteControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (h remoteControlHandler) federationStatus(w http.ResponseWriter, r *http.Request) {
 	body, origin, ok := decodeRemoteControlFederation(w, r)
 	if !ok {

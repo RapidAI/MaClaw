@@ -7,12 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/internal/testenv"
 )
 
 const testModelDir = "../../.tmp/ocr-models"
 
 func testEngine(t testing.TB) *Engine {
 	t.Helper()
+	testenv.SkipModelTests(t)
 	det := filepath.Join(testModelDir, "ppocrv6_small_det.onnx")
 	rec := filepath.Join(testModelDir, "ppocrv6_small_rec.onnx")
 	if _, err := os.Stat(det); err != nil {
@@ -97,6 +100,7 @@ func TestEngineMixed(t *testing.T) {
 }
 
 func TestManagerLifecycle(t *testing.T) {
+	testenv.SkipModelTests(t)
 	det := filepath.Join(testModelDir, "ppocrv6_small_det.onnx")
 	rec := filepath.Join(testModelDir, "ppocrv6_small_rec.onnx")
 	if _, err := os.Stat(det); err != nil {

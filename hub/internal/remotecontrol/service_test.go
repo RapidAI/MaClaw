@@ -465,6 +465,20 @@ func TestExecEnforcesPermissionAndControllerMachine(t *testing.T) {
 	}
 }
 
+func TestFetchFileOpPermissions(t *testing.T) {
+	// fetch_file is read-only: a view grant may pull a produced attachment,
+	// while an unknown op is still rejected outright.
+	if !allowedOp(OpFetchFile) {
+		t.Fatal("fetch_file must be a known op")
+	}
+	if !permissionAllows(PermView, OpFetchFile) || !permissionAllows(PermOperate, OpFetchFile) {
+		t.Fatal("fetch_file must be allowed for view and operate grants")
+	}
+	if allowedOp("delete_file") {
+		t.Fatal("unknown op must stay rejected")
+	}
+}
+
 func TestRevokeNotifiesTheOtherSide(t *testing.T) {
 	svc, _, _, notes := testService(t)
 	ctx := context.Background()

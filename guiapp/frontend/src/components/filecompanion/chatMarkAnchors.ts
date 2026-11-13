@@ -8,7 +8,7 @@
 // highlight without wrapping React's text nodes, so streaming and re-renders
 // cannot corrupt the transcript.
 
-import { CHAT_MARK_COLORS, DOC_MARK_MESSAGE, type ChatMark, type ChatMarkColor } from "./chatMarks";
+import { CHAT_MARK_COLORS, CHAT_MARK_STYLES, DOC_MARK_MESSAGE, type ChatMark, type ChatMarkColor, type ChatMarkStyle } from "./chatMarks";
 
 const SKIP_SELECTOR = "button, svg, script, style, noscript, template, [data-chat-mark-skip]";
 
@@ -218,6 +218,28 @@ export function chatRangeForMark(root: HTMLElement, mark: ChatTextAnchor): Range
     return rangeFromText(spans, chatMessageText(spans), mark);
 }
 
+/** A live range over character offsets into one walked text span list. Used
+ *  by document bookmarks, which anchor to a fraction of the whole page text
+ *  rather than to a stored quote. */
+export function chatRangeForOffsets(spans: ChatTextSpan[], start: number, end: number): Range | null {
+    const from = pointForOffset(spans, start, "start");
+    const to = pointForOffset(spans, end, "end");
+    if (!from || !to) return null;
+    const range = document.createRange();
+    try {
+        range.setStart(from.node, from.offset);
+        range.setEnd(to.node, to.offset);
+    } catch {
+        return null;
+    }
+    return range;
+}
+
+/** Total characters the span list walks. */
+export function chatTextLength(spans: ChatTextSpan[]): number {
+    return spans.length > 0 ? spans[spans.length - 1].end : 0;
+}
+
 /** Which stored mark covers a point inside one message, if any. The mark is
  *  re-anchored first, because the painted range and the stored offsets can
  *  differ once the answer has been re-rendered. */
@@ -248,8 +270,11 @@ export function chatMessageRoot(element: HTMLElement | null): HTMLElement | null
 
 // The CSS Highlight registry is global to the page, so the transcript and a
 // markdown document cannot share a name or one repaint would erase the other.
-// The prefix keeps their buckets apart while the colors stay the same.
-const highlightName = (color: ChatMarkColor, namePrefix: string): string => `${namePrefix}-${color}`;
+// The prefix keeps their buckets apart while the colors stay the same. The
+// classic fill keeps the plain name so existing CSS and stored marks paint
+// unchanged; the 画线 styles get their own bucket per style and colour.
+const highlightName = (color: ChatMarkColor, namePrefix: string, style?: ChatMarkStyle): string =>
+    style ? `${namePrefix}-${style}-${color}` : `${namePrefix}-${color}`;
 
 function highlightRegistry(): HighlightRegistry | null {
     if (typeof CSS === "undefined" || !CSS) return null;
@@ -273,7 +298,7 @@ export function applyChatHighlights(root: HTMLElement, marks: ChatMark[], namePr
         if (list) list.push(mark);
         else byMessage.set(mark.message, [mark]);
     }
-    const buckets = new Map<ChatMarkColor, Range[]>();
+    const buckets = new Map<string, Range[]>();
     for (const [message, list] of byMessage) {
         const element = messageElement(root, message);
         if (!element) continue;
@@ -283,25 +308,33 @@ export function applyChatHighlights(root: HTMLElement, marks: ChatMark[], namePr
         for (const mark of list) {
             const range = rangeFromText(spans, text, mark);
             if (!range) continue;
-            const bucket = buckets.get(mark.color);
+            const key = `${mark.style ?? ""}:${mark.color}`;
+            const bucket = buckets.get(key);
             if (bucket) bucket.push(range);
-            else buckets.set(mark.color, [range]);
+            else buckets.set(key, [range]);
         }
     }
-    for (const color of CHAT_MARK_COLORS) {
-        const name = highlightName(color.id, namePrefix);
-        const ranges = buckets.get(color.id);
-        if (!ranges || ranges.length === 0) {
-            registry.delete(name);
-            continue;
+    const fillBucket = (style: ChatMarkStyle | undefined) => {
+        for (const color of CHAT_MARK_COLORS) {
+            const name = highlightName(color.id, namePrefix, style);
+            const ranges = buckets.get(`${style ?? ""}:${color.id}`);
+            if (!ranges || ranges.length === 0) {
+                registry.delete(name);
+                continue;
+            }
+            registry.set(name, new Highlight(...ranges));
         }
-        registry.set(name, new Highlight(...ranges));
-    }
+    };
+    fillBucket(undefined);
+    for (const style of CHAT_MARK_STYLES) fillBucket(style.id);
     return true;
 }
 
 export function clearChatHighlights(namePrefix = "companion-chat"): void {
     const registry = highlightRegistry();
     if (!registry) return;
-    for (const color of CHAT_MARK_COLORS) registry.delete(highlightName(color.id, namePrefix));
+    for (const color of CHAT_MARK_COLORS) {
+        registry.delete(highlightName(color.id, namePrefix));
+        for (const style of CHAT_MARK_STYLES) registry.delete(highlightName(color.id, namePrefix, style.id));
+    }
 }

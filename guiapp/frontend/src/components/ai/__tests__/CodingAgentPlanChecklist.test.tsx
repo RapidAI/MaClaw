@@ -656,6 +656,75 @@ describe("CodingAgentPlanChecklist", () => {
         expect(getByTestId("coding-agent-plan-files-body").textContent).toContain("file_a.go");
     });
 
+    it("opens a changed file in the preview when its row is activated", () => {
+        const onOpenFile = vi.fn();
+        const { getAllByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[]}
+                fileChanges={[
+                    { path: "guiapp/file_a.go", added: 47, removed: 0 },
+                    { path: "guiapp/dir/file_b.go", added: 15, removed: 6 },
+                ]}
+                onOpenFile={onOpenFile}
+            />,
+        );
+        const rows = getAllByTestId("coding-agent-plan-file");
+        expect(rows[0].getAttribute("role")).toBe("button");
+        expect(rows[0].getAttribute("data-preview-path")).toBe("guiapp/file_a.go");
+        fireEvent.click(rows[1]);
+        expect(onOpenFile).toHaveBeenLastCalledWith("guiapp/dir/file_b.go");
+        fireEvent.keyDown(rows[0], { key: "Enter" });
+        expect(onOpenFile).toHaveBeenLastCalledWith("guiapp/file_a.go");
+        expect(onOpenFile).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps the file list open while focus moves into its rows", () => {
+        const onOpenFile = vi.fn();
+        const { getByTestId, getAllByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[]}
+                fileChanges={[{ path: "guiapp/file_a.go", added: 4, removed: 1 }]}
+                onOpenFile={onOpenFile}
+            />,
+        );
+        const toggle = getByTestId("coding-agent-plan-files-toggle");
+        const row = getAllByTestId("coding-agent-plan-file")[0];
+        fireEvent.focus(toggle);
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        fireEvent.blur(toggle, { relatedTarget: row });
+        fireEvent.focus(row, { relatedTarget: toggle });
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        fireEvent.keyDown(row, { key: "Enter" });
+        expect(onOpenFile).toHaveBeenCalledWith("guiapp/file_a.go");
+        // Escape on a focused row closes the list, like the toggle's Escape.
+        act(() => { (row as HTMLElement).focus(); });
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        fireEvent.keyDown(row, { key: "Escape" });
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("keeps file rows inert without an open handler", () => {
+        const { getAllByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[]}
+                fileChanges={[{ path: "guiapp/file_a.go", added: 4, removed: 1 }]}
+            />,
+        );
+        const row = getAllByTestId("coding-agent-plan-file")[0];
+        expect(row.getAttribute("role")).toBeNull();
+        expect(row.getAttribute("tabindex")).toBeNull();
+        expect(row.getAttribute("data-preview-path")).toBeNull();
+    });
+
     it("uses the composer side inset so the card matches the input width", () => {
         const partial = readFileSync(resolve(process.cwd(), "src/styles/partials/100-pet-store-mc.css"), "utf8");
         const assembled = readFileSync(resolve(process.cwd(), "src/App.css"), "utf8");

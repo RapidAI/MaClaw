@@ -74,7 +74,7 @@ func (h *IMMessageHandler) horizonModelForRole(role string, baseCfg corelib.Macl
 	}
 	resolved := h.app.materializeMaclawLLMProvider(provider)
 	resolved.Model = model
-	resolved.SupportsVision = providerSupportsVisionForModel(provider, model)
+	resolved.SupportsVision = corelib.ProviderSupportsVisionForModel(provider, model)
 	// Keep token usage attributed to the base execution profile; RouteSource
 	// records that a horizon role override picked the endpoint.
 	resolved.Profile = baseCfg.Profile

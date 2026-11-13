@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -64,6 +66,21 @@ func NewLocalMCPClient(entry corelib.LocalMCPServerEntry) *LocalMCPClient {
 	return &LocalMCPClient{entry: entry}
 }
 
+// errLocalMCPSpawnSuppressedUnderTest stops a `go test` binary from launching
+// arbitrary local MCP server commands. Tests that exercise the real process
+// path re-execute the test binary itself through the GO_WANT_HELPER_PROCESS
+// pattern (see newHelperLocalMCPServerEntry); anything else (npx, node, ...)
+// may download packages or stall for minutes in the initialize/discovery
+// handshake and wedge the whole suite.
+var errLocalMCPSpawnSuppressedUnderTest = errors.New("local MCP spawn suppressed under go test")
+
+func localMCPSpawnSuppressedUnderTest(entry corelib.LocalMCPServerEntry) error {
+	if !testing.Testing() || entry.Env["GO_WANT_HELPER_PROCESS"] == "1" {
+		return nil
+	}
+	return fmt.Errorf("%w: %q", errLocalMCPSpawnSuppressedUnderTest, entry.Command)
+}
+
 // startMaxRetries is the number of attempts to launch and initialize an MCP
 // server before giving up. Some servers need a moment to become ready, so
 // retrying a few times avoids the "works manually but not on auto-start" issue.
@@ -84,6 +101,9 @@ func (c *LocalMCPClient) Start(ctx context.Context) error {
 				log.Printf("[LocalMCP] %s started successfully on attempt %d", c.entry.Name, attempt)
 			}
 			return nil
+		}
+		if errors.Is(lastErr, errLocalMCPSpawnSuppressedUnderTest) {
+			return lastErr
 		}
 
 		log.Printf("[LocalMCP] %s start attempt %d/%d failed: %v", c.entry.Name, attempt, startMaxRetries, lastErr)
@@ -114,6 +134,10 @@ func (c *LocalMCPClient) tryStart(ctx context.Context) error {
 	if c.running {
 		c.stateMu.Unlock()
 		return nil
+	}
+	if err := localMCPSpawnSuppressedUnderTest(c.entry); err != nil {
+		c.stateMu.Unlock()
+		return err
 	}
 
 	childCtx, cancel := context.WithCancel(ctx)

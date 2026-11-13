@@ -166,7 +166,7 @@ func (gp *GoPdf) InsertHTMLBox(x, y, w, h float64, htmlStr string, opt HTMLBoxOp
 func (gp *GoPdf) InsertHTMLPaginated(x, y, w float64, htmlStr string, opt HTMLBoxOption) (float64, error)
 ```
 
-将 HTML 内容渲染到 PDF 页面的指定矩形区域内。`InsertHTMLBox` 在盒子高度处截断内容（旧行为）；`InsertHTMLPaginated` 让内容自动跨页流动——内容超过 `opt.PageBottom` 时自动添加新页并从 `opt.PageTop` 继续渲染，支持表格表头跨页重复（`opt.RepeatTableHeaders`）与 `opt.OnPageBreak` 回调。
+将 HTML 内容渲染到 PDF 页面的指定矩形区域内。`InsertHTMLBox` 在盒子高度处截断内容（旧行为）；`InsertHTMLPaginated` 让内容自动跨页流动——内容超过 `opt.PageBottom` 时自动添加新页并从 `opt.PageTop` 继续渲染，支持表格表头跨页重复（`opt.RepeatTableHeaders`）、`opt.OnPageBreak` 回调，以及 `break-inside: avoid` / `page-break-inside: avoid` 整块防拆分（含嵌套块与段落默认边距的高度估算）。
 
 **参数：** `x, y`（左上角坐标）、`w, h`（区域尺寸）、`htmlStr`（HTML 字符串）、`opt`（渲染选项）。
 
@@ -1066,6 +1066,111 @@ type TextLine struct {
     Text  string     // 带单词间距的整行文本
 }
 ```
+
+## 文档句柄（一次解析，多次查询）
+
+```go
+doc, err := gopdf.OpenPDFDocument(pdfData)   // 或 OpenPDFDocumentFromFile(path)
+n := doc.PageCount()
+info := doc.Info()                            // 元数据（已缓存）
+toc := doc.TOC()                              // 书签树（已缓存）
+lines, _ := doc.Lines(0)                      // 阅读顺序文本行（已缓存）
+paras, _ := doc.Paragraphs(0)                 // 重建段落（已缓存）
+words, _ := doc.Words(0)                      // 位置单词（已缓存）
+drawings, _ := doc.Drawings(0)                // 矢量图形（已缓存）
+tables, _ := doc.Tables(0)                    // 检测表格（已缓存；复用 drawings+lines）
+images, _ := doc.Images(0)                    // 图片位置（已缓存）
+text, _ := doc.Text(0)                        // 按行拼接的文本
+txt, _ := doc.TextInRect(0, gopdf.ClipRect{...})
+res := doc.Search("query", gopdf.SearchOptions{Dehyphenate: true})
+```
+
+`PDFDoc` 只解析一次文件并缓存所有按页结果——同一文件多次调用多个
+API 时，每个内容流只解压一次。在图形密集的语料文档上实测比逐页调用
+三个包级函数快 42 倍。
+
+### 段落、区域与矢量图形
+
+```go
+func ExtractPageParagraphs(pdfData []byte, pageIndex int) ([]TextParagraph, error)
+func ExtractAllPagesParagraphs(pdfData []byte) (map[int][]TextParagraph, error)
+func ExtractTextInRect(pdfData []byte, pageIndex int, clip ClipRect) (string, error)
+func ExtractTextWordsInRect(pdfData []byte, pageIndex int, clip ClipRect) ([]TextWord, error)
+func WordsInRect(words []TextWord, clip ClipRect) []TextWord
+func ExtractPageDrawings(pdfData []byte, pageIndex int) ([]Drawing, error)
+func ExtractDrawingsFromFile(path string, pageIndex int) ([]Drawing, error)
+```
+
+### 表格检测
+
+```go
+func ExtractTablesFromPage(pdfData []byte, pageIndex int) ([]Table, error)
+func ExtractTablesFromFile(path string, pageIndex int) ([]Table, error)
+
+type TableCell struct {
+    X, Y, W, H float64
+    Text       string
+}
+type Table struct {
+    X, Y, W, H float64 // 包围盒
+    ColCount   int
+    Rows       [][]TableCell
+}
+```
+
+检测有边框表格（PyMuPDF `find_tables` 对齐）：边框线按交叉连通分量分组（每个分量即一个候选表格），聚类成行/列网格，单元格按位置填充文字。坐标遵循 `/Rotate`。无边框表格无法检测——没有可聚类的网格线。
+
+- `ExtractPageParagraphs` — 最高层的文本 API：将阅读顺序的文本行重新合并为段落。换行以空格连接，断词连字符直接拼接（`"transduc-" + "tion"` → `"transduction"`），首行缩进与句末标点开启新段落。
+- `ExtractTextInRect` / `ExtractTextWordsInRect` — 按区域提取；坐标为视觉页面点（自上而下，遵循 `/Rotate`）。
+- `ExtractPageDrawings` — 矢量图形提取：直线、折线、矩形与贝塞尔曲线（已扁平化），含描边/填充颜色（RGB 与 DeviceCMYK）、线宽与绘制算符。遍历表单 XObject 并遵循 `/Rotate`。
+
+### 带选项的文本搜索
+
+```go
+func SearchTextWithOptions(pdfData []byte, query string, opt SearchOptions) ([]TextSearchResult, error)
+func SearchTextOnPageWithOptions(pdfData []byte, pageIndex int, query string, opt SearchOptions) ([]TextSearchResult, error)
+
+type SearchOptions struct {
+    CaseInsensitive bool
+    Dehyphenate     bool // 跨连字符换行匹配
+}
+```
+
+`Dehyphenate: true` 时，搜索 "computational" 可匹配跨行断词 `"computa-"` / `"tional"`；返回的矩形为匹配起始行所在位置。
+
+### 文档元数据（读取）
+
+```go
+func GetPDFInfo(pdfData []byte) (PdfInfo, error)
+func GetPDFInfoFromFile(path string) (PdfInfo, error)
+```
+
+读取 `/Info` 字典：标题、作者、主题、关键词、创建者、生产者、创建/修改日期。写入侧为 `SetInfo(PdfInfo)`。
+
+### 已有 PDF 的目录（读取）
+
+```go
+func ExtractTOC(pdfData []byte) ([]TOCEntry, error)
+func ExtractTOCFromFile(path string) ([]TOCEntry, error)
+
+type TOCEntry struct {
+    Level int     // 层级（1 = 顶层）
+    Title string
+    Page  int     // 1-based 目标页码（无法解析时为 0）
+    Y     float64 // 目标位置（距页面顶部的点数）
+}
+```
+
+遍历已有 PDF 的书签树。（写入侧为 GoPdf 实例上的 `SetTOC` / `AddOutline` / `GetTOC`。）
+
+### 区域渲染
+
+```go
+opt := gopdf.RenderOption{DPI: 150, Clip: &gopdf.ClipRect{X: 100, Y: 100, W: 200, H: 120}}
+img, err := gopdf.RenderPageToImage(data, 0, opt)
+```
+
+`Clip` 将渲染限制在页面的一个区域内（视觉点坐标）；渲染遵循 `/Rotate`（输出画布与视觉页面方向一致，并应用 2 倍超采样以保证细线保真度）。
 
 ---
 
