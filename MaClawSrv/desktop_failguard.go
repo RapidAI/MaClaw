@@ -171,6 +171,9 @@ func desktopFailClassRecord(scope agentruntime.Scope, action string, args map[st
 		return ""
 	}
 	class := desktopErrorClass(out, err)
+	if class != "" {
+		desktopNoteRunBlocker(scope.RunID, class)
+	}
 	if class == "" {
 		return ""
 	}

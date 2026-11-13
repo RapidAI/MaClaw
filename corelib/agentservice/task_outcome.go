@@ -58,6 +58,18 @@ func applyTaskOutcome(run *Run, msg *Message) string {
 		run.Metadata = map[string]string{}
 	}
 	run.Metadata[TaskOutcomeKey] = outcome
+	for _, key := range []string{"outcome_status", "outcome_results", "outcome_blocker", "outcome_unblock", "outcome_next", "outcome_remediated", "outcome_record"} {
+		if v := strings.TrimSpace(msg.Metadata[key]); v != "" {
+			run.Metadata[key] = v
+		}
+	}
+	if msg.Metadata["outcome_next"] == "continue" {
+		// The bot can remove this blocker itself, so this run does not
+		// end in a user-facing failure. A follow-up run does the work.
+		delete(msg.Metadata, "send_to_user")
+		run.WaitingForUser = false
+		return outcome
+	}
 	if TaskOutcomeNeedsUser(outcome) {
 		run.WaitingForUser = true
 	}

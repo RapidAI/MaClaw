@@ -407,12 +407,23 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 	out := desktopTaskOutcomeMetadata(run.ID, msg)
 	sentence, haveSentence := desktopFinishSentence(run.ID)
 	desktopClearFinish(run.ID)
-	if haveSentence && sentence != "" {
+	if haveSentence && sentence != "" && (out == nil || out["outcome_status"] == "") {
 		if out == nil {
 			out = map[string]string{}
 		}
 		// Only the declared sentence is shown. The finish note stays off it.
 		out["send_to_user"] = sentence
+	}
+	if s != nil && out != nil && out["outcome_next"] == "continue" {
+		if err := desktopRunContinueSend(ctx, s.svc, p, inst.ID, sess.ID, run.ID, out["outcome_blocker"], out["outcome_unblock"]); err != nil {
+			out["outcome_next"] = "ask_user"
+			out["outcome_remediated"] = "true"
+			out["send_to_user"] = desktopRunFinishSentence(desktopRunFinish{
+				Status: "failure", Blocker: out["outcome_blocker"],
+				Unblock: strings.Split(out["outcome_unblock"], "\n"), Next: "ask_user", Remediated: true,
+			})
+			out["send_to_user_kind"] = "report"
+		}
 	}
 	if botID := desktopBotOfInstance(run.InstanceID); botID != "" && out != nil {
 		// Only a run that stopped to ask keeps the goal open. Done, failed,

@@ -1350,6 +1350,9 @@ func finishDesktopActionPhase(scope agentruntime.Scope, text string, err error, 
 	if phase != "execute" {
 		return text, err
 	}
+	if reason == "login_wall" || reason == "mfa" || reason == "payment_confirm" {
+		desktopNoteRunBlocker(scope.RunID, reason)
+	}
 	if reason == "login_wall" || reason == "mfa" {
 		if desktopUnattended(scope.InstanceID) {
 			return strings.TrimSpace(text + "\n这次是自动任务，没有人在对话里填写密码、手机号或验证码。"), fmt.Errorf("desktop needs a person")

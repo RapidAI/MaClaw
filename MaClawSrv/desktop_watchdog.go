@@ -843,7 +843,27 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 	if why != "" {
 		out["task_outcome_evidence"] = desktopRuneHead(why, 300)
 	}
-	if sentence, ok := desktopFinishSentence(runID); ok && sentence != "" {
+	if fin, ok := desktopComposeRunFinish(runID, msg, outcome, why); ok {
+		fin.Record = desktopRunFinishRecordPath(runID)
+		desktopStoreRunFinish(runID, msg.Content, why, fin)
+		out["outcome_status"] = fin.Status
+		out["outcome_results"] = strings.Join(fin.Results, "\n")
+		out["outcome_blocker"] = fin.Blocker
+		out["outcome_unblock"] = strings.Join(fin.Unblock, "\n")
+		out["outcome_next"] = fin.Next
+		if fin.Remediated {
+			out["outcome_remediated"] = "true"
+		}
+		if fin.Record != "" {
+			out["outcome_record"] = fin.Record
+		}
+		if fin.Next != "continue" {
+			out["send_to_user"] = fin.Sentence()
+			if out["send_to_user_kind"] == "" {
+				out["send_to_user_kind"] = "report"
+			}
+		}
+	} else if sentence, ok := desktopFinishSentence(runID); ok && sentence != "" {
 		out["send_to_user"] = sentence
 	}
 	return out
