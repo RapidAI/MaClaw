@@ -267,11 +267,47 @@ func TestScreenLeaseCancelAndFailure(t *testing.T) {
 	eCh, eWait := leaseAsync(m, context.Background(), "k", "E")
 	<-eWait
 	relD, _, _, _ := m.acquire(context.Background(), "k", "D", nil)
+	if q := desktopScreenQueue("E"); q != desktopScreenQueueSentence {
+		t.Fatalf("queue before timeout %q", q)
+	}
 	clock.Add(31 * time.Minute)
-	if r := leaseExpect(t, eCh); r.err == nil || !strings.Contains(r.err.Error(), "screen_busy") {
+	if r := leaseExpect(t, eCh); r.err == nil || !strings.Contains(r.err.Error(), "screen_busy") || !strings.Contains(r.err.Error(), desktopScreenQueueSentence) {
 		t.Fatalf("wait limit: %+v", r)
 	}
+	if _, ok := desktopScreenHalts.Load("E"); !ok {
+		t.Fatal("timeout did not end the run")
+	}
 	relD()
+}
+
+func TestScreenLeaseWaitersAreFIFO(t *testing.T) {
+	m, _ := leaseTestEnv(t)
+	relA, _, _, err := m.acquire(context.Background(), "k", "A", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bCh, bWait := leaseAsync(m, context.Background(), "k", "B")
+	<-bWait
+	cCh, cWait := leaseAsync(m, context.Background(), "k", "C")
+	<-cWait
+	relA()
+	m.endRun("A", "run_end")
+	b := leaseExpect(t, bCh)
+	if b.err != nil {
+		t.Fatal(b.err)
+	}
+	select {
+	case got := <-cCh:
+		t.Fatalf("C passed B: %+v", got)
+	default:
+	}
+	b.release()
+	m.endRun("B", "run_end")
+	c := leaseExpect(t, cCh)
+	if c.err != nil {
+		t.Fatal(c.err)
+	}
+	c.release()
 }
 
 // Many runs hammering one screen: never two holders inside a step at once.

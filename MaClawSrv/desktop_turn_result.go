@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
@@ -101,6 +102,9 @@ type desktopRunAPI struct {
 	// run has a finished reply. The words are a fixed phrase, never the
 	// text the step typed.
 	Activity string `json:"activity,omitempty"`
+	// ScreenQueue is set while this run waits for another task of the same
+	// bot to release the screen.
+	ScreenQueue string `json:"screen_queue,omitempty"`
 	// StatusLine is the live status for the bot's status area: run id,
 	// step, latest progress, background job and its next check.
 	StatusLine    string `json:"status_line,omitempty"`
@@ -110,22 +114,47 @@ type desktopRunAPI struct {
 	ProgressPath  string `json:"progress_path,omitempty"`
 }
 
-func desktopRunAPIBody(dataRoot string, run *agentservice.Run) any {
+func desktopRunAPIBody(dataRoot string, run *agentservice.Run, stored *agentservice.Message) any {
 	sanitized := sanitizeRunPtrForAPI(dataRoot, run)
 	if run == nil {
 		return sanitized
 	}
 	activity := loadDesktopActivity(run.ID)
+	queue := desktopScreenQueue(run.ID)
 	result, ok := loadDesktopTurnResult(run.ID)
 	where, next, open, path, hasProgress := desktopProgressFields(run, result.Message)
 	status := ""
 	if !ok && run.Status == agentservice.RunStatusRunning {
 		status = desktopRunStatusLine(run.ID)
+		if queue != "" {
+			if status != "" {
+				status += " · " + queue
+			} else {
+				status = queue
+			}
+		}
+		if note := restartNoticeOf(run); note != "" {
+			if status != "" {
+				status += " · " + note
+			} else {
+				status = note
+			}
+		}
 	}
-	if !ok && activity == "" && !hasProgress && status == "" {
+	if !ok && stored != nil && desktopTerminalRun(run.Status) {
+		body := desktopRunAPI{Run: sanitized, Activity: activity, ScreenQueue: queue, StatusLine: status, DesktopReady: true, Message: stored}
+		if hasProgress {
+			body.ProgressWhere = where
+			body.ProgressNext = next
+			body.ProgressOpen = open
+			body.ProgressPath = path
+		}
+		return body
+	}
+	if !ok && activity == "" && queue == "" && !hasProgress && status == "" {
 		return sanitized
 	}
-	body := desktopRunAPI{Run: sanitized, Activity: activity, StatusLine: status}
+	body := desktopRunAPI{Run: sanitized, Activity: activity, ScreenQueue: queue, StatusLine: status}
 	if hasProgress {
 		body.ProgressWhere = where
 		body.ProgressNext = next
@@ -140,6 +169,42 @@ func desktopRunAPIBody(dataRoot string, run *agentservice.Run) any {
 	body.AttentionReason = result.Attention
 	body.Message = result.Message
 	return body
+}
+
+func restartNoticeOf(run *agentservice.Run) string {
+	if run == nil || run.Metadata == nil {
+		return ""
+	}
+	return strings.TrimSpace(run.Metadata["restart_notice"])
+}
+
+func desktopTerminalRun(status agentservice.RunStatus) bool {
+	switch status {
+	case agentservice.RunStatusSucceeded, agentservice.RunStatusFailed, agentservice.RunStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// desktopStoredTerminalMessage is the assistant reply already stored for a
+// finished run. The in-memory turn result does not survive a process
+// restart, and Hub delivers a sentence only when the run read carries one.
+func desktopStoredTerminalMessage(ctx context.Context, svc *agentservice.Service, p agentservice.Principal, run *agentservice.Run) *agentservice.Message {
+	if svc == nil || run == nil || strings.TrimSpace(run.AssistantMessageID) == "" {
+		return nil
+	}
+	if _, ok := loadDesktopTurnResult(run.ID); ok {
+		return nil
+	}
+	if !desktopTerminalRun(run.Status) {
+		return nil
+	}
+	msg, err := svc.GetMessage(ctx, p, run.InstanceID, run.SessionID, run.AssistantMessageID)
+	if err != nil {
+		return nil
+	}
+	return msg
 }
 
 func desktopProgressFields(run *agentservice.Run, msg *agentservice.Message) (where, next, open, path string, ok bool) {

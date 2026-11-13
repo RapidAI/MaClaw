@@ -35,7 +35,7 @@ func TestOrphanRunsReconciledAndCancellable(t *testing.T) {
 		t.Fatalf("orphans=%d", n)
 	}
 	got, _ := svc.store.GetRun(principal.TenantID, principal.UserID, inst.ID, orphan.ID)
-	if got.Status != RunStatusFailed || got.Error != runInterruptedError || got.CompletedAt == nil {
+	if got.Status != RunStatusInterrupted || got.Error != runInterruptedError || got.CompletedAt == nil {
 		t.Fatalf("got %+v", got)
 	}
 	if busy, _ := svc.hasRunningRuns(principal.TenantID, principal.UserID, inst.ID, got.SessionID); busy {

@@ -43,10 +43,11 @@ const (
 type RunStatus string
 
 const (
-	RunStatusRunning   RunStatus = "running"
-	RunStatusSucceeded RunStatus = "succeeded"
-	RunStatusFailed    RunStatus = "failed"
-	RunStatusCancelled RunStatus = "cancelled"
+	RunStatusRunning     RunStatus = "running"
+	RunStatusSucceeded   RunStatus = "succeeded"
+	RunStatusFailed      RunStatus = "failed"
+	RunStatusCancelled   RunStatus = "cancelled"
+	RunStatusInterrupted RunStatus = "interrupted"
 )
 
 type MessageRole string
@@ -1015,6 +1016,9 @@ type PostMessageInput struct {
 	// this call as the owner. An idempotent replay leaves it false so that
 	// call does not consume the desktop handoff or publish a result.
 	ExecutionOwner *bool `json:"-"`
+	// resumeRun continues this interrupted run instead of admitting another.
+	// Startup resume sets it. Transport JSON cannot.
+	resumeRun *Run `json:"-"`
 }
 
 type SendMessageInput struct {

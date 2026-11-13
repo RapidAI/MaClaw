@@ -72,6 +72,9 @@ EnvironmentFile=$MACLAWSRV_DEPLOY_DIR/.env
 ExecStart=$MACLAWSRV_DEPLOY_DIR/bin/maclawsrv
 Restart=always
 RestartSec=3
+# Stop waits for in-flight runs to reach a step boundary (20s) and for
+# HTTP to shut down. SIGKILL after this must not arrive first.
+TimeoutStopSec=45
 StandardOutput=append:$MACLAWSRV_DEPLOY_DIR/logs/maclawsrv.log
 StandardError=append:$MACLAWSRV_DEPLOY_DIR/logs/maclawsrv.err.log
 

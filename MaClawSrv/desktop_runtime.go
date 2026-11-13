@@ -264,7 +264,21 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 		desktopWatchdogResult(scope, action, args, "", leaseErr)
 		return "", leaseErr
 	}
+	if consumeDesktopReplay(scope.SessionID, action) {
+		out, err := m.invokeDesktopTool(ctx, request, name, map[string]any{"action": "probe"})
+		release()
+		if err != nil {
+			return "", err
+		}
+		return "The previous " + action + " may already have landed. This is the page now, not a second click.\n" + out, nil
+	}
+	agentservice.NoteRunTool(scope.RunID, action)
 	out, err := m.invokeDesktopTool(ctx, request, name, args)
+	if err == nil {
+		// A step that returned is committed. A step that was cancelled may
+		// already have clicked; leave the name so restart re-checks it.
+		agentservice.NoteRunTool(scope.RunID, "")
+	}
 	release()
 	if err == nil && leaseNote != "" {
 		out = leaseNote + out

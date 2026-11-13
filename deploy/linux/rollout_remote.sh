@@ -165,6 +165,9 @@ EnvironmentFile=$D/.env
 ExecStart=$D/bin/maclawsrv
 Restart=always
 RestartSec=3
+# Stop waits for in-flight runs to reach a step boundary (20s) and for
+# HTTP to shut down. SIGKILL after this must not arrive first.
+TimeoutStopSec=45
 StandardOutput=append:$D/logs/maclawsrv.log
 StandardError=append:$D/logs/maclawsrv.err.log
 

@@ -134,6 +134,8 @@ Hub 二进制没有版本字符串。新文件先覆盖正在运行的二进制�
 
 maclawsrv 是 systemd 单元 `maclawsrv.service`。二进制是 `/data/soft/maclaw_srv/bin/maclawsrv`，监听来自 `/data/soft/maclaw_srv/.env` 的 `MACLAW_HTTP_ADDR=:18080`。不要改单元文件，不要改 `.env`，不要用会重写 systemd、`start.sh` 或 `.env` 的远程部署脚本。
 
+停机时进程先不再接收新的桌面任务，再给正在跑的任务最多 20 秒走到步骤边界，把没做完的记成 `interrupted` 并在下次启动时接着做。单元里的 `TimeoutStopSec` 必须大于这段时间加上 HTTP 退出（安装脚本写的是 45 秒）。短于这个值时 systemd 会在检查点写完之前发 SIGKILL，任务就只剩下一次无声取消。
+
 替换步骤：停单元，把当前二进制备份成新的文件名，拷入新二进制，`chmod 755`，再启动。启动后大约 3 秒才开始监听，立刻访问会得到 connection refused。确认：
 
 ```bash

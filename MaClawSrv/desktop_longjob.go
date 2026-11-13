@@ -1703,6 +1703,9 @@ var (
 func bindDesktopLongJobService(svc *agentservice.Service) {
 	desktopLongJobService = svc
 	desktopLongJobReconcileOwners()
+}
+
+func startDesktopLongJobClock() {
 	desktopLongJobEnsureTicker()
 }
 

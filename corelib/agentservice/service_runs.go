@@ -36,6 +36,9 @@ func (s *Service) takeRunCancel(runID string) (context.CancelFunc, bool) {
 	if ok {
 		delete(s.runningRuns, runID)
 	}
+	if s.draining.Load() && s.drainCond != nil {
+		s.drainCond.Broadcast()
+	}
 	return cancel, ok
 }
 
@@ -54,6 +57,9 @@ func (s *Service) clearRunCancel(runID string) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	delete(s.runningRuns, runID)
+	if s.draining.Load() && s.drainCond != nil {
+		s.drainCond.Broadcast()
+	}
 }
 
 func (s *Service) GetRun(ctx context.Context, p Principal, instanceID, runID string) (*Run, error) {

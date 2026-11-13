@@ -487,7 +487,8 @@ type coreAgentCallbacks struct {
 	// forceFullPrompt is set by UpgradeLightPromptToFull (light tool-deny recovery).
 	forceFullPrompt bool
 	// history is pre-turn conversation for multi-turn knowledge auto-recall.
-	history []agent.ConversationEntry
+	history        []agent.ConversationEntry
+	restartWorking *agent.WorkingState
 	// MoA (request-level preset / allow_auto).
 	moaRequestPreset   string // raw request preset name (may be empty)
 	moaPreset          *moa.ResolvedPreset
@@ -843,6 +844,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		adaptiveRetry:      agentruntime.NewAdaptiveRetry(nil),
 		runID:              req.RunID,
 	}
+	cb.adoptRestartTrajectory(req)
 	cb.bindRequestHostCapabilities()
 	cb.startDesktopDeliverables()
 	if runtimeStore != nil && runtimeAttempt != nil {
@@ -887,6 +889,9 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	result := agentruntime.RunAgentTurnWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient, supplementHooks, compressionHooks)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
 	cb.noteDesktopIdleSummary(result)
+	if errors.Is(result.Err, agent.ErrRestartYield) || RestartYielding() {
+		stashRestartTrajectory(req.RunID, result.HistoryDelta, result.WorkingState)
+	}
 	if result.Error != "" {
 		// Keep whatever the model already produced. A run cut short by an
 		// upstream throttle has often finished the actual work in earlier
@@ -3476,6 +3481,17 @@ func (c *coreAgentCallbacks) OnToolResult(name string) {
 		c.onToolResult(name, "")
 	}
 }
+func (c *coreAgentCallbacks) YieldForRestart() bool {
+	return RestartYielding()
+}
+
+func (c *coreAgentCallbacks) HaltReason() error {
+	if c == nil || RunHaltReason == nil {
+		return nil
+	}
+	return RunHaltReason(c.runID)
+}
+
 func (c *coreAgentCallbacks) ShouldStop() bool {
 	// Child admission deliberately terminates the parent attempt before any
 	// child begins.  Stop this old loop immediately so it cannot make another

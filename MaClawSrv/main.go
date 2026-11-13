@@ -255,6 +255,8 @@ func runServer(ctx context.Context) error {
 		}()
 	}
 
+	// Interrupted desktop runs continue before any watch is allowed to fire.
+	svc.ResumeInterruptedRuns(context.Background())
 	// Desktop-bot timers always start. MACLAW_ENABLE_SCHEDULER=true also
 	// starts every other scheduled task.
 	schMgr := initScheduler(dataRoot, svc, executor)
@@ -313,6 +315,11 @@ func runServer(ctx context.Context) error {
 		}
 	case <-ctx.Done():
 		srvLog().Info("shutdown requested, stopping maclawsrv")
+		// Let in-flight runs reach a step boundary. TimeoutStopSec on the
+		// unit must be longer than this grace plus the HTTP shutdown below.
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), agentservice.ShutdownGrace())
+		svc.Drain(drainCtx)
+		drainCancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {

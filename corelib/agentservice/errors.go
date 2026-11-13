@@ -8,7 +8,8 @@ import (
 )
 
 var (
-	ErrUnauthorized       = errors.New("unauthorized")
+	ErrServiceDraining = errors.New("service is shutting down")
+	ErrUnauthorized    = errors.New("unauthorized")
 	ErrForbidden          = errors.New("forbidden")
 	ErrTenantNotFound     = errors.New("tenant not found")
 	ErrUserNotFound       = errors.New("user not found")

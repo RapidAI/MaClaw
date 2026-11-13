@@ -14,8 +14,8 @@ import (
 // ErrRunNotRunning). Seen live 10-22: run_181f2018 stayed running after a
 // restart and the person's resend was queued behind it.
 //
-// At startup every stored running run is marked failed with
-// runInterruptedError and a run.failed event. MACLAW_RECONCILE_ORPHAN_RUNS=off
+// At startup every stored running run is marked interrupted, with a
+// checkpoint the next start can resume. MACLAW_RECONCILE_ORPHAN_RUNS=off
 // disables this (for a deployment where several processes share one store).
 
 // orphanCancelGrace: CancelRun treats a running run without a cancel func as
@@ -82,27 +82,9 @@ func (s *Service) reconcileOrphanRuns() int {
 	return n
 }
 
-// markRunInterrupted stores run as failed (interrupted) with its event.
+// markRunInterrupted stores the run as interrupted with a checkpoint.
 func (s *Service) markRunInterrupted(run Run) bool {
 	s.reapRunSupplements(run.ID)
-	completed := s.now()
-	run.Status = RunStatusFailed
-	run.Error = runInterruptedError
-	run.CompletedAt = &completed
-	if !run.StartedAt.IsZero() {
-		run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
-	}
-	ev := runTerminalEventFor(run, "run.failed", map[string]any{"error": run.Error, "reason": "interrupted"})
-	committed, err := s.saveRunTerminalWithEvents(run, []RunEvent{ev})
-	if err != nil {
-		if saveErr := s.store.SaveRun(run); saveErr != nil {
-			log.Printf("[agentservice] orphan run %s: save failed: %v", run.ID, saveErr)
-			return false
-		}
-		committed = false
-	}
-	if !committed {
-		s.emitRunEvent(run, ev.Type, ev.Payload)
-	}
-	return true
+	s.finishInterrupted(&run, restartUncertain(runTool(run.ID)))
+	return run.Status == RunStatusInterrupted
 }

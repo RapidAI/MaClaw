@@ -69,7 +69,7 @@ func TestDesktopActivityPhrasesStayOffTheTypedText(t *testing.T) {
 
 	setDesktopActivity(runID, "正在输入")
 	run := &agentservice.Run{ID: runID, Status: agentservice.RunStatusRunning}
-	raw, err := json.Marshal(desktopRunAPIBody("", run))
+	raw, err := json.Marshal(desktopRunAPIBody("", run, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestDesktopActivityPhrasesStayOffTheTypedText(t *testing.T) {
 	if loadDesktopActivity(runID) != "" {
 		t.Fatal("a finished run kept its step")
 	}
-	done, err := json.Marshal(desktopRunAPIBody("", run))
+	done, err := json.Marshal(desktopRunAPIBody("", run, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

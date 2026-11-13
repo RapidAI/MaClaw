@@ -258,6 +258,18 @@ func (m *Manager) StartWithExecutor(fn TaskExecutor) {
 	m.Start()
 }
 
+// RefreshCatchUps rebuilds the missed-run list from the rows still stored.
+// Call it after a startup reconcile deletes rows, and before Start, so a
+// deleted watch is not fired as a catch-up.
+func (m *Manager) RefreshCatchUps(now time.Time) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingCatchUps = m.detectMissedRuns(now)
+}
+
 // SetEligible limits which rows the clock starts. Nil allows every due row.
 // Set it before Start. A row the clock skips keeps its next-run time, so a
 // later clock that allows it can still fire that occurrence.

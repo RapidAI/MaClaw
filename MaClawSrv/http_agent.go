@@ -564,7 +564,7 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agen
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, desktopRunAPIBody(s.svc.DataRoot(), out))
+	writeJSON(w, http.StatusOK, desktopRunAPIBody(s.svc.DataRoot(), out, desktopStoredTerminalMessage(r.Context(), s.svc, p, out)))
 }
 
 // desktopAsyncHooks hold the desktop for the detached run. The HTTP handler

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -109,6 +110,8 @@ type Service struct {
 
 	runMu       sync.Mutex
 	runningRuns map[string]context.CancelFunc
+	draining    atomic.Bool
+	drainCond   *sync.Cond
 	// supplements carries mid-run supplementary instructions per run, keyed by
 	// run id. It shares runMu with runningRuns: the loop drains a run's queue
 	// while an HTTP handler may be appending to the very same run.

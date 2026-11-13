@@ -1207,6 +1207,10 @@ func (c loopHooksChain) TransformConversation(conversation []interface{}) []inte
 	return out
 }
 
+// ErrRestartYield is a step-boundary stop for a service restart. It is not
+// a user cancel and not a failed tool.
+var ErrRestartYield = errors.New("run interrupted at a step boundary for restart")
+
 // LoopResult is the output of RunLoop.
 type LoopResult struct {
 	Text  string
@@ -1614,6 +1618,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		iterationStreamed.Reset()
 		if cb.ShouldStop() {
 			return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
+		}
+		// A restart asks the turn to stop only between steps, after the
+		// previous tool batch has committed. A screen-queue halt is the
+		// same boundary: the run ends with that cause, not another model call.
+		if y, ok := cb.(interface{ YieldForRestart() bool }); ok && y.YieldForRestart() {
+			return finish(LoopResult{Error: ErrRestartYield.Error(), Err: ErrRestartYield, Iterations: iteration, ToolCalls: totalToolCalls})
+		}
+		if h, ok := cb.(interface{ HaltReason() error }); ok {
+			if herr := h.HaltReason(); herr != nil {
+				return finish(LoopResult{Error: herr.Error(), Err: herr, Iterations: iteration, ToolCalls: totalToolCalls})
+			}
 		}
 		// Non-cancel hard stops (budget, host policy) — after prior-round usage recorded.
 		// A code-less stop means the previous plan is already delivered, so the

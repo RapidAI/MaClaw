@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
@@ -54,7 +55,6 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 		}
 	}
 
-	bindDesktopLongJobService(svc)
 	enabled, err := getenvBoolStrict("MACLAW_ENABLE_SCHEDULER", false)
 	if err != nil {
 		log.Printf("[MaClawSrv] WARNING: MACLAW_ENABLE_SCHEDULER: %v", err)
@@ -101,7 +101,12 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 	}
 
 	setSrvSchedulerManager(mgr)
+	// Reconcile while the clock is stopped, then drop catch-up ids for rows
+	// that reconcile removed. The ticker and the scheduler start after that,
+	// so a watch whose bot is gone cannot fire once on the way up.
 	bindDesktopLongJobService(svc)
+	mgr.RefreshCatchUps(time.Now())
+	startDesktopLongJobClock()
 	if !enabled {
 		// Other rows stay stored and keep their next-run time. Turning the
 		// flag on later still fires the occurrence this clock did not take.

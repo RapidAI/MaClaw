@@ -1086,6 +1086,44 @@ func TestLongJobStartupReconcileDropsOrphanWatchesOnce(t *testing.T) {
 	}
 }
 
+func TestDesktopReplaySkipsTheUncertainAction(t *testing.T) {
+	armDesktopReplay("sess_replay", "publish")
+	if !consumeDesktopReplay("sess_replay", "publish") {
+		t.Fatal("publish was not held for re-verify")
+	}
+	if consumeDesktopReplay("sess_replay", "publish") {
+		t.Fatal("the same action would run twice")
+	}
+	if consumeDesktopReplay("sess_replay", "click") {
+		t.Fatal("a different action was consumed")
+	}
+}
+
+func TestLongJobReconcileBeforeWatchFire(t *testing.T) {
+	d100Env(t)
+	mgr := longJobTestClock(t)
+	svc, _, _, _ := longJobOwnerService(t)
+	j := longJobUndelivered("job_due", "inst_deleted", "bot_deleted", "run_old")
+	j.Status = "running"
+	j.Alive = true
+	longJobArmWatch(t, j)
+	// The watch is due as soon as it is added. Firing now would deliver the
+	// missing-bot error. Reconcile removes it first.
+	fired := 0
+	mgr.SetExecutor(func(context.Context, *scheduler.ScheduledTask) (string, error) {
+		fired++
+		return "", nil
+	})
+	prev := desktopLongJobService
+	t.Cleanup(func() { desktopLongJobService = prev })
+	bindDesktopLongJobService(svc)
+	mgr.RefreshCatchUps(time.Now())
+	mgr.FireDue(time.Now().Add(time.Hour))
+	if fired != 0 || longJobTaskNamed(mgr, "watch-job:"+j.ID) {
+		t.Fatalf("watch fired %d still scheduled %v", fired, longJobTaskNamed(mgr, "watch-job:"+j.ID))
+	}
+}
+
 func TestLongJobKillStopsTheChildProcess(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err != nil {
 		t.Fatal(err)

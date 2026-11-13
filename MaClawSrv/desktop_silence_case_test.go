@@ -22,7 +22,7 @@ func TestDesktopBotSilenceCases(t *testing.T) {
 	desktopbot.RememberProgress("sess-silence", desktopbot.Sections{
 		WhereWeAre: "正在把登录后的第一屏存下来。", NextStep: "打开设置里的通知页。", OpenProblems: "无",
 	}, desktopbot.TaskProgressPath("sess-silence"))
-	body := desktopRunAPIBody("", &agentservice.Run{ID: "run-silence", SessionID: "sess-silence"})
+	body := desktopRunAPIBody("", &agentservice.Run{ID: "run-silence", SessionID: "sess-silence"}, nil)
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)

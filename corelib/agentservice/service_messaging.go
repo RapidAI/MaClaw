@@ -212,6 +212,9 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		return nil, nil, err
 	}
 	defer s.activeRequests.Done()
+	if err := s.refuseNewRun(); err != nil {
+		return nil, nil, err
+	}
 	// Metrics are attached to the admitted run rather than the HTTP request:
 	// idempotent replays and validation failures must not inflate execution
 	// counters. terminalStatus is set on every post-admission return path.
@@ -306,14 +309,16 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	if err := validateMessageAttachments(attachments); err != nil {
 		return nil, nil, err
 	}
-	if err := s.enforceRuntimeRateLimit(ctx, p.TenantID); err != nil {
-		return nil, nil, err
-	}
-	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricMessages); err != nil {
-		return nil, nil, err
-	}
-	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricRuns); err != nil {
-		return nil, nil, err
+	if in.resumeRun == nil {
+		if err := s.enforceRuntimeRateLimit(ctx, p.TenantID); err != nil {
+			return nil, nil, err
+		}
+		if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricMessages); err != nil {
+			return nil, nil, err
+		}
+		if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricRuns); err != nil {
+			return nil, nil, err
+		}
 	}
 	var taskRelation *TaskRelationDecision
 	if handleID := strings.TrimSpace(in.ContinuationHandle); handleID != "" {
@@ -338,43 +343,69 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	}
 	effectiveContent, pendingAskReq := buildEffectiveUserContent(sess, content)
 	now := s.now()
-	userMsg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Attachments: attachments, Metadata: cloneMap(in.Metadata), CreatedAt: now}
-	run := Run{ID: NewID("run"), TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, SessionID: sess.ID, UserMessageID: userMsg.ID, Status: RunStatusRunning, StartedAt: now, Metadata: correlationMetadata(ctx)}
-	// Preserve the inbound parent span for compatibility while assigning a
-	// distinct deterministic child span to the durable run. The child id is
-	// stable for this run and can therefore link events/audits across process
-	// boundaries without requiring an in-process exporter.
-	if traceID := agentruntime.TraceID(ctx); traceID != "" {
-		parentSpanID := agentruntime.SpanID(ctx)
-		if parentSpanID != "" {
-			run.Metadata["parent_span_id"] = parentSpanID
-		}
-		seed := parentSpanID
-		if seed == "" {
-			seed = agentruntime.CorrelationID(ctx)
-		}
-		runSpanID := agentruntime.DeriveChildSpanID(seed, run.ID)
+	var userMsg Message
+	var run Run
+	var admissionEvent RunEvent
+	admissionEventCommitted := false
+	if in.resumeRun != nil {
+		// Same run the hub is already polling. A new id would leave that
+		// poll on an interrupted row while the work continued unseen.
+		run = *in.resumeRun
+		run.Status = RunStatusRunning
+		run.Error = ""
+		run.CompletedAt = nil
+		run.DurationMs = 0
 		if run.Metadata == nil {
-			run.Metadata = make(map[string]string)
+			run.Metadata = map[string]string{}
 		}
-		run.Metadata["run_span_id"] = runSpanID
-		ctx = agentruntime.WithRunSpanID(ctx, runSpanID)
-	}
-	admissionEvent := runTerminalEventFor(run, "run.started", map[string]any{"session_id": sess.ID, "message_id": userMsg.ID})
-	admissionEventCommitted, err := s.saveRunAdmissionWithEvents(userMsg, run, []RunEvent{admissionEvent})
-	if err != nil {
-		if clientMessageID != "" && errors.Is(err, ErrAlreadyExists) {
-			// A durable unique constraint can win a cross-process retry race
-			// after the initial lookup. Return the canonical run/message pair,
-			// preserving the same idempotent replay contract as the keyed lock.
-			if existingRun, existingMsg, ok := s.findExistingClientMessage(sess.ID, p, instanceID, clientMessageID); ok {
-				if in.onRunCreated != nil {
-					in.onRunCreated(existingRun)
-				}
-				return &existingRun, existingMsg, nil
+		run.Metadata["restart_notice"] = restartNoticeContinue
+		userMsg = Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Attachments: attachments, Metadata: cloneMap(in.Metadata), CreatedAt: now}
+		if err := s.store.SaveMessage(userMsg); err != nil {
+			return nil, nil, err
+		}
+		if err := s.store.SaveRun(run); err != nil {
+			return nil, nil, err
+		}
+		admissionEventCommitted = true
+	} else {
+		userMsg = Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Attachments: attachments, Metadata: cloneMap(in.Metadata), CreatedAt: now}
+		run = Run{ID: NewID("run"), TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, SessionID: sess.ID, UserMessageID: userMsg.ID, Status: RunStatusRunning, StartedAt: now, Metadata: correlationMetadata(ctx)}
+		// Preserve the inbound parent span for compatibility while assigning a
+		// distinct deterministic child span to the durable run. The child id is
+		// stable for this run and can therefore link events/audits across process
+		// boundaries without requiring an in-process exporter.
+		if traceID := agentruntime.TraceID(ctx); traceID != "" {
+			parentSpanID := agentruntime.SpanID(ctx)
+			if parentSpanID != "" {
+				run.Metadata["parent_span_id"] = parentSpanID
 			}
+			seed := parentSpanID
+			if seed == "" {
+				seed = agentruntime.CorrelationID(ctx)
+			}
+			runSpanID := agentruntime.DeriveChildSpanID(seed, run.ID)
+			if run.Metadata == nil {
+				run.Metadata = make(map[string]string)
+			}
+			run.Metadata["run_span_id"] = runSpanID
+			ctx = agentruntime.WithRunSpanID(ctx, runSpanID)
 		}
-		return nil, nil, err
+		admissionEvent = runTerminalEventFor(run, "run.started", map[string]any{"session_id": sess.ID, "message_id": userMsg.ID})
+		admissionEventCommitted, err = s.saveRunAdmissionWithEvents(userMsg, run, []RunEvent{admissionEvent})
+		if err != nil {
+			if clientMessageID != "" && errors.Is(err, ErrAlreadyExists) {
+				// A durable unique constraint can win a cross-process retry race
+				// after the initial lookup. Return the canonical run/message pair,
+				// preserving the same idempotent replay contract as the keyed lock.
+				if existingRun, existingMsg, ok := s.findExistingClientMessage(sess.ID, p, instanceID, clientMessageID); ok {
+					if in.onRunCreated != nil {
+						in.onRunCreated(existingRun)
+					}
+					return &existingRun, existingMsg, nil
+				}
+			}
+			return nil, nil, err
+		}
 	}
 	admitted = true
 	roundRunID = run.ID
@@ -565,6 +596,24 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		// cause, that cause is what the reader can act on: "run cancelled"
 		// alone turns a provider period-quota exhaustion — wait six hours and
 		// resend — into a dead end. Keep both, executor reason last.
+		if errors.Is(execErr, agent.ErrRestartYield) || (s.drainingNow() && (errors.Is(execErr, context.Canceled) || execCanceled)) {
+			uncertain := restartUncertain(runTool(run.ID))
+			NoteRunTool(run.ID, "")
+			s.finishInterrupted(&run, uncertain)
+			terminalStatus = string(RunStatusInterrupted)
+			return &run, nil, execErr
+		}
+		if halt, ok := IsRunHalted(execErr); ok {
+			text := halt.Sentence
+			msg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleAssistant, OutputType: "text/plain", Content: text, Metadata: map[string]string{"send_to_user": text, "task_outcome": "blocked", "task_outcome_evidence": "screen queue timeout"}, CreatedAt: completed}
+			run.Status = RunStatusFailed
+			run.Error = text
+			run.AssistantMessageID = msg.ID
+			terminalStatus = "failed"
+			failedEvent := runTerminalEventFor(run, "run.failed", map[string]any{"error": text, "reason": "screen_queue"})
+			s.saveRunTerminal(run, failedEvent, &msg)
+			return &run, nil, execErr
+		}
 		if errors.Is(execErr, context.Canceled) {
 			run.Status = RunStatusCancelled
 			terminalStatus = "cancelled"
