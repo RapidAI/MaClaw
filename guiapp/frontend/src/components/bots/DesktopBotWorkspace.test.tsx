@@ -65,6 +65,7 @@ const listTaskRuns = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Arr
 const cancelRun = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string) => undefined));
 const pauseRun = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string, _reason?: string) => ({ run_id: _runId, paused: true })));
 const armAdmitCancel = vi.hoisted(() => vi.fn(async (_botId?: string) => undefined));
+const armAdmitPause = vi.hoisted(() => vi.fn(async (_botId?: string, _reason?: string) => undefined));
 type DesktopBusyMock = { seq: number; marks: Array<{ owner_id?: string; bot_id: string; count: number }>; runs?: string[] };
 const getDesktopBusy = vi.hoisted(() => vi.fn(async (_owner?: string): Promise<DesktopBusyMock> => ({ seq: 0, marks: [] })));
 const evaluateSupplement = vi.hoisted(() => vi.fn(async (_taskText?: string, _content?: string, _lang?: string): Promise<{ is_supplement?: boolean; decision?: string; instruction?: string } | null> => null));
@@ -159,6 +160,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     CancelDesktopBotRun: (botId: string, runId: string) => cancelRun(botId, runId),
     PauseDesktopBotRun: (botId: string, runId: string, reason?: string) => pauseRun(botId, runId, reason),
     ArmDesktopBotAdmitCancel: (botId: string) => armAdmitCancel(botId),
+    ArmDesktopBotAdmitPause: (botId: string, reason?: string) => armAdmitPause(botId, reason),
     GetActiveDesktopRuns: (botId: string) => listActiveRuns(botId),
     GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),

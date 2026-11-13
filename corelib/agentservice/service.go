@@ -447,6 +447,7 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 	if n := service.reconcileOrphanRuns(); n > 0 {
 		log.Printf("[agentservice] marked %d orphaned running run(s) interrupted at startup", n)
 	}
+	service.restoreStoredPauses()
 	if setter, ok := executor.(interface{ SetDynamicOperationLedger(DynamicOperationLedger) }); ok {
 		setter.SetDynamicOperationLedger(dynamicOperations)
 	}

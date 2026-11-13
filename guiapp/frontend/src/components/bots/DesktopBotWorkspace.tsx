@@ -41,6 +41,7 @@ import { openSettingsTab } from '../../utils/settingsNavigation';
 import {
     ArmDesktopBotSchedule,
     ArmDesktopBotAdmitCancel,
+    ArmDesktopBotAdmitPause,
     LogFrontendDiagnostic,
     CreateDesktopBot,
     CancelDesktopBotRun,
@@ -4781,7 +4782,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (!local || local.length === 0) {
             if (admitting && kind === 'pause') {
                 held.release(false);
-                return '';
+                try {
+                    await ArmDesktopBotAdmitPause(botId, asked ? 'pause' : 'takeover');
+                } catch {
+                    return desktopBotStopFailedSentence('', lang);
+                }
+                if (userIdRef.current !== ownerId) return '';
+                return lang.startsWith('zh') ? '先暂停了。交还或说继续后，同一项接着做。' : 'Paused. Hand it back or say continue, and the same task goes on.';
             }
             if (admitting) {
                 // Hub names the run only when the admit call returns, which

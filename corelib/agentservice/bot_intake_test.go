@@ -85,27 +85,33 @@ func TestJDFollowUpResolvesAgainstTheEarlierOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, part := range []string{original, explain, "饮料", "默认地址", follow, "京东下单"} {
+	for _, part := range []string{original, explain, "饮料", "默认地址", "京东下单啊"} {
 		if !strings.Contains(got.Instruction, part) {
 			t.Fatalf("instruction missing %q in %q", part, got.Instruction)
 		}
+	}
+	if strings.Contains(got.Instruction, "原话：") {
+		t.Fatalf("instruction appended the raw sentence: %q", got.Instruction)
 	}
 }
 
 func TestContinueRelaunchesACancelledRunWithItsTask(t *testing.T) {
 	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
 	defer svc.Close()
-	stopped := []BotIntakeRun{{RunID: "run_old", Task: "在京东下单", Status: "cancelled", Progress: "已打开商品页"}}
+	stopped := []BotIntakeRun{{
+		RunID: "run_old", Task: "在京东下单", Status: "cancelled", Progress: "已打开商品页",
+		CompletedSteps: []string{"打开商品页"},
+	}}
 	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{
 		BotID: "bot_p", Content: "继续", Earlier: []string{"在京东下单"}, Running: stopped,
 	}, func(context.Context, string, string) (string, error) {
-		return `{"kind":"new","run":0,"instruction":"继续","ack":"没有可以继续的事。","pace":"direct"}`, nil
+		return `{"kind":"continue","run":1,"instruction":"继续","ack":"没有可以继续的事。","pace":"direct"}`, nil
 	})
-	if err != nil || got.Kind != "new" || !strings.Contains(got.Instruction, "在京东下单") || strings.TrimSpace(got.Instruction) == "继续" {
-		t.Fatalf("relaunch = %+v %v", got, err)
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Instruction != "在京东下单" {
+		t.Fatalf("relaunch must wait for confirmation: %+v %v", got, err)
 	}
-	if !strings.Contains(got.Instruction, "已打开商品页") || intakeSaysNoWork(got.Ack) || !strings.Contains(got.Ack, "在京东下单") {
-		t.Fatalf("ack and progress = %+v", got)
+	if len(got.ConfirmBefore) == 0 || got.ConfirmBefore[0] != "打开商品页" {
+		t.Fatalf("completed steps were not carried: %+v", got)
 	}
 	paused := []BotIntakeRun{{RunID: "run_hold", Task: "在京东下单", Status: "paused"}}
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "继续", Running: paused}, func(context.Context, string, string) (string, error) {

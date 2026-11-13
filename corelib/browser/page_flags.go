@@ -232,6 +232,12 @@ func consentDialogFromSignals(cookieAccept, consentDialog bool) bool {
 	return consentDialog
 }
 
+// ObservedPageFlags is the last snapshot's flags. It does not evaluate
+// the page, so a hung renderer cannot block the caller.
+func (s *BrowserAgentSession) ObservedPageFlags() (BrowserPageFlags, bool) {
+	return s.lastSnapshotFlags()
+}
+
 func (s *BrowserAgentSession) lastSnapshotFlags() (BrowserPageFlags, bool) {
 	if s == nil {
 		return BrowserPageFlags{}, false

@@ -110,7 +110,9 @@ type record struct {
 	Rooms   map[string]*BotRoom `json:"rooms,omitempty"`
 	Grants  []Grant             `json:"grants,omitempty"`
 	Desktop *desktopStateRecord `json:"desktop,omitempty"`
-	LLM     llmSettings         `json:"llm,omitempty"`
+	// PausedRuns survives a Hub restart. The key is the pause key.
+	PausedRuns map[string]RunPauseState `json:"paused_runs,omitempty"`
+	LLM        llmSettings              `json:"llm,omitempty"`
 	// SystemFreeCreditsUsed is the credits each bot owner has spent on
 	// system-free, keyed by hub user id. It is independent of new-user benefits.
 	SystemFreeCreditsUsed map[string]float64 `json:"system_free_credits_used,omitempty"`
@@ -570,6 +572,11 @@ func (s *Service) load(ctx context.Context, tenantID string) (record, error) {
 	}
 	if out.Grants == nil {
 		out.Grants = []Grant{}
+	}
+	for key, st := range out.PausedRuns {
+		if st.Paused {
+			s.runPauses.Store(key, st)
+		}
 	}
 	return out, nil
 }

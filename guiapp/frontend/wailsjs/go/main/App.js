@@ -5187,6 +5187,10 @@ export function ArmDesktopBotAdmitCancel(arg1) {
   return window['go']['main']['App']['ArmDesktopBotAdmitCancel'](arg1);
 }
 
+export function ArmDesktopBotAdmitPause(arg1, arg2) {
+  return window['go']['main']['App']['ArmDesktopBotAdmitPause'](arg1, arg2);
+}
+
 export function PullDesktopBotDeliveries() {
   return window['go']['main']['App']['PullDesktopBotDeliveries']();
 }

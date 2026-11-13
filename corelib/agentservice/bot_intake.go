@@ -17,10 +17,13 @@ type BotIntakeRun struct {
 	Task  string `json:"task"`
 	// Status is running, paused, cancelled, failed, or interrupted.
 	// A paused run can be resumed. A cancelled, failed, or interrupted run
-	// stays resumable: continue relaunches that task, not the word 继续.
+	// is not started again until the person confirms.
 	Status string `json:"status,omitempty"`
 	// Progress is the last measured note for a resumable run.
 	Progress string `json:"progress,omitempty"`
+	// CompletedSteps are host-recorded steps already finished. A relaunch
+	// must confirm before repeating any of them.
+	CompletedSteps []string `json:"completed_steps,omitempty"`
 }
 
 // BotIntakeInput is one message to judge.
@@ -63,8 +66,14 @@ type BotIntake struct {
 	Schedule    *BotIntakeSchedule `json:"schedule,omitempty"`
 	Reason      string             `json:"reason,omitempty"`
 	// Phase is execute or plan. execute is the default. plan is only when
-	// this message itself orders something destructive or irreversible.
+	// this message itself orders something destructive or irreversible,
+	// or when a stopped run must be confirmed before it continues.
 	Phase string `json:"phase,omitempty"`
+	// CompletedSteps are steps the host already finished on a stopped run.
+	CompletedSteps []string `json:"completed_steps,omitempty"`
+	// ConfirmBefore are those steps that must not run again until the
+	// person confirms the relaunch.
+	ConfirmBefore []string `json:"confirm_before,omitempty"`
 }
 
 // BotIntakeClassifier answers the intake prompt with the model's raw text.
@@ -168,9 +177,17 @@ func liveIntakeRuns(in []BotIntakeRun) []BotIntakeRun {
 			continue
 		}
 		seen[id] = true
+		steps := make([]string, 0, len(r.CompletedSteps))
+		for _, step := range r.CompletedSteps {
+			step = oneLineRunes(step, 200)
+			if step != "" {
+				steps = append(steps, step)
+			}
+		}
 		out = append(out, BotIntakeRun{
 			RunID: id, Task: oneLineRunes(r.Task, 400),
 			Status: oneLineRunes(r.Status, 40), Progress: oneLineRunes(r.Progress, 200),
+			CompletedSteps: steps,
 		})
 		if len(out) == 8 {
 			break
@@ -306,8 +323,9 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun, ea
 	if idx >= 1 && idx <= len(running) {
 		runID = running[idx-1].RunID
 	}
-	if kind == "continue" || ((kind == "new" || kind == "") && (bareContinue(content) || bareContinue(in.Instruction))) {
-		if resumed, ok := continueResumable(kind, in, content, running); ok {
+	// Only the structured kind continues a run. The sentence is not a second decision.
+	if kind == "continue" {
+		if resumed, ok := continueResumable(in, running); ok {
 			return resumed
 		}
 		if len(running) == 0 {
@@ -321,18 +339,12 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun, ea
 	if needsRun && runID == "" {
 		return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Ack: in.Ack, Reason: "no run"}
 	}
-	if intakeSaysNoWork(in.Ack) && kind == "new" && !bareContinue(content) {
-		return nothingToContinue(in.Ack)
-	}
 	instruction := strings.TrimSpace(in.Instruction)
 	if instruction == "" && (kind == "new" || kind == "supplement" || kind == "change") {
 		instruction = content
 	}
 	if kind == "new" {
 		instruction = foldEarlierIntoInstruction(instruction, earlier)
-		if said := strings.TrimSpace(content); said != "" && !strings.Contains(instruction, said) {
-			instruction += "\n原话：" + said
-		}
 	}
 	if kind == "change" && instruction != "" && !strings.HasPrefix(instruction, botIntakeChangeMark) {
 		instruction = botIntakeChangeMark + instruction
@@ -508,15 +520,6 @@ func foldEarlierIntoInstruction(instruction string, earlier []string) string {
 	return FoldEarlierIntoInstruction(instruction, earlier)
 }
 
-func bareContinue(s string) bool {
-	s = strings.ToLower(strings.Trim(strings.TrimSpace(s), "。！!？?，, "))
-	switch s {
-	case "继续", "接着", "接着做", "继续做", "继续吧", "continue", "go on", "resume":
-		return true
-	}
-	return false
-}
-
 func intakeSaysNoWork(ack string) bool {
 	a := strings.ToLower(strings.TrimSpace(ack))
 	if a == "" {
@@ -548,23 +551,25 @@ func resumableStopped(r BotIntakeRun) bool {
 
 func relaunchStopped(r BotIntakeRun) BotIntake {
 	task := strings.TrimSpace(r.Task)
-	if task == "" {
-		task = "刚才停下的那项"
+	steps := make([]string, 0, len(r.CompletedSteps)+1)
+	for _, step := range r.CompletedSteps {
+		step = strings.TrimSpace(step)
+		if step != "" {
+			steps = append(steps, step)
+		}
 	}
-	instr := task
 	if p := strings.TrimSpace(r.Progress); p != "" {
-		instr = task + "\n上次进度：" + p
+		steps = append(steps, p)
 	}
+	ack := "这项停过。确认后才接着做，已经做过的步骤不会再自动做一遍。"
 	return BotIntake{
-		Kind: "new", Instruction: instr, Ack: "接着做：" + oneLineRunes(task, 80),
-		Pace: "direct", Phase: "execute", Reason: "resume " + strings.TrimSpace(r.Status),
+		Kind: "ask", Instruction: task, Ack: ack, Told: ack,
+		Pace: "ask", Phase: "plan", Reason: "confirm resume " + strings.TrimSpace(r.Status),
+		CompletedSteps: steps, ConfirmBefore: append([]string(nil), steps...),
 	}
 }
 
-func continueResumable(kind string, in BotIntake, content string, running []BotIntakeRun) (BotIntake, bool) {
-	if kind != "continue" && !bareContinue(content) && !bareContinue(in.Instruction) {
-		return BotIntake{}, false
-	}
+func continueResumable(in BotIntake, running []BotIntakeRun) (BotIntake, bool) {
 	idx := 0
 	if n, ok := atoi(in.RunID); ok {
 		idx = n

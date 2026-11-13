@@ -107,7 +107,7 @@ root = tmp / "rootfs"
 sup.install_browser_integration(root)
 print(sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()))
 `)
-	if out != "['etc/chromium.d/zz-maclaw-shared-browser', 'etc/chromium/policies/managed/maclaw-agent.json', 'etc/chromium/policies/managed/maclaw-browser-signin.json', 'usr/bin/maclaw-browser']" {
+	if out != "['etc/chromium.d/zz-maclaw-shared-browser', 'etc/chromium/policies/managed/maclaw-agent.json', 'etc/chromium/policies/managed/maclaw-browser-signin.json', 'usr/bin/maclaw-browser', 'usr/bin/xdg-open']" {
 		t.Fatalf("files = %s", out)
 	}
 }
@@ -248,7 +248,7 @@ print(json.dumps({"changed_again": changed, "policy": policy, "autostart": first
 		`"changed_again": false`,
 		`"TranslateEnabled": false`, `"PromptForDownloadLocation": false`, `"DownloadDirectory": "${home}/Downloads"`,
 		`"PasswordManagerEnabled": false`, `"AutofillAddressEnabled": false`, `"AutofillCreditCardEnabled": false`,
-		`"DefaultNotificationsSetting": 2`, `"URLBlocklist"`, `openapp.*://*`, `*app://*`, `intent:*`,
+		`"DefaultNotificationsSetting": 2`, `"URLBlocklist"`, `"URLAllowlist"`, `"http://*"`, `"https://*"`,
 		`Hidden=true`, `do-not-disturb\" type=\"bool\" value=\"true`,
 		`"package_kept": "[Desktop Entry]`, `"geometry": "1440x900x24"`,
 	} {
@@ -296,6 +296,26 @@ env = sup.desktop_env(20) if False else None
 }
 
 // The --no-sandbox warning bar is hidden by default (--test-type); =0 shows it.
+func TestNonWebSchemesAreRefused(t *testing.T) {
+	out := runSupervisorPython(t, `
+for target in ["https://example.com/a", "http://example.com", "file:///tmp/a", "weixin://pay", "alipays://pay", "intent://scan", "openapp://x"]:
+    print(target, sup.scheme_allowed(target))
+`)
+	for _, want := range []string{
+		"https://example.com/a True",
+		"http://example.com True",
+		"file:///tmp/a True",
+		"weixin://pay False",
+		"alipays://pay False",
+		"intent://scan False",
+		"openapp://x False",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in %s", want, out)
+		}
+	}
+}
+
 func TestBrowserTestTypeHidesTheSandboxBar(t *testing.T) {
 	out := runSupervisorPython(t, `print("--test-type" in sup.browser_argv(Path("/p"), 18020), "--test-type" in sup.SHARED_BROWSER_WRAPPER)`)
 	if out != "True True" {
