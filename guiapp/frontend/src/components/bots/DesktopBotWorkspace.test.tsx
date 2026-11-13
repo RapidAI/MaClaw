@@ -108,6 +108,7 @@ const syncLiveWatchView = (payload: unknown) => {
 };
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
+    StartDesktopBotPlan: (botId: string, session: string) => sendTask(botId, 'start', session),
     SendDesktopBotTask: (...args: unknown[]) => sendTask(...args),
     SendDesktopBotTaskTo: (botId: string, text: string, phase: string, continueSession?: string, askRun?: string) => {
         continueSessionSent(String(continueSession || ''));
@@ -4702,5 +4703,37 @@ describe('the page forwards words and renders the server decision', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-routed-undo'));
         await waitFor(() => expect(continueSessionSent).toHaveBeenCalledWith('bot_1'));
         expect(screen.queryByTestId('desktop-bot-routed')).toBeNull();
+    });
+
+    it('shows one bot plan and starts only from that control', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: 'Bot B', description: '自己的桌面', instance_id: 'inst_2' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-intake']?.({
+                bot_id: 'bot_2',
+                request_id: 'desktop-bot-plan',
+                kind: 'discuss',
+                ack: '先把计划对齐。',
+                discuss_state: 'planned',
+                discuss_session: 'bot_2',
+                plan_goal: '把报表发到站上',
+                plan_constraints: ['用现有的图'],
+                plan_success: ['文章在列表里'],
+                plan_open: [],
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-plan')).toBeNull();
+        fireEvent.click(screen.getByText('Bot B'));
+        const plan = await screen.findByTestId('desktop-bot-plan');
+        expect(plan.getAttribute('data-bot-id')).toBe('bot_2');
+        expect(plan.textContent).toContain('Bot B');
+        expect(plan.textContent).toContain('把报表发到站上');
+        sendTask.mockClear();
+        fireEvent.click(screen.getByTestId('desktop-bot-plan-start'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_2', 'start', 'bot_2'));
     });
 });

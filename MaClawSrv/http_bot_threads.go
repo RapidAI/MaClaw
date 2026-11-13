@@ -73,7 +73,7 @@ func (s *HTTPServer) handleRouteBotMessage(w http.ResponseWriter, r *http.Reques
 
 // POST /api/v1/instances/{instanceId}/bot-intake: what a message does
 // (new task, supplement, stop, pause, continue, reply, ask, schedule,
-// status). Hub applies the result. On timeout the body is a new task.
+// status). Hub applies the result. On timeout the message stays a discussion.
 func (s *HTTPServer) handleBotIntake(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.BotIntakeInput
 	if !decodeJSON(w, r, &in) {
@@ -151,4 +151,50 @@ func (s *HTTPServer) botRouteClassifier(p agentservice.Principal) agentservice.B
 		}
 		return resp.Content, nil
 	}
+}
+
+// POST /api/v1/instances/{instanceId}/bot-discuss writes one discussion
+// turn into the conversation and merges the plan. It does not start a run.
+func (s *HTTPServer) handleRecordBotDiscuss(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in agentservice.BotDiscussInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.RecordBotDiscussion(r.Context(), p, r.PathValue("instanceId"), in)
+	if errors.Is(err, agentservice.ErrBotThreadsBadBot) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// GET /api/v1/instances/{instanceId}/bot-discuss?client_session_key= reads
+// the plan stored on that conversation.
+func (s *HTTPServer) handleReadBotDiscuss(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.ReadBotDiscussion(r.Context(), p, r.PathValue("instanceId"), r.URL.Query().Get("client_session_key"))
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// POST /api/v1/instances/{instanceId}/bot-discuss/executing marks the plan
+// as the instruction of a run that has been admitted.
+func (s *HTTPServer) handleMarkBotDiscussExecuting(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in struct {
+		ClientSessionKey string `json:"client_session_key"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if err := s.svc.MarkBotDiscussionExecuting(r.Context(), p, r.PathValue("instanceId"), in.ClientSessionKey); err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"state": "executing"})
 }

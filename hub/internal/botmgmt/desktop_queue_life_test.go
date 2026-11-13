@@ -205,13 +205,12 @@ func TestIntakeTimeoutBecomesANewTaskOfTheUsersWords(t *testing.T) {
 	svc := newTurnKeyService(t, srv)
 	svc.queueDrainOff = true
 	start := time.Now()
-	got, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开报表", "execute", "turn-t")
-	if err != nil || got.Kind == "stop" || time.Since(start) > time.Second {
+	got, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开报表", "", "turn-t")
+	if err != nil || got.Kind != "discuss" || got.RunID != "" || time.Since(start) > time.Second {
 		t.Fatalf("timeout = %+v %v after %v", got, err, time.Since(start))
 	}
-	posts := fake.posted()
-	if len(posts) != 1 || !strings.HasPrefix(posts[0], "打开报表|") {
-		t.Fatalf("posts = %v", posts)
+	if posts := fake.posted(); len(posts) != 0 {
+		t.Fatalf("timeout started a run: %v", posts)
 	}
 }
 

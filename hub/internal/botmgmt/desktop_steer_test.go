@@ -20,6 +20,7 @@ type intakeSrv struct {
 	intake  string
 	bodies  []string
 	posts   []string
+	discuss []string
 	supps   []string
 	cancels int
 	pauses  int
@@ -60,6 +61,16 @@ func (s *intakeSrv) handle(w http.ResponseWriter, r *http.Request) {
 		s.resumes++
 		s.mu.Unlock()
 		_, _ = w.Write([]byte(`{"run_id":"run_turn","paused":false}`))
+	case strings.Contains(r.URL.Path, "/bot-discuss"):
+		if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/executing") {
+			_, _ = w.Write([]byte(`{"state":"planned","plan":{"goal":"打开报表"},"excerpts":["人: 打开报表"]}`))
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		s.mu.Lock()
+		s.discuss = append(s.discuss, string(raw))
+		s.mu.Unlock()
+		_, _ = w.Write([]byte(`{"state":"planned","session":"bot_alice","plan":{"goal":"打开报表"},"excerpts":["人: 打开报表","助手: 先记着。"]}`))
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages"):
 		raw, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
@@ -154,14 +165,42 @@ func TestHubIntakeTimeoutAdmitsTheWordsAsANewTask(t *testing.T) {
 	defer srv.Close()
 	svc := newTurnKeyService(t, srv)
 	start := time.Now()
-	adm, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开报表", "execute", "turn-t")
-	if err != nil || adm.RunID == "" || time.Since(start) > time.Second {
+	adm, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开报表", "", "turn-t")
+	if err != nil || adm.Kind != "discuss" || adm.RunID != "" || time.Since(start) > time.Second {
 		t.Fatalf("adm=%+v err=%v after %v", adm, err, time.Since(start))
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if len(fake.posts) != 1 || !strings.Contains(fake.posts[0], "打开报表") {
-		t.Fatalf("posts=%v", fake.posts)
+	if len(fake.posts) != 0 || len(fake.discuss) != 1 || !strings.Contains(fake.discuss[0], "打开报表") {
+		t.Fatalf("posts=%v discuss=%v", fake.posts, fake.discuss)
+	}
+}
+
+func TestHubDiscussDoesNotStartUntilThePersonStarts(t *testing.T) {
+	fake := &intakeSrv{intake: `{"kind":"new","instruction":"把报表发到站上","ack":"先把计划对齐。","pace":"direct","plan":{"goal":"把报表发到站上","constraints":["用现有的图"],"success":["文章在列表里"],"open_questions":[]}}`}
+	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv)
+	talk, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "把报表发到站上", "", "turn-d")
+	if err != nil || talk.Kind != "discuss" || talk.RunID != "" || talk.Discuss == nil || talk.Discuss.Plan.Goal == "" {
+		t.Fatalf("talk=%+v %v", talk, err)
+	}
+	fake.mu.Lock()
+	if len(fake.posts) != 0 {
+		t.Fatalf("discussion started a run: %v", fake.posts)
+	}
+	fake.mu.Unlock()
+	started, err := svc.AdmitDesktopMessageAct(context.Background(), "tenant-a", "alice", "bot_alice", "开始", "", "turn-go", "bot_alice", "start")
+	if err != nil || started.RunID == "" || started.Kind == "discuss" {
+		t.Fatalf("start=%+v %v", started, err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.posts) != 1 || !strings.Contains(fake.posts[0], "目标：") || !strings.Contains(fake.posts[0], "讨论摘录") {
+		t.Fatalf("start post=%v", fake.posts)
+	}
+	if strings.Contains(fake.posts[0], `"content":"开始"`) {
+		t.Fatalf("start used only the start sentence: %s", fake.posts[0])
 	}
 }
 
