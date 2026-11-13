@@ -15,6 +15,7 @@ import (
 
 func setMobileStatePathForTest(t *testing.T, path string) {
 	t.Helper()
+	mobileBumpStateGeneration()
 	t.Setenv(mobileStatePathEnv, path)
 	t.Cleanup(mobileCleanupStateDBForTest)
 }
