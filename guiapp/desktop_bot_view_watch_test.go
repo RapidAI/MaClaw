@@ -56,10 +56,10 @@ func TestPublishDesktopBotViewSharesOneWatcherPerBot(t *testing.T) {
 	const botID = "bot-watch-shared"
 	release := make(chan struct{})
 	var calls int32
-	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, error) {
+	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, string, error) {
 		atomic.AddInt32(&calls, 1)
 		<-release
-		return "https://hub.example/vnc", true, "", nil
+		return "https://hub.example/vnc", true, "", "", nil
 	}
 	t.Cleanup(func() { desktopBotWatchOverride = nil })
 
@@ -130,8 +130,8 @@ func TestPublishDesktopBotViewSharesOneWatcherPerBot(t *testing.T) {
 // count reaches zero.
 func TestPublishDesktopBotViewWatcherStopsWhenIdle(t *testing.T) {
 	const botID = "bot-watch-idle"
-	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, error) {
-		return "https://hub.example/vnc", false, "", nil
+	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, string, error) {
+		return "https://hub.example/vnc", false, "", "", nil
 	}
 	t.Cleanup(func() { desktopBotWatchOverride = nil })
 
