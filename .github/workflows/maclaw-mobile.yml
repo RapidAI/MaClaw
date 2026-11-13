@@ -33,9 +33,20 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      # Install the Flutter version the app pins in mobile/maclaw_mobile/.fvmrc.
+      # The stable channel is not consulted: a newer stable fails analysis on
+      # deprecations (material.dart -> material_ui) before that migration is done.
+      - id: flutter-pin
+        run: echo "version=$(python3 -c 'import json; print(json.load(open("mobile/maclaw_mobile/.fvmrc"))["flutter"])')" >> "$GITHUB_OUTPUT"
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: ${{ steps.flutter-pin.outputs.version }}
+      - name: Flutter binary matches the app pin
+        run: |
+          got=$(flutter --version --machine | python3 -c 'import json,sys; print(json.load(sys.stdin)["frameworkVersion"])')
+          want="${{ steps.flutter-pin.outputs.version }}"
+          test "$got" = "$want"
       - run: go test ./hub/internal/httpapi -run "TestMobile.*" -count=1
       - run: go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1
       # These tests are pure Go (SSH/mobile helpers). CGO_ENABLED=0 keeps the
