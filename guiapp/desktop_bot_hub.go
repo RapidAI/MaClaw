@@ -869,6 +869,7 @@ var (
 	desktopAdmitCancelMu   sync.Mutex
 	desktopAdmitLive       = map[string]map[string]int{}
 	desktopAdmitWant       = map[string]map[string]struct{}{}
+	desktopAdmitPause      = map[string]map[string]string{}
 	desktopAdmitCancelSent = map[string]struct{}{}
 )
 
@@ -949,6 +950,7 @@ func resetDesktopAdmitCancel() {
 	desktopAdmitCancelMu.Lock()
 	desktopAdmitLive = map[string]map[string]int{}
 	desktopAdmitWant = map[string]map[string]struct{}{}
+	desktopAdmitPause = map[string]map[string]string{}
 	desktopAdmitCancelSent = map[string]struct{}{}
 	desktopAdmitCancelMu.Unlock()
 }
@@ -1086,10 +1088,70 @@ func forgetAdmitCancelSent(keys ...string) {
 // already stopped, cancels that run before the page waits on it.
 func (a *App) nameAdmittedDesktopRun(botID, requestID, runID string) error {
 	a.setActiveDesktopRunID(botID, requestID, runID)
+	if reason, ok := takeAdmitPause(botID, requestID); ok {
+		if _, err := a.PauseDesktopBotRun(botID, runID, reason, 0); err != nil {
+			return err
+		}
+	}
 	if !takeAdmitCancel(botID, requestID) {
 		return nil
 	}
 	return a.cancelAdmittedRunOnce(botID, runID)
+}
+
+func takeAdmitPause(botID, requestID string) (string, bool) {
+	botID = strings.TrimSpace(botID)
+	requestID = strings.TrimSpace(requestID)
+	desktopAdmitCancelMu.Lock()
+	defer desktopAdmitCancelMu.Unlock()
+	byBot := desktopAdmitPause[botID]
+	if byBot == nil {
+		return "", false
+	}
+	reason, ok := byBot[requestID]
+	if !ok {
+		return "", false
+	}
+	delete(byBot, requestID)
+	if len(byBot) == 0 {
+		delete(desktopAdmitPause, botID)
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "pause"
+	}
+	return reason, true
+}
+
+// ArmDesktopBotAdmitPause queues a pause for an admit that has not named
+// its run yet. The pause is applied when the run id arrives.
+func (a *App) ArmDesktopBotAdmitPause(botID, reason string) error {
+	if a == nil {
+		return fmt.Errorf("AI assistant backend is unavailable")
+	}
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return fmt.Errorf("bot id is required")
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "pause"
+	}
+	placeholders := desktopAdmitPlaceholderIDs(botID)
+	desktopAdmitCancelMu.Lock()
+	defer desktopAdmitCancelMu.Unlock()
+	byBot := desktopAdmitPause[botID]
+	if byBot == nil {
+		byBot = map[string]string{}
+		desktopAdmitPause[botID] = byBot
+	}
+	for id, depth := range desktopAdmitLive[botID] {
+		if depth > 0 {
+			byBot[id] = reason
+		}
+	}
+	for _, id := range placeholders {
+		byBot[id] = reason
+	}
+	return nil
 }
 
 // setActiveDesktopRunID swaps the request-id placeholder for the real run id

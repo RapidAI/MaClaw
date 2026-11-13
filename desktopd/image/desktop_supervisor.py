@@ -3212,18 +3212,54 @@ AGENT_BROWSER_POLICY = json.dumps({
     "DefaultNotificationsSetting": 2,
     "DefaultBrowserSettingEnabled": False,
     "PromotionalTabsEnabled": False,
-    # Non-web schemes. A page that tries to leave the browser (openapp.*,
-    # an *app:// link, intent:) is blocked here instead of raising the
-    # "Open xdg-open?" dialog. This is not a list of shops, and it does not
-    # allow those schemes via AutoLaunchProtocolsFromOrigins.
-    "URLBlocklist": [
-        "openapp.*://*",
-        "openapp://*",
-        "*app://*",
-        "intent://*",
-        "intent:*",
+    # Block every scheme, then allow only web and browser-internal ones.
+    # Chromium does not wildcard a scheme name, so entries like
+    # "openapp.*://*" and "*app://*" never match weixin:// or alipays://.
+    # Applying this file needs a desktop image rebuild and a Chromium
+    # restart so the managed policy is read again.
+    "URLBlocklist": ["*"],
+    "URLAllowlist": [
+        "http://*",
+        "https://*",
+        "file://*",
+        "about:*",
+        "data:*",
+        "blob:*",
+        "chrome://*",
+        "chrome-extension://*",
+        "devtools://*",
     ],
 }, indent=2, sort_keys=True) + "\n"
+
+# xdg-open shim. It refuses every scheme that is not web or local.
+# /usr/bin/xdg-open.real is the previous binary when the image is rebuilt.
+XDG_OPEN_SHIM = """#!/bin/sh
+# MaClaw: refuse non-web schemes. Needs the desktop image rebuild.
+target="$1"
+case "$target" in
+  [Hh][Tt][Tt][Pp]:*|[Hh][Tt][Tt][Pp][Ss]:*|[Ff][Ii][Ll][Ee]:*|[Aa][Bb][Oo][Uu][Tt]:*|[Dd][Aa][Tt][Aa]:*|[Bb][Ll][Oo][Bb]:*|[Cc][Hh][Rr][Oo][Mm][Ee]:*|[Cc][Hh][Rr][Oo][Mm][Ee]-[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]:*|[Dd][Ee][Vv][Tt][Oo][Oo][Ll][Ss]:*)
+    if [ -x /usr/bin/xdg-open.real ]; then
+      exec /usr/bin/xdg-open.real "$@"
+    fi
+    echo "no xdg-open for web schemes" >&2
+    exit 1
+    ;;
+esac
+echo "refused non-web scheme" >&2
+exit 1
+"""
+
+
+def scheme_allowed(target):
+    """True only for web and browser-internal schemes. No site list."""
+    text = (target or "").strip().lower()
+    for prefix in (
+        "http://", "https://", "file://", "about:", "data:", "blob:",
+        "chrome://", "chrome-extension://", "devtools://",
+    ):
+        if text.startswith(prefix):
+            return True
+    return False
 
 # xfce4-notifyd draws popups over the screen the agent reads. It is not
 # started with the session, and if a program starts it over D-Bus it stays
@@ -3308,6 +3344,16 @@ def install_browser_integration(root=Path("/")):
     """
     root = Path(root)
     write_if_changed(root / "usr/bin/maclaw-browser", SHARED_BROWSER_WRAPPER, 0o755)
+    # The shim refuses weixin://, alipays:// and every other non-web scheme.
+    # A container picks this up on the next image build.
+    xdg = root / "usr/bin/xdg-open"
+    real = root / "usr/bin/xdg-open.real"
+    if xdg.exists() and not real.exists():
+        try:
+            xdg.replace(real)
+        except OSError:
+            pass
+    write_if_changed(xdg, XDG_OPEN_SHIM, 0o755)
     if (root / "etc/chromium.d").is_dir() or (root / "usr/bin/chromium").exists():
         write_if_changed(root / "etc/chromium.d/zz-maclaw-shared-browser", CHROMIUM_HOOK, 0o644)
         # Chromium without Google's API keys still offers "Allow Chromium

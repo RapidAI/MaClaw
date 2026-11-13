@@ -64,11 +64,25 @@ func (s *Service) reconcileOrphanRuns() int {
 				if err != nil {
 					continue
 				}
+				paused := map[string]storedRunPause{}
+				for _, row := range s.storedPauses() {
+					paused[row.RunID] = row
+				}
 				for _, run := range runs {
 					if run.Status != RunStatusRunning {
 						continue
 					}
 					if _, live := s.peekRunCancel(run.ID); live {
+						continue
+					}
+					if row, ok := paused[run.ID]; ok {
+						run.WaitingForUser = true
+						if run.Metadata == nil {
+							run.Metadata = map[string]string{}
+						}
+						run.Metadata["pause_reason"] = row.Reason
+						run.Metadata[TaskOutcomeKey] = TaskOutcomeAwaitingUser
+						_ = s.store.SaveRun(run)
 						continue
 					}
 					if s.markRunInterrupted(run) {

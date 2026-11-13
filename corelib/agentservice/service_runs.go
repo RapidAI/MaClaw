@@ -115,7 +115,9 @@ func (s *Service) CancelRun(ctx context.Context, p Principal, instanceID, runID 
 	}
 	cancel()
 	// A run held at a step boundary must wake to see its context cancelled.
-	s.pauses.release(run.ID)
+	if s.pauses.release(run.ID) {
+		s.persistPauses()
+	}
 	completed := s.now()
 	// Whatever was queued for this run will never be consumed now. Reaping
 	// reports each item once so the caller can tell the person it did not
@@ -286,7 +288,9 @@ func (s *Service) stopRunningRunsForDelete(ctx context.Context, p Principal, ins
 		if cancel, ok := s.takeRunCancel(run.ID); ok && cancel != nil {
 			cancel()
 		}
-		s.pauses.release(run.ID)
+		if s.pauses.release(run.ID) {
+			s.persistPauses()
+		}
 		s.reapRunSupplements(run.ID)
 		run.Status = RunStatusCancelled
 		run.Error = "run cancelled"

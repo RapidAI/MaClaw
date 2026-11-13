@@ -2,7 +2,6 @@ package botmgmt
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -326,7 +325,8 @@ type desktopTalkLog struct {
 var desktopTalks sync.Map
 
 func desktopTalkKey(s *Service, tenantID, userID, botID string) string {
-	return fmt.Sprintf("%p\x00%s\x00%s\x00%s", s, tenantID, userID, botID)
+	_ = s
+	return tenantID + "\x00" + userID + "\x00" + botID
 }
 
 func (s *Service) desktopTalkLines(tenantID, userID, botID string) []string {
@@ -352,14 +352,47 @@ func (s *Service) rememberDesktopTalk(tenantID, userID, botID, line string) {
 	v, _ := desktopTalks.LoadOrStore(key, &desktopTalkLog{})
 	log := v.(*desktopTalkLog)
 	log.mu.Lock()
-	defer log.mu.Unlock()
 	if n := len(log.lines); n > 0 && log.lines[n-1] == line {
+		log.mu.Unlock()
 		return
 	}
 	log.lines = append(log.lines, line)
 	if len(log.lines) > 12 {
 		log.lines = append([]string(nil), log.lines[len(log.lines)-12:]...)
 	}
+	log.mu.Unlock()
+	pruneDesktopTalks()
+}
+
+func pruneDesktopTalks() {
+	n := 0
+	desktopTalks.Range(func(key, value any) bool {
+		n++
+		log, _ := value.(*desktopTalkLog)
+		if log == nil {
+			desktopTalks.Delete(key)
+			return true
+		}
+		log.mu.Lock()
+		empty := len(log.lines) == 0
+		log.mu.Unlock()
+		if empty {
+			desktopTalks.Delete(key)
+		}
+		return true
+	})
+	if n <= 256 {
+		return
+	}
+	extra := n - 256
+	desktopTalks.Range(func(key, _ any) bool {
+		if extra <= 0 {
+			return false
+		}
+		desktopTalks.Delete(key)
+		extra--
+		return true
+	})
 }
 
 func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest, running []desktopRunBrief, earlier []string) desktopIntake {

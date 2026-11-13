@@ -2,42 +2,77 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
-func TestTimeoutOnALoginURLAsksInsteadOfSayingSlow(t *testing.T) {
-	prevURL := desktopTimeoutURL
-	prevDlg := desktopNativeDialogTitles
+func TestTimeoutUsesObservedFlagsNotTheURL(t *testing.T) {
+	prevTargets := desktopTimeoutTargets
+	prevFlags := desktopTimeoutFlags
+	prevWindows := desktopListWMWindows
 	t.Cleanup(func() {
-		desktopTimeoutURL = prevURL
-		desktopNativeDialogTitles = prevDlg
+		desktopTimeoutTargets = prevTargets
+		desktopTimeoutFlags = prevFlags
+		desktopListWMWindows = prevWindows
 	})
-	desktopNativeDialogTitles = func(context.Context, agentruntime.Scope) []string { return nil }
-	desktopTimeoutURL = func(agentruntime.Scope) string { return "https://plogin.m.jd.com/login/login" }
-	text, ask, ok := desktopTimeoutHandoff(agentruntime.Scope{TenantID: "t", UserID: "u"}, "navigate")
-	if !ok || !ask || !strings.Contains(text, "login_wall") || strings.Contains(text, "slow") {
-		t.Fatalf("ask=%v ok=%v text=%q", ask, ok, text)
+	desktopListWMWindows = func(context.Context, agentruntime.Scope) []desktopWMWindow { return nil }
+	desktopTimeoutTargets = func(agentruntime.Scope) []browser.TargetInfo {
+		return []browser.TargetInfo{{ID: "tab", Type: "page", URL: "https://example.com/home"}}
 	}
-	out, err := finishDesktopActionPhase(agentruntime.Scope{TenantID: "t", UserID: "u", InstanceID: "i"}, text, nil, "execute")
-	if err != nil || !strings.Contains(out, "__ASK_USER__") {
-		t.Fatalf("handoff %q %v", out, err)
+	desktopTimeoutFlags = func(agentruntime.Scope) (browser.BrowserPageFlags, bool) {
+		return browser.BrowserPageFlags{}, true
+	}
+	if _, _, ok := desktopTimeoutHandoff(agentruntime.Scope{}, "type"); ok {
+		t.Fatal("a url alone is not a login wall")
+	}
+	desktopTimeoutFlags = func(agentruntime.Scope) (browser.BrowserPageFlags, bool) {
+		return browser.BrowserPageFlags{LoginWall: true}, true
+	}
+	text, ask, ok := desktopTimeoutHandoff(agentruntime.Scope{TenantID: "t", UserID: "u"}, "type")
+	if !ok || !ask || !strings.Contains(text, "page flags: login_wall") || !strings.Contains(text, "https://example.com/home") {
+		t.Fatalf("ask=%v ok=%v text=%q", ask, ok, text)
 	}
 }
 
-func TestProbeReportsAnExternalProtocolDialog(t *testing.T) {
-	prev := desktopNativeDialogTitles
-	t.Cleanup(func() { desktopNativeDialogTitles = prev })
-	desktopNativeDialogTitles = func(context.Context, agentruntime.Scope) []string {
-		return []string{"Open xdg-open?"}
+func TestModalWindowIsReportedFromItsType(t *testing.T) {
+	prevWindows := desktopListWMWindows
+	prevDismiss := desktopDismissWMWindow
+	t.Cleanup(func() {
+		desktopListWMWindows = prevWindows
+		desktopDismissWMWindow = prevDismiss
+	})
+	desktopListWMWindows = func(context.Context, agentruntime.Scope) []desktopWMWindow {
+		return []desktopWMWindow{
+			{ID: "0x1", Type: "_NET_WM_WINDOW_TYPE_NORMAL", Role: "browser"},
+			{ID: "0x2", Type: "_NET_WM_WINDOW_TYPE_DIALOG", Role: "pop-up", Modal: true, Transient: true},
+		}
 	}
-	text, ask, ok := desktopTimeoutHandoff(agentruntime.Scope{}, "probe")
-	if !ok || ask || !strings.Contains(text, "external_protocol") || strings.Contains(text, "slow") {
-		t.Fatalf("ask=%v ok=%v text=%q", ask, ok, text)
+	dismissed := false
+	desktopDismissWMWindow = func(_ context.Context, w desktopWMWindow) error {
+		if w.ID != "0x2" {
+			t.Fatalf("dismissed %s", w.ID)
+		}
+		dismissed = true
+		return nil
 	}
-	if desktopNativeDialogKind("Save password?") != "" {
-		t.Fatal("an ordinary browser bubble is not a blocking dialog")
+	text, ask, ok := desktopTimeoutHandoff(agentruntime.Scope{}, "wait")
+	if !ok || ask || !dismissed || !strings.Contains(text, "It was dismissed") || strings.Contains(text, "0x1") {
+		t.Fatalf("ask=%v ok=%v dismissed=%v text=%q", ask, ok, dismissed, text)
+	}
+	desktopDismissWMWindow = func(context.Context, desktopWMWindow) error { return errors.New("left open") }
+	text, _, ok = desktopTimeoutHandoff(agentruntime.Scope{}, "click")
+	if !ok || !strings.Contains(text, "still open") || strings.Contains(text, "It was dismissed") {
+		t.Fatalf("text=%q", text)
+	}
+	if desktopWindowModal(desktopWMWindow{Type: "_NET_WM_WINDOW_TYPE_NORMAL", Role: "browser"}) {
+		t.Fatal("a normal browser window is not a modal")
+	}
+	parsed := parseXPropWindow("0x9", "_NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_DIALOG\n_NET_WM_STATE(ATOM) = _NET_WM_STATE_MODAL\nWM_TRANSIENT_FOR(WINDOW): window id # 0x1\nWM_WINDOW_ROLE(STRING) = \"pop-up\"\nWM_NAME(STRING) = \"Save password?\"\n")
+	if !desktopWindowModal(parsed) || parsed.Role != "pop-up" || parsed.ID != "0x9" {
+		t.Fatalf("parsed %+v", parsed)
 	}
 }

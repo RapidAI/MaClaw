@@ -58,7 +58,9 @@ func (s *Service) PauseDesktopRun(ctx context.Context, tenantID, userID, botID, 
 		if strings.TrimSpace(st.Reason) == "" {
 			st.Reason = reason
 		}
-		s.runPauses.Store(runPauseKey(tenantID, userID, bot, st.RunID), *st)
+		key := runPauseKey(tenantID, userID, bot, st.RunID)
+		s.runPauses.Store(key, *st)
+		s.storePausedRun(ctx, tenantID, key, *st)
 	}
 	if strings.EqualFold(reason, "takeover") {
 		s.beginDesktopTakeover(ctx, tenantID, userID, bot)
@@ -77,7 +79,7 @@ func (s *Service) beginDesktopTakeover(ctx context.Context, tenantID, userID, bo
 		return
 	}
 	index := indexOf(rec.Bots, botID)
-	if index < 0 || !botIsolated(rec.Bots[index]) {
+	if index < 0 {
 		return
 	}
 	ctl, ok := s.Desktop.(DesktopCtl)
@@ -119,8 +121,37 @@ func (s *Service) ResumeDesktopRun(ctx context.Context, tenantID, userID, botID,
 	if err != nil {
 		return nil, err
 	}
-	s.runPauses.Delete(runPauseKey(tenantID, userID, bot, strings.TrimSpace(runID)))
+	key := runPauseKey(tenantID, userID, bot, strings.TrimSpace(runID))
+	s.runPauses.Delete(key)
+	s.dropPausedRun(ctx, tenantID, key)
 	return st, nil
+}
+
+func (s *Service) storePausedRun(ctx context.Context, tenantID, key string, st RunPauseState) {
+	if s == nil || s.System == nil {
+		return
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return
+	}
+	if rec.PausedRuns == nil {
+		rec.PausedRuns = map[string]RunPauseState{}
+	}
+	rec.PausedRuns[key] = st
+	_ = s.save(ctx, tenantID, rec)
+}
+
+func (s *Service) dropPausedRun(ctx context.Context, tenantID, key string) {
+	if s == nil || s.System == nil {
+		return
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil || rec.PausedRuns == nil {
+		return
+	}
+	delete(rec.PausedRuns, key)
+	_ = s.save(ctx, tenantID, rec)
 }
 
 func (s *Service) runPauseCall(ctx context.Context, tenantID, userID, botID, runID, verb string, body any) (*RunPauseState, string, error) {

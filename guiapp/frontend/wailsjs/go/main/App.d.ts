@@ -2587,6 +2587,8 @@ export function PauseDesktopBotRun(arg1:string,arg2:string,arg3:string,arg4:numb
 
 export function ArmDesktopBotAdmitCancel(arg1:string):Promise<void>;
 
+export function ArmDesktopBotAdmitPause(arg1:string,arg2:string):Promise<void>;
+
 export function PullDesktopBotDeliveries():Promise<void>;
 
 export function StartDesktopBotConversationSync():Promise<string>;
