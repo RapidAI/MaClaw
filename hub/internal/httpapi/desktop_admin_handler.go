@@ -62,6 +62,13 @@ type botDesktopControl struct {
 	pool *desktoppool.Pool
 }
 
+func (c botDesktopControl) ContainerMemory(ctx context.Context, tenantID, userID string) (int64, int64, error) {
+	if c.pool == nil {
+		return 0, 0, desktoppool.ErrNotAssigned
+	}
+	return c.pool.ContainerMemory(ctx, tenantID, userID)
+}
+
 func (c botDesktopControl) Open(ctx context.Context, tenantID, userID string) (string, error) {
 	if c.pool == nil {
 		return "", desktoppool.ErrNotAssigned
@@ -495,6 +502,38 @@ func PostDesktopSessionHandler(pool *desktoppool.Pool, bots *botmgmt.Service) ht
 		// is the step the 电脑 tab learns the run is on the screen from.
 		pool.NoteBotGUIUse(in.TenantID, in.UserID, session.Novnc)
 		writeJSON(w, http.StatusOK, map[string]string{"cdp_url": session.CDP, "display": session.Display})
+	}
+}
+
+// PostDesktopMemoryHandler reads the container's memory from desktopd.
+// It does not start or wake the desktop.
+func PostDesktopMemoryHandler(pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+			BotID    string `json:"bot_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		if strings.TrimSpace(in.BotID) != "" && bots != nil {
+			in.UserID = bots.IsolatedDesktopUser(r.Context(), in.TenantID, in.UserID, in.BotID)
+		}
+		used, limit, err := pool.ContainerMemory(r.Context(), in.TenantID, in.UserID)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int64{"used_bytes": used, "limit_bytes": limit})
 	}
 }
 

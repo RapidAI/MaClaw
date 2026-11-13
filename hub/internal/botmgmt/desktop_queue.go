@@ -235,12 +235,15 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 		s.mu.Unlock()
 	}()
 	for {
+		if s.desktopMemoryPressured(context.Background(), tenantID, userID) {
+			return
+		}
 		item := s.popDesktopQueue(tenantID, userID, botID)
 		if item == nil {
 			return
 		}
 		if err := s.dispatchQueuedItem(tenantID, userID, botID, item); err != nil {
-			if err == ErrDesktopBusy {
+			if err == ErrDesktopBusy || err == ErrDesktopMemory {
 				s.pushFrontDesktopQueue(tenantID, userID, botID, item)
 			}
 			return

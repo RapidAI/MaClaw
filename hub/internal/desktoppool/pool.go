@@ -630,6 +630,27 @@ func (p *Pool) OpenDesktop(ctx context.Context, tenantID, userID string) (Deskto
 	return DesktopSession{CDP: out.CDP, Display: out.Display, Novnc: strings.TrimSpace(out.Novnc)}, nil
 }
 
+// ContainerMemory reads the desktop container's memory from desktopd.
+// used and limit are bytes.
+func (p *Pool) ContainerMemory(ctx context.Context, tenantID, userID string) (int64, int64, error) {
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	var out struct {
+		Used  int64 `json:"used_bytes"`
+		Limit int64 `json:"limit_bytes"`
+	}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/memory", body, &out); err != nil {
+		return 0, 0, err
+	}
+	return out.Used, out.Limit, nil
+}
+
 // PeekDesktopView returns the noVNC page for a desktop user whose screen is
 // already running (the owner's display, or one isolated bot's display in a
 // shared container). It never calls Ensure or OpenDesktop. An empty string

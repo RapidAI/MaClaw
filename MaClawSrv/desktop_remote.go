@@ -80,6 +80,22 @@ func (c *desktopHubClient) Session(ctx context.Context, tenantID, userID string)
 	return desktopEndpoint{CDP: out.CDP, Display: out.Display}, nil
 }
 
+// Memory reads the desktop container's used and limit bytes from Hub.
+// Hub reads them from desktopd. This does not start the desktop.
+func (c *desktopHubClient) Memory(ctx context.Context, tenantID, userID string) (int64, int64, error) {
+	var out struct {
+		Used  int64 `json:"used_bytes"`
+		Limit int64 `json:"limit_bytes"`
+	}
+	if err := c.post(ctx, "/api/v1/desktop-services/memory", map[string]string{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+	}, &out); err != nil {
+		return 0, 0, err
+	}
+	return out.Used, out.Limit, nil
+}
+
 // errDesktopKept means Hub left the desktop running. The person may be
 // logging in, so the logged-in page must stay locked to this browser.
 var errDesktopKept = errors.New("desktop kept")

@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 // Screen lease (Daniel 11-12 06:29 「改」).
@@ -119,6 +120,16 @@ type screenLeases struct {
 }
 
 var desktopScreenLeases = &screenLeases{leases: map[string]*screenLease{}, waiting: map[string]string{}}
+
+func (m *screenLeases) heldBy(key, run string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := m.leases[key]
+	return l != nil && l.holder == run
+}
 
 func (m *screenLeases) get(key string) *screenLease {
 	l := m.leases[key]
@@ -487,6 +498,79 @@ func desktopScreenLeaseStatus(runID string) string {
 		return fmt.Sprintf("等待屏幕：另一任务正在使用（排第 %d）", pos)
 	}
 	return "等待屏幕：另一任务正在使用"
+}
+
+// desktopMemoryPressured reports whether this desktop's container is over
+// the admission line. Nil means the stat is unknown and the lease proceeds.
+// The second result is the status line shown while the lease waits.
+var desktopMemoryPressured func(ctx context.Context, tenantID, userID string) (bool, string)
+
+// desktopRemoteMemory is set by tests. Production asks Hub, which asks desktopd.
+var desktopRemoteMemory func(ctx context.Context, tenantID, userID string) (used, limit int64, err error)
+
+// readDesktopMemoryPressure is the production gauge. A missing Hub, or a
+// read that fails, is not pressure: the lease proceeds.
+func readDesktopMemoryPressure(ctx context.Context, tenantID, userID string) (bool, string) {
+	var used, limit int64
+	var err error
+	switch {
+	case desktopRemoteMemory != nil:
+		used, limit, err = desktopRemoteMemory(ctx, tenantID, userID)
+	default:
+		client := desktopHubClientFromEnv()
+		if client == nil {
+			return false, ""
+		}
+		used, limit, err = client.Memory(ctx, tenantID, userID)
+	}
+	if err != nil || !desktop.MemoryPressured(used, limit) {
+		return false, ""
+	}
+	return true, desktopMemoryWaitLine
+}
+
+// desktopMemoryRecheck is how often a waiting lease re-reads the gauge.
+var desktopMemoryRecheck = 2 * time.Second
+
+// desktopMemoryWaitMax is how long a new admission waits for memory. After
+// that the step fails instead of waiting for the rest of the run.
+var desktopMemoryWaitMax = 2 * time.Minute
+
+const desktopMemoryWaitLine = "这台电脑内存紧张，这项先排着，空出来再做。"
+
+const desktopMemoryGiveUpLine = "这台电脑内存紧张，等了两分钟还是满的，这次先不做。"
+
+// waitDesktopMemory holds a new screen lease until the container is under
+// the line. Cancelling the run ends the wait. The wait has a ceiling: past
+// it the admission fails with a sentence the person can read.
+func waitDesktopMemory(ctx context.Context, tenantID, userID, runID string) error {
+	if desktopMemoryPressured == nil {
+		return nil
+	}
+	deadline := time.Now().Add(desktopMemoryWaitMax)
+	for {
+		pressed, line := desktopMemoryPressured(ctx, tenantID, userID)
+		if !pressed {
+			return nil
+		}
+		if strings.TrimSpace(line) == "" {
+			line = desktopMemoryWaitLine
+		}
+		_ = line
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("memory_busy: %s", desktopMemoryGiveUpLine)
+		}
+		// The working row only accepts a short phrase. The full sentence is
+		// the queue acknowledgement the person sees.
+		setDesktopActivity(runID, "正在等待内存")
+		timer := time.NewTimer(desktopMemoryRecheck)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // desktopScreenLeaseStep takes the screen for one desktop step of a run when

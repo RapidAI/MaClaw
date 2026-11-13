@@ -267,7 +267,15 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 	}
 	// A screen or browser step waits here while another task of the same
 	// screen has it (desktop_screen_lease.go); other steps never wait.
-	release, leaseNote, leaseErr := desktopScreenLeaseStep(ctx, desktopScreenKey(scope), scope.RunID, action, args)
+	// A new lease also waits while the container is over the memory line.
+	// The run that already holds the screen keeps going.
+	screenKey := desktopScreenKey(scope)
+	if desktopScreenLeaseEnabled() && desktopScreenLeaseNeeded(action, args) && !desktopScreenLeases.heldBy(screenKey, scope.RunID) {
+		if err := waitDesktopMemory(ctx, scope.TenantID, scope.UserID, scope.RunID); err != nil {
+			return "", err
+		}
+	}
+	release, leaseNote, leaseErr := desktopScreenLeaseStep(ctx, screenKey, scope.RunID, action, args)
 	if leaseErr != nil {
 		desktopWatchdogAfter(scope, leaseErr)
 		desktopWatchdogResult(scope, action, args, "", leaseErr)
@@ -2059,6 +2067,7 @@ func desktopBrowserSession(binding *desktopBinding, scope agentruntime.Scope, us
 		binding.session.BlockModelPasswordTyping()
 		followDesktopAfterPerson(scope, binding.session)
 		binding.session.SetCheckoutOwner(desktopCheckoutOwner(scope))
+		binding.session.SetTabOwner(desktopTabBot(scope), scope.RunID)
 		return binding.session, nil
 	}
 	if binding.session != nil {
@@ -2076,7 +2085,18 @@ func desktopBrowserSession(binding *desktopBinding, scope agentruntime.Scope, us
 	session.BlockModelPasswordTyping()
 	followDesktopAfterPerson(scope, session)
 	session.SetCheckoutOwner(desktopCheckoutOwner(scope))
+	session.SetTabOwner(desktopTabBot(scope), scope.RunID)
 	return session, nil
+}
+
+func desktopTabBot(scope agentruntime.Scope) string {
+	if _, bot := desktop.SplitDesktopUser(scope.UserID); strings.TrimSpace(bot) != "" {
+		return strings.TrimSpace(bot)
+	}
+	if id := strings.TrimSpace(scope.InstanceID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(scope.UserID)
 }
 
 // desktopSessionConnected is replaced by tests. Production asks the live
@@ -2755,10 +2775,29 @@ func finishDesktopRound(tenantID, userID, runID string) {
 		// A round that never recorded its desktop: the owner's desktop.
 		key, _ = desktop.UserKey(tenantID, userID)
 	}
+	closeDesktopRunTabs(key, runID)
 	if key == "" || desktopBindingInUse(key) {
 		return
 	}
 	dropDesktopBinding(key)
+}
+
+// closeDesktopRunTabs closes the tabs this run opened. Another run's tabs
+// on the same browser stay open.
+func closeDesktopRunTabs(key, runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	if key != "" {
+		if value, ok := desktopBindings.Load(key); ok {
+			if binding, _ := value.(*desktopBinding); binding != nil && binding.session != nil {
+				binding.session.CloseRunTabs(runID)
+				return
+			}
+		}
+	}
+	browser.EndRunTabs(runID)
 }
 
 // desktopBindingInUse reports another open round on the same desktop.

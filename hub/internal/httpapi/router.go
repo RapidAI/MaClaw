@@ -439,6 +439,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/desktop-services/desktops/stop", requireTenantAdmin(PostDesktopStopAdminHandler(desktopPool, botSvc)))
 	mux.HandleFunc("POST /api/admin/desktop-services/desktops/view", requireTenantAdmin(PostDesktopViewAdminHandler(desktopPool, botSvc)))
 	mux.HandleFunc("POST /api/v1/desktop-services/session", PostDesktopSessionHandler(desktopPool, botSvc))
+	mux.HandleFunc("POST /api/v1/desktop-services/memory", PostDesktopMemoryHandler(desktopPool, botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/stop", PostDesktopStopHandler(desktopPool, botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/hold", PostDesktopHoldHandler(botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/notify", PostDesktopNotifyHandler(botSvc))

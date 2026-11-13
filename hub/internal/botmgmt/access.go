@@ -649,6 +649,29 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			phase = "execute"
 		}
 	}
+	// The container's memory is read from desktopd. Over the line, this run
+	// waits in the same queue as a busy desktop and starts when a later
+	// read is under the line.
+	if admit && !hubStartedTurn(clientMessageID) && s.desktopMemoryPressured(ctx, tenantID, userID) {
+		// A replay is the queue itself. Returning the error puts the item
+		// back instead of starting it or queueing a second copy.
+		if desktopReplay(ctx) || desktopQueueSuppressed(ctx) {
+			return BotAdmission{}, ErrDesktopMemory
+		}
+		pos, qerr := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
+			ClientMessageID: clientMessageID,
+			Content:         content,
+			Phase:           phase,
+			ContinueSession: continueSession,
+			Kind:            "new",
+			Instruction:     content,
+			Ack:             desktopMemoryLine,
+			Secrets:         desktopSecretBag(ctx),
+		})
+		if qerr == nil {
+			return BotAdmission{Accepted: true, Queued: true, Position: pos, Ack: desktopMemoryLine, Kind: "new", ClientMessageID: clientMessageID}, nil
+		}
+	}
 	// One non-terminal admit per user. The reserve is visible to the next
 	// scan before the lock drops. The long message post stays outside it.
 	releaseTurn, claim, busyErr := s.claimDesktopTurnPref(tenantID, userID, botID, clientMessageID, content, phase, continueSession)
