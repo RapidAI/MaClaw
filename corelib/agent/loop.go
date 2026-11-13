@@ -25,6 +25,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/permission"
@@ -239,7 +240,11 @@ const (
 // ToolFailureAdmissionMemory is a desktop admission that waited out the
 // memory ceiling. The turn ends with the result sentence. The model is not
 // given the failure as a tool error it can call again.
-const ToolFailureAdmissionMemory = "admission_memory_busy"
+const ToolFailureAdmissionMemory = desktop.AdmissionMemoryBusy
+
+// ToolFailureAdmissionSkipped is a later call in the same batch that did
+// not run because an earlier call already failed admission.
+const ToolFailureAdmissionSkipped = "admission_memory_busy_skipped"
 
 type ToolExecutionResult struct {
 	Result string
@@ -3635,6 +3640,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				syntheticFailure = true
 				replanSkip = true
 			}
+			// An earlier call in this batch already failed admission. The
+			// rest are not run: each one would wait out the memory ceiling
+			// again.
+			if !replanSkip && admissionOutcome != "" {
+				execResult = ToolExecutionResult{
+					Result:      admissionOutcome,
+					Outcome:     ToolExecutionOutcomeError,
+					FailureKind: ToolFailureAdmissionSkipped,
+				}
+				syntheticFailure = true
+				replanSkip = true
+			}
 			if !replanSkip {
 				// A function name returned by the provider is model-controlled data. It
 				// may be dispatched only when it exactly matches one of the definitions
@@ -4055,6 +4072,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				ToolCallID:  tc.ID,
 				ToolName:    tc.Function.Name,
 				ToolOutcome: string(execResult.Outcome),
+				FailureKind: execResult.FailureKind,
 			})
 		}
 
@@ -4115,6 +4133,8 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			disposeSurface(ToolSurfaceToolBatchSettled)
 			return finish(LoopResult{
 				Text:       admissionOutcome,
+				Error:      admissionOutcome,
+				Err:        &desktop.MemoryAdmission{Sentence: admissionOutcome},
 				Iterations: iteration + 1,
 				ToolCalls:  totalToolCalls,
 			})

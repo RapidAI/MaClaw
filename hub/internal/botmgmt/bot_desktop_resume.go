@@ -134,6 +134,9 @@ func (s *Service) resumeAfterHandBack(tenantID, desktopUser, key string, resume 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	// A memory park of this resume has no chat poll. The give-up has to be
+	// listed as something the person still needs to do.
+	ctx = withQueueSurface(ctx, desktopQueueSurfaceNeedsUser)
 	err := desktopResumeAdmit(s, ctx, tenantID, owner, botID, message, "execute", "handback-"+botID+"-"+since)
 	log.Printf("[bot-desktop] auto hand back (%s) resumed bot %s: err=%v", trigger, botID, err)
 }

@@ -67,6 +67,9 @@ type ConversationEntry struct {
 	ToolCallID       string `json:"tool_call_id,omitempty"`
 	ToolName         string `json:"tool_name,omitempty"`
 	ToolOutcome      string `json:"tool_outcome,omitempty"`
+	// FailureKind is a structured tool failure, such as an admission that
+	// waited out the memory ceiling. ToMessage omits it.
+	FailureKind string `json:"failure_kind,omitempty"`
 	// FinishReason is host/trajectory metadata only (not sent to the LLM API).
 	// Typical values: stop, tool_calls, length.
 	FinishReason string `json:"finish_reason,omitempty"`
@@ -1493,7 +1496,8 @@ func sameConversationEntryPayload(left, right ConversationEntry) bool {
 		reflect.DeepEqual(left.ToolCalls, right.ToolCalls) &&
 		left.ToolCallID == right.ToolCallID &&
 		left.ToolName == right.ToolName &&
-		left.ToolOutcome == right.ToolOutcome
+		left.ToolOutcome == right.ToolOutcome &&
+		left.FailureKind == right.FailureKind
 }
 
 func containsString(values []string, target string) bool {

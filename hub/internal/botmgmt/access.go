@@ -667,6 +667,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			Instruction:     content,
 			Ack:             desktopMemoryLine,
 			WaitKind:        desktopQueueWaitMemory,
+			Surface:         queueSurfaceFrom(ctx),
 			Secrets:         desktopSecretBag(ctx),
 		})
 		if qerr == nil {

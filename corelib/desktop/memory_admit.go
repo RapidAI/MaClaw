@@ -16,6 +16,11 @@ const AdmissionMemoryBusy = "admission_memory_busy"
 // MemoryBusyOutcome is that sentence.
 const MemoryBusyOutcome = "这台电脑内存紧张，等了两分钟还是满的，这次先不做。"
 
+// MemoryResumeOutcome is the sentence when an automatic resume was parked
+// for memory and then gave up. It names the unblock: say 继续 once the
+// machine has room.
+const MemoryResumeOutcome = "内存还是满的，暂停的任务没能接着做。等这台电脑空一点后，再说一声「继续」。"
+
 // ErrMemoryAdmission marks a MemoryAdmission. The loop ends the turn on it.
 var ErrMemoryAdmission = errors.New(AdmissionMemoryBusy)
 
