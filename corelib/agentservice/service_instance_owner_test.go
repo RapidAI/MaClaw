@@ -2,6 +2,8 @@ package agentservice
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -9,7 +11,7 @@ import (
 
 func TestInstanceOwnerFindsTheOwningPrincipal(t *testing.T) {
 	var none *Service
-	if _, ok := none.InstanceOwner("x"); ok {
+	if _, err := none.InstanceOwner("x"); !errors.Is(err, ErrInstanceNotFound) {
 		t.Fatal("nil service found an owner")
 	}
 	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, nil, EchoExecutor{})
@@ -33,11 +35,28 @@ func TestInstanceOwnerFindsTheOwningPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := svc.InstanceOwner(inst.ID)
-	if !ok || got.TenantID != p.TenantID || got.UserID != p.UserID {
-		t.Fatalf("owner = %+v %v", got, ok)
+	got, err := svc.InstanceOwner(inst.ID)
+	if err != nil || got.TenantID != p.TenantID || got.UserID != p.UserID {
+		t.Fatalf("owner = %+v %v", got, err)
 	}
-	if _, ok := svc.InstanceOwner("inst_missing"); ok {
-		t.Fatal("missing instance found")
+	if _, err := svc.InstanceOwner("inst_missing"); !errors.Is(err, ErrInstanceNotFound) {
+		t.Fatalf("missing instance: %v", err)
+	}
+}
+
+type errListTenants struct{ *MemoryStore }
+
+func (errListTenants) ListTenants() ([]Tenant, error) {
+	return nil, errors.New("db down")
+}
+
+func TestInstanceOwnerStoreErrorIsNotMissing(t *testing.T) {
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, errListTenants{NewMemoryStore()}, EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.InstanceOwner("inst_any")
+	if err == nil || errors.Is(err, ErrInstanceNotFound) || !strings.Contains(err.Error(), "db down") {
+		t.Fatalf("store error = %v", err)
 	}
 }

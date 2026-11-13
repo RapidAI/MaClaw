@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -85,7 +86,7 @@ func TestD100StartAndPollAndDecisions(t *testing.T) {
 	alive := true
 	exit := ""
 	desktopLongJobExec = func(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
-		if strings.Contains(command, "nohup bash -lc") && strings.Contains(command, "LONGJOB_STARTED") {
+		if strings.Contains(command, "setsid bash -lc") && strings.Contains(command, "LONGJOB_STARTED") {
 			started = command
 			return "LONGJOB_STARTED pid=4242 log=/tmp/job.log exit_file=/tmp/job.exit", nil
 		}
@@ -955,11 +956,33 @@ func TestLongJobDeleteAndCancelDropWatches(t *testing.T) {
 	if _, err := svc.CancelRun(context.Background(), p, inst.ID, "run_busy"); err != nil {
 		t.Fatal(err)
 	}
-	if got := desktopLongJobGet(onRun.ID); got.Status != "cancelled" || got.EndReason != "orphaned: run cancelled" || got.Alive || longJobTaskNamed(mgr, "watch-job:"+onRun.ID) {
-		t.Fatalf("cancelled run job %+v", got)
+	if got := desktopLongJobGet(onRun.ID); got.Status != "failed" || longJobTaskNamed(mgr, "watch-job:"+onRun.ID) {
+		t.Fatalf("finished job should only lose its watch: %+v", got)
 	}
-	if len(killed) != 1 || !strings.Contains(killed[0], "kill -TERM") || !strings.Contains(killed[0], "4242") {
-		t.Fatalf("process was not killed: %#v", killed)
+	if len(killed) != 0 {
+		t.Fatalf("finished job was killed: %#v", killed)
+	}
+	liveRun := longJobUndelivered("job_live_run", inst.ID, "bot_a", "run_live")
+	liveRun.Status = "running"
+	liveRun.Alive = true
+	liveRun.PID = "4242"
+	liveRun.PGID = "4242"
+	liveRun.ProcStart = "999"
+	liveRun.PrincipalTenant = p.TenantID
+	if err := desktopLongJobSave(liveRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRun(agentservice.Run{ID: "run_live", TenantID: p.TenantID, UserID: p.UserID, InstanceID: inst.ID, SessionID: "sess", Status: agentservice.RunStatusRunning, StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelRun(context.Background(), p, inst.ID, "run_live"); err != nil {
+		t.Fatal(err)
+	}
+	if got := desktopLongJobGet(liveRun.ID); got.Status != "cancelled" || got.EndReason != "orphaned: run cancelled" || got.Alive {
+		t.Fatalf("live job %+v", got)
+	}
+	if len(killed) != 1 || !strings.Contains(killed[0], "pgid='4242'") || !strings.Contains(killed[0], "kill -TERM --") || !strings.Contains(killed[0], "MACLAW_LONGJOB_ID=job_live_run") || !strings.Contains(killed[0], "999") {
+		t.Fatalf("group was not killed: %#v", killed)
 	}
 	if got := desktopLongJobGet(otherRun.ID); got.Status != "failed" || !longJobTaskNamed(mgr, "watch-job:"+otherRun.ID) {
 		t.Fatalf("other run on the same bot was dropped: %+v", got)
@@ -1006,6 +1029,14 @@ func TestLongJobStartupReconcileDropsOrphanWatchesOnce(t *testing.T) {
 	missing := longJobUndelivered("job_missing", "inst_deleted", "bot_deleted", "run_old")
 	cancelledRun := longJobUndelivered("job_cancelled_run", inst.ID, "bot_live", "run_cancelled")
 	cancelledRun.PID = "5150"
+	cancelledRun.PGID = "5150"
+	cancelledRun.ProcStart = "42"
+	cancelledRun.Alive = true
+	finished := longJobUndelivered("job_finished_run", inst.ID, "bot_live", "run_cancelled")
+	finished.Status = "done"
+	finished.PID = "7777"
+	finished.PGID = "7777"
+	finished.ProcStart = "8"
 	live.Status, missing.Status, cancelledRun.Status = "running", "running", "running"
 	var killed []string
 	desktopLongJobExec = func(_ context.Context, _ agentruntime.Scope, command string) (string, error) {
@@ -1015,6 +1046,7 @@ func TestLongJobStartupReconcileDropsOrphanWatchesOnce(t *testing.T) {
 	longJobArmWatch(t, live)
 	longJobArmWatch(t, missing)
 	longJobArmWatch(t, cancelledRun)
+	longJobArmWatch(t, finished)
 	if _, err := mgr.Add(scheduler.ScheduledTask{Name: "watch-job:job_absent", Action: "LONGJOB job_absent 巡查", TaskType: scheduler.TaskTypeReminder, DayOfWeek: -1, DayOfMonth: -1, IntervalMinutes: 1, Status: "active"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1033,8 +1065,11 @@ func TestLongJobStartupReconcileDropsOrphanWatchesOnce(t *testing.T) {
 	if got := desktopLongJobGet(cancelledRun.ID); got.Status != "cancelled" || got.EndReason != "orphaned: run cancelled" || longJobTaskNamed(mgr, "watch-job:"+cancelledRun.ID) {
 		t.Fatalf("cancelled run %+v", got)
 	}
-	if len(killed) != 1 || !strings.Contains(killed[0], "5150") || !strings.Contains(killed[0], "kill -TERM") {
-		t.Fatalf("startup did not kill the cancelled run's process: %#v", killed)
+	if len(killed) != 1 || !strings.Contains(killed[0], "pgid='5150'") || !strings.Contains(killed[0], "kill -TERM --") || !strings.Contains(killed[0], "MACLAW_LONGJOB_ID=job_cancelled_run") || strings.Contains(killed[0], "7777") {
+		t.Fatalf("startup did not kill only the live group: %#v", killed)
+	}
+	if got := desktopLongJobGet(finished.ID); got.Status != "done" || longJobTaskNamed(mgr, "watch-job:"+finished.ID) {
+		t.Fatalf("finished job %+v", got)
 	}
 	if got := desktopLongJobGet(live.ID); got.Status != "running" || got.ScheduleID != liveSchedule || !longJobTaskNamed(mgr, "watch-job:"+live.ID) {
 		t.Fatalf("live job %+v", got)
@@ -1049,6 +1084,112 @@ func TestLongJobStartupReconcileDropsOrphanWatchesOnce(t *testing.T) {
 	if got := desktopLongJobGet(missing.ID); got.EndReason != "orphaned: owner missing at startup" || got.Status != "cancelled" {
 		t.Fatalf("second reconcile rewrote %+v", got)
 	}
+}
+
+func TestLongJobKillStopsTheChildProcess(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	id := "job_child"
+	script := desktopLongJobStartScript(id, "sleep 120", dir, filepath.Join(dir, "job.log"), filepath.Join(dir, "job.pid"), filepath.Join(dir, "job.exit"))
+	out, err := exec.Command("bash", "-lc", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("start: %v\n%s", err, out)
+	}
+	started := desktopLongJobParseStart(string(out))
+	if started.PGID == "" || started.ProcStart == "" || started.PID == "" {
+		t.Fatalf("start line %q", out)
+	}
+	t.Cleanup(func() { _ = exec.Command("kill", "-KILL", "--", "-"+started.PGID).Run() })
+	var child string
+	deadline := time.Now().Add(2 * time.Second)
+	for child == "" && time.Now().Before(deadline) {
+		child = processChild(started.PID)
+		if child == "" {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if child == "" || child == started.PID {
+		t.Fatalf("child of %s = %q", started.PID, child)
+	}
+	prev := desktopLongJobExec
+	desktopLongJobExec = func(_ context.Context, _ agentruntime.Scope, command string) (string, error) {
+		b, err := exec.Command("bash", "-lc", command).CombinedOutput()
+		return string(b), err
+	}
+	t.Cleanup(func() { desktopLongJobExec = prev })
+	j := &desktopLongJob{ID: id, PID: started.PID, PGID: started.PGID, ProcStart: started.ProcStart, Status: "running", Alive: true}
+	desktopLongJobKillProcess(context.Background(), j)
+	if processAlive(started.PID) || processAlive(child) || processAlive(started.PGID) {
+		t.Fatalf("group leader %s child %s still running", started.PID, child)
+	}
+}
+
+func TestLongJobKillSkipsARecycledPid(t *testing.T) {
+	cmd := exec.Command("sleep", "120")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	pid := strconv.Itoa(cmd.Process.Pid)
+	prev := desktopLongJobExec
+	desktopLongJobExec = func(_ context.Context, _ agentruntime.Scope, command string) (string, error) {
+		b, err := exec.Command("bash", "-lc", command).CombinedOutput()
+		return string(b), err
+	}
+	t.Cleanup(func() { desktopLongJobExec = prev })
+	j := &desktopLongJob{ID: "job_not_this", PID: pid, PGID: pid, ProcStart: "1", Status: "running", Alive: true}
+	desktopLongJobKillProcess(context.Background(), j)
+	if !processAlive(pid) {
+		t.Fatal("a process with a different start time was killed")
+	}
+}
+
+func TestLongJobReconcileSkipsOnStoreError(t *testing.T) {
+	d100Env(t)
+	mgr := longJobTestClock(t)
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, errListTenants{agentservice.NewMemoryStore()}, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	j := longJobUndelivered("job_keep", "inst_x", "bot_x", "run_x")
+	j.Status = "running"
+	j.Alive = true
+	longJobArmWatch(t, j)
+	prev := desktopLongJobService
+	t.Cleanup(func() { desktopLongJobService = prev })
+	bindDesktopLongJobService(svc)
+	if got := desktopLongJobGet(j.ID); got.Status != "running" || !longJobTaskNamed(mgr, "watch-job:"+j.ID) {
+		t.Fatalf("store error cancelled the job %+v", got)
+	}
+}
+
+type errListTenants struct{ *agentservice.MemoryStore }
+
+func (errListTenants) ListTenants() ([]agentservice.Tenant, error) {
+	return nil, errors.New("db down")
+}
+
+func processChild(parent string) string {
+	out, err := exec.Command("ps", "-o", "pid=", "--ppid", parent).Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func processAlive(pid string) bool {
+	return exec.Command("kill", "-0", pid).Run() == nil
 }
 
 func longJobUndelivered(id, instance, bot, run string) *desktopLongJob {
