@@ -131,7 +131,7 @@ func desktopLongJobScheduleOutcome(ctx context.Context, j *desktopLongJob) error
 	goal := desktopLongJobGoalKey(j)
 	j.OutcomeGoal = goal
 	desktopLongJobWriteCompletion(j)
-	if j.OutcomeState == "sent" || j.OutcomeState == "folded" || j.OutcomeState == "queued" {
+	if j.OutcomeState == "sent" || j.OutcomeState == "folded" || j.OutcomeState == "queued" || j.OutcomeState == "record" {
 		_ = desktopLongJobSave(j)
 		return nil
 	}
@@ -184,7 +184,7 @@ func desktopLongJobStartOutcome(ctx context.Context, jobs []*desktopLongJob) err
 	}
 	fresh := make([]*desktopLongJob, 0, len(jobs))
 	for _, j := range jobs {
-		if j.OutcomeRun != "" {
+		if j.OutcomeRun != "" || j.OutcomeState == "record" {
 			continue
 		}
 		fresh = append(fresh, j)
@@ -326,6 +326,17 @@ func desktopLongJobReleaseOutcomes(runID string) {
 		}
 		if err := desktopLongJobStartOutcome(context.Background(), batch); err != nil {
 			log.Printf("[desktop-longjob] goal=%s outcome after run %s: %v", goal, runID, err)
+		}
+	}
+	for _, j := range desktopLongJobAll() {
+		if j.OutcomeWait != runID || j.OutcomeState != "queued" || desktopLongJobTerminal(j) {
+			continue
+		}
+		j.OutcomeWait = ""
+		j.OutcomeState = ""
+		_ = desktopLongJobSave(j)
+		if _, err := desktopLongJobResumeAs(context.Background(), j, longJobResume); err != nil {
+			log.Printf("[desktop-longjob] job=%s follow-up after run %s: %v", j.ID, runID, err)
 		}
 	}
 }

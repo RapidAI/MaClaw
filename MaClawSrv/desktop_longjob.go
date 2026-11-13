@@ -645,6 +645,9 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 		desktopLongJobPlanCheck(j, desktopLongJobNow())
 	}
 	if !desktopLongJobKeepsRunning(j) {
+		// A relaunch replaces open jobs of the same goal. The old watches
+		// must not keep posting after the new one is the job.
+		desktopLongJobSupersede(j)
 		j.ScheduleID = desktopLongJobEnsureWatch(j)
 	}
 	if err := desktopLongJobSave(j); err != nil {
@@ -1199,11 +1202,13 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 		return nil
 	}
 	if dec == longJobCheck {
-		return desktopLongJobResumeAs(ctx, j, longJobCheck)
+		_, err := desktopLongJobResumeAs(ctx, j, longJobCheck)
+		return err
 	}
 	if dec == longJobResume && desktopLongJobTerminal(j) {
 		// The raw log is context for one summary turn. It is not a chat message.
-		return desktopLongJobScheduleOutcome(ctx, j)
+		// A job whose owning run already concluded does not speak on its own.
+		return desktopLongJobFinishOwned(ctx, j)
 	}
 	sayJob := j
 	if dec == longJobHeartbeat {
@@ -1213,7 +1218,16 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 		cp.Fingerprint += "|hb" + strconv.FormatInt(desktopLongJobNow().Unix()/int64(desktopLongJobHeartbeatEvery/time.Second), 10)
 		sayJob = &cp
 	}
-	if err := desktopLongJobSay(ctx, sayJob, desktopLongJobNoticeText(j, dec)); err != nil {
+	scheduled := false
+	var resumeErr error
+	if dec == longJobResume {
+		scheduled, resumeErr = desktopLongJobResumeAs(ctx, j, dec)
+	}
+	text := desktopLongJobNoticeText(j, dec)
+	if scheduled {
+		text += "我接着看一下原因和下一步。"
+	}
+	if err := desktopLongJobSay(ctx, sayJob, text); err != nil {
 		// A 404 on this say is not the decision. Only a missing resume
 		// target (the job's instance) ends the watch.
 		if desktopHubNotFound(err) && desktopLongJobResumeTargetGone(j) {
@@ -1221,13 +1235,8 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 		}
 		return err
 	}
-	if dec == longJobResume {
-		if err := desktopLongJobResume(ctx, j); err != nil {
-			if errors.Is(err, ErrLongJobOwnerGone) {
-				return err
-			}
-			log.Printf("[desktop-longjob] job=%s resume not started: %v", j.ID, err)
-		}
+	if errors.Is(resumeErr, ErrLongJobOwnerGone) {
+		return resumeErr
 	}
 	return nil
 }
@@ -1302,9 +1311,6 @@ func desktopLongJobNoticeText(j *desktopLongJob, dec desktopLongJobDecision) str
 	}
 	age := desktopLongJobNow().Sub(j.Started).Round(time.Minute)
 	text := head + "（任务 " + desktopLongJobShortID(j.ID) + "，已运行 " + age.String() + "，最近一次检查 " + j.LastPoll.Format("15:04") + "）。"
-	if dec == longJobResume {
-		text += "我接着看一下原因和下一步。"
-	}
 	if tail := desktopLongJobTailLines(j.LastTail, 8, 900); tail != "" {
 		text += "\n" + tail
 	}
@@ -1339,10 +1345,14 @@ func desktopLongJobTailLines(tail string, n, max int) string {
 // desktopLongJobResume starts one bot turn in the job's conversation, unless
 // a run is already working there (that run polls the job itself).
 func desktopLongJobResume(ctx context.Context, j *desktopLongJob) error {
-	return desktopLongJobResumeAs(ctx, j, longJobResume)
+	_, err := desktopLongJobResumeAs(ctx, j, longJobResume)
+	return err
 }
 
-func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopLongJobDecision) error {
+// desktopLongJobResumeAs reports whether a follow-up turn was actually
+// scheduled. A run that is already going does not drop the follow-up: it
+// waits for that run to end. The bool is false when nothing was scheduled.
+func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopLongJobDecision) (bool, error) {
 	svc := desktopLongJobService
 	if j.PrincipalUser == "" {
 		if a, ok := desktopInstancePrincipal(j.InstanceID); ok {
@@ -1356,16 +1366,21 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 		}
 	}
 	if svc == nil || j.PrincipalUser == "" {
-		return fmt.Errorf("no service principal for this job")
+		log.Printf("[desktop-longjob] job=%s follow-up skipped: no service principal", j.ID)
+		return false, fmt.Errorf("no service principal for this job")
 	}
 	principal := agentservice.Principal{TenantID: j.PrincipalTenant, UserID: j.PrincipalUser}
 	if j.SessionID != "" {
 		runs, err := svc.ListRuns(ctx, principal, j.InstanceID, agentservice.ListRunsInput{Status: agentservice.RunStatusRunning, SessionID: j.SessionID})
 		if err != nil {
-			return desktopLongJobPermanent(err)
+			return false, desktopLongJobPermanent(err)
 		}
 		if len(runs) > 0 {
-			return nil
+			j.OutcomeWait = runs[0].ID
+			j.OutcomeState = "queued"
+			_ = desktopLongJobSave(j)
+			log.Printf("[desktop-longjob] job=%s follow-up queued until run %s ends", j.ID, runs[0].ID)
+			return true, nil
 		}
 	}
 	in := agentservice.SendMessageInput{Content: desktopLongJobWatchPrompt(j, dec), SessionID: j.SessionID, Metadata: map[string]string{"long_job_id": j.ID, "long_job_watch": string(dec)}}
@@ -1375,13 +1390,14 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 	in.PrepareExecution = files.prepare
 	_, run, err := svc.SendMessageAsync(context.WithoutCancel(ctx), principal, j.InstanceID, in)
 	if err != nil {
-		return desktopLongJobPermanent(err)
+		log.Printf("[desktop-longjob] job=%s follow-up skipped: %v", j.ID, err)
+		return false, desktopLongJobPermanent(err)
 	}
 	if run != nil {
 		desktopLongJobNoteWatchRun(run.ID, j.ID)
 		go desktopLongJobFollowRunFiles(context.WithoutCancel(ctx), principal, j, run.ID, dec, files)
 	}
-	return nil
+	return true, nil
 }
 
 func desktopOwnerUserID(userID string) string {

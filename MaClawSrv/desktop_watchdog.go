@@ -862,6 +862,7 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 			if out["send_to_user_kind"] == "" {
 				out["send_to_user_kind"] = "report"
 			}
+			desktopLongJobReconcileRun(runID, fin.Status)
 		}
 	} else if sentence, ok := desktopFinishSentence(runID); ok && sentence != "" {
 		out["send_to_user"] = sentence
