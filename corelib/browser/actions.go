@@ -68,6 +68,23 @@ func (s *BrowserAgentSession) observeAfterAction(action string) (*BrowserObserva
 	return obs, nil, nil
 }
 
+// SetTabOwner records which bot and run own tabs this session opens.
+func (s *BrowserAgentSession) SetTabOwner(botID, runID string) {
+	if s == nil || s.session == nil {
+		return
+	}
+	s.session.SetTabOwner(botID, runID)
+}
+
+// CloseRunTabs closes tabs this run opened.
+func (s *BrowserAgentSession) CloseRunTabs(runID string) {
+	if s == nil || s.session == nil {
+		EndRunTabs(runID)
+		return
+	}
+	s.session.CloseRunTabs(runID)
+}
+
 // Navigate performs a browser navigation under the agent session.
 func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error) {
 	if s == nil || s.session == nil {

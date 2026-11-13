@@ -155,6 +155,11 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 		return "", false, fmt.Errorf("%w: %s", ErrSrv, ctx.Err().Error())
 	}
 	_ = desktopWatchEpoch(ctx)
+	// A watch is how we notice the container has memory again. Parked runs
+	// start on that read; a still-high reading leaves them queued.
+	if !s.desktopMemoryPressured(ctx, tenantID, owner) {
+		s.drainDesktopQueue(tenantID, owner, botID)
+	}
 	if !s.desktopViewLiveForWatch(tenantID, userID) {
 		// A bot step that drives the screen (its session wake, an app,
 		// open, ctl or screenshot call, or the worker's tool route) is not a

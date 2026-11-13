@@ -73,6 +73,9 @@ func (s *Service) reconcileOrphanRuns() int {
 					}
 					if s.markRunInterrupted(run) {
 						n++
+						if FinishDesktopRound != nil {
+							FinishDesktopRound(run.TenantID, run.UserID, run.ID)
+						}
 						log.Printf("[agentservice] orphan run marked interrupted run=%s session=%s instance=%s started=%s", run.ID, run.SessionID, run.InstanceID, run.StartedAt.Format("2006-01-02T15:04:05Z07:00"))
 					}
 				}

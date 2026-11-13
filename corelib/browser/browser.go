@@ -54,6 +54,11 @@ type Session struct {
 	attached      map[string]attachedFrame
 	pendingDialog *jsDialogState
 	visionOnce    bool
+
+	// tabBot and tabRun name who opened tabs in this browser. Empty means
+	// the tabs are not tracked.
+	tabBot string
+	tabRun string
 }
 
 var (
@@ -331,6 +336,10 @@ func (s *Session) Navigate(url string) (string, error) {
 		}
 	}
 
+	s.mu.Lock()
+	active := s.activeTabID
+	s.mu.Unlock()
+	TouchRunTab(active)
 	return string(result), nil
 }
 
@@ -530,6 +539,7 @@ func (s *Session) switchToReusableNavigationTarget(rawURL string) string {
 			if err := s.SwitchPage(page.ID); err != nil {
 				return ""
 			}
+			TouchRunTab(page.ID)
 			if oldActiveBlank && oldActiveID != "" && oldActiveID != page.ID {
 				s.closeTargetBestEffort(oldActiveID)
 			}
@@ -2319,6 +2329,7 @@ func (s *Session) openTargetInOwnTab(rawURL string) (string, error) {
 			if err := s.SwitchPage(page.ID); err != nil {
 				return "", err
 			}
+			TouchRunTab(page.ID)
 			if normalizeReusableNavigationURL(page.URL) != normalizeReusableNavigationURL(rawURL) {
 				if _, err := s.Navigate(rawURL); err != nil {
 					return "", err
@@ -2346,5 +2357,35 @@ func (s *Session) openTargetInOwnTab(rawURL string) (string, error) {
 	if err := s.SwitchPage(payload.TargetID); err != nil {
 		return "", err
 	}
+	s.noteOpenedTab(payload.TargetID)
 	return " (opened in a new tab; the previous tab was kept)", nil
+}
+
+// SetTabOwner names the bot and run whose new tabs this session tracks.
+func (s *Session) SetTabOwner(botID, runID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.tabBot, s.tabRun = strings.TrimSpace(botID), strings.TrimSpace(runID)
+	s.mu.Unlock()
+}
+
+func (s *Session) noteOpenedTab(targetID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	bot, run := s.tabBot, s.tabRun
+	s.mu.Unlock()
+	for _, id := range NoteRunTab(bot, run, targetID) {
+		s.closeTargetBestEffort(id)
+	}
+}
+
+// CloseRunTabs closes the tabs this run opened and no others.
+func (s *Session) CloseRunTabs(runID string) {
+	for _, id := range EndRunTabs(runID) {
+		s.closeTargetBestEffort(id)
+	}
 }

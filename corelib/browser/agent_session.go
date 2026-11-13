@@ -1372,6 +1372,7 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 					}
 					s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "popup", Summary: err.Error(), CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
 				} else {
+					s.session.noteOpenedTab(payload.TargetInfo.TargetID)
 					s.maybeFollowLoggedInPopup(payload.TargetInfo.TargetID, payload.TargetInfo.URL)
 				}
 			}
@@ -1398,7 +1399,8 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 						}()
 					}
 					s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "popup", Summary: err.Error(), CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
-				} else {
+				} else if s.session != nil {
+					s.session.noteOpenedTab(payload.TargetInfo.TargetID)
 					s.maybeFollowLoggedInPopup(payload.TargetInfo.TargetID, payload.TargetInfo.URL)
 				}
 			}
@@ -1427,6 +1429,7 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 		if err := validatePopupPolicy(s.Policy); shouldCloseUnsolicitedPopup(sessionKeepsLoginPopup(s.session), err) {
 			break
 		}
+		s.session.noteOpenedTab(payload.TargetInfo.TargetID)
 		s.maybeFollowLoggedInPopup(payload.TargetInfo.TargetID, payload.TargetInfo.URL)
 	}
 }

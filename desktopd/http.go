@@ -38,6 +38,25 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy": SnapshotProxyMetrics()})
 	})
+	mux.HandleFunc("POST /v1/desktops/memory", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+		}
+		if !decodeBody(w, r, &in) {
+			return
+		}
+		rep, err := svc.Memory(r.Context(), in.TenantID, in.UserID)
+		if err != nil {
+			writeServiceErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rep)
+	})
 	mux.HandleFunc("POST /v1/desktops", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
