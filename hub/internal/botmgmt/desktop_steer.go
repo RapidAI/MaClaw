@@ -2,11 +2,15 @@ package botmgmt
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
 // desktopIntakeBudget bounds the srv decision. The ack is part of that
@@ -75,6 +79,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 	if s == nil || content == "" || desktopReplay(ctx) || hubStartedTurn(in.ClientMessageID) {
 		return content, BotAdmission{}, false
 	}
+	defer s.rememberDesktopTalk(in.TenantID, in.UserID, in.BotID, content)
 	explicitNew := desktopCanonicalContinue(in.BotID, in.ContinueSession) == strings.TrimSpace(in.BotID)
 	actionReturn := strings.EqualFold(strings.TrimSpace(in.Action), "return")
 	running, earlier := s.desktopIntakeContext(in.TenantID, in.UserID, in.BotID)
@@ -184,6 +189,10 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 	if next == "" {
 		next = content
 	}
+	next = agentservice.FoldEarlierIntoInstruction(next, earlier)
+	if content != "" && !strings.Contains(next, content) {
+		next += "\n原话：" + content
+	}
 	base.Kind = "new"
 	base.RunID = ""
 	return next, base, false
@@ -284,6 +293,18 @@ func (s *Service) desktopIntakeContext(tenantID, userID, botID string) ([]deskto
 	s.mu.Unlock()
 	out := append(live, stopped...)
 	var earlier []string
+	seen := map[string]bool{}
+	add := func(line string) {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] || len(earlier) == 8 {
+			return
+		}
+		seen[line] = true
+		earlier = append(earlier, line)
+	}
+	for _, line := range s.desktopTalkLines(tenantID, userID, botID) {
+		add(line)
+	}
 	for _, r := range out {
 		line := strings.TrimSpace(r.Task)
 		if line == "" {
@@ -292,12 +313,53 @@ func (s *Service) desktopIntakeContext(tenantID, userID, botID string) ([]deskto
 		if r.Status != "" && r.Status != "running" {
 			line += " [" + r.Status + "]"
 		}
-		earlier = append(earlier, line)
-		if len(earlier) == 6 {
-			break
-		}
+		add(line)
 	}
 	return out, earlier
+}
+
+type desktopTalkLog struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+var desktopTalks sync.Map
+
+func desktopTalkKey(s *Service, tenantID, userID, botID string) string {
+	return fmt.Sprintf("%p\x00%s\x00%s\x00%s", s, tenantID, userID, botID)
+}
+
+func (s *Service) desktopTalkLines(tenantID, userID, botID string) []string {
+	if s == nil {
+		return nil
+	}
+	v, ok := desktopTalks.Load(desktopTalkKey(s, tenantID, userID, botID))
+	if !ok {
+		return nil
+	}
+	log := v.(*desktopTalkLog)
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	return append([]string(nil), log.lines...)
+}
+
+func (s *Service) rememberDesktopTalk(tenantID, userID, botID, line string) {
+	line = strings.TrimSpace(line)
+	if s == nil || line == "" {
+		return
+	}
+	key := desktopTalkKey(s, tenantID, userID, botID)
+	v, _ := desktopTalks.LoadOrStore(key, &desktopTalkLog{})
+	log := v.(*desktopTalkLog)
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	if n := len(log.lines); n > 0 && log.lines[n-1] == line {
+		return
+	}
+	log.lines = append(log.lines, line)
+	if len(log.lines) > 12 {
+		log.lines = append([]string(nil), log.lines[len(log.lines)-12:]...)
+	}
 }
 
 func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest, running []desktopRunBrief, earlier []string) desktopIntake {

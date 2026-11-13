@@ -66,6 +66,32 @@ func TestIntakeStopPauseContinueNeedALiveRun(t *testing.T) {
 	}
 }
 
+func TestJDFollowUpResolvesAgainstTheEarlierOrder(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	const (
+		original = "我帮去京东下单买一件饮料，默认地址发货"
+		explain  = "是别的任务，我说明一下"
+		follow   = "京东下单阿"
+	)
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{
+		BotID: "bot_p", Content: follow, Earlier: []string{original, explain},
+	}, func(_ context.Context, _, user string) (string, error) {
+		if !strings.Contains(user, original) || !strings.Contains(user, explain) {
+			t.Fatalf("intake prompt dropped earlier turns:\n%s", user)
+		}
+		return `{"kind":"new","run":0,"instruction":"京东下单啊","ack":"好，去下单。","pace":"direct"}`, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{original, explain, "饮料", "默认地址", follow, "京东下单"} {
+		if !strings.Contains(got.Instruction, part) {
+			t.Fatalf("instruction missing %q in %q", part, got.Instruction)
+		}
+	}
+}
+
 func TestContinueRelaunchesACancelledRunWithItsTask(t *testing.T) {
 	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
 	defer svc.Close()
