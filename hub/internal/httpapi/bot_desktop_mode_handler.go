@@ -42,6 +42,32 @@ func PutBotDesktopModeAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
 	}
 }
 
+// GetBotConversationHandler GET /api/v1/bots/{id}/conversation
+// The snapshot MaClawSrv stores for this bot. Clients poll it. The revision
+// is the change cursor. Hub does not keep its own copy.
+func GetBotConversationHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		raw, err := svc.DesktopConversation(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"))
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		if len(raw) == 0 {
+			raw = []byte(`{"state":"discuss","messages":[]}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
+	}
+}
+
 // PostBotDesktopHandBackHandler POST /api/v1/bots/{id}/desktop/handback
 // The person finished on an isolated bot's display (login, 2FA, captcha):
 // the bot may drive it again, and a continuation message resumes the task.

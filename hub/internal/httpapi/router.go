@@ -526,6 +526,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/ack", PostBotRunAckHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/secret-fill", PostBotSecretFillHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/desktop", GetBotDesktopHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/conversation", GetBotConversationHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop", PostBotDesktopWatchHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop/handback", PostBotDesktopHandBackHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/demo/start", PostBotDemoStartHandler(botSvc, identity))

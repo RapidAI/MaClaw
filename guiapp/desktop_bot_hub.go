@@ -363,6 +363,20 @@ func (a *App) GetDesktopBotScreen(botID string) (*DesktopBotScreen, error) {
 	}, nil
 }
 
+// GetDesktopBotConversation reads the server snapshot for this bot. The GUI
+// renders it. It is not a local history.
+func (a *App) GetDesktopBotConversation(botID string) (json.RawMessage, error) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil, fmt.Errorf("bot id is required")
+	}
+	var out json.RawMessage
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/"+url.PathEscape(botID)+"/conversation", nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HandBackDesktopBot ends the person's takeover of this bot's display and
 // asks the bot to continue. The body is omitted: Hub resumes with its own
 // continuation message.

@@ -52,6 +52,7 @@ import {
     DeleteDesktopBotSchedule,
     DesktopBotDesktopAdmin,
     GetDesktopBotScreen,
+    GetDesktopBotConversation,
     GetHubConnectionState,
     HandBackDesktopBot,
     SetDesktopBotDesktopMode,
@@ -2580,6 +2581,25 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const stageEpoch = useRef(0);
     const selected = bots.find(bot => bot.id === selectedId) || null;
     const messages = selected ? (messagesByBot[selected.id] || []) : [];
+    useEffect(() => {
+        if (!selectedId) return;
+        let cancel = false;
+        void Promise.resolve(GetDesktopBotConversation(selectedId)).then(raw => {
+            if (cancel || !raw) return;
+            const snap = raw as { messages?: Array<{ id?: string; role?: string; text?: string; at?: string; kind?: string; run_id?: string }> };
+            const rows = snap.messages || [];
+            if (rows.length === 0) return;
+            const next = rows.map(row => ({
+                id: String(row.id || ''),
+                role: (row.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
+                content: String(row.text || ''),
+                chat: true,
+            })).filter(row => row.id && row.content);
+            if (next.length === 0) return;
+            setMessagesByBot(prev => ({ ...prev, [selectedId]: next }));
+        }).catch(() => undefined);
+        return () => { cancel = true; };
+    }, [selectedId]);
     useEffect(() => {
         if (!selected) return;
         releaseSettledAckCommands(ackCommandsRef.current, selected.id, messages);

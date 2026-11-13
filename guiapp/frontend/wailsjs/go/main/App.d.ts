@@ -3153,6 +3153,8 @@ export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promi
 export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
 export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
 
+export function GetDesktopBotConversation(arg1:string):Promise<any>;
+
 export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
 
 export function HandBackDesktopBot(arg1:string):Promise<{handed_back:boolean,accepted?:boolean,run_id?:string,status?:string,client_message_id?:string}>;
