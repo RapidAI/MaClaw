@@ -20,6 +20,7 @@ import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTa
 import { takeAssistantStreamToken } from "../bots/visibleDesktopTurn";
 import { codingThoughtDeltaIsChrome, codingThoughtHasOpenFence, codingThoughtTextIsBlank } from "./assistantLiveActivity";
 import { createStreamCoalescer } from "./streamCoalescer";
+import { conversationViewCut } from "./conversationViewWindow";
 import { markStreamTextReplacement, noteNonAppendStreamText } from "./streamTextRevision";
 
 export interface CancelAIAssistantResult {
@@ -1582,6 +1583,8 @@ interface ResponseTimeoutController {
 // that cost three times as often — sustained multi-MB/s churn during a long
 // coding turn is what pushed the WebView renderer into the OOM crash.
 const STREAM_TOKEN_FLUSH_MS = 80;
+/** Leading+trailing window for progress-message renders in App. */
+const PROGRESS_MESSAGE_FLUSH_MS = 250;
 // Hidden pages cannot paint, so the per-frame cadence is pure churn: the same
 // bytes land via the stream-done flush or when the window comes back. A slow
 // timer keeps the pending-parts buffer bounded without paying a render each
@@ -1908,6 +1911,15 @@ function codingRowStartedAt(item: { startedAt?: number; timestamp?: number }, fa
  * information: the same text lives in message.reasoning.
  */
 const MAX_CODING_TIMELINE_ITEMS = 300;
+
+/**
+ * Live transcript ceiling. The rendered window is already the last
+ * ~CONVERSATION_VIEW_HOT_MESSAGES rows and deep history is served by the
+ * server-side archive dialog, so keeping the whole session in memory only
+ * grows every per-flush scan and the retained set. The cut reuses
+ * conversationViewCut so it lands on a turn boundary, never mid-round.
+ */
+const MAX_LIVE_TRANSCRIPT_MESSAGES = 500;
 
 /** Keep the transport order recoverable even when Wails delivers a batch late. */
 function insertCodingTimelineItem(timeline: CodingAgentTimelineItem[], item: CodingAgentTimelineItem): CodingAgentTimelineItem[] {
@@ -4382,7 +4394,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     // panel's transcript) update on their own. The ref mirror stays
     // synchronous for persist/unmount reads.
     const setMessages = useCallback((next: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
-        messagesStore.set(next);
+        messagesStore.set((prev) => {
+            const resolved = typeof next === 'function' ? next(prev) : next;
+            return resolved.length > MAX_LIVE_TRANSCRIPT_MESSAGES
+                ? resolved.slice(conversationViewCut(resolved, MAX_LIVE_TRANSCRIPT_MESSAGES))
+                : resolved;
+        });
         latestMessagesRef.current = messagesStore.get();
     }, [messagesStore]);
     const latestMessagesRef = useRef<ChatMessage[]>(messagesStore.get());
@@ -4397,7 +4414,32 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     useEffect(() => {
         try { localStorage.setItem("ai_assistant_local_draft", draftInputValue); } catch { }
     }, [draftInputValue]);
-    const [progressMessages, setProgressMessages] = useState<ChatMessage[]>([]);
+    const [progressMessages, setProgressMessagesState] = useState<ChatMessage[]>([]);
+    // Progress events arrive in bursts during a coding turn (tool calls,
+    // thoughts, phase changes). This state still lives in App, so every
+    // event used to re-render the whole tree. Leading+trailing coalescing
+    // caps it at one render per PROGRESS_MESSAGE_FLUSH_MS while keeping the
+    // latest value visible.
+    const latestProgressMessagesRef = useRef<ChatMessage[]>([]);
+    const pendingProgressMessagesRef = useRef<ChatMessage[] | null>(null);
+    const progressFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const setProgressMessages = useCallback((next: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
+        const resolved = typeof next === 'function' ? next(latestProgressMessagesRef.current) : next;
+        latestProgressMessagesRef.current = resolved;
+        pendingProgressMessagesRef.current = resolved;
+        if (progressFlushTimerRef.current !== null) return;
+        setProgressMessagesState(resolved);
+        pendingProgressMessagesRef.current = null;
+        progressFlushTimerRef.current = setTimeout(() => {
+            progressFlushTimerRef.current = null;
+            const pending = pendingProgressMessagesRef.current;
+            pendingProgressMessagesRef.current = null;
+            if (pending !== null) setProgressMessagesState(pending);
+        }, PROGRESS_MESSAGE_FLUSH_MS);
+    }, []);
+    useEffect(() => () => {
+        if (progressFlushTimerRef.current !== null) clearTimeout(progressFlushTimerRef.current);
+    }, []);
     const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
     const [trialReflectEnabled, setTrialReflectEnabled] = useState(false);
     const [preferences, setPreferences] = useState<AIAssistantPreferences>({ showTraceEntry: false });
@@ -8193,7 +8235,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
     const panelState: AIAssistantPanelHookState = useMemo(() => ({
         messagesStore,
-        progressMessages,
+        // Getter, not the coalesced state value: consumers/tests always read
+        // the latest progress even between the 250ms render flushes.
+        get progressMessages() { return latestProgressMessagesRef.current; },
         sending,
         sendingSessionKey,
         busySessionKeys,
@@ -8256,7 +8300,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         waitForExpertSessionIdle,
     }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle, isExpertSessionIdle, waitForExpertSessionIdle]);
 
-    return { get messages() { return messagesStore.get(); }, messagesStore, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, offscreenLiveSessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
+    return { get messages() { return messagesStore.get(); }, messagesStore, submittedPrompts, submittedPromptAttachments, draftInputValue, get progressMessages() { return latestProgressMessagesRef.current; }, sending, sendingSessionKey, busySessionKeys, offscreenLiveSessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

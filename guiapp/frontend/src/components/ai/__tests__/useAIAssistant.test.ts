@@ -1109,6 +1109,38 @@ describe('useAIAssistant property tests', () => {
         expect(remounted.current.messages).toEqual([]);
     });
 
+    it('caps the live transcript at the message ceiling on a turn boundary', async () => {
+        // The archive dialog serves deeper history; the live array itself
+        // must stay bounded so per-flush scans and retention can't grow with
+        // session length.
+        const seeded = Array.from({ length: 600 }, (_, i) => ({
+            id: `seed-${i}`,
+            role: i % 2 === 0 ? 'user' : 'assistant',
+            content: `seed message ${i}`,
+            timestamp: i,
+        }));
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify(seeded));
+
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+        expect(result.current.messages).toHaveLength(600);
+
+        await act(async () => {
+            void result.current.sendMessage('push past the cap');
+        });
+
+        expect(result.current.messages.length).toBeLessThanOrEqual(542);
+        expect(result.current.messages[0].role).toBe('user');
+        const tail = result.current.messages[result.current.messages.length - 1];
+        expect(tail.role).toBe('assistant');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
     it('strips assistant protocol tool-call artifacts from legacy localStorage history', async () => {
         localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify([
             { id: 'u-tool', role: 'user', content: '<tool_call[]> keep as user text', timestamp: 1 },
