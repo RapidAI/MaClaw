@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -212,28 +213,101 @@ func modifierList(raw string) ([]string, error) {
 
 func ParseSteps(raw any) ([]Step, error) {
 	if raw == nil {
-		return nil, fmt.Errorf("desktop steps are required")
+		return nil, fmt.Errorf("desktop steps are required (received %s)", valueShape(raw))
 	}
+	raw = unwrapJSONValue(raw)
 	encoded, err := json.Marshal(raw)
 	if err != nil {
 		return nil, err
 	}
-	var loose []map[string]any
+	var loose []any
 	if err := json.Unmarshal(encoded, &loose); err != nil {
-		return nil, fmt.Errorf("desktop steps must be an array of objects")
+		return nil, fmt.Errorf("desktop steps must be an array of objects (received %s)", valueShape(raw))
 	}
 	if len(loose) == 0 || len(loose) > MaxSteps {
-		return nil, fmt.Errorf("desktop steps accept 1 to %d actions", MaxSteps)
+		return nil, fmt.Errorf("desktop steps accept 1 to %d actions (received %d)", MaxSteps, len(loose))
 	}
 	steps := make([]Step, 0, len(loose))
 	for i, item := range loose {
-		step, err := ParseStep(item)
+		obj, err := stepObject(unwrapJSONValue(item))
 		if err != nil {
 			return nil, fmt.Errorf("step %d: %w", i+1, err)
+		}
+		step, err := ParseStep(obj)
+		if err != nil {
+			return nil, fmt.Errorf("step %d: %w; received %s", i+1, err, valueShape(obj))
 		}
 		steps = append(steps, step)
 	}
 	return steps, nil
+}
+
+// unwrapJSONValue parses a JSON string (once, or twice if it was encoded
+// twice) into the value it holds. Anything else is returned as it is.
+func unwrapJSONValue(raw any) any {
+	text, ok := raw.(string)
+	if !ok {
+		return raw
+	}
+	text = strings.TrimSpace(text)
+	if text == "" || (text[0] != '{' && text[0] != '[' && text[0] != '"') {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal([]byte(text), &v); err != nil {
+		return raw
+	}
+	if _, ok := v.(string); ok {
+		return unwrapJSONValue(v)
+	}
+	return v
+}
+
+func stepObject(raw any) (map[string]any, error) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("must be an object (received %s)", valueShape(raw))
+	}
+	if _, ok := m["action"]; ok {
+		return m, nil
+	}
+	for key, value := range m {
+		if strings.EqualFold(key, "action") {
+			out := make(map[string]any, len(m))
+			for name, v := range m {
+				out[name] = v
+			}
+			out["action"] = value
+			return out, nil
+		}
+	}
+	return m, nil
+}
+
+// valueShape describes a value without its contents. Typed text and other
+// argument values are not included.
+func valueShape(raw any) string {
+	switch v := raw.(type) {
+	case nil:
+		return "null"
+	case string:
+		return fmt.Sprintf("string(%d)", len(v))
+	case bool:
+		return "bool"
+	case float64, float32, int, int64, json.Number:
+		return "number"
+	case []any:
+		return fmt.Sprintf("array(%d)", len(v))
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key+":"+valueShape(v[key]))
+		}
+		sort.Strings(keys)
+		return "{" + strings.Join(keys, ",") + "}"
+	default:
+		return fmt.Sprintf("%T", raw)
+	}
 }
 
 func ParseStep(m map[string]any) (Step, error) {

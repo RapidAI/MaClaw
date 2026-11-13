@@ -96,8 +96,36 @@ func desktopErrorClass(out string, err error) string {
 		return "element_not_found"
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out") || strings.Contains(msg, "超时"):
 		return "timeout"
+	case argShapeError(msg):
+		return "bad_args"
+	}
+	if err != nil && !desktopUncountedError(msg) {
+		return "failed"
 	}
 	return ""
+}
+
+// desktopUncountedError is a refusal that is not a failed method: filling a
+// field that is not a password, or a fill that had no focus. Counting it
+// would block the next real attempt.
+func desktopUncountedError(msg string) bool {
+	switch strings.TrimSpace(msg) {
+	case "not_password_field", "no_focus", "unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
+// argShapeError is a call the tool rejected before it ran, because the
+// arguments were not the shape it accepts.
+func argShapeError(msg string) bool {
+	return strings.Contains(msg, "needs \"action\"") ||
+		strings.Contains(msg, "not allowed") ||
+		strings.Contains(msg, "requires") ||
+		strings.Contains(msg, "must be") ||
+		strings.Contains(msg, "are required") ||
+		strings.Contains(msg, "received ")
 }
 
 // desktopFailClassCheck refuses a call whose intent class is blocked.
@@ -231,6 +259,8 @@ func desktopFailClassAdvice(class string) string {
 		return "The browser or the site did not respond: this is the infrastructure, not your method. Take a screenshot or probe to see the real state, continue with the other parts of the task, call request_takeover, or report this part as blocked with the error."
 	case "timeout":
 		return "Switch interface: take a screenshot to see the real state and use a different action, or call request_takeover."
+	case "bad_args":
+		return "The arguments were not the shape this action accepts. Read the received shape in the error and send that action again with the fields it names. Do not repeat the same call."
 	}
 	return "Use a different method or call request_takeover."
 }
