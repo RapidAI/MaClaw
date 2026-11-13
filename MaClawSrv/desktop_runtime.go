@@ -1102,6 +1102,14 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			}
 			return binding.session
 		}
+		var attached *browser.BrowserAgentSession
+		if binding != nil && binding.session != nil && binding.addr == endpoint.CDP && desktopSessionConnected(binding.session) {
+			attached = binding.session
+			attached.SetCheckoutOwner(desktopCheckoutOwner(scope))
+		}
+		if ask, hold := desktopHoldCheckout(ctx, scope, attached, endpoint.Display, action, args); hold {
+			return desktopCheckoutPause(scope, ask)
+		}
 		if label, hit := desktopClickHitsPublish(ctx, scope, endpoint.Display, stepsArg); hit {
 			log.Printf("[desktop-guard] refused publish_needs_confirmation (coordinate click on %q)", label)
 			return "", fmt.Errorf("%s (That point is the %q button.)", desktopPublishRefusal, label)
@@ -1164,6 +1172,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	session, err := desktopBrowserSession(binding, scope, userKey, endpoint.CDP)
 	if err != nil {
 		return "", err
+	}
+	if ask, hold := desktopHoldCheckout(ctx, scope, session, endpoint.Display, action, args); hold {
+		return desktopCheckoutPause(scope, ask)
 	}
 	specNote := desktopSpeculateAutoOnce(scope, session)
 	defer func() {
@@ -2026,6 +2037,7 @@ func desktopBrowserSession(binding *desktopBinding, scope agentruntime.Scope, us
 	if binding.session != nil && binding.addr == addr && desktopSessionConnected(binding.session) {
 		binding.session.BlockModelPasswordTyping()
 		followDesktopAfterPerson(scope, binding.session)
+		binding.session.SetCheckoutOwner(desktopCheckoutOwner(scope))
 		return binding.session, nil
 	}
 	if binding.session != nil {
@@ -2042,6 +2054,7 @@ func desktopBrowserSession(binding *desktopBinding, scope agentruntime.Scope, us
 	binding.addr = addr
 	session.BlockModelPasswordTyping()
 	followDesktopAfterPerson(scope, session)
+	session.SetCheckoutOwner(desktopCheckoutOwner(scope))
 	return session, nil
 }
 
@@ -2712,6 +2725,7 @@ func finishDesktopRound(tenantID, userID, runID string) {
 			wake.mu.Unlock()
 		}
 	}
+	browser.ClearRunCart(runID)
 	dropDesktopToolResults(runID)
 	forgetDesktopOutage(runID)
 	desktopScreenLeaseEndRun(runID, "round_end")
