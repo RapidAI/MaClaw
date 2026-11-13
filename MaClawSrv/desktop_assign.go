@@ -154,8 +154,11 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 	if text == "" {
 		return "", fmt.Errorf("say needs message")
 	}
-	if desktopSayProgressOnly(text) {
-		return "NOT SENT progress_only: what you are doing now is already shown in the person's status line. Keep working; say only a result, a changed plan, a blocker or decision you need from them, or a failure.", nil
+	claimed := desktopArg(args, "kind")
+	kind := desktopMessageKind(claimed, false, claimed == desktopMsgNeedsUser)
+	if !desktopChatKind(kind) {
+		desktopRecordProcess(strings.TrimSpace(request.Scope.RunID), text)
+		return "NOT SENT process: this is progress, so it stays on the run record and the status line. The chat only gets a question or takeover the person must handle, and the final outcome.", nil
 	}
 	inst, ok := turnInstance(request)
 	if !ok {

@@ -1210,31 +1210,18 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 		// A job whose owning run already concluded does not speak on its own.
 		return desktopLongJobFinishOwned(ctx, j)
 	}
-	sayJob := j
-	if dec == longJobHeartbeat {
-		// Same status and output as the last line: its own key, so Hub's
-		// dedupe does not swallow it, one per heartbeat window.
-		cp := *j
-		cp.Fingerprint += "|hb" + strconv.FormatInt(desktopLongJobNow().Unix()/int64(desktopLongJobHeartbeatEvery/time.Second), 10)
-		sayJob = &cp
-	}
 	scheduled := false
 	var resumeErr error
 	if dec == longJobResume {
 		scheduled, resumeErr = desktopLongJobResumeAs(ctx, j, dec)
 	}
-	text := desktopLongJobNoticeText(j, dec)
+	// Progress, a heartbeat and a stall are process. They stay on the run
+	// record. The chat hears the follow-up's outcome, not this note.
+	note := desktopLongJobNoticeText(j, dec)
 	if scheduled {
-		text += "我接着看一下原因和下一步。"
+		note += "已安排接着看。"
 	}
-	if err := desktopLongJobSay(ctx, sayJob, text); err != nil {
-		// A 404 on this say is not the decision. Only a missing resume
-		// target (the job's instance) ends the watch.
-		if desktopHubNotFound(err) && desktopLongJobResumeTargetGone(j) {
-			return ErrLongJobOwnerGone
-		}
-		return err
-	}
+	desktopRecordProcess(firstNonEmptyString(j.SourceRun, j.ID), note)
 	if errors.Is(resumeErr, ErrLongJobOwnerGone) {
 		return resumeErr
 	}

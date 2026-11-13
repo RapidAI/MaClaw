@@ -426,6 +426,9 @@ func GetBotRunHandler(svc *botmgmt.Service, identity botAuthenticator) http.Hand
 			if line := svc.DesktopRunStatusLine(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); line != "" {
 				running["status_line"] = line
 			}
+			if process := svc.DesktopRunProcess(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); len(process) > 0 {
+				running["process"] = process
+			}
 			writeJSON(w, http.StatusAccepted, running)
 			return
 		}

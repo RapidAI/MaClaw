@@ -72,7 +72,7 @@ func TestRunFinishFailureNamesTheUnblockCondition(t *testing.T) {
 		t.Fatalf("outcome %v", md)
 	}
 	got := md["send_to_user"]
-	if !strings.HasPrefix(got, "没有做成。") || !strings.Contains(got, "卡在：登录") || !strings.Contains(got, "要继续需要：你在这个桌面完成登录或验证") {
+	if !strings.HasPrefix(got, "没有做成。") || !strings.Contains(got, "卡在：登录") || !strings.Contains(got, "要继续需要：你在这个桌面完成登录或验证") || !strings.Contains(got, "建议：你在这个桌面登录或通过验证后，我从这一页继续") {
 		t.Fatalf("sentence %q", got)
 	}
 	if strings.Contains(got, "cdp") || strings.Contains(got, "{") {

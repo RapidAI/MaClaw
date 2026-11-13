@@ -128,8 +128,12 @@ func TestLongJobPromiseRequiresAScheduledFollowUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = desktopLongJobTalkDefault(context.Background(), j, longJobResume)
-	if len(said) != 1 || strings.Contains(said[0], "我接着看一下原因和下一步。") {
-		t.Fatalf("promised a follow-up that was not scheduled: %v", said)
+	if len(said) != 0 {
+		t.Fatalf("process was posted to the chat: %v", said)
+	}
+	lines := desktopProcessOf(j.ID)
+	if len(lines) != 1 || strings.Contains(lines[0], "我接着看一下原因和下一步。") || !strings.Contains(lines[0], "没有新的输出") {
+		t.Fatalf("process record %v", lines)
 	}
 }
 

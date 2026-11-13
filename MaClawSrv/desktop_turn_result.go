@@ -107,11 +107,12 @@ type desktopRunAPI struct {
 	ScreenQueue string `json:"screen_queue,omitempty"`
 	// StatusLine is the live status for the bot's status area: run id,
 	// step, latest progress, background job and its next check.
-	StatusLine    string `json:"status_line,omitempty"`
-	ProgressWhere string `json:"progress_where,omitempty"`
-	ProgressNext  string `json:"progress_next,omitempty"`
-	ProgressOpen  string `json:"progress_open,omitempty"`
-	ProgressPath  string `json:"progress_path,omitempty"`
+	StatusLine    string   `json:"status_line,omitempty"`
+	Process       []string `json:"process,omitempty"`
+	ProgressWhere string   `json:"progress_where,omitempty"`
+	ProgressNext  string   `json:"progress_next,omitempty"`
+	ProgressOpen  string   `json:"progress_open,omitempty"`
+	ProgressPath  string   `json:"progress_path,omitempty"`
 }
 
 func desktopRunAPIBody(dataRoot string, run *agentservice.Run, stored *agentservice.Message) any {
@@ -154,7 +155,7 @@ func desktopRunAPIBody(dataRoot string, run *agentservice.Run, stored *agentserv
 	if !ok && activity == "" && queue == "" && !hasProgress && status == "" {
 		return sanitized
 	}
-	body := desktopRunAPI{Run: sanitized, Activity: activity, ScreenQueue: queue, StatusLine: status}
+	body := desktopRunAPI{Run: sanitized, Activity: activity, ScreenQueue: queue, StatusLine: status, Process: desktopProcessOf(run.ID)}
 	if hasProgress {
 		body.ProgressWhere = where
 		body.ProgressNext = next

@@ -894,21 +894,18 @@ func TestLongJobTalkMapsMissingInstance(t *testing.T) {
 	if !errors.Is(err, ErrLongJobOwnerGone) {
 		t.Fatalf("missing instance: %v", err)
 	}
+	var said int
 	desktopLongJobSayFunc = func(context.Context, map[string]any) error {
+		said++
 		return desktopStatusError(http.StatusBadGateway, []byte(`{"code":"DOCKER_SERVICE_REQUEST_FAILED","message":"no such bot or assignment"}`))
 	}
-	if err := desktopLongJobTalkDefault(context.Background(), j, longJobResume); errors.Is(err, ErrLongJobOwnerGone) {
-		t.Fatal("say 502 must stay transient")
+	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); err != nil || said != 0 {
+		t.Fatalf("progress was posted or failed the turn: %v said=%d", err, said)
 	}
-	notFound := desktopStatusError(http.StatusNotFound, []byte(`{"code":"NOT_FOUND","message":"no such bot or assignment"}`))
-	desktopLongJobSayFunc = func(context.Context, map[string]any) error { return notFound }
-	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); !errors.Is(err, ErrLongJobOwnerGone) {
-		t.Fatalf("missing resume target after say 404: %v", err)
+	if lines := desktopProcessOf(j.SourceRun); len(lines) == 0 && len(desktopProcessOf(j.ID)) == 0 {
+		t.Fatal("progress was not kept on the run")
 	}
-	j.InstanceID = inst.ID
-	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); errors.Is(err, ErrLongJobOwnerGone) {
-		t.Fatal("say 404 while the instance exists was treated as the resume target")
-	}
+	_ = inst
 }
 
 func TestLongJobDeleteAndCancelDropWatches(t *testing.T) {

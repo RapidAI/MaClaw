@@ -204,7 +204,7 @@ func desktopComposeRunFinish(runID string, msg agentservice.Message, outcome, wh
 		} else if fact.heals > 0 {
 			fin.Remediated = true
 		}
-		if self && !continued {
+		if desktopImprovementReady(kind, self, continued) {
 			fin.Next = "continue"
 		}
 	}
@@ -270,7 +270,43 @@ func desktopRunFinishSentence(f desktopRunFinish) string {
 	} else {
 		b.WriteString("\n我还没能自己处理。")
 	}
+	if suggestion := desktopFinishSuggestion(f); suggestion != "" {
+		b.WriteString("\n建议：" + suggestion)
+	}
 	return b.String()
+}
+
+func desktopFinishSuggestion(f desktopRunFinish) string {
+	switch f.Blocker {
+	case "login":
+		return "你在这个桌面登录或通过验证后，我从这一页继续"
+	case "permission":
+		return "你确认这一步之后，我继续"
+	case "missing_info":
+		return "你补充缺的信息之后，我继续"
+	case "account":
+		return "你指定账号之后，我继续"
+	case "resource":
+		if desktopImprovementReady(f.Blocker, true, f.Remediated) {
+			return "这一步我可以自己换做法，我接着做"
+		}
+		return "换一种做法，或者你接手这一步"
+	default:
+		if f.Status == "failure" {
+			return "指出卡在哪一步，我再继续"
+		}
+		return ""
+	}
+}
+
+// desktopImprovementReady is the gate for doing the next improvement instead
+// of ending. The blocker has to be one the bot can remove, and this run must
+// not already have tried that same step.
+func desktopImprovementReady(blocker string, self, alreadyTried bool) bool {
+	if alreadyTried || !self || blocker != "resource" {
+		return false
+	}
+	return true
 }
 
 func desktopStoreRunFinish(runID, modelText, why string, fin desktopRunFinish) {
