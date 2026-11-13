@@ -87,7 +87,7 @@ func resolveServiceBotRole(cfg corelib.AppConfig, role string) (corelib.MaclawLL
 	if mode == corelib.MaclawHubBotRolePin {
 		resolved, err := resolveNamedProvider(cfg, assignment.Provider)
 		if err == nil {
-			return roleVisionOverride(cfg, role, resolved), nil
+			return roleVisionOverride(cfg, role, applyHubPinModel(cfg, assignment, resolved)), nil
 		}
 		// A stale pin must not fail the turn. Grounder stays unused rather
 		// than silently borrowing the chat model.
@@ -204,6 +204,29 @@ func resolveProfileRolePin(cfg corelib.AppConfig, role string) (corelib.MaclawLL
 	return base, true, nil
 }
 
+// applyHubPinModel uses the model stored on a Bot-management pin. The
+// official group ignores it: that route schedules its own model.
+func applyHubPinModel(cfg corelib.AppConfig, assignment corelib.MaclawHubBotRole, resolved corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	model := strings.TrimSpace(assignment.Model)
+	if model == "" || hubPinIgnoresModel(cfg, resolved) {
+		return resolved
+	}
+	if provider, ok := findMaclawProviderByName(cfg.MaclawLLMProviders, resolved.ProviderName); ok {
+		return applyRolePinModel(resolved, provider, model)
+	}
+	resolved.Model = model
+	return resolved
+}
+
+func hubPinIgnoresModel(cfg corelib.AppConfig, resolved corelib.MaclawLLMConfig) bool {
+	if provider, ok := findMaclawProviderByName(cfg.MaclawLLMProviders, resolved.ProviderName); ok {
+		if provider.IsHubService || strings.EqualFold(strings.TrimSpace(provider.Name), OfficialHubLLMProviderName) {
+			return true
+		}
+	}
+	return strings.EqualFold(strings.TrimSpace(resolved.ProviderName), OfficialHubLLMProviderName)
+}
+
 // applyRolePinModel mirrors the GUI's materializeResolvedRole: the pinned
 // model replaces the provider default and image capability is recomputed for
 // that model rather than carried over from the provider's default.
@@ -218,10 +241,19 @@ func applyRolePinModel(resolved corelib.MaclawLLMConfig, provider corelib.Maclaw
 // provider's auto/default band because Hub picks a vision-capable model
 // server-side.
 func rolePinSupportsVision(provider corelib.MaclawLLMProvider, model string) bool {
-	if corelib.ProviderSupportsVisionForModel(provider, model) {
-		return true
-	}
-	if !provider.IsHubService && !strings.EqualFold(strings.TrimSpace(provider.Name), OfficialHubLLMProviderName) {
+	sees, known, _ := corelib.ProviderVisionDecision(provider, model)
+	if known {
+		if sees {
+			return true
+		}
+		// An explicit off wins, including on the official auto band.
+		if corelib.ModelVisionOverride(provider, model) == "off" {
+			return false
+		}
+		if !provider.IsHubService && !strings.EqualFold(strings.TrimSpace(provider.Name), OfficialHubLLMProviderName) {
+			return false
+		}
+	} else if !provider.IsHubService && !strings.EqualFold(strings.TrimSpace(provider.Name), OfficialHubLLMProviderName) {
 		return false
 	}
 	model = strings.TrimSpace(model)

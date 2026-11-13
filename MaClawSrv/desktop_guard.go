@@ -82,7 +82,7 @@ func desktopModelLabel(request agentruntime.TurnRequest) string {
 	if !ok {
 		return "unknown"
 	}
-	llm, err := agentservice.ResolveLLMRole(cfg, agentservice.LLMRoleComputerUse)
+	llm, err := agentservice.ResolveTurnLLMRole(cfg, desktopMessageMeta(request), nil)
 	if err != nil {
 		return "unknown"
 	}

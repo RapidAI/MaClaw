@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
@@ -169,6 +170,9 @@ type Service struct {
 	// OwnerLLM mints the Hub viewer token used as this bot user's model key.
 	// Nil keeps older tests on the MaClawSrv connection alone.
 	OwnerLLM OwnerLLMIssuer
+	// ProbeVision asks whether one provider model accepts an image.
+	// Nil skips detection; MaClawSrv then probes on the first turn that needs it.
+	ProbeVision func(ctx context.Context, cfg corelib.MaclawLLMConfig) (supported, known bool)
 
 	mu       sync.RWMutex
 	bearerMu sync.Mutex
@@ -377,6 +381,7 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 	}
 	count, err := s.countInstances(ctx, rec, s.sharedBearer(ctx, rec))
 	if err == nil {
+		s.probeStoredProviders(ctx, tenantID)
 		return count, nil
 	}
 	if !upstreamUnauthorized(err) {
@@ -401,7 +406,11 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 	if err != nil {
 		return 0, err
 	}
-	return s.countInstances(ctx, rec, bearer)
+	count, err = s.countInstances(ctx, rec, bearer)
+	if err == nil {
+		s.probeStoredProviders(ctx, tenantID)
+	}
+	return count, err
 }
 
 // instancePage is the paged shape the instance list returns; only the item

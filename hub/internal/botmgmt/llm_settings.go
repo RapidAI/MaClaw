@@ -30,13 +30,24 @@ var llmProviderIDPattern = regexp.MustCompile(`^lp_[a-z0-9]{8,32}$`)
 
 // llmProvider is one upstream an administrator added for MaClawSrv.
 // The key stays in the settings record and is never copied into a view.
+// llmModelVision is the image-input record for one model of one provider.
+// A role pin can name a different model, so the record is not the provider default.
+type llmModelVision struct {
+	Model      string `json:"model"`
+	Override   string `json:"override,omitempty"`
+	Known      bool   `json:"known,omitempty"`
+	Supported  bool   `json:"supported,omitempty"`
+	DetectedAt string `json:"detected_at,omitempty"`
+}
+
 type llmProvider struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Protocol string `json:"protocol"`
-	URL      string `json:"url"`
-	Key      string `json:"key,omitempty"`
-	Model    string `json:"model"`
+	ID       string           `json:"id"`
+	Name     string           `json:"name"`
+	Protocol string           `json:"protocol"`
+	URL      string           `json:"url"`
+	Key      string           `json:"key,omitempty"`
+	Model    string           `json:"model"`
+	Vision   []llmModelVision `json:"vision,omitempty"`
 }
 
 // llmSettings is the tenant LLM choice for MaClawSrv bot turns.
@@ -55,23 +66,32 @@ type llmSettings struct {
 
 // LLMProviderInput is one provider in an admin save. An empty key keeps the
 // key already stored for that id.
-type LLMProviderInput struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Protocol string `json:"protocol"`
-	URL      string `json:"url"`
-	Key      string `json:"key"`
+// LLMModelVisionInput is the admin override for one model. Detection is
+// server-owned and is not taken from this payload.
+type LLMModelVisionInput struct {
 	Model    string `json:"model"`
+	Override string `json:"override"`
+}
+
+type LLMProviderInput struct {
+	ID       string                `json:"id"`
+	Name     string                `json:"name"`
+	Protocol string                `json:"protocol"`
+	URL      string                `json:"url"`
+	Key      string                `json:"key"`
+	Model    string                `json:"model"`
+	Vision   []LLMModelVisionInput `json:"vision,omitempty"`
 }
 
 // LLMProviderView is a provider with the key removed.
 type LLMProviderView struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Protocol string `json:"protocol"`
-	URL      string `json:"url"`
-	Model    string `json:"model"`
-	KeySet   bool   `json:"key_set"`
+	ID       string           `json:"id"`
+	Name     string           `json:"name"`
+	Protocol string           `json:"protocol"`
+	URL      string           `json:"url"`
+	Model    string           `json:"model"`
+	KeySet   bool             `json:"key_set"`
+	Vision   []llmModelVision `json:"vision,omitempty"`
 }
 
 // LLMRoleAssignment is one Bot-management role choice. Mode is inherit, pin,
@@ -115,6 +135,7 @@ func (s *Service) SaveLLMSettings(ctx context.Context, tenantID, current string,
 	if s == nil || s.System == nil {
 		return SettingsView{}, ErrSettingsUnavailable
 	}
+	probed := s.probeProviderInputs(ctx, tenantID, inputs, roles)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, err := s.load(ctx, tenantID)
@@ -133,6 +154,7 @@ func (s *Service) SaveLLMSettings(ctx context.Context, tenantID, current string,
 		}
 	}
 	next.SystemFreeCreditsLimit = limit
+	applyVisionProbes(next.Providers, probed)
 	rec.LLM = next
 	if err := s.save(ctx, tenantID, rec); err != nil {
 		return SettingsView{}, err
@@ -151,6 +173,7 @@ func llmView(settings llmSettings) LLMSettingsView {
 			URL:      item.URL,
 			Model:    item.Model,
 			KeySet:   strings.TrimSpace(item.Key) != "",
+			Vision:   append([]llmModelVision(nil), item.Vision...),
 		})
 	}
 	return LLMSettingsView{
@@ -327,7 +350,10 @@ func normalizeLLMProvider(in LLMProviderInput, prev map[string]llmProvider) (llm
 		}
 		key = existing.Key
 	}
-	return llmProvider{ID: id, Name: name, Protocol: protocol, URL: rawURL, Key: key, Model: model}, nil
+	item := llmProvider{ID: id, Name: name, Protocol: protocol, URL: rawURL, Key: key, Model: model}
+	sameEndpoint := known && existing.URL == item.URL && existing.Key == key
+	item.Vision = mergeVisionOverrides(existing.Vision, sameEndpoint, in.Vision)
+	return item, nil
 }
 
 func newLLMProviderID() string {

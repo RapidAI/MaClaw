@@ -94,6 +94,37 @@ func TestResolveLLMRolePinModelOverridesProviderDefault(t *testing.T) {
 
 // The official route schedules its own model, so a stale model on an official
 // pin must not replace "auto".
+func TestResolveLLMRolePinModelCarriesThatModelsVision(t *testing.T) {
+	cfg := testRoleProviders()
+	for i := range cfg.MaclawLLMProviders {
+		if cfg.MaclawLLMProviders[i].Name != "Claude" {
+			continue
+		}
+		cfg.MaclawLLMProviders[i].VisionModels = []string{"claude-opus-4"}
+		cfg.MaclawLLMProviders[i].VisionTestedModels = []string{"claude-opus-4", "claude-haiku"}
+		cfg.MaclawLLMProviders[i].VisionByModel = []corelib.ModelVision{
+			{Model: "claude-opus-4", Override: "auto"},
+			{Model: "claude-haiku", Override: "auto"},
+			{Model: "claude-sonnet", Override: "on"},
+		}
+	}
+	cfg.MaclawHubBotRoles.Background = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "Claude", Model: "claude-opus-4"}
+	cfg.MaclawHubBotRoles.ComputerUse = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "Claude", Model: "claude-haiku"}
+	cfg.MaclawHubBotRoles.Foreground = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "Claude", Model: "claude-sonnet"}
+	bg, err := ResolveLLMRole(cfg, LLMRoleBackground)
+	if err != nil || bg.Model != "claude-opus-4" || !bg.SupportsVision {
+		t.Fatalf("vision model = %+v err=%v", bg, err)
+	}
+	cu, err := ResolveLLMRole(cfg, LLMRoleComputerUse)
+	if err != nil || cu.Model != "claude-haiku" || cu.SupportsVision {
+		t.Fatalf("text model = %+v err=%v", cu, err)
+	}
+	fg, err := ResolveLLMRole(cfg, LLMRoleForeground)
+	if err != nil || fg.Model != "claude-sonnet" || !fg.SupportsVision {
+		t.Fatalf("override on = %+v err=%v", fg, err)
+	}
+}
+
 func TestResolveLLMRoleOfficialPinIgnoresModel(t *testing.T) {
 	cfg := testRoleProviders()
 	cfg.MaclawHubBotRoles.ComputerUse = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: OfficialHubLLMProviderName, Model: "some-model"}

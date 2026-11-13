@@ -196,14 +196,18 @@ func (r *modelRemote) tts(ctx context.Context, voice, text string) ([]byte, stri
 }
 
 func (r *modelRemote) ocr(ctx context.Context, b64 string) ([]browser.OCRResult, error) {
+	start := time.Now()
 	var out modelServiceOCRResp
 	err := r.call(ctx, "/v1/ocr", modelServiceImageReq{PNGBase64: b64}, &out)
+	log.Printf("[model-service] call /v1/ocr bytes=%d took=%s err=%v", len(b64), time.Since(start).Round(time.Millisecond), err)
 	return out.Results, err
 }
 
 func (r *modelRemote) detect(ctx context.Context, b64 string) ([]taskengine.UIElement, error) {
+	start := time.Now()
 	var out modelServiceDetectResp
 	err := r.call(ctx, "/v1/detect", modelServiceImageReq{PNGBase64: b64}, &out)
+	log.Printf("[model-service] call /v1/detect bytes=%d took=%s err=%v", len(b64), time.Since(start).Round(time.Millisecond), err)
 	return out.Elements, err
 }
 
@@ -245,7 +249,27 @@ func (m *srvAIModelManager) detectUI(ctx context.Context, b64 string) ([]taskeng
 // ── service side ──
 
 // modelServeMain runs "maclawsrv model-serve".
+func modelServiceLogPath(dataRoot string) string {
+	return filepath.Join(dataRoot, "logs", "maclaw-models.log")
+}
+
+func configureModelServiceLogging(dataRoot string) {
+	path := modelServiceLogPath(dataRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		log.Printf("[model-service] log file: %v", err)
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		log.Printf("[model-service] log file: %v", err)
+		return
+	}
+	log.SetOutput(f)
+	log.Printf("[model-service] logging initialized path=%s", path)
+}
+
 func modelServeMain() error {
+	configureModelServiceLogging(defaultDataRoot())
 	socket := strings.TrimSpace(os.Getenv("MACLAW_MODEL_SERVICE_SOCKET"))
 	if socket == "" || socket == "off" {
 		socket = defaultModelServiceSocket
@@ -295,7 +319,11 @@ func newModelServiceHandlerWith(m *srvAIModelManager, res *modelResidency, mu *s
 			if res != nil {
 				res.before(models[path])
 			}
+			start := time.Now()
 			out, err := fn(r)
+			if path == "/v1/ocr" || path == "/v1/detect" {
+				log.Printf("[model-service] %s took=%s err=%v", path, time.Since(start).Round(time.Millisecond), err)
+			}
 			if res != nil {
 				res.after(models[path])
 			}

@@ -36,7 +36,7 @@ func ComputerUseKeepImages() int {
 }
 
 func appendComputerUseVisionImages(conversation []interface{}, cfg corelib.MaclawLLMConfig, images []ToolModelImage) []interface{} {
-	if len(images) == 0 || !cfg.SupportsVision {
+	if len(images) == 0 || !modelSeesImages(cfg) {
 		return conversation
 	}
 	conversation = pruneComputerUseVisionImages(conversation)

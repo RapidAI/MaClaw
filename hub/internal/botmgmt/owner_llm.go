@@ -285,14 +285,7 @@ func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal own
 	providers := make([]map[string]any, 0, 2+len(settings.Providers))
 	providers = append(providers, hubProvider)
 	for _, item := range settings.Providers {
-		providers = append(providers, map[string]any{
-			"id":       item.ID,
-			"name":     item.Name,
-			"url":      item.URL,
-			"key":      item.Key,
-			"model":    item.Model,
-			"protocol": item.Protocol,
-		})
+		providers = append(providers, llmProviderWire(item))
 	}
 	if choice.Mode == corelib.MaclawBotLLMModeCustom {
 		// Explicit rows are profile pins. Rows left unset follow the service,
