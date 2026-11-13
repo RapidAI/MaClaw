@@ -215,9 +215,26 @@ func (s *BrowserAgentSession) checkoutPageText() string {
 	return out
 }
 
+// SetCheckoutOwner names the person whose own message can confirm a purchase.
+// A desktop browser session is keyed by the machine, not by that person.
+func (s *BrowserAgentSession) SetCheckoutOwner(owner string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.checkoutOwner = strings.TrimSpace(owner)
+	s.mu.Unlock()
+}
+
 func (s *BrowserAgentSession) ownerKey() string {
 	if s == nil {
 		return ""
+	}
+	s.mu.RLock()
+	owner := s.checkoutOwner
+	s.mu.RUnlock()
+	if owner != "" {
+		return owner
 	}
 	return s.OwnerID
 }

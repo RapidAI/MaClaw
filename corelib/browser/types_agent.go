@@ -225,11 +225,14 @@ type BrowserAgentSession struct {
 	recoverMu sync.Mutex
 	ID        string
 	OwnerID   string
-	Addr      string
-	TargetID  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Policy    BrowserPolicy
+	// checkoutOwner is the person whose message may confirm a purchase.
+	// The desktop session id is not that person.
+	checkoutOwner string
+	Addr          string
+	TargetID      string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	Policy        BrowserPolicy
 
 	// Mode records how this session was connected (persistent/connect_user/isolated).
 	Mode SessionMode
