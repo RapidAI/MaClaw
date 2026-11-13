@@ -256,6 +256,10 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
+	if botID != "" {
+		desktopNoteBotInstance(instanceID, botID)
+		in.Content = desktopPrepareUserTurn(botID, in.Content, in.Metadata)
+	}
 	shotID := strings.TrimSpace(r.PathValue("instanceId"))
 	if wantsAsync {
 		// Occupy, the screenshot, and the handoff live on the detached run.
@@ -502,6 +506,10 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	botID := ""
 	if in.Metadata != nil {
 		botID = strings.TrimSpace(in.Metadata["bot_id"])
+	}
+	if botID != "" {
+		desktopNoteBotInstance(instanceID, botID)
+		in.Content = desktopPrepareUserTurn(botID, in.Content, in.Metadata)
 	}
 	if wantsAsync {
 		ownsRun := false

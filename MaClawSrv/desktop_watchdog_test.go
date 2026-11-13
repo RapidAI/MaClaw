@@ -1,12 +1,20 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
+
+func TestRunningNoticeKeepsTheJobOutOfTheSentence(t *testing.T) {
+	notice := desktopOutcomeNotice("running", "后台在跑：cd x && ./snake --demo（任务 fae1faef，running）", "")
+	if strings.Contains(notice, "依据") || strings.Contains(notice, "fae1faef") || strings.Contains(notice, "snake") {
+		t.Fatalf("notice leaked the job: %q", notice)
+	}
+}
 
 func TestWatchdogLoopWarnThenStop(t *testing.T) {
 	scope := agentruntime.Scope{RunID: "run_wd_loop"}

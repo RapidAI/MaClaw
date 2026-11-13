@@ -16,6 +16,7 @@ import {
     handleDesktopBotReport,
     handleDesktopBotResult,
     handleDesktopBotView,
+    attachmentIdsFrom,
     imagesFrom,
     reportDesktopBotCrossResult,
     responseText,
@@ -85,14 +86,16 @@ import {
     SaveDesktopBotLLM,
     SaveDesktopProxyMode,
     OpenFileOrShowInFolder,
+    FetchDesktopBotAttachment,
     ReadDesktopBotShot,
     SaveBotSecret,
+    StageDesktopBotSecret,
     SendDesktopBotTaskTo,
     ShowItemInFolder,
     WatchDesktopBot,
     WakeDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
+import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, firstAckCommandKeys, landFirstAck, releaseSettledAckCommands, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
@@ -1696,6 +1699,23 @@ function BotShotPreview({ src, alt, closeLabel, onClose }: { src: string; alt: s
     return createPortal(overlay, document.body);
 }
 
+const AttachmentShot = memo(function AttachmentShot({ botId, id, alt, openLabel, onOpen }: { botId: string; id: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void }) {
+    const [src, setSrc] = useState('');
+    useEffect(() => {
+        let live = true;
+        void FetchDesktopBotAttachment(botId, id).then(shot => {
+            const record = shot as { mime?: unknown; MIME?: unknown; data?: unknown; Data?: unknown } | undefined;
+            const mime = String(record?.mime || record?.MIME || '').trim().toLowerCase();
+            const data = String(record?.data || record?.Data || '').replace(/\s+/g, '');
+            if (!live || (mime !== 'image/png' && mime !== 'image/jpeg') || !data) return;
+            setSrc(`data:${mime};base64,${data}`);
+        }).catch(() => undefined);
+        return () => { live = false; };
+    }, [botId, id]);
+    if (!src) return null;
+    return <ChatShot src={src} alt={alt} openLabel={openLabel} onOpen={onOpen} />;
+});
+
 const BotShot = memo(function BotShot({ path, alt, openLabel, onOpen }: { path: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void }) {
     const [src, setSrc] = useState('');
     useEffect(() => {
@@ -2502,6 +2522,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [listContainerWidth, setListContainerWidth] = useState(0);
     const [listResizing, setListResizing] = useState(false);
     const pendingRef = useRef<Map<string, PendingSend>>(new Map());
+    // Ids that name one accepted command, shared by the intake event and the
+    // local first-reply timer. Keyed per bot so concurrent starts stay apart.
+    const ackCommandsRef = useRef(new Map<string, Set<string>>());
     const panelsRef = useRef(desktopPanels);
     panelsRef.current = desktopPanels;
     const liveRef = useRef(liveDesktop);
@@ -2547,6 +2570,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const stageEpoch = useRef(0);
     const selected = bots.find(bot => bot.id === selectedId) || null;
     const messages = selected ? (messagesByBot[selected.id] || []) : [];
+    useEffect(() => {
+        if (!selected) return;
+        releaseSettledAckCommands(ackCommandsRef.current, selected.id, messages);
+    }, [selected, messages]);
     // pendingRef is the turn this process admitted. Message age is only the
     // escape hatch after a reload, when that map is empty.
     // Runs of this bot this window is following right now. Hub admits up to
@@ -3751,9 +3778,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const ask = askFrom(data);
                 const attached = attachedFiles(data, result.failed);
                 const shots = result.failed ? undefined : shotPathsFrom(data);
-                const images = result.failed || shots ? undefined : imagesFrom(data);
+                const attachmentIds = result.failed ? undefined : attachmentIdsFrom(data);
+                const images = result.failed || shots || attachmentIds ? undefined : imagesFrom(data);
                 const stored = messagesForBot(userId, botId);
-                if (!turnHasVisibleResult(result, ask, images, shots, attached)) {
+                if (!turnHasVisibleResult(result, ask, images, shots, attached, attachmentIds)) {
                     clearLiveBotTurn(userId, botId, pending.messageId);
                     commit(botId, stored.filter(item => item.id !== pending.messageId));
                 } else {
@@ -3770,6 +3798,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         askUser: ask || item.askUser,
                         images,
                         shotPaths: shots,
+                        attachmentIds,
                         localPaths: attached.localPaths,
                         files: attached.files,
                         runId: String(data.run_id || data.RunID || '').trim() || item.runId,
@@ -3854,11 +3883,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (data.queued === true || data.held === true) noteQueuedRef.current(botId);
             if (!ack || desktopBotIsPlaceholderAck(ack, lang)) return;
             const stored = messagesForBot(userId, botId);
-            const anchor = requestId ? stored.find(item => item.requestId === requestId) : undefined;
-            if (stored.some(item => item.ack && item.content === ack)) return;
-            const line = { id: messageID(), role: 'assistant' as const, content: ack, ack: true, understood: true };
-            const at = anchor ? stored.findIndex(item => item.id === anchor.id) : -1;
-            const next = at >= 0 ? [...stored.slice(0, at), line, ...stored.slice(at)] : [...stored, line];
+            const keys = bindAckCommand(ackCommandsRef.current, botId, firstAckCommandKeys(stored, requestId));
+            if (keys.length === 0) return;
+            const next = landFirstAck(stored, keys, ack, lang, messageID);
+            if (next === stored) return;
             commit(botId, next);
         });
         return () => { if (typeof off === 'function') off(); };
@@ -5108,28 +5136,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // upgradeReceipt asks for a model line when the receipt goes up after
         // the turn decided it had nothing worth saying first.
         let upgradeReceipt: (() => void) | null = null;
-        const receiptIndex = (stored: DesktopBotMessage[]) => stored.findIndex(item => item.ack && desktopBotIsPlaceholderAck(item.content, lang));
-        // ackLanded: a model-written first line is in the chat.
-        let ackLanded = false;
-        const putAckLine = (stored: DesktopBotMessage[], line: string, chips?: string[], anchorId?: string) => {
-            if (!desktopBotIsPlaceholderAck(line, lang)) {
-                if (ackLanded && receiptPosted) {
-                    // A late line after one already landed would be a
-                    // second first reply.
-                    return stored;
-                }
-                ackLanded = true;
-                endUnderstanding();
-            }
-            const receiptAt = receiptIndex(stored);
-            if (receiptAt >= 0) {
-                if (desktopBotIsPlaceholderAck(line, lang)) return stored;
-                return stored.map((item, i) => i === receiptAt ? { ...item, content: line, options: chips } : item);
-            }
-            const ack: DesktopBotMessage = { id: messageID(), role: 'assistant', content: line, ack: true, understood: true, options: chips };
-            const at = anchorId ? stored.findIndex(item => item.id === anchorId) : -1;
-            return at >= 0 ? [...stored.slice(0, at), ack, ...stored.slice(at)] : [...stored, ack];
-        };
         // At the mark, a turn still waiting (reading, supplement check, or
         // anything else before its first reply) shows 正在理解你的话 in the
         // status row; the work carries on and the model's own line follows.
@@ -5144,15 +5150,33 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             understandingShown = false;
             markUnderstanding(botId, false);
         };
+        // One ack bubble per command. The intake event and this timer both
+        // land through here, so a model line already on screen is not followed
+        // by the neutral line, and a late model line replaces the neutral one.
+        bindAckCommand(ackCommandsRef.current, botId, [assistantMessage.id, ticket]);
+        const putAckLine = (stored: DesktopBotMessage[], line: string, chips?: string[], anchorId?: string) => {
+            const bubbleId = anchorId || assistantMessage.id;
+            const bubble = stored.find(item => item.id === bubbleId);
+            const keys = bindAckCommand(ackCommandsRef.current, botId, [bubble?.requestId, bubbleId, ticket]);
+            const next = landFirstAck(stored, keys, line, lang, messageID, chips);
+            if (!desktopBotIsPlaceholderAck(line, lang)) {
+                ackSaid = true;
+                endUnderstanding();
+            }
+            return next;
+        };
         if (!verbatim && mode === 'now') {
             // The server's first sentence arrives with the admission. If it
             // does not, one neutral line goes up at about two seconds.
             setTimeout(() => {
                 if (ackSaid || ownerLeft() || bubbleGone()) return;
-                ackSaid = true;
-                receiptPosted = true;
+                const stored = messagesForBot(ownerId, botId);
                 const line = desktopBotNeutralAck({ kind: 'accept', lang });
-                commit(botId, putAckLine(messagesForBot(ownerId, botId), line, undefined, assistantMessage.id));
+                const next = putAckLine(stored, line, undefined, assistantMessage.id);
+                ackSaid = true;
+                if (next === stored) return;
+                receiptPosted = true;
+                commit(botId, next);
             }, 2000);
         }
         // A line written after the work started upgrades the receipt in
@@ -5406,6 +5430,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     return;
                 }
                 if (requestId) {
+                    bindAckCommand(ackCommandsRef.current, botId, [assistantMessage.id, ticket, requestId]);
                     pendingRef.current.delete(ticket);
                     pendingRef.current.set(requestId, pending);
                     const stored = messagesForBot(userId, botId);
@@ -5980,8 +6005,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             await FillBotSecret(botId, name);
         } catch (error) {
             const raw = error instanceof Error ? error.message : '';
-            const code = raw === 'not_password_field' || raw === 'no_focus' || raw === 'unavailable' ? raw : 'unavailable';
-            appendNote(botId, code === 'not_password_field' ? text.fillMiss : text.secretStoreFailed);
+            appendNote(botId, text.fillMiss);
             return;
         }
         await send(fillSentence(name), 'execute');
@@ -5993,6 +6017,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const value = secretDraft;
         try {
             await SaveBotSecret(name, value);
+            if (await RecallBotSecret(name) !== true) {
+                setSecretDraft('');
+                appendNote(botId, text.secretStoreFailed);
+                return;
+            }
         } catch {
             setSecretDraft('');
             appendNote(botId, text.secretStoreFailed);
@@ -6000,6 +6029,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         setSecretDraft('');
         setSecretPrompt(null);
+        try { await StageDesktopBotSecret(botId, name, value); } catch { /* the next run says if the value did not arrive */ }
         if (fill) {
             await fillSaved(botId, name, messageId);
             return;
@@ -6681,7 +6711,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 const sentMaterials = message.role === 'user' ? splitMaterials(message.content || '') : { text: message.content, paths: [] as string[] };
                                 const rawBody = desktopBotBubbleBody(sentMaterials.text, message.failed === true, message.askUser?.question || '', lang);
                                 const fullBody = message.role === 'assistant'
-                                    ? desktopBotCorrectAttachClaim(stripConfirmedOrderLead(rawBody), !!(message.files?.length || message.localPaths?.length || message.images?.length || message.shotPaths?.length), lang)
+                                    ? desktopBotCorrectAttachClaim(stripConfirmedOrderLead(rawBody), !!(message.files?.length || message.localPaths?.length || message.images?.length || message.shotPaths?.length || message.attachmentIds?.length), lang)
                                     : rawBody;
                                 // Separate beats the bot split with a "---" line show as separate
                                 // short bubbles; attachments, options and cards stay on the last one.
@@ -6717,7 +6747,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 ))}
                                             </span>
                                         ) : null}
-                                        {message.role === 'assistant' && !message.failed && message.shotPaths?.length ? message.shotPaths.map(path => (
+                                        {message.role === 'assistant' && !message.failed && message.attachmentIds?.length && selected ? message.attachmentIds.map(id => (
+                                            <AttachmentShot key={id} botId={selected.id} id={id} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} />
+                                        )) : null}
+                                        {message.role === 'assistant' && !message.failed && !message.attachmentIds?.length && message.shotPaths?.length ? message.shotPaths.map(path => (
                                             <BotShot key={path} path={path} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} />
                                         )) : null}
                                         {message.role === 'assistant' && !message.failed && !message.shotPaths?.length && message.images?.length ? message.images.map((image, index) => (

@@ -24,6 +24,10 @@ const maxMessageAttachments = coreim.ThirdPartyMaxAttachments
 // does not start a loop that stays on the user.
 var FinishDesktopRound func(tenantID, userID, runID string)
 
+// DesktopTurnNeedsFinish reports a desktop turn that has not declared
+// action=finish. The loop then takes one step that can call only that tool.
+var DesktopTurnNeedsFinish func(runID string) bool
+
 func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID string, in SendMessageInput) (*Session, *Run, *Message, error) {
 	if err := s.beginRequest(); err != nil {
 		return nil, nil, nil, err

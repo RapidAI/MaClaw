@@ -2245,6 +2245,8 @@ export function RateHubSkill(arg1:string,arg2:number):Promise<void>;
 
 export function ReadBBS():Promise<string>;
 
+export function FetchDesktopBotAttachment(arg1:string,arg2:string):Promise<{ mime?: string; data?: string; attachment_id?: string }>;
+
 export function ReadDesktopBotShot(arg1:string):Promise<{ mime?: string; data?: string }>;
 
 export function ReadErrorLog():Promise<Array<string>>;
@@ -3158,6 +3160,8 @@ export function DesktopBotDesktopAdmin():Promise<boolean>;
 export function ReleaseDesktopBotWatch(arg1:string,arg2:number):Promise<void>;
 
 export function SaveBotSecret(arg1:string,arg2:string):Promise<void>;
+
+export function StageDesktopBotSecret(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RecallBotSecret(arg1:string):Promise<boolean>;
 

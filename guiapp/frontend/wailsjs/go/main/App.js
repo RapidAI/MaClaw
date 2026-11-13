@@ -4501,6 +4501,10 @@ export function ReadBBS() {
   return window['go']['main']['App']['ReadBBS']();
 }
 
+export function FetchDesktopBotAttachment(arg1, arg2) {
+  return window['go']['main']['App']['FetchDesktopBotAttachment'](arg1, arg2);
+}
+
 export function ReadDesktopBotShot(arg1) {
   return window['go']['main']['App']['ReadDesktopBotShot'](arg1);
 }
@@ -6376,6 +6380,10 @@ export function ReleaseDesktopBotWatch(arg1, arg2) {
 
 export function SaveBotSecret(arg1, arg2) {
   return window['go']['main']['App']['SaveBotSecret'](arg1, arg2);
+}
+
+export function StageDesktopBotSecret(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StageDesktopBotSecret'](arg1, arg2, arg3);
 }
 
 export function RecallBotSecret(arg1) {

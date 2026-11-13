@@ -355,15 +355,12 @@ func TestFinishedReplyCarriesTheDesktopScreenshot(t *testing.T) {
 	if got == nil || got.Text != "桌面截图已生成" || len(got.DesktopImages) != 0 || len(got.DesktopShotPaths) != 0 || len(got.DesktopAttachmentIDs) != 1 || got.DesktopAttachmentIDs[0] != "shot-1" {
 		t.Fatalf("reply=%#v", got)
 	}
-	if _, err := os.Stat(filepath.Join(corelib.MaclawDataDir(), "bot-files")); !os.IsNotExist(err) {
-		t.Fatalf("screenshot was written on this machine: %v", err)
+	shot, err := app.FetchDesktopBotAttachment("bot_1", "shot-1")
+	if err != nil || shot == nil || shot.Data != payload || shot.MIME != "image/png" {
+		t.Fatalf("fetch=%v %v", shot, err)
 	}
-	outside := filepath.Join(base, "secret.png")
-	if err := os.WriteFile(outside, []byte("png-bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := app.ReadDesktopBotShot(outside); err == nil {
-		t.Fatal("a screenshot outside bot-files was returned")
+	if _, err := app.FetchDesktopBotAttachment("bot_other", "shot-1"); err == nil {
+		t.Fatal("another bot received the screenshot")
 	}
 	raw, err := json.Marshal(got)
 	if err != nil || !strings.Contains(string(raw), `"desktop_attachment_ids"`) || strings.Contains(string(raw), payload) {

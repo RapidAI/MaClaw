@@ -405,6 +405,25 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 	// the round's desktop is still bound, so the outcome is measured.
 	desktopRecRecheckAtEnd(ctx, run.ID)
 	out := desktopTaskOutcomeMetadata(run.ID, msg)
+	sentence, haveSentence := desktopFinishSentence(run.ID)
+	desktopClearFinish(run.ID)
+	if haveSentence && sentence != "" {
+		if out == nil {
+			out = map[string]string{}
+		}
+		// Only the declared sentence is shown. The finish note stays off it.
+		out["send_to_user"] = sentence
+	}
+	if botID := desktopBotOfInstance(run.InstanceID); botID != "" && out != nil {
+		// Only a run that stopped to ask keeps the goal open. Done, failed,
+		// blocked or cancelled ends the wait, so a later "saved" sentence
+		// does not revive a task that is over.
+		if out[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeAwaitingUser {
+			desktopMarkWaiting(botID)
+		} else {
+			desktopClearWaiting(botID)
+		}
+	}
 	// A picture the person asked for is looked at now, while this round's
 	// desktop is still bound (it is released when PostMessage returns).
 	ensureDesktopPictureDelivered(ctx, run.ID, out[agentservice.TaskOutcomeKey])

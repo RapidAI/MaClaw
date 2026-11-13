@@ -514,6 +514,7 @@ type coreAgentCallbacks struct {
 	runtimeParentExecutor *CoreAgentExecutor
 	runtimeRequest        ExecuteRequest
 	runID                 string // req.RunID, set for every run (EarlyStop)
+	finishOnly            bool   // the next model step may call only finish
 
 	// Host-injected scheduled-task tool (MaClawSrv scheduler).
 	scheduleHandler func(args map[string]interface{}) string
@@ -2273,6 +2274,43 @@ func (c *coreAgentCallbacks) toolCapabilities() []AgentToolCapability {
 		out = append(out, AgentToolCapability{Name: tool.Name, Description: tool.Description, Enabled: tool.Enabled, DisabledReason: tool.DisabledReason, Parameters: tool.Parameters})
 	}
 	return out
+}
+
+func (c *coreAgentCallbacks) DesktopNeedsFinish() bool {
+	if c == nil || c.finishOnly || strings.TrimSpace(c.runID) == "" || DesktopTurnNeedsFinish == nil {
+		return false
+	}
+	phase := ""
+	if c.messageMetadata != nil {
+		phase = strings.TrimSpace(c.messageMetadata["bot_phase"])
+	}
+	hub := false
+	if c.instance.Metadata != nil {
+		hub = strings.TrimSpace(c.instance.Metadata["hub_bot"]) == "1"
+	}
+	if phase == "" && !hub {
+		return false
+	}
+	return DesktopTurnNeedsFinish(c.runID)
+}
+
+func (c *coreAgentCallbacks) ArmDesktopFinishStep() {
+	if c != nil {
+		c.finishOnly = true
+	}
+}
+
+func (c *coreAgentCallbacks) ClearDesktopFinishStep() {
+	if c != nil {
+		c.finishOnly = false
+	}
+}
+
+func (c *coreAgentCallbacks) DesktopFinishArmed() (bool, string) {
+	if c == nil || !c.finishOnly {
+		return false, ""
+	}
+	return true, "desktop"
 }
 
 func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{} {

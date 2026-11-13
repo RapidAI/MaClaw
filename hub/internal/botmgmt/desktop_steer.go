@@ -111,6 +111,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 			Instruction:     content,
 			Ack:             decision.Ack,
 			Held:            true,
+			Secrets:         desktopSecretBag(ctx),
 		})
 		if err == nil {
 			base.Accepted = true

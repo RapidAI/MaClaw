@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +20,17 @@ import (
 func init() {
 	agentservice.DesktopWeb = desktopBotWeb
 	agentservice.FinishDesktopRound = finishDesktopRound
+	agentservice.DesktopTurnNeedsFinish = func(runID string) bool {
+		if desktopDeclaredOutcome(runID) != "" {
+			return false
+		}
+		// A plain reply never touched the desktop. Forcing finish there
+		// turns the chat into a partial task.
+		desktopRecStateMu.Lock()
+		steps := desktopRecRunSteps[strings.TrimSpace(runID)]
+		desktopRecStateMu.Unlock()
+		return steps
+	}
 }
 
 // desktopRemoteFile is set by tests. Production asks Hub, which asks the
@@ -168,7 +182,11 @@ func operateDesktopContainer(ctx context.Context, scope agentruntime.Scope, acti
 	case "file_read", "file_write", "file_edit", "file_list":
 		return desktopContainerFile(ctx, scope, action, args)
 	case "bash":
-		text, err := desktopContainerBash(ctx, scope, desktopArg(args, "command"))
+		names := desktopBashSecretNames(args)
+		if desktopLongJobInternal(ctx) {
+			names = desktopBashSecretsOnContext(ctx)
+		}
+		text, err := desktopContainerBashSecrets(ctx, scope, desktopArg(args, "command"), names)
 		if err != nil {
 			if strings.TrimSpace(text) == "" {
 				return "", err
@@ -220,9 +238,31 @@ func desktopContainerFile(ctx context.Context, scope agentruntime.Scope, action 
 }
 
 func desktopContainerBash(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
+	return desktopContainerBashSecrets(ctx, scope, command, nil)
+}
+
+func desktopContainerBashSecrets(ctx context.Context, scope agentruntime.Scope, command string, names []string) (string, error) {
+	if err := desktopBashConfined(scope, command); err != nil {
+		return "", err
+	}
+	// Validate the model's command before any secret file exists.
 	if _, err := desktop.BashArgs(desktopContainerName(), command); err != nil {
 		return "", fmt.Errorf("desktop bash rejected the command: %w", err)
 	}
+	secrets := desktopSecretsNamed(scope, names)
+	wrapped, path, err := desktopStageSecretEnv(ctx, scope, command, secrets)
+	if err != nil {
+		return "", err
+	}
+	text, err := desktopRunContainerBash(ctx, scope, wrapped)
+	if err != nil && path != "" {
+		desktopRemoveSecretFile(ctx, scope, path)
+		err = errors.New(desktopScrubSecrets(err.Error(), secrets))
+	}
+	return desktopScrubSecrets(text, secrets), err
+}
+
+func desktopRunContainerBash(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
 	if desktopRemoteBash != nil {
 		return desktopRemoteBash(ctx, scope.TenantID, scope.UserID, strings.TrimSpace(command))
 	}
@@ -233,6 +273,154 @@ func desktopContainerBash(ctx context.Context, scope agentruntime.Scope, command
 		return "", err
 	}
 	return desktopLocalBash(ctx, command)
+}
+
+func desktopRemoveSecretFile(ctx context.Context, scope agentruntime.Scope, path string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	_, _ = desktopRunContainerBash(ctx, scope, "rm -f "+bashSingleQuote(path))
+}
+
+// desktopStageSecretEnv writes the named secrets to a 0600 file and wraps the
+// command so the shell sources that file, deletes it, runs the command, and
+// unsets the names. The values are not part of the process command line.
+// The unset is the next line, not a "; " glued to the command: a trailing
+// "&", a heredoc terminator, or a "#" comment would otherwise swallow or
+// reject the cleanup. A background child started by the command keeps the
+// environment it inherited; unset in this shell does not reach that child.
+// path is empty when nothing was written. A command that already contains a
+// value is refused before the file exists.
+func desktopStageSecretEnv(ctx context.Context, scope agentruntime.Scope, command string, secrets map[string]string) (string, string, error) {
+	if len(secrets) == 0 {
+		return command, "", nil
+	}
+	var body strings.Builder
+	var names []string
+	for name, value := range secrets {
+		if !desktopbot.ValidSecretName(name) || value == "" {
+			continue
+		}
+		if strings.Contains(command, value) {
+			return "", "", fmt.Errorf("the command would put a secret on the process command line")
+		}
+		body.WriteString(name)
+		body.WriteByte('=')
+		body.WriteString(bashSingleQuote(value))
+		body.WriteByte('\n')
+		names = append(names, name)
+	}
+	if body.Len() == 0 {
+		return command, "", nil
+	}
+	sort.Strings(names)
+	path := desktopSecretEnvPath(scope)
+	if _, err := desktopContainerFile(ctx, scope, "file_write", map[string]any{"path": path, "content": body.String()}); err != nil {
+		return "", "", err
+	}
+	quoted := bashSingleQuote(path)
+	wrapped := "chmod 0600 " + quoted + "; set -a; . " + quoted + "; set +a; rm -f " + quoted + "\n" + command + "\n__mc_st=$?\nunset " + strings.Join(names, " ") + "\nexit $__mc_st"
+	return wrapped, path, nil
+}
+
+type desktopBashSecretsCtxKey struct{}
+
+// withoutDesktopBashSecrets drops names staged for the user's command.
+// Later polls on the same call must not write the secret file again.
+func withoutDesktopBashSecrets(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, desktopBashSecretsCtxKey{}, []string{})
+}
+
+func withDesktopBashSecrets(ctx context.Context, names []string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	clean := desktopNormalizeSecretNames(names)
+	if len(clean) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, desktopBashSecretsCtxKey{}, clean)
+}
+
+func desktopBashSecretsOnContext(ctx context.Context) []string {
+	if ctx == nil {
+		return nil
+	}
+	names, _ := ctx.Value(desktopBashSecretsCtxKey{}).([]string)
+	return append([]string(nil), names...)
+}
+
+func desktopBashSecretNames(args map[string]any) []string {
+	if args == nil {
+		return nil
+	}
+	switch raw := args["secrets"].(type) {
+	case []string:
+		return desktopNormalizeSecretNames(raw)
+	case []any:
+		var names []string
+		for _, item := range raw {
+			names = append(names, fmt.Sprint(item))
+		}
+		return desktopNormalizeSecretNames(names)
+	case string:
+		if strings.TrimSpace(raw) == "" {
+			return nil
+		}
+		return desktopNormalizeSecretNames(strings.Split(raw, ","))
+	default:
+		return nil
+	}
+}
+
+func desktopNormalizeSecretNames(names []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range names {
+		name = strings.ToUpper(strings.TrimSpace(name))
+		if !desktopbot.ValidSecretName(name) || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func desktopSecretsNamed(scope agentruntime.Scope, names []string) map[string]string {
+	names = desktopNormalizeSecretNames(names)
+	if len(names) == 0 {
+		return nil
+	}
+	all := desktopSecretsForScope(scope)
+	out := map[string]string{}
+	for _, name := range names {
+		if value := all[name]; value != "" {
+			out[name] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func desktopSecretEnvPath(scope agentruntime.Scope) string {
+	_, bot := desktop.SplitDesktopUser(scope.UserID)
+	if bot == "" {
+		bot = desktopBotOfInstance(scope.InstanceID)
+	}
+	var buf [8]byte
+	_, _ = rand.Read(buf[:])
+	name := ".maclaw-secret-" + hex.EncodeToString(buf[:])
+	if bot == "" {
+		return "/tmp/" + name
+	}
+	return "/home/desktop/work/" + desktopWorkdirSafe.ReplaceAllString(bot, "_") + "/" + name
 }
 
 func desktopLocalFile(ctx context.Context, action, filePath, content, oldString, newString string) (string, error) {

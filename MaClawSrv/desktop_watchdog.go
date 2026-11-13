@@ -698,9 +698,12 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 		"blocked":       "这件没做成，我已经停下，没有再重复尝试。",
 		"not_submitted": "这件还没提交，内容没有发出去。",
 		"unconfirmed":   "提交后没能确认结果，我没有重复提交，请以页面上的实际状态为准。",
-		"running":       "后台任务还在跑，我会每 10 分钟左右把进度发给你，结束、失败或卡住时马上告诉你。",
+		"running":       "后台任务还在跑，我会定时查看进度并告诉你。",
 	}[outcome]
-	if line != "" && why != "" {
+	// A still-running job's why names the shell, the job id and a log tail.
+	// That stays in task_outcome_evidence, not in the sentence. Other
+	// outcomes keep a short cause the person can read.
+	if line != "" && why != "" && outcome != "running" {
 		line += "（依据：" + why + "）"
 	}
 	return line
@@ -741,8 +744,34 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 	desktopRecStateMu.Lock()
 	steps := desktopRecRunSteps[runID]
 	desktopRecStateMu.Unlock()
-	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] == "ask_user" {
+	asked := steps && msg != nil && msg.Metadata["response_source"] == "ask_user"
+	if outcome == "" && asked {
 		return "awaiting_user", "waiting for the person's answer"
+	}
+	// A declared finish is the turn's outcome. A missing finish is not a
+	// failure: the loop already offered one finish-only step, and the
+	// measured result stands with evidence "undeclared".
+	switch desktopDeclaredOutcome(runID) {
+	case "done":
+		if outcome != "" {
+			break
+		}
+		if !steps {
+			// No desktop step: this is a chat reply, not a half-finished task.
+			return "", ""
+		}
+		if desktopRunWorked(runID) {
+			return agentservice.TaskOutcomeDone, ""
+		}
+		return agentservice.TaskOutcomePartial, "finish said done but the run did no successful desktop work"
+	case "ask_user":
+		if outcome == "" && !asked {
+			return agentservice.TaskOutcomeBlocked, "finish said ask_user but this turn did not call ask_user"
+		}
+	case "failed":
+		if outcome == "" {
+			return agentservice.TaskOutcomeBlocked, "the turn declared failed"
+		}
 	}
 	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] != "ask_user" {
 		// Nothing was done and the last step failed: the run stopped on a
@@ -756,10 +785,10 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 			return agentservice.TaskOutcomePartial, "the last step failed"
 		}
 	}
-	if outcome == "" && msg != nil && strings.TrimSpace(msg.Content) != "" && desktopRunWorked(runID) && !desktopOutcomeSaysNotDone.MatchString(msg.Content) {
-		// A run that did its work and answered without a measured gap is
-		// done: every finished desktop run carries an outcome.
-		return agentservice.TaskOutcomeDone, ""
+	if outcome == "" && steps && msg != nil && strings.TrimSpace(msg.Content) != "" && desktopRunWorked(runID) {
+		if _, stopped := desktopWatchdogStopped(runID); !stopped {
+			return agentservice.TaskOutcomeDone, "undeclared"
+		}
 	}
 	return outcome, why
 }
@@ -813,6 +842,9 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 	}
 	if why != "" {
 		out["task_outcome_evidence"] = desktopRuneHead(why, 300)
+	}
+	if sentence, ok := desktopFinishSentence(runID); ok && sentence != "" {
+		out["send_to_user"] = sentence
 	}
 	return out
 }

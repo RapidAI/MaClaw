@@ -194,8 +194,9 @@ export function handleDesktopBotResult(payload: unknown) {
     const resultBot = sessionKey.slice(split + 1);
     const images = result.failed ? undefined : imagesFrom(data);
     const shotPaths = result.failed ? undefined : shotPathsFrom(data);
+    const attachmentIds = result.failed ? undefined : attachmentIdsFrom(data);
     const ask = askFrom(data);
-    if (!turnHasVisibleResult(result, ask, images, shotPaths, attached)) {
+    if (!turnHasVisibleResult(result, ask, images, shotPaths, attached, attachmentIds)) {
         dropPendingBotReply(resultUser, resultBot, requestId);
         return;
     }
@@ -210,6 +211,7 @@ export function handleDesktopBotResult(payload: unknown) {
         requestId,
         images,
         shotPaths,
+        attachmentIds,
         files: attached.files,
         localPaths: attached.localPaths,
         runId: String(data.run_id || data.RunID || '').trim() || undefined,
@@ -241,8 +243,9 @@ export function handleDesktopBotReport(payload: unknown) {
     const attached = attachedFiles(data, result.failed);
     const images = result.failed ? undefined : imagesFrom(data);
     const shotPaths = result.failed ? undefined : shotPathsFrom(data);
+    const attachmentIds = result.failed ? undefined : attachmentIdsFrom(data);
     const ask = askFrom(data);
-    if (!turnHasVisibleResult(result, ask, images, shotPaths, attached)) return;
+    if (!turnHasVisibleResult(result, ask, images, shotPaths, attached, attachmentIds)) return;
     const reportUser = sessionKey.slice(0, split);
     const reportBot = sessionKey.slice(split + 1);
     const sentence = sentenceForTurn(result, ask);
@@ -256,6 +259,7 @@ export function handleDesktopBotReport(payload: unknown) {
         requestId,
         images,
         shotPaths,
+        attachmentIds,
         files: attached.files,
         localPaths: attached.localPaths,
         phase: reportedTurnPhase(data),
@@ -272,6 +276,13 @@ export function shotPathsFrom(data: Record<string, unknown>) {
     return desktopBotLocalPaths(data.desktop_shot_paths ?? data.DesktopShotPaths);
 }
 
+export function attachmentIdsFrom(data: Record<string, unknown>) {
+    const raw = data.desktop_attachment_ids ?? data.DesktopAttachmentIDs;
+    if (!Array.isArray(raw)) return undefined;
+    const ids = raw.map(item => String(item || '').trim()).filter(id => /^[A-Za-z0-9_.:-]{1,80}$/.test(id));
+    return ids.length ? ids : undefined;
+}
+
 function filesFrom(data: Record<string, unknown>) {
     return desktopBotFiles(data.desktop_files ?? data.DesktopFiles);
 }
@@ -286,8 +297,8 @@ export function attachedFiles(data: Record<string, unknown>, failed: boolean) {
     return { localPaths, files: localPaths?.length ? undefined : filesFrom(data) };
 }
 
-function desktopTurnHasAttachment(images: unknown[] | undefined, shotPaths: string[] | undefined, attached: { files?: unknown[]; localPaths?: string[] }) {
-    return (images && images.length > 0) || (shotPaths && shotPaths.length > 0) || (attached.files && attached.files.length > 0) || (attached.localPaths && attached.localPaths.length > 0);
+function desktopTurnHasAttachment(images: unknown[] | undefined, shotPaths: string[] | undefined, attached: { files?: unknown[]; localPaths?: string[] }, attachmentIds?: string[]) {
+    return (images && images.length > 0) || (shotPaths && shotPaths.length > 0) || (attachmentIds && attachmentIds.length > 0) || (attached.files && attached.files.length > 0) || (attached.localPaths && attached.localPaths.length > 0);
 }
 
 export function responseText(payload: Record<string, unknown>) {
@@ -328,8 +339,8 @@ export function sentenceForTurn(result: { content: string; failed?: boolean }, a
     return result.content || '';
 }
 
-export function turnHasVisibleResult(result: { silent: boolean }, ask: DesktopBotAsk | undefined, images: unknown[] | undefined, shotPaths: string[] | undefined, attached: { files?: unknown[]; localPaths?: string[] }) {
-    return !result.silent || askKeepsTurn(ask) || desktopTurnHasAttachment(images, shotPaths, attached);
+export function turnHasVisibleResult(result: { silent: boolean }, ask: DesktopBotAsk | undefined, images: unknown[] | undefined, shotPaths: string[] | undefined, attached: { files?: unknown[]; localPaths?: string[] }, attachmentIds?: string[]) {
+    return !result.silent || askKeepsTurn(ask) || desktopTurnHasAttachment(images, shotPaths, attached, attachmentIds);
 }
 
 /**

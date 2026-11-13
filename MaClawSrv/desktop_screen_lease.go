@@ -67,7 +67,7 @@ var desktopScreenLeaseNonScreen = map[string]bool{
 	"job_status": true, "job_list": true, "request_takeover": true,
 	"notify_main": true, "report": true, "say": true, "check_inbox": true, "delegate": true,
 	"list_assignments": true, "accept_result": true, "return_result": true,
-	"shop_compare_offers": true, "proxy_mode": true, "recover": true, "goal_check": true,
+	"shop_compare_offers": true, "proxy_mode": true, "recover": true, "goal_check": true, "finish": true,
 }
 
 // desktopScreenLeaseNeeded reports a step that uses the screen or browser.

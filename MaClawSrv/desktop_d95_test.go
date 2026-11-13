@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -223,8 +224,89 @@ func TestDesktopD95SuccessHasOutcome(t *testing.T) {
 	desktopRecRunSteps[run] = true
 	desktopRecStateMu.Unlock()
 	defer func() { desktopRecStateMu.Lock(); delete(desktopRecRunSteps, run); desktopRecStateMu.Unlock() }()
-	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "贪吃蛇做好了，截图在这条消息里。"})
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "done", "text": "贪吃蛇做好了，截图在这条消息里。", "note": "关于地址要求：没有代理替换。"}); err != nil {
+		t.Fatal(err)
+	}
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "贪吃蛇做好了，截图在这条消息里。\n关于地址要求：没有代理替换。"})
 	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeDone {
+		t.Fatalf("metadata %v", md)
+	}
+	if md["send_to_user"] != "贪吃蛇做好了，截图在这条消息里。" {
+		t.Fatalf("sentence %v", md)
+	}
+}
+
+func TestNoFinishSuccessfulRunIsDoneUndeclared(t *testing.T) {
+	run := "run-no-finish"
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[run] = true
+	desktopRecStateMu.Unlock()
+	defer func() { desktopRecStateMu.Lock(); delete(desktopRecRunSteps, run); desktopRecStateMu.Unlock() }()
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "贪吃蛇做好了。"})
+	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeDone || md["task_outcome_evidence"] != "undeclared" {
+		t.Fatalf("metadata %v", md)
+	}
+}
+
+func TestDeclaredFailedIsBlocked(t *testing.T) {
+	run := "run-finish-failed"
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[run] = true
+	desktopRecStateMu.Unlock()
+	defer desktopRecoveryEndRun(run)
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "failed", "text": "这件没做成。"}); err != nil {
+		t.Fatal(err)
+	}
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "这件没做成。"})
+	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeBlocked || !strings.Contains(md["task_outcome_evidence"], "declared failed") {
+		t.Fatalf("metadata %v", md)
+	}
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "ask_user", "text": "把密码给我。"}); err != nil {
+		t.Fatal(err)
+	}
+	md = desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "把密码给我。"})
+	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeBlocked || !strings.Contains(md["task_outcome_evidence"], "ask_user") {
+		t.Fatalf("ask without tool %v", md)
+	}
+}
+
+func TestPlainChatIsNotForcedThroughFinish(t *testing.T) {
+	run := "run-plain-chat"
+	defer desktopRecoveryEndRun(run)
+	if agentservice.DesktopTurnNeedsFinish(run) {
+		t.Fatal("a reply with no desktop step was forced through finish")
+	}
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "done", "text": "你好"}); err != nil {
+		t.Fatal(err)
+	}
+	if md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "你好"}); md != nil {
+		t.Fatalf("plain chat outcome %#v", md)
+	}
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[run] = true
+	desktopRecStateMu.Unlock()
+	desktopClearFinish(run)
+	if !agentservice.DesktopTurnNeedsFinish(run) {
+		t.Fatal("a turn that did desktop work was not offered finish")
+	}
+}
+
+func TestDeclaredDoneWithoutWorkIsNotUndeclared(t *testing.T) {
+	run := "run-finish-idle"
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-finish-idle", RunID: run}
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[run] = true
+	desktopRecStateMu.Unlock()
+	defer desktopRecoveryEndRun(run)
+	desktopNoteStepResult(scope, fmt.Errorf("step failed"))
+	if _, err := desktopFinishTurn(scope, map[string]any{"outcome": "done", "text": "做好了。"}); err != nil {
+		t.Fatal(err)
+	}
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "做好了。"})
+	if md[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeDone || strings.Contains(md["task_outcome_evidence"], "undeclared") || strings.Contains(md["task_outcome_evidence"], "without a declared outcome") {
+		t.Fatalf("metadata %v", md)
+	}
+	if !strings.Contains(md["task_outcome_evidence"], "no successful desktop work") {
 		t.Fatalf("metadata %v", md)
 	}
 }

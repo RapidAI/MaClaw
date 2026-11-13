@@ -20,17 +20,22 @@ const (
 var ErrDesktopQueueFull = errors.New("这个机器人排队的事已经满了。")
 
 type desktopQueueItem struct {
-	ClientMessageID string    `json:"client_message_id"`
-	Content         string    `json:"content"`
-	Phase           string    `json:"phase,omitempty"`
-	ContinueSession string    `json:"continue_session,omitempty"`
-	Kind            string    `json:"kind,omitempty"`
-	RunID           string    `json:"run_id,omitempty"`
-	Instruction     string    `json:"instruction,omitempty"`
-	Ack             string    `json:"ack,omitempty"`
-	EnqueuedAt      time.Time `json:"enqueued_at"`
-	Held            bool      `json:"held,omitempty"`
-	State           string    `json:"state,omitempty"`
+	ClientMessageID string `json:"client_message_id"`
+	Content         string `json:"content"`
+	Phase           string `json:"phase,omitempty"`
+	ContinueSession string `json:"continue_session,omitempty"`
+	Kind            string `json:"kind,omitempty"`
+	RunID           string `json:"run_id,omitempty"`
+	Instruction     string `json:"instruction,omitempty"`
+	Ack             string `json:"ack,omitempty"`
+	// Secrets ride with the queued message in memory only. They are not
+	// written into the bot record (json "-"). They live as long as this
+	// queued message, which is desktopQueueTTL, and are cleared once the
+	// message is dispatched.
+	Secrets    map[string]string `json:"-"`
+	EnqueuedAt time.Time         `json:"enqueued_at"`
+	Held       bool              `json:"held,omitempty"`
+	State      string            `json:"state,omitempty"`
 }
 
 // DesktopQueueView is what a relay polls.
@@ -340,6 +345,10 @@ func (s *Service) dispatchQueuedItem(tenantID, userID, botID string, item *deskt
 		return nil
 	}
 	text := firstNonEmptyString(item.Instruction, item.Content)
+	// The values were taken out of the text before it was queued. Put them
+	// back on the replay only, then drop them from the item.
+	ctx = withDesktopSecretBag(ctx, item.Secrets)
+	item.Secrets = nil
 	admission, err := s.AdmitDesktopMessageAct(ctx, tenantID, userID, botID, text, item.Phase, item.ClientMessageID, item.ContinueSession, "")
 	if err != nil {
 		return err

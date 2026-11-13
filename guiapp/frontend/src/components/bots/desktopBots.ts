@@ -858,6 +858,10 @@ export interface DesktopBotMessage {
     // Instant "colleague accepted the task" reply. It never carries a handoff
     // or a result, so result lookups skip it.
     ack?: boolean;
+    // The command this first reply belongs to (the request id, or the pending
+    // bubble id when the request id is not on the transcript yet). One command
+    // has one ack bubble: a later line replaces it, it is never appended again.
+    ackFor?: string;
     // Readings of an ambiguous order offered as one-tap corrections under the
     // acceptance line. The first is what the run already does. They never
     // hold the run; optionsUsed hides them once one is picked.
@@ -890,6 +894,8 @@ export interface DesktopBotMessage {
     // Screenshots written under the maclaw data directory. The bubble reads
     // the file. The transcript keeps the path.
     shotPaths?: string[];
+    // Pictures fetched by id. The bytes are not in the transcript.
+    attachmentIds?: string[];
     // One document that could not be written on this machine. Data is standard base64.
     files?: DesktopBotFile[];
     // Documents written under the maclaw data directory. The result card opens these.
@@ -1183,12 +1189,15 @@ export function messagesForBot(userId: string, botId: string): DesktopBotMessage
     if (!Array.isArray(items)) return [];
     return items.filter(item => item && item.id && (item.role === 'user' || item.role === 'assistant')).map(item => {
         const shotPaths = desktopBotLocalPaths(item.shotPaths);
-        const images = shotPaths ? undefined : desktopBotImages(item.images);
+        const attachmentIds = desktopBotAttachmentIds(item.attachmentIds);
+        const images = shotPaths || attachmentIds ? undefined : desktopBotImages(item.images);
         const localPaths = desktopBotLocalPaths(item.localPaths);
         const files = localPaths ? undefined : desktopBotFiles(item.files);
         const next = { ...item };
         if (shotPaths) next.shotPaths = shotPaths;
         else delete next.shotPaths;
+        if (attachmentIds) next.attachmentIds = attachmentIds;
+        else delete next.attachmentIds;
         if (images) next.images = images;
         else delete next.images;
         if (localPaths) next.localPaths = localPaths;
@@ -1211,11 +1220,25 @@ function withoutShot(message: DesktopBotMessage): DesktopBotMessage {
 // The caller's message is left alone, so a bubble can still paint from memory
 // until the transcript is read back.
 function withoutImageBytes(message: DesktopBotMessage): DesktopBotMessage {
+    const attachmentIds = desktopBotAttachmentIds(message.attachmentIds);
     const shotPaths = desktopBotLocalPaths(message.shotPaths);
-    if (!shotPaths) return message;
-    const next = { ...message, shotPaths };
+    if (!shotPaths && !attachmentIds) return message;
+    const next = { ...message };
+    if (shotPaths) next.shotPaths = shotPaths;
+    if (attachmentIds) next.attachmentIds = attachmentIds;
     delete next.images;
     return next;
+}
+
+function desktopBotAttachmentIds(value: unknown): string[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    const ids: string[] = [];
+    for (const item of value) {
+        const id = String(item || '').trim();
+        if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(id) || ids.includes(id)) continue;
+        ids.push(id);
+    }
+    return ids.length ? ids : undefined;
 }
 
 // dropOldestShot removes one stored screenshot, oldest first. The newest
@@ -1355,7 +1378,7 @@ function withConversation<T extends { conversation?: string; conversationAt?: nu
     return { conversation: session, conversationAt: Number(patch.conversationAt || previous.conversationAt || 0) || now };
 }
 
-export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; runId?: string; conversation?: string; conversationAt?: number }): string {
+export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; runId?: string; conversation?: string; conversationAt?: number }): string {
     const current = messagesForBot(userId, botId);
     const index = pendingBotIndex(current, patch.requestId || '');
     if (index < 0) return '';
@@ -1365,6 +1388,7 @@ export function settlePendingBotReply(userId: string, botId: string, patch: { co
     const reason = (patch.attentionReason || '').trim();
     const localPaths = patch.failed ? undefined : desktopBotLocalPaths(patch.localPaths);
     const shotPaths = patch.failed ? undefined : desktopBotLocalPaths(patch.shotPaths);
+    const attachmentIds = patch.failed ? undefined : desktopBotAttachmentIds(patch.attachmentIds);
     next[index] = {
         ...previous,
         content: patch.content,
@@ -1374,8 +1398,9 @@ export function settlePendingBotReply(userId: string, botId: string, patch: { co
         userControl: patch.userControl === true,
         attentionReason: reason,
         askUser: patch.askUser || previous.askUser,
-        images: patch.failed || shotPaths ? undefined : desktopBotImages(patch.images),
+        images: patch.failed || shotPaths || attachmentIds ? undefined : desktopBotImages(patch.images),
         shotPaths,
+        attachmentIds,
         localPaths,
         files: patch.failed || localPaths ? undefined : desktopBotFiles(patch.files),
         runId: (patch.runId || '').trim() || previous.runId,
@@ -1585,7 +1610,7 @@ export function takeDesktopBotCrossRun(userId: string, botId: string): DesktopBo
 // The same request id is written once, so the open page and the store can
 // both hear the event. A scheduled report passes no phase, so it does not
 // take the confirm control. A destructive delegate passes phase plan.
-export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; confirm?: DesktopBotConfirm; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string; conversation?: string; conversationAt?: number }) {
+export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; confirm?: DesktopBotConfirm; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string; conversation?: string; conversationAt?: number }) {
     const requestId = (patch.requestId || '').trim();
     const runId = (patch.runId || '').trim();
     const current = messagesForBot(userId, botId);
@@ -1595,6 +1620,7 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
     const reason = (patch.attentionReason || '').trim();
     const localPaths = patch.failed ? undefined : desktopBotLocalPaths(patch.localPaths);
     const shotPaths = patch.failed ? undefined : desktopBotLocalPaths(patch.shotPaths);
+    const attachmentIds = patch.failed ? undefined : desktopBotAttachmentIds(patch.attachmentIds);
     const message: DesktopBotMessage = {
         id: `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         role: 'assistant',
@@ -1605,8 +1631,9 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
         userControl: patch.userControl === true,
         attentionReason: reason,
         askUser: patch.askUser,
-        images: patch.failed || shotPaths ? undefined : desktopBotImages(patch.images),
+        images: patch.failed || shotPaths || attachmentIds ? undefined : desktopBotImages(patch.images),
         shotPaths,
+        attachmentIds,
         localPaths,
         files: patch.failed || localPaths ? undefined : desktopBotFiles(patch.files),
         phase: patch.phase,

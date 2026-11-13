@@ -18,6 +18,58 @@ import (
 
 type desktopAskRunKey struct{}
 
+type desktopSecret struct {
+	name  string
+	value string
+}
+
+type desktopSecretKey struct{}
+
+type desktopSecretBagKey struct{}
+
+// withDesktopSecretBag carries every secret for one queued turn. The values
+// stay on the in-memory queue item and are not part of the persisted record.
+func withDesktopSecretBag(ctx context.Context, values map[string]string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(values) == 0 {
+		return ctx
+	}
+	bag := map[string]string{}
+	for name, value := range values {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if desktopbot.ValidSecretName(name) && value != "" {
+			bag[name] = value
+		}
+	}
+	if len(bag) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, desktopSecretBagKey{}, bag)
+}
+
+func desktopSecretBag(ctx context.Context) map[string]string {
+	if ctx == nil {
+		return nil
+	}
+	bag, _ := ctx.Value(desktopSecretBagKey{}).(map[string]string)
+	return bag
+}
+
+// WithDesktopSecret carries a secret the GUI saved locally. The value is
+// copied into the MaClawSrv message metadata and removed there before the
+// message is stored. It is not logged.
+func WithDesktopSecret(ctx context.Context, name, value string) context.Context {
+	name = strings.TrimSpace(name)
+	value = strings.TrimSpace(value)
+	if name == "" || value == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, desktopSecretKey{}, desktopSecret{name: name, value: value})
+}
+
 // WithDesktopAskRun marks this post as the answer to one plan-phase ask.
 func WithDesktopAskRun(ctx context.Context, run string) context.Context {
 	if ctx == nil {
@@ -253,6 +305,14 @@ func replyImageData(raw string) (string, bool) {
 // replyFiles keeps the latest file on this reply. The chat does not choose a
 // type. A path-like name, or a payload that is not base64, stays off the
 // reply. A screenshot stays on Images.
+func replyImageMIME(raw string) bool {
+	mime := strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		mime = strings.TrimSpace(mime[:i])
+	}
+	return mime == "image/png" || mime == "image/jpeg" || mime == "image/jpg"
+}
+
 func replyFiles(attachments []replyAttachment) []ReplyFile {
 	// The same cap MaClawSrv attaches files under (desktop.FileDeliverBase64Max).
 	// 200 000 here dropped a 365 KB PDF that MaClawSrv had attached, while
@@ -262,6 +322,13 @@ func replyFiles(attachments []replyAttachment) []ReplyFile {
 		item := attachments[i]
 		if strings.TrimSpace(item.Type) != "file" {
 			continue
+		}
+		// A delivered screenshot that fits an inline image is shown that way.
+		// One that is too large stays a file the person can still save.
+		if replyImageMIME(item.MimeType) {
+			if _, ok := replyImageData(item.Data); ok {
+				continue
+			}
 		}
 		name := replyFileName(item.FileName)
 		mime := replyFileMIME(item.MimeType)
@@ -351,11 +418,25 @@ func replyFileData(raw string, max int) (string, bool) {
 func replyImages(attachments []replyAttachment) []ReplyImage {
 	for i := len(attachments) - 1; i >= 0; i-- {
 		item := attachments[i]
-		if strings.TrimSpace(item.Type) != "image" {
-			continue
-		}
+		kind := strings.TrimSpace(item.Type)
 		mime := strings.ToLower(strings.TrimSpace(item.MimeType))
-		if mime != "image/png" && mime != "image/jpeg" {
+		if i := strings.IndexByte(mime, ';'); i >= 0 {
+			mime = strings.TrimSpace(mime[:i])
+		}
+		if mime == "image/jpg" {
+			mime = "image/jpeg"
+		}
+		// action=screenshot uses type image. action=deliver of a png uses
+		// type file. Both are the picture the person asked to see.
+		if kind == "image" {
+			if mime != "image/png" && mime != "image/jpeg" {
+				continue
+			}
+		} else if kind == "file" && replyImageMIME(item.MimeType) {
+			if mime != "image/png" && mime != "image/jpeg" {
+				continue
+			}
+		} else {
 			continue
 		}
 		data, ok := replyImageData(item.Data)
@@ -451,7 +532,29 @@ func (s *Service) AdmitDesktopMessageAct(ctx context.Context, tenantID, userID, 
 }
 
 func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool, action string) (BotAdmission, error) {
+	// A password typed into the message is taken out here, before routing,
+	// intake (an LLM call that may write a schedule row), the turn queue, or
+	// any log sees the text. The value rides only in the MaClawSrv metadata.
+	content, inlineSecrets := desktopbot.CaptureInlineSecrets(strings.TrimSpace(content))
 	content = strings.TrimSpace(content)
+	if replayBag := desktopSecretBag(ctx); len(replayBag) > 0 {
+		if inlineSecrets == nil {
+			inlineSecrets = map[string]string{}
+		}
+		for name, value := range replayBag {
+			if _, ok := inlineSecrets[name]; !ok {
+				inlineSecrets[name] = value
+			}
+		}
+	}
+	secretBag := map[string]string{}
+	for name, value := range inlineSecrets {
+		secretBag[name] = value
+	}
+	if secret, ok := ctx.Value(desktopSecretKey{}).(desktopSecret); ok && desktopbot.ValidSecretName(secret.name) && secret.value != "" {
+		secretBag[secret.name] = secret.value
+	}
+	ctx = withDesktopSecretBag(ctx, secretBag)
 	phase = strings.TrimSpace(phase)
 	if content == "" {
 		return BotAdmission{}, fmt.Errorf("%w: message is required", ErrInvalidInput)
@@ -560,6 +663,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 				Kind:            "new",
 				Instruction:     content,
 				Ack:             intakeAck,
+				Secrets:         desktopSecretBag(ctx),
 			})
 			if qerr == nil {
 				return BotAdmission{Accepted: true, Queued: true, Position: pos, Ack: intakeAck, Kind: "new", ClientMessageID: clientMessageID}, nil
@@ -673,6 +777,13 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	messageMeta["bot_intake_phase"] = phase
 	if askRun, _ := ctx.Value(desktopAskRunKey{}).(string); strings.TrimSpace(askRun) != "" {
 		messageMeta["bot_ask_run"] = strings.TrimSpace(askRun)
+	}
+	if secret, ok := ctx.Value(desktopSecretKey{}).(desktopSecret); ok && secret.name != "" && secret.value != "" {
+		messageMeta["bot_secret_name"] = secret.name
+		messageMeta["bot_secret_value"] = secret.value
+	}
+	for name, value := range desktopSecretBag(ctx) {
+		messageMeta[desktopbot.SecretMetaPrefix+name] = value
 	}
 	if strings.HasPrefix(clientMessageID, "xwake-") {
 		// MaClawSrv words a mailbox wake as a turn the person did not send:

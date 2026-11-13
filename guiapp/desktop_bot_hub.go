@@ -3,7 +3,9 @@ package guiapp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1434,7 +1436,9 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		}
 		// The bytes stay on the server attachment or the computer volume.
 		// This event carries the id. The next open fetches it.
-		resp.DesktopAttachmentIDs = desktopAttachmentIDs(result.Images, result.Files)
+		// The bytes stay in this process, keyed by attachment id. The event
+		// carries the id. The chat fetches the bytes when it paints.
+		resp.DesktopAttachmentIDs = stageDesktopPictures(botID, result.Images, result.Files)
 		resp.DesktopUserControl = result.UserControl
 		resp.DesktopAttentionReason = strings.TrimSpace(result.AttentionReason)
 		resp.AskUserInputType = strings.TrimSpace(result.AskUserInputType)
@@ -1758,6 +1762,10 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		Schedule        *desktopBotWireSchedule `json:"schedule"`
 	}
 	body := map[string]any{"content": text, "client_message_id": requestID}
+	if name, value := takeStagedBotSecret(botID); name != "" && value != "" {
+		body["secret_name"] = name
+		body["secret_value"] = value
+	}
 	if text == desktopBotReturnTask {
 		// The login-done sentence is the button the GUI itself sends.
 		body["action"] = "return"
@@ -2416,11 +2424,98 @@ func desktopBotDeliverMIME(raw string) string {
 	return mime
 }
 
-// storeDesktopBotShots writes each screenshot next to that bot's documents.
-// The returned paths are absolute. A shot that cannot be written is omitted
-// so the caller can still offer the bytes for this turn.
+// desktopAttachmentTTL is how long a fetched picture stays in this process.
+// The event never carries the bytes, and they are not written to disk.
+const desktopAttachmentTTL = 30 * time.Minute
+
+type cachedDesktopPicture struct {
+	mime string
+	data string
+	at   time.Time
+}
+
+var desktopAttachmentCache sync.Map // botID + "\x00" + id -> cachedDesktopPicture
+
+func desktopPictureMIME(raw string) string {
+	mime := strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		mime = strings.TrimSpace(mime[:i])
+	}
+	if mime == "image/jpg" {
+		mime = "image/jpeg"
+	}
+	if mime == "image/png" || mime == "image/jpeg" {
+		return mime
+	}
+	return ""
+}
+
+func desktopPictureID(id, data string) string {
+	id = strings.TrimSpace(id)
+	if id != "" {
+		return id
+	}
+	sum := sha256.Sum256([]byte(data))
+	return "img-" + hex.EncodeToString(sum[:8])
+}
+
+// stageDesktopPictures keeps each PNG or JPEG in memory under its attachment
+// id and returns those ids. The chat fetches them. Bytes are not written
+// to disk and are not put on the event. A non-picture file id is included
+// so the person can still be told the file exists.
+func stageDesktopPictures(botID string, images []DesktopBotImage, files []DesktopBotFile) []string {
+	botID = strings.TrimSpace(botID)
+	var ids []string
+	seen := map[string]bool{}
+	keep := func(mime, data, id string) {
+		mime = desktopPictureMIME(mime)
+		data = strings.TrimSpace(data)
+		if mime == "" || !desktopBotImageData(data) {
+			if id = strings.TrimSpace(id); id != "" && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+			return
+		}
+		id = desktopPictureID(id, data)
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		desktopAttachmentCache.Store(botID+"\x00"+id, cachedDesktopPicture{mime: mime, data: data, at: time.Now()})
+		ids = append(ids, id)
+	}
+	for _, image := range images {
+		keep(image.MIME, image.Data, image.AttachmentID)
+	}
+	for _, file := range files {
+		keep(file.MIME, file.Data, file.AttachmentID)
+	}
+	return ids
+}
+
+// FetchDesktopBotAttachment returns one picture this process staged for the
+// bot. A picture for another bot, or one past its TTL, is not returned.
+func (a *App) FetchDesktopBotAttachment(botID, id string) (*DesktopBotImage, error) {
+	botID = strings.TrimSpace(botID)
+	id = strings.TrimSpace(id)
+	if botID == "" || id == "" {
+		return nil, fmt.Errorf("screenshot is not on this machine")
+	}
+	v, ok := desktopAttachmentCache.Load(botID + "\x00" + id)
+	if !ok {
+		return nil, fmt.Errorf("screenshot is not on this machine")
+	}
+	pic := v.(cachedDesktopPicture)
+	if time.Since(pic.at) > desktopAttachmentTTL || pic.data == "" {
+		desktopAttachmentCache.Delete(botID + "\x00" + id)
+		return nil, fmt.Errorf("screenshot is not on this machine")
+	}
+	return &DesktopBotImage{MIME: pic.mime, Data: pic.data, AttachmentID: id}, nil
+}
+
 // desktopAttachmentIDs are the server or volume ids on this result.
-// The GUI does not write those bytes first. It fetches them the next time it opens.
+// The GUI does not write those bytes first. It fetches them when the chat paints.
 func desktopAttachmentIDs(images []DesktopBotImage, files []DesktopBotFile) []string {
 	var ids []string
 	for _, image := range images {
@@ -2463,38 +2558,6 @@ func abandonDesktopSurface() {
 	if cancel != nil {
 		cancel()
 	}
-}
-
-func storeDesktopBotShots(botID string, images []DesktopBotImage) []string {
-	id := safeDesktopBotDir(botID)
-	if id == "" || len(images) == 0 {
-		return nil
-	}
-	dir := filepath.Join(corelib.MaclawDataDir(), "bot-files", id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil
-	}
-	var paths []string
-	for _, image := range images {
-		raw, err := base64.StdEncoding.DecodeString(image.Data)
-		if err != nil || len(raw) == 0 {
-			continue
-		}
-		name := "screenshot.png"
-		if image.MIME == "image/jpeg" {
-			name = "screenshot.jpg"
-		}
-		dest := uniqueBotFile(dir, name)
-		if err := os.WriteFile(dest, raw, 0o644); err != nil {
-			continue
-		}
-		abs, err := filepath.Abs(dest)
-		if err != nil {
-			abs = dest
-		}
-		paths = append(paths, abs)
-	}
-	return paths
 }
 
 // ReadDesktopBotShot returns one screenshot saved for a bot bubble.
