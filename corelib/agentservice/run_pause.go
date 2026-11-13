@@ -213,6 +213,20 @@ func (s *Service) ResumeRun(ctx context.Context, p Principal, instanceID, runID 
 	if err != nil {
 		return nil, ErrRunNotFound
 	}
+	// A restart restores the pause record and not the loop that was waiting
+	// on it. Prepare the same run's executor before dropping the pause, so a
+	// failure here leaves the run paused instead of reporting resumed.
+	_, live := s.peekRunCancel(run.ID)
+	var driven *drivenRun
+	s.pauses.mu.Lock()
+	_, paused := s.pauses.gates[run.ID]
+	s.pauses.mu.Unlock()
+	if paused && !live {
+		driven, err = s.prepareDrivenRun(ctx, p, instanceID, run)
+		if err != nil {
+			return nil, err
+		}
+	}
 	s.pauses.mu.Lock()
 	g, ok := s.pauses.gates[run.ID]
 	if ok {
@@ -227,6 +241,9 @@ func (s *Service) ResumeRun(ctx context.Context, p Principal, instanceID, runID 
 	if ok {
 		s.clearRunAwaitingUser(run)
 		s.persistPauses()
+	}
+	if driven != nil {
+		s.launchDrivenRun(ctx, driven)
 	}
 	st := RunPauseState{RunID: run.ID, Outcome: "resumed"}
 	if !ok {

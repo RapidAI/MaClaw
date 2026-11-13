@@ -164,6 +164,13 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 	}
 }
 
+func TestDesktopTaskTitleUsesTheCurrentOrder(t *testing.T) {
+	folded := "此前对话：\n- 帮我下载报表\n这次：下载报表并保存"
+	if got := desktopTaskTitle(folded); got != "下载报表并保存" {
+		t.Fatalf("title = %q", got)
+	}
+}
+
 func TestDesktopTaskHintDropsStatusWords(t *testing.T) {
 	if got := desktopTaskHint("那个下载报表怎么样了"); got != "下载报表" {
 		t.Fatalf("hint = %q", got)

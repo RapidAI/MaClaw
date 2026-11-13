@@ -152,6 +152,9 @@ func (s *Service) dropPausedRun(ctx context.Context, tenantID, key string) {
 	}
 	delete(rec.PausedRuns, key)
 	_ = s.save(ctx, tenantID, rec)
+	// load copies every saved pause back into memory. A resume that deleted
+	// the key first would otherwise see it return before this write lands.
+	s.runPauses.Delete(key)
 }
 
 func (s *Service) runPauseCall(ctx context.Context, tenantID, userID, botID, runID, verb string, body any) (*RunPauseState, string, error) {

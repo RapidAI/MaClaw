@@ -943,6 +943,14 @@ func desktopTaskBody(task string) string {
 	if strings.HasPrefix(task, desktopConfirmedOrderLead) {
 		task = strings.TrimSpace(strings.TrimPrefix(task, desktopConfirmedOrderLead))
 	}
+	// Earlier turns are context in front of the order. The title is the
+	// order itself, the line after 这次：, not the context heading.
+	if strings.HasPrefix(task, "此前对话：") {
+		const mark = "\n这次："
+		if i := strings.Index(task, mark); i >= 0 {
+			task = strings.TrimSpace(task[i+len(mark):])
+		}
+	}
 	return task
 }
 

@@ -10,6 +10,42 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
+func TestModalListAsksTheDesktopContainer(t *testing.T) {
+	prev := desktopRemoteCtl
+	t.Cleanup(func() { desktopRemoteCtl = prev })
+	var ops []string
+	desktopRemoteCtl = func(_ context.Context, _, _, display string, request map[string]any) (map[string]any, error) {
+		if display != ":20" {
+			t.Fatalf("display %q", display)
+		}
+		op, _ := request["op"].(string)
+		ops = append(ops, op)
+		if op == "windows" {
+			return map[string]any{"ok": true, "windows": []any{
+				map[string]any{"id": "0x41", "type": "_NET_WM_WINDOW_TYPE_DIALOG", "modal": true, "role": "alert"},
+			}}, nil
+		}
+		if op == "window" {
+			if request["do"] != "close" || request["id"] != "0x41" {
+				t.Fatalf("close request %#v", request)
+			}
+			return map[string]any{"ok": true, "window": map[string]any{"id": "0x41", "closed": true}}, nil
+		}
+		t.Fatalf("op %s", op)
+		return nil, nil
+	}
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run-modal"}
+	desktopRoundWakes.Store(scope.RunID, &desktopRoundWake{woken: true, have: true, endpoint: desktopEndpoint{Display: ":20"}})
+	t.Cleanup(func() { desktopRoundWakes.Delete(scope.RunID) })
+	note, blocked := desktopBlockingDialog(scope)
+	if !blocked || !strings.Contains(note, "dismissed") || !strings.Contains(note, "0x41") {
+		t.Fatalf("dialog = %q blocked=%v", note, blocked)
+	}
+	if len(ops) != 2 || ops[0] != "windows" || ops[1] != "window" {
+		t.Fatalf("ops %v", ops)
+	}
+}
+
 func TestTimeoutUsesObservedFlagsNotTheURL(t *testing.T) {
 	prevTargets := desktopTimeoutTargets
 	prevFlags := desktopTimeoutFlags

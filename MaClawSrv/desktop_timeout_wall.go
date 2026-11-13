@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -19,6 +18,10 @@ type desktopWMWindow struct {
 	Role      string
 	Modal     bool
 	Transient bool
+	// scope and display name the desktop container this window was listed
+	// from. Closing it goes back through that container's supervisor.
+	scope   agentruntime.Scope
+	display string
 }
 
 // desktopTimeoutTargets lists browser targets through CDP Target.getTargets.
@@ -57,23 +60,38 @@ var errDesktopDialogLeftOpen = errors.New("dialog was not dismissed")
 
 // desktopWindowModal is a browser dialog the window manager marks as a
 // dialog that is modal or transient for another window.
-func listDesktopWMWindowsLive(ctx context.Context, _ agentruntime.Scope) []desktopWMWindow {
-	out, err := exec.CommandContext(ctx, "wmctrl", "-l").Output()
-	if err != nil {
+//
+// The list and the close both go through the desktop control service, which
+// runs wmctrl and xprop inside the container on that bot's display. This
+// process has no display of its own.
+func listDesktopWMWindowsLive(ctx context.Context, scope agentruntime.Scope) []desktopWMWindow {
+	display := ""
+	if endpoint, ok := desktopRoundAwake(scope); ok {
+		display = endpoint.Display
+	}
+	out, err := desktopCtlCall(ctx, scope, display, map[string]any{"op": "windows", "all": true})
+	if err != nil || out == nil {
 		return nil
 	}
-	var windows []desktopWMWindow
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
+	raw, _ := out["windows"].([]any)
+	windows := make([]desktopWMWindow, 0, len(raw))
+	for _, item := range raw {
+		row, _ := item.(map[string]any)
+		if row == nil {
 			continue
 		}
-		id := fields[0]
-		dump, err := exec.CommandContext(ctx, "xprop", "-id", id, "_NET_WM_WINDOW_TYPE", "_NET_WM_STATE", "WM_TRANSIENT_FOR", "WM_WINDOW_ROLE").Output()
-		if err != nil {
+		id, _ := row["id"].(string)
+		if strings.TrimSpace(id) == "" {
 			continue
 		}
-		windows = append(windows, parseXPropWindow(id, string(dump)))
+		kind, _ := row["type"].(string)
+		role, _ := row["role"].(string)
+		modal, _ := row["modal"].(bool)
+		transient, _ := row["transient"].(bool)
+		windows = append(windows, desktopWMWindow{
+			ID: id, Type: kind, Role: role, Modal: modal, Transient: transient,
+			scope: scope, display: display,
+		})
 	}
 	return windows
 }
@@ -82,8 +100,17 @@ func dismissDesktopWMWindowLive(ctx context.Context, w desktopWMWindow) error {
 	if strings.TrimSpace(w.ID) == "" {
 		return errDesktopDialogLeftOpen
 	}
-	if err := exec.CommandContext(ctx, "wmctrl", "-i", "-c", w.ID).Run(); err != nil {
+	out, err := desktopCtlCall(ctx, w.scope, w.display, map[string]any{"op": "window", "do": "close", "id": w.ID})
+	if err != nil {
 		return err
+	}
+	window, _ := out["window"].(map[string]any)
+	if window == nil {
+		return errDesktopDialogLeftOpen
+	}
+	closed, _ := window["closed"].(bool)
+	if !closed {
+		return errDesktopDialogLeftOpen
 	}
 	return nil
 }

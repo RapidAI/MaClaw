@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -156,6 +157,84 @@ func TestTakeoverPauseDoesNotCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("resume did not release the takeover pause")
 	}
+}
+
+func TestResumeAfterRestartDrivesTheSameRun(t *testing.T) {
+	exec := &redriveExecutor{continued: make(chan string, 1)}
+	svc, p, inst := setupCaptureAgentService(t, exec)
+	defer svc.Close()
+	sess, err := svc.CreateSession(context.Background(), p, inst.ID, CreateSessionInput{Title: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := svc.PostMessage(context.Background(), p, inst.ID, sess.ID, PostMessageInput{Content: "把报表下载下来", Metadata: map[string]string{"client_message_id": "restart-1"}})
+	if err != nil || run == nil {
+		t.Fatalf("post: %v", err)
+	}
+	// The process died while the run was paused. The row is still running and
+	// the pause gate was restored from disk. Nothing in this process is
+	// executing it.
+	stored, err := svc.store.GetRun(p.TenantID, p.UserID, inst.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Status = RunStatusRunning
+	stored.CompletedAt = nil
+	stored.WaitingForUser = true
+	if err := svc.store.SaveRun(stored); err != nil {
+		t.Fatal(err)
+	}
+	svc.pauses.mu.Lock()
+	if svc.pauses.gates == nil {
+		svc.pauses.gates = map[string]*runPauseGate{}
+	}
+	svc.pauses.gates[stored.ID] = &runPauseGate{
+		principal: p, instanceID: inst.ID, reason: "takeover", onTimeout: "remind",
+		pausedAt: time.Now(), timeout: time.Minute, expires: time.Now().Add(time.Minute),
+		wake: make(chan struct{}),
+	}
+	svc.pauses.mu.Unlock()
+	resumed, err := svc.ResumeRun(context.Background(), p, inst.ID, stored.ID)
+	if err != nil || resumed.Outcome != "resumed" {
+		t.Fatalf("resume: %v %+v", err, resumed)
+	}
+	select {
+	case id := <-exec.continued:
+		if id != stored.ID {
+			t.Fatalf("continued %s, want %s", id, stored.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume reported success without driving the run")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got, err := svc.store.GetRun(p.TenantID, p.UserID, inst.ID, stored.ID)
+		if err == nil && got.Status == RunStatusSucceeded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("driven run status %s err %v", got.Status, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+type redriveExecutor struct {
+	continued chan string
+	calls     int
+	mu        sync.Mutex
+}
+
+func (e *redriveExecutor) Execute(_ context.Context, req ExecuteRequest) (*ExecuteResult, error) {
+	e.mu.Lock()
+	e.calls++
+	n := e.calls
+	e.mu.Unlock()
+	if n == 1 {
+		return &ExecuteResult{Content: "first"}, nil
+	}
+	e.continued <- req.RunID
+	return &ExecuteResult{Content: "继续做完了"}, nil
 }
 
 func TestRunPauseTimeoutEnv(t *testing.T) {

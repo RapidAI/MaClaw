@@ -7594,7 +7594,7 @@ def ctl_window_info(wid, active):
                 geo[key.strip()] = int(value)
     info["x"], info["y"] = geo.get("X", 0), geo.get("Y", 0)
     info["width"], info["height"] = geo.get("WIDTH", 0), geo.get("HEIGHT", 0)
-    props = ctl_xprop(wid, "WM_CLASS", "_NET_WM_PID", "_NET_WM_DESKTOP", "_NET_WM_STATE")
+    props = ctl_xprop(wid, "WM_CLASS", "_NET_WM_PID", "_NET_WM_DESKTOP", "_NET_WM_STATE", "_NET_WM_WINDOW_TYPE", "WM_TRANSIENT_FOR", "WM_WINDOW_ROLE")
     m = re.search(r'WM_CLASS\(STRING\) = "([^"]*)", "([^"]*)"', props)
     info["class"] = m.group(2) if m else ""
     m = re.search(r"_NET_WM_PID\(CARDINAL\) = (\d+)", props)
@@ -7604,6 +7604,16 @@ def ctl_window_info(wid, active):
     state = props.split("_NET_WM_STATE(ATOM) = ", 1)[1].split("\n", 1)[0] if "_NET_WM_STATE(ATOM) = " in props else ""
     info["minimized"] = "_NET_WM_STATE_HIDDEN" in state
     info["maximized"] = "_NET_WM_STATE_MAXIMIZED_VERT" in state and "_NET_WM_STATE_MAXIMIZED_HORZ" in state
+    info["modal"] = "_NET_WM_STATE_MODAL" in props
+    info["transient"] = "WM_TRANSIENT_FOR" in props
+    info["type"] = ""
+    if "_NET_WM_WINDOW_TYPE_DIALOG" in props:
+        info["type"] = "_NET_WM_WINDOW_TYPE_DIALOG"
+    role = ""
+    marker = 'WM_WINDOW_ROLE(STRING) = "'
+    if marker in props:
+        role = props.split(marker, 1)[1].split('"', 1)[0]
+    info["role"] = role
     return info
 
 
