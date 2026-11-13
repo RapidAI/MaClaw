@@ -22,7 +22,14 @@ export type { ActiveAssistantTaskIdentity };
  * This eliminates the "forgot to wire a field" class of bugs.
  */
 export interface AIAssistantPanelHookState {
-    messages: ChatMessage[];
+    /**
+     * Live transcript. The hook keeps it in an external store instead of
+     * component state so a stream flush re-renders only the subscribing
+     * panel, not the App root. `messages` stays for direct `state` props
+     * (tests); production panels should read through the store.
+     */
+    messagesStore: import("./useAIAssistant").AssistantMessagesStore;
+    messages?: ChatMessage[];
     progressMessages: ChatMessage[];
     sending: boolean;
     sendingSessionKey?: string;
@@ -63,7 +70,6 @@ export interface AIAssistantPanelAppState {
 }
 
 export interface AIAssistantPanelStateProps extends Partial<AIAssistantPanelHookState>, AIAssistantPanelAppState {
-    messages: ChatMessage[];
     sending: boolean;
     streaming: boolean;
     ready: boolean;

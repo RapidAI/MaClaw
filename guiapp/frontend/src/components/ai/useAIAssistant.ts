@@ -1381,6 +1381,37 @@ interface StreamAppendResult {
     snapshotMode: boolean;
 }
 
+/**
+ * Transcript store living outside React state. The hook used to hold
+ * `messages` in useState inside App, so every 80ms stream flush re-rendered
+ * the entire application tree (~25k DOM nodes) — the render churn behind the
+ * WebView renderer OOM. With an external store, only the panel subscribing
+ * via useSyncExternalStore re-renders per flush.
+ */
+export interface AssistantMessagesStore {
+    get: () => ChatMessage[];
+    set: (next: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
+    subscribe: (listener: () => void) => () => void;
+}
+
+function createAssistantMessagesStore(initial: ChatMessage[]): AssistantMessagesStore {
+    let value = initial;
+    const listeners = new Set<() => void>();
+    return {
+        get: () => value,
+        set(next) {
+            const resolved = typeof next === 'function' ? (next as (prev: ChatMessage[]) => ChatMessage[])(value) : next;
+            if (resolved === value) return;
+            value = resolved;
+            for (const listener of [...listeners]) listener();
+        },
+        subscribe(listener) {
+            listeners.add(listener);
+            return () => { listeners.delete(listener); };
+        },
+    };
+}
+
 interface StreamAppendState {
     content: string;
     reasoning: string;
@@ -4341,10 +4372,22 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const uiLang = options?.lang || "en";
     const showConfirm = options?.showConfirm || nativeShowConfirm;
     const activeSessionKeyForEvents = useCallback(() => options?.activeSessionKey || getActiveSessionKey(), [options?.activeSessionKey]);
-    const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
+    const messagesStoreRef = useRef<AssistantMessagesStore | null>(null);
+    if (!messagesStoreRef.current) {
+        messagesStoreRef.current = createAssistantMessagesStore(loadPersistedMessages());
+    }
+    const messagesStore = messagesStoreRef.current;
+    // Same contract as the useState setter; applies through the external
+    // store so a token flush no longer re-renders App — subscribers (the
+    // panel's transcript) update on their own. The ref mirror stays
+    // synchronous for persist/unmount reads.
+    const setMessages = useCallback((next: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
+        messagesStore.set(next);
+        latestMessagesRef.current = messagesStore.get();
+    }, [messagesStore]);
+    const latestMessagesRef = useRef<ChatMessage[]>(messagesStore.get());
     const [chatTasks, setChatTasks] = useState<ChatTaskView[]>([]);
-    const messagesRef = useRef(messages);
-    messagesRef.current = messages;
+    const messagesRef = latestMessagesRef;
     const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>(loadPersistedPromptHistory);
     const submittedPrompts = useMemo(() => promptHistory.map(entry => entry.text), [promptHistory]);
     const submittedPromptAttachments = useMemo(() => promptHistory.map(entry => entry.attachments), [promptHistory]);
@@ -5897,7 +5940,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, commitNormalizedStreamParts, consumeRoundProseReplacement, dropRejectedRoundContent, flushStreamTokenBuffer, normalizeStreamPieces]);
 
     const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const latestMessagesRef = useRef(messages);
     const latestPromptsRef = useRef(promptHistory);
     const lastPersistedPayloadRef = useRef<string | null>(null);
     const lastPersistedPromptsPayloadRef = useRef<string | null>(null);
@@ -5975,25 +6017,28 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     }, [persistUIState]);
 
     useEffect(() => {
-        latestMessagesRef.current = messages;
-        if (!uiStateLoadedRef.current) return;
-        // Streaming replaces the tail every 80ms. Stringifying the transcript
-        // here only to see that it changed copies the whole thought on the
-        // same turn as the paint. The quiet-period save below is the one copy.
-        if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
-        persistTimerRef.current = setTimeout(() => {
-            persistTimerRef.current = null;
-            const payload = serializePersistedMessages(latestMessagesRef.current);
-            if (payload === lastPersistedPayloadRef.current) return;
-            const promptPayload = JSON.stringify(latestPromptsRef.current);
-            void persistUIState(latestMessagesRef.current, latestPromptsRef.current, contextBoundaryMessageIDRef.current)
-                .then((saved) => {
-                    if (!saved) return;
-                    lastPersistedPayloadRef.current = payload;
-                    lastPersistedPromptsPayloadRef.current = promptPayload;
-                });
-        }, 300);
-    }, [messages, persistUIState]);
+        latestMessagesRef.current = messagesStore.get();
+        return messagesStore.subscribe(() => {
+            latestMessagesRef.current = messagesStore.get();
+            if (!uiStateLoadedRef.current) return;
+            // Streaming replaces the tail every 80ms. Stringifying the transcript
+            // here only to see that it changed copies the whole thought on the
+            // same turn as the paint. The quiet-period save below is the one copy.
+            if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+            persistTimerRef.current = setTimeout(() => {
+                persistTimerRef.current = null;
+                const payload = serializePersistedMessages(latestMessagesRef.current);
+                if (payload === lastPersistedPayloadRef.current) return;
+                const promptPayload = JSON.stringify(latestPromptsRef.current);
+                void persistUIState(latestMessagesRef.current, latestPromptsRef.current, contextBoundaryMessageIDRef.current)
+                    .then((saved) => {
+                        if (!saved) return;
+                        lastPersistedPayloadRef.current = payload;
+                        lastPersistedPromptsPayloadRef.current = promptPayload;
+                    });
+            }, 300);
+        });
+    }, [messagesStore, persistUIState]);
     useEffect(() => {
         latestPromptsRef.current = promptHistory;
         if (!uiStateLoadedRef.current) return;
@@ -8147,7 +8192,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     }, [ready]);
 
     const panelState: AIAssistantPanelHookState = useMemo(() => ({
-        messages,
+        messagesStore,
         progressMessages,
         sending,
         sendingSessionKey,
@@ -8167,7 +8212,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         scrollToTopSeq,
         agentView,
         chatTasks,
-    }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, offscreenLiveSessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, submittedPromptAttachments, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView, chatTasks]);
+    }), [messagesStore, progressMessages, sending, sendingSessionKey, busySessionKeys, offscreenLiveSessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, submittedPromptAttachments, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView, chatTasks]);
 
     const deactivateRecordingSession = useCallback((messageId: string) => {
         const id = String(messageId || "").trim();
@@ -8211,7 +8256,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         waitForExpertSessionIdle,
     }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle, isExpertSessionIdle, waitForExpertSessionIdle]);
 
-    return { messages, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, offscreenLiveSessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
+    return { get messages() { return messagesStore.get(); }, messagesStore, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, offscreenLiveSessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

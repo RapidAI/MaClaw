@@ -2142,6 +2142,27 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
+    it('processes a long token stream in linear time', () => {
+        // Regression guard for the lazy StreamLane: folding every token through
+        // `content + delta` was O(n²) over a long stream — the allocation rate
+        // that starved the WebView renderer. A reintroduced eager fold blows
+        // past this bound by an order of magnitude.
+        const state = {
+            content: '',
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        const start = performance.now();
+        for (let i = 0; i < 5000; i += 1) {
+            applyIncomingStreamDelta(state, `streamed token number ${i} `);
+        }
+        const elapsed = performance.now() - start;
+        expect(state.content.length).toBeGreaterThan(100_000);
+        expect(state.content.endsWith('streamed token number 4999 ')).toBe(true);
+        expect(elapsed).toBeLessThan(2000);
+    });
+
     it('keeps text that follows a role prefix closed across buffered tokens', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);

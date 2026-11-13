@@ -72,9 +72,13 @@ export function orderedListIndentPadding(indentCols: number): string | undefined
  * - currency symbols: "$10. 00" must not break after "$"
  * - hyphen / open brackets: line ranges and parentheticals such as
  *   `(lines 251-504) to confirm` must not become a fake `504)` list item
+ * - math/operator chars: expressions like `(n+1) class` or `x=2. value`
+ *   glue the digit-run to the expression, not to a list index; operand-
+ *   binding symbols (`√2.`, `∑n.`, `x→1.`) glue the same way
+ * - "#"/"@": identifier glue such as `C#1.` or `pkg@1.`
  */
 const MID_LINE_ORDERED_GLUED =
-    /([^[\n\s\d.$€£¥￥\-–—−‐‑({（「『【])(\d+[.)]\s+)/g;
+    /([^[\n\s\d.$€£¥￥\-–—−‐‑({（「『【+*±∓×\u00f7\/=%^<>~～≈≠≤≥√∑∏∫∂∇∞→←↔∈∉∩∪⊂⊃⊆⊇∧∨¬＋－＊／％＝＜＞#@])(\d+[.)]\s+)/g;
 
 /**
  * Sentence / closer punctuation, then horizontal space, then an ordered marker.
@@ -85,19 +89,33 @@ const MID_LINE_ORDERED_AFTER_PUNCT_SPACE =
 
 /**
  * Ordered marker whose body does not start with a digit.
- * Avoids treating "2. 5 yuan" as an ordered item.
+ * Avoids treating "2. 5 yuan" as an ordered item. The lookbehind mirrors
+ * MID_LINE_ORDERED_GLUED's blocked-prev class (whitespace stays allowed —
+ * it's the normal packed-list gap), so digit-runs glued to an expression
+ * ("(n+1) 类与 (n+2) 类") are parentheticals, not list items.
  * Used only via String#matchAll (starts from index 0 each call).
  */
 const ORDERED_MARKER_WITH_NON_DIGIT_BODY =
-    /\d+[.)]\s+(?=[^\d\s\n])/g;
+    /(?<![\d.$€£¥￥\-–—−‐‑[({（「『【+*±∓×\u00f7\/=%^<>~～≈≠≤≥√∑∏∫∂∇∞→←↔∈∉∩∪⊂⊃⊆⊇∧∨¬＋－＊／％＝＜＞#@])\d+[.)]\s+(?=[^\d\s\n])/g;
+
+/**
+ * Positive form of the blocked-prev class shared by MID_LINE_ORDERED_GLUED
+ * and ORDERED_MARKER_WITH_NON_DIGIT_BODY, for single-char tests on the
+ * char (or the non-space char across a gap) before a marker candidate.
+ * Keep the sets in sync.
+ */
+const ORDERED_MARKER_GLUED_PREV =
+    /[\d.$€£¥￥\-–—−‐‑[({（「『【+*±∓×\u00f7\/=%^<>~～≈≠≤≥√∑∏∫∂∇∞→←↔∈∉∩∪⊂⊃⊆⊇∧∨¬＋－＊／％＝＜＞#@]/u;
 
 /**
  * On a line that already starts as an ordered item, later " 2. …" / " 10. …"
  * items are usually compact multi-item lines.
- * Require a non-space before the gap so leading indent ("  12. nested") is kept.
+ * Require a non-space before the gap so leading indent ("  12. nested") is
+ * kept; the captured prev char lets the replacer skip arithmetic gaps
+ * ("1. 设 x + 2. y" keeps " 2. " inline).
  */
 const CONSECUTIVE_ORDERED_ON_LIST_LINE =
-    /(?<=\S)[ \t]+(\d+[.)]\s+)(?=[^\d\s\n])/g;
+    /(?<=(\S))[ \t]+(\d+[.)]\s+)(?=[^\d\s\n])/g;
 
 /** Line begins with an ordered list marker (optional indent; body optional). */
 const LINE_STARTS_ORDERED_ITEM = /^\s*\d+[.)](?:\s|$)/;
@@ -148,6 +166,13 @@ function expandOrderedItemsOnLines(text: string): string {
     let changed = false;
 
     for (const line of lines) {
+        // Table rows keep their cells — "1." inside "| a | 1. b |" is column
+        // text, not a packed list marker.
+        if (line.includes("|")) {
+            out.push(line);
+            continue;
+        }
+
         if (LINE_STARTS_ORDERED_ITEM.test(line)) {
             // Only pay for replace when a mid-line marker gap is plausible.
             if (!LIST_LINE_HAS_MID_MARKER.test(line)) {
@@ -155,7 +180,9 @@ function expandOrderedItemsOnLines(text: string): string {
                 continue;
             }
             const lead = leadingIndentText(line);
-            const expanded = line.replace(CONSECUTIVE_ORDERED_ON_LIST_LINE, "\n$1");
+            const expanded = line.replace(CONSECUTIVE_ORDERED_ON_LIST_LINE,
+                (full, prev: string, marker: string) =>
+                    ORDERED_MARKER_GLUED_PREV.test(prev) ? full : `\n${marker}`);
             if (expanded === line) {
                 out.push(line);
                 continue;
@@ -170,8 +197,13 @@ function expandOrderedItemsOnLines(text: string): string {
             continue;
         }
 
-        // Prose with 2+ packed markers.
-        const matches = [...line.matchAll(ORDERED_MARKER_WITH_NON_DIGIT_BODY)];
+        // Prose with 2+ packed markers. A candidate whose gap follows an
+        // operator ("结果 1. a + 2. b") is arithmetic, not the next item.
+        const matches = [...line.matchAll(ORDERED_MARKER_WITH_NON_DIGIT_BODY)]
+            .filter((m) => {
+                const prev = line.slice(0, m.index ?? 0).trimEnd().slice(-1);
+                return prev === "" || !ORDERED_MARKER_GLUED_PREV.test(prev);
+            });
         if (matches.length < 2) {
             out.push(line);
             continue;
@@ -198,6 +230,7 @@ function expandOrderedItemsOnLines(text: string): string {
 
 /**
  * Insert newlines before mid-line ordered markers (outside fenced/protected spans).
+ * Lines containing "|" are treated as table rows and keep their cells.
  *
  * Order:
  * 1) punctuation + spaces + marker
@@ -212,11 +245,18 @@ export function splitMidLineOrderedListMarkers(text: string): string {
     // Normalize real CRLF/CR so line-wise expand does not leave trailing \r on markers.
     // Lone CR between items ("1. a\r2. b") becomes a real newline. Pipeline always continues
     // from this LF form so a no-op expand still returns LF text, not the original CR bytes.
-    let out = text.includes("\r") ? text.replace(/\r\n/g, "\n").replace(/\r/g, "\n") : text;
-    out = out.replace(MID_LINE_ORDERED_AFTER_PUNCT_SPACE, "$1\n$2");
-    out = splitGluedMidLineOrderedMarkers(out);
-    out = expandOrderedItemsOnLines(out);
-    return out;
+    const out = text.includes("\r") ? text.replace(/\r\n/g, "\n").replace(/\r/g, "\n") : text;
+    // Fast path: no table rows — repair the whole segment in one pass.
+    if (!out.includes("|")) {
+        return expandOrderedItemsOnLines(
+            splitGluedMidLineOrderedMarkers(out.replace(MID_LINE_ORDERED_AFTER_PUNCT_SPACE, "$1\n$2")));
+    }
+    // Split keeping each line's trailing "\n" so a marker's `\s+` still sees it.
+    const repaired = out.split(/(?<=\n)/).map((line) => line.includes("|")
+        ? line
+        : splitGluedMidLineOrderedMarkers(line.replace(MID_LINE_ORDERED_AFTER_PUNCT_SPACE, "$1\n$2"))
+    ).join("");
+    return expandOrderedItemsOnLines(repaired);
 }
 
 /**

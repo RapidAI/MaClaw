@@ -145,6 +145,22 @@ describe("normalizeInlineListMarkers ordered markers", () => {
         const input = "今天天气不错，适合出行。没有列表。";
         expect(normalizeInlineListMarkers(input)).toBe(input);
     });
+
+    it("keeps table rows intact — cells are column text, not lists/headings", () => {
+        // Numbered cells are not a packed list.
+        expect(normalizeInlineListMarkers("| 1. 旧版 | 2. 新版 |")).toBe("| 1. 旧版 | 2. 新版 |");
+        // Glued ordered marker inside a cell.
+        expect(normalizeInlineListMarkers("| 步骤1) 先做 | 2) 再做 |")).toBe("| 步骤1) 先做 | 2) 再做 |");
+        // Mid-cell heading / dash / colon rewrites stay inside the row.
+        expect(normalizeInlineListMarkers("| a。 # 标题 | b |")).toBe("| a。 # 标题 | b |");
+        expect(normalizeInlineListMarkers("| a- 项 | b |")).toBe("| a- 项 | b |");
+        expect(normalizeInlineListMarkers("| x： - y | b |")).toBe("| x： - y | b |");
+        // A full table keeps every row while prose around it still gets repaired.
+        const doc = "如下：1. 介绍\n| A | B |\n|---|---|\n| 1. 旧版 | 2. 新版 |\n完成。1. 结尾";
+        expect(normalizeInlineListMarkers(doc)).toBe(
+            "如下：\n1. 介绍\n| A | B |\n|---|---|\n| 1. 旧版 | 2. 新版 |\n完成。\n1. 结尾",
+        );
+    });
 });
 
 describe("detachGluedMarkdownFences", () => {

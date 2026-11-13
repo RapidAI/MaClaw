@@ -292,6 +292,11 @@
 - `perfReporting.ts` reports `js-heap`/`dom_nodes` every 60s; pair with the
   backend `webview_mem_mb` sample (totals ALL msedgewebview2 children) to
   split JS heap vs DOM vs GPU growth in maclaw.log.
+- `messages` is NOT React state: `useAIAssistant` writes to a per-hook
+  `AssistantMessagesStore` and `AIAssistantPanel` subscribes via
+  `useSyncExternalStore` (falls back to `state.messages` props). Token
+  flushes re-render the panel only — never add `messages` back to
+  `panelState`/`useState` or App re-renders per flush again.
 
 ## Logs
 

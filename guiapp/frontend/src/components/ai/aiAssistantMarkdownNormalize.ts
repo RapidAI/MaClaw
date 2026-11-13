@@ -603,10 +603,8 @@ export function normalizeInlineListMarkers(content: string): string {
             if (displayMathSegment.math) return displayMathSegment.text;
             const mayHaveIcons = mayContainCapabilityPictograph(displayMathSegment.text);
             const denseCapabilityList = mayHaveIcons && hasMultipleCapabilityIcons(displayMathSegment.text);
-            const repairLists = (segment: string) => {
-                let out = segment;
-                if (out.includes("\\")) out = out.replace(escapedNewlinePattern, "\n");
-                if (out.includes("||")) out = out.replace(/\|\|(?=\s*[^|\s])/g, "\n|");
+            const repairListLine = (line: string) => {
+                let out = line;
                 if (out.includes("#")) {
                     out = out
                         .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{1,6}\s+)/g, "$1\n$2")
@@ -628,6 +626,21 @@ export function normalizeInlineListMarkers(content: string): string {
                     if (denseCapabilityList) out = out.replace(capabilityIconMidSentencePattern, "$1\n- ");
                 }
                 return out;
+            };
+            const repairLists = (segment: string) => {
+                let out = segment;
+                if (out.includes("\\")) out = out.replace(escapedNewlinePattern, "\n");
+                if (out.includes("||")) out = out.replace(/\|\|(?=\s*[^|\s])/g, "\n|");
+                // Fast path: no table rows — repair the whole segment in one pass.
+                if (!out.includes("|")) return repairListLine(out);
+                // Table rows keep their cells — "#", "- ", or list markers inside
+                // "| a | b |" are column text, not structure. The split keeps each
+                // line's trailing "\n" so `\s*` / `(^|\n)` still see it. The
+                // escaped-newline and "||" repairs above stay global because they
+                // are what create the line/row boundaries in the first place.
+                return out.split(/(?<=\n)/)
+                    .map((line) => line.includes("|") ? line : repairListLine(line))
+                    .join("");
             };
             const normalized = needsMarkdownSpanProtection(displayMathSegment.text)
                 ? withMarkdownSensitiveSpansProtected(displayMathSegment.text, repairLists)

@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, type ClipboardEvent, type DragEvent } from "react";
+import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, useSyncExternalStore, type ClipboardEvent, type DragEvent } from "react";
 import { type CancelAIAssistantResult, type ChatMessage } from "./useAIAssistant";
 import { attachmentInfoFromFilePath, buildAttachmentDisplayText, findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds } from "./useAIAssistant";
 import { userTurnDisplayOptions, stripUserTurnPromptArtifacts } from "./userTurnDisplay";
@@ -199,12 +199,24 @@ function replyCardFingerprint(msg: ChatMessage): string {
     return `${actions}|${confirmation}|${slot}`;
 }
 
+const emptyAssistantMessages: ChatMessage[] = [];
+const noopAssistantMessagesSubscribe = () => () => {};
+const getEmptyAssistantMessages = () => emptyAssistantMessages;
+
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, chatFontFamily = "system", codingFontFamily = "system", themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayName, brandDisplayNameCN } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
-    const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, offscreenLiveSessionKeys: rawOffscreenLiveSessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null, chatTasks = [] } = state;
+    const { messages: propMessages, messagesStore, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, offscreenLiveSessionKeys: rawOffscreenLiveSessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null, chatTasks = [] } = state;
+    // The hook's transcript lives in an external store so a stream flush
+    // re-renders this panel without waking the App root. Panels fed a plain
+    // `messages` prop (tests, embeds) read that instead.
+    const storeMessages = useSyncExternalStore(
+        messagesStore ? messagesStore.subscribe : noopAssistantMessagesSubscribe,
+        messagesStore ? messagesStore.get : getEmptyAssistantMessages,
+    );
+    const messages = messagesStore ? storeMessages : (propMessages ?? emptyAssistantMessages);
     const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle, isExpertSessionIdle, waitForExpertSessionIdle } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";

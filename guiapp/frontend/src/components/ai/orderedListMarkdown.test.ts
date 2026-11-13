@@ -127,6 +127,50 @@ describe("splitMidLineOrderedListMarkers", () => {
         expect(splitMidLineOrderedListMarkers("done-1) next")).toBe("done-1) next");
     });
 
+    it("does not split math expressions glued to operator chars", () => {
+        expect(splitMidLineOrderedListMarkers("联合训练一个插补器和一个 (n+1) 类判别器")).toBe(
+            "联合训练一个插补器和一个 (n+1) 类判别器",
+        );
+        expect(splitMidLineOrderedListMarkers("set x=2. value")).toBe("set x=2. value");
+        expect(splitMidLineOrderedListMarkers("a*3) next")).toBe("a*3) next");
+        expect(splitMidLineOrderedListMarkers("约 n×2. 倍")).toBe("约 n×2. 倍");
+        // Packed-marker path: "(n+1) … (n+2) …" is two parentheticals, not items.
+        expect(splitMidLineOrderedListMarkers("(n+1) 类与 (n+2) 类")).toBe("(n+1) 类与 (n+2) 类");
+        expect(splitMidLineOrderedListMarkers("见 (1) 项与 (2) 项")).toBe("见 (1) 项与 (2) 项");
+        // Subscript-like bracket glue takes the same blocked-prev path.
+        expect(splitMidLineOrderedListMarkers("见 arr[1. 项与 arr[2. 项")).toBe("见 arr[1. 项与 arr[2. 项");
+        // Identifier glue: language/package names keep their version digits.
+        expect(splitMidLineOrderedListMarkers("用 C#1. 实现")).toBe("用 C#1. 实现");
+        expect(splitMidLineOrderedListMarkers("升级 pkg@1. 后")).toBe("升级 pkg@1. 后");
+        // Operand-binding math symbols glue a following digit-run the same way.
+        expect(splitMidLineOrderedListMarkers("令 x=√2. 继续")).toBe("令 x=√2. 继续");
+        expect(splitMidLineOrderedListMarkers("求和 ∑1. 项")).toBe("求和 ∑1. 项");
+        expect(splitMidLineOrderedListMarkers("映射 x→1. 处")).toBe("映射 x→1. 处");
+    });
+
+    it("does not split spaced markers whose gap follows an operator", () => {
+        // Inside a list item's body.
+        expect(splitMidLineOrderedListMarkers("1. 设 x + 2. y 时")).toBe("1. 设 x + 2. y 时");
+        expect(splitMidLineOrderedListMarkers("1. 取 a - 2. b 后")).toBe("1. 取 a - 2. b 后");
+        // Packed expansion in prose.
+        expect(splitMidLineOrderedListMarkers("结果 1. a + 2. b")).toBe("结果 1. a + 2. b");
+        // A real packed list after ordinary text still expands.
+        expect(splitMidLineOrderedListMarkers("要点 1. a 2. b")).toBe("要点\n1. a\n2. b");
+    });
+
+    it("keeps table rows intact (markers inside cells are column text)", () => {
+        const numbered = "| 1. 旧版 | 2. 新版 | 3. 最新 |";
+        expect(splitMidLineOrderedListMarkers(numbered)).toBe(numbered);
+        const glued = "| 步骤1) 先做 | 2) 再做 | 备注 |";
+        expect(splitMidLineOrderedListMarkers(glued)).toBe(glued);
+        const math = "| (n+1)-class discriminator | (n+1) 类判别器 | n 个真实类 |";
+        expect(splitMidLineOrderedListMarkers(math)).toBe(math);
+        // Non-table lines around a table still get repaired.
+        expect(splitMidLineOrderedListMarkers("如下：1. a\n| 1. x | 2. y |\n完成。1. b")).toBe(
+            "如下：\n1. a\n| 1. x | 2. y |\n完成。\n1. b",
+        );
+    });
+
     it("expands compact multi-item ordered lines including two-digit indices", () => {
         expect(splitMidLineOrderedListMarkers("1. a 2. b 10. c 11. d")).toBe(
             "1. a\n2. b\n10. c\n11. d",
