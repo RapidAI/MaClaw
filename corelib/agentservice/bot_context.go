@@ -289,6 +289,7 @@ func (s *Service) NoteBotTask(ctx context.Context, p Principal, instanceID, sess
 				state.Asks[i].Because = "run_ended"
 			}
 		}
+		s.clearWaitingRun(p, instanceID, task.RunID, "run_ended")
 	}
 	return s.writeBotContext(ctx, p, instanceID, sess, state)
 }

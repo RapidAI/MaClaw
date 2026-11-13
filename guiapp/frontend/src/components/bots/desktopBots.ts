@@ -773,10 +773,10 @@ export function desktopBotAccountId(config: { remote_user_id?: unknown; remote_e
 // desktopTaskStep decides the next step from the request and this reply.
 // A screenshot that is already attached finished a look. An arrangement that
 // still names later work keeps the confirm control. A login handoff does not.
-export function desktopTaskStep(userText: string, reply: Pick<DesktopBotMessage, 'content' | 'images' | 'files' | 'localPaths' | 'userControl' | 'attentionReason' | 'askUser' | 'askResolved' | 'workOrder' | 'confirm'>): DesktopTaskStep {
+export function desktopTaskStep(userText: string, reply: Pick<DesktopBotMessage, 'content' | 'images' | 'files' | 'localPaths' | 'userControl' | 'attentionReason' | 'askUser' | 'askResolved' | 'askWithdrawn' | 'workOrder' | 'confirm'>): DesktopTaskStep {
     if (reply.userControl || (reply.attentionReason || '').trim()) return 'assist';
     const ask = reply.askUser;
-    if (ask && !reply.askResolved && (ask.question || ask.secretName || (ask.options && ask.options.length > 0))) return 'ask';
+    if (ask && !reply.askResolved && !reply.askWithdrawn && (ask.question || ask.secretName || (ask.options && ask.options.length > 0))) return 'ask';
     const content = reply.content || '';
     if ((reply.localPaths && reply.localPaths.length > 0) || (reply.files && reply.files.length > 0)) return 'done';
     const remaining = REMAINING_WORK.test(content);
@@ -845,6 +845,9 @@ export interface DesktopBotMessage {
     phase?: BotPhase;
     askUser?: DesktopBotAsk;
     askResolved?: boolean;
+    // The question was superseded: a newer message arrived, or the run ended.
+    // The card stays so the person can see what was asked, and it does not accept a click.
+    askWithdrawn?: boolean;
     requestId?: string;
     // Set just before the order goes to SendDesktopBotTask. A pending bubble
     // without it never left this app: after a restart nothing will answer it.
@@ -921,6 +924,9 @@ export interface DesktopBotMessage {
     // When this conversation was last attached to the bubble, for the
     // short sticky window on the page.
     conversationAt?: number;
+    // Server creation time in milliseconds. Late deliveries sort by this,
+    // and a reply sits with the user turn it answers.
+    serverAt?: number;
     // On the person's line: the earlier task thread the page routed it to
     // by content (ClassifyDesktopFollowUp), its title for the visible
     // line, and whether the person undid that choice.
@@ -1303,12 +1309,66 @@ function offerTranscriptSync(userId: string, botId: string, messages: DesktopBot
     }
 }
 
+// orderDesktopTranscript puts each reply with the user turn it answers and
+// sorts by server creation time. A question with a newer user message after
+// it is withdrawn: the buttons are gone and the card is grey.
+export function orderDesktopTranscript(messages: DesktopBotMessage[]): DesktopBotMessage[] {
+    const timed = messages.every(item => (item.serverAt || 0) > 0);
+    const ordered = timed
+        ? messages.map((item, index) => ({ item, index })).sort((a, b) => (a.item.serverAt || 0) - (b.item.serverAt || 0) || a.index - b.index).map(row => row.item)
+        : messages.slice();
+    const askAt = new Map<string, number>();
+    ordered.forEach((item, index) => {
+        if (item.role === 'assistant' && item.runId && item.askUser && !askAt.has(item.runId)) askAt.set(item.runId, index);
+    });
+    const answerAt = new Map<string, number>();
+    askAt.forEach((at, runId) => {
+        for (let j = at + 1; j < ordered.length; j++) {
+            if (ordered[j].role === 'user') { answerAt.set(runId, j); break; }
+        }
+    });
+    ordered.forEach((item, index) => {
+        if (item.role === 'user' && item.runId && !answerAt.has(item.runId)) answerAt.set(item.runId, index);
+    });
+    const moved = new Set<number>();
+    const extra = new Map<number, DesktopBotMessage[]>();
+    ordered.forEach((item, index) => {
+        if (item.role !== 'assistant' || !item.runId || item.askUser) return;
+        const at = answerAt.get(item.runId);
+        if (at == null || index <= at + 1) return;
+        let laterUser = false;
+        for (let j = at + 1; j < index; j++) {
+            if (ordered[j].role === 'user') laterUser = true;
+        }
+        if (!laterUser) return;
+        moved.add(index);
+        const list = extra.get(at) || [];
+        list.push(item);
+        extra.set(at, list);
+    });
+    const placed: DesktopBotMessage[] = [];
+    ordered.forEach((item, index) => {
+        if (moved.has(index)) return;
+        placed.push(item);
+        const more = extra.get(index);
+        if (more) placed.push(...more);
+    });
+    let newestUser = -1;
+    placed.forEach((item, index) => { if (item.role === 'user') newestUser = index; });
+    return placed.map((item, index) => {
+        if (item.role === 'assistant' && item.askUser && !item.askResolved && !item.askWithdrawn && newestUser > index) {
+            return { ...item, askResolved: true, askWithdrawn: true };
+        }
+        return item;
+    });
+}
+
 export function saveBotMessages(userId: string, botId: string, messages: DesktopBotMessage[]) {
     const store = storage();
     if (!store) return;
     const all = readMessages();
     const key = desktopUserKey(userId);
-    const kept = messages.slice(-80).map(withoutImageBytes);
+    const kept = orderDesktopTranscript(messages).slice(-80).map(withoutImageBytes);
     all[key] = { ...(all[key] || {}), [botId]: kept };
     let payload = JSON.stringify(all);
     while (payload.length > MESSAGE_BUDGET && dropOldestShot(all, key, botId)) {
@@ -1378,7 +1438,7 @@ function withConversation<T extends { conversation?: string; conversationAt?: nu
     return { conversation: session, conversationAt: Number(patch.conversationAt || previous.conversationAt || 0) || now };
 }
 
-export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; runId?: string; conversation?: string; conversationAt?: number }): string {
+export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; runId?: string; conversation?: string; conversationAt?: number; serverAt?: number }): string {
     const current = messagesForBot(userId, botId);
     const index = pendingBotIndex(current, patch.requestId || '');
     if (index < 0) return '';
@@ -1404,6 +1464,7 @@ export function settlePendingBotReply(userId: string, botId: string, patch: { co
         localPaths,
         files: patch.failed || localPaths ? undefined : desktopBotFiles(patch.files),
         runId: (patch.runId || '').trim() || previous.runId,
+        serverAt: patch.serverAt || previous.serverAt,
         ...withConversation(previous, patch),
     };
     saveBotMessages(userId, botId, foldPlanConfirmation(next, index));
@@ -1610,7 +1671,7 @@ export function takeDesktopBotCrossRun(userId: string, botId: string): DesktopBo
 // The same request id is written once, so the open page and the store can
 // both hear the event. A scheduled report passes no phase, so it does not
 // take the confirm control. A destructive delegate passes phase plan.
-export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; confirm?: DesktopBotConfirm; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string; conversation?: string; conversationAt?: number }) {
+export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; confirm?: DesktopBotConfirm; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string; conversation?: string; conversationAt?: number; serverAt?: number }) {
     const requestId = (patch.requestId || '').trim();
     const runId = (patch.runId || '').trim();
     const current = messagesForBot(userId, botId);
@@ -1644,6 +1705,7 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
         chat: patch.chat === true ? true : undefined,
         feed: patch.feed,
         runId: runId || undefined,
+        serverAt: patch.serverAt,
         ...withConversation({} as DesktopBotMessage, patch),
     };
     saveBotMessages(userId, botId, [...current, message]);
