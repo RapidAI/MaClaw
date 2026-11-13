@@ -153,6 +153,21 @@ func (s *HTTPServer) botRouteClassifier(p agentservice.Principal) agentservice.B
 	}
 }
 
+// GET /api/v1/instances/{instanceId}/bot-context?client_session_key= is the
+// conversation a GUI renders. The same snapshot is what every client sees.
+func (s *HTTPServer) handleReadBotContext(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	key := r.URL.Query().Get("client_session_key")
+	if strings.TrimSpace(key) == "" {
+		key = r.URL.Query().Get("bot_id")
+	}
+	out, err := s.svc.ReadBotContext(r.Context(), p, r.PathValue("instanceId"), key)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // POST /api/v1/instances/{instanceId}/bot-discuss writes one discussion
 // turn into the conversation and merges the plan. It does not start a run.
 func (s *HTTPServer) handleRecordBotDiscuss(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

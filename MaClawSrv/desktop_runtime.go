@@ -2337,25 +2337,21 @@ func listDesktopOpenPages(addr, attachedID string) string {
 		return ""
 	}
 	targets = trimDesktopTabs(addr, attachedID, targets)
-	lines := make([]string, 0, len(targets))
+	lines := make([]string, 0, 1)
 	for _, target := range targets {
-		if target.Type != "page" || strings.TrimSpace(target.ID) == "" {
+		if target.Type != "page" || strings.TrimSpace(target.ID) == "" || target.ID != attachedID {
 			continue
 		}
 		title := desktopOneLine(target.Title, 80)
 		if title == "" {
 			title = "(untitled)"
 		}
-		mark := "-"
-		if target.ID == attachedID {
-			mark = "- attached"
-		}
-		lines = append(lines, mark+" "+title+" — "+desktopPageLocation(target.URL))
+		lines = append(lines, "- attached "+title+" — "+desktopPageLocation(target.URL))
 	}
 	if len(lines) == 0 {
 		return ""
 	}
-	return "Open browser pages (" + strconv.Itoa(len(lines)) + "), including tabs behind the front window:\n" + strings.Join(lines, "\n")
+	return "Open browser pages (" + strconv.Itoa(len(lines)) + "), this bot's page only. Other tabs in this browser are not this bot's tasks. Do not offer another tab, another site, or a cart this run did not fill as something to continue.\n" + strings.Join(lines, "\n")
 }
 
 // desktopPagesBelongToAttached: the listed targets include the page this

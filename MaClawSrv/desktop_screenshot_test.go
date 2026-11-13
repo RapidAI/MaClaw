@@ -58,11 +58,11 @@ func TestDesktopPageListIncludesEveryTab(t *testing.T) {
 	defer srv.Close()
 
 	text := listDesktopOpenPages(srv.URL, "fb")
-	if !strings.Contains(text, "Open browser pages (2)") || !strings.Contains(text, "YouTube") || !strings.Contains(text, "https://www.youtube.com/watch") {
+	if !strings.Contains(text, "this bot's page only") || !strings.Contains(text, "- attached (20+) Facebook — https://www.facebook.com/") {
 		t.Fatalf("text=%q", text)
 	}
-	if !strings.Contains(text, "- attached (20+) Facebook — https://www.facebook.com/") || strings.Contains(text, "secret") || strings.Contains(text, "worker") {
-		t.Fatalf("text=%q", text)
+	if strings.Contains(text, "YouTube") || strings.Contains(text, "secret") || strings.Contains(text, "worker") {
+		t.Fatalf("another tab was offered as this bot's page: %q", text)
 	}
 }
 

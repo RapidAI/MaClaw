@@ -29,13 +29,14 @@ type BotIntakeRun struct {
 
 // BotIntakeInput is one message to judge.
 type BotIntakeInput struct {
-	BotID   string         `json:"bot_id"`
-	Content string         `json:"content"`
-	Lang    string         `json:"lang,omitempty"`
-	Persona string         `json:"persona,omitempty"`
-	Phase   string         `json:"phase,omitempty"`
-	Earlier []string       `json:"earlier,omitempty"`
-	Running []BotIntakeRun `json:"running,omitempty"`
+	BotID            string         `json:"bot_id"`
+	Content          string         `json:"content"`
+	Lang             string         `json:"lang,omitempty"`
+	Persona          string         `json:"persona,omitempty"`
+	Phase            string         `json:"phase,omitempty"`
+	ClientSessionKey string         `json:"client_session_key,omitempty"`
+	Earlier          []string       `json:"earlier,omitempty"`
+	Running          []BotIntakeRun `json:"running,omitempty"`
 }
 
 // BotIntakeSchedule is a timer. The decision is made here. MaClawSrv writes
@@ -146,7 +147,17 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 	if content == "" {
 		return discussIntake("empty"), nil
 	}
-	running := liveIntakeRuns(in.Running)
+	sessionKey := strings.TrimSpace(in.ClientSessionKey)
+	if sessionKey == "" {
+		sessionKey = bot
+	}
+	var storedEarlier []string
+	var storedTasks []BotIntakeRun
+	if turned, tasks, turnErr := s.BeginBotTurn(ctx, p, instanceID, sessionKey, content, ""); turnErr == nil {
+		storedEarlier, storedTasks = turned, tasks
+	}
+	in.Earlier = mergeIntakeLines(storedEarlier, in.Earlier)
+	running := liveIntakeRuns(append(storedTasks, in.Running...))
 	if classify == nil {
 		return discussIntake("no classifier"), nil
 	}
@@ -175,7 +186,34 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 	if !ok {
 		return discussIntake("unreadable"), nil
 	}
-	return normalizeBotIntake(parsed, content, running, in.Earlier), nil
+	out := normalizeBotIntake(parsed, content, running, in.Earlier)
+	_ = s.FinishBotTurn(ctx, p, instanceID, sessionKey, firstNonEmptyIntake(out.Ack, out.Told), out.Kind, out.Instruction, out.RunID)
+	return out, nil
+}
+
+func firstNonEmptyIntake(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func mergeIntakeLines(groups ...[]string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, group := range groups {
+		for _, line := range group {
+			line = strings.TrimSpace(line)
+			if line == "" || seen[line] {
+				continue
+			}
+			seen[line] = true
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 func discussIntake(reason string) BotIntake {
@@ -515,6 +553,52 @@ func canonicalIntakeKind(kind, pace string) string {
 		return "status"
 	}
 	return "new"
+}
+
+func intakeSaysNoWork(ack string) bool {
+	a := strings.ToLower(strings.TrimSpace(ack))
+	if a == "" {
+		return false
+	}
+	for _, part := range []string{"没有可以继续", "没有在做", "没在做", "无任务", "nothing to continue", "no work", "nothing running"} {
+		if strings.Contains(a, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// FoldEarlierIntoInstruction keeps recent turns in a new run's order when
+// the order does not already repeat them.
+func FoldEarlierIntoInstruction(instruction string, earlier []string) string {
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" || len(earlier) == 0 {
+		return instruction
+	}
+	var missing []string
+	for _, line := range earlier {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(instruction, line) {
+			continue
+		}
+		missing = append(missing, line)
+		if len(missing) == 8 {
+			break
+		}
+	}
+	if len(missing) == 0 {
+		return instruction
+	}
+	var b strings.Builder
+	b.WriteString("此前对话：\n")
+	for _, line := range missing {
+		b.WriteString("- ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("这次：")
+	b.WriteString(instruction)
+	return b.String()
 }
 
 func validIntakeSchedule(s *BotIntakeSchedule) (*BotIntakeSchedule, bool) {

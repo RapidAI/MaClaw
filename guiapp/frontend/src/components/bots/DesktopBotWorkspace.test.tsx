@@ -124,6 +124,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     WakeDesktopBot: (arg: string, epoch?: number) => wakeBot(arg, epoch),
     ReleaseDesktopBotWatch: (arg: string, epoch?: number) => releaseWatch(arg, epoch),
     GetDesktopBotScreen: (botId: string) => getScreen(botId),
+    GetDesktopBotConversation: async () => ({ revision: 0, state: 'discuss', messages: [] }),
     HandBackDesktopBot: (botId: string) => handBack(botId),
     GetHubConnectionState: () => hubLink(),
     ReconnectHub: () => Promise.resolve({ state: 'connected' }),

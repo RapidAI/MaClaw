@@ -6366,6 +6366,10 @@ export function WakeDesktopBot(arg1, arg2) {
   return window['go']['main']['App']['WakeDesktopBot'](arg1, arg2);
 }
 
+export function GetDesktopBotConversation(arg1) {
+  return window['go']['main']['App']['GetDesktopBotConversation'](arg1);
+}
+
 export function GetDesktopBotScreen(arg1) {
   return window['go']['main']['App']['GetDesktopBotScreen'](arg1);
 }
