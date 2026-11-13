@@ -125,17 +125,32 @@ func (s *Service) MarkBotDiscussionExecuting(ctx context.Context, p Principal, i
 }
 
 func (s *Service) writeDiscussState(ctx context.Context, p Principal, instanceID string, sess *Session, state BotDiscussState) error {
+	if sess == nil {
+		return ErrSessionNotFound
+	}
+	unlock := botContextLock(p.TenantID + "\x00" + p.UserID + "\x00" + instanceID + "\x00" + strings.TrimSpace(state.Session))
+	defer unlock()
+	fresh, err := s.store.GetSession(p.TenantID, p.UserID, instanceID, sess.ID)
+	if err != nil {
+		return err
+	}
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	meta := cloneMap(sess.Metadata)
+	meta := cloneMap(fresh.Metadata)
 	if meta == nil {
 		meta = map[string]string{}
 	}
 	meta[botDiscussMetaKey] = string(raw)
-	_, err = s.UpdateSession(ctx, p, instanceID, sess.ID, UpdateSessionInput{Metadata: meta})
-	return err
+	updated, err := s.UpdateSession(ctx, p, instanceID, sess.ID, UpdateSessionInput{Metadata: meta})
+	if err != nil {
+		return err
+	}
+	if updated != nil {
+		*sess = *updated
+	}
+	return nil
 }
 
 func readDiscussState(meta map[string]string) BotDiscussState {

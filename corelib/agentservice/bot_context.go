@@ -198,7 +198,10 @@ func (s *Service) writeBotContext(ctx context.Context, p Principal, instanceID s
 	if err != nil {
 		return err
 	}
-	meta := cloneMap(sess.Metadata)
+	// The session passed in can be older than the row just read for the
+	// revision check. Write onto that row so a concurrent metadata update
+	// is not replaced by the stale copy.
+	meta := cloneMap(fresh.Metadata)
 	if meta == nil {
 		meta = map[string]string{}
 	}
@@ -288,12 +291,9 @@ func (s *Service) FinishBotTurn(ctx context.Context, p Principal, instanceID, se
 			ID: NewID("msg"), At: s.now(), Role: "assistant", Text: text, Kind: kind, RunID: runID,
 		})
 	}
-	if kind == "new" && strings.TrimSpace(instruction) != "" && !intakeSaysNoWork(ack) {
-		state.State = "executing"
-		state.Tasks = append(state.Tasks, BotContextTask{
-			RunID: strings.TrimSpace(runID), Instruction: strings.TrimSpace(instruction), Status: "running", At: s.now(),
-		})
-	}
+	// The task itself is recorded by NoteBotTask from the structured kind.
+	// The reply text is not consulted.
+	_ = instruction
 	return s.writeBotContext(ctx, p, instanceID, sess, state)
 }
 
@@ -325,6 +325,9 @@ func (s *Service) NoteBotTask(ctx context.Context, p Principal, instanceID, sess
 	}
 	if !replaced && task.Instruction != "" {
 		state.Tasks = append(state.Tasks, task)
+	}
+	if task.Status == "running" {
+		state.State = "executing"
 	}
 	if contextTaskResumable(task.Status) {
 		for i := range state.Asks {

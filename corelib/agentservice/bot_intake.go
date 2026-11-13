@@ -193,7 +193,18 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 		return discussIntake("unreadable"), nil
 	}
 	out := normalizeBotIntake(parsed, content, running, in.Earlier)
-	_ = s.FinishBotTurn(ctx, p, instanceID, sessionKey, firstNonEmptyIntake(out.Ack, out.Told), out.Kind, out.Instruction, out.RunID)
+	ack := firstNonEmptyIntake(out.Ack, out.Told)
+	_ = s.FinishBotTurn(ctx, p, instanceID, sessionKey, ack, out.Kind, out.Instruction, out.RunID)
+	if out.Kind == "new" && strings.TrimSpace(out.Instruction) != "" {
+		_ = s.NoteBotTask(ctx, p, instanceID, sessionKey, BotContextTask{
+			RunID: strings.TrimSpace(out.RunID), Instruction: strings.TrimSpace(out.Instruction), Status: "running",
+		})
+	}
+	if out.Kind == "ask" && ack != "" {
+		_ = s.NoteBotAsk(ctx, p, instanceID, sessionKey, BotContextAsk{
+			RunID: strings.TrimSpace(out.RunID), Question: ack,
+		})
+	}
 	return out, nil
 }
 
