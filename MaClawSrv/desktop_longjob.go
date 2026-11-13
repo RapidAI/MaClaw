@@ -623,6 +623,7 @@ func desktopLongJobGraceWait(ctx context.Context, j *desktopLongJob) (string, er
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = withoutDesktopBashSecrets(ctx)
 	for _, d := range desktopLongJobGrace {
 		if !desktopLongJobSleep(ctx, d) {
 			return "", nil, false

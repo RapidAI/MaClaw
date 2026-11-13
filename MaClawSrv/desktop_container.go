@@ -21,7 +21,15 @@ func init() {
 	agentservice.DesktopWeb = desktopBotWeb
 	agentservice.FinishDesktopRound = finishDesktopRound
 	agentservice.DesktopTurnNeedsFinish = func(runID string) bool {
-		return desktopDeclaredOutcome(runID) == ""
+		if desktopDeclaredOutcome(runID) != "" {
+			return false
+		}
+		// A plain reply never touched the desktop. Forcing finish there
+		// turns the chat into a partial task.
+		desktopRecStateMu.Lock()
+		steps := desktopRecRunSteps[strings.TrimSpace(runID)]
+		desktopRecStateMu.Unlock()
+		return steps
 	}
 }
 
@@ -277,6 +285,10 @@ func desktopRemoveSecretFile(ctx context.Context, scope agentruntime.Scope, path
 // desktopStageSecretEnv writes the named secrets to a 0600 file and wraps the
 // command so the shell sources that file, deletes it, runs the command, and
 // unsets the names. The values are not part of the process command line.
+// The unset is the next line, not a "; " glued to the command: a trailing
+// "&", a heredoc terminator, or a "#" comment would otherwise swallow or
+// reject the cleanup. A background child started by the command keeps the
+// environment it inherited; unset in this shell does not reach that child.
 // path is empty when nothing was written. A command that already contains a
 // value is refused before the file exists.
 func desktopStageSecretEnv(ctx context.Context, scope agentruntime.Scope, command string, secrets map[string]string) (string, string, error) {
@@ -307,11 +319,20 @@ func desktopStageSecretEnv(ctx context.Context, scope agentruntime.Scope, comman
 		return "", "", err
 	}
 	quoted := bashSingleQuote(path)
-	wrapped := "chmod 0600 " + quoted + "; set -a; . " + quoted + "; set +a; rm -f " + quoted + "; " + command + "; __mc_st=$?; unset " + strings.Join(names, " ") + "; exit $__mc_st"
+	wrapped := "chmod 0600 " + quoted + "; set -a; . " + quoted + "; set +a; rm -f " + quoted + "\n" + command + "\n__mc_st=$?\nunset " + strings.Join(names, " ") + "\nexit $__mc_st"
 	return wrapped, path, nil
 }
 
 type desktopBashSecretsCtxKey struct{}
+
+// withoutDesktopBashSecrets drops names staged for the user's command.
+// Later polls on the same call must not write the secret file again.
+func withoutDesktopBashSecrets(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, desktopBashSecretsCtxKey{}, []string{})
+}
 
 func withDesktopBashSecrets(ctx context.Context, names []string) context.Context {
 	if ctx == nil {

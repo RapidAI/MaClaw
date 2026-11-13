@@ -405,8 +405,9 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 	// the round's desktop is still bound, so the outcome is measured.
 	desktopRecRecheckAtEnd(ctx, run.ID)
 	out := desktopTaskOutcomeMetadata(run.ID, msg)
+	sentence, haveSentence := desktopFinishSentence(run.ID)
 	desktopClearFinish(run.ID)
-	if sentence, ok := desktopFinishSentence(run.ID); ok && sentence != "" {
+	if haveSentence && sentence != "" {
 		if out == nil {
 			out = map[string]string{}
 		}

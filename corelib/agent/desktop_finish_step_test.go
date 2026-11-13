@@ -21,6 +21,7 @@ type finishGateCallbacks struct {
 
 func (g *finishGateCallbacks) DesktopNeedsFinish() bool { return g.needs }
 func (g *finishGateCallbacks) ArmDesktopFinishStep()    { g.armed = true }
+func (g *finishGateCallbacks) ClearDesktopFinishStep()  { g.armed = false }
 func (g *finishGateCallbacks) DesktopFinishArmed() (bool, string) {
 	if !g.armed {
 		return false, ""
@@ -29,10 +30,6 @@ func (g *finishGateCallbacks) DesktopFinishArmed() (bool, string) {
 }
 func (g *finishGateCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
 	g.calls = append(g.calls, name+" "+args)
-	if strings.Contains(args, `"finish"`) {
-		g.needs = false
-		g.armed = false
-	}
 	return ToolExecutionResult{Result: "finish recorded", Outcome: ToolExecutionOutcomeOK}
 }
 
@@ -94,5 +91,13 @@ func TestForcedFinishStepUsesOnlyThatTool(t *testing.T) {
 	}
 	if len(cb.calls) != 1 || !strings.Contains(cb.calls[0], "finish") {
 		t.Fatalf("calls %#v", cb.calls)
+	}
+	// finish has run, so the next iteration is a normal step. The gate stays
+	// armed only if the loop never clears it.
+	if len(choices) < 3 || enums[2] == `["finish"]` || strings.Contains(choices[2], `"desktop"`) {
+		t.Fatalf("finish stayed armed: choices %#v enums %#v", choices, enums)
+	}
+	if cb.armed {
+		t.Fatal("finish-only flag still set after finish ran")
 	}
 }

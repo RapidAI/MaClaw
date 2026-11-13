@@ -270,6 +270,27 @@ func TestDeclaredFailedIsBlocked(t *testing.T) {
 	}
 }
 
+func TestPlainChatIsNotForcedThroughFinish(t *testing.T) {
+	run := "run-plain-chat"
+	defer desktopRecoveryEndRun(run)
+	if agentservice.DesktopTurnNeedsFinish(run) {
+		t.Fatal("a reply with no desktop step was forced through finish")
+	}
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "done", "text": "你好"}); err != nil {
+		t.Fatal(err)
+	}
+	if md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "你好"}); md != nil {
+		t.Fatalf("plain chat outcome %#v", md)
+	}
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[run] = true
+	desktopRecStateMu.Unlock()
+	desktopClearFinish(run)
+	if !agentservice.DesktopTurnNeedsFinish(run) {
+		t.Fatal("a turn that did desktop work was not offered finish")
+	}
+}
+
 func TestDeclaredDoneWithoutWorkIsNotUndeclared(t *testing.T) {
 	run := "run-finish-idle"
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u-finish-idle", RunID: run}

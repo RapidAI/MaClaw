@@ -435,6 +435,9 @@ type DesktopFinishGate interface {
 	ArmDesktopFinishStep()
 	// DesktopFinishArmed reports the forced step and the tool that must be called.
 	DesktopFinishArmed() (bool, string)
+	// ClearDesktopFinishStep ends that forced step once finish has run, so
+	// later iterations of the same turn are not stuck calling only finish.
+	ClearDesktopFinishStep()
 }
 
 func toolSurfaceInvocationPolicyForRequest(cb LoopCallbacks, cfg corelib.MaclawLLMConfig, iteration int) (ToolSurfaceInvocationPolicy, error) {
@@ -5674,10 +5677,11 @@ func prepareToolsForToolSurfaceReceipt(cfg corelib.MaclawLLMConfig, tools []map[
 	return prepared
 }
 
-func executeAuthorizedLoopToolCallWithContext(cb LoopCallbacks, name, argsJSON, callID string, execution ToolCallExecutionContext) ToolExecutionResult {
-	if result, blocked := ApplyCommitGate(cb, name, argsJSON); blocked {
-		return result
+func executeAuthorizedLoopToolCallWithContext(cb LoopCallbacks, name, argsJSON, callID string, execution ToolCallExecutionContext) (result ToolExecutionResult) {
+	if blockedResult, blocked := ApplyCommitGate(cb, name, argsJSON); blocked {
+		return blockedResult
 	}
+	defer func() { clearDesktopFinishAfterRun(cb, name, argsJSON) }()
 	// Phase 2 dispatcher consultation comes first: a host that registers
 	// handlers owns those names outright. handled=false falls through to
 	// the legacy executor chain unchanged.
@@ -5725,9 +5729,37 @@ func executeAuthorizedLoopToolCallWithContext(cb LoopCallbacks, name, argsJSON, 
 		}
 		return result
 	}
-	result := cb.ExecuteTool(name, argsJSON)
-	outcome := classifyToolResult(result)
-	return ToolExecutionResult{Result: result, Outcome: executionOutcomeFromToolOutcome(outcome.kind)}
+	text := cb.ExecuteTool(name, argsJSON)
+	outcome := classifyToolResult(text)
+	return ToolExecutionResult{Result: text, Outcome: executionOutcomeFromToolOutcome(outcome.kind)}
+}
+
+// clearDesktopFinishAfterRun drops the finish-only restriction once the
+// forced tool has actually called action=finish. The action is the tool
+// argument, not the surrounding text.
+func clearDesktopFinishAfterRun(cb LoopCallbacks, name, argsJSON string) {
+	gate, ok := cb.(DesktopFinishGate)
+	if !ok {
+		return
+	}
+	armed, tool := gate.DesktopFinishArmed()
+	if !armed || strings.TrimSpace(tool) == "" || strings.TrimSpace(tool) != strings.TrimSpace(name) {
+		return
+	}
+	if desktopCalledAction(argsJSON) != "finish" {
+		return
+	}
+	gate.ClearDesktopFinishStep()
+}
+
+func desktopCalledAction(argsJSON string) string {
+	var payload struct {
+		Action string `json:"action"`
+	}
+	if json.Unmarshal([]byte(argsJSON), &payload) != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(payload.Action))
 }
 
 // FilterToolDefinitionsByAuthorizer removes LLM-facing tool definitions that

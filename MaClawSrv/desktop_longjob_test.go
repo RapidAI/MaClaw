@@ -203,6 +203,32 @@ func TestD100FailedExitIsFailed(t *testing.T) {
 }
 
 // papers 2026-11-11: a 1 s README check was named "train" and became a job.
+func TestGraceWaitPollsDoNotRestageSecrets(t *testing.T) {
+	d100Env(t)
+	ctx := withDesktopBashSecrets(context.Background(), []string{"SSH_PASSWORD"})
+	if got := desktopBashSecretsOnContext(ctx); len(got) != 1 || got[0] != "SSH_PASSWORD" {
+		t.Fatalf("user command context %#v", got)
+	}
+	polls := 0
+	desktopLongJobExec = func(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
+		polls++
+		if len(desktopBashSecretsOnContext(ctx)) != 0 {
+			t.Fatalf("poll %d restaged secrets: %s", polls, command)
+		}
+		return "LONGJOB_ALIVE pid=9\nLONGJOB_LOG_BYTES=1\nLONGJOB_LOG_TAIL\nworking\n", nil
+	}
+	j := &desktopLongJob{ID: "job_grace_sec", Status: "running", Alive: true, PID: "9", Started: desktopLongJobNow()}
+	if _, _, ended := desktopLongJobGraceWait(ctx, j); ended {
+		t.Fatal("a live job ended during grace")
+	}
+	if polls == 0 {
+		t.Fatal("grace wait did not poll")
+	}
+	if got := desktopBashSecretsOnContext(ctx); len(got) != 1 {
+		t.Fatalf("grace wait cleared the caller's secrets: %#v", got)
+	}
+}
+
 func TestD101ShortCommandReturnsInline(t *testing.T) {
 	d100Env(t)
 	desktopLongJobExec = func(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {

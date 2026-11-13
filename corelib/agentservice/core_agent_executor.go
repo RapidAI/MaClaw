@@ -2300,6 +2300,12 @@ func (c *coreAgentCallbacks) ArmDesktopFinishStep() {
 	}
 }
 
+func (c *coreAgentCallbacks) ClearDesktopFinishStep() {
+	if c != nil {
+		c.finishOnly = false
+	}
+}
+
 func (c *coreAgentCallbacks) DesktopFinishArmed() (bool, string) {
 	if c == nil || !c.finishOnly {
 		return false, ""

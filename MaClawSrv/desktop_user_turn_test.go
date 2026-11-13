@@ -159,6 +159,32 @@ func TestBashInjectsOnlyDeclaredSecrets(t *testing.T) {
 	}
 }
 
+func TestSecretUnsetFollowsTheCommandOnTheNextLine(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("alice", "bot_secret_shape")}
+	prev := desktopRemoteFile
+	desktopRemoteFile = func(context.Context, string, string, string, string, string, string, string) (string, error) {
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteFile = prev })
+	cases := []string{
+		"sleep 5 &",
+		"cat <<'EOF'\nhello\nEOF",
+		"echo hi # note",
+	}
+	for _, command := range cases {
+		wrapped, _, err := desktopStageSecretEnv(context.Background(), scope, command, map[string]string{"SSH_PASSWORD": "s3cret-value"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(wrapped, command+"\n__mc_st=$?\nunset SSH_PASSWORD\nexit $__mc_st") {
+			t.Fatalf("cleanup was not a following line:\n%s", wrapped)
+		}
+		if strings.Contains(wrapped, "s3cret-value") {
+			t.Fatal("secret value was placed on the command")
+		}
+	}
+}
+
 func TestBashCannotListAnotherBotsWork(t *testing.T) {
 	scope := agentruntime.Scope{UserID: desktop.BotDesktopUser("alice", "bot_mine")}
 	if err := desktopBashConfined(scope, "ls /home/desktop/work/bot_other"); err == nil {

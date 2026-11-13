@@ -756,7 +756,11 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 		if outcome != "" {
 			break
 		}
-		if steps && desktopRunWorked(runID) {
+		if !steps {
+			// No desktop step: this is a chat reply, not a half-finished task.
+			return "", ""
+		}
+		if desktopRunWorked(runID) {
 			return agentservice.TaskOutcomeDone, ""
 		}
 		return agentservice.TaskOutcomePartial, "finish said done but the run did no successful desktop work"
