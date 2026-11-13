@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
 // Screen lease (Daniel 11-12 06:29 「改」).
@@ -49,6 +52,12 @@ var (
 
 // desktopScreenWaitPhrase is the working-row text while a run waits.
 const desktopScreenWaitPhrase = "正在等待屏幕"
+
+// desktopScreenQueueSentence is the queued state a person and Hub can read.
+// It is not a timeout to lengthen.
+const desktopScreenQueueSentence = "正在等待屏幕，这个 bot 的另一个任务正在用"
+
+var desktopScreenHalts sync.Map // run id -> *agentservice.RunHaltedError
 
 // desktopScreenLeaseOn is false in this package's tests (most tests start
 // many runs on one user without ending them); the lease tests turn it on.
@@ -213,6 +222,7 @@ func (m *screenLeases) acquire(ctx context.Context, key, run string, onWait func
 	}
 	holder, pos := l.holder, len(l.waiters)
 	m.mu.Unlock()
+	desktopScreenQueues.Store(run, desktopScreenQueueSentence)
 	log.Printf("[screen-lease] screen=%s run=%s waits: run=%s has the screen, queue position %d", screenLeaseKeyLabel(key), run, holder, pos)
 	if onWait != nil {
 		onWait(holder, pos)
@@ -223,6 +233,7 @@ func (m *screenLeases) acquire(ctx context.Context, key, run string, onWait func
 		select {
 		case <-w.ch:
 			waited := screenLeaseNow().Sub(start)
+			desktopScreenQueues.Delete(run)
 			m.mu.Lock()
 			if w.aborted {
 				m.mu.Unlock()
@@ -251,8 +262,11 @@ func (m *screenLeases) acquire(ctx context.Context, key, run string, onWait func
 			}
 			if timedOut {
 				m.abandon(key, w)
+				desktopScreenQueues.Delete(run)
 				log.Printf("[screen-lease] screen=%s run=%s gave up after %s: run=%s still has the screen", screenLeaseKeyLabel(key), run, now.Sub(start).Round(time.Second), holder)
-				return func() {}, now.Sub(start), "", fmt.Errorf("screen_busy: another task of this bot has been using the screen for %d minutes. Do the parts that need no screen (bash, files) now, or end this turn and say plainly that this step waits for the other task", int(now.Sub(start).Minutes()))
+				halt := &agentservice.RunHaltedError{Code: "screen_busy", Sentence: desktopScreenQueueSentence}
+				desktopScreenHalts.Store(run, halt)
+				return func() {}, now.Sub(start), "", halt
 			}
 		}
 	}
@@ -286,6 +300,9 @@ func desktopScreenLeaseNote(waited time.Duration) string {
 // abandon removes a waiter that stopped waiting. A grant that raced with the
 // stop is handed back.
 func (m *screenLeases) abandon(key string, w *screenLeaseWaiter) {
+	if w != nil {
+		desktopScreenQueues.Delete(w.run)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	l := m.get(key)
@@ -394,9 +411,73 @@ func (m *screenLeases) waitingFor(run string) (string, int, bool) {
 // desktopScreenLeaseEndRun is called when a run ends (or its round finishes).
 func desktopScreenLeaseEndRun(runID, why string) {
 	desktopScreenLeases.endRun(runID, why)
+	runID = strings.TrimSpace(runID)
+	desktopScreenHalts.Delete(runID)
+	desktopScreenQueues.Delete(runID)
 }
 
 // desktopScreenLeaseStatus is the status-line text of a run that waits.
+var desktopScreenQueues sync.Map // run id -> sentence
+
+func desktopScreenQueue(runID string) string {
+	v, ok := desktopScreenQueues.Load(strings.TrimSpace(runID))
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+func init() {
+	agentservice.RunHaltReason = func(runID string) error {
+		v, ok := desktopScreenHalts.Load(strings.TrimSpace(runID))
+		if !ok {
+			return nil
+		}
+		err, _ := v.(error)
+		return err
+	}
+	agentservice.ResumeProbe = desktopResumeProbe
+	agentservice.RunEnded = func(runID string) {
+		runID = strings.TrimSpace(runID)
+		desktopScreenHalts.Delete(runID)
+		desktopScreenQueues.Delete(runID)
+	}
+}
+
+func desktopResumeProbe(ctx context.Context, tenantID, userID, instanceID, sessionID, runID string, call agentservice.RestartInFlight) string {
+	var args map[string]any
+	_ = json.Unmarshal([]byte(call.Args), &args)
+	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
+	if action == "bash" {
+		return desktopBashStateProbe(ctx, call)
+	}
+	scope := agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID, SessionID: sessionID, RunID: runID}
+	out, err := operateDesktop(ctx, scope, map[string]any{"action": "probe"})
+	if err != nil {
+		return "probe: " + err.Error()
+	}
+	return out
+}
+
+func desktopBashStateProbe(ctx context.Context, call agentservice.RestartInFlight) string {
+	j := desktopLongJobForToolCall(call.ID)
+	if j == nil {
+		// A foreground bash has no job row. The result stays outcome unknown.
+		return ""
+	}
+	out, err := desktopLongJobRun(ctx, desktopLongJobScope(j), desktopLongJobPollScript(j))
+	if err != nil {
+		return "bash poll failed: " + err.Error()
+	}
+	p := desktopLongJobParsePoll(out)
+	exit := "-"
+	if p.ExitCode != nil {
+		exit = strconv.Itoa(*p.ExitCode)
+	}
+	return fmt.Sprintf("bash job %s alive=%t exit=%s", j.ID, p.Alive, exit)
+}
+
 func desktopScreenLeaseStatus(runID string) string {
 	_, pos, ok := desktopScreenLeases.waitingFor(runID)
 	if !ok {

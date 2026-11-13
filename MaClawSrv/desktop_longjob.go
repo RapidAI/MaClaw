@@ -93,6 +93,9 @@ type desktopLongJob struct {
 	SessionID  string `json:"session_id"`
 	BotID      string `json:"bot_id,omitempty"`
 	SourceRun  string `json:"source_run,omitempty"`
+	// ToolCallID is the model call that started this job. Resume probes this
+	// job, not whichever job the run started last.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 	Command    string `json:"command"`
 	Dir        string `json:"dir"`
 	LogFile    string `json:"log_file"`
@@ -140,6 +143,9 @@ type desktopLongJob struct {
 	CheckReason string    `json:"check_reason,omitempty"`
 	CheckSet    bool      `json:"check_set,omitempty"` // the bot set NextCheck
 	CheckMisses int       `json:"check_misses,omitempty"`
+	// HubMisses counts Hub 404s while the instance row is still here.
+	// The watch backs off, then stops. It does not retry forever.
+	HubMisses   int       `json:"hub_misses,omitempty"`
 	EstimateEnd time.Time `json:"estimate_end,omitempty"`
 	OverdueSaid bool      `json:"overdue_said,omitempty"`
 	// DeadlineSaid: the person was told the estimate runs past the
@@ -577,6 +583,7 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 		InstanceID:  scope.InstanceID,
 		SessionID:   scope.SessionID,
 		SourceRun:   scope.RunID,
+		ToolCallID:  strings.TrimSpace(agentruntime.ToolCallID(ctx)),
 		Command:     cmd,
 		Dir:         dir,
 		LogFile:     path.Join(dir, "job.log"),
@@ -727,6 +734,17 @@ func desktopLongJobStatus(ctx context.Context, scope agentruntime.Scope, args ma
 	return desktopLongJobView(j), nil
 }
 
+func desktopUnwatchedJobsPrompt(scope agentruntime.Scope) string {
+	var b strings.Builder
+	for _, j := range desktopLongJobListFor(scope) {
+		if j == nil || j.Status != "unwatched" {
+			continue
+		}
+		fmt.Fprintf(&b, "Background job %s (%s) is still running and was not stopped. Hub delivery stopped: %s. Tell the person. Do not kill the process and do not start the command again.\n", j.ID, desktopLongJobLabel(j.Command), strings.TrimSpace(j.EndReason))
+	}
+	return b.String()
+}
+
 func desktopLongJobList(scope agentruntime.Scope) string {
 	jobs := desktopLongJobListFor(scope)
 	if len(jobs) == 0 {
@@ -770,6 +788,13 @@ func desktopLongJobView(j *desktopLongJob) string {
 	if n := desktopLongJobKilledNote(j); n != "" && j.Status == "failed" {
 		text += "\n说明: " + n
 	}
+	if j.Status == "unwatched" {
+		why := strings.TrimSpace(j.EndReason)
+		if why == "" {
+			why = "hub assignment missing"
+		}
+		text += "\n无人值守: " + why + "。进程没有被停，Hub 不再收到巡查。不要杀掉它，也不要重新启动。"
+	}
 	if j.LastTail != "" {
 		text += "\n--- 最近日志 ---\n" + desktopRuneHead(j.LastTail, 2000)
 	}
@@ -798,8 +823,13 @@ func desktopLongJobPollAndStore(ctx context.Context, j *desktopLongJob) error {
 		j.Fingerprint = fp
 		j.LastChange = now
 	}
+	keepUnwatched := j.Status == "unwatched"
 	switch {
 	case p.Alive:
+		if keepUnwatched {
+			j.Status = "unwatched"
+			break
+		}
 		// A quiet log is not a stall while the job is inside its own estimate:
 		// many jobs write progress to their own files (papers 11-11 23:05:
 		// BERT training logged to its run folder, job.log stayed at "training
@@ -841,6 +871,8 @@ func desktopLongJobProgressLine(j *desktopLongJob) string {
 		return "后台任务失败（退出码 " + code + "）。"
 	case "stalled":
 		return "后台任务还在，但已经 " + j.stallBound().Round(time.Second).String() + " 没有新的日志进展。"
+	case "unwatched":
+		return "后台任务仍在运行，但 Hub 不再收到巡查（" + strings.TrimSpace(j.EndReason) + "）。进程没有被停。"
 	default:
 		return "后台任务仍在运行（进程存活）。"
 	}
@@ -1048,11 +1080,14 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 	if j == nil {
 		return "", fmt.Errorf("watch: job %s not found", jobID)
 	}
-	if desktopLongJobKeepsRunning(j) || j.Status == "cancelled" || ((j.Status == "done" || j.Status == "failed") && j.ReportedStatus == j.Status) {
+	if desktopLongJobKeepsRunning(j) || j.Status == "cancelled" || j.Status == "unwatched" || ((j.Status == "done" || j.Status == "failed") && j.ReportedStatus == j.Status) {
 		desktopLongJobStopWatch(j)
 		return desktopLongJobView(j), nil
 	}
 	now := desktopLongJobNow()
+	if j.HubMisses > 0 && !j.NextPoll.IsZero() && now.Before(j.NextPoll) {
+		return "", nil
+	}
 	unreported := j.ReportedStatus != "" && j.ReportedStatus != j.Status
 	if !unreported && !j.NextPoll.IsZero() && now.Before(j.NextPoll.Add(-5*time.Second)) && !j.LastPoll.IsZero() {
 		return "", nil
@@ -1106,10 +1141,30 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 			desktopLongJobAbandon(j, "orphaned: owner gone")
 			return desktopLongJobView(desktopLongJobGet(j.ID)), nil
 		}
+		if desktopHubNotFound(err) && desktopLongJobInstancePresent(j) {
+			fresh := desktopLongJobGet(j.ID)
+			if fresh == nil {
+				fresh = j
+			}
+			fresh.HubMisses++
+			if fresh.HubMisses >= desktopLongJobHubMissLimit {
+				// The process is still the user's job. Stop telling Hub about
+				// it. Do not mark it dead and do not kill it.
+				desktopLongJobUnwatch(fresh, "hub assignment missing")
+				log.Printf("[desktop-longjob] job=%s left running unwatched after %d Hub 404s; the instance row is still stored", fresh.ID, fresh.HubMisses)
+				return desktopLongJobView(desktopLongJobGet(fresh.ID)), nil
+			}
+			fresh.NextPoll = desktopLongJobNow().Add(desktopLongJobHubBackoff(fresh.HubMisses))
+			fresh.LastPoll = desktopLongJobNow()
+			_ = desktopLongJobSave(fresh)
+			log.Printf("[desktop-longjob] job=%s %s not delivered (hub 404 %d/%d, next %s): %v", fresh.ID, dec, fresh.HubMisses, desktopLongJobHubMissLimit, fresh.NextPoll.Format(time.RFC3339), err)
+			return desktopLongJobView(fresh), err
+		}
 		// A transient failure is retried on the next tick.
 		log.Printf("[desktop-longjob] job=%s %s not delivered: %v", j.ID, dec, err)
 		return desktopLongJobView(j), err
 	}
+	j.HubMisses = 0
 	if dec == longJobCheck {
 		// A bot turn reads the job; it speaks for itself if anything is new.
 		log.Printf("[desktop-longjob] job=%s check turn started (log has no measurable progress)", j.ID)
@@ -1416,6 +1471,27 @@ func desktopLongJobStopWatch(j *desktopLongJob) {
 	j.ScheduleID = ""
 }
 
+const desktopLongJobHubMissLimit = 5
+
+func desktopLongJobHubBackoff(misses int) time.Duration {
+	if misses < 1 {
+		misses = 1
+	}
+	if misses > desktopLongJobHubMissLimit {
+		misses = desktopLongJobHubMissLimit
+	}
+	return time.Minute << (misses - 1)
+}
+
+func desktopLongJobInstancePresent(j *desktopLongJob) bool {
+	svc := desktopLongJobService
+	if svc == nil || j == nil || strings.TrimSpace(j.InstanceID) == "" {
+		return false
+	}
+	_, err := svc.InstanceOwner(j.InstanceID)
+	return err == nil
+}
+
 // ErrLongJobOwnerGone is permanent: the instance this job resumes does not
 // exist. A Hub 404, including NOT_FOUND on the say call, is not this error
 // by itself. Callers tell it apart with errors.Is, not with the message text.
@@ -1482,6 +1558,23 @@ func desktopLongJobOpen(j *desktopLongJob) bool {
 // still alive. A finished job is not this, even if its watch row remains.
 func desktopLongJobShouldStopProcess(j *desktopLongJob) bool {
 	return desktopLongJobOpen(j) || (j != nil && j.Alive)
+}
+
+// desktopLongJobUnwatch stops Hub delivery for a job whose process is still
+// the one the user started. Alive is left as it was.
+func desktopLongJobUnwatch(j *desktopLongJob, reason string) {
+	if j == nil {
+		return
+	}
+	fresh := desktopLongJobGet(j.ID)
+	if fresh != nil {
+		j = fresh
+	}
+	j.Status = "unwatched"
+	j.EndReason = reason
+	j.ReportedStatus = ""
+	desktopLongJobStopWatch(j)
+	_ = desktopLongJobSave(j)
 }
 
 // desktopLongJobAbandon ends a job whose owner is gone and takes its watch
@@ -1703,6 +1796,9 @@ var (
 func bindDesktopLongJobService(svc *agentservice.Service) {
 	desktopLongJobService = svc
 	desktopLongJobReconcileOwners()
+}
+
+func startDesktopLongJobClock() {
 	desktopLongJobEnsureTicker()
 }
 

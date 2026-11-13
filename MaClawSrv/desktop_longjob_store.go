@@ -55,8 +55,8 @@ func desktopLongJobLatestFor(scope agentruntime.Scope) *desktopLongJob {
 		}
 		// A job still working outranks a newer one that already ended: the
 		// run is "running" while anything it handed off is.
-		active := j.Status == "running" || j.Status == "stalled"
-		bestActive := best != nil && (best.Status == "running" || best.Status == "stalled")
+		active := j.Status == "running" || j.Status == "stalled" || j.Status == "unwatched"
+		bestActive := best != nil && (best.Status == "running" || best.Status == "stalled" || best.Status == "unwatched")
 		if best == nil || (active && !bestActive) || (active == bestActive && j.Started.After(best.Started)) {
 			best = j
 		}
@@ -106,6 +106,23 @@ func desktopLongJobRunning() []*desktopLongJob {
 		}
 	}
 	return out
+}
+
+func desktopLongJobForToolCall(toolCallID string) *desktopLongJob {
+	toolCallID = strings.TrimSpace(toolCallID)
+	if toolCallID == "" {
+		return nil
+	}
+	desktopLongJobMu.Lock()
+	defer desktopLongJobMu.Unlock()
+	desktopLongJobLoadLocked()
+	for _, j := range desktopLongJobMem {
+		if j.ToolCallID == toolCallID {
+			cp := *j
+			return &cp
+		}
+	}
+	return nil
 }
 
 func desktopLongJobForRun(runID string) *desktopLongJob {

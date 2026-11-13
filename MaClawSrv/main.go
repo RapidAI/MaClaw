@@ -256,8 +256,12 @@ func runServer(ctx context.Context) error {
 	}
 
 	// Desktop-bot timers always start. MACLAW_ENABLE_SCHEDULER=true also
-	// starts every other scheduled task.
+	// starts every other scheduled task. Resume runs after that init: a
+	// continued turn uses the scheduler and the long-job service, which do
+	// not exist before initScheduler returns. Reconcile inside init still
+	// finishes before the clock fires.
 	schMgr := initScheduler(dataRoot, svc, executor)
+	svc.ResumeInterruptedRuns(context.Background())
 	if schMgr != nil {
 		defer func() {
 			schMgr.Stop()
@@ -313,6 +317,11 @@ func runServer(ctx context.Context) error {
 		}
 	case <-ctx.Done():
 		srvLog().Info("shutdown requested, stopping maclawsrv")
+		// Let in-flight runs reach a step boundary. TimeoutStopSec on the
+		// unit must be longer than this grace plus the HTTP shutdown below.
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), agentservice.ShutdownGrace())
+		svc.Drain(drainCtx)
+		drainCancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {

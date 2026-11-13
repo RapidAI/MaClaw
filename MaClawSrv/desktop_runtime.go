@@ -228,7 +228,16 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 	if desktopMainAgentTurn(request) {
 		def = desktopStripMainDriving(def)
 	}
+	def.ChangesState = desktopCallChangesState
 	return []agentruntime.ToolDefinition{def}, nil
+}
+
+func desktopCallChangesState(args map[string]any) bool {
+	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
+	if action == "" {
+		return true
+	}
+	return !desktopObserveActions[action]
 }
 
 // InvokeTool runs one desktop tool call under the run watchdog
@@ -632,6 +641,7 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 	prompt := "The current user has one cloud desktop through the desktop tool. " +
 		"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. "
 	if scope, _, err := desktopScopeForTurn(request); err == nil {
+		prompt += desktopUnwatchedJobsPrompt(scope)
 		prompt += desktopExperienceText(scope, "")
 		prompt += desktopLedgerPromptText(scope)
 		task := desktopTurnTask(request)

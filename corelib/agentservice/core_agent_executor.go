@@ -487,7 +487,8 @@ type coreAgentCallbacks struct {
 	// forceFullPrompt is set by UpgradeLightPromptToFull (light tool-deny recovery).
 	forceFullPrompt bool
 	// history is pre-turn conversation for multi-turn knowledge auto-recall.
-	history []agent.ConversationEntry
+	history        []agent.ConversationEntry
+	restartWorking *agent.WorkingState
 	// MoA (request-level preset / allow_auto).
 	moaRequestPreset   string // raw request preset name (may be empty)
 	moaPreset          *moa.ResolvedPreset
@@ -843,6 +844,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		adaptiveRetry:      agentruntime.NewAdaptiveRetry(nil),
 		runID:              req.RunID,
 	}
+	cb.adoptRestartTrajectory(req)
 	cb.bindRequestHostCapabilities()
 	cb.startDesktopDeliverables()
 	if runtimeStore != nil && runtimeAttempt != nil {
@@ -887,6 +889,9 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	result := agentruntime.RunAgentTurnWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient, supplementHooks, compressionHooks)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
 	cb.noteDesktopIdleSummary(result)
+	if errors.Is(result.Err, agent.ErrRestartYield) || RestartYielding() {
+		stashRestartTrajectory(req.RunID, result.HistoryDelta, result.WorkingState)
+	}
 	if result.Error != "" {
 		// Keep whatever the model already produced. A run cut short by an
 		// upstream throttle has often finished the actual work in earlier
@@ -1984,10 +1989,30 @@ type coreToolSpec struct {
 	Parameters     map[string]interface{}
 	Enabled        bool
 	DisabledReason string
+	// ReadsOnly is set from the tool definition. False means the call can
+	// change state, including when the name was never classified.
+	ReadsOnly bool
+}
+
+// coreToolReadsOnly is the read-only property of a built-in tool definition.
+// A name that is not listed changes state. Resume must not run it again
+// without a check. Knowledge imports, memory writes, and message sends are
+// not in this set.
+func coreToolReadsOnly(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "read_file", "read_files", "read_document", "read_tool_result",
+		"list_directory", "list_dir", "glob", "ripgrep", "grep", "search_files", "session_search",
+		"web_search", "web_fetch",
+		"knowledge_search", "knowledge_image_search", "knowledge_context_pack", "knowledge_export",
+		"memory_search":
+		return true
+	default:
+		return false
+	}
 }
 
 func specFromCoreTool(name, description string, enabled bool, disabledReason string) coreToolSpec {
-	spec := coreToolSpec{Name: name, Description: description, Enabled: enabled, DisabledReason: disabledReason}
+	spec := coreToolSpec{Name: name, Description: description, Enabled: enabled, DisabledReason: disabledReason, ReadsOnly: coreToolReadsOnly(name)}
 	if params, ok := agent.CoreToolJSONSchema(name); ok {
 		spec.Parameters = params
 	}
@@ -2205,6 +2230,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			Description:    "Search only imported knowledge-base images by OCR text, visual description, filename, and surrounding document context. Use when the user asks to find, show, view, select, or compare stored images. Results include safe display markers; when the user asks to see an image, copy its exact marker unchanged onto its own line in the final answer.",
 			Enabled:        knowledgeOK,
 			DisabledReason: knowledgeReason,
+			ReadsOnly:      true,
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -2538,8 +2564,82 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 // can replay the original outcome after reconnect instead of consuming a
 // second invocation grant or dispatching the provider again.
 func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agent.ToolExecutionResult {
+	recorded := c.recordSideEffect(name, argsJSON, callID)
 	result := c.executeToolCallLegacy(name, argsJSON, callID)
+	// The call returned, including during drain, so its result is the real
+	// one and must not be rewritten to "outcome unknown". A cancel that
+	// cut the call off leaves the record.
+	if recorded && !inFlightCutOff(c.ctx) {
+		c.clearSideEffect(callID)
+	}
 	return c.finishBotToolResult(name, argsJSON, result)
+}
+
+// inFlightCutOff is a call that did not finish. Drain alone is not that:
+// a step that returns while the process is stopping has a real result.
+func inFlightCutOff(ctx context.Context) bool {
+	return ctx != nil && ctx.Err() != nil
+}
+
+func (c *coreAgentCallbacks) toolChangesState(name, argsJSON string) bool {
+	if c == nil {
+		return true
+	}
+	return toolCallChangesState(name, argsJSON, c.runtimeTools)
+}
+
+// toolCallChangesState is the side-effect property of a tool definition.
+// A definition that classifies itself (ChangesState, or a known read-only
+// built-in) is authoritative. Every other name, including write_file,
+// edit_file, memory writes, MCP calls, and message sends, changes state.
+func toolCallChangesState(name, argsJSON string, defs []agentruntime.ToolDefinition) bool {
+	name = strings.TrimSpace(name)
+	for _, def := range defs {
+		if strings.TrimSpace(def.Name) != name || def.ChangesState == nil {
+			continue
+		}
+		args := map[string]any{}
+		if strings.TrimSpace(argsJSON) != "" {
+			parsed, err := agentruntime.ParseToolArgumentsObject(argsJSON)
+			if err != nil {
+				return true
+			}
+			args = parsed
+		}
+		return def.ChangesState(args)
+	}
+	if coreToolReadsOnly(name) {
+		return false
+	}
+	return true
+}
+
+func (c *coreAgentCallbacks) recordSideEffect(name, argsJSON, callID string) bool {
+	if c == nil || c.executor == nil || strings.TrimSpace(callID) == "" || strings.TrimSpace(c.runID) == "" {
+		return false
+	}
+	if !c.toolChangesState(name, argsJSON) {
+		return false
+	}
+	svc := c.executor.getService()
+	if svc == nil {
+		return false
+	}
+	err := svc.RecordInFlight(c.principal, c.instance.ID, c.runID, RestartInFlight{
+		ID: callID, Name: name, Args: argsJSON,
+	})
+	return err == nil
+}
+
+func (c *coreAgentCallbacks) clearSideEffect(callID string) {
+	if c == nil || c.executor == nil {
+		return
+	}
+	svc := c.executor.getService()
+	if svc == nil {
+		return
+	}
+	_ = svc.ClearInFlight(c.principal, c.instance.ID, c.runID, callID)
 }
 
 // executeToolCallLegacy is the full legacy entry point. ExecuteToolCall
@@ -3476,6 +3576,17 @@ func (c *coreAgentCallbacks) OnToolResult(name string) {
 		c.onToolResult(name, "")
 	}
 }
+func (c *coreAgentCallbacks) YieldForRestart() bool {
+	return RestartYielding()
+}
+
+func (c *coreAgentCallbacks) HaltReason() error {
+	if c == nil || RunHaltReason == nil {
+		return nil
+	}
+	return RunHaltReason(c.runID)
+}
+
 func (c *coreAgentCallbacks) ShouldStop() bool {
 	// Child admission deliberately terminates the parent attempt before any
 	// child begins.  Stop this old loop immediately so it cannot make another
