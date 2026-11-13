@@ -1434,6 +1434,22 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		}
 		// The bytes stay on the server attachment or the computer volume.
 		// This event carries the id. The next open fetches it.
+		pictures := append([]DesktopBotImage{}, result.Images...)
+		if len(pictures) == 0 {
+			for _, file := range result.Files {
+				mime := strings.ToLower(strings.TrimSpace(file.MIME))
+				if mime != "image/png" && mime != "image/jpeg" && mime != "image/jpg" {
+					continue
+				}
+				if mime == "image/jpg" {
+					mime = "image/jpeg"
+				}
+				pictures = append(pictures, DesktopBotImage{MIME: mime, Data: file.Data, AttachmentID: file.AttachmentID})
+			}
+		}
+		if paths := storeDesktopBotShots(botID, pictures); len(paths) > 0 {
+			resp.DesktopShotPaths = paths
+		}
 		resp.DesktopAttachmentIDs = desktopAttachmentIDs(result.Images, result.Files)
 		resp.DesktopUserControl = result.UserControl
 		resp.DesktopAttentionReason = strings.TrimSpace(result.AttentionReason)
@@ -1758,6 +1774,10 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		Schedule        *desktopBotWireSchedule `json:"schedule"`
 	}
 	body := map[string]any{"content": text, "client_message_id": requestID}
+	if name, value := takeStagedBotSecret(botID); name != "" && value != "" {
+		body["secret_name"] = name
+		body["secret_value"] = value
+	}
 	if text == desktopBotReturnTask {
 		// The login-done sentence is the button the GUI itself sends.
 		body["action"] = "return"

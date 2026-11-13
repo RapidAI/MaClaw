@@ -256,6 +256,145 @@ export function desktopBotVariedFallback(kind: string, lang: string, fallback: s
 }
 
 
+// One first reply per command. A stock line is posted only when no reply is
+// up yet, and a later model line replaces that same bubble. A stock line
+// never lands beside a line the model already wrote for that command.
+export interface FirstAckMessage {
+    id: string;
+    role: string;
+    content: string;
+    ack?: boolean;
+    understood?: boolean;
+    pending?: boolean;
+    requestId?: string;
+    ackFor?: string;
+    options?: string[];
+}
+
+// bindAckCommand joins every id that names one command (the pending bubble,
+// the local ticket, the server request id) into one set. A later call that
+// shares any id returns the whole set, so the intake event and the local
+// timer land on the same ack even when they learn the ids in either order.
+// The map is keyed by bot as well as id: two bots started together do not
+// share a command.
+export function bindAckCommand(registry: Map<string, Set<string>>, botId: string, keys: Array<string | undefined | null>): string[] {
+    const fresh = uniqueKeys(keys);
+    const owner = String(botId || '').trim();
+    if (!owner || fresh.length === 0) return fresh;
+    let set: Set<string> | undefined;
+    for (const key of fresh) {
+        const found = registry.get(`${owner}\0${key}`);
+        if (found) {
+            set = found;
+            break;
+        }
+    }
+    if (!set) set = new Set();
+    for (const key of fresh) {
+        set.add(key);
+        registry.set(`${owner}\0${key}`, set);
+    }
+    return [...set];
+}
+
+function uniqueKeys(keys: Array<string | undefined | null>): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const key of keys) {
+        const text = String(key || '').trim();
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        out.push(text);
+    }
+    return out;
+}
+
+// firstAckCommandKeys names the command an intake ack belongs to. The request
+// id is the stable name. The pending bubble's own id is included when that
+// request id is not on the transcript yet and this bot has one open command,
+// so the ack is inserted on that command rather than appended after it.
+export function firstAckCommandKeys(
+    messages: Array<{ id: string; role: string; pending?: boolean; requestId?: string; ack?: boolean }>,
+    requestId: string,
+): string[] {
+    const id = String(requestId || '').trim();
+    const keys: string[] = [];
+    if (id) keys.push(id);
+    const anchor = id ? messages.find(item => item.id === id || item.requestId === id) : undefined;
+    if (anchor) {
+        keys.push(anchor.id);
+        if (anchor.requestId) keys.push(anchor.requestId);
+        return uniqueKeys(keys);
+    }
+    const open = messages.filter((item, index) => {
+        if (item.role !== 'assistant' || !item.pending) return false;
+        const before = index > 0 ? messages[index - 1] : undefined;
+        return !(before && before.ack);
+    });
+    if (open.length === 1) {
+        keys.push(open[0].id);
+        if (open[0].requestId) keys.push(open[0].requestId);
+    }
+    return uniqueKeys(keys);
+}
+
+// landFirstAck inserts or replaces the single ack bubble for a command.
+// The returned array is the input when nothing changes.
+export function landFirstAck<T extends FirstAckMessage>(
+    messages: T[],
+    commandKeys: Array<string | undefined | null>,
+    line: string,
+    lang: string,
+    newId: () => string,
+    options?: string[],
+): T[] {
+    const keys = uniqueKeys(commandKeys);
+    const text = String(line || '').trim();
+    if (!text || keys.length === 0) return messages;
+    const keySet = new Set(keys);
+    const incomingPlaceholder = desktopBotIsPlaceholderAck(text, lang);
+    const anchorAt = messages.findIndex(item => keySet.has(item.id) || (!!item.requestId && keySet.has(item.requestId)));
+    // A queue note is also ack:true. It is not this command's first reply,
+    // so it must not swallow the model line. A placeholder counts only when
+    // it sits on this command.
+    const onThisCommand = (item: T | undefined) => {
+        if (!item || !item.ack) return false;
+        if (item.ackFor && keySet.has(item.ackFor)) return true;
+        if (desktopBotIsPlaceholderAck(String(item.content || ''), lang)) return true;
+        return item.understood === true && !item.ackFor;
+    };
+    let ackAt = messages.findIndex(item => !!item.ack && !!item.ackFor && keySet.has(item.ackFor));
+    if (ackAt < 0 && anchorAt > 0 && onThisCommand(messages[anchorAt - 1])) ackAt = anchorAt - 1;
+    if (ackAt < 0 && anchorAt >= 0 && anchorAt + 1 < messages.length && onThisCommand(messages[anchorAt + 1])) ackAt = anchorAt + 1;
+    const ackFor = keys[0];
+    if (ackAt >= 0) {
+        const current = messages[ackAt];
+        const currentPlaceholder = desktopBotIsPlaceholderAck(String(current.content || ''), lang);
+        if (!currentPlaceholder || incomingPlaceholder) return messages;
+        const next = messages.slice();
+        next[ackAt] = {
+            ...current,
+            content: text,
+            ack: true,
+            understood: true,
+            ackFor: current.ackFor || ackFor,
+            ...(options && options.length ? { options } : {}),
+        };
+        return next;
+    }
+    const ack = {
+        id: newId(),
+        role: 'assistant',
+        content: text,
+        ack: true,
+        understood: true,
+        ackFor,
+        ...(options && options.length ? { options } : {}),
+    } as T;
+    if (anchorAt >= 0) return [...messages.slice(0, anchorAt), ack, ...messages.slice(anchorAt)];
+    return [...messages, ack];
+}
+
 // desktopBotWithFoldHead puts the fold head in front of a line the model
 // already wrote (for example the reading's sentence), unless it starts so.
 export function desktopBotWithFoldHead(kind: string, lang: string, line: string): string {

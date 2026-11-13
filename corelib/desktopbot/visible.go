@@ -140,9 +140,47 @@ func ActivityPhrase(phrase string) string {
 // Visible decides the sentence a person can see.
 // Waiting does not fill an empty send_to_user. Prose and Thinking are ignored.
 // Arrange is always false here: planning prose is not a confirm button.
+// evidenceClause is the measured cause a host used to glue onto a status
+// line (a shell command, a job id, a log tail). It stays in logs.
+var evidenceClause = regexp.MustCompile(`（依据：[^）]*）`)
+
+// ruleTalk is the model answering an internal instruction (proxy, URL
+// policy, "the system said") instead of the person's task.
+var ruleTalk = regexp.MustCompile(`关于地址要求|代理替换|不存在代理|系统规则|需要 URL 的工具|内部指令|internal rule|internal instruction`)
+
+// CleanUserText drops evidence clauses and system-rule commentary, and
+// keeps one copy of a repeated sentence. The order of the remaining lines
+// is the order they first appeared.
+func CleanUserText(text string) string {
+	text = evidenceClause.ReplaceAllString(text, "")
+	raw := strings.Split(text, "\n")
+	seen := map[string]bool{}
+	var kept []string
+	for _, line := range raw {
+		line = strings.TrimSpace(line)
+		if line == "" || ruleTalk.MatchString(line) {
+			continue
+		}
+		key := strings.Join(strings.Fields(line), "")
+		if key == "" || seen[key] {
+			continue
+		}
+		// Two different "still running" lines are the same announcement.
+		if strings.HasPrefix(line, "后台任务还在跑") {
+			key = "后台任务还在跑"
+			if seen[key] {
+				continue
+			}
+		}
+		seen[key] = true
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
 func Visible(turn Turn) View {
 	view := View{Activity: ActivityPhrase(turn.Activity)}
-	send := strings.TrimSpace(turn.SendToUser)
+	send := CleanUserText(strings.TrimSpace(turn.SendToUser))
 	if send != "" && !Filler(send) {
 		view.Sentence = send
 		view.Bubble = true

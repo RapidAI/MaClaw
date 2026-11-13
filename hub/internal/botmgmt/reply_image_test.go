@@ -31,6 +31,17 @@ func TestReplyImageKeepsTheLatestScreenshot(t *testing.T) {
 	}
 }
 
+func TestDeliveredPNGIsAnImageNotADownload(t *testing.T) {
+	png := "iVBORw0KGgo="
+	got := replyImages([]replyAttachment{{Type: "file", FileName: "snake_window.png", MimeType: "image/png", Data: png}})
+	if len(got) != 1 || got[0].MIME != "image/png" || got[0].Data != png {
+		t.Fatalf("images=%#v", got)
+	}
+	if files := replyFiles([]replyAttachment{{Type: "file", FileName: "snake_window.png", MimeType: "image/png", Data: png}}); files != nil {
+		t.Fatalf("png stayed a file: %#v", files)
+	}
+}
+
 func TestReplyFileKeepsTheLatestDocument(t *testing.T) {
 	docx := "UEsDBAoAAAAA"
 	got := replyFiles([]replyAttachment{

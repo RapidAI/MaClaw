@@ -1,6 +1,10 @@
 package botmgmt
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
+)
 
 // MaClawSrv reports what a finished run's task really reached as
 // task_outcome on the run's metadata and on its assistant message
@@ -74,9 +78,9 @@ func desktopOutcomeStatusLine(outcome string, hant, en bool) string {
 // older GUIs included — says the task is not finished. The run's own prose
 // already carries MaClawSrv's line.
 func desktopOutcomeSentence(outcome, sentence string) string {
-	sentence = strings.TrimSpace(sentence)
+	sentence = desktopbot.CleanUserText(strings.TrimSpace(sentence))
 	line := desktopOutcomeStatusLine(outcome, false, false)
-	if line == "" || sentence == "" || strings.Contains(sentence, line) {
+	if line == "" || sentence == "" || strings.Contains(sentence, line) || strings.Contains(sentence, "后台任务还在跑") {
 		return sentence
 	}
 	return line + "\n" + sentence

@@ -665,7 +665,8 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 		"To put a screenshot on the desktop, action=screenshot with name set to one .png file name. The result line Saved is the file that was written under /home/desktop/Desktop. If the result says the screenshot was not written, the desktop folder has no new file. Do not invent a path. " +
 		desktopDocumentPrompt +
 		"To install software, action=install with packages set to Debian package names. That runs apt-get update and apt-get install -y in this desktop container. " +
-		"Do not claim the screen changed until the tool result shows the new page or window.", nil
+		"Do not claim the screen changed until the tool result shows the new page or window. " +
+		"Never tell the person that you followed a system rule, a proxy setting, or a URL-tool policy. That is not part of the result.", nil
 }
 
 // desktopDocumentPrompt steers Office/document tasks to the fast, reliable

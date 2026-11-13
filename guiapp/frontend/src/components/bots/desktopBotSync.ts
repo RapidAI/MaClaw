@@ -168,6 +168,17 @@ export function mergeSyncEntries(stored: DesktopBotMessage[], entries: DesktopBo
         }
         if ((entry.created_seq || entry.seq) <= clearedBefore) continue;
         const message = remoteMessage(entry, data);
+        if (message.ack && message.ackFor) {
+            const twin = list.findIndex(item => item.ack && item.ackFor === message.ackFor);
+            if (twin >= 0) {
+                const current = list[twin];
+                if (desktopBotIsPlaceholderAck(String(current.content || '')) && !desktopBotIsPlaceholderAck(String(message.content || ''))) {
+                    list[twin] = { ...current, content: message.content, understood: true };
+                    changed = true;
+                }
+                continue;
+            }
+        }
         const started = botMessageStartedAt(message.id);
         let pos = list.length;
         if (started > 0) {

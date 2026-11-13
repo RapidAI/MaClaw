@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -60,6 +61,38 @@ func loadBotSecret(userID, name string) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+type stagedBotSecret struct {
+	name  string
+	value string
+}
+
+var stagedBotSecrets sync.Map
+
+// StageDesktopBotSecret remembers a secret for the next message to this bot.
+// The value is not written into the chat. The next admit carries it once.
+func (a *App) StageDesktopBotSecret(botID, name, value string) error {
+	if a == nil {
+		return fmt.Errorf("AI assistant backend is unavailable")
+	}
+	botID = strings.TrimSpace(botID)
+	name = strings.TrimSpace(name)
+	value = strings.TrimSpace(value)
+	if botID == "" || !agent.ValidSecretName(name) || value == "" {
+		return fmt.Errorf("unavailable")
+	}
+	stagedBotSecrets.Store(botID, stagedBotSecret{name: name, value: value})
+	return nil
+}
+
+func takeStagedBotSecret(botID string) (string, string) {
+	v, ok := stagedBotSecrets.LoadAndDelete(strings.TrimSpace(botID))
+	if !ok {
+		return "", ""
+	}
+	s := v.(stagedBotSecret)
+	return s.name, s.value
 }
 
 // SaveBotSecret stores a site secret for this desktop user.

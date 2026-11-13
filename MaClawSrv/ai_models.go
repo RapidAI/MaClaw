@@ -405,6 +405,14 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 	// the round's desktop is still bound, so the outcome is measured.
 	desktopRecRecheckAtEnd(ctx, run.ID)
 	out := desktopTaskOutcomeMetadata(run.ID, msg)
+	if botID := desktopBotOfInstance(run.InstanceID); botID != "" && out != nil {
+		switch out[agentservice.TaskOutcomeKey] {
+		case agentservice.TaskOutcomeAwaitingUser:
+			desktopMarkWaiting(botID)
+		case agentservice.TaskOutcomeDone:
+			desktopClearWaiting(botID)
+		}
+	}
 	// A picture the person asked for is looked at now, while this round's
 	// desktop is still bound (it is released when PostMessage returns).
 	ensureDesktopPictureDelivered(ctx, run.ID, out[agentservice.TaskOutcomeKey])

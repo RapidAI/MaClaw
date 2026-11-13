@@ -3159,6 +3159,8 @@ export function ReleaseDesktopBotWatch(arg1:string,arg2:number):Promise<void>;
 
 export function SaveBotSecret(arg1:string,arg2:string):Promise<void>;
 
+export function StageDesktopBotSecret(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function RecallBotSecret(arg1:string):Promise<boolean>;
 
 export function FillBotSecret(arg1:string,arg2:string):Promise<void>;

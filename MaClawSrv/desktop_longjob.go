@@ -1012,6 +1012,10 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 	if j == nil {
 		return "", fmt.Errorf("watch: job %s not found", jobID)
 	}
+	if desktopLongJobIsServedApp(j.Command) {
+		desktopLongJobStopWatch(j)
+		return desktopLongJobView(j), nil
+	}
 	if (j.Status == "done" || j.Status == "failed") && j.ReportedStatus == j.Status {
 		desktopLongJobStopWatch(j)
 		return desktopLongJobView(j), nil
@@ -1423,11 +1427,35 @@ func desktopLongJobTickDue() {
 	}
 }
 
+// desktopLongJobIsServedApp reports a process the person asked to leave
+// running (a demo, a game, the app itself). That process is the result, not
+// unfinished work, so the chat must not promise later progress checks.
+// Training, a build, and a download stay pending work.
+func desktopLongJobIsServedApp(cmd string) bool {
+	cmd = strings.TrimSpace(desktopLongJobStripHeredocs(cmd))
+	if cmd == "" {
+		return false
+	}
+	last := cmd
+	if inner := desktopLongJobInnerCommands(cmd); len(inner) > 0 {
+		last = inner[len(inner)-1]
+	}
+	if desktopLongJobIntentRe.MatchString(last) && !regexp.MustCompile(`(?i)--demo\b`).MatchString(last) {
+		return false
+	}
+	return regexp.MustCompile(`(?i)(^|[^\w./])(?:--demo\b|snake\b|pygame\b|sdl2?\b)`).MatchString(last) ||
+		regexp.MustCompile(`(?i)(?:^|[;&]|&&)\s*\./[A-Za-z0-9_.-]+\s+--demo\b`).MatchString(cmd)
+}
+
 // desktopLongJobOutcome: a run that handed off a still-running job is not
-// "done" and is not a time-budget failure of that job.
+// "done" and is not a time-budget failure of that job. A served app is not
+// that job: the run can finish once it has delivered the result.
 func desktopLongJobOutcome(runID string) (string, string, bool) {
 	j := desktopLongJobForRun(runID)
 	if j == nil || (j.Status != "running" && j.Status != "stalled") {
+		return "", "", false
+	}
+	if desktopLongJobIsServedApp(j.Command) {
 		return "", "", false
 	}
 	why := "后台在跑：" + desktopLongJobLabel(j.Command) + "（任务 " + desktopLongJobShortID(j.ID) + "，" + j.Status + "）"

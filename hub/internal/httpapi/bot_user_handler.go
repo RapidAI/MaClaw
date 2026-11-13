@@ -234,6 +234,8 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			ClientSessionKey string `json:"client_session_key"`
 			Action           string `json:"action"`
 			AskRun           string `json:"ask_run"`
+			SecretName       string `json:"secret_name"`
+			SecretValue      string `json:"secret_value"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, botMessageBodyLimit)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
@@ -257,6 +259,9 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 		callCtx := r.Context()
 		if ask := strings.TrimSpace(in.AskRun); ask != "" {
 			callCtx = botmgmt.WithDesktopAskRun(callCtx, ask)
+		}
+		if name := strings.TrimSpace(in.SecretName); name != "" && strings.TrimSpace(in.SecretValue) != "" {
+			callCtx = botmgmt.WithDesktopSecret(callCtx, name, in.SecretValue)
 		}
 		if wantsAsyncBotReply(r) {
 			admission, err := svc.AdmitDesktopMessageAct(callCtx, principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID, continueSession, in.Action)

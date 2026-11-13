@@ -6378,6 +6378,10 @@ export function SaveBotSecret(arg1, arg2) {
   return window['go']['main']['App']['SaveBotSecret'](arg1, arg2);
 }
 
+export function StageDesktopBotSecret(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StageDesktopBotSecret'](arg1, arg2, arg3);
+}
+
 export function RecallBotSecret(arg1) {
   return window['go']['main']['App']['RecallBotSecret'](arg1);
 }

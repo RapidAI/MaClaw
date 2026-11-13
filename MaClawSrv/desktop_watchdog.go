@@ -698,12 +698,37 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 		"blocked":       "这件没做成，我已经停下，没有再重复尝试。",
 		"not_submitted": "这件还没提交，内容没有发出去。",
 		"unconfirmed":   "提交后没能确认结果，我没有重复提交，请以页面上的实际状态为准。",
-		"running":       "后台任务还在跑，我会每 10 分钟左右把进度发给你，结束、失败或卡住时马上告诉你。",
+		"running":       "后台任务还在跑，我会定时查看进度并告诉你。",
 	}[outcome]
-	if line != "" && why != "" {
+	// A still-running job's why names the shell, the job id and a log tail.
+	// That stays in task_outcome_evidence, not in the sentence. Other
+	// outcomes keep a short cause the person can read.
+	if line != "" && why != "" && outcome != "running" {
 		line += "（依据：" + why + "）"
 	}
 	return line
+}
+
+var desktopNeedsInputRe = regexp.MustCompile(`请提供.{0,40}(密码|口令|凭证|密钥)|请输入.{0,20}(密码|口令)|需要.{0,20}(密码|认证|登录密码)|(?i)(please (provide|enter)|need(s|ed)?).{0,30}(password|credential|passphrase)`)
+
+var desktopSecretNameRe = regexp.MustCompile(`\b([A-Z][A-Z0-9_]{2,63})\b`)
+
+// desktopReplyNeedsInput reports a finished reply that is asking the person
+// for a credential or a missing login fact. A progress note that merely
+// mentions a password field is not one.
+func desktopReplyNeedsInput(content string) bool {
+	return desktopNeedsInputRe.MatchString(strings.TrimSpace(content))
+}
+
+// desktopSecretNameIn returns an environment-style name mentioned in the
+// question (for example SITE_PASSWORD), or empty.
+func desktopSecretNameIn(content string) string {
+	for _, name := range desktopSecretNameRe.FindAllString(content, 8) {
+		if strings.Contains(name, "PASSWORD") || strings.Contains(name, "SECRET") || strings.Contains(name, "TOKEN") {
+			return name
+		}
+	}
+	return ""
 }
 
 // desktopRunOutcome: the measured outcome of a run's goals, or — for a run
@@ -742,6 +767,11 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 	steps := desktopRecRunSteps[runID]
 	desktopRecStateMu.Unlock()
 	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] == "ask_user" {
+		return "awaiting_user", "waiting for the person's answer"
+	}
+	// A prose request for a password or a missing fact is the same wait.
+	// The run did work and then stopped to ask; that is not a finished task.
+	if outcome == "" && steps && msg != nil && desktopReplyNeedsInput(msg.Content) {
 		return "awaiting_user", "waiting for the person's answer"
 	}
 	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] != "ask_user" {
@@ -793,6 +823,19 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 		return nil
 	}
 	out := map[string]string{agentservice.TaskOutcomeKey: outcome}
+	alreadyAsk := msg.Metadata != nil && msg.Metadata["response_source"] == "ask_user"
+	if outcome == "awaiting_user" && !alreadyAsk && desktopReplyNeedsInput(msg.Content) {
+		out["response_source"] = "ask_user"
+		out["ask_user_input_type"] = "secret"
+		q := strings.TrimSpace(msg.Content)
+		if r := []rune(q); len(r) > 200 {
+			q = string(r[:200])
+		}
+		out["ask_user_question"] = q
+		if name := desktopSecretNameIn(msg.Content); name != "" {
+			out["ask_user_secret_name"] = name
+		}
+	}
 	n := desktopOutcomeNotice(outcome, why, msg.Content)
 	if outcome != agentservice.TaskOutcomeDone && outcome != "awaiting_user" {
 		// The cause and what the run left behind (a draft, a click on

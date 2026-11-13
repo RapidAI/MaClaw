@@ -220,19 +220,26 @@ func desktopContainerFile(ctx context.Context, scope agentruntime.Scope, action 
 }
 
 func desktopContainerBash(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
+	if err := desktopBashConfined(scope, command); err != nil {
+		return "", err
+	}
+	secrets := desktopSecretsForScope(scope)
+	command = desktopExportSecrets(command, secrets)
 	if _, err := desktop.BashArgs(desktopContainerName(), command); err != nil {
 		return "", fmt.Errorf("desktop bash rejected the command: %w", err)
 	}
+	var text string
+	var err error
 	if desktopRemoteBash != nil {
-		return desktopRemoteBash(ctx, scope.TenantID, scope.UserID, strings.TrimSpace(command))
-	}
-	if client := desktopHubClientFromEnv(); client != nil {
-		return client.Bash(ctx, scope.TenantID, scope.UserID, strings.TrimSpace(command))
-	}
-	if err := refuseLocalDesktop(ctx); err != nil {
+		text, err = desktopRemoteBash(ctx, scope.TenantID, scope.UserID, strings.TrimSpace(command))
+	} else if client := desktopHubClientFromEnv(); client != nil {
+		text, err = client.Bash(ctx, scope.TenantID, scope.UserID, strings.TrimSpace(command))
+	} else if err = refuseLocalDesktop(ctx); err != nil {
 		return "", err
+	} else {
+		text, err = desktopLocalBash(ctx, command)
 	}
-	return desktopLocalBash(ctx, command)
+	return desktopScrubSecrets(text, secrets), err
 }
 
 func desktopLocalFile(ctx context.Context, action, filePath, content, oldString, newString string) (string, error) {

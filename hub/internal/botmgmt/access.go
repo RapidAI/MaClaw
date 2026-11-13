@@ -18,6 +18,25 @@ import (
 
 type desktopAskRunKey struct{}
 
+type desktopSecret struct {
+	name  string
+	value string
+}
+
+type desktopSecretKey struct{}
+
+// WithDesktopSecret carries a secret the GUI saved locally. The value is
+// copied into the MaClawSrv message metadata and removed there before the
+// message is stored. It is not logged.
+func WithDesktopSecret(ctx context.Context, name, value string) context.Context {
+	name = strings.TrimSpace(name)
+	value = strings.TrimSpace(value)
+	if name == "" || value == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, desktopSecretKey{}, desktopSecret{name: name, value: value})
+}
+
 // WithDesktopAskRun marks this post as the answer to one plan-phase ask.
 func WithDesktopAskRun(ctx context.Context, run string) context.Context {
 	if ctx == nil {
@@ -253,6 +272,14 @@ func replyImageData(raw string) (string, bool) {
 // replyFiles keeps the latest file on this reply. The chat does not choose a
 // type. A path-like name, or a payload that is not base64, stays off the
 // reply. A screenshot stays on Images.
+func replyImageMIME(raw string) bool {
+	mime := strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		mime = strings.TrimSpace(mime[:i])
+	}
+	return mime == "image/png" || mime == "image/jpeg" || mime == "image/jpg"
+}
+
 func replyFiles(attachments []replyAttachment) []ReplyFile {
 	// The same cap MaClawSrv attaches files under (desktop.FileDeliverBase64Max).
 	// 200 000 here dropped a 365 KB PDF that MaClawSrv had attached, while
@@ -262,6 +289,13 @@ func replyFiles(attachments []replyAttachment) []ReplyFile {
 		item := attachments[i]
 		if strings.TrimSpace(item.Type) != "file" {
 			continue
+		}
+		// A delivered screenshot that fits an inline image is shown that way.
+		// One that is too large stays a file the person can still save.
+		if replyImageMIME(item.MimeType) {
+			if _, ok := replyImageData(item.Data); ok {
+				continue
+			}
 		}
 		name := replyFileName(item.FileName)
 		mime := replyFileMIME(item.MimeType)
@@ -351,11 +385,25 @@ func replyFileData(raw string, max int) (string, bool) {
 func replyImages(attachments []replyAttachment) []ReplyImage {
 	for i := len(attachments) - 1; i >= 0; i-- {
 		item := attachments[i]
-		if strings.TrimSpace(item.Type) != "image" {
-			continue
-		}
+		kind := strings.TrimSpace(item.Type)
 		mime := strings.ToLower(strings.TrimSpace(item.MimeType))
-		if mime != "image/png" && mime != "image/jpeg" {
+		if i := strings.IndexByte(mime, ';'); i >= 0 {
+			mime = strings.TrimSpace(mime[:i])
+		}
+		if mime == "image/jpg" {
+			mime = "image/jpeg"
+		}
+		// action=screenshot uses type image. action=deliver of a png uses
+		// type file. Both are the picture the person asked to see.
+		if kind == "image" {
+			if mime != "image/png" && mime != "image/jpeg" {
+				continue
+			}
+		} else if kind == "file" && replyImageMIME(item.MimeType) {
+			if mime != "image/png" && mime != "image/jpeg" {
+				continue
+			}
+		} else {
 			continue
 		}
 		data, ok := replyImageData(item.Data)
@@ -673,6 +721,10 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	messageMeta["bot_intake_phase"] = phase
 	if askRun, _ := ctx.Value(desktopAskRunKey{}).(string); strings.TrimSpace(askRun) != "" {
 		messageMeta["bot_ask_run"] = strings.TrimSpace(askRun)
+	}
+	if secret, ok := ctx.Value(desktopSecretKey{}).(desktopSecret); ok && secret.name != "" && secret.value != "" {
+		messageMeta["bot_secret_name"] = secret.name
+		messageMeta["bot_secret_value"] = secret.value
 	}
 	if strings.HasPrefix(clientMessageID, "xwake-") {
 		// MaClawSrv words a mailbox wake as a turn the person did not send:

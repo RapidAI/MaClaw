@@ -352,11 +352,11 @@ func TestFinishedReplyCarriesTheDesktopScreenshot(t *testing.T) {
 		desktopBotResultSink = nil
 	})
 	app.finishDesktopBotTask("desktop-bot-shot", "alice:bot_1", "bot_1", "看一下环境", "plan")
-	if got == nil || got.Text != "桌面截图已生成" || len(got.DesktopImages) != 0 || len(got.DesktopShotPaths) != 0 || len(got.DesktopAttachmentIDs) != 1 || got.DesktopAttachmentIDs[0] != "shot-1" {
+	if got == nil || got.Text != "桌面截图已生成" || len(got.DesktopImages) != 0 || len(got.DesktopShotPaths) != 1 || len(got.DesktopAttachmentIDs) != 1 || got.DesktopAttachmentIDs[0] != "shot-1" {
 		t.Fatalf("reply=%#v", got)
 	}
-	if _, err := os.Stat(filepath.Join(corelib.MaclawDataDir(), "bot-files")); !os.IsNotExist(err) {
-		t.Fatalf("screenshot was written on this machine: %v", err)
+	if _, err := os.Stat(got.DesktopShotPaths[0]); err != nil {
+		t.Fatalf("screenshot was not saved for the chat: %v", err)
 	}
 	outside := filepath.Join(base, "secret.png")
 	if err := os.WriteFile(outside, []byte("png-bytes"), 0o644); err != nil {

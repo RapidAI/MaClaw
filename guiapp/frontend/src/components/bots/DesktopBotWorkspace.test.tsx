@@ -126,6 +126,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     SetDesktopBotDesktopMode: (botId: string, mode: string) => setDesktopMode(botId, mode),
     DesktopBotDesktopAdmin: () => desktopAdmin(),
     SaveBotSecret: (name: string, value: string) => saveSecret(name, value),
+    StageDesktopBotSecret: vi.fn(),
     RecallBotSecret: (name: string) => recallSecret(name),
     FillBotSecret: (botId: string, name: string) => fillSecret(botId, name),
     ListDesktopBots: () => listBots(),

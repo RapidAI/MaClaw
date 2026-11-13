@@ -858,6 +858,10 @@ export interface DesktopBotMessage {
     // Instant "colleague accepted the task" reply. It never carries a handoff
     // or a result, so result lookups skip it.
     ack?: boolean;
+    // The command this first reply belongs to (the request id, or the pending
+    // bubble id when the request id is not on the transcript yet). One command
+    // has one ack bubble: a later line replaces it, it is never appended again.
+    ackFor?: string;
     // Readings of an ambiguous order offered as one-tap corrections under the
     // acceptance line. The first is what the run already does. They never
     // hold the run; optionsUsed hides them once one is picked.
