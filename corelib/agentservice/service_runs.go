@@ -77,6 +77,10 @@ func (s *Service) GetRun(ctx context.Context, p Principal, instanceID, runID str
 	return &enriched, nil
 }
 
+// AfterRunCancelled runs after a run is recorded cancelled. The host drops
+// background watches that run started. Nil is a no-op.
+var AfterRunCancelled func(instanceID, runID string)
+
 func (s *Service) CancelRun(ctx context.Context, p Principal, instanceID, runID string) (*Run, error) {
 	if err := s.beginRequest(); err != nil {
 		return nil, err
@@ -136,6 +140,9 @@ func (s *Service) CancelRun(ctx context.Context, p Principal, instanceID, runID 
 		s.emitRunEvent(run, cancelledEvent.Type, cancelledEvent.Payload)
 	}
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.cancel_requested", ResourceType: "run", ResourceID: run.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": run.SessionID}})
+	if AfterRunCancelled != nil {
+		AfterRunCancelled(instanceID, run.ID)
+	}
 	enriched, err := s.enrichRun(run)
 	if err != nil {
 		return nil, err

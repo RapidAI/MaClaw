@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path"
@@ -85,20 +86,22 @@ func desktopLongJobInternal(ctx context.Context) bool {
 }
 
 type desktopLongJob struct {
-	ID          string        `json:"id"`
-	TenantID    string        `json:"tenant_id"`
-	UserID      string        `json:"user_id"`
-	InstanceID  string        `json:"instance_id"`
-	SessionID   string        `json:"session_id"`
-	BotID       string        `json:"bot_id,omitempty"`
-	SourceRun   string        `json:"source_run,omitempty"`
-	Command     string        `json:"command"`
-	Dir         string        `json:"dir"`
-	LogFile     string        `json:"log_file"`
-	PidFile     string        `json:"pid_file"`
-	ExitFile    string        `json:"exit_file"`
-	PID         string        `json:"pid,omitempty"`
-	Status      string        `json:"status"` // running, stalled, failed, done
+	ID         string `json:"id"`
+	TenantID   string `json:"tenant_id"`
+	UserID     string `json:"user_id"`
+	InstanceID string `json:"instance_id"`
+	SessionID  string `json:"session_id"`
+	BotID      string `json:"bot_id,omitempty"`
+	SourceRun  string `json:"source_run,omitempty"`
+	Command    string `json:"command"`
+	Dir        string `json:"dir"`
+	LogFile    string `json:"log_file"`
+	PidFile    string `json:"pid_file"`
+	ExitFile   string `json:"exit_file"`
+	PID        string `json:"pid,omitempty"`
+	Status     string `json:"status"` // running, stalled, failed, done, cancelled
+	// EndReason is why a cancelled job stopped. It is not parsed from a log line.
+	EndReason   string        `json:"end_reason,omitempty"`
 	Alive       bool          `json:"alive"`
 	ExitCode    *int          `json:"exit_code,omitempty"`
 	Progress    string        `json:"progress,omitempty"`
@@ -1019,11 +1022,7 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 	if j == nil {
 		return "", fmt.Errorf("watch: job %s not found", jobID)
 	}
-	if desktopLongJobKeepsRunning(j) {
-		desktopLongJobStopWatch(j)
-		return desktopLongJobView(j), nil
-	}
-	if (j.Status == "done" || j.Status == "failed") && j.ReportedStatus == j.Status {
+	if desktopLongJobKeepsRunning(j) || j.Status == "cancelled" || ((j.Status == "done" || j.Status == "failed") && j.ReportedStatus == j.Status) {
 		desktopLongJobStopWatch(j)
 		return desktopLongJobView(j), nil
 	}
@@ -1076,7 +1075,12 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 		return "", nil
 	}
 	if err := desktopLongJobTalk(ctx, j, dec); err != nil {
-		// Nothing reached the person: the next tick reports again.
+		if errors.Is(err, ErrLongJobOwnerGone) {
+			// The bot or assignment is gone. The watch must not fire again.
+			desktopLongJobAbandon(j, "orphaned: owner gone")
+			return desktopLongJobView(desktopLongJobGet(j.ID)), nil
+		}
+		// A transient failure is retried on the next tick.
 		log.Printf("[desktop-longjob] job=%s %s not delivered: %v", j.ID, dec, err)
 		return desktopLongJobView(j), err
 	}
@@ -1121,6 +1125,9 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 	}
 	if dec == longJobResume {
 		if err := desktopLongJobResume(ctx, j); err != nil {
+			if errors.Is(err, ErrLongJobOwnerGone) {
+				return err
+			}
 			log.Printf("[desktop-longjob] job=%s resume not started: %v", j.ID, err)
 		}
 	}
@@ -1254,7 +1261,7 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 	if j.SessionID != "" {
 		runs, err := svc.ListRuns(ctx, principal, j.InstanceID, agentservice.ListRunsInput{Status: agentservice.RunStatusRunning, SessionID: j.SessionID})
 		if err != nil {
-			return err
+			return desktopLongJobPermanent(err)
 		}
 		if len(runs) > 0 {
 			return nil
@@ -1266,11 +1273,14 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 	files := &desktopWatchFiles{}
 	in.PrepareExecution = files.prepare
 	_, run, err := svc.SendMessageAsync(context.WithoutCancel(ctx), principal, j.InstanceID, in)
-	if err == nil && run != nil {
+	if err != nil {
+		return desktopLongJobPermanent(err)
+	}
+	if run != nil {
 		desktopLongJobNoteWatchRun(run.ID, j.ID)
 		go desktopLongJobFollowRunFiles(context.WithoutCancel(ctx), principal, j, run.ID, dec, files)
 	}
-	return err
+	return nil
 }
 
 func desktopOwnerUserID(userID string) string {
@@ -1356,11 +1366,165 @@ func desktopLongJobEnsureWatch(j *desktopLongJob) string {
 }
 
 func desktopLongJobStopWatch(j *desktopLongJob) {
-	if j == nil || j.ScheduleID == "" {
+	if j == nil {
 		return
 	}
-	if mgr := getSrvSchedulerManager(); mgr != nil {
-		_ = mgr.Pause(j.ScheduleID)
+	mgr := getSrvSchedulerManager()
+	if mgr == nil {
+		j.ScheduleID = ""
+		return
+	}
+	if id := strings.TrimSpace(j.ScheduleID); id != "" {
+		_ = mgr.ForceDelete(id)
+	}
+	// A restart can leave the row under its name after the id was lost.
+	_ = mgr.DeleteByName(desktopLongJobTaskPrefix + j.ID)
+	j.ScheduleID = ""
+}
+
+// ErrLongJobOwnerGone is permanent: Hub answered that the bot or assignment
+// does not exist, or this server has no instance for the job. A down Hub
+// is not this error. Callers tell it apart with errors.Is, not with the
+// message text.
+var ErrLongJobOwnerGone = errors.New("long job owner is gone")
+
+func desktopLongJobPermanent(err error) error {
+	if errors.Is(err, ErrLongJobOwnerGone) || errors.Is(err, agentservice.ErrInstanceNotFound) {
+		return ErrLongJobOwnerGone
+	}
+	return err
+}
+
+func desktopLongJobOwnerMissing(svc *agentservice.Service, j *desktopLongJob) (string, bool) {
+	if svc == nil || j == nil || strings.TrimSpace(j.InstanceID) == "" {
+		return "", false
+	}
+	p, ok := svc.InstanceOwner(j.InstanceID)
+	if !ok {
+		return "orphaned: owner missing at startup", true
+	}
+	if strings.TrimSpace(j.SourceRun) == "" {
+		return "", false
+	}
+	run, err := svc.GetRun(context.Background(), p, j.InstanceID, j.SourceRun)
+	if err == nil && run != nil && run.Status == agentservice.RunStatusCancelled {
+		return "orphaned: run cancelled", true
+	}
+	return "", false
+}
+
+func desktopLongJobOpen(j *desktopLongJob) bool {
+	return j != nil && (j.Status == "running" || j.Status == "stalled" || j.Status == "")
+}
+
+// desktopLongJobAbandon ends a job whose owner is gone and takes its watch
+// off the scheduler.
+func desktopLongJobAbandon(j *desktopLongJob, reason string) {
+	if j == nil {
+		return
+	}
+	fresh := desktopLongJobGet(j.ID)
+	if fresh != nil {
+		j = fresh
+	}
+	j.Status = "cancelled"
+	j.Alive = false
+	j.EndReason = reason
+	j.ReportedStatus = "cancelled"
+	desktopLongJobStopWatch(j)
+	_ = desktopLongJobSave(j)
+}
+
+func desktopLongJobCancelInstance(instanceID string) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return
+	}
+	bots := map[string]struct{}{}
+	for _, j := range desktopLongJobAll() {
+		if j.InstanceID != instanceID {
+			continue
+		}
+		if j.BotID != "" {
+			bots[j.BotID] = struct{}{}
+		}
+		if desktopLongJobOpen(j) || j.ScheduleID != "" {
+			desktopLongJobAbandon(j, "orphaned: instance deleted")
+		}
+	}
+	for botID := range bots {
+		desktopLongJobCancelBot(botID)
+	}
+}
+
+func desktopLongJobCancelBot(botID string) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return
+	}
+	for _, j := range desktopLongJobAll() {
+		if j.BotID == botID && (desktopLongJobOpen(j) || j.ScheduleID != "") {
+			desktopLongJobAbandon(j, "orphaned: bot deleted")
+		}
+	}
+}
+
+func desktopLongJobCancelSourceRun(instanceID, runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	for _, j := range desktopLongJobAll() {
+		if j.SourceRun != runID {
+			continue
+		}
+		if instanceID != "" && j.InstanceID != "" && j.InstanceID != instanceID {
+			continue
+		}
+		if desktopLongJobOpen(j) || j.ScheduleID != "" {
+			desktopLongJobAbandon(j, "orphaned: run cancelled")
+		}
+	}
+	if parent := desktopLongJobWatchParent(runID); parent != nil && (instanceID == "" || parent.InstanceID == "" || parent.InstanceID == instanceID) {
+		if desktopLongJobOpen(parent) || parent.ScheduleID != "" {
+			desktopLongJobAbandon(parent, "orphaned: run cancelled")
+		}
+	}
+}
+
+// desktopLongJobReconcileOwners drops watches whose instance is gone.
+// It runs once when the service is bound, not on a timer.
+func desktopLongJobReconcileOwners() {
+	svc := desktopLongJobService
+	if svc == nil {
+		return
+	}
+	for _, j := range desktopLongJobAll() {
+		if j.InstanceID == "" {
+			continue
+		}
+		if !desktopLongJobOpen(j) && j.ScheduleID == "" {
+			continue
+		}
+		reason, gone := desktopLongJobOwnerMissing(svc, j)
+		if !gone {
+			continue
+		}
+		desktopLongJobAbandon(j, reason)
+	}
+	mgr := getSrvSchedulerManager()
+	if mgr == nil {
+		return
+	}
+	for _, task := range mgr.List() {
+		id := desktopLongJobIDFromTask(&task)
+		if id == "" {
+			continue
+		}
+		j := desktopLongJobGet(id)
+		if j == nil || j.Status == "cancelled" {
+			_ = mgr.ForceDelete(task.ID)
+		}
 	}
 }
 
@@ -1399,7 +1563,13 @@ var (
 
 func bindDesktopLongJobService(svc *agentservice.Service) {
 	desktopLongJobService = svc
+	desktopLongJobReconcileOwners()
 	desktopLongJobEnsureTicker()
+}
+
+func init() {
+	agentservice.AfterInstanceDeleted = desktopLongJobCancelInstance
+	agentservice.AfterRunCancelled = desktopLongJobCancelSourceRun
 }
 
 // desktopLongJobTickerDisabled is set by tests so the process-wide ticker

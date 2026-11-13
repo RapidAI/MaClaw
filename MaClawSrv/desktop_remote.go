@@ -304,7 +304,31 @@ func desktopStatusError(status int, payload []byte) error {
 	if status == http.StatusConflict && code == desktopbot.CodeDesktopAsleep {
 		return desktopbot.AsleepError{}
 	}
-	return fmt.Errorf("%s", desktopRejectedMessage(payload))
+	return &desktopAPIError{Status: status, Code: code, Msg: desktopRejectedMessage(payload)}
+}
+
+// desktopAPIError is a Hub rejection. Code and status are the contract.
+// The message text is only for logs.
+type desktopAPIError struct {
+	Status int
+	Code   string
+	Msg    string
+}
+
+func (e *desktopAPIError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Msg != "" {
+		return e.Msg
+	}
+	return e.Code
+}
+
+// Is reports a permanent missing bot or assignment. A 502 or an unreachable
+// Hub is not this error, so a watch keeps trying those.
+func (e *desktopAPIError) Is(target error) bool {
+	return e != nil && target == ErrLongJobOwnerGone && e.Status == http.StatusNotFound && e.Code == "NOT_FOUND"
 }
 
 func desktopRejectedMessage(payload []byte) string {
