@@ -26,9 +26,11 @@ var fileCompanionShareProbe = struct {
 
 // probeRevokedFileCompanionShares asks the Hub about previous cloud rows the
 // list no longer returns. A 404 means the link was deleted; an expired link
-// still answers 200 and stays on this machine. Only non-group rows are probed:
-// a group share missing from the list is already withdrawn by membership
-// revocation.
+// still answers 200 and stays on this machine. Local group rows are not
+// probed: a group share missing from the list is already withdrawn by
+// membership revocation. Foreign group rows are — their snapshot comes back
+// empty on a mere origin outage, so only the origin's own answer may retire
+// the row: 404 deletes it, and a rejected grant is the membership answer.
 func (a *App) probeRevokedFileCompanionShares(hub, viewer string, previous []FileCompanionLibraryItem, remote []FileCompanionLibraryItem, dismissed map[string]bool) (map[string]bool, map[string]fileCompanionShareView) {
 	revoked := map[string]bool{}
 	foreignViews := map[string]fileCompanionShareView{}
@@ -62,15 +64,16 @@ func (a *App) probeRevokedFileCompanionShares(hub, viewer string, previous []Fil
 		if prev.Source != "cloud" || !fileCompanionShareTokenMatch.MatchString(token) || seen[token] || dismissed[token] {
 			continue
 		}
-		if prev.Visibility == "group" {
-			continue
-		}
 		origin := fileCompanionHubOrigin(prev.HubOrigin)
 		foreign := origin != "" && origin != fileCompanionHubOrigin(hub)
+		if prev.Visibility == "group" && !foreign {
+			continue
+		}
 		// A foreign share is refreshed on every list: that GET is how notes
-		// and new revisions arrive. The 30-second cache is only for home-hub
-		// links that are missing because they expired, not because they moved.
-		if !foreign && fileCompanionShareProbeRecentlyChecked(token, now) {
+		// and new revisions arrive. Foreign probes only enter the 30-second
+		// cache on failure, so a healthy origin still feeds every refresh
+		// while a dead one does not cost a 5-second timeout each time.
+		if fileCompanionShareProbeRecentlyChecked(token, now) {
 			continue
 		}
 		if foreign {
@@ -107,11 +110,22 @@ func (a *App) probeRevokedFileCompanionShares(hub, viewer string, previous []Fil
 				auth = ""
 			}
 			deleted, view, err := probeFileCompanionShareDeleted(client, target, auth, job.grant, job.token)
-			if !job.foreign {
+			if !job.foreign || err != nil {
 				// Mark the attempt even on a network error. Otherwise a Hub whose
 				// single-link route is briefly failing would cost a 5-second probe
 				// on every list refresh; the retry waits out the cache TTL.
+				// Foreign probes only backoff on failure: a live origin feed is
+				// also the notes-and-revision channel and must stay fresh.
 				fileCompanionShareProbeMark(job.token)
+			}
+			if err != nil && job.foreign {
+				// The grant is the only credential an origin checks. Rejecting
+				// it is the membership answer — the member left or the share
+				// left the group — not a transient failure.
+				var status *fileCompanionShareStatus
+				if errors.As(err, &status) && status != nil && (status.status == http.StatusUnauthorized || status.status == http.StatusForbidden) {
+					deleted, err = true, nil
+				}
 			}
 			if err != nil {
 				return

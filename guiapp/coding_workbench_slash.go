@@ -75,7 +75,7 @@ func (h *IMMessageHandler) handleCodingWorkbenchIMCommand(
 	// A command already running inside an internal loop (background chat task)
 	// must not open a second window for the same owner.
 	if dispatchPlan && providedLoopCtx == nil && !msg.IsBackground {
-		window, timeoutResponse := h.beginOwnerTurnWindow(&msg)
+		window, timeoutResponse := h.beginOwnerTurnWindow(&msg, false)
 		if timeoutResponse != nil {
 			return timeoutResponse
 		}

@@ -197,6 +197,26 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
+// SetAudienceUsers replaces a notification's audience list. Relayed
+// companion-share notices arrive one member per request, so the receiving
+// hub grows and shrinks the same notification's audience as relays land.
+func (s *Store) SetAudienceUsers(ctx context.Context, id string, userIDs []string) error {
+	audienceJSON, err := json.Marshal(userIDs)
+	if err != nil {
+		return fmt.Errorf("marshal audience_ids: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE admin_notifications SET audience_ids = ?, updated_at = ? WHERE id = ?`,
+		string(audienceJSON), time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // FindBySource queries for a notification with a given source and source_id.
 // Returns nil, nil if not found.
 func (s *Store) FindBySource(ctx context.Context, source, sourceID string) (*Notification, error) {

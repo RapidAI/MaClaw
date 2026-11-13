@@ -104,7 +104,7 @@ import { GoalChecklistOverlay } from "./GoalChecklistOverlay";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, isHostGoalChecklistText, logAIPanelDiagnostic, rewriteHostGoalChecklistBody, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, goalChecklistOverlayBodyFromText, latestHostGoalChecklistText, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, isHostGoalChecklistText, logAIPanelDiagnostic, rewriteHostGoalChecklistBody, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
 import { expertTabId } from "./expertTypes";
 import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
@@ -5416,20 +5416,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [displayMessages]);
     // The goal card stays in history (collapseHostGoalChecklist keeps exactly
-    // one) but the floating overlay owns its on-screen spot, top-right.
-    const goalChecklistOverlayText = useMemo(() => {
-        if (remoteChat) return "";
-        for (let index = otherMessages.length - 1; index >= 0; index -= 1) {
-            const message = otherMessages[index];
-            if (message.kind === "goalChecklist") return String(message.content || "");
-            // Same conversion renderMessage applied inline: a host continuation
-            // stored as a user row still feeds the float.
-            if (message.role === "user" && isHostGoalChecklistText(message.content || "")) {
-                return rewriteHostGoalChecklistBody(message.content || "");
-            }
-        }
-        return "";
-    }, [otherMessages, remoteChat]);
+    // one) but the floating overlay owns its on-screen spot, top-right. A
+    // completed goal retires the float (goalChecklistOverlayBodyFromText).
+    // The scan runs per transcript render; the regex parse only re-runs when
+    // the checklist text itself changes, since the tail re-renders per token.
+    const latestGoalChecklistText = useMemo(
+        () => (remoteChat ? "" : latestHostGoalChecklistText(otherMessages)),
+        [otherMessages, remoteChat],
+    );
+    const goalChecklistOverlayText = useMemo(
+        () => goalChecklistOverlayBodyFromText(latestGoalChecklistText),
+        [latestGoalChecklistText],
+    );
     // A remote transcript file lives on the controlled machine. Opening one
     // asks that desktop for the bytes (fetch_file op), saves them into this
     // computer's Downloads folder, and returns the local path for the card.
@@ -6685,13 +6683,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 
     // Per-message render cache: avoids re-rendering unchanged messages during
     // streaming. During streaming, only the LAST assistant message changes
-    // (every 33ms). Without this cache, all N messages get full Markdown
+    // (every 80ms). Without this cache, all N messages get full Markdown
     // re-parsing on every token batch flush.
     const msgRenderCacheRef = useRef<Map<string, { contentKey: string; node: ReturnType<typeof renderMessage>; message?: ChatMessage }>>(new Map());
     const coveredOtherNodesRef = useRef<React.ReactNode[] | null>(null);
     const coveredProgressNodesRef = useRef<React.ReactNode[] | null>(null);
     // Incremental Markdown render state for the streaming (last) assistant message.
-    // This avoids re-parsing the entire message content on every 33ms token flush.
+    // This avoids re-parsing the entire message content on every 80ms token flush.
     // Only the "active tail" (last incomplete paragraph) is re-parsed each frame;
     // completed paragraphs are frozen as cached React nodes.
     const incrementalStateRef = useRef<{ messageId: string; state: IncrementalRenderState }>({
@@ -6699,7 +6697,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     });
     // Same treatment for the streaming reasoning trail (thinking panel): it
     // grows token-by-token and would otherwise get a full Markdown re-parse
-    // on every 33ms flush, stalling the main thread (frozen spinner/scroll).
+    // on every 80ms flush, stalling the main thread (frozen spinner/scroll).
     const reasoningIncrementalStateRef = useRef<{ messageId: string; state: IncrementalRenderState }>({
         messageId: '', state: createIncrementalRenderState(),
     });
@@ -6818,7 +6816,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 return cached.node;
             }
             // For the last assistant message while its content is streaming, use incremental
-            // Markdown rendering to avoid O(content.length) full re-parse every 33ms.
+            // Markdown rendering to avoid O(content.length) full re-parse every 80ms.
             // The incremental renderer freezes completed paragraphs and only re-parses
             // the active tail (~20 lines), keeping per-frame cost < 1ms regardless of
             // total message length.

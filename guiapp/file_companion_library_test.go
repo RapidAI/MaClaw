@@ -91,12 +91,19 @@ func TestFileCompanionLibraryRemembersOpensAndDropsMissing(t *testing.T) {
 		t.Fatalf("after delete = %#v", list.Items)
 	}
 
+	// Same-path local rows now collapse by design (upsertFileCompanionLocal
+	// dedups on the library path), so the cap check needs cap+1 distinct
+	// documents, each backed by a real file so the exists-filter keeps them.
 	items := make([]FileCompanionLibraryItem, 0, fileCompanionLibraryCap+1)
 	for i := 0; i < fileCompanionLibraryCap+1; i++ {
+		p := filepath.Join(home, fmt.Sprintf("extra-%03d.md", i))
+		if err := os.WriteFile(p, []byte("extra"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		items = append(items, FileCompanionLibraryItem{
-			ID:       "local:extra",
+			ID:       fileCompanionLibraryLocalID(p),
 			Name:     "extra.md",
-			Path:     second,
+			Path:     p,
 			Source:   "local",
 			OpenedAt: "2020-01-01T00:00:00Z",
 		})
@@ -4470,5 +4477,44 @@ func TestReconcileFileCompanionLibraryKeepsNewerChat(t *testing.T) {
 	got = reconcileFileCompanionLibrary(fresh, snapshot, nil)
 	if len(got) != 1 || got[0].Revision != 2 || got[0].ChatRevision != 6 || got[0].MarksRevision != 4 {
 		t.Fatalf("newer document revision dropped a newer transcript: %+v", got)
+	}
+}
+
+// A share this member published through its home Hub is theirs for the
+// link's whole life. Re-importing it (for example an open-from-notification
+// when the file copy is gone) builds a row with Mine=false because the
+// import response cannot say the member owns it. The upsert must keep the
+// ownership flags or the row loses its host controls until the next list.
+func TestFileCompanionCloudUpsertKeepsRemoteOwnership(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	token := "cd_0123456789abcdef0123456789abcdef"
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "论文.pdf",
+		Source: "cloud", Visibility: "group", Mine: true, Admin: true, Host: true,
+		HubOrigin: "https://origin.example", Revision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "论文.pdf",
+		Source: "cloud", Visibility: "group", Mine: false,
+		HubOrigin: "https://origin.example", Revision: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fileCompanionLibraryMu.Lock()
+	stored, ok := app.readFileCompanionLibraryLocked()
+	fileCompanionLibraryMu.Unlock()
+	if !ok {
+		t.Fatal("library unreadable")
+	}
+	var row FileCompanionLibraryItem
+	for _, item := range stored {
+		if item.Token == token {
+			row = item
+		}
+	}
+	if !row.Mine || !row.Admin {
+		t.Fatalf("re-import demoted the member's own share: %+v", row)
 	}
 }

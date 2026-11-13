@@ -25,7 +25,7 @@ var remoteCodingSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 		"ssh_read_file": true, "ssh_list_dir": true,
 		codeNavigationToolName: true, reportLocalizationToolName: true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
-		"coding_knowledge_search": true, "knowledge_search": true, "knowledge_image_search": true,
+		"coding_knowledge_search": true, "knowledge_search": true, "knowledge_image_search": true, "memory_search": true,
 	},
 	codingRoleReviewer: {
 		"ssh_read_file": true, "ssh_list_dir": true, "ssh_check_task": true,
@@ -37,7 +37,7 @@ var remoteCodingSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 		"ssh_bash":             true,
 		codeNavigationToolName: true, reportLocalizationToolName: true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
-		"coding_knowledge_search": true, "knowledge_search": true, "knowledge_image_search": true,
+		"coding_knowledge_search": true, "knowledge_search": true, "knowledge_image_search": true, "memory_search": true,
 	},
 }
 
@@ -293,6 +293,7 @@ func (parent *RemoteCodingSubAgent) newReadOnlyNestedRemoteCodingAgent(spec codi
 	// fresh attempt, never to resume the parent's old loop.
 	child.runtimeStore = parent.runtimeStore
 	child.codingKB, child.generalKB = parent.codingKB, parent.generalKB
+	child.memoryStore = parent.memoryStore
 	// Inspection children share neither the root preview lifecycle nor its
 	// session-end signal: they cannot edit remote files and must not close the
 	// root panel while their detached Runtime Attempt is still reporting.
@@ -536,6 +537,7 @@ func (parent *RemoteCodingSubAgent) runNestedRemoteCodingAgent(spec codingSpawnS
 	child.permissionOwnerID = parent.taskPermissionOwnerID()
 	child.codingKB = parent.codingKB
 	child.generalKB = parent.generalKB
+	child.memoryStore = parent.memoryStore
 	// Nested agents must not inherit the root preview lifecycle: workers write
 	// under an isolate, and inspection children cannot close the parent panel.
 	child.sourcePreviewEnabled = false

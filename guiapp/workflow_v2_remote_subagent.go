@@ -121,6 +121,7 @@ func (h *IMMessageHandler) launchRemoteExperimentOrchestrator(userID string, sta
 	cfg := h.getCodingLLMConfig()
 	httpClient := h.client
 	loopCtx := NewLoopContext("remote-experiment-orchestrator", h.getMaclawAgentMaxIterations(), httpClient)
+	ensureLoopCtxUserID(loopCtx, userID)
 
 	orchestrator := NewRemoteExperimentOrchestrator(
 		h, cfg, httpClient, sessionID, projectDir, params, loopCtx,
@@ -155,6 +156,12 @@ func (h *IMMessageHandler) launchRemoteExperimentOrchestrator(userID string, sta
 		},
 		nil, // onToken — not needed for background execution
 	)
+	// Same desktop read visibility as other remote coding paths: knowledge
+	// stores for knowledge_search, plus read-only memory_search.
+	if h.app != nil {
+		orchestrator.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
+	}
+	orchestrator.SetMemoryStore(h.currentMemoryStore())
 
 	// Store orchestrator reference for user control (stop/status)
 	h.activeExperimentOrchestrator.Store(userID, orchestrator)

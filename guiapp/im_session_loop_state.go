@@ -10,13 +10,18 @@ import (
 // project) and each IM user gets their own instance, enabling concurrent
 // agent loop execution without data races on shared fields.
 type sessionLoopState struct {
-	mu          sync.Mutex   // serializes agent loop execution for THIS session
-	stateMu     sync.RWMutex // protects loop metadata while mu may be held by a loop
-	loopCtx     *LoopContext // active loop context (nil when idle)
-	userText    string       // last user message text for this session
-	pendingText string       // text of the request currently holding mu, before loopCtx is published
-	pendingGen  uint64       // monotonic generation for that pending request; never reset on unlock
-	endedAt     time.Time    // most recent loop end, retained for session lifecycle diagnostics
+	mu      sync.Mutex   // serializes agent loop execution for THIS session
+	stateMu sync.RWMutex // protects loop metadata while mu may be held by a loop
+	loopCtx *LoopContext // active loop context (nil when idle)
+	// windowHeld is set by the turn holding mu inside its owner window. It is
+	// the claimant signal queueing waiters use to tell a live turn (wait for
+	// it) from a leaked lock (error out) — pendingText cannot serve here
+	// because a turn's message text may be empty.
+	windowHeld  bool
+	userText    string    // last user message text for this session
+	pendingText string    // text of the request currently holding mu, before loopCtx is published
+	pendingGen  uint64    // monotonic generation for that pending request; never reset on unlock
+	endedAt     time.Time // most recent loop end, retained for session lifecycle diagnostics
 }
 
 // getSessionLoop returns the sessionLoopState for the given userID, creating
@@ -43,13 +48,14 @@ func (h *IMMessageHandler) getSessionLoopCtx(userID string) *LoopContext {
 }
 
 // hasActiveLoopForUser returns true if the given userID has a running,
-// non-cancelled agent loop.
+// non-cancelled agent loop. A done-but-still-published loopCtx is stale:
+// the loop exited and can neither consume a steer nor own the next turn.
 func (h *IMMessageHandler) hasActiveLoopForUser(userID string) bool {
 	if h.hasCancelledTaskBoundary(userID) {
 		return false
 	}
 	ctx := h.getSessionLoopCtx(userID)
-	return ctx != nil && !ctx.IsCancelled() && ctx.AcceptingReplans()
+	return ctx != nil && !ctx.IsDone() && !ctx.IsCancelled() && ctx.AcceptingReplans()
 }
 
 // tryInjectActiveReplan resolves the owning loop and accepts the injection

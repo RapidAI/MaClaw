@@ -616,7 +616,10 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 		if seen[token] || !fileCompanionShareTokenMatch.MatchString(token) {
 			continue
 		}
-		groupGone := prev.Visibility == "group"
+		// A local group row missing from the list is withdrawn by membership
+		// revocation. A foreign group row waits for the probe: its origin Hub
+		// going quiet must not be read as the share being deleted.
+		groupGone := prev.Visibility == "group" && fileCompanionHubOrigin(prev.HubOrigin) == ""
 		if !groupGone && !revoked[token] {
 			continue
 		}
@@ -637,7 +640,7 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 		// already uses the path: the dead cloud row has to leave in this
 		// write, or the next open folds that local project away again.
 		if !installed && !prev.Mine && fileCompanionLibraryUsesPath(live, prev.Path) {
-			if !groupGone {
+			if prev.Visibility != "group" {
 				_, _ = a.dismissFileCompanionShareLocked(token)
 				a.forgetFileCompanionShareGrantLocked(token)
 			}
@@ -687,7 +690,7 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 					}
 				}
 			}
-			if !groupGone {
+			if prev.Visibility != "group" {
 				_, _ = a.dismissFileCompanionShareLocked(token)
 				a.forgetFileCompanionShareGrantLocked(token)
 			}
@@ -700,11 +703,11 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 		// Only the downloaded copy lives in this directory. The owner's paper
 		// is a different path, so losing the share must not close that tab.
 		closeTab := installed
-		if !groupGone {
+		if prev.Visibility != "group" {
 			// A deleted token is dead. Remember that before the next list, so a
 			// stale response cannot re-import the copy this drop just removed.
-			// Group shares are not dismissed: rejoining the group can make the
-			// same token visible again.
+			// Group shares are not dismissed — local or foreign: rejoining the
+			// group can make the same token visible again.
 			_, _ = a.dismissFileCompanionShareLocked(token)
 			a.forgetFileCompanionShareGrantLocked(token)
 		}
@@ -1235,6 +1238,9 @@ func (a *App) pullNewerFileCompanionShares(hub, viewer string, items []FileCompa
 
 func (a *App) pullFileCompanionShare(hub, viewer string, item FileCompanionLibraryItem, epoch uint64) (FileCompanionShareUpdate, error) {
 	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return FileCompanionShareUpdate{}, errors.New("请重新导入分享链接")
+	}
 	body := map[string]string{"password": ""}
 	if foreign {
 		if label := a.fileCompanionReaderLabel(); label != "" {
@@ -1374,7 +1380,14 @@ func (a *App) SyncFileCompanionShare(path, highlights string) (FileCompanionShar
 			}
 			break
 		}
-		view, postErr := postFileCompanionShareSync(hub, viewer, share.Token, filepath.Base(canonical), file)
+		target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, share)
+		if foreign && grant == "" {
+			if realErr == nil {
+				realErr = errors.New("请重新导入分享链接")
+			}
+			continue
+		}
+		view, postErr := postFileCompanionShareSync(target, auth, grant, share.Token, filepath.Base(canonical), file)
 		_ = file.Close()
 		if postErr != nil {
 			// A missing or expired share cannot take an update. Leave it out
@@ -1458,12 +1471,12 @@ func (a *App) SyncFileCompanionShare(path, highlights string) (FileCompanionShar
 // postFileCompanionShareMarks uploads one marks payload — the five reader-mark
 // arrays — without the project zip. The response carries the new marks
 // revision.
-func postFileCompanionShareMarks(hub, viewer, token, marks string) (int, error) {
-	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/marks", strings.NewReader(marks))
+func postFileCompanionShareMarks(target, viewer, grant, token, marks string) (int, error) {
+	req, err := http.NewRequest(http.MethodPost, target+"/api/mobile/documents/shares/"+token+"/marks", strings.NewReader(marks))
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+viewer)
+	fileCompanionShareAuthorize(req, viewer, grant)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
@@ -1527,7 +1540,14 @@ func (a *App) syncFileCompanionShareMarks(path, marks string) (FileCompanionShar
 	var realErr error
 	var goneErr error
 	for _, share := range shares {
-		marksRevision, postErr := postFileCompanionShareMarks(hub, viewer, share.Token, marks)
+		target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, share)
+		if foreign && grant == "" {
+			if realErr == nil {
+				realErr = errors.New("请重新导入分享链接")
+			}
+			continue
+		}
+		marksRevision, postErr := postFileCompanionShareMarks(target, auth, grant, share.Token, marks)
 		if postErr != nil {
 			// A missing or expired share cannot take an update. Leave it out
 			// so the next sync is not stuck on it, exactly like the full sync.
@@ -1794,7 +1814,11 @@ func (a *App) sendFileCompanionShareQuestion(body []byte, shares []FileCompanion
 		return
 	}
 	for _, share := range shares {
-		revision, postErr := postFileCompanionShareChat(hub, viewer, share.Token, body, share.ChatRevision)
+		target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, share)
+		if foreign && grant == "" {
+			continue
+		}
+		revision, postErr := postFileCompanionShareChat(target, auth, grant, share.Token, body, share.ChatRevision)
 		if postErr != nil {
 			var status *fileCompanionShareStatus
 			if errors.As(postErr, &status) && status.status == http.StatusConflict {
@@ -1830,7 +1854,11 @@ func (a *App) publishFileCompanionShareQuestion(canonical, question string) {
 // turn is a prefix of this body, so the answer replaces it. A later question
 // that already landed is longer, and this older body must not erase it.
 func (a *App) postFileCompanionShareChatKeepingNewer(hub, viewer string, share FileCompanionLibraryItem, body []byte) (int, error) {
-	revision, err := postFileCompanionShareChat(hub, viewer, share.Token, body, share.ChatRevision)
+	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, share)
+	if foreign && grant == "" {
+		return 0, errors.New("请重新导入分享链接")
+	}
+	revision, err := postFileCompanionShareChat(target, auth, grant, share.Token, body, share.ChatRevision)
 	if err == nil {
 		return revision, nil
 	}
@@ -1838,14 +1866,14 @@ func (a *App) postFileCompanionShareChatKeepingNewer(hub, viewer string, share F
 	if !errors.As(err, &status) || status == nil || status.status != http.StatusConflict {
 		return 0, err
 	}
-	remote, remoteRevision, getErr := getFileCompanionShareChat(hub, viewer, share.Token)
+	remote, remoteRevision, getErr := getFileCompanionShareChat(target, auth, grant, share.Token)
 	if getErr != nil || remoteRevision <= 0 {
 		return 0, err
 	}
 	if !fileCompanionChatBodyAhead(body, remote) {
 		return remoteRevision, nil
 	}
-	return postFileCompanionShareChat(hub, viewer, share.Token, body, remoteRevision)
+	return postFileCompanionShareChat(target, auth, grant, share.Token, body, remoteRevision)
 }
 
 // fileCompanionChatBodyAhead reports that the host's local transcript should
@@ -1883,12 +1911,12 @@ func fileCompanionChatMessages(raw []byte) ([]FileCompanionMessage, bool) {
 	return messages, true
 }
 
-func getFileCompanionShareChat(hub, viewer, token string) ([]byte, int, error) {
-	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares/"+token+"/chat", nil)
+func getFileCompanionShareChat(target, viewer, grant, token string) ([]byte, int, error) {
+	req, err := http.NewRequest(http.MethodGet, target+"/api/mobile/documents/shares/"+token+"/chat", nil)
 	if err != nil {
 		return nil, 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+viewer)
+	fileCompanionShareAuthorize(req, viewer, grant)
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1934,12 +1962,12 @@ func (a *App) noteFileCompanionShareChatRevision(token string, revision int) {
 	}
 }
 
-func postFileCompanionShareChat(hub, viewer, token string, body []byte, base int) (int, error) {
-	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/chat", bytes.NewReader(body))
+func postFileCompanionShareChat(target, viewer, grant, token string, body []byte, base int) (int, error) {
+	req, err := http.NewRequest(http.MethodPost, target+"/api/mobile/documents/shares/"+token+"/chat", bytes.NewReader(body))
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+viewer)
+	fileCompanionShareAuthorize(req, viewer, grant)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	if base >= 0 {
 		req.Header.Set("X-Companion-Chat-Base", strconv.Itoa(base))
@@ -2131,8 +2159,14 @@ func (a *App) ReviewFileCompanionShareNote(token, noteID, decision string) (File
 	if err != nil {
 		return FileCompanionShareNotesResult{}, errors.New("无法保存审核结果")
 	}
-	endpoint := hub + "/api/mobile/documents/shares/" + url.PathEscape(token) + "/notes/" + url.PathEscape(noteID) + "/review"
-	body, err := a.fileCompanionHubJSON(http.MethodPost, endpoint, viewer, payload)
+	item, _ := a.fileCompanionCloudByToken(token)
+	item.Token = token
+	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return FileCompanionShareNotesResult{}, errors.New("请重新导入分享链接")
+	}
+	endpoint := target + "/api/mobile/documents/shares/" + url.PathEscape(token) + "/notes/" + url.PathEscape(noteID) + "/review"
+	body, err := a.fileCompanionHubJSONAs(http.MethodPost, endpoint, auth, grant, payload, foreign)
 	if err != nil {
 		return FileCompanionShareNotesResult{}, err
 	}
@@ -2313,7 +2347,7 @@ func fileCompanionShareGone(err error) bool {
 	}
 }
 
-func postFileCompanionShareSync(hub, viewer, token, name string, raw io.Reader) (fileCompanionShareView, error) {
+func postFileCompanionShareSync(target, viewer, grant, token, name string, raw io.Reader) (fileCompanionShareView, error) {
 	pipeReader, pipeWriter := io.Pipe()
 	writer := multipart.NewWriter(pipeWriter)
 	go func() {
@@ -2349,12 +2383,12 @@ func postFileCompanionShareSync(hub, viewer, token, name string, raw io.Reader) 
 		}
 		writeErr = writer.Close()
 	}()
-	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/sync", pipeReader)
+	req, err := http.NewRequest(http.MethodPost, target+"/api/mobile/documents/shares/"+token+"/sync", pipeReader)
 	if err != nil {
 		_ = pipeWriter.CloseWithError(err)
 		return fileCompanionShareView{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+viewer)
+	fileCompanionShareAuthorize(req, viewer, grant)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	client := &http.Client{Timeout: 3 * time.Minute}
 	resp, err := client.Do(req)

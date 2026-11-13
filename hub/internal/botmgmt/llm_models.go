@@ -1,6 +1,7 @@
 package botmgmt
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -116,6 +117,13 @@ func (s *Service) storedLLMProviderCreds(ctx context.Context, tenantID, provider
 // disagree about whether the base URL already carries /v1.
 func fetchLLMModelList(ctx context.Context, protocol, rawURL, key string) ([]LLMModelItem, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(rawURL), "/")
+	// CodeGen is a hybrid gateway: it speaks Anthropic wire protocol for chat,
+	// but its /v1/models endpoint only accepts OpenAI-style Bearer auth and
+	// rejects the x-api-key + anthropic-version headers the SDK sends. Model
+	// discovery overrides to OpenAI, the same rule the desktop app applies.
+	if strings.EqualFold(protocol, "anthropic") && corelib.IsCodeGenURL(baseURL) {
+		protocol = "openai"
+	}
 	if strings.EqualFold(protocol, "anthropic") {
 		ctx, cancel := context.WithTimeout(ctx, llmModelFetchTimeout)
 		defer cancel()
@@ -183,6 +191,9 @@ func llmModelListError(err error) error {
 	if strings.Contains(raw, "HTTP 401") || strings.Contains(raw, "HTTP 403") {
 		return fmt.Errorf("%w: llm provider key is invalid", ErrInvalidInput)
 	}
+	if strings.Contains(raw, "HTTP 404") {
+		return fmt.Errorf("模型列表端点不存在 (HTTP 404)，请检查接口地址是否正确")
+	}
 	return fmt.Errorf("获取模型列表失败: %s", raw)
 }
 
@@ -222,15 +233,15 @@ type llmModelEntry struct {
 // parseLLMModelListBody accepts the three catalog shapes seen in the wild:
 // {"data":[...]}, {"models":[...]}, and a bare array.
 func parseLLMModelListBody(body []byte) []LLMModelItem {
-	trimmed := strings.TrimSpace(string(body))
-	if trimmed == "" || trimmed[0] == '<' {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] == '<' {
 		return nil
 	}
 	var obj struct {
 		Data   []llmModelEntry `json:"data"`
 		Models []llmModelEntry `json:"models"`
 	}
-	if err := json.Unmarshal(body, &obj); err == nil {
+	if err := json.Unmarshal(trimmed, &obj); err == nil {
 		if len(obj.Models) > 0 {
 			return llmModelItemsFromEntries(obj.Models)
 		}
@@ -239,7 +250,7 @@ func parseLLMModelListBody(body []byte) []LLMModelItem {
 		}
 	}
 	var arr []llmModelEntry
-	if err := json.Unmarshal(body, &arr); err == nil {
+	if err := json.Unmarshal(trimmed, &arr); err == nil {
 		return llmModelItemsFromEntries(arr)
 	}
 	return nil
@@ -258,9 +269,10 @@ func llmModelItemsFromEntries(entries []llmModelEntry) []LLMModelItem {
 }
 
 // normalizeLLMModelItems sorts by id and drops duplicates so a picker reads
-// predictably instead of in provider-returned order.
+// predictably instead of in provider-returned order. It returns a fresh
+// slice; the caller's order and backing array stay untouched.
 func normalizeLLMModelItems(items []LLMModelItem) []LLMModelItem {
-	out := items[:0]
+	out := make([]LLMModelItem, 0, len(items))
 	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		if _, ok := seen[item.ID]; ok {
@@ -273,10 +285,11 @@ func normalizeLLMModelItems(items []LLMModelItem) []LLMModelItem {
 	return out
 }
 
+// firstNonEmpty returns the first value that is non-blank once trimmed.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
 		}
 	}
 	return ""

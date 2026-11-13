@@ -3707,7 +3707,14 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	}
 	if _, ok := semanticCallbackClassification(c); ok && !c.semanticTurnAdmits(name) {
 		if c.semanticSurface == nil || !semanticSurfaceHasGrant(c.semanticSurface, name) {
-			return false, semanticDirectoryPetitionDenied
+			// A bound specified-target delivery rewrites producer/consumer
+			// petitions (send_file, generate_pdf, office) onto the live send
+			// grant below. Those names are not directory rows on a
+			// LabelDocumentDelivery turn, so the directory gate must let them
+			// through to the rewrite.
+			if !semanticPetitionRewritesToLiveBoundDelivery(c.semanticSurface, name) {
+				return false, semanticDirectoryPetitionDenied
+			}
 		}
 	}
 	// Dispatch stays a host tool so a same-batch retry reaches the chat

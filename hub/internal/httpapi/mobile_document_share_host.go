@@ -124,10 +124,11 @@ func CompanionDocumentShareHostHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST or DELETE")
 			return
 		}
-		_, viewerID, ok := companionRequireViewer(w, r, identity)
+		_, viewerID, ok := companionViewerIfPresent(w, r, identity)
 		if !ok {
 			return
 		}
+		grant := companionReaderGrantHeaderValue(r)
 		token := strings.TrimSpace(r.PathValue("token"))
 		if !companionShareTokenPattern.MatchString(token) {
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
@@ -162,7 +163,12 @@ func CompanionDocumentShareHostHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusGone, "SHARE_EXPIRED", "分享链接已过期")
 			return
 		}
-		if !companionShareIsAdmin(snapshot, viewerID) {
+		callerID := companionShareCallerID(snapshot, viewerID, grant)
+		if callerID == "" {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
+		if !companionShareIsAdmin(snapshot, callerID) {
 			writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有分享者管理员可以管理主持人")
 			return
 		}
@@ -205,7 +211,8 @@ func CompanionDocumentShareHostHandler(identity *auth.IdentityService) http.Hand
 				writeError(w, http.StatusGone, "SHARE_EXPIRED", "分享链接已过期")
 				return
 			}
-			if !companionShareIsAdmin(share, viewerID) {
+			callerID = companionShareCallerID(share, viewerID, grant)
+			if !companionShareIsAdmin(share, callerID) {
 				companionDocShares.Unlock()
 				writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有分享者管理员可以管理主持人")
 				return
@@ -272,7 +279,8 @@ func CompanionDocumentShareHostHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusGone, "SHARE_EXPIRED", "分享链接已过期")
 			return
 		}
-		if !companionShareIsAdmin(share, viewerID) {
+		callerID = companionShareCallerID(share, viewerID, grant)
+		if !companionShareIsAdmin(share, callerID) {
 			companionDocShares.Unlock()
 			writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有分享者管理员可以管理主持人")
 			return
@@ -717,6 +725,79 @@ func reconcileGroupHostSeats(ctx context.Context, identity *auth.IdentityService
 		}
 		go notifyCompanionHostTransferResult(share, content, companionHostSeatStampOf(share), pendingID, hostID)
 	}
+	// Shares published by a cross-Hub member need one more pass: their owner
+	// id is synthetic, so the "owner can always open" rule above cannot see
+	// the person left the group. A stranded seat moves to the group admin,
+	// who can then keep the document alive for everyone else. The check is
+	// skipped when the group itself is gone: dissolving a group retires its
+	// shares wholesale, not seat by seat.
+	group, groupOK := companionGroupSnapshotByID(groupID)
+	if !groupOK {
+		return
+	}
+	for _, token := range tokens {
+		share, reseated := reseatRemoteOwnerCompanionShare(token, group)
+		if !reseated {
+			continue
+		}
+		name := strings.TrimSpace(share.Name)
+		go notifyCompanionHostTransferResult(share,
+			fmt.Sprintf("主持人已不在群组，文档《%s》由群组管理员担任主持人。", name),
+			companionHostSeatStampOf(share), group.OwnerID)
+	}
+}
+
+// companionGroupSnapshotByID returns a detached copy of the group so callers
+// can inspect membership without holding the store lock.
+func companionGroupSnapshotByID(groupID string) (companionDocGroup, bool) {
+	loadCompanionDocGroups()
+	companionDocGroups.Lock()
+	defer companionDocGroups.Unlock()
+	group, ok := companionDocGroups.items[groupID]
+	if !ok {
+		return companionDocGroup{}, false
+	}
+	return cloneCompanionGroup(group), true
+}
+
+// reseatRemoteOwnerCompanionShare hands a stranded remote publisher's seat
+// to the group admin. The seat only moves while it is still the default one:
+// a completed transfer already left a valid local user id in HostID.
+func reseatRemoteOwnerCompanionShare(token string, group companionDocGroup) (companionDocShare, bool) {
+	current, ok := companionShareByToken(token)
+	if !ok || strings.TrimSpace(current.RemoteOwner) == "" || strings.TrimSpace(current.HostID) != "" {
+		return companionDocShare{}, false
+	}
+	stillMember := func(contact string) bool {
+		for _, m := range group.Members {
+			if m.Contact == contact && m.Status == "accepted" {
+				return true
+			}
+		}
+		return false
+	}
+	if stillMember(current.RemoteOwner) {
+		return companionDocShare{}, false
+	}
+	companionDocShares.Lock()
+	share, ok := companionDocShares.items[token]
+	// Recheck under the lock: another write can land between the snapshot and
+	// here, and only a publisher who really left is replaced.
+	if !ok || strings.TrimSpace(share.RemoteOwner) == "" || strings.TrimSpace(share.HostID) != "" || stillMember(share.RemoteOwner) {
+		companionDocShares.Unlock()
+		return companionDocShare{}, false
+	}
+	previous := share
+	share.HostID = strings.TrimSpace(group.OwnerID)
+	share.HostLabel = strings.TrimSpace(group.OwnerLabel)
+	companionDocShares.items[token] = share
+	if err := persistCompanionDocSharesLocked(); err != nil {
+		companionDocShares.items[token] = previous
+		companionDocShares.Unlock()
+		return companionDocShare{}, false
+	}
+	companionDocShares.Unlock()
+	return share, true
 }
 
 // dropUnreachableCompanionHostSeats clears a pending nominee and a current

@@ -27088,6 +27088,10 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 /* AssistantTitleBarNotifications.tsx — urgent notice toast, styled like the
    app's other floating cards (surface, themed border, shared elevation). */
 .atbn-anchor { position: relative; }
+/* Bell-less host (bellHidden): keep the bell's height so the absolutely
+   positioned panel's `top: 100%` still drops below the title bar instead of
+   collapsing onto it. */
+.atbn-anchor--bell-less { height: 30px; }
 .notification-toast {
   position: fixed;
   top: 48px;
@@ -30656,10 +30660,11 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   .mc-sidebar-drag-strip { width: 64px !important; }
 }
 
-/* Under .mc-task-pane to beat `.sidebar button`. One shared panel holds both
-   filter lines (status + workspace): the panel carries the pill chrome, the
-   rows inside are borderless lines stretching full width, chips spread evenly
-   via justify-content. The wash is kept subtle (淡雅) on purpose. */
+/* Under .mc-task-pane to beat `.sidebar button`. One shared panel holds the
+   filter head (title + status chips on a single line) and, when non-local
+   workspaces exist, the workspace line below it: the panel carries the pill
+   chrome, the rows inside are borderless lines stretching full width, chips
+   spread evenly via justify-content. The wash is kept subtle (淡雅) on purpose. */
 .mc-task-pane .mc-task-filter-stack {
   display: flex;
   flex-direction: column;
@@ -30680,6 +30685,24 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   color: var(--theme-text-muted);
   font-size: 11px;
   font-weight: 700;
+}
+/* One-line filter head: the panel title sits flush with the status chips so
+   the whole status block reads as a single row (我的任务列表 · 全部 29 · …).
+   The title never shrinks or ellipsizes; the chip line keeps the --line
+   geometry (full remaining width, even spread, hidden horizontal scroll). */
+.mc-task-pane .mc-task-filter-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.mc-task-pane .mc-task-filter-head .mc-task-filter-panel__title {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.mc-task-pane .mc-task-filter-head .mc-task-filter-row {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .mc-task-pane .mc-task-machine-bar {
   display: flex;
@@ -31708,6 +31731,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-workbench-status-line__state[data-online='false'] i { background: var(--theme-text-muted, #8a97a5); }
 .mc-workbench-status-bell {
+  position: relative;
   flex-shrink: 0;
   width: 26px;
   height: 26px;
@@ -31723,6 +31747,27 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-workbench-status-bell:hover { background: var(--theme-surface-muted, rgba(0, 0, 0, .05)); color: var(--mc-accent, #2e75cb); }
 .mc-workbench-status-bell:focus-visible { outline: 2px solid var(--mc-accent, #2e75cb); outline-offset: 1px; }
+/* Red unread count pill on the bell's top-right corner (9+ when capped).
+   Kept inside the 26px button: the state pill sits right of the bell, so an
+   overflowing badge would overlap it. */
+.mc-workbench-status-bell__badge {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 8px;
+  box-sizing: border-box;
+  background: var(--theme-danger, #b74a4a);
+  box-shadow: 0 0 0 2px var(--theme-surface, #fff);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
 
 .mc-workbench-status-popover {
   /* position: fixed applied via inline style with computed coordinates;
@@ -36047,6 +36092,15 @@ mark.companion-preview-find[data-find-active="true"] {
   display: flex;
   align-items: stretch;
   min-width: 0;
+}
+/* The rail rides inside the scrolled content so it can share the pane, but it
+   must not scroll away with the document: stick it to the viewport top. Its
+   height is capped so long bookmark/note lists scroll inside the column. */
+.companion-annotator-rail {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: 100vh;
 }
 .companion-doc-annotator-body {
   position: relative;

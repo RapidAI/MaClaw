@@ -7,7 +7,35 @@ import {
     clampDropdownLeft,
     computeProviderDropdownPos,
     providerDropdownPosEqual,
+    statusPopoverWidth,
 } from '../sidebarProviderDropdownPos';
+
+describe('statusPopoverWidth', () => {
+    const MIN = 280;
+    const GAP = 8;
+
+    it('uses the row width when it is above the floor and within the cap', () => {
+        // Row is container - 2*gap, so the cap equals the row width.
+        expect(statusPopoverWidth(432, 448, MIN, GAP)).toBe(432);
+    });
+
+    it('floors narrow rows and keeps them under the container cap', () => {
+        // Floor 280 < cap (500 - 16): popover is the floor width.
+        expect(statusPopoverWidth(120, 500, MIN, GAP)).toBe(280);
+        // Cap below the floor loses (floor wins) on a narrow sidebar.
+        expect(statusPopoverWidth(120, 300, MIN, GAP)).toBe(280);
+    });
+
+    it('skips the cap when the container is not measurable', () => {
+        expect(statusPopoverWidth(450, null, MIN, GAP)).toBe(450);
+        expect(statusPopoverWidth(120, null, MIN, GAP)).toBe(280);
+    });
+
+    it('rounds fractional measurements', () => {
+        // anchor 431.6 → 432; container 448.6 → 449 - 16 = 433 cap; min = 432.
+        expect(statusPopoverWidth(431.6, 448.6, MIN, GAP)).toBe(432);
+    });
+});
 
 describe('centeredDropdownLeft', () => {
     it('matches the anchor left edge when the menu width equals the anchor width', () => {

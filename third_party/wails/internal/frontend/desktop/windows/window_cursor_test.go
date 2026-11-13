@@ -120,33 +120,6 @@ func TestCursorWatchWithoutHandle(t *testing.T) {
 	}
 }
 
-func TestCursorRetWatchMessage(t *testing.T) {
-	cases := []struct {
-		name string
-		msg  uint32
-		want bool
-	}{
-		{name: "set cursor", msg: w32.WM_SETCURSOR, want: true},
-		{name: "mouse activate", msg: w32.WM_MOUSEACTIVATE, want: true},
-		{name: "nc hit test", msg: w32.WM_NCHITTEST, want: true},
-		{name: "nc move", msg: w32.WM_NCMOUSEMOVE, want: true},
-		{name: "nc button", msg: w32.WM_NCLBUTTONDOWN, want: true},
-		{name: "move", msg: w32.WM_MOUSEMOVE, want: true},
-		{name: "button", msg: w32.WM_LBUTTONDOWN, want: true},
-		{name: "pointer update", msg: 0x0245, want: true},
-		{name: "pointer down", msg: 0x0246, want: true},
-		{name: "size", msg: w32.WM_SIZE, want: false},
-		{name: "paint", msg: w32.WM_PAINT, want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := cursorRetWatchMessage(tc.msg); got != tc.want {
-				t.Fatalf("cursorRetWatchMessage() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestRestoreCursorDisplayCountStopsAtTheBound keeps an absurdly negative
 // count from spinning forever. The helper gives up and leaves the count as it
 // found it plus the bounded number of increments.
@@ -190,5 +163,30 @@ func TestRestoreCursorDisplayCountDeepDeficit(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("count = %d, want 0", count)
+	}
+}
+
+// TestCursorJogShould pins the episode policy: jogs are spent inside the
+// budget, then only a pointer moving while still invisible earns more.
+func TestCursorJogShould(t *testing.T) {
+	cases := []struct {
+		name   string
+		streak int
+		moved  bool
+		want   bool
+	}{
+		{name: "first detection", streak: 0, moved: false, want: true},
+		{name: "inside budget", streak: cursorJogBudget - 1, moved: false, want: true},
+		{name: "budget spent, still", streak: cursorJogBudget, moved: false, want: false},
+		{name: "past budget, still", streak: cursorJogBudget + 9, moved: false, want: false},
+		{name: "budget spent, moving", streak: cursorJogBudget, moved: true, want: true},
+		{name: "past budget, moving", streak: cursorJogBudget + 9, moved: true, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cursorJogShould(tc.streak, tc.moved); got != tc.want {
+				t.Fatalf("cursorJogShould(%d, %v) = %v, want %v", tc.streak, tc.moved, got, tc.want)
+			}
+		})
 	}
 }

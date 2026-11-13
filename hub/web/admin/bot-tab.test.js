@@ -95,6 +95,8 @@ function createHarness(options) {
   const usersGate = opts.delayUsers ? new Promise(function (resolve) { releaseUsers = resolve; }) : Promise.resolve();
   let releaseSettings = function () {};
   const settingsGate = opts.delaySettings ? new Promise(function (resolve) { releaseSettings = resolve; }) : Promise.resolve();
+  let releaseModels = function () {};
+  const modelsGate = opts.modelsGate ? new Promise(function (resolve) { releaseModels = resolve; }) : Promise.resolve();
 
   function registerIds(html, parent) {
     const re = /id="([^"]+)"/g;
@@ -211,6 +213,11 @@ function createHarness(options) {
       settings.grants.push({ id: 'g' + settings.grants.length, scope: body.scope, target_id: body.target_id });
       return Promise.resolve({ id: 'g' + (settings.grants.length - 1) });
     }
+    if (url === '/api/admin/bots/llm/models' && request && request.method === 'POST') {
+      if (opts.modelsError) return Promise.reject(new Error(opts.modelsError));
+      if (opts.modelsGate) return modelsGate.then(function () { return { models: opts.modelsResult || [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }, { id: 'deepseek-flash', name: 'DeepSeek Flash' }] }; });
+      return Promise.resolve({ models: opts.modelsResult || [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }, { id: 'deepseek-flash', name: 'DeepSeek Flash' }] });
+    }
     return Promise.reject(new Error('unexpected ' + url));
   }
 
@@ -251,6 +258,7 @@ function createHarness(options) {
     succeedGroups: function () { failGroups = false; },
     releaseUsers: function () { releaseUsers(); },
     releaseSettings: function () { releaseSettings(); },
+    releaseModels: function () { releaseModels(); },
     open: function () { return context.AdminTabRegistry.getTab('bots').onOpen(); }
   };
 }
@@ -825,8 +833,8 @@ async function testBotOwnerUsesDirectoryName() {
   assertNotIncludes(harness.elements['tab-bots']._html, 'botName', 'does not offer a create form');
 }
 
-async function testLLMSettingsKeepTheDefaultAndSaveAProvider() {
-  console.log('  Test: LLM settings default to the MaClaw official group and save an OpenAI or Anthropic provider');
+async function testLLMSettingsProvidersAreManagedAndRolesPickTheModel() {
+  console.log('  Test: providers are added and edited in a dialog; the foreground role picks the provider and model');
   const harness = createHarness();
   harness.settings.llm = {
     default_service_group: 'maclaw_official_group',
@@ -836,82 +844,129 @@ async function testLLMSettingsKeepTheDefaultAndSaveAProvider() {
   await harness.open();
   await flush();
   const list = harness.elements.botLLMList._html;
-  assertIncludes(list, 'maclaw_official_group', 'shows the official service group');
-  assertIncludes(list, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'shows the official service group name');
-  assertIncludes(list, 'value="anthropic" selected', 'shows the saved Anthropic protocol');
-  assertIncludes(list, 'Claude', 'shows the saved provider name');
+  assertNotIncludes(list, 'botLLMName_', 'the list renders no inline edit fields');
+  assertIncludes(list, 'botLLMEdit_lp_abcdef0123456789', 'offers an edit action per provider');
+  assertIncludes(list, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'the default note names the official group');
   assertNotIncludes(list, 'sk-', 'does not render a provider key');
-  assertIncludes(harness.elements.botLLMBadge.textContent, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'keeps the official group selected');
+  assertIncludes(harness.elements.botLLMBadge.textContent, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'the badge shows the foreground provider (official default)');
+  assertIncludes(harness.elements.botLLMRoles._html, 'value="maclaw_official_group" selected', 'the foreground role defaults to the official group');
+  assertIncludes(harness.elements.botLLMRoles._html, 'botLLMRoleModel_foreground', 'the foreground row carries a model field');
 
-  const before = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
-    return value.indexOf('botLLMName_') === 0;
-  });
+  // Add via the dialog: rejections keep it open, a valid save closes it.
   harness.elements.botLLMAdd.listeners.click[0]();
-  const added = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
-    return value.indexOf('botLLMName_') === 0 && before.indexOf(value) === -1;
-  });
-  assert(added.length === 1, 'adds a provider row');
-  const id = added[0].slice('botLLMName_'.length);
-  function edit(field, value) {
-    const input = harness.elements['botLLM' + field + '_' + id];
-    input.value = value;
-    harness.elements.botLLMList.listeners.input[0]({ target: input });
-  }
-  edit('Name', 'Claude');
-  harness.elements.botLLMSave.listeners.click[0]();
-  assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u670d\u52a1\u5546\u540d\u79f0\u4e0d\u80fd\u91cd\u590d') !== -1; }), 'rejects a duplicate provider name');
-  edit('Name', 'Zhipu GLM Coding');
-  const savedName = harness.elements.botLLMName_lp_abcdef0123456789;
-  savedName.value = '\u667a\u8c31\u7f16\u7a0b';
-  harness.elements.botLLMList.listeners.input[0]({ target: savedName });
-  const aliasToasts = harness.toasts.length;
-  harness.elements.botLLMSave.listeners.click[0]();
-  assert(harness.toasts.slice(aliasToasts).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u670d\u52a1\u5546\u540d\u79f0\u4e0d\u80fd\u91cd\u590d') !== -1; }), 'rejects Zhipu names MaClaw treats as one provider');
-  savedName.value = 'Claude';
-  harness.elements.botLLMList.listeners.input[0]({ target: savedName });
-  edit('Name', 'OpenAI');
-  assertIncludes(harness.elements['botLLMUse_' + id].textContent, 'OpenAI', 'renames the choice without rebuilding the row');
-  edit('Url', 'https://api.openai.com/v1');
-  edit('Model', 'gpt-4o');
-  harness.elements.botLLMSave.listeners.click[0]();
+  const modal = harness.elements.botLLMPModal;
+  assert(modal.hidden === false, 'the add action opens the provider dialog');
+  assertIncludes(harness.elements.botLLMPModalTitle.textContent, '\u6dfb\u52a0\u670d\u52a1\u5546', 'titles the create dialog');
+  const dialogSet = function (id, value) { harness.elements[id].value = value; };
+  dialogSet('botLLMPName', 'Claude');
+  dialogSet('botLLMPUrl', 'https://api.openai.com/v1');
+  dialogSet('botLLMPModel', 'gpt-4o');
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u670d\u52a1\u5546\u540d\u79f0\u4e0d\u80fd\u91cd\u590d') !== -1; }), 'rejects a duplicate provider name in the dialog');
+  assert(modal.hidden === false, 'a rejected dialog stays open');
+  dialogSet('botLLMPName', 'hub-llm');
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u4fdd\u7559') !== -1; }), 'rejects the reserved name');
+  dialogSet('botLLMPName', 'OpenAI');
+  harness.elements.botLLMPProtocol.value = 'openai';
+  harness.elements.botLLMPSave.listeners.click[0]();
   assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('API Key') !== -1; }), 'asks for a key before saving a new provider');
-  assert(!harness.calls.some(function (call) { return call.path === '/api/admin/bots/llm'; }), 'does not save a new provider without a key');
+  dialogSet('botLLMPKey', 'sk-live-secret');
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(modal.hidden === true, 'a saved dialog closes');
+  const rows = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
+    return value.indexOf('botLLMUse_') === 0;
+  });
+  assert(rows.length === 2, 'the saved provider joins the list');
+  const id = rows.filter(function (value) { return value !== 'botLLMUse_lp_abcdef0123456789'; })[0].slice('botLLMUse_'.length);
 
-  edit('Key', 'sk-live-secret');
-  const protocol = harness.elements['botLLMProtocol_' + id];
-  protocol.value = 'openai';
-  harness.elements.botLLMList.listeners.change[0]({ target: protocol });
-  const current = harness.elements['botLLMCurrent_' + id];
-  current.value = id;
-  harness.elements.botLLMList.listeners.change[0]({ target: current });
-  assert(harness.elements['botLLMKey_' + id].value === 'sk-live-secret', 'keeps a typed key when the selection changes');
-  assertIncludes(harness.elements.botLLMBadge.textContent, 'OpenAI', 'shows the selected provider on the badge');
+  // Edit via the dialog: prefilled, and a saved key starts blank with the
+  // keep-on-blank placeholder while a typed-but-unsaved key is prefilled.
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_lp_abcdef0123456789'] });
+  assert(modal.hidden === false, 'the edit action opens the dialog');
+  assertIncludes(harness.elements.botLLMPModalTitle.textContent, '\u7f16\u8f91', 'titles the edit dialog');
+  assert(harness.elements.botLLMPName.value === 'Claude', 'the edit dialog prefills the provider');
+  assertIncludes(harness.elements.botLLMPKey.placeholder, '\u7559\u7a7a', 'a saved key keeps blank with the placeholder');
+  assert(harness.elements.botLLMPKey.value === '', 'a saved key is never rendered');
+  harness.elements.botLLMPCancel.listeners.click[0]();
+  assert(modal.hidden === true, 'cancel closes the dialog without edits');
+  harness.elements.botLLMAdd.listeners.click[0]();
+  assert(modal.hidden === false, 'the dialog opens again');
+  assert(harness.elements.botLLMPSave.textContent === '\u4fdd\u5b58', 'the dialog save button reads plain save');
+  // A click on the dimmed backdrop (the overlay itself) dismisses the dialog.
+  harness.elements.botLLMPModal.listeners.click[0]({ target: harness.elements.botLLMPModal });
+  assert(modal.hidden === true, 'a backdrop click dismisses the dialog');
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_' + id] });
+  assert(harness.elements.botLLMPKey.value === 'sk-live-secret', 'a typed-but-unsaved key is prefilled');
+  dialogSet('botLLMPModel', 'gpt-4o-mini');
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(modal.hidden === true, 'the edit dialog closes on save');
   harness.elements.botLLMSave.listeners.click[0]();
   await flush();
   const saved = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
   assert(saved.length === 1, 'saves the LLM settings once');
   const body = JSON.parse(saved[0].body);
-  assert(body.current === id, 'selects the new provider');
   const created = body.providers.filter(function (item) { return item.id === id; })[0];
   const kept = body.providers.filter(function (item) { return item.id === 'lp_abcdef0123456789'; })[0];
-  assert(created && created.protocol === 'openai' && created.key === 'sk-live-secret' && created.model === 'gpt-4o', 'sends the OpenAI provider and its key');
+  assert(created && created.protocol === 'openai' && created.model === 'gpt-4o-mini' && created.key === 'sk-live-secret', 'sends the dialog-saved provider and its key');
   assert(kept && !Object.prototype.hasOwnProperty.call(kept, 'key'), 'leaves a saved key out of the request when the field is blank');
-  assertNotIncludes(harness.elements.botLLMList._html, 'sk-live-secret', 'clears the key field after a successful save');
-  const callsBeforeEdit = harness.calls.length;
-  harness.elements.botLLMSave.listeners.click[0]();
-  edit('Model', 'gpt-4o-later');
+  assert(body.current === 'maclaw_official_group' && body.roles.foreground.provider === 'maclaw_official_group', 'the untouched foreground stays official');
+
+  // The foreground role drives the default route: pin it to the new provider.
+  const foreground = harness.elements.botLLMRole_foreground;
+  foreground.value = id;
+  harness.elements.botLLMRoles.listeners.change[0]({ target: foreground });
   await flush();
-  const raced = harness.calls.slice(callsBeforeEdit).filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
-  assert(raced.length === 1 && JSON.parse(raced[0].body).providers.some(function (item) { return item.id === id && item.model === 'gpt-4o'; }), 'sends the model from when save was clicked');
-  assert(harness.elements['botLLMModel_' + id].value === 'gpt-4o-later', 'keeps a model typed while the save was in flight');
+  assertIncludes(harness.elements.botLLMBadge.textContent, 'OpenAI', 'the badge follows the foreground provider');
+  assertIncludes(harness.elements.botLLMRoles._html, 'placeholder="\u9ed8\u8ba4 gpt-4o-mini\uff0c\u53ef\u8986\u76d6"', 'the foreground model field suggests the provider default');
+  harness.elements.botLLMSave.listeners.click[0]();
+  await flush();
+  const second = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; })[1];
+  const secondBody = JSON.parse(second.body);
+  assert(secondBody.current === id && secondBody.roles.foreground.mode === 'pin' && secondBody.roles.foreground.provider === id, 'the foreground provider becomes the default route');
+  assert(!Object.prototype.hasOwnProperty.call(secondBody.roles.foreground, 'model'), 'an empty role model keeps the provider default');
+
+  // A typed model on the foreground row rides the same save.
+  const fgModel = harness.elements['botLLMRoleModel_foreground'];
+  fgModel.value = 'gpt-4o-latest';
+  harness.elements.botLLMRoles.listeners.input[0]({ target: fgModel });
+  harness.elements.botLLMSave.listeners.click[0]();
+  await flush();
+  const third = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; })[2];
+  assert(JSON.parse(third.body).roles.foreground.model === 'gpt-4o-latest', 'sends the foreground model override');
+
+  // A draft edit after the save click does not change what the click sent.
+  const callsBeforeRace = harness.calls.length;
+  harness.elements.botLLMSave.listeners.click[0]();
+  fgModel.value = 'gpt-4o-race';
+  harness.elements.botLLMRoles.listeners.input[0]({ target: fgModel });
+  await flush();
+  const raced = harness.calls.slice(callsBeforeRace).filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
+  assert(raced.length === 1 && JSON.parse(raced[0].body).roles.foreground.model === 'gpt-4o-latest', 'sends the role model from when save was clicked');
+  assert(fgModel.value === 'gpt-4o-race', 'keeps a role model typed while the save was in flight');
   assert(harness.elements['tab-bots']._llmDirty === true, 'leaves the newer edit unsaved');
-  const racedToast = harness.toasts[harness.toasts.length - 1];
-  assert(racedToast && racedToast.kind === 'info' && racedToast.msg.indexOf('\u5c1a\u672a\u5199\u5165') !== -1, 'says the later edit is not saved yet');
+
+  // Removing the foreground provider falls the route back to the official
+  // group: the stored role coerces to inherit and the badge follows.
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMRemove_' + id] });
+  const left = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
+    return value.indexOf('botLLMUse_') === 0;
+  });
+  assert(left.length === 1, 'the removed provider leaves the list');
+  assert(harness.elements['tab-bots']._llmDraft.roles.foreground.mode === 'inherit', 'the orphaned foreground pin coerces to follow');
+  assertIncludes(harness.elements.botLLMBadge.textContent, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'the route falls back to the official group');
+
+  // The dialog enforces the eight-provider limit.
   let guard = 0;
   while (attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
-    return value.indexOf('botLLMName_') === 0;
+    return value.indexOf('botLLMUse_') === 0;
   }).length < 8 && guard < 8) {
     harness.elements.botLLMAdd.listeners.click[0]();
+    dialogSet('botLLMPName', 'P' + guard);
+    dialogSet('botLLMPUrl', 'https://p' + guard + '.example/v1');
+    dialogSet('botLLMPModel', 'm-' + guard);
+    dialogSet('botLLMPKey', 'sk-p' + guard);
+    harness.elements.botLLMPSave.listeners.click[0]();
     guard += 1;
   }
   const beforeLimit = harness.toasts.length;
@@ -919,8 +974,8 @@ async function testLLMSettingsKeepTheDefaultAndSaveAProvider() {
   assert(harness.toasts.slice(beforeLimit).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('8') !== -1; }), 'stops at eight providers');
 }
 
-async function testLLMRoleSettingsFollowDefaultAndPinSeparately() {
-  console.log('  Test: LLM role settings default to follow the current provider and can be set separately');
+async function testLLMRoleSettingsFollowForegroundAndPinSeparately() {
+  console.log('  Test: role rows follow the foreground by default and pin provider plus model separately');
   const harness = createHarness();
   harness.settings.llm = {
     default_service_group: 'maclaw_official_group',
@@ -934,32 +989,43 @@ async function testLLMRoleSettingsFollowDefaultAndPinSeparately() {
   assertIncludes(rolesHtml, 'botLLMRole_background', 'shows the background role');
   assertIncludes(rolesHtml, 'botLLMRole_computer_use', 'shows the computer-use role');
   assertIncludes(rolesHtml, 'botLLMRole_grounder', 'shows the grounding role');
-  assertIncludes(rolesHtml, '\u8ddf\u968f\u9ed8\u8ba4', 'offers follow-default');
+  assertIncludes(rolesHtml, '\u8ddf\u968f\u524d\u53f0\u4ea4\u4e92', 'offers follow-foreground');
   assertIncludes(rolesHtml, '\u4e0d\u4f7f\u7528', 'offers unused for the grounder');
-  const grounder = harness.elements.botLLMRole_grounder;
-  assert(grounder && /value="__unused__"[^>]*selected|selected[^>]*value="__unused__"/.test(rolesHtml), 'grounder defaults to unused');
+  assert(/value="__unused__"[^>]*selected|selected[^>]*value="__unused__"/.test(rolesHtml), 'grounder defaults to unused');
+  assertIncludes(rolesHtml, 'value="__inherit__" selected', 'background follows the foreground by default');
+  assert(!harness.elements['botLLMRoleModel_background'], 'a following role hides its model field');
+
   const background = harness.elements.botLLMRole_background;
   background.value = 'lp_abcdef0123456789';
   harness.elements.botLLMRoles.listeners.change[0]({ target: background });
+  await flush();
+  assertIncludes(harness.elements.botLLMRoles._html, 'placeholder="\u9ed8\u8ba4 gpt-4o\uff0c\u53ef\u8986\u76d6"', 'the pinned background row shows the provider default model');
+  const bgModel = harness.elements['botLLMRoleModel_background'];
+  bgModel.value = 'gpt-4o-mini';
+  harness.elements.botLLMRoles.listeners.input[0]({ target: bgModel });
   const official = harness.elements.botLLMRole_computer_use;
   official.value = 'maclaw_official_group';
   harness.elements.botLLMRoles.listeners.change[0]({ target: official });
+  await flush();
   const follow = harness.elements.botLLMRole_grounder;
   follow.value = '__inherit__';
   harness.elements.botLLMRoles.listeners.change[0]({ target: follow });
+  await flush();
   harness.elements.botLLMSave.listeners.click[0]();
   await flush();
   const saved = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
   assert(saved.length === 1, 'saves role settings once');
   const body = JSON.parse(saved[0].body);
-  assert(body.roles.foreground.mode === 'inherit', 'chat follows the default');
+  assert(body.roles.foreground.mode === 'pin' && body.roles.foreground.provider === 'maclaw_official_group', 'chat pins the official group by default');
+  assert(!Object.prototype.hasOwnProperty.call(body.roles.foreground, 'model'), 'the official group carries no model');
   assert(body.roles.background.mode === 'pin' && body.roles.background.provider === 'lp_abcdef0123456789', 'pins background to the custom provider');
+  assert(body.roles.background.model === 'gpt-4o-mini', 'pins the background model override');
   assert(body.roles.computer_use.mode === 'pin' && body.roles.computer_use.provider === 'maclaw_official_group', 'pins computer use to the official group');
-  assert(body.roles.grounder.mode === 'inherit' && !body.roles.grounder.provider, 'grounder can follow the default');
+  assert(body.roles.grounder.mode === 'inherit' && !body.roles.grounder.provider, 'grounder can follow the foreground');
   const encoded = JSON.stringify(body.roles);
   assert(encoded.indexOf('sk-') === -1 && encoded.indexOf('key') === -1, 'role payload has no key');
   harness.elements.botLLMList.listeners.click[0]({ target: harness.elements.botLLMRemove_lp_abcdef0123456789 });
-  assert(JSON.parse(JSON.stringify(harness.elements['tab-bots']._llmDraft.roles)).background.mode === 'inherit', 'removing a provider falls that role back to follow-default');
+  assert(JSON.parse(JSON.stringify(harness.elements['tab-bots']._llmDraft.roles)).background.mode === 'inherit', 'removing a provider falls that role back to follow-foreground');
   assert(harness.elements['tab-bots']._llmDraft.roles.computer_use.mode === 'pin', 'keeps a pin to the official group');
 }
 
@@ -976,6 +1042,116 @@ async function testReloadAfterDirectoryFailure() {
   await flush();
   assertIncludes(harness.elements.botOrgTree._html, 'Company', 'reload renders the organization');
   assert(harness.toasts.length === 0, 'reload does not toast after success');
+}
+
+async function testLLMModelFetchPopulatesThePicker() {
+  console.log('  Test: fetching models lists the provider catalog in the dialog and the role pickers');
+  const harness = createHarness();
+  harness.settings.llm = {
+    default_service_group: 'maclaw_official_group',
+    current: 'lp_abcdef0123456789',
+    providers: [{ id: 'lp_abcdef0123456789', name: 'DeepSeek', protocol: 'openai', url: 'https://api.deepseek.com/v1', model: 'deepseek-flash', key_set: true }],
+    roles: { foreground: { mode: 'pin', provider: 'lp_abcdef0123456789' } }
+  };
+  await harness.open();
+  await flush();
+  const id = 'lp_abcdef0123456789';
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_' + id] });
+  assert(harness.elements.botLLMPModal.hidden === false, 'the edit action opens the dialog');
+  harness.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  const fetches = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm/models'; });
+  assert(fetches.length === 1, 'posts one model list request');
+  const body = JSON.parse(fetches[0].body);
+  assert(body.provider_id === id && body.protocol === 'openai' && body.url === 'https://api.deepseek.com/v1', 'names the provider, protocol, and url');
+  assert(!Object.prototype.hasOwnProperty.call(body, 'key'), 'omits the key so the hub reuses the saved one');
+  assertIncludes(harness.elements.botLLMPModelList._html, 'value="deepseek-chat"', 'lists a fetched model id');
+  assertIncludes(harness.elements.botLLMPModelList._html, 'value="deepseek-flash"', 'lists the other fetched model id');
+  assertIncludes(harness.elements.botLLMPModelsStatus.textContent, '2', 'reports how many models arrived');
+  assertIncludes(harness.elements['botLLMRoleModelList_foreground']._html, 'value="deepseek-chat"', 'the foreground role picker shares the catalog');
+
+  // Saving changed coordinates through the dialog retires the catalog: the
+  // role pickers referencing the provider lose their suggestions.
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_' + id] });
+  harness.elements.botLLMPUrl.value = 'https://api.other.example/v1';
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(harness.elements.botLLMPModal.hidden === true, 'the coordinate edit closes the dialog');
+  assert(harness.elements['botLLMRoleModelList_foreground']._html === '', 'the stale catalog leaves the role picker after the coordinate edit');
+}
+
+async function testLLMModelFetchDropsAResultWhoseCoordinatesChanged() {
+  console.log('  Test: a model list that resolves after the endpoint changed does not fill the dialog');
+  const harness = createHarness({ modelsGate: true });
+  harness.settings.llm = {
+    default_service_group: 'maclaw_official_group',
+    current: 'lp_abcdef0123456789',
+    providers: [{ id: 'lp_abcdef0123456789', name: 'DeepSeek', protocol: 'openai', url: 'https://api.deepseek.com/v1', model: '', key_set: true }]
+  };
+  await harness.open();
+  await flush();
+  const id = 'lp_abcdef0123456789';
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_' + id] });
+  harness.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  assert(harness.elements.botLLMPFetch.disabled === true, 'the fetch button is busy while the request is in flight');
+
+  // The endpoint changes while the first request is still pending: its answer
+  // describes an endpoint the form no longer holds.
+  harness.elements.botLLMPUrl.value = 'https://api.other.example/v1';
+  harness.elements.botLLMPModal.listeners.input[0]({ target: harness.elements.botLLMPUrl });
+  await flush();
+  harness.releaseModels();
+  await flush();
+  assert(harness.elements.botLLMPModelList._html === '', 'the stale result stays out of the suggestions');
+  assert(harness.elements.botLLMPFetch.disabled === false, 'the button recovers after the stale result');
+  assertIncludes(harness.elements.botLLMPFetch.textContent, '\u83b7\u53d6\u6a21\u578b\u5217\u8868', 'the button label resets after the stale result');
+}
+
+async function testLLMModelFetchExplainsFailuresAndRequiresCredentials() {
+  console.log('  Test: dialog fetch failures reach the status line and new providers need credentials first');
+  const failing = createHarness({ modelsError: 'invalid bot settings: llm provider key is invalid (HTTP 401)' });
+  failing.settings.llm = {
+    default_service_group: 'maclaw_official_group',
+    current: 'lp_abcdef0123456789',
+    providers: [{ id: 'lp_abcdef0123456789', name: 'DeepSeek', protocol: 'openai', url: 'https://api.deepseek.com/v1', model: '', key_set: true }]
+  };
+  await failing.open();
+  await flush();
+  failing.elements.botLLMList.listeners.click[0]({ target: failing.elements['botLLMEdit_lp_abcdef0123456789'] });
+  failing.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  assertIncludes(failing.elements.botLLMPModelsStatus.textContent, 'API Key', 'explains a rejected key on the dialog status line');
+  assert(failing.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('API Key') !== -1; }), 'toasts the rejected key');
+
+  const draft = createHarness({ modelsResult: [{ id: 'glm-4.7' }] });
+  await draft.open();
+  await flush();
+  draft.elements.botLLMAdd.listeners.click[0]();
+  assert(draft.elements.botLLMPModal.hidden === false, 'the add action opens the dialog');
+  const toastsBefore = draft.toasts.length;
+  const callsBefore = draft.calls.length;
+  // Nothing filled: the endpoint check speaks first.
+  draft.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  assert(draft.toasts.slice(toastsBefore).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('http') !== -1; }), 'an empty dialog is asked for the url first');
+  assert(draft.calls.length === callsBefore, 'an empty dialog sends no request');
+  // A url without a key: the credentials check follows.
+  draft.elements.botLLMPUrl.value = 'https://api.example.com/v1';
+  draft.elements.botLLMPModal.listeners.input[0]({ target: draft.elements.botLLMPUrl });
+  draft.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  assert(draft.toasts.slice(toastsBefore).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('API Key') !== -1; }), 'a new provider without a key cannot fetch');
+  assert(draft.calls.length === callsBefore, 'a new provider without a key sends no request');
+
+  draft.elements.botLLMPKey.value = 'sk-typed';
+  draft.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  const sent = draft.calls.slice(callsBefore).filter(function (call) { return call.path === '/api/admin/bots/llm/models'; });
+  assert(sent.length === 1, 'sends the fetch once the dialog has coordinates');
+  const sentBody = JSON.parse(sent[0].body);
+  assert(!Object.prototype.hasOwnProperty.call(sentBody, 'provider_id'), 'does not name an unsaved provider');
+  assert(sentBody.key === 'sk-typed' && sentBody.url === 'https://api.example.com/v1', 'rides the typed key for an unsaved provider');
+  assertIncludes(draft.elements.botLLMPModelList._html, 'value="glm-4.7"', 'fills the dialog picker from the response');
 }
 
 Promise.resolve()
@@ -1003,8 +1179,11 @@ Promise.resolve()
   .then(testDesktopCheckNamesTheService)
   .then(testDesktopCheckKeepsTheError)
   .then(testBotOwnerUsesDirectoryName)
-  .then(testLLMSettingsKeepTheDefaultAndSaveAProvider)
-  .then(testLLMRoleSettingsFollowDefaultAndPinSeparately)
+  .then(testLLMSettingsProvidersAreManagedAndRolesPickTheModel)
+  .then(testLLMRoleSettingsFollowForegroundAndPinSeparately)
+  .then(testLLMModelFetchPopulatesThePicker)
+  .then(testLLMModelFetchDropsAResultWhoseCoordinatesChanged)
+  .then(testLLMModelFetchExplainsFailuresAndRequiresCredentials)
   .then(testReloadAfterDirectoryFailure)
   .then(function () {
     console.log('bot-tab tests: ' + passed + ' passed, ' + failed + ' failed');

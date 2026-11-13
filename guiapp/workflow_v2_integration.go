@@ -2342,6 +2342,7 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 			codingKB := h.app.ensureCodingKnowledgeStore()
 			generalKB := getAutoRecallStoreForApp(h.app, false)
 			agent.SetKnowledgeStores(codingKB, generalKB)
+			agent.SetMemoryStore(h.currentMemoryStore())
 		}
 		result := agent.ExecuteTask(desc, taskContext)
 		if ctx.Err() != nil || loopCtx.IsCancelled() {
@@ -2863,6 +2864,7 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsRemote(userID string, 
 		agent.SetSourcePreviewEnabled(true)
 		if h.app != nil {
 			agent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
+			agent.SetMemoryStore(h.currentMemoryStore())
 		}
 		result := agent.ExecuteTask(desc, taskContext)
 		if result == nil {
@@ -3009,6 +3011,7 @@ func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.W
 			codingKB := h.app.ensureCodingKnowledgeStore()
 			generalKB := getAutoRecallStoreForApp(h.app, false)
 			agent.SetKnowledgeStores(codingKB, generalKB)
+			agent.SetMemoryStore(h.currentMemoryStore())
 		}
 		result := agent.ExecuteTask(desc, taskContext)
 		if ctx.Err() != nil || loopCtx.IsCancelled() {
@@ -5109,6 +5112,7 @@ func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLL
 			h.applyStickyRemoteCodingPermissions(userID, subAgent.highRiskApproval)
 		}
 		subAgent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
+		subAgent.SetMemoryStore(h.currentMemoryStore())
 	}
 	// SetCallbacks after approval config: highRiskApprovalExplicit blocks overwrite.
 	subAgent.SetCallbacks(wrapCodingAgentReasoningToken(onToken), onProgress)

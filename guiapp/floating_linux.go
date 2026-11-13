@@ -582,6 +582,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"testing"
 	"time"
 	"unsafe"
 
@@ -614,6 +615,9 @@ type linuxFloatingWindow struct {
 }
 
 func newFloatingWindow(app *App) floatingWindow {
+	if testing.Testing() {
+		return &noopFloatingWindow{app: app}
+	}
 	return &linuxFloatingWindow{app: app}
 }
 

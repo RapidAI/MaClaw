@@ -60,6 +60,7 @@ var codingStaticCompatibilityInventory = []codingStaticCompatibilityInventoryIte
 	{codingStaticCompatibilityHostLocal, "coding_knowledge_search", tool.CapabilityKnowledgeReadLocal, tool.EffectReadOnly, "knowledge-owner", false},
 	{codingStaticCompatibilityHostLocal, "knowledge_search", tool.CapabilityKnowledgeReadLocal, tool.EffectReadOnly, "knowledge-owner", false},
 	{codingStaticCompatibilityHostLocal, "knowledge_image_search", tool.CapabilityKnowledgeReadLocal, tool.EffectReadOnly, "knowledge-owner", false},
+	{codingStaticCompatibilityHostLocal, "memory_search", tool.CapabilityMemoryRecallAgent, tool.EffectReadOnly, "memory-owner", false},
 	// Control plane never borrows a workspace/provider binding from the model.
 	{codingStaticCompatibilityHostLocal, codeNavigationToolName, tool.CapabilityID("code.navigation"), tool.EffectReadOnly, "local-workspace", true},
 	{codingStaticCompatibilityHostLocal, reportLocalizationToolName, tool.CapabilityID("code.localization_evidence"), tool.EffectReadOnly, "coding-revision", true},
@@ -89,6 +90,7 @@ var codingStaticCompatibilityInventory = []codingStaticCompatibilityInventoryIte
 	{codingStaticCompatibilityHostRemote, "coding_knowledge_search", tool.CapabilityKnowledgeReadLocal, tool.EffectReadOnly, "knowledge-owner", false},
 	{codingStaticCompatibilityHostRemote, "knowledge_search", tool.CapabilityKnowledgeReadLocal, tool.EffectReadOnly, "knowledge-owner", false},
 	{codingStaticCompatibilityHostRemote, "knowledge_image_search", tool.CapabilityKnowledgeReadLocal, tool.EffectReadOnly, "knowledge-owner", false},
+	{codingStaticCompatibilityHostRemote, "memory_search", tool.CapabilityMemoryRecallAgent, tool.EffectReadOnly, "memory-owner", false},
 }
 
 func codingStaticCompatibilityInventoryHas(hostKind, name string) bool {

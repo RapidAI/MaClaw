@@ -1444,6 +1444,9 @@ func TestPersistImportedEntriesSamePackageIsNoOp(t *testing.T) {
 }
 
 func TestPersistImportedEntriesSamePackageIsNoOpWithoutOverwrite(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)
 	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
@@ -1552,6 +1555,9 @@ func TestAgentSkillPackageRoundTripPreservesDefinitionFields(t *testing.T) {
 }
 
 func TestPersistImportedEntriesBatchPublishFailureRollsBackEarlierPackages(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)
 	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
@@ -1597,6 +1603,9 @@ func TestPersistImportedEntriesBatchPublishFailureRollsBackEarlierPackages(t *te
 }
 
 func TestPersistImportedEntriesCleanupFailureKeepsCommittedPending(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)
 	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
@@ -1640,6 +1649,9 @@ func TestPersistImportedEntriesCleanupFailureKeepsCommittedPending(t *testing.T)
 }
 
 func TestPersistImportedEntriesBatchCleanupPendingRecoversAfterRestart(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)
 	principal := Principal{TenantID: tenant.ID, UserID: user.ID}

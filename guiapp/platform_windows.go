@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"testing"
 	"time"
 	"unsafe"
 
@@ -1649,6 +1650,9 @@ func (a *App) downloadFileSingle(destPath string, url string) error {
 }
 
 func (a *App) restartApp() {
+	if testing.Testing() {
+		return
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		a.log("Failed to get executable path: " + err.Error())

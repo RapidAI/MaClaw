@@ -844,6 +844,10 @@ func removeCompanionGroupMember(ctx context.Context, identity *auth.IdentityServ
 	// A withdrawn invitation must leave the bell, not stay as a notice whose
 	// buttons the hub would reject.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	// Their home hub also holds share notices for this group; withdraw them
+	// first — the invite revoke below deletes the row the receiving hub uses
+	// to check the secret, so a notice revoke arriving after it would 404.
+	companionRelayGroupShareNoticeRevoke(ctx, relayed, groupID)
 	companionRelayMembers(ctx, relayed, groupID)
 	// If this person was the host (or was nominated), that seat must not stay
 	// with someone who can no longer open the document.
@@ -952,6 +956,10 @@ func deleteCompanionGroup(ctx context.Context, identity *auth.IdentityService, w
 	companionDocGroups.Unlock()
 	// Every pending invitation in a dissolved group is dead; its notice must go.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	// Remote members keep share notices on their home hub; all of them die
+	// with the group. They must go before the invite revoke: the receiving
+	// hub proves the secret through the invite row that revoke deletes.
+	companionRelayGroupShareNoticeRevoke(ctx, relayed, groupID)
 	companionRelayMembers(ctx, relayed, groupID)
 	// Every member lost access; a host seat held by a member must revert.
 	reconcileGroupHostSeats(ctx, identity, groupID)

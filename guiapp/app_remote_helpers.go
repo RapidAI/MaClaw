@@ -19,7 +19,21 @@ func (a *App) hubClient() *RemoteHubClient {
 	if a == nil {
 		return nil
 	}
-	sessions := a.remoteSessionManagerIfReady()
+	var sessions *RemoteSessionManager
+	if a.remoteInfraMu.TryRLock() {
+		sessions = a.remoteSessions
+		a.remoteInfraMu.RUnlock()
+	} else {
+		// A first-time ensureRemoteInfra holds remoteInfraMu while running
+		// initCoreInfra. hubClient is reachable inside that critical section
+		// (initCoreInfra → LoadConfig → resetPathBoundStateForDataDirChange →
+		// sharedMemoryStoreHandlers), where a blocking RLock self-deadlocks:
+		// RWMutex is not reentrant. In that case the field read is on the
+		// goroutine performing the writes, so it is safe; concurrent external
+		// callers simply observe the pre-init value, which hubClient already
+		// tolerates by returning nil.
+		sessions = a.remoteSessions
+	}
 	if sessions == nil {
 		return nil
 	}

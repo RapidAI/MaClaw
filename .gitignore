@@ -399,3 +399,6 @@ hubcenter/web/i18n/_extract_log.txt
 
 # ZCode 工具会话产物（plans 等），不入库。
 .zcode/
+
+# cursor 观察工具的本地构建产物
+tools/cursorwatch/

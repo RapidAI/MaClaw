@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"testing"
 	"time"
 	"unsafe"
 
@@ -41,6 +42,9 @@ type darwinFloatingWindow struct {
 }
 
 func newFloatingWindow(app *App) floatingWindow {
+	if testing.Testing() {
+		return &noopFloatingWindow{app: app}
+	}
 	return &darwinFloatingWindow{app: app}
 }
 

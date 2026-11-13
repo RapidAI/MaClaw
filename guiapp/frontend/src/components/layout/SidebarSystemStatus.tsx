@@ -15,9 +15,11 @@ import {
     centeredDropdownLeft,
     computeProviderDropdownPos,
     providerDropdownPosEqual,
+    statusPopoverWidth,
     type ProviderDropdownPos,
 } from './sidebarProviderDropdownPos';
 import { formatWorkbenchTaskCountLine, type WorkbenchTaskCounts } from './backgroundTaskCount';
+import { useSharedUnreadCount } from '../ai/useNotifications';
 import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderName, foregroundRoleSeparatesTurn, type ContactedProfileSummary } from '../../utils/contactedModelRoute';
 import { capabilityBandName, capabilityModelMenuLabel, capabilityMultiplierFor, orderCapabilityModels } from '../../utils/capabilityModelLabel';
 import { presetProviderDisplayName } from '../remote/presetProviderLabel';
@@ -155,6 +157,8 @@ const DROPDOWN_CHECK = '\u2713';
 
 /* Collapsed status line + popover knobs (module scope: used inside stable callbacks). */
 const STATUS_LINE_MIN_WIDTH = 280;
+/** Horizontal gap the popover keeps to the sidebar edges (mirrors the row inset). */
+const STATUS_LINE_EDGE_GAP = 8;
 const STATUS_LINE_MIN_ABOVE = 200;
 const STATUS_LINE_CLOSE_DELAY = 200;
 
@@ -432,6 +436,14 @@ export const SidebarSystemStatus = ({
             `LLM：${activeProfileName}，${profileHealthText(activeProfileHealth)}`,
         );
 
+    // Red unread dot on the status-row bell. The count is the shared mirror
+    // published by the single notification host (assistant panel) — no second
+    // hook instance here, so no duplicate Wails subscriptions or loads.
+    const bellUnreadCount = useSharedUnreadCount();
+    const bellLabel = bellUnreadCount > 0
+        ? textForLang(lang, `Notifications, ${bellUnreadCount} unread`, `通知，${bellUnreadCount} 条未读`, `通知，${bellUnreadCount} 條未讀`)
+        : textForLang(lang, 'Notifications', '通知', '通知');
+
     // ── Provider switch dropdown state ──
     const [dropdownOpen, setDropdownOpen] = useState(false);
     const [tokenPeriod, setTokenPeriod] = useState<WorkbenchTokenPeriod>('total');
@@ -522,8 +534,16 @@ export const SidebarSystemStatus = ({
         const anchorEl = statusRowRef.current;
         if (!anchorEl) return;
         const anchorRect = anchorEl.getBoundingClientRect();
-        // Track the row width so the popover's edges align with it.
-        const width = Math.max(Math.round(anchorRect.width), STATUS_LINE_MIN_WIDTH);
+        // Track the row width so the popover's edges align with it; the
+        // sidebar container caps it so the popover keeps a gap to the edges
+        // (closest() so an intermediate wrapper cannot break the lookup).
+        const containerEl = anchorEl.closest('.sidebar-system-status');
+        const width = statusPopoverWidth(
+            anchorRect.width,
+            containerEl ? containerEl.getBoundingClientRect().width : null,
+            STATUS_LINE_MIN_WIDTH,
+            STATUS_LINE_EDGE_GAP,
+        );
         const next = computeProviderDropdownPos(anchorRect, {
             viewportWidth: window.innerWidth,
             viewportHeight: window.innerHeight,
@@ -1100,8 +1120,9 @@ export const SidebarSystemStatus = ({
                     type="button"
                     className="mc-workbench-status-bell"
                     data-testid="workbench-status-notifications"
-                    aria-label={textForLang(lang, 'Notifications', '通知', '通知')}
-                    title={textForLang(lang, 'Notifications', '通知', '通知')}
+                    data-unread={bellUnreadCount > 0 ? 'true' : 'false'}
+                    aria-label={bellLabel}
+                    title={bellLabel}
                     onFocus={openStatusPop}
                     onBlur={scheduleStatusPopClose}
                     onClick={handleStatusBellClick}
@@ -1110,6 +1131,11 @@ export const SidebarSystemStatus = ({
                         <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
                         <path d="M10 21h4" />
                     </svg>
+                    {bellUnreadCount > 0 ? (
+                        <span className="mc-workbench-status-bell__badge" aria-hidden="true">
+                            {bellUnreadCount > 9 ? '9+' : bellUnreadCount}
+                        </span>
+                    ) : null}
                 </button>
                 {accountIdentity ? (
                     <span className="mc-workbench-status-line__state" data-online={accountOnline ? 'true' : 'false'}>

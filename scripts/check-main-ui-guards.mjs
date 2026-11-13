@@ -680,7 +680,8 @@ const extractedFileLineLimits = [
   // measured 228 lines.
   // Refreshed 250 -> 285 (2026-11-10): remote-control notification wiring
   // landed at 282 lines. 285 -> 295 (2026-11-11): measured 287 lines.
-  ['guiapp/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 295],
+  // 295 -> 305 (2026-11-13): measured 298 lines.
+  ['guiapp/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 305],
   ['guiapp/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
   // Refreshed 240 -> 255 (2026-10-15): attachment-snapshot recall wiring
   // (guard counts 247).

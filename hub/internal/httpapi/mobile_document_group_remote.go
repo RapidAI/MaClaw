@@ -14,12 +14,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/notification"
 )
 
 // A reading group lives on the hub that created it. An invitee on another hub
@@ -616,6 +618,10 @@ func CompanionGroupRemoteDecisionHandler(identity *auth.IdentityService) http.Ha
 		if noticeID != "" {
 			companionGroupInviteNotifierFor().revokeInvites(r.Context(), noticeID)
 		}
+		if action == "leave" {
+			// The leaver's home hub still shows this group's share notices.
+			companionRelayGroupShareNoticeRevoke(r.Context(), []companionDocGroupMember{member}, groupID)
+		}
 		if action == "decline" || action == "leave" || action == "accept" {
 			reconcileGroupHostSeats(r.Context(), identity, groupID)
 		}
@@ -624,38 +630,460 @@ func CompanionGroupRemoteDecisionHandler(identity *auth.IdentityService) http.Ha
 }
 
 // CompanionGroupRemoteSharesHandler lists the group documents an accepted
-// remote member may open.
+// remote member may open, and lets that member publish a document into the
+// group. Both directions trust the invite secret their hub stored at accept;
+// the contact picks which member row the secret belongs to.
 //
-//	GET /api/mobile/documents/groups/{id}/remote-shares
+//	GET  /api/mobile/documents/groups/{id}/remote-shares
+//	POST /api/mobile/documents/groups/{id}/remote-shares
 func CompanionGroupRemoteSharesHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
-			return
+		switch r.Method {
+		case http.MethodGet:
+			writeCompanionRemoteShareList(w, r)
+		case http.MethodPost:
+			createCompanionRemoteGroupShare(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or POST")
 		}
-		groupID := strings.TrimSpace(r.PathValue("id"))
-		contact := normalizeCompanionContact(r.URL.Query().Get("contact"))
-		member, ok := companionGroupMemberBySecret(groupID, contact, companionRequestSecret(r))
-		if !ok || member.Status != "accepted" {
+	}
+}
+
+func writeCompanionRemoteShareList(w http.ResponseWriter, r *http.Request) {
+	groupID := strings.TrimSpace(r.PathValue("id"))
+	contact := normalizeCompanionContact(r.URL.Query().Get("contact"))
+	member, ok := companionGroupMemberBySecret(groupID, contact, companionRequestSecret(r))
+	if !ok || member.Status != "accepted" {
+		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "已不在群组")
+		return
+	}
+	loadCompanionDocShares()
+	now := time.Now().UTC()
+	companionDocShares.Lock()
+	shares := make([]map[string]any, 0)
+	for _, share := range companionDocShares.items {
+		if share.Visibility != "group" || share.GroupID != groupID || share.expired(now) {
+			continue
+		}
+		view := companionShareView(share, r)
+		view["group_id"] = share.GroupID
+		if strings.TrimSpace(share.RemoteOwner) != "" && share.RemoteOwner == member.Contact {
+			// The member published this share from their own hub. Their invite
+			// secret is what the write endpoints accept for it, so mark the row
+			// the same way a local owner's row is marked.
+			view["mine"] = true
+			view["admin"] = true
+			view["host"] = companionShareIsHost(share, share.OwnerID)
+			if strings.TrimSpace(share.PendingHostID) != "" {
+				view["pending_host"] = true
+				view["pending_host_label"] = strings.TrimSpace(share.PendingHostLabel)
+			}
+		} else {
+			view["host"] = false
+		}
+		companionShareAttachNotes(view, share)
+		shares = append(shares, view)
+	}
+	companionDocShares.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"shares": shares})
+}
+
+// createCompanionRemoteGroupShare publishes a document into the group on
+// behalf of a member whose account lives on another Hub. The share is
+// authoritative here; its owner id is synthetic so the member's invite secret
+// can resolve back to it on every later write.
+func createCompanionRemoteGroupShare(w http.ResponseWriter, r *http.Request) {
+	groupID := strings.TrimSpace(r.PathValue("id"))
+	if !companionGroupTokenPattern.MatchString(groupID) {
+		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "群组不存在")
+		return
+	}
+	// A member's hub sends both credentials up front — the contact in the
+	// query and the secret in the header. When they arrive that way a wrong
+	// secret is refused before the body is read; a direct caller may still
+	// carry either one in the multipart form.
+	contact := normalizeCompanionContact(r.URL.Query().Get("contact"))
+	secret := companionRequestSecret(r)
+	if contact != "" && secret != "" {
+		if member, ok := companionGroupMemberBySecret(groupID, contact, secret); !ok || member.Status != "accepted" {
 			writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "已不在群组")
 			return
 		}
-		loadCompanionDocShares()
-		now := time.Now().UTC()
-		companionDocShares.Lock()
-		shares := make([]map[string]any, 0)
-		for _, share := range companionDocShares.items {
-			if share.Visibility != "group" || share.GroupID != groupID || share.expired(now) {
-				continue
-			}
-			view := companionShareView(share, r)
-			view["group_id"] = share.GroupID
-			view["host"] = false
-			companionShareAttachNotes(view, share)
-			shares = append(shares, view)
-		}
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, int64(mobileDocumentOriginalMaxBytes)+1<<20)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "文件过大")
+		return
+	}
+	if contact == "" {
+		contact = normalizeCompanionContact(r.FormValue("contact"))
+	}
+	if secret == "" {
+		secret = strings.TrimSpace(r.FormValue("secret"))
+	}
+	member, ok := companionGroupMemberBySecret(groupID, contact, secret)
+	if !ok || member.Status != "accepted" {
+		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "已不在群组")
+		return
+	}
+	days, err := strconv.Atoi(strings.TrimSpace(r.FormValue("days")))
+	if err != nil || days < 0 || days > 3660 {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "分享时间不正确")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请选择要分享的文件")
+		return
+	}
+	defer file.Close()
+	name := strings.TrimSpace(r.FormValue("filename"))
+	if name == "" && header != nil {
+		name = header.Filename
+	}
+	raw, err := readCompanionShareUpload(file)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	contentHash := normalizeCompanionContentHash(r.FormValue("content_hash"))
+	if contentHash == "" {
+		contentHash = companionShareContentHash(raw)
+	}
+	group, groupOK := companionGroupSnapshotByID(groupID)
+	if !groupOK {
+		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "群组不存在")
+		return
+	}
+	ownerID := companionRemoteShareOwnerID(contact, groupID)
+	label := strings.TrimSpace(member.Contact)
+	if label == "" {
+		label = "跨 Hub 用户"
+	}
+	now := time.Now().UTC()
+	loadCompanionDocShares()
+	companionDocShares.Lock()
+	duplicateShare, duplicate := companionShareDuplicateLocked(ownerID, contentHash, "group", groupID, groupID, "", now)
+	companionDocShares.Unlock()
+	if duplicate {
+		go ensureCompanionShareNotification(duplicateShare)
+		writeCompanionShareDuplicate(w, r, duplicateShare)
+		return
+	}
+	token, err := newCompanionShareToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法创建分享")
+		return
+	}
+	blobPath, err := mobileWriteDocumentBlob(ownerID, "share", token, raw)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享文件")
+		return
+	}
+	share := companionDocShare{
+		Token:       token,
+		TenantID:    group.TenantID,
+		OwnerID:     ownerID,
+		OwnerLabel:  label,
+		RemoteOwner: contact,
+		Name:        companionShareFileName(name),
+		Size:        int64(len(raw)),
+		BlobPath:    blobPath,
+		Visibility:  "group",
+		CreatedAt:   now,
+		Importers:   map[string]string{},
+		Revision:    1,
+		Target:      groupID,
+		GroupID:     groupID,
+		ContentHash: contentHash,
+	}
+	if days > 0 {
+		share.ExpiresAt = now.Add(time.Duration(days) * 24 * time.Hour)
+	}
+	loadCompanionDocShares()
+	companionDocShares.Lock()
+	// Same race rule as the local create path: two uploads that passed the
+	// pre-check together must not both store a share.
+	if duplicateShare, duplicate = companionShareDuplicateLocked(ownerID, contentHash, "group", groupID, groupID, "", now); duplicate {
 		companionDocShares.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"shares": shares})
+		mobileDeleteDocumentBlob(blobPath)
+		go ensureCompanionShareNotification(duplicateShare)
+		writeCompanionShareDuplicate(w, r, duplicateShare)
+		return
+	}
+	companionDocShares.items[token] = share
+	err = persistCompanionDocSharesLocked()
+	if err != nil {
+		delete(companionDocShares.items, token)
+		companionDocShares.Unlock()
+		mobileDeleteDocumentBlob(blobPath)
+		writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
+		return
+	}
+	companionDocShares.Unlock()
+	go refreshCompanionShareNotification(share)
+	view := companionShareView(share, r)
+	view["group_id"] = share.GroupID
+	view["mine"] = true
+	view["admin"] = true
+	view["host"] = true
+	// The member's invite secret doubles as the reader grant for this share;
+	// their hub stores it so every later call can authenticate.
+	view["reader_grant"] = secret
+	writeJSON(w, http.StatusOK, view)
+}
+
+// companionRemoteInviteBySecret finds the stored relayed invite a share
+// notice refers to. The invite secret is the credential the origin hub
+// presents; matching it proves the notice is meant for this hub's user.
+func companionRemoteInviteBySecret(origin, groupID, secret string) (companionRemoteInvite, bool) {
+	origin = companionHubBaseURL(origin)
+	if origin == "" || !companionGroupTokenPattern.MatchString(groupID) || !companionReaderGrantPattern.MatchString(secret) {
+		return companionRemoteInvite{}, false
+	}
+	loadCompanionRemoteInvites()
+	companionRemoteInvites.Lock()
+	defer companionRemoteInvites.Unlock()
+	for _, invite := range companionRemoteInvites.items {
+		if companionHubBaseURL(invite.OriginHub) != origin || invite.GroupID != groupID {
+			continue
+		}
+		if companionSecretMatches(invite.Secret, secret) {
+			return invite, true
+		}
+	}
+	return companionRemoteInvite{}, false
+}
+
+// CompanionGroupRemoteShareNoticesHandler receives a share notice relayed
+// from the group's origin hub and raises (or withdraws) the local
+// companion_share notification for the invited user. The secret proves both
+// that the caller is the origin hub and which local invite the notice is for.
+//
+//	POST /api/mobile/documents/groups/remote-share-notices
+func CompanionGroupRemoteShareNoticesHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		var body struct {
+			Action    string `json:"action"`
+			GroupID   string `json:"group_id"`
+			Token     string `json:"token"`
+			Name      string `json:"name"`
+			Owner     string `json:"owner"`
+			OriginHub string `json:"origin_hub"`
+			Secret    string `json:"secret"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "无法读取通知")
+			return
+		}
+		action := strings.TrimSpace(body.Action)
+		if action != "create" && action != "revoke" {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "未知的通知动作")
+			return
+		}
+		token := strings.TrimSpace(body.Token)
+		origin := companionHubBaseURL(body.OriginHub)
+		if !companionShareTokenPattern.MatchString(token) || origin == "" {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "无法读取通知")
+			return
+		}
+		if !companionOriginIsTrusted(r.Context(), origin) {
+			writeError(w, http.StatusForbidden, "GROUP_FORBIDDEN", "无法确认分享所在的 Hub")
+			return
+		}
+		invite, ok := companionRemoteInviteBySecret(origin, body.GroupID, body.Secret)
+		if !ok {
+			writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "没有找到入群邀请")
+			return
+		}
+		_, svc := companionNotificationServices()
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "GROUP_FAILED", "通知服务不可用")
+			return
+		}
+		ctx := context.Background()
+		companionShareNotifyMu.Lock()
+		existing, err := svc.FindBySource(ctx, companionShareNotificationSource, token)
+		if err != nil {
+			companionShareNotifyMu.Unlock()
+			log.Printf("[companion-share] find relayed notification %s: %v", token, err)
+			writeError(w, http.StatusInternalServerError, "GROUP_FAILED", "无法保存通知")
+			return
+		}
+		if action == "revoke" {
+			if existing != nil {
+				// One notice row carries every member on this hub. Pull only
+				// this member out; the row dies when nobody is left.
+				remaining, remErr := svc.RemoveAudienceUser(ctx, existing.ID, invite.UserID)
+				if remErr != nil {
+					log.Printf("[companion-share] drop member from relayed notification %s: %v", existing.ID, remErr)
+				}
+				if remErr != nil || remaining == 0 {
+					if err := svc.RevokeNotification(ctx, existing.ID); err != nil {
+						log.Printf("[companion-share] revoke relayed notification %s: %v", existing.ID, err)
+					}
+					if err := svc.DeleteNotification(ctx, existing.ID); err != nil {
+						log.Printf("[companion-share] delete relayed notification %s: %v", existing.ID, err)
+					}
+				}
+			}
+			companionShareNotifyMu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		// A pending invitee has not joined yet: the origin relays notices only
+		// to accepted members, but enforce it here too since either side can
+		// lag the other's membership view.
+		if invite.Status != "accepted" || strings.TrimSpace(invite.UserID) == "" {
+			companionShareNotifyMu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		if existing != nil {
+			if existing.Status == notification.StatusPublished {
+				// Another member's relay may have raised this notice first:
+				// add this member instead of dropping them on the floor.
+				if existing.AudienceType == notification.AudienceUser {
+					if _, err := svc.AddAudienceUser(ctx, existing.ID, invite.UserID); err != nil {
+						log.Printf("[companion-share] add member to relayed notification %s: %v", existing.ID, err)
+					}
+				}
+				companionShareNotifyMu.Unlock()
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+				return
+			}
+			if err := svc.DeleteNotification(ctx, existing.ID); err != nil {
+				companionShareNotifyMu.Unlock()
+				log.Printf("[companion-share] drop settled relayed notification %s: %v", existing.ID, err)
+				writeError(w, http.StatusInternalServerError, "GROUP_FAILED", "无法保存通知")
+				return
+			}
+		}
+		owner := strings.TrimSpace(body.Owner)
+		if owner == "" {
+			owner = "一位用户"
+		}
+		name := strings.TrimSpace(body.Name)
+		if name == "" {
+			name = "文档"
+		}
+		groupName := strings.TrimSpace(invite.Name)
+		if groupName == "" {
+			groupName = "阅读群组"
+		}
+		created, err := svc.CreateNotification(ctx, notification.CreateRequest{
+			Title:        "分享文档",
+			Content:      fmt.Sprintf("%s 在阅读群组「%s」分享了文档《%s》。在伴读通知里点「打开」即可查看。", owner, groupName, name),
+			Category:     notification.CategoryCustom,
+			Priority:     notification.PriorityImportant,
+			AudienceType: notification.AudienceUser,
+			AudienceIDs:  []string{invite.UserID},
+			CreatedBy:    "companion-share",
+			Source:       companionShareNotificationSource,
+			SourceID:     token,
+		})
+		if err != nil {
+			companionShareNotifyMu.Unlock()
+			log.Printf("[companion-share] create relayed notification %s: %v", token, err)
+			writeError(w, http.StatusInternalServerError, "GROUP_FAILED", "无法保存通知")
+			return
+		}
+		if err := svc.PublishNotification(ctx, created.ID); err != nil {
+			log.Printf("[companion-share] publish relayed notification %s: %v", token, err)
+		}
+		companionShareNotifyMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+// CompanionGroupRemoteSharePublishHandler is the member-side proxy: the
+// desktop uploads to its own hub with a normal login, and this handler
+// forwards the same multipart body to the group origin with the stored
+// invite secret as the credential. The secret never leaves the pair of hubs.
+//
+//	POST /api/mobile/documents/groups/{id}/remote-share
+func CompanionGroupRemoteSharePublishHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, ownerID, ok := companionRequireViewer(w, r, identity)
+		if !ok {
+			return
+		}
+		groupID := strings.TrimSpace(r.PathValue("id"))
+		if !companionGroupTokenPattern.MatchString(groupID) {
+			writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "群组不存在")
+			return
+		}
+		contacts := companionViewerContactSet(identity, r.Context(), principal)
+		var invite companionRemoteInvite
+		found := false
+		for _, candidate := range companionRemoteInvitesFor(ownerID, contacts) {
+			if candidate.GroupID == groupID && candidate.Status == "accepted" {
+				invite = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "已不在群组")
+			return
+		}
+		origin := companionHubBaseURL(invite.OriginHub)
+		if origin == "" || !companionReaderGrantPattern.MatchString(invite.Secret) {
+			writeError(w, http.StatusBadGateway, "GROUP_FAILED", "无法连接分享所在的 Hub")
+			return
+		}
+		// Forward the untouched multipart stream: the upload can be tens of MB,
+		// so the body is not reparsed here. Contact and secret travel beside it
+		// the way a direct caller would send them.
+		endpoint := origin + "/api/mobile/documents/groups/" + url.PathEscape(groupID) + "/remote-shares?contact=" + url.QueryEscape(invite.Contact)
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		upstream, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "GROUP_FAILED", "无法连接分享所在的 Hub")
+			return
+		}
+		upstream.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+		upstream.Header.Set(companionReaderGrantHeader, invite.Secret)
+		resp, err := companionFederationClient.Do(upstream)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "GROUP_FAILED", "无法连接分享所在的 Hub")
+			return
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		// Successful and duplicate responses carry the share view; tag it with
+		// the origin so the desktop stores the row as a foreign share. The
+		// conflict body nests the view under "share", so tag both places.
+		if (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusConflict) && len(raw) > 0 {
+			var view map[string]any
+			if json.Unmarshal(raw, &view) == nil {
+				tag := func(body map[string]any) {
+					body["hub_origin"] = origin
+					if _, ok := body["reader_grant"]; !ok {
+						body["reader_grant"] = invite.Secret
+					}
+				}
+				tag(view)
+				if share, ok := view["share"].(map[string]any); ok {
+					tag(share)
+				}
+				if rewritten, marshalErr := json.Marshal(view); marshalErr == nil {
+					raw = rewritten
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(raw)
 	}
 }
 
@@ -723,9 +1151,11 @@ func companionRemoteGroupViews(ownerID string, contacts map[string]struct{}) []m
 			"icon":  "book",
 			"owner": invite.Owner,
 			"admin": false,
-			// The group lives on another Hub. It opens the documents shared
-			// inside it, but a new share cannot be published to it from here.
+			// The group lives on another Hub. Its documents open read-only
+			// through this hub, and publishing goes through the remote-share
+			// relay endpoint instead of the local share upload.
 			"remote":     true,
+			"hub_origin": invite.OriginHub,
 			"created_at": created,
 		})
 	}
@@ -806,7 +1236,7 @@ func CompanionGroupRemoteInviteHandler(identity *auth.IdentityService) http.Hand
 			return
 		}
 		companionRemoteInvites.Unlock()
-		companionRemoteSnapForgetAll()
+		companionRemoteSnapForget(invite.UserID, invite.GroupID)
 		if invite.Status == "pending" {
 			if notifier := companionGroupInviteNotifierFor(); notifier != nil {
 				noticeID := notifier.notifyInvite(r.Context(), companionDocGroup{
@@ -886,8 +1316,11 @@ func CompanionGroupRemoteRevokeHandler() http.HandlerFunc {
 			return
 		}
 		companionRemoteInvites.Unlock()
-		companionRemoteSnapForgetAll()
+		companionRemoteSnapForget(invite.UserID, invite.GroupID)
 		companionGroupInviteNotifierFor().revokeInvites(r.Context(), noticeID)
+		// A share-notice revoke that races this row's deletion can no longer
+		// prove the secret; sweep what the snapshot cache still knows.
+		companionForgetLocalGroupShareNotices(invite.UserID, groupID)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -952,7 +1385,7 @@ func companionDecideRemoteInvite(ctx context.Context, w http.ResponseWriter, own
 			}
 			companionRemoteInvites.Unlock()
 		}
-		companionRemoteSnapForgetAll()
+		companionRemoteSnapForget(invite.UserID, invite.GroupID)
 		companionGroupInviteNotifierFor().revokeInvites(ctx, noticeID)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return true
@@ -973,7 +1406,7 @@ func companionDecideRemoteInvite(ctx context.Context, w http.ResponseWriter, own
 		return true
 	}
 	companionRemoteInvites.Unlock()
-	companionRemoteSnapForgetAll()
+	companionRemoteSnapForget(original.UserID, original.GroupID)
 	// The origin is told after the local row is settled. A missed call leaves
 	// the admin able to invite again; the local bell is already quiet.
 	go companionRemoteDecideOrigin(context.Background(), original, action)
@@ -1018,16 +1451,30 @@ func companionLeaveRemoteInvite(ctx context.Context, w http.ResponseWriter, owne
 		companionRemoteInvites.Unlock()
 		return false
 	}
+	companionRemoteInvites.Unlock()
+	// Tell the origin while the invite row still exists: the revokes it
+	// relays back are verified through this row, so deleting it first would
+	// make every share notice on this hub strand. The leave completes locally
+	// even when the origin cannot be reached, and the caller hanging up must
+	// not abort the relay mid-flight.
+	companionRemoteDecideOrigin(context.Background(), invite, "leave")
+	companionRemoteInvites.Lock()
+	current, ok := companionRemoteInvites.items[key]
+	if !ok || !companionSecretMatches(current.Secret, invite.Secret) {
+		companionRemoteInvites.Unlock()
+		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "没有找到入群邀请")
+		return true
+	}
 	delete(companionRemoteInvites.items, key)
 	if err := persistCompanionRemoteInvitesLocked(); err != nil {
-		companionRemoteInvites.items[key] = invite
+		companionRemoteInvites.items[key] = current
 		companionRemoteInvites.Unlock()
 		writeError(w, http.StatusInternalServerError, "GROUP_FAILED", "无法保存群组")
 		return true
 	}
 	companionRemoteInvites.Unlock()
-	companionRemoteSnapForgetAll()
-	go companionRemoteDecideOrigin(context.Background(), invite, "leave")
+	companionRemoteSnapForget(ownerID, groupID)
+	companionForgetLocalGroupShareNotices(ownerID, groupID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	return true
 }
@@ -1037,6 +1484,60 @@ func companionRemoteSnapForgetAll() {
 	companionRemoteSnapCache.gen++
 	companionRemoteSnapCache.items = map[string]companionRemoteSnapshot{}
 	companionRemoteSnapCache.Unlock()
+}
+
+// companionRemoteSnapForget drops the cached snapshots this invite change
+// can make stale: the member's own, plus anyone whose snapshot already
+// carries shares from the group. An invite change for one member must not
+// force every other member's next poll to block on cross-hub fetches.
+func companionRemoteSnapForget(ownerID, groupID string) {
+	companionRemoteSnapCache.Lock()
+	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
+		delete(companionRemoteSnapCache.items, ownerID)
+	}
+	for uid, snap := range companionRemoteSnapCache.items {
+		for _, view := range snap.shares {
+			if group, _ := view["group_id"].(string); group == groupID {
+				delete(companionRemoteSnapCache.items, uid)
+				break
+			}
+		}
+	}
+	companionRemoteSnapCache.Unlock()
+}
+
+// companionForgetLocalGroupShareNotices withdraws this hub's own
+// companion_share bell entries for every remote share the snapshot cache
+// knows in the group. It is the sweep for revokes a relay cannot deliver
+// anymore — the invite row that proves the secret is already gone — and a
+// no-op when the cache never fetched that group.
+func companionForgetLocalGroupShareNotices(ownerID, groupID string) {
+	_, svc := companionNotificationServices()
+	if svc == nil || strings.TrimSpace(ownerID) == "" || !companionGroupTokenPattern.MatchString(strings.TrimSpace(groupID)) {
+		return
+	}
+	var tokens []string
+	companionRemoteSnapCache.Lock()
+	if snap, ok := companionRemoteSnapCache.items[ownerID]; ok {
+		for _, view := range snap.shares {
+			if group, _ := view["group_id"].(string); group != groupID {
+				continue
+			}
+			if token, _ := view["token"].(string); companionShareTokenPattern.MatchString(token) {
+				tokens = append(tokens, token)
+			}
+		}
+	}
+	companionRemoteSnapCache.Unlock()
+	if len(tokens) == 0 {
+		return
+	}
+	ctx := context.Background()
+	companionShareNotifyMu.Lock()
+	defer companionShareNotifyMu.Unlock()
+	for _, token := range tokens {
+		revokeCompanionShareNotificationLocked(ctx, svc, token)
+	}
 }
 
 func companionRemoteShareSnapshot(ctx context.Context, identity *auth.IdentityService, principal *auth.ViewerPrincipal, ownerID string) ([]map[string]any, uint64) {

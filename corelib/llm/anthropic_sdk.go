@@ -24,7 +24,13 @@ func ListAnthropicModelsWithSDK(ctx context.Context, cfg corelib.MaclawLLMConfig
 		client = http.DefaultClient
 	}
 	anthropicClient := anthropic.NewClient(anthropicSDKOptions(ctx, cfg, client)...)
-	page, err := anthropicClient.Models.List(ctx, anthropic.ModelListParams{})
+	// The endpoint defaults to 20 models per page, which truncates a catalog
+	// that now spans far more than 20 ids. One page with the documented
+	// maximum keeps the whole list without paginating; a gateway that ignores
+	// the query param simply returns whatever it holds.
+	page, err := anthropicClient.Models.List(ctx, anthropic.ModelListParams{
+		Limit: anthropic.Int(1000),
+	})
 	if err != nil {
 		if status, raw := anthropicSDKErrorStatusAndRaw(err); raw != "" {
 			return nil, fmt.Errorf("HTTP %d: body_len=%d: %w", status, len(raw), err)

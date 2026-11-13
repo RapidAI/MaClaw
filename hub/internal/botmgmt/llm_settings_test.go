@@ -3,6 +3,7 @@ package botmgmt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -78,6 +79,87 @@ func TestSaveLLMSettingsRejectsProtocolNameAndMissingKey(t *testing.T) {
 		{Name: "Zhipu GLM Coding", Protocol: "anthropic", URL: "https://open.bigmodel.cn/api/anthropic", Key: "sk-2", Model: "glm"},
 	}, nil, nil); err == nil || !strings.Contains(err.Error(), "llm provider name is duplicated") {
 		t.Fatalf("aliased names: %v", err)
+	}
+}
+
+func TestSaveLLMSettingsDerivesCurrentFromTheForegroundRole(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	view, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
+		ID: "lp_abcdef0123456789", Name: "OpenAI", Protocol: "openai",
+		URL: "https://api.openai.com/v1", Key: "sk-1", Model: "gpt-4o",
+	}}, nil, &LLMRoles{
+		Foreground:  LLMRoleAssignment{Mode: "pin", Provider: "lp_abcdef0123456789", Model: "gpt-4o-mini"},
+		Background:  LLMRoleAssignment{Mode: "inherit"},
+		ComputerUse: LLMRoleAssignment{Mode: "pin", Provider: "maclaw_official_group", Model: "should-not-survive"},
+		Grounder:    LLMRoleAssignment{Mode: "unused"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.LLM.Current != "lp_abcdef0123456789" {
+		t.Fatalf("current = %q, want the foreground pin", view.LLM.Current)
+	}
+	if view.LLM.Roles.Foreground.Model != "gpt-4o-mini" {
+		t.Fatalf("foreground model = %q", view.LLM.Roles.Foreground.Model)
+	}
+	// The official route schedules its own model: a stored model on an
+	// official pin is dropped and the pin is canonicalized.
+	if view.LLM.Roles.ComputerUse.Provider != "maclaw_official_group" || view.LLM.Roles.ComputerUse.Model != "" {
+		t.Fatalf("computer use = %+v", view.LLM.Roles.ComputerUse)
+	}
+
+	// A foreground model override is what the flat fallback runs, so a stale
+	// role pin falls back to the same model instead of the provider default.
+	snapshot := svc.llmSettingsSnapshot(ctx, "tenant-a")
+	app := map[string]any{}
+	applyServiceBotLLMFlat(app, snapshot, "https://hub.example/api/llm/v1", "viewer-token")
+	if app["maclaw_llm_current_provider"] != "OpenAI" || app["maclaw_llm_model"] != "gpt-4o-mini" {
+		t.Fatalf("flat fallback = %v", app)
+	}
+
+	// The owner-facing effective view shows the role model override, too.
+	roles := effectiveServiceRoles(snapshot)
+	if roles.Foreground.Name != "OpenAI" || roles.Foreground.Model != "gpt-4o-mini" {
+		t.Fatalf("effective foreground = %+v", roles.Foreground)
+	}
+	if !roles.ComputerUse.Official || roles.ComputerUse.Model != "auto" {
+		t.Fatalf("effective computer use = %+v", roles.ComputerUse)
+	}
+}
+
+func TestSaveLLMSettingsRejectsABadRoleModel(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	long := strings.Repeat("m", 129)
+	cases := []LLMRoles{
+		{Foreground: LLMRoleAssignment{Mode: "pin", Provider: "lp_abcdef0123456789", Model: "bad\nmodel"}},
+		{Foreground: LLMRoleAssignment{Mode: "pin", Provider: "lp_abcdef0123456789", Model: long}},
+	}
+	for _, roles := range cases {
+		_, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
+			ID: "lp_abcdef0123456789", Name: "OpenAI", Protocol: "openai",
+			URL: "https://api.openai.com/v1", Key: "sk-1", Model: "gpt-4o",
+		}}, nil, &roles)
+		if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "llm role model is invalid") {
+			t.Fatalf("roles = %+v err = %v", roles, err)
+		}
+	}
+}
+
+// A foreground pin on the official group without a model is the untouched
+// default: it must not push a roles config to MaClawSrv.
+func TestSaveLLMSettingsForegroundOfficialPinStaysDefault(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, nil, &LLMRoles{
+		Foreground: LLMRoleAssignment{Mode: "pin", Provider: "maclaw_official_group"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := svc.llmSettingsSnapshot(ctx, "tenant-a")
+	if stamp := llmConfigStamp(snapshot); stamp != "" {
+		t.Fatalf("stamp = %q, want empty for the untouched default", stamp)
 	}
 }
 

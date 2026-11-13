@@ -29,6 +29,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -5074,6 +5075,7 @@ func TestRemoteCodingSubAgentImageKnowledgeSearchDoesNotRequireSSHHandler(t *tes
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
 	defer store.Close()
+	store.SetDesktopOwnerStamp(desktopUserID)
 	store.SetImageAssetManager(assets)
 	ctx := context.Background()
 	if err := store.SaveSource(ctx, knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage, URI: "file://diagram.png", Title: "Gateway", Status: knowledge.StatusParsed}); err != nil {
@@ -5120,6 +5122,7 @@ func TestCodingImageSearchNeverUsesAbsolutePathMetadataAsDisplayEvidence(t *test
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	store.SetDesktopOwnerStamp(desktopUserID)
 	ctx := context.Background()
 	if err := store.SaveSource(ctx, knowledge.Source{
 		ID:           "path-free-image",
@@ -5336,6 +5339,7 @@ func TestCodingSubAgentGeneralKnowledgeSearchDoesNotIncludeImageMarker(t *testin
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	store.SetDesktopOwnerStamp(desktopUserID)
 	store.SetImageAssetManager(assets)
 	ctx := context.Background()
 	if err := store.SaveSource(ctx, knowledge.Source{ID: "image-source", Kind: knowledge.SourceKindImage, URI: "file://diagram.png", Title: "Gateway", Status: knowledge.StatusParsed}); err != nil {
@@ -5369,6 +5373,309 @@ func TestCodingSubAgentGeneralKnowledgeSearchDoesNotIncludeImageMarker(t *testin
 	}
 	if strings.Contains(images.Text, "Other gateway diagram") {
 		t.Fatalf("dedicated image search ignored source filter: %q", images.Text)
+	}
+}
+
+// TestCodingSubAgentKnowledgeSearchReadsWholeDesktopLibrary pins the
+// whole-library read: a source a normal chat saved without a project
+// (personal scope) and a source stored under a different project are both
+// reachable, while the active project path only affects ranking.
+func TestCodingSubAgentKnowledgeSearchReadsWholeDesktopLibrary(t *testing.T) {
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	store.SetDesktopOwnerStamp(desktopUserID)
+	ctx := context.Background()
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "personal-note", Kind: knowledge.SourceKindConversation, URI: "knowledge://conversation/personal-note", Title: "zephyr note", Status: knowledge.StatusParsed}); err != nil {
+		t.Fatalf("SaveSource(personal): %v", err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "personal-node", SourceID: "personal-note", Title: "zephyr note", Text: "zephyr endpoint config 9842 personal scope"}); err != nil {
+		t.Fatalf("SaveDocumentNode(personal): %v", err)
+	}
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "other-project-note", Kind: knowledge.SourceKindConversation, URI: "knowledge://conversation/other-project-note", Title: "zephyr other", ProjectPath: "D:/other/project", Status: knowledge.StatusParsed}); err != nil {
+		t.Fatalf("SaveSource(other project): %v", err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "other-project-node", SourceID: "other-project-note", Title: "zephyr other", Text: "zephyr schema note stored under another project"}); err != nil {
+		t.Fatalf("SaveDocumentNode(other project): %v", err)
+	}
+
+	local := &codingSubAgentCallbacks{subagent: &CodingSubAgent{generalKB: store, projectPath: "D:/workprj/aicoder"}}
+	res := local.executeKnowledgeSearch(`{"query":"zephyr"}`)
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("local knowledge search outcome=%v text=%q", res.Outcome, res.Text)
+	}
+	for _, want := range []string{"zephyr endpoint config 9842", "zephyr schema note"} {
+		if !strings.Contains(res.Text, want) {
+			t.Fatalf("local knowledge search missed %q: %q", want, res.Text)
+		}
+	}
+
+	remote := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{generalKB: store, projectDir: "D:/workprj/aicoder"}}
+	remoteText := remote.executeRemoteKnowledgeSearch(`{"query":"zephyr"}`)
+	for _, want := range []string{"zephyr endpoint config 9842", "zephyr schema note"} {
+		if !strings.Contains(remoteText, want) {
+			t.Fatalf("remote knowledge search missed %q: %q", want, remoteText)
+		}
+	}
+
+	// A non-desktop session keeps the project pin: the desktop owner's
+	// personal-scope and cross-project entries must stay invisible to it.
+	groupLocal := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		generalKB:         store,
+		projectPath:       "D:/workprj/aicoder",
+		permissionOwnerID: "lansenger-group:g1",
+	}}
+	if text := groupLocal.executeKnowledgeSearch(`{"query":"zephyr"}`).Text; strings.Contains(text, "zephyr endpoint config") || strings.Contains(text, "zephyr schema note") {
+		t.Fatalf("group session leaked desktop knowledge: %q", text)
+	}
+	groupRemote := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		generalKB:         store,
+		projectDir:        "D:/workprj/aicoder",
+		permissionOwnerID: "lansenger-group:g1",
+	}}
+	if text := groupRemote.executeRemoteKnowledgeSearch(`{"query":"zephyr"}`); strings.Contains(text, "zephyr endpoint config") || strings.Contains(text, "zephyr schema note") {
+		t.Fatalf("remote group session leaked desktop knowledge: %q", text)
+	}
+}
+
+// TestCodingSubAgentInquirySurfaceKeepsKnowledgeAndMemoryTools pins the
+// ordering contract that knowledge and memory tool definitions are appended
+// before the posture filters. A read-only inquiry turn is exactly where a
+// stored fact is needed, so the read-only filters must still see them.
+func TestCodingSubAgentInquirySurfaceKeepsKnowledgeAndMemoryTools(t *testing.T) {
+	dir := t.TempDir()
+	codingKB, err := knowledge.NewCodingKnowledgeStore(filepath.Join(dir, "coding.db"))
+	if err != nil {
+		t.Fatalf("NewCodingKnowledgeStore: %v", err)
+	}
+	t.Cleanup(func() { _ = codingKB.Close() })
+	generalKB, err := knowledge.NewSQLiteStore(filepath.Join(dir, "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = generalKB.Close() })
+	memStore, err := corememory.NewStoreWithMode(filepath.Join(dir, "memory"), corememory.StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	t.Cleanup(memStore.Stop)
+
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{
+			projectPath: t.TempDir(),
+			codingKB:    codingKB,
+			generalKB:   generalKB,
+			memoryStore: memStore,
+		},
+		task: &TaskItem{Index: 1, Title: "What does zephyr return", Description: "read-only inquiry", RequestKind: codingRequestInquiry},
+	}
+	wantTools := []string{"coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search"}
+	names := codingSubAgentToolDefinitionNamesForTest(cb.BuildTools("what does zephyr return"))
+	for _, want := range wantTools {
+		if !containsStringForTest(names, want) {
+			t.Fatalf("inquiry BuildTools dropped %q; got %#v", want, names)
+		}
+	}
+
+	// Remote surface parity: a read-only remote inquiry filters through
+	// filterRemoteCodingInquiryTools and must keep the same search family.
+	rcb := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{
+			projectDir:      t.TempDir(),
+			codingKB:        codingKB,
+			generalKB:       generalKB,
+			memoryStore:     memStore,
+			readOnlyInquiry: true,
+		},
+		task: "what does zephyr return",
+	}
+	rnames := codingSubAgentToolDefinitionNamesForTest(rcb.BuildTools("what does zephyr return"))
+	for _, want := range wantTools {
+		if !containsStringForTest(rnames, want) {
+			t.Fatalf("remote inquiry BuildTools dropped %q; got %#v", want, rnames)
+		}
+	}
+}
+
+// TestCodingSubAgentMemorySearchReadsSharedDesktopMemory pins the read-only
+// memory surface: memories saved by ordinary desktop conversations are
+// reachable from both the local and remote coding agents through
+// memory_search, which is the only action the surface can ever issue.
+func TestCodingSubAgentMemorySearchReadsSharedDesktopMemory(t *testing.T) {
+	store, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	if err := store.Save(corememory.Entry{
+		Content:  "zephyr api endpoint 9842 was recorded by an ordinary chat",
+		Category: corememory.CategoryUserFact,
+		OwnerID:  desktopUserID,
+	}); err != nil {
+		t.Fatalf("memory.Save: %v", err)
+	}
+
+	local := &codingSubAgentCallbacks{subagent: &CodingSubAgent{memoryStore: store, projectPath: "D:/workprj/aicoder"}}
+	res := local.executeMemorySearch(`{"query":"zephyr"}`)
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("local memory search outcome=%v text=%q", res.Outcome, res.Text)
+	}
+	if !strings.Contains(res.Text, "zephyr api endpoint 9842") {
+		t.Fatalf("local memory search missed saved memory: %q", res.Text)
+	}
+
+	remote := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{memoryStore: store, projectDir: "D:/workprj/aicoder"}}
+	remoteText := remote.executeRemoteMemorySearch(`{"query":"zephyr"}`)
+	if !strings.Contains(remoteText, "zephyr api endpoint 9842") {
+		t.Fatalf("remote memory search missed saved memory: %q", remoteText)
+	}
+}
+
+// TestCodingMemoryOwnerResolution pins the memory-owner mapping: desktop-owned
+// sessions (main chat, project tabs, background task children) share the
+// desktop identity so a coding task can reuse the owner's saved facts, while
+// isolated personas and external sessions keep their own namespace.
+func TestCodingMemoryOwnerResolution(t *testing.T) {
+	for _, tc := range []struct {
+		userID string
+		owner  string
+		strict bool
+	}{
+		{"", desktopUserID, false},
+		{desktopUserID, desktopUserID, false},
+		{"desktop-user:D:/workprj/aicoder", desktopUserID, false},
+		{"desktop-user:task:abc123", desktopUserID, false},
+		{"lansenger-group:g1", "lansenger-group:g1", true},
+		{"weixin_local:user42", "weixin_local:user42", false},
+	} {
+		owner, strict := codingMemoryOwner(tc.userID)
+		if owner != tc.owner || strict != tc.strict {
+			t.Fatalf("codingMemoryOwner(%q) = (%q,%v), want (%q,%v)", tc.userID, owner, strict, tc.owner, tc.strict)
+		}
+	}
+	if isACPAssistantSessionUserID("acp:s1") {
+		if owner, strict := codingMemoryOwner("acp:s1"); owner != "acp:s1" || !strict {
+			t.Fatalf("acp session must keep its own strict owner, got (%q,%v)", owner, strict)
+		}
+	}
+}
+
+// TestCodingSubAgentMemorySearchIsolatesNonDesktopOwner pins the leak guard:
+// a coding agent running for a group-chat session must not recall entries
+// saved by the desktop owner, while a project-tab agent (same human) still
+// shares the desktop namespace.
+func TestCodingSubAgentMemorySearchIsolatesNonDesktopOwner(t *testing.T) {
+	store, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	if err := store.Save(corememory.Entry{
+		Content:  "zephyr api endpoint 9842 was recorded by an ordinary chat",
+		Category: corememory.CategoryUserFact,
+		OwnerID:  desktopUserID,
+	}); err != nil {
+		t.Fatalf("memory.Save: %v", err)
+	}
+
+	group := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		memoryStore:       store,
+		permissionOwnerID: "lansenger-group:g1",
+	}}
+	if text := group.executeMemorySearch(`{"query":"zephyr"}`).Text; strings.Contains(text, "zephyr api endpoint 9842") {
+		t.Fatalf("group session leaked desktop memory: %q", text)
+	}
+
+	tab := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		memoryStore:       store,
+		projectPath:       "D:/workprj/aicoder",
+		permissionOwnerID: "desktop-user:D:/workprj/aicoder",
+	}}
+	if text := tab.executeMemorySearch(`{"query":"zephyr"}`).Text; !strings.Contains(text, "zephyr api endpoint 9842") {
+		t.Fatalf("project-tab session lost desktop memory sharing: %q", text)
+	}
+
+	remoteGroup := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		memoryStore:       store,
+		permissionOwnerID: "lansenger-group:g1",
+	}}
+	if text := remoteGroup.executeRemoteMemorySearch(`{"query":"zephyr"}`); strings.Contains(text, "zephyr api endpoint 9842") {
+		t.Fatalf("remote group session leaked desktop memory: %q", text)
+	}
+}
+
+// TestCodingSubAgentPromptInjectsRecalledMemory pins the task-start
+// auto-recall: when the memory store holds a task-relevant entry, both the
+// local and remote knowledge prompt builders inject the 长期记忆参考资料
+// section through the same HandleTool recall path memory_search uses.
+func TestCodingSubAgentPromptInjectsRecalledMemory(t *testing.T) {
+	store, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	if err := store.Save(corememory.Entry{
+		Content:  "zephyr api endpoint 9842 was recorded by an ordinary chat",
+		Category: corememory.CategoryUserFact,
+		OwnerID:  desktopUserID,
+	}); err != nil {
+		t.Fatalf("memory.Save: %v", err)
+	}
+
+	local := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{memoryStore: store, projectPath: "D:/workprj/aicoder"},
+		task:     &TaskItem{Index: 1, Title: "verify zephyr endpoint behavior"},
+	}
+	section := local.buildKnowledgePromptSections()
+	if !strings.Contains(section, "长期记忆参考资料") || !strings.Contains(section, "zephyr api endpoint 9842") {
+		t.Fatalf("local prompt sections missed recalled memory: %q", section)
+	}
+
+	remote := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{memoryStore: store, projectDir: "D:/workprj/aicoder"},
+		task:  "verify zephyr endpoint behavior",
+	}
+	rsection := remote.buildRemoteKnowledgePromptSections()
+	if !strings.Contains(rsection, "长期记忆参考资料") || !strings.Contains(rsection, "zephyr api endpoint 9842") {
+		t.Fatalf("remote prompt sections missed recalled memory: %q", rsection)
+	}
+
+	// Hard guards: no store and no query both produce no section. (The recall
+	// engine itself decides what counts as relevant — a soft-ranked engine may
+	// still return a store's closest entries for a weak query, exactly as
+	// memory_search would, so relevance thresholds are not pinned here.)
+	if got := codingMemoryPromptSection(nil, "zephyr", "D:/workprj/aicoder", desktopUserID); got != "" {
+		t.Fatalf("nil store should not inject memory section: %q", got)
+	}
+	if got := codingMemoryPromptSection(store, "", "D:/workprj/aicoder", desktopUserID); got != "" {
+		t.Fatalf("empty query should not inject memory section: %q", got)
+	}
+	// A non-desktop owner must not inject the desktop owner's memories.
+	if got := codingMemoryPromptSection(store, "zephyr", "D:/workprj/aicoder", "lansenger-group:g1"); strings.Contains(got, "zephyr api endpoint 9842") {
+		t.Fatalf("group session prompt leaked desktop memory: %q", got)
+	}
+}
+
+// TestCodingSubAgentMemorySearchToolDefinitionIsReadOnly pins the model-visible
+// schema: query is the only input, so no argument can widen scope or reach a
+// write action.
+func TestCodingSubAgentMemorySearchToolDefinitionIsReadOnly(t *testing.T) {
+	definition := memorySearchToolDef()
+	function, _ := definition["function"].(map[string]interface{})
+	parameters, _ := function["parameters"].(map[string]interface{})
+	properties, _ := parameters["properties"].(map[string]interface{})
+	if _, ok := properties["query"]; !ok {
+		t.Fatalf("memory_search definition missing query: %v", properties)
+	}
+	for _, forbidden := range []string{"action", "content", "id", "project_path", "owner_id", "session_key"} {
+		if _, ok := properties[forbidden]; ok {
+			t.Fatalf("memory_search must not expose %q", forbidden)
+		}
+	}
+	if got, _ := properties["limit"]; got != nil {
+		t.Fatalf("memory_search surface must stay minimal, got limit=%v", got)
 	}
 }
 

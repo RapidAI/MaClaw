@@ -114,6 +114,15 @@ func operateDesktopWithTimeout(ctx context.Context, scope agentruntime.Scope, ar
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			// The caller's deadline (a goal's reserved attempt time) expired
+			// at the same tick as the hard step cap; the timer goroutine may
+			// not have marked ctx.Err() yet. Attribute the stop to the
+			// reservation, not the hard timeout, so recovery reports "the
+			// attempt time its goal had left" deterministically.
+			<-ctx.Done()
+			return "", ctx.Err()
+		}
 		log.Printf("[desktop-step] action=%s timed out after %s (hard step timeout)", action, limit)
 		desktopDropStuckBinding(scope)
 		if note := desktopUnstickAfterTimeout(scope, action, args); note != "" {

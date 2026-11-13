@@ -5671,6 +5671,26 @@ func semanticPetitionLabelRewritesBoundFileDelivery(label intent.IntentLabel) bo
 	return false
 }
 
+// semanticPetitionRewritesToLiveBoundDelivery reports whether a petitioned
+// name will be rewritten onto the surface's live specified-target delivery
+// grant by the bound-file-delivery branch in PetitionToolCall. The turn
+// directory gate consults this so a name that is not a directory row still
+// reaches the rewrite.
+func semanticPetitionRewritesToLiveBoundDelivery(surface *semanticCallSurface, name string) bool {
+	if surface == nil || surface.replan == nil {
+		return false
+	}
+	capability, ok := semanticPetitionableCapabilities[strings.TrimSpace(name)]
+	if !ok {
+		return false
+	}
+	label, ok := semanticPetitionLabelForCapability(capability)
+	if !ok || !semanticPetitionLabelRewritesBoundFileDelivery(label) {
+		return false
+	}
+	return semanticLiveGrantNameForCapability(surface, semanticSpecifiedTargetDeliveryCapability) != ""
+}
+
 // semanticPetitionIsEffectful reports whether the petitioned name resolves to
 // an effectful rule label rather than a read-only one. The caller applies the
 // group-policy gate and the separate effectful budget to these; read-only

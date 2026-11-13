@@ -228,7 +228,11 @@ export function AssistantTitleBarNotifications({
     }, [dismissUrgentToast, panelOpen, urgentToast]);
     return (
         <>
-            <div data-notification-anchor="true" className="atbn-anchor" ref={anchorRef}>
+            <div
+                data-notification-anchor="true"
+                className={`atbn-anchor${bellHidden ? ' atbn-anchor--bell-less' : ''}`}
+                ref={anchorRef}
+            >
                 {bellHidden ? null : (
                     <NotificationBell
                         unreadCount={hubUnreadCount + inviteCount}

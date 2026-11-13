@@ -205,7 +205,17 @@ func effectiveServiceRole(settings llmSettings, role LLMRoleAssignment, grounder
 		return PrincipalLLMRoleView{Unused: true}
 	}
 	if mode == corelib.MaclawHubBotRolePin {
-		return serviceProviderView(settings, role.Provider)
+		view := serviceProviderView(settings, role.Provider)
+		// A per-role model override replaces the provider's default in what
+		// the owner sees, matching what a turn actually runs.
+		if view.Official || isBotDefaultServiceGroup(role.Provider) {
+			view.Model = botLLMModel
+			return view
+		}
+		if model := strings.TrimSpace(role.Model); model != "" {
+			view.Model = model
+		}
+		return view
 	}
 	if selected, ok := selectedBotLLMProvider(settings); ok {
 		return PrincipalLLMRoleView{Name: selected.Name, Model: selected.Model}
@@ -490,7 +500,17 @@ func applyServiceBotLLMFlat(app map[string]any, settings llmSettings, endpoint, 
 	if custom {
 		app["maclaw_llm_url"] = selected.URL
 		app["maclaw_llm_key"] = selected.Key
-		app["maclaw_llm_model"] = selected.Model
+		// The foreground role is the default route: its pinned model, when
+		// one is set, must also be what the flat fallback runs, so a stale
+		// role pin falls back to the same model instead of the provider's
+		// default.
+		model := selected.Model
+		if settings.Roles.Foreground.Mode == corelib.MaclawHubBotRolePin {
+			if override := strings.TrimSpace(settings.Roles.Foreground.Model); override != "" {
+				model = override
+			}
+		}
+		app["maclaw_llm_model"] = model
 		app["maclaw_llm_protocol"] = selected.Protocol
 		app["maclaw_llm_current_provider"] = selected.Name
 		return

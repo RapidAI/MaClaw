@@ -10,6 +10,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,10 +77,33 @@ func NewLocalMCPClient(entry corelib.LocalMCPServerEntry) *LocalMCPClient {
 var errLocalMCPSpawnSuppressedUnderTest = errors.New("local MCP spawn suppressed under go test")
 
 func localMCPSpawnSuppressedUnderTest(entry corelib.LocalMCPServerEntry) error {
-	if !testing.Testing() || entry.Env["GO_WANT_HELPER_PROCESS"] == "1" {
+	if !testing.Testing() || localMCPCommandIsSelfReexec(entry) {
 		return nil
 	}
 	return fmt.Errorf("%w: %q", errLocalMCPSpawnSuppressedUnderTest, entry.Command)
+}
+
+// localMCPCommandIsSelfReexec reports whether the entry would re-execute the
+// current test binary as a helper process — the only spawn a test binary may
+// legitimately perform. Recognized forms: the GO_WANT_HELPER_PROCESS marker
+// (newHelperLocalMCPServerEntry) or a command that resolves to the test
+// binary itself (MaClawSrv's os.Args[0] helper entries).
+func localMCPCommandIsSelfReexec(entry corelib.LocalMCPServerEntry) bool {
+	if entry.Env["GO_WANT_HELPER_PROCESS"] == "1" {
+		return true
+	}
+	if !filepath.IsAbs(entry.Command) {
+		return false
+	}
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		return false
+	}
+	cmd, self := filepath.Clean(entry.Command), filepath.Clean(self)
+	if cmd == self {
+		return true
+	}
+	return runtime.GOOS == "windows" && strings.EqualFold(cmd, self)
 }
 
 // startMaxRetries is the number of attempts to launch and initialize an MCP

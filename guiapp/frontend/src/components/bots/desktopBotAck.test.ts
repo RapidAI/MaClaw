@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../../../wailsjs/go/main/App', () => ({ WriteDesktopBotAck: vi.fn() }));
 
 import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotReceiptAck, desktopBotStoppingLine, firstAckCommandKeys, landFirstAck, releaseSettledAckCommands, type DesktopBotAckContext } from './desktopBotAck';
+import type { DesktopBotMessage } from './desktopBots';
 
 describe('desktopBotAck', () => {
     it('uses the model line', async () => {
@@ -71,7 +72,9 @@ describe('desktopBotAck first-reply budget', () => {
 describe('one ack bubble per command', () => {
     const model = '好的，我先获取最新的 DailyPaper，挑出最热门的一篇做图文综述，发到知乎、CSDN 和小红书。';
     const neutral = '好，我先做着。';
-    function turn(id: string, requestId: string) {
+    // DesktopBotMessage is the production transcript row: ack is optional on
+    // every variant, so fixtures that omit it still type-check.
+    function turn(id: string, requestId: string): DesktopBotMessage[] {
         return [
             { id: 'u-' + id, role: 'user' as const, content: '做这个' },
             { id, role: 'assistant' as const, content: '', pending: true, requestId },

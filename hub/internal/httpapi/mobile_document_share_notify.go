@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/notification"
@@ -119,22 +120,25 @@ func refreshCompanionShareNotification(share companionDocShare) {
 	}
 	ctx := context.Background()
 	companionShareNotifyMu.Lock()
-	defer companionShareNotifyMu.Unlock()
 	// Re-read inside the serialized section. A delete can land between the
 	// handler's unlock and this goroutine; creating a notice for a link that is
 	// already gone would leave a dead bell entry.
 	current, ok := companionShareByToken(token)
 	if !ok {
 		revokeCompanionShareNotificationLocked(ctx, svc, token)
+		companionShareNotifyMu.Unlock()
 		return
 	}
 	share = current
 	recipients, groupName := companionShareNotifyRecipients(ctx, identitySvc, share)
 	revokeCompanionShareNotificationLocked(ctx, svc, token)
-	if len(recipients) == 0 {
-		return
+	if len(recipients) > 0 {
+		createCompanionShareNotificationLocked(ctx, svc, share, recipients, groupName)
 	}
-	createCompanionShareNotificationLocked(ctx, svc, share, recipients, groupName)
+	companionShareNotifyMu.Unlock()
+	// Remote members resolve to no local account; their home hub raises the
+	// notice after proving the invite secret belongs to its user.
+	companionRelayRemoteShareNotices(share, "create")
 }
 
 // ensureCompanionShareNotification is the duplicate-create recovery path: an
@@ -227,6 +231,92 @@ func revokeCompanionShareNotificationLocked(ctx context.Context, svc *notificati
 	// row so the source key stays unambiguous.
 	if err := svc.DeleteNotification(ctx, existing.ID); err != nil {
 		log.Printf("[companion-share] delete notification %s: %v", existing.ID, err)
+	}
+}
+
+// companionShareRemoteNoticeTargets returns the accepted remote members of
+// the share's group whose notice lives on their own hub. The remote publisher
+// is skipped: the share is theirs, and the home hub already shows the row.
+func companionShareRemoteNoticeTargets(share companionDocShare) []companionDocGroupMember {
+	if share.Visibility != "group" || strings.TrimSpace(share.GroupID) == "" {
+		return nil
+	}
+	group, ok := companionGroupSnapshotByID(strings.TrimSpace(share.GroupID))
+	if !ok {
+		return nil
+	}
+	out := make([]companionDocGroupMember, 0)
+	for _, member := range group.Members {
+		if member.Status != "accepted" || member.HomeHubURL == "" || member.InviteSecret == "" {
+			continue
+		}
+		if member.Contact == strings.TrimSpace(share.RemoteOwner) {
+			continue
+		}
+		out = append(out, member)
+	}
+	return out
+}
+
+// companionRelayRemoteShareNotices mirrors a share notice event — "create"
+// or "revoke" — to the home hub of every remote member in the share's group.
+// The receiving hub verifies the invite secret belongs to its user before it
+// raises or withdraws the bell entry.
+func companionRelayRemoteShareNotices(share companionDocShare, action string) {
+	companionRelayRemoteShareNoticesTo(share, companionShareRemoteNoticeTargets(share), action)
+}
+
+func companionRelayRemoteShareNoticesTo(share companionDocShare, members []companionDocGroupMember, action string) {
+	if len(members) == 0 || !companionShareTokenPattern.MatchString(strings.TrimSpace(share.Token)) {
+		return
+	}
+	origin := companionLocalOrigin()
+	if origin == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for _, member := range members {
+		if member.HomeHubURL == "" || member.InviteSecret == "" || member.Contact == strings.TrimSpace(share.RemoteOwner) {
+			continue
+		}
+		homeURL := companionHubBaseURL(member.HomeHubURL)
+		if homeURL == "" {
+			continue
+		}
+		status, _, err := companionPostJSON(ctx, homeURL+"/api/mobile/documents/groups/remote-share-notices", map[string]string{
+			"action":     action,
+			"group_id":   share.GroupID,
+			"token":      share.Token,
+			"name":       share.Name,
+			"owner":      share.OwnerLabel,
+			"origin_hub": origin,
+			"secret":     member.InviteSecret,
+		})
+		if err != nil || status < 200 || status >= 300 {
+			log.Printf("[companion-share] relay notice %s %s to %s: status %d err %v", action, share.Token, homeURL, status, err)
+		}
+	}
+}
+
+// companionRelayGroupShareNoticeRevoke tells the home hub of each member that
+// every share in the group stopped being open to them. Used when the member
+// leaves or is removed, and when the group is dissolved.
+func companionRelayGroupShareNoticeRevoke(ctx context.Context, members []companionDocGroupMember, groupID string) {
+	if len(members) == 0 || strings.TrimSpace(groupID) == "" {
+		return
+	}
+	loadCompanionDocShares()
+	companionDocShares.Lock()
+	shares := make([]companionDocShare, 0)
+	for _, share := range companionDocShares.items {
+		if share.Visibility == "group" && share.GroupID == groupID {
+			shares = append(shares, share)
+		}
+	}
+	companionDocShares.Unlock()
+	for _, share := range shares {
+		companionRelayRemoteShareNoticesTo(share, members, "revoke")
 	}
 }
 

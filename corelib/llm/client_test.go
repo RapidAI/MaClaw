@@ -559,10 +559,11 @@ func TestAnthropicSDKMessagePreservesHTTP400RawBody(t *testing.T) {
 }
 
 func TestListAnthropicModelsWithSDKUsesOfficialSDKShape(t *testing.T) {
-	var gotPath, gotUA string
+	var gotPath, gotUA, gotLimit string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotUA = r.Header.Get("User-Agent")
+		gotLimit = r.URL.Query().Get("limit")
 		if r.Header.Get("x-api-key") != "test-key" {
 			t.Fatalf("x-api-key = %q, want test-key", r.Header.Get("x-api-key"))
 		}
@@ -582,6 +583,9 @@ func TestListAnthropicModelsWithSDKUsesOfficialSDKShape(t *testing.T) {
 	}
 	if gotPath != "/v1/models" {
 		t.Fatalf("path = %q, want /v1/models", gotPath)
+	}
+	if gotLimit != "1000" {
+		t.Fatalf("limit = %q, want the page maximum so a catalog is not truncated", gotLimit)
 	}
 	if gotUA != "claude code 2.0" {
 		t.Fatalf("User-Agent = %q, want claude code 2.0", gotUA)

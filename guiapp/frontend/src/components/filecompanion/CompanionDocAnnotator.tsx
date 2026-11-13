@@ -158,6 +158,7 @@ export function CompanionDocAnnotator({
         setDrawings(loadDocDrawings(path));
         setMenu(null);
         setClosedIds(new Set());
+        setDrawMode(false);
     }, [path]);
 
     // A received share writes the stores without announcing. The store's own

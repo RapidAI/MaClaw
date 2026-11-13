@@ -56,6 +56,25 @@ export function centeredDropdownLeft(
 }
 
 /**
+ * Width for the status popover: the account row's own width (its edges define
+ * the sidebar insets), floored at `minWidth` and capped so the popover keeps
+ * `edgeGap` to each sidebar edge even when the floor kicks in. A narrow
+ * sidebar below the floor wins (best effort): the floor is never reduced.
+ * `containerWidth == null` skips the cap (container not measurable).
+ */
+export function statusPopoverWidth(
+    anchorWidth: number,
+    containerWidth: number | null,
+    minWidth: number,
+    edgeGap: number,
+): number {
+    const base = Math.max(Math.round(anchorWidth), minWidth);
+    if (containerWidth == null) return base;
+    const cap = Math.max(minWidth, Math.round(containerWidth) - edgeGap * 2);
+    return Math.min(base, cap);
+}
+
+/**
  * Place the provider menu relative to an anchor rect.
  * Prefer opening above (status bar sits at the bottom); fall back below when needed.
  * Left-aligns with the anchor and clamps using `menuWidth` (or an estimate).

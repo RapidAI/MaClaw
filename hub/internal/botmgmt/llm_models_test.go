@@ -144,12 +144,13 @@ func TestFetchLLMProviderModelsValidatesInput(t *testing.T) {
 }
 
 func TestFetchLLMProviderModelsAnthropicUsesSDKHeaders(t *testing.T) {
-	var gotPath, gotKey, gotVersion string
+	var gotPath, gotKey, gotVersion, gotLimit string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/models") {
 			gotPath = r.URL.Path
 			gotKey = r.Header.Get("x-api-key")
 			gotVersion = r.Header.Get("anthropic-version")
+			gotLimit = r.URL.Query().Get("limit")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"data":[{"id":"claude-x","display_name":"Claude X"}],"has_more":false}`))
 			return
@@ -179,6 +180,9 @@ func TestFetchLLMProviderModelsAnthropicUsesSDKHeaders(t *testing.T) {
 	}
 	if gotVersion == "" {
 		t.Fatal("anthropic-version header missing")
+	}
+	if gotLimit != "1000" {
+		t.Fatalf("limit = %q, want 1000 so the catalog is not truncated at 20", gotLimit)
 	}
 }
 

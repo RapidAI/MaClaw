@@ -37,6 +37,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -66,6 +67,9 @@ type RemoteCodingSubAgent struct {
 	// Knowledge stores (optional, nil = gracefully skipped)
 	codingKB  *knowledge.CodingKnowledgeStore
 	generalKB *knowledge.SQLiteStore
+	// memoryStore is the shared long-term memory (memory.db). Read-only via
+	// memory_search; the remote surface never exposes save/delete actions.
+	memoryStore *corememory.Store
 
 	// highRiskApproval lets the user override remote bash safety guardrails.
 	// Nil preserves the default hard-reject behavior.
@@ -396,6 +400,16 @@ func (r *RemoteCodingSubAgent) SetKnowledgeStores(codingKB *knowledge.CodingKnow
 	}
 	r.codingKB = codingKB
 	r.generalKB = generalKB
+}
+
+// SetMemoryStore configures the shared long-term memory store (memory.db).
+// Optional — a nil store is gracefully skipped. Remote coding agents only get
+// the read-only memory_search tool; they can never save or delete.
+func (r *RemoteCodingSubAgent) SetMemoryStore(store *corememory.Store) {
+	if r == nil {
+		return
+	}
+	r.memoryStore = store
 }
 
 // SaveRuntimeExperience persists an automatically extracted experiment
@@ -2622,6 +2636,9 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	if c != nil && c.agent != nil && c.agent.generalKB != nil {
 		tools = append(tools, knowledgeSearchToolDef(), knowledgeImageSearchToolDef())
 	}
+	if c != nil && c.agent != nil && c.agent.memoryStore != nil {
+		tools = append(tools, memorySearchToolDef())
+	}
 	if goalContinuationPhase(c.task) == "plan" || goalContinuationPhase(c.taskContext) == "plan" {
 		filtered := filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterGoalPlanPhaseTools(tools))
 		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(filtered))
@@ -3183,6 +3200,8 @@ func remoteCodingKnowledgeUnavailableResult(name, result string) bool {
 		prefix = "项目知识库当前不可用；"
 	case "knowledge_image_search":
 		prefix = "图片知识库当前不可用；"
+	case "memory_search":
+		prefix = "长期记忆未配置。"
 	default:
 		return false
 	}
@@ -3390,6 +3409,9 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		return result
 	case "knowledge_image_search":
 		result = c.executeRemoteKnowledgeImageSearch(normalizedArgsJSON)
+		return result
+	case "memory_search":
+		result = c.executeRemoteMemorySearch(normalizedArgsJSON)
 		return result
 	case "web_search":
 		if c.agent.handler != nil {
@@ -6036,7 +6058,7 @@ func applyRemoteCodingSubAgentToolArgumentAliases(name string, args map[string]i
 	case "ssh_check_task":
 		changed = applyCodingSubAgentToolArgumentAlias(args, "task", "task_id") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "id", "task_id") || changed
-	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		changed = applyCodingSubAgentQueryArgumentAliases(args) || changed
 	}
 	return changed
@@ -6272,22 +6294,24 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 	// 2. General knowledge (project docs)
 	if c.agent.generalKB != nil {
 		b.WriteString(knowledgeImageDisplayPromptRule)
-		searchOpts := knowledge.SearchOptions{
-			Query:       taskQuery,
-			ProjectPath: c.agent.projectDir,
-			Limit:       10,
-		}
+		searchOpts := codingKnowledgeReadOptions(knowledge.SearchOptions{
+			Query: taskQuery,
+			Limit: 10,
+		}, c.agent.projectDir, c.agent.taskPermissionOwnerID())
 		pack, err := c.agent.generalKB.ContextPack(knowledgeSearchContext(ctx), knowledge.ContextPackOptions{
 			SearchOptions: searchOpts,
 			MaxItems:      3,
 			MaxChars:      2000,
 		})
 		if err == nil && len(pack.Items) > 0 {
-			b.WriteString("\n## 项目参考资料（来自通用知识库）\n")
-			b.WriteString("以下是与当前任务相关的项目文档：\n")
+			b.WriteString("\n## 知识库参考资料（来自通用知识库）\n")
+			b.WriteString("以下是与当前任务相关的知识库内容：\n")
 			b.WriteString(knowledge.FormatContextPackForLLM(pack))
 		}
 	}
+
+	// 3. Long-term memory (conversation-captured common info, read-only).
+	b.WriteString(codingMemoryPromptSection(c.agent.memoryStore, taskQuery, c.agent.projectDir, c.agent.taskPermissionOwnerID()))
 
 	return b.String()
 }
@@ -6370,11 +6394,10 @@ func (c *remoteCodingCallbacks) executeRemoteKnowledgeSearch(argsJSON string) st
 	ctx, cancel := context.WithTimeout(knowledgeSearchContext(context.Background()), 8*time.Second)
 	defer cancel()
 
-	results, err := c.agent.generalKB.Search(ctx, knowledge.SearchOptions{
-		Query:       query,
-		ProjectPath: c.agent.projectDir,
-		Limit:       5,
-	})
+	results, err := c.agent.generalKB.Search(ctx, codingKnowledgeReadOptions(knowledge.SearchOptions{
+		Query: query,
+		Limit: 5,
+	}, c.agent.projectDir, c.agent.taskPermissionOwnerID()))
 	if err != nil {
 		return fmt.Sprintf("项目知识库当前不可用；请使用 ssh_read_file、ssh_list_dir 或 ssh_bash 获取一手项目证据。(%v)", err)
 	}
@@ -6411,7 +6434,7 @@ func (c *remoteCodingCallbacks) executeRemoteKnowledgeImageSearch(argsJSON strin
 
 	ctx, cancel := context.WithTimeout(knowledgeSearchContext(context.Background()), 8*time.Second)
 	defer cancel()
-	results, err := c.agent.generalKB.SearchImages(ctx, knowledge.ImageSearchOptions{SearchOptions: codingKnowledgeImageSearchOptions(args, c.agent.projectDir)})
+	results, err := c.agent.generalKB.SearchImages(ctx, knowledge.ImageSearchOptions{SearchOptions: codingKnowledgeImageSearchOptions(args, c.agent.projectDir, c.agent.taskPermissionOwnerID())})
 	if err != nil {
 		return fmt.Sprintf("图片知识库当前不可用；请继续使用文本项目证据完成任务。(%v)", err)
 	}
@@ -6435,6 +6458,34 @@ func (c *remoteCodingCallbacks) executeRemoteKnowledgeImageSearch(argsJSON strin
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// executeRemoteMemorySearch handles the memory_search tool call (read-only
+// recall against the shared long-term memory store). Owner is resolved from
+// the session by codingMemoryOwner — never taken from model arguments — and
+// the handler only sees the recall action, so remote model input cannot
+// reach writes.
+func (c *remoteCodingCallbacks) executeRemoteMemorySearch(argsJSON string) string {
+	if c == nil || c.agent == nil || c.agent.memoryStore == nil {
+		return "长期记忆未配置。暂无可用的记忆库。"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return fmt.Sprintf("参数解析失败: %v", err)
+	}
+	query := knowledgeToolStringArg(args, "query")
+	if query == "" {
+		return "Error: query parameter is required"
+	}
+	owner, strict := codingMemoryOwner(c.agent.taskPermissionOwnerID())
+	return corememory.HandleTool(c.agent.memoryStore, map[string]interface{}{
+		"action": string(corememory.MemoryToolActionRecall),
+		"query":  query,
+	}, corememory.ToolOptions{
+		ProjectPath: c.agent.projectDir,
+		OwnerID:     owner,
+		StrictOwner: strict,
+	})
 }
 
 func remoteKnowledgeSnippet(r knowledge.SearchResult) string {

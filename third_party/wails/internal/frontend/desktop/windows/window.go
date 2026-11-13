@@ -47,11 +47,23 @@ type Window struct {
 	// is enough to catch a hide that lands after the first restore.
 	cursorRestoreArmed atomic.Bool
 
-	// cursorWatchArmed is set while a sustained-restore tick is queued. A
-	// maximized or fullscreen window re-arms it on every restore, so a hide
-	// that lands after both early posts still gets raised; the chain stops
-	// when the window leaves that state.
+	// cursorWatchArmed is set while a sustained-watch tick is queued. A shown
+	// window re-arms it on every tick, so a hide that lands after the early
+	// posts still gets answered; the chain stops when the window is hidden.
 	cursorWatchArmed atomic.Bool
+
+	// cursorHiddenStreak counts consecutive watch ticks that found the
+	// cursor hidden or NULL over this window; it bounds how many recovery
+	// jogs one detection episode may spend. The position fields remember
+	// the last pointer sample in that state so a pointer still moving while
+	// invisible — the stuck signature — keeps the jogs going. cursorJogNanos
+	// is the last jog's timestamp; the burst of ticks a jog posts must not
+	// consume the budget. Touched only on the window procedure thread.
+	cursorHiddenStreak int
+	cursorHiddenSeen   bool
+	cursorHiddenX      int
+	cursorHiddenY      int
+	cursorJogNanos     int64
 
 	// isMinimizing indicates whether the window is currently being minimized
 	// 标识窗口是否处于最小化状态,用于解决最小化/恢复时的闪屏问题
@@ -91,19 +103,21 @@ const (
 )
 
 // wmKeepCursorVisible is posted after a size, show, or controller-bounds
-// change that can hide the pointer, and again by the sustained watch while a
-// maximized or fullscreen state holds. WebView2 can call ShowCursor(FALSE)
-// while handling such a change and skip the matching ShowCursor(TRUE). The
-// display count then stays negative, and the pointer is invisible over this
-// window until a later focus message raises it. The posted handler runs
-// after the triggering message returns, on the UI thread that owns the count.
+// change that can hide the pointer, and again by the sustained watch while
+// the window is shown. Two distinct WebView2 failures are answered on each
+// tick: a ShowCursor(FALSE) whose matching ShowCursor(TRUE) is skipped (the
+// display count stays negative), and a hidden/NULL cursor the browser
+// process leaks across controllers (the count is fine; the cursor object is
+// gone — answered by jogging the controllers, not by ShowCursor). The
+// posted handler runs after the triggering message returns, on the UI
+// thread.
 const wmKeepCursorVisible = w32.WM_APP + 73
 
-// cursorWatchInterval paces the sustained restore while the window stays
-// maximized or fullscreen. WebView2 — and in the companion its second
-// controller — can hide the pointer well after the change the first posts
-// answered, or on a bounds update of its own; a one-shot retry leaves the
-// count negative until the next activation.
+// cursorWatchInterval paces the sustained check. A one-shot retry loses to a
+// hide that lands after it, and the stuck hidden cursor does not recover on
+// its own — the user's manual window restore is what clears it, so the watch
+// replays that signal once a second until the window is hidden or the
+// cursor is back.
 const cursorWatchInterval = time.Second
 
 type obscureUpdate int
@@ -253,20 +267,20 @@ func (w *Window) postCursorRestore() {
 	})
 }
 
-// cursorWatchActive reports whether a state that can keep hiding the pointer
-// still holds. A hidden or minimized window drops the watch; the next show
+// cursorWatchActive reports whether the cursor watch should keep ticking.
+// The WebView2 hidden-cursor leak is not confined to the maximized or
+// fullscreen state — a companion with the second controller mounted can
+// carry a NULL cursor in a normal window too — so the watch runs whenever
+// the window is shown. A hidden or minimized window drops it; the next show
 // posts a restore of its own.
 func (w *Window) cursorWatchActive() bool {
-	if w == nil || w.Handle() == 0 || !w.contentShown() {
-		return false
-	}
-	return w.Form.IsFullScreen() || w.IsFullScreen() || w.IsMaximised()
+	return w != nil && w.Handle() != 0 && w.contentShown()
 }
 
-// scheduleCursorWatch re-arms a slow restore while the risky state holds. The
-// timer posts back onto this window's procedure, so each tick raises the
-// count on the thread that owns it; when the window returns to normal the
-// handler stops re-arming and the chain ends on the next tick.
+// scheduleCursorWatch re-arms the watch while the window is shown. The timer
+// posts back onto this window's procedure, so each tick runs on the thread
+// that owns the cursor count; when the window is hidden the handler stops
+// re-arming and the chain ends on the next tick.
 func (w *Window) scheduleCursorWatch() {
 	if !w.cursorWatchActive() {
 		return
@@ -281,72 +295,101 @@ func (w *Window) scheduleCursorWatch() {
 	})
 }
 
-// cursorRetMsg mirrors CWPRETSTRUCT for the WH_CALLWNDPRORET hook.
-type cursorRetMsg struct {
-	lResult uintptr
-	lParam  uintptr
-	wParam  uintptr
-	message uint32
-	hwnd    uintptr
-}
+// cursorJogLogNanos throttles the hidden-cursor log separately from the
+// display-count log: a stuck WebView2 cursor is detected on every tick, so
+// without a cap each detection would write a line.
+var cursorJogLogNanos atomic.Int64
 
-// cursorWatchHook is the WH_CALLWNDPRORET hook installed while the watch
-// holds. In that state the runtime can hide the pointer on every
-// WM_SETCURSOR, so a once-a-second restore loses the race the moment the
-// pointer next moves; the hook raises the count immediately after each
-// message that can lower it. Installed and removed on the window procedure
-// thread only, which is also the thread it watches.
-var cursorWatchHook w32.HHOOK
+// cursorJogBudget bounds the jogs for one detection episode. A stuck state
+// either clears on the first jogs or does not; a legitimate hide (typing,
+// a page's cursor:none) must not be jogged every second forever.
+const cursorJogBudget = 3
 
-// WM_POINTER messages reach the WebView in parallel with the legacy mouse
-// messages (Chromium registers for pointer input), so a hide can ride on
-// them instead of WM_MOUSEMOVE.
-const (
-	wmPointerUpdate = 0x0245
-	wmPointerDown   = 0x0246
-	wmPointerUp     = 0x0247
-	wmPointerEnter  = 0x0249
-)
+// cursorJogMinInterval bounds the jog cadence. A jog itself posts restore
+// ticks through the player's parentMoved, and those extra handler runs must
+// not burn the episode budget in a millisecond burst — the jogs are meant
+// to be spread across the seconds the stuck state takes to settle.
+const cursorJogMinInterval = int64(900 * time.Millisecond)
 
-// cursorRetWatchMessage reports an input message whose processing can hide
-// the pointer. The set covers the legacy cursor/mouse path and the parallel
-// pointer path; after any of them the display count is worth re-checking.
-func cursorRetWatchMessage(msg uint32) bool {
-	switch msg {
-	case w32.WM_SETCURSOR, w32.WM_MOUSEACTIVATE, w32.WM_NCHITTEST,
-		w32.WM_NCMOUSEMOVE, w32.WM_NCLBUTTONDOWN,
-		w32.WM_MOUSEMOVE, w32.WM_LBUTTONDOWN,
-		wmPointerUpdate, wmPointerDown, wmPointerUp, wmPointerEnter:
-		return true
-	}
-	return false
-}
-
-// cursorRetHook restores the display count right after a mouse message that
-// WebView2 may have answered by hiding the pointer.
-func cursorRetHook(nCode int, wParam w32.WPARAM, lParam w32.LPARAM) w32.LRESULT {
-	if nCode >= 0 {
-		if s := (*cursorRetMsg)(unsafe.Pointer(lParam)); s != nil && cursorRetWatchMessage(s.message) {
-			restoreCursorDisplayCount()
-		}
-	}
-	return w32.CallNextHookEx(cursorWatchHook, nCode, wParam, lParam)
-}
-
-// updateCursorHook installs the per-message restore while the risky state
-// holds and removes it when the window leaves that state. Runs only on the
-// window procedure thread.
-func (w *Window) updateCursorHook() {
-	if w.cursorWatchActive() {
-		if cursorWatchHook == 0 {
-			cursorWatchHook = w32.SetWindowsHookEx(w32.WH_CALLWNDPROCRET, cursorRetHook, 0, w32.DWORD(w32.GetCurrentThreadId()))
-		}
+// checkWebViewCursorHidden detects a hidden or NULL cursor while the pointer
+// is over this window — the state the WebView2 browser process can leak
+// across controllers — and jogs the controllers into re-evaluating it. The
+// display count stays healthy in that state, so ShowCursor cannot reach it;
+// SetCursor from this process cannot either, because the cursor belongs to
+// the thread that owns the window under the pointer (the msedgewebview2
+// renderer). After the first few jogs the watch re-jogs only when the
+// pointer moved while invisible — the signature of the stuck state — so a
+// stationary legitimate hide is left alone. Runs on the window procedure
+// thread.
+func (w *Window) checkWebViewCursorHidden() {
+	var info w32.CURSORINFO
+	if !w32.GetCursorInfo(&info) {
+		w.clearCursorHidden()
 		return
 	}
-	if cursorWatchHook != 0 {
-		w32.UnhookWindowsHookEx(cursorWatchHook)
-		cursorWatchHook = 0
+	nullCursor := info.HCursor == 0
+	hidden := info.Flags&w32.CURSOR_SHOWING == 0
+	if !nullCursor && !hidden {
+		w.clearCursorHidden()
+		return
 	}
+	x, y := int(info.PtScreenPos.X), int(info.PtScreenPos.Y)
+	if !w.pointOverWindow(x, y) {
+		w.clearCursorHidden()
+		return
+	}
+	moved := w.cursorHiddenSeen && (w.cursorHiddenX != x || w.cursorHiddenY != y)
+	w.cursorHiddenSeen = true
+	w.cursorHiddenX, w.cursorHiddenY = x, y
+	now := time.Now().UnixNano()
+	if !cursorJogShould(w.cursorHiddenStreak, moved) || now-w.cursorJogNanos < cursorJogMinInterval {
+		return
+	}
+	w.cursorHiddenStreak++
+	w.cursorJogNanos = now
+	if last := cursorJogLogNanos.Load(); now-last >= cursorRestoreLogInterval && cursorJogLogNanos.CompareAndSwap(last, now) {
+		log.Printf("[cursor] hidden over window at %d,%d (null=%v); jogging webviews", x, y, nullCursor)
+	}
+	w.jogWebViewCursor()
+}
+
+// cursorJogShould reports whether a hidden-cursor detection tick should jog
+// the controllers. Within the episode budget every detection jogs; past it,
+// only a pointer that moved while still invisible — the stuck signature —
+// earns another jog.
+func cursorJogShould(streak int, moved bool) bool {
+	return streak < cursorJogBudget || moved
+}
+
+// clearCursorHidden resets the hidden-cursor episode so the next detection
+// starts a fresh jog budget.
+func (w *Window) clearCursorHidden() {
+	w.cursorHiddenStreak = 0
+	w.cursorHiddenSeen = false
+	w.cursorJogNanos = 0
+}
+
+// pointOverWindow reports whether a screen point lands on this window's
+// tree — the app's own WebView surfaces included.
+func (w *Window) pointOverWindow(x, y int) bool {
+	hit := w32.WindowFromPoint(w32.POINT{X: int32(x), Y: int32(y)})
+	return hit != 0 && w32.GetAncestor(hit, w32.GA_ROOT) == w.Handle()
+}
+
+// jogWebViewCursor replays what a manual window restore runs on the WebView2
+// controllers — Frontend.refitWebViewOnSize's Notify + Resize sequence,
+// which is the action that clears the browser process's stuck hidden cursor
+// for the user. The controllers only re-evaluate their state; a legitimate
+// hide (typing, a page's cursor:none) is re-applied, never forced visible.
+// Resizing the app WebView raises its window over the player surface, so the
+// player is restacked after it.
+func (w *Window) jogWebViewCursor() {
+	if w.chromium != nil {
+		_ = w.chromium.NotifyParentWindowPositionChanged()
+		w.chromium.Resize()
+	}
+	notifyCompanionPlayerParentMoved()
+	restackCompanionPlayer()
 }
 
 // restoreCursorDisplayCountWith is restoreCursorDisplayCount with the Win32
@@ -558,8 +601,8 @@ func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
 	switch msg {
 	case wmKeepCursorVisible:
 		restoreCursorDisplayCount()
+		w.checkWebViewCursorHidden()
 		w.scheduleCursorWatch()
-		w.updateCursorHook()
 		return 0
 	case win32.WM_POWERBROADCAST:
 		switch wparam {
@@ -611,10 +654,6 @@ func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
 
 	case w32.WM_DESTROY:
 		unregisterSessionNotification(uintptr(w.Handle()))
-		if cursorWatchHook != 0 {
-			w32.UnhookWindowsHookEx(cursorWatchHook)
-			cursorWatchHook = 0
-		}
 
 	case 0x02E0: //w32.WM_DPICHANGED
 		newWindowSize := (*w32.RECT)(unsafe.Pointer(lparam))

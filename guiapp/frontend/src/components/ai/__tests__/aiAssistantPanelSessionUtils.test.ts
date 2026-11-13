@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, busyTaskRunIdentities, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, expertIdFromSessionKey, expertSessionForProjectTask, expertTaskSessionKey, sessionKeysForExpert, projectTabOwnsExpertQueue, fileTerminalResponseWithoutRound, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, busyTaskRunIdentities, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, expertIdFromSessionKey, expertSessionForProjectTask, expertTaskSessionKey, sessionKeysForExpert, goalChecklistOverlayBodyFromMessages, projectTabOwnsExpertQueue, fileTerminalResponseWithoutRound, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -336,6 +336,37 @@ describe("aiAssistantPanelSessionUtils", () => {
             { role: "user", content: "设计并实现一个愤怒的小鸟游戏" },
             { role: "assistant", content: "物理内核已完成" },
         ]);
+    });
+
+    it("feeds the float the newest checklist row", () => {
+        expect(goalChecklistOverlayBodyFromMessages([
+            { id: "ask", role: "user", content: "先做环境", timestamp: 1 },
+            { id: "list", role: "system", kind: "goalChecklist", content: "目标清单\n→ 2. 物理内核\n进度：第 3/50 轮", timestamp: 2 },
+        ])).toBe("目标清单\n→ 2. 物理内核\n进度：第 3/50 轮");
+        // A stored slash snapshot is rewritten into the checklist body.
+        expect(goalChecklistOverlayBodyFromMessages([
+            { id: "step", role: "user", content: "/goal 执行步骤 4：渲染与美术表现层\n进度：第 5/50 轮", timestamp: 1 },
+        ])).toBe("目标清单\n→ 4. 渲染与美术表现层\n进度：第 5/50 轮");
+        expect(goalChecklistOverlayBodyFromMessages([
+            { id: "ask", role: "user", content: "普通消息", timestamp: 1 },
+        ])).toBe("");
+        expect(goalChecklistOverlayBodyFromMessages([])).toBe("");
+    });
+
+    it("retires the float once the goal reports complete", () => {
+        // The published card carries the 已完成 status line from the goal record.
+        expect(goalChecklistOverlayBodyFromMessages([
+            { id: "list", role: "system", kind: "goalChecklist", content: "目标清单\n✓ 1. 环境\n○ 2. 物理内核\n已完成", timestamp: 1 },
+        ])).toBe("");
+        // A failed or paused goal keeps the float so the reason stays visible.
+        expect(goalChecklistOverlayBodyFromMessages([
+            { id: "list", role: "system", kind: "goalChecklist", content: "目标清单\n→ 2. 物理内核\n目标失败：编译错误", timestamp: 1 },
+        ])).toBe("目标清单\n→ 2. 物理内核\n目标失败：编译错误");
+        // A later plain user turn does not resurrect a completed card.
+        expect(goalChecklistOverlayBodyFromMessages([
+            { id: "list", role: "system", kind: "goalChecklist", content: "目标清单\n✓ 1. 环境\n已完成", timestamp: 1 },
+            { id: "ask", role: "user", content: "下一个任务", timestamp: 2 },
+        ])).toBe("");
     });
 
     it("does not replay an injected guide as a later project-tab user turn", () => {

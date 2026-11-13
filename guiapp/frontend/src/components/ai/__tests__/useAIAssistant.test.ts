@@ -1578,8 +1578,8 @@ describe('useAIAssistant property tests', () => {
             emitRuntimeEvent('ai-assistant-new-round', requestEvent());
             emitRuntimeEvent('ai-assistant-token', requestEvent('上一轮输出'));
             emitRuntimeEvent('ai-assistant-token', requestEvent('\x01上一轮思考'));
-            // The first token paints now. A later reasoning token shares the 33ms flush.
-            await new Promise((resolve) => setTimeout(resolve, 40));
+            // The first token paints now. A later reasoning token shares the 80ms flush.
+            await new Promise((resolve) => setTimeout(resolve, 120));
         });
         expect(assistantMessages(result.current.messages)[0].content).toBe('上一轮输出');
         expect(assistantMessages(result.current.messages)[0].reasoning).toBe('上一轮思考');
@@ -2608,6 +2608,57 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toContain('→ 2. 物理内核');
     });
 
+    it('echoes a user command at once while a goal round still owns the foreground', async () => {
+        const { result } = renderAssistantHook();
+        const goalRequestId = 'goal-cont-echo-race';
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: goalRequestId,
+                session_key: 'desktop-user',
+                text: '[系统续接][execute] 当前步骤',
+                display_text: '目标清单\n→ 2. 物理内核',
+            });
+        });
+        expect(result.current.sending).toBe(true);
+
+        // The backend send is held until the goal round settles, but the
+        // submitted command must be on the transcript right away — behind
+        // goal rounds it used to stay hidden for minutes while the step
+        // list kept moving.
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        let sendPromise: Promise<boolean> | null = null;
+        await act(async () => {
+            sendPromise = result.current.sendMessage('换一个新的命令');
+        });
+
+        const echoRows = result.current.messages.filter(message => message.role === 'user' && message.content === '换一个新的命令');
+        expect(echoRows).toHaveLength(1);
+        expect((SendAIAssistantMessage as any).mock.calls).toHaveLength(0);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: goalRequestId,
+                session_key: 'desktop-user',
+                text: '本轮已完成。',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        await act(async () => {
+            pending.resolve({ text: '好的。', error: '', fields: null, actions: null });
+            expect(await sendPromise).toBe(true);
+        });
+
+        expect((SendAIAssistantMessage as any).mock.calls).toHaveLength(1);
+        expect(parseSentRequest(0).text).toBe('换一个新的命令');
+        expect(result.current.messages.filter(message => message.role === 'user' && message.content === '换一个新的命令')).toHaveLength(1);
+        expect(assistantMessages(result.current.messages).at(-1)?.content).toBe('好的。');
+    });
+
     it('tracks a backend continuation of a task that is not the visible tab', async () => {
         const hiddenSession = 'desktop-user:C:/work/tasks/hidden';
         const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user:C:/work/tasks/visible' });
@@ -3413,7 +3464,7 @@ describe('useAIAssistant property tests', () => {
             await act(async () => {
                 emitRuntimeEvent('ai-assistant-new-round', requestEvent());
                 emitRuntimeEvent('ai-assistant-token', requestEvent('partial output'));
-                await vi.advanceTimersByTimeAsync(40);
+                await vi.advanceTimersByTimeAsync(100);
                 emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
                 await vi.advanceTimersByTimeAsync(600_001);
             });
@@ -7369,7 +7420,7 @@ describe('useAIAssistant property tests', () => {
             emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 23, text: '\x01```\n' });
             emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 24, text: '\x01\n\n---\n### T3: title\n\n' });
             emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 25, text: '\x01Next sentence.' });
-            await new Promise((resolve) => setTimeout(resolve, 40));
+            await new Promise((resolve) => setTimeout(resolve, 120));
         });
 
         const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
@@ -7408,8 +7459,8 @@ describe('useAIAssistant property tests', () => {
             emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Inspect the implementation.' });
             emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: leaked });
             emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 30, text: '\x01Apply the focused change.' });
-            // Nothing after this thought forces a paint. It shares the 33ms flush.
-            await new Promise((resolve) => setTimeout(resolve, 40));
+            // Nothing after this thought forces a paint. It shares the 80ms flush.
+            await new Promise((resolve) => setTimeout(resolve, 120));
         });
 
         const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
@@ -8524,7 +8575,7 @@ describe('useAIAssistant property tests', () => {
             expect(projectContent()).toBe('Hello\n');
 
             await act(async () => {
-                vi.advanceTimersByTime(33);
+                vi.advanceTimersByTime(100);
             });
 
             expect(projectContent()).toBe('Hello kept tail');

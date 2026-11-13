@@ -23,6 +23,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 // ExperimentOrchestratorParams are the user-configured parameters for the
@@ -183,6 +184,12 @@ func (o *RemoteExperimentOrchestrator) SetCallbacks(onProgress, onNotify, onToke
 // SetKnowledgeStores passes knowledge stores to the SubAgent.
 func (o *RemoteExperimentOrchestrator) SetKnowledgeStores(codingKB *knowledge.CodingKnowledgeStore, generalKB *knowledge.SQLiteStore) {
 	o.subAgent.SetKnowledgeStores(codingKB, generalKB)
+}
+
+// SetMemoryStore passes the shared long-term memory store to the SubAgent.
+// The experiment agent only gets read-only memory_search access.
+func (o *RemoteExperimentOrchestrator) SetMemoryStore(store *corememory.Store) {
+	o.subAgent.SetMemoryStore(store)
 }
 
 // SetBaselineReproduction records the baseline reproduction result from phase 4.

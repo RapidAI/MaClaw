@@ -24,6 +24,10 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		if push.Notification == nil {
 			return
 		}
+		// Diagnostic breadcrumb: proves the Hub push reached this machine and
+		// names the source, so a "notice never arrives" report can be split
+		// into (not pushed by the Hub) vs (pushed but not displayed).
+		log.Printf("[notification] hub push: id=%s source=%s title=%q", push.Notification.ID, push.Notification.Source, push.Notification.Title)
 		// Add to local unread cache (LRU, max 10).
 		a.notifCache.Add(push.Notification)
 		// Notify frontend of the new notification.

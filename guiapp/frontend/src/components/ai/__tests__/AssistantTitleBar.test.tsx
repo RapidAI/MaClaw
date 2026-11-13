@@ -123,6 +123,9 @@ describe('AssistantTitleBar', () => {
             />,
         );
         expect(screen.queryByTestId('notification-bell-btn')).toBeNull();
+        // The bell-less anchor keeps the bell's height so the panel still
+        // drops below the bar (`top: 100%` of a zero-height anchor collapses).
+        expect(document.querySelector('.atbn-anchor--bell-less')).toBeTruthy();
         window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications'));
         expect(notificationState.current.togglePanel).toHaveBeenCalledTimes(1);
     });

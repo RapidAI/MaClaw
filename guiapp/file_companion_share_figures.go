@@ -207,12 +207,12 @@ func (a *App) noteFileCompanionShareFigureUploaded(token, name, sha string) {
 	a.fileCompanionShareFiguresSaveLocked()
 }
 
-func postFileCompanionShareFigure(hub, viewer, token, name string, data []byte) error {
-	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/figures/"+url.PathEscape(name), bytes.NewReader(data))
+func postFileCompanionShareFigure(target, viewer, grant, token, name string, data []byte) error {
+	req, err := http.NewRequest(http.MethodPost, target+"/api/mobile/documents/shares/"+token+"/figures/"+url.PathEscape(name), bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+viewer)
+	fileCompanionShareAuthorize(req, viewer, grant)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
@@ -284,7 +284,11 @@ func (a *App) pushFileCompanionShareFigures(hub, viewer string, shares []FileCom
 			if !ok {
 				break
 			}
-			if err := postFileCompanionShareFigure(hub, viewer, token, name, data); err != nil {
+			target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, share)
+			if foreign && grant == "" {
+				continue
+			}
+			if err := postFileCompanionShareFigure(target, auth, grant, token, name, data); err != nil {
 				if fileCompanionShareGone(err) {
 					a.retireFileCompanionShare(token)
 				}

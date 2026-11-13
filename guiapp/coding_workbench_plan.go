@@ -271,7 +271,7 @@ func isCodingInquiryTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "list_directory", "glob", "read_file", "search_files", "search_file", "bash",
 		"ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task",
-		codeNavigationToolName, codeSearchToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+		codeNavigationToolName, codeSearchToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return true
 	default:
 		return false
@@ -284,7 +284,7 @@ func isCodingInquiryTool(name string) bool {
 func isGoalPlanPhaseTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "list_directory", "glob", "ripgrep", "read_file", "search_files", "search_file",
-		codeNavigationToolName, codeSearchToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search",
+		codeNavigationToolName, codeSearchToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search",
 		"ssh_read_file", "ssh_list_dir":
 		return true
 	default:
@@ -323,7 +323,7 @@ func filterCodingInquiryTools(tools []map[string]interface{}) []map[string]inter
 func isCodingOperationalTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "glob", "ripgrep", "read_file", "list_directory", "bash", codeNavigationToolName, codeSearchToolName,
-		"coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+		"coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return true
 	default:
 		return false
@@ -345,7 +345,7 @@ func filterCodingOperationalTools(tools []map[string]interface{}) []map[string]i
 func isRemoteCodingInquiryTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task", codeNavigationToolName,
-		"coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+		"coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return true
 	default:
 		return false
@@ -1916,7 +1916,7 @@ func filterRemoteCodingOperationalTools(tools []map[string]interface{}) []map[st
 		name, _ := fn["name"].(string)
 		switch strings.ToLower(strings.TrimSpace(name)) {
 		case "ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task", codeNavigationToolName,
-			"coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+			"coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 			out = append(out, tool)
 		}
 	}
@@ -1926,7 +1926,7 @@ func filterRemoteCodingOperationalTools(tools []map[string]interface{}) []map[st
 func isRemoteCodingOperationalTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task", codeNavigationToolName,
-		"coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+		"coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return true
 	default:
 		return false

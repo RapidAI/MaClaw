@@ -11,8 +11,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -510,6 +513,14 @@ func (a *App) startCompanionProcess(argv []string) error {
 	if a != nil && a.processHooks.startProcess != nil {
 		return a.processHooks.startProcess(argv)
 	}
+	if testing.Testing() {
+		// Under go test the "executable" is the multi-hundred-MB test
+		// binary: every unhooked app shutdown would re-exec it as a
+		// companion/quit relay and dozens pile up per suite run (seen:
+		// ~40 processes × ~0.6 GB). Tests that verify the argv stub
+		// processHooks.startProcess, so this only silences real spawns.
+		return nil
+	}
 	// The click is in this process. The companion process is the one that
 	// shows its window, and Windows will not let it take the foreground
 	// unless this foreground process allows it.
@@ -822,6 +833,14 @@ func (a *App) FileCompanionUIReady() []string {
 	logFileCompanion("ui ready")
 	if pending == nil {
 		pending = []string{}
+	}
+	// DEBUG-ONLY: mount the second WebView2 controller without UI steps.
+	if url := strings.TrimSpace(os.Getenv("MACLAW_PROBE_PLAYER")); url != "" {
+		logFileCompanion("probe player url=%s", url)
+		go func() {
+			time.Sleep(4 * time.Second)
+			_ = maclawplayer.Place(url, maclawplayer.Bounds{X: 0, Y: 0, W: 1200, H: 750})
+		}()
 	}
 	return pending
 }

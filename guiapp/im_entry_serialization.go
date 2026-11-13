@@ -36,12 +36,12 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 	// Only attempt interrupt/merge if the active loop belongs to the SAME
 	// userID. Project tabs use a different userID ("desktop-user:{path}"),
 	// so their messages must NOT be merged into the local tab's loop.
-	// A goal continuation is the engine's own next turn. It waits on the
-	// session lock, and the admit generation then drops it if pause already
-	// won. The continuation text says "不要…". The interrupt scheduler reads
-	// that as the person cancelling or merging, which fences chat or leaves
-	// the prompt on the next message after pause.
-	if h.interruptHandler != nil && msg.Text != "" && msg.Platform != "goal-continuation" && !h.hasCancelledTaskBoundary(msg.UserID) && h.hasActiveLoopForUser(msg.UserID) {
+	// A host-authored continuation is the engine's own next turn. It waits on
+	// the session lock, and the admit generation then drops it if pause
+	// already won. The continuation text says "不要…". The interrupt
+	// scheduler reads that as the person cancelling or merging, which fences
+	// chat or leaves the prompt on the next message after pause.
+	if h.interruptHandler != nil && msg.Text != "" && !imHostAuthoredTurnPlatform(msg.Platform) && !h.hasCancelledTaskBoundary(msg.UserID) && h.hasActiveLoopForUser(msg.UserID) {
 		interrupt := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
 		if interrupt.PendingConfirm || interrupt.Handled {
 			result.Handled = true
@@ -56,10 +56,15 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 
 	// The owner's exclusive turn window also owns this turn's Coding
 	// credential: it is minted once the lock is held and swept before release.
-	window, timeoutResponse := h.beginOwnerTurnWindow(&msg)
+	window, timeoutResponse := h.beginOwnerTurnWindow(&msg, true)
 	if timeoutResponse != nil {
 		result.Handled = true
 		result.Response = timeoutResponse
+		// A denial issued while a live loop owns the session is a steer
+		// verdict (merge/status/confirm); that loop schedules the next goal
+		// turn. A lock-leak denial has no live loop behind it, so the parked
+		// continuation is restored instead.
+		result.ActiveLoopOwnsNextTurn = h.hasActiveLoopForUser(msg.UserID)
 		return result
 	}
 	result.CodingIngressToken = window.Token

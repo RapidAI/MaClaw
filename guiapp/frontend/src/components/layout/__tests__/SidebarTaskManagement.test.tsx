@@ -743,16 +743,17 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByTestId('task-filter-shared')).toBeNull();
 
         const statusGroup = screen.getByTestId('task-filter-all').closest('.mc-task-filter-row');
-        const workspaceGroup = screen.getByTestId('task-workspace-filter-local').closest('.mc-task-filter-row');
         expect(statusGroup).toBeTruthy();
-        expect(workspaceGroup).toBeTruthy();
-        expect(statusGroup?.parentElement?.classList.contains('mc-task-filter-stack')).toBe(true);
+        // All-local list on the default filter: the workspace line hides —
+        // 本地 2 is redundant with 全部 2 — and returns with cloud/remote tasks.
+        expect(screen.queryByTestId('task-workspace-filter-local')).toBeNull();
+        // Title and status chips share one head line inside the filter stack.
+        expect(statusGroup?.parentElement?.classList.contains('mc-task-filter-head')).toBe(true);
+        expect(statusGroup?.parentElement?.parentElement?.classList.contains('mc-task-filter-stack')).toBe(true);
         expect(statusGroup?.classList.contains('mc-task-filter-row--line')).toBe(true);
         expect(statusGroup?.classList.contains('mc-task-filter-row--grid')).toBe(false);
-        expect(workspaceGroup?.classList.contains('mc-task-filter-row--line')).toBe(true);
-        expect(workspaceGroup?.classList.contains('mc-task-filter-row--grid')).toBe(false);
         const filterCss = readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8');
-        // Pins the single-line filters: both rows use the --line variant, which
+        // Pins the single-line filters: the row uses the --line variant, which
         // must stay no-wrap (chips keep the base no-shrink, overflowing rows
         // scroll instead) and stretch to the full stack width.
         expect(filterCss).toMatch(/\.mc-task-pane \.mc-task-filter-row--line \{[^}]*flex-wrap: nowrap/s);
@@ -762,15 +763,14 @@ describe('SidebarTaskManagement', () => {
         // the 160px breakpoint is unreachable at the 280px sidebar minimum).
         // Re-adding one must come together with a wrapping row layout.
         expect(filterCss).not.toContain('@container task-filters');
-        expect(statusGroup).not.toBe(workspaceGroup);
         expect((statusGroup as HTMLElement).getAttribute('style')).toBeNull();
-        expect((workspaceGroup as HTMLElement).getAttribute('style')).toBeNull();
         expect(screen.getByTestId('task-filter-all').className).toContain('mc-task-filter-btn');
         expect(screen.getByTestId('task-filter-all').querySelector('.mc-task-filter-btn__label')?.textContent).toBe('All');
         expect(screen.getByTestId('task-filter-all').getAttribute('data-count')).toBe('2');
         expect(screen.getByTestId('task-filter-all').getAttribute('aria-label')).toBe('All 2');
-        expect(screen.getByTestId('task-filter-pending').getAttribute('data-count')).toBe('0');
-        expect(screen.getByTestId('task-filter-pending').getAttribute('aria-pressed')).toBe('false');
+        // Zero-count chips hide (same conditional-chip rule as paused/shared):
+        // nothing pending reads as an absent chip, not a “0” pill.
+        expect(screen.queryByTestId('task-filter-pending')).toBeNull();
 
         fireEvent.click(screen.getByTestId('task-filter-completed'));
         expect(screen.getByTestId('task-filter-completed').getAttribute('aria-pressed')).toBe('true');
@@ -782,7 +782,8 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByText('Done task')).toBeTruthy();
     });
 
-    it('hides the zero-count filter rows only while the list is empty on default filters', () => {
+    it('keeps the filter line out of the default all-local view and never strands a selection', () => {
+        const doneTask = { ...baseProject, id: 'task-done', name: 'Done task', project_path: 'D:/work/tasks/done-task', has_output: true };
         const { rerenderWith } = renderTaskManagement({ tasks: [] });
 
         // Empty list on defaults: seven zero-count chips are noise.
@@ -790,17 +791,21 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByTestId('task-filter-all')).toBeNull();
         expect(screen.queryByTestId('task-workspace-filter-local')).toBeNull();
 
-        // First task brings the rows back.
+        // First task brings the status chips back; the all-local workspace
+        // line stays hidden — 本地 1 is redundant with 全部 1 until cloud or
+        // remote tasks appear.
         rerenderWith({ tasks: [baseProject] });
         expect(screen.getByTestId('task-filter-all')).toBeTruthy();
-        expect(screen.getByTestId('task-workspace-filter-local')).toBeTruthy();
+        expect(screen.queryByTestId('task-workspace-filter-local')).toBeNull();
 
-        // An active filter never strands the user: rows stay while the
-        // filtered view is empty, so the chip can be deselected.
+        // An active status filter never strands the user: its chip stays
+        // while the filtered view is empty, so it can be deselected.
+        rerenderWith({ tasks: [doneTask] });
         fireEvent.click(screen.getByTestId('task-filter-completed'));
         rerenderWith({ tasks: [] });
         expect(screen.getByTestId('task-filter-all')).toBeTruthy();
-        expect(screen.getByTestId('task-workspace-filter-local')).toBeTruthy();
+        expect(screen.getByTestId('task-filter-completed')).toBeTruthy();
+        expect(screen.queryByTestId('task-workspace-filter-local')).toBeNull();
     });
 
     it('scrolls overflowing task rows inside the list and keeps filters pinned', () => {
@@ -867,17 +872,15 @@ describe('SidebarTaskManagement', () => {
         });
 
         expect(screen.getByTestId('task-filter-running').textContent).toContain('1');
-        expect(screen.getByTestId('task-filter-completed').textContent).toContain('0');
+        // Zero-count chips hide: the live signal leaves completed empty, so
+        // the chip is absent rather than reading “0” — and the filtered list
+        // follows the same bucket override as the chip counts.
+        expect(screen.queryByTestId('task-filter-completed')).toBeNull();
         // The open row mirrors the live signal, not the stale has_output snapshot.
         expect(screen.getByTestId('sidebar-task-row').getAttribute('data-status')).toBe('running');
 
         fireEvent.click(screen.getByTestId('task-filter-running'));
         expect(within(screen.getByTestId('sidebar-task-row')).getByText('Done task')).toBeTruthy();
-
-        // The live-running row must not also appear under completed: the
-        // filtered list follows the same bucket override as the chip counts.
-        fireEvent.click(screen.getByTestId('task-filter-completed'));
-        expect(screen.queryByTestId('sidebar-task-row')).toBeNull();
     });
 
     it('marks in-progress rows with a spinner and other statuses with distinct glyphs', () => {
@@ -971,7 +974,8 @@ describe('SidebarTaskManagement', () => {
         });
 
         expect(screen.getByTestId('task-filter-running').textContent).toContain('2');
-        expect(screen.getByTestId('task-filter-completed').textContent).toContain('0');
+        // completed sits at 0, so its chip is hidden by the zero-count rule.
+        expect(screen.queryByTestId('task-filter-completed')).toBeNull();
 
         fireEvent.click(screen.getByTestId('task-filter-running'));
         const rows = screen.getAllByTestId('sidebar-task-row');
@@ -1010,7 +1014,8 @@ describe('SidebarTaskManagement', () => {
         });
 
         expect(screen.getByTestId('task-filter-running').textContent).toContain('2');
-        expect(screen.getByTestId('task-filter-completed').textContent).toContain('0');
+        // completed sits at 0, so its chip is hidden by the zero-count rule.
+        expect(screen.queryByTestId('task-filter-completed')).toBeNull();
 
         fireEvent.click(screen.getByTestId('task-filter-running'));
         const rows = screen.getAllByTestId('sidebar-task-row');
@@ -1126,6 +1131,12 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByTestId('task-workspace-filter-local').textContent).toContain('1');
         expect(screen.getByTestId('task-workspace-filter-cloud').textContent).toContain('1');
         expect(screen.getByTestId('task-workspace-filter-remote').textContent).toContain('1');
+        // The workspace line keeps the same single-line --line geometry as the
+        // status chips (pinned from the status-chips test, whose all-local
+        // fixture now hides this row entirely).
+        const workspaceGroup = screen.getByTestId('task-workspace-filter-local').closest('.mc-task-filter-row');
+        expect(workspaceGroup?.classList.contains('mc-task-filter-row--line')).toBe(true);
+        expect(workspaceGroup?.classList.contains('mc-task-filter-row--grid')).toBe(false);
 
         fireEvent.click(screen.getByTestId('task-workspace-filter-cloud'));
         expect(screen.getByTestId('task-workspace-filter-cloud').getAttribute('aria-pressed')).toBe('true');
@@ -1160,13 +1171,18 @@ describe('SidebarTaskManagement', () => {
 
     it('does not treat an empty filter group as a full-list load', () => {
         const runningTask = { ...baseProject, id: 'task-running', name: 'Running task', project_path: 'D:/work/tasks/running-task', active_workflow: { status: 'running' } };
-        renderTaskManagement({
-            tasks: [runningTask],
+        const doneTask = { ...baseProject, id: 'task-done', name: 'Done task', project_path: 'D:/work/tasks/done-task', has_output: true };
+        const { rerenderWith } = renderTaskManagement({
+            tasks: [doneTask],
             tasksLoading: true,
             showCloudWorkspaceManagement: false,
             showCloudWorkspaceCreation: false,
         });
+        // Completed is selectable while it has a task; once the swap empties
+        // the group the selected chip stays, and the view must read as an
+        // empty group — not as a full-list load.
         fireEvent.click(screen.getByTestId('task-filter-completed'));
+        rerenderWith({ tasks: [runningTask], tasksLoading: true });
         expect(screen.queryByTestId('task-list-loading')).toBeNull();
         expect(screen.queryByTestId('task-cloud-sync-progress')).toBeNull();
         expect(screen.getByText('No tasks in this group')).toBeTruthy();
@@ -5849,13 +5865,17 @@ describe('cloud sync progress indicator', () => {
 
     it('still shows an empty-group message while cloud syncs other rows', () => {
         const runningTask = { ...baseProject, id: 'task-running', name: 'Running task', project_path: 'D:/work/tasks/running-task', active_workflow: { status: 'running' } };
-        renderTaskManagement({
+        const doneTask = { ...baseProject, id: 'task-done', name: 'Done task', project_path: 'D:/work/tasks/done-task', has_output: true };
+        const { rerenderWith } = renderTaskManagement({
             ...cloudSyncOffProps,
-            tasks: [runningTask],
+            tasks: [doneTask],
             tasksLoading: false,
             cloudTasksLoading: true,
         });
+        // Select completed while it has a task; the sync swap then empties the
+        // group, and the selected zero-count chip must stay (stranding rule).
         fireEvent.click(screen.getByTestId('task-filter-completed'));
+        rerenderWith({ tasks: [runningTask] });
         expect(screen.getByTestId('task-cloud-sync-progress')).toBeTruthy();
         expect(screen.getByText('No tasks in this group')).toBeTruthy();
         expect(screen.queryByText('Running task')).toBeNull();

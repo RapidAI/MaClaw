@@ -42,7 +42,11 @@ sup.ROOT = tmp / "desktops"
 sup.ROOT.mkdir()
 `
 	cmd := exec.Command(python, "-c", prelude+code, supervisor, t.TempDir())
-	cmd.Env = append(os.Environ(), env...)
+	// Python's stdio defaults to the locale codepage (cp936 on a Chinese
+	// Windows host); the tests compare against UTF-8 literals. Force UTF-8
+	// mode so non-ASCII output round-trips.
+	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "PYTHONIOENCODING=utf-8")
+	cmd.Env = append(cmd.Env, env...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("python: %v\n%s", err, out)

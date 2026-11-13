@@ -322,6 +322,39 @@ export function reportDomSize(source: string): void {
     }
 }
 
+/**
+ * Samples renderer memory and DOM size once a minute.
+ *
+ * The backend's process-tree sample (webview_mem_mb) totals every WebView2
+ * child and cannot tell a JS-heap leak from DOM or GPU growth. Pairing this
+ * series with it is what makes a renderer OOM diagnosable from maclaw.log
+ * after the fact: rising usedJSHeapSize points at JS retention, rising
+ * dom_nodes at DOM growth, and a flat heap with rising process memory points
+ * at GPU/compositor or bridge buffers.
+ */
+export function startRendererMemorySampling(): void {
+    if (typeof performance === 'undefined') return;
+    const memory = (performance as unknown as { memory?: { usedJSHeapSize?: number; jsHeapSizeLimit?: number } }).memory;
+    const tick = () => {
+        const used = Number(memory?.usedJSHeapSize || 0);
+        const limit = Number(memory?.jsHeapSizeLimit || 0);
+        let nodes = 0;
+        try {
+            nodes = document.getElementsByTagName('*').length;
+        } catch {
+            // Skip the DOM count on builds where it throws.
+        }
+        if (!used && !nodes) return;
+        reportPerf('renderer-memory', {
+            metric: 'js-heap',
+            value: Math.round(used / 1048576),
+            limit_mb: limit ? Math.round(limit / 1048576) : undefined,
+            dom_nodes: nodes,
+        });
+    };
+    setInterval(tick, 60_000);
+}
+
 /** Installs all renderer-side performance reporting. Idempotent. */
 export function installPerfReporting(): void {
     if (typeof window === 'undefined') return;
@@ -331,4 +364,5 @@ export function installPerfReporting(): void {
     reportFirstPaint();
     startLongTaskSampling();
     startFrameRateSampling();
+    startRendererMemorySampling();
 }

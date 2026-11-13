@@ -1388,11 +1388,154 @@ interface StreamAppendState {
     reasoningSnapshotMode: boolean;
     contentRole?: RolePrefixStreamCursor;
     reasoningRole?: RolePrefixStreamCursor;
+    contentLane?: StreamLane;
+    reasoningLane?: StreamLane;
     /**
      * Bubble text after this round's prose clear and before its content
      * tokens. Undefined until that first content token. "" is a real baseline.
      */
     contentBaseline?: string;
+}
+
+/**
+ * Dedup bookkeeping for one stream lane (content or reasoning). The previous
+ * implementation folded every token through the role-prefix cursor into one
+ * ever-growing string — `content + delta` plus a full `startsWith` rescan,
+ * O(n) allocation per token and O(n²) over a long stream. That sustained
+ * multi-MB/s churn is what starved the WebView renderer into the OOM crash.
+ *
+ * Accepted pieces sit in `pending` instead. `folded` only catches up when a
+ * compare genuinely needs the materialized text: a Browser/Tool marker inside
+ * pending (a strip could change lengths), a snapshot candidate as long as the
+ * accumulated text, or an incoming piece longer than the suffix window.
+ * Ordinary delta tokens cost O(1) plus an O(delta) regex.
+ */
+interface StreamLane {
+    folded: string;
+    pending: string[];
+    pendingLen: number;
+    pendingRoleWord: boolean;
+    tail: string;
+}
+
+const STREAM_LANE_TAIL_CHARS = 8192;
+const STREAM_LANE_ROLE_WORD = /Browser|Tool/;
+// "Browser"/"Tool" are ≤7 chars; an 8-char edge catches a marker split
+// across two pieces ("Brow" + "ser: ...").
+const STREAM_LANE_EDGE_CHARS = 8;
+
+function freshStreamLane(folded: string): StreamLane {
+    return {
+        folded,
+        pending: [],
+        pendingLen: 0,
+        pendingRoleWord: false,
+        tail: folded.length > STREAM_LANE_TAIL_CHARS ? folded.slice(-STREAM_LANE_TAIL_CHARS) : folded,
+    };
+}
+
+function streamLaneFor(state: StreamAppendState, kind: 'content' | 'reasoning'): StreamLane {
+    const field = kind === 'content' ? 'contentLane' : 'reasoningLane';
+    let lane = state[field];
+    if (lane) return lane;
+    const initial = typeof state[kind] === 'string' ? state[kind] : '';
+    lane = freshStreamLane(initial);
+    state[field] = lane;
+    // Keep `state.content`/`state.reasoning` reading the materialized text so
+    // callers holding the old shape see identical values. Writes rebuild the
+    // lane — the reject path resets by assigning "".
+    Object.defineProperty(state, kind, {
+        configurable: true,
+        enumerable: true,
+        get: () => {
+            materializeStreamLane(state, kind);
+            return state[field]!.folded;
+        },
+        set: (value: string) => {
+            state[field] = freshStreamLane(value || '');
+        },
+    });
+    return lane;
+}
+
+function materializeStreamLane(state: StreamAppendState, kind: 'content' | 'reasoning'): void {
+    const lane = state[kind === 'content' ? 'contentLane' : 'reasoningLane'];
+    if (!lane || lane.pending.length === 0) return;
+    // Fold piece by piece, not the joined chunk: a prefix that closes inside
+    // pending resets the fed stream and post-strip pieces recover onto the
+    // stripped text ("Hello\n" + "Brow" + "ser: " + " kept" folds to "Hello
+    // kept", while the joined chunk truncates at the prefix to "Hello").
+    const pieces = lane.pending;
+    const cursor = streamRoleCursor(state, kind);
+    for (const piece of pieces) {
+        lane.folded = appendRolePrefixStrip(cursor, lane.folded + piece);
+    }
+    lane.tail = lane.folded.length > STREAM_LANE_TAIL_CHARS ? lane.folded.slice(-STREAM_LANE_TAIL_CHARS) : lane.folded;
+    lane.pending = [];
+    lane.pendingLen = 0;
+    lane.pendingRoleWord = false;
+}
+
+// The suffix of fed (folded + pending) text, at least minChars when available.
+// Dedup compares only ever need the last |incoming| characters.
+function streamLaneFedSuffix(lane: StreamLane, minChars: number): string {
+    let suffix = '';
+    for (let i = lane.pending.length - 1; i >= 0 && suffix.length < minChars; i -= 1) {
+        suffix = lane.pending[i] + suffix;
+    }
+    if (suffix.length < minChars) {
+        const needed = Math.min(minChars - suffix.length, lane.tail.length);
+        if (needed > 0) suffix = lane.tail.slice(-needed) + suffix;
+    }
+    return suffix;
+}
+
+function streamLanePush(state: StreamAppendState, kind: 'content' | 'reasoning', piece: string): void {
+    const lane = streamLaneFor(state, kind);
+    lane.pending.push(piece);
+    lane.pendingLen += piece.length;
+    if (!lane.pendingRoleWord && STREAM_LANE_ROLE_WORD.test(streamLaneFedSuffix(lane, STREAM_LANE_EDGE_CHARS) + piece)) {
+        lane.pendingRoleWord = true;
+    }
+}
+
+/**
+ * streamAppendDelta on lazily-folded text. Without a role marker in pending,
+ * folded + pending IS the folded text (a strip needs a Browser/Tool match),
+ * so `fedLen` is the exact existing length and the dedup branches reduce to
+ * length gates and a bounded suffix compare. Anything ambiguous materializes
+ * and runs the original function verbatim.
+ */
+function streamAppendDeltaLazy(state: StreamAppendState, kind: 'content' | 'reasoning', incoming: string, snapshotMode = false): StreamAppendResult {
+    const lane = streamLaneFor(state, kind);
+    const fedLen = lane.folded.length + lane.pendingLen;
+    if (!fedLen || !incoming) return { delta: incoming, snapshotMode: false };
+    // Under DEDUP_MIN no branch can fire; under OVERLAP_MIN only the
+    // equality/prefix branches can, and both require |incoming| >= |existing|.
+    if (incoming.length < STREAM_SNAPSHOT_DEDUP_MIN_CHARS) return { delta: incoming, snapshotMode: false };
+    const materialized = (): StreamAppendResult => {
+        materializeStreamLane(state, kind);
+        return streamAppendDelta(lane.folded, incoming, snapshotMode);
+    };
+    if (lane.pendingRoleWord || incoming.length >= fedLen) return materialized();
+    if (incoming.length < STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) return { delta: incoming, snapshotMode: false };
+    if (incoming.length > STREAM_LANE_TAIL_CHARS) return materialized();
+    const existingSuffix = streamLaneFedSuffix(lane, incoming.length);
+    if (
+        existingSuffix.endsWith(incoming)
+        && codePointLength(incoming.trim(), STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) >= STREAM_SNAPSHOT_OVERLAP_MIN_CHARS
+    ) {
+        return snapshotMode ? { delta: '', snapshotMode: true } : { delta: incoming, snapshotMode: false };
+    }
+    if (codePointLength(incoming, STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) < STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) {
+        return { delta: incoming, snapshotMode: false };
+    }
+    const overlapUnits = longestAlignedOverlapUnits(existingSuffix, incoming);
+    if (overlapUnits < STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) return { delta: incoming, snapshotMode: false };
+    if (codePointLengthUntil(incoming, overlapUnits) < STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) {
+        return { delta: incoming, snapshotMode: false };
+    }
+    return { delta: incoming.slice(overlapUnits), snapshotMode: true };
 }
 
 interface ResponseTimeoutController {
@@ -1403,7 +1546,32 @@ interface ResponseTimeoutController {
     stop: () => void;
 }
 
-const STREAM_TOKEN_FLUSH_MS = 33;
+// ~12fps for streamed text is visually indistinguishable from 30fps, and each
+// flush is a full App-render + transcript pass. The previous 80ms cadence paid
+// that cost three times as often — sustained multi-MB/s churn during a long
+// coding turn is what pushed the WebView renderer into the OOM crash.
+const STREAM_TOKEN_FLUSH_MS = 80;
+// Hidden pages cannot paint, so the per-frame cadence is pure churn: the same
+// bytes land via the stream-done flush or when the window comes back. A slow
+// timer keeps the pending-parts buffer bounded without paying a render each
+// 80ms — the failure mode that drove the renderer's memory into OOM while a
+// long coding-agent turn streamed behind an occluded window.
+const STREAM_TOKEN_FLUSH_HIDDEN_MS = 500;
+// Every flush copies the accumulated tail once (content + delta). At 12fps a
+// 256KB response rewrites ~3MB/s of string churn on its own — the OOM profile.
+// Back off as the tail grows: a long answer appearing in slightly larger
+// chunks beats the renderer dying mid-stream.
+const STREAM_TOKEN_FLUSH_TAIL_MID_MS = 160;
+const STREAM_TOKEN_FLUSH_TAIL_MID_CHARS = 64 * 1024;
+const STREAM_TOKEN_FLUSH_TAIL_SLOW_MS = 320;
+const STREAM_TOKEN_FLUSH_TAIL_SLOW_CHARS = 256 * 1024;
+
+function streamTokenFlushDelay(tailChars: number, hidden: boolean): number {
+    if (hidden) return STREAM_TOKEN_FLUSH_HIDDEN_MS;
+    if (tailChars >= STREAM_TOKEN_FLUSH_TAIL_SLOW_CHARS) return STREAM_TOKEN_FLUSH_TAIL_SLOW_MS;
+    if (tailChars >= STREAM_TOKEN_FLUSH_TAIL_MID_CHARS) return STREAM_TOKEN_FLUSH_TAIL_MID_MS;
+    return STREAM_TOKEN_FLUSH_MS;
+}
 
 function createIdleRound(generation: number): ActiveRound {
     return {
@@ -1701,11 +1869,22 @@ function codingRowStartedAt(item: { startedAt?: number; timestamp?: number }, fa
     return stamp > 0 ? stamp : fallback;
 }
 
+/**
+ * Live feed rows owned by one assistant turn. Every reasoning burst inserts a
+ * row, so an unbounded list makes each later delta scan and copy the whole
+ * array — O(n²) churn over a long turn, the kind of sustained allocation that
+ * starved the WebView renderer into an OOM crash. Older rows are not lost
+ * information: the same text lives in message.reasoning.
+ */
+const MAX_CODING_TIMELINE_ITEMS = 300;
+
 /** Keep the transport order recoverable even when Wails delivers a batch late. */
 function insertCodingTimelineItem(timeline: CodingAgentTimelineItem[], item: CodingAgentTimelineItem): CodingAgentTimelineItem[] {
     const insertAt = timeline.findIndex((current) => current.sequence > item.sequence);
-    if (insertAt < 0) return [...timeline, item];
-    return [...timeline.slice(0, insertAt), item, ...timeline.slice(insertAt)];
+    const next = insertAt < 0
+        ? [...timeline, item]
+        : [...timeline.slice(0, insertAt), item, ...timeline.slice(insertAt)];
+    return next.length > MAX_CODING_TIMELINE_ITEMS ? next.slice(next.length - MAX_CODING_TIMELINE_ITEMS) : next;
 }
 
 /**
@@ -2184,20 +2363,20 @@ function normalizeStreamDeltaWithState(streamState: StreamAppendState, incoming:
     if (!incoming) return '';
     if (incoming.startsWith('\x01')) {
         const incomingReasoning = stripRolePrefixReasoning(incoming.slice(1));
-        const result = streamAppendDelta(streamState.reasoning, incomingReasoning, streamState.reasoningSnapshotMode);
+        const result = streamAppendDeltaLazy(streamState, 'reasoning', incomingReasoning, streamState.reasoningSnapshotMode);
         if (result.snapshotMode) streamState.reasoningSnapshotMode = true;
         if (!result.delta) return '';
-        streamState.reasoning = appendRolePrefixStrip(streamRoleCursor(streamState, "reasoning"), streamState.reasoning + result.delta);
+        streamLanePush(streamState, 'reasoning', result.delta);
         return `\x01${result.delta}`;
     }
     const incomingContent = stripRolePrefixFrontend(incoming);
-    const result = streamAppendDelta(streamState.content, incomingContent, streamState.contentSnapshotMode);
+    const result = streamAppendDeltaLazy(streamState, 'content', incomingContent, streamState.contentSnapshotMode);
     if (result.snapshotMode) streamState.contentSnapshotMode = true;
     if (!result.delta) return '';
     // Keep state aligned with display text, but return the raw delta. Split
     // prefixes such as "Brow" + "ser: ..." need the second raw piece so the
     // message write can strip the full reconstructed prefix from the UI text.
-    streamState.content = appendRolePrefixStrip(streamRoleCursor(streamState, "content"), streamState.content + result.delta);
+    streamLanePush(streamState, 'content', result.delta);
     return result.delta;
 }
 
@@ -5430,12 +5609,22 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             applyBufferedStreamParts(messages, assistantMessageId, parts, sequences)
         );
         if (parts.length === 1 && !parts[0].startsWith("\x01")) {
-            const apply = (message: ChatMessage) => appendTokenToMessage(message, parts[0]);
-            latestMessagesRef.current = updateTailMessage(latestMessagesRef.current, assistantMessageId, apply)
-                ?? updateMessageById(latestMessagesRef.current, assistantMessageId, apply)
-                ?? latestMessagesRef.current;
-            appendTokenToAssistantMessage(assistantMessageId, parts[0]);
-            noteAIScrollStreamFlush(parts[0].length);
+            // One tail concat, shared by the ref and the state write: applying
+            // on the ref first and reusing `next` halves the O(len) string
+            // copy this path used to pay twice per flush.
+            const part = parts[0];
+            const applyBuffered = (messages: ChatMessage[]): ChatMessage[] => {
+                rememberRoundContentBaseline(assistantMessageId, messages, part);
+                const apply = (message: ChatMessage) => appendTokenToMessage(message, part);
+                return updateTailMessage(messages, assistantMessageId, apply)
+                    ?? updateMessageById(messages, assistantMessageId, apply)
+                    ?? messages;
+            };
+            const previous = latestMessagesRef.current;
+            const next = applyBuffered(previous);
+            latestMessagesRef.current = next;
+            setMessages(prev => prev === previous ? next : applyBuffered(prev));
+            noteAIScrollStreamFlush(part.length);
             return;
         }
         const previous = latestMessagesRef.current;
@@ -5443,7 +5632,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         latestMessagesRef.current = next;
         setMessages(prev => prev === previous ? next : applyBuffered(prev));
         noteAIScrollStreamFlush(parts.reduce((sum, part) => sum + part.length, 0));
-    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer]);
+    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, rememberRoundContentBaseline]);
 
     // One coalesced payload is one transport sequence. Normalize each original
     // piece on its own. Joining those raw pieces before the message write strips
@@ -5553,7 +5742,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
         const key = normalizedRequestId || activeRoundRef.current.requestId;
         if (!key) return;
-        // Pieces in the 33ms buffer already arrived. Reset is how a failed or
+        // Pieces in the 80ms buffer already arrived. Reset is how a failed or
         // abandoned send drops that buffer, so publish them before the delete.
         // Callers that flushed before choosing final text see an empty buffer.
         flushStreamTokenBuffer(key);
@@ -5678,7 +5867,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
 
         // The first token still paints now so the thinking row appears.
-        // Later tokens, including reasoning, share the 33ms prose flush.
+        // Later tokens, including reasoning, share the 80ms prose flush.
         // An open coding thought is on screen: one setState per token rebuilds
         // that timeline and reads layout, so a click cannot run until the burst ends.
         if (!buffer.hasRenderedFirstToken) {
@@ -5697,7 +5886,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         buffer.parts.push(normalizedText);
         buffer.sequences.push(reasoning ? eventSequence : undefined);
         if (!buffer.flushTimer) {
-            buffer.flushTimer = setTimeout(() => flushStreamTokenBuffer(buffer.requestId), STREAM_TOKEN_FLUSH_MS);
+            const streamState = streamAppendStatesByMessageRef.current.get(buffer.assistantMessageId);
+            const tailChars = Math.max(
+                streamState?.contentLane ? streamState.contentLane.folded.length + streamState.contentLane.pendingLen : 0,
+                streamState?.reasoningLane ? streamState.reasoningLane.folded.length + streamState.reasoningLane.pendingLen : 0,
+            );
+            const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+            buffer.flushTimer = setTimeout(() => flushStreamTokenBuffer(buffer.requestId), streamTokenFlushDelay(tailChars, hidden));
         }
     }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, commitNormalizedStreamParts, consumeRoundProseReplacement, dropRejectedRoundContent, flushStreamTokenBuffer, normalizeStreamPieces]);
 
@@ -5782,7 +5977,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     useEffect(() => {
         latestMessagesRef.current = messages;
         if (!uiStateLoadedRef.current) return;
-        // Streaming replaces the tail every 33ms. Stringifying the transcript
+        // Streaming replaces the tail every 80ms. Stringifying the transcript
         // here only to see that it changed copies the whole thought on the
         // same turn as the paint. The quiet-period save below is the one copy.
         if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
@@ -6025,7 +6220,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const detachedRound = event.request_id ? inFlightRoundsByRequestRef.current.get(event.request_id) : undefined;
             if (detachedRound && !matchesActiveRequest(currentRound, event)) {
                 resetResponseTimeoutForRound(detachedRound);
-                // The 33ms content buffer is keyed by request, not by which
+                // The 80ms content buffer is keyed by request, not by which
                 // session is on screen. Stream-done is the settle point, so the
                 // tail is written here even after a newer foreground send has
                 // taken the active round.
@@ -6282,7 +6477,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     // appended assistant message keyed by the continuation request id.
     useEffect(() => {
         // Tokens paint their first delta immediately and coalesce the rest
-        // into one 33ms flush per request (same cadence as the main chat
+        // into one 80ms flush per request (same cadence as the main chat
         // loop). "final" flushes the pending tail before replacing content,
         // so the transcript stays byte-identical to per-token writes.
         const appendContinuationToken = (messages: ChatMessage[], requestId: string, delta: string, sessionKey?: string): ChatMessage[] => {
@@ -6482,6 +6677,37 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             setMessages(prev => setCredentialCardStatusInMessages(prev, 'void'));
         }
         const skipIdleWait = isConfirmationActionCommand || hasPendingCredentialCard;
+        const userMsg: ChatMessage = {
+            id: nextId(),
+            role: 'user',
+            content: options?.displayText !== undefined ? options.displayText : outgoingText,
+            attachments: options?.displayAttachments,
+            sessionKey,
+            tabId: options?.tabId,
+            timestamp: Date.now(),
+        };
+        // A busy foreground used to hide the submitted text until the wait
+        // resolved — behind goal continuation rounds that can run for many
+        // minutes, the composer sat empty with no user row while the step
+        // list kept moving. Echo the command now; the backend send below
+        // still waits for the session to settle. The context snapshot is
+        // taken before the echo lands so the echoed row is not replayed to
+        // the backend beside the turn text.
+        const foregroundBusyAtSubmit = !skipIdleWait && !isSessionIdle(sessionKey);
+        const approvalMessage = options?.markConfirmationRunning === true;
+        const contextStartIndex = resolveContextStartIndex(latestMessagesRef.current, contextBoundaryMessageIDRef.current);
+        // The hook-level transcript belongs only to the local session. A project
+        // or expert send must provide its own scoped context; falling back to the
+        // local transcript here would let an action button import another
+        // session's attached-file paths into this session.
+        const recentMessages = Array.isArray(options?.recentMessages)
+            ? options.recentMessages
+            : sessionKey === 'desktop-user'
+                ? buildClientContextMessages(latestMessagesRef.current, contextStartIndex)
+                : [];
+        if (foregroundBusyAtSubmit) {
+            setMessages(prev => [...prev, userMsg]);
+        }
         if (!skipIdleWait) {
             await waitForForegroundIdle(sessionKey);
         } else if (currentRoundBeforeWait.phase !== 'idle' && currentRoundBeforeWait.requestId) {
@@ -6494,15 +6720,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const generation = activeRoundRef.current.generation + 1;
         const assistantMessageId = nextId();
         const requestId = createForegroundRequestID();
-        const userMsg: ChatMessage = {
-            id: nextId(),
-            role: 'user',
-            content: options?.displayText !== undefined ? options.displayText : outgoingText,
-            attachments: options?.displayAttachments,
-            sessionKey,
-            tabId: options?.tabId,
-            timestamp: Date.now(),
-        };
         const placeholderMsg: ChatMessage = {
             id: assistantMessageId,
             role: 'assistant',
@@ -6512,17 +6729,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             tabId: options?.tabId,
             timestamp: Date.now(),
         };
-        const approvalMessage = options?.markConfirmationRunning === true;
-        const contextStartIndex = resolveContextStartIndex(latestMessagesRef.current, contextBoundaryMessageIDRef.current);
-        // The hook-level transcript belongs only to the local session. A project
-        // or expert send must provide its own scoped context; falling back to the
-        // local transcript here would let an action button import another
-        // session's attached-file paths into this session.
-        const recentMessages = Array.isArray(options?.recentMessages)
-            ? options.recentMessages
-            : sessionKey === 'desktop-user'
-                ? buildClientContextMessages(latestMessagesRef.current, contextStartIndex)
-                : [];
 
         clearTransientProgress(sessionKey);
         const nextRound = {
@@ -6538,7 +6744,16 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         emitPetStateForAssistant('thinking', 'ai:send', 15000);
         setMessages(prev => {
             const nextMessages = approvalMessage ? markLatestConfirmationAsRunning(prev) : prev;
-            return [...nextMessages, userMsg, placeholderMsg];
+            if (!foregroundBusyAtSubmit) return [...nextMessages, userMsg, placeholderMsg];
+            // The busy-submit echo already placed the user row. Rows of this
+            // session can have landed while the idle wait ran (a goal round's
+            // checklist or reply), so the placeholder goes beside its echo
+            // instead of appending past them.
+            const echoIndex = findLastIndex(nextMessages, message => message.id === userMsg.id);
+            if (echoIndex < 0) return [...nextMessages, placeholderMsg];
+            const next = nextMessages.slice();
+            next.splice(echoIndex + 1, 0, placeholderMsg);
+            return next;
         });
 
         // Sliding-window activity timeout: reset whenever the backend shows signs
@@ -6827,7 +7042,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         emitPetStateForAssistant('thinking', 'ai:btw-send', 10000);
 
         // Listen for streaming tokens on the /btw-specific channel. The first
-        // token still paints immediately; later tokens share a 33ms coalesced
+        // token still paints immediately; later tokens share a 80ms coalesced
         // flush (same cadence as the main chat loop) so a fast burst does not
         // re-render per event. The final/error writes flush the tail first,
         // so message order and text stay byte-identical.

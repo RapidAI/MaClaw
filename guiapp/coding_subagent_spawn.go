@@ -43,7 +43,7 @@ var codingSubAgentSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 		"Glob": true, "ripgrep": true, "read_file": true, "list_directory": true,
 		codeNavigationToolName: true, codeSearchToolName: true, reportLocalizationToolName: true,
 		"git_diff": true, "web_search": true, "web_fetch": true, "current_datetime": true,
-		"coding_knowledge_search": true, "knowledge_search": true,
+		"coding_knowledge_search": true, "knowledge_search": true, "memory_search": true,
 	},
 	codingRoleReviewer: {
 		"Glob": true, "ripgrep": true, "read_file": true, "list_directory": true,
@@ -54,7 +54,7 @@ var codingSubAgentSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 		// The explorer map stays shell-free by design.
 		"bash":       true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
-		"coding_knowledge_search": true, "knowledge_search": true,
+		"coding_knowledge_search": true, "knowledge_search": true, "memory_search": true,
 	},
 	// worker: nil map means "all standard coding tools except spawn"
 }
@@ -1008,6 +1008,7 @@ func (parent *CodingSubAgent) newReadOnlyNestedCodingAgent(spec codingSpawnSpec,
 	// shared Store is only for observing that fresh Attempt's cancellation.
 	child.runtimeStore = parent.runtimeStore
 	child.codingKB, child.generalKB = parent.codingKB, parent.generalKB
+	child.memoryStore = parent.memoryStore
 	// The actual prompt stays host-local; corelib stores only ChildTaskSpec.
 	// Progress is explicitly passed and has no authority over the child scope.
 	child.SetCallbacks(nil, parent.onProgress)
@@ -1109,6 +1110,7 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 	inheritLocalTaskCommandAllowance(parent, child)
 	child.codingKB = parent.codingKB
 	child.generalKB = parent.generalKB
+	child.memoryStore = parent.memoryStore
 
 	taskTitle := codingSpawnTaskTitle(spec.Role, spec.Task)
 	task := &TaskItem{

@@ -433,7 +433,9 @@ func TestRecoveryFileTransformRegressionThroughInvokeTool(t *testing.T) {
 			return "", errors.New("unexpected")
 		}
 		bashRuns++
-		cmd := strings.ReplaceAll(desktopArg(args, "command"), home, root)
+		// bash consumes POSIX spellings; a Windows root like C:\… loses its
+		// backslashes as escape sequences inside the shell string.
+		cmd := strings.ReplaceAll(desktopArg(args, "command"), home, filepath.ToSlash(root))
 		b, err := exec.Command("bash", "-c", cmd).CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("%s", b)

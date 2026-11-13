@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { isLansengerChannelEnabled, SidebarSystemStatus } from '../SidebarSystemStatus';
+import { publishSharedUnreadCount } from '../../ai/useNotifications';
 import type { SidebarHubCredits } from '../../../types/appShell';
 
 const baseCredits: SidebarHubCredits = {
@@ -1634,6 +1635,47 @@ describe('SidebarSystemStatus collapsed account line', () => {
             unmount();
         } finally {
             dispatchSpy.mockRestore();
+        }
+    });
+
+    it('badges the status-row bell with the unread count and caps at 9+', () => {
+        try {
+            publishSharedUnreadCount(3);
+            const first = renderStatus(baseCredits);
+            let badge = first.container.querySelector('.mc-workbench-status-bell__badge');
+            expect(badge?.textContent).toBe('3');
+            first.unmount();
+
+            publishSharedUnreadCount(12);
+            const second = renderStatus(baseCredits);
+            badge = second.container.querySelector('.mc-workbench-status-bell__badge');
+            expect(badge?.textContent).toBe('9+');
+            second.unmount();
+
+            publishSharedUnreadCount(0);
+            const third = renderStatus(baseCredits);
+            expect(third.container.querySelector('.mc-workbench-status-bell__badge')).toBeNull();
+            third.unmount();
+        } finally {
+            publishSharedUnreadCount(0);
+        }
+    });
+
+    it('updates the bell badge live through the shared mirror', () => {
+        try {
+            publishSharedUnreadCount(0);
+            const { container, unmount } = renderStatus(baseCredits);
+            expect(container.querySelector('.mc-workbench-status-bell__badge')).toBeNull();
+
+            // A publish while mounted must re-render the badge (subscription path).
+            act(() => { publishSharedUnreadCount(2); });
+            expect(container.querySelector('.mc-workbench-status-bell__badge')?.textContent).toBe('2');
+
+            act(() => { publishSharedUnreadCount(0); });
+            expect(container.querySelector('.mc-workbench-status-bell__badge')).toBeNull();
+            unmount();
+        } finally {
+            publishSharedUnreadCount(0);
         }
     });
 

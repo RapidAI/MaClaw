@@ -71,6 +71,38 @@ func TestResolveLLMRoleUsesHubAdminPin(t *testing.T) {
 	}
 }
 
+func TestResolveLLMRolePinModelOverridesProviderDefault(t *testing.T) {
+	cfg := testRoleProviders()
+	cfg.MaclawHubBotRoles = corelib.MaclawHubBotRoles{
+		Background:  corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "Claude", Model: "claude-opus-4"},
+		ComputerUse: corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "DeepSeek", Model: "deepseek-reasoner"},
+		Grounder:    corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "Claude", Model: "claude-sonnet"},
+	}
+	bg, err := ResolveLLMRole(cfg, LLMRoleBackground)
+	if err != nil || bg.ProviderName != "Claude" || bg.Model != "claude-opus-4" || bg.Protocol != "anthropic" {
+		t.Fatalf("pinned background with model = %+v err=%v", bg, err)
+	}
+	cu, err := ResolveLLMRole(cfg, LLMRoleComputerUse)
+	if err != nil || cu.ProviderName != "DeepSeek" || cu.Model != "deepseek-reasoner" || cu.Protocol != "openai" {
+		t.Fatalf("pinned computer use with model = %+v err=%v", cu, err)
+	}
+	gr, err := ResolveLLMRole(cfg, LLMRoleGrounder)
+	if err != nil || gr.Model != "claude-sonnet" {
+		t.Fatalf("pinned grounder with model = %+v err=%v", gr, err)
+	}
+}
+
+// The official route schedules its own model, so a stale model on an official
+// pin must not replace "auto".
+func TestResolveLLMRoleOfficialPinIgnoresModel(t *testing.T) {
+	cfg := testRoleProviders()
+	cfg.MaclawHubBotRoles.ComputerUse = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: OfficialHubLLMProviderName, Model: "some-model"}
+	cu, err := ResolveLLMRole(cfg, LLMRoleComputerUse)
+	if err != nil || cu.ProviderName != OfficialHubLLMProviderName || cu.Model != "auto" {
+		t.Fatalf("official pin with stale model = %+v err=%v", cu, err)
+	}
+}
+
 func TestResolveLLMRoleOfficialAliasesAndStalePinFallBack(t *testing.T) {
 	cfg := testRoleProviders()
 	cfg.MaclawHubBotRoles.ComputerUse = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "maclaw_official_group"}

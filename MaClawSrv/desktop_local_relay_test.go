@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,13 @@ type relayRig struct {
 
 func newRelayRig(t *testing.T) *relayRig {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		// The rig emulates the Linux cloud desktop with the local host:
+		// remote paths flow through path.Join/localRelayHome into bash -c.
+		// A Windows home (C:\…) cannot be a container path, and the same
+		// spelling reaches bash unquoted-in-effect, so the rig cannot run.
+		t.Skip("relay rig models a POSIX cloud desktop; Windows paths are not container paths")
+	}
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 is required for the helper")
 	}

@@ -76,10 +76,13 @@ type LLMProviderView struct {
 
 // LLMRoleAssignment is one Bot-management role choice. Mode is inherit, pin,
 // or unused (grounder only). Provider is a provider id or the official group
-// id when Mode is pin.
+// id when Mode is pin. Model, when set on a pin, overrides the provider's
+// default model for that role; the official group ignores it because the hub
+// service schedules its own model.
 type LLMRoleAssignment struct {
 	Mode     string `json:"mode,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 // LLMRoles is the optional per-role provider choice for bot turns.
@@ -278,6 +281,12 @@ func normalizeLLMSettings(prev llmSettings, current string, inputs []LLMProvider
 	if err != nil {
 		return llmSettings{}, err
 	}
+	// The foreground role is the default route now: the flat fallback config
+	// follows whatever the administrator pinned there, so a separate "current"
+	// selection cannot disagree with the role table.
+	if normalized.Foreground.Mode == corelib.MaclawHubBotRolePin {
+		current = canonicalBotServiceGroup(normalized.Foreground.Provider)
+	}
 	return llmSettings{Current: current, Providers: out, Roles: normalized}, nil
 }
 
@@ -342,12 +351,15 @@ func llmRolesView(roles LLMRoles) LLMRoles {
 func llmRoleView(role LLMRoleAssignment, grounder bool) LLMRoleAssignment {
 	mode := strings.ToLower(strings.TrimSpace(role.Mode))
 	provider := strings.TrimSpace(role.Provider)
+	model := strings.TrimSpace(role.Model)
 	switch mode {
 	case corelib.MaclawHubBotRolePin:
 		if isBotDefaultServiceGroup(provider) {
-			provider = llmDefaultServiceGroup
+			// The official route schedules its own model, so a model on the
+			// official pin is dropped rather than stored.
+			return LLMRoleAssignment{Mode: corelib.MaclawHubBotRolePin, Provider: llmDefaultServiceGroup}
 		}
-		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRolePin, Provider: provider}
+		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRolePin, Provider: provider, Model: model}
 	case corelib.MaclawHubBotRoleInherit:
 		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleInherit}
 	case corelib.MaclawHubBotRoleUnused:
@@ -364,26 +376,35 @@ func llmRoleView(role LLMRoleAssignment, grounder bool) LLMRoleAssignment {
 }
 
 func llmRolesAreDefault(roles LLMRoles) bool {
-	return llmRoleIsDefault(roles.Foreground, false) &&
-		llmRoleIsDefault(roles.Background, false) &&
-		llmRoleIsDefault(roles.ComputerUse, false) &&
-		llmRoleIsDefault(roles.Grounder, true)
+	return llmRoleIsDefault(roles.Foreground, false, true) &&
+		llmRoleIsDefault(roles.Background, false, false) &&
+		llmRoleIsDefault(roles.ComputerUse, false, false) &&
+		llmRoleIsDefault(roles.Grounder, true, false)
 }
 
-func llmRoleIsDefault(role LLMRoleAssignment, grounder bool) bool {
+// foreground marks the role that defines the default route: a pin on the
+// official group there is the untouched default, while the same pin on
+// another role is a real override (background on official while the
+// foreground runs a provider) and must be pushed.
+func llmRoleIsDefault(role LLMRoleAssignment, grounder bool, foreground bool) bool {
 	mode := strings.ToLower(strings.TrimSpace(role.Mode))
 	if grounder {
 		return mode == "" || mode == corelib.MaclawHubBotRoleUnused
 	}
-	return mode == "" || mode == corelib.MaclawHubBotRoleInherit
+	if mode == "" || mode == corelib.MaclawHubBotRoleInherit {
+		return true
+	}
+	return foreground && mode == corelib.MaclawHubBotRolePin &&
+		isBotDefaultServiceGroup(role.Provider) &&
+		strings.TrimSpace(role.Model) == ""
 }
 
 func llmRolesStamp(roles LLMRoles) string {
 	roles = llmRolesView(roles)
-	return "fg:" + roles.Foreground.Mode + ":" + roles.Foreground.Provider +
-		"\nbg:" + roles.Background.Mode + ":" + roles.Background.Provider +
-		"\ncu:" + roles.ComputerUse.Mode + ":" + roles.ComputerUse.Provider +
-		"\ngr:" + roles.Grounder.Mode + ":" + roles.Grounder.Provider + "\n"
+	return "fg:" + roles.Foreground.Mode + ":" + roles.Foreground.Provider + ":" + roles.Foreground.Model +
+		"\nbg:" + roles.Background.Mode + ":" + roles.Background.Provider + ":" + roles.Background.Model +
+		"\ncu:" + roles.ComputerUse.Mode + ":" + roles.ComputerUse.Provider + ":" + roles.ComputerUse.Model +
+		"\ngr:" + roles.Grounder.Mode + ":" + roles.Grounder.Provider + ":" + roles.Grounder.Model + "\n"
 }
 
 func normalizeLLMRoles(prev LLMRoles, in *LLMRoles, providers []llmProvider) (LLMRoles, error) {
@@ -426,11 +447,17 @@ func normalizeLLMRole(in LLMRoleAssignment, providers []llmProvider, grounder bo
 		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleUnused}, nil
 	case corelib.MaclawHubBotRolePin:
 		if isBotDefaultServiceGroup(provider) {
+			// The official route schedules its own model; a model on the
+			// official pin is stale input and is dropped.
 			return LLMRoleAssignment{Mode: corelib.MaclawHubBotRolePin, Provider: llmDefaultServiceGroup}, nil
 		}
 		for _, item := range providers {
 			if item.ID == provider {
-				return LLMRoleAssignment{Mode: corelib.MaclawHubBotRolePin, Provider: item.ID}, nil
+				model := strings.TrimSpace(in.Model)
+				if len(model) > 128 || strings.ContainsAny(model, "\r\n") {
+					return LLMRoleAssignment{}, fmt.Errorf("%w: llm role model is invalid", ErrInvalidInput)
+				}
+				return LLMRoleAssignment{Mode: corelib.MaclawHubBotRolePin, Provider: item.ID, Model: model}, nil
 			}
 		}
 		// The pinned provider was removed in this save: fall back rather than
@@ -464,6 +491,11 @@ func hubBotRoleAppConfig(settings llmSettings, role LLMRoleAssignment) map[strin
 	out := map[string]any{"mode": role.Mode}
 	if role.Mode == corelib.MaclawHubBotRolePin {
 		out["provider"] = roleProviderName(settings, role.Provider)
+		// The model rides along only for a real provider pin; the official
+		// route schedules its own model.
+		if model := strings.TrimSpace(role.Model); model != "" && !isBotDefaultServiceGroup(role.Provider) {
+			out["model"] = model
+		}
 	}
 	return out
 }

@@ -3727,10 +3727,12 @@ func TestDoctorReportsSourceGraphGaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginTx: %v", err)
 	}
-	if err := insertSourceLinkTx(ctx, tx, SourceLink{SourceID: sources[0].ID, RelatedSourceID: sources[1].ID, Relation: SourceRelationTopicRelated, Score: 0.9, Terms: []string{"graph"}}); err != nil {
+	// The source graph walks confirmed edges only; a blank status normalizes
+	// to "suggested" and leaves every node isolated.
+	if err := insertSourceLinkTx(ctx, tx, SourceLink{SourceID: sources[0].ID, RelatedSourceID: sources[1].ID, Relation: SourceRelationTopicRelated, Status: SourceLinkStatusConfirmed, Score: 0.9, Terms: []string{"graph"}}); err != nil {
 		t.Fatalf("insert link alpha beta: %v", err)
 	}
-	if err := insertSourceLinkTx(ctx, tx, SourceLink{SourceID: sources[1].ID, RelatedSourceID: sources[0].ID, Relation: SourceRelationTopicRelated, Score: 0.9, Terms: []string{"graph"}}); err != nil {
+	if err := insertSourceLinkTx(ctx, tx, SourceLink{SourceID: sources[1].ID, RelatedSourceID: sources[0].ID, Relation: SourceRelationTopicRelated, Status: SourceLinkStatusConfirmed, Score: 0.9, Terms: []string{"graph"}}); err != nil {
 		t.Fatalf("insert link beta alpha: %v", err)
 	}
 	if err := tx.Commit(); err != nil {

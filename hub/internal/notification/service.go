@@ -273,6 +273,54 @@ func (s *Service) FindBySource(ctx context.Context, source, sourceID string) (*N
 	return s.store.FindBySource(ctx, source, sourceID)
 }
 
+// AddAudienceUser appends userID to a notification's audience. Reports false
+// when the user is already listed or the notification is gone.
+func (s *Service) AddAudienceUser(ctx context.Context, id, userID string) (bool, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false, nil
+	}
+	n, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		return false, fmt.Errorf("get notification: %w", err)
+	}
+	for _, existing := range n.AudienceIDs {
+		if existing == userID {
+			return true, nil
+		}
+	}
+	n.AudienceIDs = append(n.AudienceIDs, userID)
+	if err := s.store.SetAudienceUsers(ctx, id, n.AudienceIDs); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RemoveAudienceUser drops userID from a notification's audience and reports
+// how many audience members remain.
+func (s *Service) RemoveAudienceUser(ctx context.Context, id, userID string) (int, error) {
+	n, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		return 0, fmt.Errorf("get notification: %w", err)
+	}
+	kept := make([]string, 0, len(n.AudienceIDs))
+	removed := false
+	for _, existing := range n.AudienceIDs {
+		if existing == userID {
+			removed = true
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	if !removed {
+		return len(n.AudienceIDs), nil
+	}
+	if err := s.store.SetAudienceUsers(ctx, id, kept); err != nil {
+		return 0, err
+	}
+	return len(kept), nil
+}
+
 // ---------------------------------------------------------------------------
 // ListNotifications
 // ---------------------------------------------------------------------------

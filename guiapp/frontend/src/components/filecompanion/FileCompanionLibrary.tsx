@@ -4462,7 +4462,7 @@ export function CompanionShareDialog({
                             />
                         ) : null}
                         {visibility === "group" ? (
-                            groups.some((group) => !group.remote) ? (
+                            groups.length > 0 ? (
                                 <select
                                     className="file-companion-dialog-input"
                                     data-testid="file-companion-share-group-pick"
@@ -4471,8 +4471,8 @@ export function CompanionShareDialog({
                                     onChange={(event) => setGroupID(event.target.value)}
                                 >
                                     <option value="">{cs("选择群组")}</option>
-                                    {groups.filter((group) => !group.remote).map((group) => (
-                                        <option key={group.id} value={group.id}>{group.admin ? group.name : `${group.name}（${group.owner || cs("成员")}）`}</option>
+                                    {groups.map((group) => (
+                                        <option key={group.id} value={group.id}>{group.admin ? group.name : `${group.name}（${group.owner || cs("成员")}）`}{group.remote ? `（${cs("远程群组")}）` : ""}</option>
                                     ))}
                                 </select>
                             ) : <p className="file-companion-dialog-hint">{cs("还没有可分享的群组，先在「阅读群组」里创建或加入一个。")}</p>

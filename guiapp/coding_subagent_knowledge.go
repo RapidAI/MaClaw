@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 const knowledgeImageDisplayPromptRule = `
@@ -38,6 +39,58 @@ func (s *CodingSubAgent) SetKnowledgeStores(codingKB *knowledge.CodingKnowledgeS
 	}
 	s.codingKB = codingKB
 	s.generalKB = generalKB
+}
+
+// SetMemoryStore configures the shared long-term memory store (memory.db).
+// Optional — a nil store is gracefully skipped. Coding agents only get the
+// read-only memory_search tool; they can never save, delete, or supersede.
+func (s *CodingSubAgent) SetMemoryStore(store *corememory.Store) {
+	if s == nil {
+		return
+	}
+	s.memoryStore = store
+}
+
+// codingKnowledgeReadOptions scopes the general-knowledge read to the session
+// owner. Desktop-owned sessions get the same read visibility a normal chat
+// has: the whole desktop library (personal + every project + shared
+// libraries) instead of only the active project — projectPath then only boosts
+// same-project ranking in scoreSearchResult. A session outside the desktop
+// owner (group chats, isolated personas, IM users) keeps the original
+// project_path pin: it must not read the desktop owner's personal or
+// cross-project knowledge.
+func codingKnowledgeReadOptions(opts knowledge.SearchOptions, projectPath, userID string) knowledge.SearchOptions {
+	if owner, _ := codingMemoryOwner(userID); owner == desktopUserID {
+		opts.OwnerID, opts.OwnerLineage, opts.SearchScope = applyDesktopKnowledgeMembershipRead("", "all")
+		opts.UseMembership = true
+		opts.IncludeEmptyOwner = false
+	}
+	opts.ProjectPath = strings.TrimSpace(projectPath)
+	return opts
+}
+
+// codingMemoryOwner resolves the long-term memory owner for a coding-agent
+// turn. Desktop-owned sessions (the main chat and project tabs) all belong to
+// the same human, so they share the desktopUserID namespace — that is what
+// lets a coding task reuse facts the owner saved in ordinary conversations.
+// Deliberately isolated personas (expert, ACP, pet companion) and external
+// sessions (group chats, IM users) keep their own memory namespace instead of
+// borrowing the desktop owner's; strictness mirrors the chat memory isolation
+// rules in isIsolatedAssistantSessionUserID. An empty userID (detached or
+// test agents) falls back to the desktop identity because the coding
+// workbench is a desktop-owner surface.
+func codingMemoryOwner(userID string) (owner string, strict bool) {
+	userID = strings.TrimSpace(userID)
+	switch {
+	case isACPAssistantSessionUserID(userID) ||
+		isPetCompanionUser(userID) ||
+		expertIDFromUserID(userID) != "":
+		return userID, true
+	case isDesktopCodingOwner(userID) || userID == "":
+		return desktopUserID, false
+	default:
+		return userID, isIsolatedAssistantSessionUserID(userID)
+	}
 }
 
 type codingKnowledgeRecallContextKey struct{}
@@ -163,23 +216,60 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 	// 2. General knowledge (project docs)
 	if c.subagent.generalKB != nil {
 		b.WriteString(knowledgeImageDisplayPromptRule)
-		searchOpts := knowledge.SearchOptions{
-			Query:       taskQuery,
-			ProjectPath: projectPath,
-			Limit:       10,
-		}
+		searchOpts := codingKnowledgeReadOptions(knowledge.SearchOptions{
+			Query: taskQuery,
+			Limit: 10,
+		}, projectPath, c.subagent.taskPermissionOwnerID())
 		pack, err := c.subagent.generalKB.ContextPack(knowledgeSearchContext(ctx), knowledge.ContextPackOptions{
 			SearchOptions: searchOpts,
 			MaxItems:      3,
 			MaxChars:      2000,
 		})
 		if err == nil && len(pack.Items) > 0 {
-			b.WriteString("\n## 项目参考资料（来自通用知识库）\n")
-			b.WriteString("以下是与当前任务相关的项目文档：\n")
+			b.WriteString("\n## 知识库参考资料（来自通用知识库）\n")
+			b.WriteString("以下是与当前任务相关的知识库内容：\n")
 			b.WriteString(knowledge.FormatContextPackForLLM(pack))
 		}
 	}
 
+	// 3. Long-term memory (conversation-captured common info, read-only).
+	b.WriteString(codingMemoryPromptSection(c.subagent.memoryStore, taskQuery, projectPath, c.subagent.taskPermissionOwnerID()))
+
+	return b.String()
+}
+
+// codingMemoryPromptSection renders a small auto-recalled long-term memory
+// excerpt for the task-start prompt, mirroring the general-knowledge
+// ContextPack above. It goes through the same HandleTool recall path as
+// memory_search — owner resolved by codingMemoryOwner, dynamic mode, capped
+// at three entries — so the injected content matches exactly what the tool
+// would return for the same query.
+func codingMemoryPromptSection(store *corememory.Store, query, projectPath, userID string) string {
+	if store == nil || strings.TrimSpace(query) == "" {
+		return ""
+	}
+	owner, strict := codingMemoryOwner(userID)
+	text := corememory.HandleTool(store, map[string]interface{}{
+		"action": string(corememory.MemoryToolActionRecall),
+		"mode":   "dynamic",
+		"query":  query,
+		"limit":  3,
+	}, corememory.ToolOptions{
+		ProjectPath: projectPath,
+		OwnerID:     owner,
+		StrictOwner: strict,
+	})
+	text = strings.TrimSpace(text)
+	// Only the "Recalled N relevant memories" envelope counts as a hit; the
+	// empty and lock-timeout responses carry the same fixed prefixes.
+	if !strings.HasPrefix(text, "Recalled ") {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## 长期记忆参考资料\n")
+	b.WriteString("以下是本机长期记忆中与当前任务相关的内容（需要更多时用 memory_search 继续查找）：\n")
+	b.WriteString(text)
+	b.WriteString("\n")
 	return b.String()
 }
 
@@ -206,7 +296,7 @@ func codingKnowledgeSearchToolDef() map[string]interface{} {
 func knowledgeSearchToolDef() map[string]interface{} {
 	return buildToolDef(
 		"knowledge_search",
-		"搜索项目知识库，获取 API 文档、数据库结构、接口规范、设计文档等项目资料。当你需要了解项目的具体约定或接口细节时使用。",
+		"搜索本机知识库，获取已保存的资料、API 文档、接口规范、设计文档和普通会话存入的信息。当你需要了解项目约定、接口细节或查找知识库中已保存的内容时使用。",
 		map[string]interface{}{
 			"query": map[string]interface{}{
 				"type":        "string",
@@ -223,7 +313,7 @@ func knowledgeSearchToolDef() map[string]interface{} {
 func knowledgeImageSearchToolDef() map[string]interface{} {
 	return buildToolDef(
 		"knowledge_image_search",
-		"搜索当前项目知识库中已导入的图片，基于 OCR 文本、视觉描述、文件名和文档上下文召回。用户要求查找、查看或比较已保存图片时使用。结果可包含安全展示标记；需要展示时原样复制该标记，绝不构造标记或暴露本地路径。",
+		"搜索本机知识库中已导入的图片，基于 OCR 文本、视觉描述、文件名和文档上下文召回。用户要求查找、查看或比较已保存图片时使用。结果可包含安全展示标记；需要展示时原样复制该标记，绝不构造标记或暴露本地路径。",
 		map[string]interface{}{
 			"query": map[string]interface{}{
 				"type":        "string",
@@ -269,6 +359,24 @@ func knowledgeImageSearchToolDef() map[string]interface{} {
 			"limit": map[string]interface{}{
 				"type":        "integer",
 				"description": "最大图片结果数，默认 5，最大 10。",
+			},
+		},
+		[]string{"query"},
+	)
+}
+
+// memorySearchToolDef returns the tool definition for memory_search. It is the
+// coding surface's read-only window into the shared long-term memory
+// (memory.db): the handler only ever sees the recall action, so no model
+// input can reach save/delete/derived_surgery.
+func memorySearchToolDef() map[string]interface{} {
+	return buildToolDef(
+		"memory_search",
+		"搜索本机长期记忆库，获取普通会话中沉淀下来的用户偏好、决策、重要事实和公用信息。当任务依赖之前会话记录过的信息时使用；此工具只读，不会修改记忆。",
+		map[string]interface{}{
+			"query": map[string]interface{}{
+				"type":        "string",
+				"description": "搜索关键词，描述你要找的记忆内容",
 			},
 		},
 		[]string{"query"},
@@ -380,11 +488,10 @@ func (c *codingSubAgentCallbacks) executeKnowledgeSearch(argsJSON string) coding
 	ctx, cancel := context.WithTimeout(knowledgeSearchContext(context.Background()), 8*time.Second)
 	defer cancel()
 
-	results, err := c.subagent.generalKB.Search(ctx, knowledge.SearchOptions{
-		Query:       query,
-		ProjectPath: c.subagent.projectPath,
-		Limit:       5,
-	})
+	results, err := c.subagent.generalKB.Search(ctx, codingKnowledgeReadOptions(knowledge.SearchOptions{
+		Query: query,
+		Limit: 5,
+	}, c.subagent.projectPath, c.subagent.taskPermissionOwnerID()))
 	if err != nil {
 		return codingToolExecutionResult{
 			// Do not make optional project-document recall a task blocker. The
@@ -430,7 +537,7 @@ func (c *codingSubAgentCallbacks) executeKnowledgeImageSearch(argsJSON string) c
 	}
 	ctx, cancel := context.WithTimeout(knowledgeSearchContext(context.Background()), 8*time.Second)
 	defer cancel()
-	results, err := c.subagent.generalKB.SearchImages(ctx, knowledge.ImageSearchOptions{SearchOptions: codingKnowledgeImageSearchOptions(args, c.subagent.projectPath)})
+	results, err := c.subagent.generalKB.SearchImages(ctx, knowledge.ImageSearchOptions{SearchOptions: codingKnowledgeImageSearchOptions(args, c.subagent.projectPath, c.subagent.taskPermissionOwnerID())})
 	if err != nil {
 		return codingToolExecutionResult{Text: fmt.Sprintf("图片知识库当前不可用；请继续使用文本项目证据完成任务。(%v)", err), Outcome: codingToolOutcomeSuccess}
 	}
@@ -460,11 +567,47 @@ func (c *codingSubAgentCallbacks) executeKnowledgeImageSearch(argsJSON string) c
 	return codingToolExecutionResult{Text: b.String(), Outcome: codingToolOutcomeSuccess}
 }
 
+// executeMemorySearch handles the memory_search tool call (read-only recall
+// against the shared long-term memory store). Owner is resolved from the
+// session by codingMemoryOwner — the same visibility a normal desktop chat
+// has for desktop-owned sessions — and is never taken from model arguments.
+func (c *codingSubAgentCallbacks) executeMemorySearch(argsJSON string) codingToolExecutionResult {
+	if c == nil || c.subagent == nil || c.subagent.memoryStore == nil {
+		return codingToolExecutionResult{
+			Text:    "长期记忆未配置。暂无可用的记忆库。",
+			Outcome: codingToolOutcomeSuccess,
+		}
+	}
+	args := parseCodingSubAgentToolArgs(argsJSON)
+	query := knowledgeToolStringArg(args, "query")
+	if query == "" {
+		return codingToolExecutionResult{
+			Text:    "Error: query parameter is required",
+			Outcome: codingToolOutcomeFailed,
+		}
+	}
+	owner, strict := codingMemoryOwner(c.subagent.taskPermissionOwnerID())
+	text := corememory.HandleTool(c.subagent.memoryStore, map[string]interface{}{
+		"action": string(corememory.MemoryToolActionRecall),
+		"query":  query,
+	}, corememory.ToolOptions{
+		ProjectPath: c.subagent.projectPath,
+		OwnerID:     owner,
+		StrictOwner: strict,
+	})
+	c.trackSearchResult("memory_search", map[string]interface{}{"query": query}, text, true)
+	return codingToolExecutionResult{
+		Text:    text,
+		Outcome: codingToolOutcomeSuccess,
+	}
+}
+
 // codingKnowledgeImageSearchOptions carries the same read-only filters as the
-// GUI image search. A Coding Agent is additionally pinned to its active
-// project; its tool definition deliberately omits project_path/search_scope so
-// a model cannot widen recall into unrelated project knowledge.
-func codingKnowledgeImageSearchOptions(args map[string]interface{}, projectPath string) knowledge.SearchOptions {
+// GUI image search. Desktop-owned sessions use the whole-library desktop
+// identity (the same visibility a normal chat has); other sessions stay
+// project-pinned. The tool definition deliberately omits
+// project_path/search_scope so a model cannot change the fixed read identity.
+func codingKnowledgeImageSearchOptions(args map[string]interface{}, projectPath, userID string) knowledge.SearchOptions {
 	limit := knowledgeToolIntArg(args, "limit", 5)
 	if limit <= 0 {
 		limit = 5
@@ -472,9 +615,8 @@ func codingKnowledgeImageSearchOptions(args map[string]interface{}, projectPath 
 	if limit > 10 {
 		limit = 10
 	}
-	return knowledge.SearchOptions{
+	return codingKnowledgeReadOptions(knowledge.SearchOptions{
 		Query:           knowledgeToolStringArg(args, "query"),
-		ProjectPath:     projectPath,
 		TopicHint:       knowledgeToolStringArg(args, "topic_hint"),
 		ContextTerms:    knowledgeToolStringSlice(args["context_terms"]),
 		SourceKinds:     knowledgeToolStringSlice(args["source_kinds"]),
@@ -483,7 +625,7 @@ func codingKnowledgeImageSearchOptions(args map[string]interface{}, projectPath 
 		Domain:          knowledgeToolStringArg(args, "domain"),
 		IncludeDisabled: knowledgeToolBoolArg(args, "include_disabled", false),
 		Limit:           limit,
-	}
+	}, projectPath, userID)
 }
 
 // codingKnowledgeImageSearchAuditArgs records only declared, read-only search

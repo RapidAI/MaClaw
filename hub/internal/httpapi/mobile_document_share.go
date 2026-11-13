@@ -117,6 +117,11 @@ type companionDocShare struct {
 	// that names it always arrives with a chat or project bump, and a bump
 	// here would send every reader through the full list for nothing.
 	Figures map[string]string `json:"figures,omitempty"`
+	// RemoteOwner is the normalized contact of the group member who published
+	// this share from another Hub. It is empty for shares a local account
+	// created. The member's invite secret is their credential: the write
+	// endpoints resolve it back to OwnerID, which is a synthetic id.
+	RemoteOwner string `json:"remote_owner,omitempty"`
 }
 
 // companionShareNote is one reader's discussion on a share. The host's own
@@ -655,6 +660,47 @@ func companionShareIsAdmin(share companionDocShare, userID string) bool {
 func companionShareIsHost(share companionDocShare, userID string) bool {
 	userID = strings.TrimSpace(userID)
 	return userID != "" && companionShareHostID(share) == userID
+}
+
+// companionRemoteShareOwnerID is the synthetic owner id of a share a member
+// of the group published from another Hub. It is stable per (contact, group)
+// and filesystem-safe, so the member's blobs live under a directory that
+// never collides with a local account.
+func companionRemoteShareOwnerID(contact, groupID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(contact) + "\n" + strings.TrimSpace(groupID)))
+	return "remote_" + hex.EncodeToString(sum[:12])
+}
+
+// companionShareRemoteOwnerID resolves a cross-Hub caller into the share's
+// owner identity: grant is the invite secret of the member who published the
+// share, and the member must still be accepted in the share's group. A removed
+// member loses write access even though their share stays in the group.
+func companionShareRemoteOwnerID(share companionDocShare, grant string) (string, bool) {
+	contact := strings.TrimSpace(share.RemoteOwner)
+	groupID := strings.TrimSpace(share.GroupID)
+	if contact == "" || groupID == "" || !companionReaderGrantPattern.MatchString(grant) {
+		return "", false
+	}
+	member, ok := companionGroupMemberBySecret(groupID, contact, grant)
+	if !ok || member.Status != "accepted" {
+		return "", false
+	}
+	ownerID := strings.TrimSpace(share.OwnerID)
+	if ownerID != companionRemoteShareOwnerID(contact, groupID) {
+		return "", false
+	}
+	return ownerID, true
+}
+
+// companionShareCallerID is who this write comes from: the signed-in account,
+// or the remote member whose invite secret proves they published the share.
+func companionShareCallerID(share companionDocShare, ownerID, grant string) string {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID != "" {
+		return ownerID
+	}
+	id, _ := companionShareRemoteOwnerID(share, grant)
+	return id
 }
 
 func companionShareFileName(name string) string {
@@ -1203,10 +1249,11 @@ func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.Ha
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use DELETE")
 			return
 		}
-		_, ownerID, ok := companionRequireViewer(w, r, identity)
+		_, ownerID, ok := companionViewerIfPresent(w, r, identity)
 		if !ok {
 			return
 		}
+		grant := companionReaderGrantHeaderValue(r)
 		token := strings.TrimSpace(r.PathValue("token"))
 		if !companionShareTokenPattern.MatchString(token) {
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
@@ -1215,12 +1262,18 @@ func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.Ha
 		loadCompanionDocShares()
 		companionDocShares.Lock()
 		share, found := companionDocShares.items[token]
+		callerID := companionShareCallerID(share, ownerID, grant)
+		if callerID == "" {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
 		if !found {
 			companionDocShares.Unlock()
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
 			return
 		}
-		if share.OwnerID != ownerID {
+		if share.OwnerID != callerID {
 			companionDocShares.Unlock()
 			writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有分享者可以删除分享")
 			return
@@ -1235,6 +1288,7 @@ func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.Ha
 		companionDocShares.Unlock()
 		go revokeCompanionShareNotification(share.Token)
 		go revokeCompanionHostTransferNotifications(share.Token)
+		go companionRelayRemoteShareNotices(share, "revoke")
 		mobileDeleteDocumentBlob(share.BlobPath)
 		if share.MarksPath != "" {
 			mobileDeleteDocumentBlob(share.MarksPath)
@@ -1262,10 +1316,11 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH")
 			return
 		}
-		principal, ownerID, ok := companionRequireViewer(w, r, identity)
+		principal, ownerID, ok := companionViewerIfPresent(w, r, identity)
 		if !ok {
 			return
 		}
+		grant := companionReaderGrantHeaderValue(r)
 		token := strings.TrimSpace(r.PathValue("token"))
 		if !companionShareTokenPattern.MatchString(token) {
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
@@ -1313,7 +1368,14 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 			password = ""
 			groupID = strings.TrimSpace(body.Target)
 			// Any accepted member can publish into the group, not only the admin.
-			if !companionGroupTokenPattern.MatchString(groupID) || !companionGroupPublishAccess(ownerID, groupID, companionViewerContactSet(identity, r.Context(), principal)) {
+			allowed := companionGroupTokenPattern.MatchString(groupID) && ownerID != "" &&
+				companionGroupPublishAccess(ownerID, groupID, companionViewerContactSet(identity, r.Context(), principal))
+			if !allowed && ownerID == "" && companionGroupTokenPattern.MatchString(groupID) {
+				// A cross-Hub member has no account here; their invite secret is
+				// what proves membership in the target group.
+				_, allowed = companionGroupMemberGrant(groupID, grant)
+			}
+			if !allowed {
 				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请选择群组")
 				return
 			}
@@ -1324,12 +1386,18 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 		loadCompanionDocShares()
 		companionDocShares.Lock()
 		share, found := companionDocShares.items[token]
+		callerID := companionShareCallerID(share, ownerID, grant)
+		if callerID == "" {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
 		if !found {
 			companionDocShares.Unlock()
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
 			return
 		}
-		if share.OwnerID != ownerID {
+		if share.OwnerID != callerID {
 			companionDocShares.Unlock()
 			writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有分享者可以修改分享")
 			return
@@ -1407,6 +1475,9 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 		companionDocShares.Unlock()
 		if audienceChanged {
 			go refreshCompanionShareNotification(share)
+			// The old audience may have had remote members; their home hubs
+			// still hold a notice for this token until told otherwise.
+			go companionRelayRemoteShareNotices(previous, "revoke")
 			droppedPending, droppedHost, latest, _ := dropUnreachableCompanionHostSeats(r.Context(), identity, token, nil)
 			if latest.Token != "" {
 				share = latest
@@ -1425,7 +1496,7 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 		// treat a transferred host as this machine again: an absent host field
 		// is read as "the owner still holds the seat".
 		view["admin"] = true
-		view["host"] = companionShareIsHost(share, ownerID)
+		view["host"] = companionShareIsHost(share, callerID)
 		if strings.TrimSpace(share.PendingHostID) != "" {
 			view["pending_host"] = true
 			view["pending_host_label"] = strings.TrimSpace(share.PendingHostLabel)
@@ -1604,6 +1675,13 @@ func CompanionDocumentShareImportHandler(identity *auth.IdentityService) http.Ha
 // A share that still exists after the host seat moved must stay a forbidden
 // update. Calling it missing makes the desktop retire the row.
 func companionShareSyncRejection(share companionDocShare, found bool, userID string, now time.Time) (status int, code, message string) {
+	// No caller identity at all is the old missing-login answer; it must
+	// come before the existence check or an unauthenticated probe can tell
+	// live tokens from dead ones. A known reader who is simply not the host
+	// gets the 403 below.
+	if strings.TrimSpace(userID) == "" {
+		return http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub"
+	}
 	if !found {
 		return http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在"
 	}
@@ -1626,21 +1704,29 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 			return
 		}
-		principal, err := authenticateViewerRequest(r, identity)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+		_, ownerID, ok := companionViewerIfPresent(w, r, identity)
+		if !ok {
 			return
 		}
-		ownerID := mobilePrincipalOwnerID(principal)
-		if ownerID == "" {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
-			return
-		}
+		grant := companionReaderGrantHeaderValue(r)
 		token := strings.TrimSpace(r.PathValue("token"))
 		if !companionShareTokenPattern.MatchString(token) {
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
 			return
 		}
+		// Authorize before parsing the upload: an unauthorized caller must not
+		// make the hub read a body that can be tens of MB, and a bare request
+		// with no multipart body answers 401, not a parse error.
+		loadCompanionDocShares()
+		companionDocShares.Lock()
+		share, found := companionDocShares.items[token]
+		callerID := companionShareCallerID(share, ownerID, grant)
+		if status, code, message := companionShareSyncRejection(share, found, callerID, time.Now().UTC()); status != 0 {
+			companionDocShares.Unlock()
+			writeError(w, status, code, message)
+			return
+		}
+		companionDocShares.Unlock()
 		r.Body = http.MaxBytesReader(w, r.Body, int64(mobileDocumentOriginalMaxBytes)+1<<20)
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "文件过大")
@@ -1657,28 +1743,15 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 			return
 		}
-		loadCompanionDocShares()
-		companionDocShares.Lock()
-		share, ok := companionDocShares.items[token]
-		if !ok {
-			companionDocShares.Unlock()
-			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
-			return
-		}
-		if status, code, message := companionShareSyncRejection(share, true, ownerID, time.Now().UTC()); status != 0 {
-			companionDocShares.Unlock()
-			writeError(w, status, code, message)
-			return
-		}
-		companionDocShares.Unlock()
-		blobPath, err := mobileWriteDocumentBlob(ownerID, "share", token, raw)
+		blobPath, err := mobileWriteDocumentBlob(callerID, "share", token, raw)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享文件")
 			return
 		}
 		companionDocShares.Lock()
-		share, ok = companionDocShares.items[token]
-		if status, code, message := companionShareSyncRejection(share, ok, ownerID, time.Now().UTC()); status != 0 {
+		share, found = companionDocShares.items[token]
+		callerID = companionShareCallerID(share, ownerID, grant)
+		if status, code, message := companionShareSyncRejection(share, found, callerID, time.Now().UTC()); status != 0 {
 			companionDocShares.Unlock()
 			// A delete that landed while this sync was writing must not leave
 			// the bytes it just wrote behind as an orphan. Losing the host
@@ -1732,16 +1805,11 @@ func CompanionDocumentShareMarksUpdateHandler(identity *auth.IdentityService) ht
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 			return
 		}
-		principal, err := authenticateViewerRequest(r, identity)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+		_, ownerID, ok := companionViewerIfPresent(w, r, identity)
+		if !ok {
 			return
 		}
-		ownerID := mobilePrincipalOwnerID(principal)
-		if ownerID == "" {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
-			return
-		}
+		grant := companionReaderGrantHeaderValue(r)
 		token := strings.TrimSpace(r.PathValue("token"))
 		if !companionShareTokenPattern.MatchString(token) {
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
@@ -1762,21 +1830,23 @@ func CompanionDocumentShareMarksUpdateHandler(identity *auth.IdentityService) ht
 		}
 		loadCompanionDocShares()
 		companionDocShares.Lock()
-		share, ok := companionDocShares.items[token]
-		if status, code, message := companionShareSyncRejection(share, ok, ownerID, time.Now().UTC()); status != 0 {
+		share, found := companionDocShares.items[token]
+		callerID := companionShareCallerID(share, ownerID, grant)
+		if status, code, message := companionShareSyncRejection(share, found, callerID, time.Now().UTC()); status != 0 {
 			companionDocShares.Unlock()
 			writeError(w, status, code, message)
 			return
 		}
 		companionDocShares.Unlock()
-		blobPath, err := mobileWriteDocumentBlob(ownerID, "share-marks", token, raw)
+		blobPath, err := mobileWriteDocumentBlob(callerID, "share-marks", token, raw)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
 			return
 		}
 		companionDocShares.Lock()
-		share, ok = companionDocShares.items[token]
-		if status, code, message := companionShareSyncRejection(share, ok, ownerID, time.Now().UTC()); status != 0 {
+		share, found = companionDocShares.items[token]
+		callerID = companionShareCallerID(share, ownerID, grant)
+		if status, code, message := companionShareSyncRejection(share, found, callerID, time.Now().UTC()); status != 0 {
 			companionDocShares.Unlock()
 			mobileDeleteDocumentBlob(blobPath)
 			writeError(w, status, code, message)
@@ -1929,16 +1999,11 @@ func CompanionDocumentShareChatUpdateHandler(identity *auth.IdentityService) htt
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 			return
 		}
-		principal, err := authenticateViewerRequest(r, identity)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+		_, ownerID, ok := companionViewerIfPresent(w, r, identity)
+		if !ok {
 			return
 		}
-		ownerID := mobilePrincipalOwnerID(principal)
-		if ownerID == "" {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
-			return
-		}
+		grant := companionReaderGrantHeaderValue(r)
 		token := strings.TrimSpace(r.PathValue("token"))
 		if !companionShareTokenPattern.MatchString(token) {
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
@@ -1971,7 +2036,8 @@ func CompanionDocumentShareChatUpdateHandler(identity *auth.IdentityService) htt
 		loadCompanionDocShares()
 		companionDocShares.Lock()
 		share, found := companionDocShares.items[token]
-		if status, code, message := companionShareSyncRejection(share, found, ownerID, time.Now().UTC()); status != 0 {
+		callerID := companionShareCallerID(share, ownerID, grant)
+		if status, code, message := companionShareSyncRejection(share, found, callerID, time.Now().UTC()); status != 0 {
 			companionDocShares.Unlock()
 			writeError(w, status, code, message)
 			return
@@ -1985,7 +2051,8 @@ func CompanionDocumentShareChatUpdateHandler(identity *auth.IdentityService) htt
 		if companionShareChatUnchanged(share.ChatPath, body) {
 			companionDocShares.Lock()
 			share, found = companionDocShares.items[token]
-			if status, code, message := companionShareSyncRejection(share, found, ownerID, time.Now().UTC()); status != 0 {
+			callerID = companionShareCallerID(share, ownerID, grant)
+			if status, code, message := companionShareSyncRejection(share, found, callerID, time.Now().UTC()); status != 0 {
 				companionDocShares.Unlock()
 				writeError(w, status, code, message)
 				return
@@ -2006,7 +2073,8 @@ func CompanionDocumentShareChatUpdateHandler(identity *auth.IdentityService) htt
 		// that already passed its revision check then replaces those bytes.
 		companionDocShares.Lock()
 		share, found = companionDocShares.items[token]
-		if status, code, message := companionShareSyncRejection(share, found, ownerID, time.Now().UTC()); status != 0 {
+		callerID = companionShareCallerID(share, ownerID, grant)
+		if status, code, message := companionShareSyncRejection(share, found, callerID, time.Now().UTC()); status != 0 {
 			companionDocShares.Unlock()
 			writeError(w, status, code, message)
 			return
@@ -2019,7 +2087,7 @@ func CompanionDocumentShareChatUpdateHandler(identity *auth.IdentityService) htt
 			})
 			return
 		}
-		blobPath, err := mobileWriteDocumentBlob(ownerID, "share-chat", token, body)
+		blobPath, err := mobileWriteDocumentBlob(callerID, "share-chat", token, body)
 		if err != nil {
 			companionDocShares.Unlock()
 			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
@@ -2165,16 +2233,11 @@ func CompanionDocumentShareFigureUpdateHandler(identity *auth.IdentityService) h
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 			return
 		}
-		principal, err := authenticateViewerRequest(r, identity)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+		_, ownerID, ok := companionViewerIfPresent(w, r, identity)
+		if !ok {
 			return
 		}
-		ownerID := mobilePrincipalOwnerID(principal)
-		if ownerID == "" {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
-			return
-		}
+		grant := companionReaderGrantHeaderValue(r)
 		token := strings.TrimSpace(r.PathValue("token"))
 		if !companionShareTokenPattern.MatchString(token) {
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
@@ -2197,12 +2260,13 @@ func CompanionDocumentShareFigureUpdateHandler(identity *auth.IdentityService) h
 		loadCompanionDocShares()
 		companionDocShares.Lock()
 		share, found := companionDocShares.items[token]
-		if status, code, message := companionShareSyncRejection(share, found, ownerID, time.Now().UTC()); status != 0 {
+		callerID := companionShareCallerID(share, ownerID, grant)
+		if status, code, message := companionShareSyncRejection(share, found, callerID, time.Now().UTC()); status != 0 {
 			companionDocShares.Unlock()
 			writeError(w, status, code, message)
 			return
 		}
-		blobPath, err := mobileWriteDocumentBlob(ownerID, "share-figure", companionShareFigureBlobID(token, name), raw)
+		blobPath, err := mobileWriteDocumentBlob(callerID, "share-figure", companionShareFigureBlobID(token, name), raw)
 		if err != nil {
 			companionDocShares.Unlock()
 			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
@@ -2547,7 +2611,8 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 			return
 		}
 		hostID := companionShareHostID(share)
-		isHost := ownerID != "" && hostID == ownerID
+		callerID := companionShareCallerID(share, ownerID, grant)
+		isHost := callerID != "" && hostID == callerID
 		if replyTo != "" {
 			// Only the host answers a reader note. A reader's own line is a new
 			// discussion entry, not an answer, and every answer names the note
@@ -2599,8 +2664,18 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 		authorID := ownerID
 		author := companionShareOwnerLabel(principal)
 		if ownerID == "" {
-			authorID = "guest:" + guestHash
-			author = guestLabel
+			if isHost {
+				// The remote publisher's lines are host lines; label them the
+				// way the share introduced its owner.
+				authorID = callerID
+				author = strings.TrimSpace(share.OwnerLabel)
+				if author == "" {
+					author = "云端用户"
+				}
+			} else {
+				authorID = "guest:" + guestHash
+				author = guestLabel
+			}
 		}
 		note := companionShareNote{
 			ID:        noteID,
@@ -2653,10 +2728,11 @@ func CompanionDocumentShareNoteReviewHandler(identity *auth.IdentityService) htt
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 			return
 		}
-		principal, ownerID, ok := companionRequireViewer(w, r, identity)
+		principal, ownerID, ok := companionViewerIfPresent(w, r, identity)
 		if !ok {
 			return
 		}
+		grant := companionReaderGrantHeaderValue(r)
 		token := strings.TrimSpace(r.PathValue("token"))
 		if !companionShareTokenPattern.MatchString(token) {
 			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
@@ -2680,8 +2756,12 @@ func CompanionDocumentShareNoteReviewHandler(identity *auth.IdentityService) htt
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请选择通过或忽略")
 			return
 		}
-		contacts := companionViewerContactSet(identity, r.Context(), principal)
-		groups := companionReadableGroupIDs(ownerID, contacts)
+		var contacts map[string]struct{}
+		var groups map[string]struct{}
+		if ownerID != "" {
+			contacts = companionViewerContactSet(identity, r.Context(), principal)
+			groups = companionReadableGroupIDs(ownerID, contacts)
+		}
 		loadCompanionDocShares()
 		companionDocShares.Lock()
 		share, found := companionDocShares.items[token]
@@ -2695,16 +2775,25 @@ func CompanionDocumentShareNoteReviewHandler(identity *auth.IdentityService) htt
 			writeError(w, http.StatusGone, "SHARE_EXPIRED", "分享链接已过期")
 			return
 		}
-		if status, accessMessage := companionShareReadAccess(share, ownerID, contacts, groups, ""); status != 0 {
-			companionDocShares.Unlock()
-			code := "SHARE_FORBIDDEN"
-			if status == http.StatusUnauthorized {
-				code = "UNAUTHORIZED"
+		if ownerID != "" {
+			if status, accessMessage := companionShareReadAccess(share, ownerID, contacts, groups, ""); status != 0 {
+				companionDocShares.Unlock()
+				code := "SHARE_FORBIDDEN"
+				if status == http.StatusUnauthorized {
+					code = "UNAUTHORIZED"
+				}
+				writeError(w, status, code, accessMessage)
+				return
 			}
-			writeError(w, status, code, accessMessage)
-			return
+		} else {
+			if _, _, known := companionShareForeignReader(share, grant); !known {
+				companionDocShares.Unlock()
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请重新导入分享链接")
+				return
+			}
 		}
-		if companionShareHostID(share) != ownerID {
+		callerID := companionShareCallerID(share, ownerID, grant)
+		if callerID == "" || companionShareHostID(share) != callerID {
 			companionDocShares.Unlock()
 			writeError(w, http.StatusForbidden, "SHARE_FORBIDDEN", "只有主持人可以审核批注")
 			return

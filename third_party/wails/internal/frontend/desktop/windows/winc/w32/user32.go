@@ -120,6 +120,9 @@ var (
 	procToAscii                       = moduser32.NewProc("ToAscii")
 	procSwapMouseButton               = moduser32.NewProc("SwapMouseButton")
 	procGetCursorPos                  = moduser32.NewProc("GetCursorPos")
+	procGetCursorInfo                 = moduser32.NewProc("GetCursorInfo")
+	procWindowFromPoint               = moduser32.NewProc("WindowFromPoint")
+	procGetAncestor                   = moduser32.NewProc("GetAncestor")
 	procSetCursorPos                  = moduser32.NewProc("SetCursorPos")
 	procSetCursor                     = moduser32.NewProc("SetCursor")
 	procShowCursor                    = moduser32.NewProc("ShowCursor")
@@ -1068,6 +1071,43 @@ func GetCursorPos() (x, y int, ok bool) {
 	pt := POINT{}
 	ret, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	return int(pt.X), int(pt.Y), ret != 0
+}
+
+// CURSORINFO mirrors the Win32 CURSORINFO structure. Flags carries
+// CURSOR_SHOWING while the cursor is drawn; HCursor is the cursor object,
+// which the owner of the window under the pointer can set to NULL.
+type CURSORINFO struct {
+	CbSize      uint32
+	Flags       uint32
+	HCursor     HCURSOR
+	PtScreenPos POINT
+}
+
+// CURSOR_SHOWING is the only flag defined for CURSORINFO.Flags.
+const CURSOR_SHOWING = 0x00000001
+
+// GetCursorInfo reads the global cursor state: visibility flag, cursor
+// object, and screen position. CbSize is filled in for the caller.
+func GetCursorInfo(info *CURSORINFO) bool {
+	info.CbSize = uint32(unsafe.Sizeof(*info))
+	ret, _, _ := procGetCursorInfo.Call(uintptr(unsafe.Pointer(info)))
+	return ret != 0
+}
+
+// WindowFromPoint returns the window under a screen point. Hidden windows
+// are skipped; disabled and WS_EX_TRANSPARENT windows are not.
+func WindowFromPoint(pt POINT) HWND {
+	// POINT is an 8-byte aggregate; it is passed as one integer argument.
+	ret, _, _ := procWindowFromPoint.Call(uintptr(uint32(pt.X)) | uintptr(uint32(pt.Y))<<32)
+	return HWND(ret)
+}
+
+// GA_ROOT walks to the top-level window of the chain.
+const GA_ROOT = 2
+
+func GetAncestor(hwnd HWND, gaFlags uint32) HWND {
+	ret, _, _ := procGetAncestor.Call(uintptr(hwnd), uintptr(gaFlags))
+	return HWND(ret)
 }
 
 func SetCursorPos(x, y int) bool {

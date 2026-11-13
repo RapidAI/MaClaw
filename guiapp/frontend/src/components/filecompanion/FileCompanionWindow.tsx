@@ -4940,6 +4940,30 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const showSource = showEditor && !renderedPreviewing;
     const showPreviewPane = showPreview && !emptyFile && (!previewToggleKind || renderedPreviewing);
     const unsupported = Boolean(activeTab && !isWebTab && !activeTab.error && !showEditor && !showPreview && !emptyFile);
+    // The read-only .txt view replaced the textarea, so its text selection is
+    // captured from the document selection while it is inside the annotated
+    // page — the 选中的原文 chat excerpt keeps working without an editor.
+    useEffect(() => {
+        if (kind !== "text") return;
+        const onSelect = () => {
+            const view = document.querySelector('[data-testid="doc-text-view"]');
+            const selection = window.getSelection();
+            if (!view || !selection || !selection.anchorNode || !view.contains(selection.anchorNode)) return;
+            if (selection.isCollapsed || selection.rangeCount === 0) {
+                rememberSelection("", -1);
+                return;
+            }
+            const range = selection.getRangeAt(0);
+            if (!view.contains(range.commonAncestorContainer)) return;
+            const probe = document.createRange();
+            probe.selectNodeContents(view);
+            probe.setEnd(range.startContainer, range.startOffset);
+            const text = selection.toString();
+            if (text) rememberSelection(text, probe.toString().length);
+        };
+        document.addEventListener("selectionchange", onSelect);
+        return () => document.removeEventListener("selectionchange", onSelect);
+    }, [kind, activeTab?.path]);
     const cloudDisabled = !activeTab || !activeTab.canExport || activeTab.size > CLOUD_DISABLE_BYTES;
     const [importBusyPath, setImportBusyPath] = useState("");
     const [uploadBusyPath, setUploadBusyPath] = useState("");

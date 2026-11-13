@@ -53,6 +53,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/longhorizon"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -111,6 +112,9 @@ type CodingSubAgent struct {
 	// Knowledge stores (both optional, nil = gracefully skipped)
 	codingKB  *knowledge.CodingKnowledgeStore // coding experiences (coding_knowledge.db)
 	generalKB *knowledge.SQLiteStore          // project docs (knowledge.db)
+	// memoryStore is the shared long-term memory (memory.db). Read-only via
+	// memory_search; the coding surface never exposes save/delete actions.
+	memoryStore *corememory.Store
 
 	// attachments are optional user images/files for the first user turn
 	// (pure-coding vision / screenshot-to-code). Nested spawn children inherit none.
@@ -2071,6 +2075,20 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	if c.task == nil || codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
 		tools = append(tools, buildReportLocalizationToolDefinition())
 	}
+	// Append knowledge/memory search tools (read-only) when stores are
+	// available. They must land BEFORE the goal-plan/inquiry/operational
+	// posture filters below: those branches return early, and the read-only
+	// filters whitelist exactly these names — a question turn is precisely
+	// where a stored fact is needed.
+	if c.subagent.codingKB != nil {
+		tools = append(tools, codingKnowledgeSearchToolDef())
+	}
+	if c.subagent.generalKB != nil {
+		tools = append(tools, knowledgeSearchToolDef(), knowledgeImageSearchToolDef())
+	}
+	if c.subagent.memoryStore != nil {
+		tools = append(tools, memorySearchToolDef())
+	}
 	if c.task != nil && taskIsGoalPlanPhase(c.task, c.reqCtx) {
 		tools = filterGoalPlanPhaseTools(tools)
 		tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
@@ -2117,14 +2135,6 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	// Skills/MCP are rendered as request-local opaque aliases by
 	// BuildToolsForModelRequest. Do not append generic gateway definitions
 	// to the static cross-iteration surface.
-
-	// Append knowledge search tools (read-only) when stores are available.
-	if c.subagent.codingKB != nil {
-		tools = append(tools, codingKnowledgeSearchToolDef())
-	}
-	if c.subagent.generalKB != nil {
-		tools = append(tools, knowledgeSearchToolDef(), knowledgeImageSearchToolDef())
-	}
 
 	// Codex-style nested subagents (pure coding workbench root only).
 	if c.subagent != nil && c.subagent.canSpawnCodingAgent() {
@@ -2994,6 +3004,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		return c.executeKnowledgeSearch(argsJSON)
 	case "knowledge_image_search":
 		return c.executeKnowledgeImageSearch(argsJSON)
+	case "memory_search":
+		return c.executeMemorySearch(argsJSON)
 	case "web_search":
 		if h == nil {
 			text := "web_search unavailable: host handler missing"
@@ -3224,7 +3236,7 @@ func codingSubAgentRequiredArgumentFields(name string) []string {
 		return []string{"action"}
 	case "call_mcp_tool":
 		return []string{"server_id", "tool_name"}
-	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return []string{"query"}
 	case codeSearchToolName:
 		return []string{"query"}
@@ -3336,7 +3348,7 @@ func codingSubAgentStringArgumentFields(name string) []string {
 		return []string{"action", "name"}
 	case "call_mcp_tool":
 		return []string{"server_id", "tool_name"}
-	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return []string{"query"}
 	case codeSearchToolName:
 		return []string{"query", "path"}
@@ -3544,7 +3556,7 @@ func codingSubAgentToolArgumentExample(name string) string {
 		return `{"action":"run","name":"skill-name","args":{"input":"task-specific instructions"}}`
 	case "call_mcp_tool":
 		return `{"server_id":"server","tool_name":"tool","arguments":{}}`
-	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return `{"query":"search terms"}`
 	case codeSearchToolName:
 		return `{"query":"where configuration is written to disk","path":"."}`
@@ -3571,7 +3583,7 @@ func codingSubAgentToolArgumentAliasHint(name string) string {
 		return `Accepted aliases: work_dir/cwd -> working_dir.`
 	case "call_mcp_tool":
 		return `Accepted aliases: server/server_name -> server_id; tool/name -> tool_name; args/params/input -> arguments.`
-	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return `Accepted aliases: text/question/keyword/keywords/term/terms/search_terms/q -> query.`
 	default:
 		return ""
@@ -3665,7 +3677,7 @@ func applyCodingSubAgentToolArgumentAliases(name string, args map[string]interfa
 		changed = applyCodingSubAgentToolArgumentAlias(args, "args", "arguments") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "params", "arguments") || changed
 		changed = applyCodingSubAgentToolArgumentAlias(args, "input", "arguments") || changed
-	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		changed = applyCodingSubAgentQueryArgumentAliases(args) || changed
 	}
 	return changed
@@ -8798,6 +8810,7 @@ func subAgentDynamicToolInspectionOutputLooksEmpty(tool CodingSubAgentDynamicToo
 			"found 0 matches",
 			"no documents found",
 			"no memories found",
+			"no relevant memories found",
 			"no records found",
 		} {
 			if subAgentSummaryContainsEmptyVerificationPhrase(normalized, phrase) {
@@ -8810,7 +8823,7 @@ func subAgentDynamicToolInspectionOutputLooksEmpty(tool CodingSubAgentDynamicToo
 
 func subAgentDynamicToolIsKnowledgeSearch(tool CodingSubAgentDynamicToolResult) bool {
 	switch strings.ToLower(strings.TrimSpace(tool.Tool)) {
-	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
 		return true
 	default:
 		return false
@@ -18916,6 +18929,7 @@ var codingSubAgentDynamicToolNames = map[string]bool{
 	"coding_knowledge_search":   true,
 	"knowledge_search":          true,
 	"knowledge_image_search":    true,
+	"memory_search":             true,
 	"web_search":                true,
 	"web_fetch":                 true,
 	"ssh":                       true,
@@ -19816,11 +19830,13 @@ func runTaskWithSubAgentRuntimeOptions(
 			handler.applyStickyCodingPermissions(loopCtx.UserID, sa)
 		}
 	}
-	// Wire knowledge stores for experience recall and project doc lookup.
+	// Wire knowledge stores for experience recall and project doc lookup,
+	// plus the shared long-term memory store for read-only memory_search.
 	if handler != nil && handler.app != nil {
 		codingKB := handler.app.ensureCodingKnowledgeStore()
 		generalKB := getAutoRecallStoreForApp(handler.app, false)
 		sa.SetKnowledgeStores(codingKB, generalKB)
+		sa.SetMemoryStore(handler.currentMemoryStore())
 	}
 
 	store, closeStore, err := openGUICodingRuntimeStore(handler)

@@ -3601,29 +3601,50 @@ export const SidebarTaskManagement = ({
     const themeToggleLabel = headerThemeMode === 'dark'
         ? textForLang(lang, 'Switch to light mode', '切换到浅色模式', '切換到淺色模式')
         : textForLang(lang, 'Switch to dark mode', '切换到深色模式', '切換到深色模式');
+    // Zero-count chips stay off the line (same conditional-chip rule the
+    // paused/shared chips already followed): with the title sharing the row,
+    // “进行中 0” style rows are noise — a chip returns the moment it has
+    // tasks, or stays while it is the active filter so a selection can never
+    // vanish under the cursor.
     const taskFilterChips = useMemo(() => {
         const chips: { key: TaskStatusFilter; label: string; count: number }[] = [
             { key: 'all', label: textForLang(lang, 'All', '全部', '全部'), count: visibleTasks.length },
+        ];
+        const statusChips: { key: Exclude<TaskStatusFilter, 'all'>; label: string; count: number }[] = [
             { key: 'running', label: textForLang(lang, 'In progress', '进行中', '進行中'), count: taskFilterCounts.running },
             { key: 'pending', label: textForLang(lang, 'Pending', '待处理', '待處理'), count: taskFilterCounts.pending },
             { key: 'completed', label: textForLang(lang, 'Completed', '已完成', '已完成'), count: taskFilterCounts.completed },
+            // 'created by me' is dropped because it always equals 'all' here.
+            { key: 'paused', label: textForLang(lang, 'Paused', '已暂停', '已暫停'), count: taskFilterCounts.paused },
+            { key: 'shared', label: textForLang(lang, 'Shared with me', '分享给我的', '分享給我的'), count: taskFilterCounts.shared },
         ];
-        // Low-frequency filters only appear when they actually have tasks;
-        // 'created by me' is dropped because it always equals 'all' here.
-        if (taskFilterCounts.paused > 0 || taskFilter === 'paused') chips.push({ key: 'paused', label: textForLang(lang, 'Paused', '已暂停', '已暫停'), count: taskFilterCounts.paused });
-        if (taskFilterCounts.shared > 0 || taskFilter === 'shared') chips.push({ key: 'shared', label: textForLang(lang, 'Shared with me', '分享给我的', '分享給我的'), count: taskFilterCounts.shared });
+        for (const chip of statusChips) {
+            if (chip.count > 0 || taskFilter === chip.key) chips.push(chip);
+        }
         return chips;
     }, [lang, taskFilter, visibleTasks.length, taskFilterCounts]);
     const workspaceFilterChips = useMemo(() => {
         // No "all" chip here: the status row's 全部 already shows the total, and
         // a selected workspace chip toggles back off to "all" on a second click.
-        const chips: { key: 'all' | TaskWorkspaceKind; label: string; count: number }[] = [
-            { key: 'local', label: workspaceKindLabel('local', lang), count: workspaceFilterCounts.local },
-            { key: 'cloud', label: workspaceKindLabel('cloud', lang), count: workspaceFilterCounts.cloud },
-            { key: 'remote', label: workspaceKindLabel('remote', lang), count: workspaceFilterCounts.remote },
+        const chips: { key: 'all' | TaskWorkspaceKind; label: string; count: number }[] = [];
+        const kinds: { key: TaskWorkspaceKind; count: number }[] = [
+            { key: 'local', count: workspaceFilterCounts.local },
+            { key: 'cloud', count: workspaceFilterCounts.cloud },
+            { key: 'remote', count: workspaceFilterCounts.remote },
         ];
+        for (const kind of kinds) {
+            if (kind.count > 0 || workspaceFilter === kind.key) {
+                chips.push({ key: kind.key, label: workspaceKindLabel(kind.key, lang), count: kind.count });
+            }
+        }
         return chips;
-    }, [lang, visibleTasks.length, workspaceFilterCounts]);
+    }, [lang, workspaceFilter, workspaceFilterCounts]);
+    // All-local list on the default filter: the lone 本地 chip is redundant
+    // with 全部, so the whole line stays hidden until cloud/remote tasks (or
+    // an active workspace filter) give it something to say.
+    const showWorkspaceFilterRow = workspaceFilter !== 'all'
+        || workspaceFilterCounts.cloud > 0
+        || workspaceFilterCounts.remote > 0;
     const taskListRef = useRef<HTMLDivElement | null>(null);
     const activeListedTask = useMemo(() => {
         if (!activeRowContext) return null;
@@ -5786,12 +5807,15 @@ export const SidebarTaskManagement = ({
             />
         )}
         <div className="mc-task-filter-stack">
-            <div className="mc-task-filter-panel__title">{textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
-            {/* Filter rows are noise while the list is empty on the default
-                filters (seven zero-count chips) — same conditional-chip rule
-                as paused/shared above; they return with the first task. */}
-            {(visibleTasks.length > 0 || taskFilter !== 'all' || workspaceFilter !== 'all') && (
-                <>
+            {/* One-line head: the panel title shares the row with the status
+                chips, and zero-count chips stay off it — the whole block reads
+                as one compact line (我的任务列表 · 全部 29 · 待处理 1 …). */}
+            <div className="mc-task-filter-head">
+                <div className="mc-task-filter-panel__title">{textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
+                {/* Filter rows are noise while the list is empty on the default
+                    filters — same conditional-chip rule as zero-count chips
+                    above; they return with the first task. */}
+                {(visibleTasks.length > 0 || taskFilter !== 'all' || workspaceFilter !== 'all') && (
                     <TaskFilterRow
                         ariaLabel={textForLang(lang, 'Filter tasks by status', '按状态筛选任务', '按狀態篩選任務')}
                         chips={taskFilterChips}
@@ -5800,16 +5824,18 @@ export const SidebarTaskManagement = ({
                         testIdPrefix="task-filter-"
                         layout="line"
                     />
-                    <TaskFilterRow
-                        ariaLabel={textForLang(lang, 'Filter tasks by workspace', '按工作空间筛选任务', '按工作空間篩選任務')}
-                        chips={workspaceFilterChips}
-                        value={workspaceFilter}
-                        onChange={key => setWorkspaceFilter(key === workspaceFilter ? 'all' : key)}
-                        testIdPrefix="task-workspace-filter-"
-                        titleFor={chip => `${workspaceSectionLabel(lang)} · ${chip.label}`}
-                        layout="line"
-                    />
-                </>
+                )}
+            </div>
+            {showWorkspaceFilterRow && (
+                <TaskFilterRow
+                    ariaLabel={textForLang(lang, 'Filter tasks by workspace', '按工作空间筛选任务', '按工作空間篩選任務')}
+                    chips={workspaceFilterChips}
+                    value={workspaceFilter}
+                    onChange={key => setWorkspaceFilter(key === workspaceFilter ? 'all' : key)}
+                    testIdPrefix="task-workspace-filter-"
+                    titleFor={chip => `${workspaceSectionLabel(lang)} · ${chip.label}`}
+                    layout="line"
+                />
             )}
         </div>
         <TaskMachineBar

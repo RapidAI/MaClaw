@@ -5,7 +5,7 @@
  *
  * 问题根因：
  *   renderContentWithCodeBlocks 对整个消息内容逐行做 Markdown 解析。
- *   每 33ms 的 token flush 都会触发整条消息的全量重新解析。
+ *   每 80ms 的 token flush 都会触发整条消息的全量重新解析。
  *   当消息超过 30-50KB 时，单帧解析时间超过 16ms，JS 主线程被阻塞。
  *
  * 解决方案：

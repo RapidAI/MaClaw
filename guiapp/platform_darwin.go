@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
@@ -511,6 +512,9 @@ func (a *App) downloadFile(dlPath string, url string) error {
 }
 
 func (a *App) restartApp() {
+	if testing.Testing() {
+		return
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return

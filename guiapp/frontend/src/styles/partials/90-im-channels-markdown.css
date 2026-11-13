@@ -4047,6 +4047,10 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 /* AssistantTitleBarNotifications.tsx — urgent notice toast, styled like the
    app's other floating cards (surface, themed border, shared elevation). */
 .atbn-anchor { position: relative; }
+/* Bell-less host (bellHidden): keep the bell's height so the absolutely
+   positioned panel's `top: 100%` still drops below the title bar instead of
+   collapsing onto it. */
+.atbn-anchor--bell-less { height: 30px; }
 .notification-toast {
   position: fixed;
   top: 48px;

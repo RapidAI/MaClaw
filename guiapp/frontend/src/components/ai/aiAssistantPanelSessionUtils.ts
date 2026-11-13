@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { buildOutgoingMessageMulti, type ChatMessage } from "./useAIAssistant";
+import { goalChecklistBodyFromText } from "./GoalChecklistCard";
 import { expertTabId } from "./expertTypes";
 import { cloudWorkspaceIdFromPath, isExplicitTaskCopy } from "./codingTaskMode";
 import { normalizeProjectSessionPath } from "./assistantSessionPath";
@@ -279,6 +280,44 @@ export function upsertGoalChecklistInHistory(history: ChatMessage[], sessionKey:
     };
     if (index < 0) return [...history, next];
     return history.map((message, at) => at === index ? { ...message, ...next } : message);
+}
+
+/**
+ * The newest host checklist row, the way the transcript card would show it.
+ * A stored host continuation kept as a user row is rewritten into the
+ * checklist body. Empty when nothing qualifies.
+ */
+export function latestHostGoalChecklistText(messages: readonly ChatMessage[] | null | undefined): string {
+    const rows = Array.isArray(messages) ? messages : [];
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const message = rows[index];
+        if (!message) continue;
+        if (message.kind === "goalChecklist") return String(message.content || "");
+        // Same conversion renderMessage applied inline: a host continuation
+        // stored as a user row still feeds the float.
+        if (message.role === "user" && isHostGoalChecklistText(message.content || "")) {
+            return rewriteHostGoalChecklistBody(message.content || "");
+        }
+    }
+    return "";
+}
+
+/**
+ * The float's body for one checklist text. Empty when nothing qualifies.
+ * A finished goal (已完成 status line) also returns empty — the float retires
+ * with the goal, the same rule the goal bar applies (visible=false on
+ * complete); the transcript keeps the collapsed card for reference.
+ */
+export function goalChecklistOverlayBodyFromText(text: string): string {
+    const body = String(text || "");
+    if (!body.trim()) return "";
+    if (goalChecklistBodyFromText(body)?.status === "complete") return "";
+    return body;
+}
+
+/** Convenience form used by tests; the panel splits the two for cheaper renders. */
+export function goalChecklistOverlayBodyFromMessages(messages: readonly ChatMessage[] | null | undefined): string {
+    return goalChecklistOverlayBodyFromText(latestHostGoalChecklistText(messages));
 }
 
 /**

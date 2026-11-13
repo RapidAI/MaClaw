@@ -108,7 +108,7 @@ func TestBotSettingsSaveIsAuditedWithoutSecrets(t *testing.T) {
 func TestBotLLMSettingsSaveIsAuditedWithoutTheKey(t *testing.T) {
 	svc := botmgmt.NewService(&botSettingsMem{})
 	audit := &botAuditMem{}
-	body := `{"current":"lp_abcdef0123456789","providers":[{"id":"lp_abcdef0123456789","name":"OpenAI","protocol":"openai","url":"https://api.openai.com/v1","key":"sk-live-secret","model":"gpt-4o"}]}`
+	body := `{"current":"lp_abcdef0123456789","providers":[{"id":"lp_abcdef0123456789","name":"OpenAI","protocol":"openai","url":"https://api.openai.com/v1","key":"sk-live-secret","model":"gpt-4o"}],"roles":{"foreground":{"mode":"pin","provider":"lp_abcdef0123456789","model":"gpt-4o-mini"}}}`
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/bots/llm", strings.NewReader(body))
 	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "admin-1", Scope: "tenant", TenantID: "tenant-a"}))
 	rec := httptest.NewRecorder()
@@ -124,6 +124,11 @@ func TestBotLLMSettingsSaveIsAuditedWithoutTheKey(t *testing.T) {
 	}
 	if strings.Contains(audit.logs[0].PayloadJSON, "sk-live-secret") || !strings.Contains(audit.logs[0].PayloadJSON, `"protocol":"openai"`) {
 		t.Fatalf("audit payload = %s", audit.logs[0].PayloadJSON)
+	}
+	// The saved per-role model override is part of the record of what the
+	// administrator chose, and it carries no credential.
+	if !strings.Contains(audit.logs[0].PayloadJSON, `"model":"gpt-4o-mini"`) {
+		t.Fatalf("audit payload lost the role model: %s", audit.logs[0].PayloadJSON)
 	}
 }
 
@@ -150,7 +155,7 @@ func TestBotLLMModelsAdminHandlerListsProviderCatalog(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	bad := admin(httptest.NewRequest(http.MethodPost, "/api/admin/bots/llm/models", strings.NewReader(`{"protocol":"openai","url":"` + provider.URL + `","key":"sk-wrong"}`)))
+	bad := admin(httptest.NewRequest(http.MethodPost, "/api/admin/bots/llm/models", strings.NewReader(`{"protocol":"openai","url":"`+provider.URL+`","key":"sk-wrong"}`)))
 	badRec := httptest.NewRecorder()
 	PostBotLLMModelsAdminHandler(svc).ServeHTTP(badRec, bad)
 	if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "llm provider key is invalid") {

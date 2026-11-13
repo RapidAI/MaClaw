@@ -902,8 +902,8 @@ const (
 // DesktopBotLLMAccount is one Hub user's cached bot-model view on the desktop.
 // ChoiceJSON is the view without credentials.
 type DesktopBotLLMAccount struct {
-	Migrated   bool     `json:"migrated,omitempty"`
-	ChoiceJSON string   `json:"choice_json,omitempty"`
+	Migrated   bool   `json:"migrated,omitempty"`
+	ChoiceJSON string `json:"choice_json,omitempty"`
 	// Pending are local role pins that still need a save before Hub has them.
 	// They must not be cleared just because another role was stored.
 	Pending []string `json:"pending,omitempty"`
@@ -912,10 +912,13 @@ type DesktopBotLLMAccount struct {
 // MaclawHubBotRole is one Bot-management role assignment. Mode inherit (or
 // empty) follows the default current provider. Pin requires Provider, which
 // is a provider display name (or hub-llm for the official group). Unused is
-// grounder-only: no grounding model.
+// grounder-only: no grounding model. Model, when set on a pin, overrides the
+// provider's default model for this role; the official group ignores it
+// because the hub service schedules its own model.
 type MaclawHubBotRole struct {
 	Mode     string `json:"mode,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 // MaclawHubBotRoles is the per-role provider choice Hub writes to MaClawSrv.

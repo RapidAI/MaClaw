@@ -512,6 +512,14 @@ export function CompanionPptxAnnotator({
     const drawToolRef = useRef<CompanionDrawTool>("line");
     const pathKey = pdfMarkPathKey(path);
 
+    // A slide switch closes any open menu — its anchor point was on the old
+    // page. The armed rect color and pen mode stay: they apply to whatever
+    // slide is showing when the drag begins.
+    useEffect(() => {
+        setMenu(null);
+        setRectDraft(null);
+    }, [page]);
+
     useEffect(() => {
         setMarks(loadPdfMarks(path));
         setDrawings(loadPdfDrawings(path));
@@ -521,6 +529,7 @@ export function CompanionPptxAnnotator({
         setOpenNoteId("");
         setRectDraft(null);
         setRectColor(null);
+        setDrawMode(false);
     }, [path]);
 
     useEffect(() => {
@@ -571,7 +580,7 @@ export function CompanionPptxAnnotator({
     const undoDrawing = () => {
         for (let index = drawingsRef.current.length - 1; index >= 0; index -= 1) {
             const drawing = drawingsRef.current[index];
-            if (drawing.shared) continue;
+            if (drawing.shared || drawing.page !== page) continue;
             writeDrawings([...drawingsRef.current.slice(0, index), ...drawingsRef.current.slice(index + 1)]);
             return;
         }
@@ -681,6 +690,10 @@ export function CompanionPptxAnnotator({
     // pen's box tool but committing a stored mark instead of a drawing.
     const startRect = (event: React.MouseEvent) => {
         if (!rectColor || event.button !== 0) return;
+        // A rect drag that begins on a pin, ribbon, or the draw bar is a click
+        // on that control, not a marquee start.
+        const target = event.target as HTMLElement | null;
+        if (target?.closest?.("[data-pptx-note], [data-pptx-bookmark], .companion-doc-draw, .companion-pptx-note-card")) return;
         event.preventDefault();
         const start = pointOf(stageRef.current, event.clientX, event.clientY);
         if (!start) return;
@@ -909,8 +922,8 @@ export function CompanionPptxAnnotator({
                                     lang={lang || ""}
                                     note={note}
                                     stageRef={stageRef}
-                                    placeX={placeX}
-                                    placeY={placeY}
+                                    notePlaceX={placeX}
+                                    notePlaceY={placeY}
                                     onBody={updateNoteBody}
                                     onPlace={updateNotePlace}
                                     onClose={() => setOpenNoteId("")}
@@ -1004,8 +1017,8 @@ function PptxNoteCard({
     lang,
     note,
     stageRef,
-    placeX,
-    placeY,
+    notePlaceX,
+    notePlaceY,
     onBody,
     onPlace,
     onClose,
@@ -1013,8 +1026,8 @@ function PptxNoteCard({
     lang: string;
     note: PdfTranslation;
     stageRef: React.RefObject<HTMLDivElement | null>;
-    placeX: number;
-    placeY: number;
+    notePlaceX: number;
+    notePlaceY: number;
     onBody: (id: string, body: string) => void;
     onPlace: (id: string, place: { x: number; y: number }) => void;
     onClose: () => void;
@@ -1022,8 +1035,16 @@ function PptxNoteCard({
     const say = (zh: string) => say2(lang, zh);
     const [editing, setEditing] = useState(false);
     const [draft, setDraft] = useState(note.translation);
+    // A drag moves the card through local state; the store write happens once
+    // on release instead of per pointer event.
+    const [livePlace, setLivePlace] = useState<{ x: number; y: number } | null>(null);
+    // The edge flip is pinned when the drag starts so the card does not jump
+    // as its left edge crosses the midpoint under a steady cursor.
+    const flipRef = useRef<{ x: boolean; y: boolean }>({ x: false, y: false });
     const cardRef = useRef<HTMLDivElement>(null);
     const imeKey = (event: React.KeyboardEvent) => event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
+    const placeX = livePlace?.x ?? notePlaceX;
+    const placeY = livePlace?.y ?? notePlaceY;
 
     const beginDrag = (event: React.PointerEvent) => {
         if (event.button !== 0) return;
@@ -1036,15 +1057,23 @@ function PptxNoteCard({
         const cardBox = card.getBoundingClientRect();
         const offX = event.clientX - cardBox.left;
         const offY = event.clientY - cardBox.top;
+        flipRef.current = { x: placeX > 0.55, y: placeY > 0.55 };
+        const moved = (moveEvent: PointerEvent) => ({
+            x: Math.min(1, Math.max(0, (moveEvent.clientX - stageBox.left - offX) / stageBox.width)),
+            y: Math.min(1, Math.max(0, (moveEvent.clientY - stageBox.top - offY) / stageBox.height)),
+        });
+        let last = { x: placeX, y: placeY };
         const move = (moveEvent: PointerEvent) => {
-            const x = Math.min(1, Math.max(0, (moveEvent.clientX - stageBox.left - offX) / stageBox.width));
-            const y = Math.min(1, Math.max(0, (moveEvent.clientY - stageBox.top - offY) / stageBox.height));
-            onPlace(note.id, { x, y });
+            last = moved(moveEvent);
+            setLivePlace(last);
         };
-        const finish = () => {
+        const finish = (upEvent: PointerEvent) => {
             window.removeEventListener("pointermove", move, true);
             window.removeEventListener("pointerup", finish, true);
             window.removeEventListener("pointercancel", finish, true);
+            if (upEvent.type === "pointerup") last = moved(upEvent);
+            setLivePlace(null);
+            onPlace(note.id, last);
         };
         window.addEventListener("pointermove", move, true);
         window.addEventListener("pointerup", finish, true);
@@ -1057,18 +1086,28 @@ function PptxNoteCard({
         setEditing(false);
     };
 
+    // Past half-way, flip the card so it opens over the slide instead of
+    // clipping off the right/bottom edge.
+    const flip = livePlace ? flipRef.current : { x: placeX > 0.55, y: placeY > 0.55 };
+    const transform = `${flip.x ? "translateX(-100%)" : ""} ${flip.y ? "translateY(-100%)" : ""}`.trim() || undefined;
+
     return (
         <div
             ref={cardRef}
             className="companion-pptx-note-card"
             data-testid={`pptx-note-card-${note.id}`}
-            style={{ left: `${placeX * 100}%`, top: `${placeY * 100}%` }}
+            style={{ left: `${placeX * 100}%`, top: `${placeY * 100}%`, transform }}
             onContextMenu={(event) => {
+                // The head carries data-pptx-note, so a right-click there falls
+                // through to the stage handler and opens the note's menu; the
+                // body and editor keep the browser's menu suppressed.
+                const head = (event.target as HTMLElement | null)?.closest?.(".companion-pptx-note-card-head");
+                if (head) return;
                 event.preventDefault();
                 event.stopPropagation();
             }}
         >
-            <div className="companion-pptx-note-card-head" onPointerDown={beginDrag}>
+            <div className="companion-pptx-note-card-head" data-pptx-note={note.id} onPointerDown={beginDrag}>
                 <span className="companion-pptx-note-card-title">{note.name || note.text}</span>
                 <button type="button" className="companion-pdf-menu-btn" data-testid={`pptx-note-edit-${note.id}`} onPointerDown={(event) => event.stopPropagation()} onClick={() => { setDraft(note.translation); setEditing(true); }}>{say("编辑")}</button>
                 <button type="button" className="companion-pdf-menu-btn" data-testid={`pptx-note-close-${note.id}`} aria-label={say("关闭")} onPointerDown={(event) => event.stopPropagation()} onClick={onClose}>×</button>

@@ -148,7 +148,7 @@ func TestCodingPlanApproveTakesOwnerTurnWindow(t *testing.T) {
 
 	window, timeoutResponse := h.beginOwnerTurnWindow(&IMUserMessage{
 		RequestID: "holder", UserID: owner, Platform: desktopPlatform, Text: "占住窗口",
-	})
+	}, true)
 	if timeoutResponse != nil {
 		t.Fatalf("holder window failed: %+v", timeoutResponse)
 	}
@@ -195,7 +195,7 @@ func TestCodingWorkbenchLocalCommandStaysImmediate(t *testing.T) {
 
 	window, timeoutResponse := h.beginOwnerTurnWindow(&IMUserMessage{
 		RequestID: "holder", UserID: owner, Platform: desktopPlatform, Text: "占住窗口",
-	})
+	}, true)
 	if timeoutResponse != nil {
 		window.Close()
 		t.Fatalf("holder window failed: %+v", timeoutResponse)
@@ -238,7 +238,7 @@ func TestCodingPlanApproveInsideInternalLoopSkipsOwnerWindow(t *testing.T) {
 
 	window, timeoutResponse := h.beginOwnerTurnWindow(&IMUserMessage{
 		RequestID: "holder", UserID: owner, Platform: desktopPlatform, Text: "占住窗口",
-	})
+	}, true)
 	if timeoutResponse != nil {
 		t.Fatalf("holder window failed: %+v", timeoutResponse)
 	}

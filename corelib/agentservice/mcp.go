@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -1426,11 +1428,43 @@ func newLocalMCPClient(entry corelib.LocalMCPServerEntry) *localMCPClient {
 	return &localMCPClient{entry: entry}
 }
 
+// errLocalMCPSpawnSuppressedUnderTest mirrors the guard in guiapp's
+// LocalMCPClient: a `go test` binary must not launch arbitrary MCP server
+// commands (npx, node, ...) — they can download packages or stall for
+// minutes in the initialize/discovery handshake. Tests exercise the
+// spawn/discovery failure paths with nonexistent or fast-exiting commands,
+// which still fail — just sooner. Re-executing the test binary itself as a
+// helper process (GO_WANT_HELPER_PROCESS marker or a plain os.Args[0]
+// command, as used by MaClawSrv's MCP tests) stays allowed.
+var errLocalMCPSpawnSuppressedUnderTest = errors.New("local MCP spawn suppressed under go test")
+
+func localMCPCommandIsSelfReexec(entry corelib.LocalMCPServerEntry) bool {
+	if entry.Env["GO_WANT_HELPER_PROCESS"] == "1" {
+		return true
+	}
+	if !filepath.IsAbs(entry.Command) {
+		return false
+	}
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		return false
+	}
+	cmd, self := filepath.Clean(entry.Command), filepath.Clean(self)
+	if cmd == self {
+		return true
+	}
+	return runtime.GOOS == "windows" && strings.EqualFold(cmd, self)
+}
+
 func (c *localMCPClient) Start(ctx context.Context) error {
 	c.stateMu.Lock()
 	if c.running {
 		c.stateMu.Unlock()
 		return nil
+	}
+	if testing.Testing() && !localMCPCommandIsSelfReexec(c.entry) {
+		c.stateMu.Unlock()
+		return fmt.Errorf("%w: %q", errLocalMCPSpawnSuppressedUnderTest, c.entry.Command)
 	}
 	childCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(childCtx, c.entry.Command, c.entry.Args...)

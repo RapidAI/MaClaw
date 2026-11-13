@@ -11,6 +11,10 @@
 # Slots default 2; override with MACLAW_HEAVY_SLOTS (e.g. 1 to serialize fully).
 # Caps default GOMEMLIMIT=8GiB / GOMAXPROCS=8; override with
 # MACLAW_HEAVY_GOMEMLIMIT / MACLAW_HEAVY_GOMAXPROCS ("off" disables).
+# The gated command also runs at BelowNormal process priority (inherited by
+# the go toolchain, compiler, and test binaries) so a full test run cannot
+# starve the desktop/IDE. Override with MACLAW_HEAVY_PRIORITY (e.g. Idle,
+# Normal; "off" keeps the caller's priority).
 
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -90,6 +94,25 @@ if (-not $env:GOMAXPROCS) {
     if ($procs -ne 'off') { $env:GOMAXPROCS = $procs }
 }
 
+# Keep the host responsive: on Windows, child processes inherit the parent's
+# priority class, so lowering this process drops the go toolchain, compiler,
+# linker, and every spawned test binary (including GO_WANT_HELPER_PROCESS
+# re-execs) below interactive work. A saturating test run then competes only
+# for leftover CPU instead of freezing the desktop.
+$priority = if ($env:MACLAW_HEAVY_PRIORITY) { $env:MACLAW_HEAVY_PRIORITY } else { 'BelowNormal' }
+$prevPriority = $null
+$self = $null
+if ($priority -ne 'off') {
+    try {
+        $self = [System.Diagnostics.Process]::GetCurrentProcess()
+        $prevPriority = $self.PriorityClass
+        $self.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::$priority
+    } catch {
+        Write-Host "[goheavy] could not set process priority to '$priority': $($_.Exception.Message)"
+        $self = $null
+    }
+}
+
 $exitCode = 0
 try {
     $exe = $Cmd[0]
@@ -98,6 +121,9 @@ try {
     $exitCode = $LASTEXITCODE
     if ($null -eq $exitCode) { $exitCode = 0 }
 } finally {
+    if ($self -and $prevPriority) {
+        try { $self.PriorityClass = $prevPriority } catch {}
+    }
     Remove-Item $mySlotFile -Force -ErrorAction SilentlyContinue
 }
 exit $exitCode

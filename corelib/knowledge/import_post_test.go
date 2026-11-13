@@ -381,7 +381,7 @@ func TestWaitBackgroundBeforeCloseCompletesPostWork(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		src, err := store.SaveText(ctx, TextSaveRequest{
 			Title:       fmt.Sprintf("WaitClose 防勒索 文档 %d", i),
-			Text:        fmt.Sprintf("共享主题内容 防勒索 行为审计 %d。", i),
+			Text:        fmt.Sprintf("共享主题内容 防勒索 巡检记录 %d。", i),
 			ProjectPath: "D:/wait-close",
 			SaveScope:   SaveScopeProject,
 			DistillMode: DistillModeRules,

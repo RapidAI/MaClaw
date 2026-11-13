@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"testing"
 	"time"
 	"unsafe"
 
@@ -271,6 +272,9 @@ type windowsFloatingWindow struct {
 }
 
 func newFloatingWindow(app *App) floatingWindow {
+	if testing.Testing() {
+		return &noopFloatingWindow{app: app}
+	}
 	return &windowsFloatingWindow{app: app}
 }
 

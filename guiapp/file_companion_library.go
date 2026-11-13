@@ -768,8 +768,11 @@ type fileCompanionShareView struct {
 	Token string `json:"token"`
 	Name  string `json:"name"`
 	// Host/Admin are per-viewer flags on list rows. Host is a pointer so an
-	// older Hub (field absent) can default to the owner.
+	// older Hub (field absent) can default to the owner. Mine marks the share
+	// this member published from another Hub: it arrives on the received list
+	// but behaves like an owned row.
 	Host             *bool                    `json:"host,omitempty"`
+	Mine             bool                     `json:"mine,omitempty"`
 	Admin            bool                     `json:"admin,omitempty"`
 	HostLabel        string                   `json:"host_label,omitempty"`
 	PendingHost      bool                     `json:"pending_host,omitempty"`
@@ -814,8 +817,12 @@ type fileCompanionShareStatus struct {
 	status  int
 	message string
 	// A create that collides with a live share also names that share. The
-	// desktop adopts it instead of leaving a duplicate dead end.
-	token string
+	// desktop adopts it instead of leaving a duplicate dead end. For a share
+	// that lives on another Hub the view additionally carries its origin and
+	// the reader grant, so the adopt path can keep writing to that Hub.
+	token  string
+	origin string
+	grant  string
 }
 
 func (e *fileCompanionShareStatus) Error() string {
@@ -1546,6 +1553,14 @@ func mergeFileCompanionSharesWithRevoked(items, remote []FileCompanionLibraryIte
 			if item.HubOrigin == "" {
 				item.HubOrigin = prev.HubOrigin
 			}
+			// A remote-published share stays this member's own for its whole
+			// life; a stale snapshot that lost the flag must not demote the row.
+			if prev.Mine {
+				item.Mine = true
+			}
+			if prev.Admin {
+				item.Admin = true
+			}
 			// A hub that does not know about notes omits the field. Keep the
 			// notes this machine already stored. A list that left earlier
 			// also must not cover a note that landed while it was in flight.
@@ -1575,7 +1590,13 @@ func mergeFileCompanionSharesWithRevoked(items, remote []FileCompanionLibraryIte
 		kept = append(kept, item)
 	}
 	for token, prev := range previous {
-		if seen[token] || dismissed[token] || revoked[token] || prev.Visibility == "group" || !fileCompanionLibraryFileExists(prev.Path) {
+		if seen[token] || dismissed[token] || revoked[token] || !fileCompanionLibraryFileExists(prev.Path) {
+			continue
+		}
+		// A local group row missing from the list is already revoked by
+		// membership. A foreign group row waits on the probe: the remote
+		// snapshot going quiet only means the origin could not be read.
+		if prev.Visibility == "group" && fileCompanionHubOrigin(prev.HubOrigin) == "" {
 			continue
 		}
 		kept = append(kept, prev)
@@ -1614,6 +1635,22 @@ func applyForeignCompanionShares(items []FileCompanionLibraryItem, views map[str
 		}
 		if label := strings.TrimSpace(view.HostLabel); label != "" {
 			item.HostLabel = label
+		}
+		// The single-share GET does not carry the member flags; only the
+		// remote-shares list asserts them. Treat each as assert-only so a
+		// metadata refresh cannot demote the row this member published.
+		if view.Mine {
+			item.Mine = true
+		}
+		if view.Mine || view.Admin {
+			item.Admin = true
+		}
+		if view.Host != nil {
+			item.Host = *view.Host
+		}
+		if view.PendingHost {
+			item.PendingHost = true
+			item.PendingHostLabel = view.PendingHostLabel
 		}
 		if view.ExpiresAt != "" {
 			item.ExpiresAt = strings.TrimSpace(view.ExpiresAt)
@@ -2166,6 +2203,7 @@ func libraryItemsFromShares(views []fileCompanionShareView, mine bool, hub strin
 		if !fileCompanionShareTokenMatch.MatchString(token) || view.Expired {
 			continue
 		}
+		mine := mine || view.Mine
 		host := mine
 		if view.Host != nil {
 			host = *view.Host
@@ -2357,12 +2395,24 @@ func (a *App) ShareFileCompanionDocument(path, visibility, password, target, hig
 	}
 	defer file.Close()
 	name := filepath.Base(canonical)
-	view, err := postFileCompanionShare(hub, viewer, name, visibility, password, target, days, contentHash, file)
+	// A group that lives on another Hub takes the same upload through the
+	// relay endpoint on this Hub: it forwards the body with the stored invite
+	// secret, so the home login never reaches the origin.
+	endpoint := hub + "/api/mobile/documents/shares"
+	if visibility == "group" {
+		if group, ok, groupErr := a.findFileCompanionRemoteGroup(target); groupErr == nil && ok && group.Remote {
+			endpoint = hub + "/api/mobile/documents/groups/" + target + "/remote-share"
+		}
+	}
+	view, err := postFileCompanionShareTo(endpoint, viewer, name, visibility, password, target, days, contentHash, file)
 	if err != nil {
 		if adopted, handled, adoptErr := a.adoptDuplicateFileCompanionShare(canonical, err, visibility, password, target, days, zipPath, hub, viewer); handled {
 			return adopted, adoptErr
 		}
 		return FileCompanionShareResult{}, err
+	}
+	if grant := strings.TrimSpace(view.ReaderGrant); fileCompanionReaderGrantMatch.MatchString(grant) {
+		_ = a.saveFileCompanionShareGrant(view.Token, grant)
 	}
 	item := libraryItemsFromShares([]fileCompanionShareView{view}, true, hub)
 	if len(item) == 0 {
@@ -2384,6 +2434,22 @@ func (a *App) ShareFileCompanionDocument(path, visibility, password, target, hig
 	}, nil
 }
 
+// findFileCompanionRemoteGroup returns the group row for groupID when it is
+// one this member joined on another Hub. A group that is not remote, or not
+// found, answers found=false.
+func (a *App) findFileCompanionRemoteGroup(groupID string) (FileCompanionGroup, bool, error) {
+	groups, err := a.ListFileCompanionGroups()
+	if err != nil {
+		return FileCompanionGroup{}, false, err
+	}
+	for _, group := range groups {
+		if group.ID == groupID {
+			return group, true, nil
+		}
+	}
+	return FileCompanionGroup{}, false, nil
+}
+
 // adoptDuplicateFileCompanionShare recovers the case where the Hub already
 // holds a live link for this paper, scope, and owner. It applies the settings
 // the person just chose, pushes the current project onto that link, and puts
@@ -2398,16 +2464,27 @@ func (a *App) adoptDuplicateFileCompanionShare(canonical string, shareErr error,
 	if !fileCompanionShareTokenMatch.MatchString(token) {
 		return FileCompanionShareResult{}, false, nil
 	}
+	// A share that lives on another Hub keeps being edited through that Hub:
+	// the grant is the member credential, and the row below must stay foreign.
+	route := FileCompanionLibraryItem{Source: "cloud", Token: token, HubOrigin: status.origin}
+	grant := strings.TrimSpace(status.grant)
+	if fileCompanionReaderGrantMatch.MatchString(grant) {
+		_ = a.saveFileCompanionShareGrant(token, grant)
+	}
 	// The link exists with this paper and scope; apply the password/expiry the
 	// person just selected before pushing the newer project.
-	if _, err := a.UpdateFileCompanionShare(token, visibility, password, target, days); err != nil {
+	if _, err := a.updateFileCompanionShareFor(hub, viewer, route, visibility, password, target, days); err != nil {
 		return FileCompanionShareResult{}, true, err
 	}
 	file, err := os.Open(zipPath)
 	if err != nil {
 		return FileCompanionShareResult{}, true, errors.New("无法保存分享")
 	}
-	view, syncErr := postFileCompanionShareSync(hub, viewer, token, filepath.Base(canonical), file)
+	targetHub, auth, callGrant, foreign := a.fileCompanionShareCall(hub, viewer, route)
+	if foreign && callGrant == "" {
+		return FileCompanionShareResult{}, true, errors.New("请重新导入分享链接")
+	}
+	view, syncErr := postFileCompanionShareSync(targetHub, auth, callGrant, token, filepath.Base(canonical), file)
 	_ = file.Close()
 	if syncErr != nil {
 		return FileCompanionShareResult{}, true, syncErr
@@ -2416,6 +2493,9 @@ func (a *App) adoptDuplicateFileCompanionShare(canonical string, shareErr error,
 		return FileCompanionShareResult{}, true, errors.New("云端没有返回分享链接")
 	}
 	item := libraryItemsFromShares([]fileCompanionShareView{view}, true, hub)
+	if len(item) > 0 && status.origin != "" {
+		item[0].HubOrigin = status.origin
+	}
 	if len(item) == 0 {
 		return FileCompanionShareResult{}, true, errors.New("云端没有返回分享链接")
 	}
@@ -2484,6 +2564,25 @@ func (a *App) UpdateFileCompanionShare(token, visibility, password, target strin
 	if err != nil {
 		return FileCompanionShareResult{}, err
 	}
+	route, _ := a.fileCompanionCloudByToken(token)
+	if route.Token == "" {
+		route = FileCompanionLibraryItem{Source: "cloud", Token: token}
+	}
+	return a.updateFileCompanionShareFor(hub, viewer, route, visibility, password, target, days)
+}
+
+// updateFileCompanionShareFor PATCHes the share on the Hub that owns it. item
+// carries HubOrigin when the share lives on another Hub; the member's grant
+// is the credential there, not the home login.
+func (a *App) updateFileCompanionShareFor(hub, viewer string, item FileCompanionLibraryItem, visibility, password, target string, days int) (FileCompanionShareResult, error) {
+	token := strings.TrimSpace(item.Token)
+	if token == "" {
+		return FileCompanionShareResult{}, errors.New("分享链接不存在")
+	}
+	targetHub, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return FileCompanionShareResult{}, errors.New("请重新导入分享链接")
+	}
 	body := map[string]any{
 		"visibility": visibility,
 		"password":   password,
@@ -2495,7 +2594,7 @@ func (a *App) UpdateFileCompanionShare(token, visibility, password, target strin
 		body["days"] = days
 	}
 	payload, _ := json.Marshal(body)
-	raw, err := a.fileCompanionHubJSON(http.MethodPatch, hub+"/api/mobile/documents/shares/"+token, viewer, payload)
+	raw, err := a.fileCompanionHubJSONAs(http.MethodPatch, targetHub+"/api/mobile/documents/shares/"+token, auth, grant, payload, foreign)
 	if err != nil {
 		// An old hub has no route for this at all. Its plain 404 or 405 reads
 		// better when the message says what to do about it.
@@ -2517,15 +2616,18 @@ func (a *App) UpdateFileCompanionShare(token, visibility, password, target strin
 		Revision:   view.Revision,
 	}
 	if result.URL == "" {
-		result.URL = strings.TrimRight(hub, "/") + "/hub/documents/shares/" + token
+		result.URL = strings.TrimRight(targetHub, "/") + "/hub/documents/shares/" + token
 	}
-	item := libraryItemsFromShares([]fileCompanionShareView{view}, true, hub)
-	if len(item) == 0 {
+	if view.HubOrigin == "" && foreign {
+		view.HubOrigin = item.HubOrigin
+	}
+	rows := libraryItemsFromShares([]fileCompanionShareView{view}, true, hub)
+	if len(rows) == 0 {
 		return result, nil
 	}
 	// Rewrite the row this machine already has. A row deleted while the edit
 	// was in flight is not brought back.
-	if _, err := a.updateFileCompanionCloudRow(item[0]); err != nil {
+	if _, err := a.updateFileCompanionCloudRow(rows[0]); err != nil {
 		return FileCompanionShareResult{}, err
 	}
 	return result, nil
@@ -2566,7 +2668,13 @@ func (a *App) DeleteFileCompanionShare(token string) (FileCompanionProjectDelete
 	if err != nil {
 		return FileCompanionProjectDelete{}, err
 	}
-	_, err = a.fileCompanionHubJSON(http.MethodDelete, hub+"/api/mobile/documents/shares/"+token, viewer, nil)
+	item, _ := a.fileCompanionCloudByToken(token)
+	item.Token = token
+	targetHub, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return FileCompanionProjectDelete{}, errors.New("请重新导入分享链接")
+	}
+	_, err = a.fileCompanionHubJSONAs(http.MethodDelete, targetHub+"/api/mobile/documents/shares/"+token, auth, grant, nil, foreign)
 	if err != nil {
 		var status *fileCompanionShareStatus
 		if !errors.As(err, &status) || status == nil {
@@ -2607,6 +2715,12 @@ func fileCompanionDocumentSHA256(path string) (string, error) {
 }
 
 func postFileCompanionShare(hub, viewer, name, visibility, password, target string, days int, contentHash string, raw io.Reader) (fileCompanionShareView, error) {
+	return postFileCompanionShareTo(hub+"/api/mobile/documents/shares", viewer, name, visibility, password, target, days, contentHash, raw)
+}
+
+// postFileCompanionShareTo uploads the share multipart to one endpoint. The
+// remote-group relay uses it with the group path instead of the shares path.
+func postFileCompanionShareTo(endpoint, viewer, name, visibility, password, target string, days int, contentHash string, raw io.Reader) (fileCompanionShareView, error) {
 	pipeReader, pipeWriter := io.Pipe()
 	writer := multipart.NewWriter(pipeWriter)
 	go func() {
@@ -2657,7 +2771,7 @@ func postFileCompanionShare(hub, viewer, name, visibility, password, target stri
 		}
 		writeErr = writer.Close()
 	}()
-	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares", pipeReader)
+	req, err := http.NewRequest(http.MethodPost, endpoint, pipeReader)
 	if err != nil {
 		_ = pipeWriter.CloseWithError(err)
 		return fileCompanionShareView{}, err
@@ -2674,10 +2788,15 @@ func postFileCompanionShare(hub, viewer, name, visibility, password, target stri
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		failure := &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
 		var payload struct {
-			Token string `json:"token"`
+			Token string                 `json:"token"`
+			Share *fileCompanionShareView `json:"share"`
 		}
 		if json.Unmarshal(body, &payload) == nil {
 			failure.token = strings.TrimSpace(payload.Token)
+			if payload.Share != nil {
+				failure.origin = fileCompanionHubOrigin(payload.Share.HubOrigin)
+				failure.grant = strings.TrimSpace(payload.Share.ReaderGrant)
+			}
 		}
 		return fileCompanionShareView{}, failure
 	}
@@ -2713,8 +2832,14 @@ func (a *App) TransferFileCompanionShareHost(token, contact string) error {
 	if err != nil {
 		return err
 	}
+	item, _ := a.fileCompanionCloudByToken(token)
+	item.Token = token
+	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return errors.New("请重新导入分享链接")
+	}
 	payload, _ := json.Marshal(map[string]string{"contact": contact})
-	_, err = a.fileCompanionHubJSON(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/host", viewer, payload)
+	_, err = a.fileCompanionHubJSONAs(http.MethodPost, target+"/api/mobile/documents/shares/"+token+"/host", auth, grant, payload, foreign)
 	return err
 }
 
@@ -2739,7 +2864,13 @@ func (a *App) RevokeFileCompanionShareHost(token, action string) error {
 	if err != nil {
 		return err
 	}
-	_, err = a.fileCompanionHubJSON(http.MethodDelete, hub+"/api/mobile/documents/shares/"+token+"/host?action="+action, viewer, nil)
+	item, _ := a.fileCompanionCloudByToken(token)
+	item.Token = token
+	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return errors.New("请重新导入分享链接")
+	}
+	_, err = a.fileCompanionHubJSONAs(http.MethodDelete, target+"/api/mobile/documents/shares/"+token+"/host?action="+action, auth, grant, nil, foreign)
 	return err
 }
 
@@ -2765,7 +2896,13 @@ func (a *App) decideFileCompanionShareHost(token, decision string) error {
 	if err != nil {
 		return err
 	}
-	_, err = a.fileCompanionHubJSON(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/host/"+decision, viewer, nil)
+	item, _ := a.fileCompanionCloudByToken(token)
+	item.Token = token
+	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return errors.New("请重新导入分享链接")
+	}
+	_, err = a.fileCompanionHubJSONAs(http.MethodPost, target+"/api/mobile/documents/shares/"+token+"/host/"+decision, auth, grant, nil, foreign)
 	return err
 }
 
@@ -2799,7 +2936,25 @@ func (a *App) OpenFileCompanionShareFromNotification(token string) (string, erro
 			return path, nil
 		}
 	}
-	imported, err := a.ImportFileCompanionShare(token, "")
+	// A share that lives on another Hub cannot import from the home Hub at
+	// all. The link carries the origin so the import talks to the right Hub
+	// with the stored reader grant instead of the home login.
+	link := token
+	if item, ok := a.fileCompanionCloudByToken(token); ok && fileCompanionHubOrigin(item.HubOrigin) != "" {
+		link = strings.TrimRight(fileCompanionHubOrigin(item.HubOrigin), "/") + "/hub/documents/shares/" + token
+	} else if !ok {
+		if hub, viewer, loginErr := a.fileCompanionHubLogin(); loginErr == nil {
+			if remote, _, _, _, _, fetchErr := a.fetchFileCompanionShareList(hub, viewer); fetchErr == nil {
+				for _, row := range remote {
+					if row.Token == token && fileCompanionHubOrigin(row.HubOrigin) != "" {
+						link = strings.TrimRight(fileCompanionHubOrigin(row.HubOrigin), "/") + "/hub/documents/shares/" + token
+						break
+					}
+				}
+			}
+		}
+	}
+	imported, err := a.ImportFileCompanionShare(link, "")
 	if err != nil {
 		return "", err
 	}
@@ -3008,6 +3163,14 @@ func (a *App) upsertFileCompanionCloudLocked(item FileCompanionLibraryItem) erro
 			// Sync and import replace the row with the snapshot taken before
 			// the upload. A note that landed while that request was in flight
 			// has the newer revision and has to stay.
+			if current.Mine && !item.Mine {
+				// Ownership is monotone: the share's owner never changes, but
+				// a re-import response cannot say this row is the member's own
+				// remote-published share. Keep the flag or the row loses its
+				// host controls until the next list refresh restores them.
+				item.Mine = true
+				item.Admin = true
+			}
 			if current.NotesRevision > item.NotesRevision {
 				item.Notes = current.Notes
 				item.NotesRevision = current.NotesRevision

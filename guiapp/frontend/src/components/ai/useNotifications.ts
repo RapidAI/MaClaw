@@ -151,6 +151,39 @@ function syncGeneration(value: unknown): number | null {
 }
 
 // ---------------------------------------------------------------------------
+// Shared unread-count mirror
+// ---------------------------------------------------------------------------
+
+// The notification state is per-hook-instance (the single hidden host in the
+// assistant panel). UI outside that host — the sidebar status bell — badges
+// off this module-level mirror instead of mounting a second hook instance,
+// which would double the Wails event subscriptions and the initial load.
+let sharedUnreadCount = 0;
+const sharedUnreadSubscribers = new Set<(count: number) => void>();
+
+/** Subscribe to the mirrored unread count. Fires immediately with the current value. */
+export function subscribeSharedUnreadCount(listener: (count: number) => void): () => void {
+  listener(sharedUnreadCount);
+  sharedUnreadSubscribers.add(listener);
+  return () => { sharedUnreadSubscribers.delete(listener); };
+}
+
+/** Publish an unread count to the mirror (no-op when unchanged). */
+export function publishSharedUnreadCount(count: number): void {
+  const next = Math.max(0, Math.round(Number(count) || 0));
+  if (next === sharedUnreadCount) return;
+  sharedUnreadCount = next;
+  sharedUnreadSubscribers.forEach((listener) => listener(next));
+}
+
+/** The sidebar status bell's badge: the mirrored unread count. */
+export function useSharedUnreadCount(): number {
+  const [count, setCount] = useState(sharedUnreadCount);
+  useEffect(() => subscribeSharedUnreadCount(setCount), []);
+  return count;
+}
+
+// ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
 
@@ -387,6 +420,10 @@ export function useNotifications(): UseNotificationsReturn {
   // -------------------------------------------------------------------------
   // Derived values
   // -------------------------------------------------------------------------
+
+  // Mirror the unread count to the shared store so UI outside this host
+  // (the sidebar status bell) badges without a second hook instance.
+  useEffect(() => { publishSharedUnreadCount(state.unreadCount); }, [state.unreadCount]);
 
   const displayCount = Math.min(state.unreadCount, 10);
   const shouldAnimate = state.unreadCount > 0;
