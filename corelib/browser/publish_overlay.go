@@ -52,10 +52,10 @@ func (p *publishRun) progressBusy() bool {
 	return err == nil && strings.TrimSpace(v) != ""
 }
 
-// publishPictureGap is a structure error that names a picture not in the
-// editor yet, as opposed to a formatting problem.
-func publishPictureGap(err string) bool {
-	return strings.Contains(err, "picture") && strings.Contains(err, "missing")
+// structurePictureGap is the structure walk's own missing-picture list.
+// The error text is not consulted.
+func structurePictureGap(missing []int) bool {
+	return len(missing) > 0
 }
 
 // closeOverlays shuts open popups the generic way a person would: Escape,

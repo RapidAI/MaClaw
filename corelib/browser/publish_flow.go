@@ -1551,6 +1551,50 @@ func (p *publishRun) submitControl() (int, error) {
 	return 0, fmt.Errorf("no visible enabled submit button (tried %q and labels starting with a submit verb); pass submit_texts", strings.Join(p.spec.SubmitTexts, "/"))
 }
 
+// markSubmitOverlays remembers every element already in the document. The
+// memory is a WeakSet, not an attribute, so it cannot be copied into the
+// published article. A control added by the click sits in a parent that is
+// not in that set. A re-rendered button keeps its existing parent.
+func (p *publishRun) markSubmitOverlays() {
+	_, _ = p.eval(`window.__mcBefore = new WeakSet(); document.querySelectorAll('*').forEach(e => window.__mcBefore.add(e))`)
+}
+
+// submitInNewOverlay reports a submit button whose parent element was not
+// in the document when the click started. A button node replaced inside a
+// parent that was already there is the same control.
+func (p *publishRun) submitInNewOverlay() bool {
+	out, err := p.eval(submitNewOverlayJS)
+	return err == nil && strings.TrimSpace(out) == "yes"
+}
+
+func (p *publishRun) clickMarkedSubmit() error {
+	obj, err := p.element(`window.__mcSubmit`)
+	if err != nil || obj == "" {
+		return fmt.Errorf("the new submit control could not be pressed")
+	}
+	x, y, err := p.boxCenter(map[string]interface{}{"objectId": obj})
+	if err != nil {
+		return err
+	}
+	return p.mouseClick(x, y)
+}
+
+const submitNewOverlayJS = `(() => {
+  const vis = e => { const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) !== 0; };
+  const verb = /^(发布|发表|发送|提交|确定并发布|确认发布|立即发布|publish|post|submit|send)/i;
+  const skip = /设置|草稿|预览|定时|取消|保存|评论|回复|setting|draft|preview|schedul|cancel|save|comment|reply/i;
+  const btn = [...document.querySelectorAll('button,[role=button]')].filter(vis).reverse().find(b => {
+    const parent = b.parentElement;
+    if (!parent || (window.__mcBefore && window.__mcBefore.has(parent))) return false;
+    const t = (b.innerText || '').replace(/\s+/g, ' ').trim();
+    return t && [...t].length <= 10 && verb.test(t) && !skip.test(t);
+  });
+  if (!btn) return '';
+  window.__mcSubmit = btn;
+  return 'yes';
+})()`
+
 func (p *publishRun) clickBackendNode(id int) error {
 	x, y, err := p.boxCenter(map[string]interface{}{"backendNodeId": id})
 	if err != nil {
@@ -1648,7 +1692,7 @@ func (p *publishRun) submit() (string, error) {
 	p.submitClicked.Store(true)
 	clickedAt := time.Now()
 	p.clickedAt = clickedAt
-	clickedID, _ := p.submitControl()
+	p.markSubmitOverlays()
 	if err := p.clickSubmit(); err != nil {
 		if strings.Contains(err.Error(), "timeout") {
 			// The page froze inside the click handler: the click went
@@ -1658,7 +1702,7 @@ func (p *publishRun) submit() (string, error) {
 		return "", err
 	}
 	confirmed := false
-	retried, panels := false, 0
+	extra, panels := 0, 0
 	panelNote := ""
 	lastClick := time.Now()
 	// The step budget is the safety cap. The loop ends when the outcome
@@ -1716,23 +1760,27 @@ func (p *publishRun) submit() (string, error) {
 				}
 			}
 		}
-		// A new submit control (a settings panel's own button) is not a
-		// retry of the click we already made. Press it once when the first
-		// click sent no publish write. The same control is never pressed
-		// again: that is how a duplicate post is made.
-		if time.Since(lastClick) > 1500*time.Millisecond && !p.panelConfirmed && panelNote == "" && (p.net == nil || (len(p.net.submitWritesSince(clickedAt)) == 0 && p.net.draftWritesSince(clickedAt) == 0)) {
-			if id, err := p.submitControl(); err == nil && id != 0 && id != clickedID {
-				clickedID = id
-				lastClick = time.Now()
-				if err := p.clickBackendNode(id); err != nil {
-					return "", err
-				}
-				continue
-			}
+		// A submit button inside a dialog that was not on the page before
+		// the click is that dialog's own confirm, pressed once. A changed
+		// node id is not a new control. A write already sent is never
+		// clicked again, and without a network observer there is no second click.
+		writes, drafts := 0, 0
+		if p.net != nil {
+			writes = len(p.net.submitWritesSince(clickedAt))
+			drafts = p.net.draftWritesSince(clickedAt)
 		}
-		// One outcome. A second click of the same control happens only when
-		// the editor is still up, the platform's own list does not contain
-		// the post, and the editor is ready again.
+		quiet := submitClickAgain(p.net != nil, writes, drafts, extra)
+		if time.Since(lastClick) > 1500*time.Millisecond && !p.panelConfirmed && panelNote == "" && quiet && p.submitInNewOverlay() {
+			extra++
+			lastClick = time.Now()
+			if err := p.clickMarkedSubmit(); err != nil {
+				return "", err
+			}
+			continue
+		}
+		// One outcome. A second click of the editor's own button happens
+		// only when the list was read, the post is not on it, the editor
+		// is ready, and this click sent no publish write.
 		facts := p.observeSubmit(clickedAt, true)
 		switch submitOutcome(facts) {
 		case submitPublished:
@@ -1740,13 +1788,13 @@ func (p *publishRun) submit() (string, error) {
 		case submitPending:
 			continue
 		case submitInEditor:
-			if retried || p.panelConfirmed || panelNote != "" {
+			if !quiet || p.panelConfirmed || panelNote != "" {
 				return "", fmt.Errorf("submit outcome still-in-editor: the platform's list does not contain the post; %s", p.afterSubmitState(clickedAt))
 			}
 			if ready, _ := editorReady(p.editorFacts()); !ready {
 				continue
 			}
-			retried = true
+			extra++
 			lastClick = time.Now()
 			if err := p.clickSubmit(); err != nil {
 				return "", err
@@ -2284,7 +2332,7 @@ func (p *publishRun) trialMeasure() {
 		// Wait (bounded) for uploads the paste started, then count the
 		// pictures that still have no server URL.
 		_, _ = p.checkStructure(obj, "editor")
-		if _, pending, err := p.checkStructureOnce(obj, "editor"); err == nil || pending > 0 {
+		if _, pending, _, err := p.checkStructureOnce(obj, "editor"); err == nil || pending > 0 {
 			n -= pending
 		}
 	}

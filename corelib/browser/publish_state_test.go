@@ -58,6 +58,55 @@ func TestSubmitOutcomeIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSubmitDoesNotClickAgainAfterAWrite(t *testing.T) {
+	if submitClickAgain(true, 1, 0, 0) {
+		t.Fatal("a submit write was clicked again")
+	}
+	if submitClickAgain(true, 0, 1, 0) {
+		t.Fatal("a draft write was clicked again")
+	}
+	if submitClickAgain(false, 0, 0, 0) {
+		t.Fatal("no network observer was clicked again")
+	}
+	if !submitClickAgain(true, 0, 0, 0) {
+		t.Fatal("a quiet observed click should allow one more press")
+	}
+	if submitClickAgain(true, 0, 0, 1) {
+		t.Fatal("a second extra press")
+	}
+}
+
+func TestNewControlIsNotANewNode(t *testing.T) {
+	// A re-rendered button is a new node id and is not, by itself, a new control.
+	appeared := false
+	if submitClickAgain(true, 0, 0, 0) && appeared {
+		t.Fatal("a node id change was treated as a new control")
+	}
+	appeared = true
+	if !submitClickAgain(true, 0, 0, 0) || !appeared {
+		t.Fatal("a dialog that appeared after the click is the one extra press")
+	}
+	if submitClickAgain(true, 0, 0, 1) && appeared {
+		t.Fatal("the new control was pressed twice")
+	}
+	if submitClickAgain(true, 1, 0, 0) && appeared {
+		t.Fatal("a write already sent was pressed again")
+	}
+}
+
+func TestStructureGapIsTheMissingIndex(t *testing.T) {
+	if structurePictureGap(nil) {
+		t.Fatal("an empty missing list is a gap")
+	}
+	if !structurePictureGap([]int{1}) {
+		t.Fatal("index 1 is not a gap")
+	}
+	// The words in an error are not the signal.
+	if structurePictureGap(nil) || !structurePictureGap([]int{8, 9}) {
+		t.Fatal("gap followed the error text")
+	}
+}
+
 func TestImageSrcRemote(t *testing.T) {
 	if !imageSrcRemote("https://pic.example/a.png") || !imageSrcRemote("http://pic.example/a.jpg") {
 		t.Fatal("remote")

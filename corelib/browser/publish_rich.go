@@ -355,13 +355,11 @@ func (p *publishRun) checkStructure(obj, where string) (string, error) {
 	start := time.Now()
 	fallback := start.Add(minDur(2*p.spec.StepBudget-15*time.Second, 45*time.Second))
 	for {
-		sum, pending, err := p.checkStructureOnce(obj, where)
-		// A formatting problem is terminal. A picture that is missing or
-		// still only a local preview is the same wait: the upload pipeline
-		// has not finished. It becomes a failure when an upload request
-		// fails, or when the network has gone idle and no progress remains.
-		gap := err != nil && publishPictureGap(err.Error())
-		if err != nil && !gap {
+		sum, pending, missing, err := p.checkStructureOnce(obj, where)
+		// A formatting problem is terminal. A picture the structure walk
+		// recorded as missing, or one still only a local preview, is the
+		// same wait: the upload pipeline has not finished.
+		if err != nil && !structurePictureGap(missing) {
 			return sum, err
 		}
 		if err == nil && pending == 0 {
@@ -401,10 +399,10 @@ const (
 	publishUploadLookback = 5 * time.Minute
 )
 
-func (p *publishRun) checkStructureOnce(obj, where string) (string, int, error) {
+func (p *publishRun) checkStructureOnce(obj, where string) (string, int, []int, error) {
 	raw, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishStructureFn, "arguments": []map[string]interface{}{{"value": p.structureSpec()}}, "returnByValue": true})
 	if err != nil {
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	var out struct {
 		Result struct {
@@ -428,9 +426,9 @@ func (p *publishRun) checkStructureOnce(obj, where string) (string, int, error) 
 	}
 	sum := fmt.Sprintf("%s: %d picture(s), %d/%d bold, %d heading(s)", where, r.Imgs, r.Bold, len(p.doc.bold), r.Heads)
 	if len(bad) > 0 {
-		return sum, 0, fmt.Errorf("%s: %s", where, strings.Join(bad, "; "))
+		return sum, 0, r.Missing, fmt.Errorf("%s: %s", where, strings.Join(bad, "; "))
 	}
-	return sum + " — pictures in place, formatting kept", r.Pending, nil
+	return sum + " — pictures in place, formatting kept", r.Pending, nil, nil
 }
 
 // articleExpr finds the published article: the smallest element holding the

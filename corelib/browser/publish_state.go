@@ -84,6 +84,13 @@ func submitOutcome(f submitFacts) string {
 	return submitUnknown
 }
 
+// submitClickAgain is the one extra press after the first click. It requires
+// a network observer and no submit or draft write from that click. Without
+// a network observer there is no second click.
+func submitClickAgain(net bool, submitWrites, draftWrites, presses int) bool {
+	return net && submitWrites == 0 && draftWrites == 0 && presses < 1
+}
+
 // imageSrcRemote reports whether src is a stored remote picture. A data
 // or blob URL is the browser's local preview, not the site's copy.
 func imageSrcRemote(src string) bool {
