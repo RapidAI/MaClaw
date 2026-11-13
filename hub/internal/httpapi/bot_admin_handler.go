@@ -226,6 +226,31 @@ func PutBotLLMSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditR
 	}
 }
 
+// PostBotLLMVisionAdminHandler POST /api/admin/bots/llm/vision
+// re-probes one saved provider model and stores the detected image capability.
+func PostBotLLMVisionAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			return
+		}
+		var in struct {
+			ID    string `json:"id"`
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot vision probe")
+			return
+		}
+		view, err := svc.ProbeOneLLMProvider(r.Context(), botTenantID(r), in.ID, in.Model)
+		if err != nil {
+			writeBotError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
+	}
+}
+
 // PostBotLLMModelsAdminHandler POST /api/admin/bots/llm/models
 //
 // Lists one provider's models so the administrator picks from the catalog

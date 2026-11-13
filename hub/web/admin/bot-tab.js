@@ -116,6 +116,14 @@
       llmRoleModelDefault: '\u9ed8\u8ba4 {m}\uff0c\u53ef\u8986\u76d6',
       llmRoleModelEmpty: '\u670d\u52a1\u5546\u9ed8\u8ba4\u6a21\u578b',
       llmRoleModelBad: '\u89d2\u8272\u6a21\u578b\u540d\u65e0\u6548',
+      llmVision: '\u56fe\u50cf\u8f93\u5165',
+      llmVisionAuto: '\u81ea\u52a8',
+      llmVisionOn: '\u5f00',
+      llmVisionOff: '\u5173',
+      llmVisionYes: '\u5df2\u68c0\u6d4b\uff1a\u652f\u6301\u56fe\u50cf',
+      llmVisionNo: '\u5df2\u68c0\u6d4b\uff1a\u4e0d\u652f\u6301\u56fe\u50cf',
+      llmVisionUnknown: '\u5c1a\u672a\u68c0\u6d4b',
+      llmVisionDetect: '\u68c0\u6d4b',
       llmFetchModels: '\u83b7\u53d6\u6a21\u578b\u5217\u8868',
       llmFetching: '\u6b63\u5728\u83b7\u53d6...',
       llmModelsLoaded: '\u5df2\u83b7\u53d6 {n} \u4e2a\u6a21\u578b\uff0c\u70b9\u51fb\u8f93\u5165\u6846\u53ef\u76f4\u63a5\u9009\u62e9',
@@ -236,6 +244,14 @@
       llmRoleModelDefault: 'Default {m}; override here',
       llmRoleModelEmpty: 'Provider default model',
       llmRoleModelBad: 'The role model is invalid',
+      llmVision: 'Image input',
+      llmVisionAuto: 'Auto',
+      llmVisionOn: 'On',
+      llmVisionOff: 'Off',
+      llmVisionYes: 'Detected: accepts images',
+      llmVisionNo: 'Detected: no image input',
+      llmVisionUnknown: 'Not detected yet',
+      llmVisionDetect: 'Detect',
       llmDefaultNote: 'When no other provider is pinned for the foreground role, bots use the MaClaw official service group and deduct the associated user official allowance.',
       llmFetchModels: 'Fetch models',
       llmFetching: 'Fetching...',
@@ -384,6 +400,8 @@
       + '#tab-bots .bot-llm-role-model{display:flex;gap:6px;align-items:center;min-width:0}'
       + '#tab-bots .bot-llm-role-model input{min-width:0}'
       + '#tab-bots .bot-llm-role-model input:disabled{background:#f4f6fa;color:#94a3b8;cursor:default}'
+      + '#tab-bots .bot-llm-role-vision{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px;font-size:11px;color:#64748b}'
+      + '#tab-bots .bot-llm-role-vision select{font-size:12px}'
       + '#tab-bots .bot-llm-default-note{margin:0;padding:9px 12px;border:1px dashed #d7e3f8;border-radius:10px;background:#f8fbff;color:#475569;font-size:11px;line-height:1.5}'
       + '#tab-bots .bot-llm-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border:1px solid #e4e9f2;border-radius:12px;background:#fff;box-shadow:0 1px 2px rgba(23,34,54,.04);transition:border-color .15s ease}'
       + '#tab-bots .bot-llm-row:hover{border-color:#c9d5e8}'
@@ -1536,7 +1554,16 @@
           url: String(item.url || ''),
           model: String(item.model || ''),
           key: '',
-          key_set: !!item.key_set
+          key_set: !!item.key_set,
+          vision: (Array.isArray(item.vision) ? item.vision : []).map(function (row) {
+            return {
+              model: String(row.model || ''),
+              override: row.override === 'on' || row.override === 'off' ? row.override : 'auto',
+              known: !!row.known,
+              supported: !!row.supported,
+              detected_at: String(row.detected_at || '')
+            };
+          })
         };
       })
     };
@@ -1777,7 +1804,67 @@
       + '<input id="botLLMRoleModel_' + key + '" list="botLLMRoleModelList_' + key + '" value="' + value + '" placeholder="' + escapeHtml(placeholder) + '" autocomplete="off" spellcheck="false"' + disabled + '>'
       + '<datalist id="botLLMRoleModelList_' + key + '">' + options + '</datalist>'
       + fetch
+      + roleVisionHTML(draft, key, state.official)
       + '</div>';
+  }
+
+  // roleEffectiveModel is the model a pin actually runs: the typed override,
+  // or the provider default when the override is empty.
+  function roleEffectiveModel(draft, key) {
+    var role = (draft.roles || {})[key] || {};
+    var typed = String(role.model || '').trim();
+    if (typed) return typed;
+    var provider = llmProviderFromID(role.provider);
+    return provider ? String(provider.model || '').trim() : '';
+  }
+
+  function visionRecord(provider, model) {
+    var list = provider && provider.vision || [];
+    var want = String(model || '').toLowerCase();
+    for (var i = 0; i < list.length; i += 1) {
+      if (String(list[i].model || '').toLowerCase() === want) return list[i];
+    }
+    return null;
+  }
+
+  function llmVisionStatus(record) {
+    var t = text();
+    if (!record || !record.known) return t.llmVisionUnknown;
+    var line = record.supported ? t.llmVisionYes : t.llmVisionNo;
+    if (record.detected_at) line += ' ' + record.detected_at;
+    return line;
+  }
+
+  function roleVisionHTML(draft, key, official) {
+    if (official) return '';
+    var role = (draft.roles || {})[key] || {};
+    if (role.mode !== 'pin' || isBotDefaultGroup(role.provider)) return '';
+    var provider = llmProviderFromID(role.provider);
+    if (!provider) return '';
+    var model = roleEffectiveModel(draft, key);
+    var record = visionRecord(provider, model);
+    var override = record && (record.override === 'on' || record.override === 'off') ? record.override : 'auto';
+    var t = text();
+    return '<label class="bot-llm-role-vision" for="botLLMRoleVision_' + key + '">' + escapeHtml(t.llmVision)
+      + '<select id="botLLMRoleVision_' + key + '">'
+      + '<option value="auto"' + (override === 'auto' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionAuto) + '</option>'
+      + '<option value="on"' + (override === 'on' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionOn) + '</option>'
+      + '<option value="off"' + (override === 'off' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionOff) + '</option>'
+      + '</select>'
+      + '<span id="botLLMRoleVisionStatus_' + key + '">' + escapeHtml(llmVisionStatus(record)) + '</span>'
+      + '<button type="button" class="btn-secondary" id="botLLMRoleVisionDetect_' + key + '">' + escapeHtml(t.llmVisionDetect) + '</button>'
+      + '</label>';
+  }
+
+  function ensureVisionRecord(provider, model, override) {
+    if (!provider.vision) provider.vision = [];
+    var found = visionRecord(provider, model);
+    if (!found) {
+      found = { model: model, override: override || 'auto', known: false, supported: false, detected_at: '' };
+      provider.vision.push(found);
+    }
+    if (override) found.override = override;
+    return found;
   }
 
   function paintLLMRoles() {
@@ -1804,9 +1891,14 @@
 
   function onLLMRoleChange(event) {
     var target = event && event.target;
-    if (!target || !target.id || target.id.indexOf('botLLMRole_') !== 0) return;
+    if (!target || !target.id) return;
+    if (target.id.indexOf('botLLMRoleVision_') === 0) {
+      onLLMRoleVisionEdit(target);
+      return;
+    }
+    if (target.id.indexOf('botLLMRole_') !== 0) return;
     var key = target.id.slice('botLLMRole_'.length);
-    if (key.indexOf('Model') === 0) return; // handled by onLLMRoleModelEdit
+    if (key.indexOf('Model') === 0 || key.indexOf('Vision') === 0) return;
     var grounder = key === 'grounder';
     var draft = llmDraft();
     if (!draft.roles) draft.roles = defaultLLMRoles();
@@ -1828,6 +1920,36 @@
     draft.roles[key].model = String(target.value || '').trim();
     var panel = byID('tab-bots');
     if (panel) panel._llmDirty = true;
+    refreshRoleVision(key);
+  }
+
+  function onLLMRoleVisionEdit(target) {
+    var key = target.id.slice('botLLMRoleVision_'.length);
+    var draft = llmDraft();
+    var role = (draft.roles || {})[key];
+    if (!role || role.mode !== 'pin') return;
+    var provider = llmProviderFromID(role.provider);
+    var model = roleEffectiveModel(draft, key);
+    if (!provider || !model) return;
+    ensureVisionRecord(provider, model, target.value === 'on' || target.value === 'off' ? target.value : 'auto');
+    var panel = byID('tab-bots');
+    if (panel) panel._llmDirty = true;
+  }
+
+  function refreshRoleVision(key) {
+    var status = byID('botLLMRoleVisionStatus_' + key);
+    var select = byID('botLLMRoleVision_' + key);
+    if (!status && !select) return;
+    var draft = llmDraft();
+    var role = (draft.roles || {})[key] || {};
+    var provider = llmProviderFromID(role.provider);
+    var model = roleEffectiveModel(draft, key);
+    var record = visionRecord(provider, model);
+    if (status) status.textContent = llmVisionStatus(record);
+    if (select && document.activeElement !== select) {
+      var override = record && (record.override === 'on' || record.override === 'off') ? record.override : 'auto';
+      select.value = override;
+    }
   }
 
   // onLLMRoleClick routes the per-role "fetch models" button: the row's
@@ -1835,7 +1957,12 @@
   // refreshes from the shared cache.
   function onLLMRoleClick(event) {
     var target = event && event.target;
-    if (!target || !target.id || target.id.indexOf('botLLMRoleFetch_') !== 0) return;
+    if (!target || !target.id) return;
+    if (target.id.indexOf('botLLMRoleVisionDetect_') === 0) {
+      detectRoleVision(target.id.slice('botLLMRoleVisionDetect_'.length));
+      return;
+    }
+    if (target.id.indexOf('botLLMRoleFetch_') !== 0) return;
     var key = target.id.slice('botLLMRoleFetch_'.length);
     var role = (llmDraft().roles || {})[key] || {};
     if (role.mode !== 'pin' || isBotDefaultGroup(role.provider)) return;
@@ -2156,6 +2283,58 @@
     return request;
   }
 
+  function providerVisionRequest(item, draft) {
+    var models = {};
+    function add(model) {
+      model = String(model || '').trim();
+      if (!model) return;
+      var key = model.toLowerCase();
+      if (models[key]) return;
+      var record = visionRecord(item, model);
+      var override = record && (record.override === 'on' || record.override === 'off') ? record.override : 'auto';
+      models[key] = { model: model, override: override };
+    }
+    add(item.model);
+    ['foreground', 'background', 'computer_use', 'grounder'].forEach(function (key) {
+      var role = (draft.roles || {})[key] || {};
+      if (role.mode !== 'pin' || role.provider !== item.id || isBotDefaultGroup(role.provider)) return;
+      add(String(role.model || '').trim() || item.model);
+    });
+    return Object.keys(models).map(function (key) { return models[key]; });
+  }
+
+  function detectRoleVision(key) {
+    var draft = llmDraft();
+    var role = (draft.roles || {})[key] || {};
+    if (role.mode !== 'pin' || isBotDefaultGroup(role.provider)) return;
+    var provider = llmProviderFromID(role.provider);
+    var model = roleEffectiveModel(draft, key);
+    if (!provider || !provider.key_set || !model) {
+      showToast(text().llmNeedKey, 'error');
+      return;
+    }
+    return api('/api/admin/bots/llm/vision', { method: 'POST', body: JSON.stringify({ id: provider.id, model: model }) }).then(function (view) {
+      var providers = view && view.llm && view.llm.providers || [];
+      var fresh = null;
+      for (var i = 0; i < providers.length; i += 1) {
+        if (providers[i].id === provider.id) fresh = providers[i];
+      }
+      if (!fresh) return;
+      provider.vision = (fresh.vision || []).map(function (row) {
+        return {
+          model: String(row.model || ''),
+          override: row.override === 'on' || row.override === 'off' ? row.override : 'auto',
+          known: !!row.known,
+          supported: !!row.supported,
+          detected_at: String(row.detected_at || '')
+        };
+      });
+      refreshRoleVision(key);
+    }).catch(function (err) {
+      showToast(messageOf(err), 'error');
+    });
+  }
+
   function llmRequestBody(draft) {
     var roles = normalizeDraftRoles(draft && draft.roles, draft || {});
     var current = llmForegroundProvider(draft);
@@ -2167,7 +2346,8 @@
           name: String(item.name || '').trim(),
           protocol: String(item.protocol || '').toLowerCase(),
           url: String(item.url || '').trim(),
-          model: String(item.model || '').trim()
+          model: String(item.model || '').trim(),
+          vision: providerVisionRequest(item, draft)
         };
         var key = String(item.key || '').trim();
         if (key) out.key = key;
@@ -2277,6 +2457,7 @@
       byID('botConnStatus').textContent = msg;
       renderConnBadge(panel && panel._botView);
       showToast(msg, 'success');
+      if (panel && !panel._llmDirty) load();
     }).catch(function (err) {
       if (panel) panel._botConnOk = false;
       byID('botConnStatus').textContent = messageOf(err);

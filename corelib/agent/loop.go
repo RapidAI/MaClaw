@@ -5886,6 +5886,12 @@ func executionOutcomeFromToolOutcome(kind toolOutcomeKind) ToolExecutionOutcome 
 //   - "anthropic" → Anthropic Messages API
 //   - everything else → OpenAI-compatible chat completions
 func doLLMRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, policy ToolSurfaceInvocationPolicy, httpClient *http.Client) (*llm.Response, error) {
+	return llmCallWithoutRejectedImages(cfg, conversation, func(conv []interface{}) (*llm.Response, error) {
+		return doLLMRequestWithToolsSend(ctx, cfg, conv, tools, policy, httpClient)
+	})
+}
+
+func doLLMRequestWithToolsSend(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, policy ToolSurfaceInvocationPolicy, httpClient *http.Client) (*llm.Response, error) {
 	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
 		return doResponsesRequestWithTools(ctx, cfg, conversation, tools, policy, httpClient)
 	}
@@ -6763,7 +6769,9 @@ func doLLMRequestWithToolsStreamWithBeforeFallback(ctx context.Context, cfg core
 				httpClient = preparation.HTTPClient
 				policy = preparation.InvocationPolicy
 			}
-			return doResponsesRequestWithTools(ctx, cfg, conversation, tools, policy, httpClient)
+			return llmCallWithoutRejectedImages(cfg, conversation, func(conv []interface{}) (*llm.Response, error) {
+				return doResponsesRequestWithTools(ctx, cfg, conv, tools, policy, httpClient)
+			})
 		}
 		return resp, err
 	}
@@ -6795,8 +6803,10 @@ func doLLMRequestWithToolsStreamWithBeforeFallback(ctx context.Context, cfg core
 				httpClient = preparation.HTTPClient
 				policy = preparation.InvocationPolicy
 			}
-			return llm.DoAnthropicRequestWithOptions(ctx, cfg, conversation, tools, httpClient, llm.AnthropicMessagesRequestOptions{
-				Tools: tools, ExplicitToolReplacement: true,
+			return llmCallWithoutRejectedImages(cfg, conversation, func(conv []interface{}) (*llm.Response, error) {
+				return llm.DoAnthropicRequestWithOptions(ctx, cfg, conv, tools, httpClient, llm.AnthropicMessagesRequestOptions{
+					Tools: tools, ExplicitToolReplacement: true,
+				})
 			})
 		}
 		return resp, nil
@@ -6839,7 +6849,9 @@ func doLLMRequestWithToolsStreamWithBeforeFallback(ctx context.Context, cfg core
 		// failed streaming predecessor, so recompute the provider-native Chat
 		// projection after beforeFallback returned the successor snapshot.
 		choice, parallel = toolSurfacePolicyRequestOptions(policy)
-		return llm.DoOpenAIRequestWithOptions(ctx, cfg, conversation, tools, httpClient, llm.OpenAIChatRequestOptions{Stream: false, Tools: tools, ExplicitToolReplacement: true, ToolChoice: choice, ParallelToolCalls: parallel})
+		return llmCallWithoutRejectedImages(cfg, conversation, func(conv []interface{}) (*llm.Response, error) {
+			return llm.DoOpenAIRequestWithOptions(ctx, cfg, conv, tools, httpClient, llm.OpenAIChatRequestOptions{Stream: false, Tools: tools, ExplicitToolReplacement: true, ToolChoice: choice, ParallelToolCalls: parallel})
+		})
 	}
 	return resp, nil
 }

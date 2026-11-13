@@ -972,6 +972,82 @@ func SkillVisibleInExperienceDomain(skillDomain, agentDomain string) bool {
 	return skillDomain == agentDomain
 }
 
+// NormalizeVisionOverride maps an admin choice to auto, on, or off.
+// Anything else, including empty, is auto: detect, and do not treat an
+// unprobed model as unable to see images.
+func NormalizeVisionOverride(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "on", "true", "yes", "1":
+		return "on"
+	case "off", "false", "no", "0":
+		return "off"
+	default:
+		return "auto"
+	}
+}
+
+// ModelVisionOverride is the admin choice for one model: "on", "off", "auto",
+// or "" when this provider has no record for that model. A missing record is
+// not auto: old configs keep the legacy boolean.
+func ModelVisionOverride(provider MaclawLLMProvider, model string) string {
+	model = strings.TrimSpace(model)
+	for _, item := range provider.VisionByModel {
+		if !strings.EqualFold(strings.TrimSpace(item.Model), model) {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(item.Override)) {
+		case "on", "true", "yes", "1":
+			return "on"
+		case "off", "false", "no", "0":
+			return "off"
+		default:
+			return "auto"
+		}
+	}
+	return ""
+}
+
+// ProviderVisionDecision is the image-input decision for one model.
+// sees is meaningful only when known is true. probe is true when that
+// model is marked auto and has never been probed: unknown is not unsupported.
+// An override is per model, because a role pin can name a different model
+// than the provider default.
+func ProviderVisionDecision(provider MaclawLLMProvider, model string) (sees, known, probe bool) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false, false, false
+	}
+	switch ModelVisionOverride(provider, model) {
+	case "on":
+		return true, true, false
+	case "off":
+		return false, true, false
+	}
+	for _, visionModel := range provider.VisionModels {
+		if strings.EqualFold(strings.TrimSpace(visionModel), model) {
+			return true, true, false
+		}
+	}
+	for _, tested := range provider.VisionTestedModels {
+		if strings.EqualFold(strings.TrimSpace(tested), model) {
+			return false, true, false
+		}
+	}
+	recorded := ModelVisionOverride(provider, model) == "auto"
+	// A provider that never recorded this model keeps the legacy boolean.
+	if !recorded && len(provider.VisionModels) == 0 && len(provider.VisionTestedModels) == 0 {
+		return ProviderSupportsVisionForModel(provider, model), true, false
+	}
+	if (provider.IsHubService || strings.EqualFold(strings.TrimSpace(provider.Name), "hub-llm")) &&
+		(strings.EqualFold(model, "auto") || strings.EqualFold(model, "default")) {
+		return true, true, false
+	}
+	if recorded || len(provider.VisionModels) > 0 || len(provider.VisionTestedModels) > 0 {
+		return false, false, true
+	}
+	return false, false, false
+}
+
 // ProviderSupportsVisionForModel only confirms image input for the provider's
 // model that was actually probed. Once a provider has been probed for
 // multiple models, never fall back to its currently selected default.
@@ -992,6 +1068,13 @@ func ProviderSupportsVisionForModel(provider MaclawLLMProvider, model string) bo
 	}
 	// Legacy files persisted a single result tied to provider.Model.
 	return provider.SupportsVision && strings.EqualFold(strings.TrimSpace(provider.Model), model)
+}
+
+// ModelVision is one model's image-input override and when it was probed.
+type ModelVision struct {
+	Model      string `json:"model"`
+	Override   string `json:"override,omitempty"`
+	DetectedAt string `json:"detected_at,omitempty"`
 }
 
 // MaclawLLMProvider 描述一个 MaClaw LLM 提供商配置。
@@ -1027,7 +1110,11 @@ type MaclawLLMProvider struct {
 	// whether the result was supported or unsupported. Catalog names missing
 	// from this list are untested.
 	VisionTestedModels []string `json:"vision_tested_models,omitempty"`
-	AgentType          string   `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
+	// VisionByModel is the admin override and probe time for each model.
+	// A role pin can name a model other than Model, so one provider-wide
+	// switch cannot describe it. Empty Override on a row means auto.
+	VisionByModel []ModelVision `json:"vision_by_model,omitempty"`
+	AgentType     string        `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
 	AuthType                     string  `json:"auth_type,omitempty"`
 	RefreshToken                 string  `json:"refresh_token,omitempty"`

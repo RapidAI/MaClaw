@@ -169,7 +169,7 @@ func mobileSSHQuickConnectStore(
 	mobileSSHVault.Lock()
 	mobileSSHVault.secrets[vaultKey] = secret
 	mobileSSHVault.Unlock()
-	go mobilePersistSSHQuick(rec, secret)
+	mobilePersistSSHQuickAsync(rec, secret)
 
 	return mobileSSHQuickConnectResult{
 		ProfileID:     profileID,

@@ -299,6 +299,7 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	// key and keep today's behavior; a bot turn always sets it.
 	ctx = context.WithValue(ctx, desktopPhaseKey{}, desktopTurnPhase(request))
 	ctx = context.WithValue(ctx, desktopLLMSeesImagesKey{}, desktopTurnSeesImages(request))
+	ctx = context.WithValue(ctx, desktopVisionCacheKey{}, desktopVisionKey(request))
 	ctx = context.WithValue(ctx, desktopComputerHelperKey{}, strings.TrimSpace(desktopMessageMeta(request)["computer_helper"]) == "1")
 	ctx = context.WithValue(ctx, desktopPublishApprovedKey{}, desktopTurnPublishApproved(request))
 	if cfg, ok := turnAppConfig(request); ok {
@@ -1760,9 +1761,11 @@ func desktopScopeForTurn(request agentruntime.TurnRequest) (agentruntime.Scope, 
 type desktopLLMSeesImagesKey struct{}
 type desktopAppConfigKey struct{}
 
-// desktopTurnSeesImages reports whether this turn's chat model accepts images.
-// That is the same switch the GUI uses for Computer Use: a vision model looks
-// at the screenshot, and local OCR plus OmniParser run only for a text model.
+// desktopTurnSeesImages reports whether the model this turn actually calls
+// accepts images. That is the same switch the GUI uses for Computer Use: a
+// vision model looks at the screenshot, and local OCR plus OmniParser run
+// only for a text model. The computer-use role pin is not the label: a chat
+// turn calls the foreground model.
 func desktopTurnSeesImages(request agentruntime.TurnRequest) bool {
 	cfg, ok := turnAppConfig(request)
 	if !ok {
@@ -1772,7 +1775,7 @@ func desktopTurnSeesImages(request agentruntime.TurnRequest) bool {
 	if err != nil {
 		return false
 	}
-	return llm.SupportsVision
+	return desktopModelSeesImages(cfg, llm)
 }
 
 func turnAppConfig(request agentruntime.TurnRequest) (corelib.AppConfig, bool) {
@@ -1794,7 +1797,15 @@ func desktopContextSeesImages(ctx context.Context) bool {
 		return false
 	}
 	sees, _ := ctx.Value(desktopLLMSeesImagesKey{}).(bool)
-	return sees
+	if !sees {
+		return false
+	}
+	// A refusal recorded after this turn started still has to read the
+	// screen: the snapshot above was taken before the provider rejected it.
+	if key, _ := ctx.Value(desktopVisionCacheKey{}).(string); visionDowngraded(key) {
+		return false
+	}
+	return true
 }
 
 func desktopScreenVisionPrompt(seesImages bool) string {

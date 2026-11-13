@@ -87,6 +87,7 @@ func (m *srvAIModelManager) screenVision(ctx context.Context, png []byte, clickP
 	if m == nil || len(png) == 0 {
 		return ""
 	}
+	log.Printf("[desktop-screen] local OCR/OmniParser bytes=%d click_pixels=%v", len(png), clickPixels)
 	if ctx != nil && ctx.Err() != nil {
 		return ""
 	}

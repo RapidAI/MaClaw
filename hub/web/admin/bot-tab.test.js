@@ -1000,6 +1000,7 @@ async function testLLMRoleSettingsFollowForegroundAndPinSeparately() {
   harness.elements.botLLMRoles.listeners.change[0]({ target: background });
   await flush();
   assertIncludes(harness.elements.botLLMRoles._html, 'placeholder="\u9ed8\u8ba4 gpt-4o\uff0c\u53ef\u8986\u76d6"', 'the pinned background row shows the provider default model');
+  assertIncludes(harness.elements.botLLMRoles._html, 'botLLMRoleVision_background', 'a custom pin shows the image-input override');
   const bgModel = harness.elements['botLLMRoleModel_background'];
   bgModel.value = 'gpt-4o-mini';
   harness.elements.botLLMRoles.listeners.input[0]({ target: bgModel });
@@ -1020,6 +1021,8 @@ async function testLLMRoleSettingsFollowForegroundAndPinSeparately() {
   assert(!Object.prototype.hasOwnProperty.call(body.roles.foreground, 'model'), 'the official group carries no model');
   assert(body.roles.background.mode === 'pin' && body.roles.background.provider === 'lp_abcdef0123456789', 'pins background to the custom provider');
   assert(body.roles.background.model === 'gpt-4o-mini', 'pins the background model override');
+  const vision = (body.providers[0].vision || []).map(function (row) { return row.model; });
+  assert(vision.indexOf('gpt-4o') !== -1 && vision.indexOf('gpt-4o-mini') !== -1, 'saves image capability per provider model');
   assert(body.roles.computer_use.mode === 'pin' && body.roles.computer_use.provider === 'maclaw_official_group', 'pins computer use to the official group');
   assert(body.roles.grounder.mode === 'inherit' && !body.roles.grounder.provider, 'grounder can follow the foreground');
   const encoded = JSON.stringify(body.roles);

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/localrelay"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
@@ -392,6 +393,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/metrics", requireTenantAdmin(GetCloudWorkspaceMetricsAdminHandler(cloudWorkspaceSvc)))
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/audit/export", requireTenantAdmin(GetCloudWorkspaceAuditExportAdminHandler(cloudWorkspaceSvc)))
 	botSvc := botmgmt.NewService(system)
+	botSvc.ProbeVision = llm.ProbeVision
 	// Hub starts delegated work and wakes idle bots itself; off only when
 	// an operator sets MACLAW_HUB_BOT_DISPATCH=off.
 	botSvc.MailFileDir = strings.TrimSpace(os.Getenv("MACLAW_HUB_BOT_MAIL_DIR"))
@@ -414,6 +416,7 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/admin/bots/settings", requireTenantAdmin(PutBotSettingsAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("PUT /api/admin/bots/llm", requireTenantAdmin(PutBotLLMSettingsAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("POST /api/admin/bots/llm/models", requireTenantAdmin(PostBotLLMModelsAdminHandler(botSvc)))
+	mux.HandleFunc("POST /api/admin/bots/llm/vision", requireTenantAdmin(PostBotLLMVisionAdminHandler(botSvc)))
 	mux.HandleFunc("POST /api/admin/bots/connection/test", requireTenantAdmin(TestBotConnectionAdminHandler(botSvc)))
 	mux.HandleFunc("POST /api/admin/bots/grants", requireTenantAdmin(PostBotGrantAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("PUT /api/admin/bots/{id}/desktop-mode", requireTenantAdmin(PutBotDesktopModeAdminHandler(botSvc)))
