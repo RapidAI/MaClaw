@@ -321,13 +321,13 @@ export function useTaskRemoteControl() {
             void callBinding<string>('RemoteControlOp', '', grantId, 'watch_task', JSON.stringify({ project_path: path }))
                 .then(raw => {
                     if (watchKey.current !== next) return;
-                    let parsed: { live?: unknown } = {};
+                    let parsed: { live?: unknown; workbench?: unknown } = {};
                     try {
-                        parsed = JSON.parse(raw || '{}') as { live?: unknown };
+                        parsed = JSON.parse(raw || '{}') as { live?: unknown; workbench?: unknown };
                     } catch {
                         parsed = {};
                     }
-                    applyRemoteWatchSnapshot(grantId, parsed.live);
+                    applyRemoteWatchSnapshot(grantId, path, parsed.live, parsed.workbench);
                 })
                 .catch(() => undefined);
         }

@@ -310,6 +310,14 @@ func (r *remoteWatchRegistry) relay(name string, event AIAssistantStreamEvent) {
 	case "ai-assistant-token":
 		r.relayTokenLocked(send, grants, turn, event)
 	case "ai-assistant-progress":
+		if strings.TrimSpace(event.Text) == imHeartbeatMsg {
+			// The keepalive is liveness only. It must not close an open
+			// thinking block or paint "__heartbeat__" into the trail; a
+			// dedicated event still refreshes the controller's staleness
+			// window during long silent tool runs.
+			r.sendLocked(send, grants, sessionKey, event.RequestID, seq, "heartbeat", nil)
+			return
+		}
 		r.flushPendingLocked(send, grants, turn, seq)
 		r.closeThinkingLocked(send, grants, turn, seq)
 		text := trimRemoteStreamText(event.Text, remoteStreamProgressTextCap)
@@ -329,14 +337,17 @@ func (r *remoteWatchRegistry) relay(name string, event AIAssistantStreamEvent) {
 }
 
 // relayTokenLocked splits one coalesced token batch into lanes. Reasoning
-// deltas accumulate into the open thinking part and ship only when it closes;
-// content deltas join the pending run flushed on the 150ms window or before
-// the next non-token event, keeping wire order identical to local order.
+// deltas accumulate into the open thinking part and ship as live deltas while
+// the block stays open (the close still carries the full text as ground
+// truth); content deltas join the pending run flushed on the 150ms window or
+// before the next non-token event, keeping wire order identical to local
+// order.
 func (r *remoteWatchRegistry) relayTokenLocked(send func(map[string]any), grants []string, turn *remoteLiveTurn, event AIAssistantStreamEvent) {
 	deltas := event.Deltas
 	if len(deltas) == 0 && event.Text != "" {
 		deltas = []string{event.Text}
 	}
+	var thinkingDelta strings.Builder
 	for _, delta := range deltas {
 		switch {
 		case strings.HasPrefix(delta, rejectedRoundContentToken):
@@ -344,6 +355,7 @@ func (r *remoteWatchRegistry) relayTokenLocked(send func(map[string]any), grants
 			// forward the marker verbatim — the controller drops its trailing
 			// text run and keeps whatever follows the marker as fresh content.
 			r.flushPendingLocked(send, grants, turn, event.Sequence)
+			r.flushThinkingDeltaLocked(send, grants, turn, event.Sequence, &thinkingDelta)
 			r.dropTrailingTextPartsLocked(turn)
 			part := remoteStreamPart{Kind: "text", Seq: event.Sequence, Text: strings.TrimPrefix(delta, rejectedRoundContentToken)}
 			if part.Text != "" {
@@ -357,17 +369,38 @@ func (r *remoteWatchRegistry) relayTokenLocked(send func(map[string]any), grants
 				turn.snapshot.Parts = append(turn.snapshot.Parts, remoteStreamPart{Kind: "thinking", Seq: event.Sequence})
 				r.sendLocked(send, grants, turn.snapshot.SessionKey, turn.snapshot.RequestID, event.Sequence, "thinking", map[string]any{"state": "started"})
 			}
+			body := strings.TrimPrefix(delta, "\x01")
 			part := &turn.snapshot.Parts[len(turn.snapshot.Parts)-1]
-			part.Text = trimRemoteStreamTail(part.Text+strings.TrimPrefix(delta, "\x01"), remoteStreamPartThinkingCap)
+			part.Text = trimRemoteStreamTail(part.Text+body, remoteStreamPartThinkingCap)
+			thinkingDelta.WriteString(body)
 		default:
 			// Content tokens mean the model finished thinking — close the box
 			// the same moment the local panel folds it.
 			if turn.thinkingOpen {
+				r.flushThinkingDeltaLocked(send, grants, turn, event.Sequence, &thinkingDelta)
 				r.closeThinkingLocked(send, grants, turn, event.Sequence)
 			}
 			r.queueContentDelta(turn, event.Sequence, delta)
 		}
 	}
+	r.flushThinkingDeltaLocked(send, grants, turn, event.Sequence, &thinkingDelta)
+}
+
+// flushThinkingDeltaLocked ships the reasoning text collected since the last
+// send as one live delta, so the controller's 思考 box grows with the
+// controlled desktop's instead of appearing only when the block closes. The
+// closing "done" event still carries the full text as ground truth, so a
+// dropped delta self-corrects.
+func (r *remoteWatchRegistry) flushThinkingDeltaLocked(send func(map[string]any), grants []string, turn *remoteLiveTurn, seq uint64, acc *strings.Builder) {
+	if acc == nil || acc.Len() == 0 {
+		return
+	}
+	text := acc.String()
+	acc.Reset()
+	r.sendLocked(send, grants, turn.snapshot.SessionKey, turn.snapshot.RequestID, seq, "thinking", map[string]any{
+		"state": "delta",
+		"text":  text,
+	})
 }
 
 // queueContentDelta appends to the pending run and arms the flush timer.
@@ -456,6 +489,39 @@ func (r *remoteWatchRegistry) dropTrailingTextPartsLocked(turn *remoteLiveTurn) 
 	for len(turn.snapshot.Parts) > 0 && turn.snapshot.Parts[len(turn.snapshot.Parts)-1].Kind == "text" {
 		turn.snapshot.Parts = turn.snapshot.Parts[:len(turn.snapshot.Parts)-1]
 	}
+}
+
+// relayRemoteWorkbenchSteps is the emitCodingWorkbenchStepsUpdate hook: the
+// plan-checklist snapshot the local panel just received also goes to every
+// watcher, so the controller renders the same step list in sync.
+func (a *App) relayRemoteWorkbenchSteps(sessionKey string, payload map[string]interface{}) {
+	reg := a.remoteWatchRegistryOrNil()
+	if reg == nil {
+		return
+	}
+	reg.relayWorkbenchSteps(sessionKey, payload)
+}
+
+func (r *remoteWatchRegistry) relayWorkbenchSteps(sessionKey string, payload map[string]interface{}) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" || len(payload) == 0 {
+		return
+	}
+	send := r.sender()
+	if send == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	grants := r.grantsForLocked(sessionKey)
+	if len(grants) == 0 {
+		return
+	}
+	requestID := ""
+	if turn := r.turns[sessionKey]; turn != nil {
+		requestID = turn.snapshot.RequestID
+	}
+	r.sendLocked(send, grants, sessionKey, requestID, 0, "workbench_steps", map[string]any{"workbench": payload})
 }
 
 func (r *remoteWatchRegistry) trimProgressLocked(turn *remoteLiveTurn) {
@@ -585,9 +651,25 @@ func (a *App) remoteControlWatchTask(grantID string, body json.RawMessage) (any,
 	reg := a.ensureRemoteWatchRegistry()
 	reg.watch(grantID, sessionKey)
 	return map[string]any{
-		"watching": true,
-		"live":     reg.liveSnapshot(sessionKey),
+		"watching":  true,
+		"live":      reg.liveSnapshot(sessionKey),
+		"workbench": a.remoteWorkbenchSnapshot(sessionKey),
 	}, nil
+}
+
+// remoteWorkbenchSnapshot reads the live coding-workbench checklist for one
+// session so a watcher opening mid-plan paints the same step list. Nil when
+// no handler or no workbench memory exists yet.
+func (a *App) remoteWorkbenchSnapshot(sessionKey string) map[string]interface{} {
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return nil
+	}
+	handler := hubClient.peekIMHandler()
+	if handler == nil {
+		return nil
+	}
+	return handler.codingWorkbenchStepsSnapshotForSession(sessionKey)
 }
 
 func (a *App) remoteControlUnwatchTask(grantID string, body json.RawMessage) (any, error) {

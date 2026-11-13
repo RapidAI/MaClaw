@@ -45,6 +45,26 @@ export type RemoteAssistantWorkflow = {
     pending_review?: boolean;
 };
 
+/** One row of the coding workbench checklist mirrored from the controlled desktop. */
+export type RemoteWorkbenchStep = {
+    index?: number;
+    title?: string;
+    status?: string;
+    summary?: string;
+    verify_cmd?: string;
+    verify_ok?: boolean;
+};
+
+/** Session-level coding workbench state mirrored over remote_control.stream. */
+export type RemoteWorkbenchState = {
+    step_statuses?: RemoteWorkbenchStep[];
+    execution_plan?: string;
+    requirement_restatement?: string;
+    pending_approval?: boolean;
+    plan_dialogue?: boolean;
+    steps_revision?: number;
+};
+
 /**
  * Live status mirrored from the remote task snapshot. Everything here comes
  * from the get_task poll, so it refreshes on the same cadence (3s while the
@@ -81,6 +101,8 @@ export type RemoteAssistantSession = {
     activity?: RemoteAssistantActivity;
     /** The in-flight round mirrored live; absent when nothing streams. */
     live?: RemoteLiveRound | null;
+    /** Coding workbench checklist mirrored over workbench_steps events. */
+    workbench?: RemoteWorkbenchState | null;
     messages: RemoteAssistantTranscriptMessage[];
 };
 
@@ -134,6 +156,9 @@ function markKey(session: RemoteAssistantSession | null) {
 // closes, so the 思考 box appears first and fills in afterwards.
 
 const liveRounds = new Map<string, RemoteLiveRound>();
+// Session-level workbench checklist, keyed like liveRounds. Outlives a round:
+// the plan list belongs to the session, not to one request.
+const workbenchByKey = new Map<string, RemoteWorkbenchState>();
 
 function liveKey(grantId: string, projectPath: string) {
     return grantId && projectPath ? `${grantId}${projectPath}` : '';
@@ -178,6 +203,7 @@ type RemoteStreamPayload = {
     state?: string;
     display_text?: string;
     response?: { text?: string } | null;
+    workbench?: RemoteWorkbenchState | null;
 };
 
 /** Folds one remote_control.stream event into the session's live round. */
@@ -222,10 +248,40 @@ export function applyRemoteStreamPayload(payload: unknown) {
                 } else {
                     round.parts.push({ kind: 'thinking', seq, text: String(p.text || ''), done: true });
                 }
+            } else if (p.state === 'delta') {
+                // Live reasoning increment: append to the open block instead
+                // of stacking a new part per delta.
+                const text = String(p.text || '');
+                if (text) {
+                    let target = -1;
+                    for (let i = round.parts.length - 1; i >= 0; i--) {
+                        const part = round.parts[i];
+                        if (part.kind === 'thinking' && !part.done) { target = i; break; }
+                    }
+                    if (target >= 0) round.parts[target].text += text;
+                    else round.parts.push({ kind: 'thinking', seq, text, done: false });
+                }
             } else {
-                round.parts.push({ kind: 'thinking', seq, text: '', done: false });
+                // 'started' — a fresh block. An already-open tail only repeats.
+                const tail = round.parts[round.parts.length - 1];
+                if (!(tail && tail.kind === 'thinking' && !tail.done)) {
+                    round.parts.push({ kind: 'thinking', seq, text: '', done: false });
+                }
             }
             break;
+        }
+        case 'heartbeat': {
+            // Liveness only: refreshes the stale-round window without a part.
+            round = ensureLiveRound(key, requestId);
+            break;
+        }
+        case 'workbench_steps': {
+            // Session-level checklist: no live round is created for it.
+            const wb = p.workbench && typeof p.workbench === 'object' ? p.workbench : null;
+            if (wb) workbenchByKey.set(key, wb);
+            else workbenchByKey.delete(key);
+            emit();
+            return;
         }
         case 'progress': {
             round = ensureLiveRound(key, requestId);
@@ -274,12 +330,18 @@ type RemoteWatchSnapshot = {
     started_at?: number;
 };
 
-/** Installs the in-flight turn a watch_task reply carried (mid-turn catch-up). */
-export function applyRemoteWatchSnapshot(grantId: string, live: unknown) {
-    const p = (live && typeof live === 'object' ? live : null) as RemoteWatchSnapshot | null;
-    if (!p || !String(p.request_id || '')) return;
-    const key = liveKey(grantId, String(p.project_path || '').trim());
+/** Installs the in-flight turn and workbench snapshot a watch_task reply carried (mid-turn catch-up). */
+export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, live: unknown, workbench?: unknown) {
+    const key = liveKey(grantId, String(projectPath || '').trim());
     if (!key) return;
+    if (workbench && typeof workbench === 'object') {
+        workbenchByKey.set(key, workbench as RemoteWorkbenchState);
+    }
+    const p = (live && typeof live === 'object' ? live : null) as RemoteWatchSnapshot | null;
+    if (!p || !String(p.request_id || '')) {
+        emit();
+        return;
+    }
     liveRounds.set(key, {
         requestId: String(p.request_id || ''),
         displayText: String(p.display_text || ''),
@@ -300,11 +362,15 @@ export function applyRemoteWatchSnapshot(grantId: string, live: unknown) {
 function settleLiveRounds() {
     if (!raw) {
         liveRounds.clear();
+        workbenchByKey.clear();
         return;
     }
     const key = markKey(raw);
     for (const roundKey of [...liveRounds.keys()]) {
         if (roundKey !== key) liveRounds.delete(roundKey);
+    }
+    for (const wbKey of [...workbenchByKey.keys()]) {
+        if (wbKey !== key) workbenchByKey.delete(wbKey);
     }
     const round = liveRounds.get(key);
     if (!round) return;
@@ -379,9 +445,11 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
         if (content || thinking || liveThinking) {
             merged.push({ role: 'assistant', content, reasoning: thinking || undefined, remoteLive: true, liveThinking });
         }
-        return { ...session, messages: merged, live: round };
+        return { ...session, messages: merged, live: round, workbench: workbenchByKey.get(key) || null };
     }
-    return merged ? { ...session, messages: merged } : session;
+    const workbench = workbenchByKey.get(key) || null;
+    if (merged || workbench) return { ...session, messages: merged || session.messages, workbench };
+    return session;
 }
 
 function sessionKey(session: RemoteAssistantSession | null) {
@@ -398,6 +466,7 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.error,
         session.activity ? JSON.stringify(session.activity) : '',
         session.live ? JSON.stringify(session.live.parts) + (session.live.responded ? 'r' : '') : '',
+        session.workbench ? JSON.stringify(session.workbench) : '',
         session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}`).join('\n--\n'),
     ].join('\n');
 }

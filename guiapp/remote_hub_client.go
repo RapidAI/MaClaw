@@ -228,6 +228,21 @@ func NewRemoteHubClient(app *App, manager *RemoteSessionManager) *RemoteHubClien
 	}
 }
 
+// peekIMHandler returns the handler only when one already exists. Callers
+// that merely read session state (watch_task workbench snapshot) must not
+// construct it — an unused handler holds real session machinery.
+func (c *RemoteHubClient) peekIMHandler() *IMMessageHandler {
+	c.imHandlerMu.Lock()
+	defer c.imHandlerMu.Unlock()
+	if c.imHandler != nil {
+		return c.imHandler
+	}
+	if c.app != nil {
+		return c.app.imHandler
+	}
+	return nil
+}
+
 func (c *RemoteHubClient) ensureIMHandler() *IMMessageHandler {
 	c.imHandlerMu.Lock()
 	defer c.imHandlerMu.Unlock()

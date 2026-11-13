@@ -693,6 +693,57 @@ func codingWorkbenchStepsSnapshot(steps []codingWorkbenchStepStatus) []codingWor
 	return out
 }
 
+// codingWorkbenchStepsEventPayload shapes the checklist snapshot shared by
+// the local event, the remote-control mirror, and the watch_task reply.
+// The expert rule stays here: an expert workbench carries no project_path so
+// its snapshot cannot replace the programming tab's live plan.
+func (h *IMMessageHandler) codingWorkbenchStepsEventPayload(userID string, mem stickyCodingWorkbenchMemory) map[string]interface{} {
+	projectPath := ""
+	if expertIDFromUserID(userID) == "" {
+		projectPath = projectPathFromSessionOwnerID(userID)
+		if projectPath == "" {
+			projectPath = strings.TrimSpace(mem.ProjectPath)
+		}
+	}
+	return map[string]interface{}{
+		"user_id":                 userID,
+		"project_path":            projectPath,
+		"step_statuses":           codingWorkbenchStepsSnapshot(mem.StepStatuses),
+		"execution_plan":          strings.TrimSpace(mem.ExecutionPlan),
+		"requirement_restatement": strings.TrimSpace(mem.RequirementRestatement),
+		"pending_approval":        h.codingPlanHasPendingApproval(userID, mem),
+		"plan_dialogue":           mem.PlanDialogue,
+		"steps_revision":          mem.StepsEmitSeq,
+	}
+}
+
+// codingWorkbenchStepsSnapshotForSession reads the current checklist without
+// bumping the emit sequence. A nil payload means the session has no live
+// workbench memory; callers must not substitute an empty struct (a cleared
+// session would write the workbench file back).
+func (h *IMMessageHandler) codingWorkbenchStepsSnapshotForSession(userID string) map[string]interface{} {
+	if h == nil {
+		return nil
+	}
+	userID = stickyCodingMemoryKey(userID)
+	if userID == "" {
+		return nil
+	}
+	var payload map[string]interface{}
+	withStickyCodingUserLock(userID, func() {
+		raw, ok := h.stickyCodingWorkbenchMemory.Load(userID)
+		if !ok {
+			return
+		}
+		mem, ok := raw.(stickyCodingWorkbenchMemory)
+		if !ok {
+			return
+		}
+		payload = h.codingWorkbenchStepsEventPayload(userID, mem)
+	})
+	return payload
+}
+
 // emitCodingWorkbenchStepsUpdate pushes live Todo checklist state to the GUI
 // (Codex / Claude Code style: pending ○ → running … → passed ☑).
 // Safe no-op without Wails event bus (tests / headless).
@@ -724,32 +775,14 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 		mem.StepsEmitSeq++
 		h.stickyCodingWorkbenchMemory.Store(userID, mem)
 		scheduleStickyCodingDebouncedPersist(userID, mem)
-		// Expert workbench events are a different session. The checklist treats
-		// project_path as the coding tab, and an expert document can sit in
-		// that same directory. Leave the path off so the snapshot cannot
-		// replace the programming agent's live plan.
-		projectPath := ""
-		if expertIDFromUserID(userID) == "" {
-			projectPath = projectPathFromSessionOwnerID(userID)
-			if projectPath == "" {
-				projectPath = strings.TrimSpace(mem.ProjectPath)
-			}
-		}
-		payload = map[string]interface{}{
-			"user_id":                 userID,
-			"project_path":            projectPath,
-			"step_statuses":           codingWorkbenchStepsSnapshot(mem.StepStatuses),
-			"execution_plan":          strings.TrimSpace(mem.ExecutionPlan),
-			"requirement_restatement": strings.TrimSpace(mem.RequirementRestatement),
-			"pending_approval":        h.codingPlanHasPendingApproval(userID, mem),
-			"plan_dialogue":           mem.PlanDialogue,
-			"steps_revision":          mem.StepsEmitSeq,
-		}
+		payload = h.codingWorkbenchStepsEventPayload(userID, mem)
 	})
 	if payload == nil {
 		return
 	}
 	h.app.emitEvent("coding-workbench-steps", payload)
+	// The same snapshot mirrors to remote-control watchers of this session.
+	h.app.relayRemoteWorkbenchSteps(userID, payload)
 }
 
 // markRemainingCodingStepsSkipped marks later plan steps as skipped after a

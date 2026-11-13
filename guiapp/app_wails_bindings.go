@@ -2486,12 +2486,10 @@ func (e *aiAssistantStreamEventEmitter) deliver(name string, event AIAssistantSt
 	if e.app == nil {
 		return
 	}
-	payload, err := json.Marshal(event)
-	if err != nil {
-		log.Printf("[SendAIAssistantMessage] marshal %s event failed: %v", name, err)
-		return
-	}
-	e.app.emitEvent(name, string(payload))
+	// The shared transport fans out to the local panel and to remote-control
+	// watchers. Emitting through emitEvent directly used to skip the mirror,
+	// so a watched turn only ever produced round_started and response.
+	e.app.emitAIAssistantStreamEvent(name, event)
 }
 
 func newAIAssistantStreamEventEmitter(app *App, requestID, sessionKey string) *aiAssistantStreamEventEmitter {

@@ -49,7 +49,7 @@ func TestRemoteStreamRelayMirrorsLanesAndSettles(t *testing.T) {
 	})
 
 	got := cap.events()
-	want := []string{"round_started", "thinking", "thinking", "token", "stream_done"}
+	want := []string{"round_started", "thinking", "thinking", "thinking", "token", "stream_done"}
 	if len(got) != len(want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
@@ -58,14 +58,19 @@ func TestRemoteStreamRelayMirrorsLanesAndSettles(t *testing.T) {
 			t.Fatalf("events = %v, want %v", got, want)
 		}
 	}
-	// Reasoning ships only once, when the block closes, carrying its text —
-	// here the closing trigger is the first content delta after it.
-	thinkDone := cap.payloads[2]
+	// Reasoning streams while the block is open: the first token opens the
+	// box, the collected text rides a delta, and the close (triggered here by
+	// the first content delta) carries the same text as ground truth.
+	thinkDelta := cap.payloads[2]
+	if thinkDelta["state"] != "delta" || thinkDelta["text"] != "先想想" {
+		t.Fatalf("thinking delta payload = %v", thinkDelta)
+	}
+	thinkDone := cap.payloads[3]
 	if thinkDone["state"] != "done" || thinkDone["text"] != "先想想" {
 		t.Fatalf("thinking done payload = %v", thinkDone)
 	}
-	if cap.payloads[3]["text"] != "答案" {
-		t.Fatalf("token payload = %v", cap.payloads[3])
+	if cap.payloads[4]["text"] != "答案" {
+		t.Fatalf("token payload = %v", cap.payloads[4])
 	}
 	for _, p := range cap.payloads {
 		if p["grant_id"] != "g1" {
@@ -82,6 +87,67 @@ func TestRemoteStreamRelayMirrorsLanesAndSettles(t *testing.T) {
 	}
 	if len(snap.Parts) != 2 || snap.Parts[0].Kind != "thinking" || !snap.Parts[0].Done || snap.Parts[1].Kind != "text" || snap.Parts[1].Text != "答案" {
 		t.Fatalf("snapshot parts = %+v", snap.Parts)
+	}
+}
+
+func TestRemoteStreamHeartbeatKeepsThinkingOpen(t *testing.T) {
+	app := &App{}
+	reg := app.ensureRemoteWatchRegistry()
+	cap := &remoteStreamCapture{}
+	reg.sink = cap.sink
+	session := streamSessionKey()
+	reg.watch("g1", session)
+
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x01先想想", Sequence: 1,
+	})
+	app.relayRemoteStreamEvent("ai-assistant-progress", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: imHeartbeatMsg, Sequence: 2,
+	})
+
+	got := cap.events()
+	want := []string{"thinking", "thinking", "heartbeat"}
+	if len(got) != len(want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
+	}
+	// The keepalive is liveness only: no reasoning text, no state change.
+	if _, ok := cap.payloads[2]["text"]; ok {
+		t.Fatalf("heartbeat carried text: %v", cap.payloads[2])
+	}
+	snap := reg.liveSnapshot(session)
+	if snap == nil || len(snap.Parts) != 1 || snap.Parts[0].Kind != "thinking" || snap.Parts[0].Done {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+}
+
+func TestRemoteWorkbenchStepsRelayMirrorsSnapshot(t *testing.T) {
+	app := &App{}
+	reg := app.ensureRemoteWatchRegistry()
+	cap := &remoteStreamCapture{}
+	reg.sink = cap.sink
+	session := streamSessionKey()
+	reg.watch("g1", session)
+
+	app.relayRemoteWorkbenchSteps(session, map[string]interface{}{
+		"project_path":   "D:\\proj\\demo",
+		"steps_revision": 3,
+		"step_statuses": []interface{}{
+			map[string]interface{}{"index": 1, "title": "plan", "status": "running"},
+		},
+	})
+
+	got := cap.events()
+	if len(got) != 1 || got[0] != "workbench_steps" {
+		t.Fatalf("events = %v", got)
+	}
+	wb, ok := cap.payloads[0]["workbench"].(map[string]interface{})
+	if !ok || wb["steps_revision"] != 3 {
+		t.Fatalf("workbench payload = %v", cap.payloads[0])
 	}
 }
 
