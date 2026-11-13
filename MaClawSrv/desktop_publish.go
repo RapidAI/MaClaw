@@ -76,8 +76,15 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	// A new post opens a fresh editor; only this run's own drafts (an
 	// earlier call that failed) or a draft the person asked to continue
 	// (reuse_draft=true) are written on.
+	spec.NewDraft = desktopArgBool(args, "new_draft")
 	if rec, ok := desktopPublishRecordOf(scope.RunID); ok {
 		spec.OwnDrafts = append([]string(nil), rec.Drafts...)
+		if !spec.NewDraft && rec.DraftIdentity != "" {
+			spec.DraftURL = rec.DraftIdentity
+			if !desktopStrIn(spec.OwnDrafts, rec.DraftIdentity) {
+				spec.OwnDrafts = append(spec.OwnDrafts, rec.DraftIdentity)
+			}
+		}
 	}
 	spec.ReuseDraft = desktopArgBool(args, "reuse_draft")
 	expURL := spec.EditorURL

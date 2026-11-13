@@ -232,6 +232,157 @@ func desktopReconcileOutcome(runID, outcome, why string) (string, string) {
 // desktopReplyDeniesPost: the reply says the post did not go out.
 var desktopReplyDeniesPost = regexp.MustCompile(`没有发布|未发布|没发布|没能发布|没有发出|没发出|发布失败|没有成功发布|未能发布|没有.{0,6}验证|未.{0,4}验证|not (been )?published|not posted`)
 
+// desktopReconcilePublishReply is the user-visible reply when this run has
+// publish records. Per-site lines come only from those records (and the
+// ledger). Model sentences that contradict them are dropped, and so is a
+// publish claim written after an infra timeout or a screenshot failure.
+func desktopReconcilePublishReply(runID, content string) (string, bool) {
+	records := desktopPublishRunRecords(runID)
+	if len(records) == 0 {
+		return "", false
+	}
+	var lines []string
+	for _, r := range records {
+		if line := desktopRecordOutcomeLine(r); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	kept := desktopDropPublishContradictions(content, records, desktopReplyUntrusted(runID))
+	out := strings.TrimSpace(strings.Join(lines, "\n"))
+	if kept != "" {
+		if out != "" {
+			out += "\n"
+		}
+		out += kept
+	}
+	if out == "" {
+		return "", false
+	}
+	return out, true
+}
+
+func desktopRecordsOutcome(records []desktopPublishRecord) string {
+	if len(records) == 0 {
+		return ""
+	}
+	posted, other := 0, 0
+	for _, r := range records {
+		if r.State == "" && r.DraftIdentity == "" && len(r.Orphans) == 0 {
+			continue
+		}
+		if r.posted() {
+			posted++
+			continue
+		}
+		other++
+	}
+	switch {
+	case posted > 0 && other == 0:
+		return agentservice.TaskOutcomeDone
+	case posted > 0:
+		return agentservice.TaskOutcomePartial
+	case other > 0:
+		return agentservice.TaskOutcomeNotSubmitted
+	default:
+		return ""
+	}
+}
+
+func desktopRecordOutcomeLine(r desktopPublishRecord) string {
+	name := strings.TrimSpace(r.Site)
+	if name == "" {
+		name = desktopLedgerHost(firstNonEmptyStr(r.URL, r.DraftIdentity))
+	}
+	if name == "" {
+		name = "站点"
+	}
+	var b strings.Builder
+	b.WriteString(name + "：")
+	switch {
+	case r.State == browser.PublishLive || r.State == browser.PublishLiveIncomplete:
+		b.WriteString("已发布")
+		if r.Title != "" {
+			b.WriteString("《" + r.Title + "》")
+		}
+		if r.PostID != "" {
+			b.WriteString(" " + r.PostID)
+		}
+		if r.URL != "" {
+			b.WriteString(" " + r.URL)
+		}
+	case r.State == browser.PublishSubmitted:
+		b.WriteString("已提交，尚未确认")
+	case r.DraftIdentity != "" || r.State == browser.PublishDraftOnly:
+		b.WriteString("草稿未发布")
+		if r.DraftIdentity != "" {
+			b.WriteString(" " + r.DraftIdentity)
+		}
+	default:
+		if r.State == "" && len(r.Orphans) == 0 {
+			return ""
+		}
+		if r.State != "" {
+			b.WriteString(string(r.State))
+		}
+	}
+	if len(r.Orphans) > 0 {
+		b.WriteString("；未使用的草稿：" + strings.Join(r.Orphans, "，"))
+	}
+	return b.String()
+}
+
+var (
+	desktopContradictsPosted = regexp.MustCompile(`没有发布|未发布|没发布|没能发布|没有发出|没发出|发布失败|没有成功发布|未能发布|没有证据|全部报错|没有.{0,6}验证|未.{0,4}验证`)
+	desktopClaimsPublished   = regexp.MustCompile(`发布成功|已经发布|已发布成功|都发布了`)
+)
+
+var (
+	desktopUntrustedReply sync.Map
+)
+
+func desktopNoteUntrustedReply(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	desktopUntrustedReply.Store(runID, true)
+}
+
+func desktopReplyUntrusted(runID string) bool {
+	_, ok := desktopUntrustedReply.Load(strings.TrimSpace(runID))
+	return ok
+}
+
+func desktopDropPublishContradictions(content string, records []desktopPublishRecord, untrusted bool) string {
+	posted := false
+	for _, r := range records {
+		if r.posted() {
+			posted = true
+			break
+		}
+	}
+	var kept []string
+	for _, para := range strings.Split(content, "\n") {
+		p := strings.TrimSpace(para)
+		if p == "" {
+			continue
+		}
+		denies := desktopContradictsPosted.MatchString(p)
+		claims := desktopClaimsPublished.MatchString(p)
+		if untrusted && (denies || claims) {
+			continue
+		}
+		if posted && denies {
+			continue
+		}
+		if !posted && claims {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return strings.Join(kept, "\n")
+}
+
 // desktopPostCorrection is the line put in front of a reply that denies a
 // post this run verifiably published ("" when there is nothing to correct).
 func desktopPostCorrection(runID, content string) string {

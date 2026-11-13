@@ -951,7 +951,8 @@ export interface DesktopBotFile {
 }
 
 const SHOT_MAX = 1_200_000;
-const FILE_MAX = 200_000;
+// Same cap as desktop.FileDeliverBase64Max. 200_000 dropped a ~378KB PNG.
+const FILE_MAX = 700_000;
 
 // desktopBotFiles keeps the latest file. The chat does not choose a type.
 // A path, a hostile mime, or a payload that is not base64 never becomes a download.

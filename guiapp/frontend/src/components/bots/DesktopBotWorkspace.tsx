@@ -1748,6 +1748,23 @@ function openBotFile(event: { preventDefault: () => void; stopPropagation: () =>
 
 // openFeedFile downloads a file a bot shared with a Hub message (the same
 // bytes on every client). A failure is thrown to the chip, which shows it.
+async function loadSaidImage(noteId: string, name: string): Promise<{ mime: string; data: string } | null> {
+    const file = await FetchDesktopBotMailFile(noteId, name);
+    const mime = String(file?.mime || '').trim().toLowerCase();
+    const data = String(file?.data || '').replace(/\s+/g, '');
+    if (data && (mime === 'image/png' || mime === 'image/jpeg' || mime === 'image/jpg')) {
+        return { mime: mime === 'image/jpg' ? 'image/jpeg' : mime, data };
+    }
+    if (file?.local_path) {
+        const shot = await ReadDesktopBotShot(file.local_path);
+        const record = shot as { mime?: unknown; MIME?: unknown; data?: unknown; Data?: unknown } | undefined;
+        const kind = String(record?.mime || record?.MIME || mime || '').trim().toLowerCase();
+        const bytes = String(record?.data || record?.Data || '').replace(/\s+/g, '');
+        if ((kind === 'image/png' || kind === 'image/jpeg') && bytes) return { mime: kind, data: bytes };
+    }
+    return null;
+}
+
 async function openFeedFile(noteId: string, name: string): Promise<void> {
     const file = await FetchDesktopBotMailFile(noteId, name);
     if (file?.local_path) {
@@ -1757,6 +1774,19 @@ async function openFeedFile(noteId: string, name: string): Promise<void> {
     }
     if (!file || !file.data) throw new Error('Hub 上没有这个文件');
     saveDesktopFile({ name: file.name || name, mime: file.mime || 'application/octet-stream', data: file.data } as DesktopBotFile);
+}
+
+function inlineImageMIME(file: { mime?: string; name?: string }): 'image/png' | 'image/jpeg' {
+    const mime = String(file.mime || '').toLowerCase();
+    if (mime === 'image/jpeg' || mime === 'image/jpg' || /\.jpe?g$/i.test(file.name || '')) return 'image/jpeg';
+    return 'image/png';
+}
+
+function fileIsInlineImage(file: { mime?: string; name?: string; data?: string }): boolean {
+    const mime = String(file.mime || '').toLowerCase();
+    const name = file.name || '';
+    const image = mime === 'image/png' || mime === 'image/jpeg' || mime === 'image/jpg' || /\.(png|jpe?g)$/i.test(name);
+    return image && !!file.data;
 }
 
 function saveDesktopFile(file: DesktopBotFile) {
@@ -6767,15 +6797,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             <TaskResultArtifacts paths={message.localPaths} messageId={message.id} lang={lang} onOpen={openBotFile} />
                                         ) : null}
                                         {message.role === 'assistant' && !message.failed && !message.localPaths?.length && message.files?.length ? message.files.map(file => (
-                                            <button
-                                                type="button"
-                                                key={file.name}
-                                                className="desktop-bot-chat__file"
-                                                data-testid="desktop-bot-file"
-                                                onClick={() => saveDesktopFile(file)}
-                                            >
-                                                {text.download} {file.name}
-                                            </button>
+                                            !message.attachmentIds?.length && fileIsInlineImage(file)
+                                                ? <InlineChatShot key={file.name} mime={inlineImageMIME(file)} data={file.data} alt={file.name || text.screenshot} openLabel={text.viewShot} onOpen={openShot} />
+                                                : <button
+                                                    type="button"
+                                                    key={file.name}
+                                                    className="desktop-bot-chat__file"
+                                                    data-testid="desktop-bot-file"
+                                                    onClick={() => saveDesktopFile(file)}
+                                                >
+                                                    {text.download} {file.name}
+                                                </button>
                                         )) : null}
                                     </div>
                                     {message.role === 'user' && message.routedTo && !message.routedUndone ? (
@@ -6872,7 +6904,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </p>
                             ) : null}
                             {collab.features.say ? (
-                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary, saidSince(messages.map(m => m.id)), bots.map(b => b.id))} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} />
+                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary, saidSince(messages.map(m => m.id)), bots.map(b => b.id))} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} loadImage={loadSaidImage} />
                             ) : null}
                             </div>
                             </BotChipContext.Provider>

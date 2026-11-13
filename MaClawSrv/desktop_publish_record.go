@@ -37,11 +37,15 @@ type desktopPublishRecord struct {
 	// truncated, kept so a failed publish can be diagnosed afterwards.
 	// Drafts: editor pages this run's calls ended on (their own drafts).
 	// Earlier: an earlier run of the same request published this site.
-	Earlier bool      `json:"earlier,omitempty"`
-	Drafts  []string  `json:"drafts,omitempty"`
-	Errors  []string  `json:"errors,omitempty"`
-	NetLog  []string  `json:"net_log,omitempty"`
-	Updated time.Time `json:"updated"`
+	Earlier bool     `json:"earlier,omitempty"`
+	Drafts  []string `json:"drafts,omitempty"`
+	// DraftIdentity is the editor or article URL later publishes of this
+	// task and site open. Orphans are other drafts this run opened.
+	DraftIdentity string    `json:"draft_identity,omitempty"`
+	Orphans       []string  `json:"orphans,omitempty"`
+	Errors        []string  `json:"errors,omitempty"`
+	NetLog        []string  `json:"net_log,omitempty"`
+	Updated       time.Time `json:"updated"`
 }
 
 // Limits for the diagnostics kept in a record.
@@ -217,11 +221,8 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 				r.Errors = r.Errors[len(r.Errors)-desktopRecordErrMax:]
 			}
 		}
-		if rep != nil && rep.EditorPage != "" && !desktopStrIn(r.Drafts, rep.EditorPage) {
-			r.Drafts = append(r.Drafts, rep.EditorPage)
-			if len(r.Drafts) > 4 {
-				r.Drafts = r.Drafts[len(r.Drafts)-4:]
-			}
+		if rep != nil && rep.EditorPage != "" {
+			desktopRememberDraft(r, rep.EditorPage, spec.NewDraft)
 		}
 		if rep != nil {
 			r.Evidence, r.Notice, r.Pending = rep.Evidence, rep.Notice, rep.Pending
@@ -247,6 +248,9 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 			if link := desktopPostURLFor(spec, rep.PostID); link != "" {
 				r.URL = link
 			}
+		}
+		if r.posted() {
+			r.Orphans = desktopDropPublishedDrafts(r.Orphans, r.PostID, r.URL)
 		}
 	})
 
@@ -366,4 +370,59 @@ func desktopStrIn(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// desktopRememberDraft keeps one draft identity per task and site. A later
+// publish opens that page. newDraft records the extra page as an orphan
+// instead of replacing the identity.
+func desktopRememberDraft(r *desktopPublishRecord, page string, newDraft bool) {
+	page = strings.TrimSpace(page)
+	if r == nil || page == "" {
+		return
+	}
+	if !desktopStrIn(r.Drafts, page) {
+		r.Drafts = append(r.Drafts, page)
+		if len(r.Drafts) > 4 {
+			r.Drafts = r.Drafts[len(r.Drafts)-4:]
+		}
+	}
+	if desktopSameArticle(page, r.PostID, r.URL) {
+		return
+	}
+	if r.DraftIdentity == "" && !newDraft {
+		r.DraftIdentity = page
+		return
+	}
+	if page != r.DraftIdentity && !desktopStrIn(r.Orphans, page) {
+		r.Orphans = append(r.Orphans, page)
+	}
+}
+
+func desktopSameArticle(page, postID, url string) bool {
+	page = strings.TrimSpace(page)
+	if page == "" {
+		return false
+	}
+	if url != "" && strings.TrimRight(strings.SplitN(page, "#", 2)[0], "/") == strings.TrimRight(strings.SplitN(url, "#", 2)[0], "/") {
+		return true
+	}
+	postID = strings.TrimSpace(postID)
+	return postID != "" && strings.Contains(page, postID)
+}
+
+func desktopDropPublishedDrafts(pages []string, postID, url string) []string {
+	if len(pages) == 0 {
+		return pages
+	}
+	kept := pages[:0]
+	for _, page := range pages {
+		if desktopSameArticle(page, postID, url) {
+			continue
+		}
+		kept = append(kept, page)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }

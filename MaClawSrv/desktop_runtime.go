@@ -2695,6 +2695,7 @@ func ensureDesktopRound(ctx context.Context, scope agentruntime.Scope, userKey s
 // still uses is kept, so one bot finishing does not cut another bot's browser.
 // The next tool after the computer sleeps calls Ensure again.
 func finishDesktopRound(tenantID, userID, runID string) {
+	desktopLongJobRunEnded(runID)
 	desktopClearFinish(runID)
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
@@ -3619,13 +3620,7 @@ func deliverDesktopDocument(ctx context.Context, scope agentruntime.Scope, args 
 	if err != nil {
 		return "", err
 	}
-	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
-		return desktopSayFile(ctx, scope, name, raw)
-	}
-	if err := noteDesktopFile(ctx, name, mime, raw); err != nil {
-		return "", err
-	}
-	return desktopDelivered(name, len(raw)), nil
+	return deliverDesktopBytes(ctx, scope, name, mime, raw)
 }
 
 // deliverDesktopPath attaches the file that is already on the desktop.
@@ -3662,10 +3657,16 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 		}
 		return "", fmt.Errorf("desktop file could not be read")
 	}
-	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
+	return deliverDesktopBytes(ctx, scope, name, desktopDeliverMIME(name), raw)
+}
+
+// deliverDesktopBytes keeps an image or document on this reply when it fits
+// the shared cap, and only then. A larger file is its own say message.
+func deliverDesktopBytes(ctx context.Context, scope agentruntime.Scope, name, mime string, raw []byte) (string, error) {
+	if !desktopDeliverOnReply(raw) {
 		return desktopSayFile(ctx, scope, name, raw)
 	}
-	if err := noteDesktopFile(ctx, name, desktopDeliverMIME(name), raw); err != nil {
+	if err := noteDesktopFile(ctx, name, mime, raw); err != nil {
 		return "", err
 	}
 	return desktopDelivered(name, len(raw)), nil
@@ -3696,8 +3697,12 @@ func noteDesktopFile(ctx context.Context, name, mime string, raw []byte) error {
 	if !desktopMIMEOK(mime) {
 		return fmt.Errorf("desktop document could not be attached to this reply")
 	}
+	kind := "file"
+	if mime == "image/png" || mime == "image/jpeg" {
+		kind = "image"
+	}
 	file := agent.MessageAttachment{
-		Type:     "file",
+		Type:     kind,
 		FileName: name,
 		MimeType: mime,
 		Data:     encoded,

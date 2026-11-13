@@ -171,6 +171,10 @@ func desktopFailClassRecord(scope agentruntime.Scope, action string, args map[st
 		return ""
 	}
 	class := desktopErrorClass(out, err)
+	if class == "infra_timeout" || (action == "screenshot" && err != nil) {
+		// A later sentence about what was published is not evidence.
+		desktopNoteUntrustedReply(scope.RunID)
+	}
 	if class == "" {
 		return ""
 	}

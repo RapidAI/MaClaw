@@ -25,6 +25,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -2360,7 +2361,7 @@ func desktopBotImageData(data string) bool {
 }
 
 func cleanDesktopBotFiles(files []DesktopBotFile) []DesktopBotFile {
-	const maxFile = 200_000
+	const maxFile = desktop.FileDeliverBase64Max
 	for i := len(files) - 1; i >= 0; i-- {
 		name := strings.TrimSpace(files[i].Name)
 		if !desktopBotDeliverName(name) {

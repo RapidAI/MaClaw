@@ -105,9 +105,16 @@ type desktopLongJob struct {
 	ProcStart string `json:"proc_start,omitempty"`
 	Status    string `json:"status"` // running, stalled, failed, done, cancelled
 	// EndReason is why a cancelled job stopped. It is not parsed from a log line.
-	EndReason   string        `json:"end_reason,omitempty"`
-	Alive       bool          `json:"alive"`
-	ExitCode    *int          `json:"exit_code,omitempty"`
+	EndReason string `json:"end_reason,omitempty"`
+	Alive     bool   `json:"alive"`
+	ExitCode  *int   `json:"exit_code,omitempty"`
+	// ExitUnknown is why a finished job has no exit code: poll_failed,
+	// no_exit (job.exit was not written), process_gone, or both.
+	ExitUnknown string `json:"exit_unknown,omitempty"`
+	// FollowUp is how the person hears that this job finished: started,
+	// injected, queued, done, or skipped. Empty means nobody was told.
+	FollowUp    string        `json:"follow_up,omitempty"`
+	FollowRun   string        `json:"follow_run,omitempty"`
 	Progress    string        `json:"progress,omitempty"`
 	LastTail    string        `json:"last_tail,omitempty"`
 	Fingerprint string        `json:"fingerprint,omitempty"`
@@ -427,7 +434,7 @@ func desktopLongJobPollScript(j *desktopLongJob) string {
 		"log=" + desktopLongJobQuote(j.LogFile),
 		`pid=""; [ -f "$pidf" ] && pid=$(cat "$pidf")`,
 		`if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo LONGJOB_ALIVE pid=$pid; else echo LONGJOB_DEAD pid=$pid; fi`,
-		`if [ -f "$exf" ]; then echo LONGJOB_EXIT=$(cat "$exf"); fi`,
+		`if [ -f "$exf" ]; then echo LONGJOB_EXIT=$(cat "$exf"); else echo LONGJOB_NO_EXIT; fi`,
 		`if [ -f "$log" ]; then echo LONGJOB_LOG_BYTES=$(wc -c < "$log"); echo LONGJOB_LOG_TAIL; tail -n 40 "$log"; fi`,
 	}, "\n")
 }
@@ -469,6 +476,7 @@ type desktopLongJobPoll struct {
 	Alive    bool
 	PID      string
 	ExitCode *int
+	NoExit   bool
 	Tail     string
 	Bytes    int
 	Raw      string
@@ -496,6 +504,8 @@ func desktopLongJobParsePoll(out string) desktopLongJobPoll {
 			if err == nil {
 				p.ExitCode = &n
 			}
+		case s == "LONGJOB_NO_EXIT":
+			p.NoExit = true
 		case strings.HasPrefix(s, "LONGJOB_LOG_BYTES="):
 			n, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(s, "LONGJOB_LOG_BYTES=")))
 			p.Bytes = n
@@ -782,6 +792,10 @@ func desktopLongJobPollAndStore(ctx context.Context, j *desktopLongJob) error {
 	}
 	out, err := desktopLongJobRun(ctx, desktopLongJobScope(j), desktopLongJobPollScript(j))
 	if err != nil {
+		j.ExitUnknown = "poll_failed"
+		j.Progress = "这次检查没能读到状态。"
+		log.Printf("[desktop-longjob] job=%s poll read failed: %v", j.ID, err)
+		_ = desktopLongJobSave(j)
 		return err
 	}
 	p := desktopLongJobParsePoll(out)
@@ -800,6 +814,7 @@ func desktopLongJobPollAndStore(ctx context.Context, j *desktopLongJob) error {
 	}
 	switch {
 	case p.Alive:
+		j.ExitUnknown = ""
 		// A quiet log is not a stall while the job is inside its own estimate:
 		// many jobs write progress to their own files (papers 11-11 23:05:
 		// BERT training logged to its run folder, job.log stayed at "training
@@ -815,11 +830,13 @@ func desktopLongJobPollAndStore(ctx context.Context, j *desktopLongJob) error {
 			j.Status = "running"
 		}
 	case p.ExitCode != nil && *p.ExitCode == 0:
+		j.ExitUnknown = ""
 		j.Status = "done"
 		j.Alive = false
 	default:
 		j.Status = "failed"
 		j.Alive = false
+		j.ExitUnknown = desktopLongJobUnknownExit(p)
 	}
 	j.Progress = desktopLongJobProgressLine(j)
 	j.NextPoll = now.Add(desktopLongJobInterval(now.Sub(j.Started)))
@@ -834,11 +851,7 @@ func desktopLongJobProgressLine(j *desktopLongJob) string {
 	case "done":
 		return desktopLongJobDoneHead(j) + "。"
 	case "failed":
-		code := "未知"
-		if j.ExitCode != nil {
-			code = strconv.Itoa(*j.ExitCode)
-		}
-		return "后台任务失败（退出码 " + code + "）。"
+		return "后台任务失败（" + desktopLongJobExitPhrase(j) + "）。"
 	case "stalled":
 		return "后台任务还在，但已经 " + j.stallBound().Round(time.Second).String() + " 没有新的日志进展。"
 	default:
@@ -1135,8 +1148,16 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 	if j == nil || strings.TrimSpace(j.InstanceID) == "" {
 		return nil
 	}
-	if dec == longJobCheck {
-		return desktopLongJobResumeAs(ctx, j, longJobCheck)
+	var scheduled error
+	if dec == longJobCheck || dec == longJobResume {
+		how, err := desktopLongJobResumeAs(ctx, j, dec)
+		scheduled = err
+		if how == "" && (err != nil || dec == longJobResume) {
+			log.Printf("[desktop-longjob] job=%s follow-up skipped: %v", j.ID, err)
+		}
+		if dec == longJobCheck {
+			return err
+		}
 	}
 	sayJob := j
 	if dec == longJobHeartbeat {
@@ -1154,13 +1175,8 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 		}
 		return err
 	}
-	if dec == longJobResume {
-		if err := desktopLongJobResume(ctx, j); err != nil {
-			if errors.Is(err, ErrLongJobOwnerGone) {
-				return err
-			}
-			log.Printf("[desktop-longjob] job=%s resume not started: %v", j.ID, err)
-		}
+	if errors.Is(scheduled, ErrLongJobOwnerGone) {
+		return scheduled
 	}
 	return nil
 }
@@ -1206,11 +1222,7 @@ func desktopLongJobNoticeText(j *desktopLongJob, dec desktopLongJobDecision) str
 	case "done":
 		head = desktopLongJobDoneHead(j) + "，下面是最后的输出"
 	case "failed":
-		code := "未知"
-		if j.ExitCode != nil {
-			code = strconv.Itoa(*j.ExitCode)
-		}
-		head = "后台任务失败了（退出码 " + code + "），下面是最后的输出"
+		head = "后台任务失败了（" + desktopLongJobExitPhrase(j) + "），下面是最后的输出"
 		if n := desktopLongJobKilledNote(j); n != "" {
 			head = "后台任务被外部结束了（" + n + "），下面是最后的输出"
 		}
@@ -1235,7 +1247,7 @@ func desktopLongJobNoticeText(j *desktopLongJob, dec desktopLongJobDecision) str
 	}
 	age := desktopLongJobNow().Sub(j.Started).Round(time.Minute)
 	text := head + "（任务 " + desktopLongJobShortID(j.ID) + "，已运行 " + age.String() + "，最近一次检查 " + j.LastPoll.Format("15:04") + "）。"
-	if dec == longJobResume {
+	if dec == longJobResume && desktopLongJobFollowScheduled(j) {
 		text += "我接着看一下原因和下一步。"
 	}
 	if tail := desktopLongJobTailLines(j.LastTail, 8, 900); tail != "" {
@@ -1272,10 +1284,15 @@ func desktopLongJobTailLines(tail string, n, max int) string {
 // desktopLongJobResume starts one bot turn in the job's conversation, unless
 // a run is already working there (that run polls the job itself).
 func desktopLongJobResume(ctx context.Context, j *desktopLongJob) error {
-	return desktopLongJobResumeAs(ctx, j, longJobResume)
+	_, err := desktopLongJobResumeAs(ctx, j, longJobResume)
+	return err
 }
 
-func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopLongJobDecision) error {
+// desktopLongJobResumeAs schedules the follow-up. The string is started,
+// injected, or queued when the person will hear it, and empty when it was
+// skipped. A running session run gets the item injected; if that cannot be
+// queued onto the run, the follow-up waits until that run ends.
+func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopLongJobDecision) (string, error) {
 	svc := desktopLongJobService
 	if j.PrincipalUser == "" {
 		if a, ok := desktopInstancePrincipal(j.InstanceID); ok {
@@ -1289,32 +1306,206 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 		}
 	}
 	if svc == nil || j.PrincipalUser == "" {
-		return fmt.Errorf("no service principal for this job")
+		j.FollowUp = "skipped"
+		_ = desktopLongJobSave(j)
+		return "", fmt.Errorf("no service principal for this job")
 	}
 	principal := agentservice.Principal{TenantID: j.PrincipalTenant, UserID: j.PrincipalUser}
 	if j.SessionID != "" {
 		runs, err := svc.ListRuns(ctx, principal, j.InstanceID, agentservice.ListRunsInput{Status: agentservice.RunStatusRunning, SessionID: j.SessionID})
 		if err != nil {
-			return desktopLongJobPermanent(err)
+			return "", desktopLongJobPermanent(err)
 		}
 		if len(runs) > 0 {
-			return nil
+			if dec != longJobResume {
+				log.Printf("[desktop-longjob] job=%s follow-up skipped: run %s is already running", j.ID, runs[0].ID)
+				return "", nil
+			}
+			return desktopLongJobFollowRunning(ctx, principal, j, runs[0].ID)
 		}
 	}
 	in := agentservice.SendMessageInput{Content: desktopLongJobWatchPrompt(j, dec), SessionID: j.SessionID, Metadata: map[string]string{"long_job_id": j.ID, "long_job_watch": string(dec)}}
+	// Mark it before the send. The new run can finish inside SendMessageAsync
+	// and ask for another follow-up; started means this one is already it.
+	j.FollowUp = "started"
+	_ = desktopLongJobSave(j)
 	// The turn gets its own file slot, so action=deliver works here too; the
 	// follower says the files with the turn's reply (desktop_longjob_files.go).
 	files := &desktopWatchFiles{}
 	in.PrepareExecution = files.prepare
 	_, run, err := svc.SendMessageAsync(context.WithoutCancel(ctx), principal, j.InstanceID, in)
 	if err != nil {
-		return desktopLongJobPermanent(err)
+		j.FollowUp = "skipped"
+		_ = desktopLongJobSave(j)
+		log.Printf("[desktop-longjob] job=%s follow-up skipped: %v", j.ID, err)
+		return "", desktopLongJobPermanent(err)
 	}
 	if run != nil {
+		j.FollowRun = run.ID
+		_ = desktopLongJobSave(j)
 		desktopLongJobNoteWatchRun(run.ID, j.ID)
 		go desktopLongJobFollowRunFiles(context.WithoutCancel(ctx), principal, j, run.ID, dec, files)
 	}
-	return nil
+	return "started", nil
+}
+
+func desktopLongJobFollowRunning(ctx context.Context, principal agentservice.Principal, j *desktopLongJob, runID string) (string, error) {
+	svc := desktopLongJobService
+	what := "finished"
+	if j.Status == "stalled" {
+		what = "stalled"
+	}
+	text := "job " + j.ID + " " + what + ": verify and report\n" + desktopLongJobView(j)
+	var accepted bool
+	if svc != nil {
+		receipt, err := svc.AppendRunSupplement(ctx, principal, j.InstanceID, runID, text)
+		accepted = err == nil && receipt != nil && receipt.Accepted
+		if !accepted {
+			why := "not accepted"
+			if err != nil {
+				why = err.Error()
+			} else if receipt != nil && receipt.Detail != "" {
+				why = receipt.Detail
+			}
+			log.Printf("[desktop-longjob] job=%s follow-up queued until run %s ends: %s", j.ID, runID, why)
+		}
+	}
+	if accepted {
+		j.FollowUp = "injected"
+		j.FollowRun = runID
+		_ = desktopLongJobSave(j)
+		log.Printf("[desktop-longjob] job=%s follow-up injected into running run %s", j.ID, runID)
+		return "injected", nil
+	}
+	desktopLongJobQueueFollow(runID, j.ID)
+	j.FollowUp = "queued"
+	j.FollowRun = runID
+	_ = desktopLongJobSave(j)
+	return "queued", nil
+}
+
+func desktopLongJobFollowScheduled(j *desktopLongJob) bool {
+	if j == nil {
+		return false
+	}
+	switch j.FollowUp {
+	case "started", "injected", "queued", "done":
+		return true
+	}
+	return false
+}
+
+func desktopLongJobUnknownExit(p desktopLongJobPoll) string {
+	if p.ExitCode != nil {
+		return ""
+	}
+	switch {
+	case p.NoExit && strings.TrimSpace(p.PID) == "":
+		return "process_gone,no_exit"
+	case p.NoExit:
+		return "no_exit"
+	default:
+		return "process_gone"
+	}
+}
+
+func desktopLongJobExitPhrase(j *desktopLongJob) string {
+	if j != nil && j.ExitCode != nil {
+		return "退出码 " + strconv.Itoa(*j.ExitCode)
+	}
+	reason := ""
+	if j != nil {
+		reason = j.ExitUnknown
+	}
+	switch reason {
+	case "poll_failed":
+		return "这次检查没能读到状态"
+	case "no_exit":
+		return "没有 job.exit"
+	case "process_gone":
+		return "进程已不在"
+	case "process_gone,no_exit":
+		return "进程已不在，且没有 job.exit"
+	default:
+		return "退出码 未知"
+	}
+}
+
+var (
+	desktopLongJobFollowMu sync.Mutex
+	desktopLongJobFollow   = map[string][]string{}
+)
+
+func desktopLongJobQueueFollow(runID, jobID string) {
+	runID, jobID = strings.TrimSpace(runID), strings.TrimSpace(jobID)
+	if runID == "" || jobID == "" {
+		return
+	}
+	desktopLongJobFollowMu.Lock()
+	defer desktopLongJobFollowMu.Unlock()
+	for _, id := range desktopLongJobFollow[runID] {
+		if id == jobID {
+			return
+		}
+	}
+	desktopLongJobFollow[runID] = append(desktopLongJobFollow[runID], jobID)
+}
+
+func desktopLongJobTakeFollow(runID string) []string {
+	desktopLongJobFollowMu.Lock()
+	defer desktopLongJobFollowMu.Unlock()
+	ids := desktopLongJobFollow[runID]
+	delete(desktopLongJobFollow, runID)
+	return ids
+}
+
+// desktopLongJobRunEnded gives a follow-up to every finished job that was
+// waiting on this run, and to any job this run started that finished without
+// one. A cancelled job is not revived.
+func desktopLongJobRunEnded(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	for _, id := range desktopLongJobTakeFollow(runID) {
+		desktopLongJobDeliverFollowUp(desktopLongJobGet(id))
+	}
+	for _, j := range desktopLongJobAll() {
+		if j.SourceRun != runID && j.FollowRun != runID {
+			continue
+		}
+		if j.Status != "done" && j.Status != "failed" {
+			continue
+		}
+		if j.FollowUp == "started" || j.FollowUp == "done" {
+			continue
+		}
+		// Injected into a run that is still going is that run's job. Injected
+		// into the run that just ended never became a user-facing report.
+		if j.FollowUp == "injected" && j.FollowRun != "" && j.FollowRun != runID {
+			continue
+		}
+		if j.FollowUp == "queued" && j.FollowRun != "" && j.FollowRun != runID {
+			continue
+		}
+		log.Printf("[desktop-longjob] job=%s run %s ended with no user-facing follow-up", j.ID, runID)
+		j.FollowUp = ""
+		desktopLongJobDeliverFollowUp(j)
+	}
+}
+
+func desktopLongJobDeliverFollowUp(j *desktopLongJob) {
+	if j == nil || j.Status == "cancelled" {
+		return
+	}
+	if j.FollowUp == "started" || j.FollowUp == "injected" || j.FollowUp == "done" {
+		return
+	}
+	j.FollowUp = ""
+	how, err := desktopLongJobResumeAs(context.Background(), j, longJobResume)
+	if err != nil || how == "" {
+		log.Printf("[desktop-longjob] job=%s follow-up skipped after the run ended: %v", j.ID, err)
+	}
 }
 
 func desktopOwnerUserID(userID string) string {
@@ -1619,6 +1810,7 @@ func desktopLongJobCancelSourceRun(instanceID, runID string) {
 		}
 		desktopLongJobStopStartedRun(j)
 	}
+	desktopLongJobRunEnded(runID)
 }
 
 // desktopLongJobReconcileOwners drops watches whose instance is gone.
