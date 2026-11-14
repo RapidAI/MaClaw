@@ -307,14 +307,13 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	if _, err = desktop.BashArgs(containerName(spec.TenantID, spec.UserID), command); err != nil {
 		return "", err
 	}
-	// A bot's GUI programs belong on its own display. The command service
-	// applies that display. The docker line does not name bash.
+	// A bot's GUI programs belong on its own display when that screen is
+	// already open. Bash does not open it: a shell, ssh or training job
+	// stays on the workspace while the desktop sleeps.
 	display := ""
 	if spec.BotID != "" {
-		var displayErr error
-		display, displayErr = s.specDisplay(ctx, spec, "")
-		if displayErr != nil {
-			return "", displayErr
+		if got, err := s.readBotDisplay(ctx, spec); err == nil {
+			display = got
 		}
 	}
 	shell := commandRequest{

@@ -11,7 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
-func TestBotBashOpensAMissingScreen(t *testing.T) {
+func TestBotBashDoesNotOpenAMissingScreen(t *testing.T) {
 	bot := desktop.BotDesktopUser("alice", "bot_a")
 	var mu sync.Mutex
 	ensured := 0
@@ -20,16 +20,16 @@ func TestBotBashOpensAMissingScreen(t *testing.T) {
 	if err != nil || text != "hi" {
 		t.Fatalf("bash=%q err=%v", text, err)
 	}
-	if ensured != 1 {
-		t.Fatalf("ensured=%d", ensured)
+	if ensured != 0 {
+		t.Fatalf("ensured=%d, bash opened a screen", ensured)
 	}
 	text, err = svc.Bash(context.Background(), "tenant", bot, "echo hi")
-	if err != nil || text != "hi" || ensured != 1 {
+	if err != nil || text != "hi" || ensured != 0 {
 		t.Fatalf("second bash=%q err=%v ensured=%d", text, err, ensured)
 	}
 }
 
-func TestThreeBotsOpenScreensFromBash(t *testing.T) {
+func TestThreeBotsBashWithoutOpeningScreens(t *testing.T) {
 	var mu sync.Mutex
 	ensured := map[string]int{}
 	svc := &Service{
@@ -80,13 +80,8 @@ func TestThreeBotsOpenScreensFromBash(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(ensured) != 3 {
-		t.Fatalf("ensured=%v", ensured)
-	}
-	for key, n := range ensured {
-		if n != 1 {
-			t.Fatalf("key %s ensured %d times", key, n)
-		}
+	if len(ensured) != 0 {
+		t.Fatalf("bash opened screens: %v", ensured)
 	}
 }
 

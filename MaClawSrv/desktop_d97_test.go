@@ -71,9 +71,9 @@ func TestDesktopD97OutageErrorsRecognised(t *testing.T) {
 	}
 }
 
-// The first bash hits "desktop is not open yet". Open the screen and run the
-// step once more. Do not spend the outage window or mark infra_timeout.
-func TestDesktopD97BashOpensTheScreenAndRetriesOnce(t *testing.T) {
+// A GUI step that hits "desktop is not open yet" opens the screen and runs
+// once more. A plain shell does not. Neither spends the outage window.
+func TestDesktopD97ClickOpensTheScreenAndRetriesOnce(t *testing.T) {
 	req := d97Env(t)
 	reconnects := 0
 	desktopOutageReconnect = func(context.Context, agentruntime.Scope) string {
@@ -87,20 +87,20 @@ func TestDesktopD97BashOpensTheScreenAndRetriesOnce(t *testing.T) {
 	}
 	calls := 0
 	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
-		if desktopArg(args, "action") == "bash" {
+		if desktopArg(args, "action") == "click" {
 			calls++
 			if calls == 1 {
 				return "", errors.New(d97NotOpen)
 			}
-			return "ssh ok: Linux macmini", nil
+			return "clicked", nil
 		}
 		return "ok", nil
 	}
-	out, err := invoke(t, req, map[string]any{"action": "bash", "command": "echo hi"})
+	out, err := invoke(t, req, map[string]any{"action": "click", "x": 1, "y": 2})
 	if err != nil {
-		t.Fatalf("bash after the screen opened: %v", err)
+		t.Fatalf("click after the screen opened: %v", err)
 	}
-	if calls != 2 || opens != 2 || reconnects != 0 || !strings.Contains(out, "ssh ok") || strings.Contains(out, "unavailable") {
+	if calls != 2 || opens != 2 || reconnects != 0 || !strings.Contains(out, "clicked") || strings.Contains(out, "unavailable") {
 		t.Fatalf("calls=%d opens=%d reconnects=%d out=%q", calls, opens, reconnects, out)
 	}
 	if desktopOutageWasSeen(req.Scope.RunID) {

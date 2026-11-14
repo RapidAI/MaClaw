@@ -253,14 +253,6 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 		desktopWatchdogStopByUser(scope.RunID)
 		return "", errWatchdogStop
 	}
-	// An isolated bot's screen has to exist before the first action. Opening
-	// it here means a cold container does not answer the first bash with
-	// "not open yet". Owner desktops and headless steps of the owner skip it.
-	if err := ensureBotScreen(ctx, scope, false); err != nil {
-		desktopWatchdogAfter(scope, err)
-		desktopWatchdogResult(scope, action, args, "", err)
-		return "", err
-	}
 	warn, stop := desktopWatchdogBefore(scope, action, args)
 	if stop != nil {
 		return "", stop
@@ -269,9 +261,20 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 	// screen has it (desktop_screen_lease.go); other steps never wait.
 	// A new lease also waits while the container is over the memory line.
 	// The run that already holds the screen keeps going.
+	// Shell, ssh and training (bash that does not start a window) do not
+	// open a desktop. Opening a screen happens only after the memory gate,
+	// and only for an action that draws on the screen.
 	screenKey := desktopScreenKey(scope)
-	if desktopScreenLeaseEnabled() && desktopScreenLeaseNeeded(action, args) && !desktopScreenLeases.heldBy(screenKey, scope.RunID) {
+	needsScreen := desktopScreenLeaseNeeded(action, args)
+	if desktopScreenLeaseEnabled() && needsScreen && !desktopScreenLeases.heldBy(screenKey, scope.RunID) {
 		if err := waitDesktopMemory(ctx, scope.TenantID, scope.UserID, scope.RunID); err != nil {
+			return "", err
+		}
+	}
+	if needsScreen {
+		if err := ensureBotScreen(ctx, scope, false); err != nil {
+			desktopWatchdogAfter(scope, err)
+			desktopWatchdogResult(scope, action, args, "", err)
 			return "", err
 		}
 	}
@@ -489,7 +492,7 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 				err = fmt.Errorf("%w (the connection was reset and the desktop session requested again; it still fails, so this is the infrastructure)", err)
 			}
 		}
-		if err != nil && ctx.Err() == nil && desktopColdStart(err) {
+		if err != nil && ctx.Err() == nil && desktopColdStart(err) && desktopScreenLeaseNeeded(actionName, args) {
 			// Exactly one retry. The screen was still closed. Open it and
 			// run this step once more. This is not an outage.
 			first := err
