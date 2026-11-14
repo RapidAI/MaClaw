@@ -53,16 +53,23 @@ class BotsController extends Notifier<BotsState> {
   Future<void> refresh() async {
     final api = _api;
     if (api == null) return;
+    // A mid-flight account switch rebuilds this controller with the new
+    // client — writes from the old request would stamp the previous
+    // account's list onto the fresh state. Drop them.
+    bool stale() => !identical(ref.read(botApiProvider), api);
     state = state.copyWith(loading: true, error: '');
     try {
       final access = await api.fetchAccess();
+      if (stale()) return;
       if (!access.enabled) {
         state = state.copyWith(access: access, bots: const [], loading: false);
         return;
       }
       final bots = await api.listBots();
+      if (stale()) return;
       state = state.copyWith(access: access, bots: bots, loading: false);
     } on Object catch (error) {
+      if (stale()) return;
       noteAuthFailure(ref, error);
       if (error is HubApiException && error.code == 'BOT_DISABLED') {
         // Hub answers 403 BOT_DISABLED for accounts without bot access —
@@ -84,7 +91,9 @@ class BotsController extends Notifier<BotsState> {
     if (api == null) throw StateError('not signed in');
     final bot = await api.createBot(
         name: name, description: description, color: color, shape: shape);
-    state = state.copyWith(bots: [...state.bots, bot]);
+    if (identical(ref.read(botApiProvider), api)) {
+      state = state.copyWith(bots: [...state.bots, bot]);
+    }
     return bot;
   }
 
@@ -92,9 +101,11 @@ class BotsController extends Notifier<BotsState> {
     final api = _api;
     if (api == null) return;
     await api.deleteBot(bot.id);
-    state = state.copyWith(
-      bots: state.bots.where((b) => b.id != bot.id).toList(),
-    );
+    if (identical(ref.read(botApiProvider), api)) {
+      state = state.copyWith(
+        bots: state.bots.where((b) => b.id != bot.id).toList(),
+      );
+    }
   }
 }
 

@@ -97,6 +97,8 @@ function createHarness(options) {
   const settingsGate = opts.delaySettings ? new Promise(function (resolve) { releaseSettings = resolve; }) : Promise.resolve();
   let releaseModels = function () {};
   const modelsGate = opts.modelsGate ? new Promise(function (resolve) { releaseModels = resolve; }) : Promise.resolve();
+  let releaseVision = function () {};
+  const visionGate = opts.visionGate ? new Promise(function (resolve) { releaseVision = resolve; }) : Promise.resolve();
 
   function registerIds(html, parent) {
     const re = /id="([^"]+)"/g;
@@ -218,6 +220,11 @@ function createHarness(options) {
       if (opts.modelsGate) return modelsGate.then(function () { return { models: opts.modelsResult || [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }, { id: 'deepseek-flash', name: 'DeepSeek Flash' }] }; });
       return Promise.resolve({ models: opts.modelsResult || [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }, { id: 'deepseek-flash', name: 'DeepSeek Flash' }] });
     }
+    if (url === '/api/admin/bots/llm/vision' && request && request.method === 'POST') {
+      if (opts.visionError) return Promise.reject(new Error(opts.visionError));
+      if (opts.visionGate) return visionGate.then(function () { return opts.visionResult || settings; });
+      return Promise.resolve(opts.visionResult || settings);
+    }
     return Promise.reject(new Error('unexpected ' + url));
   }
 
@@ -259,6 +266,7 @@ function createHarness(options) {
     releaseUsers: function () { releaseUsers(); },
     releaseSettings: function () { releaseSettings(); },
     releaseModels: function () { releaseModels(); },
+    releaseVision: function () { releaseVision(); },
     open: function () { return context.AdminTabRegistry.getTab('bots').onOpen(); }
   };
 }
@@ -919,6 +927,14 @@ async function testLLMSettingsProvidersAreManagedAndRolesPickTheModel() {
   await flush();
   assertIncludes(harness.elements.botLLMBadge.textContent, 'OpenAI', 'the badge follows the foreground provider');
   assertIncludes(harness.elements.botLLMRoles._html, 'placeholder="\u9ed8\u8ba4 gpt-4o-mini\uff0c\u53ef\u8986\u76d6"', 'the foreground model field suggests the provider default');
+  // The provider rows keep their "in use" marker in sync without a rebuild:
+  // the chip moves off the old provider onto the new foreground route.
+  const prevRow = harness.elements['botLLMRow_lp_abcdef0123456789'];
+  const newRow = harness.elements['botLLMRow_' + id];
+  assert(!prevRow.className.includes('bot-llm-row-active'), 'the old foreground row loses its active highlight');
+  assert(newRow.className.includes('bot-llm-row-active'), 'the new foreground row gains the active highlight');
+  assert(!harness.elements['botLLMTags_lp_abcdef0123456789']._html.includes('bot-llm-tag-use'), 'the old row drops the in-use chip');
+  assertIncludes(harness.elements['botLLMTags_' + id]._html, 'bot-llm-tag-use', 'the new row shows the in-use chip');
   harness.elements.botLLMSave.listeners.click[0]();
   await flush();
   const second = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; })[1];
@@ -1157,6 +1173,71 @@ async function testLLMModelFetchExplainsFailuresAndRequiresCredentials() {
   assertIncludes(draft.elements.botLLMPModelList._html, 'value="glm-4.7"', 'fills the dialog picker from the response');
 }
 
+async function testLLMVisionDetectShowsBusyAndAnnouncesInconclusive() {
+  console.log('  Test: the vision detect button goes busy and an inconclusive probe is announced');
+  const settings = function () {
+    return {
+      default_service_group: 'maclaw_official_group',
+      current: 'lp_abcdef0123456789',
+      providers: [{ id: 'lp_abcdef0123456789', name: 'DeepSeek', protocol: 'openai', url: 'https://api.deepseek.com/v1', model: 'm-base', key_set: true }],
+      roles: {
+        foreground: { mode: 'pin', provider: 'lp_abcdef0123456789', model: 'm1' },
+        background: { mode: 'pin', provider: 'lp_abcdef0123456789', model: 'm1' },
+        computer_use: { mode: 'pin', provider: 'lp_abcdef0123456789', model: 'm2' },
+        grounder: { mode: 'unused' }
+      }
+    };
+  };
+
+  // An inconclusive probe (no known record in the answer) used to be a
+  // silent no-op that made the button look dead.
+  const inconclusive = createHarness({
+    visionResult: { llm: { providers: [{ id: 'lp_abcdef0123456789', vision: [] }] } }
+  });
+  inconclusive.settings.llm = settings();
+  await inconclusive.open();
+  await flush();
+  const callsBefore = inconclusive.calls.length;
+  inconclusive.elements.botLLMRoles.listeners.click[0]({ target: inconclusive.elements.botLLMRoleVisionDetect_foreground });
+  await flush();
+  const sent = inconclusive.calls.slice(callsBefore).filter(function (call) { return call.path === '/api/admin/bots/llm/vision'; });
+  assert(sent.length === 1, 'the detect click probes the pinned model');
+  assert(sent[0].body && JSON.parse(sent[0].body).model === 'm1', 'the probe names the role model');
+  assert(inconclusive.toasts.some(function (toast) { return toast.kind === 'info'; }), 'an inconclusive probe toasts instead of staying silent');
+  assert(inconclusive.elements.botLLMRoleVisionDetect_foreground.disabled === false, 'the button recovers after an inconclusive answer');
+
+  // The busy label covers every role row pinned to the same provider+model;
+  // a different model stays clickable and may probe concurrently, and the
+  // answers refresh each row with its own state.
+  const gated = createHarness({
+    visionGate: true,
+    visionResult: { llm: { providers: [{ id: 'lp_abcdef0123456789', vision: [
+      { model: 'm1', known: true, supported: true, detected_at: '2026-11-14 09:00' },
+      { model: 'm2', known: true, supported: false, detected_at: '2026-11-14 09:00' }
+    ] }] } }
+  });
+  gated.settings.llm = settings();
+  await gated.open();
+  await flush();
+  const visionCallsBefore = gated.calls.length;
+  gated.elements.botLLMRoles.listeners.click[0]({ target: gated.elements.botLLMRoleVisionDetect_foreground });
+  assert(gated.elements.botLLMRoleVisionDetect_foreground.disabled === true, 'the clicked button goes busy while the probe runs');
+  assertIncludes(gated.elements.botLLMRoleVisionDetect_foreground.textContent, '\u6b63\u5728\u68c0\u6d4b', 'the busy label replaces the detect label');
+  assert(gated.elements.botLLMRoleVisionDetect_background.disabled === true, 'the same model on another role goes busy too');
+  assert(gated.elements.botLLMRoleVisionDetect_computer_use.disabled === false, 'a different model on another role stays clickable');
+  gated.elements.botLLMRoles.listeners.click[0]({ target: gated.elements.botLLMRoleVisionDetect_computer_use });
+  assert(gated.elements.botLLMRoleVisionDetect_computer_use.disabled === true, 'a second model probes concurrently');
+  assert(gated.calls.slice(visionCallsBefore).filter(function (call) { return call.path === '/api/admin/bots/llm/vision'; }).length === 2, 'both probes reach the endpoint');
+  gated.releaseVision();
+  await flush();
+  assert(gated.elements.botLLMRoleVisionDetect_foreground.disabled === false, 'the button recovers after the answer');
+  assert(gated.elements.botLLMRoleVisionDetect_foreground.textContent === '\u68c0\u6d4b', 'the detect label resets after the answer');
+  assert(gated.elements.botLLMRoleVisionStatus_foreground.className.indexOf('bot-llm-vision-yes') !== -1, 'a supported answer colors the chip green');
+  assert(gated.elements.botLLMRoleVisionStatus_background.className.indexOf('bot-llm-vision-yes') !== -1, 'the shared answer refreshes every row showing the model');
+  assert(gated.elements.botLLMRoleVisionStatus_computer_use.className.indexOf('bot-llm-vision-no') !== -1, 'an unsupported answer colors the chip amber');
+  assert(gated.toasts.every(function (toast) { return toast.kind !== 'info'; }), 'a conclusive answer needs no extra toast');
+}
+
 Promise.resolve()
   .then(testPickerSelectsDepartmentAndUser)
   .then(testAccountSearchIgnoresSharedDomain)
@@ -1187,6 +1268,7 @@ Promise.resolve()
   .then(testLLMModelFetchPopulatesThePicker)
   .then(testLLMModelFetchDropsAResultWhoseCoordinatesChanged)
   .then(testLLMModelFetchExplainsFailuresAndRequiresCredentials)
+  .then(testLLMVisionDetectShowsBusyAndAnnouncesInconclusive)
   .then(testReloadAfterDirectoryFailure)
   .then(function () {
     console.log('bot-tab tests: ' + passed + ' passed, ' + failed + ' failed');

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobilebot/core/account_store.dart';
@@ -24,6 +25,7 @@ class _FakeApi extends BotApi {
   List<Bot> bots = const [];
   Object? refreshError;
   String? deletedBotId;
+  Future<List<Bot>>? pendingBots;
 
   @override
   Future<BotAccess> fetchAccess() async {
@@ -34,6 +36,7 @@ class _FakeApi extends BotApi {
   @override
   Future<List<Bot>> listBots() async {
     if (refreshError != null) throw refreshError!;
+    if (pendingBots != null) return pendingBots!;
     return bots;
   }
 
@@ -140,6 +143,33 @@ void main() {
     await _settle(container);
     expect(container.read(botsProvider).error, isNotEmpty);
     expect(container.read(sessionProvider).expired, isTrue);
+  });
+
+  test('a late reply from the previous api is dropped on rebuild', () async {
+    final slow = Completer<List<Bot>>();
+    final oldApi = _FakeApi()..pendingBots = slow.future;
+    final newApi = _FakeApi()..bots = const [_botB];
+    final container = ProviderContainer(overrides: [
+      botApiProvider.overrideWithValue(oldApi),
+      sessionProvider.overrideWith(_FakeSession.new),
+    ]);
+    addTearDown(container.dispose);
+
+    // The initial refresh starts against the old api, then the provider is
+    // rebound (account switch) before it resolves.
+    await Future<void>.delayed(Duration.zero);
+    container.updateOverrides([
+      botApiProvider.overrideWithValue(newApi),
+      sessionProvider.overrideWith(_FakeSession.new),
+    ]);
+    await _settle(container);
+    expect(container.read(botsProvider).bots.map((b) => b.id), ['b']);
+
+    // The stale response resolves after the rebuild — its writes must not
+    // stamp the old account's list over the new one.
+    slow.complete(const [_botA]);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(container.read(botsProvider).bots.map((b) => b.id), ['b']);
   });
 
   test('create appends the new bot and remove drops it', () async {

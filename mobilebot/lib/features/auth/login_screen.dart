@@ -45,9 +45,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     _tabCtrl = TabController(length: 2, vsync: this)
       ..addListener(() {
         if (!_tabCtrl.indexIsChanging) {
+          // A pending code request is bound to its method — drop it when
+          // the user switches tabs or verify would reuse the wrong one.
+          _resendTimer?.cancel();
           setState(() {
             _error = '';
             _info = '';
+            _request = null;
+            _resendIn = 0;
           });
         }
       });
@@ -144,7 +149,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
             .read(sessionProvider.notifier)
             .addAccount(result.account!);
         if (!mounted) return;
-        if (widget.addingAccount) {
+        if (widget.addingAccount && context.canPop()) {
           context.pop();
         } else {
           context.go('/');
@@ -203,9 +208,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   if (!widget.addingAccount) ...[
-                    Icon(Icons.smart_toy,
-                        size: 64, color: theme.colorScheme.primary),
-                    const SizedBox(height: 12),
+                    Container(
+                      width: 76,
+                      height: 76,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                      child: Icon(Icons.smart_toy,
+                          size: 40, color: theme.colorScheme.primary),
+                    ),
+                    const SizedBox(height: 14),
                     Text('MaClawBot',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.headlineMedium),

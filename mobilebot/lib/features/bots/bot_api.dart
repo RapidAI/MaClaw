@@ -474,24 +474,11 @@ class BotApi {
   }
 
   /// `GET /api/v1/bots/llm` — the model settings applying to every bot of
-  /// this owner (mode, provider fields with the key removed, per-role view).
+  /// this owner (per-role effective view; mobile is read-only).
   Future<Map<String, dynamic>> getLLMSettings() async {
     return _client.guard(
       () => _client.dio.get<Map<String, dynamic>>(
         '/api/v1/bots/llm',
-        options: _client.opts(),
-      ),
-    );
-  }
-
-  /// `PUT /api/v1/bots/llm`. `{"mode":"default"}` restores the configured
-  /// default; a custom save carries provider fields per role.
-  Future<Map<String, dynamic>> putLLMSettings(
-      Map<String, dynamic> body) async {
-    return _client.guard(
-      () => _client.dio.put<Map<String, dynamic>>(
-        '/api/v1/bots/llm',
-        data: body,
         options: _client.opts(),
       ),
     );

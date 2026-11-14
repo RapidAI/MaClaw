@@ -665,8 +665,12 @@ class BotChatController extends Notifier<ChatState> {
     if (askResolved) flags['askResolved'] = true;
     if (optionsUsed) flags['optionsUsed'] = true;
     if (flags.isEmpty) return;
+    // botApiProvider is null the moment the session drops — _api's `!` would
+    // throw synchronously here, escaping into an unhandled async error.
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     unawaited(
-      _api.writeConversation(_clientId, [
+      api.writeConversation(_clientId, [
         {
           'bot_id': state.botId,
           'id': messageId,
@@ -687,8 +691,10 @@ class BotChatController extends Notifier<ChatState> {
   void _writeProjection(ChatMessage message) {
     final projection = message.syncProjection;
     if (projection == null) return;
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     unawaited(
-      _api.writeConversation(_clientId, [
+      api.writeConversation(_clientId, [
         {
           'bot_id': state.botId,
           'id': message.id,

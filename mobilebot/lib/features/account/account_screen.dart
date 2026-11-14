@@ -27,8 +27,8 @@ class AccountScreen extends ConsumerWidget {
           Card(
             child: ListTile(
               leading: const Icon(Icons.psychology_alt_outlined),
-              title: const Text('模型设置'),
-              subtitle: const Text('对所有 Bot 生效的模型提供方'),
+              title: const Text('当前模型'),
+              subtitle: const Text('各阶段生效的模型配置'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => context.push('/llm-settings'),
             ),

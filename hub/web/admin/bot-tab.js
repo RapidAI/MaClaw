@@ -120,10 +120,12 @@
       llmVisionAuto: '\u81ea\u52a8',
       llmVisionOn: '\u5f00',
       llmVisionOff: '\u5173',
-      llmVisionYes: '\u5df2\u68c0\u6d4b\uff1a\u652f\u6301\u56fe\u50cf',
-      llmVisionNo: '\u5df2\u68c0\u6d4b\uff1a\u4e0d\u652f\u6301\u56fe\u50cf',
+      llmVisionYes: '\u652f\u6301\u56fe\u50cf',
+      llmVisionNo: '\u4e0d\u652f\u6301\u56fe\u50cf',
       llmVisionUnknown: '\u5c1a\u672a\u68c0\u6d4b',
       llmVisionDetect: '\u68c0\u6d4b',
+      llmVisionProbing: '\u6b63\u5728\u68c0\u6d4b\u2026',
+      llmVisionInconclusive: '\u672a\u80fd\u786e\u8ba4\u8be5\u6a21\u578b\u662f\u5426\u652f\u6301\u56fe\u50cf\uff0c\u8bf7\u68c0\u67e5\u63a5\u53e3\u6216\u7a0d\u540e\u91cd\u8bd5',
       llmFetchModels: '\u83b7\u53d6\u6a21\u578b\u5217\u8868',
       llmFetching: '\u6b63\u5728\u83b7\u53d6...',
       llmModelsLoaded: '\u5df2\u83b7\u53d6 {n} \u4e2a\u6a21\u578b\uff0c\u70b9\u51fb\u8f93\u5165\u6846\u53ef\u76f4\u63a5\u9009\u62e9',
@@ -251,10 +253,12 @@
       llmVisionAuto: 'Auto',
       llmVisionOn: 'On',
       llmVisionOff: 'Off',
-      llmVisionYes: 'Detected: accepts images',
-      llmVisionNo: 'Detected: no image input',
+      llmVisionYes: 'Accepts images',
+      llmVisionNo: 'No image input',
       llmVisionUnknown: 'Not detected yet',
       llmVisionDetect: 'Detect',
+      llmVisionProbing: 'Probing...',
+      llmVisionInconclusive: 'Could not tell whether this model accepts images; check the endpoint or retry later',
       llmDefaultNote: 'When no other provider is pinned for the foreground role, bots use the MaClaw official service group and deduct the associated user official allowance.',
       llmFetchModels: 'Fetch models',
       llmFetching: 'Fetching...',
@@ -417,13 +421,14 @@
       + '#tab-bots .bot-llm-roles{display:grid;margin-top:2px;padding:0;border:1px solid #e4e9f2;border-radius:10px;background:#fff;overflow:hidden}'
       + '#tab-bots .bot-llm-roles-title{margin:0;padding:11px 13px 3px;font-size:13px;font-weight:650;color:#172033}'
       + '#tab-bots .bot-llm-roles-hint{margin:0;padding:0 13px 10px;font-size:11px;line-height:1.5;color:#64748b;border-bottom:1px solid #eef2f7}'
-      + '#tab-bots .bot-llm-roles-head,#tab-bots .bot-llm-role{display:grid;grid-template-columns:minmax(6.5em,.62fr) minmax(0,.95fr) minmax(0,1.3fr) minmax(0,1.05fr);gap:6px 12px;align-items:center}'
+      + '#tab-bots .bot-llm-roles-head,#tab-bots .bot-llm-role{display:grid;grid-template-columns:minmax(6.5em,.6fr) minmax(0,.9fr) minmax(0,1.2fr) minmax(0,1.15fr);gap:6px 12px;align-items:center}'
       + '#tab-bots .bot-llm-roles-head{padding:6px 13px;background:#f8fafc;border-bottom:1px solid #eef2f7;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b}'
       + '#tab-bots .bot-llm-roles-head span:last-child{text-align:right}'
       + '#tab-bots .bot-llm-role{padding:8px 13px;border-bottom:1px solid #f1f5f9;transition:background .12s ease}'
       + '#tab-bots .bot-llm-role:last-child{border-bottom:0}'
       + '#tab-bots .bot-llm-role:hover{background:#fafcff}'
-      + '#tab-bots .bot-llm-role-name{display:flex;align-items:center;gap:7px;margin:0;min-width:0;text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-llm-role-name{display:flex;align-items:center;gap:7px;margin:0;min-width:0;text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;color:#172033}'
+      + '#tab-bots .bot-llm-role-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
       + '#tab-bots .bot-llm-role-dot{width:7px;height:7px;border-radius:999px;flex:0 0 auto;background:#94a3b8}'
       + '#tab-bots .bot-llm-role-dot[data-role="foreground"]{background:#2563eb}'
       + '#tab-bots .bot-llm-role-dot[data-role="background"]{background:#0f9f8f}'
@@ -434,7 +439,7 @@
       + '#tab-bots .bot-llm-role-model input{min-width:0;flex:1 1 auto}'
       + '#tab-bots .bot-llm-role-model input:disabled{background:#f4f6fa;color:#94a3b8;cursor:default}'
       + '#tab-bots .bot-llm-role-blank{color:#cbd5e1;font-size:12px;user-select:none}'
-      + '#tab-bots .bot-llm-role-vision{display:flex;gap:6px;align-items:center;justify-content:flex-end;min-width:0;flex-wrap:wrap}'
+      + '#tab-bots .bot-llm-role-vision{display:flex;gap:6px;align-items:center;justify-content:flex-end;min-width:0;flex-wrap:nowrap}'
       + '#tab-bots .bot-llm-role-vision select{width:auto;min-width:78px;height:30px;min-height:30px;font-size:12px;flex:0 0 auto}'
       + '#tab-bots .bot-llm-vision-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;min-width:0;height:24px;padding:0 9px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
       + '#tab-bots .bot-llm-vision-chip::before{content:"";width:6px;height:6px;border-radius:999px;background:currentColor;opacity:.75;flex:0 0 auto}'
@@ -1610,9 +1615,33 @@
     return out;
   }
 
+  // syncLLMRowChips re-derives each provider row's "in use" marker from the
+  // current foreground route. The role select can move the route while the
+  // provider rows stay mounted (a rebuild would drop focus), so the chips
+  // travel without repainting the list.
+  function syncLLMRowChips() {
+    var t = text();
+    var draft = llmDraft();
+    var foreground = llmForegroundProvider(draft);
+    (draft.providers || []).forEach(function (item) {
+      var tags = byID('botLLMTags_' + item.id);
+      var row = byID('botLLMRow_' + item.id);
+      if (!tags && !row) return;
+      var protocol = item.protocol === 'anthropic' ? 'anthropic' : 'openai';
+      var inUse = foreground === item.id;
+      if (tags) {
+        tags.innerHTML = (inUse ? '<span class="bot-llm-tag bot-llm-tag-use">' + escapeHtml(t.llmTagInUse) + '</span>' : '')
+          + '<span class="bot-llm-tag">' + (protocol === 'anthropic' ? 'Anthropic' : 'OpenAI') + '</span>'
+          + (item.key_set ? '<span class="bot-llm-tag bot-llm-tag-ok">' + escapeHtml(t.llmKeySet) + '</span>' : '');
+      }
+      if (row) row.className = 'bot-llm-row' + (inUse ? ' bot-llm-row-active' : '');
+    });
+  }
+
   function syncLLMBadge() {
     var badge = byID('botLLMBadge');
     if (!badge) return;
+    syncLLMRowChips();
     var draft = llmDraft();
     var foreground = llmForegroundProvider(draft);
     var name = text().llmOfficialName;
@@ -1646,13 +1675,13 @@
       // The foreground route is the one chat actually uses; surface it so the
       // administrator can tell a parked provider from the active one.
       var inUse = draft.current === item.id;
-      return '<div class="bot-llm-row' + (inUse ? ' bot-llm-row-active' : '') + '">'
+      return '<div class="bot-llm-row' + (inUse ? ' bot-llm-row-active' : '') + '" id="botLLMRow_' + id + '">'
         + '<span class="bot-llm-avatar" data-protocol="' + protocol + '" aria-hidden="true">' + (protocol === 'anthropic' ? 'A' : 'O') + '</span>'
         + '<span class="bot-llm-row-main">'
         + '<strong class="bot-llm-row-name" id="botLLMUse_' + id + '">' + escapeHtml(item.name || t.llmName) + '</strong>'
         + '<span class="bot-llm-row-url">' + escapeHtml(item.url) + '</span>'
         + '</span>'
-        + '<span class="bot-llm-tags">'
+        + '<span class="bot-llm-tags" id="botLLMTags_' + id + '">'
         + (inUse ? '<span class="bot-llm-tag bot-llm-tag-use">' + escapeHtml(t.llmTagInUse) + '</span>' : '')
         + '<span class="bot-llm-tag">' + (protocol === 'anthropic' ? 'Anthropic' : 'OpenAI') + '</span>'
         + (item.key_set ? '<span class="bot-llm-tag bot-llm-tag-ok">' + escapeHtml(t.llmKeySet) + '</span>' : '') + '</span>'
@@ -1907,7 +1936,7 @@
       + '<option value="on"' + (override === 'on' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionOn) + '</option>'
       + '<option value="off"' + (override === 'off' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionOff) + '</option>'
       + '</select>'
-      + '<span class="bot-llm-vision-chip bot-llm-vision-' + llmVisionState(record) + '" id="botLLMRoleVisionStatus_' + key + '" title="' + escapeHtml(llmVisionTitle(record)) + '">' + escapeHtml(status) + '</span>'
+      + '<span class="bot-llm-vision-chip bot-llm-vision-' + llmVisionState(record) + '" id="botLLMRoleVisionStatus_' + key + '" role="status" title="' + escapeHtml(llmVisionTitle(record)) + '">' + escapeHtml(status) + '</span>'
       + '<button type="button" class="btn-secondary bot-llm-vision-detect" id="botLLMRoleVisionDetect_' + key + '">' + escapeHtml(t.llmVisionDetect) + '</button>'
       + '</div>';
   }
@@ -1950,7 +1979,7 @@
       var modelCell = roleModelFieldHTML(draft, row.key, row.grounder);
       var visionCell = roleVisionHTML(draft, row.key, false);
       return '<div class="bot-llm-role">'
-        + '<label class="bot-llm-role-name" for="botLLMRole_' + row.key + '"><span class="bot-llm-role-dot" data-role="' + row.key + '" aria-hidden="true"></span>' + escapeHtml(row.label) + '</label>'
+        + '<label class="bot-llm-role-name" for="botLLMRole_' + row.key + '"><span class="bot-llm-role-dot" data-role="' + row.key + '" aria-hidden="true"></span><span class="bot-llm-role-label">' + escapeHtml(row.label) + '</span></label>'
         + '<select id="botLLMRole_' + row.key + '">' + llmRoleOptions(draft, row.key, row.grounder, selected) + '</select>'
         + (modelCell || '<span class="bot-llm-role-blank" aria-hidden="true">\u2014</span>')
         + (visionCell || '<span class="bot-llm-role-blank" aria-hidden="true">\u2014</span>')
@@ -2379,6 +2408,13 @@
     return Object.keys(models).map(function (key) { return models[key]; });
   }
 
+  // detectRoleVision probes one pinned role's provider+model. The probe can
+  // take up to the server's 25s timeout and come back inconclusive (the
+  // provider neither described nor refused the image), so the affected
+  // buttons show a busy label while it runs and an inconclusive answer gets
+  // its own toast instead of a silent no-op. Every role row showing the same
+  // provider+model shares the answer; probes of different pairs may run
+  // concurrently, keyed by provider|model.
   function detectRoleVision(key) {
     var draft = llmDraft();
     var role = (draft.roles || {})[key] || {};
@@ -2389,13 +2425,48 @@
       showToast(text().llmNeedKey, 'error');
       return;
     }
+    var panel = byID('tab-bots');
+    var wanted = String(model).trim();
+    var busyKey = provider.id + '|' + wanted;
+    if (panel) {
+      panel._llmVisionBusy = panel._llmVisionBusy || {};
+      if (panel._llmVisionBusy[busyKey]) return;
+      panel._llmVisionBusy[busyKey] = true;
+    }
+    // Buttons on every role row pinned to the same provider+model go busy:
+    // the answer lands on all of them.
+    var rows = ['foreground', 'background', 'computer_use', 'grounder'].filter(function (row) {
+      var item = (draft.roles || {})[row] || {};
+      return item.mode === 'pin' && item.provider === provider.id
+        && String(roleEffectiveModel(draft, row) || '').trim() === wanted;
+    });
+    var t = text();
+    var busyButtons = [];
+    rows.forEach(function (row) {
+      var button = byID('botLLMRoleVisionDetect_' + row);
+      if (button) {
+        button.disabled = true;
+        button.textContent = t.llmVisionProbing;
+        busyButtons.push(button);
+      }
+    });
+    var done = function () {
+      if (panel && panel._llmVisionBusy) delete panel._llmVisionBusy[busyKey];
+      busyButtons.forEach(function (button) {
+        button.disabled = false;
+        button.textContent = t.llmVisionDetect;
+      });
+    };
     return api('/api/admin/bots/llm/vision', { method: 'POST', body: JSON.stringify({ id: provider.id, model: model }) }).then(function (view) {
       var providers = view && view.llm && view.llm.providers || [];
       var fresh = null;
       for (var i = 0; i < providers.length; i += 1) {
         if (providers[i].id === provider.id) fresh = providers[i];
       }
-      if (!fresh) return;
+      // The provider (or its row) may have gone away during the probe; the
+      // draft no longer holds it, so neither its vision rows nor an
+      // inconclusive toast belong here.
+      if (!fresh || !llmProviderFromID(provider.id)) return;
       provider.vision = (fresh.vision || []).map(function (row) {
         return {
           model: String(row.model || ''),
@@ -2405,10 +2476,14 @@
           detected_at: String(row.detected_at || '')
         };
       });
-      refreshRoleVision(key);
+      rows.forEach(refreshRoleVision);
+      // An inconclusive probe leaves the chip unchanged; say so instead of
+      // letting the button look dead.
+      var record = visionRecord(provider, model);
+      if (!record || !record.known) showToast(text().llmVisionInconclusive, 'info');
     }).catch(function (err) {
       showToast(messageOf(err), 'error');
-    });
+    }).then(done);
   }
 
   function llmRequestBody(draft) {

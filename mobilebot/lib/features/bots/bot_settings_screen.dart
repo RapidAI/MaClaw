@@ -268,139 +268,175 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
-          TextField(
-            controller: _nameCtrl,
-            decoration: const InputDecoration(
-              labelText: '名称',
-              border: OutlineInputBorder(),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _nameCtrl,
+                    decoration: const InputDecoration(labelText: '名称'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _descCtrl,
+                    decoration: const InputDecoration(labelText: '简介'),
+                    maxLines: 3,
+                  ),
+                ],
+              ),
             ),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _descCtrl,
-            decoration: const InputDecoration(
-              labelText: '简介',
-              border: OutlineInputBorder(),
-            ),
-            maxLines: 3,
-          ),
-          const SizedBox(height: 24),
-          Text('外观', style: theme.textTheme.titleSmall),
           const SizedBox(height: 8),
-          Wrap(
-            spacing: 10,
-            children: [
-              for (final hex in botColors)
-                GestureDetector(
-                  onTap: () => setState(() => _color = hex),
-                  child: Container(
-                    width: 34,
-                    height: 34,
-                    decoration: BoxDecoration(
-                      color: hexColor(hex),
-                      shape: BoxShape.circle,
-                      border: _color == hex
-                          ? Border.all(
-                              color: theme.colorScheme.onSurface,
-                              width: 2.5,
-                            )
-                          : null,
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('外观', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    children: [
+                      for (final hex in botColors)
+                        GestureDetector(
+                          onTap: () => setState(() => _color = hex),
+                          child: Container(
+                            width: 34,
+                            height: 34,
+                            decoration: BoxDecoration(
+                              color: hexColor(hex),
+                              shape: BoxShape.circle,
+                              border: _color == hex
+                                  ? Border.all(
+                                      color: theme.colorScheme.onSurface,
+                                      width: 2.5,
+                                    )
+                                  : null,
+                            ),
+                            child: _color == hex
+                                ? const Icon(Icons.check,
+                                    color: Colors.white, size: 18)
+                                : null,
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      for (final shape in botShapes)
+                        ChoiceChip(
+                          label: Text(botShapeLabel(shape)),
+                          selected: _shape == shape,
+                          onSelected: (_) => setState(() => _shape = shape),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('电脑', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(
+                          value: 'shared',
+                          label: Text('共享电脑'),
+                          icon: Icon(Icons.computer),
+                        ),
+                        ButtonSegment(
+                          value: 'isolated',
+                          label: Text('独立电脑'),
+                          icon: Icon(Icons.desktop_windows),
+                        ),
+                      ],
+                      selected: {_desktopMode},
+                      onSelectionChanged: (v) =>
+                          setState(() => _desktopMode = v.first),
                     ),
-                    child: _color == hex
-                        ? const Icon(Icons.check, color: Colors.white, size: 18)
-                        : null,
                   ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            children: [
-              for (final shape in botShapes)
-                ChoiceChip(
-                  label: Text(botShapeLabel(shape)),
-                  selected: _shape == shape,
-                  onSelected: (_) => setState(() => _shape = shape),
-                ),
-            ],
-          ),
-          const SizedBox(height: 24),
-          Text('电脑', style: theme.textTheme.titleSmall),
-          const SizedBox(height: 8),
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(
-                value: 'shared',
-                label: Text('共享电脑'),
-                icon: Icon(Icons.computer),
+                  const SizedBox(height: 8),
+                  Text(
+                    _desktopMode == 'isolated'
+                        ? 'Bot 使用自己的独立电脑画面'
+                        : 'Bot 使用你账号下的共享电脑画面',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
-              ButtonSegment(
-                value: 'isolated',
-                label: Text('独立电脑'),
-                icon: Icon(Icons.desktop_windows),
-              ),
-            ],
-            selected: {_desktopMode},
-            onSelectionChanged: (v) => setState(() => _desktopMode = v.first),
+            ),
           ),
           const SizedBox(height: 8),
-          Text(
-            _desktopMode == 'isolated'
-                ? 'Bot 使用自己的独立电脑画面'
-                : 'Bot 使用你账号下的共享电脑画面',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 24),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.psychology_outlined),
-            title: const Text('人格与记忆'),
-            subtitle: const Text('自定义 Bot 的性格、语气和长期记忆'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => context.push(
-              '/bot/${Uri.encodeComponent(widget.bot.id)}/style',
-            ),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.tune),
-            title: const Text('长期偏好'),
-            subtitle: const Text('记录 Bot 在每个任务里都要遵循的偏好'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: _preferenceSheet,
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.smart_display_outlined),
-            title: const Text('演示录制'),
-            subtitle: const Text('录一段操作过程，提炼成 Bot 的技能（需独立电脑）'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () =>
-                context.push('/bot/${Uri.encodeComponent(widget.bot.id)}/demo'),
-          ),
-          const SizedBox(height: 24),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.star_outline),
-            title: const Text('主 Bot'),
-            subtitle: Text(
-              _primary
-                  ? '已是主 Bot，其他 Bot 的委托由它派发'
-                  : '设为主 Bot 后，它可以给团队里其他 Bot 派任务',
-            ),
-            trailing: _primary
-                ? Icon(Icons.check_circle, color: theme.colorScheme.primary)
-                : TextButton(
-                    onPressed: _saving ? null : _makePrimary,
-                    child: const Text('设为主 Bot'),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.psychology_outlined),
+                  title: const Text('人格与记忆'),
+                  subtitle: const Text('自定义 Bot 的性格、语气和长期记忆'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => context.push(
+                    '/bot/${Uri.encodeComponent(widget.bot.id)}/style',
                   ),
+                ),
+                const Divider(height: 1, indent: 16, endIndent: 16),
+                ListTile(
+                  leading: const Icon(Icons.tune),
+                  title: const Text('长期偏好'),
+                  subtitle: const Text('记录 Bot 在每个任务里都要遵循的偏好'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _preferenceSheet,
+                ),
+                const Divider(height: 1, indent: 16, endIndent: 16),
+                ListTile(
+                  leading: const Icon(Icons.smart_display_outlined),
+                  title: const Text('演示录制'),
+                  subtitle:
+                      const Text('录一段操作过程，提炼成 Bot 的技能（需独立电脑）'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => context
+                      .push('/bot/${Uri.encodeComponent(widget.bot.id)}/demo'),
+                ),
+              ],
+            ),
           ),
-          const Divider(height: 40),
+          const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.star_outline),
+              title: const Text('主 Bot'),
+              subtitle: Text(
+                _primary
+                    ? '已是主 Bot，其他 Bot 的委托由它派发'
+                    : '设为主 Bot 后，它可以给团队里其他 Bot 派任务',
+              ),
+              trailing: _primary
+                  ? Icon(Icons.check_circle, color: theme.colorScheme.primary)
+                  : TextButton(
+                      onPressed: _saving ? null : _makePrimary,
+                      child: const Text('设为主 Bot'),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 20),
           FilledButton.tonalIcon(
             style: FilledButton.styleFrom(
               foregroundColor: theme.colorScheme.error,
@@ -511,13 +547,12 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
     setState(() => _saving = true);
     try {
       await api.rollbackStyle(widget.bot.id, version);
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('已回滚到版本 $version')));
-        await _load();
-        setState(() => _saving = false);
-      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已回滚到版本 $version')));
+      await _load();
+      if (mounted) setState(() => _saving = false);
     } on Object catch (error) {
       if (mounted) {
         setState(() {

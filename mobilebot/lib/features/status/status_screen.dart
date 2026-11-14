@@ -323,13 +323,16 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: SegmentedButton<int>(
+            child: SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<int>(
               segments: const [
                 ButtonSegment(value: 0, label: Text('任务')),
                 ButtonSegment(value: 1, label: Text('动态')),
               ],
               selected: {_segment},
               onSelectionChanged: (v) => setState(() => _segment = v.first),
+              ),
             ),
           ),
           Expanded(
@@ -482,11 +485,12 @@ class _FeedBody extends ConsumerWidget {
         ];
         if (notes.isEmpty && assignments.isEmpty && direct.isEmpty) {
           return ListView(
-            children: [
-              const SizedBox(height: 140),
-              Icon(Icons.forum_outlined, size: 56, color: Colors.grey.shade400),
-              const SizedBox(height: 16),
-              const Center(child: Text('还没有 Bot 之间的动态')),
+            children: const [
+              SizedBox(height: 140),
+              EmptyState(
+                icon: Icons.forum_outlined,
+                title: '还没有 Bot 之间的动态',
+              ),
             ],
           );
         }
@@ -557,7 +561,7 @@ class _FeedBody extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (note.text.isNotEmpty)
-                      Text(
+                      LinkifiedText(
                         note.text,
                         maxLines: 3,
                         overflow: TextOverflow.ellipsis,
@@ -664,7 +668,11 @@ class _SaidCard extends ConsumerWidget {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(note.text, maxLines: 3, overflow: TextOverflow.ellipsis),
+            LinkifiedText(
+              note.text,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
             if (note.files.isNotEmpty)
               Wrap(
                 spacing: 6,

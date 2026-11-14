@@ -33,6 +33,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   final _notesCtrl = TextEditingController();
   final _recorder = AudioRecorder();
   final _shotCache = <String, Uint8List>{};
+  final _shotFutures = <String, Future<Uint8List?>>{};
 
   _DemoPhase _phase = _DemoPhase.idle;
   bool _busy = false;
@@ -69,7 +70,8 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   }
 
   Future<void> _start() => _run(() async {
-    final api = ref.read(botApiProvider)!;
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     final out = await api.demoStart(widget.bot.id, _titleCtrl.text.trim());
     if (!mounted) return;
     setState(() {
@@ -79,7 +81,8 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   });
 
   Future<void> _narrateText() => _run(() async {
-    final api = ref.read(botApiProvider)!;
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     final text = _narrateCtrl.text.trim();
     if (text.isEmpty) return;
     final out = await api.demoNarrate(widget.bot.id, text: text);
@@ -96,7 +99,8 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
       final path = await _recorder.stop();
       if (path == null || path.isEmpty || !mounted) return;
       await _run(() async {
-        final api = ref.read(botApiProvider)!;
+        final api = ref.read(botApiProvider);
+        if (api == null) return;
         final file = File(path);
         final bytes = await file.readAsBytes();
         await file.delete().onError((_, _) => file); // temp clip — best effort
@@ -126,7 +130,8 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   }
 
   Future<void> _stop() => _run(() async {
-    final api = ref.read(botApiProvider)!;
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     final out = await api.demoStop(widget.bot.id);
     if (!mounted) return;
     final timeline = out['timeline'] is Map
@@ -144,7 +149,8 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   });
 
   Future<void> _distill() => _run(() async {
-    final api = ref.read(botApiProvider)!;
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     final out = await api.demoDistill(
       widget.bot.id,
       _timeline,
@@ -190,11 +196,15 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         errorBuilder: (_, _, _) => const SizedBox.shrink(),
       );
     }
-    return FutureBuilder<Uint8List?>(
-      future: ref
-          .read(botApiProvider)!
+    final future = _shotFutures.putIfAbsent(shotRef, () {
+      final api = ref.read(botApiProvider);
+      if (api == null) return Future<Uint8List?>.value();
+      return api
           .demoShot(widget.bot.id, _demoId, shotRef)
-          .then((s) => s.data.isEmpty ? null : base64Decode(s.data)),
+          .then((s) => s.data.isEmpty ? null : base64Decode(s.data));
+    });
+    return FutureBuilder<Uint8List?>(
+      future: future,
       builder: (context, snap) {
         final data = snap.data;
         if (data == null) {

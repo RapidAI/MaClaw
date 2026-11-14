@@ -43,18 +43,11 @@ class BotsScreen extends ConsumerWidget {
       return ListView(
         children: [
           const SizedBox(height: 120),
-          Icon(Icons.block, size: 56, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                state.access.message.isNotEmpty
-                    ? state.access.message
-                    : '当前账号未开通 Bot 功能',
-                textAlign: TextAlign.center,
-              ),
-            ),
+          EmptyState(
+            icon: Icons.block,
+            title: state.access.message.isNotEmpty
+                ? state.access.message
+                : '当前账号未开通 Bot 功能',
           ),
         ],
       );
@@ -63,12 +56,10 @@ class BotsScreen extends ConsumerWidget {
       return ListView(
         children: [
           const SizedBox(height: 120),
-          Icon(Icons.cloud_off, size: 56, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          Center(child: Text(state.error)),
-          const SizedBox(height: 12),
-          Center(
-            child: FilledButton.tonal(
+          EmptyState(
+            icon: Icons.cloud_off,
+            title: state.error,
+            action: FilledButton.tonal(
               onPressed: () => ref.read(botsProvider.notifier).refresh(),
               child: const Text('重试'),
             ),
@@ -78,11 +69,13 @@ class BotsScreen extends ConsumerWidget {
     }
     if (state.bots.isEmpty) {
       return ListView(
-        children: [
-          const SizedBox(height: 140),
-          Icon(Icons.smart_toy_outlined, size: 64, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          const Center(child: Text('还没有 Bot，点击右下角创建一个')),
+        children: const [
+          SizedBox(height: 140),
+          EmptyState(
+            icon: Icons.smart_toy_outlined,
+            title: '还没有 Bot',
+            hint: '点击右下角创建一个',
+          ),
         ],
       );
     }
@@ -174,11 +167,12 @@ class _BotCard extends ConsumerWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
-              Column(
+              Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton(
                     tooltip: '电脑画面',
+                    visualDensity: VisualDensity.compact,
                     icon: const Icon(Icons.desktop_windows_outlined),
                     onPressed: () => context.push(
                       '/bot/${Uri.encodeComponent(bot.id)}/desktop',

@@ -122,7 +122,17 @@ window.HUB_ADMIN_DICT_MN.BOT = {
   "llmProviderGone": "Үйлчилгээ үзүүлэгч байхгүй болсон; хуудсыг шинэчлээд дахин оролдоно уу",
   "llmTagInUse": "Урд талаас ашиглаж байна",
   "llmRolesColRole": "Үүрэг",
-  "llmRolesColProvider": "Үйлчилгээ үзүүлэгч"
+  "llmRolesColProvider": "Үйлчилгээ үзүүлэгч",
+  "llmVision": "Дүрс оруулах",
+  "llmVisionAuto": "Автомат",
+  "llmVisionOn": "Идэвхтэй",
+  "llmVisionOff": "Идэвхгүй",
+  "llmVisionYes": "Дүрс дэмждэг",
+  "llmVisionNo": "Дүрс дэмждэггүй",
+  "llmVisionUnknown": "Шалгаагүй",
+  "llmVisionDetect": "Шалгах",
+  "llmVisionProbing": "Шалгаж байна...",
+  "llmVisionInconclusive": "Загвар дүрс хүлээж авах эсэхийг тогтоож чадсангүй; дараа дахин оролдоно уу"
 };
 
 window.HUB_ADMIN_DICT_MN.DESKTOP = {

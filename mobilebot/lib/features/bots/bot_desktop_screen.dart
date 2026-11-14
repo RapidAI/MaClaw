@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,7 +25,13 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     with WidgetsBindingObserver {
   static const _holdRefresh = Duration(seconds: 45);
 
-  final int _epoch = Random().nextInt(1 << 30);
+  /// One generation per open — a clock-based counter like the GUI's
+  /// takeDesktopWatchEpoch: Hub compares epochs across every client of this
+  /// user, so a random small int always loses to the GUI's Date.now() epochs
+  /// and the watch gets silently dropped.
+  static int _nextEpoch = DateTime.now().millisecondsSinceEpoch;
+
+  final int _epoch = ++_nextEpoch;
   Timer? _holdTimer;
   Timer? _loadGuardTimer;
 
@@ -181,8 +186,13 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
             .where((part) => part.startsWith('view_only='))
             .firstOrNull ??
         'view_only=1';
+    // Watch-only on a phone gets a narrower, slower stream — the full
+    // 1440px/15fps feed saturates a mobile link, so the server drops
+    // delta frames and the picture fills in bit by bit between keyframes.
+    // Takeover keeps the native stream for precision.
+    final stream = viewOnly == 'view_only=1' ? '&w=960&fps=10' : '';
     final fallback = 'vnc.html${query.isNotEmpty ? '?$query' : ''}';
-    return '${path.substring(0, slash + 1)}h264.html?$viewOnly&vnc=${Uri.encodeComponent(fallback)}';
+    return '${path.substring(0, slash + 1)}h264.html?$viewOnly$stream&vnc=${Uri.encodeComponent(fallback)}';
   }
 
   String _watchUrl() {

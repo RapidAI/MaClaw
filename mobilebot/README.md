@@ -75,7 +75,7 @@ lib/
 cd mobilebot
 flutter pub get
 flutter analyze
-flutter test                  :: 模型解析 + 控制器单测（fake BotApi）+ 列表/聊天/设置页 widget 冒烟测试（53 例）
+flutter test                  :: 模型解析 + 控制器单测（fake BotApi）+ 列表/聊天/设置页 widget 冒烟测试（60 例）
 flutter build apk --debug     :: 或 flutter run
 ```
 

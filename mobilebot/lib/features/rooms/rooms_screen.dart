@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
+import '../bots/widgets.dart';
 import '../status/status_screen.dart' show shareInboxFile;
 
 final _roomsProvider = FutureProvider.autoDispose<List<BotRoom>>((ref) async {
@@ -49,19 +50,12 @@ class RoomsScreen extends ConsumerWidget {
           data: (rooms) {
             if (rooms.isEmpty) {
               return ListView(
-                children: [
-                  const SizedBox(height: 140),
-                  Icon(
-                    Icons.groups_outlined,
-                    size: 56,
-                    color: Colors.grey.shade400,
-                  ),
-                  const SizedBox(height: 16),
-                  const Center(
-                    child: Text(
-                      '还没有房间\n建一个让你和几个 Bot 群聊',
-                      textAlign: TextAlign.center,
-                    ),
+                children: const [
+                  SizedBox(height: 140),
+                  EmptyState(
+                    icon: Icons.groups_outlined,
+                    title: '还没有房间',
+                    hint: '建一个让你和几个 Bot 群聊',
                   ),
                 ],
               );
@@ -520,7 +514,7 @@ class _RoomTranscript extends ConsumerWidget {
                                 ),
                               ),
                             ),
-                          Text(
+                          LinkifiedText(
                             note.text,
                             style: TextStyle(
                               color: mine
@@ -528,6 +522,16 @@ class _RoomTranscript extends ConsumerWidget {
                                   : theme.colorScheme.onSurface,
                               height: 1.35,
                             ),
+                            linkStyle: mine
+                                ? TextStyle(
+                                    color: theme.colorScheme.onPrimary,
+                                    height: 1.35,
+                                    fontWeight: FontWeight.w600,
+                                    decoration: TextDecoration.underline,
+                                    decorationColor:
+                                        theme.colorScheme.onPrimary,
+                                  )
+                                : null,
                           ),
                           if (note.files.isNotEmpty)
                             Wrap(

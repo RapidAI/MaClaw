@@ -73,7 +73,18 @@ class ApiClient {
     try {
       final response = await fn();
       final status = response.statusCode ?? 0;
-      if (status == 401) onAuthRejected?.call();
+      if (status == 401) {
+        onAuthRejected?.call();
+      } else {
+        final data = response.data;
+        final code = data == null
+            ? ''
+            : (data['error'] as String? ?? data['code'] as String? ?? '')
+                .trim();
+        if (code == 'UNAUTHORIZED' || code == 'MACHINE_UNAUTHORIZED') {
+          onAuthRejected?.call();
+        }
+      }
       return response;
     } on DioException catch (error) {
       final mapped = hubExceptionFrom(error);

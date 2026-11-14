@@ -4393,22 +4393,29 @@ def h264_input_allowed(key, owner):
     return bool(key) and takeover_state(key) is not None
 
 
-def h264_ffmpeg_argv(display, size, fps=H264_DEFAULT_FPS, mse=False, interactive=False):
+def h264_ffmpeg_argv(display, size, fps=H264_DEFAULT_FPS, mse=False, interactive=False, out_size=None):
     # mpdecimate max: at most 2 s of dropped frames in a row, so an idle
     # screen still emits a tiny frame now and then and a lost viewer resyncs.
     # FLV for the Annex B stream (no muxer delay, see FlvToAnnexB); the MSE
     # fallback needs fragmented MP4, which arrives one frame late.
+    # out_size: mobile viewers ask for a narrower stream (the ?w= query);
+    # x11grab still grabs the full display, the scale filter shrinks the
+    # encode so a slow link carries a fraction of the bytes.
     if mse:
         container = ["-movflags", "empty_moov+default_base_moof+frag_every_frame", "-f", "mp4"]
     else:
         container = ["-f", "flv"]
+    decimate = ("mpdecimate=hi=64:lo=32:frac=0.1:max=%d" % fps) if interactive else ("mpdecimate=hi=768:lo=320:frac=0.33:max=%d" % (fps * 2))
+    filters = decimate + ",format=yuv420p"
+    if out_size and out_size != size:
+        filters = "scale=%s,%s" % (out_size.replace("x", ":"), filters)
     return [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
         "-f", "x11grab", "-draw_mouse", "1", "-framerate", str(fps),
         "-video_size", size, "-i", ":%d" % display,
         # A person driving the screen needs every frame: mpdecimate drops
         # small changes (a moving pointer, a caret), which reads as lag.
-        "-vf", ("mpdecimate=hi=64:lo=32:frac=0.1:max=%d,format=yuv420p" % fps) if interactive else "mpdecimate=hi=768:lo=320:frac=0.33:max=%d,format=yuv420p" % (fps * 2),
+        "-vf", filters,
         "-fps_mode", "vfr",
         "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
         "-profile:v", "baseline", "-level", "4.1", "-g", str(fps * H264_GOP_SECONDS), "-bf", "0",
@@ -4923,7 +4930,7 @@ function setupMSE(){const v=document.createElement("video");v.id="s";v.autoplay=
  return new Promise(r=>ms.addEventListener("sourceopen",()=>{sb=ms.addSourceBuffer('video/mp4; codecs="avc1.42E029"');sb.mode="sequence";sb.addEventListener("updateend",pump);r()}))}
 function pump(){if(!sb||sb.updating||!mq.length)return;sb.appendBuffer(mq.shift());const b=sb.buffered,v=surface;if(b.length&&v.currentTime<b.end(0)-0.3)v.currentTime=b.end(0)-0.05;if(b.length&&b.end(0)-b.start(0)>30&&!sb.updating){try{sb.remove(b.start(0),b.end(0)-10)}catch(_){}}}
 // ---- connection
-function connect(){const qs=[];if(!HAS_WC)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
+function connect(){const qs=[];if(!HAS_WC)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");for(const k of["w","fps"]){const v=Q.get(k);if(v)qs.push(k+"="+encodeURIComponent(v))}const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
  ws=new WebSocket(url);ws.binaryType="arraybuffer";show();
  ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(HAS_WC)onVideo(e.data);else{gotFrame=true;fails=0;mq.push(e.data);pump()}};
  ws.onclose=()=>{ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
@@ -4975,7 +4982,10 @@ class H264SharedEncoder:
 
     def __init__(self, display, width, height, fps):
         self.display = display
+        # A scaled viewer (mobile ?w=) gets its own encoder instance keyed
+        # below; size is the OUTPUT dims while the grab stays full-res.
         self.size = "%dx%d" % (width, height)
+        self.key = (display, width, height, fps)
         self.fps = fps
         self.lock = threading.Lock()
         self.viewers = []
@@ -5016,8 +5026,8 @@ class H264SharedEncoder:
             if last:
                 self.stopped.set()
                 self.gop = []
-                if _h264_encoders.get(self.display) is self:
-                    _h264_encoders.pop(self.display, None)
+                if _h264_encoders.get(self.key) is self:
+                    _h264_encoders.pop(self.key, None)
             else:
                 self.interactive = self._mode()
         if last or change:
@@ -5038,7 +5048,8 @@ class H264SharedEncoder:
 
     def argv(self):
         fps = max(self.fps, H264_INTERACTIVE_FPS) if self.interactive else self.fps
-        return h264_ffmpeg_argv(self.display, self.size, fps, False, self.interactive)
+        grab = "x".join(desktop_geometry().split("x")[:2])
+        return h264_ffmpeg_argv(self.display, grab, fps, False, self.interactive, out_size=self.size)
 
     def fan_out(self, frame, key):
         with self.lock:
@@ -5098,8 +5109,8 @@ class H264SharedEncoder:
         with self.lock:
             viewers = list(self.viewers)
             self.thread = None
-            if _h264_encoders.get(self.display) is self:
-                _h264_encoders.pop(self.display, None)
+            if _h264_encoders.get(self.key) is self:
+                _h264_encoders.pop(self.key, None)
         for viewer in viewers:
             viewer.encoder_finished()
 
@@ -5109,11 +5120,12 @@ _h264_encoders_lock = threading.Lock()
 
 
 def h264_shared_encoder(display, width, height, fps):
+    key = (display, width, height, fps)
     with _h264_encoders_lock:
-        enc = _h264_encoders.get(display)
+        enc = _h264_encoders.get(key)
         if enc is None or enc.stopped.is_set():
             enc = H264SharedEncoder(display, width, height, fps)
-            _h264_encoders[display] = enc
+            _h264_encoders[key] = enc
         return enc
 
 
@@ -5121,7 +5133,7 @@ class H264Viewer:
     """One /h264 WebSocket: an encoder for this viewer, the video sender,
     the control reader and the lease ticker."""
 
-    def __init__(self, client, display, key, owner, mse=False, fps=H264_DEFAULT_FPS, want_input=False):
+    def __init__(self, client, display, key, owner, mse=False, fps=H264_DEFAULT_FPS, want_input=False, view_width=0):
         self.client = client
         self.display = display
         self.key = key
@@ -5150,7 +5162,16 @@ class H264Viewer:
         self.screen = screen_input(display)
         self.lease_sent = None
         width, height = desktop_geometry().split("x")[:2]
-        self.width, self.height = int(width), int(height)
+        native_w, native_h = int(width), int(height)
+        # The grab always covers the real display; view_width only shrinks
+        # the encoded output so a slow link carries fewer bytes.
+        self.grab_size = "%dx%d" % (native_w, native_h)
+        if 320 <= view_width < native_w:
+            w = view_width - view_width % 2
+            h = native_h * w // native_w
+            self.width, self.height = w, max(h - h % 2, 2)
+        else:
+            self.width, self.height = native_w, native_h
 
     # -- sending
     def send_raw(self, payload, opcode=0x82):
@@ -5219,7 +5240,8 @@ class H264Viewer:
         env = dict(os.environ, DISPLAY=":%d" % self.display)
         interactive = self.want_input and self.input_allowed()
         fps = max(self.fps, H264_INTERACTIVE_FPS) if interactive else self.fps
-        argv = h264_ffmpeg_argv(self.display, "%dx%d" % (self.width, self.height), fps, self.mse, interactive)
+        argv = h264_ffmpeg_argv(self.display, self.grab_size, fps, self.mse, interactive,
+                                out_size="%dx%d" % (self.width, self.height))
         while not self.closed.is_set():
             self.restart.clear()
             started = time.monotonic()
@@ -5479,7 +5501,22 @@ def serve_h264(client, head, owner_token):
             return
         try:
             query = request_query(head)
-            stream_h264(client, key, screen, mse=query.get("mse") == "1", want_input=query.get("input") == "1")
+            # fps may only be lowered by the client (mobile on a slow link);
+            # it can never exceed the env default.
+            fps = h264_fps()
+            try:
+                asked = int(query.get("fps", "0") or 0)
+                if 3 <= asked < fps:
+                    fps = asked
+            except (TypeError, ValueError):
+                pass
+            try:
+                view_width = int(query.get("w", "0") or 0)
+            except (TypeError, ValueError):
+                view_width = 0
+            stream_h264(client, key, screen, mse=query.get("mse") == "1",
+                        want_input=query.get("input") == "1", fps=fps,
+                        view_width=view_width)
         finally:
             _h264_streams.release()
     except OSError:
@@ -5501,14 +5538,15 @@ def h264_wake_bot(screen):
     return screen
 
 
-def stream_h264(client, key, screen, mse=False, want_input=False):
+def stream_h264(client, key, screen, mse=False, want_input=False, fps=0, view_width=0):
     screen = h264_wake_bot(screen)
     display, screen_key, owner = screen
     client.settimeout(None)
     client.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                     "Sec-WebSocket-Accept: %s\r\n\r\n" % ws_accept_key(key)).encode("latin-1"))
     # Watching must not refresh idle. Only bot steps / human_input do.
-    H264Viewer(client, display, screen_key, owner, mse=mse, fps=h264_fps(), want_input=want_input).run()
+    H264Viewer(client, display, screen_key, owner, mse=mse, fps=fps or h264_fps(),
+               want_input=want_input, view_width=view_width).run()
 
 
 # ---------------------------------------------------------------------------

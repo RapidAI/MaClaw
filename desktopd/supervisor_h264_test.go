@@ -246,6 +246,22 @@ print(argv[argv.index("-i") + 1], "mpdecimate" in argv[argv.index("-vf") + 1], a
 	}
 }
 
+// A watch-only viewer on a slow link (mobile ?w=) keeps the full-res grab but
+// encodes a narrower stream: scale sits in front of mpdecimate, and the same
+// size passed twice never grows a scale filter.
+func TestSupervisorH264ScaledEncoderArgs(t *testing.T) {
+	out := runSupervisorPython(t, `
+a = sup.h264_ffmpeg_argv(21, "1440x900", 10, out_size="960x600")
+b = sup.h264_ffmpeg_argv(21, "1440x900", 15, out_size="1440x900")
+vf_a, vf_b = a[a.index("-vf") + 1], b[b.index("-vf") + 1]
+print(a[a.index("-video_size") + 1], vf_a.startswith("scale=960:600,"), "mpdecimate" in vf_a,
+      "scale" in vf_b, a[a.index("-framerate") + 1])
+`)
+	if out != "1440x900 True True False 10" {
+		t.Fatalf("got %q", out)
+	}
+}
+
 // With the flag explicitly off the gate answers the new player URL with a redirect to
 // the noVNC page the GUI named, so the picture still opens.
 func TestSupervisorH264FlagOffRedirectsToVNC(t *testing.T) {
@@ -520,10 +536,10 @@ b.shared = e2; e2.subscribe(b)
 time.sleep(0.2)
 print(e1 is e2, len(spawned), [f for _, f, _ in a.queue], [f for _, f, _ in b.queue])
 e1.unsubscribe(a)
-print(e1.stopped.is_set(), 31 in sup._h264_encoders)
+print(e1.stopped.is_set(), (31, 1280, 800, 15) in sup._h264_encoders)
 e1.unsubscribe(b)
 time.sleep(0.5)
-print(e1.stopped.is_set(), 31 in sup._h264_encoders, e1.proc is None)
+print(e1.stopped.is_set(), (31, 1280, 800, 15) in sup._h264_encoders, e1.proc is None)
 `)
 	want := "True 1 [b'K1', b'd1'] [b'K1', b'd1']\nFalse True\nTrue False True"
 	if out != want {

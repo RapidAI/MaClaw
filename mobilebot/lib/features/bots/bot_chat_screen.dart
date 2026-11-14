@@ -14,6 +14,7 @@ import 'package:go_router/go_router.dart';
 import 'bot_chat_controller.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
+import 'widgets.dart';
 
 /// One bot's workspace — the mobile version of the desktop GUI's
 /// DesktopBotWorkspace: chat transcript + composer, with the desktop view,
@@ -236,20 +237,30 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        title: Row(
           children: [
-            Text(
-              widget.bot.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            Text(
-              (state.sending || state.activeRunId != null) ? '正在处理…' : '在线',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: (state.sending || state.activeRunId != null)
-                    ? Theme.of(context).colorScheme.primary
-                    : Theme.of(context).colorScheme.onSurfaceVariant,
+            BotAvatar(bot: widget.bot, radius: 17),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.bot.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    (state.sending || state.activeRunId != null)
+                        ? '正在处理…'
+                        : '在线',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: (state.sending || state.activeRunId != null)
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -431,15 +442,13 @@ class _MessageBubble extends ConsumerWidget {
         ? theme.colorScheme.errorContainer
         : isUser
         ? theme.colorScheme.primary
-        : theme.colorScheme.surfaceContainerHighest;
+        : theme.colorScheme.surfaceContainerHigh;
     final textColor = isUser
         ? theme.colorScheme.onPrimary
         : theme.colorScheme.onSurface;
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
+    final bubble = Container(
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.82,
+          maxWidth: MediaQuery.of(context).size.width * 0.78,
         ),
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -457,17 +466,32 @@ class _MessageBubble extends ConsumerWidget {
           children: [
             if (message.content.isNotEmpty)
               isUser
-                  ? Text(
+                  ? LinkifiedText(
                       message.content,
                       style: TextStyle(color: textColor, height: 1.4),
+                      linkStyle: TextStyle(
+                        color: textColor,
+                        height: 1.4,
+                        fontWeight: FontWeight.w600,
+                        decoration: TextDecoration.underline,
+                        decorationColor: textColor,
+                      ),
                     )
                   : MarkdownBody(
-                      data: message.content,
+                      data: linkifyMarkdownUrls(message.content),
                       selectable: true,
+                      onTapLink: (text, href, title) {
+                        if (href != null) openExternalUrl(href);
+                      },
                       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
                         p: theme.textTheme.bodyMedium?.copyWith(
                           color: textColor,
                           height: 1.45,
+                        ),
+                        a: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                          decoration: TextDecoration.underline,
                         ),
                       ),
                     ),
@@ -579,7 +603,20 @@ class _MessageBubble extends ConsumerWidget {
               _HandoffBanner(message: message, bot: bot),
           ],
         ),
-      ),
+      );
+    if (isUser) {
+      return Align(alignment: Alignment.centerRight, child: bubble);
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: BotAvatar(bot: bot, radius: 14),
+        ),
+        const SizedBox(width: 8),
+        Flexible(child: bubble),
+      ],
     );
   }
 }
@@ -844,50 +881,59 @@ class _Composer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+        padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            IconButton(
-              onPressed: onAttach,
-              icon: const Icon(Icons.attach_file),
-              tooltip: '传送文件到 Bot 的电脑',
-            ),
-            IconButton(
-              onPressed: onMic,
-              icon: Icon(
-                listening ? Icons.mic : Icons.mic_none,
-                color: listening ? Theme.of(context).colorScheme.error : null,
-              ),
-              tooltip: listening ? '停止语音输入' : '语音输入',
-            ),
             Expanded(
-              child: TextField(
-                controller: inputCtrl,
-                minLines: 1,
-                maxLines: 5,
-                textInputAction: TextInputAction.newline,
-                decoration: InputDecoration(
-                  hintText: '给 Bot 下达任务…',
-                  filled: true,
-                  fillColor: Theme.of(
-                    context,
-                  ).colorScheme.surfaceContainerHighest,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(22),
-                    borderSide: BorderSide.none,
-                  ),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(26),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    IconButton(
+                      onPressed: onAttach,
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.attach_file),
+                      tooltip: '传送文件到 Bot 的电脑',
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: inputCtrl,
+                        minLines: 1,
+                        maxLines: 5,
+                        textInputAction: TextInputAction.newline,
+                        decoration: const InputDecoration(
+                          hintText: '给 Bot 下达任务…',
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 2,
+                            vertical: 12,
+                          ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: onMic,
+                      visualDensity: VisualDensity.compact,
+                      icon: Icon(
+                        listening ? Icons.mic : Icons.mic_none,
+                        color: listening ? scheme.error : null,
+                      ),
+                      tooltip: listening ? '停止语音输入' : '语音输入',
+                    ),
+                  ],
                 ),
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 6),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -907,7 +953,7 @@ class _Composer extends StatelessWidget {
                           height: 18,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Theme.of(context).colorScheme.onPrimary,
+                            color: scheme.onPrimary,
                           ),
                         )
                       : const Icon(Icons.send),
