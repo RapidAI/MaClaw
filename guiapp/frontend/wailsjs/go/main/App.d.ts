@@ -3148,8 +3148,8 @@ export function TokenBankPreviewGiftLink(arg1:string):Promise<Record<string, any
 export function TokenBankClaimGiftLink(arg1:string):Promise<Record<string, any>>;
 export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
 
-export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
-export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
+export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string,desktop_state?:string,code?:string}>;
+export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string,desktop_state?:string,code?:string}>;
 
 export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
 

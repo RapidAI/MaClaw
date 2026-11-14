@@ -4903,6 +4903,7 @@ const badge=document.getElementById("b");
 let surface=document.getElementById("s"),ctx=null,ws=null,decoder=null,needKey=true,lastKeyReq=0,fails=0,gotFrame=false;
 let seq=Math.floor(Math.random()*1e6),pending=[],flushQueued=false,inputOn=false,lease="",held=new Map(),pasteHold=null,wheelAcc=[0,0];
 function fallback(){if(VNC){location.replace(VNC);return true}badge.textContent="此浏览器不支持 H.264 播放";return false}
+function noteStream(event){try{parent.postMessage({source:"maclaw-desktop",event:event},"*")}catch(_){}}
 function show(){let t,c="";if(!ws||ws.readyState!==1)t="连接中…";else if(lease==="you"){t="你在控制";c="you"}else if(lease==="bot"){t="Bot 正在操作";c="bot"}else if(lease==="human")t="其他人在控制";else t=inputOn?"可以操作":"仅观看";badge.textContent=t;badge.className=c;try{parent.postMessage({type:"maclaw-desktop-lease",holder:lease,input:inputOn},"*")}catch(_){}}
 function send(type,payload){if(ws&&ws.readyState===1)ws.send(JSON.stringify(Object.assign({type},payload||{})))}
 function requestKey(){const n=performance.now();if(n-lastKeyReq<500)return;lastKeyReq=n;send("request_keyframe")}
@@ -4925,8 +4926,9 @@ function pump(){if(!sb||sb.updating||!mq.length)return;sb.appendBuffer(mq.shift(
 // ---- connection
 function connect(){const qs=[];if(!HAS_WC)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
  ws=new WebSocket(url);ws.binaryType="arraybuffer";show();
+ ws.onopen=()=>noteStream("connect");
  ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(HAS_WC)onVideo(e.data);else{gotFrame=true;fails=0;mq.push(e.data);pump()}};
- ws.onclose=()=>{ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
+ ws.onclose=()=>{noteStream("disconnect");ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
 function control(m){if(m.type==="hello"){inputOn=WANT_INPUT&&!!m.input;show()}else if(m.type==="lease"){const was=lease;lease=m.holder||"";inputOn=WANT_INPUT&&!!m.input;if(was==="you"&&lease!=="you")releaseLocal();show()}
  else if(m.type==="clipboard"&&typeof m.text==="string"){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(m.text).catch(()=>{})}
  else if(m.type==="input_error"){if(m.code==="sequence_gap"&&typeof m.expected==="number")seq=m.expected}}

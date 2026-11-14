@@ -4126,9 +4126,18 @@ button.desktop-bot-feed__file {
     border: none;
 }
 
+.desktop-bot-sleep__label {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.4;
+    text-align: center;
+    color: var(--theme-text-secondary, #6b7a8c);
+}
+
 .desktop-bot-sleep__wake {
-    display: grid;
-    place-items: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
     box-sizing: border-box;
     width: min(232px, 100%);
     margin: 0;
@@ -4137,8 +4146,13 @@ button.desktop-bot-feed__file {
     border-radius: 12px;
     background: none;
     color: var(--theme-text-primary, #526277);
-    line-height: 0;
+    line-height: 1.4;
     cursor: pointer;
+}
+
+.desktop-bot-sleep__wake span {
+    margin-top: 8px;
+    font-size: 14px;
 }
 
 .desktop-bot-sleep__status,

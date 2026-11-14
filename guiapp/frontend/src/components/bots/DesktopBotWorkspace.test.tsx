@@ -18,8 +18,9 @@ const classifyWorkStop = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
 const armSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: string, _rest?: unknown): Promise<string> => 'task-1'));
 const listSchedules = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Array<{ id: string; name: string; action: string; interval_minutes: number; hour: number; minute: number; day_of_week: number; next_run_at?: string; status?: string }>));
 const deleteSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _taskId?: string) => undefined));
-const wakeBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean } | undefined> => ({ novnc_url: '', user_control: false })));
-const watchBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string } | undefined> => ({ novnc_url: '', user_control: false })));
+type WatchMock = { novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string; desktop_state?: string; code?: string };
+const wakeBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<WatchMock | undefined> => ({ novnc_url: '', user_control: false })));
+const watchBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<WatchMock | undefined> => ({ novnc_url: '', user_control: false })));
 const getScreen = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode: string }> => ({ novnc_url: '', user_control: false, desktop_mode: 'shared' })));
 const hubLink = vi.hoisted(() => vi.fn(async () => ({ state: 'connected' }) as Record<string, unknown> | null));
 const handBack = vi.hoisted(() => vi.fn(async (_botId?: string) => ({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' })));
@@ -117,8 +118,18 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ListDesktopBotSchedules: (botId: string) => listSchedules(botId),
     ListDesktopBotActiveRuns: (botId: string) => listTaskRuns(botId),
     DeleteDesktopBotSchedule: (botId: string, taskId: string) => deleteSchedule(botId, taskId),
-    WatchDesktopBot: (arg: string, epoch?: number) => watchBot(arg, epoch),
-    WakeDesktopBot: (arg: string, epoch?: number) => wakeBot(arg, epoch),
+    WatchDesktopBot: async (arg: string, epoch?: number) => {
+        const view = await watchBot(arg, epoch);
+        // Older cases speak in pages. Hub now sends desktop_state; stamp it
+        // only when the case left it out. An explicit state is kept.
+        if (!view || view.desktop_state || view.code) return view;
+        return { ...view, desktop_state: view.novnc_url ? 'running' : 'asleep' };
+    },
+    WakeDesktopBot: async (arg: string, epoch?: number) => {
+        const view = await wakeBot(arg, epoch);
+        if (!view || view.desktop_state || view.code) return view;
+        return { ...view, desktop_state: view.novnc_url ? 'running' : 'asleep' };
+    },
     ReleaseDesktopBotWatch: (arg: string, epoch?: number) => releaseWatch(arg, epoch),
     GetDesktopBotScreen: (botId: string) => getScreen(botId),
     HandBackDesktopBot: (botId: string) => handBack(botId),
@@ -757,6 +768,75 @@ describe('DesktopBotWorkspace', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('drops a stale frame when the display is stopped or the stream disconnects, then reconnects when a bot step wakes it', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        const stale = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        const live = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1&fresh=1';
+        getScreen.mockResolvedValue({ novnc_url: stale, user_control: false, desktop_mode: 'shared' });
+        watchBot.mockResolvedValue({ novnc_url: stale, desktop_state: 'display_stopped', user_control: false, desktop_mode: 'shared' });
+        wakeBot.mockClear();
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            expect(screen.getByTestId('desktop-bot-asleep-label').textContent).toBe('桌面在休眠');
+            expect(screen.getByTestId('desktop-bot-wake').textContent).toContain('唤醒');
+            expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+            watchBot.mockResolvedValue({ novnc_url: stale, desktop_state: 'running', user_control: false, desktop_mode: 'shared' });
+            await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+            const frame = screen.getByTestId('desktop-bot-handoff');
+            expect(frame).toBeTruthy();
+            // A disconnect from somewhere else does not touch the frame, and
+            // the player's own disconnect does not unmount it while the watch
+            // still says the screen is running.
+            await act(async () => {
+                window.dispatchEvent(new MessageEvent('message', { data: { source: 'maclaw-desktop', event: 'disconnect' } }));
+            });
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+            await act(async () => {
+                window.dispatchEvent(new MessageEvent('message', {
+                    data: { source: 'maclaw-desktop', event: 'disconnect' },
+                    source: (frame as HTMLIFrameElement).contentWindow,
+                }));
+            });
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+            expect(screen.queryByTestId('desktop-bot-sleep')).toBeNull();
+            // The re-check is what takes the frame down, once the watch says stopped.
+            watchBot.mockResolvedValue({ novnc_url: stale, desktop_state: 'display_stopped', user_control: false, desktop_mode: 'shared' });
+            await act(async () => {
+                window.dispatchEvent(new MessageEvent('message', {
+                    data: { source: 'maclaw-desktop', event: 'disconnect' },
+                    source: (screen.getByTestId('desktop-bot-handoff') as HTMLIFrameElement).contentWindow,
+                }));
+                await Promise.resolve();
+            });
+            expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+            expect(screen.getByTestId('desktop-bot-asleep-label').textContent).toBe('桌面在休眠');
+            watchBot.mockResolvedValue({ novnc_url: live, desktop_state: 'running', user_control: false, desktop_mode: 'shared' });
+            await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('fresh=1');
+            expect(screen.queryByTestId('desktop-bot-sleep')).toBeNull();
+            expect(wakeBot).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('shows 桌面在休眠 when open answers DESKTOP_ASLEEP, not a dead frame', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        getScreen.mockResolvedValue({ novnc_url: 'http://hub.example/stale/vnc.html', user_control: false, desktop_mode: 'shared' });
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/stale/vnc.html', user_control: false, code: 'DESKTOP_ASLEEP' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        expect((await screen.findByTestId('desktop-bot-asleep-label')).textContent).toBe('桌面在休眠');
+        expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+        expect(screen.queryByText('桌面画面连不上。可以重试连接，不用重发任务。')).toBeNull();
     });
 
     it('warns in the chat when the account credits are too low to finish a task', async () => {

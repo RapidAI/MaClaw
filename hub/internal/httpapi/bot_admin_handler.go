@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -81,6 +82,8 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 	}
 	status, code, message := http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", "bot service is unavailable, contact the administrator"
 	switch {
+	case desktopbot.IsDesktopAsleep(err):
+		status, code, message = http.StatusConflict, desktopbot.CodeDesktopAsleep, "桌面在休眠"
 	case errors.Is(err, botmgmt.ErrSettingsUnavailable),
 		errors.Is(err, botmgmt.ErrNotConfigured),
 		errors.Is(err, botmgmt.ErrSrv),

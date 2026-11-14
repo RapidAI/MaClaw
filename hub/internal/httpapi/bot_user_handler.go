@@ -637,14 +637,7 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 			writeJSON(w, http.StatusOK, map[string]any{"released": true})
 			return
 		}
-		var novnc string
-		var userControl bool
-		var err error
-		if wake {
-			novnc, userControl, err = svc.WakeDesktopView(ctx, principal.TenantID, principal.UserID, botID)
-		} else {
-			novnc, userControl, err = svc.HoldDesktopView(ctx, principal.TenantID, principal.UserID, botID)
-		}
+		novnc, userControl, state, err := svc.DesktopPicture(ctx, principal.TenantID, principal.UserID, botID, wake)
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return
@@ -654,6 +647,7 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 			"user_control":     userControl,
 			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
 			"desktop_mode":     botDesktopModeOf(r, svc, principal.TenantID, principal.UserID, botID),
+			"desktop_state":    state,
 		})
 	}
 }
