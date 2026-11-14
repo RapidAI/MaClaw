@@ -903,9 +903,9 @@ func PostDesktopBashHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			return
 		}
 		output, err := pool.RunBashScreen(r.Context(), in.TenantID, in.UserID, in.Command, in.NeedsScreen)
-		var closed *desktopbot.ScreenClosedError
-		if errors.As(err, &closed) {
-			writeJSON(w, http.StatusOK, map[string]any{"output": closed.Output, "code": desktopbot.CodeScreenClosed})
+		var required *desktopbot.ScreenRequiredError
+		if errors.As(err, &required) {
+			writeJSON(w, http.StatusOK, map[string]any{"output": required.Output, "code": desktopbot.CodeScreenRequired})
 			return
 		}
 		if err != nil {

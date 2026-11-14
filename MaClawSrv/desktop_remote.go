@@ -239,8 +239,8 @@ func (c *desktopHubClient) Bash(ctx context.Context, tenantID, userID, command s
 	}, &out); err != nil {
 		return "", err
 	}
-	if out.Code == desktopbot.CodeScreenClosed {
-		return "", &desktopbot.ScreenClosedError{Output: out.Output}
+	if out.Code == desktopbot.CodeScreenRequired {
+		return "", &desktopbot.ScreenRequiredError{Output: out.Output}
 	}
 	return out.Output, nil
 }

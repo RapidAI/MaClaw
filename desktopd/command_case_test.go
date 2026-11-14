@@ -70,8 +70,15 @@ func TestDesktopBotCommandCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		botReq := commandPayload(t, botShells[0])
-		if botReq.Display != ":21" || strings.Contains(strings.Join(botShells[0], " "), "DISPLAY=") {
-			t.Fatalf("bot shell=%+v args=%v", botReq, botShells[0])
+		if botReq.Display != "" || strings.Contains(strings.Join(botShells[0], " "), "DISPLAY=") {
+			t.Fatalf("plain bash must not take a display: %+v %v", botReq, botShells[0])
+		}
+		if _, err := bot.bash(context.Background(), "tenant", "alice::desk::bot_1", "firefox", true); err != nil {
+			t.Fatal(err)
+		}
+		botReq = commandPayload(t, botShells[1])
+		if botReq.Display != ":21" || strings.Contains(strings.Join(botShells[1], " "), "DISPLAY=") {
+			t.Fatalf("needs_screen shell=%+v args=%v", botReq, botShells[1])
 		}
 
 		var clicks [][]string

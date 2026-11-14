@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -21,22 +20,11 @@ var (
 	desktopRaisePoll = 500 * time.Millisecond
 )
 
-// desktopGUILaunch matches a bash command that starts a windowed program.
-// Headless conversions (soffice --headless, --convert-to) open no window.
-var desktopGUILaunch = regexp.MustCompile(`(?:^|[\s;&|(])(?:soffice|libreoffice|lowriter|localc|loimpress|evince|mousepad|gedit|eog|ristretto|thunar|xdg-open|gimp|xfce4-terminal|okular|atril|gnome-text-editor|gio\s+open)(?:\s|$|&)`)
-
 // desktopBashNeedsScreen is the model's typed request. The command text
 // does not decide whether a shell gets a screen.
 func desktopBashNeedsScreen(args map[string]any) bool {
 	v, ok := args["needs_screen"].(bool)
 	return ok && v
-}
-
-func desktopBashLaunchesGUI(command string) bool {
-	if strings.Contains(command, "--headless") || strings.Contains(command, "--convert-to") {
-		return false
-	}
-	return desktopGUILaunch.MatchString(command)
 }
 
 type desktopWindowSeen struct {

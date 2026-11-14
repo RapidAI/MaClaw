@@ -314,20 +314,15 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 	if _, err = desktop.BashArgs(containerName(spec.TenantID, spec.UserID), command); err != nil {
 		return "", err
 	}
-	// needsScreen opens the bot screen. Otherwise a bot shell never starts
-	// it, and uses the display only when the supervisor says it is running.
+	// needsScreen opens the bot screen and is the only way this bash gets
+	// DISPLAY. A command that omits it does not open a screen.
 	display := ""
-	screenOpen := spec.BotID == ""
 	if spec.BotID != "" && needsScreen {
 		got, openErr := s.specDisplay(ctx, spec, "")
 		if openErr != nil {
 			return "", openErr
 		}
-		display, screenOpen = got, true
-	} else if spec.BotID != "" {
-		if got, readErr := s.readBotDisplay(ctx, spec); readErr == nil {
-			display, screenOpen = got, true
-		}
+		display = got
 	}
 	shell := commandRequest{
 		Op:      "shell",
@@ -379,8 +374,8 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 	}
 	s.noteToolUse(spec, container, onDesktop)
 	text := desktop.ProgramOutput(output, exitCode, false)
-	if spec.BotID != "" && !screenOpen && exitCode != 0 {
-		return text, &desktopbot.ScreenClosedError{Output: text}
+	if spec.BotID != "" && !needsScreen && exitCode != 0 && desktopbot.XConnectionFailed(output) {
+		return text, &desktopbot.ScreenRequiredError{Output: text}
 	}
 	return text, nil
 }

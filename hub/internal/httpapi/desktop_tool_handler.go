@@ -132,11 +132,11 @@ func PostDesktopToolHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		}
 		text, attachmentID, err := dispatchDesktopTool(r.Context(), pool, call)
 		noteDesktopToolUse(r.Context(), pool, call, err)
-		var closed *desktopbot.ScreenClosedError
-		if errors.As(err, &closed) {
+		var required *desktopbot.ScreenRequiredError
+		if errors.As(err, &required) {
 			writeJSON(w, http.StatusOK, map[string]any{
-				"output":        closed.Error(),
-				"code":          desktopbot.CodeScreenClosed,
+				"output":        required.Error(),
+				"code":          desktopbot.CodeScreenRequired,
 				"attachment_id": attachmentID,
 				"executor_id":   "assigned",
 				"volumes":       "desktops,home,opt,usr-local",

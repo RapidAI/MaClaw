@@ -879,8 +879,8 @@ func (p *Pool) RunBashScreen(ctx context.Context, tenantID, userID, command stri
 	if err := p.callClient(ctx, client, server, http.MethodPost, "/v1/desktops/bash", body, &out); err != nil {
 		return "", err
 	}
-	if out.Code == desktopbot.CodeScreenClosed {
-		return out.Output, &desktopbot.ScreenClosedError{Output: out.Output}
+	if out.Code == desktopbot.CodeScreenRequired {
+		return out.Output, &desktopbot.ScreenRequiredError{Output: out.Output}
 	}
 	return out.Output, nil
 }

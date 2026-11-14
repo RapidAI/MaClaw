@@ -20,31 +20,55 @@ const (
 	// is not open yet. The container may already be running. It is not an
 	// outage: open the screen and retry the same step once.
 	CodeBotScreenClosed = "BOT_SCREEN_CLOSED"
-	// CodeScreenClosed is a bash that ran with no display. The model retries
-	// the same command with needs_screen true when the program needs a window.
-	CodeScreenClosed = "screen_closed"
+	// CodeScreenRequired is a bash that tried to open an X display while
+	// needs_screen was false. The model retries that command with
+	// needs_screen true.
+	CodeScreenRequired = "screen_required"
 )
 
-// ErrScreenClosed is the sentinel for a bash that had no display.
-var ErrScreenClosed = errors.New(CodeScreenClosed)
+// ErrScreenRequired is the sentinel for a bash that failed to connect to X.
+var ErrScreenRequired = errors.New(CodeScreenRequired)
 
-// ScreenClosedError is that bash. Output is the command's own result.
+// ScreenRequiredError is that bash. Output is the command's own result.
 // The sentence tells the model how to retry. Callers use errors.Is.
-type ScreenClosedError struct {
+type ScreenRequiredError struct {
 	Output string
 }
 
-func (e *ScreenClosedError) Error() string {
-	const sentence = "screen_closed: this command had no display. Retry the same bash with needs_screen true if it needs a window."
+func (e *ScreenRequiredError) Error() string {
+	const sentence = "screen_required: this command tried to connect to X and had no display. Retry the same bash with needs_screen true."
 	if e == nil || strings.TrimSpace(e.Output) == "" {
 		return sentence
 	}
 	return strings.TrimSpace(e.Output) + "\n" + sentence
 }
 
-func (e *ScreenClosedError) Unwrap() error { return ErrScreenClosed }
+func (e *ScreenRequiredError) Unwrap() error { return ErrScreenRequired }
 
-func (e *ScreenClosedError) Code() string { return CodeScreenClosed }
+func (e *ScreenRequiredError) Code() string { return CodeScreenRequired }
+
+// XConnectionFailed reports that a program tried to open an X display and
+// the connection failed. It reads the program's result, not the command.
+func XConnectionFailed(output string) bool {
+	text := strings.ToLower(output)
+	for _, phrase := range []string{
+		"cannot open display",
+		"can't open display",
+		"could not connect to display",
+		"couldn't connect to display",
+		"could not open display",
+		"unable to open display",
+		"failed to open display",
+		"no display name and no $display",
+		"missing x server or $display",
+		"cannot connect to x server",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
 
 // AsleepError is a coded refusal to exec a stopped desktop container.
 type AsleepError struct{}

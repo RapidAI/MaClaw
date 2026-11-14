@@ -44,9 +44,42 @@ func TestClosedScreenDisplayIsNotADisplay(t *testing.T) {
 		},
 	}
 	text, err := svc.Bash(context.Background(), "tenant", bot, "firefox")
-	var closed *desktopbot.ScreenClosedError
-	if !errors.As(err, &closed) || !strings.Contains(text, "cannot open display") {
+	var required *desktopbot.ScreenRequiredError
+	if !errors.As(err, &required) || !strings.Contains(text, "cannot open display") || required.Code() != desktopbot.CodeScreenRequired {
 		t.Fatalf("text=%q err=%v", text, err)
+	}
+}
+
+func TestBashFailureThatIsNotXIsNotScreenRequired(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	svc := &Service{
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			return "ValueError: bad batch\n", 1, nil
+		},
+	}
+	text, err := svc.Bash(context.Background(), "tenant", bot, "python train.py")
+	if err != nil || !strings.Contains(text, "ValueError") {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+}
+
+func TestNeedsScreenOpensAndSetsDisplay(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	var mu sync.Mutex
+	ensured := 0
+	svc := botScreenService(&mu, &ensured)
+	var shells [][]string
+	svc.RunCommand = func(_ context.Context, _ io.Reader, args ...string) (string, int, error) {
+		shells = append(shells, append([]string(nil), args...))
+		return "ok\n", 0, nil
+	}
+	text, err := svc.bash(context.Background(), "tenant", bot, "firefox", true)
+	if err != nil || text != "ok" || ensured != 1 || len(shells) != 1 {
+		t.Fatalf("text=%q err=%v ensured=%d shells=%d", text, err, ensured, len(shells))
+	}
+	req := commandPayload(t, shells[0])
+	if req.Display != ":21" {
+		t.Fatalf("display=%q", req.Display)
 	}
 }
 
