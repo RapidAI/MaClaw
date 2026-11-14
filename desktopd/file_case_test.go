@@ -150,6 +150,15 @@ print("body " + sup.file_read(dest, 20).decode())
 print("b64 " + sup.file_bytes(dest, 20).decode())
 print("parent " + ("1" if (tmp / "desk" / "sub" / "a.c").is_file() else "0"))
 print("registry " + ("1" if (sup.ROOT / "registry.json").exists() else "0"))
+watch = sup.SentinelDisplay()
+client = __import__("socket").socket(__import__("socket").AF_UNIX, __import__("socket").SOCK_STREAM)
+client.connect("/tmp/.X11-unix/X%d" % watch.number)
+client.close()
+import time
+time.sleep(0.3)
+watch.close()
+watch.write("tok")
+print("hit " + str(sup.read_sentinel("tok").get("x_client")))
 `)
 		for _, want := range []string{
 			"home /home/desktop/Desktop/a.c",
@@ -167,6 +176,7 @@ print("registry " + ("1" if (sup.ROOT / "registry.json").exists() else "0"))
 			"b64 " + base64.StdEncoding.EncodeToString([]byte("int main(){}\n")),
 			"parent 1",
 			"registry 0",
+			"hit True",
 		} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("supervisor missing %q\n%s", want, out)

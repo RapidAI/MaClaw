@@ -851,6 +851,10 @@ func (p *Pool) UploadFile(ctx context.Context, tenantID, userID, filePath string
 
 // RunBash runs one command in the user's desktop container.
 func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (string, error) {
+	return p.RunBashScreen(ctx, tenantID, userID, command, false)
+}
+
+func (p *Pool) RunBashScreen(ctx context.Context, tenantID, userID, command string, needsScreen bool) (string, error) {
 	if _, err := desktop.BashArgs("container", command); err != nil {
 		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
 	}
@@ -863,15 +867,20 @@ func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (s
 	}
 	var out struct {
 		Output string `json:"output"`
+		Code   string `json:"code"`
 	}
 	body := map[string]any{
-		"tenant_id": store.NormalizeTenantID(tenantID),
-		"user_id":   strings.TrimSpace(userID),
-		"command":   strings.TrimSpace(command),
+		"tenant_id":    store.NormalizeTenantID(tenantID),
+		"user_id":      strings.TrimSpace(userID),
+		"command":      strings.TrimSpace(command),
+		"needs_screen": needsScreen,
 	}
 	client := &http.Client{Timeout: 2 * time.Minute}
 	if err := p.callClient(ctx, client, server, http.MethodPost, "/v1/desktops/bash", body, &out); err != nil {
 		return "", err
+	}
+	if out.Code == desktopbot.CodeScreenRequired {
+		return out.Output, &desktopbot.ScreenRequiredError{Output: out.Output}
 	}
 	return out.Output, nil
 }

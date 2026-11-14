@@ -13,7 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
-func TestBotScreenEnsuredBeforeTheFirstBash(t *testing.T) {
+func TestBashDoesNotOpenABotScreen(t *testing.T) {
 	req := d97Env(t)
 	var opens atomic.Int32
 	openBotScreen = func(context.Context, agentruntime.Scope) error {
@@ -22,9 +22,6 @@ func TestBotScreenEnsuredBeforeTheFirstBash(t *testing.T) {
 	}
 	calls := 0
 	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
-		if desktopArg(args, "action") != "bash" {
-			return "ok", nil
-		}
 		calls++
 		return "bash ok", nil
 	}
@@ -32,11 +29,78 @@ func TestBotScreenEnsuredBeforeTheFirstBash(t *testing.T) {
 	if err != nil || !strings.Contains(out, "bash ok") {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
-	if calls != 1 || opens.Load() != 1 {
-		t.Fatalf("calls=%d opens=%d", calls, opens.Load())
+	if calls != 1 || opens.Load() != 0 {
+		t.Fatalf("calls=%d opens=%d, a shell must not open a screen", calls, opens.Load())
 	}
-	if desktopOutageWasSeen(req.Scope.RunID) {
-		t.Fatal("a successful open was an outage")
+}
+
+func TestGUIActionOpensTheBotScreen(t *testing.T) {
+	req := d97Env(t)
+	var opens atomic.Int32
+	openBotScreen = func(context.Context, agentruntime.Scope) error {
+		opens.Add(1)
+		return nil
+	}
+	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+		return "clicked", nil
+	}
+	out, err := invoke(t, req, map[string]any{"action": "click", "x": 1, "y": 2})
+	if err != nil || !strings.Contains(out, "clicked") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	if opens.Load() != 1 {
+		t.Fatalf("opens=%d, a click must open the screen", opens.Load())
+	}
+	resetBotScreens()
+	req.Scope.RunID = req.Scope.RunID + "-gui"
+	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "xdg-open /tmp/a.pdf", "needs_screen": true})
+	if err != nil || !strings.Contains(out, "clicked") {
+		t.Fatalf("gui bash out=%q err=%v", out, err)
+	}
+	if opens.Load() != 2 {
+		t.Fatalf("opens=%d, needs_screen must open the screen", opens.Load())
+	}
+	resetBotScreens()
+	req.Scope.RunID = req.Scope.RunID + "-plain"
+	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "firefox"})
+	if err != nil || opens.Load() != 2 {
+		t.Fatalf("plain bash out=%q err=%v opens=%d", out, err, opens.Load())
+	}
+}
+
+func TestScreenOpenWaitsOutTheMemoryGate(t *testing.T) {
+	req := d97Env(t)
+	prev := desktopMemoryPressured
+	prevWait := desktopMemoryRecheck
+	prevMax := desktopMemoryWaitMax
+	prevLease := desktopScreenLeaseOn
+	t.Cleanup(func() {
+		desktopMemoryPressured = prev
+		desktopMemoryRecheck = prevWait
+		desktopMemoryWaitMax = prevMax
+		desktopScreenLeaseOn = prevLease
+	})
+	desktopScreenLeaseOn = true
+	desktopMemoryRecheck = time.Millisecond
+	desktopMemoryWaitMax = 5 * time.Millisecond
+	desktopMemoryPressured = func(context.Context, string, string) (bool, string, error) {
+		return true, desktopMemoryWaitLine, nil
+	}
+	var opens atomic.Int32
+	openBotScreen = func(context.Context, agentruntime.Scope) error {
+		opens.Add(1)
+		return nil
+	}
+	operateDesktopFunc = func(context.Context, agentruntime.Scope, map[string]any) (string, error) {
+		return "", errors.New("ran while memory was full")
+	}
+	_, err := invoke(t, req, map[string]any{"action": "click", "x": 1, "y": 2})
+	var admit *desktop.MemoryAdmission
+	if !errors.As(err, &admit) || admit.Kind() != desktop.AdmissionMemoryBusy {
+		t.Fatalf("err=%v", err)
+	}
+	if opens.Load() != 0 {
+		t.Fatalf("opens=%d, the screen opened before the memory gate", opens.Load())
 	}
 }
 
@@ -126,7 +190,7 @@ func TestBotScreenClosedRetriesExactlyOnce(t *testing.T) {
 		calls++
 		return "", errors.New("BOT_SCREEN_CLOSED: this bot's desktop is not open yet")
 	}
-	_, err := invoke(t, req, map[string]any{"action": "bash", "command": "echo hi"})
+	_, err := invoke(t, req, map[string]any{"action": "click", "x": 1, "y": 2})
 	if err == nil || !strings.Contains(err.Error(), "still not open") || !strings.Contains(err.Error(), "BOT_SCREEN_CLOSED") {
 		t.Fatalf("err=%v", err)
 	}

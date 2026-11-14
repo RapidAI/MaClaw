@@ -9,9 +9,10 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
-func TestBotBashOpensAMissingScreen(t *testing.T) {
+func TestBotBashDoesNotOpenAMissingScreen(t *testing.T) {
 	bot := desktop.BotDesktopUser("alice", "bot_a")
 	var mu sync.Mutex
 	ensured := 0
@@ -20,16 +21,92 @@ func TestBotBashOpensAMissingScreen(t *testing.T) {
 	if err != nil || text != "hi" {
 		t.Fatalf("bash=%q err=%v", text, err)
 	}
-	if ensured != 1 {
-		t.Fatalf("ensured=%d", ensured)
+	if ensured != 0 {
+		t.Fatalf("ensured=%d, bash opened a screen", ensured)
 	}
 	text, err = svc.Bash(context.Background(), "tenant", bot, "echo hi")
-	if err != nil || text != "hi" || ensured != 1 {
+	if err != nil || text != "hi" || ensured != 0 {
 		t.Fatalf("second bash=%q err=%v ensured=%d", text, err, ensured)
 	}
 }
 
-func TestThreeBotsOpenScreensFromBash(t *testing.T) {
+func TestClosedScreenDisplayIsNotADisplay(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	svc := &Service{
+		Run: func(_ context.Context, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, " sentinel ") {
+				return `{"x_client":true}`, nil
+			}
+			if strings.Contains(joined, " display ") {
+				return `{"display":":21","running":false}`, nil
+			}
+			return "", nil
+		},
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			return "Error: something failed\n", 1, nil
+		},
+	}
+	text, err := svc.Bash(context.Background(), "tenant", bot, "firefox")
+	var required *desktopbot.ScreenRequiredError
+	if !errors.As(err, &required) || !strings.Contains(text, "something failed") || required.Code() != desktopbot.CodeScreenRequired {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+}
+
+func TestOutputTextDoesNotDecideScreenRequired(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	svc := &Service{
+		Run: func(_ context.Context, args ...string) (string, error) {
+			if strings.Contains(strings.Join(args, " "), " sentinel ") {
+				return `{"x_client":false}`, nil
+			}
+			return "", nil
+		},
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			return "cannot open display\n", 1, nil
+		},
+	}
+	text, err := svc.Bash(context.Background(), "tenant", bot, "firefox")
+	if err != nil || !strings.Contains(text, "cannot open display") {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+}
+
+func TestBashFailureThatIsNotXIsNotScreenRequired(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	svc := &Service{
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			return "ValueError: bad batch\n", 1, nil
+		},
+	}
+	text, err := svc.Bash(context.Background(), "tenant", bot, "python train.py")
+	if err != nil || !strings.Contains(text, "ValueError") {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+}
+
+func TestNeedsScreenOpensAndSetsDisplay(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	var mu sync.Mutex
+	ensured := 0
+	svc := botScreenService(&mu, &ensured)
+	var shells [][]string
+	svc.RunCommand = func(_ context.Context, _ io.Reader, args ...string) (string, int, error) {
+		shells = append(shells, append([]string(nil), args...))
+		return "ok\n", 0, nil
+	}
+	text, err := svc.bash(context.Background(), "tenant", bot, "firefox", true)
+	if err != nil || text != "ok" || ensured != 1 || len(shells) != 1 {
+		t.Fatalf("text=%q err=%v ensured=%d shells=%d", text, err, ensured, len(shells))
+	}
+	req := commandPayload(t, shells[0])
+	if req.Display != ":21" {
+		t.Fatalf("display=%q", req.Display)
+	}
+}
+
+func TestThreeBotsBashWithoutOpeningScreens(t *testing.T) {
 	var mu sync.Mutex
 	ensured := map[string]int{}
 	svc := &Service{
@@ -80,13 +157,8 @@ func TestThreeBotsOpenScreensFromBash(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(ensured) != 3 {
-		t.Fatalf("ensured=%v", ensured)
-	}
-	for key, n := range ensured {
-		if n != 1 {
-			t.Fatalf("key %s ensured %d times", key, n)
-		}
+	if len(ensured) != 0 {
+		t.Fatalf("bash opened screens: %v", ensured)
 	}
 }
 

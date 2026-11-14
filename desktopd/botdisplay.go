@@ -65,11 +65,19 @@ func (s *Service) readBotDisplay(ctx context.Context, spec Spec) (string, error)
 	if err != nil {
 		return "", err
 	}
+	line := statusLine(out)
+	var raw map[string]json.RawMessage
 	var status struct {
 		Display string `json:"display"`
+		Running bool   `json:"running"`
 	}
-	if line := statusLine(out); line == "" || json.Unmarshal([]byte(line), &status) != nil || !desktop.ValidDisplay(status.Display) || status.Display == desktop.DefaultDisplay {
+	if line == "" || json.Unmarshal([]byte(line), &raw) != nil || json.Unmarshal([]byte(line), &status) != nil || !desktop.ValidDisplay(status.Display) || status.Display == desktop.DefaultDisplay {
 		return "", fmt.Errorf("%w: desktop supervisor returned no bot display", ErrDocker)
+	}
+	// A recorded display whose screen is not running is not a display.
+	// An older supervisor that omits the flag is left as it was.
+	if _, ok := raw["running"]; ok && !status.Running {
+		return "", fmt.Errorf("%w: bot screen is not running", ErrDocker)
 	}
 	s.noteComputerScreen(spec, status.Display)
 	return status.Display, nil

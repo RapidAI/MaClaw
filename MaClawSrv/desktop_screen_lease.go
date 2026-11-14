@@ -88,7 +88,7 @@ func desktopScreenLeaseNeeded(action string, args map[string]any) bool {
 		return false
 	}
 	if action == "bash" {
-		return desktopBashLaunchesGUI(desktopArg(args, "command"))
+		return desktopBashNeedsScreen(args)
 	}
 	return !desktopScreenLeaseNonScreen[action]
 }
@@ -502,31 +502,43 @@ func desktopScreenLeaseStatus(runID string) string {
 
 // desktopMemoryPressured reports whether this desktop's container is over
 // the admission line. Nil means the stat is unknown and the lease proceeds.
-// The second result is the status line shown while the lease waits.
-var desktopMemoryPressured func(ctx context.Context, tenantID, userID string) (bool, string)
+// The second result is the status line shown while the lease waits. A
+// non-nil error is a fail-closed unread gauge: the lease does not proceed
+// and does not wait out the pressure ceiling.
+var desktopMemoryPressured func(ctx context.Context, tenantID, userID string) (bool, string, error)
 
-// desktopRemoteMemory is set by tests. Production asks Hub, which asks desktopd.
+// desktopRemoteMemory is set by tests. Production asks desktopd, then Hub.
 var desktopRemoteMemory func(ctx context.Context, tenantID, userID string) (used, limit int64, err error)
 
-// readDesktopMemoryPressure is the production gauge. A missing Hub, or a
-// read that fails, is not pressure: the lease proceeds.
-func readDesktopMemoryPressure(ctx context.Context, tenantID, userID string) (bool, string) {
-	var used, limit int64
-	var err error
-	switch {
-	case desktopRemoteMemory != nil:
-		used, limit, err = desktopRemoteMemory(ctx, tenantID, userID)
-	default:
-		client := desktopHubClientFromEnv()
-		if client == nil {
-			return false, ""
+// readDesktopMemoryPressure is the production gauge. It reads desktopd
+// directly when that client is configured, and Hub only when desktopd is
+// absent or its read fails. A failed read follows memoryReadPolicy.
+func readDesktopMemoryPressure(ctx context.Context, tenantID, userID string) (bool, string, error) {
+	if desktopRemoteMemory != nil {
+		used, limit, err := desktopRemoteMemory(ctx, tenantID, userID)
+		return finishMemoryRead(memorySourceTest, used, limit, err)
+	}
+	if client := desktopdClientFromEnv(); client != nil {
+		used, limit, err := client.memoryAt(ctx, desktopdMemoryPath, tenantID, userID)
+		if err == nil {
+			return finishMemoryRead(memorySourceDesktopd, used, limit, nil)
 		}
-		used, limit, err = client.Memory(ctx, tenantID, userID)
+		directErr := err
+		if hub := desktopHubClientFromEnv(); hub != nil {
+			used, limit, hubErr := hub.Memory(ctx, tenantID, userID)
+			if hubErr == nil {
+				noteMemoryFallback(memoryReadReasonOf(directErr))
+				return finishMemoryRead(memorySourceHub, used, limit, nil)
+			}
+			return finishMemoryRead(memorySourceHub, 0, 0, hubErr)
+		}
+		return finishMemoryRead(memorySourceDesktopd, 0, 0, directErr)
 	}
-	if err != nil || !desktop.MemoryPressured(used, limit) {
-		return false, ""
+	if hub := desktopHubClientFromEnv(); hub != nil {
+		used, limit, err := hub.Memory(ctx, tenantID, userID)
+		return finishMemoryRead(memorySourceHub, used, limit, err)
 	}
-	return true, desktopMemoryWaitLine
+	return finishMemoryRead("", 0, 0, errMemoryNoClient)
 }
 
 // desktopMemoryRecheck is how often a waiting lease re-reads the gauge.
@@ -549,7 +561,10 @@ func waitDesktopMemory(ctx context.Context, tenantID, userID, runID string) erro
 	}
 	deadline := time.Now().Add(desktopMemoryWaitMax)
 	for {
-		pressed, line := desktopMemoryPressured(ctx, tenantID, userID)
+		pressed, line, err := desktopMemoryPressured(ctx, tenantID, userID)
+		if err != nil {
+			return err
+		}
 		if !pressed {
 			return nil
 		}

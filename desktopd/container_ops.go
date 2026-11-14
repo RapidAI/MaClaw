@@ -2,7 +2,10 @@ package desktopd
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func (s *Service) runCommand(ctx context.Context, stdin io.Reader, args ...string) (string, int, error) {
@@ -298,8 +302,14 @@ func (s *Service) ListFile(ctx context.Context, tenantID, userID, filePath strin
 	return filePath + "\n" + text, nil
 }
 
-// Bash runs one command in the user's desktop container and returns its output.
+// Bash runs one command and returns its output. A bot's bash that does not
+// ask for a screen stays in the workspace for the life of that bot, even
+// when the desktop container is awake, so a job's /tmp and pid stay visible.
 func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (string, error) {
+	return s.bash(ctx, tenantID, userID, command, false)
+}
+
+func (s *Service) bash(ctx context.Context, tenantID, userID, command string, needsScreen bool) (string, error) {
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
 		return "", err
@@ -307,20 +317,25 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	if _, err = desktop.BashArgs(containerName(spec.TenantID, spec.UserID), command); err != nil {
 		return "", err
 	}
-	// A bot's GUI programs belong on its own display. The command service
-	// applies that display. The docker line does not name bash.
+	// needsScreen opens the bot screen and is the only way this bash gets
+	// DISPLAY. A command that omits it does not open a screen.
 	display := ""
-	if spec.BotID != "" {
-		var displayErr error
-		display, displayErr = s.specDisplay(ctx, spec, "")
-		if displayErr != nil {
-			return "", displayErr
+	if spec.BotID != "" && needsScreen {
+		got, openErr := s.specDisplay(ctx, spec, "")
+		if openErr != nil {
+			return "", openErr
 		}
+		display = got
+	}
+	sentinel := ""
+	if spec.BotID != "" && !needsScreen {
+		sentinel = newSentinelToken()
 	}
 	shell := commandRequest{
-		Op:      "shell",
-		Command: strings.TrimSpace(command),
-		Display: display,
+		Op:       "shell",
+		Command:  strings.TrimSpace(command),
+		Display:  display,
+		Sentinel: sentinel,
 	}
 	if _, err := commandServiceArgs(containerName(spec.TenantID, spec.UserID), shell); err != nil {
 		return "", err
@@ -337,11 +352,19 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	var container string
 	var onDesktop bool
 	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
-		c, desk, cErr := s.toolContainer(ctx, spec)
-		if cErr != nil {
-			return cErr
+		if spec.BotID != "" && !needsScreen && s.httpUsesWorkspace() {
+			name, wErr := s.ensureWorkspace(ctx, spec)
+			if wErr != nil {
+				return wErr
+			}
+			container, onDesktop = name, false
+		} else {
+			c, desk, cErr := s.toolContainer(ctx, spec)
+			if cErr != nil {
+				return cErr
+			}
+			container, onDesktop = c, desk
 		}
-		container, onDesktop = c, desk
 		commandArgs, argsErr := commandServiceArgs(container, shell)
 		if argsErr != nil {
 			return argsErr
@@ -358,7 +381,39 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 		return "", err
 	}
 	s.noteToolUse(spec, container, onDesktop)
-	return desktop.ProgramOutput(output, exitCode, false), nil
+	text := desktop.ProgramOutput(output, exitCode, false)
+	if sentinel != "" && container != "" && s.sentinelConnected(ctx, container, sentinel) {
+		return text, &desktopbot.ScreenRequiredError{Output: text}
+	}
+	return text, nil
+}
+
+func newSentinelToken() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// sentinelConnected reads the supervisor's record of an X client connecting
+// to this command's sentinel display. The program's own output is not read.
+func (s *Service) sentinelConnected(ctx context.Context, container, token string) bool {
+	if s == nil || strings.TrimSpace(token) == "" || strings.TrimSpace(container) == "" {
+		return false
+	}
+	out, err := s.docker(ctx, "exec", container, "python3", "/desktop_supervisor.py", "sentinel", token)
+	if err != nil {
+		return false
+	}
+	var rec struct {
+		XClient bool `json:"x_client"`
+	}
+	line := statusLine(out)
+	if line == "" || json.Unmarshal([]byte(line), &rec) != nil {
+		return false
+	}
+	return rec.XClient
 }
 
 // ErrDesktopAsleep is a fetch that would have docker-exec'd curl into a

@@ -332,9 +332,10 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		_ = controller.SetWriteDeadline(deadline)
 		_ = controller.SetReadDeadline(deadline)
 		var in struct {
-			TenantID string `json:"tenant_id"`
-			UserID   string `json:"user_id"`
-			Command  string `json:"command"`
+			TenantID    string `json:"tenant_id"`
+			UserID      string `json:"user_id"`
+			Command     string `json:"command"`
+			NeedsScreen bool   `json:"needs_screen"`
 		}
 		if !decodeLimited(w, r, 64<<10, &in) {
 			return
@@ -343,7 +344,12 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			writeServiceErr(w, err)
 			return
 		}
-		text, err := svc.Bash(r.Context(), in.TenantID, in.UserID, in.Command)
+		text, err := svc.bash(r.Context(), in.TenantID, in.UserID, in.Command, in.NeedsScreen)
+		var required *desktopbot.ScreenRequiredError
+		if errors.As(err, &required) {
+			writeJSON(w, http.StatusOK, map[string]any{"output": required.Output, "code": desktopbot.CodeScreenRequired})
+			return
+		}
 		writeOp(w, text, err)
 	})
 	mux.HandleFunc("POST /v1/desktops/http", func(w http.ResponseWriter, r *http.Request) {
