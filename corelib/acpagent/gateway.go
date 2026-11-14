@@ -197,7 +197,7 @@ func gatewayResponsePreview(data []byte) string {
 	if len(data) <= maxPreviewBytes {
 		return string(data)
 	}
-	return string(bytes.ToValidUTF8(data[:maxPreviewBytes], []byte("�"))) + "…"
+	return string(bytes.ToValidUTF8(data[:maxPreviewBytes], []byte("\uFFFD"))) + "…"
 }
 
 // FormatCursor returns a decimal cursor string.
