@@ -4902,10 +4902,14 @@ H264_PLAYER = r"""<!doctype html><meta charset=utf-8><meta name=viewport content
 <script>
 // MaClaw desktop player (maclaw-h264/1, see docs/desktop-h264-takeover.md).
 "use strict";
-const Q=new URLSearchParams(location.search),WANT_INPUT=Q.get("view_only")==="0",VNC=Q.get("vnc")||"";
+const Q=new URLSearchParams(location.search),WANT_INPUT=Q.get("view_only")==="0",VNC=Q.get("vnc")||"",MSE=Q.get("mse")==="1";
 const MAC=/Mac|iPhone|iPad/.test(navigator.platform||"");
 const HAS_WC=typeof VideoDecoder!=="undefined"&&typeof EncodedVideoChunk!=="undefined";
 const HAS_MSE=typeof MediaSource!=="undefined"&&MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E029"');
+// ?mse=1 opts out of the canvas/WebCodecs path: Android WebView can rasterize
+// drawImage(VideoFrame) through a 16-bit ordered-dither fallback (halftone
+// dots). The <video> element composites in hardware and looks correct.
+const USE_MSE=HAS_MSE&&(MSE||!HAS_WC);
 const badge=document.getElementById("b");
 let surface=document.getElementById("s"),ctx=null,ws=null,decoder=null,needKey=true,lastKeyReq=0,fails=0,gotFrame=false;
 let seq=Math.floor(Math.random()*1e6),pending=[],flushQueued=false,inputOn=false,lease="",held=new Map(),pasteHold=null,wheelAcc=[0,0];
@@ -4930,9 +4934,9 @@ function setupMSE(){const v=document.createElement("video");v.id="s";v.autoplay=
  return new Promise(r=>ms.addEventListener("sourceopen",()=>{sb=ms.addSourceBuffer('video/mp4; codecs="avc1.42E029"');sb.mode="sequence";sb.addEventListener("updateend",pump);r()}))}
 function pump(){if(!sb||sb.updating||!mq.length)return;sb.appendBuffer(mq.shift());const b=sb.buffered,v=surface;if(b.length&&v.currentTime<b.end(0)-0.3)v.currentTime=b.end(0)-0.05;if(b.length&&b.end(0)-b.start(0)>30&&!sb.updating){try{sb.remove(b.start(0),b.end(0)-10)}catch(_){}}}
 // ---- connection
-function connect(){const qs=[];if(!HAS_WC)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");for(const k of["w","fps"]){const v=Q.get(k);if(v)qs.push(k+"="+encodeURIComponent(v))}const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
+function connect(){const qs=[];if(USE_MSE)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");for(const k of["w","fps"]){const v=Q.get(k);if(v)qs.push(k+"="+encodeURIComponent(v))}const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
  ws=new WebSocket(url);ws.binaryType="arraybuffer";show();
- ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(HAS_WC)onVideo(e.data);else{gotFrame=true;fails=0;mq.push(e.data);pump()}};
+ ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(!USE_MSE)onVideo(e.data);else{gotFrame=true;fails=0;mq.push(e.data);pump()}};
  ws.onclose=()=>{ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
 function control(m){if(m.type==="hello"){inputOn=WANT_INPUT&&!!m.input;show()}else if(m.type==="lease"){const was=lease;lease=m.holder||"";inputOn=WANT_INPUT&&!!m.input;if(was==="you"&&lease!=="you")releaseLocal();show()}
  else if(m.type==="clipboard"&&typeof m.text==="string"){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(m.text).catch(()=>{})}
@@ -4961,7 +4965,7 @@ function bind(){const el=surface;
  window.addEventListener("paste",e=>{if(!inputOn)return;const text=(e.clipboardData&&e.clipboardData.getData("text/plain"))||"";e.preventDefault();if(text)send("clipboard_set",{text});
   if(pasteHold){clearTimeout(pasteHold.timer);const code=pasteHold.code;pasteHold=null;queue({t:"key",code,down:true})}});
  window.addEventListener("blur",()=>{if(held.size||pasteHold){releaseLocal();queue({t:"release"})}})}
-async function start(){if(!HAS_WC&&!HAS_MSE){fallback();return}if(HAS_WC)ctx=surface.getContext("2d");else await setupMSE();bind();if(WANT_INPUT)surface.focus();connect()}
+async function start(){if(!HAS_WC&&!HAS_MSE){fallback();return}if(USE_MSE)await setupMSE();else ctx=surface.getContext("2d");bind();if(WANT_INPUT)surface.focus();connect()}
 start();
 </script>"""
 

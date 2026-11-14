@@ -969,8 +969,16 @@ HubApiException hubException(Response<dynamic> response) {
   var code = 'HTTP_${response.statusCode}';
   var message = '请求失败';
   if (data is Map) {
-    code = (data['error'] as String? ?? code).toString();
-    message = (data['message'] as String? ?? message).toString();
+    final rawError = data['error'];
+    if (rawError is Map) {
+      code = (rawError['code'] ?? rawError['name'] ?? rawError['error'] ?? code)
+          .toString();
+      final inner = (rawError['message'] ?? '').toString().trim();
+      if (inner.isNotEmpty) message = inner;
+    } else {
+      code = (rawError as String? ?? code).toString();
+      message = (data['message'] as String? ?? message).toString();
+    }
   }
   return HubApiException(code, message, statusCode: response.statusCode);
 }

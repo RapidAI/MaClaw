@@ -191,8 +191,11 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     // delta frames and the picture fills in bit by bit between keyframes.
     // Takeover keeps the native stream for precision.
     final stream = viewOnly == 'view_only=1' ? '&w=960&fps=10' : '';
+    // Android WebView rasterizes canvas.drawImage(VideoFrame) through a
+    // 16-bit ordered-dither path (halftone dots) — force the fmp4 <video>
+    // pipeline instead, which composites in hardware.
     final fallback = 'vnc.html${query.isNotEmpty ? '?$query' : ''}';
-    return '${path.substring(0, slash + 1)}h264.html?$viewOnly$stream&vnc=${Uri.encodeComponent(fallback)}';
+    return '${path.substring(0, slash + 1)}h264.html?$viewOnly$stream&mse=1&vnc=${Uri.encodeComponent(fallback)}';
   }
 
   String _watchUrl() {

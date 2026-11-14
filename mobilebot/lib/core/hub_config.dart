@@ -176,8 +176,21 @@ HubApiException hubExceptionFrom(Object error) {
     var code = '';
     var message = '';
     if (data is Map) {
-      code = (data['error'] as String? ?? data['code'] as String? ?? '').trim();
-      message = (data['message'] as String? ?? '').trim();
+      final rawError = data['error'];
+      // Most Hub errors are {"error":"CODE"}; gateways/proxies may nest a
+      // structured {"error":{...}} object instead — unwrap it rather than
+      // throwing a TypeError that hides the real failure.
+      if (rawError is Map) {
+        code = (rawError['code'] ?? rawError['name'] ?? rawError['error'] ?? '')
+            .toString()
+            .trim();
+        message = (rawError['message'] ?? '').toString().trim();
+      } else {
+        code = (rawError as String? ?? data['code'] as String? ?? '').trim();
+      }
+      if (message.isEmpty) {
+        message = (data['message'] as String? ?? '').trim();
+      }
     }
     final status = error.response?.statusCode;
     if (message.isEmpty) {

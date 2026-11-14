@@ -38,6 +38,9 @@ GUI iframe ─ Hub /api/v1/desktop-handoff/<t>/h264.html?view_only=0|1&vnc=<noVN
                 → supervisor 解析 fMP4 → Annex B 访问单元 → WebSocket
 浏览器：WebCodecs VideoDecoder(optimizeForLatency) → canvas
         无 WebCodecs → `/h264?mse=1`（原始 fMP4，MSE <video>）
+        `h264.html?mse=1` 也可强制走 <video>——移动端 Android WebView 的
+        canvas.drawImage(VideoFrame) 会退到 16 位有序抖动软光栅（画面呈半调
+        噪点），App 统一传 mse=1 绕开 canvas 路径
         WebCodecs 与 MSE 都没有 / 连不上 → 跳转 `vnc` 参数里的 noVNC 页
 ```
 
