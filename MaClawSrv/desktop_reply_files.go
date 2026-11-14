@@ -12,8 +12,8 @@ import (
 )
 
 // publishDesktopReplyIn attaches this turn's screenshot and documents, then
-// any file the reply names under this run's work folder or the desktop that
-// was not already delivered and still fits the reply limit.
+// files this run declared as outputs. A path mentioned only in the reply
+// text is not a file to fetch.
 func publishDesktopReplyIn(ctx context.Context, scope agentruntime.Scope, msg *agentservice.Message, slot *desktopShotSlot) (images, files int) {
 	images = attachDesktopShot(msg, slot)
 	files = attachDesktopFile(msg, slot)
@@ -32,15 +32,52 @@ func publishDesktopReplyIn(ctx context.Context, scope agentruntime.Scope, msg *a
 	return images, files
 }
 
-// autoDeliverReplyFiles reads files the reply names under the run work
-// directory or ~/Desktop and attaches the ones that fit. A path is kept
-// only when ContainerPath resolves it under one of those roots.
+const (
+	desktopReplyOutputMaxFiles = 8
+	desktopReplyOutputMaxBytes = 200_000
+)
+
+// noteDesktopOutput records a file this run wrote or edited and declared as
+// an output. The reply delivers that record. The reply text does not.
+func noteDesktopOutput(ctx context.Context, filePath string) {
+	resolved, err := desktop.DeliverableContainerPath(filePath)
+	if err != nil {
+		return
+	}
+	slot := desktopShotSlotFrom(ctx)
+	if slot == nil {
+		return
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	for _, have := range slot.outputs {
+		if have == resolved {
+			return
+		}
+	}
+	slot.outputs = append(slot.outputs, resolved)
+}
+
+// autoDeliverReplyFiles attaches files this run declared as outputs and that
+// are not already on the reply. Count and total size are capped. A path that
+// is only named in the reply is not fetched.
 func autoDeliverReplyFiles(ctx context.Context, scope agentruntime.Scope, msg *agentservice.Message) int {
 	if msg == nil {
 		return 0
 	}
+	slot := desktopShotSlotFrom(ctx)
+	if slot == nil {
+		return 0
+	}
+	slot.mu.Lock()
+	paths := append([]string(nil), slot.outputs...)
+	slot.mu.Unlock()
 	n := 0
-	for _, filePath := range desktopReplyFileCandidates(msg.Content, scope) {
+	total := 0
+	for _, filePath := range paths {
+		if n >= desktopReplyOutputMaxFiles || total >= desktopReplyOutputMaxBytes {
+			break
+		}
 		if replyAlreadyHasFile(msg, path.Base(filePath)) {
 			continue
 		}
@@ -49,13 +86,14 @@ func autoDeliverReplyFiles(ctx context.Context, scope agentruntime.Scope, msg *a
 			continue
 		}
 		raw, err := desktop.DecodeFileBytes(encoded)
-		if err != nil || base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
+		if err != nil || len(raw) > desktopReplyOutputMaxBytes-total || base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
 			continue
 		}
 		if err := noteDesktopFile(ctx, path.Base(filePath), desktopDeliverMIME(path.Base(filePath)), raw); err != nil {
 			continue
 		}
-		n += attachDesktopFile(msg, desktopShotSlotFrom(ctx))
+		total += len(raw)
+		n += attachDesktopFile(msg, slot)
 	}
 	return n
 }
@@ -68,76 +106,4 @@ func replyAlreadyHasFile(msg *agentservice.Message, name string) bool {
 		}
 	}
 	return false
-}
-
-func desktopReplyFileCandidates(text string, scope agentruntime.Scope) []string {
-	work := desktopRunWorkDir(scope)
-	roots := []string{
-		path.Join(desktop.ContainerHome, "Desktop"),
-		path.Join(desktop.ContainerHome, "桌面"),
-	}
-	if work != "" {
-		roots = append([]string{work}, roots...)
-	}
-	var out []string
-	seen := map[string]bool{}
-	for _, token := range desktopPathTokens(text) {
-		resolved, err := desktop.ContainerPath(token)
-		if err != nil || seen[resolved] {
-			continue
-		}
-		if !pathUnderAny(resolved, roots) {
-			continue
-		}
-		seen[resolved] = true
-		out = append(out, resolved)
-	}
-	return out
-}
-
-func pathUnderAny(filePath string, roots []string) bool {
-	for _, root := range roots {
-		if root != "" && (filePath == root || strings.HasPrefix(filePath, root+"/")) {
-			return true
-		}
-	}
-	return false
-}
-
-// desktopPathTokens lists path-shaped tokens. Whether one is a desktop file
-// is decided by ContainerPath and the allowed roots, not by the sentence around it.
-func desktopPathTokens(text string) []string {
-	var out []string
-	for i := 0; i < len(text); i++ {
-		if text[i] != '/' && text[i] != '~' {
-			continue
-		}
-		if i > 0 {
-			prev := text[i-1]
-			switch prev {
-			case ' ', '\n', '\t', '(', '`', '"', '\'':
-			default:
-				continue
-			}
-		}
-		if text[i] == '~' && (i+1 >= len(text) || text[i+1] != '/') {
-			continue
-		}
-		j := i + 1
-		for j < len(text) {
-			c := text[j]
-			if c <= ' ' || c == '`' || c == '\'' || c == '"' || c == '<' || c == '>' {
-				break
-			}
-			j++
-		}
-		token := strings.TrimRight(text[i:j], ".,;:!?)]}")
-		if token != "" {
-			out = append(out, token)
-		}
-		if j > i {
-			i = j - 1
-		}
-	}
-	return out
 }

@@ -205,7 +205,7 @@ function BotChip({ chip }: { chip: Chip }) {
         );
     }
     if (chip.kind === 'path') {
-        const origin = handlers.pathKind?.(chip.value) ?? 'local';
+        const origin = handlers.pathKind?.(chip.value) ?? 'text';
         if (origin === 'text' || (origin === 'desktop' && !handlers.openDesktopPath)) {
             return <span className="desktop-bot-chat__chip-text" data-testid="bot-chip-path-text">{chip.value}</span>;
         }

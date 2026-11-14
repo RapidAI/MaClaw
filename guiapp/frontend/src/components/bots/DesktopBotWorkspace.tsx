@@ -1749,20 +1749,47 @@ const AttachmentShot = memo(function AttachmentShot({ botId, runId, id, alt, ope
     return <ChatShot src={src} alt={alt} openLabel={openLabel} onOpen={onOpen} />;
 });
 
-const BotShot = memo(function BotShot({ path, alt, openLabel, onOpen, retryLabel }: { path: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void; retryLabel: string }) {
+function shotFileID(path: string): string {
+    const base = path.split(/[/\\]/).pop() || '';
+    return base.replace(/\.(png|jpe?g)$/i, '');
+}
+
+const BotShot = memo(function BotShot({ path, botId, runId, alt, openLabel, onOpen, retryLabel }: { path: string; botId?: string; runId?: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void; retryLabel: string }) {
     const [src, setSrc] = useState('');
     const [missing, setMissing] = useState(false);
     const [attempt, setAttempt] = useState(0);
     useEffect(() => {
         let live = true;
-        void ReadDesktopBotShot(path).then(shot => {
+        const show = (shot: { mime?: string; data?: string } | null) => {
             const next = pictureSrc(shot);
             if (!live) return;
             if (next) { setSrc(next); setMissing(false); }
             else setMissing(true);
-        }).catch(() => { if (live) setMissing(true); });
+        };
+        void ReadDesktopBotShot(path).then(async shot => {
+            if (pictureSrc(shot) || !botId || !runId) {
+                show(shot);
+                return;
+            }
+            const id = shotFileID(path);
+            if (!id) { show(null); return; }
+            try {
+                show(await RefetchDesktopBotRunImage(botId, runId, id));
+            } catch {
+                if (live) setMissing(true);
+            }
+        }).catch(async () => {
+            if (!botId || !runId) { if (live) setMissing(true); return; }
+            const id = shotFileID(path);
+            if (!id) { if (live) setMissing(true); return; }
+            try {
+                show(await RefetchDesktopBotRunImage(botId, runId, id));
+            } catch {
+                if (live) setMissing(true);
+            }
+        });
         return () => { live = false; };
-    }, [path, attempt]);
+    }, [path, botId, runId, attempt]);
     if (!src && missing) return <DesktopPictureMissing label={retryLabel} onRetry={() => { setMissing(false); setAttempt(value => value + 1); }} />;
     if (!src) return null;
     return <ChatShot src={src} alt={alt} openLabel={openLabel} onOpen={onOpen} />;
@@ -1772,9 +1799,12 @@ const BotShot = memo(function BotShot({ path, alt, openLabel, onOpen, retryLabel
 // (or shows it in its folder).
 const botChipHandlers = {
     openLink: (url: string) => BrowserOpenURL(url),
-    pathKind: (path: string) => classifyBotPath(path, true),
     openPath: (event: { preventDefault: () => void; stopPropagation: () => void }, path: string) => openBotFile(event, path),
 };
+
+function botPathKind(path: string, message: { localPaths?: string[]; shotPaths?: string[] }) {
+    return classifyBotPath(path, { guiPaths: [...(message.localPaths || []), ...(message.shotPaths || [])] });
+}
 
 function openDesktopContainerFile(botId: string, event: { preventDefault: () => void; stopPropagation: () => void }, filePath: string) {
     event.preventDefault();
@@ -6747,7 +6777,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             data-testid="desktop-bot-log"
                             onScroll={onLogScroll}
                         >
-                            <BotChipContext.Provider value={{ ...botChipHandlers, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path) }}>
+                            <BotChipContext.Provider value={{ ...botChipHandlers, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => classifyBotPath(path) }}>
                             <div ref={logBodyRef} className="desktop-bot-chat__log-body">
                             {messages.length === 0 ? (
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>
@@ -6773,7 +6803,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     </div>
                                 );
                                 return (
-                                <Fragment key={message.id}>
+                                <BotChipContext.Provider key={message.id} value={{ ...botChipHandlers, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => botPathKind(path, message) }}>
+                                <Fragment>
                                 {beats.slice(0, -1).map((beat, beatIndex) => (
                                     <div key={`${message.id}:beat${beatIndex}`} className="desktop-bot-chat__entry desktop-bot-chat__entry--assistant" data-message-role="assistant" data-testid="desktop-bot-beat">
                                         <div className={`desktop-bot-chat__bubble desktop-bot-chat__bubble--assistant${botMessageIsStructured(beat) ? '' : ' is-plain'}`}>
@@ -6793,7 +6824,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             </span>
                                         ) : null}
                                         {message.role === 'assistant' && !message.failed && message.shotPaths?.length ? message.shotPaths.map(path => (
-                                            <BotShot key={path} path={path} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} retryLabel={text.pictureRetry} />
+                                            <BotShot key={path} path={path} botId={selected.id} runId={message.runId} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} retryLabel={text.pictureRetry} />
                                         )) : null}
                                         {message.role === 'assistant' && !message.failed && !message.shotPaths?.length && message.attachmentIds?.length && selected ? message.attachmentIds.map(id => (
                                             <AttachmentShot key={id} botId={selected.id} runId={message.runId} id={id} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} retryLabel={text.pictureRetry} />
@@ -6909,6 +6940,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     ) : null}
                                 </div>
                                 </Fragment>
+                                </BotChipContext.Provider>
                                 );
                             })}
                             {handoffMessage && !agentOperating && !handoffSettled ? (

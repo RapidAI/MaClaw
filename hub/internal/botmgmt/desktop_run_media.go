@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
@@ -16,9 +19,15 @@ import (
 // desktopRunMedia is the pictures and files of one finished run. The pin
 // keeps the text. These bytes live in their own file so a later GET can
 // hand them back after the process restarts.
+const (
+	desktopRunMediaTTL = 14 * 24 * time.Hour
+	desktopRunMediaCap = 32 << 20
+)
+
 type desktopRunMedia struct {
-	Images []ReplyImage `json:"images,omitempty"`
-	Files  []ReplyFile  `json:"files,omitempty"`
+	SavedAt time.Time    `json:"saved_at,omitempty"`
+	Images  []ReplyImage `json:"images,omitempty"`
+	Files   []ReplyFile  `json:"files,omitempty"`
 }
 
 func replyMediaID(data string) string {
@@ -42,11 +51,65 @@ func (s *Service) keepDesktopRunMedia(tenantID, userID, botID, runID string, ima
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(desktopRunMedia{Images: images, Files: files})
+	raw, err := json.Marshal(desktopRunMedia{SavedAt: time.Now(), Images: images, Files: files})
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, safeMediaName(runID)+".json"), raw, 0o600)
+	dest := filepath.Join(dir, safeMediaName(runID)+".json")
+	if err := os.WriteFile(dest, raw, 0o600); err != nil {
+		log.Printf("[desktop-run-media] save bot=%s run=%s: %v", botID, runID, err)
+		return err
+	}
+	s.pruneDesktopRunMedia(dir)
+	return nil
+}
+
+// forgetDesktopRunMedia drops the pictures and files kept for one bot.
+func (s *Service) forgetDesktopRunMedia(tenantID, userID, botID string) {
+	dir := s.desktopRunMediaDir(tenantID, userID, botID)
+	if dir == "" {
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("[desktop-run-media] delete bot=%s: %v", botID, err)
+	}
+}
+
+func (s *Service) pruneDesktopRunMedia(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type kept struct {
+		path    string
+		size    int64
+		modTime time.Time
+	}
+	var files []kept
+	var total int64
+	now := time.Now()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		full := filepath.Join(dir, entry.Name())
+		if !info.ModTime().IsZero() && now.Sub(info.ModTime()) > desktopRunMediaTTL {
+			_ = os.Remove(full)
+			continue
+		}
+		files = append(files, kept{path: full, size: info.Size(), modTime: info.ModTime()})
+		total += info.Size()
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].modTime.Before(files[j].modTime) })
+	for len(files) > 0 && total > desktopRunMediaCap {
+		_ = os.Remove(files[0].path)
+		total -= files[0].size
+		files = files[1:]
+	}
 }
 
 func (s *Service) DesktopRunImages(tenantID, userID, botID, runID string) ([]ReplyImage, error) {
@@ -87,6 +150,10 @@ func (s *Service) loadDesktopRunMedia(tenantID, userID, botID, runID string) (de
 	if err := json.Unmarshal(raw, &media); err != nil {
 		return desktopRunMedia{}, err
 	}
+	if !media.SavedAt.IsZero() && time.Since(media.SavedAt) > desktopRunMediaTTL {
+		_ = os.Remove(filepath.Join(dir, safeMediaName(runID)+".json"))
+		return desktopRunMedia{}, nil
+	}
 	return media, nil
 }
 
@@ -126,7 +193,11 @@ func (s *Service) ReadDesktopContainerFile(ctx context.Context, tenantID, userID
 	if read == nil {
 		return "", "", "", ErrSettingsUnavailable
 	}
-	encoded, err := read(ctx, tenantID, s.desktopUserOf(tenantID, userID, botID), resolved)
+	desktopUser, err := s.desktopUserOf(tenantID, userID, botID)
+	if err != nil {
+		return "", "", "", err
+	}
+	encoded, err := read(ctx, tenantID, desktopUser, resolved)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -152,15 +223,11 @@ func desktopFileMIME(filePath string) string {
 }
 
 // DesktopContainerFilePath resolves a path the person asked to fetch from
-// the bot desktop. Only a path inside that desktop's home is accepted.
-// The decision is ContainerPath plus the home prefix, not a phrase in the reply.
+// the bot desktop. Only the run work tree and the Desktop are accepted.
+// A hidden directory is refused. The decision is the resolved path.
 func DesktopContainerFilePath(raw string) (string, error) {
-	resolved, err := desktop.ContainerPath(raw)
+	resolved, err := desktop.DeliverableContainerPath(raw)
 	if err != nil {
-		return "", err
-	}
-	home := desktop.ContainerHome
-	if resolved != home && !strings.HasPrefix(resolved, home+"/") {
 		return "", ErrInvalidInput
 	}
 	return resolved, nil

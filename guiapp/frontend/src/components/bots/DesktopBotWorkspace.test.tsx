@@ -141,6 +141,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     OpenFileOrShowInFolder: (path: string) => openFile(path),
     ShowItemInFolder: (path: string) => showFile(path),
     PreviewTaskResultFile: (path: string) => previewFile(path),
+    ForgetDesktopBotFiles: () => Promise.resolve(),
     FetchDesktopBotAttachment: (botId: string, id: string) => fetchShot(botId, id),
     FetchDesktopBotContainerFile: () => Promise.resolve(''),
     RefetchDesktopBotRunImage: () => Promise.resolve(null),

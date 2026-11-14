@@ -943,7 +943,11 @@ type desktopCommandBody struct {
 func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novnc string, opened bool, body desktopCommandBody) (Reply, error) {
 	// Holds, keyboard and picture are the bot's own display's when it is
 	// isolated. The attention reason is keyed per bot and owner either way.
-	userID = s.desktopUserOf(tenantID, userID, botID)
+	desktopUser, userErr := s.desktopUserOf(tenantID, userID, botID)
+	if userErr != nil {
+		return Reply{}, userErr
+	}
+	userID = desktopUser
 	if body.CallErr != nil {
 		reason := strings.TrimSpace(body.Attention)
 		if body.Handoff {

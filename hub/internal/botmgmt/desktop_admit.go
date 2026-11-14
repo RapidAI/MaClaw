@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -680,7 +681,9 @@ func (s *Service) settleAdmittedDesktopRun(tenantID, userID, botID, runID string
 	state.finished = time.Now()
 	state.mediaFetched = true
 	state.mu.Unlock()
-	_ = s.keepDesktopRunMedia(tenantID, userID, botID, runID, reply.Images, reply.Files)
+	if keepErr := s.keepDesktopRunMedia(tenantID, userID, botID, runID, reply.Images, reply.Files); keepErr != nil {
+		log.Printf("[desktop-run-media] keep run=%s: %v", runID, keepErr)
+	}
 	if err != nil {
 		// Keeping the claim after a failed settle would answer every later
 		// read with "still going" forever and strand the run for good, which
@@ -810,7 +813,9 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		runStatus := state.status
 		session := state.session
 		state.mu.Unlock()
-		_ = s.keepDesktopRunMedia(job.TenantID, job.UserID, job.BotID, job.RunID, reply.Images, reply.Files)
+		if keepErr := s.keepDesktopRunMedia(job.TenantID, job.UserID, job.BotID, job.RunID, reply.Images, reply.Files); keepErr != nil {
+			log.Printf("[desktop-run-media] keep run=%s: %v", job.RunID, keepErr)
+		}
 		s.noteDesktopAskOwner(job.TenantID, job.UserID, job.BotID, session, reply)
 		s.persistDesktopTasks(job.TenantID)
 		s.reportDelegateRunEnd(job.TenantID, job.UserID, job.BotID, job.RunID, runStatus, reply, settleErr)

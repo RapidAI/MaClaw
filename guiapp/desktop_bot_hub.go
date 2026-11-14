@@ -499,7 +499,14 @@ func (a *App) SetDesktopBotAppearance(botID, color, shape string) (*DesktopBotIn
 }
 
 func (a *App) DeleteDesktopBot(botID string) error {
-	return a.desktopBotCall(context.Background(), http.MethodDelete, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID)), nil, nil, 30*time.Second)
+	err := a.desktopBotCall(context.Background(), http.MethodDelete, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID)), nil, nil, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	if forgetErr := a.ForgetDesktopBotFiles(botID); forgetErr != nil {
+		log.Printf("[desktop-bot] delete files bot=%s: %v", botID, forgetErr)
+	}
+	return nil
 }
 
 // DesktopBotLLM is the model setting every bot of this user runs on. Mode is
@@ -2490,8 +2497,12 @@ func stageDesktopPictures(botID string, images []DesktopBotImage, files []Deskto
 		}
 		seen[id] = true
 		desktopAttachmentCache.Store(botID+"\x00"+id, cachedDesktopPicture{mime: mime, data: data, at: time.Now()})
-		if path, err := writeStagedDesktopShot(botID, id, mime, data); err == nil {
+		path, err := writeStagedDesktopShot(botID, id, mime, data)
+		if err != nil {
+			log.Printf("[desktop-bot] shot save bot=%s id=%s: %v", botID, id, err)
+		} else {
 			paths = append(paths, path)
+			pruneDesktopBotFiles(botID)
 		}
 		ids = append(ids, id)
 	}
@@ -2504,12 +2515,31 @@ func stageDesktopPictures(botID string, images []DesktopBotImage, files []Deskto
 	return ids, paths
 }
 
-func stagedShotDir(botID string) string {
+const (
+	desktopBotFileTTL = 14 * 24 * time.Hour
+	desktopBotFileCap = 32 << 20
+)
+
+// desktopBotDataDir is the configured data directory. Tests point it at a
+// temporary base with SetMaclawBaseDir; it is read at write time.
+func desktopBotDataDir() string {
+	return corelib.MaclawDataDir()
+}
+
+func desktopBotFilesDir(botID string) string {
 	id := safeDesktopBotDir(botID)
 	if id == "" {
 		return ""
 	}
-	return filepath.Join(corelib.MaclawDataDir(), "bot-files", id, "shots")
+	return filepath.Join(desktopBotDataDir(), "bot-files", id)
+}
+
+func stagedShotDir(botID string) string {
+	dir := desktopBotFilesDir(botID)
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "shots")
 }
 
 func stagedShotName(id, mime string) string {
@@ -2551,9 +2581,60 @@ func writeStagedDesktopShot(botID, id, mime, data string) (string, error) {
 	}
 	dest := filepath.Join(dir, name)
 	if err := os.WriteFile(dest, raw, 0o644); err != nil {
+		log.Printf("[desktop-bot] shot write %s: %v", dest, err)
 		return "", err
 	}
 	return filepath.Abs(dest)
+}
+
+// ForgetDesktopBotFiles removes pictures and files this GUI saved for one bot.
+// Deleting the bot and clearing its chat both drop them.
+func (a *App) ForgetDesktopBotFiles(botID string) error {
+	dir := desktopBotFilesDir(botID)
+	if dir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("[desktop-bot] delete files bot=%s: %v", botID, err)
+		return err
+	}
+	return nil
+}
+
+func pruneDesktopBotFiles(botID string) {
+	dir := desktopBotFilesDir(botID)
+	if dir == "" {
+		return
+	}
+	var files []struct {
+		path    string
+		size    int64
+		modTime time.Time
+	}
+	var total int64
+	now := time.Now()
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		if now.Sub(info.ModTime()) > desktopBotFileTTL {
+			_ = os.Remove(path)
+			return nil
+		}
+		files = append(files, struct {
+			path    string
+			size    int64
+			modTime time.Time
+		}{path, info.Size(), info.ModTime()})
+		total += info.Size()
+		return nil
+	})
+	sort.Slice(files, func(i, j int) bool { return files[i].modTime.Before(files[j].modTime) })
+	for len(files) > 0 && total > desktopBotFileCap {
+		_ = os.Remove(files[0].path)
+		total -= files[0].size
+		files = files[1:]
+	}
 }
 
 func readStagedDesktopShot(botID, id string) (mime, data string, ok bool) {
@@ -2707,7 +2788,7 @@ func (a *App) ReadDesktopBotShot(path string) (*DesktopBotImage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
-	root, err := filepath.Abs(filepath.Join(corelib.MaclawDataDir(), "bot-files"))
+	root, err := filepath.Abs(filepath.Join(desktopBotDataDir(), "bot-files"))
 	if err != nil || !desktopBotPathInside(root, abs) {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
@@ -2747,8 +2828,9 @@ func storeDesktopBotFiles(botID string, files []DesktopBotFile) (paths []string,
 	if id == "" || len(files) == 0 {
 		return nil, files
 	}
-	dir := filepath.Join(corelib.MaclawDataDir(), "bot-files", id)
+	dir := filepath.Join(desktopBotDataDir(), "bot-files", id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[desktop-bot] file dir bot=%s: %v", botID, err)
 		return nil, files
 	}
 	for _, file := range files {
@@ -2759,6 +2841,7 @@ func storeDesktopBotFiles(botID string, files []DesktopBotFile) (paths []string,
 		}
 		dest := uniqueBotFile(dir, file.Name)
 		if err := os.WriteFile(dest, raw, 0o644); err != nil {
+			log.Printf("[desktop-bot] file write bot=%s name=%s: %v", botID, file.Name, err)
 			left = append(left, file)
 			continue
 		}
@@ -2767,6 +2850,9 @@ func storeDesktopBotFiles(botID string, files []DesktopBotFile) (paths []string,
 			abs = dest
 		}
 		paths = append(paths, abs)
+	}
+	if len(paths) > 0 {
+		pruneDesktopBotFiles(botID)
 	}
 	return paths, left
 }
