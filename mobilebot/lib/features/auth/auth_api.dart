@@ -146,7 +146,7 @@ class AuthApi {
     }
     final account = Account(
       key: isPhone ? 'phone:${request.identity}' : 'email:${request.identity}',
-      label: isPhone ? request.identity : request.identity,
+      label: request.identity,
       hubUrl: normalizeHubUrl(hub.baseUrl),
       hubId: hub.hubId,
       hubCenterUrl: request.hubCenterUrl,

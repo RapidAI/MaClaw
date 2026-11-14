@@ -61,7 +61,7 @@ class AccountScreen extends ConsumerWidget {
           const SizedBox(height: 24),
           Center(
             child: Text(
-              'MobileBot · 桌面 Bot 的移动工作台',
+              'MaClawBot · 桌面 Bot 的移动工作台',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
@@ -176,7 +176,7 @@ class _AccountCard extends StatelessWidget {
               backgroundColor: theme.colorScheme.primary,
               child: Text(
                 account.label.isNotEmpty
-                    ? account.label.substring(0, 1).toUpperCase()
+                    ? account.label.characters.first.toUpperCase()
                     : '?',
                 style: const TextStyle(
                     color: Colors.white,
@@ -233,7 +233,7 @@ class _AccountTile extends ConsumerWidget {
               : theme.colorScheme.surfaceContainerHighest,
           child: Text(
             account.label.isNotEmpty
-                ? account.label.substring(0, 1).toUpperCase()
+                ? account.label.characters.first.toUpperCase()
                 : '?',
             style: TextStyle(
               color: isActive

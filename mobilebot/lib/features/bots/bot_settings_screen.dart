@@ -31,8 +31,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     super.initState();
     _nameCtrl = TextEditingController(text: widget.bot.name);
     _descCtrl = TextEditingController(text: widget.bot.description);
-    _desktopMode =
-        widget.bot.desktopMode == 'isolated' ? 'isolated' : 'shared';
+    _desktopMode = widget.bot.desktopMode == 'isolated' ? 'isolated' : 'shared';
     _color = botColors.contains(widget.bot.color.toLowerCase())
         ? widget.bot.color.toLowerCase()
         : botColors.first;
@@ -50,30 +49,37 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
   Future<void> _save() async {
     final api = ref.read(botApiProvider);
     if (api == null) return;
+    if (_nameCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('名称不能为空')));
+      return;
+    }
     setState(() => _saving = true);
     try {
       await api.updateBot(
         widget.bot.id,
-        name: _nameCtrl.text,
-        description: _descCtrl.text,
+        name: _nameCtrl.text.trim(),
+        description: _descCtrl.text.trim(),
       );
       if (_desktopMode != widget.bot.desktopMode) {
         await api.setDesktopMode(widget.bot.id, _desktopMode);
       }
       if (_color != widget.bot.color || _shape != widget.bot.shape) {
-        await api.setAppearance(widget.bot.id,
-            color: _color, shape: _shape);
+        await api.setAppearance(widget.bot.id, color: _color, shape: _shape);
       }
       await ref.read(botsProvider.notifier).refresh();
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('已保存')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已保存')));
         context.pop();
       }
     } on Object catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
         setState(() => _saving = false);
       }
     }
@@ -87,8 +93,9 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
       await api.setPrimary(widget.bot.id);
       await ref.read(botsProvider.notifier).refresh();
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('已设为主 Bot')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已设为主 Bot')));
         // widget.bot is the pre-refresh copy — track the flag locally so the
         // subtitle/check icon update without re-entering the screen.
         setState(() {
@@ -99,8 +106,9 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     } on Object catch (error) {
       if (mounted) {
         setState(() => _saving = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     }
   }
@@ -115,84 +123,91 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     try {
       await showModalBottomSheet<void>(
         context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (context) => Padding(
-        padding: EdgeInsets.fromLTRB(
-            20, 0, 20, 24 + MediaQuery.viewInsetsOf(context).bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('长期偏好',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 4),
-            const Text(
-              '写下的偏好会长期生效，之后的每个任务都会遵循（例如"结果用表格呈现""截图带上关键步骤"）。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ctrl,
-              minLines: 2,
-              maxLines: 4,
-              decoration: const InputDecoration(
-                hintText: '记录一条偏好…',
-                border: OutlineInputBorder(),
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (context) => Padding(
+          padding: EdgeInsets.fromLTRB(
+            20,
+            0,
+            20,
+            24 + MediaQuery.viewInsetsOf(context).bottom,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('长期偏好', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 4),
+              const Text(
+                '写下的偏好会长期生效，之后的每个任务都会遵循（例如"结果用表格呈现""截图带上关键步骤"）。',
+                style: TextStyle(fontSize: 12),
               ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                TextButton.icon(
-                  onPressed: () async {
-                    final navigator = Navigator.of(context);
-                    try {
-                      await api.withdrawPreference(widget.bot.id);
-                      navigator.pop();
-                      if (mounted) {
-                        ScaffoldMessenger.of(this.context).showSnackBar(
-                            const SnackBar(content: Text('已撤回全部偏好')));
-                      }
-                    } on Object catch (error) {
-                      navigator.pop();
-                      if (mounted) {
-                        ScaffoldMessenger.of(this.context).showSnackBar(
-                            SnackBar(content: Text(failureMessage(error))));
-                      }
-                    }
-                  },
-                  icon: const Icon(Icons.delete_outline, size: 18),
-                  label: const Text('撤回全部偏好'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctrl,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  hintText: '记录一条偏好…',
+                  border: OutlineInputBorder(),
                 ),
-                const Spacer(),
-                FilledButton(
-                  onPressed: () async {
-                    final text = ctrl.text.trim();
-                    final navigator = Navigator.of(context);
-                    if (text.isEmpty) return;
-                    try {
-                      await api.savePreference(widget.bot.id, text);
-                      navigator.pop();
-                      if (mounted) {
-                        ScaffoldMessenger.of(this.context).showSnackBar(
-                            const SnackBar(content: Text('偏好已记录')));
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  TextButton.icon(
+                    onPressed: () async {
+                      final navigator = Navigator.of(context);
+                      try {
+                        await api.withdrawPreference(widget.bot.id);
+                        navigator.pop();
+                        if (mounted) {
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            const SnackBar(content: Text('已撤回全部偏好')),
+                          );
+                        }
+                      } on Object catch (error) {
+                        navigator.pop();
+                        if (mounted) {
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            SnackBar(content: Text(failureMessage(error))),
+                          );
+                        }
                       }
-                    } on Object catch (error) {
-                      navigator.pop();
-                      if (mounted) {
-                        ScaffoldMessenger.of(this.context).showSnackBar(
-                            SnackBar(content: Text(failureMessage(error))));
+                    },
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: const Text('撤回全部偏好'),
+                  ),
+                  const Spacer(),
+                  FilledButton(
+                    onPressed: () async {
+                      final text = ctrl.text.trim();
+                      final navigator = Navigator.of(context);
+                      if (text.isEmpty) return;
+                      try {
+                        await api.savePreference(widget.bot.id, text);
+                        navigator.pop();
+                        if (mounted) {
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            const SnackBar(content: Text('偏好已记录')),
+                          );
+                        }
+                      } on Object catch (error) {
+                        navigator.pop();
+                        if (mounted) {
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            SnackBar(content: Text(failureMessage(error))),
+                          );
+                        }
                       }
-                    }
-                  },
-                  child: const Text('记录'),
-                ),
-              ],
-            ),
-          ],
+                    },
+                    child: const Text('记录'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
-      ),
       );
     } finally {
       ctrl.dispose();
@@ -226,8 +241,9 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
       if (mounted) context.go('/');
     } on Object catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     }
   }
@@ -243,8 +259,10 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
             onPressed: _saving ? null : _save,
             child: _saving
                 ? const SizedBox(
-                    width: 16, height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2))
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Text('保存'),
           ),
         ],
@@ -285,12 +303,13 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                       shape: BoxShape.circle,
                       border: _color == hex
                           ? Border.all(
-                              color: theme.colorScheme.onSurface, width: 2.5)
+                              color: theme.colorScheme.onSurface,
+                              width: 2.5,
+                            )
                           : null,
                     ),
                     child: _color == hex
-                        ? const Icon(Icons.check,
-                            color: Colors.white, size: 18)
+                        ? const Icon(Icons.check, color: Colors.white, size: 18)
                         : null,
                   ),
                 ),
@@ -325,16 +344,16 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               ),
             ],
             selected: {_desktopMode},
-            onSelectionChanged: (v) =>
-                setState(() => _desktopMode = v.first),
+            onSelectionChanged: (v) => setState(() => _desktopMode = v.first),
           ),
           const SizedBox(height: 8),
           Text(
             _desktopMode == 'isolated'
                 ? 'Bot 使用自己的独立电脑画面'
                 : 'Bot 使用你账号下的共享电脑画面',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: 24),
           ListTile(
@@ -343,7 +362,9 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
             title: const Text('人格与记忆'),
             subtitle: const Text('自定义 Bot 的性格、语气和长期记忆'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () => context.push('/bot/${widget.bot.id}/style'),
+            onTap: () => context.push(
+              '/bot/${Uri.encodeComponent(widget.bot.id)}/style',
+            ),
           ),
           ListTile(
             contentPadding: EdgeInsets.zero,
@@ -359,19 +380,21 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
             title: const Text('演示录制'),
             subtitle: const Text('录一段操作过程，提炼成 Bot 的技能（需独立电脑）'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () => context.push('/bot/${widget.bot.id}/demo'),
+            onTap: () =>
+                context.push('/bot/${Uri.encodeComponent(widget.bot.id)}/demo'),
           ),
           const SizedBox(height: 24),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.star_outline),
             title: const Text('主 Bot'),
-            subtitle: Text(_primary
-                ? '已是主 Bot，其他 Bot 的委托由它派发'
-                : '设为主 Bot 后，它可以给团队里其他 Bot 派任务'),
+            subtitle: Text(
+              _primary
+                  ? '已是主 Bot，其他 Bot 的委托由它派发'
+                  : '设为主 Bot 后，它可以给团队里其他 Bot 派任务',
+            ),
             trailing: _primary
-                ? Icon(Icons.check_circle,
-                    color: theme.colorScheme.primary)
+                ? Icon(Icons.check_circle, color: theme.colorScheme.primary)
                 : TextButton(
                     onPressed: _saving ? null : _makePrimary,
                     child: const Text('设为主 Bot'),
@@ -426,7 +449,11 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
 
   Future<void> _load() async {
     final api = ref.read(botApiProvider);
-    if (api == null) return;
+    if (api == null) {
+      // No session — stop the spinner instead of hanging forever.
+      setState(() => _loading = false);
+      return;
+    }
     try {
       final view = await api.getStyle(widget.bot.id);
       if (!mounted) return;
@@ -463,8 +490,9 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
         memory: _memoryCtrl.text,
       );
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('已保存')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已保存')));
         context.pop();
       }
     } on Object catch (error) {
@@ -484,8 +512,9 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
     try {
       await api.rollbackStyle(widget.bot.id, version);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('已回滚到版本 $version')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已回滚到版本 $version')));
         await _load();
         setState(() => _saving = false);
       }
@@ -515,73 +544,70 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : !_enabled
-              ? const Center(child: Text('当前 Hub 未开启人格设置'))
-              : ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
-                    if (_error.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Text(_error,
-                            style: TextStyle(
-                                color:
-                                    Theme.of(context).colorScheme.error)),
+          ? const Center(child: Text('当前 Hub 未开启人格设置'))
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                if (_error.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      _error,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
                       ),
-                    TextField(
-                      controller: _soulCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '人格',
-                        hintText: '这个 Bot 是谁，怎么说话',
-                        border: OutlineInputBorder(),
-                        alignLabelWithHint: true,
-                      ),
-                      maxLines: 6,
                     ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _memoryCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '长期记忆',
-                        hintText: 'Bot 应记住的事（偏好、约定、背景）',
-                        border: OutlineInputBorder(),
-                        alignLabelWithHint: true,
-                      ),
-                      maxLines: 6,
-                    ),
-                    if (_history.isNotEmpty) ...[
-                      const SizedBox(height: 24),
-                      Text('历史版本',
-                          style: theme.textTheme.titleSmall),
-                      const SizedBox(height: 8),
-                      for (final item in _history.reversed)
-                        ListTile(
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          leading: const Icon(Icons.history, size: 20),
-                          title: Text('版本 ${item['version']}'),
-                          subtitle: Text(
-                            DateTime.tryParse(
-                                            item['updated_at']
-                                                    as String? ??
-                                                '')
-                                        ?.toLocal()
-                                        .toString()
-                                        .substring(0, 16) ??
-                                    '',
-                            style: theme.textTheme.bodySmall,
-                          ),
-                          trailing: TextButton(
-                            onPressed: _saving
-                                ? null
-                                : () => _rollback(
-                                    (item['version'] as num? ?? 0)
-                                        .toInt()),
-                            child: const Text('回滚'),
-                          ),
-                        ),
-                    ],
-                  ],
+                  ),
+                TextField(
+                  controller: _soulCtrl,
+                  decoration: const InputDecoration(
+                    labelText: '人格',
+                    hintText: '这个 Bot 是谁，怎么说话',
+                    border: OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                  ),
+                  maxLines: 6,
                 ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _memoryCtrl,
+                  decoration: const InputDecoration(
+                    labelText: '长期记忆',
+                    hintText: 'Bot 应记住的事（偏好、约定、背景）',
+                    border: OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                  ),
+                  maxLines: 6,
+                ),
+                if (_history.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  Text('历史版本', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  for (final item in _history.reversed)
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.history, size: 20),
+                      title: Text('版本 ${item['version']}'),
+                      subtitle: Text(
+                        DateTime.tryParse(
+                              item['updated_at'] as String? ?? '',
+                            )?.toLocal().toString().substring(0, 16) ??
+                            '',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      trailing: TextButton(
+                        onPressed: _saving
+                            ? null
+                            : () => _rollback(
+                                (item['version'] as num? ?? 0).toInt(),
+                              ),
+                        child: const Text('回滚'),
+                      ),
+                    ),
+                ],
+              ],
+            ),
     );
   }
 }

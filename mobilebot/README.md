@@ -1,4 +1,4 @@
-# MobileBot
+# MaClawBot
 
 桌面 Bot（MaClaw / CodeClaw desktop bot）的手机客户端，Flutter 实现
 （Android / iOS）。功能对齐桌面 GUI 的 `DesktopBotWorkspace`：创建和配置
@@ -28,7 +28,7 @@ Bot、与 Bot 聊天、查看工作状态、查看并操作 Bot 的电脑画面�
 | BotEditDialog / 电脑模式 / BotStyleDialog | Bot 设置页：改名、简介、外观（桌面同款 10 色 × 6 形状）、`desktop_mode`（共享/独立）、人格与记忆（style soul/memory）、删除 |
 | BotLLMSettingsDialog | `我的` → 模型设置：默认/自定义提供方（name/url/key/model/protocol/wire_api），展示各角色当前生效配置 |
 | 额度显示 | `我的` → Bot 额度卡：`GET /bots/credits`，用量进度或不限量 |
-| 登录 / 多账号 | 邮箱验证码或手机验证码登录；多账号并存、一键切换、退出/移除账号；token 过期（401/403）自动跳转重新验证，账号保留可一键恢复 |
+| 登录 / 多账号 | 邮箱验证码或手机验证码登录；多账号并存、一键切换、退出/移除账号；token 过期（401/凭证显式拒绝）自动跳转重新验证，账号保留可一键恢复 |
 
 ## 架构
 
@@ -56,7 +56,7 @@ lib/
    `POST {hub}/api/mobile/auth/phone/send-code`；
 3. `POST {hub}/api/enroll/email/verify-and-start` 或
    `POST {hub}/api/mobile/auth/phone/verify-and-start`
-   （携带 `machine_name=MobileBot`、`platform=mobile`、持久 `client_id`）→
+   （携带 `machine_name=MaClawBot`、`platform=mobile`、持久 `client_id`）→
    `access_token`/`viewer_token`、`machine_id`、`machine_token`。
    `status=pending` 表示待管理员审批。
 
@@ -75,7 +75,7 @@ lib/
 cd mobilebot
 flutter pub get
 flutter analyze
-flutter test                  :: 模型解析 + 控制器单测（fake BotApi）+ 列表/聊天页 widget 冒烟测试（43 例）
+flutter test                  :: 模型解析 + 控制器单测（fake BotApi）+ 列表/聊天/设置页 widget 冒烟测试（53 例）
 flutter build apk --debug     :: 或 flutter run
 ```
 

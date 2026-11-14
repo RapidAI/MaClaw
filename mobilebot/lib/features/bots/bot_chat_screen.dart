@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -72,7 +72,8 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             ? result.recognizedWords
             : '$_speechPrefix ${result.recognizedWords}';
         _inputCtrl.selection = TextSelection.collapsed(
-            offset: _inputCtrl.text.length);
+          offset: _inputCtrl.text.length,
+        );
       },
     );
   }
@@ -84,47 +85,52 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     String? text;
     try {
       text = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('给当前任务补充说明'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          minLines: 1,
-          maxLines: 4,
-          decoration: const InputDecoration(
-            hintText: '例如：只要前 5 条结果',
-            border: OutlineInputBorder(),
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('给当前任务补充说明'),
+          content: TextField(
+            controller: ctrl,
+            autofocus: true,
+            minLines: 1,
+            maxLines: 4,
+            decoration: const InputDecoration(
+              hintText: '例如：只要前 5 条结果',
+              border: OutlineInputBorder(),
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, ctrl.text),
+              child: const Text('追加'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, ctrl.text),
-            child: const Text('追加'),
-          ),
-        ],
-      ),
       );
     } finally {
       ctrl.dispose();
     }
     if (text == null || text.trim().isEmpty || !mounted) return;
-    final result =
-        await ref.read(botChatProvider.notifier).supplement(text.trim());
+    final result = await ref
+        .read(botChatProvider.notifier)
+        .supplement(text.trim());
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(result == null
-          ? ref.read(botChatProvider).error.isNotEmpty
-              ? ref.read(botChatProvider).error
-              : '追加失败'
-          : result.accepted
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result == null
+              ? ref.read(botChatProvider).error.isNotEmpty
+                    ? ref.read(botChatProvider).error
+                    : '追加失败'
+              : result.accepted
               ? '已补充到当前任务'
-              : (result.detail.isNotEmpty ? result.detail : '任务已结束，补充未送达')),
-    ));
+              : (result.detail.isNotEmpty ? result.detail : '任务已结束，补充未送达'),
+        ),
+      ),
+    );
   }
 
   /// Pick files and push them to the bot's desktop as material
@@ -170,19 +176,31 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         }
 
         final path = disk != null
-            ? await api.uploadMaterialFile(widget.bot.id, file.name, disk,
-                onProgress: onProgress)
-            : await api.uploadMaterial(widget.bot.id, file.name, bytes!,
-                onProgress: onProgress);
+            ? await api.uploadMaterialFile(
+                widget.bot.id,
+                file.name,
+                disk,
+                onProgress: onProgress,
+              )
+            : await api.uploadMaterial(
+                widget.bot.id,
+                file.name,
+                bytes!,
+                onProgress: onProgress,
+              );
         if (!mounted) return;
-        final line = path.isNotEmpty ? path : '~/素材/${widget.bot.name}/${file.name}';
+        final line = path.isNotEmpty
+            ? path
+            : '~/素材/${widget.bot.name}/${file.name}';
         final current = _inputCtrl.text;
-        _inputCtrl.text =
-            current.isEmpty ? '素材已传送到 $line' : '$current\n素材已传送到 $line';
+        _inputCtrl.text = current.isEmpty
+            ? '素材已传送到 $line'
+            : '$current\n素材已传送到 $line';
       } on Object catch (error) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('${file.name} 上传失败：$error')));
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('${file.name} 上传失败：$error')));
         }
       }
     }
@@ -196,13 +214,17 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
 
   void _jumpToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollCtrl.hasClients) {
-        _scrollCtrl.animateTo(
-          _scrollCtrl.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        );
-      }
+      if (!_scrollCtrl.hasClients) return;
+      // Standard chat convention: only follow the transcript when the
+      // person is already near the bottom — someone reading older history
+      // must not be yanked down on every long-poll merge.
+      final position = _scrollCtrl.position;
+      if (position.maxScrollExtent - position.pixels > 400) return;
+      _scrollCtrl.animateTo(
+        position.maxScrollExtent,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
     });
   }
 
@@ -217,17 +239,18 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.bot.title, maxLines: 1,
-                overflow: TextOverflow.ellipsis),
             Text(
-              (state.sending || state.activeRunId != null)
-                  ? '正在处理…'
-                  : '在线',
+              widget.bot.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              (state.sending || state.activeRunId != null) ? '正在处理…' : '在线',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: (state.sending || state.activeRunId != null)
-                        ? Theme.of(context).colorScheme.primary
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: (state.sending || state.activeRunId != null)
+                    ? Theme.of(context).colorScheme.primary
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
@@ -235,17 +258,23 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
           IconButton(
             tooltip: '电脑画面',
             icon: const Icon(Icons.desktop_windows_outlined),
-            onPressed: () => context.push('/bot/${widget.bot.id}/desktop'),
+            onPressed: () => context.push(
+              '/bot/${Uri.encodeComponent(widget.bot.id)}/desktop',
+            ),
           ),
           IconButton(
             tooltip: '任务状态',
             icon: const Icon(Icons.fact_check_outlined),
-            onPressed: () => context.push('/bot/${widget.bot.id}/status'),
+            onPressed: () => context.push(
+              '/bot/${Uri.encodeComponent(widget.bot.id)}/status',
+            ),
           ),
           IconButton(
             tooltip: '设置',
             icon: const Icon(Icons.settings_outlined),
-            onPressed: () => context.push('/bot/${widget.bot.id}/settings'),
+            onPressed: () => context.push(
+              '/bot/${Uri.encodeComponent(widget.bot.id)}/settings',
+            ),
           ),
         ],
       ),
@@ -273,8 +302,10 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('上传 $_uploadingName…',
-                      style: Theme.of(context).textTheme.bodySmall),
+                  Text(
+                    '上传 $_uploadingName…',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                   LinearProgressIndicator(value: _uploadProgress),
                 ],
               ),
@@ -283,28 +314,28 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             Material(
               color: Theme.of(context).colorScheme.secondaryContainer,
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 4,
+                ),
                 child: Row(
                   children: [
                     const Icon(Icons.replay, size: 16),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text('下一条消息将继续该任务线程',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSecondaryContainer)),
+                      child: Text(
+                        '下一条消息将继续该任务线程',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSecondaryContainer,
+                        ),
+                      ),
                     ),
                     TextButton(
-                      onPressed: () => ref
-                          .read(botChatProvider.notifier)
-                          .continueTask(''),
-                      child: const Text('取消',
-                          style: TextStyle(fontSize: 12)),
+                      onPressed: () =>
+                          ref.read(botChatProvider.notifier).continueTask(''),
+                      child: const Text('取消', style: TextStyle(fontSize: 12)),
                     ),
                   ],
                 ),
@@ -334,11 +365,13 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
 }
 
 /// Bumped whenever the transcript should scroll — driven by message count.
+// Declared dependencies keep this scoped into the bot route's ProviderScope
+// together with botChatProvider instead of mounting at the root container.
 final chatScrollTickProvider = Provider<int>((ref) {
   final state = ref.watch(botChatProvider);
-  return state.messages.length * 100000 + state.messages.fold<int>(
-      0, (acc, m) => acc + m.content.length);
-});
+  return state.messages.length * 100000 +
+      state.messages.fold<int>(0, (acc, m) => acc + m.content.length);
+}, dependencies: [botChatProvider]);
 
 class _MessageList extends ConsumerWidget {
   final ScrollController scrollCtrl;
@@ -355,7 +388,9 @@ class _MessageList extends ConsumerWidget {
           padding: const EdgeInsets.all(32),
           child: Text(
             '和 ${bot.title} 说点什么开始吧',
-            style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
       );
@@ -369,8 +404,9 @@ class _MessageList extends ConsumerWidget {
         bot: bot,
         // foldPlanConfirmation: a later confirm sentence folds the plan's
         // run-it chip — the arrangement was already approved once.
-        planConfirmed: messages.skip(index + 1).any(
-            (m) => m.isUser && m.content == botConfirmTaskText),
+        planConfirmed: messages
+            .skip(index + 1)
+            .any((m) => m.isUser && m.content == botConfirmTaskText),
       ),
     );
   }
@@ -381,10 +417,11 @@ class _MessageBubble extends ConsumerWidget {
   final Bot bot;
   final bool planConfirmed;
 
-  const _MessageBubble(
-      {required this.message,
-      required this.bot,
-      this.planConfirmed = false});
+  const _MessageBubble({
+    required this.message,
+    required this.bot,
+    this.planConfirmed = false,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -393,8 +430,8 @@ class _MessageBubble extends ConsumerWidget {
     final bubbleColor = message.failed
         ? theme.colorScheme.errorContainer
         : isUser
-            ? theme.colorScheme.primary
-            : theme.colorScheme.surfaceContainerHighest;
+        ? theme.colorScheme.primary
+        : theme.colorScheme.surfaceContainerHighest;
     final textColor = isUser
         ? theme.colorScheme.onPrimary
         : theme.colorScheme.onSurface;
@@ -420,15 +457,18 @@ class _MessageBubble extends ConsumerWidget {
           children: [
             if (message.content.isNotEmpty)
               isUser
-                  ? Text(message.content,
-                      style: TextStyle(color: textColor, height: 1.4))
+                  ? Text(
+                      message.content,
+                      style: TextStyle(color: textColor, height: 1.4),
+                    )
                   : MarkdownBody(
                       data: message.content,
                       selectable: true,
-                      styleSheet: MarkdownStyleSheet.fromTheme(theme)
-                          .copyWith(
-                        p: theme.textTheme.bodyMedium
-                            ?.copyWith(color: textColor, height: 1.45),
+                      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                        p: theme.textTheme.bodyMedium?.copyWith(
+                          color: textColor,
+                          height: 1.45,
+                        ),
                       ),
                     ),
             if (message.pending)
@@ -441,19 +481,25 @@ class _MessageBubble extends ConsumerWidget {
                       width: 12,
                       height: 12,
                       child: CircularProgressIndicator(
-                          strokeWidth: 1.5, color: textColor),
+                        strokeWidth: 1.5,
+                        color: textColor,
+                      ),
                     ),
                     const SizedBox(width: 6),
-                    Text('发送中…',
-                        style: TextStyle(fontSize: 11, color: textColor)),
+                    Text(
+                      '发送中…',
+                      style: TextStyle(fontSize: 11, color: textColor),
+                    ),
                   ],
                 ),
               ),
             if (message.queued && !message.failed)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text(_queueTag(message),
-                    style: TextStyle(fontSize: 11, color: textColor)),
+                child: Text(
+                  _queueTag(message),
+                  style: TextStyle(fontSize: 11, color: textColor),
+                ),
               ),
             if (message.failed)
               Padding(
@@ -461,13 +507,16 @@ class _MessageBubble extends ConsumerWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text('发送失败',
-                        style: TextStyle(
-                            fontSize: 11, color: theme.colorScheme.error)),
+                    Text(
+                      '发送失败',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
                     TextButton(
-                      onPressed: () => ref
-                          .read(botChatProvider.notifier)
-                          .retry(message),
+                      onPressed: () =>
+                          ref.read(botChatProvider.notifier).retry(message),
                       style: TextButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
                         minimumSize: Size.zero,
@@ -487,8 +536,7 @@ class _MessageBubble extends ConsumerWidget {
                 alignment: Alignment.centerLeft,
                 child: ActionChip(
                   avatar: const Icon(Icons.play_arrow, size: 16),
-                  label: const Text('按这个安排执行',
-                      style: TextStyle(fontSize: 12)),
+                  label: const Text('按这个安排执行', style: TextStyle(fontSize: 12)),
                   onPressed: () => ref
                       .read(botChatProvider.notifier)
                       .send(botConfirmTaskText, phase: BotPhase.execute),
@@ -499,8 +547,7 @@ class _MessageBubble extends ConsumerWidget {
                 alignment: Alignment.centerLeft,
                 child: ActionChip(
                   avatar: const Icon(Icons.replay, size: 16),
-                  label: const Text('继续这个任务',
-                      style: TextStyle(fontSize: 12)),
+                  label: const Text('继续这个任务', style: TextStyle(fontSize: 12)),
                   onPressed: () => ref
                       .read(botChatProvider.notifier)
                       .continueTask(message.conversation),
@@ -527,7 +574,8 @@ class _MessageBubble extends ConsumerWidget {
                   ],
                 ),
               ),
-            if (message.handoffUrl.isNotEmpty || message.attentionReason.isNotEmpty)
+            if (message.handoffUrl.isNotEmpty ||
+                message.attentionReason.isNotEmpty)
               _HandoffBanner(message: message, bot: bot),
           ],
         ),
@@ -552,9 +600,8 @@ class _ReplyImage extends StatelessWidget {
         child: GestureDetector(
           onTap: () => showDialog(
             context: context,
-            builder: (_) => Dialog(
-              child: InteractiveViewer(child: Image.memory(bytes)),
-            ),
+            builder: (_) =>
+                Dialog(child: InteractiveViewer(child: Image.memory(bytes))),
           ),
           child: Image.memory(bytes, fit: BoxFit.cover),
         ),
@@ -585,13 +632,16 @@ class _ReplyFileChip extends StatelessWidget {
       final path = '${dir.path}${Platform.pathSeparator}$safe';
       await File(path).writeAsBytes(bytes, flush: true);
       if (!context.mounted) return;
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(path, mimeType: file.mime)],
-      ));
+      await SharePlus.instance.share(
+        ShareParams(files: [
+          XFile(path, mimeType: file.mime.isNotEmpty ? file.mime : null),
+        ]),
+      );
     } on Object {
       if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('文件解析失败')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('文件解析失败')));
       }
     }
   }
@@ -602,8 +652,11 @@ class _ReplyFileChip extends StatelessWidget {
       padding: const EdgeInsets.only(top: 8),
       child: ActionChip(
         avatar: const Icon(Icons.attach_file, size: 18),
-        label: Text(file.displayName,
-            maxLines: 1, overflow: TextOverflow.ellipsis),
+        label: Text(
+          file.displayName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         onPressed: file.data.isEmpty ? null : () => _open(context),
       ),
     );
@@ -647,18 +700,22 @@ class _AskCardState extends ConsumerState<_AskCard> {
         children: [
           Row(
             children: [
-              Icon(question.isSecret ? Icons.key : Icons.help_outline,
-                  size: 16, color: theme.colorScheme.primary),
+              Icon(
+                question.isSecret ? Icons.key : Icons.help_outline,
+                size: 16,
+                color: theme.colorScheme.primary,
+              ),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   question.question.isNotEmpty
                       ? question.question
                       : question.isSecret
-                          ? '需要输入 ${question.secretName}'
-                          : '需要你的回答',
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(fontWeight: FontWeight.w600),
+                      ? '需要输入 ${question.secretName}'
+                      : '需要你的回答',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             ],
@@ -735,8 +792,11 @@ class _HandoffBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.desktop_windows,
-              size: 18, color: theme.colorScheme.onTertiaryContainer),
+          Icon(
+            Icons.desktop_windows,
+            size: 18,
+            color: theme.colorScheme.onTertiaryContainer,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -749,7 +809,8 @@ class _HandoffBanner extends StatelessWidget {
             ),
           ),
           TextButton(
-            onPressed: () => context.push('/bot/${bot.id}/desktop'),
+            onPressed: () =>
+                context.push('/bot/${Uri.encodeComponent(bot.id)}/desktop'),
             child: const Text('去查看'),
           ),
         ],
@@ -797,10 +858,10 @@ class _Composer extends StatelessWidget {
             ),
             IconButton(
               onPressed: onMic,
-              icon: Icon(listening ? Icons.mic : Icons.mic_none,
-                  color: listening
-                      ? Theme.of(context).colorScheme.error
-                      : null),
+              icon: Icon(
+                listening ? Icons.mic : Icons.mic_none,
+                color: listening ? Theme.of(context).colorScheme.error : null,
+              ),
               tooltip: listening ? '停止语音输入' : '语音输入',
             ),
             Expanded(
@@ -812,10 +873,13 @@ class _Composer extends StatelessWidget {
                 decoration: InputDecoration(
                   hintText: '给 Bot 下达任务…',
                   filled: true,
-                  fillColor:
-                      Theme.of(context).colorScheme.surfaceContainerHighest,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  fillColor: Theme.of(
+                    context,
+                  ).colorScheme.surfaceContainerHighest,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(22),
                     borderSide: BorderSide.none,
@@ -843,8 +907,7 @@ class _Composer extends StatelessWidget {
                           height: 18,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color:
-                                Theme.of(context).colorScheme.onPrimary,
+                            color: Theme.of(context).colorScheme.onPrimary,
                           ),
                         )
                       : const Icon(Icons.send),

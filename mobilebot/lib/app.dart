@@ -17,8 +17,8 @@ import 'features/bots/bots_screen.dart';
 import 'features/rooms/rooms_screen.dart';
 import 'features/status/status_screen.dart';
 
-class MobileBotApp extends ConsumerWidget {
-  const MobileBotApp({super.key});
+class MaClawBotApp extends ConsumerWidget {
+  const MaClawBotApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -28,7 +28,7 @@ class MobileBotApp extends ConsumerWidget {
       brightness: Brightness.light,
     );
     return MaterialApp.router(
-      title: 'MobileBot',
+      title: 'MaClawBot',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: scheme,
@@ -149,8 +149,28 @@ final _routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/rooms/:rid',
-        builder: (context, state) =>
-            RoomChatScreen(room: state.extra as BotRoom),
+        builder: (context, state) {
+          // extra carries the room object on a tap-through; a restored
+          // route (process death, deep link) arrives with none.
+          final room = state.extra;
+          if (room is BotRoom) return RoomChatScreen(room: room);
+          return Scaffold(
+            appBar: AppBar(),
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('找不到这个房间'),
+                  const SizedBox(height: 12),
+                  FilledButton.tonal(
+                    onPressed: () => context.go('/rooms'),
+                    child: const Text('返回房间列表'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
       GoRoute(
         path: '/bot/:id/style',

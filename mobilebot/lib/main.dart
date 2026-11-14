@@ -5,5 +5,5 @@ import 'app.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const ProviderScope(child: MobileBotApp()));
+  runApp(const ProviderScope(child: MaClawBotApp()));
 }

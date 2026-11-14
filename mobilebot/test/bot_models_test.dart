@@ -36,6 +36,13 @@ void main() {
           'RB');
       expect(Bot.fromJson({'id': 'x', 'name': '研'}).initials, '研');
     });
+
+    test('initials keep emoji and grapheme clusters whole', () {
+      expect(
+          Bot.fromJson({'id': 'x', 'name': '🤖助手'}).initials, '🤖');
+      expect(Bot.fromJson({'id': 'x', 'name': '👨‍💻 助手'}).initials,
+          '👨‍💻助');
+    });
   });
 
   group('FeedNote / SaidNote', () {

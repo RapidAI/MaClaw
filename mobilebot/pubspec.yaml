@@ -41,7 +41,6 @@ dependencies:
   shared_preferences: ^2.5.6
   web_socket_channel: ^3.0.3
   webview_flutter: ^4.14.1
-  flutter_markdown: ^0.7.7+1
   intl: ^0.20.3
   uuid: ^4.6.0
   path_provider: ^2.1.6
@@ -49,6 +48,8 @@ dependencies:
   file_picker: ^13.3.3
   record: ^6.2.1
   speech_to_text: ^7.4.0
+  characters: ^1.4.1
+  flutter_markdown_plus: ^1.0.12
 
 dev_dependencies:
   flutter_test:

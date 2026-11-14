@@ -80,8 +80,7 @@ class BotsScreen extends ConsumerWidget {
       return ListView(
         children: [
           const SizedBox(height: 140),
-          Icon(Icons.smart_toy_outlined,
-              size: 64, color: Colors.grey.shade400),
+          Icon(Icons.smart_toy_outlined, size: 64, color: Colors.grey.shade400),
           const SizedBox(height: 16),
           const Center(child: Text('还没有 Bot，点击右下角创建一个')),
         ],
@@ -106,7 +105,7 @@ class BotsScreen extends ConsumerWidget {
       builder: (context) => const CreateBotSheet(),
     );
     if (created != null && context.mounted) {
-      context.push('/bot/${created.id}');
+      context.push('/bot/${Uri.encodeComponent(created.id)}');
     }
   }
 }
@@ -122,7 +121,7 @@ class _BotCard extends ConsumerWidget {
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () => context.push('/bot/${bot.id}'),
+        onTap: () => context.push('/bot/${Uri.encodeComponent(bot.id)}'),
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Row(
@@ -136,24 +135,30 @@ class _BotCard extends ConsumerWidget {
                     Row(
                       children: [
                         Flexible(
-                          child: Text(bot.title,
-                              style: theme.textTheme.titleMedium,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
+                          child: Text(
+                            bot.title,
+                            style: theme.textTheme.titleMedium,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                         if (bot.primary)
                           Container(
                             margin: const EdgeInsets.only(left: 6),
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 5, vertical: 1),
+                              horizontal: 5,
+                              vertical: 1,
+                            ),
                             decoration: BoxDecoration(
                               color: theme.colorScheme.primaryContainer,
                               borderRadius: BorderRadius.circular(4),
                             ),
-                            child: Text('主',
-                                style: theme.textTheme.labelSmall?.copyWith(
-                                    color: theme
-                                        .colorScheme.onPrimaryContainer)),
+                            child: Text(
+                              '主',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: theme.colorScheme.onPrimaryContainer,
+                              ),
+                            ),
                           ),
                       ],
                     ),
@@ -175,10 +180,14 @@ class _BotCard extends ConsumerWidget {
                   IconButton(
                     tooltip: '电脑画面',
                     icon: const Icon(Icons.desktop_windows_outlined),
-                    onPressed: () => context.push('/bot/${bot.id}/desktop'),
+                    onPressed: () => context.push(
+                      '/bot/${Uri.encodeComponent(bot.id)}/desktop',
+                    ),
                   ),
-                  Icon(Icons.chevron_right,
-                      color: theme.colorScheme.onSurfaceVariant),
+                  Icon(
+                    Icons.chevron_right,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ],
               ),
             ],
@@ -260,15 +269,17 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
                         shape: BoxShape.circle,
                         border: _color == hex
                             ? Border.all(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface,
-                                width: 2)
+                                color: Theme.of(context).colorScheme.onSurface,
+                                width: 2,
+                              )
                             : null,
                       ),
                       child: _color == hex
-                          ? const Icon(Icons.check,
-                              color: Colors.white, size: 14)
+                          ? const Icon(
+                              Icons.check,
+                              color: Colors.white,
+                              size: 14,
+                            )
                           : null,
                     ),
                   ),
@@ -281,8 +292,10 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
             children: [
               for (final shape in botShapes)
                 ChoiceChip(
-                  label: Text(botShapeLabel(shape),
-                      style: const TextStyle(fontSize: 12)),
+                  label: Text(
+                    botShapeLabel(shape),
+                    style: const TextStyle(fontSize: 12),
+                  ),
                   visualDensity: VisualDensity.compact,
                   selected: _shape == shape,
                   onSelected: (_) => setState(() => _shape = shape),
@@ -292,16 +305,20 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
           if (_error.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
-              child: Text(_error,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              child: Text(
+                _error,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ),
           const SizedBox(height: 8),
           FilledButton(
             onPressed: _saving ? null : _create,
             child: _saving
                 ? const SizedBox(
-                    width: 20, height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2))
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Text('创建'),
           ),
         ],
@@ -322,8 +339,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
     try {
       final bot = await ref
           .read(botsProvider.notifier)
-          .create(name, _descCtrl.text.trim(),
-              color: _color, shape: _shape);
+          .create(name, _descCtrl.text.trim(), color: _color, shape: _shape);
       if (mounted) Navigator.of(context).pop(bot);
     } on Object catch (error) {
       if (mounted) {

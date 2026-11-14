@@ -705,5 +705,10 @@ final botChatBotIdProvider = Provider<String>(
   (ref) => throw UnimplementedError('botChatBotIdProvider not overridden'),
 );
 
-final botChatProvider =
-    NotifierProvider<BotChatController, ChatState>(BotChatController.new);
+final botChatProvider = NotifierProvider<BotChatController, ChatState>(
+  BotChatController.new,
+  // Without this the provider would mount on the root container even when
+  // first read inside the route's ProviderScope — scoping follows declared
+  // dependencies only, not runtime ref.read calls.
+  dependencies: [botChatBotIdProvider],
+);

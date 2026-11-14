@@ -56,6 +56,14 @@ class _FakeApi extends BotApi {
   Future<List<PendingDelivery>> pendingDeliveries() async => const [];
 
   @override
+  Future<List<ActiveRun>> activeRuns(String botId) async => const [];
+
+  @override
+  Future<QueueView> queueStatus(
+          String botId, String clientMessageId) async =>
+      const QueueView(state: 'queued', position: 1);
+
+  @override
   Future<void> writeConversation(
       String clientId, List<Map<String, dynamic>> entries) async {}
 

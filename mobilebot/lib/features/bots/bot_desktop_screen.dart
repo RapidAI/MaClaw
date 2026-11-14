@@ -63,6 +63,15 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && mounted) {
       _hold();
+      return;
+    }
+    // Backgrounded: stop renewing the watch hold — the server-side TTL
+    // lapses on its own and the desktop can idle-sleep. A phone in a
+    // pocket must not pin the screen awake (or keep streaming video).
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _holdTimer?.cancel();
     }
   }
 

@@ -30,7 +30,14 @@ class RoomsScreen extends ConsumerWidget {
         label: const Text('新建房间'),
       ),
       body: RefreshIndicator(
-        onRefresh: () async => ref.invalidate(_roomsProvider),
+        onRefresh: () async {
+          ref.invalidate(_roomsProvider);
+          try {
+            await ref.read(_roomsProvider.future);
+          } on Object {
+            // Error state renders via data.when(error:).
+          }
+        },
         child: data.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (error, _) => ListView(
@@ -44,10 +51,18 @@ class RoomsScreen extends ConsumerWidget {
               return ListView(
                 children: [
                   const SizedBox(height: 140),
-                  Icon(Icons.groups_outlined,
-                      size: 56, color: Colors.grey.shade400),
+                  Icon(
+                    Icons.groups_outlined,
+                    size: 56,
+                    color: Colors.grey.shade400,
+                  ),
                   const SizedBox(height: 16),
-                  const Center(child: Text('还没有房间\n建一个让你和几个 Bot 群聊', textAlign: TextAlign.center)),
+                  const Center(
+                    child: Text(
+                      '还没有房间\n建一个让你和几个 Bot 群聊',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
                 ],
               );
             }
@@ -63,9 +78,9 @@ class RoomsScreen extends ConsumerWidget {
                 return Card(
                   child: ListTile(
                     leading: CircleAvatar(
-                      child: Text(room.name.isEmpty
-                          ? '房'
-                          : room.name.characters.first),
+                      child: Text(
+                        room.name.isEmpty ? '房' : room.name.characters.first,
+                      ),
                     ),
                     title: Text(
                       room.name.isEmpty ? '未命名房间' : room.name,
@@ -80,11 +95,12 @@ class RoomsScreen extends ConsumerWidget {
                     trailing: IconButton(
                       icon: const Icon(Icons.tune),
                       tooltip: '编辑房间',
-                      onPressed: () =>
-                          _openEditor(context, ref, bots, room),
+                      onPressed: () => _openEditor(context, ref, bots, room),
                     ),
-                    onTap: () =>
-                        context.push('/rooms/${room.id}', extra: room),
+                    onTap: () => context.push(
+                      '/rooms/${Uri.encodeComponent(room.id)}',
+                      extra: room,
+                    ),
                   ),
                 );
               },
@@ -95,8 +111,12 @@ class RoomsScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _openEditor(BuildContext context, WidgetRef ref,
-      List<Bot> bots, BotRoom? room) async {
+  Future<void> _openEditor(
+    BuildContext context,
+    WidgetRef ref,
+    List<Bot> bots,
+    BotRoom? room,
+  ) async {
     final changed = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -139,8 +159,8 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
 
   String _attentionOf(String botId) =>
       _attention[botId] == 'mentions' || _attention[botId] == 'off'
-          ? _attention[botId]!
-          : 'all';
+      ? _attention[botId]!
+      : 'all';
 
   Future<void> _save() async {
     final api = ref.read(botApiProvider);
@@ -151,16 +171,15 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
         id: widget.room?.id ?? '',
         name: _nameCtrl.text.trim(),
         members: _members.toList(),
-        attention: {
-          for (final id in _members) id: _attentionOf(id),
-        },
+        attention: {for (final id in _members) id: _attentionOf(id)},
       );
       if (mounted) Navigator.of(context).pop(true);
     } on Object catch (error) {
       if (mounted) {
         setState(() => _saving = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     }
   }
@@ -175,8 +194,9 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
     } on Object catch (error) {
       if (mounted) {
         setState(() => _saving = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     }
   }
@@ -195,8 +215,10 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(widget.room == null ? '新建房间' : '编辑房间',
-              style: theme.textTheme.titleMedium),
+          Text(
+            widget.room == null ? '新建房间' : '编辑房间',
+            style: theme.textTheme.titleMedium,
+          ),
           const SizedBox(height: 12),
           TextField(
             controller: _nameCtrl,
@@ -230,13 +252,12 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
                             value: _attentionOf(bot.id),
                             underline: const SizedBox.shrink(),
                             items: const [
+                              DropdownMenuItem(value: 'all', child: Text('全部')),
                               DropdownMenuItem(
-                                  value: 'all', child: Text('全部')),
-                              DropdownMenuItem(
-                                  value: 'mentions',
-                                  child: Text('仅@提及')),
-                              DropdownMenuItem(
-                                  value: 'off', child: Text('不听')),
+                                value: 'mentions',
+                                child: Text('仅@提及'),
+                              ),
+                              DropdownMenuItem(value: 'off', child: Text('不听')),
                             ],
                             onChanged: (v) =>
                                 setState(() => _attention[bot.id] = v!),
@@ -252,9 +273,10 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
               if (widget.room != null)
                 TextButton(
                   onPressed: _saving ? null : _delete,
-                  child: Text('删除',
-                      style:
-                          TextStyle(color: theme.colorScheme.error)),
+                  child: Text(
+                    '删除',
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
                 ),
               const Spacer(),
               FilledButton(
@@ -263,8 +285,8 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
                     ? const SizedBox(
                         width: 16,
                         height: 16,
-                        child:
-                            CircularProgressIndicator(strokeWidth: 2))
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
                     : Text(widget.room == null ? '创建' : '保存'),
               ),
             ],
@@ -307,19 +329,35 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
       final woken = await api.postRoomMessage(widget.room.id, text);
       _inputCtrl.clear();
       ref.invalidate(_roomSaidProvider(widget.room.id));
+      // Land on the just-sent bubble instead of leaving the scroll where it
+      // was — matches every chat client's post-send convention.
+      try {
+        await ref.read(_roomSaidProvider(widget.room.id).future);
+      } on Object {
+        // Error state renders via data.when(error:).
+      }
+      if (mounted && _scrollCtrl.hasClients) {
+        _scrollCtrl.animateTo(
+          _scrollCtrl.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+      }
       if (mounted && woken.isNotEmpty) {
         final bots = ref.read(botsProvider).bots;
         final names = [
           for (final id in woken)
             bots.where((b) => b.id == id).firstOrNull?.title ?? id,
         ].join('、');
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('已唤醒：$names')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已唤醒：$names')));
       }
     } on Object catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -337,9 +375,10 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
             Text(widget.room.name.isEmpty ? '房间' : widget.room.name),
             Text(
               widget.room.members
-                  .map((id) =>
-                      bots.where((b) => b.id == id).firstOrNull?.title ??
-                      id)
+                  .map(
+                    (id) =>
+                        bots.where((b) => b.id == id).firstOrNull?.title ?? id,
+                  )
                   .join('、'),
               style: Theme.of(context).textTheme.bodySmall,
               maxLines: 1,
@@ -350,11 +389,13 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
       ),
       body: Column(
         children: [
-          Expanded(child: _RoomTranscript(
-            room: widget.room,
-            bots: bots,
-            scrollCtrl: _scrollCtrl,
-          )),
+          Expanded(
+            child: _RoomTranscript(
+              room: widget.room,
+              bots: bots,
+              scrollCtrl: _scrollCtrl,
+            ),
+          ),
           SafeArea(
             top: false,
             child: Padding(
@@ -369,11 +410,13 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
                       decoration: InputDecoration(
                         hintText: '在房间里说话，@Bot名 可点名',
                         filled: true,
-                        fillColor: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHighest,
+                        fillColor: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerHighest,
                         contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 10),
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(22),
                           borderSide: BorderSide.none,
@@ -398,10 +441,10 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
 
 final _roomSaidProvider = FutureProvider.autoDispose
     .family<List<SaidNote>, String>((ref, roomId) async {
-  final api = ref.watch(botApiProvider);
-  if (api == null) return const [];
-  return api.said(room: roomId);
-});
+      final api = ref.watch(botApiProvider);
+      if (api == null) return const [];
+      return api.said(room: roomId);
+    });
 
 class _RoomTranscript extends ConsumerWidget {
   final BotRoom room;
@@ -420,7 +463,9 @@ class _RoomTranscript extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    return ref.watch(_roomSaidProvider(room.id)).when(
+    return ref
+        .watch(_roomSaidProvider(room.id))
+        .when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (error, _) => Center(child: Text(failureMessage(error))),
           data: (notes) {
@@ -428,8 +473,14 @@ class _RoomTranscript extends ConsumerWidget {
               return const Center(child: Text('在房间里说点什么，Bot 们会听到'));
             }
             return RefreshIndicator(
-              onRefresh: () async =>
-                  ref.invalidate(_roomSaidProvider(room.id)),
+              onRefresh: () async {
+                ref.invalidate(_roomSaidProvider(room.id));
+                try {
+                  await ref.read(_roomSaidProvider(room.id).future);
+                } on Object {
+                  // Error state renders via data.when(error:).
+                }
+              },
               child: ListView.builder(
                 controller: scrollCtrl,
                 padding: const EdgeInsets.all(12),
@@ -443,12 +494,13 @@ class _RoomTranscript extends ConsumerWidget {
                         : Alignment.centerLeft,
                     child: Container(
                       constraints: BoxConstraints(
-                        maxWidth:
-                            MediaQuery.of(context).size.width * 0.82,
+                        maxWidth: MediaQuery.of(context).size.width * 0.82,
                       ),
                       margin: const EdgeInsets.only(bottom: 8),
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: mine
                             ? theme.colorScheme.primary
@@ -460,14 +512,12 @@ class _RoomTranscript extends ConsumerWidget {
                         children: [
                           if (!mine)
                             Padding(
-                              padding:
-                                  const EdgeInsets.only(bottom: 2),
+                              padding: const EdgeInsets.only(bottom: 2),
                               child: Text(
                                 _botName(note.from),
-                                style: theme.textTheme.labelSmall
-                                    ?.copyWith(
-                                        color: theme
-                                            .colorScheme.primary),
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.primary,
+                                ),
                               ),
                             ),
                           Text(
@@ -486,31 +536,38 @@ class _RoomTranscript extends ConsumerWidget {
                                 for (final name in note.files)
                                   ActionChip(
                                     avatar: const Icon(
-                                        Icons.attach_file,
-                                        size: 14),
-                                    label: Text(name,
-                                        maxLines: 1,
-                                        overflow:
-                                            TextOverflow.ellipsis),
+                                      Icons.attach_file,
+                                      size: 14,
+                                    ),
+                                    label: Text(
+                                      name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                     onPressed: () => shareInboxFile(
-                                        ref, note.from, note.id, name),
+                                      context,
+                                      ref,
+                                      note.from,
+                                      note.id,
+                                      name,
+                                    ),
                                   ),
                               ],
                             ),
                           if (note.createdAt != null)
                             Padding(
-                              padding:
-                                  const EdgeInsets.only(top: 2),
+                              padding: const EdgeInsets.only(top: 2),
                               child: Text(
-                                DateFormat('MM-dd HH:mm').format(
-                                    note.createdAt!.toLocal()),
+                                DateFormat(
+                                  'MM-dd HH:mm',
+                                ).format(note.createdAt!.toLocal()),
                                 style: TextStyle(
                                   fontSize: 10,
                                   color: mine
-                                      ? theme.colorScheme.onPrimary
-                                          .withValues(alpha: 0.7)
-                                      : theme.colorScheme
-                                          .onSurfaceVariant,
+                                      ? theme.colorScheme.onPrimary.withValues(
+                                          alpha: 0.7,
+                                        )
+                                      : theme.colorScheme.onSurfaceVariant,
                                 ),
                               ),
                             ),

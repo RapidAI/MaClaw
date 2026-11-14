@@ -134,7 +134,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       final result = await ref.read(authApiProvider).verifyCode(
             request: request,
             code: code,
-            machineName: 'MobileBot',
+            machineName: 'MaClawBot',
             clientId: clientId,
             language: language,
           );
@@ -206,7 +206,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                     Icon(Icons.smart_toy,
                         size: 64, color: theme.colorScheme.primary),
                     const SizedBox(height: 12),
-                    Text('MobileBot',
+                    Text('MaClawBot',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.headlineMedium),
                     const SizedBox(height: 6),

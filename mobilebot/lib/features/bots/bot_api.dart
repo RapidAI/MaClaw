@@ -668,7 +668,7 @@ class BotApi {
       String botId, String noteId, String name) async {
     final data = await _client.guard(
       () => _client.dio.get<Map<String, dynamic>>(
-        _botPath(botId, '/inbox/$noteId/files/${Uri.encodeComponent(name)}'),
+        _botPath(botId, '/inbox/${Uri.encodeComponent(noteId)}/files/${Uri.encodeComponent(name)}'),
         options: _client.opts(),
       ),
     );
@@ -722,7 +722,7 @@ class BotApi {
               options: _client.opts(),
             )
           : _client.dio.put<Map<String, dynamic>>(
-              '/api/v1/bot-rooms/$id',
+              '/api/v1/bot-rooms/${Uri.encodeComponent(id)}',
               data: body,
               options: _client.opts(),
             ),
@@ -734,7 +734,7 @@ class BotApi {
   Future<void> deleteRoom(String id) async {
     await _client.guard(
       () => _client.dio.delete<Map<String, dynamic>>(
-        '/api/v1/bot-rooms/$id',
+        '/api/v1/bot-rooms/${Uri.encodeComponent(id)}',
         options: _client.opts(),
       ),
     );
@@ -745,7 +745,7 @@ class BotApi {
   Future<List<String>> postRoomMessage(String id, String text) async {
     final data = await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
-        '/api/v1/bot-rooms/$id/messages',
+        '/api/v1/bot-rooms/${Uri.encodeComponent(id)}/messages',
         data: {'text': text},
         options: _client.opts(),
       ),
@@ -777,7 +777,7 @@ class BotApi {
   Future<void> crossNoteStart(String botId, String noteId) async {
     await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
-        _botPath(botId, '/cross-notes/$noteId/start'),
+        _botPath(botId, '/cross-notes/${Uri.encodeComponent(noteId)}/start'),
         options: _client.opts(),
       ),
     );
@@ -850,7 +850,7 @@ class BotApi {
     final out = await _client.guard(
       () => _client.dio.get<Map<String, dynamic>>(
         _botPath(botId,
-            '/demo/shots/$demoId/${Uri.encodeComponent(ref)}'),
+            '/demo/shots/${Uri.encodeComponent(demoId)}/${Uri.encodeComponent(ref)}'),
         options: _client.opts(),
       ),
     );
@@ -866,7 +866,7 @@ class BotApi {
       String botId, String runId, String content) async {
     final out = await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
-        _botPath(botId, '/runs/$runId/supplement'),
+        _botPath(botId, '/runs/${Uri.encodeComponent(runId)}/supplement'),
         data: {'content': content},
         options: _client.opts(),
       ),
@@ -893,7 +893,7 @@ class BotApi {
   Future<QueueView> queueStatus(String botId, String clientMessageId) async {
     final out = await _client.guard(
       () => _client.dio.get<Map<String, dynamic>>(
-        _botPath(botId, '/queue/$clientMessageId'),
+        _botPath(botId, '/queue/${Uri.encodeComponent(clientMessageId)}'),
         options: _client.opts(),
       ),
     );

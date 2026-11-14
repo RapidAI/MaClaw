@@ -4,6 +4,8 @@ library;
 
 import 'dart:convert';
 
+import 'package:characters/characters.dart';
+
 /// What a bot is doing right now, derived from run state + last reply.
 enum BotWorkState { idle, running, waitingForUser, awaitingAnswer, failed }
 
@@ -54,10 +56,13 @@ class Bot {
     final source = title.trim();
     if (source.isEmpty) return '?';
     final words = source.split(RegExp(r'\s+')).where((w) => w.isNotEmpty);
+    // Grapheme clusters, not UTF-16 units — emoji/CJK names must not be
+    // sliced mid-surrogate-pair.
     if (words.length >= 2) {
-      return '${words.first[0]}${words.elementAt(1)[0]}'.toUpperCase();
+      return '${words.first.characters.first}${words.elementAt(1).characters.first}'
+          .toUpperCase();
     }
-    return source.substring(0, 1).toUpperCase();
+    return source.characters.first.toUpperCase();
   }
 
   factory Bot.fromJson(Map<String, dynamic> json) => Bot(
