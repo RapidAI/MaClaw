@@ -1438,7 +1438,7 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		// This event carries the id. The next open fetches it.
 		// The bytes stay in this process, keyed by attachment id. The event
 		// carries the id. The chat fetches the bytes when it paints.
-		resp.DesktopAttachmentIDs = stageDesktopPictures(botID, result.Images, result.Files)
+		resp.DesktopAttachmentIDs, resp.DesktopShotPaths = stageDesktopPictures(botID, result.Images, result.Files)
 		resp.DesktopUserControl = result.UserControl
 		resp.DesktopAttentionReason = strings.TrimSpace(result.AttentionReason)
 		resp.AskUserInputType = strings.TrimSpace(result.AskUserInputType)
@@ -2466,13 +2466,13 @@ func desktopPictureID(id, data string) string {
 	return "img-" + hex.EncodeToString(sum[:8])
 }
 
-// stageDesktopPictures keeps each PNG or JPEG in memory under its attachment
-// id and returns those ids. The chat fetches them. Bytes are not written
-// to disk and are not put on the event. A non-picture file id is included
-// so the person can still be told the file exists.
-func stageDesktopPictures(botID string, images []DesktopBotImage, files []DesktopBotFile) []string {
+// stageDesktopPictures keeps each PNG or JPEG under the maclaw data directory
+// and in memory, and returns the attachment ids plus those durable paths.
+// The chat paints a path with ReadDesktopBotShot. A non-picture file id is
+// included so the person can still be told the file exists. The event does
+// not carry the bytes.
+func stageDesktopPictures(botID string, images []DesktopBotImage, files []DesktopBotFile) (ids, paths []string) {
 	botID = strings.TrimSpace(botID)
-	var ids []string
 	seen := map[string]bool{}
 	keep := func(mime, data, id string) {
 		mime = desktopPictureMIME(mime)
@@ -2490,6 +2490,9 @@ func stageDesktopPictures(botID string, images []DesktopBotImage, files []Deskto
 		}
 		seen[id] = true
 		desktopAttachmentCache.Store(botID+"\x00"+id, cachedDesktopPicture{mime: mime, data: data, at: time.Now()})
+		if path, err := writeStagedDesktopShot(botID, id, mime, data); err == nil {
+			paths = append(paths, path)
+		}
 		ids = append(ids, id)
 	}
 	for _, image := range images {
@@ -2498,7 +2501,74 @@ func stageDesktopPictures(botID string, images []DesktopBotImage, files []Deskto
 	for _, file := range files {
 		keep(file.MIME, file.Data, file.AttachmentID)
 	}
-	return ids
+	return ids, paths
+}
+
+func stagedShotDir(botID string) string {
+	id := safeDesktopBotDir(botID)
+	if id == "" {
+		return ""
+	}
+	return filepath.Join(corelib.MaclawDataDir(), "bot-files", id, "shots")
+}
+
+func stagedShotName(id, mime string) string {
+	ext := ".png"
+	if mime == "image/jpeg" {
+		ext = ".jpg"
+	}
+	return safeShotID(id) + ext
+}
+
+func safeShotID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 80 {
+		return ""
+	}
+	for _, r := range id {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' {
+			return ""
+		}
+	}
+	if strings.Contains(id, "..") {
+		return ""
+	}
+	return id
+}
+
+func writeStagedDesktopShot(botID, id, mime, data string) (string, error) {
+	dir := stagedShotDir(botID)
+	name := stagedShotName(id, mime)
+	if dir == "" || name == "" {
+		return "", fmt.Errorf("screenshot is not on this machine")
+	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil || len(raw) == 0 {
+		return "", fmt.Errorf("screenshot is not on this machine")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(dir, name)
+	if err := os.WriteFile(dest, raw, 0o644); err != nil {
+		return "", err
+	}
+	return filepath.Abs(dest)
+}
+
+func readStagedDesktopShot(botID, id string) (mime, data string, ok bool) {
+	dir := stagedShotDir(botID)
+	if dir == "" || safeShotID(id) == "" {
+		return "", "", false
+	}
+	for _, item := range []struct{ ext, mime string }{{".png", "image/png"}, {".jpg", "image/jpeg"}} {
+		raw, err := os.ReadFile(filepath.Join(dir, safeShotID(id)+item.ext))
+		if err != nil || len(raw) == 0 || len(raw) > 1_000_000 {
+			continue
+		}
+		return item.mime, base64.StdEncoding.EncodeToString(raw), true
+	}
+	return "", "", false
 }
 
 // FetchDesktopBotAttachment returns one picture this process staged for the
@@ -2509,16 +2579,79 @@ func (a *App) FetchDesktopBotAttachment(botID, id string) (*DesktopBotImage, err
 	if botID == "" || id == "" {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
-	v, ok := desktopAttachmentCache.Load(botID + "\x00" + id)
+	key := botID + "\x00" + id
+	if v, ok := desktopAttachmentCache.Load(key); ok {
+		pic := v.(cachedDesktopPicture)
+		if time.Since(pic.at) <= desktopAttachmentTTL && pic.data != "" {
+			return &DesktopBotImage{MIME: pic.mime, Data: pic.data, AttachmentID: id}, nil
+		}
+		desktopAttachmentCache.Delete(key)
+	}
+	mime, data, ok := readStagedDesktopShot(botID, id)
 	if !ok {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
-	pic := v.(cachedDesktopPicture)
-	if time.Since(pic.at) > desktopAttachmentTTL || pic.data == "" {
-		desktopAttachmentCache.Delete(botID + "\x00" + id)
+	desktopAttachmentCache.Store(key, cachedDesktopPicture{mime: mime, data: data, at: time.Now()})
+	return &DesktopBotImage{MIME: mime, Data: data, AttachmentID: id}, nil
+}
+
+// RefetchDesktopBotRunImage asks Hub for the pictures stored with this run
+// and writes the one with this id back under the maclaw data directory.
+func (a *App) RefetchDesktopBotRunImage(botID, runID, id string) (*DesktopBotImage, error) {
+	botID = strings.TrimSpace(botID)
+	runID = strings.TrimSpace(runID)
+	id = strings.TrimSpace(id)
+	if a == nil || botID == "" || runID == "" || id == "" {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
-	return &DesktopBotImage{MIME: pic.mime, Data: pic.data, AttachmentID: id}, nil
+	var out struct {
+		Items []DesktopBotImage `json:"items"`
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/runs/" + url.PathEscape(runID) + "/images"
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, path, nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	for _, image := range out.Items {
+		image.AttachmentID = desktopPictureID(image.AttachmentID, image.Data)
+		if image.AttachmentID != id {
+			continue
+		}
+		stageDesktopPictures(botID, []DesktopBotImage{image}, nil)
+		return a.FetchDesktopBotAttachment(botID, id)
+	}
+	return nil, fmt.Errorf("screenshot is not on this machine")
+}
+
+// FetchDesktopBotContainerFile reads one file from the bot's desktop through
+// Hub and saves it under the maclaw data directory. The returned path is on
+// this machine. A path that is not on that desktop is refused.
+func (a *App) FetchDesktopBotContainerFile(botID, filePath string) (string, error) {
+	botID = strings.TrimSpace(botID)
+	filePath = strings.TrimSpace(filePath)
+	if a == nil || botID == "" || filePath == "" {
+		return "", fmt.Errorf("file is not on this desktop")
+	}
+	var out struct {
+		Name string `json:"name"`
+		MIME string `json:"mime"`
+		Data string `json:"data"`
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/desktop-file"
+	if err := a.desktopBotCall(context.Background(), http.MethodPost, path, map[string]string{"path": filePath}, &out, 30*time.Second); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out.Data) == "" {
+		return "", fmt.Errorf("file is not on this desktop")
+	}
+	name := strings.TrimSpace(out.Name)
+	if name == "" {
+		name = "file"
+	}
+	paths, left := storeDesktopBotFiles(botID, []DesktopBotFile{{Name: name, MIME: out.MIME, Data: out.Data}})
+	if len(paths) != 1 || len(left) != 0 {
+		return "", fmt.Errorf("file is not on this desktop")
+	}
+	return paths[0], nil
 }
 
 // desktopAttachmentIDs are the server or volume ids on this result.

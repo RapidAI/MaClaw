@@ -499,7 +499,7 @@ func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text strin
 		owner = "local"
 	}
 	requestID := fmt.Sprintf("desktop-bot-sched-%s-%d", strings.TrimSpace(task.ID), time.Now().UnixNano())
-	ids := stageDesktopPictures(botID, result.Images, result.Files)
+	ids, shotPaths := stageDesktopPictures(botID, result.Images, result.Files)
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: result.SendToUser})
 	payload := map[string]any{
 		"request_id":      requestID,
@@ -519,6 +519,9 @@ func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text strin
 	}
 	if len(ids) > 0 {
 		payload["desktop_attachment_ids"] = ids
+	}
+	if len(shotPaths) > 0 {
+		payload["desktop_shot_paths"] = shotPaths
 	}
 	if result.UserControl || strings.TrimSpace(result.AttentionReason) != "" {
 		payload["desktop_handoff_url"] = result.NovncURL

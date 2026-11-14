@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { BotChipContext, BotMessageBody, botMessageHasChips, botMessageIsStructured, splitBotBeats } from './botMessageBody';
+import { classifyBotPath } from './desktopPathOrigin';
 import { desktopBotCorrectAttachClaim } from './desktopBotDelivery';
 
 describe('reply cards and beats', () => {
@@ -19,6 +20,28 @@ describe('reply cards and beats', () => {
         expect(link.textContent).toBe('github.com/RapidAI/CodeClaw/pull/12');
         fireEvent.click(link);
         expect(openLink).toHaveBeenCalledWith('https://github.com/RapidAI/CodeClaw/pull/12');
+    });
+
+    it('does not open a desktop container path on this machine', () => {
+        const openPath = vi.fn();
+        const openDesktopPath = vi.fn();
+        const text = '代码在 /home/desktop/work/bot_a/snake.cpp';
+        render(<BotChipContext.Provider value={{ openPath, openDesktopPath, pathKind: path => classifyBotPath(path, true) }}>
+            <BotMessageBody text={text} />
+        </BotChipContext.Provider>);
+        const chip = screen.getByTestId('bot-chip-path');
+        expect(chip.getAttribute('data-path-origin')).toBe('desktop');
+        fireEvent.click(chip);
+        expect(openDesktopPath).toHaveBeenCalled();
+        expect(openPath).not.toHaveBeenCalled();
+    });
+
+    it('shows a desktop path as text when it cannot be fetched', () => {
+        render(<BotChipContext.Provider value={{ pathKind: path => classifyBotPath(path, true) }}>
+            <BotMessageBody text="代码在 /home/desktop/work/bot_a/snake.cpp" />
+        </BotChipContext.Provider>);
+        expect(screen.getByTestId('bot-chip-path-text').textContent).toContain('/home/desktop/work/bot_a/snake.cpp');
+        expect(screen.queryByTestId('bot-chip-path')).toBeNull();
     });
 
     it('leaves ordinary words, numbers and short slashes alone', () => {

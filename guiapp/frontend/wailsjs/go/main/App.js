@@ -4505,6 +4505,14 @@ export function FetchDesktopBotAttachment(arg1, arg2) {
   return window['go']['main']['App']['FetchDesktopBotAttachment'](arg1, arg2);
 }
 
+export function FetchDesktopBotContainerFile(arg1, arg2) {
+  return window['go']['main']['App']['FetchDesktopBotContainerFile'](arg1, arg2);
+}
+
+export function RefetchDesktopBotRunImage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RefetchDesktopBotRunImage'](arg1, arg2, arg3);
+}
+
 export function ReadDesktopBotShot(arg1) {
   return window['go']['main']['App']['ReadDesktopBotShot'](arg1);
 }

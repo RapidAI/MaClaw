@@ -445,6 +445,9 @@ func (s *Service) fillPendingMedia(ctx context.Context, tenantID, userID string,
 			if files := replyFiles(view.Message.Attachments); len(files) > 0 && len(need.state.reply.Files) == 0 {
 				need.state.reply.Files = files
 			}
+			if len(need.state.reply.Images) > 0 || len(need.state.reply.Files) > 0 {
+				_ = s.keepDesktopRunMedia(tenantID, userID, need.state.botID, need.runID, need.state.reply.Images, need.state.reply.Files)
+			}
 			if strings.TrimSpace(need.state.reply.Text) == "" {
 				if text := strings.TrimSpace(view.Message.Content); text != "" {
 					need.state.reply.Text = text

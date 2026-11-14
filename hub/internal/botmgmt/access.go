@@ -115,6 +115,8 @@ type DesktopControl interface {
 type ReplyImage struct {
 	MIME string `json:"mime"`
 	Data string `json:"data"`
+	// ID is the attachment id the GUI uses to refetch this picture.
+	ID string `json:"attachment_id,omitempty"`
 }
 
 type Reply struct {
