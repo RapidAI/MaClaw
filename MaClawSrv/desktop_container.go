@@ -183,6 +183,7 @@ func operateDesktopContainer(ctx context.Context, scope agentruntime.Scope, acti
 	case "file_read", "file_write", "file_edit", "file_list":
 		return desktopContainerFile(ctx, scope, action, args)
 	case "bash":
+		ctx = context.WithValue(ctx, desktopNeedsScreenKey{}, desktopBashNeedsScreen(args))
 		names := desktopBashSecretNames(args)
 		if desktopLongJobInternal(ctx) {
 			names = desktopBashSecretsOnContext(ctx)

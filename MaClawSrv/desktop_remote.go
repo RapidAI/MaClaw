@@ -223,16 +223,24 @@ func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, f
 	return out.Output, nil
 }
 
+type desktopNeedsScreenKey struct{}
+
 func (c *desktopHubClient) Bash(ctx context.Context, tenantID, userID, command string) (string, error) {
+	needs, _ := ctx.Value(desktopNeedsScreenKey{}).(bool)
 	var out struct {
 		Output string `json:"output"`
+		Code   string `json:"code"`
 	}
 	if err := c.post(ctx, "/api/v1/desktop-services/bash", map[string]any{
-		"tenant_id": tenantID,
-		"user_id":   userID,
-		"command":   command,
+		"tenant_id":    tenantID,
+		"user_id":      userID,
+		"command":      command,
+		"needs_screen": needs,
 	}, &out); err != nil {
 		return "", err
+	}
+	if out.Code == desktopbot.CodeScreenClosed {
+		return "", &desktopbot.ScreenClosedError{Output: out.Output}
 	}
 	return out.Output, nil
 }

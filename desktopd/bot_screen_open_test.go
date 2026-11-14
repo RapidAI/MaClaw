@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func TestBotBashDoesNotOpenAMissingScreen(t *testing.T) {
@@ -26,6 +27,26 @@ func TestBotBashDoesNotOpenAMissingScreen(t *testing.T) {
 	text, err = svc.Bash(context.Background(), "tenant", bot, "echo hi")
 	if err != nil || text != "hi" || ensured != 0 {
 		t.Fatalf("second bash=%q err=%v ensured=%d", text, err, ensured)
+	}
+}
+
+func TestClosedScreenDisplayIsNotADisplay(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	svc := &Service{
+		Run: func(_ context.Context, args ...string) (string, error) {
+			if strings.Contains(strings.Join(args, " "), " display ") {
+				return `{"display":":21","running":false}`, nil
+			}
+			return "", nil
+		},
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			return "cannot open display\n", 1, nil
+		},
+	}
+	text, err := svc.Bash(context.Background(), "tenant", bot, "firefox")
+	var closed *desktopbot.ScreenClosedError
+	if !errors.As(err, &closed) || !strings.Contains(text, "cannot open display") {
+		t.Fatalf("text=%q err=%v", text, err)
 	}
 }
 

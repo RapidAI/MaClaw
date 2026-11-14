@@ -53,12 +53,18 @@ func TestGUIActionOpensTheBotScreen(t *testing.T) {
 	}
 	resetBotScreens()
 	req.Scope.RunID = req.Scope.RunID + "-gui"
-	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "xdg-open /tmp/a.pdf"})
+	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "xdg-open /tmp/a.pdf", "needs_screen": true})
 	if err != nil || !strings.Contains(out, "clicked") {
 		t.Fatalf("gui bash out=%q err=%v", out, err)
 	}
 	if opens.Load() != 2 {
-		t.Fatalf("opens=%d, a bash that starts a window must open the screen", opens.Load())
+		t.Fatalf("opens=%d, needs_screen must open the screen", opens.Load())
+	}
+	resetBotScreens()
+	req.Scope.RunID = req.Scope.RunID + "-plain"
+	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "firefox"})
+	if err != nil || opens.Load() != 2 {
+		t.Fatalf("plain bash out=%q err=%v opens=%d", out, err, opens.Load())
 	}
 }
 

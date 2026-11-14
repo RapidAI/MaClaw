@@ -3,11 +3,13 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 )
 
@@ -130,6 +132,18 @@ func PostDesktopToolHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		}
 		text, attachmentID, err := dispatchDesktopTool(r.Context(), pool, call)
 		noteDesktopToolUse(r.Context(), pool, call, err)
+		var closed *desktopbot.ScreenClosedError
+		if errors.As(err, &closed) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"output":        closed.Error(),
+				"code":          desktopbot.CodeScreenClosed,
+				"attachment_id": attachmentID,
+				"executor_id":   "assigned",
+				"volumes":       "desktops,home,opt,usr-local",
+				"replaced":      false,
+			})
+			return
+		}
 		if err != nil {
 			writeDesktopError(w, err)
 			return
@@ -197,7 +211,8 @@ func dispatchDesktopTool(ctx context.Context, pool *desktoppool.Pool, call deskt
 		text, err := pool.RunFile(ctx, call.Tenant, call.User, wire, toolArgString(call.Args, "path"), toolArgRaw(call.Args, "content"), toolArgRaw(call.Args, "old_string"), toolArgRaw(call.Args, "new_string"))
 		return text, "", err
 	case "bash":
-		text, err := pool.RunBash(ctx, call.Tenant, call.User, toolArgString(call.Args, "command"))
+		needs, _ := call.Args["needs_screen"].(bool)
+		text, err := pool.RunBashScreen(ctx, call.Tenant, call.User, toolArgString(call.Args, "command"), needs)
 		return text, "", err
 	case "http":
 		body, status, kind, err := pool.RunHTTP(ctx, call.Tenant, call.User, toolArgString(call.Args, "url"))

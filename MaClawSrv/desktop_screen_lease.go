@@ -88,7 +88,7 @@ func desktopScreenLeaseNeeded(action string, args map[string]any) bool {
 		return false
 	}
 	if action == "bash" {
-		return desktopBashLaunchesGUI(desktopArg(args, "command"))
+		return desktopBashNeedsScreen(args)
 	}
 	return !desktopScreenLeaseNonScreen[action]
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func (s *Service) runCommand(ctx context.Context, stdin io.Reader, args ...string) (string, int, error) {
@@ -298,8 +299,14 @@ func (s *Service) ListFile(ctx context.Context, tenantID, userID, filePath strin
 	return filePath + "\n" + text, nil
 }
 
-// Bash runs one command in the user's desktop container and returns its output.
+// Bash runs one command and returns its output. A bot's bash that does not
+// ask for a screen stays in the workspace for the life of that bot, even
+// when the desktop container is awake, so a job's /tmp and pid stay visible.
 func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (string, error) {
+	return s.bash(ctx, tenantID, userID, command, false)
+}
+
+func (s *Service) bash(ctx context.Context, tenantID, userID, command string, needsScreen bool) (string, error) {
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
 		return "", err
@@ -307,13 +314,19 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	if _, err = desktop.BashArgs(containerName(spec.TenantID, spec.UserID), command); err != nil {
 		return "", err
 	}
-	// A bot's GUI programs belong on its own display when that screen is
-	// already open. Bash does not open it: a shell, ssh or training job
-	// stays on the workspace while the desktop sleeps.
+	// needsScreen opens the bot screen. Otherwise a bot shell never starts
+	// it, and uses the display only when the supervisor says it is running.
 	display := ""
-	if spec.BotID != "" {
-		if got, err := s.readBotDisplay(ctx, spec); err == nil {
-			display = got
+	screenOpen := spec.BotID == ""
+	if spec.BotID != "" && needsScreen {
+		got, openErr := s.specDisplay(ctx, spec, "")
+		if openErr != nil {
+			return "", openErr
+		}
+		display, screenOpen = got, true
+	} else if spec.BotID != "" {
+		if got, readErr := s.readBotDisplay(ctx, spec); readErr == nil {
+			display, screenOpen = got, true
 		}
 	}
 	shell := commandRequest{
@@ -336,11 +349,19 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	var container string
 	var onDesktop bool
 	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
-		c, desk, cErr := s.toolContainer(ctx, spec)
-		if cErr != nil {
-			return cErr
+		if spec.BotID != "" && !needsScreen && s.httpUsesWorkspace() {
+			name, wErr := s.ensureWorkspace(ctx, spec)
+			if wErr != nil {
+				return wErr
+			}
+			container, onDesktop = name, false
+		} else {
+			c, desk, cErr := s.toolContainer(ctx, spec)
+			if cErr != nil {
+				return cErr
+			}
+			container, onDesktop = c, desk
 		}
-		container, onDesktop = c, desk
 		commandArgs, argsErr := commandServiceArgs(container, shell)
 		if argsErr != nil {
 			return argsErr
@@ -357,7 +378,11 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 		return "", err
 	}
 	s.noteToolUse(spec, container, onDesktop)
-	return desktop.ProgramOutput(output, exitCode, false), nil
+	text := desktop.ProgramOutput(output, exitCode, false)
+	if spec.BotID != "" && !screenOpen && exitCode != 0 {
+		return text, &desktopbot.ScreenClosedError{Output: text}
+	}
+	return text, nil
 }
 
 // ErrDesktopAsleep is a fetch that would have docker-exec'd curl into a

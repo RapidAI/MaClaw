@@ -136,6 +136,20 @@ func TestBotBashWhileTheDesktopSleepsStaysInTheWorkspace(t *testing.T) {
 	}
 }
 
+func TestBotBashStaysInTheWorkspaceWhileTheDesktopIsAwake(t *testing.T) {
+	h := &fakeHost{desktop: "running"}
+	svc := h.service(t)
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	if _, err := svc.Bash(context.Background(), "tenant", bot, "python train.py"); err != nil {
+		t.Fatal(err)
+	}
+	work := workspaceName("tenant", "alice")
+	desk := containerName("tenant", "alice")
+	if len(h.execs) != 1 || !strings.HasPrefix(h.execs[0], "exec "+work+" ") || strings.Contains(h.execs[0], "exec "+desk+" ") {
+		t.Fatalf("execs=%v", h.execs)
+	}
+}
+
 func TestBashWhileTheDesktopSleepsRunsInTheWorkspace(t *testing.T) {
 	h := &fakeHost{desktop: "stopped"}
 	svc := h.service(t)
