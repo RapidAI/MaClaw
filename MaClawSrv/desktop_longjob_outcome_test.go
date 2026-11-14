@@ -42,23 +42,14 @@ func TestLongJobOutcomeHidesTheRawTail(t *testing.T) {
 	if len(prompts) != 1 || !strings.Contains(prompts[0], "BEST_VAL_METRICS") || !strings.Contains(prompts[0], "不要把日志原文") {
 		t.Fatalf("prompt %v", prompts)
 	}
-	sawProcess := false
 	for _, body := range said {
 		text, _ := body["text"].(string)
-		kind, _ := body["message_kind"].(string)
-		if kind == desktopMsgProcess {
-			sawProcess = strings.Contains(text, "BEST_VAL_METRICS")
-			if desktopChatKind(kind) {
-				t.Fatal("process was a chat bubble")
-			}
-			continue
-		}
-		if strings.Contains(text, "BEST_VAL_METRICS") || strings.Contains(text, "████") {
-			t.Fatalf("raw tail was an outcome: %q", text)
+		if strings.Contains(text, "BEST_VAL_METRICS") || strings.Contains(text, "████") || strings.Contains(text, "下面是最后的输出") {
+			t.Fatalf("a finished job was shown: %q", text)
 		}
 	}
-	if !sawProcess {
-		t.Fatalf("exit notice was not process: %#v", said)
+	if len(desktopProcessOf(j.ID)) == 0 {
+		t.Fatal("the exit was not kept for the loop")
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "completion.json"))
 	if err != nil || !strings.Contains(string(raw), "BEST_VAL_METRICS") {

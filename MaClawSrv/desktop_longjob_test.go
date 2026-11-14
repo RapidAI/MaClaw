@@ -317,15 +317,23 @@ func TestD101NoticeSaysWithEvidence(t *testing.T) {
 	code := 3
 	j := &desktopLongJob{ID: "job_abcdef123", TenantID: "tenant_default", UserID: "u_1::desk::bot_x", InstanceID: "inst_x", Status: "failed", ExitCode: &code, Started: desktopLongJobNow().Add(-30 * time.Minute), LastPoll: desktopLongJobNow(), LastTail: "Warning: Permanently added host\nTraceback\nValueError: bad label"}
 	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); err != nil {
-		t.Fatalf("ALREADY_SAID is delivered: %v", err)
+		t.Fatal(err)
+	}
+	if body != nil {
+		t.Fatalf("a finished job was said to the person: %+v", body)
+	}
+	lines := desktopProcessOf(j.ID)
+	if len(lines) != 1 || !strings.Contains(lines[0], "失败") || !strings.Contains(lines[0], "3") || !strings.Contains(lines[0], "ValueError: bad label") || strings.Contains(lines[0], "Permanently added") {
+		t.Fatalf("loop record %v", lines)
+	}
+	running := &desktopLongJob{ID: "job_still", TenantID: "tenant_default", UserID: "u_1::desk::bot_x", InstanceID: "inst_x", Status: "running", Alive: true, Started: desktopLongJobNow().Add(-time.Minute), LastPoll: desktopLongJobNow(), LastTail: "step 2"}
+	if err := desktopLongJobTalkDefault(context.Background(), running, longJobNotice); err != nil {
+		t.Fatal(err)
 	}
 	text, _ := body["text"].(string)
 	kind, _ := body["message_kind"].(string)
-	if body["user_id"] != "u_1" || body["tenant_id"] != "tenant_default" || body["instance_id"] != "inst_x" || body["key"] == "" || kind != desktopMsgProcess || desktopChatKind(kind) {
-		t.Fatalf("body %+v", body)
-	}
-	if !strings.Contains(text, "失败") || !strings.Contains(text, "3") || !strings.Contains(text, "ValueError: bad label") || strings.Contains(text, "Permanently added") {
-		t.Fatalf("text %q", text)
+	if body["user_id"] != "u_1" || kind != desktopMsgProcess || desktopChatKind(kind) || !strings.Contains(text, "step 2") {
+		t.Fatalf("running notice %+v", body)
 	}
 }
 

@@ -1205,16 +1205,18 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 		_, err := desktopLongJobResumeAs(ctx, j, longJobCheck)
 		return err
 	}
-	// The poll notice is the job's exit or progress, not the run's outcome.
-	// It is delivered as process so the chat keeps it collapsed. The outcome
-	// is a later message.
+	// The poll note is evidence for the loop. A finished job is not a chat
+	// message: the outcome turn is the only thing the person sees. A job
+	// that is still running may show one collapsed process line.
 	note := desktopLongJobNoticeText(j, dec)
 	desktopRecordProcess(firstNonEmptyString(j.SourceRun, j.ID), note)
-	if err := desktopLongJobSayKind(ctx, j, note, desktopMsgProcess); err != nil {
-		if desktopHubNotFound(err) && desktopLongJobResumeTargetGone(j) {
-			return ErrLongJobOwnerGone
+	if !desktopLongJobTerminal(j) {
+		if err := desktopLongJobSayKind(ctx, j, note, desktopMsgProcess); err != nil {
+			if desktopHubNotFound(err) && desktopLongJobResumeTargetGone(j) {
+				return ErrLongJobOwnerGone
+			}
+			log.Printf("[desktop-longjob] job=%s process notice not delivered: %v", j.ID, err)
 		}
-		log.Printf("[desktop-longjob] job=%s process notice not delivered: %v", j.ID, err)
 	}
 	if dec == longJobResume && desktopLongJobTerminal(j) {
 		return desktopLongJobFinishOwned(ctx, j)
@@ -1407,7 +1409,7 @@ func desktopLongJobWatchPrompt(j *desktopLongJob, dec desktopLongJobDecision) st
 	goal := "若与上次通知相比没有新的进展，就结束，不要调用 send_to_user。"
 	switch dec {
 	case longJobResume:
-		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到了这次轮询的状态和最后输出。用这些证据判断：结束了就核对结果（指标、产物）并告诉这个人；结果是训练、评估、基准或其它实验的数字时，报告里必须有结果评估：与基线或目标对比，检查结果是否可信（验证集与测试集的差距、类别不平衡、过拟合迹象、抽几条样本实际推理），明确说能否使用，并给出建议（继续训练、调整数据或超参、或停止）和理由；" + desktopIterPolicy + "失败或停滞就查明原因并换一种做法继续，并说明。你的最后回复会转给这个人（已用 action=say 说过就不再转）；没有要说的新内容时最后回复只写 NO_UPDATE。不要把已经说过的再说一遍。"
+		goal = "这不是新任务，不要重新启动同一个命令。这个人还没有看到这次结束的原始输出。用下面的记录判断。结束了，最后回复只写结果：成没成、指标、建议、若需要这个人做什么才能继续。不要贴日志。结果是训练、评估、基准或其它实验的数字时，报告里必须有结果评估：与基线或目标对比，检查结果是否可信（验证集与测试集的差距、类别不平衡、过拟合迹象、抽几条样本实际推理），明确说能否使用，并给出建议（继续训练、调整数据或超参、或停止）和理由；" + desktopIterPolicy + "失败或停滞就查明原因并换一种做法继续，并说明。你的最后回复会转给这个人（已用 action=say 说过就不再转）；没有要说的新内容时最后回复只写 NO_UPDATE。不要把已经说过的再说一遍。"
 	case longJobNotice:
 		goal = "这不是新任务，不要重新启动该命令。这是按预计时间安排的查看，出现了新的阶段结果、已经远超预计时间，或预计会超过命令自带的时限。用 send_to_user 简短告诉这个人这一阶段的结果（指标或日志要点）或比预计晚了多少，附上这次轮询的证据（进程存活与否、最近日志）。不要报步数。对剩余时间有更好的估计时，用 action=job_status，next_check_minutes 和 check_reason 设定下次查看。"
 	}
