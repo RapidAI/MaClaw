@@ -156,9 +156,8 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 	}
 	claimed := desktopArg(args, "kind")
 	kind := desktopMessageKind(claimed, false, claimed == desktopMsgNeedsUser)
-	if !desktopChatKind(kind) {
+	if kind == desktopMsgProcess {
 		desktopRecordProcess(strings.TrimSpace(request.Scope.RunID), text)
-		return "NOT SENT process: this is progress, so it stays on the run record and the status line. The chat only gets a question or takeover the person must handle, and the final outcome.", nil
 	}
 	inst, ok := turnInstance(request)
 	if !ok {
@@ -177,18 +176,14 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 	if !desktopSayRuns.allow(runKey+"|"+room, update, time.Now()) {
 		return "SKIPPED already_said_this_run: you already told the person in this run. Do not say it again; only call say with update=true if there is information they have not had yet.", nil
 	}
-	text = desktopLongJobHideRaw(text, desktopLongJobRecordedRaws())
-	if text == "" {
-		desktopSayRuns.undo(runKey+"|"+room, time.Now())
-		return "NOT SENT raw_log: the background job's log stays in its record. Tell the person the outcome in your own words, without pasting the log.", nil
-	}
 	body := map[string]any{
-		"tenant_id":   strings.TrimSpace(inst.Metadata["hub_tenant_id"]),
-		"user_id":     user,
-		"instance_id": inst.ID,
-		"room":        room,
-		"text":        text,
-		"key":         desktopMessageKey(runKey, "say", room, text),
+		"tenant_id":    strings.TrimSpace(inst.Metadata["hub_tenant_id"]),
+		"user_id":      user,
+		"instance_id":  inst.ID,
+		"room":         room,
+		"text":         text,
+		"message_kind": kind,
+		"key":          desktopMessageKey(runKey, "say", room, text),
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

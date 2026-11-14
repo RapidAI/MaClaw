@@ -1205,23 +1205,24 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 		_, err := desktopLongJobResumeAs(ctx, j, longJobCheck)
 		return err
 	}
+	// The poll notice is the job's exit or progress, not the run's outcome.
+	// It is delivered as process so the chat keeps it collapsed. The outcome
+	// is a later message.
+	note := desktopLongJobNoticeText(j, dec)
+	desktopRecordProcess(firstNonEmptyString(j.SourceRun, j.ID), note)
+	if err := desktopLongJobSayKind(ctx, j, note, desktopMsgProcess); err != nil {
+		if desktopHubNotFound(err) && desktopLongJobResumeTargetGone(j) {
+			return ErrLongJobOwnerGone
+		}
+		log.Printf("[desktop-longjob] job=%s process notice not delivered: %v", j.ID, err)
+	}
 	if dec == longJobResume && desktopLongJobTerminal(j) {
-		// The raw log is context for one summary turn. It is not a chat message.
-		// A job whose owning run already concluded does not speak on its own.
 		return desktopLongJobFinishOwned(ctx, j)
 	}
-	scheduled := false
-	var resumeErr error
-	if dec == longJobResume {
-		scheduled, resumeErr = desktopLongJobResumeAs(ctx, j, dec)
+	if dec != longJobResume {
+		return nil
 	}
-	// Progress, a heartbeat and a stall are process. They stay on the run
-	// record. The chat hears the follow-up's outcome, not this note.
-	note := desktopLongJobNoticeText(j, dec)
-	if scheduled {
-		note += "已安排接着看。"
-	}
-	desktopRecordProcess(firstNonEmptyString(j.SourceRun, j.ID), note)
+	_, resumeErr := desktopLongJobResumeAs(ctx, j, dec)
 	if errors.Is(resumeErr, ErrLongJobOwnerGone) {
 		return resumeErr
 	}
@@ -1244,6 +1245,10 @@ var desktopLongJobSayFunc = func(ctx context.Context, body map[string]any) error
 }
 
 func desktopLongJobSay(ctx context.Context, j *desktopLongJob, text string) error {
+	return desktopLongJobSayKind(ctx, j, text, "")
+}
+
+func desktopLongJobSayKind(ctx context.Context, j *desktopLongJob, text, kind string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1254,6 +1259,9 @@ func desktopLongJobSay(ctx context.Context, j *desktopLongJob, text string) erro
 		"room":        "",
 		"text":        text,
 		"key":         desktopMessageKey(j.InstanceID+"|"+j.ID, "longjob", j.Status, j.Fingerprint),
+	}
+	if kind != "" {
+		body["message_kind"] = kind
 	}
 	err := desktopLongJobSayFunc(ctx, body)
 	if err != nil && (strings.Contains(err.Error(), "ALREADY_SAID") || strings.Contains(err.Error(), "409")) {

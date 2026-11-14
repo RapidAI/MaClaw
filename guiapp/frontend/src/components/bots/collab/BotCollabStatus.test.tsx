@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { BotCollabStatus } from './BotCollabStatus';
-import { BotSaidInline } from './BotSaidInline';
+import { BotSaidInline, DesktopBotProcessNote } from './BotSaidInline';
 
 const bots = [{ id: 'm', title: '主管', primary: true }, { id: 'a', title: '小A' }];
 
@@ -36,6 +36,25 @@ describe('BotSaidInline', () => {
         const el = screen.getByTestId('bot-said-s1');
         expect(el.textContent).toContain('小A');
         expect(el.textContent).toContain('做完了');
+    });
+});
+
+describe('DesktopBotProcessNote', () => {
+    it('keeps a process message collapsed and out of a bubble', () => {
+        const log = '后台任务结束了，下面是最后的输出\nNotOpenSSLWarning\nSome weights newly initialized\ntrain=1 dev=2 device=mps';
+        render(<BotSaidInline
+            bots={bots}
+            lookOf={() => ({ color: '#888', shape: 'circle' } as never)}
+            items={[{ id: 'job1', from: 'a', target: 'human', kind: 'say', message_kind: 'process', text: log, created_at: '' }]}
+        />);
+        const row = screen.getByTestId('desktop-bot-process-job1');
+        expect(row.tagName).toBe('DETAILS');
+        expect(row.hasAttribute('open')).toBe(false);
+        expect(row.querySelector('summary')?.textContent).toBe('后台任务结束了，下面是最后的输出');
+        expect(row.textContent).toContain('device=mps');
+        expect(screen.getByTestId('bot-said-job1').querySelector('.desktop-bot-chat__bubble')).toBeNull();
+        render(<DesktopBotProcessNote id="alone" text={log} />);
+        expect(screen.getByTestId('desktop-bot-process-alone').querySelector('.desktop-bot-chat__bubble')).toBeNull();
     });
 });
 

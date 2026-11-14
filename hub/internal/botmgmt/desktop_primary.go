@@ -20,14 +20,19 @@ type BotListItem struct {
 
 // BotCrossNote is one message between bots of the same account. It is not a run.
 type BotCrossNote struct {
-	ID        string `json:"id"`
-	Owner     string `json:"owner"`
-	From      string `json:"from"`
-	Target    string `json:"target"`
-	Kind      string `json:"kind"`
-	Text      string `json:"text"`
-	Order     string `json:"order,omitempty"`
-	CreatedAt string `json:"created_at"`
+	ID     string `json:"id"`
+	Owner  string `json:"owner"`
+	From   string `json:"from"`
+	Target string `json:"target"`
+	Kind   string `json:"kind"`
+	// MessageKind is why this say exists: process, needs_user, or outcome.
+	// Empty is an older say and stays a normal chat bubble. process is a
+	// collapsed row. The value is one of those three constants; it is not
+	// read out of the message text.
+	MessageKind string `json:"message_kind,omitempty"`
+	Text        string `json:"text"`
+	Order       string `json:"order,omitempty"`
+	CreatedAt   string `json:"created_at"`
 	// StartedAt is the single claim that a client may admit this note.
 	// Empty means no client has started it. RunID is filled after 202.
 	StartedAt string `json:"started_at,omitempty"`

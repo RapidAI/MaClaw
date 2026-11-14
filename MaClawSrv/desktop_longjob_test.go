@@ -320,7 +320,8 @@ func TestD101NoticeSaysWithEvidence(t *testing.T) {
 		t.Fatalf("ALREADY_SAID is delivered: %v", err)
 	}
 	text, _ := body["text"].(string)
-	if body["user_id"] != "u_1" || body["tenant_id"] != "tenant_default" || body["instance_id"] != "inst_x" || body["key"] == "" {
+	kind, _ := body["message_kind"].(string)
+	if body["user_id"] != "u_1" || body["tenant_id"] != "tenant_default" || body["instance_id"] != "inst_x" || body["key"] == "" || kind != desktopMsgProcess || desktopChatKind(kind) {
 		t.Fatalf("body %+v", body)
 	}
 	if !strings.Contains(text, "失败") || !strings.Contains(text, "3") || !strings.Contains(text, "ValueError: bad label") || strings.Contains(text, "Permanently added") {
@@ -895,12 +896,14 @@ func TestLongJobTalkMapsMissingInstance(t *testing.T) {
 		t.Fatalf("missing instance: %v", err)
 	}
 	var said int
-	desktopLongJobSayFunc = func(context.Context, map[string]any) error {
+	var kind string
+	desktopLongJobSayFunc = func(_ context.Context, body map[string]any) error {
 		said++
+		kind, _ = body["message_kind"].(string)
 		return desktopStatusError(http.StatusBadGateway, []byte(`{"code":"DOCKER_SERVICE_REQUEST_FAILED","message":"no such bot or assignment"}`))
 	}
-	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); err != nil || said != 0 {
-		t.Fatalf("progress was posted or failed the turn: %v said=%d", err, said)
+	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); err != nil || said != 1 || kind != desktopMsgProcess {
+		t.Fatalf("progress notice: %v said=%d kind=%s", err, said, kind)
 	}
 	if lines := desktopProcessOf(j.SourceRun); len(lines) == 0 && len(desktopProcessOf(j.ID)) == 0 {
 		t.Fatal("progress was not kept on the run")

@@ -15,11 +15,11 @@ func TestLongJobOutcomeHidesTheRawTail(t *testing.T) {
 	d100Env(t)
 	dir := t.TempDir()
 	tail := "epoch 3/3 [██████████] 100%\nBEST_VAL_METRICS {\"f1\": 0.81, \"auc\": 0.77}\n"
-	var said []string
+	var said []map[string]any
 	prevSay := desktopLongJobSayFunc
 	t.Cleanup(func() { desktopLongJobSayFunc = prevSay })
 	desktopLongJobSayFunc = func(_ context.Context, body map[string]any) error {
-		said = append(said, body["text"].(string))
+		said = append(said, body)
 		return nil
 	}
 	var prompts []string
@@ -42,18 +42,27 @@ func TestLongJobOutcomeHidesTheRawTail(t *testing.T) {
 	if len(prompts) != 1 || !strings.Contains(prompts[0], "BEST_VAL_METRICS") || !strings.Contains(prompts[0], "不要把日志原文") {
 		t.Fatalf("prompt %v", prompts)
 	}
-	for _, text := range said {
-		if strings.Contains(text, "BEST_VAL_METRICS") || strings.Contains(text, "████") || strings.Contains(text, "下面是最后的输出") {
-			t.Fatalf("raw tail was said: %q", text)
+	sawProcess := false
+	for _, body := range said {
+		text, _ := body["text"].(string)
+		kind, _ := body["message_kind"].(string)
+		if kind == desktopMsgProcess {
+			sawProcess = strings.Contains(text, "BEST_VAL_METRICS")
+			if desktopChatKind(kind) {
+				t.Fatal("process was a chat bubble")
+			}
+			continue
 		}
+		if strings.Contains(text, "BEST_VAL_METRICS") || strings.Contains(text, "████") {
+			t.Fatalf("raw tail was an outcome: %q", text)
+		}
+	}
+	if !sawProcess {
+		t.Fatalf("exit notice was not process: %#v", said)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "completion.json"))
 	if err != nil || !strings.Contains(string(raw), "BEST_VAL_METRICS") {
 		t.Fatalf("record %s %v", raw, err)
-	}
-	pasted := desktopLongJobHideRaw("训练结束了。\n"+tail, []string{tail})
-	if strings.Contains(pasted, "BEST_VAL_METRICS") || strings.Contains(pasted, "████") || !strings.Contains(pasted, "训练结束了") {
-		t.Fatalf("visible %q", pasted)
 	}
 }
 
@@ -157,11 +166,11 @@ func TestLongJobOutcomeAsksInsteadOfContinuing(t *testing.T) {
 		prompts = append(prompts, prompt)
 		return "run_ask", nil
 	}
-	var said []string
+	var said []map[string]any
 	prevSay := desktopLongJobSayFunc
 	t.Cleanup(func() { desktopLongJobSayFunc = prevSay })
 	desktopLongJobSayFunc = func(_ context.Context, body map[string]any) error {
-		said = append(said, body["text"].(string))
+		said = append(said, body)
 		return nil
 	}
 	metric := 0.4
@@ -182,9 +191,14 @@ func TestLongJobOutcomeAsksInsteadOfContinuing(t *testing.T) {
 	if _, refuse := desktopLongJobIterationGate(j); refuse == "" {
 		t.Fatal("ask_user was allowed to start another round")
 	}
-	for _, text := range said {
+	for _, body := range said {
+		text, _ := body["text"].(string)
+		kind, _ := body["message_kind"].(string)
+		if kind == desktopMsgProcess {
+			continue
+		}
 		if strings.Contains(text, "TAIL_ASK_LOG") {
-			t.Fatalf("raw log said: %q", text)
+			t.Fatalf("raw log was an outcome: %q", text)
 		}
 	}
 }

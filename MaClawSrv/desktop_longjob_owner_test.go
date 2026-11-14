@@ -58,11 +58,11 @@ func TestLongJobRelaunchSupersedesTheOpenOnes(t *testing.T) {
 
 func TestLongJobAfterTheOwnerConcludedDoesNotSpeak(t *testing.T) {
 	d100Env(t)
-	var said []string
+	var said []map[string]any
 	prevSay := desktopLongJobSayFunc
 	t.Cleanup(func() { desktopLongJobSayFunc = prevSay })
 	desktopLongJobSayFunc = func(_ context.Context, body map[string]any) error {
-		said = append(said, body["text"].(string))
+		said = append(said, body)
 		return nil
 	}
 	var prompts []string
@@ -101,7 +101,12 @@ func TestLongJobAfterTheOwnerConcludedDoesNotSpeak(t *testing.T) {
 	if len(prompts) != 1 || !strings.Contains(prompts[0], "TAIL_CHANGED") || strings.Contains(prompts[0], "我接着看一下") {
 		t.Fatalf("follow-up %v", prompts)
 	}
-	for _, text := range said {
+	for _, body := range said {
+		text, _ := body["text"].(string)
+		kind, _ := body["message_kind"].(string)
+		if kind == desktopMsgProcess {
+			continue
+		}
 		if strings.Contains(text, "TAIL_SAME") || strings.Contains(text, "TAIL_CHANGED") || strings.Contains(text, "我接着看一下") || strings.Contains(text, "BEST_VAL_METRICS") {
 			t.Fatalf("watcher spoke after the owner concluded: %q", text)
 		}
@@ -113,11 +118,11 @@ func TestLongJobAfterTheOwnerConcludedDoesNotSpeak(t *testing.T) {
 
 func TestLongJobPromiseRequiresAScheduledFollowUp(t *testing.T) {
 	d100Env(t)
-	var said []string
+	var said []map[string]any
 	prevSay := desktopLongJobSayFunc
 	t.Cleanup(func() { desktopLongJobSayFunc = prevSay })
 	desktopLongJobSayFunc = func(_ context.Context, body map[string]any) error {
-		said = append(said, body["text"].(string))
+		said = append(said, body)
 		return nil
 	}
 	j := &desktopLongJob{
@@ -128,8 +133,11 @@ func TestLongJobPromiseRequiresAScheduledFollowUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = desktopLongJobTalkDefault(context.Background(), j, longJobResume)
-	if len(said) != 0 {
-		t.Fatalf("process was posted to the chat: %v", said)
+	if len(said) != 1 || said[0]["message_kind"] != desktopMsgProcess || desktopChatKind(desktopMsgProcess) {
+		t.Fatalf("exit notice %#v", said)
+	}
+	if text, _ := said[0]["text"].(string); strings.Contains(text, "我接着看一下原因和下一步。") {
+		t.Fatalf("process promised a look: %q", text)
 	}
 	lines := desktopProcessOf(j.ID)
 	if len(lines) != 1 || strings.Contains(lines[0], "我接着看一下原因和下一步。") || !strings.Contains(lines[0], "没有新的输出") {

@@ -1167,12 +1167,13 @@ func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
 			return
 		}
 		var in struct {
-			TenantID   string `json:"tenant_id"`
-			UserID     string `json:"user_id"`
-			InstanceID string `json:"instance_id"`
-			Room       string `json:"room"`
-			Text       string `json:"text"`
-			Key        string `json:"key"`
+			TenantID    string `json:"tenant_id"`
+			UserID      string `json:"user_id"`
+			InstanceID  string `json:"instance_id"`
+			Room        string `json:"room"`
+			Text        string `json:"text"`
+			Key         string `json:"key"`
+			MessageKind string `json:"message_kind"`
 			// Files: a server-started turn's deliverables, base64; at most
 			// 3 x 8 MB like a notify. Stored before the note is written.
 			Files []struct {
@@ -1218,7 +1219,7 @@ func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
 				files = append(files, stored)
 			}
 		}
-		note, err := bots.SayFilesFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.Room, in.Text, in.Key, files)
+		note, err := bots.SayFilesKindFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.Room, in.Text, in.Key, files, in.MessageKind)
 		var said *botmgmt.AlreadySaidError
 		var worker *botmgmt.WorkerSayError
 		switch {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -30,14 +31,23 @@ func TestMessageKindKeepsProcessOutOfChat(t *testing.T) {
 
 func TestSayDuringARunIsProcess(t *testing.T) {
 	run := "run_vis"
+	var kind string
+	desktopRemoteAssign = func(_ context.Context, path string, body map[string]any) (map[string]any, error) {
+		if path != "/api/v1/desktop-services/say" {
+			t.Fatalf("path %s", path)
+		}
+		kind, _ = body["message_kind"].(string)
+		return map[string]any{"id": "s"}, nil
+	}
 	t.Cleanup(func() {
+		desktopRemoteAssign = nil
 		desktopProcessMu.Lock()
 		delete(desktopProcessLines, run)
 		desktopProcessMu.Unlock()
 	})
-	out, err := desktopSay(t.Context(), agentruntime.TurnRequest{Scope: agentruntime.Scope{RunID: run}}, map[string]any{"message": "正在打开编辑器，第 3 步"})
-	if err != nil || !strings.Contains(out, "NOT SENT process") {
-		t.Fatalf("say %q %v", out, err)
+	out, err := desktopSay(t.Context(), assignReq(run), map[string]any{"message": "正在打开编辑器，第 3 步"})
+	if err != nil || !strings.HasPrefix(out, "SAID to the person: ") || kind != desktopMsgProcess || desktopChatKind(kind) {
+		t.Fatalf("say %q kind %q err %v", out, kind, err)
 	}
 	lines := desktopProcessOf(run)
 	if len(lines) != 1 || !strings.Contains(lines[0], "正在打开编辑器") {

@@ -186,7 +186,7 @@ import { BotRailIcon } from '../layout/SidebarNavIcons';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useBotCollab } from './collab/useBotCollab';
 import { BotCollabStatus } from './collab/BotCollabStatus';
-import { BotSaidInline } from './collab/BotSaidInline';
+import { BotSaidInline, DesktopBotProcessNote } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
 import { applyBotStatusLine, saidForChat, saidSince, shownDesktopBotActivity } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
@@ -6911,10 +6911,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line" title={statusByBot[selected.id].text}>{statusByBot[selected.id].text}</span>
                                 ) : null}
                                 {processByBot[selected.id]?.length ? (
-                                    <details className="desktop-bot-chat__process" data-testid="desktop-bot-process">
-                                        <summary>{lang.startsWith('zh') ? '过程' : 'Progress'}</summary>
-                                        {processByBot[selected.id].map((line, index) => <div key={`${index}:${line}`}>{line}</div>)}
-                                    </details>
+                                    <DesktopBotProcessNote id={`status-${selected.id}`} text={processByBot[selected.id].join('\n')} lang={lang} />
                                 ) : null}
                             </p>
                         ) : null}
