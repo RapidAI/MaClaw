@@ -981,6 +981,9 @@ func (p *Pool) ScreenshotWith(ctx context.Context, tenantID, userID, display, na
 		if !opts.Region.Empty() {
 			body["region"] = opts.Region
 		}
+		if opts.Window != "" {
+			body["window"] = opts.Window
+		}
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {

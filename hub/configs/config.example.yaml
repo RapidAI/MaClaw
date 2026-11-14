@@ -3,6 +3,17 @@ server:
   listen_port: 9399
   public_base_url: https://hub.example.com
 
+# Desktop/CLI clients verify HTTPS/WSS certificates by default. For a private
+# CA or self-signed Hub, set MACLAW_HUB_CA_FILE on each client to the explicitly
+# trusted PEM CA/certificate. MACLAW_HUB_TLS_INSECURE=1 is a legacy-only opt-out.
+# Cross-Hub relay requires HTTPS outside loopback; the same CA setting applies.
+# MACLAW_HUB_FEDERATION_ALLOW_HTTP=1 is an explicit legacy-only HTTP opt-out.
+tls:
+  enabled: true # Set false only when TLS terminates at a trusted reverse proxy.
+  cert_file: ./data/tls/hub.crt
+  key_file: ./data/tls/hub.key
+  auto_generate: true
+
 database:
   driver: sqlite
   dsn: ./data/maclaw-hub.db

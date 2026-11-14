@@ -92,6 +92,10 @@ func shouldLogMachineHeartbeat(ctx *ConnContext, sessions, intervalSec int) bool
 }
 
 const (
+	webSocketAuthMessageLimit int64 = 64 << 10
+	webSocketMessageLimit     int64 = 48 << 20
+	webSocketAuthWait               = 15 * time.Second
+
 	// sendChSize is the per-connection outbound message buffer. If a client
 	// can't keep up and the buffer fills, the connection is dropped.
 	sendChSize = 256
@@ -486,6 +490,9 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	// Authentication messages are small. Raise the limit only after a valid
+	// machine/viewer identity; 48 MiB still covers base64-encoded 32 MiB files.
+	conn.SetReadLimit(webSocketAuthMessageLimit)
 
 	// Enable compression on outbound messages.
 	conn.EnableWriteCompression(true)
@@ -502,7 +509,7 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 		pongWait   = 90 * time.Second // must be > client heartbeat interval
 		pingPeriod = 30 * time.Second // must be < pongWait
 	)
-	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+	_ = conn.SetReadDeadline(time.Now().Add(webSocketAuthWait))
 	conn.SetPongHandler(func(string) error {
 		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
@@ -538,10 +545,13 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		// Refresh read deadline on every incoming message so that machines
-		// sending frequent data (summaries, preview deltas) don't time out
-		// even if the pong is slightly delayed.
-		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+		// Unauthenticated sockets cannot be held open indefinitely. Once
+		// authenticated, normal traffic refreshes the longer liveness deadline.
+		readWait := pongWait
+		if ctx.Role == "" {
+			readWait = webSocketAuthWait
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(readWait))
 
 		var msg Envelope
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -803,6 +813,10 @@ func (g *Gateway) broadcastMachineEvent(machineID string, payload map[string]any
 }
 
 func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "" {
+		_ = writeWSError(ctx.Conn, "ALREADY_AUTHENTICATED", "Connection is already authenticated")
+		return errors.New("websocket connection is already authenticated")
+	}
 	var payload struct {
 		MachineID    string `json:"machine_id"`
 		MachineToken string `json:"machine_token"`
@@ -819,6 +833,7 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 		return fmt.Errorf("machine auth failed: %w", err)
 	}
 	ctx.Role = "machine"
+	ctx.Conn.SetReadLimit(webSocketMessageLimit)
 	ctx.TenantID = principal.TenantID
 	ctx.UserID = principal.UserID
 	ctx.MachineID = principal.MachineID
@@ -831,7 +846,8 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 	// and uses it for LLM service API calls (redeem, status, chat completions).
 	// Issuing on every connect ensures the client always has a valid token
 	// (viewer tokens expire after 30 days; reconnects keep it fresh).
-	// Old tokens expire naturally - no accumulation concern for SQLite.
+	// Old tokens expire naturally; repeated authentication on one connection is
+	// rejected above so a client cannot turn token issuance into a write loop.
 	if viewerToken, err := g.Identity.IssueViewerTokenForUser(context.Background(), principal.UserID); err == nil {
 		authPayload["viewer_token"] = viewerToken
 	} else {
@@ -842,6 +858,10 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 }
 
 func (g *Gateway) handleViewerAuth(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "" {
+		_ = writeWSError(ctx.Conn, "ALREADY_AUTHENTICATED", "Connection is already authenticated")
+		return errors.New("websocket connection is already authenticated")
+	}
 	var payload struct {
 		AccessToken string `json:"access_token"`
 	}
@@ -853,6 +873,7 @@ func (g *Gateway) handleViewerAuth(ctx *ConnContext, msg Envelope) error {
 		return writeWSError(ctx.Conn, "UNAUTHORIZED", "Viewer authentication failed")
 	}
 	ctx.Role = "viewer"
+	ctx.Conn.SetReadLimit(webSocketMessageLimit)
 	ctx.TenantID = principal.TenantID
 	ctx.UserID = principal.UserID
 	ctx.ViewerID = principal.Email

@@ -98,7 +98,8 @@ type Config struct {
 
 	// TLS enables HTTPS/WSS on the same listen port (default 9399).
 	// When enabled with auto_generate, Hub creates a self-signed certificate
-	// on first start. Clients must use https:// URLs and accept self-signed certs.
+	// on first start. Clients must use https:// URLs and set MACLAW_HUB_CA_FILE
+	// to a PEM CA/certificate they explicitly trust.
 	//
 	// If you later add nginx reverse proxy, set enabled=false and configure nginx:
 	//

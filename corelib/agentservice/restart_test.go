@@ -88,6 +88,58 @@ func TestResumeInterruptedRunOnce(t *testing.T) {
 	}
 }
 
+func TestResumeInstallsTheReplySlotWithThePersonsAsk(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	updated, err := svc.UpdateInstance(context.Background(), principal, inst.ID, UpdateInstanceInput{Metadata: map[string]string{"hub_bot": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = *updated
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "shot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgID := NewID("msg")
+	if err := svc.store.SaveMessage(Message{
+		ID: msgID, TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		Role: MessageRoleUser, Content: "运行后截屏发给我", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var gotAsk string
+	svc.ResumeExecutionHooks = func(_ Principal, _ Instance, ask string) (func(context.Context) context.Context, func(context.Context, *Run, *Message, error)) {
+		gotAsk = ask
+		return func(ctx context.Context) context.Context { return ctx }, func(context.Context, *Run, *Message, error) {
+			close(done)
+		}
+	}
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		UserMessageID: msgID,
+		Status:        RunStatusInterrupted, Error: runInterruptedError, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{
+			metaRestartCheckpoint: `{"session_id":"` + sess.ID + `","instance_id":"` + inst.ID + `"}`,
+			metaRestartTrajectory: `{"entries":[{"role":"user","content":"keep going"}]}`,
+		},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if n := svc.ResumeInterruptedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d", n)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume did not finish the reply slot")
+	}
+	if gotAsk != "运行后截屏发给我" {
+		t.Fatalf("ask=%q", gotAsk)
+	}
+}
+
 func TestResumeImpossibleIsTold(t *testing.T) {
 	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
 	defer svc.Close()

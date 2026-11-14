@@ -1306,8 +1306,9 @@ func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.Ha
 // CompanionDocumentShareUpdateHandler changes who can see a share and how long
 // it lasts. Only the owner may change it. The file, the revision, and the
 // readers' notes stay as they are; a password that is left empty keeps the
-// one already stored. A change that would leave two live links for the same
-// paper and audience is refused, exactly like creating a duplicate.
+// one already stored. Making a link private or replacing its password revokes
+// prior import and guest credentials. A change that would leave two live links
+// for the same paper and audience is refused, exactly like creating a duplicate.
 //
 //	PATCH /api/mobile/documents/shares/{token}
 func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
@@ -1440,6 +1441,14 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 		share.Target = target
 		share.GroupID = groupID
 		audienceChanged := companionShareAudienceChanged(previous, share)
+		passwordChanged := visibility == "private" && password != ""
+		if (audienceChanged && visibility == "private") || passwordChanged {
+			// Imported accounts bypass a private password, and guest grants do the
+			// same for off-Hub readers. Neither may survive a change that newly
+			// protects the link or replaces its password.
+			share.Importers = map[string]string{}
+			share.Guests = nil
+		}
 		// Any audience edit withdraws a nomination, even when the nominee can
 		// still open the new audience. The host seat is settled after the lock
 		// is released, because that check takes the group lock.

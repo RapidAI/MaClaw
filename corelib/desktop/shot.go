@@ -7,6 +7,7 @@ import (
 	"image"
 	_ "image/jpeg" // DecodeConfig for JPEG shots
 	"image/png"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -40,6 +41,11 @@ type ShotOptions struct {
 	// Marks draws the numbered boxes of the last accessibility probe
 	// (set-of-marks), as written by desktop_supervisor.py a11y.
 	Marks bool `json:"marks,omitempty"`
+	// Window is an X window id (0x1a2b or a decimal id) or a plain title.
+	// The capture raises that window and crops the composited root. An
+	// SDL or OpenGL window's own pixmap is empty, so import -window and
+	// xwd of the id come back black; the root crop is the pixels on screen.
+	Window string `json:"window,omitempty"`
 }
 
 // ShotMaxEdge bounds MaxWidth, MaxHeight, and a region side.
@@ -50,7 +56,7 @@ const ShotDefaultQuality = 80
 
 // Plain reports whether the options ask for nothing beyond the legacy shot.
 func (o ShotOptions) Plain() bool {
-	return o.MaxWidth == 0 && o.MaxHeight == 0 && o.Region.Empty() && (o.Format == "" || o.Format == "png") && !o.Cursor && !o.Marks
+	return o.MaxWidth == 0 && o.MaxHeight == 0 && o.Region.Empty() && (o.Format == "" || o.Format == "png") && !o.Cursor && !o.Marks && o.Window == ""
 }
 
 // Normalize validates the options and fills defaults. Format is lower-cased
@@ -86,6 +92,16 @@ func (o ShotOptions) Normalize() (ShotOptions, error) {
 		if r.X < 0 || r.Y < 0 || r.Width < 1 || r.Height < 1 || r.Width > ShotMaxEdge || r.Height > ShotMaxEdge || r.X > ShotMaxEdge || r.Y > ShotMaxEdge {
 			return o, fmt.Errorf("desktop screenshot region must have x,y >= 0 and a positive width and height")
 		}
+	}
+	window, err := ShotWindow(o.Window)
+	if err != nil {
+		return o, err
+	}
+	o.Window = window
+	if o.Window != "" {
+		// The window's geometry is the crop. A region as well would be a
+		// second rectangle the script cannot place on the window.
+		o.Region = ShotRegion{}
 	}
 	return o, nil
 }
@@ -164,6 +180,153 @@ func clampInt(v, lo, hi int) int {
 // shotMetaPrefix starts the first output line of ShotScript.
 const shotMetaPrefix = "MACLAW_SHOT"
 
+var shotWindowIDPattern = regexp.MustCompile(`^(?:0x[0-9a-fA-F]{1,8}|[0-9]{1,10})$`)
+
+// ShotWindow accepts an X window id or a plain title. Empty is no window.
+// A title may contain letters and spaces. Shell and regex metacharacters
+// are rejected so the id or title can be placed in the capture script.
+func ShotWindow(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if len(raw) > 80 {
+		return "", fmt.Errorf("desktop screenshot window is too long")
+	}
+	if shotWindowIDPattern.MatchString(raw) {
+		if shotWindowIDValue(raw) == 0 {
+			return "", fmt.Errorf("desktop screenshot window id is empty")
+		}
+		return raw, nil
+	}
+	if strings.ContainsAny(raw, "\r\n\x00`$\\;|&<>\"'*?[]{}()^") {
+		return "", fmt.Errorf("desktop screenshot window must be a window id or a plain title")
+	}
+	return raw, nil
+}
+
+func shotWindowIDValue(raw string) uint32 {
+	base := 10
+	digits := raw
+	if strings.HasPrefix(strings.ToLower(raw), "0x") {
+		base = 16
+		digits = raw[2:]
+	}
+	n, err := strconv.ParseUint(digits, base, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(n)
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// xdotoolLiteralName escapes a title for xdotool search --name, which is a
+// regular expression. The title is already free of shell metacharacters.
+func xdotoolLiteralName(title string) string {
+	var b strings.Builder
+	for _, r := range title {
+		switch r {
+		case '\\', '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// shotWindowPrelude resolves and raises the window before the root capture.
+// Raising first is what puts an SDL or OpenGL window into the composite;
+// capturing the window id itself reads an empty pixmap.
+func shotWindowPrelude(window string) string {
+	if window == "" {
+		return ""
+	}
+	quoted := shellSingleQuote(window)
+	var b strings.Builder
+	if shotWindowIDPattern.MatchString(window) {
+		b.WriteString("wid=" + quoted + "\n")
+	} else {
+		// The largest match is the frame on screen. Visible windows win; a
+		// minimized game is found by the second search and mapped below.
+		pattern := shellSingleQuote(xdotoolLiteralName(window))
+		b.WriteString(`wid=
+best=0
+consider() {
+  for id in "$@"; do
+    geo=$(xwininfo -id "$id" 2>/dev/null) || continue
+    gw=$(printf '%s\n' "$geo" | awk '/^[[:space:]]*Width:/ {print $NF; exit}')
+    gh=$(printf '%s\n' "$geo" | awk '/^[[:space:]]*Height:/ {print $NF; exit}')
+    case "$gw" in ''|*[!0-9]*) continue ;; esac
+    case "$gh" in ''|*[!0-9]*) continue ;; esac
+    # A tooltip or input-only window can share the title. Keeping it would
+    # hide a minimized game that the second search is there to find.
+    if [ "$gw" -lt 32 ] || [ "$gh" -lt 32 ]; then continue; fi
+    ga=$((gw*gh))
+    if [ "$ga" -gt "$best" ]; then best=$ga; wid=$id; fi
+  done
+}
+consider $(xdotool search --onlyvisible --name ` + pattern + ` 2>/dev/null)
+if [ -z "$wid" ]; then
+  consider $(xdotool search --name ` + pattern + ` 2>/dev/null)
+fi
+[ -n "$wid" ] || { echo "desktop screenshot window was not found" >&2; rm -rf "$d"; exit 1; }
+`)
+	}
+	// A missing id fails here. Importing the root first would spend a full
+	// frame grab and only then report that the window does not exist.
+	b.WriteString(`xwininfo -id "$wid" >/dev/null 2>&1 || { echo "desktop screenshot window was not found" >&2; rm -rf "$d"; exit 1; }
+`)
+	// Map first so a minimized game is on the composite, then raise and
+	// activate. --sync returns when the window manager has focused it;
+	// the sleep is one frame for an SDL buffer to present.
+	b.WriteString(`xdotool windowmap "$wid" >/dev/null 2>&1 || true
+xdotool windowraise "$wid" >/dev/null 2>&1 || true
+xdotool windowactivate --sync "$wid" >/dev/null 2>&1 || true
+sleep 0.3
+`)
+	return b.String()
+}
+
+// shotWindowGeometry reads the window frame from xwininfo and sets the crop.
+func shotWindowGeometry() string {
+	return `geo=$(xwininfo -id "$wid" 2>/dev/null) || { echo "desktop screenshot window was not found" >&2; rm -rf "$d"; exit 1; }
+ax=$(printf '%s\n' "$geo" | awk '/Absolute upper-left X:/ {print $NF; exit}')
+ay=$(printf '%s\n' "$geo" | awk '/Absolute upper-left Y:/ {print $NF; exit}')
+aw=$(printf '%s\n' "$geo" | awk '/^[[:space:]]*Width:/ {print $NF; exit}')
+ah=$(printf '%s\n' "$geo" | awk '/^[[:space:]]*Height:/ {print $NF; exit}')
+case "$ax" in ''|*[!0-9-]*|-*[!0-9]*|-) echo "desktop screenshot window has no geometry" >&2; rm -rf "$d"; exit 1 ;; esac
+case "$ay" in ''|*[!0-9-]*|-*[!0-9]*|-) echo "desktop screenshot window has no geometry" >&2; rm -rf "$d"; exit 1 ;; esac
+case "$aw" in ''|*[!0-9]*) echo "desktop screenshot window has no geometry" >&2; rm -rf "$d"; exit 1 ;; esac
+case "$ah" in ''|*[!0-9]*) echo "desktop screenshot window has no geometry" >&2; rm -rf "$d"; exit 1 ;; esac
+[ "$aw" -ge 1 ] && [ "$ah" -ge 1 ] || { echo "desktop screenshot window has no geometry" >&2; rm -rf "$d"; exit 1; }
+[ "$ax" -lt 0 ] && aw=$((aw+ax)) && ax=0
+[ "$ay" -lt 0 ] && ah=$((ah+ay)) && ay=0
+[ "$aw" -ge 1 ] && [ "$ah" -ge 1 ] || { echo "desktop screenshot window is outside the ${sw}x${sh} screen" >&2; rm -rf "$d"; exit 1; }
+[ "$ax" -lt "$sw" ] && [ "$ay" -lt "$sh" ] || { echo "desktop screenshot window is outside the ${sw}x${sh} screen" >&2; rm -rf "$d"; exit 1; }
+[ $((ax+aw)) -le "$sw" ] || aw=$((sw-ax))
+[ $((ay+ah)) -le "$sh" ] || ah=$((sh-ay))
+[ "$aw" -ge 1 ] && [ "$ah" -ge 1 ] || { echo "desktop screenshot window is outside the ${sw}x${sh} screen" >&2; rm -rf "$d"; exit 1; }
+rx=$ax; ry=$ay; rw=$aw; rh=$ah
+`
+}
+
+// shotWindowBlankGuard rejects a crop that is still an empty pixmap. A
+// uniform dark splash (mean above the cutoff) is kept. The check is skipped
+// when ImageMagick cannot report the statistic, so a policy that blocks
+// info: does not fail a real capture.
+func shotWindowBlankGuard() string {
+	return `stats=$(convert "$f" -format '%[fx:mean] %[fx:standard_deviation]' info: 2>/dev/null) || stats=
+if [ -n "$stats" ] && echo "$stats" | awk '($1+0 < 0.02 && $2+0 < 0.004) { bad=1 } END { exit (bad ? 0 : 1) }'; then
+  echo "desktop screenshot window is blank after raising it. Call action=screenshot with the same window again." >&2
+  rm -rf "$d"
+  exit 1
+fi
+`
+}
+
 // ShotScript is the container-side capture for options that are not Plain.
 // It captures like ScreenshotScript, optionally saves the full PNG under
 // name, then draws the pointer, crops, shrinks, and encodes with ImageMagick
@@ -190,9 +353,13 @@ func ShotScript(name string, opts ShotOptions) (string, error) {
 f="$d/screen.png"
 o="$d/out"
 command -v convert >/dev/null 2>&1 || { echo "desktop screenshot options need ImageMagick convert" >&2; rm -rf "$d"; exit 1; }
-import -window root "png:$f" >/dev/null 2>&1 || { rm -rf "$d"; exit 1; }
 `)
-	if safe != "" {
+	b.WriteString(shotWindowPrelude(opts.Window))
+	b.WriteString(`import -window root "png:$f" >/dev/null 2>&1 || { rm -rf "$d"; exit 1; }
+`)
+	// A window shot is saved after the crop. Saving $f here would store the
+	// whole desktop, including whatever else is open beside the window.
+	if safe != "" && opts.Window == "" {
 		path := desktopShotDir + "/" + safe
 		b.WriteString("mkdir -p " + desktopShotDir + ` && cp "$f" ` + path + " && chmod 644 " + path + ` || { rm -rf "$d"; exit 1; }` + "\n")
 	}
@@ -209,7 +376,8 @@ eval "$(xdotool getmouselocation --shell 2>/dev/null | grep -E '^[XY]=[0-9]+$')"
 	if opts.Cursor {
 		b.WriteString(`if [ "$cx" != "-" ]; then
   p="$cx,$cy $cx,$((cy+17)) $((cx+4)),$((cy+13)) $((cx+7)),$((cy+20)) $((cx+10)),$((cy+19)) $((cx+7)),$((cy+12)) $((cx+12)),$((cy+12))"
-  convert "$f" -fill black -stroke white -strokewidth 1 -draw "polygon $p" "png:$f" >/dev/null 2>&1 || { rm -rf "$d"; exit 1; }
+  convert "$f" -fill black -stroke white -strokewidth 1 -draw "polygon $p" "png:$d/draw.png" >/dev/null 2>&1 || { rm -rf "$d"; exit 1; }
+  mv "$d/draw.png" "$f"
 fi
 `)
 	}
@@ -218,19 +386,32 @@ fi
 		// primitives go inline instead (they hold only numbers and colors).
 		b.WriteString(`m="/tmp/.maclaw-a11y-$(echo "${DISPLAY#:}" | cut -d. -f1).mvg"
 if [ -s "$m" ]; then
-  convert "$f" -draw "$(cat "$m")" "png:$f" >/dev/null 2>&1 || { rm -rf "$d"; exit 1; }
+  convert "$f" -draw "$(cat "$m")" "png:$d/draw.png" >/dev/null 2>&1 || { rm -rf "$d"; exit 1; }
+  mv "$d/draw.png" "$f"
 fi
 `)
 	}
-	rx, ry, rw, rh := "0", "0", "$sw", "$sh"
-	if !opts.Region.Empty() {
+	b.WriteString("rx=0; ry=0; rw=$sw; rh=$sh\n")
+	rx, ry, rw, rh := "$rx", "$ry", "$rw", "$rh"
+	if opts.Window != "" {
+		b.WriteString(shotWindowGeometry())
+		// Crop into a second file. convert refuses to read and write the
+		// same path, and an in-place crop comes back truncated.
+		b.WriteString(`convert "$f" -crop "${rw}x${rh}+${rx}+${ry}" +repage "png:$d/win.png" >/dev/null 2>&1 || { rm -rf "$d"; exit 1; }
+mv "$d/win.png" "$f"
+`)
+		b.WriteString(shotWindowBlankGuard())
+		if safe != "" {
+			path := desktopShotDir + "/" + safe
+			b.WriteString("mkdir -p " + desktopShotDir + ` && cp "$f" ` + path + " && chmod 644 " + path + ` || { rm -rf "$d"; exit 1; }` + "\n")
+		}
+	} else if !opts.Region.Empty() {
 		r := opts.Region
 		b.WriteString(fmt.Sprintf(`rx=%d; ry=%d; rw=%d; rh=%d
 [ "$rx" -lt "$sw" ] && [ "$ry" -lt "$sh" ] || { echo "desktop screenshot region is outside the ${sw}x${sh} screen" >&2; rm -rf "$d"; exit 1; }
 [ $((rx+rw)) -le "$sw" ] || rw=$((sw-rx))
 [ $((ry+rh)) -le "$sh" ] || rh=$((sh-ry))
 `, r.X, r.Y, r.Width, r.Height))
-		rx, ry, rw, rh = "$rx", "$ry", "$rw", "$rh"
 		args = append(args, `-crop "${rw}x${rh}+${rx}+${ry}"`, "+repage")
 	}
 	if opts.MaxWidth > 0 || opts.MaxHeight > 0 {
@@ -251,8 +432,14 @@ fi
 		// JPEG has no alpha; a flat background avoids a black fill.
 		args = append(args, "-background", "white", "-alpha", "remove")
 	}
-	args = append(args, `"`+opts.Format+`:$o"`)
-	b.WriteString("convert " + strings.Join(args, " ") + " >/dev/null 2>&1 || { rm -rf \"$d\"; exit 1; }\n")
+	if opts.Format == "png" && opts.MaxWidth == 0 && opts.MaxHeight == 0 && len(args) == 1 {
+		// The pixels are already the image to send. A second convert only
+		// re-encodes the same PNG.
+		b.WriteString("cp \"$f\" \"$o\" || { rm -rf \"$d\"; exit 1; }\n")
+	} else {
+		args = append(args, `"`+opts.Format+`:$o"`)
+		b.WriteString("convert " + strings.Join(args, " ") + " >/dev/null 2>&1 || { rm -rf \"$d\"; exit 1; }\n")
+	}
 	b.WriteString(`set -- $(identify -format '%w %h' "$o" 2>/dev/null | head -n 1)
 ow=$1; oh=$2
 [ -n "$ow" ] && [ -n "$oh" ] || { rm -rf "$d"; exit 1; }

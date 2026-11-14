@@ -99,11 +99,14 @@ type RigClip struct {
 	DurationMS int                      `json:"duration_ms"`
 	Loop       bool                     `json:"loop,omitempty"`
 	Tracks     map[string][]RigKeyframe `json:"tracks,omitempty"`
-	// TravelX is optional desktop locomotion in design-canvas pixels over one
-	// full playback of this clip. Positive moves the pet right. The host scales
-	// by petSize/256, clamps to the work area, and turns around at the edges.
-	// Zero keeps the window where it is. Packs cannot read the screen.
+	// TravelX and TravelY are optional desktop locomotion in design-canvas
+	// pixels over one full playback. Their length is the speed. Positive X is
+	// right and positive Y is down in screen space. The host scales by
+	// petSize/256, then walks that speed horizontally, vertically, and on a
+	// diagonal, turning at the work-area edges. Zero on both axes keeps the
+	// window where it is. Packs cannot read the screen.
 	TravelX float64 `json:"travel_x,omitempty"`
+	TravelY float64 `json:"travel_y,omitempty"`
 	// Cue names a built-in action sound. Sound, when non-empty, replaces Cue.
 	// Playback is once per clip start unless SoundLoop is set.
 	Cue string `json:"cue,omitempty"`
@@ -134,10 +137,10 @@ type RigKeyframe struct {
 }
 
 const (
-	maxRigBones          = 24
-	maxRigSlots          = 32
-	maxRigTextures       = 32
-	maxRigKeyframes      = 240
+	maxRigBones     = 24
+	maxRigSlots     = 32
+	maxRigTextures  = 32
+	maxRigKeyframes = 240
 	// A full-body action library (walk, run, jump, bend, plus idle phases)
 	// does not fit in the original 1,200-keyframe cap. 4,800 is still a hard
 	// budget: per-track 240 and the texture caps are unchanged.
@@ -327,6 +330,9 @@ func ValidateRig(rig *Rig, assets *PetPackRigAssets) error {
 func validateClipMotion(name string, clip RigClip) error {
 	if math.IsNaN(clip.TravelX) || math.IsInf(clip.TravelX, 0) || math.Abs(clip.TravelX) > maxRigTravelX {
 		return fmt.Errorf("clip %q travel_x must be within ±%d design pixels", name, maxRigTravelX)
+	}
+	if math.IsNaN(clip.TravelY) || math.IsInf(clip.TravelY, 0) || math.Abs(clip.TravelY) > maxRigTravelX {
+		return fmt.Errorf("clip %q travel_y must be within ±%d design pixels", name, maxRigTravelX)
 	}
 	if clip.Cue != "" && !IsActionCue(clip.Cue) {
 		return fmt.Errorf("clip %q has unknown sound cue %q", name, clip.Cue)

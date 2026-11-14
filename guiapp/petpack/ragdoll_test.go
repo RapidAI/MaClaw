@@ -63,6 +63,9 @@ func TestRagdollLargeActionsAndCues(t *testing.T) {
 	if think := rig.Clips["think_loop"]; think.TravelX < 40 || think.Cue != "step" || !think.SoundLoop {
 		t.Fatalf("think_loop = %+v", think)
 	}
+	if breathe := rig.Clips["idle_breathe_loop"]; breathe.TravelX < 40 || breathe.Cue != "" {
+		t.Fatalf("idle_breathe_loop = %+v", breathe)
+	}
 	if listen := rig.Clips["listen_loop"]; listen.Cue != "" || listen.TravelX != 0 {
 		t.Fatal("listening must stay still and silent")
 	}
@@ -148,13 +151,14 @@ func TestActionSoundCatalogAndTravelClamp(t *testing.T) {
 		Bones:   []RigBone{{Name: "root"}},
 		Slots:   []RigSlot{{Name: "body", Bone: "root", Texture: "rig/body.png"}},
 		Clips: map[string]RigClip{
-			"bad_travel": {DurationMS: 400, TravelX: 999},
-			"bad_cue":    {DurationMS: 400, Cue: "meow"},
-			"bad_loop":   {DurationMS: 400, SoundLoop: true},
+			"bad_travel":   {DurationMS: 400, TravelX: 999},
+			"bad_travel_y": {DurationMS: 400, TravelY: 999},
+			"bad_cue":      {DurationMS: 400, Cue: "meow"},
+			"bad_loop":     {DurationMS: 400, SoundLoop: true},
 		},
 	}
 	assets := &PetPackRigAssets{Definition: "rig/pet-rig.json", Textures: []string{"rig/body.png"}}
-	for _, name := range []string{"bad_travel", "bad_cue", "bad_loop"} {
+	for _, name := range []string{"bad_travel", "bad_travel_y", "bad_cue", "bad_loop"} {
 		one := *rig
 		one.Clips = map[string]RigClip{name: rig.Clips[name]}
 		if err := ValidateRig(&one, assets); err == nil {

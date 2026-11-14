@@ -39,6 +39,15 @@ func NotContent(text string) bool {
 	}
 }
 
+// RecurringWorkPrompt tells the bot to register work that should happen
+// again. The judgment is the bot's, from the work and the conversation.
+// It is pinned with the system segment for the whole conversation.
+const RecurringWorkPrompt = "一件事若要反复做，调用 bot_schedule 登记成定时任务。一次就能做完的事不要登记。\n" +
+	"判断来自当前这件事和已经说过的话，不限于这句话写了周期。搜索、查看、汇报、清理，以及其它要隔一段时间再做的事，都一样。\n" +
+	"name 是这条定时任务的稳定名字。同一个名字是同一条，instruction 写成以后每一轮要做的整件事。另一件反复的事用另一个名字。\n" +
+	"周期写 interval_minutes。钟点要同时写 hour 和 minute。没写的时间沿用这条任务已有的值。新建时必须给出周期，或同时给出 hour 和 minute。对方没说隔多久，就按这件事该隔多久选一个，并在回复里说明选了多久。\n" +
+	"登记之后，这一轮对方要你现在做的仍然做。定时任务负责以后的轮次。到点的那一轮不要再次登记同一条，除非工作或周期变了。取消用 action=cancel 并给出 name。列出用 action=list。"
+
 // PinWorthSaying appends the stable interruption rule once.
 func PinWorthSaying(prompt string) string {
 	if strings.Contains(prompt, WorthSayingPrompt) {
@@ -49,6 +58,18 @@ func PinWorthSaying(prompt string) string {
 		return WorthSayingPrompt
 	}
 	return prompt + "\n\n" + WorthSayingPrompt
+}
+
+// PinRecurringWork appends the timer rule once.
+func PinRecurringWork(prompt string) string {
+	if strings.Contains(prompt, RecurringWorkPrompt) {
+		return prompt
+	}
+	prompt = strings.TrimRight(prompt, "\n")
+	if prompt == "" {
+		return RecurringWorkPrompt
+	}
+	return prompt + "\n\n" + RecurringWorkPrompt
 }
 
 // SpeakInput is one finished round, before any surface is chosen.

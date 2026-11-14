@@ -3053,6 +3053,10 @@ export function InstallPetPackZip(arg1) {
   return window['go']['main']['App']['InstallPetPackZip'](arg1);
 }
 
+export function ImportDSHPetFolder(arg1) {
+  return window['go']['main']['App']['ImportDSHPetFolder'](arg1);
+}
+
 export function InstallPetStorePack(arg1) {
   return window['go']['main']['App']['InstallPetStorePack'](arg1);
 }
@@ -3814,6 +3818,9 @@ export function SaveBotMemory(arg1, arg2, arg3, arg4) {
 }
 export function UpdateBotMemory(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['UpdateBotMemory'](arg1, arg2, arg3, arg4, arg5);
+}
+export function UpdateBotMemoryWithVersion(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['UpdateBotMemoryWithVersion'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 export function DeleteBotMemory(arg1, arg2) {
   return window['go']['main']['App']['DeleteBotMemory'](arg1, arg2);
@@ -6081,6 +6088,10 @@ export function UpdateMaclawAppPackageSubmissionStatus(arg1, arg2) {
 
 export function UpdateMemory(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['UpdateMemory'](arg1, arg2, arg3, arg4);
+}
+
+export function UpdateMemoryWithVersion(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateMemoryWithVersion'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function UpdateNLSkill(arg1) {

@@ -2101,16 +2101,32 @@ func fileCompanionShareOrigin(link, homeHub string) (string, bool) {
 	return origin, true
 }
 
-func fileCompanionSameSite(left, right *url.URL) bool {
-	if left == nil || right == nil {
+func fileCompanionSameOrigin(left, right *url.URL) bool {
+	if left == nil || right == nil || left.Hostname() == "" {
 		return false
 	}
-	return strings.EqualFold(left.Hostname(), right.Hostname()) && left.Hostname() != ""
+	if !strings.EqualFold(left.Scheme, right.Scheme) || !strings.EqualFold(left.Hostname(), right.Hostname()) {
+		return false
+	}
+	return fileCompanionURLPort(left) == fileCompanionURLPort(right)
 }
 
-// fileCompanionDirectClient follows a redirect only when it stays on the same
-// host. A share request must not carry a reader grant, or the home Hub token,
-// across to some other site.
+func fileCompanionURLPort(value *url.URL) string {
+	if port := value.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(value.Scheme, "https") {
+		return "443"
+	}
+	if strings.EqualFold(value.Scheme, "http") {
+		return "80"
+	}
+	return ""
+}
+
+// fileCompanionDirectClient follows a redirect only within one origin. Scheme,
+// host, and port must all match so credentials never cross services or downgrade
+// from HTTPS to HTTP.
 func fileCompanionDirectClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
@@ -2118,7 +2134,7 @@ func fileCompanionDirectClient(timeout time.Duration) *http.Client {
 			if len(via) == 0 || len(via) >= 3 || req == nil || req.URL == nil || req.URL.User != nil {
 				return http.ErrUseLastResponse
 			}
-			if !fileCompanionSameSite(via[len(via)-1].URL, req.URL) {
+			if !fileCompanionSameOrigin(via[len(via)-1].URL, req.URL) {
 				return http.ErrUseLastResponse
 			}
 			return nil
@@ -2312,7 +2328,7 @@ func fileCompanionShareMessage(body []byte) string {
 // ShareFileCompanionDocument uploads the open paper together with its
 // highlights and chat, and returns a link. days 0 is permanent. A private
 // share needs a password of 4 to 64 characters. person needs an email or
-// phone. group needs a group id the caller administers.
+// phone. group needs a group id whose membership the caller already accepted.
 func (a *App) ShareFileCompanionDocument(path, visibility, password, target, highlights string, days int) (FileCompanionShareResult, error) {
 	if a == nil {
 		return FileCompanionShareResult{}, errors.New("app unavailable")
@@ -2520,7 +2536,8 @@ func (a *App) adoptDuplicateFileCompanionShare(canonical string, shareErr error,
 // UpdateFileCompanionShare changes who can see one of this person's shares and
 // how long it lasts. The document, its highlights, and the readers' notes stay
 // as they are. An empty password keeps the one already on the link, and a
-// negative days keeps the expiry the link already has.
+// negative days keeps the expiry the link already has. The Hub revokes old
+// reader credentials when a link becomes private or its password changes.
 func (a *App) UpdateFileCompanionShare(token, visibility, password, target string, days int) (FileCompanionShareResult, error) {
 	if a == nil {
 		return FileCompanionShareResult{}, errors.New("app unavailable")
@@ -2788,7 +2805,7 @@ func postFileCompanionShareTo(endpoint, viewer, name, visibility, password, targ
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		failure := &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
 		var payload struct {
-			Token string                 `json:"token"`
+			Token string                  `json:"token"`
 			Share *fileCompanionShareView `json:"share"`
 		}
 		if json.Unmarshal(body, &payload) == nil {

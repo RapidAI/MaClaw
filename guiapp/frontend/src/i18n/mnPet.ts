@@ -137,7 +137,7 @@ export const petMnByEnglish: Record<string, string> = {
     'User packs: ': 'Хэрэглэгчийн багц: ',
     'Install failed: ': 'Суулгалт амжилтгүй: ',
     'Size': 'Хэмжээ',
-    '72-96px is a comfortable desktop range.': '72-96px нь ширээнд тохиромжтой хүрээ.',
+    '200-240px is enough to see her as a person.': '200-240px дээр тэр хүн шиг харагдана.',
     'Interaction Style': 'Харилцах хэв маяг',
     'Controls motion pace and promptiveness.': 'Хөдөлгөөний давтамж ба сануулгын идэвхийг удирдана.',
     'Motion Sound': 'Хөдөлгөөний дуу',
@@ -150,6 +150,7 @@ export const petMnByEnglish: Record<string, string> = {
     'Conversation Mode': 'Ярианы горим',
     'Readback': 'Уншлага',
     'Ask again when speech is unclear': 'Яриа тодорхойгүй үед дахин асуух',
+    'Import DeepSeek sprite folder': 'DeepSeek sprite хавтас оруулах',
 };
 
 export function petMn(lang: string | undefined | null, en: string): string {

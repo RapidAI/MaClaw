@@ -58,6 +58,7 @@ func (f *desktopFrame) set(shot desktop.Shot, opts desktop.ShotOptions) {
 	shot.Data = nil
 	opts.Region = desktop.ShotRegion{}
 	opts.Marks = false
+	opts.Window = ""
 	f.mu.Lock()
 	f.shot, f.opts = shot, opts
 	f.mu.Unlock()
@@ -161,7 +162,7 @@ func desktopCaptureShot(ctx context.Context, scope agentruntime.Scope, display, 
 	if err != nil {
 		return "", desktop.Shot{}, err
 	}
-	zoom := !opts.Region.Empty()
+	zoom := !opts.Region.Empty() || opts.Window != ""
 	if !zoom {
 		frame.set(shot, opts)
 	}
@@ -177,7 +178,10 @@ func desktopCaptureShot(ctx context.Context, scope agentruntime.Scope, display, 
 	}
 	text := fmt.Sprintf("Desktop screenshot of display %s: image %dx%d (%s, %d KB) of a %dx%d screen, scale %.4f.",
 		strings.TrimSpace(display), shot.ImageWidth, shot.ImageHeight, shot.MIME, len(shot.Data)/1024, shot.ScreenWidth, shot.ScreenHeight, shot.Scale)
-	if zoom {
+	if opts.Window != "" {
+		text += fmt.Sprintf(" Window %q was raised and cropped from the composited screen (x=%d y=%d %dx%d), not from that window's X pixmap. import -window and xwd are black for SDL and OpenGL. Coordinates for actions still use the last full screenshot, not this crop.",
+			opts.Window, shot.Region.X, shot.Region.Y, shot.Region.Width, shot.Region.Height)
+	} else if zoom {
 		text += fmt.Sprintf(" Zoom of screen region x=%d y=%d %dx%d. Coordinates for actions still use the last full screenshot, not this zoom.",
 			shot.Region.X, shot.Region.Y, shot.Region.Width, shot.Region.Height)
 	} else if clickPixels {
@@ -344,10 +348,14 @@ func operateDesktopSteps(ctx context.Context, scope agentruntime.Scope, display,
 	}
 	frame := desktopFrameFor(scope)
 	shotFrame, base := frame.get()
+	batchWindow := ""
 	if opts, changed, optErr := computeruse.ShotOptionsFromArgs(args, shotFrame, base); optErr != nil {
 		return "", optErr
 	} else if changed {
-		// New screenshot options apply from this batch's first shot on.
+		// Window stays on this batch only. The frame keeps the scale options
+		// a later full screenshot still uses.
+		batchWindow = opts.Window
+		opts.Window = ""
 		opts.Region = desktop.ShotRegion{}
 		opts = desktopPinShotSize(opts)
 		frame.mu.Lock()
@@ -367,6 +375,7 @@ func operateDesktopSteps(ctx context.Context, scope agentruntime.Scope, display,
 		return desktopAppCommand(display, argv...)
 	}
 	env := desktopComputerEnv(ctx, scope, display, frame, run, beforeInsert, browserRaises)
+	env.ShotWindow = batchWindow
 	if action == "computer" {
 		env.StructureFirst = true
 		env.PageNeedsPerson = desktopPageNeedFor(scope)

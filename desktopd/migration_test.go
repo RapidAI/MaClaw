@@ -470,6 +470,16 @@ func TestScreenshotOptionsReturnGeometryHeaders(t *testing.T) {
 	if resp.Header.Get("X-Desktop-Screen-Size") != "1280x800" || resp.Header.Get("X-Desktop-Shot-Scale") != "0.800000" || resp.Header.Get("X-Desktop-Cursor") != "10,20" {
 		t.Fatalf("headers=%v", resp.Header)
 	}
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/desktops/screenshot", strings.NewReader(`{"tenant_id":"tenant","user_id":"alice","window":"NEON SERPENT"}`))
+	req.Header.Set("Authorization", "Bearer primary-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(script, "windowactivate") || strings.Contains(script, `import -window "$wid"`) {
+		t.Fatalf("window status=%d script=%s", resp.StatusCode, script)
+	}
 	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/desktops/screenshot", strings.NewReader(`{"tenant_id":"tenant","user_id":"alice","format":"gif"}`))
 	req.Header.Set("Authorization", "Bearer primary-token")
 	resp, err = http.DefaultClient.Do(req)

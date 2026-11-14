@@ -133,6 +133,9 @@ type PublishReport struct {
 	// Pending: the post is out but the site still reviews it (审核中); its
 	// public link may not open for others yet.
 	Pending string `json:"pending,omitempty"`
+	// Account is the signed-in name a post_url template's {user} was filled
+	// from (a site-wide cookie or a profile link). Empty when unknown.
+	Account string `json:"account,omitempty"`
 	// Method records which branch each primitive took (exploration
 	// recording; see publishRun.note): the site experience stores it.
 	Method map[string]string `json:"method,omitempty"`
@@ -466,6 +469,11 @@ type publishRun struct {
 	lazyImages bool
 	// mdLinks: the stored picture links a markdown editor got, in order.
 	mdLinks []string
+	// pageLinksAt caches the anchors scraped for that page URL. A later
+	// navigation (the account's post list) must not reuse them.
+	pageLinksAt  string
+	pageLinksOK  bool
+	pageLinkList []string
 }
 
 func (p *publishRun) send(method string, params interface{}) (json.RawMessage, error) {
@@ -1908,12 +1916,15 @@ func (p *publishRun) verify() (string, error) {
 		// {"data":{"id":"170775764"}} with no URL; the success page and the
 		// account cookie still have to build https://blog.csdn.net/{user}/article/details/{id}.
 		// Stopping on the id left the reply with no link.
-		link = publishPublicLink(link)
-		if link != "" {
+		resolved := resolvePostLink(p.spec.PostURL, id, link, "")
+		if resolved == "" && id != "" && strings.Contains(p.spec.PostURL, "{user}") {
+			resolved = resolvePostLink(p.spec.PostURL, id, "", p.accountName())
+		}
+		if resolved != "" {
 			p.rep.PostID = id
-			p.rep.ResultURL = link
+			p.rep.ResultURL = resolved
 			p.rep.Evidence = "response"
-			return fmt.Sprintf("the site answered the submit with post id %q %s", id, link), nil
+			return fmt.Sprintf("the site answered the submit with post id %q %s", id, resolved), nil
 		}
 		if id != "" {
 			p.rep.PostID = id
@@ -2012,12 +2023,25 @@ func (p *publishRun) checkAPI(key string) (string, error) {
 		}
 		_ = json.Unmarshal([]byte(out), &o)
 		if err == nil && o.Found {
-			p.rep.PostID = o.ID
-			if o.Link != "" {
-				if strings.HasPrefix(o.Link, "//") {
-					o.Link = "https:" + o.Link
-				}
-				p.rep.ResultURL = o.Link
+			// An id with no public URL is not the post when the profile
+			// builds that URL from the account name. CSDN's list answer is
+			// often just the id; stopping there published 170775764 with
+			// nothing to open.
+			if o.ID != "" {
+				p.rep.PostID = o.ID
+			}
+			link := resolvePostLink(p.spec.PostURL, o.ID, o.Link, "")
+			if link == "" && o.ID != "" && strings.Contains(p.spec.PostURL, "{user}") {
+				link = resolvePostLink(p.spec.PostURL, o.ID, "", p.accountName())
+			}
+			if link == "" && strings.Contains(p.spec.PostURL, "{user}") {
+				// The row is already in the list. Polling will not grow the
+				// account cookie or the public URL, and it would burn the
+				// step budget before the account's own list page is opened.
+				return "", fmt.Errorf("post list API %s lists %q (id %s) but not its public link", p.spec.VerifyAPI, key, o.ID)
+			}
+			if link != "" {
+				p.rep.ResultURL = strings.SplitN(link, "#", 2)[0]
 			}
 			return fmt.Sprintf("post list API lists %q (id %s)", key, o.ID), nil
 		}
@@ -2039,7 +2063,7 @@ func (p *publishRun) checkResult(key string, budget time.Duration, listed bool) 
 	deadline := time.Now().Add(budget)
 	reloaded := false
 	for {
-		out, _ := p.eval(`(() => { const key = ` + jsq(normText(key)) + `; const n = s => (s || '').replace(/\s+/g, ''); const has = n(document.body ? document.body.innerText : '').includes(key); const a = [...document.querySelectorAll('a[href]')].find(a => n(a.innerText).includes(key) || n(a.closest('section,li,article,div') ? a.closest('section,li,article,div').innerText : '').includes(key)); let id = ''; if (has && !a) { const els = [...document.querySelectorAll('body *')].filter(e => e.children.length < 3 && n(e.innerText).includes(key)); let e = els[0]; for (let i = 0; e && i < 6 && !id; i++, e = e.parentElement) { for (const x of [e, ...e.querySelectorAll('*')]) { for (const at of x.attributes) { const m = (at.value || '').match(/\b([0-9a-f]{24}|[0-9]{15,20})\b/); if (m) { id = m[1]; break; } } if (id) break; } } } return JSON.stringify({url: location.href, has, link: a ? a.href : '', id}); })()`)
+		out, _ := p.eval(`(() => { const key = ` + jsq(normText(key)) + `; const n = s => (s || '').replace(/\s+/g, ''); const has = n(document.body ? document.body.innerText : '').includes(key); const anchors = [...document.querySelectorAll('a[href]')]; const own = anchors.find(a => n(a.innerText).includes(key)); const a = own || anchors.find(a => n(a.closest('section,li,article,div') ? a.closest('section,li,article,div').innerText : '').includes(key)); let id = ''; if (has && !a) { const els = [...document.querySelectorAll('body *')].filter(e => e.children.length < 3 && n(e.innerText).includes(key)); let e = els[0]; for (let i = 0; e && i < 6 && !id; i++, e = e.parentElement) { for (const x of [e, ...e.querySelectorAll('*')]) { for (const at of x.attributes) { const m = (at.value || '').match(/\b([0-9a-f]{24}|[0-9]{15,20})\b/); if (m) { id = m[1]; break; } } if (id) break; } } } return JSON.stringify({url: location.href, has, link: a ? a.href : '', id}); })()`)
 		var o struct {
 			URL  string `json:"url"`
 			Has  bool   `json:"has"`
@@ -2048,14 +2072,18 @@ func (p *publishRun) checkResult(key string, budget time.Duration, listed bool) 
 		}
 		_ = json.Unmarshal([]byte(out), &o)
 		if o.Has {
-			result := o.URL
-			if listed && o.Link != "" {
-				result = o.Link
+			postID := ""
+			if p.rep != nil {
+				postID = p.rep.PostID
 			}
-			result = publishPublicLink(result)
+			var links []string
+			if postID != "" {
+				links = p.pageLinksNow()
+			}
+			result := pickResultURL(p.spec.PostURL, postID, listed, o.URL, o.Link, links)
 			if result != "" {
 				p.rep.ResultURL = result
-				if listed && o.ID != "" {
+				if listed && o.ID != "" && p.rep.PostID == "" {
 					p.rep.PostID = o.ID
 				}
 				return fmt.Sprintf("result page %s shows %q", result, key), nil

@@ -1,6 +1,9 @@
 package memory
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // ManualMemorySourceType marks memories explicitly created or edited by the user.
 const ManualMemorySourceType = "manual"
@@ -55,6 +58,97 @@ func (s *Store) UpdateManualMemory(id, content string, category Category, tags [
 		Tags:       tags,
 		SourceType: ManualMemorySourceType,
 	})
+}
+
+// UpdateManualMemoryIfUnchanged applies a manual edit only when the entry still matches expected.
+func (s *Store) UpdateManualMemoryIfUnchanged(id, content string, category Category, tags []string, expected Entry) (bool, error) {
+	return s.updateManualMemoryForOwnerIfUnchanged(id, content, category, tags, "", nil, expected)
+}
+
+func (s *Store) updateManualMemoryForOwnerIfUnchanged(id, content string, category Category, tags []string, owner string, boundary *MemoryBoundary, expected Entry) (bool, error) {
+	if s == nil {
+		return false, fmt.Errorf("memory_store: not initialized")
+	}
+	id = strings.TrimSpace(id)
+	content = strings.TrimSpace(content)
+	if id == "" {
+		return false, fmt.Errorf("memory_store: entry id must not be empty")
+	}
+	if content == "" {
+		return false, fmt.Errorf("memory_store: content must not be empty")
+	}
+	if err := ScanForInjection(content); err != nil {
+		return false, fmt.Errorf("memory_store: rejected: %w", err)
+	}
+	content = redactSecretsInMemory(content)
+
+	s.mu.RLock()
+	var updated Entry
+	found := false
+	for _, entry := range s.entries {
+		if entry.ID == id {
+			updated = entry
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.mu.RUnlock()
+		return false, fmt.Errorf("memory_store: entry %q not found", id)
+	}
+	if !entryMatchesExpectation(updated, map[string]Entry{id: expected}, id) {
+		s.mu.RUnlock()
+		return false, nil
+	}
+	ownerForDup := updated.OwnerID
+	if owner != "" {
+		ownerForDup = owner
+	}
+	duplicateID := ""
+	for _, entry := range s.entries {
+		if !entry.IsActive() || entry.ID == id || strings.TrimSpace(entry.Content) != content {
+			continue
+		}
+		if category != "" && MapToCanonical(entry.Category) != MapToCanonical(category) {
+			continue
+		}
+		if !memoryOwnersEqual(entry.OwnerID, ownerForDup) || distinctProjectRecords(entry, updated) {
+			continue
+		}
+		duplicateID = entry.ID
+		break
+	}
+	s.mu.RUnlock()
+	if duplicateID != "" {
+		return false, fmt.Errorf("memory_store: duplicate content (matches entry %q)", duplicateID)
+	}
+
+	contentChanged := updated.Content != content
+	if contentChanged {
+		updated.InvalidAt = nil
+		updated.Embedding = nil
+	}
+	updated.Content = content
+	updated.Category = category
+	updated.Tags = append([]string(nil), tags...)
+	updated.SourceType = ManualMemorySourceType
+	updated.CompactForm = ""
+	updated.ContentHash = computeContentHash(content)
+	updated.Stale = false
+	if owner != "" {
+		updated.OwnerID = owner
+	}
+	if boundary != nil {
+		updated.Boundary = cloneMemoryBoundary(boundary)
+	}
+	applied, err := s.UpdateEntriesAndDeleteIDsIfUnchanged([]Entry{updated}, nil, map[string]Entry{id: expected})
+	if err != nil || !applied {
+		return applied, err
+	}
+	if contentChanged {
+		s.scheduleStoredEntryEmbedding(id)
+	}
+	return true, nil
 }
 
 // FormatMemorySavedForTool returns the shared short success message used by

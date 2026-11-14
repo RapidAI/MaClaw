@@ -112,6 +112,41 @@ func TestSiteExperienceLearnVerifyRetireRollback(t *testing.T) {
 	}
 }
 
+func TestLearnedCSDNKeepsThePublicLinkFields(t *testing.T) {
+	withSiteExpRoot(t)
+	seed := siteExpSeed("csdn")
+	if seed == nil || seed.Profile.PostURL == "" || seed.Profile.UserCookie != "UserName" || browser.SuccessPatternCaptures(seed.Profile.SuccessURL) < 1 {
+		t.Fatalf("seed %+v", seed)
+	}
+	spec := browser.PublishSpec{
+		EditorURL:  seed.Profile.EditorURL,
+		VerifyURL:  "https://blog.csdn.net/",
+		SuccessURL: `^https://mp\.csdn\.net/mp_blog/creation/success/\d+`,
+		PostURL:    seed.Profile.PostURL,
+		UserCookie: seed.Profile.UserCookie,
+		Title:      "t",
+	}
+	learned := siteExpLearned(seed.Profile, spec)
+	if learned.VerifyURL != seed.Profile.VerifyURL || learned.SuccessURL != seed.Profile.SuccessURL || learned.PostURL != seed.Profile.PostURL || learned.UserCookie != "UserName" {
+		t.Fatalf("learned dropped the public link: verify %q success %q post %q cookie %q", learned.VerifyURL, learned.SuccessURL, learned.PostURL, learned.UserCookie)
+	}
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u"}
+	siteExpRecord(scope, "csdn", false, spec, liveRep("redirect", map[string]string{"submit": "panel_confirm"}), nil)
+	if e := siteExpLoad("csdn"); e == nil || e.Profile.PostURL == "" || e.Profile.UserCookie != "UserName" || e.Profile.VerifyURL != seed.Profile.VerifyURL {
+		t.Fatalf("saved %+v", e)
+	}
+	// A later verified run that passes the homepage must not replace the list.
+	bad := spec
+	bad.VerifyURL = "https://blog.csdn.net/"
+	bad.SuccessURL = `^https://mp\.csdn\.net/mp_blog/creation/success/\d+`
+	bad.PostURL = ""
+	bad.UserCookie = ""
+	siteExpRecord(scope, "csdn", true, bad, liveRep("list", map[string]string{"submit": "panel_confirm"}), nil)
+	if e := siteExpLoad("csdn"); e == nil || e.Profile.VerifyURL != seed.Profile.VerifyURL || browser.SuccessPatternCaptures(e.Profile.SuccessURL) < 1 || e.Profile.PostURL == "" || e.Profile.UserCookie != "UserName" {
+		t.Fatalf("second learn %+v", e)
+	}
+}
+
 func TestSiteExperienceSeedRetireFallsBackAndBlocksExpire(t *testing.T) {
 	withSiteExpRoot(t)
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u"}

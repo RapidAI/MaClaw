@@ -13,15 +13,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/hub/internal/remotecontrol"
 )
 
-var remoteControlFederationClient = &http.Client{
-	Timeout: 23 * time.Second,
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+var remoteControlFederationClient = func() *http.Client {
+	client := remote.NewHubHTTPClient()
+	client.Timeout = 23 * time.Second
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
-	},
-}
+	}
+	return client
+}()
+
+const remoteControlFederationStreamConcurrency = 16
+
+var remoteControlFederationStreamSlots = make(chan struct{}, remoteControlFederationStreamConcurrency)
 
 type remoteControlFederationRequest struct {
 	GrantID               string          `json:"grant_id,omitempty"`
@@ -43,6 +50,9 @@ type remoteControlFederationRequest struct {
 }
 
 func remoteControlRelayPost(ctx context.Context, endpoint string, payload any) ([]byte, error) {
+	if err := companionFederationEndpoint(endpoint); err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -297,7 +307,13 @@ func (h remoteControlHandler) relayControlledStream(machineID string, payload js
 	// Federated grant: this Hub cannot reach the controller's machine. Hand
 	// the event to the controller's Hub over the federation channel; loss is
 	// acceptable (fire-and-forget mirror, transcript poll is the fallback).
+	select {
+	case remoteControlFederationStreamSlots <- struct{}{}:
+	default:
+		return
+	}
 	go func() {
+		defer func() { <-remoteControlFederationStreamSlots }()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if _, err := remoteControlRelayPost(ctx, grant.ControllerHub+"/api/remote-control/federation/grants/"+grant.ID+"/stream", remoteControlFederationRequest{

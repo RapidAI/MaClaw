@@ -261,6 +261,7 @@ func runServer(ctx context.Context) error {
 	// not exist before initScheduler returns. Reconcile inside init still
 	// finishes before the clock fires.
 	schMgr := initScheduler(dataRoot, svc, executor)
+	svc.ResumeExecutionHooks = desktopResumeExecutionHooks
 	svc.ResumeInterruptedRuns(context.Background())
 	if schMgr != nil {
 		defer func() {

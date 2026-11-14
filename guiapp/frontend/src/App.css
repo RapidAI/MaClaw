@@ -37689,28 +37689,27 @@ body.companion-pdf-translation-dragging * {
   line-height: 1.45;
   color: var(--theme-danger, #dc2626);
 }
-/* Audience: four equal tiles, icon over label, so the row reads as one
-   control instead of four loose chips of different widths. */
+/* Audience choices carry both a name and the credential they require. */
 .file-companion-audience {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 .file-companion-audience-option {
+  position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 5px;
+  justify-content: flex-start;
+  gap: 10px;
   box-sizing: border-box;
-  min-height: 62px;
-  padding: 8px 4px;
+  min-height: 68px;
+  padding: 11px 12px;
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
   color: var(--theme-text-secondary, #46586f);
-  font: 500 11.5px/1.25 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
-  text-align: center;
+  font: 500 12px/1.35 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  text-align: left;
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
 }
@@ -37824,10 +37823,11 @@ body.companion-pdf-translation-dragging * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  padding: 0;
+  min-width: 28px;
+  height: 30px;
+  padding: 0 10px;
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
@@ -37914,12 +37914,13 @@ body.companion-pdf-translation-dragging * {
 /* 阅读群组: a wider two-pane dialog. The rail lists groups; the pane edits the
    selected one. Both panes scroll on their own so the dialog never grows. */
 .file-companion-dialog-card.file-companion-groups-dialog {
-  width: min(720px, 100%);
-  max-height: min(640px, 100%);
+  width: min(840px, 100%);
+  max-height: min(680px, 100%);
+  min-height: min(520px, 100%);
 }
 .file-companion-groups-body {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 258px minmax(0, 1fr);
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -38193,8 +38194,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-library-inline button {
   flex: 0 0 auto;
 }
-/* Share link line: the URL keeps its own <p> for copy/select, with an
-   icon-only copy button beside it. */
+/* Share link line: the URL keeps its own <p> for copy/select. */
 /* Group cards: a bounded surface per group instead of bare rows. */
 .file-companion-library-group {
   display: flex;
@@ -38270,6 +38270,355 @@ body.companion-pdf-translation-dragging * {
   width: 18px;
   height: 18px;
   display: block;
+}
+/* Sharing and group management use a quiet, settings-like visual hierarchy. */
+.file-companion-dialog-card.file-companion-share-dialog-card {
+  width: min(640px, 100%);
+  max-height: min(820px, 100%);
+  border-radius: var(--radius-lg, 14px);
+}
+.file-companion-share-dialog-card .file-companion-dialog-head,
+.file-companion-groups-dialog .file-companion-dialog-head {
+  padding: 18px 20px 15px;
+}
+.file-companion-dialog-eyebrow {
+  color: var(--theme-primary, #2563eb);
+  font: 600 10px/1.2 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.file-companion-share-dialog-card .file-companion-dialog-heading h2,
+.file-companion-groups-dialog .file-companion-dialog-heading h2 {
+  font-size: 18px;
+  line-height: 1.35;
+}
+.file-companion-share-dialog-card .file-companion-dialog-body {
+  gap: 18px;
+  padding: 18px 20px 20px;
+}
+.file-companion-share-dialog-card .file-companion-dialog-section {
+  gap: 10px;
+}
+.file-companion-share-dialog-card .file-companion-dialog-label,
+.file-companion-groups-dialog .file-companion-dialog-label {
+  font-size: 12.5px;
+  color: var(--theme-text-primary, #1f2937);
+}
+.file-companion-audience-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.file-companion-audience-copy strong {
+  color: var(--theme-text-primary, #1f2937);
+  font-size: 13px;
+  font-weight: 600;
+}
+.file-companion-audience-copy small {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 11px;
+}
+.file-companion-audience-option[aria-pressed="true"] .file-companion-audience-copy strong,
+.file-companion-audience-option[aria-pressed="true"] .file-companion-audience-copy small {
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-audience-option:disabled {
+  opacity: 0.58;
+  cursor: default;
+}
+.file-companion-audience-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-border-subtle, #e6edf6);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface-muted, #f8fafc);
+}
+.file-companion-audience-summary-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-audience-summary p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 2px 0 0;
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.file-companion-share-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.file-companion-share-field .file-companion-dialog-input {
+  height: 38px;
+}
+.file-companion-dialog-input[aria-invalid="true"] {
+  border-color: var(--theme-danger, #dc2626);
+}
+.file-companion-share-error {
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--theme-danger, #dc2626) 6%, transparent);
+}
+.file-companion-share-existing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 2px;
+}
+.file-companion-share-existing ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.file-companion-share-existing li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-surface-muted, #f8fafc);
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 11.5px;
+}
+.file-companion-share-existing li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.file-companion-dialog-result {
+  padding: 12px;
+}
+.file-companion-dialog-result .file-companion-dialog-linkrow {
+  padding: 8px 8px 8px 10px;
+  border: 1px solid var(--theme-border-subtle, #e6edf6);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-surface, #ffffff);
+}
+.file-companion-share-host-current {
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border-left: 2px solid var(--theme-primary, #2563eb);
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.08));
+  color: var(--theme-text-secondary, #46586f);
+}
+.file-companion-share-dialog-card .file-companion-dialog-foot {
+  padding: 14px 20px;
+}
+.file-companion-groups-create-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file-companion-groups-search {
+  height: 34px;
+  background: var(--theme-surface, #ffffff);
+}
+.file-companion-groups-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 3px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.file-companion-groups-item {
+  min-height: 54px;
+  padding: 9px;
+}
+.file-companion-groups-item-text {
+  gap: 3px;
+}
+.file-companion-groups-item-meta {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 10.5px;
+}
+.file-companion-group-mark {
+  border-color: transparent;
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.09));
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-groups-detail {
+  gap: 16px;
+  padding: 20px 22px 22px;
+}
+.file-companion-groups-detail-head {
+  flex-wrap: wrap;
+  padding-bottom: 16px;
+}
+.file-companion-groups-title-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.file-companion-library-group-title strong {
+  font-size: 16px;
+}
+.file-companion-groups-role {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2563eb);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.file-companion-groups-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 11px;
+}
+.file-companion-groups-summary > span {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+.file-companion-groups-summary strong {
+  color: var(--theme-text-primary, #1f2937);
+  font-size: 18px;
+  font-weight: 600;
+}
+.file-companion-groups-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 14px 18px;
+  box-sizing: border-box;
+  padding: 14px;
+  border: 1px solid var(--theme-border-subtle, #e6edf6);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface-muted, #f8fafc);
+}
+.file-companion-groups-settings .file-companion-groups-field:first-child {
+  grid-column: 2;
+  grid-row: 1;
+}
+.file-companion-groups-settings .file-companion-groups-field:last-child {
+  grid-column: 1;
+  grid-row: 1;
+}
+.file-companion-groups-members-section {
+  gap: 10px;
+}
+.file-companion-library-members {
+  gap: 6px;
+}
+.file-companion-library-member {
+  gap: 10px;
+  min-height: 48px;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border: 1px solid var(--theme-border-subtle, #e6edf6);
+  border-radius: var(--radius-md);
+}
+.file-companion-library-member-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--theme-surface-muted, #eef3f8);
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.file-companion-library-member-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.file-companion-library-member-contact {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.file-companion-library-member-status {
+  font-size: 10.5px;
+}
+.file-companion-library-member-action {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-primary, #2563eb);
+  font: 600 11px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+}
+.file-companion-library-member-action:hover:not(:disabled) {
+  border-color: var(--theme-primary, #2563eb);
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.08));
+}
+.file-companion-library-member-action:focus-visible {
+  outline: 2px solid var(--theme-primary, #2563eb);
+  outline-offset: 1px;
+}
+.file-companion-library-member-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.file-companion-groups-danger {
+  margin-top: auto;
+}
+@media (max-width: 560px) {
+  .file-companion-dialog {
+    padding: 12px;
+  }
+  .file-companion-groups-settings {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .file-companion-groups-settings .file-companion-groups-field:first-child,
+  .file-companion-groups-settings .file-companion-groups-field:last-child {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .file-companion-groups-summary {
+    width: 100%;
+    margin-left: 0;
+  }
+  .file-companion-share-dialog-card .file-companion-dialog-foot {
+    align-items: stretch;
+  }
+  .file-companion-share-dialog-card .file-companion-dialog-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+@media (max-width: 360px) {
+  .file-companion-audience {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .file-companion-library h3 {
   margin: 0;

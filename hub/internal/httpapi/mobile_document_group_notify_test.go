@@ -518,8 +518,8 @@ func TestCompanionGroupInviteNotificationNotDuplicated(t *testing.T) {
 	add.Header.Set("Authorization", "Bearer "+ownerToken)
 	addRec := httptest.NewRecorder()
 	CompanionDocumentGroupMembersHandler(identity).ServeHTTP(addRec, add)
-	if addRec.Code != http.StatusBadRequest {
-		t.Fatalf("duplicate invite: %d %s", addRec.Code, addRec.Body.String())
+	if addRec.Code != http.StatusOK {
+		t.Fatalf("resend invite: %d %s", addRec.Code, addRec.Body.String())
 	}
 	if got := pendingInviteNotifications(t, svc); len(got) != 1 {
 		t.Fatalf("duplicate invite made %d notices", len(got))

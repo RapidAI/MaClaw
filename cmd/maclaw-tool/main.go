@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/gorilla/websocket"
 )
 
@@ -45,7 +46,7 @@ type CLISessionView struct {
 // Connect dials the Hub WebSocket endpoint and sends an auth message.
 func (c *HubCLIClient) Connect() error {
 	log.Printf("[maclaw-tool] connecting to Hub: %s", c.hubURL)
-	// Build WebSocket URL: ws://{hub_url}/ws/cli?token={token}
+	// Build the WebSocket URL; the token is sent only in the auth message.
 	wsURL := strings.Replace(c.hubURL, "http://", "ws://", 1)
 	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
 	wsURL = strings.TrimRight(wsURL, "/")
@@ -54,11 +55,15 @@ func (c *HubCLIClient) Connect() error {
 	if err != nil {
 		return fmt.Errorf("invalid hub URL: %w", err)
 	}
-	q := u.Query()
-	q.Set("token", c.token)
-	u.RawQuery = q.Encode()
-
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	dialer := *websocket.DefaultDialer
+	if u.Scheme == "wss" {
+		tlsConfig, err := remote.HubTLSConfig()
+		if err != nil {
+			return fmt.Errorf("invalid Hub TLS configuration: %w", err)
+		}
+		dialer.TLSClientConfig = tlsConfig
+	}
+	conn, _, err := dialer.Dial(u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to Hub: %w", err)
 	}

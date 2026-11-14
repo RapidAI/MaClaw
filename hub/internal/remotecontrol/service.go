@@ -191,6 +191,7 @@ type Service struct {
 	mu            sync.Mutex
 	waiters       map[string]waiter
 	activateMu    sync.Mutex
+	streamMu      sync.Mutex
 	streamBuckets map[string]*streamBucket
 }
 
@@ -719,6 +720,9 @@ func (s *Service) StreamGrant(ctx context.Context, grantID, fromMachineID string
 	}
 	grant, err := s.load(ctx, grantID)
 	if err != nil || grant.TargetMachineID != strings.TrimSpace(fromMachineID) || grant.Status != StatusActive {
+		if err == nil && grant.Status != StatusActive {
+			s.dropStreamBucket(grantID)
+		}
 		return Grant{}, ErrNotFound
 	}
 	return grant, nil
@@ -736,8 +740,8 @@ func (s *Service) AllowStream(grantID string) bool {
 	const ratePerSec = 30.0
 	const burst = 60.0
 	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
 	if s.streamBuckets == nil {
 		s.streamBuckets = map[string]*streamBucket{}
 	}
@@ -756,6 +760,15 @@ func (s *Service) AllowStream(grantID string) bool {
 	}
 	b.tokens--
 	return true
+}
+
+func (s *Service) dropStreamBucket(grantID string) {
+	if s == nil {
+		return
+	}
+	s.streamMu.Lock()
+	delete(s.streamBuckets, strings.TrimSpace(grantID))
+	s.streamMu.Unlock()
 }
 
 type streamBucket struct {
@@ -1193,6 +1206,9 @@ func (s *Service) updateExpected(ctx context.Context, grant Grant, expectedStatu
 		return false, err
 	}
 	changed, err := res.RowsAffected()
+	if err == nil && changed == 1 && grant.Status != StatusActive {
+		s.dropStreamBucket(grant.ID)
+	}
 	return changed == 1, err
 }
 

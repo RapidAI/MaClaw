@@ -37,8 +37,20 @@ func TestShotOptionsNormalize(t *testing.T) {
 			t.Fatalf("expected error for %+v", bad)
 		}
 	}
-	if !(ShotOptions{}).Plain() || (ShotOptions{Marks: true}).Plain() || (ShotOptions{MaxWidth: 1024}).Plain() {
+	if !(ShotOptions{}).Plain() || (ShotOptions{Marks: true}).Plain() || (ShotOptions{MaxWidth: 1024}).Plain() || (ShotOptions{Window: "0x1a"}).Plain() {
 		t.Fatal("Plain is wrong")
+	}
+	if _, err := (ShotOptions{Window: "a;rm -rf /"}).Normalize(); err == nil {
+		t.Fatal("shell metacharacters in a window must be rejected")
+	}
+	for _, id := range []string{"0", "0x0", "00"} {
+		if _, err := (ShotOptions{Window: id}).Normalize(); err == nil {
+			t.Fatalf("window id %s was accepted", id)
+		}
+	}
+	got, err := (ShotOptions{Window: " 0x1A ", Region: ShotRegion{X: 1, Y: 2, Width: 3, Height: 4}}).Normalize()
+	if err != nil || got.Window != "0x1A" || !got.Region.Empty() {
+		t.Fatalf("window normalize: %+v %v", got, err)
 	}
 }
 
@@ -73,6 +85,26 @@ func TestShotScriptAndDecode(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script lacks %q", want)
 		}
+	}
+	win, err := ShotScript("snake.png", ShotOptions{Window: "NEON SERPENT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"windowmap", "windowactivate", "xwininfo -id", "import -window root", "search --onlyvisible --name 'NEON SERPENT'", `search --name 'NEON SERPENT'`, "best=0", "-lt 32", "standard_deviation", "blank after raising", "/home/desktop/Desktop/snake.png", `png:$d/win.png`, `[ "$ax" -lt 0 ]`, `cp "$f" "$o"`} {
+		if !strings.Contains(win, want) {
+			t.Fatalf("window script lacks %q\n%s", want, win)
+		}
+	}
+	if strings.Contains(win, `import -window "$wid"`) || strings.Contains(win, "import -window $wid") || strings.Contains(win, `png:$f" >/dev/null 2>&1 || { rm -rf "$d"; exit 1; }`+"\nconvert \"$f\" -crop") {
+		t.Fatal("window capture must not read the window pixmap or crop a file onto itself")
+	}
+	dotted, err := ShotScript("", ShotOptions{Window: "v2.0"})
+	if err != nil || !strings.Contains(dotted, `search --onlyvisible --name 'v2\.0'`) {
+		t.Fatalf("title must be a literal xdotool pattern: %v\n%s", err, dotted)
+	}
+	byID, err := ShotScript("", ShotOptions{Window: "0x22"})
+	if err != nil || !strings.Contains(byID, "wid='0x22'") || strings.Contains(byID, "search --name") {
+		t.Fatalf("id script: %v\n%s", err, byID)
 	}
 	data := testPNG(t, 1024, 640)
 	out := shotMetaPrefix + " 1280 800 0 0 1280 800 1024 640 33 44\n" + base64.StdEncoding.EncodeToString(data)

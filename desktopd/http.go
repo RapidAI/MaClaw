@@ -664,7 +664,7 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 }
 
 // shotOptionsFromQuery reads screenshot options from GET parameters:
-// max_width, max_height, format, quality, cursor, marks, and region=x,y,w,h.
+// max_width, max_height, format, quality, cursor, marks, window, and region=x,y,w,h.
 func shotOptionsFromQuery(query url.Values) (desktop.ShotOptions, error) {
 	var opts desktop.ShotOptions
 	number := func(key string) (int, error) {
@@ -689,6 +689,7 @@ func shotOptionsFromQuery(query url.Values) (desktop.ShotOptions, error) {
 		return opts, err
 	}
 	opts.Format = query.Get("format")
+	opts.Window = query.Get("window")
 	opts.Cursor = query.Get("cursor") == "1" || query.Get("cursor") == "true"
 	opts.Marks = query.Get("marks") == "1" || query.Get("marks") == "true"
 	if raw := strings.TrimSpace(query.Get("region")); raw != "" {

@@ -180,7 +180,9 @@ func TestRestoreBackupAtRetentionLimitReadsTargetBeforePruning(t *testing.T) {
 		t.Fatal(err)
 	}
 	compressor := NewCompressor(store, nil, nil)
-	compressor.SetMaxBackups(MinBackups)
+	if err := compressor.SetMaxBackups(MinBackups); err != nil {
+		t.Fatal(err)
+	}
 	backupDir := filepath.Join(dir, "memory_backups")
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		t.Fatal(err)

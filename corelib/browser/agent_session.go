@@ -331,6 +331,44 @@ func KeepLoggedInDocument(sess *BrowserAgentSession, keep bool) {
 // chooseSharedDesktopPage keeps the page the person just logged into.
 // A blank tab is only used when the browser has no other page, so the website
 // login is not left behind on a second tab.
+// RaisePageBehindNetworkError activates the loaded page only when a Chrome
+// network-error document is the one with focus. Activating any other tab
+// raises the browser window over the application in front, so a screenshot
+// of a game or a document would show the browser instead.
+func RaisePageBehindNetworkError(sess *BrowserAgentSession) error {
+	if sess == nil {
+		return nil
+	}
+	sess.mu.RLock()
+	session := sess.session
+	sess.mu.RUnlock()
+	if session == nil {
+		return nil
+	}
+	session.mu.Lock()
+	addr := session.addr
+	active := session.activeTabID
+	session.mu.Unlock()
+	targets, err := DiscoverTargets(addr)
+	if err != nil || len(targets) == 0 {
+		return nil
+	}
+	next := loadedPageBehindNetworkError(active, targets)
+	if next == "" {
+		return nil
+	}
+	if next != active {
+		if err := session.SwitchPage(next); err != nil {
+			return err
+		}
+	}
+	sess.mu.Lock()
+	sess.TargetID = next
+	sess.resetTargetGone()
+	sess.mu.Unlock()
+	return activateVisiblePage(session)
+}
+
 // FocusDesktopAfterPerson moves the agent to the page the person just used.
 // The browser process and its cookies stay; only the attached tab changes.
 func FocusDesktopAfterPerson(sess *BrowserAgentSession) error {
@@ -462,6 +500,80 @@ func visibleDesktopPage(preferredID string, targets []TargetInfo) string {
 	snapshot := append([]pageAttention(nil), attention...)
 	mu.Unlock()
 	return pickVisibleDesktopPage(preferredID, candidates, snapshot)
+}
+
+// loadedPageBehindNetworkError is the page to raise when a network-error
+// document has focus, or "" when the display should be left alone.
+func loadedPageBehindNetworkError(preferredID string, targets []TargetInfo) string {
+	preferredID = strings.TrimSpace(preferredID)
+	candidates := make([]TargetInfo, 0, len(targets))
+	for _, target := range targets {
+		if target.Type != "page" || !sharedDesktopRealPage(target.URL) || strings.TrimSpace(target.WebSocketDebugURL) == "" || strings.TrimSpace(target.ID) == "" {
+			continue
+		}
+		candidates = append(candidates, target)
+	}
+	// One page cannot both be the focused error and the loaded page behind
+	// it. Probing that single tab waits on CDP and cannot change the shot.
+	if len(candidates) < 2 {
+		return ""
+	}
+	const budget = 700 * time.Millisecond
+	attention := make([]pageAttention, len(candidates))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i, target := range candidates {
+		wg.Add(1)
+		go func(i int, wsURL string) {
+			defer wg.Done()
+			att := pageAttentionWithin(wsURL, budget)
+			mu.Lock()
+			attention[i] = att
+			mu.Unlock()
+		}(i, target.WebSocketDebugURL)
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+	mu.Lock()
+	snapshot := append([]pageAttention(nil), attention...)
+	mu.Unlock()
+	return pageBehindNetworkError(preferredID, candidates, snapshot)
+}
+
+// pageBehindNetworkError returns the loaded page to activate, or "" when no
+// network-error document is focused. A focused ordinary page stays where it
+// is: activating it would raise the browser over another application.
+func pageBehindNetworkError(preferredID string, candidates []TargetInfo, snapshot []pageAttention) string {
+	focusedFailed := false
+	for i, att := range snapshot {
+		if i >= len(candidates) {
+			break
+		}
+		if att.focused && att.failed {
+			focusedFailed = true
+			break
+		}
+	}
+	if !focusedFailed {
+		return ""
+	}
+	if id := firstMatchingPage(candidates, snapshot, func(att pageAttention, id string) bool {
+		return !att.failed && att.visible && id == preferredID
+	}); id != "" {
+		return id
+	}
+	return firstMatchingPage(candidates, snapshot, func(att pageAttention, id string) bool {
+		return !att.failed && att.visible
+	})
 }
 
 // pickVisibleDesktopPage chooses the page the person is using. A network-error

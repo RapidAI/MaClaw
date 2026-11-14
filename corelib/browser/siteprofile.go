@@ -48,8 +48,10 @@ type SiteProfile struct {
 	// PostURL builds a post's public URL from an id the list reports ({id});
 	// {user} is the signed-in account name read from UserCookie.
 	PostURL string `json:"post_url"`
-	// UserCookie: the cookie (readable by the page) holding the account
-	// name PostURL's {user} needs.
+	// UserCookie: the cookie holding the account name PostURL's {user}
+	// needs. It is often set on another host of the same site (HttpOnly),
+	// so it is read from the browser's cookie jar, not only document.cookie
+	// on the editor page.
 	UserCookie string `json:"user_cookie,omitempty"`
 	// EditorRedirects: regexps of other editors on the site (a second,
 	// different editor this profile's selectors do not fit); an editor_url
@@ -303,6 +305,59 @@ func (p *SiteProfile) PostURLFor(id string) string {
 		return ""
 	}
 	return PostURLFrom(p.PostURL, id, "")
+}
+
+// PublishURLIsBareOrigin reports a URL with no path. https://blog.csdn.net/
+// is the public homepage, not the account's post list.
+func PublishURLIsBareOrigin(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	// A tracking query (https://blog.csdn.net/?spm=1) is still the homepage.
+	return strings.Trim(u.Path, "/") == ""
+}
+
+// SuccessPatternCaptures is how many groups a success_url regexp captures
+// (0 when it does not compile). The first group is the post id; a learned
+// pattern that dropped it can no longer build the public link.
+func SuccessPatternCaptures(pattern string) int {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return 0
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return 0
+	}
+	return re.NumSubexp()
+}
+
+// RestorePublishIdentity puts profile fields back when a learned record
+// replaced them with a value that can no longer build the public link.
+// A homepage is not a post list. A success_url that dropped its capture
+// group can no longer yield the post id. Empty post_url / user_cookie are
+// filled from the profile (a learned record used to forget both).
+func RestorePublishIdentity(p *SiteProfile, s *PublishSpec) {
+	if p == nil || s == nil {
+		return
+	}
+	if PublishURLIsBareOrigin(s.VerifyURL) && strings.TrimSpace(p.VerifyURL) != "" && !PublishURLIsBareOrigin(p.VerifyURL) {
+		s.VerifyURL = p.VerifyURL
+	}
+	if SuccessPatternCaptures(s.SuccessURL) < SuccessPatternCaptures(p.SuccessURL) {
+		s.SuccessURL = p.SuccessURL
+	}
+	if strings.TrimSpace(s.PostURL) == "" {
+		s.PostURL = p.PostURL
+	}
+	if strings.TrimSpace(s.UserCookie) == "" {
+		s.UserCookie = p.UserCookie
+	}
 }
 
 // PostURLFrom fills a post URL template; "" when a placeholder it needs

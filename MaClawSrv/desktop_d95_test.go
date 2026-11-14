@@ -210,7 +210,12 @@ func TestDesktopD95EvidencePartialAcrossSites(t *testing.T) {
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u-d95-part", InstanceID: "i", RunID: run}
 	desktopNoteTaskSpec(run, multiSiteReq)
 	defer desktopTaskSpecs.Delete(run)
-	desktopObservePublishEvidence(scope, "probe", "https://mp.csdn.net/mp_blog/creation/success/42")
+	if got := desktopObservePublishEvidence(scope, "probe", "https://mp.csdn.net/mp_blog/creation/success/42"); got != "" {
+		t.Fatalf("console page stored as the public link: %q", got)
+	}
+	if got := desktopObservePublishEvidence(scope, "probe", "https://mp.csdn.net/mp_blog/creation/success/42 https://blog.csdn.net/daniel/article/details/42"); got != "https://blog.csdn.net/daniel/article/details/42" {
+		t.Fatalf("public link %q", got)
+	}
 	outcome, why := desktopReconcileOutcome(run, "", "")
 	if outcome != agentservice.TaskOutcomePartial || !strings.Contains(why, "csdn") || !strings.Contains(why, "zhihu") {
 		t.Fatalf("outcome %q %q", outcome, why)

@@ -21,12 +21,12 @@ func TestSanitizePetConfigUsesRegistryAllowlist(t *testing.T) {
 	}
 	petpack.SetGlobalForTest(reg)
 
-	cfg := corelib.AppConfig{PetSkin: "unknown-skin", PetSize: 200}
+	cfg := corelib.AppConfig{PetSkin: "unknown-skin", PetSize: 400}
 	sanitizePetConfig(&cfg)
 	if cfg.PetSkin != petpack.DefaultPackID {
 		t.Fatalf("unknown → ragdoll, got %q", cfg.PetSkin)
 	}
-	if cfg.PetSize != 120 {
+	if cfg.PetSize != maxPetSize {
 		t.Fatalf("size clamp, got %d", cfg.PetSize)
 	}
 
@@ -41,6 +41,34 @@ func TestSanitizePetConfigUsesRegistryAllowlist(t *testing.T) {
 	}
 	if cfg2.PetFigurativeUpgradePromptPending {
 		t.Fatal("retired upgrade prompt should be cleared")
+	}
+}
+
+func TestSanitizePetSizeBumpsShippedDefaults(t *testing.T) {
+	prev := petpack.EnsureGlobal()
+	t.Cleanup(func() { petpack.SetGlobalForTest(prev) })
+	petpack.SetGlobalForTest(petpack.NewRegistry(t.TempDir(), nil))
+
+	for _, size := range []int{0, legacyDefaultPetSize, previousDefaultPetSize} {
+		cfg := corelib.AppConfig{PetSkin: "ragdoll", PetVariant: "default", PetVariantMigrated: true, PetSize: size}
+		sanitizePetConfig(&cfg)
+		if cfg.PetSize != defaultPetSize {
+			t.Fatalf("size %d became %d, want %d", size, cfg.PetSize, defaultPetSize)
+		}
+	}
+	for _, size := range []int{96, 120, 200, maxPetSize} {
+		cfg := corelib.AppConfig{PetSkin: "ragdoll", PetVariant: "default", PetVariantMigrated: true, PetSize: size}
+		sanitizePetConfig(&cfg)
+		if cfg.PetSize != size {
+			t.Fatalf("chosen size %d became %d", size, cfg.PetSize)
+		}
+	}
+	// Window sizing leaves a caller-supplied size alone. Position tests pass 88.
+	if got := floatingWindowSize(corelib.AppConfig{PetSize: legacyDefaultPetSize}); got != legacyDefaultPetSize+16 {
+		t.Fatalf("unsanitized window = %d, want %d", got, legacyDefaultPetSize+16)
+	}
+	if got := floatingWindowSize(corelib.AppConfig{PetSize: previousDefaultPetSize}); got != previousDefaultPetSize+16 {
+		t.Fatalf("unsanitized previous window = %d, want %d", got, previousDefaultPetSize+16)
 	}
 }
 

@@ -270,14 +270,8 @@ func (b *Broker) use(token string) (Grant, error) {
 	now := b.now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	var g *Grant
-	for tok, cand := range b.grants {
-		if len(tok) == len(token) && subtle.ConstantTimeCompare([]byte(tok), []byte(token)) == 1 {
-			g = cand
-			break
-		}
-	}
-	if g == nil || token == "" {
+	g := b.grants[token]
+	if g == nil || token == "" || subtle.ConstantTimeCompare([]byte(g.Token), []byte(token)) != 1 {
 		return Grant{}, &Err{Code: CodeExpired, Message: "relay token is unknown or was closed (the server may have restarted); open it again"}
 	}
 	if why := b.deadLocked(g, now); why != "" {

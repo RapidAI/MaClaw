@@ -673,6 +673,79 @@ func (a *App) InstallPetPackZip(zipPath string) (string, error) {
 	return id, nil
 }
 
+// DSHPetImport is the settings-page result of converting one sprite folder.
+// Warnings keep the converter's stable tokens. Dropped is the number of atlas
+// cells that were not copied into the pack.
+type DSHPetImport struct {
+	ID       string   `json:"id"`
+	Warnings []string `json:"warnings"`
+	Dropped  int      `json:"dropped"`
+}
+
+// ImportDSHPetFolder converts a local DeepSeek Harness sprite folder into a
+// user pet pack and installs it. An empty dir opens the directory dialog.
+// Cancel returns an empty ID and a nil error. Ordinary zip installs stay on
+// InstallPetPackZip and are still marked created.
+func (a *App) ImportDSHPetFolder(dir string) (DSHPetImport, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		if a == nil || a.ctx == nil {
+			return DSHPetImport{}, nil
+		}
+		selected, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+			Title: "Import DeepSeek sprite folder",
+		})
+		if err != nil || strings.TrimSpace(selected) == "" {
+			return DSHPetImport{}, nil
+		}
+		dir = selected
+	}
+	tmp, err := os.CreateTemp("", "maclaw-dsh-*.zip")
+	if err != nil {
+		return DSHPetImport{}, err
+	}
+	zipPath := tmp.Name()
+	defer os.Remove(zipPath)
+	if err := tmp.Close(); err != nil {
+		return DSHPetImport{}, err
+	}
+	report, err := petpack.ConvertDSHPet(petpack.DSHConvertRequest{InputDir: dir, ZipPath: zipPath})
+	if err != nil {
+		if report.RejectedReason != "" {
+			return DSHPetImport{}, fmt.Errorf("无法转换这只宠物：%s", report.RejectedReason)
+		}
+		if report.ValidatorError != "" {
+			return DSHPetImport{}, fmt.Errorf("转换器生成的包没有通过校验：%s", report.ValidatorError)
+		}
+		return DSHPetImport{}, err
+	}
+	reg := petpack.EnsureGlobal()
+	if reg == nil {
+		return DSHPetImport{}, errPetRegistryUnavailable
+	}
+	id, err := reg.InstallZip(zipPath)
+	if err != nil {
+		return DSHPetImport{}, err
+	}
+	if err := reg.SetPackSource(id, petpack.SourceImported); err != nil {
+		_ = reg.Uninstall(id)
+		return DSHPetImport{}, fmt.Errorf("mark pet pack source: %w", err)
+	}
+	if a != nil && a.ctx != nil {
+		a.emitEvent("pet:packs-changed", map[string]any{"id": id, "action": "install"})
+	}
+	if a != nil {
+		if fa := a.existingFloatingAssistant(); fa != nil {
+			fa.InvalidatePetPackAssets()
+		}
+	}
+	warnings := report.Warnings
+	if warnings == nil {
+		warnings = []string{}
+	}
+	return DSHPetImport{ID: id, Warnings: warnings, Dropped: len(report.DroppedFrames)}, nil
+}
+
 // UninstallPetPack removes a user-installed pack by id (not bundled-only official).
 func (a *App) UninstallPetPack(id string) error {
 	id = strings.TrimSpace(id)

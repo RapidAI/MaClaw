@@ -1528,6 +1528,8 @@ export function ListSkillSuites():Promise<Array<Record<string, any>>>;
 
 export function InstallPetPackZip(arg1:string):Promise<string>;
 
+export function ImportDSHPetFolder(arg1:string):Promise<{id:string, warnings:string[], dropped:number}>;
+
 export function InstallPetStorePack(arg1:string):Promise<string>;
 
 export function InstallSelectedMaclawAppPackageFromHub(arg1:string,arg2:Array<string>):Promise<Record<string, any>>;
@@ -1902,6 +1904,7 @@ export function UninstallBotCatalogItem(arg1:string,arg2:string,arg3:string):Pro
 export function ListBotMemories(arg1:string,arg2:string,arg3:string):Promise<Array<{id:string,bot_id:string,content:string,category:string,tags:Array<string>,created_at:string,updated_at:string,access_count:number}>>;
 export function SaveBotMemory(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<{id:string,bot_id:string,content:string,category:string,tags:Array<string>,created_at:string,updated_at:string,access_count:number}>;
 export function UpdateBotMemory(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>):Promise<void>;
+export function UpdateBotMemoryWithVersion(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:string):Promise<void>;
 export function DeleteBotMemory(arg1:string,arg2:string):Promise<void>;
 
 
@@ -3029,6 +3032,8 @@ export function UpdateMCPServer(arg1:corelib.MCPServerEntry):Promise<void>;
 export function UpdateMaclawAppPackageSubmissionStatus(arg1:string,arg2:main.maclawAppSubmissionStatusUpdate):Promise<boolean>;
 
 export function UpdateMemory(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
+
+export function UpdateMemoryWithVersion(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<void>;
 
 export function UpdateNLSkill(arg1:corelib.NLSkillEntry):Promise<void>;
 

@@ -552,20 +552,22 @@ func (r *RigRenderer) Clip(name string) *RigClip {
 }
 
 // DesktopTravelDesignPerMS is the active body clip's locomotion in design
-// pixels per millisecond. Zero means the action stays in place. The sign is
-// the authored direction; the host may reverse it at a screen edge.
-func (r *CharacterRenderer) DesktopTravelDesignPerMS(nowMS int64) float64 {
+// pixels per millisecond. X is right and Y is down. A zero vector means the
+// action stays in place. The host uses the length as speed and chooses
+// horizontal, vertical, and diagonal headings.
+func (r *CharacterRenderer) DesktopTravelDesignPerMS(nowMS int64) (vx, vy float64) {
 	if r == nil || r.rig == nil {
-		return 0
+		return 0, 0
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_ = nowMS
 	clip := r.rig.Clip(r.step.Body)
-	if clip == nil || clip.TravelX == 0 || clip.DurationMS < 1 {
-		return 0
+	if clip == nil || clip.DurationMS < 1 || (clip.TravelX == 0 && clip.TravelY == 0) {
+		return 0, 0
 	}
-	return clip.TravelX / float64(clip.DurationMS)
+	d := float64(clip.DurationMS)
+	return clip.TravelX / d, clip.TravelY / d
 }
 
 // TakeActionSound reports the body clip's cue the first time that clip starts,

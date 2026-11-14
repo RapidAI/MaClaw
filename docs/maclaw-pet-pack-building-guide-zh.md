@@ -219,7 +219,7 @@ Clip：身体先动，头延迟 80–280ms；表情只改 head 的 alpha。设�
 | `sound` | 1–4 个 `{hz, ms}`，写出后覆盖 cue，总长 ≤ 420ms。 |
 | `sound_loop` | 循环 clip 每一圈重播，用于脚步。 |
 
-listening 不要出声。speaking 期间宿主只播放 `sing`。安静模式和减少动效无声且静止。不要在包里放 wav/mp3。DeepSeek Harness、Live2D 和视频宠物不能直接安装。Hub `/pet-pack-help` 与本节一致。官方默认包是 `ragdoll`，不再提供螃蟹皮肤。
+listening 不要出声。speaking 期间宿主只播放 `sing`。安静模式和减少动效无声且静止。不要在包里放 wav/mp3。DeepSeek Harness、Live2D 和视频宠物不能直接安装。Hub `/pet-pack-help` 与本节一致。官方默认包是 `ragdoll`，不再提供螃蟹皮肤。Codex 兼容的精灵图集（目录内的 pet.json 加 spritesheet.webp 或 png）可用 dshconvert 转成用户宠物包后再安装。Live2D、视频、GIF 播放和 JS 宠物仍然不能直接安装。
 
 ---
 

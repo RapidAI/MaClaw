@@ -26,6 +26,10 @@ type Env struct {
 	Blocked func() error
 	// WindowClass is the WM_CLASS of the focused window, or "".
 	WindowClass func() string
+	// ShotWindow is the id or title of an explicit screenshot step in this
+	// batch. The shot taken after a click stays the whole screen, so that
+	// proof is not replaced by raising this window.
+	ShotWindow string
 	// Settle waits for the screen to draw before the closing screenshot.
 	Settle func()
 	// StructureFirst refuses a pixel batch on a browser and a coordinate
@@ -151,7 +155,12 @@ func runSpecial(env Env, step Step, frame desktop.Shot) (Result, string, error) 
 			return fail(fmt.Errorf("screenshot is not available here"))
 		}
 		_, opts := env.Frame()
-		text, err := env.Capture(opts, true)
+		clickPixels := true
+		if env.ShotWindow != "" {
+			opts.Window = env.ShotWindow
+			clickPixels = false
+		}
+		text, err := env.Capture(opts, clickPixels)
 		if err != nil {
 			return fail(err)
 		}
@@ -167,6 +176,9 @@ func runSpecial(env Env, step Step, frame desktop.Shot) (Result, string, error) 
 			return fail(fmt.Errorf("zoom region is empty on the screen"))
 		}
 		_, opts := env.Frame()
+		// A window crop and a zoom are different rectangles. Keeping the
+		// window here would drop the zoom.
+		opts.Window = ""
 		opts.Region = desktop.ShotRegion{X: x0, Y: y0, Width: x1 - x0, Height: y1 - y0}
 		text, err := env.Capture(opts, false)
 		if err != nil {

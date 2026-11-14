@@ -318,6 +318,7 @@ fallback:
 
       <h2>大幅度动作、走位与音效</h2>
       <p>官方默认角色是布偶猫 <code>ragdoll</code>。旧官方宠物（ClawMate 螃蟹，以及 mini / dev / focus claw）不再是可加载皮肤。DeepSeek Harness 桌面宠物（Live2D、视频、JS、dsh-pet-desktop）不能直接安装；可以借鉴具名全身动作、走到屏幕边缘转身、以及每个动作一条音效，但包仍然只能是 YAML、JSON 和 PNG。</p>
+      <p>Codex 兼容的精灵图集（目录内的 pet.json 加 spritesheet.webp 或 png）可用 dshconvert 转成用户宠物包后再安装。Live2D、视频、GIF 播放和 JS 宠物仍然不能直接安装。</p>
       <ul>
         <li>关节旋转和根骨骼位移可以做成大幅度姿势，例如起跳、侧身弯腰、张开手臂唱歌。角色放在画布中下部，给头顶留空。</li>
         <li><code>travel_x</code> 是整段 clip 的横向位移，单位为设计像素，范围 ±256。正值向右。宿主按宠物尺寸缩放，停在工作区边缘并转身。拖拽时不走位。包不能读取屏幕。</li>
@@ -452,6 +453,7 @@ fallback: { renderer: native-skeleton, idle: native/idle.png }</code></pre>
 
       <h2>Large actions, travel, and sound</h2>
       <p>The official character is the ragdoll cat-girl, pack id <code>ragdoll</code>. Older official pets (the ClawMate crab, and mini / dev / focus claw) are not loadable skins. DeepSeek Harness desktop pets — Live2D, video, JS, dsh-pet-desktop — cannot be installed. Named full-body actions, turning around at the screen edge, and one sound per action are the ideas to copy. The pack format stays YAML, JSON, and PNG.</p>
+      <p>A Codex-compatible sprite atlas (pet.json plus a local spritesheet webp or png) can be converted with dshconvert into a user pack and then installed. Live2D, video, GIF playback, and JS pets still cannot be installed directly.</p>
       <ul>
         <li>Joint rotation and root offset may be large: a jump, a side bow, arms raised to sing. Place the character low in the 256 canvas and leave headroom.</li>
         <li><code>travel_x</code> is horizontal travel in design pixels over one full playback, within ±256. Positive moves right. The host scales it by pet size, stops at the work-area edge, and turns around. Dragging skips travel. A pack cannot read the screen.</li>
@@ -582,6 +584,7 @@ fallback: { renderer: native-skeleton, idle: native/idle.png }</code></pre>
 
       <h2>Том хөдөлгөөн, шилжилт, дуу</h2>
       <p>Албан ёсны дүр нь ragdoll муур охин, багцын id <code>ragdoll</code>. Хуучин албан дүр (ClawMate хавч, mini / dev / focus claw) ачаалагдахгүй. DeepSeek Harness-ийн ширээний тэжээвэр (Live2D, видео, JS, dsh-pet-desktop) шууд суухгүй. Нэрлэсэн бүтэн биеийн хөдөлгөөн, дэлгэцийн ирмэг дээр эргэх, үйлдэл бүрт нэг дуу гэсэн санааг авна. Багц нь YAML, JSON, PNG хэвээр.</p>
+      <p>Codex-тэй зохицох sprite атлас (pet.json болон локал spritesheet webp/png) нь dshconvert-оор хэрэглэгчийн багц болгож хөрвүүлсний дараа суулгана. Live2D, видео, GIF, JS тэжээвэр шууд суухгүй.</p>
       <ul>
         <li><code>travel_x</code> нь нэг clip-ийн хэвтээ шилжилт, дизайны пикселээр, ±256. Эерэг нь баруун тийш. Хост хэмжээгээр масштаблаж, ажлын талбайн ирмэг дээр зогсоон эргүүлнэ. Чирэх үед шилжихгүй.</li>
         <li><code>cue</code> нь бэлэн дууны нэр (<code>step</code>, <code>run</code>, <code>jump</code>, <code>land</code>, <code>bend</code>, <code>sing</code> гэх мэт). <code>sound</code> нь 1–4 <code>{hz, ms}</code> бөгөөд cue-г орлоно. Нийлбэр 420ms-ээс хэтрэхгүй. <code>sound_loop</code> давталт бүрт дахин дуугарна.</li>

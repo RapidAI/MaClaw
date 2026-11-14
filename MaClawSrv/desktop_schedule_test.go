@@ -59,6 +59,36 @@ func TestArmDesktopBotScheduleUpdatesTheSameOrder(t *testing.T) {
 	}
 }
 
+func TestArmDesktopBotScheduleKeepsTheIntervalAnchor(t *testing.T) {
+	mgr := newDesktopScheduleManager(t)
+	id, err := mgr.Add(scheduler.ScheduledTask{
+		Name: "watch", Action: "看一眼", DesktopBotID: "bot_1", InstanceID: "inst_1",
+		OwnerTenantID: "tenant-a", OwnerUserID: "alice",
+		IntervalMinutes: 7, Hour: 8, Minute: 30, DayOfWeek: -1, DayOfMonth: -1, Status: "active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := mgr.Get(id)
+	if before == nil || before.NextRunAt == nil {
+		t.Fatal("no next run")
+	}
+	due := *before.NextRunAt
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "alice"}
+	follow := agentservice.BotIntake{
+		Kind:        "schedule",
+		Instruction: "看一眼，有变化就说",
+		Schedule:    &agentservice.BotIntakeSchedule{Name: "watch", Mode: "create", IntervalMinutes: 7},
+	}
+	if err := armDesktopBotSchedule(mgr, p, "inst_1", "bot_1", "有变化就说", follow); err != nil {
+		t.Fatal(err)
+	}
+	after := mgr.Get(id)
+	if after == nil || after.Hour != 8 || after.Minute != 30 || after.IntervalMinutes != 7 || after.Action != "看一眼，有变化就说" || after.NextRunAt == nil || !after.NextRunAt.Equal(due) {
+		t.Fatalf("anchor moved: %+v", after)
+	}
+}
+
 func TestArmDesktopBotScheduleKeepsTheWeatherTimerWhenBeijingAndAPDFArrive(t *testing.T) {
 	mgr := newDesktopScheduleManager(t)
 	p := agentservice.Principal{TenantID: "tenant-a", UserID: "alice"}
@@ -313,6 +343,80 @@ func TestDesktopBotClockFiresOneRunWithoutTheGUI(t *testing.T) {
 			t.Fatalf("second fire n=%d inflight=%d session=%d", n, mgr.Inflight(), sessionCalls)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestDesktopBotScheduleToolKeepsTheTimerItNamed(t *testing.T) {
+	mgr := newDesktopScheduleManager(t)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "alice"}
+	got := desktopBotScheduleTool(mgr, p, "inst_1", "bot_1", map[string]interface{}{
+		"name": "free_resources", "instruction": "搜索免费资源，有新的就告诉我", "interval_minutes": float64(60),
+	})
+	if !strings.Contains(got, "已登记 free_resources") || !strings.Contains(got, "每 60 分钟") {
+		t.Fatalf("create = %q", got)
+	}
+	rows := desktopScheduleRows(mgr, "inst_1", "bot_1")
+	if len(rows) != 1 || rows[0].IntervalMinutes != 60 || rows[0].Action != "搜索免费资源，有新的就告诉我" || rows[0].DesktopBotID != "bot_1" {
+		t.Fatalf("row = %+v", rows)
+	}
+	next := rows[0].NextRunAt
+	got = desktopBotScheduleTool(mgr, p, "inst_1", "bot_1", map[string]interface{}{
+		"name": "free_resources", "instruction": "搜索免费资源，有新的就告诉我", "interval_minutes": float64(60),
+	})
+	rows = desktopScheduleRows(mgr, "inst_1", "bot_1")
+	if !strings.Contains(got, "已是 free_resources") || len(rows) != 1 || rows[0].NextRunAt == nil || next == nil || !rows[0].NextRunAt.Equal(*next) {
+		t.Fatalf("repeat moved the timer: %q next=%v", got, rows[0].NextRunAt)
+	}
+	got = desktopBotScheduleTool(mgr, p, "inst_1", "bot_1", map[string]interface{}{
+		"name": "free_resources", "instruction": "搜索免费资源，有新的就告诉我",
+		"interval_minutes": float64(60), "hour": float64(9), "minute": float64(15),
+	})
+	rows = desktopScheduleRows(mgr, "inst_1", "bot_1")
+	if len(rows) != 1 || rows[0].IntervalMinutes != 60 || rows[0].Hour != 9 || rows[0].Minute != 15 || !strings.Contains(got, "从 09:15 起") {
+		t.Fatalf("anchor = %q row=%+v", got, rows)
+	}
+	anchored := rows[0].NextRunAt
+	got = desktopBotScheduleTool(mgr, p, "inst_1", "bot_1", map[string]interface{}{
+		"name": "free_resources", "instruction": "搜索免费资源，有新的就告诉我",
+		"interval_minutes": float64(60), "hour": float64(9), "minute": float64(15),
+	})
+	rows = desktopScheduleRows(mgr, "inst_1", "bot_1")
+	if !strings.Contains(got, "已是") || rows[0].NextRunAt == nil || anchored == nil || !rows[0].NextRunAt.Equal(*anchored) {
+		t.Fatalf("same anchor moved: %q", got)
+	}
+	got = desktopBotScheduleTool(mgr, p, "inst_1", "bot_1", map[string]interface{}{
+		"name": "free_resources", "instruction": "搜索免费数据集和模型，有新的就告诉我",
+	})
+	rows = desktopScheduleRows(mgr, "inst_1", "bot_1")
+	if len(rows) != 1 || rows[0].IntervalMinutes != 60 || rows[0].Action != "搜索免费数据集和模型，有新的就告诉我" || !strings.Contains(got, "已更新") {
+		t.Fatalf("update = %q row=%+v", got, rows)
+	}
+	got = desktopBotScheduleTool(mgr, p, "inst_1", "bot_1", map[string]interface{}{
+		"name": "free_resources", "hour": float64(9),
+	})
+	if !strings.Contains(got, "一起写") || desktopScheduleRows(mgr, "inst_1", "bot_1")[0].IntervalMinutes != 60 {
+		t.Fatalf("partial clock = %q", got)
+	}
+	got = desktopBotScheduleTool(mgr, p, "inst_1", "bot_1", map[string]interface{}{
+		"name": "morning", "instruction": "整理早间简报", "hour": float64(8), "minute": float64(30),
+	})
+	if rows = desktopScheduleRows(mgr, "inst_1", "bot_1"); len(rows) != 2 || !strings.Contains(got, "已登记 morning") {
+		t.Fatalf("second = %q rows=%d", got, len(rows))
+	}
+	if got = desktopBotScheduleTool(mgr, p, "inst_1", "bot_1", map[string]interface{}{
+		"name": "other", "instruction": "做一次",
+	}); !strings.Contains(got, "新建") || len(desktopScheduleRows(mgr, "inst_1", "bot_1")) != 2 {
+		t.Fatalf("missing clock = %q", got)
+	}
+	if got = desktopBotScheduleTool(mgr, p, "inst_1", "bot_2", map[string]interface{}{"action": "list"}); got != "当前没有定时任务" {
+		t.Fatalf("other bot = %q", got)
+	}
+	if got = desktopBotScheduleTool(mgr, p, "inst_1", "bot_1", map[string]interface{}{"action": "cancel", "name": "free_resources"}); !strings.Contains(got, "已取消") {
+		t.Fatal(got)
+	}
+	rows = desktopScheduleRows(mgr, "inst_1", "bot_1")
+	if len(rows) != 1 || rows[0].Name != "morning" {
+		t.Fatalf("after cancel = %+v", rows)
 	}
 }
 

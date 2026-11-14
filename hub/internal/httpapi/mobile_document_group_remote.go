@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/notification"
@@ -30,9 +32,9 @@ import (
 // the credential: their hub presents it, and this hub checks it before
 // accepting the person or handing over a group document.
 //
-// A registered hub only accepts a relay whose origin center knows. An
-// unregistered hub (tests, a machine that has not joined center) still checks
-// the secret against the origin. The secret never appears in a client response.
+// A hub accepts a relay only when center knows its origin. Without a trust
+// authority only loopback development peers are accepted; public origins fail
+// closed. The secret never appears in a client response.
 
 const companionRemoteSnapTTL = 4 * time.Second
 
@@ -76,12 +78,14 @@ var (
 	companionOriginTrusted func(context.Context, string) bool
 )
 
-var companionFederationClient = &http.Client{
-	Timeout: 4 * time.Second,
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+var companionFederationClient = func() *http.Client {
+	client := remote.NewHubHTTPClient()
+	client.Timeout = 4 * time.Second
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
-	},
-}
+	}
+	return client
+}()
 
 type companionRemoteSnapshot struct {
 	gen    uint64
@@ -233,6 +237,40 @@ func companionHubBaseURL(raw string) string {
 	return scheme + "://" + host
 }
 
+const companionFederationAllowHTTPEnv = "MACLAW_HUB_FEDERATION_ALLOW_HTTP"
+
+func companionLoopbackOrigin(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil {
+		return false
+	}
+	if strings.EqualFold(parsed.Hostname(), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	return ip != nil && ip.IsLoopback()
+}
+
+func companionFederationEndpoint(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.User != nil || parsed.Hostname() == "" {
+		return fmt.Errorf("跨 Hub 地址无效")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if companionLoopbackOrigin(raw) {
+			return nil
+		}
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(companionFederationAllowHTTPEnv))) {
+		case "1", "true", "yes", "on":
+			return nil
+		}
+	}
+	return fmt.Errorf("跨 Hub 通信必须使用 HTTPS；仅 loopback 开发环境或显式 %s=1 可使用 HTTP", companionFederationAllowHTTPEnv)
+}
+
 func companionLocalHubID() string {
 	identity := companionFederationIdentity()
 	if identity == nil {
@@ -323,7 +361,7 @@ func companionOriginIsTrusted(ctx context.Context, origin string) bool {
 	}
 	centerSvc := companionFederationCenter()
 	if centerSvc == nil {
-		return true
+		return companionLoopbackOrigin(origin)
 	}
 	ok, err := centerSvc.OriginTrusted(ctx, origin)
 	if err != nil {
@@ -334,6 +372,9 @@ func companionOriginIsTrusted(ctx context.Context, origin string) bool {
 }
 
 func companionPostJSON(ctx context.Context, endpoint string, payload any) (int, []byte, error) {
+	if err := companionFederationEndpoint(endpoint); err != nil {
+		return 0, nil, err
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return 0, nil, err
@@ -354,6 +395,9 @@ func companionPostJSON(ctx context.Context, endpoint string, payload any) (int, 
 }
 
 func companionGet(ctx context.Context, endpoint, secret string) (int, []byte, error) {
+	if err := companionFederationEndpoint(endpoint); err != nil {
+		return 0, nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return 0, nil, err

@@ -101,6 +101,11 @@ func desktopObservePublishEvidence(scope agentruntime.Scope, action, out string)
 			if link == "" {
 				link = browser.PostURLFrom(p.PostURL, id, "")
 			}
+			if link == "" && strings.Contains(p.PostURL, "{") {
+				// The profile builds a public article URL. The creator
+				// console (mp.csdn.net/.../success/<id>) is not that URL.
+				continue
+			}
 			if link == "" {
 				link = u
 			}
@@ -155,7 +160,12 @@ func desktopSiteDoneWithoutLink(runID string, p *browser.SiteProfile) string {
 	}
 	for _, key := range desktopLedgerKeysForRun(runID) {
 		for _, e := range desktopLedgerEntries(key) {
-			if e.Kind == "posted" && e.Run == runID && e.Detail == string(browser.PublishLive) && desktopProfileHasHost(p, e.Host) {
+			if e.Kind == "posted" && e.Run == runID && e.URL == "" && e.Detail == string(browser.PublishLive) && desktopProfileHasHost(p, e.Host) {
+				// The profile knows how to build the public URL. An article
+				// id alone (CSDN 170775764) is not a finished post.
+				if strings.TrimSpace(p.PostURL) != "" {
+					return ""
+				}
 				return "(published, the site gave no public link)"
 			}
 		}

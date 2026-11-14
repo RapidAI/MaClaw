@@ -16,15 +16,17 @@ var fileCompanionGroupIDMatch = regexp.MustCompile(`^cg_[0-9a-f]{32}$`)
 
 // FileCompanionGroup is a reading group. The creator is the admin.
 type FileCompanionGroup struct {
-	ID      string                     `json:"id"`
-	Name    string                     `json:"name"`
-	Owner   string                     `json:"owner"`
-	Admin   bool                       `json:"admin"`
-	Icon    string                     `json:"icon,omitempty"`
-	Members []FileCompanionGroupMember `json:"members"`
+	ID           string                     `json:"id"`
+	Name         string                     `json:"name"`
+	Owner        string                     `json:"owner"`
+	Admin        bool                       `json:"admin"`
+	Icon         string                     `json:"icon,omitempty"`
+	MemberCount  int                        `json:"member_count,omitempty"`
+	PendingCount int                        `json:"pending_count,omitempty"`
+	Members      []FileCompanionGroupMember `json:"members"`
 	// Remote marks a group that lives on another Hub: this person joined it
-	// through a relayed invitation, so the group opens its documents but a
-	// new share cannot be published to it from here.
+	// through a relayed invitation. Documents open through the origin, and new
+	// shares are published through this Hub's authenticated relay.
 	Remote bool `json:"remote,omitempty"`
 }
 

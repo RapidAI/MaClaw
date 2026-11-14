@@ -4,6 +4,7 @@ import { corelib, main } from '../../wailsjs/go/models';
 import {
     ListPetPacks,
     InstallPetPackZip,
+    ImportDSHPetFolder,
     SelectPetPackZip,
     UninstallPetPack,
     GetPetPackPreviewDataURL,
@@ -331,7 +332,7 @@ function rendererCapabilityLabel(lang: Lang, renderer: string): string {
 
 function clampPetSize(value: number): number {
     if (!Number.isFinite(value)) return defaultPetSize;
-    return Math.min(120, Math.max(56, Math.round(value)));
+    return Math.min(240, Math.max(56, Math.round(value)));
 }
 
 function cloneAppConfig(config: corelib.AppConfig, patch: Record<string, unknown> = {}): corelib.AppConfig {
@@ -998,6 +999,51 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         }
     }, [refreshPackOptions, lang, updatePetConfig]);
 
+    const importDSHPetFromDialog = useCallback(async () => {
+        if (installBusyRef.current) return;
+        installBusyRef.current = true;
+        setInstallError('');
+        setInstallNotice('');
+        if (installNoticeTimerRef.current) {
+            window.clearTimeout(installNoticeTimerRef.current);
+            installNoticeTimerRef.current = undefined;
+        }
+        setInstallBusy(true);
+        try {
+            const imported = await ImportDSHPetFolder('');
+            if (!imported?.id) {
+                return;
+            }
+            await refreshPackOptions();
+            updatePetConfig({
+                pet_skin: imported.id,
+                pet_variant: 'default',
+            });
+            const warnings = (imported.warnings ?? []).join(' ');
+            const dropped = imported.dropped ?? 0;
+            const detail = warnings ? ` ${warnings}` : '';
+            setInstallNotice(
+                text(
+                    lang,
+                    `已导入并选用：${imported.id}，丢掉 ${dropped} 帧。${detail}`,
+                    `已匯入並選用：${imported.id}，丟掉 ${dropped} 幀。${detail}`,
+                    `Imported and selected: ${imported.id}. Dropped ${dropped} frames.${detail}`,
+                )
+            );
+            installNoticeTimerRef.current = window.setTimeout(() => {
+                if (mountedRef.current) setInstallNotice('');
+                installNoticeTimerRef.current = undefined;
+            }, 4000);
+        } catch (err) {
+            const message = formatUnknownError(err);
+            console.error('[PetSettingsPanel] ImportDSHPetFolder failed:', err);
+            setInstallError(message);
+        } finally {
+            installBusyRef.current = false;
+            setInstallBusy(false);
+        }
+    }, [refreshPackOptions, lang, updatePetConfig]);
+
     return (
         <div className="pet-settings-panel">
             {petStoreOpen ? <PetStoreDialog lang={lang} onClose={() => { setPetStoreOpen(false); void refreshPetStoreListings(); }} /> : null}
@@ -1270,6 +1316,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             </button>
                             <button
                                 type="button"
+                                className="pet-install-button"
+                                disabled={installBusy}
+                                onClick={() => { void importDSHPetFromDialog(); }}
+                            >
+                                {text(lang, '导入 DeepSeek 精灵图', '匯入 DeepSeek 精靈圖', 'Import DeepSeek sprite folder')}
+                            </button>
+                            <button
+                                type="button"
                                 className="pet-help-button pet-help-button--inline"
                                 onClick={() => { void openPetPacksFolder(); }}
                                 title={packsDirLabel || text(lang, '打开用户宠物包目录', '開啟使用者寵物包目錄', 'Open user pet packs folder')}
@@ -1332,14 +1386,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     <div className="pet-form-section">
                         <div className="pet-section-heading pet-section-heading--inline">
                             <label className="form-label" htmlFor="pet-size-range">{text(lang, '\u5c3a\u5bf8', '\u5c3a\u5bf8', 'Size')}</label>
-                            <span>{text(lang, '建议 72-96px，兼顾存在感与遮挡。', '建議 72-96px，兼顧存在感與遮擋。', '72-96px is a comfortable desktop range.')}</span>
+                            <span>{text(lang, '建议 200-240px，站着的人才看得清。', '建議 200-240px，站著的人才看得清。', '200-240px is enough to see her as a person.')}</span>
                         </div>
                         <div className="pet-range-row">
                             <input
                                 id="pet-size-range"
                                 type="range"
                                 min={56}
-                                max={120}
+                                max={240}
                                 step={4}
                                 value={petSize}
                                 aria-valuetext={`${petSize}px`}

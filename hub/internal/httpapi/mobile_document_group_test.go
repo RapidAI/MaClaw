@@ -632,6 +632,67 @@ func TestCompanionDocumentShareDeleteHidesTheSingleLink(t *testing.T) {
 	}
 }
 
+func TestCompanionDocumentGroupPendingInviteCanBeResent(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "resend-owner@example.com")
+	readerToken, _ := issueViewerToken(t, identity, "resend-reader@example.com")
+	create := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups", strings.NewReader(`{"name":"重发邀请"}`))
+	create.Header.Set("Authorization", "Bearer "+ownerToken)
+	created := httptest.NewRecorder()
+	CompanionDocumentGroupsHandler(identity).ServeHTTP(created, create)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	var group map[string]any
+	if err := json.Unmarshal(created.Body.Bytes(), &group); err != nil {
+		t.Fatal(err)
+	}
+	groupID, _ := group["id"].(string)
+	invite := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups/"+groupID+"/members", strings.NewReader(`{"contact":"resend-reader@example.com"}`))
+		req.SetPathValue("id", groupID)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		rec := httptest.NewRecorder()
+		CompanionDocumentGroupMembersHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := invite(); rec.Code != http.StatusOK {
+		t.Fatalf("invite: %d %s", rec.Code, rec.Body.String())
+	}
+	body := listCompanionGroups(t, identity, ownerToken)
+	if !strings.Contains(body, `"member_count":1`) || !strings.Contains(body, `"pending_count":1`) {
+		t.Fatalf("pending counts: %s", body)
+	}
+	first := invite()
+	if first.Code != http.StatusOK {
+		t.Fatalf("resend: %d %s", first.Code, first.Body.String())
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &group); err != nil {
+		t.Fatal(err)
+	}
+	members, _ := group["members"].([]any)
+	if len(members) != 1 {
+		t.Fatalf("resend duplicated the member: %s", first.Body.String())
+	}
+
+	accept := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups/"+groupID+"/accept", nil)
+	accept.SetPathValue("id", groupID)
+	accept.Header.Set("Authorization", "Bearer "+readerToken)
+	accepted := httptest.NewRecorder()
+	CompanionDocumentGroupAcceptHandler(identity).ServeHTTP(accepted, accept)
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("accept: %d %s", accepted.Code, accepted.Body.String())
+	}
+	body = listCompanionGroups(t, identity, readerToken)
+	if !strings.Contains(body, `"member_count":2`) || !strings.Contains(body, `"pending_count":0`) {
+		t.Fatalf("accepted counts: %s", body)
+	}
+	if rec := invite(); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "这位用户已经在群组里") {
+		t.Fatalf("accepted member reinvite: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCompanionDocumentGroupRenameIconLeaveAndDissolve(t *testing.T) {
 	resetCompanionDocShares(t)
 	identity, _, _ := newHTTPAPITestServices(t)

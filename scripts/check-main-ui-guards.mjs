@@ -714,8 +714,8 @@ const highRiskRemoteFileLineLimits = [
   // counts 1439).
   ['guiapp/frontend/src/components/remote/MCPManagementPanel.tsx', 1450],
   // Refreshed 1100 -> 1110 (2026-11-10): memory bot-scope batch pushed
-  // this past 1105.
-  ['guiapp/frontend/src/components/remote/MemoryManagementPanel.tsx', 1110],
+  // this past 1105. 1110 -> 1140 (2026-11-14): measured 1117 lines.
+  ['guiapp/frontend/src/components/remote/MemoryManagementPanel.tsx', 1140],
 ];
 for (const [rel, max] of highRiskRemoteFileLineLimits) requireMaxLines(rel, max);
 

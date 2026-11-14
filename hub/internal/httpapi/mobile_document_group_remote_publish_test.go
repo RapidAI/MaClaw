@@ -207,6 +207,7 @@ func TestCompanionRemoteMemberPublishesGroupShare(t *testing.T) {
 // companion_share bell entry for the invited user.
 func TestCompanionRemoteShareNoticeRelayCreatesLocalNotification(t *testing.T) {
 	resetCompanionDocShares(t)
+	trustCompanionOriginsForTest(t)
 	identity, _, _ := newHTTPAPITestServices(t)
 	svc := newCompanionGroupNotificationService(t)
 	withCompanionGroupNotifier(t, identity, svc)
@@ -342,6 +343,7 @@ func TestCompanionRemoteShareNoticeRelayCreatesLocalNotification(t *testing.T) {
 // the bell entry.
 func TestCompanionRemoteMemberRemovalRevokesShareNotices(t *testing.T) {
 	resetCompanionDocShares(t)
+	trustCompanionOriginsForTest(t)
 	identity, _, _ := newHTTPAPITestServices(t)
 	svc := newCompanionGroupNotificationService(t)
 	withCompanionGroupNotifier(t, identity, svc)
@@ -559,6 +561,7 @@ func TestCompanionRemoteMemberLeaveRevokesShareNotices(t *testing.T) {
 // bell entry down with it.
 func TestCompanionRemoteShareNoticeMergesAudiences(t *testing.T) {
 	resetCompanionDocShares(t)
+	trustCompanionOriginsForTest(t)
 	identity, _, _ := newHTTPAPITestServices(t)
 	svc := newCompanionGroupNotificationService(t)
 	withCompanionGroupNotifier(t, identity, svc)

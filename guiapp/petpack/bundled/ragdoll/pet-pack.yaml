@@ -16,7 +16,7 @@ description_i18n:
   zh-Hans: "会在桌面上走动、奔跑、跳跃、弯腰和唱歌的布偶猫女娘"
   zh-Hant: "會在桌面上走動、奔跑、跳躍、彎腰和唱歌的布偶貓女娘"
 preview: preview.png
-default_size: 88
+default_size: 224
 tone: balanced
 tags: ["official", "default"]
 renderer: native-character

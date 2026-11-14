@@ -52,6 +52,53 @@ func loadRestartTrajectory(raw string) (restartTrajectory, bool) {
 // after the service process comes back.
 const restartNoticeContinue = "服务刚重启，这项任务接着做。"
 
+// restartPersonAsk is the message the person sent, so a resumed turn still
+// knows they asked for a screenshot or a file. The restart notice is not
+// that message. The stored user message wins; the checkpoint's user rows
+// cover a run whose message row was not kept.
+func restartPersonAsk(s *Service, run Run) string {
+	if s != nil && s.store != nil {
+		if id := strings.TrimSpace(run.UserMessageID); id != "" && strings.TrimSpace(run.SessionID) != "" {
+			if msgs, err := s.store.ListMessages(run.SessionID); err == nil {
+				for _, m := range msgs {
+					if m.ID == id {
+						if text := strings.TrimSpace(m.Content); text != "" {
+							return text
+						}
+					}
+				}
+			}
+		}
+	}
+	raw := ""
+	if run.Metadata != nil {
+		raw = run.Metadata[metaRestartTrajectory]
+	}
+	traj, ok := loadRestartTrajectory(raw)
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	for _, entry := range traj.Entries {
+		if entry.HostContinuation || entry.Role != "user" {
+			continue
+		}
+		text, _ := entry.Content.(string)
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(text)
+		if b.Len() > 4000 {
+			break
+		}
+	}
+	return b.String()
+}
+
 // restartNoticeStopped is the sentence when that task cannot be continued.
 const restartNoticeStopped = "这项任务被服务重启打断了，没法接着做。"
 
@@ -398,11 +445,15 @@ func (s *Service) resumeOne(ctx context.Context, p Principal, inst Instance, run
 	s.sayRestart(p, cp.InstanceID, cp.SessionID, restartNoticeContinue)
 	meta := map[string]string{"restart_resume": "1", "restart_from": run.ID}
 	continuing := run
-	_, err = s.PostMessageAsync(ctx, p, cp.InstanceID, cp.SessionID, PostMessageInput{
+	in := PostMessageInput{
 		Content:   restartNoticeContinue,
 		Metadata:  meta,
 		resumeRun: &continuing,
-	})
+	}
+	if s.ResumeExecutionHooks != nil {
+		in.PrepareExecution, in.FinishExecution = s.ResumeExecutionHooks(p, instLive, restartPersonAsk(s, run))
+	}
+	_, err = s.PostMessageAsync(ctx, p, cp.InstanceID, cp.SessionID, in)
 	if err != nil {
 		log.Printf("[agentservice] resume run %s: %v", run.ID, err)
 		s.endInterrupted(p, run, restartNoticeStopped)

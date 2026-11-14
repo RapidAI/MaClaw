@@ -250,6 +250,32 @@ func TestVisibleDesktopPageLeavesAFocusedNetworkError(t *testing.T) {
 	}
 }
 
+func TestLoadedPageBehindNetworkErrorSkipsASinglePage(t *testing.T) {
+	start := time.Now()
+	got := loadedPageBehindNetworkError("only", []TargetInfo{{
+		ID: "only", Type: "page", URL: "https://example.com/game", WebSocketDebugURL: "ws://127.0.0.1:1/devtools/page/only",
+	}})
+	if got != "" || time.Since(start) > 200*time.Millisecond {
+		t.Fatalf("single page got %q in %s", got, time.Since(start))
+	}
+}
+
+func TestPageBehindNetworkErrorLeavesAnOrdinaryPageAlone(t *testing.T) {
+	pages := []TargetInfo{{ID: "game-tab", Type: "page"}, {ID: "login", Type: "page"}}
+	ordinary := []pageAttention{{focused: true, failed: false, visible: true}, {visible: true}}
+	if got := pageBehindNetworkError("game-tab", pages, ordinary); got != "" {
+		t.Fatalf("ordinary focus raised %q", got)
+	}
+	covered := []pageAttention{{focused: true, failed: true, visible: true}, {visible: true}}
+	if got := pageBehindNetworkError("game-tab", pages, covered); got != "login" {
+		t.Fatalf("covered page = %q", got)
+	}
+	onlyError := []pageAttention{{focused: true, failed: true, visible: true}}
+	if got := pageBehindNetworkError("error", []TargetInfo{{ID: "error", Type: "page"}}, onlyError); got != "" {
+		t.Fatalf("lone error raised %q", got)
+	}
+}
+
 func TestVisibleDesktopPageKeepsTheOnlyNetworkError(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

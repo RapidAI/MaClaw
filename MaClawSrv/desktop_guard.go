@@ -64,7 +64,10 @@ func desktopRepeatCheck(scope agentruntime.Scope, action string, args map[string
 const desktopShotWidthEnv = "MACLAW_DESKTOP_SHOT_WIDTH"
 
 func desktopPinShotSize(opts desktop.ShotOptions) desktop.ShotOptions {
-	if !opts.Region.Empty() {
+	// A region zoom and a window crop keep the size the caller asked for.
+	// Pinning them to the full-screen width rescales a picture whose
+	// coordinates are not the click frame.
+	if !opts.Region.Empty() || opts.Window != "" {
 		return opts
 	}
 	opts.MaxWidth = desktopEnvInt(desktopShotWidthEnv, 0, 0, desktop.ShotMaxEdge)

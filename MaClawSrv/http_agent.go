@@ -665,6 +665,22 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 	return prepare, finish
 }
 
+// desktopResumeExecutionHooks is the reply slot for a run continued after a
+// process restart. The HTTP handler installs this slot for a normal turn.
+// A restart continuation does not come through HTTP, and without the slot
+// deliver reports that the turn has no reply that can carry files.
+func desktopResumeExecutionHooks(p agentservice.Principal, inst agentservice.Instance, ask string) (
+	func(context.Context) context.Context,
+	func(context.Context, *agentservice.Run, *agentservice.Message, error),
+) {
+	user, tenant := rememberDesktopOwner(inst.ID, inst.Metadata, p.UserID, p.TenantID)
+	botID := ""
+	if inst.Metadata != nil {
+		botID = strings.TrimSpace(inst.Metadata[desktopBotMetadataKey])
+	}
+	return desktopAsyncHooks(tenant, user, inst.ID, botID, nil, ask)
+}
+
 func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {

@@ -302,17 +302,30 @@ func siteExpLearned(base browser.SiteProfile, spec browser.PublishSpec) browser.
 		}
 	}
 	set(&p.EditorURL, spec.EditorURL)
-	set(&p.VerifyURL, spec.VerifyURL)
+	// A model-passed homepage (https://blog.csdn.net/) is not the account's
+	// post list. Keep the list the profile already has.
+	if v := strings.TrimSpace(spec.VerifyURL); v != "" && !(browser.PublishURLIsBareOrigin(v) && strings.TrimSpace(p.VerifyURL) != "" && !browser.PublishURLIsBareOrigin(p.VerifyURL)) {
+		p.VerifyURL = v
+	}
 	set(&p.VerifyAPI, spec.VerifyAPI)
 	set(&p.TitleSelector, spec.TitleSelector)
 	set(&p.BodySelector, spec.BodySelector)
 	set(&p.UploadSelector, spec.UploadSelector)
-	set(&p.SuccessURL, spec.SuccessURL)
+	// A success_url that lost its (\d+) capture can no longer yield the id
+	// the public link is built from. Keep the pattern that still captures.
+	if v := strings.TrimSpace(spec.SuccessURL); v != "" && browser.SuccessPatternCaptures(v) >= browser.SuccessPatternCaptures(p.SuccessURL) {
+		p.SuccessURL = v
+	}
+	set(&p.PostURL, spec.PostURL)
+	set(&p.UserCookie, spec.UserCookie)
 	if len(spec.SubmitTexts) > 0 {
 		p.SubmitTexts = append([]string(nil), spec.SubmitTexts...)
 	}
 	if len(spec.ConfirmTexts) > 0 {
 		p.ConfirmTexts = append([]string(nil), spec.ConfirmTexts...)
+	}
+	if len(spec.PendingTexts) > 0 {
+		p.PendingTexts = append([]string(nil), spec.PendingTexts...)
 	}
 	if spec.LazyUpload {
 		p.LazyUpload = true

@@ -243,9 +243,18 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 			// may stand for this one (stale success URLs leaked before).
 			r.URL = ""
 		}
-		if rep.PostID != "" && spec.VerifyURL != "" && (r.State == browser.PublishLive || r.State == browser.PublishLiveIncomplete) {
-			if link := desktopPostURLFor(spec, rep.PostID); link != "" {
+		if rep.PostID != "" && (r.State == browser.PublishLive || r.State == browser.PublishLiveIncomplete) {
+			// A public article URL that already names this id stays. The
+			// template is filled when the report has no such link (an empty
+			// URL, a creator-console page, or a profile link beside the
+			// title). A template that still cannot be filled does not keep
+			// that other link.
+			if browser.PostURLHasID(r.URL, rep.PostID) {
+				r.URL = browser.PublicPostURL(r.URL)
+			} else if link := desktopPostURLFor(spec, rep.PostID, rep.Account); link != "" {
 				r.URL = link
+			} else if strings.Contains(desktopPostURLTemplate(spec), "{id}") {
+				r.URL = ""
 			}
 		}
 	})

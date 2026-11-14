@@ -408,13 +408,25 @@ func companionShareReceived(share companionDocShare, ownerID string, contacts, g
 
 func companionGroupView(group companionDocGroup, ownerID string) map[string]any {
 	admin := group.OwnerID == ownerID
+	accepted := 0
+	pending := 0
+	for _, member := range group.Members {
+		switch member.Status {
+		case "accepted":
+			accepted++
+		case "pending":
+			pending++
+		}
+	}
 	view := map[string]any{
-		"id":         group.ID,
-		"name":       group.Name,
-		"icon":       companionGroupIcon(group.Icon),
-		"owner":      group.OwnerLabel,
-		"admin":      admin,
-		"created_at": group.CreatedAt.UTC().Format(time.RFC3339),
+		"id":            group.ID,
+		"name":          group.Name,
+		"icon":          companionGroupIcon(group.Icon),
+		"owner":         group.OwnerLabel,
+		"admin":         admin,
+		"created_at":    group.CreatedAt.UTC().Format(time.RFC3339),
+		"member_count":  accepted + 1,
+		"pending_count": pending,
 	}
 	if admin {
 		members := make([]map[string]any, 0, len(group.Members))
@@ -664,22 +676,15 @@ func addCompanionGroupMember(ctx context.Context, identity *auth.IdentityService
 		writeError(w, http.StatusForbidden, "GROUP_FORBIDDEN", "只有群组管理员可以邀请成员")
 		return
 	}
-	// Inviting again is how an admin reaches someone who ignored the first
-	// invitation: that pending row is re-armed and re-notified. A pending row
-	// that is not muted is already in their bell; an accepted row is a member.
+	// Inviting a pending row again explicitly resends its notice. This covers
+	// an ignored invitation, an unresolved account, a relay retry, and a local
+	// reader who simply missed the first notice. Accepted rows stay unchanged.
 	rearmIndex := -1
 	for i, member := range group.Members {
 		if member.Contact != contact {
 			continue
 		}
-		if member.Status == "pending" && member.Muted {
-			rearmIndex = i
-			break
-		}
-		// A pending row that never resolved to a local account, or one that
-		// was relayed to another hub, can be invited again. That retries a
-		// delivery that failed, and reaches someone who registered later.
-		if member.Status == "pending" && !member.Muted && (member.UserID == "" || member.HomeHubURL != "") {
+		if member.Status == "pending" {
 			rearmIndex = i
 			break
 		}

@@ -1383,6 +1383,38 @@ func (a *App) UpdateMemory(id, content, category string, tags []string) error {
 	return nil
 }
 
+// UpdateMemoryWithVersion applies a desktop edit only when the opened version is still current.
+func (a *App) UpdateMemoryWithVersion(id, content, category string, tags []string, expectedUpdatedAt string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "id": id, "category": category, "tags": tags}); err != nil {
+		return err
+	}
+	expectedAt, err := time.Parse(time.RFC3339Nano, expectedUpdatedAt)
+	if err != nil {
+		return fmt.Errorf("invalid memory version: %w", err)
+	}
+	a.ensureInteractionInfra()
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	previous := memoryEntriesByIDsForStore(runtime.Store, id)
+	if !desktopMemoryMutationsAllowed(previous, []string{id}) {
+		return fmt.Errorf("memory not found in desktop scope")
+	}
+	if !previous[0].UpdatedAt.Equal(expectedAt) {
+		return fmt.Errorf("memory changed since it was opened; reload and retry")
+	}
+	applied, err := runtime.Store.UpdateManualMemoryIfUnchanged(id, content, memory.Category(category), tags, previous[0])
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("memory changed during save; reload and retry")
+	}
+	return nil
+}
+
 // DeleteMemory removes the memory entry with the given ID (Wails binding).
 func (a *App) DeleteMemory(id string) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "delete", "id": id}); err != nil {
@@ -1539,11 +1571,6 @@ func (a *App) SetAutoCompress(enabled bool) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "set_auto_compress", "enabled": enabled}); err != nil {
 		return err
 	}
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.MemoryAutoCompress = enabled
-	}); err != nil {
-		return err
-	}
 	a.ensureInteractionInfra()
 	runtime, release := a.acquireSharedMemoryRuntime()
 	defer release()
@@ -1554,8 +1581,17 @@ func (a *App) SetAutoCompress(enabled bool) error {
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
-	if pipeline := maintenance.Pipeline(); pipeline != nil {
-		pipeline.SetAutoCompressEnabled(enabled)
+	pipeline := maintenance.Pipeline()
+	if pipeline == nil {
+		return fmt.Errorf("memory pipeline not initialized")
+	}
+	previous := pipeline.AutoCompressEnabled()
+	pipeline.SetAutoCompressEnabled(enabled)
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.MemoryAutoCompress = enabled
+	}); err != nil {
+		pipeline.SetAutoCompressEnabled(previous)
+		return err
 	}
 	return nil
 }
@@ -1743,11 +1779,8 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 	if n > memory.MaxBackups {
 		n = memory.MaxBackups
 	}
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.MemoryMaxBackups = n
-	}); err != nil {
-		return err
-	}
+	previous := a.GetMemoryMaxBackups()
+	a.ensureInteractionInfra()
 	runtime, release := a.acquireSharedMemoryRuntime()
 	defer release()
 	if runtime == nil {
@@ -1757,7 +1790,23 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
-	return maintenance.SetMaxBackups(n)
+	if err := maintenance.SetMaxBackups(n); err != nil {
+		rollbackErr := maintenance.SetMaxBackups(previous)
+		if rollbackErr != nil {
+			return fmt.Errorf("%w; rollback retention: %v", err, rollbackErr)
+		}
+		return err
+	}
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.MemoryMaxBackups = n
+	}); err != nil {
+		rollbackErr := maintenance.SetMaxBackups(previous)
+		if rollbackErr != nil {
+			return fmt.Errorf("%w; rollback retention: %v", err, rollbackErr)
+		}
+		return err
+	}
+	return nil
 }
 
 // ListArchiveMemories returns archived (cold storage) entries filtered by category and keyword (Wails binding).

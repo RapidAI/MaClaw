@@ -108,6 +108,16 @@ type Service struct {
 	// capability metadata after an assistant response is produced.
 	AssistantMessageMetadataHook func(ctx context.Context, p Principal, inst Instance, sess Session, run Run, msg Message, cfg corelib.AppConfig) map[string]string
 
+	// ResumeExecutionHooks supplies the desktop reply slot for a run continued
+	// after a process restart. That continuation is not an HTTP turn, so
+	// without this hook the turn has nowhere to attach a screenshot or a
+	// delivered file. ask is the person's original message, not the restart
+	// notice, so a request for a picture is still a request for a picture.
+	ResumeExecutionHooks func(p Principal, inst Instance, ask string) (
+		func(context.Context) context.Context,
+		func(context.Context, *Run, *Message, error),
+	)
+
 	runMu       sync.Mutex
 	runningRuns map[string]context.CancelFunc
 	draining    atomic.Bool

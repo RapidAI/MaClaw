@@ -101,6 +101,13 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 	}
 
 	setSrvSchedulerManager(mgr)
+	if executor != nil {
+		// The desktop-bot clock fires these rows with or without the general
+		// scheduler. The working bot registers them through bot_schedule.
+		executor.DesktopBotSchedule = func(_ context.Context, principal agentservice.Principal, instanceID, botID string, args map[string]interface{}) string {
+			return desktopBotScheduleTool(mgr, principal, instanceID, botID, args)
+		}
+	}
 	// Reconcile while the clock is stopped, then drop catch-up ids for rows
 	// that reconcile removed. The ticker and the scheduler start after that,
 	// so a watch whose bot is gone cannot fire once on the way up.

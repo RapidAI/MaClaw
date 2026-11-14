@@ -2092,14 +2092,25 @@ func (s *IdentityService) RemoveBlockedEmail(ctx context.Context, email string) 
 }
 
 func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, rawToken string) (*MachinePrincipal, error) {
+	if s == nil || s.machines == nil || s.users == nil || strings.TrimSpace(machineID) == "" || rawToken == "" {
+		return nil, ErrMachineUnauthorized
+	}
 	machine, err := s.machines.GetByID(ctx, machineID)
 	if err != nil {
 		return nil, err
 	}
-	if machine == nil {
+	if machine == nil || machine.MachineTokenHash != hashToken(rawToken) {
 		return nil, ErrMachineUnauthorized
 	}
-	if machine.MachineTokenHash != hashToken(rawToken) {
+	switch strings.ToLower(strings.TrimSpace(machine.Status)) {
+	case "disabled", "revoked", "deleted":
+		return nil, ErrMachineUnauthorized
+	}
+	user, err := s.users.GetByID(ctx, machine.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil || user.Status != "active" {
 		return nil, ErrMachineUnauthorized
 	}
 	return &MachinePrincipal{TenantID: machine.TenantID, UserID: machine.UserID, MachineID: machine.ID}, nil
@@ -2110,12 +2121,18 @@ func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, ra
 // (which only have a machine_token) can obtain a viewer_token without
 // re-enrolling.
 func (s *IdentityService) IssueViewerTokenForUser(ctx context.Context, userID string) (string, error) {
+	if s == nil || s.users == nil || s.viewerTok == nil {
+		return "", ErrInvalidUserCredentials
+	}
 	user, err := s.users.GetByID(ctx, userID)
 	if err != nil {
 		return "", err
 	}
+	if user == nil || user.Status != "active" {
+		return "", ErrInvalidUserCredentials
+	}
 	tenantID := strings.TrimSpace(tenantIDFromContext(ctx))
-	if user != nil && strings.TrimSpace(user.TenantID) != "" {
+	if strings.TrimSpace(user.TenantID) != "" {
 		tenantID = strings.TrimSpace(user.TenantID)
 	}
 	if tenantID == "" {

@@ -3814,6 +3814,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-share-group"));
         await waitFor(() => expect(screen.getByTestId("file-companion-share-group-pick").querySelectorAll("option").length).toBeGreaterThan(1));
         fireEvent.change(screen.getByTestId("file-companion-share-group-pick"), { target: { value: groupID } });
+        expect(screen.getByTestId("file-companion-share-audience-summary").textContent).toContain("已接受邀请的成员");
         fireEvent.click(screen.getByTestId("file-companion-library-share"));
         await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "group", "", groupID, JSON.stringify({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] }), 0));
         await waitFor(() => expect(screen.getByTestId("file-companion-library-share").textContent).toBe("分享到云端"));
@@ -3919,15 +3920,19 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId(`file-companion-group-${groupID}`);
         const detail = screen.getByTestId("file-companion-groups");
         expect(detail.textContent).toContain("reader@example.com");
-        expect(detail.textContent).toContain("待确认");
+        expect(detail.textContent).toContain("等待接受邀请");
+        expect(detail.textContent).toContain("成员管理");
+        fireEvent.click(screen.getByTestId(`file-companion-group-resend-${groupID}-reader@example.com`));
+        await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(groupID, "reader@example.com"));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-resend-${groupID}-reader@example.com`).hasAttribute("disabled")).toBe(false));
         fireEvent.change(screen.getByTestId("file-companion-group-name"), { target: { value: "新组" } });
         fireEvent.click(screen.getByTestId("file-companion-group-create"));
         await waitFor(() => expect(createGroup).toHaveBeenCalledWith("新组"));
-        await waitFor(() => expect(screen.getByTestId("file-companion-group-create").hasAttribute("disabled")).toBe(false));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-contact-${groupID}`).hasAttribute("disabled")).toBe(false));
         fireEvent.change(screen.getByTestId(`file-companion-group-contact-${groupID}`), { target: { value: "13800138000" } });
         fireEvent.click(screen.getByTestId(`file-companion-group-add-${groupID}`));
         await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(groupID, "13800138000"));
-        await waitFor(() => expect(screen.getByTestId("file-companion-group-create").hasAttribute("disabled")).toBe(false));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-contact-${groupID}`).hasAttribute("disabled")).toBe(false));
         fireEvent.click(screen.getByTestId(`file-companion-group-remove-${groupID}-reader@example.com`));
         await waitFor(() => expect(removeGroupMember).toHaveBeenCalledWith(groupID, "reader@example.com"));
         await waitFor(() => expect(screen.getByTestId(`file-companion-group-save-${groupID}`).hasAttribute("disabled")).toBe(false));
@@ -4009,6 +4014,37 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(await screen.findByTestId(`file-companion-group-dissolve-confirm-${groupID}`));
         await waitFor(() => expect(deleteGroup).toHaveBeenCalledTimes(1));
         await waitFor(() => expect(screen.queryByTestId(`file-companion-group-${groupID}`)).toBeNull());
+    });
+
+    it("does not merge an older group list over a newly created group", async () => {
+        const oldID = "cg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const newID = "cg_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const oldGroup = { id: oldID, name: "旧列表里的群组", owner: "me@example.com", admin: true, members: [] };
+        const newGroup = { id: newID, name: "刚创建的群组", owner: "me@example.com", admin: true, members: [] };
+        let resolveInitial: (value: Record<string, unknown>[]) => void = () => undefined;
+        let resolveAfterCreate: (value: Record<string, unknown>[]) => void = () => undefined;
+        listGroups
+            .mockImplementationOnce(() => new Promise<Record<string, unknown>[]>((resolve) => { resolveInitial = resolve; }))
+            .mockImplementationOnce(() => new Promise<Record<string, unknown>[]>((resolve) => { resolveAfterCreate = resolve; }));
+        createGroup.mockResolvedValue(newGroup);
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        fireEvent.click(screen.getByTestId("file-companion-groups-open"));
+        fireEvent.change(await screen.findByTestId("file-companion-group-name"), { target: { value: "刚创建的群组" } });
+        fireEvent.click(screen.getByTestId("file-companion-group-create"));
+        await waitFor(() => expect(createGroup).toHaveBeenCalledWith("刚创建的群组"));
+        await act(async () => {
+            resolveAfterCreate([newGroup]);
+            await Promise.resolve();
+        });
+        await screen.findByTestId(`file-companion-group-${newID}`);
+        await act(async () => {
+            resolveInitial([oldGroup]);
+            await Promise.resolve();
+        });
+        expect(screen.queryByTestId(`file-companion-group-${oldID}`)).toBeNull();
+        expect(screen.getByTestId(`file-companion-group-${newID}`)).toBeTruthy();
     });
 
     it("closes the management screens and popups on Escape without leaving fullscreen", async () => {

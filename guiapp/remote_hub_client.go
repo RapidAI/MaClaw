@@ -2,7 +2,6 @@ package guiapp
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -401,9 +400,12 @@ func thirdPartyClientIDFromSessionUserID(userID string) string {
 
 func defaultHubDial(urlStr string) (*websocket.Conn, error) {
 	dialer := *websocket.DefaultDialer
-	// Support wss:// with self-signed certificates (Hub TLS mode).
-	if strings.HasPrefix(urlStr, "wss://") {
-		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	if strings.HasPrefix(strings.ToLower(urlStr), "wss://") {
+		tlsConfig, err := remote.HubTLSConfig()
+		if err != nil {
+			return nil, fmt.Errorf("hub TLS configuration: %w", err)
+		}
+		dialer.TLSClientConfig = tlsConfig
 	}
 	conn, _, err := dialer.Dial(urlStr, nil)
 	return conn, err

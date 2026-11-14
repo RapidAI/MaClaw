@@ -40,6 +40,9 @@ func (c *desktopHubClient) screenshotWith(ctx context.Context, tenantID, userID,
 	if !opts.Region.Empty() {
 		body["region"] = opts.Region
 	}
+	if opts.Window != "" {
+		body["window"] = opts.Window
+	}
 	if strings.TrimSpace(name) != "" {
 		body["name"] = strings.TrimSpace(name)
 	}

@@ -3911,8 +3911,8 @@ func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	if reloaded.PetSkin != "ragdoll" {
 		t.Fatalf("PetSkin = %q, want ragdoll", reloaded.PetSkin)
 	}
-	if reloaded.PetSize != 120 {
-		t.Fatalf("PetSize = %d, want 120", reloaded.PetSize)
+	if reloaded.PetSize != maxPetSize {
+		t.Fatalf("PetSize = %d, want %d", reloaded.PetSize, maxPetSize)
 	}
 	if reloaded.PetInteractionMode != "balanced" {
 		t.Fatalf("PetInteractionMode = %q, want balanced", reloaded.PetInteractionMode)

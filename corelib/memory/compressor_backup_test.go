@@ -9,6 +9,15 @@ import (
 	"testing"
 )
 
+func backupEntriesForTest(t *testing.T, data []byte) []Entry {
+	t.Helper()
+	snapshot, err := decodeMemoryBackup(data)
+	if err != nil {
+		t.Fatalf("backup should be valid memory snapshot: %v", err)
+	}
+	return snapshot.Entries
+}
+
 func TestCompressorCreatesBackupWhenMemoryFileMissing(t *testing.T) {
 	tmpDir := t.TempDir()
 	memPath := filepath.Join(tmpDir, "memories.json")
@@ -36,10 +45,7 @@ func TestCompressorCreatesBackupWhenMemoryFileMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read backup: %v", err)
 	}
-	var entries []Entry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		t.Fatalf("backup should be valid JSON entries: %v", err)
-	}
+	entries := backupEntriesForTest(t, data)
 	if len(entries) != 0 {
 		t.Fatalf("expected empty backup, got %d entries", len(entries))
 	}
@@ -89,10 +95,7 @@ func TestCompressorCreatesBackupAfterPartitionMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read backup: %v", err)
 	}
-	var backedUp []Entry
-	if err := json.Unmarshal(backupData, &backedUp); err != nil {
-		t.Fatalf("backup should be valid JSON entries: %v", err)
-	}
+	backedUp := backupEntriesForTest(t, backupData)
 	if len(backedUp) != len(legacyEntries) {
 		t.Fatalf("expected %d backed up entries, got %d", len(legacyEntries), len(backedUp))
 	}
@@ -145,10 +148,7 @@ func TestCompressorBackupUsesLoadedPartitionsWhenLegacyFileIsStale(t *testing.T)
 	if err != nil {
 		t.Fatalf("read backup: %v", err)
 	}
-	var backedUp []Entry
-	if err := json.Unmarshal(backupData, &backedUp); err != nil {
-		t.Fatalf("backup should be valid JSON entries: %v", err)
-	}
+	backedUp := backupEntriesForTest(t, backupData)
 	if len(backedUp) != len(partitionEntries) {
 		t.Fatalf("expected %d partition entries in backup, got %d", len(partitionEntries), len(backedUp))
 	}

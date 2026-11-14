@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -90,28 +91,36 @@ func TestDesktopPagesStayVisibleWhenTheAttachedTabTimesOut(t *testing.T) {
 	}
 }
 
-func TestScreenshotRaisesTheLoadedPageWithoutAResume(t *testing.T) {
+func TestScreenshotDoesNotRaiseTheBrowser(t *testing.T) {
 	shot := desktopTestPNG(t, 8, 8, false)
 	scope := agentruntime.Scope{TenantID: "tenant-shot-raise", UserID: "alice", InstanceID: "shot-raise"}
 	previousSession := desktopRemoteSession
 	previousShot := desktopRemoteScreenshot
 	previousOpen := desktopOpenBrowser
 	previousFocus := desktopFocusVisiblePage
+	previousRaise := desktopRaisePageBehindError
 	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
 		return desktopEndpoint{CDP: "http://10.0.0.8:19020", Display: ":20"}, nil
 	}
 	desktopRemoteScreenshot = func(context.Context, string, string, string) ([]byte, error) {
 		return shot, nil
 	}
-	raised := 0
+	focused := 0
+	checked := 0
+	opened := 0
 	desktopOpenBrowser = func(*desktopBinding, agentruntime.Scope, string, string) (*browser.BrowserAgentSession, error) {
+		opened++
 		return &browser.BrowserAgentSession{}, nil
 	}
-	desktopFocusVisiblePage = func(sess *browser.BrowserAgentSession) error {
+	desktopFocusVisiblePage = func(*browser.BrowserAgentSession) error {
+		focused++
+		return nil
+	}
+	desktopRaisePageBehindError = func(sess *browser.BrowserAgentSession) error {
 		if sess == nil {
-			t.Fatal("screenshot raised a nil browser")
+			t.Fatal("screenshot checked a nil browser")
 		}
-		raised++
+		checked++
 		return nil
 	}
 	t.Cleanup(func() {
@@ -119,12 +128,36 @@ func TestScreenshotRaisesTheLoadedPageWithoutAResume(t *testing.T) {
 		desktopRemoteScreenshot = previousShot
 		desktopOpenBrowser = previousOpen
 		desktopFocusVisiblePage = previousFocus
+		desktopRaisePageBehindError = previousRaise
 	})
 
 	out, err := operateDesktop(context.Background(), scope, map[string]any{"action": "screenshot"})
 	text, images := agentruntime.ExtractModelImages(out)
-	if err != nil || raised != 1 || !strings.Contains(text, "8x8") || len(images) != 1 {
-		t.Fatalf("raised=%d text=%q images=%d err=%v", raised, text, len(images), err)
+	if err != nil || focused != 0 || checked != 0 || opened != 0 || !strings.Contains(text, "8x8") || len(images) != 1 {
+		t.Fatalf("cold shot focused=%d checked=%d opened=%d text=%q images=%d err=%v", focused, checked, opened, text, len(images), err)
+	}
+
+	key := mustDesktopUserKey(t, scope.TenantID, scope.UserID)
+	binding := desktopBindingFor(key)
+	binding.mu.Lock()
+	binding.session = &browser.BrowserAgentSession{TargetID: "tab-keep"}
+	binding.addr = "http://10.0.0.8:19020"
+	binding.mu.Unlock()
+	previousConnected := desktopSessionConnected
+	desktopSessionConnected = func(sess *browser.BrowserAgentSession) bool {
+		return sess != nil && sess.TargetID == "tab-keep"
+	}
+	t.Cleanup(func() {
+		desktopSessionConnected = previousConnected
+		binding.mu.Lock()
+		binding.session = nil
+		binding.addr = ""
+		binding.mu.Unlock()
+	})
+	out, err = operateDesktop(context.Background(), scope, map[string]any{"action": "screenshot"})
+	text, images = agentruntime.ExtractModelImages(out)
+	if err != nil || focused != 0 || checked != 1 || opened != 0 || !strings.Contains(text, "8x8") || len(images) != 1 {
+		t.Fatalf("attached shot focused=%d checked=%d opened=%d text=%q images=%d err=%v", focused, checked, opened, text, len(images), err)
 	}
 }
 
@@ -331,6 +364,27 @@ func TestHubClientFetchesTheScreenshot(t *testing.T) {
 	data, saved, err = saver.screenshot(context.Background(), "tenant", "alice", ":20", "other.png")
 	if err != nil || saved != "" || !bytes.Equal(data, shot) {
 		t.Fatalf("mismatched path saved=%q err=%v", saved, err)
+	}
+}
+
+func TestHubClientSendsTheWindow(t *testing.T) {
+	shot := desktopTestPNG(t, 8, 6, false)
+	var window string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		window, _ = in["window"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"mime": "image/png", "image_base64": base64.StdEncoding.EncodeToString(shot),
+			"screen_width": 8, "screen_height": 6, "image_width": 8, "image_height": 6,
+			"scale": 1, "region": map[string]int{"x": 0, "y": 0, "width": 8, "height": 6},
+		})
+	}))
+	defer srv.Close()
+	client := &desktopHubClient{baseURL: srv.URL, token: "hub-token", http: srv.Client()}
+	got, _, err := client.screenshotWith(context.Background(), "tenant", "alice", ":20", "", desktop.ShotOptions{Window: "NEON SERPENT"})
+	if err != nil || window != "NEON SERPENT" || got.ImageWidth != 8 {
+		t.Fatalf("window=%q shot=%+v err=%v", window, got, err)
 	}
 }
 

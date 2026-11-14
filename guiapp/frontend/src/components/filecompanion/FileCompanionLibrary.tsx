@@ -256,15 +256,18 @@ type CompanionGroup = {
     owner: string;
     admin: boolean;
     icon: CompanionGroupIcon;
+    memberCount: number;
+    pendingCount: number;
     members: CompanionGroupMember[];
-    // remote marks a group that lives on another Hub. It opens the documents
-    // shared inside it, but a new share cannot be published to it from here.
+    // remote marks a group that lives on another Hub. Publishing uses the
+    // home Hub's authenticated relay rather than sending this login onward.
     remote: boolean;
 };
 
 type GroupEdit = { name: string; icon: string };
 
 type ShareSpan = "forever" | "days" | "months";
+type ShareErrorField = "" | "password" | "person" | "group" | "expiry";
 
 type LibraryToast = (text: string, kind: "success" | "error", durationMs: number) => void;
 
@@ -388,12 +391,16 @@ function readGroups(raw: unknown): CompanionGroup[] {
             if (!contact) return null;
             return { contact, status: textOf(row, "status", "Status") || "pending" };
         }).filter((member): member is CompanionGroupMember => member !== null);
+        const acceptedCount = members.filter((member) => member.status === "accepted").length;
+        const pendingCount = members.filter((member) => member.status !== "accepted").length;
         return {
             id,
             name: textOf(group, "name", "Name") || cs("未命名群组"),
             owner: textOf(group, "owner", "Owner"),
             admin: boolOf(group, "admin", "Admin"),
             icon: companionGroupIcon(textOf(group, "icon", "Icon")),
+            memberCount: numberOf(group, "member_count", "MemberCount") || numberOf(group, "memberCount", "MemberCount") || (group.remote ? 0 : acceptedCount + 1),
+            pendingCount: numberOf(group, "pending_count", "PendingCount") || numberOf(group, "pendingCount", "PendingCount") || pendingCount,
             members,
             remote: boolOf(group, "remote", "Remote"),
         };
@@ -1216,6 +1223,23 @@ function audienceLabel(visibility: string): string {
     if (visibility === "person") return cs("指定的人");
     if (visibility === "group") return cs("群组");
     return cs("公开");
+}
+
+function audienceDescription(visibility: ShareAudience, target: string): string {
+    switch (visibility) {
+        case "private":
+            return cs("获得链接并输入正确密码的人才能打开；更换密码后，旧访客需要重新验证。");
+        case "person":
+            return target
+                ? companionFill(getCompanionUiLang(), "仅 ${target} 对应的已验证账号可以打开，转发链接不会授予其他人权限。", { target })
+                : cs("仅指定邮箱或手机号对应的已验证账号可以打开，转发链接不会授予其他人权限。");
+        case "group":
+            return target
+                ? companionFill(getCompanionUiLang(), "仅「${target}」中已接受邀请的成员可以打开；退出或被移出后立即失去云端访问。", { target })
+                : cs("仅所选群组中已接受邀请的成员可以打开；退出或被移出后立即失去云端访问。");
+        default:
+            return cs("任何获得链接的人都可以打开，无需密码；请仅分享适合公开的内容。");
+    }
 }
 
 function shareDays(span: ShareSpan, amount: string): number | null {
@@ -3607,6 +3631,7 @@ export function CompanionGroupsDialog({
     const [notice, setNotice] = useState("");
     const [loading, setLoading] = useState(true);
     const [groupName, setGroupName] = useState("");
+    const [groupQuery, setGroupQuery] = useState("");
     // The selected group is the one whose settings show on the right. It stays
     // on a group the list no longer has only until the next reload.
     const [selectedID, setSelectedID] = useState("");
@@ -3617,26 +3642,31 @@ export function CompanionGroupsDialog({
     // groupBusy is still false until the next paint, so a second click in this
     // turn would start another request and then toast a failure for one that worked.
     const groupBusyRef = useRef(false);
+    const groupReloadGen = useRef(0);
+    const unconfirmedGroups = useRef(new Map<string, CompanionGroup>());
 
     const reload = useCallback(async () => {
+        const generation = ++groupReloadGen.current;
         setLoading(true);
         try {
             const listed = readGroups(await ListFileCompanionGroups());
-            // A create or invite that already landed locally must survive a
-            // refresh that raced ahead of it: the list is the server's view,
-            // and an entry it has not written yet is still ours.
-            setGroups((current) => {
-                const seen = new Set(listed.map((group) => group.id));
-                const kept = current.filter((group) => !seen.has(group.id));
-                return kept.length === 0 ? listed : [...listed, ...kept];
-            });
+            // Only the newest server snapshot may replace local operation results.
+            // An older request can finish after a create, dissolve, or leave.
+            if (generation !== groupReloadGen.current) return;
+            const confirmed = new Set(listed.map((group) => group.id));
+            for (const id of confirmed) unconfirmedGroups.current.delete(id);
+            const merged = [...listed];
+            for (const [id, group] of unconfirmedGroups.current) {
+                if (!confirmed.has(id)) merged.push(group);
+            }
+            setGroups(merged);
             setNotice("");
         } catch (err) {
             // A failed refresh is not an empty group list. Wiping the cards
             // makes a rename, dissolve, or leave that already succeeded look undone.
-            setNotice(libraryError(err));
+            if (generation === groupReloadGen.current) setNotice(libraryError(err));
         } finally {
-            setLoading(false);
+            if (generation === groupReloadGen.current) setLoading(false);
         }
     }, []);
 
@@ -3657,6 +3687,7 @@ export function CompanionGroupsDialog({
     const rememberGroup = (raw: unknown) => {
         const next = readGroups([raw])[0];
         if (!next) return;
+        unconfirmedGroups.current.set(next.id, next);
         setGroups((current) => {
             const index = current.findIndex((item) => item.id === next.id);
             if (index < 0) return [...current, next];
@@ -3667,6 +3698,7 @@ export function CompanionGroupsDialog({
     };
 
     const forgetGroup = (id: string) => {
+        unconfirmedGroups.current.delete(id);
         setGroups((current) => current.filter((item) => item.id !== id));
     };
 
@@ -3706,8 +3738,8 @@ export function CompanionGroupsDialog({
         }
     };
 
-    const addMember = async (id: string) => {
-        const contact = (groupContact[id] || "").trim();
+    const inviteMember = async (id: string, value: string, resend = false) => {
+        const contact = value.trim();
         if (!contact) {
             showToast(cs("请填写要邀请的邮箱或手机号"), "error", 6000);
             return;
@@ -3715,8 +3747,8 @@ export function CompanionGroupsDialog({
         if (!beginGroupAction()) return;
         try {
             rememberGroup(await AddFileCompanionGroupMember(id, contact));
-            setGroupContact((current) => ({ ...current, [id]: "" }));
-            showToast(cs("已发送入群邀请"), "success", 6000);
+            if (!resend) setGroupContact((current) => ({ ...current, [id]: "" }));
+            showToast(cs(resend ? "已重新发送入群邀请" : "已发送入群邀请"), "success", 6000);
             await reload();
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
@@ -3724,6 +3756,8 @@ export function CompanionGroupsDialog({
             endGroupAction();
         }
     };
+
+    const addMember = async (id: string) => inviteMember(id, groupContact[id] || "");
 
     const removeMember = async (id: string, contact: string) => {
         if (!beginGroupAction()) return;
@@ -3818,6 +3852,10 @@ export function CompanionGroupsDialog({
     };
 
     const selected = groups.find((group) => group.id === selectedID) ?? groups[0] ?? null;
+    const query = groupQuery.trim().toLowerCase();
+    const visibleGroups = query
+        ? groups.filter((group) => `${group.name} ${group.owner}`.toLowerCase().includes(query))
+        : groups;
     // Focus the create field once the group list has arrived: with no group
     // yet that is the only action.
     const cardRef = useDialogFocus<HTMLDivElement>(".file-companion-groups-create input", !loading);
@@ -3839,8 +3877,9 @@ export function CompanionGroupsDialog({
             <div className="file-companion-dialog-card file-companion-groups-dialog" ref={cardRef}>
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
+                        <span className="file-companion-dialog-eyebrow">{cs("协作与权限")}</span>
                         <h2 id="file-companion-groups-title">{cs("阅读群组")}</h2>
-                        <p className="file-companion-dialog-sub">{cs("用邮箱或手机号邀请，对方在主界面通知里同意后加入。")}</p>
+                        <p className="file-companion-dialog-sub">{cs("管理成员与群组分享。受邀者在主界面通知中同意后加入。")}</p>
                     </div>
                     <button
                         type="button"
@@ -3857,25 +3896,45 @@ export function CompanionGroupsDialog({
 
                 <div className="file-companion-groups-body">
                     <aside className="file-companion-groups-rail">
-                        <form
-                            className="file-companion-groups-create"
+                        <div className="file-companion-groups-create-block">
+                            <span className="file-companion-dialog-label">{cs("新建群组")}</span>
+                            <form
+                                className="file-companion-groups-create"
                             onSubmit={(event) => {
                                 event.preventDefault();
                                 void createGroup();
                             }}
                         >
+                                <input
+                                    className="file-companion-dialog-input"
+                                    data-testid="file-companion-group-name"
+                                    aria-label={cs("新群组名称")}
+                                    placeholder={cs("输入群组名称")}
+                                    maxLength={40}
+                                    disabled={groupBusy}
+                                    value={groupName}
+                                    onChange={(event) => setGroupName(event.target.value)}
+                                />
+                                <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-group-create" disabled={groupBusy || !groupName.trim()}>
+                                    {cs("创建")}
+                                </button>
+                            </form>
+                        </div>
+                        {groups.length > 0 ? (
                             <input
-                                className="file-companion-dialog-input"
-                                data-testid="file-companion-group-name"
-                                aria-label={cs("新群组名称")}
-                                placeholder={cs("新群组名称")}
-                                value={groupName}
-                                onChange={(event) => setGroupName(event.target.value)}
+                                className="file-companion-dialog-input file-companion-groups-search"
+                                data-testid="file-companion-group-search"
+                                type="search"
+                                aria-label={cs("搜索群组")}
+                                placeholder={cs("搜索群组")}
+                                value={groupQuery}
+                                onChange={(event) => setGroupQuery(event.target.value)}
                             />
-                            <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-group-create" disabled={groupBusy}>
-                                {cs("创建")}
-                            </button>
-                        </form>
+                        ) : null}
+                        <div className="file-companion-groups-list-head">
+                            <span>{cs("我的群组")}</span>
+                            <span>{query ? `${visibleGroups.length}/${groups.length}` : groups.length}</span>
+                        </div>
                         {notice ? <p className="file-companion-library-notice" data-testid="file-companion-groups-notice" role="status">{notice}</p> : null}
                         {loading ? <p className="file-companion-library-note">{cs("正在读取…")}</p> : null}
                         <div
@@ -3886,27 +3945,27 @@ export function CompanionGroupsDialog({
                                 // Roving tabindex: arrows move the selection, so the
                                 // list is one tab stop instead of N.
                                 const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
-                                if (!keys.includes(event.key) || groups.length === 0) return;
+                                if (!keys.includes(event.key) || visibleGroups.length === 0) return;
                                 event.preventDefault();
-                                const current = Math.max(0, groups.findIndex((group) => group.id === selected?.id));
+                                const current = Math.max(0, visibleGroups.findIndex((group) => group.id === selected?.id));
                                 let next = current;
-                                if (event.key === "ArrowDown") next = Math.min(groups.length - 1, current + 1);
+                                if (event.key === "ArrowDown") next = Math.min(visibleGroups.length - 1, current + 1);
                                 if (event.key === "ArrowUp") next = Math.max(0, current - 1);
                                 if (event.key === "Home") next = 0;
-                                if (event.key === "End") next = groups.length - 1;
-                                const target = groups[next];
+                                if (event.key === "End") next = visibleGroups.length - 1;
+                                const target = visibleGroups[next];
                                 if (!target) return;
                                 setSelectedID(target.id);
                                 const node = event.currentTarget.querySelector<HTMLElement>(`[data-group-id="${target.id}"]`);
                                 node?.focus();
                             }}
                         >
-                            {groups.length === 0 && !loading ? (
+                            {visibleGroups.length === 0 && !loading ? (
                                 <div className="file-companion-groups-empty">
-                                    <p>{cs("还没有群组")}</p>
-                                    <small>{cs("创建后可以邀请同伴一起读同一份文档。")}</small>
+                                    <p>{query ? cs("没有匹配的群组") : cs("还没有群组")}</p>
+                                    <small>{query ? cs("试试其他名称或管理员账号。") : cs("创建后可以邀请同伴一起读同一份文档。")}</small>
                                 </div>
-                            ) : groups.map((group) => {
+                            ) : visibleGroups.map((group) => {
                                 const edit = draftOf(group);
                                 const active = selected?.id === group.id;
                                 return (
@@ -3926,7 +3985,8 @@ export function CompanionGroupsDialog({
                                         </span>
                                         <span className="file-companion-groups-item-text">
                                             <strong>{group.name}</strong>
-                                            <small>{group.admin ? cs("管理员") : (group.owner || cs("成员"))}{group.remote ? ` · ${cs("远程群组")}` : ""}{group.members.length > 0 ? companionFill(getCompanionUiLang(), " · ${count} 人", { count: group.members.length }) : ""}</small>
+                                            <small>{group.admin ? cs("我管理") : companionFill(getCompanionUiLang(), "管理员：${owner}", { owner: group.owner || cs("未知") })}{group.remote ? ` · ${cs("远程")}` : ""}</small>
+                                            {group.memberCount > 0 ? <small className="file-companion-groups-item-meta">{companionFill(getCompanionUiLang(), "${count} 位成员", { count: group.memberCount })}{group.pendingCount > 0 ? companionFill(getCompanionUiLang(), " · ${count} 待确认", { count: group.pendingCount }) : ""}</small> : null}
                                         </span>
                                     </button>
                                 );
@@ -3947,13 +4007,23 @@ export function CompanionGroupsDialog({
                                         <GroupGlyph icon={selected.admin ? (selectedEdit?.icon ?? selected.icon) : selected.icon} />
                                     </span>
                                     <div className="file-companion-library-group-title">
-                                        <strong>{selected.name}</strong>
-                                        <small>{selected.admin ? cs("你是管理员") : companionFill(getCompanionUiLang(), "成员 · ${owner}", { owner: selected.owner || cs("群主") })}{!selected.admin && selected.remote ? ` · ${cs("远程群组")}` : ""}</small>
+                                        <div className="file-companion-groups-title-line">
+                                            <strong>{selected.name}</strong>
+                                            <span className="file-companion-groups-role">{selected.admin ? cs("管理员") : cs("成员")}</span>
+                                        </div>
+                                        <small>{selected.admin ? cs("你可以管理群组设置、成员和分享") : companionFill(getCompanionUiLang(), "由 ${owner} 管理", { owner: selected.owner || cs("群主") })}{selected.remote ? ` · ${cs("远程群组")}` : ""}</small>
                                     </div>
+                                    {selected.memberCount > 0 ? (
+                                        <div className="file-companion-groups-summary" aria-label={cs("群组统计")}>
+                                            <span><strong>{selected.memberCount}</strong>{cs("位成员")}</span>
+                                            {selected.pendingCount > 0 ? <span><strong>{selected.pendingCount}</strong>{cs("待确认")}</span> : null}
+                                        </div>
+                                    ) : null}
                                 </div>
 
                                 {selected.admin ? (
                                     <>
+                                        <section className="file-companion-groups-settings" aria-label={cs("群组设置")}>
                                         <div className="file-companion-groups-field">
                                             <h3 className="file-companion-dialog-label">{cs("群组图标")}</h3>
                                             <div className="file-companion-groups-icons" role="group" aria-label={cs("群组图标")}>
@@ -3992,13 +4062,14 @@ export function CompanionGroupsDialog({
                                                         [selected.id]: { name: event.target.value, icon: current[selected.id]?.icon ?? companionGroupIcon(selected.icon) },
                                                     }))}
                                                 />
-                                                <button type="button" className="file-companion-dialog-secondary" data-testid={`file-companion-group-save-${selected.id}`} disabled={groupBusy} onClick={() => { void saveGroup(selected.id); }}>{cs("保存")}</button>
+                                                <button type="button" className="file-companion-dialog-secondary" data-testid={`file-companion-group-save-${selected.id}`} disabled={groupBusy} onClick={() => { void saveGroup(selected.id); }}>{cs("保存设置")}</button>
                                             </div>
                                         </div>
+                                        </section>
 
-                                        <div className="file-companion-groups-field">
+                                        <section className="file-companion-groups-field file-companion-groups-members-section" aria-label={cs("成员管理")}>
                                             <h3 className="file-companion-dialog-label">
-                                                {cs("成员")}<span className="file-companion-dialog-optional">{companionFill(getCompanionUiLang(), "${count} 人", { count: selected.members.length })}</span>
+                                                {cs("成员管理")}<span className="file-companion-dialog-optional">{companionFill(getCompanionUiLang(), "${count} 位成员", { count: selected.memberCount || selected.members.length })}</span>
                                             </h3>
                                             <form
                                                 className="file-companion-library-inline"
@@ -4016,16 +4087,29 @@ export function CompanionGroupsDialog({
                                                     disabled={groupBusy}
                                                     onChange={(event) => setGroupContact((current) => ({ ...current, [selected.id]: event.target.value }))}
                                                 />
-                                                <button type="submit" className="file-companion-dialog-secondary" data-testid={`file-companion-group-add-${selected.id}`} disabled={groupBusy}>{cs("邀请")}</button>
+                                                <button type="submit" className="file-companion-dialog-primary" data-testid={`file-companion-group-add-${selected.id}`} disabled={groupBusy || !(groupContact[selected.id] || "").trim()}>{cs("发送邀请")}</button>
                                             </form>
+                                            <p className="file-companion-dialog-hint">{cs("对方接受邀请后才能查看和发布群组分享。")}</p>
                                             {selected.members.length === 0 ? (
                                                 <p className="file-companion-dialog-hint">{cs("还没有成员。邀请后对方会收到通知。")}</p>
                                             ) : (
                                                 <div className="file-companion-library-members">
                                                     {selected.members.map((member) => (
-                                                        <div key={member.contact} className="file-companion-library-member">
-                                                            <span className="file-companion-library-member-contact">{member.contact}</span>
-                                                            <small className="file-companion-library-member-status" data-ok={member.status === "accepted" ? "true" : undefined}>{member.status === "accepted" ? cs("已加入") : member.status === "ignored" ? cs("已忽略") : cs("待确认")}</small>
+                                                        <div key={member.contact} className="file-companion-library-member" data-status={member.status}>
+                                                            <span className="file-companion-library-member-avatar" aria-hidden="true">{Array.from(member.contact)[0]?.toUpperCase()}</span>
+                                                            <div className="file-companion-library-member-main">
+                                                                <span className="file-companion-library-member-contact">{member.contact}</span>
+                                                                <small className="file-companion-library-member-status" data-ok={member.status === "accepted" ? "true" : undefined}>{member.status === "accepted" ? cs("已加入") : member.status === "ignored" ? cs("已忽略邀请") : cs("等待接受邀请")}</small>
+                                                            </div>
+                                                            {member.status !== "accepted" ? (
+                                                                <button
+                                                                    type="button"
+                                                                    className="file-companion-library-member-action"
+                                                                    data-testid={`file-companion-group-resend-${selected.id}-${member.contact}`}
+                                                                    disabled={groupBusy}
+                                                                    onClick={() => { void inviteMember(selected.id, member.contact, true); }}
+                                                                >{cs("重新邀请")}</button>
+                                                            ) : null}
                                                             <button
                                                                 type="button"
                                                                 className="file-companion-library-x"
@@ -4042,12 +4126,12 @@ export function CompanionGroupsDialog({
                                                     ))}
                                                 </div>
                                             )}
-                                        </div>
+                                        </section>
 
                                         <div className="file-companion-groups-danger">
                                             <div>
                                                 <strong>{cs("解散群组")}</strong>
-                                                <small>{cs("成员会失去这份分享的访问权限，文档本身不受影响。")}</small>
+                                                <small>{cs("成员将失去该群组所有分享的访问权限，已分享的文档不会被删除。")}</small>
                                             </div>
                                             {selectedConfirm === "dissolve" ? (
                                                 <div className="file-companion-dialog-actions">
@@ -4135,11 +4219,13 @@ export function CompanionShareDialog({
     // stored unless a new one is typed.
     const [password, setPassword] = useState("");
     const [shareBusy, setShareBusy] = useState(false);
+    const [shareError, setShareError] = useState("");
+    const [shareErrorField, setShareErrorField] = useState<ShareErrorField>("");
     const [shareURL, setShareURL] = useState(share?.shareUrl ?? "");
     // The saved result is what the header echoes. The row the dialog was
     // opened with is a snapshot, so it still shows the old audience and
     // expiry after a save.
-    const [savedEcho, setSavedEcho] = useState<{ visibility: string; expiresAt: string } | null>(null);
+    const [savedEcho, setSavedEcho] = useState<{ visibility: string; expiresAt: string; target: string; groupId: string } | null>(null);
     const [hostContact, setHostContact] = useState("");
     const [hostLabel, setHostLabel] = useState(share?.hostLabel || share?.owner || "");
     const [pendingHost, setPendingHost] = useState(share?.pendingHostLabel || "");
@@ -4160,6 +4246,10 @@ export function CompanionShareDialog({
     const listedRef = useRef(onListed);
     listedRef.current = onListed;
     const { showConfirm } = useDialog();
+    const rejectShare = (message: string, field: ShareErrorField) => {
+        setShareError(message);
+        setShareErrorField(field);
+    };
 
     useEffect(() => {
         let dead = false;
@@ -4217,12 +4307,13 @@ export function CompanionShareDialog({
     const shareCurrent = async () => {
         // 修改 works from the share alone: a row this account created on
         // another machine has no local copy here, and it is still editable.
-        if ((!editing && !path) || shareBusy) return;
+        if ((!editing && !path) || shareBusy || hostBusy) return;
+        setShareError("");
         // An edit that did not touch 有效期 sends -1, which the backend reads
         // as "keep the expiry already on the link".
         const days = editing && !expiryTouched ? -1 : shareDays(span, amount);
         if (days === null) {
-            showToast(cs("分享时间不正确"), "error", 6000);
+            rejectShare(cs("分享时间不正确"), "expiry");
             return;
         }
         const secret = password.trim();
@@ -4234,21 +4325,21 @@ export function CompanionShareDialog({
         if (visibility === "private" && !keepStoredPassword) {
             const n = Array.from(secret).length;
             if (n === 0) {
-                showToast(cs("请设置分享密码"), "error", 6000);
+                rejectShare(cs("请设置分享密码"), "password");
                 return;
             }
             if (n < 4 || n > 64) {
-                showToast(cs("分享密码需为 4–64 个字符"), "error", 6000);
+                rejectShare(cs("分享密码需为 4–64 个字符"), "password");
                 return;
             }
         }
         const target = visibility === "person" ? personTarget.trim() : visibility === "group" ? groupID : "";
         if (visibility === "person" && target === "") {
-            showToast(cs("请填写邮箱或手机号"), "error", 6000);
+            rejectShare(cs("请填写邮箱或手机号"), "person");
             return;
         }
         if (visibility === "group" && target === "") {
-            showToast(cs("请选择群组"), "error", 6000);
+            rejectShare(cs("请选择群组"), "group");
             return;
         }
         // The same audience is the same link. Creating it again would adopt the
@@ -4257,7 +4348,7 @@ export function CompanionShareDialog({
         // too. Saving this link onto its own audience is not.
         const scope = companionShareScopeKey(visibility, target, visibility === "group" ? groupID : "");
         if (existingShares.some((row) => row.token !== share?.token && companionShareScopeKey(row.visibility, row.target, row.groupId) === scope)) {
-            showToast(cs("这个范围已经分享过了。请换一个对象，或去修改原来的分享。"), "error", 6000);
+            rejectShare(cs("这个范围已经分享过了。请换一个对象，或去修改原来的分享。"), "");
             return;
         }
         setShareBusy(true);
@@ -4269,6 +4360,8 @@ export function CompanionShareDialog({
             setSavedEcho({
                 visibility: textOf(result, "visibility", "Visibility") || visibility,
                 expiresAt: textOf(result, "expiresAt", "ExpiresAt"),
+                target,
+                groupId: visibility === "group" ? groupID : "",
             });
             // The password just sent is stored on the link now. Clearing the
             // field means the next save keeps it instead of hashing it again.
@@ -4284,7 +4377,7 @@ export function CompanionShareDialog({
     };
 
     const syncCurrent = async () => {
-        if (!path || shareBusy) return;
+        if (!path || shareBusy || hostBusy) return;
         setShareBusy(true);
         try {
             await SyncFileCompanionShare(path, marksJSON);
@@ -4303,7 +4396,7 @@ export function CompanionShareDialog({
 
     const deleteCurrent = async () => {
         const token = share?.token ?? "";
-        if (!token || shareBusy) return;
+        if (!token || shareBusy || hostBusy) return;
         const docName = name || share?.name || cs("当前文档");
         const ok = await showConfirm(
             companionFill(getCompanionUiLang(), "确认删除“${name}”的分享？\n链接会立即失效，其他人将无法再打开。\n没有其他分享时，这份文档会回到本机项目，高亮和阅读记录会保留。\n在本机项目里删除才会清除这些数据。", { name: docName }),
@@ -4339,7 +4432,7 @@ export function CompanionShareDialog({
     const transferHost = async () => {
         const token = share?.token ?? "";
         const contact = hostContact.trim();
-        if (!token || hostBusy) return;
+        if (!token || hostBusy || shareBusy) return;
         if (!contact) {
             setHostError(cs("请填写参与者邮箱或手机号"));
             return;
@@ -4363,7 +4456,7 @@ export function CompanionShareDialog({
     // current host. The admin never loses management rights.
     const revokeHost = async () => {
         const token = share?.token ?? "";
-        if (!token || hostBusy) return;
+        if (!token || hostBusy || shareBusy) return;
         const ok = await showConfirm(
             pendingHost
                 ? companionFill(getCompanionUiLang(), "确认取消提名 ${name} 接任主持人？", { name: pendingHost })
@@ -4391,14 +4484,28 @@ export function CompanionShareDialog({
         }
     };
 
+    const chooseVisibility = (next: ShareAudience) => {
+        setVisibility(next);
+        setShareError("");
+    };
+    const selectedGroup = groups.find((group) => group.id === groupID);
+    const draftTarget = visibility === "person" ? personTarget.trim() : visibility === "group" ? (selectedGroup?.name ?? "") : "";
+    const draftScope = companionShareScopeKey(visibility, visibility === "person" ? personTarget : groupID, groupID);
+    const savedScope = companionShareScopeKey(
+        echoVisibility,
+        savedEcho?.target ?? share?.target ?? "",
+        savedEcho?.groupId ?? share?.groupId ?? "",
+    );
+    const accessWillChange = editing && (draftScope !== savedScope || (visibility === "private" && password.trim() !== ""));
     const cardRef = useDialogFocus<HTMLDivElement>(".file-companion-audience-option");
 
     return (
         <div className="file-companion-dialog" data-testid="file-companion-share-dialog" role="dialog" aria-modal="true" aria-labelledby="file-companion-share-dialog-title">
             <div className="file-companion-dialog-scrim" data-testid="file-companion-share-dialog-scrim" onMouseDown={onClose} />
-            <div className="file-companion-dialog-card file-companion-share" ref={cardRef}>
+            <div className="file-companion-dialog-card file-companion-share file-companion-share-dialog-card" ref={cardRef}>
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
+                        <span className="file-companion-dialog-eyebrow">{cs("文档协作")}</span>
                         <h2 id="file-companion-share-dialog-title">{editing ? cs("修改分享") : cs("分享到云端")}</h2>
                         <p className="file-companion-dialog-sub">
                             <span className="file-companion-dialog-doc">{name || share?.name || cs("当前文档")}</span>
@@ -4423,76 +4530,110 @@ export function CompanionShareDialog({
                     <section className="file-companion-dialog-section">
                         <h3 className="file-companion-dialog-label">{cs("可见范围")}</h3>
                         <div className="file-companion-audience" role="group" aria-label={cs("可见范围")}>
-                            <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-public" aria-pressed={visibility === "public"} onClick={() => setVisibility("public")}>
-                                <LibraryGlyph name="globe" size={15} />
-                                <span>{cs("完全公开")}</span>
+                            <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-public" aria-pressed={visibility === "public"} disabled={shareBusy || hostBusy} onClick={() => chooseVisibility("public")}>
+                                <LibraryGlyph name="globe" size={18} />
+                                <span className="file-companion-audience-copy"><strong>{cs("完全公开")}</strong><small>{cs("链接即可访问")}</small></span>
                             </button>
-                            <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-private" aria-pressed={visibility === "private"} onClick={() => setVisibility("private")}>
-                                <LibraryGlyph name="lock" size={15} />
-                                <span>{cs("私密分享")}</span>
+                            <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-private" aria-pressed={visibility === "private"} disabled={shareBusy || hostBusy} onClick={() => chooseVisibility("private")}>
+                                <LibraryGlyph name="lock" size={18} />
+                                <span className="file-companion-audience-copy"><strong>{cs("私密分享")}</strong><small>{cs("链接与密码")}</small></span>
                             </button>
-                            <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-person" aria-pressed={visibility === "person"} onClick={() => setVisibility("person")}>
-                                <LibraryGlyph name="person" size={15} />
-                                <span>{cs("指定的人")}</span>
+                            <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-person" aria-pressed={visibility === "person"} disabled={shareBusy || hostBusy} onClick={() => chooseVisibility("person")}>
+                                <LibraryGlyph name="person" size={18} />
+                                <span className="file-companion-audience-copy"><strong>{cs("指定的人")}</strong><small>{cs("验证指定账号")}</small></span>
                             </button>
-                            <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-group" aria-pressed={visibility === "group"} onClick={() => setVisibility("group")}>
-                                <LibraryGlyph name="people" size={15} />
-                                <span>{cs("群组")}</span>
+                            <button type="button" className="file-companion-audience-option" data-testid="file-companion-share-group" aria-pressed={visibility === "group"} disabled={shareBusy || hostBusy} onClick={() => chooseVisibility("group")}>
+                                <LibraryGlyph name="people" size={18} />
+                                <span className="file-companion-audience-copy"><strong>{cs("群组")}</strong><small>{cs("仅已加入成员")}</small></span>
                             </button>
                         </div>
+                        <div className="file-companion-audience-summary" data-testid="file-companion-share-audience-summary">
+                            <span className="file-companion-audience-summary-icon"><LibraryGlyph name={visibility === "public" ? "globe" : visibility === "private" ? "lock" : visibility === "person" ? "person" : "people"} size={15} /></span>
+                            <p>{audienceDescription(visibility, draftTarget)}</p>
+                        </div>
                         {visibility === "private" ? (
-                            <input
-                                className="file-companion-dialog-input"
-                                data-testid="file-companion-share-password"
-                                type="password"
-                                aria-label={cs("分享密码")}
-                                placeholder={editing ? cs("留空则保持原密码") : cs("设置密码，4–64 个字符")}
-                                value={password}
-                                onChange={(event) => setPassword(event.target.value)}
-                            />
+                            <div className="file-companion-share-field">
+                                <label className="file-companion-dialog-label" htmlFor="file-companion-share-password-input">{cs("访问密码")}{editing ? <span className="file-companion-dialog-optional">{cs("留空则保持原密码")}</span> : null}</label>
+                                <input
+                                    id="file-companion-share-password-input"
+                                    className="file-companion-dialog-input"
+                                    data-testid="file-companion-share-password"
+                                    type="password"
+                                    aria-label={cs("分享密码")}
+                                    aria-invalid={Boolean(shareError) && shareErrorField === "password"}
+                                    placeholder={editing ? cs("输入新密码以更换；留空保持不变") : cs("设置 4–64 个字符的访问密码")}
+                                    autoComplete="new-password"
+                                    maxLength={64}
+                                    disabled={shareBusy || hostBusy}
+                                    value={password}
+                                    onChange={(event) => { setPassword(event.target.value); setShareError(""); }}
+                                />
+                            </div>
                         ) : null}
                         {visibility === "person" ? (
-                            <input
-                                className="file-companion-dialog-input"
-                                data-testid="file-companion-share-target"
-                                aria-label={cs("邮箱或手机号")}
-                                placeholder={cs("对方的邮箱或手机号")}
-                                value={personTarget}
-                                onChange={(event) => setPersonTarget(event.target.value)}
-                            />
+                            <div className="file-companion-share-field">
+                                <label className="file-companion-dialog-label" htmlFor="file-companion-share-person-input">{cs("接收人账号")}</label>
+                                <input
+                                    id="file-companion-share-person-input"
+                                    className="file-companion-dialog-input"
+                                    data-testid="file-companion-share-target"
+                                    aria-label={cs("邮箱或手机号")}
+                                    aria-invalid={Boolean(shareError) && shareErrorField === "person"}
+                                    placeholder={cs("对方已验证的邮箱或手机号")}
+                                    autoComplete="off"
+                                    disabled={shareBusy || hostBusy}
+                                    value={personTarget}
+                                    onChange={(event) => { setPersonTarget(event.target.value); setShareError(""); }}
+                                />
+                                <p className="file-companion-dialog-hint">{cs("每个链接对应一位接收人；可通过「添加分享」为其他人创建独立权限。")}</p>
+                            </div>
                         ) : null}
                         {visibility === "group" ? (
-                            groups.length > 0 ? (
-                                <select
-                                    className="file-companion-dialog-input"
-                                    data-testid="file-companion-share-group-pick"
-                                    aria-label={cs("选择群组")}
-                                    value={groupID}
-                                    onChange={(event) => setGroupID(event.target.value)}
-                                >
-                                    <option value="">{cs("选择群组")}</option>
-                                    {groups.map((group) => (
-                                        <option key={group.id} value={group.id}>{group.admin ? group.name : `${group.name}（${group.owner || cs("成员")}）`}{group.remote ? `（${cs("远程群组")}）` : ""}</option>
-                                    ))}
-                                </select>
-                            ) : <p className="file-companion-dialog-hint">{cs("还没有可分享的群组，先在「阅读群组」里创建或加入一个。")}</p>
+                            <div className="file-companion-share-field">
+                                <label className="file-companion-dialog-label" htmlFor="file-companion-share-group-select">{cs("目标群组")}</label>
+                                {groups.length > 0 ? (
+                                    <select
+                                        id="file-companion-share-group-select"
+                                        className="file-companion-dialog-input"
+                                        data-testid="file-companion-share-group-pick"
+                                        aria-label={cs("选择群组")}
+                                        aria-invalid={Boolean(shareError) && shareErrorField === "group"}
+                                        disabled={shareBusy || hostBusy}
+                                        value={groupID}
+                                        onChange={(event) => { setGroupID(event.target.value); setShareError(""); }}
+                                    >
+                                        <option value="">{cs("选择群组")}</option>
+                                        {groups.map((group) => (
+                                            <option key={group.id} value={group.id}>{group.name}{group.memberCount > 0 ? companionFill(getCompanionUiLang(), "（${count} 位成员）", { count: group.memberCount }) : ""}{!group.admin && group.owner ? ` · ${group.owner}` : ""}{group.remote ? ` · ${cs("远程群组")}` : ""}</option>
+                                        ))}
+                                    </select>
+                                ) : <p className="file-companion-dialog-hint">{cs("还没有可分享的群组，先在「阅读群组」里创建或加入一个。")}</p>}
+                                <p className="file-companion-dialog-hint">{cs("群组成员可共同阅读和参与讨论；只有群组管理员能管理成员。")}</p>
+                            </div>
                         ) : null}
                         {otherShares.length > 0 ? (
-                            <p className="file-companion-dialog-hint" data-testid="file-companion-share-existing">
-                                {companionFill(getCompanionUiLang(), "已有分享：${list}", {
-                                    list: otherShares.map((row) => shareChoiceLabel(row, groupNames)).join("、"),
-                                })}
-                            </p>
+                            <div className="file-companion-share-existing" data-testid="file-companion-share-existing">
+                                <span className="file-companion-dialog-label">{cs("此文档的其他分享")}</span>
+                                <ul>
+                                    {otherShares.map((row) => (
+                                        <li key={row.token}>
+                                            <LibraryGlyph name={row.visibility === "group" ? "people" : row.visibility === "person" ? "person" : row.visibility === "private" ? "lock" : "globe"} size={13} />
+                                            <span>{shareChoiceLabel(row, groupNames)}</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
                         ) : null}
+                        {shareError ? <p className="file-companion-dialog-error file-companion-share-error" data-testid="file-companion-share-error" role="alert">{shareError}</p> : null}
                     </section>
 
                     <section className="file-companion-dialog-section">
-                        <h3 className="file-companion-dialog-label">{cs("有效期")}</h3>
+                        <h3 className="file-companion-dialog-label">{cs("链接有效期")}<span className="file-companion-dialog-optional">{cs("到期后自动停止云端访问")}</span></h3>
                         <div className="file-companion-dialog-row">
                             <div className="file-companion-segment" role="group" aria-label={cs("有效期")}>
-                                <button type="button" data-testid="file-companion-share-forever" aria-pressed={span === "forever"} onClick={() => { setSpan("forever"); setExpiryTouched(true); }}>{cs("永久")}</button>
-                                <button type="button" data-testid="file-companion-share-days" aria-pressed={span === "days"} onClick={() => { setSpan("days"); setExpiryTouched(true); }}>{cs("几天")}</button>
-                                <button type="button" data-testid="file-companion-share-months" aria-pressed={span === "months"} onClick={() => { setSpan("months"); setExpiryTouched(true); }}>{cs("几月")}</button>
+                                <button type="button" data-testid="file-companion-share-forever" aria-pressed={span === "forever"} disabled={shareBusy || hostBusy} onClick={() => { setSpan("forever"); setExpiryTouched(true); setShareError(""); }}>{cs("永久")}</button>
+                                <button type="button" data-testid="file-companion-share-days" aria-pressed={span === "days"} disabled={shareBusy || hostBusy} onClick={() => { setSpan("days"); setExpiryTouched(true); setShareError(""); }}>{cs("按天")}</button>
+                                <button type="button" data-testid="file-companion-share-months" aria-pressed={span === "months"} disabled={shareBusy || hostBusy} onClick={() => { setSpan("months"); setExpiryTouched(true); setShareError(""); }}>{cs("按月")}</button>
                             </div>
                             {span !== "forever" ? (
                                 <label className="file-companion-dialog-amount">
@@ -4503,8 +4644,10 @@ export function CompanionShareDialog({
                                         min={1}
                                         max={span === "months" ? 122 : 3660}
                                         aria-label={span === "months" ? cs("分享月数") : cs("分享天数")}
+                                        aria-invalid={Boolean(shareError) && shareErrorField === "expiry"}
                                         value={amount}
-                                        onChange={(event) => { setAmount(event.target.value); setExpiryTouched(true); }}
+                                        disabled={shareBusy || hostBusy}
+                                        onChange={(event) => { setAmount(event.target.value); setExpiryTouched(true); setShareError(""); }}
                                     />
                                     <span>{span === "months" ? cs("个月") : cs("天")}</span>
                                 </label>
@@ -4514,8 +4657,8 @@ export function CompanionShareDialog({
 
                     {editing && share?.admin ? (
                         <section className="file-companion-dialog-section" data-testid="file-companion-share-host">
-                            <h3 className="file-companion-dialog-label">{cs("主持人")}</h3>
-                            <p className="file-companion-dialog-hint" data-testid="file-companion-share-host-current">
+                            <h3 className="file-companion-dialog-label">{cs("主持人")}<span className="file-companion-dialog-optional">{cs("负责内容同步与讨论回复")}</span></h3>
+                            <p className="file-companion-dialog-hint file-companion-share-host-current" data-testid="file-companion-share-host-current">
                                 {hostLabel ? companionFill(getCompanionUiLang(), "当前主持人：${host}", { host: hostLabel }) : cs("当前主持人：你")}
                             </p>
                             {pendingHost ? (
@@ -4523,7 +4666,7 @@ export function CompanionShareDialog({
                                     <p className="file-companion-dialog-hint" data-testid="file-companion-share-host-pending">
                                         {companionFill(getCompanionUiLang(), "已提名 ${name}，等待对方在通知里接受。", { name: pendingHost })}
                                     </p>
-                                    <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-host-cancel" disabled={hostBusy} onClick={() => { void revokeHost(); }}>
+                                    <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-host-cancel" disabled={hostBusy || shareBusy} onClick={() => { void revokeHost(); }}>
                                         {cs("取消转移")}
                                     </button>
                                 </div>
@@ -4534,14 +4677,15 @@ export function CompanionShareDialog({
                                         data-testid="file-companion-share-host-target"
                                         aria-label={cs("新主持人的邮箱或手机号")}
                                         placeholder={cs("参与者的邮箱或手机号")}
+                                        disabled={hostBusy || shareBusy}
                                         value={hostContact}
                                         onChange={(event) => setHostContact(event.target.value)}
                                     />
-                                    <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-host-transfer" disabled={hostBusy} onClick={() => { void transferHost(); }}>
+                                    <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-host-transfer" disabled={hostBusy || shareBusy} onClick={() => { void transferHost(); }}>
                                         {cs("转移主持权")}
                                     </button>
                                     {!hostIsMe ? (
-                                        <button type="button" className="file-companion-dialog-danger" data-testid="file-companion-share-host-revoke" disabled={hostBusy} onClick={() => { void revokeHost(); }}>
+                                        <button type="button" className="file-companion-dialog-danger" data-testid="file-companion-share-host-revoke" disabled={hostBusy || shareBusy} onClick={() => { void revokeHost(); }}>
                                             {cs("收回主持权")}
                                         </button>
                                     ) : null}
@@ -4561,7 +4705,7 @@ export function CompanionShareDialog({
                                 <p className="file-companion-dialog-link" data-testid="file-companion-library-link">{shareURL}</p>
                                 <button type="button" className="file-companion-dialog-copy" data-testid="file-companion-library-copy" aria-label={cs("复制分享链接")} title={cs("复制分享链接")} onClick={() => { void copyText(shareURL, showToast); }}>
                                     <LibraryGlyph name="copy" size={13} />
-                                    <span className="file-companion-sr">{cs("复制")}</span>
+                                    <span>{cs("复制链接")}</span>
                                 </button>
                             </div>
                         </section>
@@ -4569,8 +4713,12 @@ export function CompanionShareDialog({
                 </div>
 
                 <footer className="file-companion-dialog-foot">
-                    <p className="file-companion-dialog-hint">
-                        {editing ? cs("改范围或有效期后，链接不变，已导入的人继续可用。") : cs("分享包含文档、高亮和聊天。之后的新标注和聊天也会同步给参与者。")}
+                    <p className="file-companion-dialog-hint" data-testid="file-companion-share-footnote">
+                        {accessWillChange
+                            ? cs("保存后链接保持不变；权限按新范围立即执行，更换密码后旧访客需重新验证。")
+                            : editing
+                                ? cs("链接保持不变；参与者能否继续访问取决于当前范围和有效期。")
+                                : cs("分享包含文档、高亮和聊天；后续更新仅同步给符合权限的参与者。")}
                     </p>
                     <div className="file-companion-dialog-actions">
                         {editing && onAddShare && path ? (
@@ -4578,7 +4726,7 @@ export function CompanionShareDialog({
                                 type="button"
                                 className="file-companion-dialog-secondary"
                                 data-testid="file-companion-share-add"
-                                disabled={shareBusy}
+                                disabled={shareBusy || hostBusy}
                                 title={cs("添加分享 — 再分享给其他人或群组，已有的分享保持不变")}
                                 onClick={onAddShare}
                             >
@@ -4586,15 +4734,15 @@ export function CompanionShareDialog({
                             </button>
                         ) : null}
                         {editing ? (
-                            <button type="button" className="file-companion-dialog-danger" data-testid="file-companion-share-delete" disabled={shareBusy} onClick={() => { void deleteCurrent(); }}>
+                            <button type="button" className="file-companion-dialog-danger" data-testid="file-companion-share-delete" disabled={shareBusy || hostBusy} onClick={() => { void deleteCurrent(); }}>
                                 {cs("删除分享")}
                             </button>
                         ) : (
-                            <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-library-sync" disabled={shareBusy} onClick={() => { void syncCurrent(); }}>
+                            <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-library-sync" disabled={shareBusy || hostBusy} onClick={() => { void syncCurrent(); }}>
                                 {cs("同步更新")}
                             </button>
                         )}
-                        <button type="button" className="file-companion-dialog-primary" data-testid="file-companion-library-share" disabled={shareBusy} aria-busy={shareBusy} onClick={() => { void shareCurrent(); }}>
+                        <button type="button" className="file-companion-dialog-primary" data-testid="file-companion-library-share" disabled={shareBusy || hostBusy} aria-busy={shareBusy} onClick={() => { void shareCurrent(); }}>
                             {shareBusy ? (editing ? cs("正在保存…") : cs("正在分享…")) : (editing ? cs("保存修改") : cs("分享到云端"))}
                         </button>
                     </div>

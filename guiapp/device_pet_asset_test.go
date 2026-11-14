@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"math"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/guiapp/petpack"
@@ -136,50 +137,125 @@ func TestEnsureDevicePetMotionFramesPreservesAuthoredInitialHold(t *testing.T) {
 	}
 }
 
-func TestDevicePetCharacterFramesUseDeterministicIdleLoop(t *testing.T) {
+func TestDevicePetCharacterFramesShowRichActionsOnAVisibleRoute(t *testing.T) {
 	reg := petpack.NewRegistry(t.TempDir(), petpack.BundledFS())
 	if err := reg.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	frames := devicePetRenderedFrames(reg, petpack.DefaultPackID, petpack.VariantDefault)
+	frames, frameMS := devicePetFramesForPack(reg, petpack.DefaultPackID, petpack.VariantDefault)
 	if len(frames) != devicePetFrameCount {
 		t.Fatalf("rendered frames=%d want=%d", len(frames), devicePetFrameCount)
 	}
-	resolved, err := reg.Resolve(petpack.DefaultPackID, petpack.VariantDefault)
-	if err != nil {
-		t.Fatal(err)
+	if frameMS != devicePetRouteFrameMS {
+		t.Fatalf("route frame ms=%d want=%d", frameMS, devicePetRouteFrameMS)
 	}
-	rig, err := petpack.NewRigRenderer(resolved)
-	if err != nil || rig == nil {
-		t.Fatalf("create deterministic rig renderer: renderer=%v err=%v", rig, err)
+	again, _ := devicePetFramesForPack(reg, petpack.DefaultPackID, petpack.VariantDefault)
+	if len(again) != len(frames) {
+		t.Fatalf("second render frames=%d want=%d", len(again), len(frames))
 	}
-	for index, frame := range frames {
-		want := rig.Render(petpack.StateIdle, index*devicePetFrameMS, devicePetAssetWidth)
-		if want == nil {
-			t.Fatalf("expected idle-loop frame %d", index)
-		}
-		if gotPixels, wantPixels := devicePetRGB565A8(frame), devicePetRGB565A8(want); !bytes.Equal(gotPixels, wantPixels) {
-			t.Fatalf("frame %d contains performance-director transition or non-looping layers", index)
+	for index := range frames {
+		if !bytes.Equal(devicePetRGB565A8(frames[index]), devicePetRGB565A8(again[index])) {
+			t.Fatalf("frame %d is not deterministic", index)
 		}
 	}
 
-	// A closed device loop includes the wrap from the final sample back to the
-	// first. Guard against accidentally sampling a character entry/exit again:
-	// that produces a wrap delta far larger than any authored adjacent segment
-	// and is perceived as a periodic jump on the LCD.
-	deltas := make([]uint64, len(frames))
-	var adjacentMax uint64
-	for index := range frames {
-		deltas[index] = perceptualDevicePetFrameDelta(frames[index], frames[(index+1)%len(frames)])
-		if index+1 < len(frames) && deltas[index] > adjacentMax {
-			adjacentMax = deltas[index]
+	// Reel order for a pack that has the full action set: rest, walk out,
+	// turn at the far edge, run back through center, then jump, bend, and sing
+	// held on the resting anchor. The pet's opaque body stays inside the frame
+	// the whole way, which is what the round buddy screen can show.
+	centers := make([]float64, len(frames))
+	var idleTop, jumpTop int
+	for index, frame := range frames {
+		box, top := devicePetTestBounds(frame)
+		if !box.ok {
+			t.Fatalf("frame %d has no visible pet", index)
+		}
+		if box.minX < devicePetTrackMargin || box.minY < devicePetTrackMargin ||
+			box.maxX > devicePetAssetWidth-1-devicePetTrackMargin ||
+			box.maxY > devicePetAssetHeight-1-devicePetTrackMargin {
+			t.Fatalf("frame %d leaves the safe area: %+v", index, box)
+		}
+		centers[index] = float64(box.minX+box.maxX) / 2
+		switch index {
+		case 0:
+			idleTop = top
+		case 5:
+			jumpTop = top
 		}
 	}
-	if adjacentMax == 0 {
-		t.Fatal("idle loop has no visible motion")
+	if centers[1] <= centers[0]+8 {
+		t.Fatalf("walk did not move right: centers=%v", centers)
 	}
-	if wrap := deltas[len(deltas)-1]; wrap > adjacentMax+adjacentMax/4 {
-		t.Fatalf("idle loop wrap delta=%d exceeds adjacent max=%d by more than 25%% (all deltas=%v)", wrap, adjacentMax, deltas)
+	if centers[2] <= centers[1] {
+		t.Fatalf("walk did not reach the far edge: centers=%v", centers)
+	}
+	if centers[4] >= centers[2]-8 {
+		t.Fatalf("run did not come back from the edge: centers=%v", centers)
+	}
+	if math.Abs(centers[4]-centers[0]) > 24 {
+		t.Fatalf("route does not return near the resting anchor: centers=%v", centers)
+	}
+	if jumpTop >= idleTop-8 {
+		t.Fatalf("jump top %d is not above idle top %d", jumpTop, idleTop)
+	}
+	distinct := 0
+	first := devicePetRGB565A8(frames[0])
+	for _, frame := range frames[1:] {
+		if !bytes.Equal(first, devicePetRGB565A8(frame)) {
+			distinct++
+		}
+	}
+	if distinct < 6 {
+		t.Fatalf("rich reel collapsed to %d distinct frames", distinct)
+	}
+	t.Logf("centers=%v idleTop=%d jumpTop=%d", centers, idleTop, jumpTop)
+}
+
+func devicePetTestBounds(frame image.Image) (petOpaqueBox, int) {
+	if frame == nil {
+		return petOpaqueBox{}, 0
+	}
+	bounds := frame.Bounds()
+	canvas := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	for y := 0; y < bounds.Dy(); y++ {
+		for x := 0; x < bounds.Dx(); x++ {
+			r, g, b, a := frame.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
+			if a == 0 {
+				continue
+			}
+			canvas.SetNRGBA(x, y, color.NRGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: uint8(a >> 8)})
+		}
+	}
+	box := petOpaqueBoxOf(canvas)
+	return box, box.minY
+}
+
+func TestLayoutDevicePetFrameKeepsTravelInsideTheFrame(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, devicePetAssetWidth, devicePetAssetHeight))
+	for y := 80; y < 200; y++ {
+		for x := 90; x < 150; x++ {
+			src.SetNRGBA(x, y, color.NRGBA{R: 240, G: 180, B: 90, A: 255})
+		}
+	}
+	rest := petOpaqueBoxOf(layoutDevicePetFrame(src, 1, 0, false))
+	far := petOpaqueBoxOf(layoutDevicePetFrame(src, 1, 1, false))
+	turned := petOpaqueBoxOf(layoutDevicePetFrame(src, 1, 0, true))
+	if !rest.ok || !far.ok || !turned.ok {
+		t.Fatal("layout dropped the pet")
+	}
+	if far.minX <= rest.minX {
+		t.Fatalf("along=1 did not move right: rest=%+v far=%+v", rest, far)
+	}
+	if far.maxX > devicePetAssetWidth-1-devicePetTrackMargin || far.minX < devicePetTrackMargin {
+		t.Fatalf("route walked off the frame: %+v", far)
+	}
+	// The blob sits left of center. Mirroring it across the canvas moves that
+	// mass to the right, which is the turn at the edge of the route.
+	if turned.minX <= rest.minX {
+		t.Fatalf("turn did not mirror the silhouette: turned=%+v rest=%+v", turned, rest)
+	}
+	if turned.maxX > devicePetAssetWidth-1-devicePetTrackMargin || turned.minX < devicePetTrackMargin {
+		t.Fatalf("turned pet left the frame: %+v", turned)
 	}
 }
 

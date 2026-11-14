@@ -242,13 +242,13 @@ type windowsFloatingWindow struct {
 	// event so it fires once per idle period and rearms on new activity.
 	petLastInteractionAt time.Time
 	petLongIdleFired     bool
-	// Desktop travel for clips that declare travel_x. Facing flips at the work
-	// area edge. Remainder keeps sub-pixel steps from being dropped.
-	petTravelFacing    int
-	petTravelRemainder float64
-	petTravelAt        time.Time
-	petFaceLeft        bool
-	actionSoundGen     uint64
+	// Desktop travel. A clip's travel vector is a speed; the heading cycles
+	// through horizontal, vertical, and diagonal directions and bounces at
+	// the work-area edges. Remainders keep sub-pixel steps.
+	petRoam        petpack.DesktopRoam
+	petTravelAt    time.Time
+	petFaceLeft    bool
+	actionSoundGen uint64
 	// Increments for every motion update so an older, slower registry lookup
 	// cannot overwrite a newer setting snapshot.
 	motionConfigRevision uint64
@@ -1667,64 +1667,50 @@ func (w *windowsFloatingWindow) petFacesLeft() bool {
 	return w.petFaceLeft
 }
 
-// stepPetLocomotion applies one clip's travel_x to the floating window.
-// designPxPerMS is signed design-canvas pixels per millisecond. Facing flips
-// when the window hits the work area so a walk or a run turns around.
-func (w *windowsFloatingWindow) stepPetLocomotion(designPxPerMS float64, sz int) {
+// stepPetLocomotion applies one clip's travel vector to the floating window.
+// vx and vy are design-canvas pixels per millisecond. The host keeps the
+// speed and changes heading, so the same walk can go across, up, down, or
+// on a diagonal. The window mutex is not held across MoveWindow.
+func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
 	if w == nil || sz <= 0 {
 		return
 	}
 	now := time.Now()
 	w.mu.Lock()
-	if w.petTravelFacing == 0 {
-		w.petTravelFacing = 1
-	}
-	dt := now.Sub(w.petTravelAt).Milliseconds()
+	dt := now.Sub(w.petTravelAt)
 	if w.petTravelAt.IsZero() {
 		dt = 0
 	}
 	w.petTravelAt = now
-	if designPxPerMS == 0 || dt <= 0 || dt > 200 || w.hwnd == 0 {
-		if designPxPerMS == 0 {
-			w.petTravelRemainder = 0
-		}
-		w.mu.Unlock()
-		return
-	}
-	scale := float64(sz) / 256
-	w.petTravelRemainder += math.Abs(designPxPerMS) * scale * float64(dt) * float64(w.petTravelFacing)
-	step := math.Trunc(w.petTravelRemainder)
-	w.petTravelRemainder -= step
+	state := w.petRoam
+	state.FaceLeft = w.petFaceLeft
 	x := w.windowStartX
 	y := w.windowStartY
 	hwnd := w.hwnd
-	facing := w.petTravelFacing
-	// Mirror when the effective direction is left. A negative authored travel
-	// already faces left; the host facing multiplies that.
-	w.petFaceLeft = (designPxPerMS < 0) != (facing < 0)
 	w.mu.Unlock()
-	if step == 0 {
+	if hwnd == 0 {
 		return
 	}
 	maxX := getScreenWidth() - sz
 	if maxX < 0 {
 		maxX = 0
 	}
-	next, hit := petpack.StepDesktopTravel(x, step, 0, maxX)
-	if hit {
-		w.mu.Lock()
-		w.petTravelFacing = -facing
-		w.petTravelRemainder = 0
-		w.petFaceLeft = !w.petFaceLeft
-		w.mu.Unlock()
+	maxY := getScreenHeight() - sz
+	if maxY < 0 {
+		maxY = 0
 	}
-	if next == x {
+	next, nx, ny := petpack.StepDesktopRoam(state, vx, vy, float64(sz)/256, dt, x, y, 0, maxX, 0, maxY, now)
+	w.mu.Lock()
+	w.petRoam = next
+	w.petFaceLeft = next.FaceLeft
+	w.mu.Unlock()
+	if nx == x && ny == y {
 		return
 	}
-	procMoveWindowProc.Call(hwnd, uintptr(next), uintptr(y), uintptr(sz), uintptr(sz), 1)
+	procMoveWindowProc.Call(hwnd, uintptr(nx), uintptr(ny), uintptr(sz), uintptr(sz), 1)
 	w.mu.Lock()
-	w.windowStartX = next
-	w.windowStartY = y
+	w.windowStartX = nx
+	w.windowStartY = ny
 	w.mu.Unlock()
 }
 
@@ -1981,7 +1967,8 @@ func (w *windowsFloatingWindow) renderFrame() {
 			if renderer := w.characterRenderer(petSkin, petVariant); renderer != nil {
 				nowMS := time.Now().UnixMilli()
 				if !petDragging {
-					w.stepPetLocomotion(renderer.DesktopTravelDesignPerMS(nowMS), sz)
+					vx, vy := renderer.DesktopTravelDesignPerMS(nowMS)
+					w.stepPetLocomotion(vx, vy, sz)
 				}
 				cue, tones := renderer.TakeActionSound(nowMS)
 				if actionSoundAllowed(petMotionSound, petQuietMode, petReducedMotion, petState, cue) && (cue != "" || len(tones) > 0) {

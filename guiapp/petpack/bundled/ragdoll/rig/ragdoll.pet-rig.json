@@ -4,17 +4,17 @@
     {
       "name": "root",
       "x": 128,
-      "y": 128
+      "y": 150
     },
     {
       "name": "hip",
       "parent": "root",
-      "y": 50
+      "y": 34
     },
     {
       "name": "torso",
       "parent": "hip",
-      "y": -4
+      "y": -34
     },
     {
       "name": "head",
@@ -24,43 +24,43 @@
     {
       "name": "eyes",
       "parent": "head",
-      "y": 8
+      "y": -6
     },
     {
       "name": "mouth",
       "parent": "head",
-      "y": 22
+      "y": 14
     },
     {
       "name": "arm_l",
       "parent": "torso",
-      "x": -30,
-      "y": -18
+      "x": -28,
+      "y": -22
     },
     {
       "name": "arm_r",
       "parent": "torso",
-      "x": 30,
-      "y": -18
+      "x": 28,
+      "y": -22
     },
     {
       "name": "leg_l",
       "parent": "hip",
-      "x": -13,
-      "y": 6
+      "x": -8,
+      "y": 2
     },
     {
       "name": "leg_r",
       "parent": "hip",
-      "x": 13,
-      "y": 6
+      "x": 8,
+      "y": 2
     },
     {
       "name": "tail",
       "parent": "hip",
-      "x": 8,
-      "y": -10,
-      "rotate": -18
+      "x": 4,
+      "y": -8,
+      "rotate": -20
     }
   ],
   "slots": [
@@ -739,11 +739,11 @@
         "eyes": [
           {
             "at_ms": 0,
-            "x": -6
+            "x": -3
           },
           {
             "at_ms": 800,
-            "x": -8,
+            "x": -4,
             "ease": "ease-in-out"
           }
         ]
@@ -756,11 +756,11 @@
         "eyes": [
           {
             "at_ms": 0,
-            "x": 6
+            "x": 3
           },
           {
             "at_ms": 800,
-            "x": 8,
+            "x": 4,
             "ease": "ease-in-out"
           }
         ]
@@ -773,13 +773,12 @@
         "eyes": [
           {
             "at_ms": 0,
-            "x": 1,
-            "y": -6
+            "y": -3
           },
           {
             "at_ms": 900,
-            "x": 2,
-            "y": -8,
+            "x": 1,
+            "y": -4,
             "ease": "ease-in-out"
           }
         ]
@@ -795,12 +794,12 @@
           },
           {
             "at_ms": 700,
-            "x": -7,
+            "x": -3,
             "ease": "ease-in-out"
           },
           {
             "at_ms": 1600,
-            "x": 6,
+            "x": 3,
             "y": -1,
             "ease": "ease-in-out"
           },
@@ -909,6 +908,7 @@
     "idle_breathe_loop": {
       "duration_ms": 3200,
       "loop": true,
+      "travel_x": 80,
       "tracks": {
         "root": [
           {

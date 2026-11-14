@@ -9,6 +9,7 @@ import * as AppAPI from '../../../wailsjs/go/main/App';
 vi.mock('../../../wailsjs/go/main/App', () => ({
     ListPetPacks: vi.fn().mockResolvedValue([]),
     InstallPetPackZip: vi.fn().mockResolvedValue('cool-pet'),
+    ImportDSHPetFolder: vi.fn().mockResolvedValue({ id: '', warnings: [], dropped: 0 }),
     SelectPetPackZip: vi.fn().mockResolvedValue(''),
     UninstallPetPack: vi.fn().mockResolvedValue(undefined),
     GetPetPackPreviewDataURL: vi.fn().mockResolvedValue(''),
@@ -70,6 +71,7 @@ describe('PetSettingsPanel localization', () => {
         vi.mocked(AppAPI.OpenPetPacksDir).mockResolvedValue(undefined);
         mockListPetPacks([]);
         vi.mocked(AppAPI.InstallPetPackZip).mockResolvedValue('cool-pet');
+        vi.mocked(AppAPI.ImportDSHPetFolder).mockResolvedValue({ id: '', warnings: [], dropped: 0 });
         vi.mocked(AppAPI.SelectPetPackZip).mockResolvedValue('');
         vi.mocked(AppAPI.UninstallPetPack).mockResolvedValue(undefined);
         vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({ uploads: [] });
@@ -558,5 +560,30 @@ describe('PetSettingsPanel localization', () => {
         expect(screen.queryByRole('menuitem', { name: 'Share…' })).toBeNull();
         expect(screen.queryByRole('menuitem', { name: 'Unlist' })).toBeNull();
         expect(screen.getByRole('menuitem', { name: 'Uninstall' })).toBeTruthy();
+    });
+
+    it('imports a DeepSeek sprite folder from the install row', async () => {
+        vi.mocked(AppAPI.ImportDSHPetFolder).mockResolvedValue({
+            id: 'dsh-whale',
+            warnings: ['no_locomotion: 没有可识别的跑或走，角色会以待机为主。'],
+            dropped: 2,
+        });
+        await act(async () => { renderPetSettings('zh-Hans'); });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: '导入 DeepSeek 精灵图' }));
+        });
+        await waitFor(() => expect(AppAPI.ImportDSHPetFolder).toHaveBeenCalledWith(''));
+        const notice = document.querySelector('.pet-install-notice');
+        expect(notice?.textContent).toContain('dsh-whale');
+        expect(notice?.textContent).toContain('2');
+
+        cleanup();
+        vi.mocked(AppAPI.ImportDSHPetFolder).mockResolvedValue({ id: '', warnings: [], dropped: 0 });
+        await act(async () => { renderPetSettings('en'); });
+        expect(screen.getByRole('button', { name: 'Import DeepSeek sprite folder' })).toBeTruthy();
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Import DeepSeek sprite folder' }));
+        });
+        expect(document.querySelector('.pet-install-notice')).toBeNull();
     });
 });

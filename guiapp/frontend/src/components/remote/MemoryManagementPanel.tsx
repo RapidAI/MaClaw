@@ -3,12 +3,12 @@ import { intlLocale, localizeText, normalizeLang } from "../../i18n";
 import {
     ListMemories,
     SaveMemory,
-    UpdateMemory,
+    UpdateMemoryWithVersion,
     DeleteMemory,
     DeleteMemories,
     ListBotMemories,
     SaveBotMemory,
-    UpdateBotMemory,
+    UpdateBotMemoryWithVersion,
     DeleteBotMemory,
     DeleteBotMemories,
     ListDesktopBots,
@@ -609,10 +609,10 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
         try {
             const tags = formTags.split(",").map(s => s.trim()).filter(Boolean);
             if (filterBot) {
-                if (editEntry) { await UpdateBotMemory(filterBot, editEntry.id, formContent.trim(), formCategory, tags); }
+                if (editEntry) { await UpdateBotMemoryWithVersion(filterBot, editEntry.id, formContent.trim(), formCategory, tags, editEntry.updated_at); }
                 else { await SaveBotMemory(filterBot, formContent.trim(), formCategory, tags); }
             } else {
-                if (editEntry) { await UpdateMemory(editEntry.id, formContent.trim(), formCategory, tags); }
+                if (editEntry) { await UpdateMemoryWithVersion(editEntry.id, formContent.trim(), formCategory, tags, editEntry.updated_at); }
                 else { await SaveMemory(formContent.trim(), formCategory, tags); }
             }
             setDlgOpen(false); await loadEntries();
@@ -862,6 +862,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
     const [savingMax, setSavingMax] = useState(false);
     const [backupActionPending, setBackupActionPending] = useState(false);
     const backupsRequestRef = useRef(0);
+    const statusRequestRef = useRef(0);
 
     const loadBackups = useCallback(async () => {
         const requestID = ++backupsRequestRef.current;
@@ -877,8 +878,10 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
     }, []);
 
     const loadStatus = useCallback(async () => {
+        const requestID = ++statusRequestRef.current;
         try {
             const s = await GetAutoCompressStatus();
+            if (requestID !== statusRequestRef.current) return;
             setServiceStatus(s as AutoCompressStatus);
             const status = s as AutoCompressStatus;
             setAutoEnabled(!!(status?.enabled ?? status?.running));
@@ -901,9 +904,8 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
         }).catch(() => { /* ignore */ });
     }, []);
 
-    // Listen for the backend "memory:compressed" event — the single source of
-    // truth for "compression finished". Both manual (CompressMemories) and auto
-    // (runOnce) paths emit this event. All post-completion UI updates happen here.
+    // Manual and legacy-loop compression finish here; the production Pipeline
+    // emits memory:pipeline_completed instead and has its own listener below.
     useEffect(() => {
         const handler = async (result: any) => {
             // A compression round finished, but another may still be in flight
@@ -925,6 +927,16 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
         return () => { EventsOff("memory:compressed"); };
     }, [loadBackups, loadStatus, onDataChanged]);
 
+    useEffect(() => {
+        const handler = () => {
+            loadBackups();
+            loadStatus();
+            onDataChanged();
+        };
+        EventsOn("memory:pipeline_completed", handler);
+        return () => { EventsOff("memory:pipeline_completed"); };
+    }, [loadBackups, loadStatus, onDataChanged]);
+
     // Clean up delayed refresh timer on unmount.
     const autoRefreshTimer = useRef<ReturnType<typeof setTimeout>>();
     useEffect(() => () => clearTimeout(autoRefreshTimer.current), []);
@@ -934,7 +946,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
         try {
             const next = !autoEnabled;
             await SetAutoCompress(next);
-            setAutoEnabled(next);
+            await loadStatus();
             if (next) {
                 clearTimeout(autoRefreshTimer.current);
                 autoRefreshTimer.current = setTimeout(async () => { await loadBackups(); await loadStatus(); onDataChanged(); }, 2000);

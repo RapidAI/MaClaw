@@ -247,6 +247,151 @@ func desktopBashConfined(scope agentruntime.Scope, command string) error {
 
 var errDesktopBashConfined = errors.New("this bot can only read its own project folder")
 
+var (
+	desktopPixmapImportRe = regexp.MustCompile(`(?i)(?:^|[;&|\n(])\s*import\b([^;&|\n]*)`)
+	desktopPixmapXwdRe    = regexp.MustCompile(`(?i)(?:^|[;&|\n(])\s*xwd\b([^;&|\n]*)`)
+)
+
+// desktopRefuseWindowPixmap rejects a bash capture of one window's X pixmap.
+// import -window root and xwd -root read the composited screen and stay allowed.
+func desktopRefuseWindowPixmap(command string) error {
+	if desktopWindowPixmapCommand(command) {
+		return fmt.Errorf("this command reads one window's X pixmap. An SDL or OpenGL window comes back black. Call action=screenshot and set window to that window's id or title")
+	}
+	return nil
+}
+
+func desktopWindowPixmapCommand(command string) bool {
+	text := stripShellHeredocs(command)
+	for _, match := range desktopPixmapImportRe.FindAllStringSubmatch(text, -1) {
+		if importTargetsWindowPixmap(match[1]) {
+			return true
+		}
+	}
+	for _, match := range desktopPixmapXwdRe.FindAllStringSubmatch(text, -1) {
+		if xwdTargetsWindowPixmap(match[1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func importTargetsWindowPixmap(args string) bool {
+	fields := strings.Fields(args)
+	for i := 0; i < len(fields); i++ {
+		if fields[i] != "-window" || i+1 >= len(fields) {
+			continue
+		}
+		if shellWord(fields[i+1]) != "root" {
+			return true
+		}
+	}
+	return false
+}
+
+func xwdTargetsWindowPixmap(args string) bool {
+	for _, field := range strings.Fields(args) {
+		switch field {
+		case "-id", "-name":
+			return true
+		}
+	}
+	return false
+}
+
+func shellWord(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 {
+		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
+// stripShellHeredocs drops heredoc bodies so a source file that mentions
+// import -window is not treated as a capture command.
+func stripShellHeredocs(s string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if i+1 < len(s) && s[i] == '<' && s[i+1] == '<' {
+			j := i + 2
+			if j < len(s) && s[j] == '-' {
+				j++
+			}
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+				j++
+			}
+			if j >= len(s) {
+				break
+			}
+			var term string
+			switch s[j] {
+			case '\'', '"':
+				quote := s[j]
+				j++
+				end := strings.IndexByte(s[j:], quote)
+				if end < 0 {
+					break
+				}
+				term = s[j : j+end]
+				j += end + 1
+			default:
+				k := j
+				for k < len(s) && s[k] != ' ' && s[k] != '\t' && s[k] != '\n' && s[k] != ';' && s[k] != '&' && s[k] != '|' {
+					k++
+				}
+				term = strings.ReplaceAll(s[j:k], `\`, "")
+				j = k
+			}
+			if term == "" {
+				b.WriteByte(s[i])
+				i++
+				continue
+			}
+			rest := s[j:]
+			nl := strings.IndexByte(rest, '\n')
+			if nl < 0 {
+				break
+			}
+			body := rest[nl+1:]
+			found := -1
+			offset := 0
+			for {
+				lineEnd := strings.IndexByte(body[offset:], '\n')
+				line := body[offset:]
+				next := len(body)
+				if lineEnd >= 0 {
+					line = body[offset : offset+lineEnd]
+					next = offset + lineEnd + 1
+				}
+				if strings.TrimSpace(line) == term {
+					found = offset
+					break
+				}
+				if lineEnd < 0 {
+					break
+				}
+				offset = next
+			}
+			if found < 0 {
+				break
+			}
+			after := j + nl + 1 + found
+			lineEnd := strings.IndexByte(s[after:], '\n')
+			if lineEnd < 0 {
+				break
+			}
+			i = after + lineEnd + 1
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 // A turn ends by declaring one outcome. The person sees Text. Note is the
 // model's own compliance remark and is never copied into the sentence.
 type desktopFinish struct {

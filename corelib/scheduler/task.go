@@ -875,7 +875,11 @@ func (m *Manager) writeTask(id string, args map[string]interface{}, status strin
 			return m.removeSaved(i, id)
 		}
 		if next.Status == "active" {
-			next.NextRunAt = m.calcNext(&next, now)
+			// The next fire follows the clock. Rewriting the order leaves a
+			// future slot where it is; a new period or an empty slot is calculated.
+			if scheduleClockChanged(prev, next) || next.NextRunAt == nil {
+				next.NextRunAt = m.calcNext(&next, now)
+			}
 		}
 		m.tasks[i] = next
 		if err := m.save(); err != nil {
@@ -890,6 +894,19 @@ func (m *Manager) writeTask(id string, args map[string]interface{}, status strin
 		return nil
 	}
 	return fmt.Errorf("scheduler: task %q not found", id)
+}
+
+// scheduleClockChanged reports a patch that moves when the task runs.
+// The order text and the name do not.
+func scheduleClockChanged(prev, next ScheduledTask) bool {
+	return prev.IntervalMinutes != next.IntervalMinutes ||
+		prev.Hour != next.Hour ||
+		prev.Minute != next.Minute ||
+		prev.DayOfWeek != next.DayOfWeek ||
+		prev.DayOfMonth != next.DayOfMonth ||
+		prev.StartDate != next.StartDate ||
+		prev.EndDate != next.EndDate ||
+		prev.Status != next.Status
 }
 
 // ---------------------------------------------------------------------------

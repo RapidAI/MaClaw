@@ -69,6 +69,10 @@ type CoreAgentExecutor struct {
 	// ScheduleHandler hosts manage_schedule (create/list/update/delete/list_targets).
 	// Nil keeps the tool visible but returns "not initialized".
 	ScheduleHandler func(args map[string]interface{}) string
+	// DesktopBotSchedule hosts bot_schedule for one desktop bot. The desktop
+	// clock runs without MACLAW_ENABLE_SCHEDULER, so this tool does too.
+	// The bot id comes from the turn, not from the model's arguments.
+	DesktopBotSchedule func(ctx context.Context, principal Principal, instanceID, botID string, args map[string]interface{}) string
 	// ScheduleHandlerContext is the request-scoped variant. The instance id
 	// is the caller that owns the task; model arguments cannot choose another
 	// instance. Hosts should prefer it so one user's instances stay separate.
@@ -520,6 +524,8 @@ type coreAgentCallbacks struct {
 
 	// Host-injected scheduled-task tool (MaClawSrv scheduler).
 	scheduleHandler func(args map[string]interface{}) string
+	// botScheduleHandler registers this desktop bot's own timer.
+	botScheduleHandler func(args map[string]interface{}) string
 	// Host-injected proactive IM message tool.
 	imMessageHandler func(args map[string]interface{}) string
 	imFileHandler    func(args map[string]interface{}) string
@@ -755,6 +761,15 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
 		}
 	}
+	var botScheduleHandler func(args map[string]interface{}) string
+	if e.DesktopBotSchedule != nil {
+		principal := req.Principal
+		instanceID := strings.TrimSpace(req.Instance.ID)
+		botID := botlog.FromMeta(req.Message.Metadata)
+		botScheduleHandler = func(args map[string]interface{}) string {
+			return e.DesktopBotSchedule(ctx, principal, instanceID, botID, args)
+		}
+	}
 	imFileHandler := e.IMFileHandler
 	if e.IMFileHandlerContext != nil {
 		imFileHandler = func(args map[string]interface{}) string {
@@ -809,6 +824,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		onToolCall:               req.OnToolCall,
 		onToolResult:             req.OnToolResult,
 		scheduleHandler:          scheduleHandler,
+		botScheduleHandler:       botScheduleHandler,
 		imMessageHandler:         imMessageHandler,
 		imFileHandler:            imFileHandler,
 		messageMetadata:          cloneMap(req.Message.Metadata),
@@ -1814,6 +1830,7 @@ Specified IM file delivery:
 	}
 	if c.promptPrefixActive() {
 		prompt = desktopbot.PinWorthSaying(prompt)
+		prompt = desktopbot.PinRecurringWork(prompt)
 	}
 	return c.pinDesktopSystemPrompt(prompt)
 }
@@ -2948,6 +2965,11 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 	if c != nil && strings.TrimSpace(name) == "ssh" && c.botUsesContainer() && c.canUseSSH() {
 		return true
 	}
+	// Registering this bot's own timer is how a short message becomes a
+	// repeated job. A light turn must still be able to call it.
+	if c != nil && strings.TrimSpace(name) == "bot_schedule" && c.botScheduleHandler != nil && strings.TrimSpace(c.botID) != "" {
+		return true
+	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
 		if _, ok := c.dynamicSemanticSurface.grants[strings.TrimSpace(name)]; ok {
 			return coretool.GrantSelectionIsLightPromptSafe(c.dynamicSemanticSurface.plan, c.dynamicSemanticSurface.grants, name)
@@ -3319,6 +3341,11 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 			return agent.ToolExecutionResult{Result: "scheduled task manager is not initialized (set MACLAW_ENABLE_SCHEDULER=true)", Outcome: agent.ToolExecutionOutcomeError}
 		}
 		return toolTextResult(c.scheduleHandler(args))
+	case "bot_schedule":
+		if c.botScheduleHandler == nil || strings.TrimSpace(c.botID) == "" {
+			return agent.ToolExecutionResult{Result: "Error: this turn has no desktop bot timer", Outcome: agent.ToolExecutionOutcomeError}
+		}
+		return toolTextResult(c.botScheduleHandler(args))
 	case "im_message":
 		if c.imMessageHandler == nil {
 			return agent.ToolExecutionResult{Result: "IM message tool is not initialized", Outcome: agent.ToolExecutionOutcomeError}

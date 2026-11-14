@@ -101,7 +101,7 @@ kind:
 - continue: the message only asks to keep going on a running task and adds no new instruction.
 - reply: small talk, thanks, or an identity, with no desktop work.
 - ask: a fact only this person knows is missing, so the work cannot start.
-- schedule: they want work at a later time or on a repeat, or they want that timer stopped.
+- schedule: they want work at a later time or on a repeat, the work should keep happening, or they want that timer stopped. When it should keep happening and names no period, still use schedule and set interval_minutes to a period that fits that work. A job that is finished in one run is not schedule.
 - status: they ask how work is going or what it already produced. Do not invent the answer.
 - new: an independent job, or anything you are not sure about.
 

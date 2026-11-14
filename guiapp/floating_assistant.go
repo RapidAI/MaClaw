@@ -10,7 +10,13 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-const defaultPetSize = 88
+const (
+	defaultPetSize         = 224
+	minPetSize             = 56
+	maxPetSize             = 240
+	legacyDefaultPetSize   = 88
+	previousDefaultPetSize = 176
+)
 
 // FloatingAssistantManager manages the MaClaw desktop pet window lifecycle.
 // The pet is independent from the main window and is configured from Settings > Pet.
@@ -300,11 +306,11 @@ func floatingWindowSize(config corelib.AppConfig) int {
 	if size <= 0 {
 		size = defaultPetSize
 	}
-	if size < 56 {
-		size = 56
+	if size < minPetSize {
+		size = minPetSize
 	}
-	if size > 120 {
-		size = 120
+	if size > maxPetSize {
+		size = maxPetSize
 	}
 	return size + 16
 }
@@ -378,12 +384,14 @@ func sanitizePetConfig(config *corelib.AppConfig) {
 	}
 	_ = petpack.MigratePetVariant(config)
 
-	if config.PetSize == 0 {
+	// 88 was the chibi default; 176 was the first standing-figure default.
+	// Both follow the current size. A size the user picked otherwise stays.
+	if config.PetSize == 0 || config.PetSize == legacyDefaultPetSize || config.PetSize == previousDefaultPetSize {
 		config.PetSize = defaultPetSize
-	} else if config.PetSize < 56 {
-		config.PetSize = 56
-	} else if config.PetSize > 120 {
-		config.PetSize = 120
+	} else if config.PetSize < minPetSize {
+		config.PetSize = minPetSize
+	} else if config.PetSize > maxPetSize {
+		config.PetSize = maxPetSize
 	}
 
 	switch config.PetInteractionMode {

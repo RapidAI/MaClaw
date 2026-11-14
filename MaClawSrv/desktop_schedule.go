@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -60,6 +62,10 @@ func armDesktopBotSchedule(mgr *scheduler.Manager, p agentservice.Principal, ins
 	interval := decision.Schedule.IntervalMinutes
 	if interval > 0 {
 		hour, minute = 0, 0
+		if decision.Schedule.Hour != nil && decision.Schedule.Minute != nil {
+			hour = *decision.Schedule.Hour
+			minute = *decision.Schedule.Minute
+		}
 	} else {
 		if decision.Schedule.Hour != nil {
 			hour = *decision.Schedule.Hour
@@ -107,8 +113,10 @@ func armDesktopBotSchedule(mgr *scheduler.Manager, p agentservice.Principal, ins
 		}
 		if interval > 0 {
 			fields["interval_minutes"] = interval
-			fields["hour"] = 0
-			fields["minute"] = 0
+			if decision.Schedule.Hour != nil && decision.Schedule.Minute != nil {
+				fields["hour"] = *decision.Schedule.Hour
+				fields["minute"] = *decision.Schedule.Minute
+			}
 		} else if decision.Schedule.Hour != nil && decision.Schedule.Minute != nil {
 			fields["interval_minutes"] = 0
 			fields["hour"] = hour
@@ -178,6 +186,267 @@ func cancelDesktopBotSchedules(mgr *scheduler.Manager, instanceID, botID, name s
 		}
 	}
 	return n
+}
+
+// desktopBotScheduleTool is bot_schedule. The model names the timer. The
+// same name updates that row through armDesktopBotSchedule. A clock field
+// the call leaves out stays on the row. A different name is a new timer.
+func desktopBotScheduleTool(mgr *scheduler.Manager, p agentservice.Principal, instanceID, botID string, args map[string]interface{}) string {
+	if mgr == nil {
+		return "定时任务时钟没有启动"
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	botID = strings.TrimSpace(botID)
+	if botID == "" || instanceID == "" {
+		return "这一轮没有桌面 bot，不能登记定时任务"
+	}
+	action := strings.ToLower(strings.TrimSpace(scheduleArgString(args, "action")))
+	if action == "" {
+		action = "create"
+	}
+	switch action {
+	case "list":
+		return desktopBotScheduleList(mgr, instanceID, botID)
+	case "cancel":
+		name := clipScheduleText(scheduleArgString(args, "name"), 80)
+		if name == "" {
+			return "取消要给出这条定时任务的 name"
+		}
+		n := cancelDesktopBotSchedules(mgr, instanceID, botID, name)
+		if n == 0 {
+			return "没有名为 " + name + " 的定时任务"
+		}
+		return "已取消 " + name
+	case "create":
+		return desktopBotScheduleCreate(mgr, p, instanceID, botID, args)
+	default:
+		return "action 只能是 create、list 或 cancel"
+	}
+}
+
+func desktopBotScheduleCreate(mgr *scheduler.Manager, p agentservice.Principal, instanceID, botID string, args map[string]interface{}) string {
+	name := clipScheduleText(scheduleArgString(args, "name"), 80)
+	if name == "" {
+		return "登记要给出这条定时任务的 name"
+	}
+	instruction := clipScheduleText(scheduleArgString(args, "instruction"), 4000)
+	interval, intervalSet := scheduleArgInt(args, "interval_minutes")
+	hour, hourSet := scheduleArgInt(args, "hour")
+	minute, minuteSet := scheduleArgInt(args, "minute")
+	day, daySet := scheduleArgInt(args, "day_of_week")
+	if hourSet != minuteSet {
+		return "hour 和 minute 要一起写，或者都不写"
+	}
+	if intervalSet && interval <= 0 {
+		intervalSet = false
+	}
+	if intervalSet && interval > 7*24*60 {
+		return "interval_minutes 不能超过 7 天"
+	}
+	if hourSet && (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+		return "hour 必须在 0-23，minute 必须在 0-59"
+	}
+	if daySet && (day < 0 || day > 6) {
+		daySet = false
+	}
+	exists := desktopBotHasTimer(mgr, instanceID, botID, name)
+	if !intervalSet && !hourSet && !exists {
+		return "新建定时任务要给出 interval_minutes，或同时给出 hour 和 minute"
+	}
+	if instruction == "" && !exists {
+		return "新建定时任务要给出 instruction，写以后每一轮要做的整件事"
+	}
+	sched := &agentservice.BotIntakeSchedule{Name: name, Mode: "create"}
+	if intervalSet {
+		sched.IntervalMinutes = interval
+	}
+	if hourSet {
+		sched.Hour = &hour
+		sched.Minute = &minute
+	}
+	if daySet {
+		sched.DayOfWeek = &day
+	}
+	if exists {
+		if current := desktopBotTimerByName(mgr, instanceID, botID, name); current != nil && desktopBotScheduleUnchanged(current, instruction, sched) {
+			return "已是 " + name + "，" + desktopBotScheduleWhen(*current) + "。" + clipScheduleText(current.Action, 200)
+		}
+	}
+	decision := agentservice.BotIntake{Kind: "schedule", Instruction: instruction, Schedule: sched}
+	if err := armDesktopBotSchedule(mgr, p, instanceID, botID, "", decision); err != nil {
+		return err.Error()
+	}
+	task := desktopBotTimerByName(mgr, instanceID, botID, name)
+	if task == nil {
+		return "已登记 " + name
+	}
+	verb := "已登记"
+	if exists {
+		verb = "已更新"
+	}
+	return verb + " " + name + "，" + desktopBotScheduleWhen(*task) + "。" + clipScheduleText(task.Action, 200)
+}
+
+// desktopBotScheduleUnchanged reports a register call that repeats the stored
+// order and clock. Writing it again would schedule the next run from now.
+func desktopBotScheduleUnchanged(task *scheduler.ScheduledTask, instruction string, sched *agentservice.BotIntakeSchedule) bool {
+	if task == nil || sched == nil {
+		return false
+	}
+	if instruction != "" && instruction != strings.TrimSpace(task.Action) {
+		return false
+	}
+	if sched.IntervalMinutes > 0 && sched.IntervalMinutes != task.IntervalMinutes {
+		return false
+	}
+	if sched.Hour != nil && sched.Minute != nil {
+		if sched.IntervalMinutes > 0 {
+			if task.Hour != *sched.Hour || task.Minute != *sched.Minute {
+				return false
+			}
+		} else if task.IntervalMinutes != 0 || task.Hour != *sched.Hour || task.Minute != *sched.Minute {
+			return false
+		}
+	}
+	if sched.DayOfWeek != nil && *sched.DayOfWeek != task.DayOfWeek {
+		return false
+	}
+	return true
+}
+
+func clipScheduleText(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimSpace(string(r[:n]))
+}
+
+func desktopBotScheduleList(mgr *scheduler.Manager, instanceID, botID string) string {
+	var lines []string
+	for _, task := range mgr.List() {
+		if task.Status != "active" || task.InstanceID != instanceID || task.DesktopBotID != botID {
+			continue
+		}
+		lines = append(lines, task.Name+"，"+desktopBotScheduleWhen(task)+"。"+clipScheduleText(task.Action, 200))
+	}
+	if len(lines) == 0 {
+		return "当前没有定时任务"
+	}
+	return strings.Join(lines, "\n")
+}
+
+func desktopBotScheduleWhen(task scheduler.ScheduledTask) string {
+	if task.IntervalMinutes > 0 {
+		when := fmt.Sprintf("每 %d 分钟", task.IntervalMinutes)
+		if task.Hour != 0 || task.Minute != 0 {
+			when += fmt.Sprintf("，从 %02d:%02d 起", task.Hour, task.Minute)
+		}
+		if task.DayOfWeek >= 0 && task.DayOfWeek <= 6 {
+			when += "，" + desktopBotWeekday(task.DayOfWeek)
+		}
+		return when
+	}
+	when := fmt.Sprintf("%02d:%02d", task.Hour, task.Minute)
+	if task.DayOfWeek >= 0 && task.DayOfWeek <= 6 {
+		return desktopBotWeekday(task.DayOfWeek) + " " + when
+	}
+	return "每天 " + when
+}
+
+func desktopBotWeekday(day int) string {
+	switch day {
+	case 0:
+		return "周日"
+	case 1:
+		return "周一"
+	case 2:
+		return "周二"
+	case 3:
+		return "周三"
+	case 4:
+		return "周四"
+	case 5:
+		return "周五"
+	case 6:
+		return "周六"
+	default:
+		return ""
+	}
+}
+
+func desktopBotHasTimer(mgr *scheduler.Manager, instanceID, botID, name string) bool {
+	return desktopBotTimerByName(mgr, instanceID, botID, name) != nil
+}
+
+func desktopBotTimerByName(mgr *scheduler.Manager, instanceID, botID, name string) *scheduler.ScheduledTask {
+	name = strings.TrimSpace(name)
+	if mgr == nil || name == "" {
+		return nil
+	}
+	for _, task := range mgr.List() {
+		if task.Status == "active" && task.InstanceID == instanceID && task.DesktopBotID == botID && task.Name == name {
+			found := task
+			return &found
+		}
+	}
+	return nil
+}
+
+func scheduleArgString(args map[string]interface{}, key string) string {
+	if args == nil {
+		return ""
+	}
+	v, ok := args[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	default:
+		return strings.TrimSpace(fmt.Sprint(t))
+	}
+}
+
+func scheduleArgInt(args map[string]interface{}, key string) (int, bool) {
+	if args == nil {
+		return 0, false
+	}
+	v, ok := args[key]
+	if !ok || v == nil {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(n))
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	default:
+		return 0, false
+	}
 }
 
 // desktopIntakeTimers is what Intake sees, so a follow-up that names a city

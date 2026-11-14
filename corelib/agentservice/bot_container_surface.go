@@ -148,6 +148,7 @@ func botHostSystemTool(name string) bool {
 }
 
 func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) []map[string]interface{} {
+	tools = c.withBotScheduleTool(tools)
 	if !c.botUsesContainer() {
 		return tools
 	}
@@ -198,6 +199,42 @@ func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) [
 		}
 	}
 	return kept
+}
+
+// withBotScheduleTool keeps bot_schedule on a desktop-bot turn, including a
+// semantic plan and a light turn. The plan chooses the work tools. This tool
+// is how that bot registers its own later runs.
+func (c *coreAgentCallbacks) withBotScheduleTool(tools []map[string]interface{}) []map[string]interface{} {
+	if c == nil || c.botScheduleHandler == nil || strings.TrimSpace(c.botID) == "" {
+		return tools
+	}
+	for _, tool := range tools {
+		if tooldef.Name(tool) == "bot_schedule" {
+			return tools
+		}
+	}
+	out := make([]map[string]interface{}, len(tools)+1)
+	copy(out, tools)
+	out[len(tools)] = botScheduleToolDefinition()
+	return out
+}
+
+func botScheduleToolDefinition() map[string]interface{} {
+	return functionToolDefinition("bot_schedule",
+		"Register, update, list, or cancel this bot's own timer. Call it when the work in front of you should happen again later, including when the person did not name a clock. name is the timer. The same name updates that timer. A different repeating job uses another name. instruction is the whole order for one later run. interval_minutes repeats. hour and minute together are a clock time; set both or neither. Omit a clock field to keep the armed value. A new timer needs interval_minutes, or both hour and minute. action is create, list, or cancel.",
+		map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"action":           map[string]interface{}{"type": "string", "description": "create, list, or cancel. Default create."},
+				"name":             map[string]interface{}{"type": "string", "description": "Stable timer name. Required for create and cancel."},
+				"instruction":      map[string]interface{}{"type": "string", "description": "The whole order for one later run. Empty on update keeps the stored order."},
+				"interval_minutes": map[string]interface{}{"type": "integer", "description": "Repeat every N minutes. Omit to keep the armed interval."},
+				"hour":             map[string]interface{}{"type": "integer", "description": "Clock hour 0-23. Set together with minute, or omit both."},
+				"minute":           map[string]interface{}{"type": "integer", "description": "Clock minute 0-59. Set together with hour, or omit both."},
+				"day_of_week":      map[string]interface{}{"type": "integer", "description": "0 Sunday through 6 Saturday. Omit to keep the armed weekday."},
+			},
+		},
+	)
 }
 
 // botSSHPlanAction is the read-only slice of the ssh tool. A plan turn can

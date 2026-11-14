@@ -106,7 +106,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"A job expected to run for minutes or more (training, a remote compile, a large download, anything started with nohup or background=true) must be started in the background: action=bash with background=true (or the same command you would have waited on). That starts it detached, stores its status, and a watcher polls pid, logs and metrics on a timer; this turn then ends. Do not block this run waiting for it to finish. Progress, stalls, failures and completion are sent to this chat with evidence from the last poll. action=job_status (optional job_id=) and job_list look at that state without waiting. " +
 			"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
 			"The screen stays off until action=open_screen. Call open_screen only when this task needs a visible desktop: a browser, a screenshot, a window, or clicking and typing on screen. Do not call it for ssh, training, compiling, files, or any command that only needs a shell. One open_screen is enough for the task. A screen step before that fails and tells you to call it. " +
-			"action=screenshot returns an image of the whole desktop; its pixel coordinates are the ones app_run click uses. " +
+			"action=screenshot returns an image of the whole desktop as it is now and does not open or raise the browser; its pixel coordinates are the ones app_run click uses. A game or other SDL/OpenGL window is black from import -window or xwd; set window to that window's id or title and the shot raises it and crops the composited screen. " +
 			desktopScreenVisionPrompt(desktopTurnSeesImages(request)) +
 			"To put that image on the desktop, set name to one file name ending in .png. The file is written to /home/desktop/Desktop and the result says Saved with that path. Without name, nothing is written. Do not invent a file path. " +
 			"After an app_run that clicks, types, or sends a key, the result includes one fresh unscaled desktop image. app_run click uses those pixels. " +
@@ -118,7 +118,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"Batch mode (DEFAULT for any multi-step browser/form flow on every site): observe once (one probe or one script that reads the page), then ONE action=batch whose plan is the whole sequence as desktop steps, e.g. [{action:script,script:fill title},{action:rich_fill,text:BODY},{action:script,script:set topics},{action:script,script:click 发布}], then ONE read-back script on the result page. batch runs the steps in order through the same guards, stops at the first failure and reports each step; only then fix the failed step alone. " +
 			"An article or post body is always written in paragraphs (blank line between paragraphs, a heading per section), never one block of text. For a rich-text editor body on any site use ONE action=rich_fill with the full text (replace=true to overwrite); it focuses the page's main editor itself (ref, or x,y in SCREEN pixels, only for a different editor), raises the browser, pastes with a real Ctrl+V and reads back what the field now holds (len, has=yes/no). For a title use rich_fill with selector=<title input>. Once title and body read back has=yes, the next step is the submit/publish click, not more fills or probes. Coordinates a page script reports are viewport/CSS pixels, not screen pixels: click page elements by ref, never by script coordinates. " +
 			"action=clipboard_set then a paste step (or app_run paste{text}) inserts long or Chinese text without the input method. clipboard_get reads it. window_list, window (activate, maximize, minimize, restore, move, resize, close), screen_info, and wait (for screen change or a window) manage windows. " +
-			"action=screenshot accepts region (zoom), format jpeg/webp, quality, and cursor. Full screenshots always come at one fixed size, so coordinates keep the same scale from shot to shot. " +
+			"action=screenshot accepts region (zoom), window (id or title; composited crop, not the X pixmap), format jpeg/webp, quality, and cursor. Full screenshots always come at one fixed size, so coordinates keep the same scale from shot to shot. " +
 			"navigate to another site keeps the current tab and opens the target in its own tab (or switches to a tab already on that site); do not retry a navigate that was refused, and do not detour through redirect links. " +
 			desktopAXFirstPrompt() +
 			"Rich-text editors (Zhihu, WeChat, Xiaohongshu, Draft.js/ProseMirror boxes): script- or DOM-set text and synthetic paste are often ignored. Click inside the editor first, put the text on the clipboard with clipboard_set, then paste with a real key event (app_run steps [click{x,y}, key{key:\"ctrl+v\"}] or paste{text}), then check that the text shows and that the publish (发布) button is enabled. If the same method fails twice, switch to another method instead of retrying it. " +
@@ -211,7 +211,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"cursor":             map[string]any{"type": "boolean", "description": "Draw the mouse pointer on the screenshot."},
 				"marks":              map[string]any{"type": "boolean", "description": "app_probe or screenshot: draw numbered boxes of the last app_probe elements."},
 				"region":             map[string]any{"type": "array", "description": "action=screenshot zoom: [x0,y0,x1,y1] in pixels of the last full screenshot.", "items": map[string]any{"type": "number"}},
-				"window":             map[string]any{"type": "string", "description": "app_probe: focused (default), all, or part of a window title."},
+				"window":             map[string]any{"type": "string", "description": "action=screenshot: X window id (0x1a2b) or plain title. Raises that window and crops the composited screen. Do not use import -window or xwd for an SDL/OpenGL window; those read an empty pixmap and come back black. action=app_probe: focused (default), all, or part of a window title."},
 				"max_nodes":          map[string]any{"type": "integer", "description": "app_probe: most elements to list (default 120, at most 400)."},
 				"do":                 map[string]any{"type": "string", "description": "action=window: activate, maximize, minimize, restore, move, resize, move_resize, or close."},
 				"window_id":          map[string]any{"type": "string", "description": "action=window: id from window_list. title also selects a window."},
@@ -669,7 +669,7 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 		"This user's bots are different instances of the same MaClawSrv user, and those instances share this desktop. Other users have separate desktops. " +
 		"Web pages: probe once. When the controls are listed, one action=script clicks, types, selects, presses, and scrolls them, including a cookie accept button. Do not probe again between those steps. name on that script keeps it. skill_list then skill_run repeats a saved script without another probe. A password, phone number, or verification code is requested in this chat and then filled in. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. Navigate only to another page of this site. Do not pixel-click the browser. " +
 		"A probe with no filter that finds no element ref includes one desktop image so you can see the page. If a filter matches nothing, probe again without it. The next web step is still an element ref, not a pixel click. " +
-		"Other apps: action=app_open with program starts a window. xfce4-terminal is already installed. app_open is not a shell. That window does not use the Chinese input method, so ASCII typed into it is literal. app_run focus only activates a window that is already open; exit status 1 means that window is not open. One type step can contain several lines. The terminal is a shell, so a line break runs that line. Write the source as a heredoc in that step, then compile on the next line. Then app_list and one app_run. After click, type, or key, that result includes one fresh desktop image. app_run click uses those pixels. " + desktopScreenVisionClickPrompt(desktopTurnSeesImages(request)) + desktopScreenCheckPrompt(desktopTurnSeesImages(request)) + "Use screenshot when app_list is not enough, or to check a result before any input. " +
+		"Other apps: action=app_open with program starts a window. xfce4-terminal is already installed. app_open is not a shell. That window does not use the Chinese input method, so ASCII typed into it is literal. app_run focus only activates a window that is already open; exit status 1 means that window is not open. One type step can contain several lines. The terminal is a shell, so a line break runs that line. Write the source as a heredoc in that step, then compile on the next line. Then app_list and one app_run. After click, type, or key, that result includes one fresh desktop image. app_run click uses those pixels. " + desktopScreenVisionClickPrompt(desktopTurnSeesImages(request)) + desktopScreenCheckPrompt(desktopTurnSeesImages(request)) + "Use screenshot when app_list is not enough, or to check a result before any input. screenshot shows the desktop as it is and does not open or raise the browser. For one application window set window to its id or title; import -window and xwd are black for SDL and OpenGL. " +
 		"To put a screenshot on the desktop, action=screenshot with name set to one .png file name. The result line Saved is the file that was written under /home/desktop/Desktop. If the result says the screenshot was not written, the desktop folder has no new file. Do not invent a path. " +
 		desktopDocumentPrompt +
 		"To install software, action=install with packages set to Debian package names. That runs apt-get update and apt-get install -y in this desktop container. " +
@@ -890,6 +890,14 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	}
 	if action == "job_list" {
 		return desktopLongJobList(scope), nil
+	}
+	if action == "bash" {
+		// import -window <id> and xwd -id read an empty pixmap for SDL and
+		// OpenGL (snake task: a 214-byte black PNG). The screenshot action
+		// raises that window and crops the composited root.
+		if err := desktopRefuseWindowPixmap(desktopArg(args, "command")); err != nil {
+			return "", err
+		}
 	}
 	if action == "bash" && !desktopLongJobInternal(ctx) && desktopLongJobShouldStart(args) {
 		ctx = withDesktopBashSecrets(ctx, desktopBashSecretNames(args))
@@ -1144,9 +1152,10 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		return desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, appErr)
 	}
 	if action == "screenshot" {
-		// The shot is the whole display. A network-error window left in front
-		// is what gets captured, even when the loaded page is open behind it.
-		// A login resume already raises that page. A normal screenshot did not.
+		// The shot is the display as it is. Raising the browser here used to
+		// cover a game or document with Chromium (snake task, 2026-11-14).
+		// Only a network-error document that is the focused page is raised,
+		// so the loaded page behind that error is what gets captured.
 		name := strings.TrimSpace(desktopArg(args, "name"))
 		if name != "" {
 			if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
@@ -1157,11 +1166,19 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			}
 		}
 		defer beginDesktopActivity(scope.RunID, "正在看屏幕")()
-		session, _ := desktopOpenBrowser(binding, scope, userKey, endpoint.CDP)
+		// Do not call desktopOpenBrowser here. That attaches with
+		// StartSharedDesktopSession, which activates the current tab and
+		// raises Chromium. After a process restart the binding is empty, so
+		// the first screenshot of a resumed game would cover the window it
+		// is supposed to show. A session already attached by a browser step
+		// may still uncover a page sitting behind a network-error document.
+		session := desktopShotBrowser(binding, endpoint.CDP)
 		attached := ""
+		pageAddr := ""
 		if session != nil {
-			_ = desktopFocusVisiblePage(session)
+			_ = desktopRaisePageBehindError(session)
 			attached = session.TargetID
+			pageAddr = endpoint.CDP
 		}
 		frame, base := desktopFrameFor(scope).get()
 		opts, _, optErr := computeruse.ShotOptionsFromArgs(args, frame, base)
@@ -1172,16 +1189,18 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		// The accessibility list is read before the capture so the screen
 		// YOLO gate knows how many elements it already has.
 		axBlock, shotCtx := "", ctx
-		if name == "" && opts.Region.Empty() {
+		// A window crop is not the focused window yet; listing that window's
+		// elements would describe whatever is in front before the raise.
+		if name == "" && opts.Region.Empty() && opts.Window == "" {
 			axBlock = desktopAXFirstElements(ctx, scope, endpoint.Display)
 			shotCtx = withDesktopVisionHints(ctx, desktopVisionHints{AXCount: desktopAXElementCount(axBlock)})
 		}
-		shot, _, shotErr := desktopCaptureShot(shotCtx, scope, endpoint.Display, name, opts, opts.Region.Empty())
+		shot, _, shotErr := desktopCaptureShot(shotCtx, scope, endpoint.Display, name, opts, opts.Region.Empty() && opts.Window == "")
 		if shotErr != nil {
 			return "", shotErr
 		}
 		shot = axBlock + shot
-		return withDesktopPages(shot, nil, endpoint.CDP, attached)
+		return withDesktopPages(shot, nil, pageAddr, attached)
 	}
 
 	session, err := desktopBrowserSession(binding, scope, userKey, endpoint.CDP)
@@ -2114,11 +2133,22 @@ func desktopAppBrowserRaises(binding *desktopBinding, scope agentruntime.Scope, 
 	return pending
 }
 
-// desktopOpenBrowser and desktopFocusVisiblePage are replaced by tests.
-// Production reattaches to the shared browser, then raises the page the
-// person can use so a screenshot does not show a network-error window.
+// desktopOpenBrowser, desktopFocusVisiblePage, and desktopRaisePageBehindError
+// are replaced by tests. Production reattaches to the shared browser.
+// A screenshot raises a page only when a network-error document is focused,
+// and only on a browser session that is already attached.
 var desktopOpenBrowser = desktopBrowserSession
 var desktopFocusVisiblePage = browser.FocusDesktopAfterPerson
+var desktopRaisePageBehindError = browser.RaisePageBehindNetworkError
+
+// desktopShotBrowser is the browser a previous step already attached.
+// Screenshot uses this and does not open a session of its own.
+func desktopShotBrowser(binding *desktopBinding, addr string) *browser.BrowserAgentSession {
+	if binding == nil || binding.session == nil || binding.addr != addr || !desktopSessionConnected(binding.session) {
+		return nil
+	}
+	return binding.session
+}
 
 // desktopKeepLoggedInDocument is replaced by tests. Production marks the
 // browser so the continuation does not open a new document.

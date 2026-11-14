@@ -51,6 +51,10 @@ func TestDesktopPinShotSize(t *testing.T) {
 	if got := desktopPinShotSize(zoom); got.MaxWidth != 500 {
 		t.Fatalf("region zoom must keep its own size: %+v", got)
 	}
+	win := desktop.ShotOptions{MaxWidth: 640, Window: "NEON SERPENT"}
+	if got := desktopPinShotSize(win); got.MaxWidth != 640 || got.Window != "NEON SERPENT" {
+		t.Fatalf("window crop must keep its own size: %+v", got)
+	}
 }
 
 func TestDesktopBudgetLogFields(t *testing.T) {

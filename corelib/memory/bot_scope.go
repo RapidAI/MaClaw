@@ -169,6 +169,40 @@ func (s *Store) UpdateBotMemory(baseOwner, botID, id, content, category string, 
 	})
 }
 
+// UpdateBotMemoryIfUnchanged applies a bot edit only when the entry still matches expected.
+func (s *Store) UpdateBotMemoryIfUnchanged(baseOwner, botID, id, content, category string, tags []string, expected Entry) (bool, error) {
+	owner, err := FormatBotMemoryOwner(baseOwner, botID)
+	if err != nil {
+		return false, err
+	}
+	if s == nil {
+		return false, fmt.Errorf("memory store is nil")
+	}
+	entry, ok := s.findBotOwnedEntry(owner, id)
+	if !ok {
+		return false, fmt.Errorf("memory not found")
+	}
+	if entry.Category.IsProtected() || MapToCanonical(Category(category)).IsProtected() {
+		return false, fmt.Errorf("protected memory cannot be edited here")
+	}
+	tag := BotMemoryTag(botID)
+	cleaned := make([]string, 0, len(tags)+1)
+	seen := map[string]struct{}{tag: {}}
+	cleaned = append(cleaned, tag)
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		cleaned = append(cleaned, t)
+	}
+	return s.updateManualMemoryForOwnerIfUnchanged(id, content, Category(category), cleaned, owner, &MemoryBoundary{OwnerID: owner}, expected)
+}
+
 // DeleteBotMemory removes one bot-scoped entry. Wrong-owner ids are rejected.
 func (s *Store) DeleteBotMemory(baseOwner, botID, id string) error {
 	owner, err := FormatBotMemoryOwner(baseOwner, botID)

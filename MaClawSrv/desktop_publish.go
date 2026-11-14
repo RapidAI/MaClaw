@@ -99,6 +99,11 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		prof = browser.ProfileForURL(session.CurrentURL())
 	}
 	prof.Apply(&spec)
+	// Learned experience has dropped CSDN's post_url, user_cookie and the
+	// success_url capture, and a model verify_url of https://blog.csdn.net/
+	// replaced the account's article list. The embedded profile wins those
+	// back so the public link can be built.
+	browser.RestorePublishIdentity(prof, &spec)
 	if desktopArgBool(args, "explore") {
 		probe, perr := browser.ExplorePublish(session.PublishDriver(), spec)
 		if exp != nil {
@@ -246,13 +251,21 @@ func desktopPublishStepText(scope agentruntime.Scope, r desktopPublishRecord) st
 }
 
 // desktopPostURLFor builds a listed post's public URL from its id through
-// the profile of the site the list is on (site data, not code).
-func desktopPostURLFor(spec browser.PublishSpec, id string) string {
+// the profile of the site the list is on (site data, not code). user fills
+// a {user} template; "" leaves those templates unresolved.
+func desktopPostURLTemplate(spec browser.PublishSpec) string {
 	p := browser.ProfileForURL(spec.VerifyURL)
 	if p == nil {
 		p = browser.ProfileForURL(spec.EditorURL)
 	}
-	return p.PostURLFor(id)
+	if p != nil && p.PostURL != "" {
+		return p.PostURL
+	}
+	return spec.PostURL
+}
+
+func desktopPostURLFor(spec browser.PublishSpec, id, user string) string {
+	return browser.PostURLFrom(desktopPostURLTemplate(spec), id, user)
 }
 
 func desktopArgBool(args map[string]any, key string) bool {

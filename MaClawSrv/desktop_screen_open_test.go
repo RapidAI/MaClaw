@@ -60,6 +60,15 @@ func TestOpenScreenActionOpensTheBotScreen(t *testing.T) {
 	}
 }
 
+func TestBashWindowPixmapDoesNotRun(t *testing.T) {
+	req := d97Env(t)
+	operateDesktopFunc = operateDesktop
+	_, err := invoke(t, req, map[string]any{"action": "bash", "command": "import -window 0x1a2b snake.png"})
+	if err == nil || !strings.Contains(err.Error(), "action=screenshot") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestScreenshotBeforeOpenScreenIsRefused(t *testing.T) {
 	req := d97Env(t)
 	opens := 0

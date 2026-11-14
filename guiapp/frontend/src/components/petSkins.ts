@@ -26,7 +26,7 @@ export interface PetSkinOption {
 }
 
 export const defaultPetSkinId: PetSkinId = 'ragdoll';
-export const defaultPetSize = 88;
+export const defaultPetSize = 224;
 
 const builtinImages: Record<string, string> = {
     ragdoll: ragdollSrc,

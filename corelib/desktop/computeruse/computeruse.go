@@ -802,6 +802,12 @@ func ShotOptionsFromArgs(args map[string]any, frame desktop.Shot, base desktop.S
 	if v, ok := args["marks"].(bool); ok {
 		opts.Marks = v
 	}
+	// Window is one shot. A title left on the frame would raise that window
+	// on every later screenshot, and a closed window would fail the shot.
+	opts.Window = ""
+	if w := StringArg(args, "window"); w != "" {
+		opts.Window, changed = w, true
+	}
 	var region []any
 	if r, ok := args["region"].([]any); ok {
 		region = r

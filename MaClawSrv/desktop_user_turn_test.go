@@ -228,3 +228,30 @@ func TestBashConfinementCoversEverySpellingAndKeepsOwnFolders(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowPixmapBashIsRefused(t *testing.T) {
+	refused := []string{
+		"import -window 0x1a2b snake.png",
+		"import -silent -window \"$wid\" snake.png",
+		"xwd -id 0x1a2b -out snake.xwd",
+		"xwd -name 'NEON SERPENT' -out snake.xwd",
+		"import -window root full.png && import -window 0x22 game.png",
+	}
+	for _, cmd := range refused {
+		if err := desktopRefuseWindowPixmap(cmd); err == nil || !strings.Contains(err.Error(), "action=screenshot") {
+			t.Fatalf("allowed %q: %v", cmd, err)
+		}
+	}
+	allowed := []string{
+		"import -window root snake.png",
+		"import -window 'root' snake.png",
+		"xwd -root -out snake.xwd",
+		"echo import -window 0x1",
+		"cat > README <<'EOF'\nimport -window 0x1a2b snake.png\nEOF\nmake",
+	}
+	for _, cmd := range allowed {
+		if err := desktopRefuseWindowPixmap(cmd); err != nil {
+			t.Fatalf("refused %q: %v", cmd, err)
+		}
+	}
+}
