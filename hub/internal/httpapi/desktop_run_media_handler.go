@@ -66,8 +66,9 @@ func DeleteBotDesktopMediaHandler(svc *botmgmt.Service, identity botAuthenticato
 }
 
 // PostBotDesktopFileHandler POST /api/v1/bots/{id}/desktop-file
-// reads one file from that bot's desktop through file_bytes. The path has
-// to be on the desktop. The bytes are size-limited.
+// reads one file the person may fetch. It uses the supervisor link op,
+// which resolves symlinks and allows only the work tree and Desktop.
+// The shared file-bytes read is not this path.
 func PostBotDesktopFileHandler(pool *desktoppool.Pool, bots *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
@@ -85,7 +86,7 @@ func PostBotDesktopFileHandler(pool *desktoppool.Pool, bots *botmgmt.Service, id
 			return
 		}
 		name, mime, data, err := bots.ReadDesktopContainerFile(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Path, func(ctx context.Context, tenantID, desktopUser, path string) (string, error) {
-			return pool.RunFile(ctx, tenantID, desktopUser, "bytes", path, "", "", "")
+			return pool.RunFile(ctx, tenantID, desktopUser, "link", path, "", "", "")
 		})
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")

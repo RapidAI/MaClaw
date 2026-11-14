@@ -759,7 +759,7 @@ func (p *Pool) RunInstall(ctx context.Context, tenantID, userID string, packages
 func (p *Pool) RunFile(ctx context.Context, tenantID, userID, action, filePath, content, oldString, newString string) (string, error) {
 	action = strings.ToLower(strings.TrimSpace(action))
 	switch action {
-	case "read", "write", "edit", "list", "bytes":
+	case "read", "write", "edit", "list", "bytes", "link":
 	default:
 		return "", fmt.Errorf("%w: file action is invalid", ErrInvalidInput)
 	}
