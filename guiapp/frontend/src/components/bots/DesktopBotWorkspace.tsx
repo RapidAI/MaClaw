@@ -3206,9 +3206,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     return;
                 }
                 if (picture.state !== 'running' || !picture.url) {
-                    // Asleep and a stopped display are the same picture: no
-                    // frame. A missing state is not turned into one from a
-                    // leftover URL. Do not start the desktop.
+                    // A typed state that is not running has no frame. An old
+                    // Hub omits desktop_state; pictureFromWatch already turned
+                    // its page into running. Do not start the desktop.
                     watchMisses.current[botId] = 0;
                     setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                     setLiveDesktop(prev => {
@@ -6328,6 +6328,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const panel = panelsRef.current[botId];
             if (panel !== 'auto' && panel !== 'user') return;
             const picture = pictureFromWatch(view);
+            // Old Hub wake answers with a page and no desktop_state. That is
+            // running. A typed state that is not running did not come up.
             if (picture.state !== 'running' || !picture.url) {
                 delete wakeArm.current[botId];
                 setAsleepByBot(prev => ({ ...prev, [botId]: true }));

@@ -118,18 +118,8 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ListDesktopBotSchedules: (botId: string) => listSchedules(botId),
     ListDesktopBotActiveRuns: (botId: string) => listTaskRuns(botId),
     DeleteDesktopBotSchedule: (botId: string, taskId: string) => deleteSchedule(botId, taskId),
-    WatchDesktopBot: async (arg: string, epoch?: number) => {
-        const view = await watchBot(arg, epoch);
-        // Older cases speak in pages. Hub now sends desktop_state; stamp it
-        // only when the case left it out. An explicit state is kept.
-        if (!view || view.desktop_state || view.code) return view;
-        return { ...view, desktop_state: view.novnc_url ? 'running' : 'asleep' };
-    },
-    WakeDesktopBot: async (arg: string, epoch?: number) => {
-        const view = await wakeBot(arg, epoch);
-        if (!view || view.desktop_state || view.code) return view;
-        return { ...view, desktop_state: view.novnc_url ? 'running' : 'asleep' };
-    },
+    WatchDesktopBot: (arg: string, epoch?: number) => watchBot(arg, epoch),
+    WakeDesktopBot: (arg: string, epoch?: number) => wakeBot(arg, epoch),
     ReleaseDesktopBotWatch: (arg: string, epoch?: number) => releaseWatch(arg, epoch),
     GetDesktopBotScreen: (botId: string) => getScreen(botId),
     HandBackDesktopBot: (botId: string) => handBack(botId),

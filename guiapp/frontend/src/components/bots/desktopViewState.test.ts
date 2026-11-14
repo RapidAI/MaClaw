@@ -6,11 +6,18 @@ describe('desktop picture state', () => {
         expect(pictureFromWatch({ novnc_url: 'http://hub/stale/vnc.html', desktop_state: 'display_stopped' })).toEqual({ state: 'display_stopped', url: '' });
         expect(pictureFromWatch({ novnc_url: 'http://hub/stale/vnc.html', desktop_state: 'asleep' })).toEqual({ state: 'asleep', url: '' });
         expect(pictureFromWatch({ novnc_url: 'http://hub/stale/vnc.html', desktop_state: 'unavailable' })).toEqual({ state: 'unavailable', url: '' });
-        expect(pictureFromWatch({ novnc_url: 'http://hub/stale/vnc.html' })).toEqual({ state: '', url: '' });
-        expect(pictureFromWatch({ novnc_url: '' })).toEqual({ state: '', url: '' });
-        expect(pictureFromWatch(null)).toEqual({ state: '', url: '' });
+        expect(pictureFromWatch({ novnc_url: 'http://hub/stale/vnc.html', desktop_state: '' })).toEqual({ state: '', url: '' });
         expect(showsLiveFrame('display_stopped', 'http://hub/stale/vnc.html')).toBe(false);
         expect(showsLiveFrame('', 'http://hub/stale/vnc.html')).toBe(false);
+    });
+
+    it('treats an old Hub watch, which omits desktop_state, as a page', () => {
+        const oldPage = { novnc_url: 'http://hub/live/vnc.html' };
+        const oldIdle = { novnc_url: '' };
+        expect(pictureFromWatch(oldPage)).toEqual({ state: 'running', url: 'http://hub/live/vnc.html' });
+        expect(pictureFromWatch(oldIdle)).toEqual({ state: 'asleep', url: '' });
+        expect(pictureFromWatch(null)).toEqual({ state: 'asleep', url: '' });
+        expect(showsLiveFrame('running', 'http://hub/live/vnc.html')).toBe(true);
     });
 
     it('shows a frame only for a running state that has a page', () => {

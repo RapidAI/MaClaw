@@ -14,11 +14,21 @@ export type DesktopWatchView = {
     code?: string;
 };
 
+function desktopStateField(view?: DesktopWatchView | null): string | undefined {
+    if (!view || !Object.prototype.hasOwnProperty.call(view, 'desktop_state')) return undefined;
+    return String(view.desktop_state ?? '').trim();
+}
+
 export function pictureFromWatch(view?: DesktopWatchView | null): { state: DesktopRunState | ''; url: string } {
     // The code is a field on the watch result. The message text is not a signal.
     if (String(view?.code || '').trim() === DESKTOP_ASLEEP) return { state: 'asleep', url: '' };
     const url = String(view?.novnc_url || '').trim();
-    switch (String(view?.desktop_state || '').trim()) {
+    const raw = desktopStateField(view);
+    // An old Hub omits desktop_state. Its page is the picture: a URL is
+    // running, and no URL is asleep. A present field is never inferred
+    // from that URL.
+    if (raw === undefined) return url ? { state: 'running', url } : { state: 'asleep', url: '' };
+    switch (raw) {
         case 'running':
             return { state: 'running', url };
         case 'asleep':
