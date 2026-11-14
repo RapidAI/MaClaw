@@ -166,6 +166,7 @@ import {
 } from './desktopBots';
 import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from './botUnread';
 import { desktopBotCorrectAttachClaim } from './desktopBotDelivery';
+import { activeRunsOccupy, botBusyPhase, reattachStalePending } from './desktopBotBusy';
 import { BotChipContext, BotMessageBody, botMessageIsStructured, splitBotBeats } from './botMessageBody';
 import { BotFeedLine, botFeedLineInternal, botFeedLineOf } from './botFeedLine';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
@@ -2399,6 +2400,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [schedulesByBot, setSchedulesByBot] = useState<Record<string, DesktopBotScheduleInfo[]>>({});
     const [scheduleNotice, setScheduleNotice] = useState('');
     const [activeRunsByBot, setActiveRunsByBot] = useState<Record<string, DesktopBotActiveRunRow[]>>({});
+    // true: the last ListDesktopBotActiveRuns succeeded. false: it failed.
+    // Absent: this page has not heard from Hub yet, so the clock still applies.
+    const [hubReachableByBot, setHubReachableByBot] = useState<Record<string, boolean>>({});
     const [taskNotice, setTaskNotice] = useState('');
     const [taskBusy, setTaskBusy] = useState<Record<string, boolean>>({});
     const taskLoadGen = useRef(0);
@@ -2592,9 +2596,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const turnLive = (botId: string) =>
         [...pendingRef.current.values()].some(value => value.botId === botId && !value.settled);
     const botPending = (botId: string) => {
-        if (turnLive(botId)) return true;
-        const items = messagesByBot[botId] || messagesForBot(userId, botId);
-        return items.some(message => message.role === 'assistant' && message.pending && !pendingReplyIsStale(message));
+        const phase = busyPhase(botId, messagesByBot[botId] || messagesForBot(userId, botId));
+        return phase === 'plan' || phase === 'execute';
     };
     // Every final-reply path ends the busy row (papers 11-12 06:28, Bot 4's
     // reply arrived and the row kept 「正在一点点推进」): the live push settles
@@ -2641,12 +2644,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
     const busyPhase = (botId: string, items: DesktopBotMessage[]): BotPhase | '' => {
         const live = turnLive(botId);
-        const active = (message: DesktopBotMessage) =>
-            message.role === 'assistant' && message.pending && (live || !pendingReplyIsStale(message));
-        if (items.some(message => active(message) && message.phase === 'execute')) return 'execute';
-        if (items.some(active)) return 'plan';
-        if (live) return 'plan';
-        return '';
+        return botBusyPhase({
+            hubReachable: hubReachableByBot[botId] === true,
+            runs: activeRunsByBot[botId],
+            turnLive: live,
+            pending: items.filter(message => message.role === 'assistant').map(message => ({
+                pending: message.pending,
+                phase: message.phase,
+                stale: pendingReplyIsStale(message),
+            })),
+        });
     };
     const running = !!selected && botPending(selected.id);
     const handoffMessage = [...messages].reverse().find(message => message.userControl || !!message.attentionReason);
@@ -3966,10 +3973,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const gen = ++taskLoadGen.current;
             void ListDesktopBotActiveRuns(botId).then(list => {
                 if (!live || gen !== taskLoadGen.current) return;
-                setActiveRunsByBot(prev => ({ ...prev, [botId]: Array.isArray(list) ? list as DesktopBotActiveRunRow[] : [] }));
+                const runs = Array.isArray(list) ? list as DesktopBotActiveRunRow[] : [];
+                setActiveRunsByBot(prev => ({ ...prev, [botId]: runs }));
+                setHubReachableByBot(prev => ({ ...prev, [botId]: true }));
                 setTaskNotice('');
             }).catch((error: unknown) => {
                 if (!live || gen !== taskLoadGen.current) return;
+                setHubReachableByBot(prev => ({ ...prev, [botId]: false }));
                 setTaskNotice(error instanceof Error && error.message ? error.message : text.unavailable);
             });
         };
@@ -3984,6 +3994,65 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (typeof off === 'function') off();
         };
     }, [selectedId, panelSection, showDesktop, text.unavailable]);
+
+    // Busy state for every bot, not only the tasks tab. Hub's active runs
+    // are the signal. One read is in flight per bot. A failure waits longer
+    // before the next try. A hidden page does not poll. An idle bot that is
+    // not the one on screen is read less often than a bot that is working.
+    const botIds = bots.map(bot => bot.id).join('\0');
+    useEffect(() => {
+        const ids = botIds ? botIds.split('\0') : [];
+        if (!ids.length) return;
+        let live = true;
+        const timers = new Map<string, number>();
+        const inflight = new Set<string>();
+        const failDelay = new Map<string, number>();
+        const pageHidden = () => typeof document !== 'undefined' && document.hidden;
+        const schedule = (botId: string, delay: number) => {
+            const existing = timers.get(botId);
+            if (existing) window.clearTimeout(existing);
+            timers.set(botId, window.setTimeout(() => { void tick(botId); }, delay));
+        };
+        const tick = async (botId: string) => {
+            if (!live || pageHidden()) return;
+            if (inflight.has(botId)) return;
+            inflight.add(botId);
+            try {
+                const list = await ListDesktopBotActiveRuns(botId);
+                if (!live) return;
+                failDelay.delete(botId);
+                const runs = Array.isArray(list) ? list as DesktopBotActiveRunRow[] : [];
+                setActiveRunsByBot(prev => ({ ...prev, [botId]: runs }));
+                setHubReachableByBot(prev => ({ ...prev, [botId]: true }));
+                const stored = messagesForBot(userId, botId);
+                const attached = reattachStalePending(stored, runs);
+                if (attached !== stored) commit(botId, attached);
+                if (!activeRunsOccupy(runs)) drainDeskRef.current(botId);
+                const idle = botId !== selectedId && !activeRunsOccupy(runs);
+                schedule(botId, idle ? 30000 : 5000);
+            } catch {
+                if (!live) return;
+                setHubReachableByBot(prev => ({ ...prev, [botId]: false }));
+                const waited = failDelay.get(botId) || 5000;
+                const nextWait = Math.min(waited * 2, 60000);
+                failDelay.set(botId, nextWait);
+                schedule(botId, nextWait);
+            } finally {
+                inflight.delete(botId);
+            }
+        };
+        const onVisible = () => {
+            if (!live || pageHidden()) return;
+            ids.forEach(id => { if (!inflight.has(id)) void tick(id); });
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        ids.forEach(id => { void tick(id); });
+        return () => {
+            live = false;
+            document.removeEventListener('visibilitychange', onVisible);
+            timers.forEach(timer => window.clearTimeout(timer));
+        };
+    }, [botIds, userId, selectedId]);
 
     // Stop and cancel use the same Hub routes as the chat stop: a run with an
     // id goes through CancelDesktopBotRun, an admission still being posted
@@ -5035,13 +5104,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 return next;
             });
         }
-        const prior = messagesForBot(userId, botId).map(item => {
+        const hubRuns = activeRunsByBot[botId] || [];
+        const hubKnown = hubReachableByBot[botId] === true;
+        let prior = reattachStalePending(messagesForBot(userId, botId), hubKnown ? hubRuns : []);
+        prior = prior.map(item => {
             // A turn this page already admitted stays live, however old the
             // bubble looks. Clearing it here would cancel the other job on
-            // screen the moment a second one starts.
+            // screen the moment a second one starts. A bubble Hub still lists
+            // by run id stays too: the clock does not retire a live run.
             const ticket = item.requestId || '';
             const live = ticket !== '' && pendingRef.current.get(ticket)?.settled === false;
-            if (item.role === 'assistant' && item.pending && pendingReplyIsStale(item) && !live) {
+            const listed = !!item.runId && hubRuns.some(row => row.run_id === item.runId && !row.stale);
+            if (item.role === 'assistant' && item.pending && pendingReplyIsStale(item) && !live && !listed) {
                 return { ...item, pending: false, userControl: false, attentionReason: '', content: item.content || text.userControl };
             }
             if (takingKeyboard && (item.userControl || item.attentionReason)) return { ...item, userControl: false, attentionReason: '' };
@@ -5990,7 +6064,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         // Sending is a new line the person just asked to see. Stop, pause,
         // supplement, and where the words belong are decided on the server.
-        // This page only forwards the words.
+        // This page always forwards the words. Hub decides steer, new, or queue.
         applyFollowRef.current(true);
         const explicit = phase === 'plan' || phase === 'execute';
         const turnPhase = phaseFor(content, explicit ? phase : undefined);
