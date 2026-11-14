@@ -143,6 +143,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"reason":             map[string]any{"type": "string", "description": "request_takeover: one short sentence for the person, what they need to do on this desktop (log in, enter the 2FA code, solve the captcha)."},
 				"path":               map[string]any{"type": "string", "description": "Container path. file_read, file_write, file_edit, and file_list use it as the file; a relative path is inside this run's project folder. action=deliver attaches that existing file, such as report.pdf in the project folder. ~/x is /home/desktop/x."},
 				"user_location":      map[string]any{"type": "boolean", "description": "file_write: true only when the person asked for the file at that place (for example on their Desktop). Otherwise a write to the Desktop or home folder goes to this run's project folder."},
+				"output":             map[string]any{"type": "boolean", "description": "file_write and file_edit: set true when this file is a result for the person. The reply delivers that file. Omit it for notes, logs, and scratch files. A path named only in the reply text is not delivered."},
 				"old_string":         map[string]any{"type": "string", "description": "Exact passage file_edit replaces. It must occur once."},
 				"new_string":         map[string]any{"type": "string", "description": "Replacement text for file_edit."},
 				"command":            map[string]any{"type": "string", "description": "Command for action=bash. It runs in this container and the result is its output. A minutes-long job uses background=true so this turn does not wait."},
@@ -948,8 +949,14 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			}
 			return out, err
 		}
+		recordOutput := func(text string, err error) (string, error) {
+			if err == nil && (action == "file_write" || action == "file_edit") && desktopBoolArg(args, "output") {
+				noteDesktopOutput(ctx, desktopArg(args, "path"))
+			}
+			return text, err
+		}
 		if desktopHubExecutesTool() {
-			return bashNotes(withNote(runDesktopHubTool(ctx, scope, action, args)))
+			return recordOutput(bashNotes(withNote(runDesktopHubTool(ctx, scope, action, args))))
 		}
 		userKey, keyErr := desktopUserKey(scope)
 		if keyErr != nil {
@@ -958,7 +965,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		if _, err := ensureDesktopRound(ctx, scope, userKey, false); err != nil {
 			return "", err
 		}
-		return bashNotes(withNote(operateDesktopContainer(ctx, scope, action, args)))
+		return recordOutput(bashNotes(withNote(operateDesktopContainer(ctx, scope, action, args))))
 	}
 	var installPackages []string
 	if action == "install" {
@@ -3524,6 +3531,8 @@ type desktopShotSlot struct {
 	// the GUI read is sized for one screenshot plus that much.
 	files     []agent.MessageAttachment
 	savedPath string
+	// outputs are files this run wrote or edited and declared with output=true.
+	outputs []string
 	// request is the person's message, so the run's end knows whether a
 	// picture was asked for (desktop_deliverable.go).
 	request string

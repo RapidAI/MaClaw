@@ -352,9 +352,13 @@ func TestFinishedReplyCarriesTheDesktopScreenshot(t *testing.T) {
 		desktopBotResultSink = nil
 	})
 	app.finishDesktopBotTask("desktop-bot-shot", "alice:bot_1", "bot_1", "看一下环境", "plan")
-	if got == nil || got.Text != "桌面截图已生成" || len(got.DesktopImages) != 0 || len(got.DesktopShotPaths) != 0 || len(got.DesktopAttachmentIDs) != 1 || got.DesktopAttachmentIDs[0] != "shot-1" {
+	if got == nil || got.Text != "桌面截图已生成" || len(got.DesktopImages) != 0 || len(got.DesktopShotPaths) != 1 || len(got.DesktopAttachmentIDs) != 1 || got.DesktopAttachmentIDs[0] != "shot-1" {
 		t.Fatalf("reply=%#v", got)
 	}
+	if shot, err := app.ReadDesktopBotShot(got.DesktopShotPaths[0]); err != nil || shot == nil || shot.Data != payload || shot.MIME != "image/png" {
+		t.Fatalf("shot=%v %v", shot, err)
+	}
+	desktopAttachmentCache.Delete("bot_1\x00shot-1")
 	shot, err := app.FetchDesktopBotAttachment("bot_1", "shot-1")
 	if err != nil || shot == nil || shot.Data != payload || shot.MIME != "image/png" {
 		t.Fatalf("fetch=%v %v", shot, err)

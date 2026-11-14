@@ -1876,7 +1876,9 @@ def screen_record(key):
 # HOME matches corelib/desktop.ContainerHome. container_path matches
 # ContainerPath, including absolute paths outside that home.
 FILE_HOME = "/home/desktop"
-FILE_OPS = ("read", "write", "list", "bytes")
+# link is only the Hub /desktop-file fetch. read/write/list/bytes stay
+# unrestricted so a bot can share ~/Downloads or /tmp.
+FILE_OPS = ("read", "write", "list", "bytes", "link")
 
 
 def container_path(raw):
@@ -1938,6 +1940,23 @@ def file_bytes(path, limit):
     return base64.b64encode(file_read(path, limit))
 
 
+def deliverable_file(path):
+    """The real path of a file the person may fetch through /desktop-file.
+
+    Symlinks are resolved before the work-tree and Desktop check, and
+    before a hidden directory is refused. The lexical path is not enough.
+    The shared file read does not use this.
+    """
+    real = os.path.realpath(path)
+    parts = [part for part in real.split("/") if part not in ("", ".", "..")]
+    if any(part.startswith(".") for part in parts):
+        raise ValueError("path is invalid")
+    roots = (FILE_HOME + "/work", FILE_HOME + "/Desktop", FILE_HOME + "/桌面")
+    if not any(real == root or real.startswith(root + "/") for root in roots):
+        raise ValueError("path is invalid")
+    return real
+
+
 def file_list(path):
     proc = subprocess.run(file_list_command(path))
     return proc.returncode
@@ -1949,7 +1968,7 @@ def run_file(argv):
     This does not start Chrome, clone a profile, write the registry, or
     refresh last_used. A bad path is refused before any file is opened.
     """
-    usage = "usage: desktop_supervisor.py file read|write|list|bytes <path> [limit]"
+    usage = "usage: desktop_supervisor.py file read|write|list|bytes|link <path> [limit]"
     if len(argv) < 4 or argv[1] != "file" or argv[2] not in FILE_OPS:
         print(usage, file=sys.stderr)
         return 2
@@ -1960,7 +1979,7 @@ def run_file(argv):
         print("path is invalid", file=sys.stderr)
         return 2
     limit = None
-    if op in ("read", "bytes"):
+    if op in ("read", "bytes", "link"):
         if len(argv) != 5:
             print(usage, file=sys.stderr)
             return 2
@@ -1975,12 +1994,18 @@ def run_file(argv):
     elif len(argv) != 4:
         print(usage, file=sys.stderr)
         return 2
+    if op == "link":
+        try:
+            path = deliverable_file(path)
+        except ValueError:
+            print("path is invalid", file=sys.stderr)
+            return 2
     try:
         if op == "list":
             return file_list(path)
         if op == "write":
             payload = file_write(path, sys.stdin.buffer)
-        elif op == "bytes":
+        elif op in ("bytes", "link"):
             payload = file_bytes(path, limit)
         else:
             payload = file_read(path, limit)

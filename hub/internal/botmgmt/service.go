@@ -532,6 +532,7 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 		}
 	}
 	s.releaseBotDesktopLater(tenantID, bot.OwnerUserID, bot.ID, keep)
+	s.forgetDesktopRunMedia(tenantID, bot.OwnerUserID, bot.ID)
 	return nil
 }
 

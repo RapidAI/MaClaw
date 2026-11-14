@@ -274,7 +274,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			return
 		}
 		switch strings.ToLower(strings.TrimSpace(in.Action)) {
-		case "read", "bytes", "write", "edit", "list":
+		case "read", "bytes", "link", "write", "edit", "list":
 		default:
 			writeOp(w, "", fmt.Errorf("%w: file action is invalid", ErrInvalid))
 			return
@@ -290,6 +290,8 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			text, err = svc.ReadFile(r.Context(), in.TenantID, in.UserID, in.Path)
 		case "bytes":
 			text, err = svc.ReadBytes(r.Context(), in.TenantID, in.UserID, in.Path)
+		case "link":
+			text, err = svc.ReadDesktopLink(r.Context(), in.TenantID, in.UserID, in.Path)
 		case "write":
 			text, err = svc.WriteFile(r.Context(), in.TenantID, in.UserID, in.Path, in.Content)
 		case "edit":

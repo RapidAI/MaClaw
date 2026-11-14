@@ -115,6 +115,8 @@ type DesktopControl interface {
 type ReplyImage struct {
 	MIME string `json:"mime"`
 	Data string `json:"data"`
+	// ID is the attachment id the GUI uses to refetch this picture.
+	ID string `json:"attachment_id,omitempty"`
 }
 
 type Reply struct {
@@ -877,6 +879,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			Started:         pipelineStarted,
 			ClientMessageID: clientMessageID,
 			Session:         claim.session,
+			DesktopUser:     desktopUser,
 		})
 		traceBot(botID, "admit", nil,
 			"instance", instanceID,
@@ -904,6 +907,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		Attachments: payload.Message.Attachments,
 		Turn:        clientMessageID,
 		Waiting:     strings.TrimSpace(clientMessageID) != "",
+		DesktopUser: desktopUser,
 	})
 	if settleErr != nil {
 		return BotAdmission{}, settleErr
@@ -936,12 +940,18 @@ type desktopCommandBody struct {
 	// Turn owns this settle (desktopTurnOf). A sibling run's settle leaves
 	// the hold and keyboard another turn owns.
 	Turn string
+	// DesktopUser is the desktop this run was admitted on. Finalize uses
+	// this record. It does not read settings again.
+	DesktopUser string
 }
 
 func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novnc string, opened bool, body desktopCommandBody) (Reply, error) {
-	// Holds, keyboard and picture are the bot's own display's when it is
-	// isolated. The attention reason is keyed per bot and owner either way.
-	userID = s.desktopUserOf(tenantID, userID, botID)
+	// The desktop user was resolved when the run was admitted. A settings
+	// read that fails now, or a bot deleted while the run was going, does
+	// not drop the answer or leave that desktop open.
+	if carried := strings.TrimSpace(body.DesktopUser); carried != "" {
+		userID = carried
+	}
 	if body.CallErr != nil {
 		reason := strings.TrimSpace(body.Attention)
 		if body.Handoff {

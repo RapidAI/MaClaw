@@ -175,8 +175,9 @@ func TestPullDesktopBotDeliveryUsesSendToUserWhenTheRunFailed(t *testing.T) {
 func TestPullDesktopBotDeliveryKeepsAScreenshotWithoutCaption(t *testing.T) {
 	base := t.TempDir()
 	prev := corelib.MaclawBaseDir()
-	corelib.SetMaclawBaseDir(base)
+	corelib.SetMaclawBaseDir(filepath.Join(base, ".maclaw"))
 	t.Cleanup(func() { corelib.SetMaclawBaseDir(prev) })
+	app := &App{testHomeDir: base}
 	var payloads []string
 	shot := base64.StdEncoding.EncodeToString([]byte("png-bytes"))
 	desktopBotReportSink = func(raw string) { payloads = append(payloads, raw) }
@@ -206,25 +207,27 @@ func TestPullDesktopBotDeliveryKeepsAScreenshotWithoutCaption(t *testing.T) {
 		delete(ackedDesktopRuns, desktopRunKey("bot_1", "run_shot"))
 		activeDesktopRunsMu.Unlock()
 	})
-	if err := (&App{}).PullDesktopBotDeliveries(); err != nil {
+	if err := app.PullDesktopBotDeliveries(); err != nil {
 		t.Fatal(err)
 	}
 	if len(payloads) != 1 || strings.Contains(payloads[0], `"send_to_user":"截个图`) || strings.Contains(payloads[0], `"error"`) || strings.Contains(payloads[0], `"send_to_user"`) || strings.Contains(payloads[0], `"text"`) {
 		t.Fatalf("payload = %#v", payloads)
 	}
-	if !strings.Contains(payloads[0], `"desktop_attachment_ids"`) || !strings.Contains(payloads[0], "shot-1") || strings.Contains(payloads[0], `"desktop_shot_paths"`) || strings.Contains(payloads[0], shot) {
+	if !strings.Contains(payloads[0], `"desktop_attachment_ids"`) || !strings.Contains(payloads[0], "shot-1") || !strings.Contains(payloads[0], `"desktop_shot_paths"`) || strings.Contains(payloads[0], shot) {
 		t.Fatalf("screenshot id dropped: %s", payloads[0])
 	}
-	if _, err := os.Stat(filepath.Join(base, "data", "bot-files")); !os.IsNotExist(err) {
-		t.Fatalf("screenshot was written on this machine: %v", err)
+	shotFile := filepath.Join(base, ".maclaw", "data", "bot-files", "bot_1", "shots", "shot-1.png")
+	if _, err := os.Stat(shotFile); err != nil {
+		t.Fatalf("screenshot was not kept under the test data dir %s: %v", shotFile, err)
 	}
 }
 
 func TestPullDesktopBotDeliveryKeepsFileAndScreenshotWithTheSentence(t *testing.T) {
 	base := t.TempDir()
 	prev := corelib.MaclawBaseDir()
-	corelib.SetMaclawBaseDir(base)
+	corelib.SetMaclawBaseDir(filepath.Join(base, ".maclaw"))
 	t.Cleanup(func() { corelib.SetMaclawBaseDir(prev) })
+	app := &App{testHomeDir: base}
 	var payloads []string
 	shot := base64.StdEncoding.EncodeToString([]byte("png-bytes"))
 	doc := base64.StdEncoding.EncodeToString([]byte("doc-bytes"))
@@ -257,18 +260,22 @@ func TestPullDesktopBotDeliveryKeepsFileAndScreenshotWithTheSentence(t *testing.
 		delete(ackedDesktopRuns, desktopRunKey("bot_1", "run_both"))
 		activeDesktopRunsMu.Unlock()
 	})
-	if err := (&App{}).PullDesktopBotDeliveries(); err != nil {
+	if err := app.PullDesktopBotDeliveries(); err != nil {
 		t.Fatal(err)
 	}
 	if len(payloads) != 1 {
 		t.Fatalf("payloads = %#v", payloads)
 	}
 	raw := payloads[0]
-	if !strings.Contains(raw, `"send_to_user":"文件和截图都在。"`) || !strings.Contains(raw, `"desktop_attachment_ids"`) || !strings.Contains(raw, "shot-1") || !strings.Contains(raw, "file-1") || strings.Contains(raw, `"desktop_shot_paths"`) || strings.Contains(raw, `"local_file_paths"`) || strings.Contains(raw, shot) || strings.Contains(raw, doc) {
+	if !strings.Contains(raw, `"send_to_user":"文件和截图都在。"`) || !strings.Contains(raw, `"desktop_attachment_ids"`) || !strings.Contains(raw, "shot-1") || !strings.Contains(raw, "file-1") || !strings.Contains(raw, `"desktop_shot_paths"`) || strings.Contains(raw, `"local_file_paths"`) || strings.Contains(raw, shot) || strings.Contains(raw, doc) {
 		t.Fatalf("payload = %s", raw)
 	}
-	if _, err := os.Stat(filepath.Join(base, "data", "bot-files")); !os.IsNotExist(err) {
-		t.Fatalf("delivery was written on this machine: %v", err)
+	shotFile := filepath.Join(base, ".maclaw", "data", "bot-files", "bot_1", "shots", "shot-1.png")
+	if _, err := os.Stat(shotFile); err != nil {
+		t.Fatalf("screenshot was not kept under the test data dir %s: %v", shotFile, err)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(base, ".maclaw", "data", "bot-files", "bot_1", "*.docx")); len(matches) != 0 {
+		t.Fatalf("the document was written beside the picture: %v", matches)
 	}
 	if strings.Contains(raw, `"send_to_user":"截个图`) || strings.Contains(raw, `"error"`) || strings.Contains(raw, "过程记录") || strings.Contains(raw, `"text"`) {
 		t.Fatalf("payload = %s", raw)

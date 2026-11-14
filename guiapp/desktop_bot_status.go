@@ -247,7 +247,7 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	if len(item.Reply.Files) > 0 {
 		a.multiBot().recordDeliveryArtifacts(botID, strings.TrimSpace(item.RunID), item.Reply.Files)
 	}
-	ids := stageDesktopPictures(botID, item.Reply.Images, item.Reply.Files)
+	ids, shotPaths := stageDesktopPictures(botID, item.Reply.Images, item.Reply.Files)
 	payload := map[string]any{
 		"request_id":      "desktop-bot-deliver-" + strings.TrimSpace(item.RunID),
 		"session_key":     desktopBotLocalSessionKey(owner, botID),
@@ -275,6 +275,9 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	}
 	if len(ids) > 0 {
 		payload["desktop_attachment_ids"] = ids
+	}
+	if len(shotPaths) > 0 {
+		payload["desktop_shot_paths"] = shotPaths
 	}
 	if o := desktopTaskOutcomeOf(item.Reply.TaskOutcome); o != "" {
 		payload["task_outcome"] = o

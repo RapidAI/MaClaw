@@ -2,6 +2,7 @@ package botmgmt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -32,19 +33,26 @@ func desktopUserForBot(userID string, bot Bot) string {
 }
 
 // desktopUserOf is desktopUserForBot when only the bot id is at hand.
-func (s *Service) desktopUserOf(tenantID, userID, botID string) string {
-	if s == nil || strings.TrimSpace(botID) == "" {
-		return userID
+// An unknown bot is not the owner's desktop.
+func (s *Service) desktopUserOf(tenantID, userID, botID string) (string, error) {
+	if s == nil {
+		return userID, nil
+	}
+	if strings.TrimSpace(botID) == "" {
+		return "", ErrNotFound
 	}
 	rec, err := s.load(context.Background(), tenantID)
 	if err != nil {
-		return userID
+		if errors.Is(err, ErrSettingsUnavailable) {
+			return userID, nil
+		}
+		return "", err
 	}
 	index := indexOf(rec.Bots, botID)
 	if index < 0 {
-		return userID
+		return "", ErrNotFound
 	}
-	return desktopUserForBot(userID, rec.Bots[index])
+	return desktopUserForBot(userID, rec.Bots[index]), nil
 }
 
 // NormalizeDesktopMode accepts "", "shared" and "isolated".

@@ -173,9 +173,14 @@ export function botMessageHasChips(text: string): boolean {
     return false;
 }
 
+export type BotPathKind = 'local' | 'desktop' | 'text';
+
 export type BotChipHandlers = {
     openLink?: (url: string) => void;
     openPath?: (event: MouseEvent, path: string) => void;
+    // pathKind is the run's typed origin for a path. Absent means a local path.
+    pathKind?: (path: string) => BotPathKind;
+    openDesktopPath?: (event: MouseEvent, path: string) => void;
 };
 
 export const BotChipContext = createContext<BotChipHandlers>({});
@@ -200,13 +205,18 @@ function BotChip({ chip }: { chip: Chip }) {
         );
     }
     if (chip.kind === 'path') {
+        const origin = handlers.pathKind?.(chip.value) ?? 'text';
+        if (origin === 'text' || (origin === 'desktop' && !handlers.openDesktopPath)) {
+            return <span className="desktop-bot-chat__chip-text" data-testid="bot-chip-path-text">{chip.value}</span>;
+        }
         return (
             <button
                 type="button"
                 className="desktop-bot-chat__chip desktop-bot-chat__chip--path"
                 data-testid="bot-chip-path"
+                data-path-origin={origin}
                 title={chip.value}
-                onClick={event => handlers.openPath?.(event, chip.value)}
+                onClick={event => (origin === 'desktop' ? handlers.openDesktopPath?.(event, chip.value) : handlers.openPath?.(event, chip.value))}
             >{chip.label}</button>
         );
     }

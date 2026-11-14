@@ -1,5 +1,5 @@
 import { EventsOn } from '../../../wailsjs/runtime';
-import { PublishDesktopBotConversation, StartDesktopBotConversationSync } from '../../../wailsjs/go/main/App';
+import { ForgetDesktopBotFiles, PublishDesktopBotConversation, StartDesktopBotConversationSync } from '../../../wailsjs/go/main/App';
 import {
     botMessageStartedAt,
     desktopUserKey,
@@ -314,6 +314,11 @@ export function noteDesktopBotCleared(userId: string, botId: string) {
         window.localStorage.setItem(CLEARED_KEY, JSON.stringify(all));
     } catch {
         // A full storage only loses the watermark; old lines may return.
+    }
+    try {
+        void ForgetDesktopBotFiles(botId);
+    } catch {
+        // A test host has no desktop file store.
     }
 }
 

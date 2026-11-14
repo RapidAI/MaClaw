@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { BotChipContext, BotMessageBody, botMessageHasChips, botMessageIsStructured, splitBotBeats } from './botMessageBody';
+import { classifyBotPath } from './desktopPathOrigin';
 import { desktopBotCorrectAttachClaim } from './desktopBotDelivery';
 
 describe('reply cards and beats', () => {
@@ -9,7 +10,7 @@ describe('reply cards and beats', () => {
         const openPath = vi.fn();
         const text = '已推送 1faa7af6f，报告在 /Users/dan/Desktop/report.pdf，详情 https://github.com/RapidAI/CodeClaw/pull/12。';
         expect(botMessageIsStructured(text)).toBe(true);
-        render(<BotChipContext.Provider value={{ openLink, openPath }}><BotMessageBody text={text} /></BotChipContext.Provider>);
+        render(<BotChipContext.Provider value={{ openLink, openPath, pathKind: path => classifyBotPath(path, { guiPaths: ['/Users/dan/Desktop/report.pdf'] }) }}><BotMessageBody text={text} /></BotChipContext.Provider>);
         expect(screen.getByTestId('bot-chip-commit').textContent).toBe('1faa7af6f');
         const path = screen.getByTestId('bot-chip-path');
         expect(path.textContent).toBe('report.pdf');
@@ -21,12 +22,36 @@ describe('reply cards and beats', () => {
         expect(openLink).toHaveBeenCalledWith('https://github.com/RapidAI/CodeClaw/pull/12');
     });
 
+    it('does not open a desktop container path on this machine', () => {
+        const openPath = vi.fn();
+        const openDesktopPath = vi.fn();
+        const text = '代码在 /home/desktop/work/bot_a/snake.cpp';
+        render(<BotChipContext.Provider value={{ openPath, openDesktopPath, pathKind: path => classifyBotPath(path) }}>
+            <BotMessageBody text={text} />
+        </BotChipContext.Provider>);
+        const chip = screen.getByTestId('bot-chip-path');
+        expect(chip.getAttribute('data-path-origin')).toBe('desktop');
+        fireEvent.click(chip);
+        expect(openDesktopPath).toHaveBeenCalled();
+        expect(openPath).not.toHaveBeenCalled();
+    });
+
+    it('shows a desktop path as text when it cannot be fetched', () => {
+        render(<BotChipContext.Provider value={{ pathKind: path => classifyBotPath(path) }}>
+            <BotMessageBody text="代码在 /home/desktop/work/bot_a/snake.cpp" />
+        </BotChipContext.Provider>);
+        expect(screen.getByTestId('bot-chip-path-text').textContent).toContain('/home/desktop/work/bot_a/snake.cpp');
+        expect(screen.queryByTestId('bot-chip-path')).toBeNull();
+    });
+
     it('leaves ordinary words, numbers and short slashes alone', () => {
         expect(botMessageHasChips('明天 1234567 次，a/b 两种，颜色 #a1b2c3d，deadbeef')).toBe(false);
     });
 
     it('reads a code span holding a path as a card and a Markdown link by its label', () => {
-        render(<BotMessageBody text={'看 `/home/me/out.csv` 和 [合并请求](https://example.com/pr/3)'} />);
+        render(<BotChipContext.Provider value={{ pathKind: path => classifyBotPath(path, { guiPaths: ['/home/me/out.csv'] }) }}>
+            <BotMessageBody text={'看 `/home/me/out.csv` 和 [合并请求](https://example.com/pr/3)'} />
+        </BotChipContext.Provider>);
         expect(screen.getByTestId('bot-chip-path').textContent).toBe('out.csv');
         expect(screen.getByTestId('bot-chip-link').textContent).toBe('合并请求');
     });

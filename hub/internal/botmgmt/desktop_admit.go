@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -64,6 +65,8 @@ type desktopAdmitState struct {
 	progressWhere string
 	progressNext  string
 	progressOpen  string
+	// desktopUser is the desktop resolved when this run was admitted.
+	desktopUser string
 	// session is the srv conversation this post/run uses: the bot's main
 	// one (the bot id) or a per-run thread (see desktopThreadSession).
 	session string
@@ -172,6 +175,8 @@ type admittedDesktopFollow struct {
 	ClientMessageID string
 	// Session is the srv conversation the run is in (bot id or a thread).
 	Session string
+	// DesktopUser is the desktop resolved at admission.
+	DesktopUser string
 }
 
 type desktopRunView struct {
@@ -573,6 +578,21 @@ func desktopTerminalMiss(runID, status, text, recorded string, handoff bool) err
 	return fmt.Errorf("run %s ended as %s without a result", strings.TrimSpace(runID), strings.TrimSpace(status))
 }
 
+func (s *Service) admittedDesktopUser(tenantID, userID, botID, runID string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	state := s.desktopAdmits[desktopAdmitKey(tenantID, userID, botID, runID)]
+	s.mu.Unlock()
+	if state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.desktopUser
+}
+
 func (s *Service) followAdmittedDesktopRun(job admittedDesktopFollow) {
 	if s == nil || strings.TrimSpace(job.RunID) == "" {
 		return
@@ -680,6 +700,9 @@ func (s *Service) settleAdmittedDesktopRun(tenantID, userID, botID, runID string
 	state.finished = time.Now()
 	state.mediaFetched = true
 	state.mu.Unlock()
+	if keepErr := s.keepDesktopRunMedia(tenantID, userID, botID, runID, reply.Images, reply.Files); keepErr != nil {
+		log.Printf("[desktop-run-media] keep run=%s: %v", runID, keepErr)
+	}
 	if err != nil {
 		// Keeping the claim after a failed settle would answer every later
 		// read with "still going" forever and strand the run for good, which
@@ -795,6 +818,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			}
 		}
 		body.CallErr = desktopTerminalMiss(job.RunID, view.Status, body.Text, view.Error, body.Handoff)
+		body.DesktopUser = job.DesktopUser
 		reply, settleErr := s.settleDesktopCommand(job.TenantID, job.UserID, job.BotID, job.InstanceID, job.Novnc, job.Opened, body)
 		state.mu.Lock()
 		state.reply = reply
@@ -809,6 +833,9 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		runStatus := state.status
 		session := state.session
 		state.mu.Unlock()
+		if keepErr := s.keepDesktopRunMedia(job.TenantID, job.UserID, job.BotID, job.RunID, reply.Images, reply.Files); keepErr != nil {
+			log.Printf("[desktop-run-media] keep run=%s: %v", job.RunID, keepErr)
+		}
 		s.noteDesktopAskOwner(job.TenantID, job.UserID, job.BotID, session, reply)
 		s.persistDesktopTasks(job.TenantID)
 		s.reportDelegateRunEnd(job.TenantID, job.UserID, job.BotID, job.RunID, runStatus, reply, settleErr)
@@ -1284,14 +1311,16 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 		if watchErr != nil {
 			novnc = ""
 		}
+		desktopUser, _ := s.desktopUserOf(tenantID, userID, botID)
 		s.followAdmittedDesktopRun(admittedDesktopFollow{
-			TenantID:   tenantID,
-			UserID:     userID,
-			BotID:      botID,
-			InstanceID: instanceID,
-			Novnc:      novnc,
-			RunID:      runID,
-			Started:    time.Now(),
+			TenantID:    tenantID,
+			UserID:      userID,
+			BotID:       botID,
+			InstanceID:  instanceID,
+			Novnc:       novnc,
+			RunID:       runID,
+			Started:     time.Now(),
+			DesktopUser: desktopUser,
 		})
 		traceBot(botID, "run_readmit", nil,
 			"instance", instanceID,
@@ -1315,6 +1344,7 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 		Turn:        desktopTurnOf(view.Message.Metadata["client_message_id"], runID),
 	}
 	body.CallErr = desktopTerminalMiss(runID, view.Status, body.Text, view.Error, body.Handoff)
+	body.DesktopUser = s.admittedDesktopUser(tenantID, userID, botID, runID)
 	// Settling is claimed, not repeated. The caller polls again whenever the
 	// answer was lost, and the desktop bookkeeping inside settle does not
 	// survive being run twice.

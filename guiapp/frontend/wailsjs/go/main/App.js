@@ -4501,8 +4501,20 @@ export function ReadBBS() {
   return window['go']['main']['App']['ReadBBS']();
 }
 
+export function ForgetDesktopBotFiles(arg1) {
+  return window['go']['main']['App']['ForgetDesktopBotFiles'](arg1);
+}
+
 export function FetchDesktopBotAttachment(arg1, arg2) {
   return window['go']['main']['App']['FetchDesktopBotAttachment'](arg1, arg2);
+}
+
+export function FetchDesktopBotContainerFile(arg1, arg2) {
+  return window['go']['main']['App']['FetchDesktopBotContainerFile'](arg1, arg2);
+}
+
+export function RefetchDesktopBotRunImage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RefetchDesktopBotRunImage'](arg1, arg2, arg3);
 }
 
 export function ReadDesktopBotShot(arg1) {

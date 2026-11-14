@@ -76,6 +76,43 @@ func ContainerPath(raw string) (string, error) {
 	return cleaned, nil
 }
 
+// DeliverableContainerPath is a container path the person may receive:
+// this run tree under /home/desktop/work, or the Desktop. A hidden
+// directory is refused. The decision is the resolved path, not the words
+// around it.
+func DeliverableContainerPath(raw string) (string, error) {
+	resolved, err := ContainerPath(raw)
+	if err != nil {
+		return "", err
+	}
+	if hiddenContainerPath(resolved) || !deliverableContainerRoot(resolved) {
+		return "", fmt.Errorf("%w: path is not a deliverable file", ErrInvalid)
+	}
+	return resolved, nil
+}
+
+func deliverableContainerRoot(filePath string) bool {
+	for _, root := range []string{
+		path.Join(ContainerHome, "work"),
+		path.Join(ContainerHome, "Desktop"),
+		path.Join(ContainerHome, "桌面"),
+	} {
+		if filePath == root || strings.HasPrefix(filePath, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func hiddenContainerPath(filePath string) bool {
+	for _, part := range strings.Split(filePath, "/") {
+		if strings.HasPrefix(part, ".") && part != "." && part != ".." {
+			return true
+		}
+	}
+	return false
+}
+
 // ApplyEdit replaces one exact passage. An empty old string, a missing
 // passage, or more than one match is refused so the file is not rewritten
 // at the wrong place.
