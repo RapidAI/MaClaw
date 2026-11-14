@@ -166,7 +166,7 @@ import {
 } from './desktopBots';
 import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from './botUnread';
 import { desktopBotCorrectAttachClaim } from './desktopBotDelivery';
-import { activeRunsOccupy, botBusyPhase, messageQueuesBehindRun, reattachStalePending } from './desktopBotBusy';
+import { activeRunsOccupy, botBusyPhase, reattachStalePending } from './desktopBotBusy';
 import { BotChipContext, BotMessageBody, botMessageIsStructured, splitBotBeats } from './botMessageBody';
 import { BotFeedLine, botFeedLineInternal, botFeedLineOf } from './botFeedLine';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
@@ -2403,8 +2403,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // true: the last ListDesktopBotActiveRuns succeeded. false: it failed.
     // Absent: this page has not heard from Hub yet, so the clock still applies.
     const [hubReachableByBot, setHubReachableByBot] = useState<Record<string, boolean>>({});
-    const hubBusyRef = useRef<{ reachable: Record<string, boolean>; runs: Record<string, DesktopBotActiveRunRow[]> }>({ reachable: {}, runs: {} });
-    hubBusyRef.current = { reachable: hubReachableByBot, runs: activeRunsByBot };
     const [taskNotice, setTaskNotice] = useState('');
     const [taskBusy, setTaskBusy] = useState<Record<string, boolean>>({});
     const taskLoadGen = useRef(0);
@@ -3998,17 +3996,31 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     }, [selectedId, panelSection, showDesktop, text.unavailable]);
 
     // Busy state for every bot, not only the tasks tab. Hub's active runs
-    // are the signal. A failed read leaves the previous list and marks Hub
-    // unreachable so the clock can cover that gap.
+    // are the signal. One read is in flight per bot. A failure waits longer
+    // before the next try. A hidden page does not poll. An idle bot that is
+    // not the one on screen is read less often than a bot that is working.
     const botIds = bots.map(bot => bot.id).join('\0');
     useEffect(() => {
         const ids = botIds ? botIds.split('\0') : [];
         if (!ids.length) return;
         let live = true;
-        const loadOne = async (botId: string) => {
+        const timers = new Map<string, number>();
+        const inflight = new Set<string>();
+        const failDelay = new Map<string, number>();
+        const pageHidden = () => typeof document !== 'undefined' && document.hidden;
+        const schedule = (botId: string, delay: number) => {
+            const existing = timers.get(botId);
+            if (existing) window.clearTimeout(existing);
+            timers.set(botId, window.setTimeout(() => { void tick(botId); }, delay));
+        };
+        const tick = async (botId: string) => {
+            if (!live || pageHidden()) return;
+            if (inflight.has(botId)) return;
+            inflight.add(botId);
             try {
                 const list = await ListDesktopBotActiveRuns(botId);
                 if (!live) return;
+                failDelay.delete(botId);
                 const runs = Array.isArray(list) ? list as DesktopBotActiveRunRow[] : [];
                 setActiveRunsByBot(prev => ({ ...prev, [botId]: runs }));
                 setHubReachableByBot(prev => ({ ...prev, [botId]: true }));
@@ -4016,19 +4028,31 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const attached = reattachStalePending(stored, runs);
                 if (attached !== stored) commit(botId, attached);
                 if (!activeRunsOccupy(runs)) drainDeskRef.current(botId);
+                const idle = botId !== selectedId && !activeRunsOccupy(runs);
+                schedule(botId, idle ? 30000 : 5000);
             } catch {
                 if (!live) return;
                 setHubReachableByBot(prev => ({ ...prev, [botId]: false }));
+                const waited = failDelay.get(botId) || 5000;
+                const nextWait = Math.min(waited * 2, 60000);
+                failDelay.set(botId, nextWait);
+                schedule(botId, nextWait);
+            } finally {
+                inflight.delete(botId);
             }
         };
-        const load = () => { ids.forEach(id => { void loadOne(id); }); };
-        load();
-        const timer = window.setInterval(load, 5000);
+        const onVisible = () => {
+            if (!live || pageHidden()) return;
+            ids.forEach(id => { if (!inflight.has(id)) void tick(id); });
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        ids.forEach(id => { void tick(id); });
         return () => {
             live = false;
-            window.clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVisible);
+            timers.forEach(timer => window.clearTimeout(timer));
         };
-    }, [botIds, userId]);
+    }, [botIds, userId, selectedId]);
 
     // Stop and cancel use the same Hub routes as the chat stop: a run with an
     // id goes through CancelDesktopBotRun, an admission still being posted
@@ -5082,7 +5106,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         const hubRuns = activeRunsByBot[botId] || [];
         const hubKnown = hubReachableByBot[botId] === true;
-        let prior = reattachStalePending(messagesForBot(userId, botId), hubKnown ? hubRuns : [], Date.now());
+        let prior = reattachStalePending(messagesForBot(userId, botId), hubKnown ? hubRuns : []);
         prior = prior.map(item => {
             // A turn this page already admitted stays live, however old the
             // bubble looks. Clearing it here would cancel the other job on
@@ -5616,9 +5640,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (stopHoldRef.current.has(botId)) return;
         const queue = queueRef.current.get(botId);
         if (!queue || queue.length === 0) return;
-        // Hub's active runs hold the queue. The parallel cap is the fallback
-        // when that read has not succeeded.
-        if (hubBusyRef.current.reachable[botId] === true && activeRunsOccupy(hubBusyRef.current.runs[botId])) return;
         // A queued job waits only while the bot is at its parallel cap.
         if (!fromList && Math.max(desktopRunByBotRef.current[botId] || 0, liveRunsOf(botId)) >= DESKTOP_BOT_PARALLEL_RUNS) return;
         if (turnStillReading(botId) || pendingBubbleHoldsQueue(botId)) return;
@@ -6043,21 +6064,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         // Sending is a new line the person just asked to see. Stop, pause,
         // supplement, and where the words belong are decided on the server.
-        // This page only forwards the words. A run Hub still lists keeps the
-        // new line behind it.
+        // This page always forwards the words. Hub decides steer, new, or queue.
         applyFollowRef.current(true);
         const explicit = phase === 'plan' || phase === 'execute';
         const turnPhase = phaseFor(content, explicit ? phase : undefined);
-        if (messageQueuesBehindRun(content, hubReachableByBot[botId] === true && activeRunsOccupy(activeRunsByBot[botId]))) {
-            const queued = queueRef.current.get(botId) || [];
-            queueRef.current.set(botId, [...queued, { text: content, phase: turnPhase, verbatim, literal, prepared, continueSession }]);
-            const qid = messageID();
-            const userIdLine = messageID();
-            const qline = queuedAckReply(content, lang, 'task');
-            commit(botId, [...messagesForBot(userId, botId), { id: userIdLine, role: 'user', content, queued: true, phase: turnPhase }, { id: qid, role: 'assistant', content: qline, ack: true }]);
-            if (!preset) setCommand('');
-            return;
-        }
         startTask(botId, content, turnPhase, 'now', verbatim, prepared, literal, continueSession, explicit ? phase : '', askRun);
         if (!preset) setCommand('');
     };

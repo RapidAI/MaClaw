@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
-import { activeRunsOccupy, botBusyPhase, messageQueuesBehindRun, reattachStalePending } from './desktopBotBusy';
+import { activeRunsOccupy, botBusyPhase, reattachStalePending } from './desktopBotBusy';
 
 const running = { run_id: 'run_6468df58', status: 'running', phase: 'execute' };
 
@@ -56,29 +56,30 @@ describe('bot busy from Hub active runs', () => {
     });
 });
 
-describe('reattach a stale bubble to the run Hub still lists', () => {
-    it('writes the run id and leaves the bubble pending', () => {
+describe('reattach only a bubble that already carries the run', () => {
+    it('keeps that bubble pending and takes the run phase', () => {
         const now = Date.now();
-        const bubble = { role: 'assistant' as const, pending: true, id: staleId(now), phase: 'plan' as const };
-        const next = reattachStalePending([bubble], [running], now);
+        const bubble = { role: 'assistant' as const, pending: true, id: staleId(now), runId: 'run_6468df58', phase: 'plan' as const };
+        const next = reattachStalePending([bubble], [running]);
         expect(next[0].pending).toBe(true);
         expect(next[0].runId).toBe('run_6468df58');
         expect(next[0].phase).toBe('execute');
     });
 
-    it('does not invent a run when Hub lists none', () => {
+    it('does not attach a bubble that carries no run id', () => {
         const now = Date.now();
-        const messages = [{ role: 'assistant' as const, pending: true, id: staleId(now) }];
-        const next = reattachStalePending(messages, [], now);
+        const messages: Array<{ role: 'assistant'; pending: boolean; id: string; runId?: string }> = [
+            { role: 'assistant', pending: true, id: staleId(now) },
+        ];
+        const next = reattachStalePending(messages, [running]);
         expect(next).toBe(messages);
         expect(next[0].runId).toBeUndefined();
     });
-});
 
-describe('a new message waits behind a live run', () => {
-    it('queues ordinary work and lets a stop through', () => {
-        expect(messageQueuesBehindRun('再训一轮', true)).toBe(true);
-        expect(messageQueuesBehindRun('停下', true)).toBe(false);
-        expect(messageQueuesBehindRun('再训一轮', false)).toBe(false);
+    it('does not move a bubble onto a different run', () => {
+        const bubble = { role: 'assistant' as const, pending: true, id: 'm-1', runId: 'run_other' };
+        const next = reattachStalePending([bubble], [running]);
+        expect(next[0].runId).toBe('run_other');
+        expect(next).toEqual([bubble]);
     });
 });

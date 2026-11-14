@@ -1,5 +1,3 @@
-import { desktopBotLocalControl, desktopBotStopIntent, isDesktopBotClearCommand, pendingBotReplyIsStale, BOT_CONFIRM_TASK } from './desktopBots';
-
 // One run Hub still lists for a bot. stale means Hub thinks the process is gone.
 export type ActiveRunRef = {
     run_id?: string;
@@ -54,35 +52,21 @@ type PendingBubble = {
     phase?: string;
 };
 
-// A pending bubble past the clock stays pending when Hub still lists its run.
-// The run id is written on the bubble so a later poll keeps the same match.
-export function reattachStalePending<T extends PendingBubble>(messages: T[], runs: readonly ActiveRunRef[] | null | undefined, now = Date.now()): T[] {
+// A pending bubble that already carries a run id stays pending while Hub
+// still lists that same run. A bubble with no run id is not attached to
+// whichever run happens to be open.
+export function reattachStalePending<T extends PendingBubble>(messages: T[], runs: readonly ActiveRunRef[] | null | undefined): T[] {
     const open = (runs || []).filter(row => row.run_id && !row.stale && (row.status === 'running' || row.status === 'queued' || !String(row.status || '').trim()));
     if (!open.length) return messages;
-    const used = new Set(messages.map(item => item.runId).filter((id): id is string => !!id));
     let changed = false;
     const next = messages.map(item => {
-        if (item.role !== 'assistant' || !item.pending) return item;
-        if (item.runId && open.some(row => row.run_id === item.runId)) return item;
-        if (!pendingBotReplyIsStale(item, now)) return item;
-        const run = open.find(row => row.run_id && !used.has(row.run_id));
-        if (!run?.run_id) return item;
-        used.add(run.run_id);
-        changed = true;
+        if (item.role !== 'assistant' || !item.pending || !item.runId) return item;
+        const run = open.find(row => row.run_id === item.runId);
+        if (!run) return item;
         const phase = run.phase === 'execute' || run.phase === 'plan' ? run.phase : item.phase;
-        return { ...item, pending: true, runId: run.run_id, phase };
+        if (phase === item.phase) return item;
+        changed = true;
+        return { ...item, pending: true, phase };
     });
     return changed ? next : messages;
-}
-
-// A new line waits behind a run Hub still lists. Stop, status, and clear
-// still go straight through.
-export function messageQueuesBehindRun(content: string, occupy: boolean): boolean {
-    const text = content.trim();
-    if (!occupy || !text) return false;
-    if (text === BOT_CONFIRM_TASK) return false;
-    if (isDesktopBotClearCommand(text)) return false;
-    if (desktopBotStopIntent(text)) return false;
-    if (desktopBotLocalControl(text)) return false;
-    return true;
 }

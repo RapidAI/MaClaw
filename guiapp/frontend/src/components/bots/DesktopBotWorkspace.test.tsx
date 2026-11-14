@@ -2405,14 +2405,13 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByText('码卡龙本龙'));
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '做今天的摘要发知乎' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('好，手上这件做完就弄这个，弄好告诉你。')).toBeTruthy();
-        expect(sendTask).not.toHaveBeenCalled();
+        await waitFor(() => expect(sendTask).toHaveBeenCalled());
         const pause = await screen.findByTestId('desktop-bot-pause');
         fireEvent.click(pause);
         fireEvent.click(pause);
         fireEvent.click(pause);
         await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run_eafb6f42'));
-        expect(await screen.findByText(/停了/)).toBeTruthy();
+        expect(await screen.findByText('停了。做摘要发知乎 不再继续。')).toBeTruthy();
         expect(cancelRun).toHaveBeenCalledTimes(1);
         expect(screen.queryByText(/nothing|Say plainly/i)).toBeNull();
     });
