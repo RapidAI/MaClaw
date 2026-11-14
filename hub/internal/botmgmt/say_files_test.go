@@ -7,6 +7,32 @@ import (
 
 // A server-started turn's files ride on its said note, are listed with it,
 // and can be read back by the person's GUI.
+func TestSayKeepsTheSpeechKind(t *testing.T) {
+	svc := assignFixture(t)
+	ctx := context.Background()
+	note, err := svc.SayFilesKindFromInstance(ctx, "tenant-a", "alice", "inst_a", "", "后台任务结束了，下面是最后的输出\ntrain=1", "k-process", nil, "process")
+	if err != nil || note.MessageKind != "process" {
+		t.Fatalf("note %+v %v", note, err)
+	}
+	said, err := svc.ListSaid(ctx, "tenant-a", "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, n := range said {
+		if n.ID == note.ID && n.MessageKind == "process" && n.Kind == "say" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("said %+v", said)
+	}
+	plain, err := svc.SayFromInstance(ctx, "tenant-a", "alice", "inst_a", "", "结果是 F1 0.81，建议停在这一轮。", "k-outcome")
+	if err != nil || plain.MessageKind != "" {
+		t.Fatalf("untagged say %+v %v", plain, err)
+	}
+}
+
 func TestSayFilesFromInstanceCarriesReadableFiles(t *testing.T) {
 	svc := assignFixture(t)
 	svc.MailFileDir = t.TempDir()

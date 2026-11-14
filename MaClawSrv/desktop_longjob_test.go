@@ -317,14 +317,23 @@ func TestD101NoticeSaysWithEvidence(t *testing.T) {
 	code := 3
 	j := &desktopLongJob{ID: "job_abcdef123", TenantID: "tenant_default", UserID: "u_1::desk::bot_x", InstanceID: "inst_x", Status: "failed", ExitCode: &code, Started: desktopLongJobNow().Add(-30 * time.Minute), LastPoll: desktopLongJobNow(), LastTail: "Warning: Permanently added host\nTraceback\nValueError: bad label"}
 	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); err != nil {
-		t.Fatalf("ALREADY_SAID is delivered: %v", err)
+		t.Fatal(err)
+	}
+	if body != nil {
+		t.Fatalf("a finished job was said to the person: %+v", body)
+	}
+	lines := desktopProcessOf(j.ID)
+	if len(lines) != 1 || !strings.Contains(lines[0], "失败") || !strings.Contains(lines[0], "3") || !strings.Contains(lines[0], "ValueError: bad label") || strings.Contains(lines[0], "Permanently added") {
+		t.Fatalf("loop record %v", lines)
+	}
+	running := &desktopLongJob{ID: "job_still", TenantID: "tenant_default", UserID: "u_1::desk::bot_x", InstanceID: "inst_x", Status: "running", Alive: true, Started: desktopLongJobNow().Add(-time.Minute), LastPoll: desktopLongJobNow(), LastTail: "step 2"}
+	if err := desktopLongJobTalkDefault(context.Background(), running, longJobNotice); err != nil {
+		t.Fatal(err)
 	}
 	text, _ := body["text"].(string)
-	if body["user_id"] != "u_1" || body["tenant_id"] != "tenant_default" || body["instance_id"] != "inst_x" || body["key"] == "" {
-		t.Fatalf("body %+v", body)
-	}
-	if !strings.Contains(text, "失败") || !strings.Contains(text, "3") || !strings.Contains(text, "ValueError: bad label") || strings.Contains(text, "Permanently added") {
-		t.Fatalf("text %q", text)
+	kind, _ := body["message_kind"].(string)
+	if body["user_id"] != "u_1" || kind != desktopMsgProcess || desktopChatKind(kind) || !strings.Contains(text, "step 2") {
+		t.Fatalf("running notice %+v", body)
 	}
 }
 
@@ -888,27 +897,26 @@ func TestLongJobTalkMapsMissingInstance(t *testing.T) {
 	desktopLongJobSayFunc = func(context.Context, map[string]any) error { return nil }
 	j := &desktopLongJob{
 		ID: "job_resume_gone", TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst_missing",
-		SessionID: "s", PrincipalTenant: p.TenantID, PrincipalUser: p.UserID, Status: "failed",
+		SessionID: "s", PrincipalTenant: p.TenantID, PrincipalUser: p.UserID, Status: "stalled",
 	}
 	err := desktopLongJobTalkDefault(context.Background(), j, longJobResume)
 	if !errors.Is(err, ErrLongJobOwnerGone) {
 		t.Fatalf("missing instance: %v", err)
 	}
-	desktopLongJobSayFunc = func(context.Context, map[string]any) error {
+	var said int
+	var kind string
+	desktopLongJobSayFunc = func(_ context.Context, body map[string]any) error {
+		said++
+		kind, _ = body["message_kind"].(string)
 		return desktopStatusError(http.StatusBadGateway, []byte(`{"code":"DOCKER_SERVICE_REQUEST_FAILED","message":"no such bot or assignment"}`))
 	}
-	if err := desktopLongJobTalkDefault(context.Background(), j, longJobResume); errors.Is(err, ErrLongJobOwnerGone) {
-		t.Fatal("say 502 must stay transient")
+	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); err != nil || said != 1 || kind != desktopMsgProcess {
+		t.Fatalf("progress notice: %v said=%d kind=%s", err, said, kind)
 	}
-	notFound := desktopStatusError(http.StatusNotFound, []byte(`{"code":"NOT_FOUND","message":"no such bot or assignment"}`))
-	desktopLongJobSayFunc = func(context.Context, map[string]any) error { return notFound }
-	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); !errors.Is(err, ErrLongJobOwnerGone) {
-		t.Fatalf("missing resume target after say 404: %v", err)
+	if lines := desktopProcessOf(j.SourceRun); len(lines) == 0 && len(desktopProcessOf(j.ID)) == 0 {
+		t.Fatal("progress was not kept on the run")
 	}
-	j.InstanceID = inst.ID
-	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); errors.Is(err, ErrLongJobOwnerGone) {
-		t.Fatal("say 404 while the instance exists was treated as the resume target")
-	}
+	_ = inst
 }
 
 func TestLongJobDeleteAndCancelDropWatches(t *testing.T) {

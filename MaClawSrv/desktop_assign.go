@@ -154,8 +154,10 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 	if text == "" {
 		return "", fmt.Errorf("say needs message")
 	}
-	if desktopSayProgressOnly(text) {
-		return "NOT SENT progress_only: what you are doing now is already shown in the person's status line. Keep working; say only a result, a changed plan, a blocker or decision you need from them, or a failure.", nil
+	claimed := desktopArg(args, "kind")
+	kind := desktopMessageKind(claimed, false, claimed == desktopMsgNeedsUser)
+	if kind == desktopMsgProcess {
+		desktopRecordProcess(strings.TrimSpace(request.Scope.RunID), text)
 	}
 	inst, ok := turnInstance(request)
 	if !ok {
@@ -175,12 +177,13 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 		return "SKIPPED already_said_this_run: you already told the person in this run. Do not say it again; only call say with update=true if there is information they have not had yet.", nil
 	}
 	body := map[string]any{
-		"tenant_id":   strings.TrimSpace(inst.Metadata["hub_tenant_id"]),
-		"user_id":     user,
-		"instance_id": inst.ID,
-		"room":        room,
-		"text":        text,
-		"key":         desktopMessageKey(runKey, "say", room, text),
+		"tenant_id":    strings.TrimSpace(inst.Metadata["hub_tenant_id"]),
+		"user_id":      user,
+		"instance_id":  inst.ID,
+		"room":         room,
+		"text":         text,
+		"message_kind": kind,
+		"key":          desktopMessageKey(runKey, "say", room, text),
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

@@ -120,12 +120,13 @@ func desktopLongJobFollowRunFiles(ctx context.Context, p agentservice.Principal,
 			cur = j
 		}
 		body := map[string]any{
-			"tenant_id":   cur.TenantID,
-			"user_id":     desktopOwnerUserID(cur.UserID),
-			"instance_id": instanceID,
-			"room":        "",
-			"text":        text,
-			"key":         desktopMessageKey(instanceID+"|"+runID, "watch-reply", text),
+			"tenant_id":    cur.TenantID,
+			"user_id":      desktopOwnerUserID(cur.UserID),
+			"instance_id":  instanceID,
+			"room":         "",
+			"text":         text,
+			"message_kind": desktopMsgOutcome,
+			"key":          desktopMessageKey(instanceID+"|"+runID, "watch-reply", text),
 		}
 		if len(attached) > 0 {
 			body["files"] = desktopWatchFilesBody(attached)

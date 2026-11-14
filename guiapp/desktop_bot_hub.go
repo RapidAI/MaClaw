@@ -2069,6 +2069,18 @@ func (a *App) publishDesktopBotActivity(botID, runID, activity string) {
 // publishDesktopBotStatus sends a run's live status line (run id, step,
 // latest progress, background job, next check) to the bot's status area. It
 // is never a chat message (Daniel 11-11 21:10).
+func (a *App) publishDesktopBotProcess(botID, runID string, lines []string) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" || len(lines) == 0 {
+		return
+	}
+	raw, err := json.Marshal(map[string]any{"bot_id": botID, "run_id": strings.TrimSpace(runID), "process": lines})
+	if err != nil {
+		return
+	}
+	a.emitEvent("desktop-bot-process", string(raw))
+}
+
 func (a *App) publishDesktopBotStatus(botID, runID, line string) {
 	botID = strings.TrimSpace(botID)
 	if botID == "" {
@@ -2197,6 +2209,7 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			Status             string            `json:"status"`
 			Activity           string            `json:"activity"`
 			StatusLine         string            `json:"status_line"`
+			Process            []string          `json:"process"`
 		}
 		// Derived from ctx, not Background: this read must be interruptible
 		// when the turn is abandoned. A Background parent leaves each poll
@@ -2252,6 +2265,9 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			if line := strings.TrimSpace(out.StatusLine); line != lastStatus {
 				lastStatus = line
 				a.publishDesktopBotStatus(botID, runID, line)
+			}
+			if len(out.Process) > 0 {
+				a.publishDesktopBotProcess(botID, runID, out.Process)
 			}
 			if sleepErr := sleepDesktopBotPoll(ctx, desktopBotPollInterval); sleepErr != nil {
 				botlog.Write(botID, "gui.run_poll", sleepErr, "run", runID, "polls", strconv.Itoa(polls))

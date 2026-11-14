@@ -39,6 +39,17 @@ func botSayEnabled() bool {
 	return true
 }
 
+// speechKind keeps a sender-supplied kind only when it is one of the
+// three speech kinds. Anything else is an ordinary say.
+func speechKind(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "process", "needs_user", "outcome":
+		return strings.TrimSpace(raw)
+	default:
+		return ""
+	}
+}
+
 // sayNorm keeps letters and digits only, lower-cased.
 func sayNorm(s string) string {
 	var b strings.Builder
@@ -81,19 +92,25 @@ func (s *Service) SayFromInstance(ctx context.Context, tenantID, userID, instanc
 // or resume) has no chat reply, so its deliverables ride on the said note
 // and the GUI fetches them like a teammate's shared files.
 func (s *Service) SayFilesFromInstance(ctx context.Context, tenantID, userID, instanceID, room, text, key string, files []BotMailFile) (BotCrossNote, error) {
+	return s.SayFilesKindFromInstance(ctx, tenantID, userID, instanceID, room, text, key, files, "")
+}
+
+// SayFilesKindFromInstance is SayFilesFromInstance with the speech kind
+// the sender already decided: process, needs_user, or outcome.
+func (s *Service) SayFilesKindFromInstance(ctx context.Context, tenantID, userID, instanceID, room, text, key string, files []BotMailFile, messageKind string) (BotCrossNote, error) {
 	from, err := s.botForInstance(ctx, tenantID, userID, instanceID)
 	if err != nil {
 		return BotCrossNote{}, err
 	}
-	return s.sayWith(ctx, tenantID, userID, from, room, text, key, files)
+	return s.sayWith(ctx, tenantID, userID, from, room, text, key, files, messageKind)
 }
 
 // Say records one message from bot from to the person or a room.
 func (s *Service) Say(ctx context.Context, tenantID, userID, from, room, text, key string) (BotCrossNote, error) {
-	return s.sayWith(ctx, tenantID, userID, from, room, text, key, nil)
+	return s.sayWith(ctx, tenantID, userID, from, room, text, key, nil, "")
 }
 
-func (s *Service) sayWith(ctx context.Context, tenantID, userID, from, room, text, key string, files []BotMailFile) (BotCrossNote, error) {
+func (s *Service) sayWith(ctx context.Context, tenantID, userID, from, room, text, key string, files []BotMailFile, messageKind string) (BotCrossNote, error) {
 	if s == nil {
 		return BotCrossNote{}, ErrSettingsUnavailable
 	}
@@ -163,7 +180,7 @@ func (s *Service) sayWith(ctx context.Context, tenantID, userID, from, room, tex
 	if recent >= sayPerHour {
 		return BotCrossNote{}, ErrRateLimited
 	}
-	note := BotCrossNote{ID: newCrossNoteID(), Owner: userID, From: from, Target: target, Kind: "say", Key: strings.TrimSpace(key), Text: text, Files: files, CreatedAt: now.UTC().Format(time.RFC3339)}
+	note := BotCrossNote{ID: newCrossNoteID(), Owner: userID, From: from, Target: target, Kind: "say", MessageKind: speechKind(messageKind), Key: strings.TrimSpace(key), Text: text, Files: files, CreatedAt: now.UTC().Format(time.RFC3339)}
 	var answered []string
 	if room != "" {
 		answered = RoomAnsweredBy(rec.CrossNotes, userID, target)

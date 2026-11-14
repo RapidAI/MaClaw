@@ -231,7 +231,7 @@ func TestDesktopD95SuccessHasOutcome(t *testing.T) {
 	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeDone {
 		t.Fatalf("metadata %v", md)
 	}
-	if md["send_to_user"] != "贪吃蛇做好了，截图在这条消息里。" {
+	if !strings.HasPrefix(md["send_to_user"], "做成了。") || !strings.Contains(md["send_to_user"], "贪吃蛇做好了，截图在这条消息里。") {
 		t.Fatalf("sentence %v", md)
 	}
 }

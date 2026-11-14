@@ -38,6 +38,9 @@ func desktopRunStatusLine(runID string) string {
 	if j := desktopLongJobForRun(runID); j != nil {
 		parts = append(parts, desktopLongJobStatusPhrase(j, desktopLongJobNow()))
 	}
+	if note := desktopLatestProcess(runID); note != "" {
+		parts = append(parts, desktopRuneHead(strings.ReplaceAll(note, "\n", " "), 80))
+	}
 	return strings.Join(parts, " · ")
 }
 
