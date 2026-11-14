@@ -227,6 +227,52 @@ print("IsolateOrigins" in [a for a in bot if a.startswith("--disable-features=")
 	}
 }
 
+func TestBotScreenDoesNotRestoreTabs(t *testing.T) {
+	out := runSupervisorPython(t, `
+import json
+user = "ab" * 8
+bot = user + "11" * 8
+os.environ["MACLAW_DESKTOP_KEY"] = user
+sup.save_registry({"users": {
+    user: {"display": 20, "token": "aa" * 16},
+    bot: {"display": 21, "token": "bb" * 16, "bot": True},
+}})
+owner = sup.browser_argv("/p", 18020)
+bot_argv = sup.browser_argv("/q", 18021, bot=True)
+print("--restore-last-session" in owner, "--restore-last-session" in bot_argv)
+owner_pref = tmp / "owner"
+bot_pref = tmp / "bot"
+for prof in (owner_pref, bot_pref):
+    (prof / "Default").mkdir(parents=True)
+    (prof / "Default" / "Preferences").write_text("{}", encoding="utf-8")
+sup.keep_website_login(owner_pref)
+sup.keep_website_login(bot_pref, bot=True)
+print(json.loads((owner_pref / "Default" / "Preferences").read_text())["session"]["restore_on_startup"])
+print(json.loads((bot_pref / "Default" / "Preferences").read_text())["session"]["restore_on_startup"])
+master = sup.master_profile(user)
+(master / "Default" / "Sessions").mkdir(parents=True)
+(master / "Default" / "Sessions" / "Tabs_1").write_text("old-tabs", encoding="utf-8")
+(master / "Default" / "Current Session").write_text("old-session", encoding="utf-8")
+(master / "Default" / "Cookies").write_bytes(b"cookie-bytes")
+(master / "Default" / "Login Data").write_bytes(b"login-bytes")
+work = sup.prepare_screen_profile(bot, 21)
+print((work / "Default" / "Cookies").read_bytes() == b"cookie-bytes")
+print((work / "Default" / "Login Data").read_bytes() == b"login-bytes")
+print((work / "Default" / "Sessions").exists(), (work / "Default" / "Current Session").exists())
+(work / "Default" / "Sessions").mkdir()
+(work / "Default" / "Sessions" / "Tabs_2").write_text("later", encoding="utf-8")
+(work / "Default" / "Last Tabs").write_text("later-tabs", encoding="utf-8")
+sup.drop_bot_session_files(work)
+print((work / "Default" / "Sessions").exists(), (work / "Default" / "Last Tabs").exists())
+print((work / "Default" / "Cookies").read_bytes() == b"cookie-bytes")
+print((work / "Default" / "Login Data").read_bytes() == b"login-bytes")
+`)
+	want := "True False\n1\n5\nTrue\nTrue\nFalse False\nFalse False\nTrue\nTrue"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
 // A human takeover is temporary: with no person input for the idle limit it
 // hands the desktop back by itself, the deadline is kept in takeover.json
 // (so a restart keeps it), and the next bot_state reports it once.
