@@ -22,6 +22,12 @@ func TestDesktopViewStateReadsTheTypedPicture(t *testing.T) {
 		if r.URL.Path != "/v1/desktops/view" {
 			t.Errorf("path %s", r.URL.Path)
 		}
+		if n >= len(answers) {
+			n++
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"ok":false,"message":"docker inspect failed"}`))
+			return
+		}
 		body := answers[n]
 		n++
 		if n == len(answers) {
@@ -41,11 +47,11 @@ func TestDesktopViewStateReadsTheTypedPicture(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, url, err := pool.DesktopViewState(context.Background(), "tenant-a", "alice")
-	if err != nil || state != "display_stopped" || url != "http://hub/stale/vnc.html" {
+	if err != nil || state != "display_stopped" || url != "" {
 		t.Fatalf("display stopped state=%q url=%q err=%v", state, url, err)
 	}
 	state, url, err = pool.DesktopViewState(context.Background(), "tenant-a", "alice")
-	if err != nil || state != "asleep" || url != "http://hub/stale/vnc.html" {
+	if err != nil || state != "asleep" || url != "" {
 		t.Fatalf("asleep state=%q url=%q err=%v", state, url, err)
 	}
 	state, url, err = pool.DesktopViewState(context.Background(), "tenant-a", "alice")
@@ -59,5 +65,9 @@ func TestDesktopViewStateReadsTheTypedPicture(t *testing.T) {
 	state, url, err = pool.DesktopViewState(context.Background(), "tenant-a", "alice")
 	if err != nil || state != "asleep" || url != "" {
 		t.Fatalf("409 state=%q url=%q err=%v", state, url, err)
+	}
+	_, _, err = pool.DesktopViewState(context.Background(), "tenant-a", "alice")
+	if err == nil {
+		t.Fatal("a failed state read was reported as a stopped display")
 	}
 }

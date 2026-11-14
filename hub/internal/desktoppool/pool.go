@@ -713,20 +713,25 @@ func (p *Pool) DesktopViewState(ctx context.Context, tenantID, userID string) (s
 		if desktopbot.IsDesktopAsleep(err) {
 			return "asleep", "", nil
 		}
-		return "display_stopped", "", nil
+		// A transport or inspect failure is not a stopped display.
+		return "", "", err
 	}
 	state, novnc := reportedViewState(out.State, out.Novnc)
 	return state, novnc, nil
 }
 
 // reportedViewState keeps a typed state from desktopd. An older desktopd
-// omits the field: a page means running, and no page means asleep.
+// omits the field. The view route's contract is that a page means the
+// screen is up and no page means it is not; Hub turns that into the typed
+// state the GUI reads. A non-running state never keeps the page.
 func reportedViewState(state, novnc string) (string, string) {
 	state = strings.TrimSpace(state)
 	novnc = strings.TrimSpace(novnc)
 	switch state {
-	case "running", "asleep", "display_stopped":
-		return state, novnc
+	case "running":
+		return "running", novnc
+	case "asleep", "display_stopped", "unavailable":
+		return state, ""
 	default:
 		if novnc == "" {
 			return "asleep", ""

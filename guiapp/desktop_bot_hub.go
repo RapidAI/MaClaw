@@ -225,11 +225,34 @@ type DesktopBotInfo struct {
 
 // DesktopBotWatch is one watch poll result: the live noVNC page for this
 // user's desktop and whether a bot handed that keyboard to the person.
+// DesktopState is running, asleep, display_stopped, or unavailable.
+// Code is a typed Hub error code such as DESKTOP_ASLEEP; the message text
+// is not a signal.
 type DesktopBotWatch struct {
 	NovncURL        string `json:"novnc_url"`
 	UserControl     bool   `json:"user_control"`
 	AttentionReason string `json:"attention_reason,omitempty"`
 	DesktopMode     string `json:"desktop_mode,omitempty"`
+	DesktopState    string `json:"desktop_state,omitempty"`
+	Code            string `json:"code,omitempty"`
+}
+
+// desktopCodedError is a Hub failure that carried a code field. Callers
+// branch on Code. They do not read it out of Message.
+type desktopCodedError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *desktopCodedError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if strings.TrimSpace(e.Message) != "" {
+		return e.Message
+	}
+	return e.Code
 }
 
 // DesktopBotScreen is one GET /api/v1/bots/{id}/desktop result. Shared bots
@@ -276,6 +299,8 @@ func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*Deskto
 		UserControl     bool   `json:"user_control"`
 		AttentionReason string `json:"attention_reason"`
 		DesktopMode     string `json:"desktop_mode"`
+		DesktopState    string `json:"desktop_state"`
+		Code            string `json:"code"`
 	}
 	body := map[string]any{}
 	if epoch > 0 {
@@ -291,13 +316,24 @@ func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*Deskto
 	// 60s matches the Hub watch-open budget. Wake may cold-start the container.
 	err := a.desktopBotCallRetryingGateway(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", payload, &out, 60*time.Second)
 	if err != nil {
+		var coded *desktopCodedError
+		if errors.As(err, &coded) && coded.Code == desktopbot.CodeDesktopAsleep {
+			return &DesktopBotWatch{DesktopState: "asleep", Code: coded.Code}, nil
+		}
 		return nil, err
+	}
+	state := strings.TrimSpace(out.DesktopState)
+	code := strings.TrimSpace(out.Code)
+	if code == desktopbot.CodeDesktopAsleep {
+		state = "asleep"
 	}
 	return &DesktopBotWatch{
 		NovncURL:        a.absoluteHubPath(out.NovncURL),
 		UserControl:     out.UserControl,
 		AttentionReason: strings.TrimSpace(out.AttentionReason),
 		DesktopMode:     desktopModeLabel(out.DesktopMode),
+		DesktopState:    state,
+		Code:            code,
 	}, nil
 }
 
@@ -3165,6 +3201,7 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var failure struct {
 			Message string `json:"message"`
+			Code    string `json:"code"`
 		}
 		jsonErr := json.Unmarshal(payload, &failure)
 		callErr := fmt.Errorf("MaClawSrv 不可达")
@@ -3173,7 +3210,9 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 			// Hub never wrote this body.
 			callErr = desktopHubNotReachedError{}
 		}
-		if strings.TrimSpace(failure.Message) != "" {
+		if code := strings.TrimSpace(failure.Code); code != "" {
+			callErr = &desktopCodedError{Status: resp.StatusCode, Code: code, Message: strings.TrimSpace(failure.Message)}
+		} else if strings.TrimSpace(failure.Message) != "" {
 			callErr = fmt.Errorf("%s", strings.TrimSpace(failure.Message))
 		}
 		// The failure body is still decoded into dest when it carries the

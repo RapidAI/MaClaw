@@ -99,7 +99,7 @@ import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAc
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
-import { pictureFromWatch, stateFromFailure, stateFromStreamEvent } from './desktopViewState';
+import { applyWatchResult, disconnectBot, pictureFromWatch } from './desktopViewState';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
 import { wakeFailureReason } from './desktopWake';
 import {
@@ -2551,6 +2551,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const expandBtnRef = useRef<HTMLButtonElement>(null);
     const restoreBtnRef = useRef<HTMLButtonElement>(null);
     const handoffRef = useRef<HTMLIFrameElement>(null);
+    // pictureSeq bumps on 唤醒. A poll records the value it started with and
+    // must not apply a result if a wake has moved on. wakeArm is the
+    // generation whose display is still starting. watchKick re-reads one bot
+    // without unmounting the player.
+    const pictureSeq = useRef<Record<string, number>>({});
+    const wakeArm = useRef<Record<string, number | undefined>>({});
+    const watchKickRef = useRef<Record<string, () => void>>({});
+    const frameBotRef = useRef('');
     const stageRef = useRef<HTMLDivElement>(null);
     const workspaceRef = useRef<HTMLElement>(null);
     const preferredListWidthRef = useRef(preferredListWidth);
@@ -2776,6 +2784,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const screenPickNow = effectiveScreenPick(screenPickTouched, screenPick, selected?.id || '', screenByBot[selected?.id || '']?.mode);
     const shownDesktopUrl = showDesktop ? shownScreenURL(screenPickNow, selected?.id || '', bots, screenByBot, desktopUrl) : '';
     const holdBotId = screenNeedsOwnHold(screenPickNow, selectedId, screenByBot, bots);
+    frameBotRef.current = holdBotId || selectedId || '';
     // "My desktop" is missing only for an isolated bot: a shared bot's "mine"
     // is its own display and already has retry/loading through its own poll.
     // While a shared-display hold is being fetched, it is still connecting,
@@ -3172,13 +3181,34 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending = true;
             try {
                 const requestedAt = Date.now();
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; desktop_mode?: string; desktop_state?: string } | undefined;
+                const seq = pictureSeq.current[botId] || 0;
+                const view = await WatchDesktopBot(botId, epoch);
                 if (!alive) return;
                 const picture = pictureFromWatch(view);
-                if (picture.state !== 'running') {
+                const decision = applyWatchResult(seq, pictureSeq.current[botId] || 0, picture.state, wakeArm.current[botId]);
+                if (decision !== 'apply') return;
+                if (picture.state === 'running' && wakeArm.current[botId] === seq) delete wakeArm.current[botId];
+                if (picture.state === 'unavailable') {
+                    watchMisses.current[botId] = 0;
+                    setAsleepByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+                    setRetryByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+                    setLiveDesktop(prev => {
+                        if (!(botId in prev)) return prev;
+                        const next = { ...prev };
+                        delete next[botId];
+                        return next;
+                    });
+                    setScreenByBot(prev => {
+                        const existing = prev[botId];
+                        if (!existing?.url) return prev;
+                        return { ...prev, [botId]: { ...existing, url: '' } };
+                    });
+                    return;
+                }
+                if (picture.state !== 'running' || !picture.url) {
                     // Asleep and a stopped display are the same picture: no
-                    // frame. A remembered page is not a frame. Do not start
-                    // the desktop and do not show a connection error.
+                    // frame. A missing state is not turned into one from a
+                    // leftover URL. Do not start the desktop.
                     watchMisses.current[botId] = 0;
                     setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                     setLiveDesktop(prev => {
@@ -3192,7 +3222,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         if (!existing?.url) return prev;
                         return { ...prev, [botId]: { ...existing, url: '' } };
                     });
-                    setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+                    setAsleepByBot(prev => {
+                        const down = picture.state === 'asleep' || picture.state === 'display_stopped';
+                        if (!!prev[botId] === down) return prev;
+                        return { ...prev, [botId]: down };
+                    });
                     return;
                 }
                 const url = picture.url;
@@ -3258,34 +3292,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         return { ...prev, [botId]: { url: url || existing?.url || '', mode } };
                     });
                 }
-            } catch (err) {
-                if (stateFromFailure(err)) {
-                    if (!alive) return;
-                    watchMisses.current[botId] = 0;
-                    setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
-                    setLiveDesktop(prev => {
-                        if (!(botId in prev)) return prev;
-                        const next = { ...prev };
-                        delete next[botId];
-                        return next;
-                    });
-                    setScreenByBot(prev => {
-                        const existing = prev[botId];
-                        if (!existing?.url) return prev;
-                        return { ...prev, [botId]: { ...existing, url: '' } };
-                    });
-                    setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
-                    return;
-                }
+            } catch {
                 fail();
             } finally {
                 pending = false;
             }
         };
+        watchKickRef.current[botId] = () => { void tick(); };
         void tick();
         const timer = window.setInterval(() => { void tick(); }, DESKTOP_BOT_WATCH_INTERVAL_MS);
         return () => {
             alive = false;
+            delete watchKickRef.current[botId];
             window.clearInterval(timer);
             // Defer the release one microtask. Switching to another bot whose
             // stage is already open installs the next generation first, and
@@ -3306,32 +3324,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         };
     }, [selectedId, showDesktop]);
 
-    // The player posts this when its stream closes (H.264 WebSocket, or the
-    // same message from noVNC). Drop the frame immediately. The next watch
-    // that reports running mounts it again, which is how a bot step that
-    // woke the desktop reconnects without a click.
+    // The H.264 player posts this when its WebSocket closes. noVNC does not.
+    // The player reconnects on its own, so this does not unmount the iframe
+    // and does not decide the desktop is asleep. It re-checks the watch for
+    // the bot this frame is showing, and only a message from that frame.
     useEffect(() => {
-        if (!selectedId) return;
-        const botId = selectedId;
         const onMessage = (ev: MessageEvent) => {
-            if (stateFromStreamEvent(ev.data) !== 'display_stopped') return;
-            setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
-            setLiveDesktop(prev => {
-                if (!(botId in prev)) return prev;
-                const next = { ...prev };
-                delete next[botId];
-                return next;
-            });
-            setScreenByBot(prev => {
-                const existing = prev[botId];
-                if (!existing?.url) return prev;
-                return { ...prev, [botId]: { ...existing, url: '' } };
-            });
-            setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+            const frame = handoffRef.current?.contentWindow ?? null;
+            const botId = disconnectBot(frame, ev.source, ev.data, frameBotRef.current);
+            if (!botId) return;
+            watchKickRef.current[botId]?.();
         };
         window.addEventListener('message', onMessage);
         return () => window.removeEventListener('message', onMessage);
-    }, [selectedId]);
+    }, []);
 
     const botScreenKey = bots.map(bot => bot.id).join('\n');
     useEffect(() => {
@@ -3393,12 +3399,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (pending) return;
             pending = true;
             try {
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; desktop_mode?: string; desktop_state?: string } | undefined;
+                const seq = pictureSeq.current[botId] || 0;
+                const view = await WatchDesktopBot(botId, epoch);
                 if (!alive) return;
                 const picture = pictureFromWatch(view);
+                const decision = applyWatchResult(seq, pictureSeq.current[botId] || 0, picture.state, wakeArm.current[botId]);
+                if (decision !== 'apply') return;
+                if (picture.state === 'running' && wakeArm.current[botId] === seq) delete wakeArm.current[botId];
                 const url = picture.state === 'running' ? picture.url : '';
+                const down = picture.state === 'asleep' || picture.state === 'display_stopped';
                 setAsleepByBot(prev => {
-                    const down = picture.state !== 'running';
                     if (!!prev[botId] === down) return prev;
                     return { ...prev, [botId]: down };
                 });
@@ -3411,22 +3421,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     if (existing && existing.url === next.url && existing.mode === next.mode) return prev;
                     return { ...prev, [botId]: next };
                 });
-            } catch (err) {
-                if (!stateFromFailure(err)) return;
-                setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
-                setScreenByBot(prev => {
-                    const existing = prev[botId];
-                    if (!existing?.url) return prev;
-                    return { ...prev, [botId]: { ...existing, url: '' } };
-                });
+            } catch {
+                // The last picture stays up while this display is still starting.
             } finally {
                 pending = false;
             }
         };
+        watchKickRef.current[botId] = () => { void tick(); };
         void tick();
         const timer = window.setInterval(() => { void tick(); }, DESKTOP_BOT_WATCH_INTERVAL_MS);
         return () => {
             alive = false;
+            delete watchKickRef.current[botId];
             window.clearInterval(timer);
             void ReleaseDesktopBotWatch(botId, epoch).catch(() => undefined);
         };
@@ -6312,13 +6318,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const epoch = watchEpochByBot.current[botId] || takeDesktopWatchEpoch();
         watchEpochByBot.current[botId] = epoch;
         stageEpoch.current = epoch;
+        const seq = (pictureSeq.current[botId] || 0) + 1;
+        pictureSeq.current[botId] = seq;
+        wakeArm.current[botId] = seq;
         try {
-            const view = await WakeDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string } | undefined;
+            const view = await WakeDesktopBot(botId, epoch);
+            if ((pictureSeq.current[botId] || 0) !== seq) return;
             if (stageEpoch.current !== epoch) return;
             const panel = panelsRef.current[botId];
             if (panel !== 'auto' && panel !== 'user') return;
-            const url = String(view?.novnc_url || '');
-            if (!url) {
+            const picture = pictureFromWatch(view);
+            if (picture.state !== 'running' || !picture.url) {
+                delete wakeArm.current[botId];
                 setAsleepByBot(prev => ({ ...prev, [botId]: true }));
                 setWakeByBot(prev => ({ ...prev, [botId]: { state: 'failed', reason: wakeFailureReason('') } }));
                 return;
@@ -6326,9 +6337,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setWakeByBot(prev => { const next = { ...prev }; delete next[botId]; return next; });
             setRetryByBot(prev => ({ ...prev, [botId]: false }));
             setAsleepByBot(prev => ({ ...prev, [botId]: false }));
-            syncLive(botId, { url, userControl: view?.user_control === true, attentionReason: String(view?.attention_reason || '') });
+            syncLive(botId, { url: picture.url, userControl: view?.user_control === true, attentionReason: String(view?.attention_reason || '') });
             openPanel(botId, 'user');
         } catch (err) {
+            if ((pictureSeq.current[botId] || 0) === seq) delete wakeArm.current[botId];
             setWakeByBot(prev => ({ ...prev, [botId]: { state: 'failed', reason: wakeFailureReason(err) } }));
             if (stageEpoch.current !== epoch) return;
             const panel = panelsRef.current[botId];

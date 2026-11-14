@@ -186,6 +186,11 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 			}
 		}
 	}
+	// Same per-user gate as WakeDesktopView, so a poll cannot read the page
+	// while a wake is still opening it.
+	gate := s.desktopUserGate(tenantID, userID)
+	gate.Lock()
+	defer gate.Unlock()
 	novnc := s.desktopViewURL(tenantID, userID)
 	if novnc != "" && !s.desktopPictureRunning(ctx, tenantID, userID) {
 		return "", false, nil

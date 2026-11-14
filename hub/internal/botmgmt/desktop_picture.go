@@ -3,6 +3,7 @@ package botmgmt
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
@@ -14,7 +15,27 @@ const (
 	DesktopStateRunning        = "running"
 	DesktopStateAsleep         = "asleep"
 	DesktopStateDisplayStopped = "display_stopped"
+	// DesktopStateUnavailable is a failed state read. It is not asleep and
+	// not a stopped display.
+	DesktopStateUnavailable = "unavailable"
 )
+
+type viewMemoKey struct{}
+
+type viewMemo struct {
+	once  sync.Once
+	state string
+	novnc string
+	known bool
+}
+
+// withViewMemo makes every ask on this context share one desktopd read.
+func withViewMemo(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, viewMemoKey{}, &viewMemo{})
+}
 
 // DesktopViewState is the optional typed look-up of a screen that is
 // already up. It must never start, wake, or pin the desktop.
@@ -27,7 +48,7 @@ type DesktopViewState interface {
 func liveDesktopPicture(url, state string) (string, string) {
 	url = strings.TrimSpace(url)
 	switch state {
-	case DesktopStateAsleep, DesktopStateDisplayStopped:
+	case DesktopStateAsleep, DesktopStateDisplayStopped, DesktopStateUnavailable:
 		return "", state
 	case DesktopStateRunning:
 		if url == "" {
@@ -35,10 +56,8 @@ func liveDesktopPicture(url, state string) (string, string) {
 		}
 		return url, DesktopStateRunning
 	default:
-		if url == "" {
-			return "", DesktopStateAsleep
-		}
-		return url, DesktopStateRunning
+		// No typed state. Do not invent one from a remembered page.
+		return "", ""
 	}
 }
 
@@ -48,6 +67,7 @@ func liveDesktopPicture(url, state string) (string, string) {
 // desktop. A remembered page is dropped when the screen is asleep or the
 // display has stopped, so the viewer cannot keep a black frame.
 func (s *Service) DesktopPicture(ctx context.Context, tenantID, userID, botID string, wake bool) (string, bool, string, error) {
+	ctx = withViewMemo(ctx)
 	var url string
 	var control bool
 	var err error
@@ -71,9 +91,15 @@ func (s *Service) DesktopPicture(ctx context.Context, tenantID, userID, botID st
 	}
 	desktopUser := s.desktopUserForWatch(ctx, tenantID, userID, botID)
 	reported, live, known := s.askDesktopViewState(ctx, tenantID, desktopUser)
-	if known && reported == DesktopStateRunning && strings.TrimSpace(live) != "" {
+	if !known {
+		if strings.TrimSpace(url) == "" {
+			return "", false, DesktopStateAsleep, nil
+		}
+		return url, control, DesktopStateRunning, nil
+	}
+	if reported == DesktopStateRunning && strings.TrimSpace(live) != "" {
 		url = strings.TrimSpace(live)
-	} else if known && reported != "" && reported != DesktopStateRunning {
+	} else if reported != DesktopStateRunning {
 		url = ""
 	}
 	url, state := liveDesktopPicture(url, reported)
@@ -96,6 +122,23 @@ func (s *Service) desktopUserForWatch(ctx context.Context, tenantID, userID, bot
 }
 
 func (s *Service) askDesktopViewState(ctx context.Context, tenantID, desktopUser string) (string, string, bool) {
+	read := func() (string, string, bool) {
+		return s.readDesktopViewState(ctx, tenantID, desktopUser)
+	}
+	var memo *viewMemo
+	if ctx != nil {
+		memo, _ = ctx.Value(viewMemoKey{}).(*viewMemo)
+	}
+	if memo == nil {
+		return read()
+	}
+	memo.once.Do(func() {
+		memo.state, memo.novnc, memo.known = read()
+	})
+	return memo.state, memo.novnc, memo.known
+}
+
+func (s *Service) readDesktopViewState(ctx context.Context, tenantID, desktopUser string) (string, string, bool) {
 	if s == nil || s.Desktop == nil {
 		return "", "", false
 	}
@@ -108,7 +151,7 @@ func (s *Service) askDesktopViewState(ctx context.Context, tenantID, desktopUser
 		if desktopbot.IsDesktopAsleep(err) {
 			return DesktopStateAsleep, "", true
 		}
-		return DesktopStateDisplayStopped, "", true
+		return DesktopStateUnavailable, "", true
 	}
 	if strings.TrimSpace(state) == "" {
 		if strings.TrimSpace(novnc) == "" {

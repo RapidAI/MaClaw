@@ -1,43 +1,62 @@
-// Typed desktop picture. running is the only state that may show a frame.
+// Typed desktop picture. The viewer shows a frame only for state running
+// with a page. It does not invent that state from a leftover noVNC URL.
 // asleep: the container is stopped. display_stopped: the supervisor
-// idle-stopped the display. A remembered noVNC URL is not a picture in
-// either case.
+// idle-stopped the display. unavailable: the state read failed (inspect
+// or transport); that is not a stopped desktop.
 
-export type DesktopRunState = 'running' | 'asleep' | 'display_stopped';
+export type DesktopRunState = 'running' | 'asleep' | 'display_stopped' | 'unavailable';
 
 export const DESKTOP_ASLEEP = 'DESKTOP_ASLEEP';
 
-export function pictureFromWatch(view?: { desktop_state?: string; novnc_url?: string } | null): { state: DesktopRunState; url: string } {
+export type DesktopWatchView = {
+    desktop_state?: string;
+    novnc_url?: string;
+    code?: string;
+};
+
+export function pictureFromWatch(view?: DesktopWatchView | null): { state: DesktopRunState | ''; url: string } {
+    // The code is a field on the watch result. The message text is not a signal.
+    if (String(view?.code || '').trim() === DESKTOP_ASLEEP) return { state: 'asleep', url: '' };
     const url = String(view?.novnc_url || '').trim();
-    const raw = String(view?.desktop_state || '').trim();
-    if (raw === 'asleep' || raw === 'display_stopped') return { state: raw, url: '' };
-    if (raw === 'running') return url ? { state: 'running', url } : { state: 'asleep', url: '' };
-    if (!url) return { state: 'asleep', url: '' };
-    return { state: 'running', url };
+    switch (String(view?.desktop_state || '').trim()) {
+        case 'running':
+            return { state: 'running', url };
+        case 'asleep':
+            return { state: 'asleep', url: '' };
+        case 'display_stopped':
+            return { state: 'display_stopped', url: '' };
+        case 'unavailable':
+            return { state: 'unavailable', url: '' };
+        default:
+            return { state: '', url: '' };
+    }
 }
 
-export function showsLiveFrame(state: DesktopRunState, url: string): boolean {
+export function showsLiveFrame(state: DesktopRunState | '', url: string): boolean {
     return state === 'running' && url !== '';
 }
 
-// A 409 DESKTOP_ASLEEP arrives as that code. Match the code, not a sentence.
-export function stateFromFailure(error: unknown): DesktopRunState | '' {
-    if (error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === DESKTOP_ASLEEP) {
-        return 'asleep';
-    }
-    const text = error instanceof Error ? error.message : String(error ?? '');
-    const token = text.trim();
-    if (token === DESKTOP_ASLEEP || token.split(/[\s:]+/).includes(DESKTOP_ASLEEP)) return 'asleep';
-    return '';
+// A poll carries the picture generation it started with. A wake bumps the
+// generation, so a poll that started earlier must not unmount the frame the
+// wake just mounted. display_stopped on the wake's own generation is the
+// display still starting, not a stopped screen.
+export function applyWatchResult(pollSeq: number, currentSeq: number, state: DesktopRunState | '', wakeArm: number | undefined): 'ignore' | 'starting' | 'apply' {
+    if (pollSeq !== currentSeq) return 'ignore';
+    if (state === 'display_stopped' && wakeArm !== undefined && wakeArm === currentSeq) return 'starting';
+    return 'apply';
 }
 
-// The H.264 player posts this when its WebSocket closes. noVNC can post the
-// same shape. A disconnect is display_stopped until the next watch says
-// the screen is running again.
-export function stateFromStreamEvent(data: unknown): DesktopRunState | '' {
-    if (!data || typeof data !== 'object') return '';
+// Only the H.264 player posts this, and only from its own iframe. noVNC does not.
+export function isH264Disconnect(data: unknown): boolean {
+    if (!data || typeof data !== 'object') return false;
     const event = data as { source?: unknown; event?: unknown };
-    if (event.source !== 'maclaw-desktop') return '';
-    if (event.event === 'disconnect' || event.event === 'stream-end') return 'display_stopped';
-    return '';
+    return event.source === 'maclaw-desktop' && event.event === 'disconnect';
+}
+
+// The bot id of the frame, when this message came from that frame. Anything
+// else is ignored so a foreign postMessage cannot kick the watch.
+export function disconnectBot(frame: Window | null, source: MessageEventSource | null, data: unknown, frameBotId: string): string {
+    if (!frame || source !== frame || !frameBotId) return '';
+    if (!isH264Disconnect(data)) return '';
+    return frameBotId;
 }

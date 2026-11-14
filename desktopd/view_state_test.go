@@ -84,4 +84,14 @@ func TestViewStateNamesAStoppedContainerAndAStoppedDisplay(t *testing.T) {
 	if err != nil || live.State != DesktopRunning || !strings.Contains(live.Novnc, token) {
 		t.Fatalf("live %#v err=%v", live, err)
 	}
+	svc.Run = func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "inspect" {
+			return "", errDocker("inspect failed")
+		}
+		return "true", nil
+	}
+	unread, err := svc.ViewState(context.Background(), Spec{TenantID: "tenant", UserID: "alice"})
+	if err != nil || unread.State != DesktopUnavailable || unread.Novnc != "" {
+		t.Fatalf("inspect %#v err=%v", unread, err)
+	}
 }

@@ -17,6 +17,9 @@ const (
 	DesktopRunning        = "running"
 	DesktopAsleep         = "asleep"
 	DesktopDisplayStopped = "display_stopped"
+	// DesktopUnavailable is an inspect or display read that failed. It is
+	// not a stopped container and not a stopped display.
+	DesktopUnavailable = "unavailable"
 )
 
 // PeekSession returns the noVNC (and CDP) page for a screen that is already
@@ -30,15 +33,22 @@ func (s *Service) PeekSession(ctx context.Context, spec Spec) (Session, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return Session{}, ctx.Err()
 	}
+	running, err := s.displayStatus(ctx, spec)
+	if err != nil || !running {
+		return Session{}, nil
+	}
+	return s.sessionForRunningScreen(ctx, spec)
+}
+
+// sessionForRunningScreen builds the page for a screen the caller already
+// knows is running. It does not ask the supervisor again.
+func (s *Service) sessionForRunningScreen(ctx context.Context, spec Spec) (Session, error) {
 	base, err := s.publicBase()
 	if err != nil {
 		return Session{}, err
 	}
 	status, err := s.Screen(ctx, spec)
 	if err != nil || strings.TrimSpace(status.Token) == "" || !desktop.ValidDisplay(status.Display) {
-		return Session{}, nil
-	}
-	if !s.displayRunning(ctx, spec) {
 		return Session{}, nil
 	}
 	// One tunnel per container, named by the owner. The gate token in the
@@ -85,13 +95,21 @@ func (s *Service) ViewState(ctx context.Context, spec Spec) (Session, error) {
 		return Session{}, ctx.Err()
 	}
 	up, err := s.containerRunning(ctx, containerName(spec.TenantID, spec.UserID))
-	if err != nil || !up {
+	if err != nil {
+		return Session{State: DesktopUnavailable}, nil
+	}
+	if !up {
 		return Session{State: DesktopAsleep}, nil
 	}
-	if !s.displayRunning(ctx, spec) {
+	// One display read. PeekSession would ask again.
+	running, err := s.displayStatus(ctx, spec)
+	if err != nil {
+		return Session{State: DesktopUnavailable}, nil
+	}
+	if !running {
 		return Session{State: DesktopDisplayStopped}, nil
 	}
-	session, err := s.PeekSession(ctx, spec)
+	session, err := s.sessionForRunningScreen(ctx, spec)
 	if err != nil {
 		return Session{}, err
 	}
@@ -102,32 +120,39 @@ func (s *Service) ViewState(ctx context.Context, spec Spec) (Session, error) {
 	return session, nil
 }
 
-// displayRunning is the supervisor's running bit for this screen. A missing
-// or unreadable answer is treated as up when Screen already returned a
-// token, so an older supervisor still yields a view. running:false stays
-// empty: a slept screen must not look live.
+// displayRunning is the supervisor's running bit. A read error is not up.
+// displayStatus treats a missing running bit as up so an older supervisor
+// still yields a view, and running:false as stopped.
 func (s *Service) displayRunning(ctx context.Context, spec Spec) bool {
+	running, err := s.displayStatus(ctx, spec)
+	return err == nil && running
+}
+
+// displayStatus is the supervisor's running bit. A docker exec failure is
+// an error, not "stopped". A missing running bit is up, so an older
+// supervisor still yields a view. running:false is display_stopped.
+func (s *Service) displayStatus(ctx context.Context, spec Spec) (bool, error) {
 	key, err := specKey(spec)
 	if err != nil {
-		return false
+		return false, err
 	}
 	name := containerName(spec.TenantID, spec.UserID)
 	if name == "" {
-		return false
+		return false, ErrInvalid
 	}
 	out, err := s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "display", key)
 	if err != nil {
-		return false
+		return false, err
 	}
 	line := statusLine(out)
 	if line == "" {
-		return true
+		return true, nil
 	}
 	var status struct {
 		Running *bool `json:"running"`
 	}
 	if json.Unmarshal([]byte(line), &status) != nil || status.Running == nil {
-		return true
+		return true, nil
 	}
-	return *status.Running
+	return *status.Running, nil
 }
