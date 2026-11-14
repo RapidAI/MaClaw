@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -80,6 +81,8 @@ func extractRunsWithParser(parser *rawPDFParser, pageIndex int) ([]ExtractedText
 		xobjs:    page.resources.xobjs,
 		mediaBox: page.mediaBox,
 		rotate:   page.rotate,
+		extgs:    page.resources.extgstates,
+		alpha:    1,
 		visited:  map[int]bool{},
 	}, stream), nil
 }
@@ -104,6 +107,8 @@ func ExtractTextFromAllPages(pdfData []byte) (map[int][]ExtractedText, error) {
 				xobjs:    page.resources.xobjs,
 				mediaBox: page.mediaBox,
 				rotate:   page.rotate,
+				extgs:    page.resources.extgstates,
+				alpha:    1,
 				visited:  map[int]bool{},
 			}, stream)
 			if len(texts) > 0 {
@@ -128,11 +133,22 @@ func ExtractTextFromAllPages(pdfData []byte) (map[int][]ExtractedText, error) {
 // ExtractPageText extracts all text from a page as a single string.
 // Convenience wrapper around ExtractTextFromPage.
 func ExtractPageText(pdfData []byte, pageIndex int) (string, error) {
-	// Try robust ledongthuc/pdf backend first.
+	// The raw parser (position-aware merging, column-aware reading order,
+	// encodings) is the primary backend; the legacy v2 backend is the
+	// fallback for streams it cannot handle.
+	if lines, err := ExtractPageLines(pdfData, pageIndex); err == nil && len(lines) > 0 {
+		var sb strings.Builder
+		for _, ln := range lines {
+			sb.WriteString(ln.Text)
+			sb.WriteByte('\n')
+		}
+		return sb.String(), nil
+	}
+	// Fallback to the legacy v2 backend.
 	if result, err := extractPageTextV2(pdfData, pageIndex); err == nil && result != "" {
 		return result, nil
 	}
-	// Fallback to raw parser.
+	// Last resort: raw runs joined by baseline.
 	texts, err := ExtractTextFromPage(pdfData, pageIndex)
 	if err != nil {
 		return "", err
@@ -164,6 +180,7 @@ type fontInfo struct {
 	isType0       bool
 	codeSize      int // 1 for simple fonts, 2 for Type0/CID fonts
 	isSymbolicZap bool
+	styleFlags    int // bit 1 = bold, bit 2 = italic (from the font name)
 	// widths maps character codes (simple fonts) or CIDs (Type0) to glyph
 	// widths in 1/1000 em, used to advance the text position after show ops.
 	widths map[int]float64
@@ -194,6 +211,20 @@ func buildFontMap(parser *rawPDFParser, page rawPDFPage) map[string]*fontInfo {
 			// Symbol and ZapfDingbats use special custom encodings.
 			base := fi.baseFont
 			fi.isSymbolicZap = strings.Contains(base, "Symbol") || strings.Contains(base, "Dingbat")
+			// style hints from the font name (PyMuPDF span flags parity),
+			// including TeX naming: CMBX = bold extended, CMSL = slanted,
+			// "Medi"/"Medium" weights are display-bold
+			lb := strings.ToLower(base)
+			if strings.Contains(lb, "bold") || strings.Contains(lb, "black") ||
+				strings.Contains(lb, "heavy") || strings.Contains(lb, "semibold") ||
+				strings.Contains(lb, "medi") ||
+				(strings.HasPrefix(lb, "cm") && strings.Contains(lb, "bx")) {
+				fi.styleFlags |= 1
+			}
+			if strings.Contains(lb, "italic") || strings.Contains(lb, "oblique") ||
+				(strings.HasPrefix(lb, "cm") && strings.Contains(lb, "sl")) {
+				fi.styleFlags |= 2
+			}
 
 			// Glyph widths: /Widths [..] with /FirstChar /LastChar (simple
 			// fonts), /W [..] (CID fonts), /MissingWidth fallback.
@@ -726,6 +757,11 @@ type extractionContext struct {
 	offY     float64
 	depth    int
 	visited  map[int]bool
+	fillR    uint8 // current fill color (text renders with the fill)
+	fillG    uint8
+	fillB    uint8
+	alpha    float64        // current fill alpha from ExtGState /ca (1 = opaque)
+	extgs    map[string]int // ExtGState resource names (with leading '/')
 }
 
 // pageRotateCoords maps unrotated top-down page coordinates to visual
@@ -958,13 +994,22 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 					xRaw := ctx.offX + ctmA*tmX + ctmE
 					yRaw := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
 					x, y := ctx.pageRotateCoords(xRaw, yRaw)
+					var fl int
+					if curFont != nil {
+						fl = curFont.styleFlags
+					}
 					results = append(results, ExtractedText{
-						Text:     text,
-						X:        x,
-						Y:        y,
-						FontName: fontDisplayName(curFont),
-						FontSize: effSize,
-						Width:    shownWidth(raw, curFont, fontSize) * math.Hypot(tmA, tmB),
+						Text:      text,
+						X:         x,
+						Y:         y,
+						FontName:  fontDisplayName(curFont),
+						FontSize:  effSize,
+						Width:     shownWidth(raw, curFont, fontSize) * math.Hypot(tmA, tmB),
+						ColorR:    ctx.fillR,
+						ColorG:    ctx.fillG,
+						ColorB:    ctx.fillB,
+						FontFlags: fl,
+						Alpha:     uint8(ctx.alpha*255 + 0.5),
 					})
 				}
 				// Advance the text position by the glyph widths shown,
@@ -1006,13 +1051,22 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 				xRaw := ctx.offX + ctmA*tmX + ctmE
 				yRaw := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
 				x, y := ctx.pageRotateCoords(xRaw, yRaw)
+				var fl int
+				if curFont != nil {
+					fl = curFont.styleFlags
+				}
 				results = append(results, ExtractedText{
-					Text:     text,
-					X:        x,
-					Y:        y,
-					FontName: fontDisplayName(curFont),
-					FontSize: effSize,
-					Width:    tjWidth(arr, curFont, fontSize) * math.Hypot(tmA, tmB),
+					Text:      text,
+					X:         x,
+					Y:         y,
+					FontName:  fontDisplayName(curFont),
+					FontSize:  effSize,
+					Width:     tjWidth(arr, curFont, fontSize) * math.Hypot(tmA, tmB),
+					ColorR:    ctx.fillR,
+					ColorG:    ctx.fillG,
+					ColorB:    ctx.fillB,
+					FontFlags: fl,
+					Alpha:     uint8(ctx.alpha*255 + 0.5),
 				})
 			}
 			tmX += advance * tmA
@@ -1031,10 +1085,17 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 					xRaw := ctx.offX + ctmA*tmX + ctmE
 					yRaw := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
 					x, y := ctx.pageRotateCoords(xRaw, yRaw)
+					var fl int
+					if curFont != nil {
+						fl = curFont.styleFlags
+					}
 					results = append(results, ExtractedText{
 						Text: text, X: x, Y: y,
 						FontName: fontDisplayName(curFont), FontSize: effSize,
-						Width: shownWidth(raw, curFont, fontSize) * math.Hypot(tmA, tmB),
+						Width:  shownWidth(raw, curFont, fontSize) * math.Hypot(tmA, tmB),
+						ColorR: ctx.fillR, ColorG: ctx.fillG, ColorB: ctx.fillB,
+						FontFlags: fl,
+						Alpha:     uint8(ctx.alpha*255 + 0.5),
 					})
 				}
 				tmX += shownAdvance(raw, curFont, fontSize)
@@ -1054,13 +1115,82 @@ func parseTextOperatorsCtx(ctx *extractionContext, stream []byte) []ExtractedTex
 					xRaw := ctx.offX + ctmA*tmX + ctmE
 					yRaw := (pageHeight - ctx.offY) - (ctmD*tmY + ctmF)
 					x, y := ctx.pageRotateCoords(xRaw, yRaw)
+					var fl int
+					if curFont != nil {
+						fl = curFont.styleFlags
+					}
 					results = append(results, ExtractedText{
 						Text: text, X: x, Y: y,
 						FontName: fontDisplayName(curFont), FontSize: effSize,
-						Width: shownWidth(raw, curFont, fontSize) * math.Hypot(tmA, tmB),
+						Width:  shownWidth(raw, curFont, fontSize) * math.Hypot(tmA, tmB),
+						ColorR: ctx.fillR, ColorG: ctx.fillG, ColorB: ctx.fillB,
+						FontFlags: fl,
+						Alpha:     uint8(ctx.alpha*255 + 0.5),
 					})
 				}
 				tmX += shownAdvance(raw, curFont, fontSize)
+			}
+		case "gs":
+			if os.Getenv("GOPDF_DEBUG_GUTTER") != "" {
+				fmt.Fprintf(os.Stderr, "DBG gs fired: name=%q mapsize=%d\n", string(tokens[i-1]), len(ctx.extgs))
+			}
+			if i >= 1 && len(tokens[i-1]) > 0 && tokens[i-1][0] == '/' {
+				gsName := "/" + string(tokens[i-1][1:])
+				ref, ok := ctx.extgs[gsName]
+				if os.Getenv("GOPDF_DEBUG_GUTTER") != "" {
+					fmt.Fprintf(os.Stderr, "DBG gs: name=%q ok=%v ref=%d\n", gsName, ok, ref)
+				}
+				if ok {
+					if gsObj, ok2 := ctx.parser.objects[ref]; ok2 {
+						ca := extractNumValue(gsObj.dict, "/ca")
+						if os.Getenv("GOPDF_DEBUG_GUTTER") != "" {
+							fmt.Fprintf(os.Stderr, "DBG gs: ca=%.3f\n", ca)
+						}
+						if ca >= 0 && ca <= 1 {
+							ctx.alpha = ca
+						}
+					}
+				}
+			}
+		case "rg":
+			if a := popN(3); len(a) >= 3 {
+				ctx.fillR = uint8(math.Min(math.Max(a[0], 0), 1)*255 + 0.5)
+				ctx.fillG = uint8(math.Min(math.Max(a[1], 0), 1)*255 + 0.5)
+				ctx.fillB = uint8(math.Min(math.Max(a[2], 0), 1)*255 + 0.5)
+			}
+		case "g":
+			if a := popN(1); len(a) >= 1 {
+				v := uint8(math.Min(math.Max(a[0], 0), 1)*255 + 0.5)
+				ctx.fillR, ctx.fillG, ctx.fillB = v, v, v
+			}
+		case "k":
+			if a := popN(4); len(a) >= 4 {
+				ctx.fillR = uint8(math.Min(math.Max((1-a[0])*(1-a[3]), 0), 1)*255 + 0.5)
+				ctx.fillG = uint8(math.Min(math.Max((1-a[1])*(1-a[3]), 0), 1)*255 + 0.5)
+				ctx.fillB = uint8(math.Min(math.Max((1-a[2])*(1-a[3]), 0), 1)*255 + 0.5)
+			}
+		case "sc", "scn":
+			// generic color: interpret by pending-number count. Only the
+			// 1/3/4-operand forms map to RGB; anything else (patterns,
+			// longer component lists) just clears the stack — popN's
+			// scratch buffer holds at most 8 slots.
+			switch n := len(stack); {
+			case n == 1:
+				a := popN(1)
+				v := uint8(math.Min(math.Max(a[0], 0), 1)*255 + 0.5)
+				ctx.fillR, ctx.fillG, ctx.fillB = v, v, v
+			case n == 3:
+				a := popN(3)
+				ctx.fillR = uint8(math.Min(math.Max(a[0], 0), 1)*255 + 0.5)
+				ctx.fillG = uint8(math.Min(math.Max(a[1], 0), 1)*255 + 0.5)
+				ctx.fillB = uint8(math.Min(math.Max(a[2], 0), 1)*255 + 0.5)
+			case n == 4:
+				a := popN(4)
+				ctx.fillR = uint8(math.Min(math.Max((1-a[0])*(1-a[3]), 0), 1)*255 + 0.5)
+				ctx.fillG = uint8(math.Min(math.Max((1-a[1])*(1-a[3]), 0), 1)*255 + 0.5)
+				ctx.fillB = uint8(math.Min(math.Max((1-a[2])*(1-a[3]), 0), 1)*255 + 0.5)
+			default:
+				stack = stack[:0]
 			}
 		case "cm":
 			args := popN(6)

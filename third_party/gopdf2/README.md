@@ -15,7 +15,7 @@ Requires Go 1.13+.
 - **Open and modify existing PDFs** via `OpenPDF` — import all pages, overlay new content (text, images, HTML, drawings), and save
 - **HTML-to-PDF rendering** via `InsertHTMLBox` — supports `<b>`, `<i>`, `<u>`, `<s>`, `<p>`, `<h1>`–`<h6>`, `<font>`, `<span style>`, `<img>` (files and base64 data URIs), `<ul>`/`<ol>` (nested, `start`/`type`), `<hr>`, `<center>`, `<a>`, `<blockquote>`, `<pre>`/`<code>`, full `<table>` (colspan/rowspan, column widths, caption, per-cell styling), `<style>` blocks with tag/class/id selectors, CJK-aware line breaking with kinsoku rules, justified text, and more; multi-page flow via `InsertHTMLPaginated`
 - **Watermark** — text and image watermarks with opacity, rotation, and tiling via `AddWatermarkText` / `AddWatermarkImage`
-- **PDF annotations** — sticky notes, highlights, underlines, strikeouts, squares, circles, and free text via `AddAnnotation`
+- **PDF annotations** — sticky notes, highlights, underlines, strikeouts, squares, circles, and free text via `AddAnnotation`; read annotations from existing PDFs via `ExtractAnnotationsFromPage`
 - **Page manipulation** — extract pages (`ExtractPages`), merge PDFs (`MergePages`), delete pages (`DeletePage` / `DeletePages`), copy pages (`CopyPage`), move pages (`MovePage`)
 - **Page inspection** — query page sizes (`GetPageSize`, `GetAllPageSizes`), source PDF page count (`GetSourcePDFPageCount`)
 - **Page crop box** — define the visible area of a page via `SetPageCropBox` / `GetPageCropBox` / `ClearPageCropBox`

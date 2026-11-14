@@ -55,6 +55,13 @@ func TestFuzz_MutatedPDFs(t *testing.T) {
 		_, _ = ExtractPageDrawings(data, 0)
 		_, _ = ExtractTablesFromPage(data, 0)
 		_, _ = ExtractImagesFromPage(data, 0)
+		_, _ = ExtractAnnotationsFromPage(data, 0)
+		_, _ = ExtractAllAnnotations(data)
+		if doc, err := OpenPDFDocument(data); err == nil {
+			_ = doc.HasForms()
+			_ = doc.FormFields()
+			_, _ = doc.Formatted(0, FormatJSON)
+		}
 		_, _ = RenderPageToImage(data, 0, RenderOption{DPI: 36})
 	}
 

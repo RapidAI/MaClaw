@@ -22,6 +22,9 @@ type mergedRun struct {
 	y     float64 // baseline
 	font  string
 	size  float64
+	colorR, colorG, colorB uint8
+	alpha  uint8
+	flags  int
 }
 
 // mergeGapRatio: a gap larger than this fraction of the font size between two
@@ -100,6 +103,9 @@ func explodeRunSpaces(e ExtractedText) []ExtractedText {
 				FontName: e.FontName,
 				FontSize: e.FontSize,
 				Width:    float64(end-segStart) * per,
+				ColorR:   e.ColorR, ColorG: e.ColorG, ColorB: e.ColorB,
+				FontFlags: e.FontFlags,
+				Alpha:     e.Alpha,
 			})
 		}
 	}
@@ -109,6 +115,8 @@ func explodeRunSpaces(e ExtractedText) []ExtractedText {
 			out = append(out, ExtractedText{
 				Text: " ", X: e.X + float64(i)*per, Y: e.Y,
 				FontName: e.FontName, FontSize: e.FontSize, Width: per,
+				ColorR: e.ColorR, ColorG: e.ColorG, ColorB: e.ColorB,
+				FontFlags: e.FontFlags,
 			})
 			segStart = i + 1
 		}
@@ -177,6 +185,9 @@ func buildMergedRuns(runs []ExtractedText) [][]mergedRun {
 		lastW := 0.0        // width estimate of the last run appended
 		curSize := 0.0
 		curFont := ""
+		curColorR, curColorG, curColorB := uint8(0), uint8(0), uint8(0)
+		curFlags := 0
+		curAlpha := uint8(255)
 		spaceSeen := false
 
 		flush := func() {
@@ -184,6 +195,8 @@ func buildMergedRuns(runs []ExtractedText) [][]mergedRun {
 				words = append(words, mergedRun{
 					text: cur.String(), x: wordX, width: wordW, y: ln.y,
 					font: curFont, size: curSize,
+					colorR: curColorR, colorG: curColorG, colorB: curColorB,
+					alpha: curAlpha, flags: curFlags,
 				})
 			}
 			cur.Reset()
@@ -219,6 +232,9 @@ func buildMergedRuns(runs []ExtractedText) [][]mergedRun {
 				lastW = w
 				curSize = r.FontSize
 				curFont = r.FontName
+				curColorR, curColorG, curColorB = r.ColorR, r.ColorG, r.ColorB
+				curFlags = r.FontFlags
+				curAlpha = r.Alpha
 				spaceSeen = false
 				continue
 			}
@@ -245,6 +261,9 @@ func buildMergedRuns(runs []ExtractedText) [][]mergedRun {
 				lastW = w
 				curSize = r.FontSize
 				curFont = r.FontName
+				curColorR, curColorG, curColorB = r.ColorR, r.ColorG, r.ColorB
+				curFlags = r.FontFlags
+				curAlpha = r.Alpha
 			}
 			spaceSeen = false
 		}
@@ -269,6 +288,9 @@ func MergeTextRuns(runs []ExtractedText) []ExtractedText {
 				Text: w.text, X: w.x, Y: w.y,
 				FontName: w.font, FontSize: w.size,
 				Width: w.width,
+				ColorR: w.colorR, ColorG: w.colorG, ColorB: w.colorB,
+				Alpha: w.alpha,
+				FontFlags: w.flags,
 			})
 		}
 	}
@@ -293,6 +315,9 @@ func GroupIntoTextLines(runs []ExtractedText) []TextLine {
 				Text:     w.text,
 				FontName: w.font,
 				FontSize: w.size,
+				ColorR:   w.colorR, ColorG: w.colorG, ColorB: w.colorB,
+				Flags: w.flags,
+				Alpha: w.alpha,
 			}
 			if i > 0 {
 				// decide space by gap

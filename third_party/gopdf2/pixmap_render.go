@@ -121,6 +121,25 @@ func renderParsedPage(parser *rawPDFParser, pageIndex int, opt RenderOption) (im
 		renderContentStream(img, stream, parser, page, scale, pageH)
 	}
 
+	// /CropBox: the visible area — crop the composed page to it (user
+	// space y-up) before any rotation
+	if page.hasCrop {
+		scaleF := opt.DPI / 72.0 * float64(ss)
+		cx0 := int((page.cropBox[0] - page.mediaBox[0]) * scaleF)
+		cy0 := int((page.mediaBox[3] - page.cropBox[3]) * scaleF)
+		cw := int((page.cropBox[2] - page.cropBox[0]) * scaleF)
+		ch := int((page.cropBox[3] - page.cropBox[1]) * scaleF)
+		if cw > 0 && ch > 0 && cw <= img.Bounds().Dx() && ch <= img.Bounds().Dy() {
+			cropped := image.NewRGBA(image.Rect(0, 0, cw, ch))
+			for y := 0; y < ch; y++ {
+				for x := 0; x < cw; x++ {
+					cropped.SetRGBA(x, y, img.RGBAAt(cx0+x, cy0+y))
+				}
+			}
+			img = cropped
+		}
+	}
+
 	// /Rotate: rotate the composed page — a rigid transform of the whole
 	// bitmap is exactly equivalent to rotating the page before drawing.
 	switch page.rotate {

@@ -57,6 +57,8 @@ type rawPDFObject struct {
 type rawPDFPage struct {
 	objNum    int
 	mediaBox  [4]float64
+	cropBox   [4]float64 // /CropBox (visible area); valid when hasCrop
+	hasCrop   bool
 	rotate    int // /Rotate degrees clockwise (0/90/180/270)
 	contents  []int // content stream obj numbers
 	resources rawPDFResources
@@ -64,8 +66,9 @@ type rawPDFPage struct {
 
 // rawPDFResources holds resource references for a page.
 type rawPDFResources struct {
-	fonts map[string]int // /F1 -> obj number
-	xobjs map[string]int // /Im1 -> obj number
+	fonts      map[string]int // /F1 -> obj number
+	xobjs      map[string]int // /Im1 -> obj number
+	extgstates map[string]int // /GS1 -> obj number (ExtGState dicts)
 }
 
 // newRawPDFParser creates a parser for the given PDF data.
@@ -660,12 +663,12 @@ func (p *rawPDFParser) parsePages() {
 }
 
 func (p *rawPDFParser) collectPages(objNum int) {
-	p.collectPagesInherited(objNum, [4]float64{}, 0)
+	p.collectPagesInherited(objNum, [4]float64{}, 0, nil)
 }
 
 // collectPagesInherited walks the page tree, propagating inherited
 // attributes (MediaBox) from Pages nodes down to their Page leaves.
-func (p *rawPDFParser) collectPagesInherited(objNum int, inherited [4]float64, inheritedRotate int) {
+func (p *rawPDFParser) collectPagesInherited(objNum int, inherited [4]float64, inheritedRotate int, inheritedCrop *([4]float64)) {
 	obj, ok := p.objects[objNum]
 	if !ok {
 		return
@@ -677,6 +680,11 @@ func (p *rawPDFParser) collectPagesInherited(objNum int, inherited [4]float64, i
 		if page.mediaBox == [4]float64{0, 0, 612, 792} && inherited != [4]float64{} {
 			// page lacks its own MediaBox — inherit from the Pages tree
 			page.mediaBox = inherited
+		}
+		if cb, has := extractBox(obj.dict, "/CropBox"); has {
+			page.cropBox, page.hasCrop = cb, true
+		} else if inheritedCrop != nil {
+			page.cropBox, page.hasCrop = *inheritedCrop, true
 		}
 		page.rotate = extractPageRotate(obj.dict)
 		if page.rotate == 0 {
@@ -691,13 +699,17 @@ func (p *rawPDFParser) collectPagesInherited(objNum int, inherited [4]float64, i
 		if inheritedMedia == [4]float64{0, 0, 612, 792} && inherited != [4]float64{} {
 			inheritedMedia = inherited
 		}
+		localCrop := inheritedCrop
+		if cb, has := extractBox(obj.dict, "/CropBox"); has {
+			localCrop = &cb
+		}
 		inheritedRot := extractPageRotate(obj.dict)
 		if inheritedRot == 0 {
 			inheritedRot = inheritedRotate
 		}
 		kids := extractRefArray(obj.dict, "/Kids")
 		for _, kid := range kids {
-			p.collectPagesInherited(kid, inheritedMedia, inheritedRot)
+			p.collectPagesInherited(kid, inheritedMedia, inheritedRot, localCrop)
 		}
 	}
 }
@@ -842,6 +854,15 @@ func extractRefArray(dict, key string) []int {
 	return refs
 }
 
+// extractBox parses an arbitrary box array (/CropBox, /BleedBox, ...)
+// from a dict. ok is false when the box is absent or malformed.
+func extractBox(dict string, key string) ([4]float64, bool) {
+	if arr := extractNumberArray(dict, key); len(arr) >= 4 {
+		return [4]float64{arr[0], arr[1], arr[2], arr[3]}, true
+	}
+	return [4]float64{}, false
+}
+
 func extractMediaBox(dict string) [4]float64 {
 	m := reMediaBox.FindStringSubmatch(dict)
 	if m == nil {
@@ -874,8 +895,9 @@ func extractContentRefs(dict string) []int {
 
 func (p *rawPDFParser) extractResources(dict string, pageObjNum int) rawPDFResources {
 	res := rawPDFResources{
-		fonts: make(map[string]int),
-		xobjs: make(map[string]int),
+		fonts:      make(map[string]int),
+		xobjs:      make(map[string]int),
+		extgstates: make(map[string]int),
 	}
 	// Resources can be inline or a reference
 	resDict := dict
@@ -886,6 +908,7 @@ func (p *rawPDFParser) extractResources(dict string, pageObjNum int) rawPDFResou
 		}
 	}
 	// Extract /Font << /F1 N 0 R ... >>
+	p.extractNamedRefs(resDict, "/ExtGState", res.extgstates)
 	p.extractNamedRefs(resDict, "/Font", res.fonts)
 	// Extract /XObject << /Im1 N 0 R ... >>
 	p.extractNamedRefs(resDict, "/XObject", res.xobjs)
@@ -951,19 +974,18 @@ func (p *rawPDFParser) getPageContentStream(pageIdx int) []byte {
 
 // ExtractedText represents a piece of text extracted from a PDF page.
 type ExtractedText struct {
-	// Text is the extracted text string.
-	Text string
-	// X is the horizontal position.
-	X float64
-	// Y is the vertical position.
-	Y float64
-	// FontName is the PDF font resource name (e.g. "/F1").
-	FontName string
-	// FontSize is the font size in points.
-	FontSize float64
-	// Width is the estimated advance width of the text (set by MergeTextRuns
-	// and GroupIntoTextLines; 0 when unknown).
-	Width float64
+	Text     string  // The extracted text string
+	X        float64 // Horizontal position
+	Y        float64 // Vertical position
+	FontName string  // PDF font resource name (e.g. "/F1")
+	FontSize float64 // Font size in points
+	Width    float64 // Estimated advance width (set by MergeTextRuns; 0 when unknown)
+	// Color is the fill color the text was painted with (0-255 RGB).
+	ColorR, ColorG, ColorB uint8
+	// FontFlags bit 1 = bold, bit 2 = italic, detected from the font name.
+	FontFlags int
+	// Alpha is the fill alpha from ExtGState /ca (255 = opaque).
+	Alpha uint8
 }
 
 // ExtractedImage represents an image found on a PDF page.

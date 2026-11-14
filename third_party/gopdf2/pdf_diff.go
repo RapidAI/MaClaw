@@ -341,6 +341,8 @@ func extractTextsWithParser(parser *rawPDFParser, data []byte, pageIdx int) []Ex
 		xobjs:    page.resources.xobjs,
 		mediaBox: page.mediaBox,
 		rotate:   page.rotate,
+		extgs:    page.resources.extgstates,
+		alpha:    1,
 		visited:  map[int]bool{},
 	}, stream)
 }

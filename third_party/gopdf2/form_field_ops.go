@@ -259,3 +259,100 @@ func (c *cacheContentRaw) write(w io.Writer, protection *PDFProtection) error {
 	_, err := io.WriteString(w, c.data)
 	return err
 }
+
+
+// FlattenFormFields bakes the current form field values into the page
+// content as static text and removes the interactive widgets. Text and
+// dropdown fields draw their value; checkboxes and radios draw an "X" when
+// set. After flattening the document has no AcroForm fields.
+//
+// Example:
+//
+//	pdf.ModifyFormFieldValue("name", "Jane Doe")
+//	pdf.FlattenFormFields()
+//	pdf.WritePdf("flattened.pdf")
+func (gp *GoPdf) FlattenFormFields() error {
+	if len(gp.formFields) == 0 {
+		return nil
+	}
+
+	// map page object ids to 1-based page numbers and objects
+	pageNum := map[int]int{}
+	pageObjs := map[int]*PageObj{}
+	num := 0
+	for i, obj := range gp.pdfObjs {
+		if p, ok := obj.(*PageObj); ok {
+			num++
+			pageNum[i+1] = num
+			pageObjs[i+1] = p
+		}
+	}
+
+	// remember the caller's page for restoring afterwards
+	savedPageNo := 0
+	if no, ok := pageNum[gp.curr.IndexOfPageObj+1]; ok {
+		savedPageNo = no
+	}
+
+	for _, ref := range gp.formFields {
+		ffObj, ok := gp.pdfObjs[ref.objIdx].(formFieldObj)
+		if !ok {
+			continue
+		}
+		pNo, ok := pageNum[ffObj.pageRef]
+		if !ok {
+			continue
+		}
+		// remove the widget from the page's annotation list
+		if page, ok2 := pageObjs[ffObj.pageRef]; ok2 {
+			kept := page.LinkObjIds[:0]
+			for _, id := range page.LinkObjIds {
+				if id != ref.objIdx+1 {
+					kept = append(kept, id)
+				}
+			}
+			page.LinkObjIds = kept
+		}
+		// bake the value as static text
+		if strings.TrimSpace(ffObj.field.Value) == "" {
+			continue
+		}
+		if err := gp.SetPage(pNo); err != nil {
+			return err
+		}
+		gp.SetXY(ffObj.field.X, ffObj.field.Y)
+		if ffObj.field.FontFamily != "" {
+			_ = gp.SetFont(ffObj.field.FontFamily, "", ffObj.field.FontSize)
+		} else if ffObj.field.FontSize > 0 {
+			gp.curr.FontSize = ffObj.field.FontSize
+		}
+		text := ffObj.field.Value
+		if ffObj.field.Type == FormFieldCheckbox || ffObj.field.Type == FormFieldRadio {
+			text = "X"
+		}
+		if text == "" {
+			continue
+		}
+		if strings.Contains(text, "\n") {
+			// multi-line values wrap inside the field box
+			_ = gp.MultiCellWithOption(&Rect{W: ffObj.field.W, H: ffObj.field.H}, text, CellOption{Align: Left | Top})
+		} else {
+			_ = gp.CellWithOption(&Rect{W: ffObj.field.W, H: ffObj.field.H}, text, CellOption{Align: Left | Top})
+		}
+	}
+
+	// restore the caller's page
+	if savedPageNo > 0 {
+		_ = gp.SetPage(savedPageNo)
+	}
+
+	// drop the interactive fields and the AcroForm field references
+	gp.formFields = nil
+	for i, obj := range gp.pdfObjs {
+		if af, ok := obj.(acroFormObj); ok {
+			af.fieldObjIDs = nil
+			gp.pdfObjs[i] = af
+		}
+	}
+	return nil
+}

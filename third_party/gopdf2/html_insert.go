@@ -94,6 +94,9 @@ type htmlRenderState struct {
 	padLeft                            float64
 	padRight                           float64
 	pageBreakAvoid                     bool // break-inside/page-break-inside: avoid
+	cssWidth                           float64 // block width (0 = parent width)
+	marginLeft, marginRight            float64
+	marginLeftAuto, marginRightAuto    bool
 }
 
 // htmlBlockBorder is one side of a block-level border.
@@ -663,6 +666,66 @@ func (r *htmlRenderer) applyCSSProps(css map[string]string, state htmlRenderStat
 			state.preformed = true
 		}
 	}
+	if w, ok := css["width"]; ok {
+		if v, ok2 := parseCSSLenPx(w); ok2 && v > 0 {
+			state.cssWidth = v / r.unitConversion()
+		}
+	}
+	if m, ok := css["margin"]; ok {
+		// shorthand: 1-4 values, CSS order top right bottom left; "auto"
+		// marks the corresponding sides
+		fields := strings.Fields(m)
+		at := func(i int) string {
+			switch {
+			case len(fields) == 1:
+				return fields[0]
+			case len(fields) == 2:
+				if i == 0 || i == 2 {
+					return fields[0]
+				}
+				return fields[1]
+			case len(fields) == 3:
+				if i == 1 || i == 3 {
+					return fields[1]
+				}
+				if i == 0 {
+					return fields[0]
+				}
+				return fields[2]
+			default:
+				return fields[i]
+			}
+		}
+		for i, slot := range []struct {
+			dst  *float64
+			auto *bool
+		}{{&state.marginTop, nil}, {&state.marginRight, &state.marginRightAuto}, {&state.marginBot, nil}, {&state.marginLeft, &state.marginLeftAuto}} {
+			f := at(i)
+			if f == "auto" {
+				if slot.auto != nil {
+					*slot.auto = true
+				}
+			} else if v, ok2 := parseCSSLenPx(f); ok2 {
+				*slot.dst = v / r.unitConversion()
+			}
+		}
+	}
+	if m, ok := css["margin-left"]; ok {
+		f := strings.TrimSpace(m)
+		if f == "auto" {
+			state.marginLeftAuto = true
+		} else if v, ok2 := parseCSSLenPx(f); ok2 {
+			state.marginLeft = v / r.unitConversion()
+		}
+	}
+	if m, ok := css["margin-right"]; ok {
+		f := strings.TrimSpace(m)
+		if f == "auto" {
+			state.marginRightAuto = true
+		} else if v, ok2 := parseCSSLenPx(f); ok2 {
+			state.marginRight = v / r.unitConversion()
+		}
+	}
 	if mt, ok := css["margin-top"]; ok {
 		if v, ok := parseDimension(mt, r.boxW); ok {
 			state.marginTop = v / r.unitConversion()
@@ -1112,22 +1175,33 @@ func (r *htmlRenderer) flowBlock(children []*htmlNode, state htmlRenderState, de
 	if depth > 32 {
 		return nil
 	}
-	// block padding: shift the content box inside the block's box and add
-	// vertical padding space; borders anchor at the outer box
-	state.blockX = r.boxX
-	state.blockW = r.boxW
+	// block box: CSS width constrains it, margins position it, padding
+	// insets the content box; borders anchor at the (constrained) box
+	parentX, parentW := r.boxX, r.boxW
+	parentBoxX, parentBoxW := r.boxX, r.boxW
+	state.blockX = parentX
+	state.blockW = parentW
+	if state.cssWidth > 0 && state.cssWidth <= parentW {
+		state.blockW = state.cssWidth
+	}
+	switch {
+	case state.marginLeftAuto && state.marginRightAuto && state.blockW < parentW:
+		state.blockX = parentX + (parentW-state.blockW)/2
+	case state.marginLeftAuto && state.blockW < parentW:
+		state.blockX = parentX + parentW - state.blockW
+	case state.marginLeft > 0:
+		state.blockX = parentX + state.marginLeft
+	}
 	if state.borderL.has {
-		state.borderL.x = r.boxX + state.borderL.w*0.5
+		state.borderL.x = state.blockX + state.borderL.w*0.5
 	}
 	if state.borderR.has {
-		state.borderR.x = r.boxX + r.boxW - state.borderR.w*0.5
+		state.borderR.x = state.blockX + state.blockW - state.borderR.w*0.5
 	}
-	if state.padLeft > 0 {
-		r.boxX += state.padLeft
-		r.boxW -= state.padLeft
-	}
-	if state.padRight > 0 {
-		r.boxW -= state.padRight
+	r.boxX = state.blockX + state.padLeft
+	r.boxW = state.blockW - state.padLeft - state.padRight
+	if r.boxW < 4 {
+		r.boxW = state.blockW
 	}
 	if state.padTop > 0 {
 		r.cursorY += state.padTop
@@ -1187,10 +1261,7 @@ func (r *htmlRenderer) flowBlock(children []*htmlNode, state htmlRenderState, de
 	if state.padBot > 0 {
 		r.cursorY += state.padBot
 	}
-	if state.padLeft > 0 {
-		r.boxX -= state.padLeft
-		r.boxW += state.padLeft
-	}
+	r.boxX, r.boxW = parentBoxX, parentBoxW
 	if state.marginBot > 0 {
 		r.cursorY += state.marginBot
 	}

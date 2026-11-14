@@ -2,6 +2,7 @@ package gopdf
 
 import (
 	"fmt"
+	"strings"
 )
 
 // ============================================================
@@ -23,14 +24,17 @@ import (
 type PDFDoc struct {
 	parser *rawPDFParser
 
-	linesCache     map[int][]TextLine
-	parasCache     map[int][]TextParagraph
-	wordsCache     map[int][]TextWord
-	drawingsCache  map[int][]Drawing
-	tablesCache    map[int][]Table
-	imagesCache    map[int][]ExtractedImage
-	infoCache      *PdfInfo
-	tocCache       []TOCEntry
+	linesCache    map[int][]TextLine
+	parasCache    map[int][]TextParagraph
+	wordsCache    map[int][]TextWord
+	drawingsCache map[int][]Drawing
+	tablesCache   map[int][]Table
+	imagesCache   map[int][]ExtractedImage
+	annotsCache   map[int][]ExtractedAnnotation
+	labelsCache   []PageLabel
+	infoCache     *PdfInfo
+	tocCache      []TOCEntry
+	rootObj       *rawPDFObject
 }
 
 // OpenPDFDocument parses raw PDF bytes once and returns a document handle
@@ -49,6 +53,7 @@ func OpenPDFDocument(pdfData []byte) (*PDFDoc, error) {
 		drawingsCache: map[int][]Drawing{},
 		tablesCache:   map[int][]Table{},
 		imagesCache:   map[int][]ExtractedImage{},
+		annotsCache:   map[int][]ExtractedAnnotation{},
 	}, nil
 }
 
@@ -264,4 +269,210 @@ func (d *PDFDoc) searchDehyphenated(pageIndex int, query string, caseInsensitive
 
 func (d *PDFDoc) extractTOC() []TOCEntry {
 	return extractTOCWithParser(d.parser)
+}
+
+// PageSize returns the visual size of a page in points, honoring /Rotate
+// (width and height swap for 90/270).
+func (d *PDFDoc) PageSize(pageIndex int) (PageInfo, error) {
+	if err := d.checkPage(pageIndex); err != nil {
+		return PageInfo{}, err
+	}
+	page := d.parser.pages[pageIndex]
+	w := page.mediaBox[2] - page.mediaBox[0]
+	h := page.mediaBox[3] - page.mediaBox[1]
+	if page.hasCrop {
+		// the visible area is the CropBox (PyMuPDF page.rect convention)
+		w = page.cropBox[2] - page.cropBox[0]
+		h = page.cropBox[3] - page.cropBox[1]
+	}
+	if page.rotate == 90 || page.rotate == 270 {
+		w, h = h, w
+	}
+	return PageInfo{Width: w, Height: h, PageNumber: pageIndex + 1}, nil
+}
+
+// PageSizes returns the visual sizes of all pages (1-based PageNumber).
+func (d *PDFDoc) PageSizes() []PageInfo {
+	out := make([]PageInfo, 0, len(d.parser.pages))
+	for i := range d.parser.pages {
+		if pi, err := d.PageSize(i); err == nil {
+			out = append(out, pi)
+		}
+	}
+	return out
+}
+
+// Annotations returns the annotations of a page (cached).
+func (d *PDFDoc) Annotations(pageIndex int) ([]ExtractedAnnotation, error) {
+	if err := d.checkPage(pageIndex); err != nil {
+		return nil, err
+	}
+	if a, ok := d.annotsCache[pageIndex]; ok {
+		return a, nil
+	}
+	annots := extractAnnotsWithParser(d.parser, pageIndex)
+	d.annotsCache[pageIndex] = annots
+	return annots, nil
+}
+
+// OpenPDFDocumentWithPassword parses an encrypted PDF into a document
+// handle, decrypting with the given user or owner password.
+func OpenPDFDocumentWithPassword(pdfData []byte, password string) (*PDFDoc, error) {
+	decrypted := pdfData
+	if detectEncryption(pdfData) > 0 {
+		dc, err := authenticate(pdfData, password)
+		if err != nil {
+			return nil, err
+		}
+		if dc != nil {
+			decrypted = decryptPDF(pdfData, dc)
+		}
+	}
+	return OpenPDFDocument(decrypted)
+}
+
+// Links returns the link annotations of a page.
+func (d *PDFDoc) Links(pageIndex int) ([]ExtractedLink, error) {
+	if err := d.checkPage(pageIndex); err != nil {
+		return nil, err
+	}
+	return extractLinksFromPage(d.parser, d.parser.pages[pageIndex], pageIndex), nil
+}
+
+// Fonts returns the fonts used by a page.
+func (d *PDFDoc) Fonts(pageIndex int) ([]ExtractedFont, error) {
+	if err := d.checkPage(pageIndex); err != nil {
+		return nil, err
+	}
+	return extractFontsFromResources(d.parser, d.parser.pages[pageIndex].resources), nil
+}
+
+// Formatted returns the page text in the requested format
+// (FormatText / FormatBlocks / FormatWords / FormatHTML / FormatJSON).
+func (d *PDFDoc) Formatted(pageIndex int, format TextExtractionFormat) (interface{}, error) {
+	if err := d.checkPage(pageIndex); err != nil {
+		return nil, err
+	}
+	texts := d.runs(pageIndex)
+	switch format {
+	case FormatText:
+		return formatAsText(texts), nil
+	case FormatBlocks:
+		return formatAsBlocks(texts), nil
+	case FormatWords:
+		return formatAsWords(texts), nil
+	case FormatHTML:
+		return formatAsHTML(texts, pageIndex), nil
+	case FormatJSON:
+		return formatAsJSON(texts, pageIndex, d.parser)
+	default:
+		return nil, fmt.Errorf("unsupported format: %d", format)
+	}
+}
+
+// HasForms reports whether the document contains an AcroForm.
+func (d *PDFDoc) HasForms() bool {
+	if d.rootObj == nil {
+		obj, ok := d.parser.objects[d.parser.root]
+		if !ok {
+			return false
+		}
+		d.rootObj = &obj
+	}
+	return extractRef(d.rootObj.dict, "/AcroForm") > 0
+}
+
+// FormFields reads the interactive form fields of the document (PyMuPDF
+// widgets parity): name, type, rectangle, current value.
+func (d *PDFDoc) FormFields() []FormField {
+	return extractFormFieldsWithParser(d.parser)
+}
+
+// extractFormFieldsWithParser walks /AcroForm /Fields and reads the core
+// field properties.
+func extractFormFieldsWithParser(parser *rawPDFParser) []FormField {
+	if parser.root <= 0 {
+		return nil
+	}
+	rootObj, ok := parser.objects[parser.root]
+	if !ok {
+		return nil
+	}
+	acroRef := extractRef(rootObj.dict, "/AcroForm")
+	if acroRef <= 0 {
+		return nil
+	}
+	acroObj, ok := parser.objects[acroRef]
+	if !ok {
+		return nil
+	}
+	var fields []FormField
+	for _, ref := range extractRefArray(acroObj.dict, "/Fields") {
+		obj, ok := parser.objects[ref]
+		if !ok {
+			continue
+		}
+		f := FormField{
+			Name: extractStringFromDict(obj.dict, "/T"),
+		}
+		switch extractName(obj.dict, "/FT") {
+		case "Btn":
+			f.Type = FormFieldCheckbox
+		case "Ch":
+			f.Type = FormFieldChoice
+		case "Sig":
+			f.Type = FormFieldSignature
+		default:
+			f.Type = FormFieldText
+		}
+		if r := extractNumberArray(obj.dict, "/Rect"); len(r) >= 4 {
+			// widget rects are PDF y-up; convert to top-down against the
+			// field's own page box when resolvable
+			f.X, f.W = r[0], r[2]-r[0]
+			f.H = r[3] - r[1]
+			f.Y = r[3]
+		}
+		// value: string or name (/Yes)
+		if v := extractStringFromDict(obj.dict, "/V"); v != "" {
+			f.Value = v
+		} else if vi := stringsIndex(obj.dict, "/V"); vi >= 0 {
+			rest := trimSpaces(obj.dict[vi+2:])
+			if strings.HasPrefix(rest, "/") {
+				f.Value = rest[1:minStr(len(rest), 1+firstWordLen(rest[1:]))]
+			}
+		}
+		fields = append(fields, f)
+	}
+	return fields
+}
+
+func stringsIndex(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}
+
+func trimSpaces(s string) string {
+	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t' || s[0] == '\r' || s[0] == '\n') {
+		s = s[1:]
+	}
+	return s
+}
+
+func firstWordLen(s string) int {
+	n := 0
+	for n < len(s) && s[n] != ' ' && s[n] != '\t' && s[n] != '\r' && s[n] != '\n' && s[n] != '/' {
+		n++
+	}
+	return n
+}
+
+func minStr(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

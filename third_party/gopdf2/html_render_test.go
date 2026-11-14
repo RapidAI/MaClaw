@@ -1,6 +1,7 @@
 package gopdf
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -610,5 +611,67 @@ func TestPageBreakInsideAvoid(t *testing.T) {
 	}
 	if !found {
 		t.Skip("no filler count in range produced a split")
+	}
+}
+
+// TestBlockWidthAndMargins verifies CSS width and margin auto/left
+// position block content and constrain background bands.
+func TestBlockWidthAndMargins(t *testing.T) {
+	pdf := &GoPdf{}
+	pdf.Start(Config{PageSize: *PageSizeA4})
+	pdf.AddTTFFont("lib", "test/res/LiberationSerif-Regular.ttf")
+	pdf.SetFont("lib", "", 12)
+	pdf.AddPage()
+	html := `<div style="width:300px; margin:0 auto; background-color:#eeeeee"><p>CENTERED text here</p></div>
+<div style="width:300px; margin-left:auto; background-color:#ddeeff"><p>PUSHED right block</p></div>
+<div style="margin-left:60px"><p>INDENTED by 60</p></div>`
+	if _, err := pdf.InsertHTMLBox(50, 50, 495, 400, html, HTMLBoxOption{
+		DefaultFontFamily: "lib", DefaultFontSize: 12,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "w.pdf")
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+
+	lines, err := ExtractPageLines(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xOf := func(marker string) float64 {
+		for _, ln := range lines {
+			if strings.Contains(ln.Text, marker) && len(ln.Words) > 0 {
+				return ln.Words[0].X
+			}
+		}
+		return -1
+	}
+	cx := xOf("CENTERED")
+	px := xOf("PUSHED")
+	ix := xOf("INDENTED")
+	if cx < 140 || cx > 160 {
+		t.Errorf("centered text X = %.1f, want ~147.5", cx)
+	}
+	if px < 240 || px > 260 {
+		t.Errorf("pushed text X = %.1f, want ~245", px)
+	}
+	if ix < 105 || ix > 120 {
+		t.Errorf("indented text X = %.1f, want ~110", ix)
+	}
+	// background bands constrained to 300pt
+	drawings, err := ExtractPageDrawings(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bands := 0
+	for _, d := range drawings {
+		if d.IsRect && d.Op == "f" && math.Abs(d.Rect[2]-300) < 3 {
+			bands++
+		}
+	}
+	if bands < 2 {
+		t.Errorf("expected >=2 width-constrained background bands, got %d", bands)
 	}
 }

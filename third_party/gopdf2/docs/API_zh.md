@@ -1101,6 +1101,18 @@ func ExtractPageDrawings(pdfData []byte, pageIndex int) ([]Drawing, error)
 func ExtractDrawingsFromFile(path string, pageIndex int) ([]Drawing, error)
 ```
 
+### 批注提取
+
+```go
+func ExtractAnnotationsFromPage(pdfData []byte, pageIndex int) ([]ExtractedAnnotation, error)
+func ExtractAnnotationsFromFile(path string, pageIndex int) ([]ExtractedAnnotation, error)
+func ExtractAllAnnotations(pdfData []byte) (map[int][]ExtractedAnnotation, error)
+```
+
+读取已有 PDF 的 `/Annots`：类型、矩形（自上而下页面点）、内容、作者、颜色。
+`AddAnnotation` 添加的批注可通过此读取端回读。亦可使用 `PDFDoc` 句柄上
+的 `doc.Annotations(page)`（已缓存）。
+
 ### 表格检测
 
 ```go
@@ -1147,6 +1159,18 @@ func GetPDFInfoFromFile(path string) (PdfInfo, error)
 
 读取 `/Info` 字典：标题、作者、主题、关键词、创建者、生产者、创建/修改日期。写入侧为 `SetInfo(PdfInfo)`。
 
+### 页面标签（读取）
+
+```go
+func ExtractPageLabels(pdfData []byte) ([]PageLabel, error)
+func ExtractPageLabelsFromFile(path string) ([]PageLabel, error)
+```
+
+读取已有 PDF 的页面标签范围（`/PageLabels` 数字树）：样式（`D` 十进制、
+`r`/`R` 罗马数字、`a`/`A` 字母）、前缀与起始编号——与写入端
+`SetPageLabels` 使用相同的 `PageLabel` 值。亦可使用 `PDFDoc` 句柄上的
+`doc.PageLabels()`（已缓存）与 `doc.Rotation(page)`。
+
 ### 已有 PDF 的目录（读取）
 
 ```go
@@ -1170,7 +1194,7 @@ opt := gopdf.RenderOption{DPI: 150, Clip: &gopdf.ClipRect{X: 100, Y: 100, W: 200
 img, err := gopdf.RenderPageToImage(data, 0, opt)
 ```
 
-`Clip` 将渲染限制在页面的一个区域内（视觉点坐标）；渲染遵循 `/Rotate`（输出画布与视觉页面方向一致，并应用 2 倍超采样以保证细线保真度）。
+`Clip` 将渲染限制在页面的一个区域内（视觉点坐标）；渲染遵循 `/Rotate`（输出画布与视觉页面方向一致，自适应超采样保证细线保真度）与 `/CropBox`（可见区域决定 `doc.PageSize` 与渲染画布尺寸）。
 
 ---
 

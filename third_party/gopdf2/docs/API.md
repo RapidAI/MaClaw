@@ -1110,6 +1110,27 @@ func ExtractPageDrawings(pdfData []byte, pageIndex int) ([]Drawing, error)
 func ExtractDrawingsFromFile(path string, pageIndex int) ([]Drawing, error)
 ```
 
+### Annotation Extraction
+
+```go
+func ExtractAnnotationsFromPage(pdfData []byte, pageIndex int) ([]ExtractedAnnotation, error)
+func ExtractAnnotationsFromFile(path string, pageIndex int) ([]ExtractedAnnotation, error)
+func ExtractAllAnnotations(pdfData []byte) (map[int][]ExtractedAnnotation, error)
+
+type ExtractedAnnotation struct {
+    Type     string  // /Subtype: "Text", "Highlight", "Square", ...
+    X, Y, W, H float64 // rectangle, top-down page points
+    Contents string  // annotation body
+    Author   string  // /T title field
+    ColorR, ColorG, ColorB uint8
+    Page     int     // 1-based page number
+}
+```
+
+Reads the `/Annots` of existing PDFs. Annotations added with
+`AddAnnotation` round-trip through this reader. Also available as the
+cached `doc.Annotations(page)` on a `PDFDoc` handle.
+
 ### Table Detection
 
 ```go
@@ -1159,6 +1180,19 @@ func GetPDFInfoFromFile(path string) (PdfInfo, error)
 
 Reads the `/Info` dictionary: title, author, subject, keywords, creator, producer, creation and modification dates. The writer side is `SetInfo(PdfInfo)`.
 
+### Page Labels (read)
+
+```go
+func ExtractPageLabels(pdfData []byte) ([]PageLabel, error)
+func ExtractPageLabelsFromFile(path string) ([]PageLabel, error)
+```
+
+Reads the page label ranges of an existing PDF (the `/PageLabels` number
+tree): style (`D` decimal, `r`/`R` roman, `a`/`A` alpha), prefix and
+start number — the same `PageLabel` values the writer's `SetPageLabels`
+takes. Also available as the cached `doc.PageLabels()` on a `PDFDoc`
+handle, together with `doc.Rotation(page)`.
+
 ### TOC of Existing PDFs (read)
 
 ```go
@@ -1182,7 +1216,7 @@ opt := gopdf.RenderOption{DPI: 150, Clip: &gopdf.ClipRect{X: 100, Y: 100, W: 200
 img, err := gopdf.RenderPageToImage(data, 0, opt)
 ```
 
-`Clip` restricts rendering to a region of the page in visual points; rendering honors `/Rotate` (the output canvas matches the visual page orientation, and 2× supersampling is applied for hairline fidelity).
+`Clip` restricts rendering to a region of the page in visual points; rendering honors `/Rotate` (the output canvas matches the visual page orientation, adaptive supersampling for hairline fidelity) and `/CropBox` (the visible area drives `doc.PageSize` and the rendered canvas).
 
 ---
 
