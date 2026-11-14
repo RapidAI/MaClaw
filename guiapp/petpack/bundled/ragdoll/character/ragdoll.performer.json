@@ -1,0 +1,392 @@
+{
+  "version": 1,
+  "moods": [
+    "calm",
+    "curious",
+    "focused",
+    "pleased",
+    "concerned",
+    "tired"
+  ],
+  "layers": [
+    "body",
+    "expression",
+    "gaze",
+    "secondary"
+  ],
+  "behaviors": {
+    "idle_bend": {
+      "enter": "bend_in",
+      "loop": "bend_loop",
+      "exit": "bend_out",
+      "weight": 1,
+      "min_ms": 1800,
+      "max_ms": 3200,
+      "cooldown_ms": 16000,
+      "moods": [
+        "curious",
+        "calm"
+      ]
+    },
+    "idle_blink": {
+      "enter": "idle_blink_in",
+      "loop": "idle_blink_loop",
+      "exit": "idle_blink_out",
+      "weight": 4,
+      "min_ms": 900,
+      "max_ms": 1800,
+      "cooldown_ms": 5000,
+      "moods": [
+        "calm",
+        "focused"
+      ]
+    },
+    "idle_breathe": {
+      "enter": "idle_breathe_in",
+      "loop": "idle_breathe_loop",
+      "exit": "idle_breathe_out",
+      "weight": 5,
+      "min_ms": 3200,
+      "max_ms": 6200,
+      "cooldown_ms": 4000,
+      "moods": [
+        "calm"
+      ]
+    },
+    "idle_jump": {
+      "enter": "jump_in",
+      "loop": "jump_loop",
+      "exit": "jump_out",
+      "weight": 1,
+      "min_ms": 1400,
+      "max_ms": 2400,
+      "cooldown_ms": 18000,
+      "moods": [
+        "pleased",
+        "calm"
+      ]
+    },
+    "idle_look_left": {
+      "enter": "idle_look_left_in",
+      "loop": "idle_look_left_loop",
+      "exit": "idle_look_left_out",
+      "weight": 3,
+      "min_ms": 2400,
+      "max_ms": 4200,
+      "cooldown_ms": 9000,
+      "moods": [
+        "calm",
+        "curious"
+      ]
+    },
+    "idle_look_right": {
+      "enter": "idle_look_right_in",
+      "loop": "idle_look_right_loop",
+      "exit": "idle_look_right_out",
+      "weight": 3,
+      "min_ms": 2400,
+      "max_ms": 4200,
+      "cooldown_ms": 9000,
+      "moods": [
+        "calm",
+        "curious"
+      ]
+    },
+    "idle_rest": {
+      "enter": "rest_in",
+      "loop": "rest_loop",
+      "exit": "rest_out",
+      "weight": 1,
+      "min_ms": 3000,
+      "max_ms": 5600,
+      "cooldown_ms": 20000,
+      "moods": [
+        "tired",
+        "calm"
+      ]
+    },
+    "idle_run": {
+      "enter": "run_in",
+      "loop": "run_loop",
+      "exit": "run_out",
+      "weight": 1,
+      "min_ms": 1600,
+      "max_ms": 2800,
+      "cooldown_ms": 22000,
+      "moods": [
+        "pleased",
+        "calm"
+      ]
+    },
+    "idle_sing": {
+      "enter": "sing_in",
+      "loop": "sing_loop",
+      "exit": "sing_out",
+      "weight": 2,
+      "min_ms": 2200,
+      "max_ms": 4600,
+      "cooldown_ms": 12000,
+      "moods": [
+        "pleased",
+        "calm"
+      ]
+    },
+    "idle_stretch": {
+      "enter": "stretch_in",
+      "loop": "stretch_loop",
+      "exit": "stretch_out",
+      "weight": 2,
+      "min_ms": 2000,
+      "max_ms": 3600,
+      "cooldown_ms": 14000,
+      "moods": [
+        "tired",
+        "calm"
+      ]
+    },
+    "idle_walk": {
+      "enter": "walk_in",
+      "loop": "walk_loop",
+      "exit": "walk_out",
+      "weight": 3,
+      "min_ms": 2200,
+      "max_ms": 4800,
+      "cooldown_ms": 8000,
+      "moods": [
+        "calm",
+        "curious"
+      ]
+    }
+  },
+  "states": {
+    "alert": {
+      "enter": "alert_in",
+      "loop": "alert_loop",
+      "exit": "alert_out",
+      "mood": "concerned",
+      "expression": "expr_concerned",
+      "gaze": "gaze_right",
+      "secondary": "secondary_alert"
+    },
+    "done": {
+      "enter": "done_in",
+      "loop": "done_loop",
+      "exit": "done_out",
+      "mood": "pleased",
+      "expression": "expr_pleased",
+      "gaze": "gaze_center",
+      "secondary": "secondary_done"
+    },
+    "idle": {
+      "enter": "",
+      "loop": "",
+      "exit": "",
+      "behavior_pool": [
+        "idle_breathe",
+        "idle_look_left",
+        "idle_look_right",
+        "idle_blink",
+        "idle_walk",
+        "idle_run",
+        "idle_jump",
+        "idle_bend",
+        "idle_stretch",
+        "idle_sing",
+        "idle_rest"
+      ],
+      "mood": "calm",
+      "expression": "expr_calm",
+      "gaze": "gaze_wander",
+      "secondary": "secondary_idle"
+    },
+    "listening": {
+      "enter": "listen_in",
+      "loop": "listen_loop",
+      "exit": "listen_out",
+      "mood": "curious",
+      "expression": "expr_curious",
+      "gaze": "gaze_left",
+      "secondary": "secondary_listen"
+    },
+    "quiet": {
+      "enter": "quiet_in",
+      "loop": "quiet_loop",
+      "exit": "quiet_out",
+      "mood": "tired",
+      "expression": "expr_tired",
+      "gaze": "gaze_center",
+      "secondary": "secondary_quiet"
+    },
+    "speaking": {
+      "enter": "speak_in",
+      "loop": "speak_loop",
+      "exit": "speak_out",
+      "mood": "pleased",
+      "expression": "expr_speak",
+      "gaze": "gaze_center",
+      "secondary": "secondary_speak"
+    },
+    "thinking": {
+      "enter": "think_in",
+      "loop": "think_loop",
+      "exit": "think_out",
+      "mood": "focused",
+      "expression": "expr_focus",
+      "gaze": "gaze_up",
+      "secondary": "secondary_think"
+    }
+  },
+  "events": {
+    "click": {
+      "play": "react_click_greet",
+      "interrupt": "soft",
+      "mood": "pleased",
+      "cooldown_ms": 2800
+    },
+    "drag_end": {
+      "play": "react_drag_release",
+      "interrupt": "soft",
+      "mood": "calm",
+      "cooldown_ms": 800
+    },
+    "drag_start": {
+      "play": "react_drag_brace",
+      "interrupt": "soft",
+      "mood": "concerned",
+      "cooldown_ms": 800
+    },
+    "hover": {
+      "play": "react_hover_peek",
+      "interrupt": "soft",
+      "mood": "curious",
+      "cooldown_ms": 4000
+    },
+    "long_idle": {
+      "play": "react_long_idle_rest",
+      "interrupt": "after_loop",
+      "mood": "tired",
+      "cooldown_ms": 20000
+    },
+    "task_done": {
+      "play": "react_task_celebrate",
+      "interrupt": "after_loop",
+      "mood": "pleased",
+      "cooldown_ms": 6000
+    },
+    "task_failed": {
+      "play": "react_task_concern",
+      "interrupt": "after_loop",
+      "mood": "concerned",
+      "cooldown_ms": 6000
+    },
+    "task_started": {
+      "play": "react_task_focus",
+      "interrupt": "after_loop",
+      "mood": "focused",
+      "cooldown_ms": 4000
+    }
+  },
+  "reactions": {
+    "click_greet": {
+      "event": "click",
+      "play": "react_click_greet",
+      "interrupt": "soft",
+      "mood": "pleased",
+      "cooldown_ms": 2800,
+      "weight": 4
+    },
+    "click_notice": {
+      "event": "click",
+      "play": "react_click_notice",
+      "interrupt": "soft",
+      "mood": "curious",
+      "cooldown_ms": 2800,
+      "weight": 2
+    },
+    "drag_brace": {
+      "event": "drag_start",
+      "play": "react_drag_brace",
+      "interrupt": "soft",
+      "mood": "concerned",
+      "cooldown_ms": 800,
+      "weight": 3
+    },
+    "drag_release": {
+      "event": "drag_end",
+      "play": "react_drag_release",
+      "interrupt": "soft",
+      "mood": "calm",
+      "cooldown_ms": 800,
+      "weight": 3
+    },
+    "hover_blink": {
+      "event": "hover",
+      "play": "react_hover_blink",
+      "interrupt": "soft",
+      "mood": "calm",
+      "cooldown_ms": 4500,
+      "weight": 1
+    },
+    "hover_peek": {
+      "event": "hover",
+      "play": "react_hover_peek",
+      "interrupt": "soft",
+      "mood": "curious",
+      "cooldown_ms": 4000,
+      "weight": 3
+    },
+    "long_idle_rest": {
+      "event": "long_idle",
+      "play": "react_long_idle_rest",
+      "interrupt": "after_loop",
+      "mood": "tired",
+      "cooldown_ms": 20000,
+      "weight": 3
+    },
+    "task_celebrate": {
+      "event": "task_done",
+      "play": "react_task_celebrate",
+      "interrupt": "after_loop",
+      "mood": "pleased",
+      "cooldown_ms": 6000,
+      "weight": 3
+    },
+    "task_concern": {
+      "event": "task_failed",
+      "play": "react_task_concern",
+      "interrupt": "after_loop",
+      "mood": "concerned",
+      "cooldown_ms": 6000,
+      "weight": 3
+    },
+    "task_focus": {
+      "event": "task_started",
+      "play": "react_task_focus",
+      "interrupt": "after_loop",
+      "mood": "focused",
+      "cooldown_ms": 4000,
+      "weight": 3
+    },
+    "task_listen": {
+      "event": "task_started",
+      "play": "react_task_listen",
+      "interrupt": "after_loop",
+      "mood": "curious",
+      "cooldown_ms": 4500,
+      "weight": 1
+    },
+    "task_settle": {
+      "event": "task_done",
+      "play": "react_task_settle",
+      "interrupt": "after_loop",
+      "mood": "calm",
+      "cooldown_ms": 7000,
+      "weight": 1
+    }
+  },
+  "rules": {
+    "no_repeat_last": 3,
+    "crossfade_ms": 160,
+    "max_interrupt_ms": 800
+  }
+}

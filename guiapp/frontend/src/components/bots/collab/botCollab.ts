@@ -190,6 +190,53 @@ export function saidSince(messageIds: string[], now = Date.now()): number {
     return Math.max(now - 12 * 3600 * 1000, ...messageIds.map(messageIdTime));
 }
 
+export type PlacedSays = { after: Map<string, SaidItem[]>; trailing: SaidItem[] };
+
+// routineReask is a timer asking the person to decide something again
+// ("说一声我就固定下来"). The chat already has their answer.
+function routineReask(text: string): boolean {
+    return /说一声|你要[\s\S]{0,24}的话/.test(String(text || ''));
+}
+
+/**
+ * placeChatSays keeps a say where it was said. Ones older than the latest
+ * bubble sit after the bubble that was already on screen; only a newer say
+ * stays under the transcript. A newer say that asks the person to choose
+ * again is left out — they already answered in the chat.
+ */
+export function placeChatSays(items: SaidItem[], botId: string, isPrimary: boolean, messages: Array<{ id: string; role: string; content?: string }>, ownChats?: string[]): PlacedSays {
+    const after = new Map<string, SaidItem[]>();
+    const trailing: SaidItem[] = [];
+    const mine = saidForChat(items, botId, isPrimary, 0, ownChats)
+        .slice()
+        .sort((a, b) => Date.parse(String(a.created_at || '')) - Date.parse(String(b.created_at || '')));
+    const anchors = messages
+        .map(message => ({ id: message.id, t: messageIdTime(message.id) }))
+        .filter(message => message.t > 0);
+    const latest = anchors.reduce((max, message) => Math.max(max, message.t), 0);
+    const answered = messages.some(message => message.role === 'user' && String(message.content || '').trim() !== '');
+    for (const say of mine) {
+        const at = Date.parse(String(say.created_at || ''));
+        if (!at || at > latest) {
+            if (answered && routineReask(say.text)) continue;
+            trailing.push(say);
+            continue;
+        }
+        let anchor = anchors[0]?.id || '';
+        for (const message of anchors) {
+            if (message.t <= at) anchor = message.id;
+        }
+        if (!anchor) {
+            trailing.push(say);
+            continue;
+        }
+        const list = after.get(anchor) || [];
+        list.push(say);
+        after.set(anchor, list);
+    }
+    return { after, trailing };
+}
+
 /** Bots that spoke in a room after the person's last message. */
 export function answeredSinceLast(items: SaidItem[]): string[] {
     const out: string[] = [];

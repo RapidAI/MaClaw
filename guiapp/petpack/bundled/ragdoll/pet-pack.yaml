@@ -1,0 +1,94 @@
+schema_version: 3
+id: ragdoll
+name: Ragdoll
+version: 3.0.0
+author: MaClaw Official
+license: proprietary
+description: "A ragdoll cat-girl desktop companion who walks, runs, jumps, bows, and sings"
+tier: figurative
+min_maclaw_version: "0.0.0"
+label:
+  en: Ragdoll
+  zh-Hans: 布偶猫
+  zh-Hant: 布偶貓
+description_i18n:
+  en: "A ragdoll cat-girl who walks the desktop, runs, jumps, bows, and sings"
+  zh-Hans: "会在桌面上走动、奔跑、跳跃、弯腰和唱歌的布偶猫女娘"
+  zh-Hant: "會在桌面上走動、奔跑、跳躍、彎腰和唱歌的布偶貓女娘"
+preview: preview.png
+default_size: 88
+tone: balanced
+tags: ["official", "default"]
+renderer: native-character
+face_overlay: false
+assets:
+  preview: preview.png
+  native:
+    idle: native/idle.png
+    listening: native/listening.png
+    thinking: native/thinking.png
+    speaking: native/speaking.png
+    done: native/done.png
+    alert: native/alert.png
+    quiet: native/quiet.png
+  rig:
+    definition: rig/ragdoll.pet-rig.json
+    textures:
+      - rig/tail.png
+      - rig/leg-l.png
+      - rig/leg-r.png
+      - rig/torso.png
+      - rig/arm-l.png
+      - rig/arm-r.png
+      - rig/head.png
+      - rig/mouth.png
+      - rig/eyes.png
+  character:
+    definition: character/ragdoll.performer.json
+fallback:
+  renderer: native-skeleton
+  idle: native/idle.png
+variants:
+  - id: default
+    tier: figurative
+    renderer: native-character
+    face_overlay: false
+    assets:
+      native:
+        idle: native/idle.png
+        listening: native/listening.png
+        thinking: native/thinking.png
+        speaking: native/speaking.png
+        done: native/done.png
+        alert: native/alert.png
+        quiet: native/quiet.png
+      rig:
+        definition: rig/ragdoll.pet-rig.json
+        textures:
+          - rig/tail.png
+          - rig/leg-l.png
+          - rig/leg-r.png
+          - rig/torso.png
+          - rig/arm-l.png
+          - rig/arm-r.png
+          - rig/head.png
+          - rig/mouth.png
+          - rig/eyes.png
+      character:
+        definition: character/ragdoll.performer.json
+  - id: classic
+    tier: classic
+    renderer: procedural-fallback
+    face_overlay: true
+motion:
+  idle_ms: 4000
+  listening_ms: 1200
+  thinking_ms: 1800
+  speaking_ms: 1280
+  amplitude: 1
+  sound_profile: classic
+  pitch: 1
+capabilities:
+  supports_done_state: true
+  supports_alert_state: true
+  pet_performance_v3: true

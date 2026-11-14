@@ -2,6 +2,7 @@ package botmgmt
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"os"
@@ -99,6 +100,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 		Phase:           decision.Phase,
 		RunID:           decision.RunID,
 		ClientMessageID: in.ClientMessageID,
+		Instruction:     strings.TrimSpace(decision.Instruction),
 		Schedule:        decision.Schedule,
 	}
 	if in.Admit && !actionReturn && decision.Kind == "new" && s.personHasBotKeyboard(in.TenantID, in.UserID, in.BotID) {
@@ -259,6 +261,9 @@ func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest
 		}
 		body["running"] = rows
 	}
+	if earlier := s.earlierDesktopLines(ctx, in.TenantID, in.UserID, in.BotID, in.Content); len(earlier) > 0 {
+		body["earlier"] = earlier
+	}
 	var out desktopIntake
 	path := "/api/v1/instances/" + url.PathEscape(in.InstanceID) + "/bot-intake"
 	err := s.authAsOwner(rctx, in.TenantID, in.UserID, rec, token, http.MethodPost, path, body, &out)
@@ -274,4 +279,49 @@ func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest
 		out.Phase = "execute"
 	}
 	return out
+}
+
+// earlierDesktopLines is the recent chat Intake should see with the new
+// message. The line that is the new message itself is left out. Only the
+// last few lines are sent.
+func (s *Service) earlierDesktopLines(ctx context.Context, tenantID, userID, botID, current string) []string {
+	if s == nil {
+		return nil
+	}
+	page, err := s.ReadConversation(ctx, tenantID, userID, botID, 0, convPageMax, 0)
+	if err != nil || len(page.Entries) == 0 {
+		return nil
+	}
+	current = strings.TrimSpace(current)
+	var lines []string
+	for _, entry := range page.Entries {
+		if entry.Kind != convKindMessage || len(entry.Data) == 0 {
+			continue
+		}
+		var msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+			Deleted bool   `json:"deleted"`
+		}
+		if json.Unmarshal(entry.Data, &msg) != nil || msg.Deleted {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" || content == current {
+			continue
+		}
+		who := "助手"
+		if msg.Role == "user" {
+			who = "用户"
+		}
+		rs := []rune(content)
+		if len(rs) > 200 {
+			content = string(rs[:200])
+		}
+		lines = append(lines, who+": "+content)
+	}
+	if len(lines) > 8 {
+		lines = lines[len(lines)-8:]
+	}
+	return lines
 }

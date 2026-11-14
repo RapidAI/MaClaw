@@ -611,6 +611,43 @@ hub 与 maclawsrv 都能从本地工区**逐字节复现**对方那份，等于�
 
 备份（各台一份）：`desktopd.bak-12412-20261019`，maclaw.top 另有 `maclaw-hub.bak-12412-20261019`、`maclawsrv.bak-12412-20261019`。
 
+#### 12624（2026-11-14 14:30 CST）
+
+距上一轮近一个月，中间发布完全由对面流水线接管过若干轮。HEAD `1162acf1`（V8.2.0.12624，当天 13:32 提交），工作区干净，`build_number` 12624。
+
+动手前的线上局面：
+
+| 组件 | mypapers | maclaw.top |
+| --- | --- | --- |
+| maclaw-hub | `88d30d5c…`（当天 10:46，对方发的） | 同哈希（当天 10:48） |
+| maclawsrv | `808df63e…`，`/version` 报 `12620`/`2afede21`（当天 07:57） | `667965e3…`，**10-29 的 dev 构建**：`/version` 报 `{"built_at":"","commit":"","version":"dev"}`，且未 strip（94.9 MB） |
+| desktopd | `1a499a18…`（11-13） | `241469fa…`（11-11） |
+
+两件事先核实过才动手：`2afede21` 是 HEAD 的祖先（差 6 个提交），拉到 12624 是纯前进；maclaw.top 的桌面容器**已经没有了**——11-11 那天对面做了镜像重建（留有 `maclaw-gui:2-bak-d101-20261111` 快照），容器随之清空，所以这台的容器核对是空集，不是异常。
+
+按三种配方重编（maclawsrv 元数据：`12624` / `1162acf1` / `2026-11-14T14:06:22+08:00`）：hub `b44c1af5…`（与线上同尺寸 107,734,032 字节但内容不同——hub 不注入元数据，哈希变即代码变）、maclawsrv `3abcd1f6…`、desktopd `0de56340…`。六份全部落后，**三件套 × 两台全换**。
+
+| 组件（12624） | mypapers | maclaw.top |
+| --- | --- | --- |
+| maclawsrv `3abcd1f6…` | PID 2134 | PID 1219275 |
+| desktopd `0de56340…` | PID 2082 | PID 1219251 |
+| maclaw-hub `b44c1af5…` | PID 2733 | PID 1219306 |
+| `/version` | `12624` / `1162acf1` | 同左 |
+| `/v1/health`（带 token） | 200 | 200 |
+| hub 9399 bootstrap（不带 token） | 401 | 401 |
+| 桌面容器 | 3 个 Exited，ID 与状态前后一致 | （空，见上文） |
+
+`/proc/<pid>/exe` 复核六个进程全部是新二进制；端口 18080/18081/18082/18083/9399 各归其主。
+
+过程中两次「异常」都不是这次部署造成的，记下判据：
+
+- **maclaw.top hubcenter「消失」**：我 pgrep 时正好抓到它停止/启动之间 2 秒的空窗——journal 显示 06:17:39 有显式 `Stopping`（`NRestarts=0`，不是崩溃自愈），对面流水线在 14:16-14:17 部署了新 hubcenter（两台同尺寸 68,861,481 字节）并显式重启。现在两台都健康（mypapers PID 2705、maclaw.top PID 1219905，监听 9388）。**重启会话期间 hubcenter 短暂不在，先看 journal 的 Stopping/Started 再下结论。**
+- **两台各有一个 11-04 启动的 `maclawsrv model-serve` 孤儿进程**（mypapers PID 17571、maclaw.top PID 2265518，PPID=1，`exe` 显示 `(deleted)`）：历次 maclawsrv 替换把父进程换掉后子进程脱离留下的。实测**不监听任何端口、无连接**，期间多次部署都相安无事，新的 maclawsrv 也没有立刻再 spawn（按需启动）。先不动，留待发布流程在空窗期清理；动手前先 `ss` 确认无端口无连接。
+
+另：maclaw.top 重启时 systemd 提示 `maclawsrv.service` / `maclaw-desktopd.service` 的 unit 文件在磁盘上有变化（对面 11-11 动过 unit），只是警告，重启本身成功；`daemon-reload` 属于对面流程的事，本节流程不改 unit。
+
+备份（各台三份）：`maclawsrv.bak-12624-20261114`、`desktopd.bak-12624-20261114`、`maclaw-hub.bak-12624-20261114`。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为

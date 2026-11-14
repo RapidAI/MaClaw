@@ -42,7 +42,7 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check", "finish"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "open_screen", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check", "finish"}
 
 var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check", "finish"}
 
@@ -105,6 +105,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"action=file_read, file_write, file_edit, and file_list use a path inside this container. Each run has its own project folder (named in the first file or bash result): bash starts there and a relative path such as a.c resolves there. Keep code, logs and temporary files in it; the Desktop and the home folder are the person's, so write there only when the person asked for that place (user_location=true). action=bash runs one command in this container and returns its output. A one-off script is file_write, then bash. " +
 			"A job expected to run for minutes or more (training, a remote compile, a large download, anything started with nohup or background=true) must be started in the background: action=bash with background=true (or the same command you would have waited on). That starts it detached, stores its status, and a watcher polls pid, logs and metrics on a timer; this turn then ends. Do not block this run waiting for it to finish. Progress, stalls, failures and completion are sent to this chat with evidence from the last poll. action=job_status (optional job_id=) and job_list look at that state without waiting. " +
 			"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
+			"The screen stays off until action=open_screen. Call open_screen only when this task needs a visible desktop: a browser, a screenshot, a window, or clicking and typing on screen. Do not call it for ssh, training, compiling, files, or any command that only needs a shell. One open_screen is enough for the task. A screen step before that fails and tells you to call it. " +
 			"action=screenshot returns an image of the whole desktop; its pixel coordinates are the ones app_run click uses. " +
 			desktopScreenVisionPrompt(desktopTurnSeesImages(request)) +
 			"To put that image on the desktop, set name to one file name ending in .png. The file is written to /home/desktop/Desktop and the result says Saved with that path. Without name, nothing is written. Do not invent a file path. " +
@@ -126,7 +127,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":             map[string]any{"type": "string", "description": "probe, speculate (safe precheck only: check_login/check_posted/prepare_draft/snapshot_page; stays quiet when nothing useful; never publish/pay/delete), script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash in this run's own scratch folder ($TMPDIR when set, else /tmp), open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
+				"action":             map[string]any{"type": "string", "description": "probe, speculate (safe precheck only: check_login/check_posted/prepare_draft/snapshot_page; stays quiet when nothing useful; never publish/pay/delete), script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, open_screen (start this bot's visible screen only when the task needs a browser, screenshot, window, or clicks; never for ssh, training, compile, or shell-only work), computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash in this run's own scratch folder ($TMPDIR when set, else /tmp), open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
 				"kind":               map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
 				"message":            map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
 				"target":             map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id. A partial name or number works (\"5\" or \"5号\" finds \"Bot 5\", \"写作\" finds \"写作助手\"); if several bots fit, or none, the error lists the names: ask the person which one."},
@@ -253,14 +254,8 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 		desktopWatchdogStopByUser(scope.RunID)
 		return "", errWatchdogStop
 	}
-	// An isolated bot's screen has to exist before the first action. Opening
-	// it here means a cold container does not answer the first bash with
-	// "not open yet". Owner desktops and headless steps of the owner skip it.
-	if err := ensureBotScreen(ctx, scope, false); err != nil {
-		desktopWatchdogAfter(scope, err)
-		desktopWatchdogResult(scope, action, args, "", err)
-		return "", err
-	}
+	// The screen is not opened here. The model calls action=open_screen when
+	// the task needs a visible desktop. Shell, files, and training do not.
 	warn, stop := desktopWatchdogBefore(scope, action, args)
 	if stop != nil {
 		return "", stop
@@ -490,19 +485,9 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 			}
 		}
 		if err != nil && ctx.Err() == nil && desktopColdStart(err) {
-			// Exactly one retry. The screen was still closed. Open it and
-			// run this step once more. This is not an outage.
-			first := err
-			if openErr := ensureBotScreen(ctx, scope, true); openErr != nil {
-				err = fmt.Errorf("%s: this bot's screen did not open (%v). Retry this same step once; do not switch method", desktopbot.CodeBotScreenClosed, openErr)
-			} else {
-				out, err = operateDesktopWithTimeout(opCtx, scope, opArgs)
-				if err == nil {
-					out = "(this bot's screen was not open; it was opened and this step ran again)\n" + out
-				} else if desktopColdStart(err) {
-					err = fmt.Errorf("%s: this bot's screen is still not open after one open. Retry this same step once; do not switch method (%w)", desktopbot.CodeBotScreenClosed, first)
-				}
-			}
+			// The screen stays closed until the model calls open_screen.
+			// Opening it here would start a display for a shell-only task.
+			err = desktopOpenScreenFirst(err)
 		}
 		if err != nil && ctx.Err() == nil && desktopOutageAllowed(desktopOwner(scope), actionName, err) {
 			// The call never reached the desktop (Hub restarting, or this
@@ -680,6 +665,7 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 		"web_search and web_fetch use this desktop's network. A site the user may have signed into stays in this desktop browser, because those two tools do not see that login. " +
 		"Files and commands use action=file_read, file_write, file_edit, file_list, and action=bash inside this container. " +
 		"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
+		"The screen stays off until action=open_screen. Call open_screen only when this task needs a visible desktop: a browser, a screenshot, a window, or clicking and typing on screen. Do not call it for ssh, training, compiling, files, or any command that only needs a shell. One open_screen is enough for the task. A screen step before that fails and tells you to call it. " +
 		"This user's bots are different instances of the same MaClawSrv user, and those instances share this desktop. Other users have separate desktops. " +
 		"Web pages: probe once. When the controls are listed, one action=script clicks, types, selects, presses, and scrolls them, including a cookie accept button. Do not probe again between those steps. name on that script keeps it. skill_list then skill_run repeats a saved script without another probe. A password, phone number, or verification code is requested in this chat and then filled in. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. Navigate only to another page of this site. Do not pixel-click the browser. " +
 		"A probe with no filter that finds no element ref includes one desktop image so you can see the page. If a filter matches nothing, probe again without it. The next web step is still an element ref, not a pixel click. " +
@@ -874,6 +860,10 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			return "", fmt.Errorf("%s", desktopbot.PlanPhaseNextStep)
 		}
 	}
+	if action == "open_screen" {
+		defer beginDesktopActivity(scope.RunID, "正在打开屏幕")()
+		return openDesktopScreen(ctx, scope)
+	}
 	if action == "script" {
 		if desktopArg(args, "script") == "" {
 			return "", fmt.Errorf("desktop script requires script")
@@ -912,6 +902,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		return out, err
 	}
 	if action == "bash" && desktopBashLaunchesGUI(desktopArg(args, "command")) {
+		if err := desktopBotMustOpenScreen(scope, action, args); err != nil {
+			return "", err
+		}
 		return operateDesktopBashGUI(ctx, scope, args)
 	}
 	if action == "proxy_mode" {
@@ -1012,6 +1005,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			}
 		}
 		return runDesktopHubTool(ctx, scope, action, args)
+	}
+	if err := desktopBotMustOpenScreen(scope, action, args); err != nil {
+		return "", err
 	}
 	endpoint, err := ensureDesktopRound(ctx, scope, userKey, true)
 	if err != nil {

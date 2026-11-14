@@ -53,12 +53,6 @@ func (a *App) ArmDesktopBotSchedule(botID, name, mode, action string, intervalMi
 	if mode != "create" {
 		return "", fmt.Errorf("desktop bot understanding omitted the schedule")
 	}
-	if action == "" {
-		return "", fmt.Errorf("desktop bot understanding omitted the work order")
-	}
-	if name == "" {
-		name = clipRunes(action, 40)
-	}
 	if dayOfWeek < -1 || dayOfWeek > 6 {
 		return "", fmt.Errorf("desktop bot understanding omitted the schedule")
 	}
@@ -82,15 +76,35 @@ func (a *App) ArmDesktopBotSchedule(botID, name, mode, action string, intervalMi
 	} else if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
 		return "", fmt.Errorf("desktop bot understanding omitted the schedule")
 	}
+	var mine []scheduler.ScheduledTask
 	for _, existing := range mgr.List() {
 		if existing.Status != "active" || existing.DesktopBotID != id || existing.DesktopBotOwner != owner {
 			continue
 		}
-		if strings.TrimSpace(existing.Action) != action {
-			continue
+		mine = append(mine, existing)
+	}
+	rowID, keptAction := "", ""
+	for _, existing := range mine {
+		if name != "" && existing.Name == name {
+			rowID, keptAction = existing.ID, strings.TrimSpace(existing.Action)
+			break
 		}
-		if err := mgr.Update(existing.ID, map[string]interface{}{
+	}
+	if rowID == "" && action != "" {
+		for _, existing := range mine {
+			if strings.TrimSpace(existing.Action) == action {
+				rowID, keptAction = existing.ID, strings.TrimSpace(existing.Action)
+				break
+			}
+		}
+	}
+	if rowID != "" {
+		if action == "" {
+			action = keptAction
+		}
+		if err := mgr.Update(rowID, map[string]interface{}{
 			"name":             name,
+			"action":           action,
 			"hour":             task.Hour,
 			"minute":           task.Minute,
 			"day_of_week":      task.DayOfWeek,
@@ -98,9 +112,15 @@ func (a *App) ArmDesktopBotSchedule(botID, name, mode, action string, intervalMi
 		}); err != nil {
 			return "", err
 		}
-		log.Printf("[desktop-bot-schedule] update id=%s bot=%q interval=%d hour=%d minute=%d", existing.ID, id, task.IntervalMinutes, task.Hour, task.Minute)
+		log.Printf("[desktop-bot-schedule] update id=%s bot=%q interval=%d hour=%d minute=%d", rowID, id, task.IntervalMinutes, task.Hour, task.Minute)
 		a.noteDesktopBotSchedulesChanged()
-		return existing.ID, nil
+		return rowID, nil
+	}
+	if action == "" {
+		return "", fmt.Errorf("desktop bot understanding omitted the work order")
+	}
+	if task.Name == "" {
+		task.Name = clipRunes(action, 40)
 	}
 	taskID, err := mgr.Add(task)
 	if err != nil {
@@ -116,6 +136,25 @@ func (a *App) noteDesktopBotSchedulesChanged() {
 		return
 	}
 	a.emitEvent("scheduled-tasks-changed")
+}
+
+// desktopBotScheduleWeekday is the weekday already stored for this timer.
+// A schedule decision that omits day_of_week means that weekday stays.
+func (a *App) desktopBotScheduleWeekday(botID, name string) (int, bool) {
+	name = strings.TrimSpace(name)
+	if a == nil || name == "" {
+		return 0, false
+	}
+	listed, err := a.ListDesktopBotSchedules(botID)
+	if err != nil {
+		return 0, false
+	}
+	for _, item := range listed {
+		if item.Name == name {
+			return item.DayOfWeek, true
+		}
+	}
+	return 0, false
 }
 
 // DesktopBotScheduleInfo is one timed job of this bot, for the schedules tab.
@@ -499,7 +538,7 @@ func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text strin
 		owner = "local"
 	}
 	requestID := fmt.Sprintf("desktop-bot-sched-%s-%d", strings.TrimSpace(task.ID), time.Now().UnixNano())
-	ids := stageDesktopPictures(botID, result.Images, result.Files)
+	shots, local, ids := landDesktopBotMedia(botID, result.Images, result.Files)
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: result.SendToUser})
 	payload := map[string]any{
 		"request_id":      requestID,
@@ -512,7 +551,13 @@ func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text strin
 		payload["text"] = text
 	}
 	if visible.Bubble && !visible.Failed {
-		payload["send_to_user"] = visible.Sentence
+		payload["send_to_user"] = localizeDesktopPaths(visible.Sentence, append(append([]string{}, shots...), local...))
+	}
+	if len(shots) > 0 {
+		payload["desktop_shot_paths"] = shots
+	}
+	if len(local) > 0 {
+		payload["local_file_paths"] = local
 	}
 	if runErr != nil {
 		payload["error"] = runErr.Error()

@@ -87,7 +87,7 @@ func TestScreenLeaseClassifiesSteps(t *testing.T) {
 			t.Errorf("%s needs the screen", a)
 		}
 	}
-	for _, a := range []string{"bash", "file_read", "file_write", "file_edit", "file_list", "install", "deliver", "job_status", "goal_check", "say"} {
+	for _, a := range []string{"bash", "open_screen", "file_read", "file_write", "file_edit", "file_list", "install", "deliver", "job_status", "goal_check", "say"} {
 		if desktopScreenLeaseNeeded(a, map[string]any{"command": "python3 train.py"}) {
 			t.Errorf("%s does not need the screen", a)
 		}

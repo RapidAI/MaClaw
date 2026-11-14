@@ -33,17 +33,9 @@ func (s *Service) specDisplay(ctx context.Context, spec Spec, requested string) 
 		return requested, nil
 	}
 	display, err := s.readBotDisplay(ctx, spec)
-	if err == nil {
-		return display, nil
-	}
-	// The container can be up (ensure-start) while this bot's screen is not.
-	// Open it here, idempotently, instead of answering 400 and leaving the
-	// caller to guess. A second caller of the same bot waits on the same open.
-	if openErr := s.ensureBotScreen(ctx, spec); openErr != nil {
-		return "", botScreenClosedErr()
-	}
-	display, err = s.readBotDisplay(ctx, spec)
 	if err != nil {
+		// The model opens this display with action=open_screen. A click,
+		// screenshot, or app does not start it on its own.
 		return "", botScreenClosedErr()
 	}
 	return display, nil

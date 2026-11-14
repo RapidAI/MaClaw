@@ -352,18 +352,21 @@ func TestFinishedReplyCarriesTheDesktopScreenshot(t *testing.T) {
 		desktopBotResultSink = nil
 	})
 	app.finishDesktopBotTask("desktop-bot-shot", "alice:bot_1", "bot_1", "看一下环境", "plan")
-	if got == nil || got.Text != "桌面截图已生成" || len(got.DesktopImages) != 0 || len(got.DesktopShotPaths) != 0 || len(got.DesktopAttachmentIDs) != 1 || got.DesktopAttachmentIDs[0] != "shot-1" {
+	if got == nil || got.Text != "桌面截图已生成" || len(got.DesktopImages) != 0 || len(got.DesktopShotPaths) != 1 || len(got.DesktopAttachmentIDs) != 0 {
 		t.Fatalf("reply=%#v", got)
 	}
-	shot, err := app.FetchDesktopBotAttachment("bot_1", "shot-1")
+	if !strings.HasSuffix(got.DesktopShotPaths[0], "screenshot.png") {
+		t.Fatalf("shot path=%q", got.DesktopShotPaths[0])
+	}
+	shot, err := app.ReadDesktopBotShot(got.DesktopShotPaths[0])
 	if err != nil || shot == nil || shot.Data != payload || shot.MIME != "image/png" {
 		t.Fatalf("fetch=%v %v", shot, err)
 	}
-	if _, err := app.FetchDesktopBotAttachment("bot_other", "shot-1"); err == nil {
+	if _, err := os.Stat(filepath.Join(corelib.MaclawDataDir(), "bot-files", "bot_other")); !os.IsNotExist(err) {
 		t.Fatal("another bot received the screenshot")
 	}
 	raw, err := json.Marshal(got)
-	if err != nil || !strings.Contains(string(raw), `"desktop_attachment_ids"`) || strings.Contains(string(raw), payload) {
+	if err != nil || !strings.Contains(string(raw), `"desktop_shot_paths"`) || strings.Contains(string(raw), payload) {
 		t.Fatalf("event=%s err=%v", raw, err)
 	}
 }
@@ -391,13 +394,16 @@ func TestFinishedReplyCarriesTheDocument(t *testing.T) {
 		desktopBotResultSink = nil
 	})
 	app.finishDesktopBotTask("desktop-bot-file", "alice:bot_1", "bot_1", "生成文档", "execute")
-	if got == nil || got.Text != "文件已放在这条回复里" || len(got.DesktopFiles) != 0 || len(got.LocalFilePaths) != 0 || len(got.DesktopAttachmentIDs) != 1 || got.DesktopAttachmentIDs[0] != "file-1" {
+	if got == nil || got.Text != "文件已放在这条回复里" || len(got.DesktopFiles) != 0 || len(got.LocalFilePaths) != 1 || len(got.DesktopAttachmentIDs) != 0 {
 		t.Fatalf("reply=%#v", got)
 	}
-	if _, err := os.Stat(filepath.Join(corelib.MaclawDataDir(), "bot-files")); !os.IsNotExist(err) {
-		t.Fatalf("document was written on this machine: %v", err)
+	if filepath.Base(got.LocalFilePaths[0]) != "自我描述.docx" {
+		t.Fatalf("local=%v", got.LocalFilePaths)
 	}
-	first, left := storeDesktopBotFiles("bot_1", []DesktopBotFile{{
+	if _, err := os.Stat(got.LocalFilePaths[0]); err != nil {
+		t.Fatalf("document was not written on this machine: %v", err)
+	}
+	first, left := storeDesktopBotFiles("bot_store", []DesktopBotFile{{
 		Name: "自我描述.docx",
 		MIME: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		Data: payload,
@@ -405,7 +411,7 @@ func TestFinishedReplyCarriesTheDocument(t *testing.T) {
 	if len(left) != 0 || len(first) != 1 || filepath.Base(first[0]) != "自我描述.docx" {
 		t.Fatalf("saved=%v left=%v", first, left)
 	}
-	again, left := storeDesktopBotFiles("bot_1", []DesktopBotFile{{
+	again, left := storeDesktopBotFiles("bot_store", []DesktopBotFile{{
 		Name: "自我描述.docx",
 		MIME: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		Data: payload,
@@ -414,7 +420,7 @@ func TestFinishedReplyCarriesTheDocument(t *testing.T) {
 		t.Fatalf("collision=%v left=%v", again, left)
 	}
 	raw, err := json.Marshal(got)
-	if err != nil || !strings.Contains(string(raw), `"desktop_attachment_ids"`) || strings.Contains(string(raw), `"local_file_paths"`) || strings.Contains(string(raw), payload) {
+	if err != nil || !strings.Contains(string(raw), `"local_file_paths"`) || strings.Contains(string(raw), payload) {
 		t.Fatalf("event=%s err=%v", raw, err)
 	}
 }

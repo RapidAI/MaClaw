@@ -71,9 +71,9 @@ func TestDesktopD97OutageErrorsRecognised(t *testing.T) {
 	}
 }
 
-// The first bash hits "desktop is not open yet". Open the screen and run the
-// step once more. Do not spend the outage window or mark infra_timeout.
-func TestDesktopD97BashOpensTheScreenAndRetriesOnce(t *testing.T) {
+// A closed screen is the model's decision, not an automatic open and not an
+// outage wait. The step fails once and tells the model to call open_screen.
+func TestDesktopD97ClosedScreenAsksForOpenScreen(t *testing.T) {
 	req := d97Env(t)
 	reconnects := 0
 	desktopOutageReconnect = func(context.Context, agentruntime.Scope) string {
@@ -89,26 +89,19 @@ func TestDesktopD97BashOpensTheScreenAndRetriesOnce(t *testing.T) {
 	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
 		if desktopArg(args, "action") == "bash" {
 			calls++
-			if calls == 1 {
-				return "", errors.New(d97NotOpen)
-			}
-			return "ssh ok: Linux macmini", nil
+			return "", errors.New(d97NotOpen)
 		}
 		return "ok", nil
 	}
-	out, err := invoke(t, req, map[string]any{"action": "bash", "command": "echo hi"})
-	if err != nil {
-		t.Fatalf("bash after the screen opened: %v", err)
+	_, err := invoke(t, req, map[string]any{"action": "bash", "command": "echo hi"})
+	if err == nil || !strings.Contains(err.Error(), "action=open_screen") || !strings.Contains(err.Error(), "BOT_SCREEN_CLOSED") {
+		t.Fatalf("err=%v", err)
 	}
-	if calls != 2 || opens != 2 || reconnects != 0 || !strings.Contains(out, "ssh ok") || strings.Contains(out, "unavailable") {
-		t.Fatalf("calls=%d opens=%d reconnects=%d out=%q", calls, opens, reconnects, out)
+	if calls != 1 || opens != 0 || reconnects != 0 {
+		t.Fatalf("calls=%d opens=%d reconnects=%d", calls, opens, reconnects)
 	}
 	if desktopOutageWasSeen(req.Scope.RunID) {
 		t.Fatal("a closed screen was waited out as an outage")
-	}
-	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "nvidia-smi"})
-	if err != nil || strings.Contains(out, "blocked") {
-		t.Fatalf("second bash: %q %v", out, err)
 	}
 }
 

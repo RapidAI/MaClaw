@@ -24,6 +24,23 @@ func convService(t *testing.T) (*Service, *memSettings) {
 	return NewService(settings), settings
 }
 
+func TestEarlierDesktopLinesOmitsTheMessageJustSent(t *testing.T) {
+	svc, _ := convService(t)
+	ctx := context.Background()
+	_, err := svc.WriteConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_a", "m-1", `{"role":"user","content":"每5分钟向我报告下天气情况"}`),
+		convMsg("bot_a", "m-2", `{"role":"assistant","content":"好的，我会定时向你报告天气情况。"}`),
+		convMsg("bot_a", "m-3", `{"role":"user","content":"北京，下次再生成pdf文件"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := svc.earlierDesktopLines(ctx, "t", "alice", "bot_a", "北京，下次再生成pdf文件")
+	if len(lines) != 2 || !strings.Contains(lines[0], "报告下天气") || !strings.Contains(lines[1], "定时向你报告") {
+		t.Fatalf("lines = %#v", lines)
+	}
+}
+
 func convMsg(bot, id, body string) ConversationWrite {
 	return ConversationWrite{BotID: bot, ID: id, Kind: convKindMessage, Data: json.RawMessage(body)}
 }

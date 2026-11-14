@@ -70,5 +70,7 @@
 	<string>语音输入和演示旁白需要麦克风</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>将你说的话转成文字发给 Bot</string>
+	<key>NSCameraUsageDescription</key>
+	<string>扫描桌面端的移动认证二维码登录账号</string>
 </dict>
 </plist>

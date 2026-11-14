@@ -26,8 +26,10 @@ func persistDesktopBotSchedule(p agentservice.Principal, instanceID string, in a
 }
 
 // armDesktopBotSchedule creates, updates, or cancels one bot's timer.
-// The same work order updates the existing row instead of adding a second
-// one, so a repeated sentence cannot fire twice.
+// The name is the timer. A later decision that uses that name replaces the
+// stored order with the decision's instruction and writes the clock the
+// decision carries. The same stored order updates that row's clock.
+// A different name is a new timer.
 func armDesktopBotSchedule(mgr *scheduler.Manager, p agentservice.Principal, instanceID, botID, content string, decision agentservice.BotIntake) error {
 	if mgr == nil {
 		return fmt.Errorf("desktop bot clock is not running")
@@ -52,17 +54,8 @@ func armDesktopBotSchedule(mgr *scheduler.Manager, p agentservice.Principal, ins
 	if mode != "create" {
 		return fmt.Errorf("desktop bot schedule mode %q is unknown", mode)
 	}
+	givenName := strings.TrimSpace(decision.Schedule.Name)
 	action := strings.TrimSpace(decision.Instruction)
-	if action == "" {
-		action = strings.TrimSpace(content)
-	}
-	if action == "" {
-		return fmt.Errorf("desktop bot schedule has no work order")
-	}
-	name := strings.TrimSpace(decision.Schedule.Name)
-	if name == "" {
-		name = clipScheduleName(action)
-	}
 	hour, minute, day := 0, 0, -1
 	interval := decision.Schedule.IntervalMinutes
 	if interval > 0 {
@@ -74,29 +67,71 @@ func armDesktopBotSchedule(mgr *scheduler.Manager, p agentservice.Principal, ins
 		if decision.Schedule.Minute != nil {
 			minute = *decision.Schedule.Minute
 		}
-		if decision.Schedule.DayOfWeek != nil {
-			day = *decision.Schedule.DayOfWeek
-		}
 	}
+	if decision.Schedule.DayOfWeek != nil {
+		day = *decision.Schedule.DayOfWeek
+	}
+	var mine []scheduler.ScheduledTask
 	for _, existing := range mgr.List() {
 		if existing.Status != "active" || existing.InstanceID != instanceID || existing.DesktopBotID != botID {
 			continue
 		}
-		if strings.TrimSpace(existing.Action) != action {
-			continue
+		mine = append(mine, existing)
+	}
+	matchedID, matchedName, matchedAction := "", "", ""
+	for _, existing := range mine {
+		if givenName != "" && existing.Name == givenName {
+			matchedID, matchedName, matchedAction = existing.ID, existing.Name, strings.TrimSpace(existing.Action)
+			break
 		}
-		if err := mgr.Update(existing.ID, map[string]interface{}{
-			"name":             name,
-			"hour":             hour,
-			"minute":           minute,
-			"day_of_week":      day,
-			"day_of_month":     -1,
-			"interval_minutes": interval,
-		}); err != nil {
+	}
+	if matchedID == "" && action != "" {
+		for _, existing := range mine {
+			if strings.TrimSpace(existing.Action) == action {
+				matchedID, matchedName, matchedAction = existing.ID, existing.Name, strings.TrimSpace(existing.Action)
+				break
+			}
+		}
+	}
+	if matchedID != "" {
+		if action == "" {
+			action = matchedAction
+		}
+		name := givenName
+		if name == "" {
+			name = matchedName
+		}
+		fields := map[string]interface{}{
+			"name":   name,
+			"action": action,
+		}
+		if interval > 0 {
+			fields["interval_minutes"] = interval
+			fields["hour"] = 0
+			fields["minute"] = 0
+		} else if decision.Schedule.Hour != nil && decision.Schedule.Minute != nil {
+			fields["interval_minutes"] = 0
+			fields["hour"] = hour
+			fields["minute"] = minute
+		}
+		if decision.Schedule.DayOfWeek != nil {
+			fields["day_of_week"] = day
+		}
+		if err := mgr.Update(matchedID, fields); err != nil {
 			return err
 		}
-		log.Printf("[desktop-schedule] update id=%s bot=%s interval=%d hour=%d minute=%d", existing.ID, botID, interval, hour, minute)
+		log.Printf("[desktop-schedule] update id=%s bot=%s interval=%d hour=%d minute=%d", matchedID, botID, interval, hour, minute)
 		return nil
+	}
+	if action == "" {
+		action = strings.TrimSpace(content)
+	}
+	if action == "" {
+		return fmt.Errorf("desktop bot schedule has no work order")
+	}
+	name := givenName
+	if name == "" {
+		name = clipScheduleName(action)
 	}
 	id, err := mgr.Add(scheduler.ScheduledTask{
 		Name:            name,
@@ -143,6 +178,35 @@ func cancelDesktopBotSchedules(mgr *scheduler.Manager, instanceID, botID, name s
 		}
 	}
 	return n
+}
+
+// desktopIntakeTimers is what Intake sees, so a follow-up that names a city
+// or a PDF updates the armed row instead of being read on its own.
+func desktopIntakeTimers(instanceID, botID string) []agentservice.BotIntakeTimer {
+	mgr := getSrvSchedulerManager()
+	if mgr == nil {
+		return nil
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	botID = strings.TrimSpace(botID)
+	var out []agentservice.BotIntakeTimer
+	for _, task := range mgr.List() {
+		if task.Status != "active" || task.InstanceID != instanceID || task.DesktopBotID != botID {
+			continue
+		}
+		out = append(out, agentservice.BotIntakeTimer{
+			Name:            task.Name,
+			Action:          task.Action,
+			IntervalMinutes: task.IntervalMinutes,
+			Hour:            task.Hour,
+			Minute:          task.Minute,
+			DayOfWeek:       task.DayOfWeek,
+		})
+		if len(out) == 4 {
+			break
+		}
+	}
+	return out
 }
 
 func clipScheduleName(action string) string {

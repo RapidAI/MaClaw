@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 
 import '../../core/account_store.dart';
 import '../../core/hub_config.dart';
+import 'desktop_auth_qr.dart';
 
 /// Where a code-request left off: the Hub to verify against plus display
 /// hints for the code step.
@@ -160,6 +161,69 @@ class AuthApi {
       phoneNumber: (data['phone_number'] as String? ??
               (isPhone ? request.identity : ''))
           .trim(),
+      token: token,
+      machineId: (data['machine_id'] as String? ?? '').trim(),
+      machineToken: (data['machine_token'] as String? ?? '').trim(),
+      clientId: clientId,
+      addedAt: DateTime.now(),
+    );
+    return VerifyResult(status: status, account: account, message: message);
+  }
+
+  /// Exchanges a scanned desktop authentication QR (About → 移动认证二维码)
+  /// for a machine enrollment on the QR owner's account. The QR is the
+  /// credential — no prior login on this phone is needed.
+  Future<VerifyResult> redeemDesktopQr({
+    required DesktopAuthQrPayload payload,
+    required String machineName,
+    required String clientId,
+    String language = '',
+  }) async {
+    final dio = hubDio(payload.hubUrl);
+    late final Response<Map<String, dynamic>> response;
+    try {
+      response = await dio.post<Map<String, dynamic>>(
+        '/api/mobile/auth/desktop-qr-sessions/redeem',
+        data: {
+          'qr_payload': payload.raw,
+          'machine_name': machineName,
+          'platform': 'mobile',
+          'client_id': clientId,
+          if (language.isNotEmpty) 'language': language,
+        },
+        options: Options(
+          sendTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 45),
+        ),
+      );
+    } on DioException catch (error) {
+      throw hubExceptionFrom(error);
+    }
+    final data = response.data ?? const <String, dynamic>{};
+    final status = (data['status'] as String? ?? '').trim();
+    final token = (data['access_token'] as String? ??
+            data['viewer_token'] as String? ??
+            '')
+        .trim();
+    final message = (data['message'] as String? ?? '').trim();
+    if (token.isEmpty) {
+      return VerifyResult(
+        status: status.isNotEmpty ? status : 'pending',
+        message: message.isNotEmpty ? message : '注册已提交，等待审批通过后再登录',
+      );
+    }
+    final phone = (data['phone_number'] as String? ?? '').trim();
+    final email = (data['email'] as String? ?? '').trim();
+    final identity = phone.isNotEmpty ? phone : email;
+    final account = Account(
+      key: phone.isNotEmpty ? 'phone:$phone' : 'email:${email.toLowerCase()}',
+      label: email.isNotEmpty ? email : identity,
+      hubUrl: normalizeHubUrl(payload.hubUrl),
+      tenantId: (data['tenant_id'] as String? ?? '').trim(),
+      tenantName: (data['tenant_name'] as String? ?? '').trim(),
+      userId: (data['user_id'] as String? ?? '').trim(),
+      email: email,
+      phoneNumber: phone,
       token: token,
       machineId: (data['machine_id'] as String? ?? '').trim(),
       machineToken: (data['machine_token'] as String? ?? '').trim(),

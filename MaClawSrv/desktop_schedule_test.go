@@ -59,6 +59,121 @@ func TestArmDesktopBotScheduleUpdatesTheSameOrder(t *testing.T) {
 	}
 }
 
+func TestArmDesktopBotScheduleKeepsTheWeatherTimerWhenBeijingAndAPDFArrive(t *testing.T) {
+	mgr := newDesktopScheduleManager(t)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "alice"}
+	first := agentservice.BotIntake{
+		Kind:        "schedule",
+		Instruction: "每5分钟向我报告下天气情况",
+		Schedule:    &agentservice.BotIntakeSchedule{Name: "weather_report", Mode: "create", IntervalMinutes: 5},
+	}
+	if err := armDesktopBotSchedule(mgr, p, "inst_1", "bot_5", "每5分钟向我报告下天气情况", first); err != nil {
+		t.Fatal(err)
+	}
+	follow := agentservice.BotIntake{
+		Kind:        "schedule",
+		Instruction: "每5分钟报告北京的天气，并把这一轮做成 PDF",
+		Schedule:    &agentservice.BotIntakeSchedule{Name: "weather_report", Mode: "create", IntervalMinutes: 5},
+	}
+	if err := armDesktopBotSchedule(mgr, p, "inst_1", "bot_5", "北京，下次再生成pdf文件", follow); err != nil {
+		t.Fatal(err)
+	}
+	rows := desktopScheduleRows(mgr, "inst_1", "bot_5")
+	if len(rows) != 1 || rows[0].Name != "weather_report" || rows[0].IntervalMinutes != 5 {
+		t.Fatalf("timer = %+v", rows)
+	}
+	if rows[0].Action != "每5分钟报告北京的天气，并把这一轮做成 PDF" {
+		t.Fatalf("action = %q", rows[0].Action)
+	}
+	other := agentservice.BotIntake{
+		Kind:        "schedule",
+		Instruction: "每5分钟打开百度",
+		Schedule:    &agentservice.BotIntakeSchedule{Name: "baidu", Mode: "create", IntervalMinutes: 15},
+	}
+	if err := armDesktopBotSchedule(mgr, p, "inst_1", "bot_5", "每5分钟打开百度", other); err != nil {
+		t.Fatal(err)
+	}
+	rows = desktopScheduleRows(mgr, "inst_1", "bot_5")
+	if len(rows) != 2 {
+		t.Fatalf("different job rows=%d", len(rows))
+	}
+	for _, row := range rows {
+		if row.Name == "weather_report" && row.Action != "每5分钟报告北京的天气，并把这一轮做成 PDF" {
+			t.Fatalf("weather order changed: %+v", row)
+		}
+	}
+}
+
+func TestArmDesktopBotScheduleKeepsTheOrderAndDoesNotGuessAName(t *testing.T) {
+	mgr := newDesktopScheduleManager(t)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "alice"}
+	first := agentservice.BotIntake{
+		Kind:        "schedule",
+		Instruction: "每5分钟向我报告下天气情况",
+		Schedule:    &agentservice.BotIntakeSchedule{Name: "weather_report", Mode: "create", IntervalMinutes: 5},
+	}
+	if err := armDesktopBotSchedule(mgr, p, "inst_1", "bot_5", "每5分钟向我报告下天气情况", first); err != nil {
+		t.Fatal(err)
+	}
+	clockOnly := agentservice.BotIntake{
+		Kind:     "schedule",
+		Schedule: &agentservice.BotIntakeSchedule{Name: "weather_report", Mode: "create", IntervalMinutes: 10},
+	}
+	if err := armDesktopBotSchedule(mgr, p, "inst_1", "bot_5", "北京，下次再生成pdf文件", clockOnly); err != nil {
+		t.Fatal(err)
+	}
+	rows := desktopScheduleRows(mgr, "inst_1", "bot_5")
+	if len(rows) != 1 || rows[0].Action != "每5分钟向我报告下天气情况" || rows[0].IntervalMinutes != 10 {
+		t.Fatalf("empty instruction = %+v", rows)
+	}
+	other := agentservice.BotIntake{
+		Kind:        "schedule",
+		Instruction: "每5分钟打开百度",
+		Schedule:    &agentservice.BotIntakeSchedule{Mode: "create", IntervalMinutes: 15},
+	}
+	if err := armDesktopBotSchedule(mgr, p, "inst_1", "bot_5", "每5分钟打开百度", other); err != nil {
+		t.Fatal(err)
+	}
+	rows = desktopScheduleRows(mgr, "inst_1", "bot_5")
+	if len(rows) != 2 {
+		t.Fatalf("nameless order rows=%d", len(rows))
+	}
+	for _, row := range rows {
+		if row.Name == "weather_report" && (row.Action != "每5分钟向我报告下天气情况" || row.IntervalMinutes != 10) {
+			t.Fatalf("weather timer = %+v", row)
+		}
+	}
+}
+
+func TestArmDesktopBotScheduleKeepsTheWeekdayWhenTheOrderChanges(t *testing.T) {
+	mgr := newDesktopScheduleManager(t)
+	p := agentservice.Principal{TenantID: "tenant-a", UserID: "alice"}
+	day := 1
+	first := agentservice.BotIntake{
+		Kind:        "schedule",
+		Instruction: "每5分钟向我报告下天气情况",
+		Schedule:    &agentservice.BotIntakeSchedule{Name: "weather_report", Mode: "create", IntervalMinutes: 5, DayOfWeek: &day},
+	}
+	if err := armDesktopBotSchedule(mgr, p, "inst_1", "bot_5", "每5分钟向我报告下天气情况", first); err != nil {
+		t.Fatal(err)
+	}
+	follow := agentservice.BotIntake{
+		Kind:        "schedule",
+		Instruction: "每5分钟报告北京的天气，并把这一轮做成 PDF",
+		Schedule:    &agentservice.BotIntakeSchedule{Name: "weather_report", Mode: "create", IntervalMinutes: 5},
+	}
+	if err := armDesktopBotSchedule(mgr, p, "inst_1", "bot_5", "北京，下次再生成pdf文件", follow); err != nil {
+		t.Fatal(err)
+	}
+	rows := desktopScheduleRows(mgr, "inst_1", "bot_5")
+	if len(rows) != 1 || rows[0].DayOfWeek != 1 || rows[0].DayOfMonth != -1 || rows[0].IntervalMinutes != 5 {
+		t.Fatalf("weekday = %+v", rows)
+	}
+	if rows[0].Action != follow.Instruction {
+		t.Fatalf("action = %q", rows[0].Action)
+	}
+}
+
 func TestPersistDesktopBotScheduleUsesTheHostClock(t *testing.T) {
 	mgr := newDesktopScheduleManager(t)
 	prev := getSrvSchedulerManager()

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -511,6 +512,77 @@ func TestMobileDesktopAuthQRSessionAllowsEmailUserWithBoundPhone(t *testing.T) {
 
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s, want 201", createRec.Code, createRec.Body.String())
+	}
+}
+
+func TestMobileDesktopAuthQRRedeemEnrollsScanner(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	desktopViewerToken, ownerEnroll := issueViewerToken(t, identity, "phone:19900004444")
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
+	createReq.Host = "tenant-a.maclaw.top"
+	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
+	createRec := httptest.NewRecorder()
+	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	qrPayload, _ := created["qr_payload"].(string)
+
+	redeemBody := fmt.Sprintf(`{"qr_payload":%s,"machine_name":"MaClawBot","platform":"mobile","client_id":"scan-1"}`, strconv.Quote(qrPayload))
+	redeemReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions/redeem", strings.NewReader(redeemBody))
+	redeemReq.Host = "tenant-a.maclaw.top"
+	redeemRec := httptest.NewRecorder()
+	MobileDesktopAuthQRRedeemHandler(identity).ServeHTTP(redeemRec, redeemReq)
+	if redeemRec.Code != http.StatusOK {
+		t.Fatalf("redeem status=%d body=%s", redeemRec.Code, redeemRec.Body.String())
+	}
+	var redeemed map[string]any
+	if err := json.Unmarshal(redeemRec.Body.Bytes(), &redeemed); err != nil {
+		t.Fatalf("decode redeem: %v", err)
+	}
+	if token, _ := redeemed["viewer_token"].(string); token == "" {
+		t.Fatalf("redeem response missing viewer_token: %#v", redeemed)
+	}
+	if got, _ := redeemed["user_id"].(string); got != ownerEnroll.UserID {
+		t.Fatalf("redeem user_id=%q want owner %q", got, ownerEnroll.UserID)
+	}
+	if got, _ := redeemed["phone_number"].(string); got != "19900004444" {
+		t.Fatalf("redeem phone_number=%q", got)
+	}
+
+	// One-time: the same QR cannot be redeemed twice.
+	againReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions/redeem", strings.NewReader(redeemBody))
+	againReq.Host = "tenant-a.maclaw.top"
+	againRec := httptest.NewRecorder()
+	MobileDesktopAuthQRRedeemHandler(identity).ServeHTTP(againRec, againReq)
+	if againRec.Code != http.StatusBadRequest {
+		t.Fatalf("second redeem status=%d body=%s, want 400", againRec.Code, againRec.Body.String())
+	}
+}
+
+func TestMobileDesktopAuthQRRedeemRejectsUnknownAndWrongType(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+
+	bad := `{"qr_payload":"{\"v\":2,\"type\":\"maclaw_mobile_llm_authorization\",\"session_id\":\"x\",\"hub_url\":\"https://h\"}"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions/redeem", strings.NewReader(bad))
+	rec := httptest.NewRecorder()
+	MobileDesktopAuthQRRedeemHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("wrong-type status=%d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+
+	unknown := `{"qr_payload":"{\"v\":2,\"type\":\"maclaw_mobile_desktop_authorization\",\"session_id\":\"maqr_missing\",\"hub_url\":\"https://h\"}"}`
+	req = httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions/redeem", strings.NewReader(unknown))
+	rec = httptest.NewRecorder()
+	MobileDesktopAuthQRRedeemHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown status=%d body=%s, want 400", rec.Code, rec.Body.String())
 	}
 }
 

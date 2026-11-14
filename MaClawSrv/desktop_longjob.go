@@ -940,7 +940,9 @@ var desktopLongJobPctRe = regexp.MustCompile(`(?:^|[^0-9.])([0-9]{1,3}(?:\.[0-9]
 // "[12/100]", or a percentage. units is the outer counter's total (0 for a
 // percentage). Notation, not commands: any job that prints its progress.
 func desktopLongJobProgress(tail string) (frac float64, units int, ok bool) {
-	lines := strings.Split(strings.TrimSpace(tail), "\n")
+	// A bar redraws with carriage returns. Those updates are one line on
+	// disk; treating every N/M on it as a nested counter understates progress.
+	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(tail, "\r", "\n")), "\n")
 	for i := len(lines) - 1; i >= 0 && i >= len(lines)-40; i-- {
 		line := lines[i]
 		var pairs [][2]int
@@ -1254,23 +1256,34 @@ func desktopLongJobSay(ctx context.Context, j *desktopLongJob, text string) erro
 	return err
 }
 
-// desktopLongJobNoticeText is the honest line from the last poll.
+// desktopLongJobNoticeText is the chat line for one poll. It states the
+// outcome, the measured progress and the metrics. The raw log stays with
+// the bot (desktopLongJobView); chat does not get progress bars, carriage
+// returns or locale errors such as "tr: Illegal byte sequence".
 func desktopLongJobNoticeText(j *desktopLongJob, dec desktopLongJobDecision) string {
-	head := "后台任务进度"
+	if j == nil {
+		return ""
+	}
+	head := "后台任务还在跑"
 	switch j.Status {
 	case "done":
-		head = desktopLongJobDoneHead(j) + "，下面是最后的输出"
+		head = desktopLongJobDoneHead(j)
 	case "failed":
 		code := "未知"
 		if j.ExitCode != nil {
 			code = strconv.Itoa(*j.ExitCode)
 		}
-		head = "后台任务失败了（退出码 " + code + "），下面是最后的输出"
+		head = "后台任务失败了（退出码 " + code + "）"
 		if n := desktopLongJobKilledNote(j); n != "" {
-			head = "后台任务被外部结束了（" + n + "），下面是最后的输出"
+			head = "后台任务被外部结束了（" + n + "）"
 		}
 	case "stalled":
-		head = "后台任务的进程还在，但已经 " + j.stallBound().Round(time.Minute).String() + " 没有新的输出"
+		stall := desktopLongJobAgeText(j.stallBound())
+		if strings.HasPrefix(stall, "不到") {
+			head = "后台任务的进程还在，但已经" + stall + "没有新的输出"
+		} else {
+			head = "后台任务的进程还在，但已经 " + stall + " 没有新的输出"
+		}
 	default:
 		if !j.Alive {
 			head = "后台任务的进程已不在"
@@ -1288,13 +1301,33 @@ func desktopLongJobNoticeText(j *desktopLongJob, dec desktopLongJobDecision) str
 		}
 		head = "后台任务还在，自 " + since.Format("15:04") + " 起没有新的输出（不是新进展）"
 	}
-	age := desktopLongJobNow().Sub(j.Started).Round(time.Minute)
-	text := head + "（任务 " + desktopLongJobShortID(j.ID) + "，已运行 " + age.String() + "，最近一次检查 " + j.LastPoll.Format("15:04") + "）。"
-	if dec == longJobResume {
-		text += "我接着看一下原因和下一步。"
+	age := time.Duration(0)
+	if !j.Started.IsZero() {
+		age = desktopLongJobNow().Sub(j.Started)
+		if age < 0 {
+			age = 0
+		}
 	}
-	if tail := desktopLongJobTailLines(j.LastTail, 8, 900); tail != "" {
-		text += "\n" + tail
+	text := head + "（" + desktopLongJobShortID(j.ID) + "，" + desktopLongJobRanFor(age)
+	if !j.LastPoll.IsZero() {
+		text += "，" + j.LastPoll.Format("15:04") + " 查看"
+	}
+	text += "）。"
+	// A heartbeat says that nothing moved. A metric line here would look
+	// like news.
+	if dec != longJobHeartbeat {
+		if sum := desktopLongJobNoticeSummary(j); sum != "" {
+			text += "\n" + sum
+		} else if j.Status == "running" || j.Status == "stalled" {
+			text += "\n日志里还没有可测的进度。"
+		}
+	}
+	if dec == longJobResume {
+		if j.Status == "done" && len(desktopLongJobInnerFailures(j.LastTail)) == 0 {
+			text += "\n我接着核对结果；能改进就继续，要确认再问你。"
+		} else {
+			text += "\n我接着看一下原因；能改进就继续，要确认再问你。"
+		}
 	}
 	return text
 }
@@ -1305,23 +1338,6 @@ func desktopLongJobShortID(id string) string {
 		return id[:8]
 	}
 	return id
-}
-
-func desktopLongJobTailLines(tail string, n, max int) string {
-	lines := strings.Split(strings.TrimSpace(tail), "\n")
-	kept := make([]string, 0, n)
-	for i := len(lines) - 1; i >= 0 && len(kept) < n; i-- {
-		l := strings.TrimSpace(lines[i])
-		if l == "" || strings.Contains(l, "Permanently added") {
-			continue
-		}
-		kept = append([]string{l}, kept...)
-	}
-	out := strings.Join(kept, "\n")
-	if r := []rune(out); len(r) > max {
-		out = "…" + string(r[len(r)-max:])
-	}
-	return out
 }
 
 // desktopLongJobResume starts one bot turn in the job's conversation, unless
@@ -1384,9 +1400,9 @@ func desktopLongJobWatchPrompt(j *desktopLongJob, dec desktopLongJobDecision) st
 	goal := "若与上次通知相比没有新的进展，就结束，不要调用 send_to_user。"
 	switch dec {
 	case longJobResume:
-		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到了这次轮询的状态和最后输出。用这些证据判断：结束了就核对结果（指标、产物）并告诉这个人；结果是训练、评估、基准或其它实验的数字时，报告里必须有结果评估：与基线或目标对比，检查结果是否可信（验证集与测试集的差距、类别不平衡、过拟合迹象、抽几条样本实际推理），明确说能否使用，并给出建议（继续训练、调整数据或超参、或停止）和理由；" + desktopIterPolicy + "失败或停滞就查明原因并换一种做法继续，并说明。你的最后回复会转给这个人（已用 action=say 说过就不再转）；没有要说的新内容时最后回复只写 NO_UPDATE。不要把已经说过的再说一遍。"
+		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到一条整理过的状态，没有原始日志。用这些证据判断：结束了就核对结果（指标、产物）并告诉这个人；结果是训练、评估、基准或其它实验的数字时，报告里必须有结果评估：与基线或目标对比，检查结果是否可信（验证集与测试集的差距、类别不平衡、过拟合迹象、抽几条样本实际推理），明确说能否使用，并给出建议（继续训练、调整数据或超参、或停止）和理由；" + desktopIterPolicy + "失败或停滞就查明原因并换一种做法继续，并说明。最后回复要短：结论、关键指标、能否使用、下一步。不要粘贴原始日志、进度条、tr 报错或成片数字。能改进就继续做；需要这个人确认或讨论时再问。你的最后回复会转给这个人（已用 action=say 说过就不再转）；没有要说的新内容时最后回复只写 NO_UPDATE。不要把已经说过的再说一遍。"
 	case longJobNotice:
-		goal = "这不是新任务，不要重新启动该命令。这是按预计时间安排的查看，出现了新的阶段结果、已经远超预计时间，或预计会超过命令自带的时限。用 send_to_user 简短告诉这个人这一阶段的结果（指标或日志要点）或比预计晚了多少，附上这次轮询的证据（进程存活与否、最近日志）。不要报步数。对剩余时间有更好的估计时，用 action=job_status，next_check_minutes 和 check_reason 设定下次查看。"
+		goal = "这不是新任务，不要重新启动该命令。这是按预计时间安排的查看，出现了新的阶段结果、已经远超预计时间，或预计会超过命令自带的时限。调用 send_to_user，用两三句话告诉这个人：进度或这一阶段的指标、是否还在跑、预计何时结束。不要报步数，不要粘贴原始日志、进度条或 tr 报错。对剩余时间有更好的估计时，用 action=job_status，next_check_minutes 和 check_reason 设定下次查看。"
 	}
 	if dec == longJobResume && j.RoundMetric == nil && strings.TrimSpace(j.Decision) == "" && j.Status != "running" {
 		if m := desktopRoundMetrics(j.LastTail); m != "" {

@@ -427,6 +427,10 @@ func TestD103CheckIsPlannedFromObservedProgress(t *testing.T) {
 	if f, _, ok := desktopLongJobProgress("downloading  45.5% 1.2MB/s"); !ok || f < 0.45 || f > 0.46 {
 		t.Fatalf("pct %v %v", f, ok)
 	}
+	// Carriage-return redraws are successive values, not nested counters.
+	if f, _, ok := desktopLongJobProgress("100/2000\r800/2000"); !ok || f < 0.39 || f > 0.41 {
+		t.Fatalf("cr overwrite %v %v", f, ok)
+	}
 	// No progress signal: default, doubling after empty checks, bounded.
 	k := &desktopLongJob{Started: now.Add(-time.Minute), LastTail: "starting"}
 	desktopLongJobPlanCheck(k, now)
@@ -563,8 +567,88 @@ func TestD111InnerStepFailureIsNotDone(t *testing.T) {
 	if got := desktopLongJobDoneHead(ok); strings.Contains(got, "没成功") {
 		t.Fatalf("clean run %q", got)
 	}
+	if got := desktopLongJobNoticeText(ok, longJobResume); !strings.Contains(got, "脚本已跑完") || strings.Contains(got, "train_rc") {
+		t.Fatalf("clean notice %q", got)
+	}
 	if f := desktopLongJobInnerFailures("x [exit 2] y"); len(f) != 1 || f[0] != "[exit 2]" {
 		t.Fatalf("bracket %v", f)
+	}
+}
+
+func TestLongJobNoticeSummarizesNoisyLog(t *testing.T) {
+	now := time.Date(2026, 11, 14, 15, 18, 0, 0, time.Local)
+	desktopLongJobNow = func() time.Time { return now }
+	t.Cleanup(func() { desktopLongJobNow = time.Now })
+	code := 0
+	done := &desktopLongJob{
+		ID: "job_8a1d3a8f", Status: "done", ExitCode: &code,
+		Started: now.Add(-27 * time.Minute), LastPoll: now,
+		LastTail: "0\n0\ntr: Illegal byte sequence\ntr: Illegal byte sequence\n0\n" +
+			"BEST_VAL_METRICS {\"eval_loss\": 0.1824, \"eval_accuracy\": 0.9335, \"eval_precision\": 0.9408, \"eval_recall\": 0.9515, \"eval_f1\": 0.9461, \"epoch\": 1.0}\n" +
+			"ALL_DONE\n1\n",
+	}
+	got := desktopLongJobNoticeText(done, longJobResume)
+	for _, bad := range []string{"Illegal byte", "下面是最后的输出", "\n0\n", "27m0s"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("noisy %q in %q", bad, got)
+		}
+	}
+	for _, want := range []string{"已结束", "8a1d3a8f", "27 分钟", "15:18 查看", "验证准确率 0.9335", "验证 F1 0.9461", "验证精确率 0.9408", "验证召回率 0.9515", "验证损失 0.1824", "第 1 轮", "脚本已跑完", "能改进就继续"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+
+	running := &desktopLongJob{
+		ID: "job_8a1d3a8f", Status: "running", Alive: true,
+		Started: now.Add(-25 * time.Minute), LastPoll: now.Add(-2 * time.Minute),
+		EstimateEnd: now.Add(98 * time.Minute),
+		LastTail:    "tr: Illegal byte sequence\n0\n0\n{'loss': '0.91', 'epoch': '0.2'}\n 20%|██ | 400/2000 [05:00<20:00, 1.2it/s]",
+	}
+	got = desktopLongJobNoticeText(running, longJobNotice)
+	if strings.Contains(got, "Illegal") || strings.Contains(got, "\n0\n") || strings.Contains(got, "it/s") {
+		t.Fatalf("running noisy %q", got)
+	}
+	for _, want := range []string{"还在跑", "25 分钟", "进度约 20%", "16:56 结束", "损失 0.91"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("running missing %q in %q", want, got)
+		}
+	}
+
+	quiet := &desktopLongJob{
+		ID: "job_8a1d3a8f", Status: "running", Alive: true,
+		Started: now.Add(-25 * time.Minute), LastPoll: now,
+		LastTail: "0\ntr: Illegal byte sequence\n0\n",
+	}
+	got = desktopLongJobNoticeText(quiet, longJobNotice)
+	if strings.Contains(got, "Illegal") || !strings.Contains(got, "还没有可测的进度") {
+		t.Fatalf("quiet %q", got)
+	}
+
+	done.LastTail += "=== leftover ===\ntrain_rc=0\n"
+	got = desktopLongJobNoticeText(done, longJobNotice)
+	if strings.Contains(got, "leftover") || strings.Contains(got, "train_rc") || !strings.Contains(got, "脚本已跑完") {
+		t.Fatalf("junk after metrics %q", got)
+	}
+	failed := *done
+	failed.Status = "failed"
+	failed.LastTail += "ValueError: bad label\n"
+	got = desktopLongJobNoticeText(&failed, longJobResume)
+	if !strings.Contains(got, "出错：") || !strings.Contains(got, "bad label") || strings.Contains(got, "脚本已跑完") {
+		t.Fatalf("error after done %q", got)
+	}
+	recovered := *done
+	recovered.LastTail = "ValueError: transient\nALL_DONE\n"
+	got = desktopLongJobNoticeText(&recovered, longJobNotice)
+	if !strings.Contains(got, "脚本已跑完") || strings.Contains(got, "transient") {
+		t.Fatalf("recovered %q", got)
+	}
+	if got := desktopLongJobAgeText(90*time.Minute + 20*time.Second); got != "1 小时 30 分钟" {
+		t.Fatalf("age %q", got)
+	}
+	secret := &desktopLongJob{ID: "job_sec", Status: "done", Started: now.Add(-time.Minute), LastPoll: now, LastTail: "saved TOKEN=supersecret to model.safetensors"}
+	if got := desktopLongJobNoticeText(secret, longJobNotice); strings.Contains(got, "supersecret") || !strings.Contains(got, "TOKEN=***") {
+		t.Fatalf("secret %q", got)
 	}
 }
 

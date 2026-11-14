@@ -1904,15 +1904,20 @@ func (p *publishRun) verify() (string, error) {
 	}
 	p.net.settleAnswers(p.clickedAt, 5*time.Second)
 	if id, link := p.net.evidenceSince(p.clickedAt); id != "" || link != "" {
-		p.rep.PostID = id
+		// An article id alone is not the public post. CSDN's save answer is
+		// {"data":{"id":"170775764"}} with no URL; the success page and the
+		// account cookie still have to build https://blog.csdn.net/{user}/article/details/{id}.
+		// Stopping on the id left the reply with no link.
+		link = publishPublicLink(link)
 		if link != "" {
-			p.rep.ResultURL = strings.SplitN(link, "#", 2)[0]
-			if strings.HasPrefix(p.rep.ResultURL, "//") {
-				p.rep.ResultURL = "https:" + p.rep.ResultURL
-			}
+			p.rep.PostID = id
+			p.rep.ResultURL = link
+			p.rep.Evidence = "response"
+			return fmt.Sprintf("the site answered the submit with post id %q %s", id, link), nil
 		}
-		p.rep.Evidence = "response"
-		return fmt.Sprintf("the site answered the submit with post id %q %s", id, link), nil
+		if id != "" {
+			p.rep.PostID = id
+		}
 	}
 	// Sites whose success page is not the post itself (a post_url template
 	// builds the public link from its id): wait for that page briefly.
@@ -2043,15 +2048,29 @@ func (p *publishRun) checkResult(key string, budget time.Duration, listed bool) 
 		}
 		_ = json.Unmarshal([]byte(out), &o)
 		if o.Has {
-			p.rep.ResultURL = o.URL
+			result := o.URL
 			if listed && o.Link != "" {
-				p.rep.ResultURL = o.Link
-			} else if listed {
-				p.rep.PostID = o.ID
+				result = o.Link
 			}
-			return fmt.Sprintf("result page %s shows %q", o.URL, key), nil
+			result = publishPublicLink(result)
+			if result != "" {
+				p.rep.ResultURL = result
+				if listed && o.ID != "" {
+					p.rep.PostID = o.ID
+				}
+				return fmt.Sprintf("result page %s shows %q", result, key), nil
+			}
+			// The success page names the article and is still not the public
+			// link. Leave it at once so the account list can be read. A list
+			// that has not rendered its public link yet keeps waiting below.
+			if !listed && publishConsoleLink.MatchString(o.URL) {
+				return "", fmt.Errorf("result page %s shows %q but not its public link", o.URL, key)
+			}
 		}
 		if time.Now().After(deadline) {
+			if o.Has {
+				return "", fmt.Errorf("result page %s shows %q but not its public link", o.URL, key)
+			}
 			return "", fmt.Errorf("result page %s does not show %q", o.URL, key)
 		}
 		// Lists load lazily; one reload halfway catches a stale first render.

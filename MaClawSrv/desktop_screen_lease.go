@@ -73,7 +73,7 @@ func desktopScreenLeaseEnabled() bool {
 // the browser. Every other action (including an unknown one) takes the lease.
 var desktopScreenLeaseNonScreen = map[string]bool{
 	"file_read": true, "file_write": true, "file_edit": true, "file_list": true,
-	"bash": true, "install": true, "http": true, "deliver": true, "skill_list": true,
+	"bash": true, "open_screen": true, "install": true, "http": true, "deliver": true, "skill_list": true,
 	"job_status": true, "job_list": true, "request_takeover": true,
 	"notify_main": true, "report": true, "say": true, "check_inbox": true, "delegate": true,
 	"list_assignments": true, "accept_result": true, "return_result": true,

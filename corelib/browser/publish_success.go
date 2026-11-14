@@ -69,9 +69,10 @@ func (p *publishRun) successPagePost(u string) (string, bool) {
 		return "", false
 	}
 	link, _ := p.evalWithin(publishPostLinkJS+"("+jsq(id)+")", 3*time.Second)
+	link = publishPublicLink(link)
 	how := "the page's link"
 	if link == "" && p.spec.PostURL != "" {
-		link = PostURLFrom(p.spec.PostURL, id, p.cookie(u, p.spec.UserCookie))
+		link = PostURLFrom(p.spec.PostURL, id, p.accountName(u))
 		how = "post_url"
 	}
 	if link == "" {
@@ -88,6 +89,53 @@ func (p *publishRun) successPagePost(u string) (string, bool) {
 		out += "; the site says " + p.rep.Pending + " (under review, may not be public yet)"
 	}
 	return out, true
+}
+
+// publishConsoleLink matches a creator console or success page. It is anchored
+// to those hosts and paths so an article whose account name contains
+// "editor" or "passport" still counts as public.
+var publishConsoleLink = regexp.MustCompile(`(?i)(?:^https?://(?:mp\.csdn\.net|editor\.csdn\.net|creator\.xiaohongshu\.com|passport\.[^/]+)|/mp_blog/|/creation/(?:success|editor)|zhuanlan\.zhihu\.com/write(?:/|$))`)
+
+// publishPublicLink keeps an http(s) article URL and drops creator-console
+// pages (CSDN's /mp_blog/creation/success/<id> is one of those).
+func publishPublicLink(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "//") {
+		raw = "https:" + raw
+	}
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		return ""
+	}
+	if publishConsoleLink.MatchString(strings.SplitN(raw, "?", 2)[0]) {
+		return ""
+	}
+	return strings.SplitN(raw, "#", 2)[0]
+}
+
+// accountName is the signed-in name the public URL template needs. extra
+// is the page already open. The cookie is often set on the editor host and
+// is not sent to the success page on another host, so the editor is tried
+// as well.
+func (p *publishRun) accountName(extra ...string) string {
+	if p.spec.UserCookie == "" {
+		return ""
+	}
+	seen := map[string]bool{}
+	pages := append(append([]string{}, extra...), p.spec.EditorURL)
+	for _, page := range pages {
+		page = strings.TrimSpace(page)
+		if page == "" || seen[page] {
+			continue
+		}
+		seen[page] = true
+		if v := p.cookie(page, p.spec.UserCookie); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // cookie reads a cookie of the page's site by name: the browser's cookie

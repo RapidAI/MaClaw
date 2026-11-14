@@ -163,3 +163,84 @@ func TestIntakePhaseComesFromTheModelAndTimeoutStaysExecute(t *testing.T) {
 		t.Fatalf("timeout must not fall back to keywords: %+v %v", got, err)
 	}
 }
+
+func TestIntakeTimerFollowUpStaysASchedule(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	in := BotIntakeInput{
+		BotID:   "bot_p",
+		Content: "北京，下次再生成pdf文件",
+		Earlier: []string{"用户: 每5分钟向我报告下天气情况"},
+		Timers:  []BotIntakeTimer{{Name: "weather_report", Action: "每5分钟向我报告下天气情况", IntervalMinutes: 5}},
+	}
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, in, func(_ context.Context, system, user string) (string, error) {
+		if !strings.Contains(system, "timers already armed") || !strings.Contains(user, "weather_report every 5 minutes") || !strings.Contains(user, "每5分钟向我报告下天气情况") {
+			t.Fatalf("prompt missing the timer:\n%s\n%s", system, user)
+		}
+		return `{"kind":"schedule","run":0,"instruction":"每5分钟报告北京的天气，并把这一轮做成 PDF","ack":"以后每5分钟只报北京，并生成 PDF。","pace":"schedule","schedule":{"name":"weather_report","mode":"create"}}`, nil
+	})
+	if err != nil || got.Kind != "schedule" || got.Schedule == nil || got.Schedule.IntervalMinutes != 5 || got.Schedule.Name != "weather_report" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if got.Instruction != "每5分钟报告北京的天气，并把这一轮做成 PDF" {
+		t.Fatalf("instruction = %q", got.Instruction)
+	}
+
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, in, func(context.Context, string, string) (string, error) {
+		return `{"kind":"schedule","run":0,"instruction":"每5分钟报告北京的天气，并把这一轮做成 PDF","ack":"以后只报北京，并生成 PDF。","pace":"schedule","schedule":{"mode":"create"}}`, nil
+	})
+	if err != nil || got.Kind != "schedule" || got.Schedule == nil || got.Schedule.Name != "weather_report" || got.Schedule.IntervalMinutes != 5 {
+		t.Fatalf("the only timer fills an omitted name: %+v %v", got, err)
+	}
+
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, in, func(context.Context, string, string) (string, error) {
+		return `{"kind":"schedule","run":0,"instruction":"每5分钟打开百度","ack":"另开一个计时。","pace":"schedule","schedule":{"name":"baidu","mode":"create"}}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Reason != "bad schedule" {
+		t.Fatalf("a different job must bring its own clock: %+v %v", got, err)
+	}
+}
+
+func TestIntakeKeepsTheArmedWeekdayWhenTheClockMoves(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	in := BotIntakeInput{
+		BotID:   "bot_p",
+		Content: "改到九点",
+		Timers:  []BotIntakeTimer{{Name: "brief", Action: "做一份简报", Hour: 8, Minute: 30, DayOfWeek: 1}},
+	}
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, in, func(_ context.Context, _, user string) (string, error) {
+		if !strings.Contains(user, "brief at 8:30 day_of_week 1") {
+			t.Fatalf("prompt = %s", user)
+		}
+		return `{"kind":"schedule","run":0,"instruction":"做一份简报","ack":"改到九点。","pace":"schedule","schedule":{"name":"brief","mode":"create","hour":9,"minute":0}}`, nil
+	})
+	if err != nil || got.Kind != "schedule" || got.Schedule == nil || got.Schedule.Hour == nil || *got.Schedule.Hour != 9 || got.Schedule.Minute == nil || *got.Schedule.Minute != 0 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if got.Schedule.DayOfWeek == nil || *got.Schedule.DayOfWeek != 1 || got.Schedule.IntervalMinutes != 0 {
+		t.Fatalf("weekday = %+v", got.Schedule)
+	}
+
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, in, func(context.Context, string, string) (string, error) {
+		return `{"kind":"schedule","run":0,"instruction":"做一份简报","ack":"改到九点。","pace":"schedule","schedule":{"name":"brief","mode":"create","hour":9}}`, nil
+	})
+	if err != nil || got.Kind != "schedule" || got.Schedule == nil || got.Schedule.Hour == nil || *got.Schedule.Hour != 9 || got.Schedule.Minute == nil || *got.Schedule.Minute != 30 {
+		t.Fatalf("omitted minute = %+v %v", got, err)
+	}
+	if got.Schedule.DayOfWeek == nil || *got.Schedule.DayOfWeek != 1 {
+		t.Fatalf("omitted minute dropped the weekday: %+v", got.Schedule)
+	}
+
+	every := BotIntakeInput{
+		BotID:   "bot_p",
+		Content: "改成只报北京",
+		Timers:  []BotIntakeTimer{{Name: "weather_report", Action: "报告天气", IntervalMinutes: 5}},
+	}
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, every, func(context.Context, string, string) (string, error) {
+		return `{"kind":"schedule","run":0,"instruction":"每5分钟报告北京的天气","ack":"仍是每5分钟。","pace":"schedule","schedule":{"name":"weather_report","mode":"create","hour":9}}`, nil
+	})
+	if err != nil || got.Kind != "schedule" || got.Schedule == nil || got.Schedule.IntervalMinutes != 5 || got.Schedule.Hour != nil || got.Schedule.Minute != nil {
+		t.Fatalf("a partial clock converted the interval: %+v %v", got, err)
+	}
+}

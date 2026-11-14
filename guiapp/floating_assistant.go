@@ -332,6 +332,24 @@ func petMotionSoundHeard(enabled, quiet, reduced bool, state string) bool {
 	}
 }
 
+// actionSoundAllowed is the per-action cue gate. Listening stays silent so a
+// cue cannot be heard as the wake word. Speaking stays silent except for the
+// sing cue, which is the speaking performance. Other cues, including thinking
+// and alert, keep their own sounds. Quiet mode and reduced motion stay silent.
+func actionSoundAllowed(enabled, quiet, reduced bool, state, cue string) bool {
+	if !enabled || quiet || reduced {
+		return false
+	}
+	switch petpack.NormalizeState(state) {
+	case petpack.StateListening:
+		return false
+	case petpack.StateSpeaking:
+		return cue == "sing"
+	default:
+		return true
+	}
+}
+
 func petMotionSoundPreset(config corelib.AppConfig) string {
 	switch config.PetMotionSoundPreset {
 	case "classic", "bubble", "chime", "synth", "soft":
@@ -353,6 +371,11 @@ func sanitizePetConfig(config *corelib.AppConfig) {
 		allow = reg.Allowlist()
 	}
 	config.PetSkin = petpack.SanitizeSkinID(config.PetSkin, ready, allow)
+	// The mechanical crab is retired. A saved clawmate choice follows the new
+	// default the next time settings are sanitized, including app load.
+	if config.PetSkin == petpack.LegacyClawMatePackID {
+		config.PetSkin = petpack.DefaultPackID
+	}
 	_ = petpack.MigratePetVariant(config)
 
 	if config.PetSize == 0 {

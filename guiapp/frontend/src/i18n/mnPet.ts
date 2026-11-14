@@ -114,7 +114,7 @@ export const petMnByEnglish: Record<string, string> = {
     'Animation: ': 'Хөдөлгөөнт дүрс: ',
     ' · Degraded: ${packRuntimeInfo.degradation_reason}': ' · Чанар буурсан: ${packRuntimeInfo.degradation_reason}',
     'Skin': 'Дүрс',
-    'The default crab is the official motion reference; add other characters through installed or created packs.': 'Анхдагч хавч нь албан ёсны хөдөлгөөний загвар; бусад дүрсийг суулгасан эсвэл үүсгэсэн багцаар нэмнэ.',
+    'The default is a ragdoll cat-girl who walks, runs, jumps, bows, and sings; add other characters through installed or created packs.': 'Анхдагч нь алхаж, гүйж, үсэрч, бөхийж, дуулдаг рагдолл муур; бусад дүрсийг суулгасан эсвэл үүсгэсэн багцаар нэмнэ.',
     'Invalid pack — uninstall and reinstall': 'Хүчингүй багц — устгаад дахин суулгана уу',
     'User': 'Хэрэглэгч',
     'Official': 'Албан ёсны',

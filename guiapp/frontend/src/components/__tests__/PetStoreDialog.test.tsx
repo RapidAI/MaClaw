@@ -224,6 +224,52 @@ describe('PetStoreDialog', () => {
         expect(screen.queryByText('please sign in to HubCenter before using the Pet Store')).toBeNull();
     });
 
+    it('marks a pack installed after InstallPetStorePack resolves', async () => {
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({
+            ...account,
+            purchases: [{ pack: { id: 'pet-one', source_pack_id: 'pet-one-source', name: 'Pet One', status: 'active' } }],
+        });
+        renderStore();
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Install' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Install' })); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: 'Installed' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: 'Installed' }).querySelector('.modal-footer button')!); });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Installed' })).toBeTruthy());
+        expect(AppAPI.InstallPetStorePack).toHaveBeenCalledWith('pet-one');
+    });
+
+    it('keeps a legacy listing installed when its source_pack_id is empty', async () => {
+        const legacyPack = { id: 'pet-legacy', name: 'Legacy Pet', price: 0, download_count: 0, sales_amount: 0 };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [legacyPack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({
+            ...account,
+            purchases: [{ pack: { id: 'pet-legacy', name: 'Legacy Pet', status: 'active' } }],
+        });
+        renderStore();
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Install' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Install' })); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: 'Installed' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: 'Installed' }).querySelector('.modal-footer button')!); });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Installed' })).toBeTruthy());
+        expect(AppAPI.InstallPetStorePack).toHaveBeenCalledWith('pet-legacy');
+    });
+
+    it('flips Get to Install when HubCenter reports the pack already owned', async () => {
+        vi.mocked(AppAPI.PurchasePetStorePack).mockRejectedValue(new Error('Pet Store request failed: you already own this pet pack'));
+        renderStore('zh-Hans');
+        await waitFor(() => expect(screen.getByRole('button', { name: '获取' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '获取' })); });
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '确认购买' }).querySelector('.modal-footer button:last-child')!); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: '购买失败' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '购买失败' }).querySelector('.modal-footer button')!); });
+        await waitFor(() => expect(screen.getByRole('button', { name: '安装' })).toBeTruthy());
+        expect(screen.queryByRole('button', { name: '获取' })).toBeNull();
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '安装' })); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: '安装完成' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '安装完成' }).querySelector('.modal-footer button')!); });
+        await waitFor(() => expect(screen.getByRole('button', { name: '已安装' })).toBeTruthy());
+    });
+
     it('shows the report sign-in prompt in English', async () => {
         vi.mocked(AppAPI.GetPetStoreCreatorReport).mockRejectedValue(new Error('please sign in to HubCenter before using the Pet Store'));
         renderStore();

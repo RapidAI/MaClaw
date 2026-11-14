@@ -24,6 +24,30 @@ func TestNetWriteKind(t *testing.T) {
 	}
 }
 
+func TestPublishPublicLinkDropsTheCreatorConsole(t *testing.T) {
+	if got := publishPublicLink("https://mp.csdn.net/mp_blog/creation/success/170775764"); got != "" {
+		t.Fatalf("success page kept: %q", got)
+	}
+	if got := publishPublicLink("https://blog.csdn.net/znsoft/article/details/170775764"); got != "https://blog.csdn.net/znsoft/article/details/170775764" {
+		t.Fatalf("public article dropped: %q", got)
+	}
+	if got := publishPublicLink("//blog.csdn.net/znsoft/article/details/170775764#comment"); got != "https://blog.csdn.net/znsoft/article/details/170775764" {
+		t.Fatalf("protocol-relative: %q", got)
+	}
+	if publishPublicLink("https://zhuanlan.zhihu.com/p/2104949181500625789") == "" {
+		t.Fatal("zhihu article dropped")
+	}
+	if publishPublicLink("https://www.xiaohongshu.com/explore/6af80598000000001803b36e") == "" {
+		t.Fatal("xiaohongshu note dropped")
+	}
+	if publishPublicLink("https://blog.csdn.net/passportuser/article/details/170775764") == "" {
+		t.Fatal("account name passportuser was treated as the login host")
+	}
+	if publishPublicLink("https://zhuanlan.zhihu.com/write") != "" {
+		t.Fatal("zhihu editor kept")
+	}
+}
+
 func TestJSONPostRef(t *testing.T) {
 	id, u := jsonPostRef(`{"code":0,"data":{"article_id":"123456","url":"https://x.test/p/123456"}}`)
 	if id != "123456" || u != "https://x.test/p/123456" {

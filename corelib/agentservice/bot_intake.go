@@ -19,13 +19,25 @@ type BotIntakeRun struct {
 
 // BotIntakeInput is one message to judge.
 type BotIntakeInput struct {
-	BotID   string         `json:"bot_id"`
-	Content string         `json:"content"`
-	Lang    string         `json:"lang,omitempty"`
-	Persona string         `json:"persona,omitempty"`
-	Phase   string         `json:"phase,omitempty"`
-	Earlier []string       `json:"earlier,omitempty"`
-	Running []BotIntakeRun `json:"running,omitempty"`
+	BotID   string           `json:"bot_id"`
+	Content string           `json:"content"`
+	Lang    string           `json:"lang,omitempty"`
+	Persona string           `json:"persona,omitempty"`
+	Phase   string           `json:"phase,omitempty"`
+	Earlier []string         `json:"earlier,omitempty"`
+	Running []BotIntakeRun   `json:"running,omitempty"`
+	Timers  []BotIntakeTimer `json:"timers,omitempty"`
+}
+
+// BotIntakeTimer is a timer this bot already has. A later message that only
+// adds a place or a file form updates this row instead of starting a job.
+type BotIntakeTimer struct {
+	Name            string `json:"name,omitempty"`
+	Action          string `json:"action,omitempty"`
+	IntervalMinutes int    `json:"interval_minutes,omitempty"`
+	Hour            int    `json:"hour,omitempty"`
+	Minute          int    `json:"minute,omitempty"`
+	DayOfWeek       int    `json:"day_of_week,omitempty"`
 }
 
 // BotIntakeSchedule is a timer. The decision is made here. MaClawSrv writes
@@ -93,12 +105,14 @@ kind:
 - status: they ask how work is going or what it already produced. Do not invent the answer.
 - new: an independent job, or anything you are not sure about.
 
+A line under "timers already armed" is a timer that already runs. When the new message only adds a fact or a delivery form for that timer — a city, a place, or a file type such as PDF — kind is schedule, mode is create, and name is that timer's name. instruction is the whole order for one later run: what the timer already does, the place it covers, and the file form. A place is the subject of the report, not a field inside a sample file. A file form is how that later run is delivered. Do not make the file on this turn. ack says the timer now uses that place and that form, and does not say a file was already made. This is not kind new, not kind reply, and not kind ask. A different repeating job gets its own name. Leave a clock field out to keep the armed timer's value. Set interval_minutes, or hour and minute, only when the message changes the time. Omit day_of_week to keep the armed weekday.
+
 When no task is running, do not use supplement, change, stop, pause, or continue.
 A clear request is direct work. Do not ask only for permission to proceed.
 If you are unsure which running task a message belongs to, kind is new and run is 0.
 Do not match the message against a list of phrases.
 
-phase is execute or plan. execute is the default. Use plan only when this message itself orders something destructive or irreversible: deleting the person's own data, paying, wiping a machine, or sending a message to many other people. Fetching, writing, publishing, and continuing work already arranged are execute. A follow-up that continues arranged work or answers a previous question is kind continue or reply and phase execute. If you are unsure, phase is execute.`
+phase is execute or plan. execute is the default. Use plan only when this message itself orders something destructive or irreversible: deleting the person's own data, paying, wiping a machine, or sending a message to many other people. Fetching, writing, publishing, and continuing work already arranged are execute. A follow-up that continues a running task, or answers a question that is not about an armed timer, is kind continue or reply and phase execute. A follow-up that only fills in an armed timer stays kind schedule. If you are unsure, phase is execute.`
 
 // IntakeBotMessage decides what a message does. A classifier that fails,
 // times out, or answers something unusable yields a new task whose
@@ -150,6 +164,7 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 		fallback.Reason = "unreadable"
 		return fallback, nil
 	}
+	parsed = completeIntakeSchedule(parsed, in.Timers)
 	return normalizeBotIntake(parsed, content, running), nil
 }
 
@@ -187,6 +202,41 @@ func intakeUserPromptClean(content string, in BotIntakeInput, running []BotIntak
 	if persona := strings.TrimSpace(in.Persona); persona != "" {
 		b.WriteString("\npersona already kept:\n")
 		b.WriteString(oneLineRunes(persona, 400))
+	}
+	if len(in.Timers) > 0 {
+		b.WriteString("\ntimers already armed:")
+		n := 0
+		for _, timer := range in.Timers {
+			action := oneLineRunes(timer.Action, 200)
+			if action == "" {
+				continue
+			}
+			n++
+			if n > 4 {
+				break
+			}
+			b.WriteString("\n- ")
+			b.WriteString(oneLineRunes(timer.Name, 40))
+			if timer.IntervalMinutes > 0 {
+				b.WriteString(" every ")
+				b.WriteString(itoa(timer.IntervalMinutes))
+				b.WriteString(" minutes")
+			} else {
+				b.WriteString(" at ")
+				b.WriteString(itoa(timer.Hour))
+				b.WriteString(":")
+				if timer.Minute < 10 {
+					b.WriteString("0")
+				}
+				b.WriteString(itoa(timer.Minute))
+				if timer.DayOfWeek >= 0 && timer.DayOfWeek <= 6 {
+					b.WriteString(" day_of_week ")
+					b.WriteString(itoa(timer.DayOfWeek))
+				}
+			}
+			b.WriteString(": ")
+			b.WriteString(action)
+		}
 	}
 	if len(in.Earlier) > 0 {
 		b.WriteString("\nearlier messages:")
@@ -397,6 +447,66 @@ func canonicalIntakeKind(kind, pace string) string {
 	return "new"
 }
 
+// completeIntakeSchedule fills the clock fields a schedule left out. The
+// named timer, or the only timer when the name was left out, supplies each
+// missing field. A field the decision set is kept. Without this, a decision
+// that names the timer but omits part of the clock is rejected and the
+// message starts a new job.
+func completeIntakeSchedule(in BotIntake, timers []BotIntakeTimer) BotIntake {
+	if canonicalIntakeKind(in.Kind, in.Pace) != "schedule" || in.Schedule == nil || len(timers) == 0 {
+		return in
+	}
+	sched := *in.Schedule
+	picked := pickIntakeTimer(timers, sched.Name)
+	if picked == nil {
+		return in
+	}
+	if strings.TrimSpace(sched.Name) == "" {
+		sched.Name = picked.Name
+	}
+	// An interval timer stays on its interval unless the decision names a
+	// complete clock. One of hour or minute is not a new time.
+	explicitClock := sched.Hour != nil && sched.Minute != nil
+	if sched.IntervalMinutes == 0 && !explicitClock && picked.IntervalMinutes > 0 {
+		sched.IntervalMinutes = picked.IntervalMinutes
+		sched.Hour, sched.Minute = nil, nil
+	} else if sched.IntervalMinutes == 0 {
+		if sched.Hour == nil {
+			h := picked.Hour
+			sched.Hour = &h
+		}
+		if sched.Minute == nil {
+			m := picked.Minute
+			sched.Minute = &m
+		}
+	}
+	if sched.IntervalMinutes == 0 && sched.DayOfWeek == nil && picked.IntervalMinutes == 0 && picked.DayOfWeek >= 0 && picked.DayOfWeek <= 6 {
+		d := picked.DayOfWeek
+		sched.DayOfWeek = &d
+	}
+	in.Schedule = &sched
+	return in
+}
+
+// pickIntakeTimer identifies the armed timer by the name the decision used.
+// An empty name means the only armed timer. A different name is a different
+// timer and does not borrow this one's clock.
+func pickIntakeTimer(timers []BotIntakeTimer, name string) *BotIntakeTimer {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		for i := range timers {
+			if timers[i].Name == name {
+				return &timers[i]
+			}
+		}
+		return nil
+	}
+	if len(timers) == 1 {
+		return &timers[0]
+	}
+	return nil
+}
+
 func validIntakeSchedule(s *BotIntakeSchedule) (*BotIntakeSchedule, bool) {
 	if s == nil {
 		return nil, false
@@ -417,6 +527,13 @@ func validIntakeSchedule(s *BotIntakeSchedule) (*BotIntakeSchedule, bool) {
 			return nil, false
 		}
 		out.IntervalMinutes = s.IntervalMinutes
+		if s.DayOfWeek != nil {
+			d := *s.DayOfWeek
+			if d < 0 || d > 6 {
+				return nil, false
+			}
+			out.DayOfWeek = &d
+		}
 		return out, true
 	}
 	if s.Hour == nil || s.Minute == nil {

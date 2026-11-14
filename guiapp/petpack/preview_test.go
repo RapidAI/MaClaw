@@ -64,7 +64,7 @@ assets:
 				t.Fatal("expected has_preview")
 			}
 		}
-		if p.ID == "clawmate" && p.CanUninstall {
+		if p.ID == DefaultPackID && p.CanUninstall {
 			t.Fatal("bundled-only official should not be uninstallable")
 		}
 	}
@@ -78,7 +78,7 @@ func TestLoadPreviewBytesBundledOfficial(t *testing.T) {
 	if err := reg.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	data, ctype, err := reg.LoadPreviewBytes("clawmate")
+	data, ctype, err := reg.LoadPreviewBytes(DefaultPackID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestLoadStateFrameBytesFigurative(t *testing.T) {
 		t.Fatal(err)
 	}
 	// speaking frame for official clawmate (live character/skeleton when possible)
-	data, ctype, err := reg.LoadStateFrameBytes("clawmate", "speaking", VariantDefault)
+	data, ctype, err := reg.LoadStateFrameBytes(DefaultPackID, "speaking", VariantDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,21 +109,21 @@ func TestLoadStateFrameBytesFigurative(t *testing.T) {
 	}
 	// Live path should prefer PNG encode from rig for clawmate character packs.
 	if ctype != "image/png" {
-		t.Fatalf("expected live PNG preview for clawmate, got %q", ctype)
+		t.Fatalf("expected live PNG preview for ragdoll, got %q", ctype)
 	}
 	// The retired quality-style selector resolves classic to the pack default,
 	// so legacy classic requests also serve raster frames.
-	if _, _, err := reg.LoadStateFrameBytes("clawmate", "idle", VariantClassic); err != nil {
+	if _, _, err := reg.LoadStateFrameBytes(DefaultPackID, "idle", VariantClassic); err != nil {
 		t.Fatalf("legacy classic should resolve to pack default frames: %v", err)
 	}
 	// missing state falls back to idle (still non-empty for official)
-	data2, _, err := reg.LoadStateFrameBytes("clawmate", "listening", VariantDefault)
+	data2, _, err := reg.LoadStateFrameBytes(DefaultPackID, "listening", VariantDefault)
 	if err != nil || len(data2) == 0 {
 		t.Fatalf("listening frame: err=%v len=%d", err, len(data2))
 	}
 	// done / alert official frames
 	for _, st := range []string{"done", "alert", "thinking"} {
-		d, _, err := reg.LoadStateFrameBytes("clawmate", st, VariantDefault)
+		d, _, err := reg.LoadStateFrameBytes(DefaultPackID, st, VariantDefault)
 		if err != nil || len(d) == 0 {
 			t.Fatalf("state %q: err=%v len=%d", st, err, len(d))
 		}
@@ -134,7 +134,7 @@ func TestUninstallUserOnly(t *testing.T) {
 	user := t.TempDir()
 	reg := NewRegistry(user, BundledFS())
 	_ = reg.Scan()
-	if err := reg.Uninstall("clawmate"); err == nil {
+	if err := reg.Uninstall(DefaultPackID); err == nil {
 		t.Fatal("bundled-only official uninstall should fail")
 	}
 

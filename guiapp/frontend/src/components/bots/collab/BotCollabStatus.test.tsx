@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { BotCollabStatus } from './BotCollabStatus';
-import { BotSaidInline } from './BotSaidInline';
+import { BotSaidInline, saidFileIsImage, saidPictureSource } from './BotSaidInline';
 
 const bots = [{ id: 'm', title: '主管', primary: true }, { id: 'a', title: '小A' }];
 
@@ -53,5 +53,47 @@ describe('BotSaidInline files', () => {
         fireEvent.click(screen.getByTestId('bot-said-file-n1-REPORT.md'));
         expect(opened).toEqual(['n1/REPORT.md']);
         expect(screen.queryByText(/\*\*报告\*\*/)).toBeNull();
+    });
+    it('shows a png as a picture, not a file chip', async () => {
+        const { render, screen, fireEvent } = await import('@testing-library/react');
+        const { BotSaidInline } = await import('./BotSaidInline');
+        const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+        const opened: string[] = [];
+        render(<BotSaidInline
+            items={[{ id: 'n2', from: 'b4', target: 'human', kind: 'say', text: '文件：snake-desktop.png（181 KB）', created_at: '', files: [{ name: 'snake-desktop.png', mime: 'image/png', size: 185000, sha256: 'abc' }] }]}
+            bots={[{ id: 'b4', title: 'Bot 4' } as any]}
+            lookOf={() => ({} as any)}
+            loadFile={async () => ({ mime: 'image/png', data: png })}
+            onOpenShot={src => { opened.push(src); }}
+        />);
+        expect(screen.getByText(/文件：snake-desktop.png/)).toBeTruthy();
+        const img = await screen.findByTestId('desktop-bot-screenshot');
+        expect(screen.queryByText(/文件：/)).toBeNull();
+        expect(img.getAttribute('src')).toBe(`data:image/png;base64,${png}`);
+        expect(screen.queryByTestId('bot-said-file-n2-snake-desktop.png')).toBeNull();
+        fireEvent.click(screen.getByTestId('bot-said-image-n2-snake-desktop.png'));
+        expect(opened[0]).toContain('data:image/png;base64,');
+    });
+    it('keeps the file chip when the picture cannot be loaded', async () => {
+        const { render, screen } = await import('@testing-library/react');
+        const { BotSaidInline } = await import('./BotSaidInline');
+        render(<BotSaidInline
+            items={[{ id: 'n3', from: 'b4', target: 'human', kind: 'say', text: '文件：snake-desktop.png（181 KB）', created_at: '', files: [{ name: 'snake-desktop.png', size: 185000, sha256: 'abc' }] }]}
+            bots={[{ id: 'b4', title: 'Bot 4' } as any]}
+            lookOf={() => ({} as any)}
+            loadFile={async () => { throw new Error('no'); }}
+        />);
+        expect(await screen.findByTestId('bot-said-file-n3-snake-desktop.png')).toBeTruthy();
+        expect(screen.getByText(/文件：snake-desktop.png/)).toBeTruthy();
+    });
+    it('keeps a non-image payload named like a picture as a file chip', () => {
+        expect(saidFileIsImage({ name: 'report.png', mime: 'application/pdf' })).toBe(false);
+        expect(saidFileIsImage({ name: 'snake-desktop.png' })).toBe(true);
+        expect(saidFileIsImage({ name: 'a.jpg', mime: 'image/jpg' })).toBe(true);
+        expect(saidFileIsImage({ name: 'notes.md', mime: 'text/plain' })).toBe(false);
+        const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+        expect(saidPictureSource('shot.png', { data: png })).toBe(`data:image/png;base64,${png}`);
+        expect(saidPictureSource('shot.png', { mime: 'image/jpg', data: png })).toBe(`data:image/jpeg;base64,${png}`);
+        expect(saidPictureSource('shot.png', { mime: 'image/png', data: '!!!!' })).toBe('');
     });
 });

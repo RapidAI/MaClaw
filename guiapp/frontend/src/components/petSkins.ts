@@ -1,4 +1,4 @@
-import clawMateSrc from '../assets/images/maclaw-clawmate.svg';
+import ragdollSrc from '../assets/images/maclaw-ragdoll.png';
 import { normalizeLang } from '../i18n/langSelect';
 
 /** Built-in official ids remain known for typing; runtime packs may add more. */
@@ -25,22 +25,22 @@ export interface PetSkinOption {
     renderer?: string;
 }
 
-export const defaultPetSkinId: PetSkinId = 'clawmate';
+export const defaultPetSkinId: PetSkinId = 'ragdoll';
 export const defaultPetSize = 88;
 
 const builtinImages: Record<string, string> = {
-    'clawmate': clawMateSrc,
+    ragdoll: ragdollSrc,
 };
 
 export const petSkinOptions: PetSkinOption[] = [
     {
-        id: 'clawmate',
-        label: 'ClawMate',
-        alt: 'MaClaw ClawMate mechanical crab companion',
+        id: 'ragdoll',
+        label: 'Ragdoll',
+        alt: 'MaClaw ragdoll cat-girl companion',
         tone: 'Balanced',
-        desc: 'A calm mechanical crab companion with expressive eyes and compact claws',
-        previewLine: 'The official animated reference; add your own character through a pet pack.',
-        image: clawMateSrc,
+        desc: 'A ragdoll cat-girl who walks, runs, jumps, bows, and sings',
+        previewLine: 'The official desktop companion. She can cross the screen, jump, bow, and sing.',
+        image: ragdollSrc,
         variants: ['default'],
     },
 ];
@@ -57,7 +57,7 @@ export function getPetSkinOption(id: unknown, catalog: PetSkinOption[] = petSkin
             tone: 'Custom',
             desc: id,
             previewLine: id,
-            image: builtinImages[id] || clawMateSrc,
+            image: builtinImages[id] || ragdollSrc,
             variants: ['default'],
         };
     }
@@ -103,7 +103,7 @@ export function packInfoToSkinOption(pack: Record<string, unknown>, lang: string
         desc,
         manifestDescription: plainDesc || desc,
         previewLine: desc,
-        image: builtinImages[id] || clawMateSrc,
+        image: builtinImages[id] || ragdollSrc,
         variants,
         scope,
         faceOverlay: !!pack.face_overlay,

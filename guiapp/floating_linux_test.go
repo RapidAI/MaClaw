@@ -53,9 +53,9 @@ func TestLinuxTryLoadPackFrameStill(t *testing.T) {
 		t.Fatal(err)
 	}
 	petpack.SetGlobalForTest(reg)
-	frame := tryLoadPackFrame("clawmate", "default", "idle", 88, petpack.NewFrameCache())
+	frame := tryLoadPackFrame(petpack.DefaultPackID, "default", "idle", 88, petpack.NewFrameCache())
 	if frame == nil {
-		t.Fatal("bundled clawmate idle still should load on Linux")
+		t.Fatal("bundled ragdoll idle still should load on Linux")
 	}
 	if b := encodeNRGBAToPNG(frame); len(b) < 32 {
 		t.Fatalf("png encode too small: %d", len(b))

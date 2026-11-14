@@ -28,7 +28,7 @@ import {
 } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { useDialog } from '../CustomDialog';
-import { getPetSkinOption, packInfoToSkinOption, petSkinOptions, type PetSkinOption } from '../petSkins';
+import { defaultPetSkinId, getPetSkinOption, packInfoToSkinOption, petSkinOptions, type PetSkinOption } from '../petSkins';
 import { channelModeLabel, watchLabel } from './imSettingsShared';
 import { WelcomeResetButton } from './WelcomeResetButton';
 import { ttsVoiceOptions } from '../../constants/ttsVoices';
@@ -907,7 +907,7 @@ export const ThirdPartyAccessSettings = ({
 
 		const setDevicePet = async (device: HardwareDevice, skin: string) => {
 			const lifecycle = deviceLifecycle(device.clientId);
-			const previous = device.petSkin || String((config as any)?.pet_skin || 'clawmate');
+			const previous = device.petSkin || String((config as any)?.pet_skin || defaultPetSkinId);
 		setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, petSkin: skin } : item));
 		setSavingPetClientIds((current) => new Set(current).add(device.clientId));
 		try {
@@ -1413,7 +1413,7 @@ export const ThirdPartyAccessSettings = ({
 								const deviceVolume = Math.max(0, Math.min(100, Math.round(Number(device.volume ?? defaultVolume))));
 								const deviceBrightness = Math.max(0, Math.min(100, Math.round(Number(device.brightness ?? defaultBrightness))));
 								const deviceScreenSleepSeconds = screenSleepOptions.some((option) => option.seconds === device.screenSleepSeconds) ? device.screenSleepSeconds! : 60;
-								const devicePetSkin = device.petSkin || String((config as any)?.pet_skin || 'clawmate');
+								const devicePetSkin = device.petSkin || String((config as any)?.pet_skin || defaultPetSkinId);
 								const devicePet = getPetSkinOption(devicePetSkin, petOptions);
 								const availablePetOptions = petOptions.some((pet) => pet.id === devicePetSkin) ? petOptions : [devicePet, ...petOptions];
 								const assistantMode = device.assistantMode === 'expert' ? 'expert' : 'general';

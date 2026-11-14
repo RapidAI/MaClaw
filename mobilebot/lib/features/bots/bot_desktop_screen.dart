@@ -1,9 +1,12 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import 'bot_api.dart';
 import 'bot_models.dart';
@@ -528,6 +531,7 @@ class DesktopWebView extends StatefulWidget {
 
 class _DesktopWebViewState extends State<DesktopWebView> {
   late final WebViewController _controller;
+  late final Widget _webView;
   double _progress = 0;
   String _loadError = '';
 
@@ -550,13 +554,36 @@ class _DesktopWebViewState extends State<DesktopWebView> {
         ),
       )
       ..loadRequest(Uri.parse(widget.url));
+    _webView = _buildWebView();
+  }
+
+  /// The default SurfaceTexture platform-view path re-rasterizes WebView
+  /// content through a GL texture — on some devices that samples at reduced
+  /// depth and shows up as a halftone dot grid over the whole picture.
+  /// Hybrid composition embeds the real Android WebView so it composites
+  /// straight to the screen in hardware.
+  Widget _buildWebView() {
+    PlatformWebViewWidgetCreationParams params =
+        PlatformWebViewWidgetCreationParams(
+      controller: _controller.platform,
+      layoutDirection: TextDirection.ltr,
+      gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+    );
+    if (WebViewPlatform.instance is AndroidWebViewPlatform) {
+      params = AndroidWebViewWidgetCreationParams
+          .fromPlatformWebViewWidgetCreationParams(
+        params,
+        displayWithHybridComposition: true,
+      );
+    }
+    return WebViewWidget.fromPlatformCreationParams(params: params);
   }
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        WebViewWidget(controller: _controller),
+        _webView,
         if (_progress < 1 && _loadError.isEmpty)
           LinearProgressIndicator(value: _progress > 0 ? _progress : null),
         if (_loadError.isNotEmpty)

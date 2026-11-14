@@ -11,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // errBotScreenUnconfigured means this process has no Hub session to open a
@@ -88,8 +89,51 @@ func markBotScreen(runID string) {
 	botScreenReady[runID] = true
 }
 
-// ensureBotScreen opens an isolated bot's screen once per run before the
-// first desktop action. force opens it again after "not open yet". Several
+// desktopOpenScreenFirst is what a screen step says when this bot has not
+// called action=open_screen. The model decides; this process does not open
+// a display for a shell-only task.
+func desktopOpenScreenFirst(err error) error {
+	if err != nil && strings.Contains(err.Error(), "action=open_screen") {
+		return err
+	}
+	return fmt.Errorf("%s: this step uses the screen. Call action=open_screen first, then retry this step. Do not call open_screen for ssh, training, compiling, or any command that only needs a shell", desktopbot.CodeBotScreenClosed)
+}
+
+// desktopBotMustOpenScreen refuses a visible-desktop step until this run has
+// opened its screen. Shell steps, and the owner's desktop, are unchanged.
+func desktopBotMustOpenScreen(scope agentruntime.Scope, action string, args map[string]any) error {
+	_, bot := desktop.SplitDesktopUser(scope.UserID)
+	if bot == "" || action == "open_screen" || !desktopScreenLeaseNeeded(action, args) {
+		return nil
+	}
+	if botScreenAlready(strings.TrimSpace(scope.RunID)) {
+		return nil
+	}
+	return desktopOpenScreenFirst(nil)
+}
+
+// openDesktopScreen is action=open_screen. An isolated bot gets its own
+// display. The owner's desktop wakes the shared screen.
+func openDesktopScreen(ctx context.Context, scope agentruntime.Scope) (string, error) {
+	_, bot := desktop.SplitDesktopUser(scope.UserID)
+	if bot == "" {
+		userKey, err := desktopUserKey(scope)
+		if err != nil {
+			return "", err
+		}
+		if _, err := ensureDesktopRound(ctx, scope, userKey, true); err != nil {
+			return "", err
+		}
+		return "Screen is open.", nil
+	}
+	if err := ensureBotScreen(ctx, scope, true); err != nil {
+		return "", err
+	}
+	return "Screen is open. Browser, screenshot, click, and GUI programs can use it now.", nil
+}
+
+// ensureBotScreen opens an isolated bot's screen when the model calls
+// action=open_screen. force opens it again after "not open yet". Several
 // bots open in parallel; two callers of one bot share one open.
 func ensureBotScreen(ctx context.Context, scope agentruntime.Scope, force bool) error {
 	_, bot := desktop.SplitDesktopUser(scope.UserID)

@@ -25,11 +25,18 @@ type ReportPeriod = (typeof REPORT_PERIODS)[number];
 const t = (lang: Lang, zh: string, en: string) => chromeText(lang, en, zh);
 const localeFor = (lang: Lang) => intlLocale(lang);
 const errText = (err: unknown) => err instanceof Error ? err.message : String(err || 'Unknown error');
+// A purchase that HubCenter reports as already owned is still an ownership
+// confirmation: the caller should flip the card to Install instead of leaving
+// it on Get for another failing round-trip.
+const isAlreadyOwnedError = (err: unknown) => errText(err).toLowerCase().includes('already own this pet pack');
 const petStoreErrorText = (lang: Lang, err: unknown) => {
     const message = errText(err);
     const normalized = message.toLowerCase();
     if (normalized.includes('already own this pet pack')) {
         return t(lang, '您已拥有此宠物包，无需重复获取。', 'You already own this pet pack.');
+    }
+    if (normalized.includes('local pet pack') && normalized.includes('already exists')) {
+        return t(lang, '本地已存在相同 ID 的宠物包。请先卸载或重命名本地宠物包，再从市场安装。', 'A local pet pack with the same ID is already installed. Uninstall or rename it before installing the market pack.');
     }
     if (normalized.includes('pet pack has been removed')) {
         return t(lang, '该宠物包已被作者移除，无法安装。', 'This pet pack has been removed by its creator and cannot be installed.');
@@ -134,7 +141,17 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     // Marketplace listings can be withdrawn and later re-issued. Ownership is
     // therefore keyed by the immutable manifest/source ID, not a listing ID.
     const [ownedSourcePackIDs, setOwnedSourcePackIDs] = useState<Set<string>>(() => new Set());
+    // Ownership is also tracked by listing ID: purchase records join on the
+    // listing, which still identifies an entitlement when a legacy listing
+    // carries an empty source_pack_id.
+    const [ownedListingIDs, setOwnedListingIDs] = useState<Set<string>>(() => new Set());
     const [installedPackIDs, setInstalledPackIDs] = useState<Set<string>>(() => new Set());
+    // Listing IDs installed in this dialog session, keyed by the immutable
+    // listing ID. Legacy listings can carry an empty source_pack_id, so the
+    // source-ID probe alone can never mark them installed; the listing alias
+    // keeps a just-completed install on 已安装 instead of inviting another
+    // redundant download.
+    const [installedListingIDs, setInstalledListingIDs] = useState<Set<string>>(() => new Set());
     const searchRef = useRef<HTMLInputElement>(null);
     const shellRef = useRef<HTMLElement>(null);
     const tablistRef = useRef<HTMLDivElement>(null);
@@ -145,10 +162,18 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     const reportRequestRef = useRef(0);
     const installedRequestRef = useRef(0);
     const installedProbeCacheRef = useRef<Map<string, boolean>>(new Map());
+    // Source and listing IDs the server confirmed as owned during this dialog
+    // session — either by a successful purchase or by an "already own"
+    // response. Merged into every account refresh so a lagging read cannot
+    // revert a card to Get after the entitlement was granted.
+    const sessionOwnedRef = useRef<{ sourcePackIDs: Set<string>; listingIDs: Set<string> }>({ sourcePackIDs: new Set(), listingIDs: new Set() });
     const accountLoadedOnceRef = useRef(false);
     const packBusyKey = (pack: StorePack) => `pack:${String(pack.id)}`;
     const isPackBusy = (pack: StorePack) => busyID === packBusyKey(pack);
-    const isPackInstalled = (pack: StorePack) => installedPackIDs.has(String(pack.source_pack_id || ''));
+    const isPackInstalled = (pack: StorePack) => {
+        const sourcePackID = String(pack.source_pack_id || '');
+        return (!!sourcePackID && installedPackIDs.has(sourcePackID)) || installedListingIDs.has(String(pack.id || ''));
+    };
     // Probe native installation state only when the set of source pack IDs
     // changes. Account refreshes otherwise recreate the same data and used to
     // repeat one bridge call per visible pack.
@@ -190,7 +215,16 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
             if (requestID !== accountRequestRef.current) return;
             setAccount(nextAccount);
             const purchases = Array.isArray(nextAccount?.purchases) ? nextAccount.purchases : [];
-            setOwnedSourcePackIDs(new Set(purchases.map((entry: StorePack) => String((entry.pack || entry).source_pack_id || '')).filter(Boolean)));
+            // Union with session-confirmed ownership so a stale read cannot
+            // flip a just-purchased (or already-owned) card back to Get.
+            setOwnedSourcePackIDs(new Set([
+                ...purchases.map((entry: StorePack) => String((entry.pack || entry).source_pack_id || '')).filter(Boolean),
+                ...sessionOwnedRef.current.sourcePackIDs,
+            ]));
+            setOwnedListingIDs(new Set([
+                ...purchases.map((entry: StorePack) => String((entry.pack || entry).id || '')).filter(Boolean),
+                ...sessionOwnedRef.current.listingIDs,
+            ]));
 
         }
         catch (err) {
@@ -267,9 +301,29 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
             try { return (await IsPetStorePackInstalled(sourcePackID)) ? sourcePackID : ''; }
             catch { return ''; }
         })).then((results) => {
-            if (requestID !== installedRequestRef.current) return;
-            missingSourcePackIDs.forEach((sourcePackID) => installedProbeCacheRef.current.set(sourcePackID, results.includes(sourcePackID)));
-            applyInstalledState();
+            // Cache every per-id result even when this run was superseded —
+            // discarding the whole batch would leave those packs unprobed
+            // until the key set changes again. A confirmed install/probe true
+            // must not be overwritten by an older in-flight false.
+            missingSourcePackIDs.forEach((sourcePackID, index) => {
+                if (installedProbeCacheRef.current.get(sourcePackID) !== true) {
+                    installedProbeCacheRef.current.set(sourcePackID, results[index] === sourcePackID);
+                }
+            });
+            if (requestID === installedRequestRef.current) {
+                applyInstalledState();
+                return;
+            }
+            // Stale run: the list rebuild belongs to a newer effect, but the
+            // freshly probed installs still count — merge them additively
+            // instead of waiting for the next key change.
+            setInstalledPackIDs((current) => {
+                const next = new Set(current);
+                for (const sourcePackID of sourcePackIDs) {
+                    if (installedProbeCacheRef.current.get(sourcePackID)) next.add(sourcePackID);
+                }
+                return next;
+            });
         });
     }, [sourcePackIDsKey]);
     // Focus management mirrors CustomDialog: move focus into the dialog on
@@ -330,6 +384,61 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     };
 
 
+    // Record confirmed ownership under every alias the card can carry so a
+    // later account read cannot flip it back to Get.
+    const recordPackOwned = (pack: StorePack) => {
+        const sourcePackID = String(pack.source_pack_id || '').trim();
+        const listingID = String(pack.id || '');
+        if (sourcePackID) {
+            sessionOwnedRef.current.sourcePackIDs.add(sourcePackID);
+            setOwnedSourcePackIDs((current) => new Set(current).add(sourcePackID));
+        }
+        if (listingID) {
+            sessionOwnedRef.current.listingIDs.add(listingID);
+            setOwnedListingIDs((current) => new Set(current).add(listingID));
+        }
+    };
+    // Record a confirmed install under every alias the card can carry: the
+    // listing's source ID, the manifest ID the bridge actually installed, and
+    // the listing ID itself. Legacy listings can ship an empty source_pack_id;
+    // the listing-ID fallback keeps those cards on 已安装 as well.
+    const recordPackInstalled = (pack: StorePack, manifestID: string) => {
+        const sourcePackID = String(pack.source_pack_id || '').trim();
+        const installedID = String(manifestID || '').trim();
+        // Route any in-flight probe batch to its additive merge: an older run
+        // must not wholesale-rebuild the set from its stale source list and
+        // drop this just-installed alias.
+        installedRequestRef.current++;
+        for (const key of [sourcePackID, installedID]) {
+            if (key) installedProbeCacheRef.current.set(key, true);
+        }
+        setInstalledPackIDs((current) => {
+            const next = new Set(current);
+            for (const key of [sourcePackID, installedID]) {
+                if (key) next.add(key);
+            }
+            return next;
+        });
+        const listingID = String(pack.id || '');
+        if (listingID) setInstalledListingIDs((current) => new Set(current).add(listingID));
+        // A market install implies the entitlement; record it so an account
+        // refresh cannot flip the card back to Get.
+        recordPackOwned(pack);
+    };
+    // Re-probe one pack's native install state so a card whose local copy is
+    // already on disk (installed before this dialog opened, or on another tab)
+    // can jump straight to 已安装 without a redundant download.
+    const refreshPackInstalled = async (pack: StorePack) => {
+        const sourcePackID = String(pack.source_pack_id || '').trim();
+        if (!sourcePackID) return;
+        try {
+            if (await IsPetStorePackInstalled(sourcePackID)) {
+                recordPackInstalled(pack, sourcePackID);
+            }
+        } catch {
+            // Presentation state only; the Install action stays authoritative.
+        }
+    };
     const purchase = async (pack: StorePack) => {
         const price = Number(pack.price || 0);
         const ok = await showConfirm(
@@ -345,29 +454,36 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
             await PurchasePetStorePack(String(pack.id));
             // An account refresh is the authoritative source for every other
             // entitlement; keep the clicked card responsive while it is in flight.
-            const sourcePackID = String(pack.source_pack_id || '');
-            if (sourcePackID) setOwnedSourcePackIDs((current) => new Set(current).add(sourcePackID));
+            recordPackOwned(pack);
+            // The pack may already be installed locally — installed on another
+            // surface after this dialog's probe ran, or behind a probe result
+            // cached as false. Re-probe in the background so the card can jump
+            // straight to 已安装 without a redundant download.
+            void refreshPackInstalled(pack);
             setAccountOpen(true);
             await loadAccount();
             await loadPacks();
             await loadRankings();
         }
-        catch (err) { await showAlert(petStoreErrorText(lang, err), t(lang, '购买失败', 'Purchase failed')); }
+        catch (err) {
+            if (isAlreadyOwnedError(err)) {
+                // The server already granted the entitlement; update the card
+                // immediately instead of leaving it on Get behind an error
+                // loop. Reconcile ownership and native install state in the
+                // background — neither needs to hold up the alert.
+                recordPackOwned(pack);
+                void loadAccount();
+                void refreshPackInstalled(pack);
+            }
+            await showAlert(petStoreErrorText(lang, err), t(lang, '购买失败', 'Purchase failed'));
+        }
         finally { setBusyID(''); }
     };
     const install = async (pack: StorePack) => {
         setBusyID(packBusyKey(pack));
         try {
             const id = await InstallPetStorePack(String(pack.id));
-            const sourcePackID = String(pack.source_pack_id || '');
-            if (sourcePackID) {
-                // Ignore any in-flight registry probe that started before this
-                // successful install; it may otherwise replace the fresh state
-                // with its older false result.
-                installedRequestRef.current++;
-                installedProbeCacheRef.current.set(sourcePackID, true);
-                setInstalledPackIDs((current) => new Set(current).add(sourcePackID));
-            }
+            recordPackInstalled(pack, String(id || ''));
             await loadRankings();
             await showAlert(t(lang, '已安装宠物包：{id}', 'Installed pet pack: {id}').replace('{id}', String(id)), t(lang, '安装完成', 'Installed'));
         }
@@ -453,7 +569,7 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
                         ) : (
                             <div className="pet-store-grid" aria-live="polite">
                                 {packs.map((pack, index) => {
-                                    const owned = ownedSourcePackIDs.has(String(pack.source_pack_id || ''));
+                                    const owned = ownedSourcePackIDs.has(String(pack.source_pack_id || '')) || ownedListingIDs.has(String(pack.id || ''));
                                     const installed = isPackInstalled(pack);
                                     return <article className="pet-store-pack" key={String(pack.id)}>
                                     <div className="pet-store-pack-art">{pack.preview_data_url ? <img src={String(pack.preview_data_url)} alt={t(lang, '{name} 预览', '{name} preview').replace('{name}', String(pack.name))} loading={index < 4 ? 'eager' : 'lazy'} decoding="async" /> : <span aria-hidden="true">{[...String(pack.name || '?')][0]}</span>}</div>

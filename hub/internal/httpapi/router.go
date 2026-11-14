@@ -809,6 +809,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationHandler(identity))
 	mux.HandleFunc("DELETE /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationRevokeHandler(identity))
 	mux.HandleFunc("POST /api/mobile/auth/desktop-qr-sessions", MobileDesktopAuthQRSessionHandler(identity))
+	mux.HandleFunc("POST /api/mobile/auth/desktop-qr-sessions/redeem", MobileDesktopAuthQRRedeemHandler(identity))
 	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
 	mux.HandleFunc("GET /api/mobile/jobs", MobileJobsHandler(identity))
 	// Hub SSH credential vault (hub_exec path).

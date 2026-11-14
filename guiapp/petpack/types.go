@@ -9,24 +9,28 @@ import (
 	"strings"
 )
 
-// Official pack IDs shipped with the product. ClawMate is intentionally the
-// sole maintained official visual reference; every other appearance is a
-// user-created/imported/market pack.
-var OfficialPackIDs = []string{"clawmate"}
+// Official pack IDs shipped with the product. Ragdoll is the maintained
+// default; every other appearance is a user-created, imported, or market pack.
+var OfficialPackIDs = []string{"ragdoll"}
 
 const (
-	DefaultPackID     = "clawmate"
-	VariantClassic    = "classic"
-	VariantDefault    = "default" // figurative
-	StatusOK          = "ok"
-	StatusInvalid     = "invalid"
-	StatusUnsupported = "unsupported"
-	ScopeBundled      = "bundled"
-	ScopeUser         = "user"
-	SourceCreated     = "created"
-	SourceImported    = "imported"
-	SourceMarket      = "market"
-	RendererNative    = "native-raster"
+	DefaultPackID = "ragdoll"
+	// LegacyClawMatePackID is the retired crab. Bundled scans do not load it.
+	// Sanitize rewrites a saved clawmate id so an old config opens Ragdoll
+	// instead of a missing skin. The new pet system does not keep the crab
+	// as a supported character.
+	LegacyClawMatePackID = "clawmate"
+	VariantClassic       = "classic"
+	VariantDefault       = "default" // figurative
+	StatusOK             = "ok"
+	StatusInvalid        = "invalid"
+	StatusUnsupported    = "unsupported"
+	ScopeBundled         = "bundled"
+	ScopeUser            = "user"
+	SourceCreated        = "created"
+	SourceImported       = "imported"
+	SourceMarket         = "market"
+	RendererNative       = "native-raster"
 	// RendererSkeleton is MaClaw's declarative 2D bone/slot renderer. It only
 	// consumes local JSON plus raster textures; it never executes pack code.
 	RendererSkeleton = "native-skeleton"

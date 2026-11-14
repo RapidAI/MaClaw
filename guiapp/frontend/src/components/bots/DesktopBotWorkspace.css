@@ -1606,10 +1606,12 @@
 .desktop-bot-chat__shot {
     display: block;
     box-sizing: border-box;
-    width: 100%;
+    width: auto;
     max-width: 100%;
+    max-height: 360px;
     height: auto;
     margin: 0;
+    object-fit: contain;
     border-radius: 8px;
     border: 1px solid var(--theme-border, #d9e1ec);
     background: var(--theme-page-bg, #f4f7fb);
@@ -1624,13 +1626,14 @@
     justify-content: center;
     box-sizing: border-box;
     padding: 56px 24px 24px;
+    overflow: auto;
     background: rgba(16, 24, 40, 0.72);
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
 }
 
 .desktop-bot-shot-preview__close {
-    position: absolute;
+    position: fixed;
     top: 16px;
     right: 16px;
     width: 36px;
@@ -1659,15 +1662,34 @@
 
 .desktop-bot-shot-preview__image {
     display: block;
-    max-width: 100%;
-    max-height: 100%;
+    max-width: calc(100vw - 48px);
+    max-height: calc(100vh - 96px);
     width: auto;
     height: auto;
     object-fit: contain;
+    cursor: zoom-in;
     border-radius: 8px;
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
+}
+
+.desktop-bot-shot-preview.is-zoomed {
+    align-items: flex-start;
+    justify-content: flex-start;
+}
+
+.desktop-bot-shot-preview__image.is-zoomed {
+    max-width: none;
+    max-height: none;
+    width: calc(200vw - 96px);
+    height: auto;
+    cursor: zoom-out;
+}
+
+.desktop-bot-shot-preview__image:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 4px;
 }
 
 .desktop-bot-chat__entry:has(.desktop-bot-chat__choices) .desktop-bot-chat__bubble--assistant {

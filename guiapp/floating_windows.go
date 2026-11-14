@@ -242,6 +242,13 @@ type windowsFloatingWindow struct {
 	// event so it fires once per idle period and rearms on new activity.
 	petLastInteractionAt time.Time
 	petLongIdleFired     bool
+	// Desktop travel for clips that declare travel_x. Facing flips at the work
+	// area edge. Remainder keeps sub-pixel steps from being dropped.
+	petTravelFacing    int
+	petTravelRemainder float64
+	petTravelAt        time.Time
+	petFaceLeft        bool
+	actionSoundGen     uint64
 	// Increments for every motion update so an older, slower registry lookup
 	// cannot overwrite a newer setting snapshot.
 	motionConfigRevision uint64
@@ -352,7 +359,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	petQuietMode := false
 	petReducedMotion := false
 	petInteractionMode := "balanced"
-	petSkin := "clawmate"
+	petSkin := petpack.DefaultPackID
 	petVariant := petpack.VariantDefault
 	petSoundPreset := "classic"
 	packPitch := 1.0
@@ -1327,7 +1334,7 @@ func petFacePoseForPhase(phase float64, interactionMode string) petFacePose {
 
 func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, variant, state, interactionMode string, phase float64) *image.NRGBA {
 	if skin == "" {
-		skin = "clawmate"
+		skin = petpack.DefaultPackID
 	}
 	variant = petpack.VariantDefault
 	if state == "" {
@@ -1635,6 +1642,141 @@ func (w *windowsFloatingWindow) evictPetFrameCacheCycleLocked(incoming petFrameC
 	}
 }
 
+func (w *windowsFloatingWindow) characterRenderer(skin, variant string) *petpack.CharacterRenderer {
+	if w == nil {
+		return nil
+	}
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	variant = petpack.ResolveVariantForRuntime(variant)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.characterRenderers == nil {
+		return nil
+	}
+	return w.characterRenderers[skin+"\x00"+variant]
+}
+
+func (w *windowsFloatingWindow) petFacesLeft() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.petFaceLeft
+}
+
+// stepPetLocomotion applies one clip's travel_x to the floating window.
+// designPxPerMS is signed design-canvas pixels per millisecond. Facing flips
+// when the window hits the work area so a walk or a run turns around.
+func (w *windowsFloatingWindow) stepPetLocomotion(designPxPerMS float64, sz int) {
+	if w == nil || sz <= 0 {
+		return
+	}
+	now := time.Now()
+	w.mu.Lock()
+	if w.petTravelFacing == 0 {
+		w.petTravelFacing = 1
+	}
+	dt := now.Sub(w.petTravelAt).Milliseconds()
+	if w.petTravelAt.IsZero() {
+		dt = 0
+	}
+	w.petTravelAt = now
+	if designPxPerMS == 0 || dt <= 0 || dt > 200 || w.hwnd == 0 {
+		if designPxPerMS == 0 {
+			w.petTravelRemainder = 0
+		}
+		w.mu.Unlock()
+		return
+	}
+	scale := float64(sz) / 256
+	w.petTravelRemainder += math.Abs(designPxPerMS) * scale * float64(dt) * float64(w.petTravelFacing)
+	step := math.Trunc(w.petTravelRemainder)
+	w.petTravelRemainder -= step
+	x := w.windowStartX
+	y := w.windowStartY
+	hwnd := w.hwnd
+	facing := w.petTravelFacing
+	// Mirror when the effective direction is left. A negative authored travel
+	// already faces left; the host facing multiplies that.
+	w.petFaceLeft = (designPxPerMS < 0) != (facing < 0)
+	w.mu.Unlock()
+	if step == 0 {
+		return
+	}
+	maxX := getScreenWidth() - sz
+	if maxX < 0 {
+		maxX = 0
+	}
+	next, hit := petpack.StepDesktopTravel(x, step, 0, maxX)
+	if hit {
+		w.mu.Lock()
+		w.petTravelFacing = -facing
+		w.petTravelRemainder = 0
+		w.petFaceLeft = !w.petFaceLeft
+		w.mu.Unlock()
+	}
+	if next == x {
+		return
+	}
+	procMoveWindowProc.Call(hwnd, uintptr(next), uintptr(y), uintptr(sz), uintptr(sz), 1)
+	w.mu.Lock()
+	w.windowStartX = next
+	w.windowStartY = y
+	w.mu.Unlock()
+}
+
+func (w *windowsFloatingWindow) playActionSound(cue string, tones []petpack.RigTone, packPitch float64) {
+	resolved := petpack.ResolveActionSound(cue, tones)
+	if len(resolved) == 0 || w == nil {
+		return
+	}
+	pitch := packPitch
+	if pitch <= 0 {
+		pitch = 1
+	}
+	pitch = math.Max(0.8, math.Min(pitch, 1.25))
+	w.mu.Lock()
+	w.actionSoundGen++
+	gen := w.actionSoundGen
+	w.mu.Unlock()
+	go func() {
+		for index, tone := range resolved {
+			w.mu.Lock()
+			current := w.actionSoundGen == gen && actionSoundAllowed(w.petMotionSound, w.petQuietMode, w.petReducedMotion, w.petRuntimeState, cue)
+			w.mu.Unlock()
+			if !current {
+				return
+			}
+			frequency := petpack.ClampActionToneHz(float64(tone.Hz) * pitch)
+			procBeep.Call(uintptr(frequency), uintptr(tone.Ms))
+			if index+1 < len(resolved) {
+				time.Sleep(8 * time.Millisecond)
+			}
+		}
+	}()
+}
+
+func mirrorPetFrame(src *image.NRGBA) *image.NRGBA {
+	if src == nil {
+		return nil
+	}
+	bounds := src.Bounds()
+	dst := image.NewNRGBA(bounds)
+	width := bounds.Dx()
+	height := bounds.Dy()
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			si := src.PixOffset(bounds.Min.X+x, bounds.Min.Y+y)
+			di := dst.PixOffset(bounds.Min.X+width-1-x, bounds.Min.Y+y)
+			copy(dst.Pix[di:di+4], src.Pix[si:si+4])
+		}
+	}
+	return dst
+}
+
 func (w *windowsFloatingWindow) playPetMotionSound(interactionMode, skin, preset string, packPitch float64, generation uint64) {
 	go func() {
 		if interactionMode == "quiet" {
@@ -1707,6 +1849,7 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petEnabled := w.petEnabled
 	petMotionEnabled := w.petMotionEnabled
 	petMotionSound := w.petMotionSound
+	petDragging := w.dragging
 	playPetSound := false
 	if hwnd != 0 && base != nil && distMap != nil && w.petEnabled && w.petMotionEnabled && petMotionSoundHeard(petMotionSound, w.petQuietMode, w.petReducedMotion, w.petRuntimeState) {
 		bucket := int(math.Floor(w.haloPhase/(2*math.Pi)*4)) % 4
@@ -1764,9 +1907,6 @@ func (w *windowsFloatingWindow) renderFrame() {
 	w.mu.Unlock()
 	if longIdleDue {
 		w.triggerCharacterEvent("long_idle")
-	}
-	if playPetSound && !petReducedMotion {
-		w.playPetMotionSound(petInteractionMode, petSkin, petSoundPreset, packPitch, soundGeneration)
 	}
 
 	if hwnd == 0 || base == nil || distMap == nil {
@@ -1832,6 +1972,25 @@ func (w *windowsFloatingWindow) renderFrame() {
 		stateScale, stateXOffset, stateYOffset := 1.0, 0.0, 0.0
 		if !nativeCharacter {
 			stateScale, stateXOffset, stateYOffset = petStateTransitionPose(petState, stateTransition, sz, petMotionAmplitude)
+			if playPetSound && !petReducedMotion {
+				w.playPetMotionSound(petInteractionMode, petSkin, petSoundPreset, packPitch, soundGeneration)
+			}
+		} else if !staticOnly {
+			// Authored clips own both the pose and the cue. The legacy halo beep
+			// would stack a second, unrelated tone on every action.
+			if renderer := w.characterRenderer(petSkin, petVariant); renderer != nil {
+				nowMS := time.Now().UnixMilli()
+				if !petDragging {
+					w.stepPetLocomotion(renderer.DesktopTravelDesignPerMS(nowMS), sz)
+				}
+				cue, tones := renderer.TakeActionSound(nowMS)
+				if actionSoundAllowed(petMotionSound, petQuietMode, petReducedMotion, petState, cue) && (cue != "" || len(tones) > 0) {
+					w.playActionSound(cue, tones, packPitch)
+				}
+				if w.petFacesLeft() && petFrame != nil {
+					petFrame = mirrorPetFrame(petFrame)
+				}
+			}
 		}
 		renderAnimatedPetFrame(frame, petFrame, previousPetFrame, petScale*stateScale, petXOffset+stateXOffset, petYOffset+stateYOffset, stateTransition)
 	} else {

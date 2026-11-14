@@ -23,6 +23,7 @@ const chromeMn: Record<string, string> = {
     '{phase} is waiting for review': '{phase} хяналт хүлээж байна',
     '{shown} of {total} open': '{total}-аас {shown} нээлттэй',
     '20 per page': 'Хуудсанд 20',
+    'A local pet pack with the same ID is already installed. Uninstall or rename it before installing the market pack.': 'Ижил ID-тэй локал тэжээврийн багц аль хэдийн суулгасан байна. Захын багцыг суулгахын өмнө устгах эсвэл нэрээ өөрчлөнө үү.',
     'Abort': 'Зогсоох',
     'Accept': 'Хүлээн авах',
     'Account panels': 'Бүртгэлийн самбар',

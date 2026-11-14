@@ -1761,7 +1761,7 @@ func AppConfigDefaults() AppConfig {
 		// UnmarshalJSON uses these defaults for absent keys; seeding figurative
 		// would silently upgrade every legacy install. First-run calls
 		// ApplyNewInstallPetDefaults instead (K18).
-		PetSkin:              "clawmate",
+		PetSkin:              "ragdoll",
 		GroupDiscussion:      defaultGroupDiscussionConfig(),
 		LLMPromptCache:       DefaultLLMPromptCacheConfig(),
 		AnswerCache:          DefaultAnswerCacheConfig(),
@@ -1793,8 +1793,8 @@ func ApplyNewInstallPetDefaults(cfg *AppConfig) {
 	if cfg == nil {
 		return
 	}
-	if strings.TrimSpace(cfg.PetSkin) == "" {
-		cfg.PetSkin = "clawmate"
+	if strings.TrimSpace(cfg.PetSkin) == "" || strings.TrimSpace(cfg.PetSkin) == "clawmate" {
+		cfg.PetSkin = "ragdoll"
 	}
 	// AppConfigDefaults seeds UnmarshalJSON as well. Set this only on new-install
 	// creation paths so an explicit persisted false is never changed to true.

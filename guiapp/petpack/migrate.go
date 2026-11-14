@@ -37,7 +37,8 @@ func ResolveVariantForRuntime(stored string) string {
 // SanitizeSkinID applies allowlist rules (design B.4).
 //
 // registryReady=false: keep official IDs and any well-formed pack id (do not wipe user packs).
-// registryReady=true: keep ids present in allowlist (ok + installed invalid); unknown → clawmate.
+// registryReady=true: keep ids present in allowlist (ok + installed invalid); unknown → ragdoll.
+// A saved "clawmate" id is rewritten to the default after this returns.
 func SanitizeSkinID(skin string, registryReady bool, allowlist map[string]bool) string {
 	skin = strings.TrimSpace(skin)
 	if skin == "" {

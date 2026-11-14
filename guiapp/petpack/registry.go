@@ -158,8 +158,8 @@ func (r *Registry) scanUnlocked() error {
 			}
 			m.Scope = ScopeBundled
 			m.Dir = filepath.ToSlash(filepath.Dir(path))
-			// Historical bundled skins are kept in the source tree only as legacy
-			// assets. They are not exposed as official 2.0 choices.
+			// Only the current official character is scanned. Retired bundled
+			// skins, including the old crab, are not loadable characters.
 			if m.ID != DefaultPackID {
 				return nil
 			}
@@ -509,10 +509,15 @@ func (r *Registry) List() []PackInfo {
 		}
 	}
 	rest := make([]string, 0, len(r.packs))
-	for id := range r.packs {
-		if !seen[id] {
-			rest = append(rest, id)
+	for id, m := range r.packs {
+		if seen[id] {
+			continue
 		}
+		// A retired bundled sample can still Resolve, but it is not a skin card.
+		if m != nil && m.Scope == ScopeBundled && !IsOfficialPackID(id) {
+			continue
+		}
+		rest = append(rest, id)
 	}
 	sort.Strings(rest)
 	for _, id := range rest {

@@ -318,6 +318,7 @@ func replyFiles(attachments []replyAttachment) []ReplyFile {
 	// 200 000 here dropped a 365 KB PDF that MaClawSrv had attached, while
 	// the bot said it was attached (papers 2026-11-12 06:28, Bot 4).
 	maxFile := desktop.FileDeliverBase64Max
+	var kept []ReplyFile
 	for i := len(attachments) - 1; i >= 0; i-- {
 		item := attachments[i]
 		if strings.TrimSpace(item.Type) != "file" {
@@ -339,9 +340,15 @@ func replyFiles(attachments []replyAttachment) []ReplyFile {
 		if !ok {
 			continue
 		}
-		return []ReplyFile{{Name: name, MIME: mime, Data: data}}
+		kept = append(kept, ReplyFile{Name: name, MIME: mime, Data: data})
+		if len(kept) == 8 {
+			break
+		}
 	}
-	return nil
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	return kept
 }
 
 func replyFileName(raw string) string {
@@ -487,7 +494,10 @@ type BotAdmission struct {
 	Queued   bool
 	Held     bool
 	Position int
-	Schedule *DesktopSchedule
+	// Instruction is the work order Intake wrote. The GUI stores it on the
+	// timer it shows, so a follow-up is not saved as the raw sentence alone.
+	Instruction string
+	Schedule    *DesktopSchedule
 }
 
 // PostMessagePhase is PostMessage with the bot turn phase. An empty phase

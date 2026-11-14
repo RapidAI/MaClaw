@@ -23,25 +23,18 @@ func TestSanitizePetConfigUsesRegistryAllowlist(t *testing.T) {
 
 	cfg := corelib.AppConfig{PetSkin: "unknown-skin", PetSize: 200}
 	sanitizePetConfig(&cfg)
-	if cfg.PetSkin != "clawmate" {
-		t.Fatalf("unknown → clawmate, got %q", cfg.PetSkin)
+	if cfg.PetSkin != petpack.DefaultPackID {
+		t.Fatalf("unknown → ragdoll, got %q", cfg.PetSkin)
 	}
 	if cfg.PetSize != 120 {
 		t.Fatalf("size clamp, got %d", cfg.PetSize)
 	}
 
-	// third-party installed
-	allow := reg.Allowlist()
-	allow["third-party-pet"] = true
-	// inject into registry via rescan with dir
-	// simpler: call SanitizeSkinID path by putting pack on disk
-	// Already tested in petpack; here verify official retained
-	// dev-claw is retired from the official list; clawmate is the remaining
-	// official skin and must survive sanitization against a ready registry.
+	// A saved crab id is rewritten. Ragdoll is the only official skin.
 	cfg2 := corelib.AppConfig{PetSkin: "clawmate", PetVariant: "", PetVariantMigrated: false}
 	sanitizePetConfig(&cfg2)
-	if cfg2.PetSkin != "clawmate" {
-		t.Fatalf("official wiped: %q", cfg2.PetSkin)
+	if cfg2.PetSkin != petpack.DefaultPackID {
+		t.Fatalf("retired skin = %q, want ragdoll", cfg2.PetSkin)
 	}
 	if cfg2.PetVariant != petpack.VariantDefault {
 		t.Fatalf("legacy variant = %q, want default", cfg2.PetVariant)
@@ -162,7 +155,7 @@ func TestGetPetPackPreviewDataURLOfficial(t *testing.T) {
 	}
 	petpack.SetGlobalForTest(reg)
 	app := &App{}
-	url := app.GetPetPackPreviewDataURL("clawmate")
+	url := app.GetPetPackPreviewDataURL(petpack.DefaultPackID)
 	if url == "" || !strings.HasPrefix(url, "data:image/") {
 		t.Fatalf("expected data URL, got %q", url)
 	}
@@ -170,12 +163,12 @@ func TestGetPetPackPreviewDataURLOfficial(t *testing.T) {
 		t.Fatalf("expected base64 payload: %q", url[:min(40, len(url))])
 	}
 	// State frame for figurative preview
-	speak := app.GetPetPackStateFrameDataURL("clawmate", "speaking", "default")
+	speak := app.GetPetPackStateFrameDataURL(petpack.DefaultPackID, "speaking", "default")
 	if speak == "" || !strings.HasPrefix(speak, "data:image/") {
 		t.Fatalf("expected speaking frame data URL, got %q", speak)
 	}
 	// Legacy classic value is normalized to the pack frame.
-	if got := app.GetPetPackStateFrameDataURL("clawmate", "idle", "classic"); got == "" {
+	if got := app.GetPetPackStateFrameDataURL(petpack.DefaultPackID, "idle", "classic"); got == "" {
 		t.Fatal("legacy classic should return the default pack frame")
 	}
 	dir := app.GetPetPacksDir()
@@ -242,7 +235,7 @@ func TestTryLoadPackFrameFigurative(t *testing.T) {
 		t.Fatal(err)
 	}
 	petpack.SetGlobalForTest(reg)
-	frame, resolved, err := reg.ResolveAndLoad("clawmate", "default", petpack.StateIdle, 64, petpack.NewFrameCache())
+	frame, resolved, err := reg.ResolveAndLoad(petpack.DefaultPackID, "default", petpack.StateIdle, 64, petpack.NewFrameCache())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +245,7 @@ func TestTryLoadPackFrameFigurative(t *testing.T) {
 	if frame == nil {
 		t.Fatalf("figurative pack frame missing; renderer=%s native=%v dir=%q", resolved.Renderer, resolved.Native, resolved.Manifest.Dir)
 	}
-	if legacyFrame := tryLoadPackFrame("clawmate", "classic", "idle", 64, petpack.NewFrameCache()); legacyFrame == nil {
+	if legacyFrame := tryLoadPackFrame(petpack.DefaultPackID, "classic", "idle", 64, petpack.NewFrameCache()); legacyFrame == nil {
 		t.Fatal("legacy classic value should still render the selected pack frame")
 	}
 	if petpack.ResolveVariantForRuntime("") != "default" {

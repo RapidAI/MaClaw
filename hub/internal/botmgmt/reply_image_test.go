@@ -50,7 +50,7 @@ func TestReplyFileKeepsTheLatestDocument(t *testing.T) {
 		{Type: "file", FileName: "note.docx", MimeType: "application/pdf", Data: docx},
 		{Type: "file", FileName: "自我描述.docx", MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Data: docx},
 	})
-	if len(got) != 1 || got[0].Name != "自我描述.docx" || got[0].Data != docx {
+	if len(got) != 2 || got[0].Name != "note.docx" || got[1].Name != "自我描述.docx" || got[1].Data != docx {
 		t.Fatalf("files=%#v", got)
 	}
 	if got := replyFiles([]replyAttachment{{Type: "file", FileName: "a.docx", MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Data: "not base64"}}); got != nil {

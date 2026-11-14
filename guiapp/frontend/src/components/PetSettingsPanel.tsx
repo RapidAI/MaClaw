@@ -20,6 +20,7 @@ import {
 import { buildHubPetPackHelpURL } from '../utils/hubCredits';
 import {
     defaultPetSize,
+    defaultPetSkinId,
     getPetSkinOption,
     packInfoToSkinOption,
     petSkinOptions,
@@ -296,17 +297,17 @@ function skinToneLabel(lang: Lang, tone: string): string {
 
 function skinDescription(lang: Lang, id: string): string {
     switch (id) {
-        case 'clawmate':
+        case 'ragdoll':
         default:
-            return text(lang, '带耳朵、爪子和信号标记的默认助手', '帶耳朵、爪子和訊號標記的預設助手', 'Default helper with ears, paws, and a signal tag');
+            return text(lang, '会走动、奔跑、跳跃、弯腰和唱歌的布偶猫', '會走動、奔跑、跳躍、彎腰和唱歌的布偶貓', 'A ragdoll cat-girl who walks, runs, jumps, bows, and sings');
     }
 }
 
 function skinPreviewLine(lang: Lang, id: string): string {
     switch (id) {
-        case 'clawmate':
+        case 'ragdoll':
         default:
-            return text(lang, '抓住问题，把有效信号拎出来。', '抓住問題，把有效訊號拎出來。', 'Catches the problem and pulls out the signal.');
+            return text(lang, '在桌面上走来走去，高兴时会跳起来唱歌。', '在桌面上走來走去，高興時會跳起來唱歌。', 'Walks the desktop, and jumps or sings when she is pleased.');
     }
 }
 
@@ -375,7 +376,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
     const saveSeqRef = useRef(0);
     const pendingPatchRef = useRef<Record<string, unknown>>({});
     const petSize = clampPetSize(config.pet_size || defaultPetSize);
-    const selectedSkin = config.pet_skin || 'clawmate';
+    const selectedSkin = config.pet_skin || defaultPetSkinId;
     // The live preview uses the configured variant. Legacy 'classic' has no
     // raster frames (see GetPetPackStateFrameDataURL), so it resolves to the
     // default variant, which every pack ships.
@@ -904,7 +905,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             // pending debounced patch that still references the removed skin.
             if (latestConfigRef.current.pet_skin === skin) {
                 const next = cloneAppConfig(latestConfigRef.current, {
-                    pet_skin: 'clawmate',
+                    pet_skin: defaultPetSkinId,
                     pet_variant: 'default',
                 });
                 latestConfigRef.current = next;
@@ -913,7 +914,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             if (pendingPatchRef.current.pet_skin === skin) {
                 pendingPatchRef.current = {
                     ...pendingPatchRef.current,
-                    pet_skin: 'clawmate',
+                    pet_skin: defaultPetSkinId,
                     pet_variant: 'default',
                 };
             }
@@ -1183,7 +1184,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
 					<div className="pet-form-section">
                         <div className="pet-section-heading">
                             <strong>{text(lang, '\u5f62\u8c61', '\u5f62\u8c61', 'Skin')}</strong>
-                            <span>{text(lang, '默认小螃蟹是官方动作打样；其他形象由你安装或创建的宠物包提供。', '預設小螃蟹是官方動作打樣；其他形象由你安裝或建立的寵物包提供。', 'The default crab is the official motion reference; add other characters through installed or created packs.')}</span>
+                            <span>{text(lang, '默认是会走、跑、跳、弯腰和唱歌的布偶猫；其他形象由你安装或创建的宠物包提供。', '預設是會走、跑、跳、彎腰和唱歌的布偶貓；其他形象由你安裝或建立的寵物包提供。', 'The default is a ragdoll cat-girl who walks, runs, jumps, bows, and sings; add other characters through installed or created packs.')}</span>
                         </div>
                         <div className="pet-skin-grid">
                             {packOptions.map((skin) => {

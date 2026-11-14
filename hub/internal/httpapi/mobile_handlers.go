@@ -1615,6 +1615,113 @@ func MobileDesktopAuthQRSessionHandler(identity *auth.IdentityService) http.Hand
 	}
 }
 
+// MobileDesktopAuthQRRedeemHandler exchanges a scanned desktop authentication
+// QR for a machine enrollment on the QR owner's account. The QR payload itself
+// is the credential — whoever presents a live one-time session id is enrolled,
+// matching how the desktop-side verification codes work. Sessions are
+// consumed on first use and expire five minutes after issue.
+func MobileDesktopAuthQRRedeemHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if identity == nil {
+			writeError(w, http.StatusInternalServerError, "IDENTITY_UNAVAILABLE", "identity service is unavailable")
+			return
+		}
+		var req struct {
+			QRPayload   string `json:"qr_payload"`
+			MachineName string `json:"machine_name"`
+			Platform    string `json:"platform"`
+			ClientID    string `json:"client_id"`
+			Language    string `json:"language"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_JSON", "invalid JSON")
+			return
+		}
+		payload, err := parseMobileDesktopAuthQRPayload(req.QRPayload)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_QR", err.Error())
+			return
+		}
+		now := time.Now().UTC()
+		mobileLlmAuthorizations.Lock()
+		session, ok := mobileLlmAuthorizations.qrSessions[payload.SessionID]
+		if !ok || session.Purpose != mobileQRSessionPurposeAuth ||
+			!session.ConsumedAt.IsZero() || now.After(session.ExpiresAt) {
+			mobileLlmAuthorizations.Unlock()
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_QR",
+				"desktop authentication QR was not found, has already been used, or has expired")
+			return
+		}
+		session.ConsumedAt = now
+		delete(mobileLlmAuthorizations.qrSessions, payload.SessionID)
+		mobileLlmAuthorizations.Unlock()
+
+		ctx := auth.WithTenant(r.Context(), session.TenantID)
+		repo := identity.UsersRepo()
+		if repo == nil {
+			writeError(w, http.StatusInternalServerError, "QR_OWNER_UNAVAILABLE",
+				"the account that issued this QR is no longer available")
+			return
+		}
+		user, err := repo.GetByID(ctx, session.OwnerID)
+		if err != nil || user == nil {
+			writeError(w, http.StatusInternalServerError, "QR_OWNER_UNAVAILABLE",
+				"the account that issued this QR is no longer available")
+			return
+		}
+		enrollOpts := []auth.EnrollOption{auth.WithPhoneVerifiedRegistration()}
+		if lang := strings.TrimSpace(req.Language); lang != "" {
+			enrollOpts = append(enrollOpts, auth.WithLanguage(lang))
+		} else if acceptLang := r.Header.Get("Accept-Language"); strings.Contains(acceptLang, "zh") {
+			enrollOpts = append(enrollOpts, auth.WithLanguage("zh"))
+		}
+		resp, err := identity.StartEnrollment(ctx, user.Email,
+			strings.TrimSpace(req.MachineName), strings.TrimSpace(req.Platform),
+			strings.TrimSpace(req.ClientID), "", enrollOpts...)
+		if err != nil {
+			writeEnrollmentStartError(w, err, resp)
+			return
+		}
+		respMap := enrollmentStartResponseMap(resp)
+		// Surface the verified phone so a phone-keyed mobile account list
+		// merges this login with a code-sign-in for the same number.
+		phone := ""
+		if resp != nil {
+			phone = strings.TrimSpace(resp.PhoneNumber)
+		}
+		if phone == "" {
+			phone = mobilePhoneDigitsFromAccountEmail(user.Email)
+		}
+		if phone != "" {
+			respMap["phone_number"] = phone
+		}
+		writeJSON(w, http.StatusOK, respMap)
+	}
+}
+
+// parseMobileDesktopAuthQRPayload decodes the desktop-generated authentication
+// QR JSON. Unlike the LLM authorization QR it carries no provider fields.
+func parseMobileDesktopAuthQRPayload(raw string) (mobileDesktopLlmQRPayload, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("qr_payload is required")
+	}
+	var payload mobileDesktopLlmQRPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("qr_payload must be MaClaw desktop GUI JSON")
+	}
+	payload.Type = strings.TrimSpace(payload.Type)
+	payload.SessionID = strings.TrimSpace(payload.SessionID)
+	payload.ExpiresAt = strings.TrimSpace(payload.ExpiresAt)
+	if payload.Type != mobileDesktopAuthAuthorizationQRType {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("qr_payload must be a MaClaw desktop authentication session")
+	}
+	if payload.SessionID == "" {
+		return mobileDesktopLlmQRPayload{}, fmt.Errorf("session_id is required")
+	}
+	return payload, nil
+}
+
 // mobilePrincipalHasVerifiedPhoneIdentity reports whether the viewer may issue
 // a mobile authentication QR. Phone-primary accounts use email "phone:<digits>";
 // email accounts must have a verified phone identity binding.

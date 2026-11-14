@@ -8,6 +8,7 @@ import (
 	_ "image/png"
 	"io"
 	"io/fs"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -98,6 +99,27 @@ type RigClip struct {
 	DurationMS int                      `json:"duration_ms"`
 	Loop       bool                     `json:"loop,omitempty"`
 	Tracks     map[string][]RigKeyframe `json:"tracks,omitempty"`
+	// TravelX is optional desktop locomotion in design-canvas pixels over one
+	// full playback of this clip. Positive moves the pet right. The host scales
+	// by petSize/256, clamps to the work area, and turns around at the edges.
+	// Zero keeps the window where it is. Packs cannot read the screen.
+	TravelX float64 `json:"travel_x,omitempty"`
+	// Cue names a built-in action sound. Sound, when non-empty, replaces Cue.
+	// Playback is once per clip start unless SoundLoop is set.
+	Cue string `json:"cue,omitempty"`
+	// Sound is an optional explicit tone sequence for this action. It stays
+	// inside the declarative contract: no audio files, URLs, or code.
+	Sound []RigTone `json:"sound,omitempty"`
+	// SoundLoop replays the action sound each time a looping clip wraps.
+	// Walk and run use it for footfalls. One-shots leave it false.
+	SoundLoop bool `json:"sound_loop,omitempty"`
+}
+
+// RigTone is one host-synthesized beep. Packs declare it; they do not ship
+// audio bytes. Hz and Ms are checked in ValidateRig.
+type RigTone struct {
+	Hz int `json:"hz"`
+	Ms int `json:"ms"`
 }
 
 type RigKeyframe struct {
@@ -116,7 +138,12 @@ const (
 	maxRigSlots          = 32
 	maxRigTextures       = 32
 	maxRigKeyframes      = 240
-	maxRigTotalKeyframes = 1200
+	// A full-body action library (walk, run, jump, bend, plus idle phases)
+	// does not fit in the original 1,200-keyframe cap. 4,800 is still a hard
+	// budget: per-track 240 and the texture caps are unchanged.
+	maxRigTotalKeyframes = 4800
+	maxRigTravelX        = 256
+	maxRigSoundTones     = 4
 	// A pet is rendered at 56–136px. These bounds keep an apparently small,
 	// compressed image from expanding into an unreasonable amount of memory.
 	maxRigTextureBytes   = 512 * 1024
@@ -265,6 +292,9 @@ func ValidateRig(rig *Rig, assets *PetPackRigAssets) error {
 		if !validRigName(clipName) || clip.DurationMS < 1 || clip.DurationMS > 60000 {
 			return fmt.Errorf("invalid clip %q", clipName)
 		}
+		if err := validateClipMotion(clipName, clip); err != nil {
+			return err
+		}
 		for track, frames := range clip.Tracks {
 			if !bones[track] && !slotNames[track] {
 				return fmt.Errorf("clip %q references unknown track %q", clipName, track)
@@ -290,6 +320,32 @@ func ValidateRig(rig *Rig, assets *PetPackRigAssets) error {
 	}
 	if err := validateRigJoin(rig.Join, textures); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateClipMotion(name string, clip RigClip) error {
+	if math.IsNaN(clip.TravelX) || math.IsInf(clip.TravelX, 0) || math.Abs(clip.TravelX) > maxRigTravelX {
+		return fmt.Errorf("clip %q travel_x must be within ±%d design pixels", name, maxRigTravelX)
+	}
+	if clip.Cue != "" && !IsActionCue(clip.Cue) {
+		return fmt.Errorf("clip %q has unknown sound cue %q", name, clip.Cue)
+	}
+	if len(clip.Sound) > maxRigSoundTones {
+		return fmt.Errorf("clip %q sound exceeds %d tones", name, maxRigSoundTones)
+	}
+	totalMS := 0
+	for i, tone := range clip.Sound {
+		if tone.Hz < minActionToneHz || tone.Hz > maxActionToneHz || tone.Ms < minActionToneMs || tone.Ms > maxActionToneMs {
+			return fmt.Errorf("clip %q sound tone %d is outside %d–%d Hz and %d–%d ms", name, i, minActionToneHz, maxActionToneHz, minActionToneMs, maxActionToneMs)
+		}
+		totalMS += tone.Ms
+	}
+	if totalMS > maxActionSoundMs {
+		return fmt.Errorf("clip %q sound exceeds %d ms", name, maxActionSoundMs)
+	}
+	if clip.SoundLoop && clip.Cue == "" && len(clip.Sound) == 0 {
+		return fmt.Errorf("clip %q sound_loop requires a cue or sound", name)
 	}
 	return nil
 }

@@ -79,6 +79,7 @@ func (s *HTTPServer) handleBotIntake(w http.ResponseWriter, r *http.Request, p a
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	in.Timers = desktopIntakeTimers(r.PathValue("instanceId"), in.BotID)
 	out, err := s.svc.IntakeBotMessage(r.Context(), p, r.PathValue("instanceId"), in, s.botIntakeClassifier(p))
 	if errors.Is(err, agentservice.ErrBotThreadsBadBot) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

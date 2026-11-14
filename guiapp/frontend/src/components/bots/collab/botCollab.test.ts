@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { answeredSinceLast, applyBotStatusLine, shownDesktopBotActivity, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
+import { answeredSinceLast, applyBotStatusLine, shownDesktopBotActivity, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, placeChatSays, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
 
 const bots = [{ id: 'm', title: '主管', primary: true }, { id: 'a', title: '小A' }, { id: 'b', title: '小B' }, { id: 'c', title: '小C' }, { id: 'd', title: '小D' }];
 const asg = (id: string, target: string, state: string, extra: Partial<Assignment> = {}): Assignment =>
@@ -55,6 +55,26 @@ describe('inline says only after the latest message', () => {
         const since = saidSince([msg, 'x'], now);
         expect(saidForChat([old, fresh], 'b', false, since).map(i => i.id)).toEqual(['n2']);
         expect(saidForChat([old, fresh], 'b', false).map(i => i.id)).toEqual(['n1', 'n2']);
+    });
+});
+
+describe('placeChatSays', () => {
+    it('keeps an earlier weather report where it was said and drops a later reask', () => {
+        const ackAt = Date.parse('2026-11-14T08:20:00Z');
+        const userAt = Date.parse('2026-11-14T08:25:00Z');
+        const weatherAt = '2026-11-14T08:22:00Z';
+        const againAt = '2026-11-14T08:31:00Z';
+        const messages = [
+            { id: `m-${ackAt.toString(36)}-ack`, role: 'assistant', content: '好的，我会定时向你报告天气情况。' },
+            { id: `m-${userAt.toString(36)}-u`, role: 'user', content: '北京，下次再生成pdf文件' },
+        ];
+        const items = [
+            { id: 'w', kind: 'say', target: 'human', from: 'b', text: '北京晴 12℃', created_at: weatherAt },
+            { id: 'q', kind: 'say', target: 'human', from: 'b', text: '这轮的天气：北京晴 12℃，上海阴有小雨 19℃。你要报自己城市的话，说一声我就固定下来。', created_at: againAt },
+        ] as SaidItem[];
+        const placed = placeChatSays(items, 'b', false, messages);
+        expect(placed.after.get(messages[0].id)?.map(item => item.id)).toEqual(['w']);
+        expect(placed.trailing).toEqual([]);
     });
 });
 

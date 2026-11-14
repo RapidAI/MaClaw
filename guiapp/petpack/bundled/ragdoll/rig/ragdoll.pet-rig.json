@@ -1,0 +1,3603 @@
+{
+  "version": 1,
+  "bones": [
+    {
+      "name": "root",
+      "x": 128,
+      "y": 128
+    },
+    {
+      "name": "hip",
+      "parent": "root",
+      "y": 50
+    },
+    {
+      "name": "torso",
+      "parent": "hip",
+      "y": -4
+    },
+    {
+      "name": "head",
+      "parent": "torso",
+      "y": -50
+    },
+    {
+      "name": "eyes",
+      "parent": "head",
+      "y": 8
+    },
+    {
+      "name": "mouth",
+      "parent": "head",
+      "y": 22
+    },
+    {
+      "name": "arm_l",
+      "parent": "torso",
+      "x": -30,
+      "y": -18
+    },
+    {
+      "name": "arm_r",
+      "parent": "torso",
+      "x": 30,
+      "y": -18
+    },
+    {
+      "name": "leg_l",
+      "parent": "hip",
+      "x": -13,
+      "y": 6
+    },
+    {
+      "name": "leg_r",
+      "parent": "hip",
+      "x": 13,
+      "y": 6
+    },
+    {
+      "name": "tail",
+      "parent": "hip",
+      "x": 8,
+      "y": -10,
+      "rotate": -18
+    }
+  ],
+  "slots": [
+    {
+      "name": "tail",
+      "bone": "tail",
+      "texture": "rig/tail.png"
+    },
+    {
+      "name": "leg_l",
+      "bone": "leg_l",
+      "texture": "rig/leg-l.png",
+      "z": 1
+    },
+    {
+      "name": "leg_r",
+      "bone": "leg_r",
+      "texture": "rig/leg-r.png",
+      "z": 1
+    },
+    {
+      "name": "torso",
+      "bone": "torso",
+      "texture": "rig/torso.png",
+      "z": 2
+    },
+    {
+      "name": "arm_l",
+      "bone": "arm_l",
+      "texture": "rig/arm-l.png",
+      "z": 3
+    },
+    {
+      "name": "arm_r",
+      "bone": "arm_r",
+      "texture": "rig/arm-r.png",
+      "z": 3
+    },
+    {
+      "name": "head",
+      "bone": "head",
+      "texture": "rig/head.png",
+      "z": 4
+    },
+    {
+      "name": "mouth",
+      "bone": "mouth",
+      "texture": "rig/mouth.png",
+      "z": 5
+    },
+    {
+      "name": "eyes",
+      "bone": "eyes",
+      "texture": "rig/eyes.png",
+      "z": 6
+    }
+  ],
+  "clips": {
+    "alert_in": {
+      "duration_ms": 280,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 280,
+            "rotate": 36,
+            "ease": "ease-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 280,
+            "rotate": -36,
+            "ease": "ease-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 100,
+            "y": 6,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 280,
+            "y": -16,
+            "ease": "ease-out"
+          }
+        ]
+      },
+      "cue": "alert"
+    },
+    "alert_loop": {
+      "duration_ms": 1100,
+      "loop": true,
+      "tracks": {
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -12
+          },
+          {
+            "at_ms": 400,
+            "y": -8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1100,
+            "y": -12,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "alert_out": {
+      "duration_ms": 340,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 20
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -20
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -8
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "bend_in": {
+      "duration_ms": 560,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 560,
+            "y": 6,
+            "rotate": 24,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 560,
+            "y": 6,
+            "rotate": 18,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": 4
+          },
+          {
+            "at_ms": 560,
+            "rotate": -40,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 160,
+            "y": -4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 560,
+            "x": 4,
+            "y": 10,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": -8
+          },
+          {
+            "at_ms": 560,
+            "rotate": 62,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "bend"
+    },
+    "bend_loop": {
+      "duration_ms": 1400,
+      "loop": true,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "y": 6,
+            "rotate": 24
+          },
+          {
+            "at_ms": 1400,
+            "y": 6,
+            "rotate": 24
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "y": 6,
+            "rotate": 18
+          },
+          {
+            "at_ms": 1400,
+            "y": 6,
+            "rotate": 18
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": -40
+          },
+          {
+            "at_ms": 700,
+            "rotate": -46,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1400,
+            "rotate": -40,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "x": 4,
+            "y": 10
+          },
+          {
+            "at_ms": 700,
+            "x": 6,
+            "y": 12,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1400,
+            "x": 4,
+            "y": 10,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": 62
+          },
+          {
+            "at_ms": 700,
+            "rotate": 68,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1400,
+            "rotate": 62,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "bend_out": {
+      "duration_ms": 480,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "y": 4,
+            "rotate": 20
+          },
+          {
+            "at_ms": 480,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "y": 4,
+            "rotate": 14
+          },
+          {
+            "at_ms": 480,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": -40
+          },
+          {
+            "at_ms": 480,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "x": 4,
+            "y": 10
+          },
+          {
+            "at_ms": 480,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": 62
+          },
+          {
+            "at_ms": 480,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "done_in": {
+      "duration_ms": 420,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 420,
+            "rotate": 140,
+            "ease": "ease-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 420,
+            "rotate": -140,
+            "ease": "ease-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 4
+          },
+          {
+            "at_ms": 160,
+            "y": 10,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "y": -36,
+            "ease": "ease-out"
+          }
+        ]
+      },
+      "cue": "celebrate"
+    },
+    "done_loop": {
+      "duration_ms": 900,
+      "loop": true,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 130
+          },
+          {
+            "at_ms": 900,
+            "rotate": 120,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -130
+          },
+          {
+            "at_ms": 900,
+            "rotate": -120,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -28
+          },
+          {
+            "at_ms": 360,
+            "y": -16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "y": -28,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "done_out": {
+      "duration_ms": 400,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 80
+          },
+          {
+            "at_ms": 400,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -80
+          },
+          {
+            "at_ms": 400,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -12
+          },
+          {
+            "at_ms": 160,
+            "y": 8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 400,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "land"
+    },
+    "expr_calm": {
+      "duration_ms": 1400,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 700,
+            "scale_y": 0.96,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1400,
+            "scale_y": 1,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "expr_concerned": {
+      "duration_ms": 900,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_x": 1.16,
+            "scale_y": 1.08
+          },
+          {
+            "at_ms": 450,
+            "scale_x": 1.22,
+            "scale_y": 1.12,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "scale_x": 1.16,
+            "scale_y": 1.08,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "expr_curious": {
+      "duration_ms": 1000,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_x": 1.12,
+            "scale_y": 1.12
+          },
+          {
+            "at_ms": 500,
+            "scale_x": 1.18,
+            "scale_y": 1.16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1000,
+            "scale_x": 1.12,
+            "scale_y": 1.12,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "expr_focus": {
+      "duration_ms": 1200,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_x": 0.9,
+            "scale_y": 1.05
+          },
+          {
+            "at_ms": 600,
+            "scale_x": 0.86,
+            "scale_y": 1.08,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1200,
+            "scale_x": 0.9,
+            "scale_y": 1.05,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "expr_pleased": {
+      "duration_ms": 1000,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_x": 0.92,
+            "scale_y": 0.72
+          },
+          {
+            "at_ms": 500,
+            "scale_x": 0.96,
+            "scale_y": 0.78,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1000,
+            "scale_x": 0.92,
+            "scale_y": 0.72,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "expr_speak": {
+      "duration_ms": 720,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 260,
+            "scale_y": 0.9,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 720,
+            "scale_y": 1,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "expr_tired": {
+      "duration_ms": 1800,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.58
+          },
+          {
+            "at_ms": 900,
+            "scale_y": 0.5,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "scale_y": 0.58,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "gaze_center": {
+      "duration_ms": 800,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 800,
+            "x": 1,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "gaze_left": {
+      "duration_ms": 800,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "x": -6
+          },
+          {
+            "at_ms": 800,
+            "x": -8,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "gaze_right": {
+      "duration_ms": 800,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "x": 6
+          },
+          {
+            "at_ms": 800,
+            "x": 8,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "gaze_up": {
+      "duration_ms": 900,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "x": 1,
+            "y": -6
+          },
+          {
+            "at_ms": 900,
+            "x": 2,
+            "y": -8,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "gaze_wander": {
+      "duration_ms": 2600,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 700,
+            "x": -7,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1600,
+            "x": 6,
+            "y": -1,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_blink_in": {
+      "duration_ms": 160,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 160,
+            "scale_y": 0.16,
+            "ease": "ease-out"
+          }
+        ]
+      },
+      "cue": "blink"
+    },
+    "idle_blink_loop": {
+      "duration_ms": 1100,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.16
+          },
+          {
+            "at_ms": 140,
+            "scale_y": 1,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 700,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 820,
+            "scale_y": 0.2,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 980,
+            "scale_y": 1,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 1100,
+            "scale_y": 0.16,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_blink_out": {
+      "duration_ms": 180,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.2
+          },
+          {
+            "at_ms": 180,
+            "scale_y": 1,
+            "ease": "ease-out"
+          }
+        ]
+      }
+    },
+    "idle_breathe_in": {
+      "duration_ms": 420,
+      "tracks": {
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.98
+          },
+          {
+            "at_ms": 420,
+            "scale_y": 1.02,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_breathe_loop": {
+      "duration_ms": 3200,
+      "loop": true,
+      "tracks": {
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 800,
+            "y": -4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "y": -1,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 3200,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 800,
+            "scale_y": 1.04,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "scale_y": 1.015,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 3200,
+            "scale_y": 1,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_breathe_out": {
+      "duration_ms": 360,
+      "tracks": {
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -2
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "scale_y": 1.02
+          },
+          {
+            "at_ms": 360,
+            "scale_y": 1,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_look_left_in": {
+      "duration_ms": 420,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": 4
+          },
+          {
+            "at_ms": 120,
+            "rotate": 8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "x": -2,
+            "rotate": -18,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_look_left_loop": {
+      "duration_ms": 2600,
+      "loop": true,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": -18
+          },
+          {
+            "at_ms": 900,
+            "x": -4,
+            "rotate": -26,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "x": -2,
+            "rotate": -16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": -18,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_look_left_out": {
+      "duration_ms": 380,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0,
+            "x": -2,
+            "rotate": -16
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_look_right_in": {
+      "duration_ms": 420,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": -4
+          },
+          {
+            "at_ms": 120,
+            "rotate": -8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "x": 2,
+            "rotate": 18,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_look_right_loop": {
+      "duration_ms": 2600,
+      "loop": true,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": 18
+          },
+          {
+            "at_ms": 900,
+            "x": 4,
+            "rotate": 26,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "x": 2,
+            "rotate": 16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": 18,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "idle_look_right_out": {
+      "duration_ms": 380,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0,
+            "x": 2,
+            "rotate": 16
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "jump_in": {
+      "duration_ms": 340,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 340,
+            "rotate": 70,
+            "ease": "ease-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 340,
+            "rotate": -70,
+            "ease": "ease-out"
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 140,
+            "y": 4,
+            "rotate": 22,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 340,
+            "y": -6,
+            "rotate": 18,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 140,
+            "y": 4,
+            "rotate": -22,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 340,
+            "y": -6,
+            "rotate": -18,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 140,
+            "y": 12,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 340,
+            "y": -28,
+            "ease": "ease-out"
+          }
+        ]
+      },
+      "cue": "jump"
+    },
+    "jump_loop": {
+      "duration_ms": 520,
+      "loop": true,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 130
+          },
+          {
+            "at_ms": 260,
+            "y": -4,
+            "rotate": 146,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 520,
+            "rotate": 130,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -130
+          },
+          {
+            "at_ms": 260,
+            "y": -4,
+            "rotate": -146,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 520,
+            "rotate": -130,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0,
+            "y": -8,
+            "rotate": 28
+          },
+          {
+            "at_ms": 520,
+            "y": -8,
+            "rotate": 28
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0,
+            "y": -8,
+            "rotate": -28
+          },
+          {
+            "at_ms": 520,
+            "y": -8,
+            "rotate": -28
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -56
+          },
+          {
+            "at_ms": 260,
+            "y": -48,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 520,
+            "y": -56,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": -6
+          },
+          {
+            "at_ms": 520,
+            "rotate": -6
+          }
+        ]
+      }
+    },
+    "jump_out": {
+      "duration_ms": 360,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 40
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -40
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0,
+            "y": -4,
+            "rotate": 16
+          },
+          {
+            "at_ms": 160,
+            "y": 6,
+            "rotate": 20,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0,
+            "y": -4,
+            "rotate": -16
+          },
+          {
+            "at_ms": 160,
+            "y": 6,
+            "rotate": -20,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -20
+          },
+          {
+            "at_ms": 160,
+            "y": 10,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "land"
+    },
+    "listen_in": {
+      "duration_ms": 400,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": 2
+          },
+          {
+            "at_ms": 400,
+            "x": -2,
+            "rotate": -14,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 400,
+            "rotate": -6,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "listen_loop": {
+      "duration_ms": 1500,
+      "loop": true,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": -14
+          },
+          {
+            "at_ms": 700,
+            "x": -3,
+            "rotate": -18,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1500,
+            "rotate": -14,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "listen_out": {
+      "duration_ms": 340,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0,
+            "x": -2,
+            "rotate": -12
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": -4
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "quiet_in": {
+      "duration_ms": 480,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 480,
+            "scale_y": 0.5,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 480,
+            "y": 12,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "rest"
+    },
+    "quiet_loop": {
+      "duration_ms": 4000,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.5
+          },
+          {
+            "at_ms": 4000,
+            "scale_y": 0.46,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 12
+          },
+          {
+            "at_ms": 2000,
+            "y": 14,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 4000,
+            "y": 12,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "quiet_out": {
+      "duration_ms": 420,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.5
+          },
+          {
+            "at_ms": 420,
+            "scale_y": 1,
+            "ease": "ease-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 12
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "react_click_greet": {
+      "duration_ms": 980,
+      "tracks": {
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 460,
+            "rotate": -150,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 720,
+            "rotate": -110,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 980,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 460,
+            "rotate": 8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 980,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 180,
+            "y": 8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 460,
+            "y": -18,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 980,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "greet"
+    },
+    "react_click_notice": {
+      "duration_ms": 760,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 220,
+            "rotate": -12,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 200,
+            "y": -8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "notice"
+    },
+    "react_drag_brace": {
+      "duration_ms": 520,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 240,
+            "rotate": 28,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 520,
+            "rotate": 16,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 240,
+            "rotate": -28,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 520,
+            "rotate": -16,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 160,
+            "y": 8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 520,
+            "y": 4,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "brace"
+    },
+    "react_drag_release": {
+      "duration_ms": 640,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 16
+          },
+          {
+            "at_ms": 640,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -16
+          },
+          {
+            "at_ms": 640,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 4
+          },
+          {
+            "at_ms": 180,
+            "y": -10,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 640,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "release"
+    },
+    "react_hover_blink": {
+      "duration_ms": 520,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 90,
+            "scale_y": 0.16,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 220,
+            "scale_y": 1,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 520,
+            "scale_y": 1
+          }
+        ]
+      },
+      "cue": "blink"
+    },
+    "react_hover_peek": {
+      "duration_ms": 720,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 180,
+            "x": 3,
+            "rotate": 16,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 480,
+            "x": -2,
+            "rotate": -8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 720,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "notice"
+    },
+    "react_long_idle_rest": {
+      "duration_ms": 1200,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 500,
+            "scale_y": 0.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1000,
+            "scale_y": 0.7,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 1200,
+            "scale_y": 1,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 400,
+            "y": 12,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "y": 8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1200,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "rest"
+    },
+    "react_task_celebrate": {
+      "duration_ms": 1100,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 480,
+            "rotate": 150,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 1100,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 480,
+            "rotate": -150,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 1100,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 180,
+            "y": 10,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 480,
+            "y": -40,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 780,
+            "y": -8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1100,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "celebrate"
+    },
+    "react_task_concern": {
+      "duration_ms": 900,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 360,
+            "y": 2,
+            "rotate": 12,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 360,
+            "rotate": 28,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "concern"
+    },
+    "react_task_focus": {
+      "duration_ms": 860,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 400,
+            "x": 4,
+            "y": -8,
+            "rotate": 40,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 860,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 300,
+            "x": 2,
+            "y": -4,
+            "rotate": 6,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 860,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "focus"
+    },
+    "react_task_listen": {
+      "duration_ms": 780,
+      "tracks": {
+        "head": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 240,
+            "x": -4,
+            "rotate": -16,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 780,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "notice"
+    },
+    "react_task_settle": {
+      "duration_ms": 820,
+      "tracks": {
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -6
+          },
+          {
+            "at_ms": 280,
+            "y": 6,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 820,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "land"
+    },
+    "rest_in": {
+      "duration_ms": 520,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 520,
+            "y": 4,
+            "rotate": 12,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 520,
+            "y": 4,
+            "rotate": -12,
+            "ease": "ease-in-out"
+          }
+        ],
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 520,
+            "scale_y": 0.55,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 520,
+            "y": 4,
+            "rotate": 10,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 520,
+            "y": 14,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "rest"
+    },
+    "rest_loop": {
+      "duration_ms": 3600,
+      "loop": true,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.55
+          },
+          {
+            "at_ms": 1800,
+            "scale_y": 0.42,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 3600,
+            "scale_y": 0.55,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 14
+          },
+          {
+            "at_ms": 1600,
+            "y": 16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 3600,
+            "y": 14,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "rest_out": {
+      "duration_ms": 460,
+      "tracks": {
+        "eyes": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.55
+          },
+          {
+            "at_ms": 460,
+            "scale_y": 1,
+            "ease": "ease-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "y": 4,
+            "rotate": 10
+          },
+          {
+            "at_ms": 460,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 14
+          },
+          {
+            "at_ms": 460,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "run_in": {
+      "duration_ms": 280,
+      "tracks": {
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 120,
+            "y": 8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 280,
+            "y": -6,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 280,
+            "rotate": -8,
+            "ease": "ease-out"
+          }
+        ]
+      }
+    },
+    "run_loop": {
+      "duration_ms": 420,
+      "loop": true,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 23.200000000000003
+          },
+          {
+            "at_ms": 210,
+            "rotate": -58,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": 23.200000000000003,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -23.200000000000003
+          },
+          {
+            "at_ms": 210,
+            "rotate": 58,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": -23.200000000000003,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 105,
+            "y": -40,
+            "rotate": 12,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 210,
+            "y": 2,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 210,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 315,
+            "y": -40,
+            "rotate": -12,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "y": 2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 105,
+            "y": -16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 210,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 315,
+            "y": -12.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": -4
+          },
+          {
+            "at_ms": 210,
+            "rotate": 5,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": -4,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "travel_x": 200,
+      "cue": "run",
+      "sound_loop": true
+    },
+    "run_out": {
+      "duration_ms": 300,
+      "tracks": {
+        "leg_l": [
+          {
+            "at_ms": 0,
+            "y": -12,
+            "rotate": 10
+          },
+          {
+            "at_ms": 300,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0,
+            "y": 4,
+            "rotate": -8
+          },
+          {
+            "at_ms": 300,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -10
+          },
+          {
+            "at_ms": 140,
+            "y": 8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 300,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "land"
+    },
+    "secondary_alert": {
+      "duration_ms": 800,
+      "loop": true,
+      "tracks": {
+        "tail": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 266,
+            "rotate": 6,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 533,
+            "rotate": -4.199999999999999,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 800,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "secondary_done": {
+      "duration_ms": 900,
+      "loop": true,
+      "tracks": {
+        "tail": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 300,
+            "rotate": 26,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 600,
+            "rotate": -18.2,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "secondary_idle": {
+      "duration_ms": 2400,
+      "loop": true,
+      "tracks": {
+        "tail": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 800,
+            "rotate": 10,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1600,
+            "rotate": -7,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2400,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "secondary_listen": {
+      "duration_ms": 1500,
+      "loop": true,
+      "tracks": {
+        "tail": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 500,
+            "rotate": 16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1000,
+            "rotate": -11.2,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1500,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "secondary_quiet": {
+      "duration_ms": 3200,
+      "loop": true,
+      "tracks": {
+        "tail": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 1066,
+            "rotate": 4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2133,
+            "rotate": -2.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 3200,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "secondary_speak": {
+      "duration_ms": 1100,
+      "loop": true,
+      "tracks": {
+        "tail": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 366,
+            "rotate": 22,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 733,
+            "rotate": -15.399999999999999,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1100,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "secondary_think": {
+      "duration_ms": 1800,
+      "loop": true,
+      "tracks": {
+        "tail": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 600,
+            "rotate": 8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1200,
+            "rotate": -5.6,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "sing_in": {
+      "duration_ms": 400,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 400,
+            "rotate": 120,
+            "ease": "ease-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 400,
+            "rotate": -110,
+            "ease": "ease-out"
+          }
+        ],
+        "mouth": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.7
+          },
+          {
+            "at_ms": 400,
+            "scale_y": 1.35,
+            "ease": "ease-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 400,
+            "y": -8,
+            "ease": "ease-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 400,
+            "rotate": 8,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "sing_loop": {
+      "duration_ms": 1280,
+      "loop": true,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 120
+          },
+          {
+            "at_ms": 400,
+            "y": -6,
+            "rotate": 156,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 800,
+            "rotate": 100,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 120,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -110
+          },
+          {
+            "at_ms": 480,
+            "y": -4,
+            "rotate": -150,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "rotate": -90,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": -110,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": -4
+          },
+          {
+            "at_ms": 320,
+            "rotate": 10,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": -8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": -4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "mouth": [
+          {
+            "at_ms": 0,
+            "scale_y": 1.2
+          },
+          {
+            "at_ms": 180,
+            "scale_y": 1.7,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 360,
+            "scale_y": 0.65,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 560,
+            "scale_y": 1.55,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 860,
+            "scale_y": 0.7,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "scale_y": 1.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -8
+          },
+          {
+            "at_ms": 320,
+            "y": -18,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "y": -6,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 960,
+            "y": -16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "y": -8,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": 8
+          },
+          {
+            "at_ms": 320,
+            "rotate": -14,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 960,
+            "rotate": -10,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 8,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "sing",
+      "sound_loop": true
+    },
+    "sing_out": {
+      "duration_ms": 420,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 100
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -90
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": 4
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "mouth": [
+          {
+            "at_ms": 0,
+            "scale_y": 1.2
+          },
+          {
+            "at_ms": 420,
+            "scale_y": 0.85,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -8
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": 6
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "speak_in": {
+      "duration_ms": 400,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 400,
+            "rotate": 120,
+            "ease": "ease-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 400,
+            "rotate": -110,
+            "ease": "ease-out"
+          }
+        ],
+        "mouth": [
+          {
+            "at_ms": 0,
+            "scale_y": 0.7
+          },
+          {
+            "at_ms": 400,
+            "scale_y": 1.35,
+            "ease": "ease-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 400,
+            "y": -8,
+            "ease": "ease-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 400,
+            "rotate": 8,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "speak_loop": {
+      "duration_ms": 1280,
+      "loop": true,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 120
+          },
+          {
+            "at_ms": 400,
+            "y": -6,
+            "rotate": 156,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 800,
+            "rotate": 100,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 120,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -110
+          },
+          {
+            "at_ms": 480,
+            "y": -4,
+            "rotate": -150,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "rotate": -90,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": -110,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": -4
+          },
+          {
+            "at_ms": 320,
+            "rotate": 10,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": -8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": -4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "mouth": [
+          {
+            "at_ms": 0,
+            "scale_y": 1.2
+          },
+          {
+            "at_ms": 180,
+            "scale_y": 1.7,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 360,
+            "scale_y": 0.65,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 560,
+            "scale_y": 1.55,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 860,
+            "scale_y": 0.7,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "scale_y": 1.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -8
+          },
+          {
+            "at_ms": 320,
+            "y": -18,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "y": -6,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 960,
+            "y": -16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "y": -8,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": 8
+          },
+          {
+            "at_ms": 320,
+            "rotate": -14,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 16,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 960,
+            "rotate": -10,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 8,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "cue": "sing",
+      "sound_loop": true
+    },
+    "speak_out": {
+      "duration_ms": 420,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 100
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -90
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "rotate": 4
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "mouth": [
+          {
+            "at_ms": 0,
+            "scale_y": 1.2
+          },
+          {
+            "at_ms": 420,
+            "scale_y": 0.85,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -8
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": 6
+          },
+          {
+            "at_ms": 420,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "stretch_in": {
+      "duration_ms": 520,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 10
+          },
+          {
+            "at_ms": 520,
+            "rotate": 150,
+            "ease": "ease-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -10
+          },
+          {
+            "at_ms": 520,
+            "rotate": -150,
+            "ease": "ease-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 180,
+            "y": 6,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 520,
+            "y": -14,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "scale_y": 1
+          },
+          {
+            "at_ms": 520,
+            "scale_y": 1.08,
+            "ease": "ease-out"
+          }
+        ]
+      },
+      "cue": "stretch"
+    },
+    "stretch_loop": {
+      "duration_ms": 1600,
+      "loop": true,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 150
+          },
+          {
+            "at_ms": 700,
+            "y": -4,
+            "rotate": 162,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1600,
+            "rotate": 150,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -150
+          },
+          {
+            "at_ms": 800,
+            "y": -4,
+            "rotate": -158,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1600,
+            "rotate": -150,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -14
+          },
+          {
+            "at_ms": 600,
+            "y": -20,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1600,
+            "y": -14,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "stretch_out": {
+      "duration_ms": 440,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 140
+          },
+          {
+            "at_ms": 440,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -140
+          },
+          {
+            "at_ms": 440,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -12
+          },
+          {
+            "at_ms": 440,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "scale_y": 1.06
+          },
+          {
+            "at_ms": 440,
+            "scale_y": 1,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "think_in": {
+      "duration_ms": 420,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 420,
+            "x": 6,
+            "y": -10,
+            "rotate": 48,
+            "ease": "ease-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 420,
+            "x": 2,
+            "y": -2,
+            "rotate": 8,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 420,
+            "y": 2,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "think_loop": {
+      "duration_ms": 1800,
+      "loop": true,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 8.8
+          },
+          {
+            "at_ms": 900,
+            "rotate": -22,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": 8.8,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -8.8
+          },
+          {
+            "at_ms": 900,
+            "rotate": 22,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -8.8,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 450,
+            "y": -14,
+            "rotate": 12,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 900,
+            "y": 2,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1350,
+            "y": -14,
+            "rotate": -12,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 1800,
+            "y": 2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 450,
+            "y": -4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1350,
+            "y": -3.2,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": -4
+          },
+          {
+            "at_ms": 900,
+            "rotate": 5,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -4,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "travel_x": 72,
+      "cue": "step",
+      "sound_loop": true
+    },
+    "think_out": {
+      "duration_ms": 360,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "x": 4,
+            "y": -6,
+            "rotate": 30
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "x": 2,
+            "y": -2,
+            "rotate": 6
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "walk_in": {
+      "duration_ms": 360,
+      "tracks": {
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 360,
+            "rotate": -18,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 360,
+            "y": -8,
+            "rotate": 8,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -2
+          },
+          {
+            "at_ms": 160,
+            "y": 6,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    },
+    "walk_loop": {
+      "duration_ms": 640,
+      "loop": true,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 14.4
+          },
+          {
+            "at_ms": 320,
+            "rotate": -36,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 14.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -14.4
+          },
+          {
+            "at_ms": 320,
+            "rotate": 36,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": -14.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 160,
+            "y": -26,
+            "rotate": 12,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 320,
+            "y": 2,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0,
+            "y": 2
+          },
+          {
+            "at_ms": 320,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 480,
+            "y": -26,
+            "rotate": -12,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 640,
+            "y": 2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 160,
+            "y": -8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 320,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 480,
+            "y": -6.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "ease": "ease-in-out"
+          }
+        ],
+        "torso": [
+          {
+            "at_ms": 0,
+            "rotate": -4
+          },
+          {
+            "at_ms": 320,
+            "rotate": 5,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": -4,
+            "ease": "ease-in-out"
+          }
+        ]
+      },
+      "travel_x": 110,
+      "cue": "step",
+      "sound_loop": true
+    },
+    "walk_out": {
+      "duration_ms": 340,
+      "tracks": {
+        "arm_l": [
+          {
+            "at_ms": 0,
+            "rotate": 16
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "arm_r": [
+          {
+            "at_ms": 0,
+            "rotate": -16
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0,
+            "y": -8,
+            "rotate": 6
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0,
+            "y": 2,
+            "rotate": -4
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0,
+            "y": -4
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ]
+      }
+    }
+  }
+}

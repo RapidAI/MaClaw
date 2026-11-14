@@ -200,7 +200,7 @@ Clip：身体先动，头延迟 80–280ms；表情只改 head 的 alpha。设�
 | 骨骼 | 24 |
 | slot / 贴图 | 32 |
 | 单轨关键帧 | 240 |
-| 全 rig 关键帧 | 1,200 |
+| 全 rig 关键帧 | 4,800 |
 | 单图 | 512 KiB，1024×1024 |
 | 贴图像素合计 | 4,194,304 |
 | ZIP 文件 | 3 MiB |
@@ -209,6 +209,17 @@ Clip：身体先动，头延迟 80–280ms；表情只改 head 的 alpha。设�
 
 可动画：`x` `y` `rotate` `scale_x` `scale_y`，slot 可 `alpha`。  
 缓动：`linear` / `ease-out` / `ease-in-out`。`at_ms` 严格递增。
+
+大幅度动作（走、跑、跳、弯腰、唱）使用同一套关键帧，不另加运行时。把角色放在画布中下部，给头顶留空。
+
+| 字段 | 含义 |
+| --- | --- |
+| `travel_x` | 整段 clip 的横向设计像素，±256。正值向右。宿主缩放、夹在工作区并在边缘转身。拖拽时不走。 |
+| `cue` | 内置音效名，含 `step` `run` `jump` `land` `bend` `sing` 等。 |
+| `sound` | 1–4 个 `{hz, ms}`，写出后覆盖 cue，总长 ≤ 420ms。 |
+| `sound_loop` | 循环 clip 每一圈重播，用于脚步。 |
+
+listening 不要出声。speaking 期间宿主只播放 `sing`。安静模式和减少动效无声且静止。不要在包里放 wav/mp3。DeepSeek Harness、Live2D 和视频宠物不能直接安装。Hub `/pet-pack-help` 与本节一致。官方默认包是 `ragdoll`，不再提供螃蟹皮肤。
 
 ---
 

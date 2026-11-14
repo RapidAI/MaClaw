@@ -22,6 +22,7 @@
       <pre><code>任务：生成一个 MaClaw Pet Performance Pack 3.0。
 角色：具体、温和、易识别；可以是动物、物品、人物或其他具象主题。
 表演：不是单一循环。每个主要状态具备 enter / loop / exit；身体、表情、视线和次级运动可并行混合。
+大幅度：走、跑、跳、弯腰、唱都是合法全身动作。需要横移时写 travel_x；需要音效时写 cue 或 sound。listening 保持无声。不要直接加载 DeepSeek Harness、Live2D 或视频宠物。
 闲置：至少 10 个 idle 行为，带权重、最短停留、最长停留和冷却；不可连续重复最近 3 个行为。
 事件：至少覆盖 click、hover、task_started、task_done、task_failed、long_idle、drag_start、drag_end；thinking 和 speaking 是运行状态，不是事件。
 安全：仅本地 PNG/WebP、YAML、JSON；无 JS/WASM/URL/代码执行。
@@ -104,7 +105,7 @@ fallback:
       <h2>自然动作质量约束（必须遵守）</h2>
       <p>“丰富”不等于把同一个部位摆得更快。每个动作都必须有<strong>意图、准备、执行、停顿与余势</strong>，并且至少让两个部位以不同节奏配合。生成简单往复平移、同步缩放或无意义抖动的包不合格。</p>
       <table><thead><tr><th>动作语法</th><th>Agent 必须生成</th><th>禁止</th></tr></thead><tbody><tr><td>准备与执行</td><td>动作开始前 100–300ms 的反向预备；动作结束后 120–500ms 的跟随与安定</td><td>从静止瞬间跳到大姿态，或动作结束立即归零</td></tr><tr><td>重心与不对称</td><td>身体先移动，头/视线稍后响应；左右、上下和角度不完全镜像</td><td>所有骨骼在同一关键帧、相同幅度、相同方向移动</td></tr><tr><td>闲置节奏</td><td>呼吸、眨眼、注视、微调姿势、短观察、伸展、休息等 10 个以上候选行为；行为之间 0.6–2.5 秒自然停留</td><td>单一 1–2 秒循环，或每轮完全相同的眨眼/摆动</td></tr><tr><td>表情</td><td>眼、眉、嘴或等价结构独立于身体；情绪变化先改变视线或表情，再带动身体</td><td>用整体缩放/旋转代替表情</td></tr><tr><td>次级运动</td><td>耳朵、尾巴、配件、衣角、线缆等在主动作后 80–280ms 延迟，并用较小幅度收束</td><td>与身体完全同步，或持续高频摆动</td></tr><tr><td>循环接缝</td><td>loop 首尾姿态和速度连续；每个长循环内部至少有一个非等间隔变化</td><td>循环边界跳帧、匀速钟摆或恒定频率抖动</td></tr></tbody></table>
-      <p>建议时序：微表情 80–220ms；注视转移 180–450ms；姿态调整 350–900ms；短反应 600–1800ms；闲置行为 2.5–10 秒。幅度优先保持克制：桌面角色应像正在做事，而不是在持续表演。</p>
+      <p>建议时序：微表情 80–220ms；注视转移 180–450ms；姿态调整 350–900ms；短反应 600–1800ms；闲置行为 2.5–10 秒。大幅度动作（走、跑、跳、弯腰、唱）同样要有准备、执行和收势，并给头顶留出画布空间，避免跳出 256 画面。</p>
       <p>最低动作库：10 个闲置候选、12 个事件反应、6 种表情、4 个注视动作。闲置候选至少包含：呼吸、自然眨眼、观察、重心调整、短暂走神、伸展、整理姿态、休息、恢复注意、环境回应。不得连续重复最近 3 个闲置行为。</p>
 
       <h2>分件形象制作（桌面角色实战规范）</h2>
@@ -315,8 +316,17 @@ fallback:
         <li>clip：身体先动、头延迟 80–280ms；表情只改 head/face 贴图 alpha，不把表情 baked 进身体或 hair。</li>
       </ul>
 
+      <h2>大幅度动作、走位与音效</h2>
+      <p>官方默认角色是布偶猫 <code>ragdoll</code>。旧官方宠物（ClawMate 螃蟹，以及 mini / dev / focus claw）不再是可加载皮肤。DeepSeek Harness 桌面宠物（Live2D、视频、JS、dsh-pet-desktop）不能直接安装；可以借鉴具名全身动作、走到屏幕边缘转身、以及每个动作一条音效，但包仍然只能是 YAML、JSON 和 PNG。</p>
+      <ul>
+        <li>关节旋转和根骨骼位移可以做成大幅度姿势，例如起跳、侧身弯腰、张开手臂唱歌。角色放在画布中下部，给头顶留空。</li>
+        <li><code>travel_x</code> 是整段 clip 的横向位移，单位为设计像素，范围 ±256。正值向右。宿主按宠物尺寸缩放，停在工作区边缘并转身。拖拽时不走位。包不能读取屏幕。</li>
+        <li><code>cue</code> 使用内置音效名：<code>step</code>、<code>run</code>、<code>jump</code>、<code>land</code>、<code>bend</code>、<code>stretch</code>、<code>blink</code>、<code>greet</code>、<code>notice</code>、<code>brace</code>、<code>release</code>、<code>focus</code>、<code>celebrate</code>、<code>concern</code>、<code>rest</code>、<code>alert</code>、<code>speak</code>、<code>sing</code>。<code>sound</code> 最多 4 个 <code>{hz, ms}</code>，写出后覆盖 cue，总时长不超过 420ms。<code>sound_loop: true</code> 让循环 clip 每一圈重播，用于脚步。</li>
+        <li>不要在 listening 上放会出声的 clip。speaking 期间宿主只播放 <code>sing</code>，其它 cue 会关掉，避免盖住语音。安静模式和减少动效全程无声且静止。音效由宿主合成，包内不能放 wav 或 mp3。</li>
+      </ul>
+
       <h2>资源、安全与降级</h2>
-      <ul><li>沿用 2.0 的安全预算：最多 24 根骨骼、32 个 slot、32 张贴图；每条轨道最多 240 个关键帧，整套 rig 最多 1,200 个关键帧。</li><li>每张贴图及静态回退帧最多 512 KiB、1024×1024；贴图总计最多 4,194,304 像素。</li><li>压缩包文件最大 3 MiB；解压后的资源总量最大 2 MiB（用于防止压缩炸弹）；最多 64 个文件，单文件最多 512 KiB，路径最长 180 字符。</li><li>仅允许 PNG、WebP、YAML、JSON、TXT、MD、SVG。禁止绝对路径、<code>..</code>、盘符、重复路径以及所有代码文件。</li><li>ZIP 建议只含运行所需文件；大体积源图目录（<code>_src</code>/<code>native_src</code>）可留在工程内但不打进安装包。</li><li>降级顺序固定：<code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>。任何异常都不得阻塞桌面主界面。</li></ul>
+      <ul><li>安全预算：最多 24 根骨骼、32 个 slot、32 张贴图；每条轨道最多 240 个关键帧，整套 rig 最多 4,800 个关键帧。</li><li>每张贴图及静态回退帧最多 512 KiB、1024×1024；贴图总计最多 4,194,304 像素。</li><li>压缩包文件最大 3 MiB；解压后的资源总量最大 2 MiB（用于防止压缩炸弹）；最多 64 个文件，单文件最多 512 KiB，路径最长 180 字符。</li><li>仅允许 PNG、WebP、YAML、JSON、TXT、MD、SVG。禁止绝对路径、<code>..</code>、盘符、重复路径以及所有代码文件。</li><li>ZIP 建议只含运行所需文件；大体积源图目录（<code>_src</code>/<code>native_src</code>）可留在工程内但不打进安装包。</li><li>降级顺序固定：<code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>。任何异常都不得阻塞桌面主界面。</li></ul>
 
       <h2>Agent 发布前自检</h2>
       <ol class="checklist"><li>目标客户端声明 <code>pet-performance-v3</code>；否则已输出 2.0 兼容包。</li><li>manifest 只有一个；<code>schema_version</code> 为整数 3；ID、ZIP 根目录与安装目录一致。</li><li>每个 behavior/state/event 所引用的 clip 均存在；所有时间、权重、冷却、interrupt 枚举均有效。</li><li>idle 行为不少于 10 个，且 <code>no_repeat_last</code> 不小于 3；每个主要状态有自然进出场。</li><li>所有 slot 贴图都在 <code>assets.rig.textures</code> 白名单（含 hair/face/collar_overlay）；每张 PNG/WebP 都可解码。</li><li>分件接缝：七态均无横缝、无漂浮头、无双脸、无双下巴、无脖子插头；身体无五官残留；长发包七态发型外轮廓固定。</li><li>七态表情头/脸为独立全尺寸；说话态张嘴可辨；default 变体 native 表列齐七态。</li><li>存在有效 <code>native/idle.png</code>，在 56px、88px、120px 下仍可识别角色；黑发/金发完整。</li><li>没有 JS、WASM、远程 URL、可执行内容、未知事件或越权的屏幕/音频数据访问。</li></ol>
@@ -329,6 +339,7 @@ fallback:
       <pre><code>Task: generate a MaClaw Pet Performance Pack 3.0.
 Character: specific, gentle, recognizable; an animal, object, person, or other figurative theme.
 Performance: enter / loop / exit for primary states; body, expression, gaze, and secondary motion mix in parallel.
+Large actions: walk, run, jump, bend, and sing are valid full-body clips. Use travel_x to move the window and cue or sound for a per-action tone. Keep listening silent. Do not load DeepSeek Harness, Live2D, or video pets.
 Idle: at least ten weighted, cooled-down behaviors; do not repeat any of the last three.
 Events: click, hover, task_started, task_done, task_failed, long_idle, drag_start, drag_end. Thinking and speaking are runtime states, not events.
 Safety: local PNG/WebP, YAML, JSON only. No JS/WASM/URLs/executable code.
@@ -439,8 +450,16 @@ fallback: { renderer: native-skeleton, idle: native/idle.png }</code></pre>
       <h3>Bone layout tip</h3>
       <p><code>root</code> near lower-center (~y = 0.56×256); <code>body</code> at neck pivot; <code>head</code> child with a small upward offset so the chin covers the shoulder cup; layout B adds <code>hair</code> + <code>f_*</code> under <code>head</code>. Body leads, head lags 80–280ms.</p>
 
+      <h2>Large actions, travel, and sound</h2>
+      <p>The official character is the ragdoll cat-girl, pack id <code>ragdoll</code>. Older official pets (the ClawMate crab, and mini / dev / focus claw) are not loadable skins. DeepSeek Harness desktop pets — Live2D, video, JS, dsh-pet-desktop — cannot be installed. Named full-body actions, turning around at the screen edge, and one sound per action are the ideas to copy. The pack format stays YAML, JSON, and PNG.</p>
+      <ul>
+        <li>Joint rotation and root offset may be large: a jump, a side bow, arms raised to sing. Place the character low in the 256 canvas and leave headroom.</li>
+        <li><code>travel_x</code> is horizontal travel in design pixels over one full playback, within ±256. Positive moves right. The host scales it by pet size, stops at the work-area edge, and turns around. Dragging skips travel. A pack cannot read the screen.</li>
+        <li><code>cue</code> names a built-in tone: <code>step</code>, <code>run</code>, <code>jump</code>, <code>land</code>, <code>bend</code>, <code>stretch</code>, <code>blink</code>, <code>greet</code>, <code>notice</code>, <code>brace</code>, <code>release</code>, <code>focus</code>, <code>celebrate</code>, <code>concern</code>, <code>rest</code>, <code>alert</code>, <code>speak</code>, <code>sing</code>. <code>sound</code> is one to four <code>{hz, ms}</code> tones and replaces the cue. Total length stays within 420ms. <code>sound_loop: true</code> replays on every loop, for footsteps.</li>
+        <li>Do not put a sounding clip on listening. While speaking, the host plays only the <code>sing</code> cue so other tones do not sit on the voice. Quiet mode and reduced motion stay silent and still. The host synthesizes tones; packs cannot ship wav or mp3.</li>
+      </ul>
       <h2>Budgets, safety, fallback</h2>
-      <ul><li>Keep 2.0 budgets: 24 bones, 32 slots/textures, 240 keyframes per track, 1,200 keyframes total; images are 512 KiB and 1024×1024 each; total texture pixels ≤ 4,194,304.</li><li>ZIP file maximum: 3 MiB. Unpacked resource total: 2 MiB (to prevent compression bombs). Maximum 64 files; single file ≤ 512 KiB; path ≤ 180 characters; no unsafe or duplicate paths.</li><li>Local PNG/WebP, YAML, JSON, TXT, MD, SVG only. No JS/WASM/URL/executables.</li><li>Fallback is fixed: <code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>.</li></ul>
+      <ul><li>Budgets: 24 bones, 32 slots/textures, 240 keyframes per track, 4,800 keyframes total; images are 512 KiB and 1024×1024 each; total texture pixels ≤ 4,194,304.</li><li>ZIP file maximum: 3 MiB. Unpacked resource total: 2 MiB (to prevent compression bombs). Maximum 64 files; single file ≤ 512 KiB; path ≤ 180 characters; no unsafe or duplicate paths.</li><li>Local PNG/WebP, YAML, JSON, TXT, MD, SVG only. No JS/WASM/URL/executables.</li><li>Fallback is fixed: <code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>.</li></ul>
       <h2>Agent self-check</h2><ol class="checklist"><li>Target supports <code>pet-performance-v3</code>, or a 2.0 fallback was emitted.</li><li><code>schema_version</code> is integer 3; every referenced clip and allowlisted image exists and decodes.</li><li>Timing, weights, cooldowns, state/event names, and interrupt modes are valid.</li><li>Idle has ten or more varied behaviors and <code>no_repeat_last</code> is at least three.</li><li>Multi-part join QA for <strong>all seven states</strong>: no horizontal crack, no floating head, no double face, no double chin, no exposed neck plug; body has no leftover face; long-hair packs keep hair silhouette fixed across states.</li><li>Expression heads/faces are full-size; speaking mouth is open; default variant lists all seven native frames; textures list is complete (incl. hair/face/collar_overlay if used).</li><li>The static idle remains recognizable at 56px, 88px, and 120px; black/blonde hair intact.</li><li>No code, remote URL, executable content, or unauthorized data access is present.</li></ol>
     </section>
 
@@ -561,8 +580,15 @@ fallback: { renderer: native-skeleton, idle: native/idle.png }</code></pre>
       <h3>Ясны бүдүүвчийн зөвлөмж</h3>
       <p><code>root</code> доод төвийн ойролцоо (~y = 0.56×256); <code>body</code> хүзүүний тулгуур дээр; <code>head</code> нь хүүхэд яс бөгөөд бага зэрэг дээш шилжсэнээр эрүү мөрний хонхорыг хаана; B бүдүүвч <code>head</code>-ийн дор <code>hair</code> + <code>f_*</code> нэмнэ. Бие түрүүлж, толгой 80–280 мс хоцорно.</p>
 
+      <h2>Том хөдөлгөөн, шилжилт, дуу</h2>
+      <p>Албан ёсны дүр нь ragdoll муур охин, багцын id <code>ragdoll</code>. Хуучин албан дүр (ClawMate хавч, mini / dev / focus claw) ачаалагдахгүй. DeepSeek Harness-ийн ширээний тэжээвэр (Live2D, видео, JS, dsh-pet-desktop) шууд суухгүй. Нэрлэсэн бүтэн биеийн хөдөлгөөн, дэлгэцийн ирмэг дээр эргэх, үйлдэл бүрт нэг дуу гэсэн санааг авна. Багц нь YAML, JSON, PNG хэвээр.</p>
+      <ul>
+        <li><code>travel_x</code> нь нэг clip-ийн хэвтээ шилжилт, дизайны пикселээр, ±256. Эерэг нь баруун тийш. Хост хэмжээгээр масштаблаж, ажлын талбайн ирмэг дээр зогсоон эргүүлнэ. Чирэх үед шилжихгүй.</li>
+        <li><code>cue</code> нь бэлэн дууны нэр (<code>step</code>, <code>run</code>, <code>jump</code>, <code>land</code>, <code>bend</code>, <code>sing</code> гэх мэт). <code>sound</code> нь 1–4 <code>{hz, ms}</code> бөгөөд cue-г орлоно. Нийлбэр 420ms-ээс хэтрэхгүй. <code>sound_loop</code> давталт бүрт дахин дуугарна.</li>
+        <li>listening дээр дуу бүү тавь. speaking үед зөвхөн <code>sing</code> дуугарна. wav/mp3 оруулахгүй.</li>
+      </ul>
       <h2>Төсөв, аюулгүй байдал, нөөц горим</h2>
-      <ul><li>2.0-ийн төсвийг хэвээр барина: 24 яс, 32 slot/текстур, зам бүрт 240 түлхүүр кадр, нийт 1,200 түлхүүр кадр; зураг тус бүр 512 KiB ба 1024×1024; текстурын нийт пиксел ≤ 4,194,304.</li><li>ZIP файлын дээд хэмжээ: 3 MiB. Задласан ресурсын нийлбэр: 2 MiB (шахалтын бөмбөгөөс сэргийлнэ). Хамгийн ихдээ 64 файл; нэг файл ≤ 512 KiB; зам ≤ 180 тэмдэгт; аюултай эсвэл давхардсан зам байхгүй.</li><li>Зөвхөн дотоод PNG/WebP, YAML, JSON, TXT, MD, SVG. JS/WASM/URL/гүйцэтгэх файл байхгүй.</li><li>Нөөц горим тогтмол: <code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>.</li></ul>
+      <ul><li>Төсөв: 24 яс, 32 slot/текстур, зам бүрт 240 түлхүүр кадр, нийт 4,800 түлхүүр кадр; зураг тус бүр 512 KiB ба 1024×1024; текстурын нийт пиксел ≤ 4,194,304.</li><li>ZIP файлын дээд хэмжээ: 3 MiB. Задласан ресурсын нийлбэр: 2 MiB (шахалтын бөмбөгөөс сэргийлнэ). Хамгийн ихдээ 64 файл; нэг файл ≤ 512 KiB; зам ≤ 180 тэмдэгт; аюултай эсвэл давхардсан зам байхгүй.</li><li>Зөвхөн дотоод PNG/WebP, YAML, JSON, TXT, MD, SVG. JS/WASM/URL/гүйцэтгэх файл байхгүй.</li><li>Нөөц горим тогтмол: <code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>.</li></ul>
       <h2>Agent-ийн өөрийн шалгалт</h2><ol class="checklist"><li>Зорилт <code>pet-performance-v3</code>-ийг дэмждэг, эсвэл 2.0 нөөц багц гарсан.</li><li><code>schema_version</code> бүхэл тоо 3; иш татсан clip болон зөвшөөрлийн жагсаалтын зураг бүр байна, тайлагдана.</li><li>Хугацаа, жин, cooldown, төлөв/үйл явдлын нэр болон interrupt горим хүчинтэй.</li><li>Idle нь арав буюу түүнээс олон ялгаатай behavior-тэй, <code>no_repeat_last</code> дор хаяж гурав.</li><li>Олон хэсгийн заадсын QA <strong>бүх долоон төлөвт</strong>: хэвтээ ан цавгүй, хөвөх толгойгүй, давхар нүүргүй, давхар эрүүгүй, ил хүзүүний залгуургүй; бие дээр үлдэгдэл нүүр байхгүй; урт үстэй багцын үсний силуэт төлөв даяар тогтмол.</li><li>Илэрхийллийн толгой/нүүр бүтэн хэмжээтэй; speaking-ийн ам ангайсан; default хувилбар долоон native кадрыг бүгдийг жагсаасан; текстурын жагсаалт бүрэн (ашигласан бол hair/face/collar_overlay орно).</li><li>Статик idle 56px, 88px, 120px дээр танигдах хэвээр; хар/шаргал үс бүтэн.</li><li>Код, алсын URL, гүйцэтгэх агуулга эсвэл зөвшөөрөлгүй өгөгдлийн хандалт байхгүй.</li></ol>
     </section>
   </main>

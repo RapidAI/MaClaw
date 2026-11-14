@@ -76,6 +76,7 @@ const claimCross = vi.hoisted(() => vi.fn(async (_botId?: string, _noteId?: stri
 const armCross = vi.hoisted(() => vi.fn(async (_botId?: string, _noteId?: string) => undefined));
 // 跟进路由（1b132e0d 起）：默认没有接管者，走正常发送链；测试可覆写。
 const routeFollowUp = vi.hoisted(() => vi.fn(async (_botId?: string, _content?: string): Promise<{ routed: boolean; to_bot?: string; ask?: string } | null> => null));
+const writeAck = vi.hoisted(() => vi.fn(async (_ctx?: { kind?: string }): Promise<string> => ''));
 const responseListeners = vi.hoisted(() => ({
     list: [] as Array<(payload: unknown) => void>,
     byEvent: {} as Record<string, (payload: unknown) => void>,
@@ -161,7 +162,9 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
     // stopped/idle/pause come back empty here so the minimal lines are checked.
-    WriteDesktopBotAck: (ctx?: { kind?: string }) => Promise.resolve(ctx?.kind === 'stopping' ? '还在收尾，停稳了告诉你。' : ['stopped', 'idle', 'pause', 'queued', 'stop_failed', 'continuing', 'status_notice', 'error', 'interrupted'].includes(ctx?.kind || '') ? '' : "好，这就去办。"),
+    // A first-reply accept hangs unless a test says otherwise: the server's
+    // sentence is the reply, and a stock line must not land ahead of it.
+    WriteDesktopBotAck: (ctx?: { kind?: string }) => writeAck(ctx),
     AppendDesktopBotSupplement: (botId: string, runId: string, instruction: string) => appendSupplement(botId, runId, instruction),
     GetDesktopBotSupplements: (botId: string, runId: string) => getSupplements(botId, runId),
     SetDesktopBotPrimary: (id: string) => setPrimary(id),
@@ -303,6 +306,12 @@ beforeEach(() => {
     armCross.mockResolvedValue(undefined);
     routeFollowUp.mockReset();
     routeFollowUp.mockResolvedValue(null);
+    writeAck.mockReset();
+    writeAck.mockImplementation(async (ctx?: { kind?: string }) => {
+        if (ctx?.kind === 'stopping') return '还在收尾，停稳了告诉你。';
+        if (['stopped', 'idle', 'pause', 'queued', 'stop_failed', 'continuing', 'status_notice', 'error', 'interrupted'].includes(ctx?.kind || '')) return '';
+        return new Promise<string>(() => undefined);
+    });
     understandTask.mockReset();
     classifyWorkStop.mockReset();
     classifyWorkStop.mockResolvedValue('unknown');
@@ -1958,12 +1967,20 @@ describe('DesktopBotWorkspace', () => {
         expect(full.getAttribute('alt')).toBe('');
         expect(screen.getByTestId('desktop-bot-shot-preview-close')).toBe(document.activeElement);
         fireEvent.keyDown(document, { key: 'Tab' });
+        expect(full).toBe(document.activeElement);
+        fireEvent.keyDown(document, { key: 'Tab' });
         expect(screen.getByTestId('desktop-bot-shot-preview-close')).toBe(document.activeElement);
         fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
         expect(screen.getByTestId('desktop-bot-command')).not.toBe(document.activeElement);
         fireEvent.mouseDown(full);
         fireEvent.click(full);
         expect(screen.getByTestId('desktop-bot-shot-preview')).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-shot-preview').className).toContain('is-zoomed');
+        expect(full.className).toContain('is-zoomed');
+        expect(full.getAttribute('aria-label')).toBe('适合窗口');
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.getByTestId('desktop-bot-shot-preview')).toBeTruthy();
+        expect(full.className).not.toContain('is-zoomed');
 
         fireEvent.click(screen.getByTestId('desktop-bot-shot-preview-close'));
         await waitFor(() => expect(screen.queryByTestId('desktop-bot-shot-preview')).toBeNull());
@@ -3371,7 +3388,11 @@ describe('DesktopBotWorkspace', () => {
         expect(css).toMatch(/\.desktop-bot-chat__shot\s*\{[^}]*max-width:\s*100%/);
         expect(css).toMatch(/\.desktop-bot-shot-preview\s*\{[^}]*position:\s*fixed/);
         expect(css).toMatch(/\.desktop-bot-shot-preview\s*\{[^}]*inset:\s*0/);
-        expect(css).toMatch(/\.desktop-bot-shot-preview__close\s*\{[^}]*position:\s*absolute/);
+        expect(css).toMatch(/\.desktop-bot-shot-preview__close\s*\{[^}]*position:\s*fixed/);
+        expect(css).toMatch(/\.desktop-bot-shot-preview__image\s*\{[^}]*cursor:\s*zoom-in/);
+        expect(css).toMatch(/\.desktop-bot-shot-preview__image\.is-zoomed\s*\{[^}]*cursor:\s*zoom-out/);
+        expect(css).toMatch(/\.desktop-bot-shot-preview\.is-zoomed\s*\{[^}]*align-items:\s*flex-start/);
+        expect(css).toMatch(/\.desktop-bot-chat__shot\s*\{[^}]*max-height:\s*360px/);
         expect(css).toMatch(/\.desktop-bot-chat__entry--assistant:has\(\.desktop-bot-chat__shot\)\s*\{[^}]*width:\s*100%/);
         expect(css).toMatch(/\.desktop-bot-chat \.desktop-bot-chat__body li > p,[\s\S]*?\{[^}]*margin-top:\s*4px/);
         expect(css).toMatch(/\.desktop-bot-chat \.desktop-bot-chat__pre code\s*\{[^}]*background:\s*transparent/);
@@ -4563,6 +4584,7 @@ describe('the page forwards words and renders the server decision', () => {
         expect(await screen.findByText('打开示例网站')).toBeTruthy();
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-ack', kind: 'new', ack: '我去打开示例网站。', queued: false, held: false });
         expect(await screen.findByText('我去打开示例网站。')).toBeTruthy();
+        expect(screen.queryByText('好，我先做着。')).toBeNull();
         result({ request_id: 'desktop-bot-ack', session_key: 'alice:bot_1', text: '网站开好了', send_to_user: '网站开好了' });
         expect(await screen.findByText('网站开好了')).toBeTruthy();
     });
@@ -4587,6 +4609,15 @@ describe('the page forwards words and renders the server decision', () => {
         await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '再开一个', ''));
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-q', kind: 'new', ack: '先记着。', queued: true, held: false });
         expect(await screen.findByText('先记着。')).toBeTruthy();
+        expect(screen.queryByText('好，这个等手上的做完我就做。')).toBeNull();
+    });
+
+    it('shows the parked fallback only when a queued message has no sentence', async () => {
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-q0', deferred: true, session_key: 'alice:bot_1' });
+        await openDuty();
+        await typeAndSend('再开一个');
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '再开一个', ''));
+        intake({ bot_id: 'bot_1', request_id: 'desktop-bot-q0', kind: 'new', ack: '', queued: true, held: false });
         expect(await screen.findByText('好，这个等手上的做完我就做。')).toBeTruthy();
     });
 
@@ -4597,7 +4628,7 @@ describe('the page forwards words and renders the server decision', () => {
         await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '下一件', ''));
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-h', kind: 'new', ack: '等你交还。', queued: true, held: true });
         expect(await screen.findByText('等你交还。')).toBeTruthy();
-        expect(await screen.findByText('好，这个等手上的做完我就做。')).toBeTruthy();
+        expect(screen.queryByText('好，这个等手上的做完我就做。')).toBeNull();
         expect(cancelRun).not.toHaveBeenCalled();
     });
 
@@ -4687,12 +4718,23 @@ describe('the page forwards words and renders the server decision', () => {
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
     });
 
-    it('shows one neutral line when the server sends no ack in time', async () => {
+    it('shows one neutral line only when the model writes nothing', async () => {
+        writeAck.mockResolvedValue('');
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-late', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('打开示例网站');
         await waitFor(() => expect(sendTask).toHaveBeenCalled());
-        expect(await screen.findByText('好，我先做着。', {}, { timeout: 4000 })).toBeTruthy();
+        expect(await screen.findByText('好，我先做着。')).toBeTruthy();
+        expect(screen.getAllByText('好，我先做着。')).toHaveLength(1);
+    });
+
+    it('shows the model sentence and not the stock line ahead of it', async () => {
+        writeAck.mockResolvedValue('我去打开示例网站，打开了告诉你。');
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-model', deferred: true, session_key: 'alice:bot_1' });
+        await openDuty();
+        await typeAndSend('打开示例网站');
+        expect(await screen.findByText('我去打开示例网站，打开了告诉你。')).toBeTruthy();
+        expect(screen.queryByText('好，我先做着。')).toBeNull();
     });
 
     it('shows the server route on the line and undoes it as a new matter', async () => {

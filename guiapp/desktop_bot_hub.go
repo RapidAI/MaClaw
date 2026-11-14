@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +27,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -1434,11 +1437,15 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		if visible.Bubble && !visible.Failed {
 			resp.SendToUser = visible.Sentence
 		}
-		// The bytes stay on the server attachment or the computer volume.
-		// This event carries the id. The next open fetches it.
-		// The bytes stay in this process, keyed by attachment id. The event
-		// carries the id. The chat fetches the bytes when it paints.
-		resp.DesktopAttachmentIDs = stageDesktopPictures(botID, result.Images, result.Files)
+		// Pictures and documents are saved on this machine. The bubble shows
+		// those local paths. A file that could not be saved stays an id.
+		shots, local, ids := landDesktopBotMedia(botID, result.Images, result.Files)
+		saved := append(append([]string{}, shots...), local...)
+		resp.Text = localizeDesktopPaths(resp.Text, saved)
+		resp.SendToUser = localizeDesktopPaths(resp.SendToUser, saved)
+		resp.DesktopShotPaths = shots
+		resp.LocalFilePaths = local
+		resp.DesktopAttachmentIDs = ids
 		resp.DesktopUserControl = result.UserControl
 		resp.DesktopAttentionReason = strings.TrimSpace(result.AttentionReason)
 		resp.AskUserInputType = strings.TrimSpace(result.AskUserInputType)
@@ -1762,6 +1769,7 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		Queued          bool                    `json:"queued"`
 		Held            bool                    `json:"held"`
 		Position        int                     `json:"position"`
+		Instruction     string                  `json:"instruction"`
 		Schedule        *desktopBotWireSchedule `json:"schedule"`
 	}
 	body := map[string]any{"content": text, "client_message_id": requestID}
@@ -1879,6 +1887,8 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		day := -1
 		if out.Schedule.DayOfWeek != nil {
 			day = *out.Schedule.DayOfWeek
+		} else if kept, ok := a.desktopBotScheduleWeekday(botID, out.Schedule.Name); ok {
+			day = kept
 		}
 		hour, minute := 0, 0
 		if out.Schedule.Hour != nil {
@@ -1887,7 +1897,13 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		if out.Schedule.Minute != nil {
 			minute = *out.Schedule.Minute
 		}
-		if _, armErr := a.ArmDesktopBotSchedule(botID, out.Schedule.Name, out.Schedule.Mode, text, out.Schedule.IntervalMinutes, hour, minute, day); armErr != nil {
+		order := strings.TrimSpace(out.Instruction)
+		if _, armErr := a.ArmDesktopBotSchedule(botID, out.Schedule.Name, out.Schedule.Mode, order, out.Schedule.IntervalMinutes, hour, minute, day); armErr != nil && order == "" {
+			_, armErr = a.ArmDesktopBotSchedule(botID, out.Schedule.Name, out.Schedule.Mode, text, out.Schedule.IntervalMinutes, hour, minute, day)
+			if armErr != nil {
+				botlog.Write(botID, "gui.schedule", armErr)
+			}
+		} else if armErr != nil {
 			botlog.Write(botID, "gui.schedule", armErr)
 		}
 	}
@@ -2367,7 +2383,8 @@ func desktopBotImageData(data string) bool {
 }
 
 func cleanDesktopBotFiles(files []DesktopBotFile) []DesktopBotFile {
-	const maxFile = 200_000
+	maxFile := desktop.FileDeliverBase64Max
+	var kept []DesktopBotFile
 	for i := len(files) - 1; i >= 0; i-- {
 		name := strings.TrimSpace(files[i].Name)
 		if !desktopBotDeliverName(name) {
@@ -2381,9 +2398,15 @@ func cleanDesktopBotFiles(files []DesktopBotFile) []DesktopBotFile {
 		if data == "" || len(data) > maxFile || !desktopBotImageDataSized(data, maxFile) {
 			continue
 		}
-		return []DesktopBotFile{{Name: name, MIME: mime, Data: data}}
+		kept = append(kept, DesktopBotFile{Name: name, MIME: mime, Data: data, AttachmentID: strings.TrimSpace(files[i].AttachmentID)})
+		if len(kept) == 8 {
+			break
+		}
 	}
-	return nil
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	return kept
 }
 
 func desktopBotDeliverName(name string) bool {
@@ -2464,6 +2487,81 @@ func desktopPictureID(id, data string) string {
 	}
 	sum := sha256.Sum256([]byte(data))
 	return "img-" + hex.EncodeToString(sum[:8])
+}
+
+// landDesktopBotMedia saves pictures and documents under this machine's
+// bot-files directory. The chat shows those paths. Anything that could not
+// be written stays an in-memory id.
+func landDesktopBotMedia(botID string, images []DesktopBotImage, files []DesktopBotFile) (shots, local, ids []string) {
+	images = cleanDesktopBotImages(images)
+	files = cleanDesktopBotFiles(files)
+	seenPic := map[string]bool{}
+	for _, image := range images {
+		seenPic[image.Data] = true
+	}
+	docs := make([]DesktopBotFile, 0, len(files))
+	for _, file := range files {
+		mime := desktopPictureMIME(file.MIME)
+		if mime != "" && desktopBotImageData(file.Data) {
+			if !seenPic[file.Data] {
+				seenPic[file.Data] = true
+				images = append(images, DesktopBotImage{MIME: mime, Data: file.Data})
+			}
+			continue
+		}
+		docs = append(docs, file)
+	}
+	files = docs
+	pictureFiles := make([]DesktopBotFile, 0, len(images))
+	for i, image := range images {
+		ext := ".png"
+		if strings.Contains(strings.ToLower(image.MIME), "jpeg") {
+			ext = ".jpg"
+		}
+		name := "screenshot" + ext
+		if i > 0 {
+			name = fmt.Sprintf("screenshot-%d%s", i+1, ext)
+		}
+		pictureFiles = append(pictureFiles, DesktopBotFile{Name: name, MIME: image.MIME, Data: image.Data})
+	}
+	shots, leftPics := storeDesktopBotFiles(botID, pictureFiles)
+	local, leftFiles := storeDesktopBotFiles(botID, files)
+	if len(leftPics) == 0 && len(leftFiles) == 0 {
+		return shots, local, nil
+	}
+	leftImages := make([]DesktopBotImage, 0, len(leftPics))
+	for _, file := range leftPics {
+		leftImages = append(leftImages, DesktopBotImage{MIME: file.MIME, Data: file.Data})
+	}
+	return shots, local, stageDesktopPictures(botID, leftImages, leftFiles)
+}
+
+// cloudDesktopPath matches a path on the bot's computer. The bubble rewrites
+// it to the file saved on this machine.
+var cloudDesktopPath = regexp.MustCompile(`(?:~/|/(?:Users|home|tmp|var|opt|data|workspace|Volumes|private|mnt|srv)/)[^\s` + "`" + `"'<>，。；、）】]+`)
+
+func localizeDesktopPaths(text string, local []string) string {
+	if strings.TrimSpace(text) == "" || len(local) == 0 {
+		return text
+	}
+	byBase := map[string]string{}
+	for _, item := range local {
+		base := filepath.Base(item)
+		if base == "" || base == "." || base == string(filepath.Separator) {
+			continue
+		}
+		byBase[base] = item
+	}
+	if len(byBase) == 0 {
+		return text
+	}
+	return cloudDesktopPath.ReplaceAllStringFunc(text, func(match string) string {
+		trimmed := strings.TrimRight(match, ".,;:)]}")
+		if saved, ok := byBase[path.Base(trimmed)]; ok {
+			return saved + match[len(trimmed):]
+		}
+		return match
+	})
 }
 
 // stageDesktopPictures keeps each PNG or JPEG in memory under its attachment
@@ -3056,7 +3154,9 @@ func (a *App) watchDesktopBot(ctx context.Context, botID string) (string, bool, 
 func desktopBotResponseLimit(path string) int64 {
 	// An admitted run is read from /runs and can carry the same screenshot.
 	if strings.Contains(path, "/messages") || strings.Contains(path, "/runs/") || strings.Contains(path, "/pending") {
-		return 1<<20 + 1_200_000
+		// One screenshot plus several delivered files. A shorter read cuts
+		// the JSON and the bubble loses both.
+		return 1<<20 + 1_200_000 + int64(desktop.FileDeliverBase64Max)*4
 	}
 	return 1 << 20
 }
@@ -3149,10 +3249,10 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 			req.Header.Set("X-Machine-ID", machineID)
 		}
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := desktopBotDo(callCtx, req)
 	if err != nil {
 		a.logDesktopBotCall(botID, method, path, botlog.Host(hubURL), 0, time.Since(started), err)
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "没有在时限内") {
 			return 0, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
 		}
 		if desktopDialFailed(err) {
@@ -3161,7 +3261,11 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 		return 0, fmt.Errorf("MaClawSrv 不可达")
 	}
 	defer resp.Body.Close()
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, desktopBotResponseLimit(path)))
+	payload, readErr := readDesktopBotBody(callCtx, resp.Body, desktopBotResponseLimit(path))
+	if readErr != nil && strings.Contains(readErr.Error(), "没有在时限内") {
+		a.logDesktopBotCall(botID, method, path, botlog.Host(hubURL), 0, time.Since(started), readErr)
+		return 0, readErr
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var failure struct {
 			Message string `json:"message"`
@@ -3197,6 +3301,65 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 		return resp.StatusCode, fmt.Errorf("MaClawSrv 没有返回结果")
 	}
 	return resp.StatusCode, nil
+}
+
+// desktopBotDo runs the request and returns when the context ends, even if
+// the transport is still waiting on the connection. A stalled poll must not
+// hold the turn, because that turn is what carries the screenshot and files.
+func desktopBotDo(ctx context.Context, req *http.Request) (*http.Response, error) {
+	done := make(chan struct{})
+	var resp *http.Response
+	var err error
+	go func() {
+		resp, err = http.DefaultClient.Do(req)
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		go func() {
+			<-done
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}()
+		return nil, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
+	case <-done:
+		if err == nil && resp != nil {
+			return resp, nil
+		}
+		if ctx.Err() != nil {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			return nil, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
+		}
+		return resp, err
+	}
+}
+
+// readDesktopBotBody reads the reply and stops when the context ends. Closing
+// the body unblocks a read that the request context itself did not.
+func readDesktopBotBody(ctx context.Context, body io.ReadCloser, limit int64) ([]byte, error) {
+	done := make(chan struct{})
+	var payload []byte
+	var err error
+	go func() {
+		payload, err = io.ReadAll(io.LimitReader(body, limit))
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		_ = body.Close()
+		return nil, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
+	case <-done:
+		if err == nil && len(payload) > 0 {
+			return payload, nil
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
+		}
+		return payload, err
+	}
 }
 
 // logDesktopBotCall records the Hub call the chat would otherwise collapse

@@ -420,6 +420,10 @@ type CharacterRenderer struct {
 	previousAt      int64
 	previousElapsed int64
 	idleSinceMS     int64
+	// soundClip / soundLoops remember which body clip already played its cue,
+	// including how many loop wraps have sounded. Expression layers do not.
+	soundClip  string
+	soundLoops int
 }
 
 func NewCharacterRenderer(resolved *ResolvedPack) (*CharacterRenderer, error) {
@@ -537,6 +541,69 @@ func (r *CharacterRenderer) RenderState(state PetRuntimeState, nowMS int64, size
 	step, started, previous, previousAt, previousElapsed := r.step, r.startedMS, r.previous, r.previousAt, r.previousElapsed
 	r.mu.Unlock()
 	return r.renderPerformanceStep(step, started, previous, previousAt, previousElapsed, nowMS, size)
+}
+
+// Clip returns the validated clip pointer for a body-track name.
+func (r *RigRenderer) Clip(name string) *RigClip {
+	if r == nil {
+		return nil
+	}
+	return r.clips[name]
+}
+
+// DesktopTravelDesignPerMS is the active body clip's locomotion in design
+// pixels per millisecond. Zero means the action stays in place. The sign is
+// the authored direction; the host may reverse it at a screen edge.
+func (r *CharacterRenderer) DesktopTravelDesignPerMS(nowMS int64) float64 {
+	if r == nil || r.rig == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_ = nowMS
+	clip := r.rig.Clip(r.step.Body)
+	if clip == nil || clip.TravelX == 0 || clip.DurationMS < 1 {
+		return 0
+	}
+	return clip.TravelX / float64(clip.DurationMS)
+}
+
+// TakeActionSound reports the body clip's cue the first time that clip starts,
+// and again on each wrap when the clip sets sound_loop. Calling it consumes
+// the edge, so a muted frame still advances the latch.
+func (r *CharacterRenderer) TakeActionSound(nowMS int64) (cue string, tones []RigTone) {
+	if r == nil || r.rig == nil {
+		return "", nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name := r.step.Body
+	clip := r.rig.Clip(name)
+	loops := 0
+	if clip != nil && r.looping && clip.SoundLoop && clip.DurationMS > 0 {
+		elapsed := nowMS - r.startedMS
+		if elapsed > 0 {
+			loops = int(elapsed / int64(clip.DurationMS))
+		}
+	}
+	if clip == nil || (clip.Cue == "" && len(clip.Sound) == 0) {
+		if r.soundClip != name {
+			r.soundClip = name
+			r.soundLoops = 0
+		}
+		return "", nil
+	}
+	if name == r.soundClip {
+		if !clip.SoundLoop || loops <= r.soundLoops {
+			r.soundLoops = loops
+			return "", nil
+		}
+		r.soundLoops = loops
+		return clip.Cue, append([]RigTone(nil), clip.Sound...)
+	}
+	r.soundClip = name
+	r.soundLoops = loops
+	return clip.Cue, append([]RigTone(nil), clip.Sound...)
 }
 
 func (r *CharacterRenderer) renderPerformanceStep(step PerformanceStep, started int64, previous PerformanceStep, previousAt, previousElapsed, nowMS int64, size int) *image.NRGBA {

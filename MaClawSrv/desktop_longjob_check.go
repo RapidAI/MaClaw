@@ -163,3 +163,257 @@ var desktopLongJobRemoteRe = regexp.MustCompile(`(?:^|[\s;&|('"/])(?:ssh|sshpass
 func desktopLongJobLooksRemote(cmd string) bool {
 	return desktopLongJobRemoteRe.MatchString(desktopLongJobStripHeredocs(cmd))
 }
+
+func desktopLongJobAgeText(d time.Duration) string {
+	if d < time.Minute {
+		return "不到 1 分钟"
+	}
+	mins := int(d.Round(time.Minute) / time.Minute)
+	if mins < 1 {
+		mins = 1
+	}
+	if mins < 60 {
+		return strconv.Itoa(mins) + " 分钟"
+	}
+	h, m := mins/60, mins%60
+	if m == 0 {
+		return strconv.Itoa(h) + " 小时"
+	}
+	return strconv.Itoa(h) + " 小时 " + strconv.Itoa(m) + " 分钟"
+}
+
+func desktopLongJobRanFor(d time.Duration) string {
+	t := desktopLongJobAgeText(d)
+	if strings.HasPrefix(t, "不到") {
+		return t
+	}
+	return "已 " + t
+}
+
+var (
+	desktopLongJobANSIRe      = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	desktopLongJobNoiseRe     = regexp.MustCompile(`(?i)^tr:\s*illegal byte sequence\.?$`)
+	desktopLongJobBareNumRe   = regexp.MustCompile(`^[0-9]{1,4}$`)
+	desktopLongJobBarRe       = regexp.MustCompile(`\d+%\s*\|`)
+	desktopLongJobEpochPairRe = regexp.MustCompile(`(?i)\bepoch\s+([0-9]{1,6})\s*/\s*([0-9]{1,6})\b`)
+	desktopLongJobEpochValRe  = regexp.MustCompile(`(?i)["']?\bepoch["']?\s*[:=]\s*["']?([0-9]+(?:\.[0-9]+)?)`)
+	desktopLongJobMarkRe      = regexp.MustCompile(`(?i)(?:^|\s)(ALL_DONE|PIPELINE_DONE|TRAINING COMPLETED|TRAINING COMPLETE)(?:\s|$)`)
+	desktopLongJobErrLineRe   = regexp.MustCompile(`(?i)(traceback \(most recent call last\)|cuda out of memory|\b(?:[A-Z][A-Za-z]+(?:Error|Exception)):\s*\S|^\s*error:)`)
+	desktopLongJobRcLineRe    = regexp.MustCompile(`(?i)^(?:[a-z][a-z0-9_.-]{0,40}(?:_rc|_exit|_status|_exit_code|exit_code)\s*[=:]\s*-?[0-9]{1,3}|\[exit\s+-?[0-9]{1,3}\])$`)
+	desktopLongJobSavedLineRe = regexp.MustCompile(`(?i)(saved|checkpoint|已保存|\.safetensors)`)
+)
+
+func desktopLongJobNormalizeTail(tail string) string {
+	tail = strings.ReplaceAll(tail, "\r", "\n")
+	return desktopLongJobANSIRe.ReplaceAllString(tail, "")
+}
+
+// desktopLongJobNoticeSummary is the body under the status line: progress,
+// the latest metrics, and one outcome or error line. A later signal wins, so
+// an error that the run then got past does not hide ALL_DONE, and a failure
+// after ALL_DONE is not reported as a clean finish.
+func desktopLongJobNoticeSummary(j *desktopLongJob) string {
+	if j == nil || strings.TrimSpace(j.LastTail) == "" {
+		return ""
+	}
+	var lines []string
+	running := j.Status == "running" || j.Status == "stalled" || j.Status == "unwatched"
+	progress := ""
+	if running {
+		progress = desktopLongJobProgressSentence(j)
+		if progress != "" {
+			lines = append(lines, progress)
+		}
+	}
+	metrics := desktopLongJobMetricSentence(j.LastTail, !running)
+	if metrics != "" {
+		lines = append(lines, metrics)
+	} else if !running {
+		if ep := desktopLongJobEpochPhrase(j.LastTail); ep != "" {
+			lines = append(lines, ep)
+		}
+	}
+	if n := desktopLongJobNotableLine(j.LastTail); n != "" {
+		if n == "脚本已跑完" && len(desktopLongJobInnerFailures(j.LastTail)) > 0 {
+			n = ""
+		}
+		if strings.HasPrefix(n, "最近：") && (metrics != "" || progress != "") && !desktopLongJobSavedLineRe.MatchString(n) {
+			n = ""
+		}
+		if n != "" {
+			lines = append(lines, n)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func desktopLongJobProgressSentence(j *desktopLongJob) string {
+	var parts []string
+	if f, _, ok := desktopLongJobProgress(j.LastTail); ok {
+		parts = append(parts, "进度约 "+strconv.Itoa(int(f*100+0.5))+"%")
+	}
+	if ep := desktopLongJobEpochPhrase(j.LastTail); ep != "" && (len(parts) == 0 || strings.Contains(ep, "/")) {
+		parts = append(parts, ep)
+	}
+	if !j.EstimateEnd.IsZero() && j.EstimateEnd.After(desktopLongJobNow()) {
+		parts = append(parts, "预计 "+j.EstimateEnd.Format("15:04")+" 结束")
+	}
+	return strings.Join(parts, "，")
+}
+
+func desktopLongJobEpochPhrase(tail string) string {
+	tail = desktopLongJobNormalizeTail(tail)
+	if ms := desktopLongJobEpochPairRe.FindAllStringSubmatch(tail, -1); len(ms) > 0 {
+		last := ms[len(ms)-1]
+		return "第 " + last[1] + "/" + last[2] + " 轮"
+	}
+	ms := desktopLongJobEpochValRe.FindAllStringSubmatch(tail, -1)
+	if len(ms) == 0 {
+		return ""
+	}
+	f, err := strconv.ParseFloat(ms[len(ms)-1][1], 64)
+	if err != nil || f <= 0 {
+		return ""
+	}
+	if f == float64(int(f)) {
+		return "第 " + strconv.Itoa(int(f)) + " 轮"
+	}
+	return "epoch " + strconv.FormatFloat(f, 'f', 2, 64)
+}
+
+func desktopLongJobMetricHits(tail string) map[string]string {
+	hits := map[string]string{}
+	for _, m := range desktopRoundMetricRe.FindAllStringSubmatch(desktopLongJobNormalizeTail(tail), -1) {
+		hits[strings.ToLower(m[1])] = m[2]
+	}
+	return hits
+}
+
+func desktopLongJobTrimNum(s string) string {
+	// A short literal is already what the log printed. Running it through
+	// float64 turns 0.9335 into 0.933.
+	if len(s) <= 6 && !strings.ContainsAny(s, "eE") {
+		return s
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return s
+	}
+	abs := f
+	if abs < 0 {
+		abs = -abs
+	}
+	switch {
+	case abs >= 100:
+		return strconv.FormatFloat(f, 'f', 1, 64)
+	default:
+		return strconv.FormatFloat(f, 'f', 4, 64)
+	}
+}
+
+func desktopLongJobMetricSentence(tail string, withEpoch bool) string {
+	hits := desktopLongJobMetricHits(tail)
+	if len(hits) == 0 {
+		return ""
+	}
+	pick := func(keys ...string) (string, string, bool) {
+		for _, k := range keys {
+			if v, ok := hits[k]; ok {
+				return k, desktopLongJobTrimNum(v), true
+			}
+		}
+		return "", "", false
+	}
+	var parts []string
+	add := func(base string, keys ...string) {
+		key, v, ok := pick(keys...)
+		if !ok {
+			return
+		}
+		label := base
+		switch {
+		case strings.HasPrefix(key, "test_"):
+			label = "测试" + base
+		case strings.HasPrefix(key, "eval_"), strings.HasPrefix(key, "val_"), strings.HasPrefix(key, "dev_"):
+			label = "验证" + base
+		}
+		if base == "F1" && label != base {
+			label = strings.TrimSuffix(label, "F1") + " F1"
+		}
+		parts = append(parts, label+" "+v)
+	}
+	add("准确率", "eval_accuracy", "test_accuracy", "val_accuracy", "dev_accuracy", "accuracy", "eval_acc", "test_acc", "val_acc", "acc")
+	add("F1", "eval_f1", "test_f1", "val_f1", "dev_f1", "macro_f1", "micro_f1", "f1")
+	add("精确率", "eval_precision", "test_precision", "val_precision", "dev_precision", "precision")
+	add("召回率", "eval_recall", "test_recall", "val_recall", "dev_recall", "recall")
+	if _, _, ok := pick("eval_loss", "test_loss", "val_loss", "dev_loss"); ok {
+		add("损失", "eval_loss", "test_loss", "val_loss", "dev_loss")
+	} else {
+		add("损失", "loss")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	head := "指标"
+	if withEpoch {
+		if ep := desktopLongJobEpochPhrase(tail); ep != "" {
+			head += "（" + ep + "）"
+		}
+	}
+	return head + "：" + strings.Join(parts, "，")
+}
+
+func desktopLongJobReadableLines(tail string) []string {
+	var out []string
+	for _, l := range strings.Split(desktopLongJobNormalizeTail(tail), "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || desktopLongJobNoiseRe.MatchString(l) || desktopLongJobBareNumRe.MatchString(l) {
+			continue
+		}
+		if strings.Contains(l, "Permanently added") {
+			continue
+		}
+		if desktopLongJobBarRe.MatchString(l) && !desktopRoundMetricRe.MatchString(l) {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+func desktopLongJobMetricBlob(l string) bool {
+	return desktopRoundMetricRe.MatchString(l) && (strings.Contains(l, "{") || strings.Contains(l, "eval_") || strings.Count(l, ":") >= 2)
+}
+
+func desktopLongJobBoringLine(l string) bool {
+	if desktopLongJobRcLineRe.MatchString(l) {
+		return true
+	}
+	lead := strings.TrimLeft(l, " \t")
+	return lead == "" || lead[0] == '=' || lead[0] == '#'
+}
+
+func desktopLongJobNotableLine(tail string) string {
+	var kind, text, plain string
+	for _, l := range desktopLongJobReadableLines(tail) {
+		switch {
+		case desktopLongJobErrLineRe.MatchString(l):
+			kind, text = "err", l
+		case desktopLongJobMarkRe.MatchString(l):
+			kind, text = "mark", l
+		case desktopLongJobMetricBlob(l) || desktopLongJobBoringLine(l):
+		default:
+			plain = l
+		}
+	}
+	switch kind {
+	case "err":
+		return "出错：" + desktopRuneHead(desktopLongJobSecretRe.ReplaceAllString(text, "$1***"), 120)
+	case "mark":
+		return "脚本已跑完"
+	}
+	if plain == "" {
+		return ""
+	}
+	return "最近：" + desktopRuneHead(desktopLongJobSecretRe.ReplaceAllString(plain, "$1***"), 120)
+}

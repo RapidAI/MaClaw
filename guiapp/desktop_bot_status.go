@@ -247,7 +247,7 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	if len(item.Reply.Files) > 0 {
 		a.multiBot().recordDeliveryArtifacts(botID, strings.TrimSpace(item.RunID), item.Reply.Files)
 	}
-	ids := stageDesktopPictures(botID, item.Reply.Images, item.Reply.Files)
+	shots, local, ids := landDesktopBotMedia(botID, item.Reply.Images, item.Reply.Files)
 	payload := map[string]any{
 		"request_id":      "desktop-bot-deliver-" + strings.TrimSpace(item.RunID),
 		"session_key":     desktopBotLocalSessionKey(owner, botID),
@@ -265,7 +265,13 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	// send_to_user is the only sentence. Assistant prose stays off the event.
 	// A real transport error stays on error.
 	if visible.Bubble && !visible.Failed {
-		payload["send_to_user"] = visible.Sentence
+		payload["send_to_user"] = localizeDesktopPaths(visible.Sentence, append(append([]string{}, shots...), local...))
+	}
+	if len(shots) > 0 {
+		payload["desktop_shot_paths"] = shots
+	}
+	if len(local) > 0 {
+		payload["local_file_paths"] = local
 	}
 	if failed {
 		errText := strings.TrimSpace(item.Error)

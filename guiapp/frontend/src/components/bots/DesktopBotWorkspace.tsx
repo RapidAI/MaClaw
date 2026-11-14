@@ -95,7 +95,7 @@ import {
     WatchDesktopBot,
     WakeDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, firstAckCommandKeys, landFirstAck, releaseSettledAckCommands, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
+import { DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, firstAckCommandKeys, landFirstAck, releaseSettledAckCommands, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
@@ -188,9 +188,9 @@ import { BotRailIcon } from '../layout/SidebarNavIcons';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useBotCollab } from './collab/useBotCollab';
 import { BotCollabStatus } from './collab/BotCollabStatus';
-import { BotSaidInline } from './collab/BotSaidInline';
+import { BotSaidInline, saidFileIsImage } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
-import { applyBotStatusLine, saidForChat, saidSince, shownDesktopBotActivity } from './collab/botCollab';
+import { applyBotStatusLine, placeChatSays, shownDesktopBotActivity } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
 import { DemoSkillPanel } from './DemoSkillPanel';
 import { isChineseLang, isTraditionalLang, localizeText, normalizeLang } from '../../i18n';
@@ -899,6 +899,8 @@ function copy(lang: string) {
             screenOf: (name: string) => `${name}'s screen`,
             screenshot: 'Desktop screenshot',
             viewShot: 'View full size',
+            zoomIn: 'Enlarge',
+            zoomOut: 'Fit to window',
             closePreview: 'Close',
             download: 'Download',
             send: 'Send',
@@ -1124,6 +1126,8 @@ function copy(lang: string) {
             screenOf: (name: string) => `${name} 的螢幕`,
             screenshot: '桌面截圖',
             viewShot: '查看大圖',
+            zoomIn: '放大',
+            zoomOut: '適合視窗',
             closePreview: '關閉',
             download: '下載',
             send: '發送',
@@ -1347,6 +1351,8 @@ function copy(lang: string) {
         screenOf: (name: string) => `${name} 的屏幕`,
         screenshot: '桌面截图',
         viewShot: '查看大图',
+        zoomIn: '放大',
+        zoomOut: '适合窗口',
         closePreview: '关闭',
         download: '下载',
         send: '发送',
@@ -1632,10 +1638,14 @@ const InlineChatShot = memo(function InlineChatShot({ mime, data, alt, openLabel
 });
 
 // Above the bot page and the assistant image drawer; alert dialogs stay at 120000.
-function BotShotPreview({ src, alt, closeLabel, onClose }: { src: string; alt: string; closeLabel: string; onClose: () => void }) {
+function BotShotPreview({ src, alt, closeLabel, zoomInLabel, zoomOutLabel, onClose }: { src: string; alt: string; closeLabel: string; zoomInLabel: string; zoomOutLabel: string; onClose: () => void }) {
     const closeRef = useRef<HTMLButtonElement | null>(null);
     const dialogRef = useRef<HTMLDivElement | null>(null);
+    const [zoomed, setZoomed] = useState(false);
+    const zoomedRef = useRef(false);
+    zoomedRef.current = zoomed;
     const { backdropProps } = useSafeBackdropDismiss(onClose);
+    useEffect(() => { setZoomed(false); }, [src]);
 
     useEffect(() => {
         closeRef.current?.focus({ preventScroll: true });
@@ -1643,6 +1653,10 @@ function BotShotPreview({ src, alt, closeLabel, onClose }: { src: string; alt: s
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
+                if (zoomedRef.current) {
+                    setZoomed(false);
+                    return;
+                }
                 onClose();
                 return;
             }
@@ -1651,9 +1665,9 @@ function BotShotPreview({ src, alt, closeLabel, onClose }: { src: string; alt: s
             if (event.key !== 'Tab') return;
             event.preventDefault();
             event.stopPropagation();
-            const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') || []);
+            const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), [role="button"]') || []);
             if (controls.length === 0) return;
-            const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+            const current = controls.indexOf(document.activeElement as HTMLElement);
             const next = event.shiftKey
                 ? controls[(current <= 0 ? controls.length : current) - 1]
                 : controls[(current + 1) % controls.length];
@@ -1673,7 +1687,7 @@ function BotShotPreview({ src, alt, closeLabel, onClose }: { src: string; alt: s
     const overlay = (
         <div
             ref={dialogRef}
-            className="desktop-bot-shot-preview"
+            className={'desktop-bot-shot-preview' + (zoomed ? ' is-zoomed' : '')}
             role="dialog"
             aria-modal="true"
             aria-label={alt}
@@ -1692,11 +1706,26 @@ function BotShotPreview({ src, alt, closeLabel, onClose }: { src: string; alt: s
                 ×
             </button>
             <img
-                className="desktop-bot-shot-preview__image"
+                className={'desktop-bot-shot-preview__image' + (zoomed ? ' is-zoomed' : '')}
                 data-testid="desktop-bot-shot-preview-image"
                 alt=""
+                title={zoomed ? zoomOutLabel : zoomInLabel}
+                aria-label={zoomed ? zoomOutLabel : zoomInLabel}
+                role="button"
+                tabIndex={0}
+                aria-pressed={zoomed}
                 draggable={false}
                 src={src}
+                onClick={event => {
+                    event.stopPropagation();
+                    setZoomed(value => !value);
+                }}
+                onKeyDown={event => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setZoomed(value => !value);
+                }}
             />
         </div>
     );
@@ -1749,6 +1778,23 @@ function openBotFile(event: { preventDefault: () => void; stopPropagation: () =>
     event.preventDefault();
     event.stopPropagation();
     void OpenFileOrShowInFolder(filePath).catch(() => ShowItemInFolder(filePath));
+}
+
+// loadSaidPicture fetches a picture a bot sent as its own message, so the
+// chat can show it. A large file comes back as a local path; that path is
+// read the same way as a screenshot already on this computer.
+async function loadSaidPicture(noteId: string, name: string): Promise<{ mime: string; data: string }> {
+    const file = await FetchDesktopBotMailFile(noteId, name) as { mime?: string; MIME?: string; data?: string; Data?: string; local_path?: string; LocalPath?: string } | undefined;
+    const data = String(file?.data || file?.Data || '').replace(/\s+/g, '');
+    const mime = String(file?.mime || file?.MIME || '');
+    if (data) return { mime, data };
+    const path = String(file?.local_path || file?.LocalPath || '');
+    if (!path) return { mime, data: '' };
+    const shot = await ReadDesktopBotShot(path) as { mime?: string; MIME?: string; data?: string; Data?: string } | undefined;
+    return {
+        mime: String(shot?.mime || shot?.MIME || mime),
+        data: String(shot?.data || shot?.Data || '').replace(/\s+/g, ''),
+    };
 }
 
 // openFeedFile downloads a file a bot shared with a Hub message (the same
@@ -2579,6 +2625,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const stageEpoch = useRef(0);
     const selected = bots.find(bot => bot.id === selectedId) || null;
     const messages = selected ? (messagesByBot[selected.id] || []) : [];
+    const placedSays = placeChatSays(collab.said, selected?.id || '', !!selected?.primary, messages.filter(message => !message.pending), bots.map(bot => bot.id));
     useEffect(() => {
         if (!selected) return;
         releaseSettledAckCommands(ackCommandsRef.current, selected.id, messages);
@@ -2914,8 +2961,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const commit = (botId: string, next: DesktopBotMessage[]) => {
         rememberMessages(botId, next);
     };
-    // The minimal line goes in at once so nothing waits; the bot's own line
-    // replaces it when the model answers.
     // The last few chat lines, oldest first, so a status line fits the
     // conversation and never repeats what the bot just said.
     const recentChat = desktopBotRecentChat;
@@ -2931,19 +2976,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             last_task: lastTask || undefined,
         };
     };
-    // One composer for every status line: the bubble shows the plain
-    // fallback at once, then the persona line written from the structured
-    // state and recent chat replaces it if nothing else changed it meanwhile.
+    // One composer for every status line. The bubble is written once, when
+    // the model answers. The plain fallback is that write only when the
+    // model returns nothing; it is not shown first and then replaced.
     const upgradeLine = (ownerId: string, botId: string, messageId: string, kind: 'queued' | 'continuing' | 'status_notice' | 'error' | 'interrupted', fallback: string, said = '', facts: DesktopBotStatusPayload = {}) => {
         void (async () => {
             const status = { ...(await statusFor(botId, said)), ...facts };
             const recent = recentChat(ownerId, botId).filter((_, index, all) => index < all.length - 1 || !all[index].startsWith('我: '));
             return desktopBotLine(kind, { lang: langRef.current, message: said, persona: personaForBot(ownerId, botId), running_task: status.active_run, status, recent }, fallback);
         })().then(line => {
-            if (userIdRef.current !== ownerId || line === fallback) return;
+            if (userIdRef.current !== ownerId) return;
+            const text = String(line || '').trim() || fallback;
             const stored = messagesForBot(ownerId, botId);
-            if (!stored.some(item => item.id === messageId && item.content === fallback)) return;
-            commit(botId, stored.map(item => item.id === messageId ? { ...item, content: line } : item));
+            if (!stored.some(item => item.id === messageId)) {
+                commit(botId, [...stored, { id: messageId, role: 'assistant', content: text, ack: true }]);
+                return;
+            }
+            commit(botId, stored.map(item => item.id === messageId && item.content !== text ? { ...item, content: text, pending: false } : item));
         });
     };
     noteQueuedRef.current = (botId: string) => {
@@ -2957,7 +3006,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         const id = messageID();
         const fallback = desktopBotVariedFallback('queued', langRef.current, desktopBotQueuedSentence(langRef.current), desktopBotRecentChat(owner, botId));
-        commit(botId, [...stored, { id, role: 'assistant', content: fallback, ack: true }]);
         upgradeLine(owner, botId, id, 'queued', fallback);
     };
     // The model writes the identity. A single hyphen withdraws it. The stored
@@ -3797,11 +3845,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     clearLiveBotTurn(userId, botId, pending.messageId);
                     commit(botId, stored.filter(item => item.id !== pending.messageId));
                 } else {
-                    const attention = screen.userControl || screen.reason !== '';
-                    const next = stored.map(item => item.id === pending.messageId ? {
-                        ...item,
-                        content: sentenceForTurn(result, ask),
-                        pending: false,
+                const attention = screen.userControl || screen.reason !== '';
+                const personaLine = result.failed && !ask;
+                const next = stored.map(item => item.id === pending.messageId ? {
+                    ...item,
+                    content: personaLine ? '' : sentenceForTurn(result, ask),
+                    pending: personaLine,
                         failed: result.failed,
                         requestId: requestId || item.requestId,
                         handoffUrl: attention ? (screen.url || item.handoffUrl || '') : '',
@@ -3892,13 +3941,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const requestId = String(data.request_id || '').trim();
             const ack = String(data.ack || '').trim();
             if (!botId) return;
-            if (data.queued === true || data.held === true) noteQueuedRef.current(botId);
+            // A real sentence is the reply. The parked fallback is only for a
+            // queue/hold that arrived with nothing to say.
+            if ((data.queued === true || data.held === true) && (!ack || desktopBotIsPlaceholderAck(ack, lang))) noteQueuedRef.current(botId);
             if (!ack || desktopBotIsPlaceholderAck(ack, lang)) return;
             const stored = messagesForBot(userId, botId);
             const keys = bindAckCommand(ackCommandsRef.current, botId, firstAckCommandKeys(stored, requestId));
             if (keys.length === 0) return;
             const next = landFirstAck(stored, keys, ack, lang, messageID);
             if (next === stored) return;
+            markUnderstanding(botId, false);
             commit(botId, next);
         });
         return () => { if (typeof off === 'function') off(); };
@@ -4196,13 +4248,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 // No continuation bubble came back, so say once that it goes on.
                 const noteId = messageID();
                 const fallback = desktopBotVariedFallback('status_notice', langRef.current, desktopBotContinuingSentence(langRef.current), recentChat(userId, botId));
-                commit(botId, [...stored, { id: noteId, role: 'assistant', content: fallback, ack: true }]);
                 upgradeLine(userId, botId, noteId, 'status_notice', fallback, '', { takeover: 'handed back to the bot; the task continues' });
             } else {
                 // Truly not handed back: say so in the persona, in the chat.
                 const noteId = messageID();
                 const fallback = text.handBackFailed;
-                commit(botId, [...messagesForBot(userId, botId), { id: noteId, role: 'assistant', content: fallback, ack: true }]);
                 upgradeLine(userId, botId, noteId, 'error', fallback, '', { takeover: 'the person still has the desktop; hand-back did not go through', stop_reason: detail || 'hand-back failed' });
             }
         } finally {
@@ -5153,7 +5203,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const stored = messagesForBot(ownerId, botId);
             // Nothing was sent. Without a phase this stays a side note, so a
             // confirmation that is still waiting keeps its button.
-            commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: raw, pending: false, failed: true, phase: undefined } : item));
+            commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: '', pending: true, failed: true, phase: undefined } : item));
             upgradeLine(ownerId, botId, assistantMessage.id, 'error', raw, content.trim(), { stop_reason: raw });
             dropAutoPanel(botId);
             drainIfIdle(botId);
@@ -5212,38 +5262,26 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             clearLiveBotTurn(ownerId, botId, assistantMessage.id);
             return true;
         };
-        // The first reply has one end-to-end budget from this moment (the
-        // command's arrival): the reading's own sentence when it is back in
-        // time, otherwise one neutral receipt. receiptPosted means that
-        // receipt is already on screen; a later understanding line still
-        // replaces it in place (same bubble id) rather than adding a second
-        // first reply.
-        const receivedAt = Date.now();
-        const ackLeftMs = () => DESKTOP_BOT_FIRST_ACK_BUDGET_MS - (Date.now() - receivedAt);
-        let receiptPosted = false;
         // ackSaid: a first reply (the reading's sentence or a written line)
-        // is already on its way, so the receipt is not needed.
+        // is already on its way, so a stock line is not needed.
         let ackSaid = false;
-        // upgradeReceipt asks for a model line when the receipt goes up after
-        // the turn decided it had nothing worth saying first.
+        // upgradeReceipt asks for a model line when the turn decided it had
+        // nothing worth saying first.
         let upgradeReceipt: (() => void) | null = null;
-        // At the mark, a turn still waiting (reading, supplement check, or
-        // anything else before its first reply) shows 正在理解你的话 in the
-        // status row; the work carries on and the model's own line follows.
-        // No stock chat line is posted (Daniel 11-12): 「收到，正在看。」 read
-        // as a template. receiptPosted now means "the first reply is late".
-        // A turn that already settled into an answer, question or queue note
-        // needs none. A button accept is verbatim; a queued line was answered
-        // when it was queued.
+        // While the first sentence is still being written, the status row
+        // says 正在理解你的话. The chat stays empty until that sentence
+        // arrives. The neutral line is posted only when the wait ends with
+        // nothing (Daniel 11-12: a stock line such as 「收到，正在看。」 read
+        // as a template).
         let understandingShown = false;
         const endUnderstanding = () => {
             if (!understandingShown) return;
             understandingShown = false;
             markUnderstanding(botId, false);
         };
-        // One ack bubble per command. The intake event and this timer both
-        // land through here, so a model line already on screen is not followed
-        // by the neutral line, and a late model line replaces the neutral one.
+        // One ack bubble per command. A model line already on screen is not
+        // followed by the neutral line. The neutral line lands only when the
+        // wait produced nothing.
         bindAckCommand(ackCommandsRef.current, botId, [assistantMessage.id, ticket]);
         const putAckLine = (stored: DesktopBotMessage[], line: string, chips?: string[], anchorId?: string) => {
             const bubbleId = anchorId || assistantMessage.id;
@@ -5256,38 +5294,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
             return next;
         };
-        if (!verbatim && mode === 'now') {
-            // The server's first sentence arrives with the admission. If it
-            // does not, one neutral line goes up at about two seconds.
-            setTimeout(() => {
-                if (ackSaid || ownerLeft() || bubbleGone()) return;
-                const stored = messagesForBot(ownerId, botId);
-                const line = desktopBotNeutralAck({ kind: 'accept', lang });
-                const next = putAckLine(stored, line, undefined, assistantMessage.id);
-                ackSaid = true;
-                if (next === stored) return;
-                receiptPosted = true;
-                commit(botId, next);
-            }, 2000);
-        }
-        // A line written after the work started upgrades the receipt in
-        // place when one is up, otherwise it goes above the wait bubble,
-        // or at the end when that bubble has already settled. After the
-        // budget, a late model line still gets a short try so the receipt
-        // can be replaced; a second stock line is not shown.
+        // One wait for the model's sentence. The neutral line is committed
+        // only when that wait returns nothing; it is not posted first and
+        // then replaced. landFirstAck keeps a sentence that already arrived
+        // (the server's admission) and ignores a later neutral line.
         const postLaterAck = (botId: string, anchorId: string, ctx: DesktopBotAckContext, chips?: string[]) => {
             ackSaid = true;
-            const left = ackLeftMs();
-            const late = left <= 0 && receiptPosted;
-            const budget = left > 0 ? left : (late ? DESKTOP_BOT_LATE_ACK_BUDGET_MS : left);
-            void desktopBotAck(late ? { ...ctx, late: true } : ctx, undefined, budget).then(line => {
+            if (!understandingShown) {
+                understandingShown = true;
+                markUnderstanding(botId, true);
+            }
+            void desktopBotAck({ ...ctx, late: true }, undefined, DESKTOP_BOT_LATE_ACK_BUDGET_MS).then(line => {
                 endUnderstanding();
                 if (userIdRef.current !== ownerId) return;
                 const stored = messagesForBot(ownerId, botId);
-                // Every model attempt failed: the status row keeps showing the
-                // work; a stock line in the chat would only be a template.
-                if (desktopBotIsPlaceholderAck(line, lang)) return;
-                commit(botId, putAckLine(stored, line, chips, anchorId));
+                const next = putAckLine(stored, line, chips, anchorId);
+                if (next !== stored) commit(botId, next);
             });
         };
         void (async () => {
@@ -5350,7 +5372,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const sentence = told.trim();
             // A stock receipt already on screen is always upgraded: left
             // alone it was the bot's only, mechanical first reply.
-            const earlyAckPosted = !sentence && !verbatim && sendPhase === 'execute' && (worthSaying || receiptPosted);
+            const earlyAckPosted = !sentence && !verbatim && sendPhase === 'execute' && worthSaying;
             const acceptAckCtx: DesktopBotAckContext = {
                 kind: 'accept', message: content, lang, persona: personaForBot(ownerId, botId),
                 goal: str(u.goal, u.Goal), instruction,
@@ -5374,7 +5396,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             let foldKind: 'accept' | 'parallel' = 'accept';
             if (deferFirst) {
                 // The decision runs while the status row shows the wait.
-            } else if (!earlyAckPosted && !sentence && !verbatim && sendPhase === 'execute' && !receiptPosted) {
+            } else if (!earlyAckPosted && !sentence && !verbatim && sendPhase === 'execute') {
                 upgradeReceipt = () => postLaterAck(botId, assistantMessage.id, { ...acceptAckCtx, files: ackFiles.map(item => item.split('/').pop() || item) }, options.length >= 2 ? options : undefined);
             }
             if (earlyAckPosted && !deferFirst) {
@@ -5442,10 +5464,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     postLaterAck(botId, assistantMessage.id, { ...acceptAckCtx, kind: 'accept', running_task: running || undefined, files: ackFiles.map(item => item.split('/').pop() || item) }, options.length >= 2 ? options : undefined);
                 }
             } else if (desktopAckOwedOnDispatch({ sentence, verbatim, phase: sendPhase, earlyAckPosted })) {
-                // A new job that had no line yet: say a short one now, above
-                // the wait bubble (2026-11-03 21:05: a second task mid-run got
-                // only "正在一点点推进" and no reply). After a receipt, this
-                // upgrades that bubble in place when the model line arrives.
+                // A new job that had no line yet: one sentence above the wait
+                // bubble (2026-11-03 21:05: a second task mid-run got only
+                // "正在一点点推进" and no reply). The stock line is that
+                // sentence only when the model writes nothing.
                 postLaterAck(botId, assistantMessage.id, acceptAckCtx);
             }
             {
@@ -5542,7 +5564,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 clearLiveBotTurn(ownerId, botId, assistantMessage.id);
                 const raw = friendlyFailure(failureMessage(error), lang) || text.unavailable;
                 const stored = messagesForBot(ownerId, botId);
-                const failed = stored.map(item => item.id === assistantMessage.id ? { ...item, content: raw, pending: false, failed: true } : item);
+                const failed = stored.map(item => item.id === assistantMessage.id ? { ...item, content: ownerLeft() ? raw : '', pending: !ownerLeft(), failed: true } : item);
                 if (ownerLeft()) {
                     saveBotMessages(ownerId, botId, failed);
                     return;
@@ -5976,17 +5998,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // The bot's own line for the change, not a stock sentence; with
             // no model line in time, the fold head and the chosen option,
             // replaced in the same bubble by a late model line.
-            const line = receipt?.stage === 'queued' ? await desktopBotAck(optionCtx, undefined, DESKTOP_BOT_FIRST_ACK_BUDGET_MS) : String(receipt?.message || '');
+            const line = receipt?.stage === 'queued' ? await desktopBotAck({ ...optionCtx, late: true }, undefined, DESKTOP_BOT_LATE_ACK_BUDGET_MS) : String(receipt?.message || '');
             if (userIdRef.current !== ownerId) return;
             const noteId = messageID();
             const wrote = !!line && !desktopBotIsPlaceholderAck(line, langNow);
             commit(botId, [...messagesForBot(ownerId, botId), { id: noteId, role: 'assistant', content: wrote ? line : (receipt?.stage === 'queued' ? desktopBotFoldFallback(optionCtx.kind, langNow, option) : (line || desktopBotNeutralAck(optionCtx))), ack: true, supplementId: supplementId || undefined, supplementRunId: runId || undefined }]);
-            if (receipt?.stage === 'queued' && !wrote) {
-                void desktopBotAck({ ...optionCtx, late: true }, undefined, DESKTOP_BOT_LATE_ACK_BUDGET_MS).then(late => {
-                    if (userIdRef.current !== ownerId || desktopBotIsPlaceholderAck(late, langNow)) return;
-                    commit(botId, messagesForBot(ownerId, botId).map(item => item.id === noteId ? { ...item, content: late } : item));
-                });
-            }
         } catch {
             commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: localizeText(langNow, "Couldn't pass that on. Type it and I'll adjust.", '没能转给正在做的任务，你直接打一句，我按你说的改。'), ack: true }]);
         }
@@ -6329,7 +6345,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const current = messagesForBot(userId, botId);
                 const qid = messageID();
                 const qline = desktopBotQueuedSentence(lang);
-                commit(botId, [...current, { id: qid, role: 'assistant', content: qline, ack: true }]);
                 upgradeLine(userId, botId, qid, 'queued', qline, order);
             };
             const atCap = () => Math.max(desktopRunByBotRef.current[botId] || 0, liveRunsOf(botId)) >= DESKTOP_BOT_PARALLEL_RUNS;
@@ -6858,6 +6873,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             <TaskResultArtifacts paths={message.localPaths} messageId={message.id} lang={lang} onOpen={openBotFile} />
                                         ) : null}
                                         {message.role === 'assistant' && !message.failed && !message.localPaths?.length && message.files?.length ? message.files.map(file => (
+                                            saidFileIsImage(file) && file.data ? (
+                                                <InlineChatShot
+                                                    key={file.name}
+                                                    mime={file.mime}
+                                                    data={file.data}
+                                                    alt={file.name}
+                                                    openLabel={text.viewShot}
+                                                    onOpen={openShot}
+                                                />
+                                            ) : (
                                             <button
                                                 type="button"
                                                 key={file.name}
@@ -6867,6 +6892,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             >
                                                 {text.download} {file.name}
                                             </button>
+                                            )
                                         )) : null}
                                     </div>
                                     {message.role === 'user' && message.routedTo && !message.routedUndone ? (
@@ -6954,6 +6980,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         </form>
                                     ) : null}
                                 </div>
+                                {collab.features.say && placedSays.after.get(message.id)?.length ? (
+                                    <BotSaidInline items={placedSays.after.get(message.id) || []} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} loadFile={loadSaidPicture} onOpenShot={openShot} openLabel={text.viewShot} />
+                                ) : null}
                                 </Fragment>
                                 );
                             })}
@@ -6963,7 +6992,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </p>
                             ) : null}
                             {collab.features.say ? (
-                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary, saidSince(messages.map(m => m.id)), bots.map(b => b.id))} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} />
+                                <BotSaidInline items={placedSays.trailing} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} loadFile={loadSaidPicture} onOpenShot={openShot} openLabel={text.viewShot} />
                             ) : null}
                             </div>
                             </BotChipContext.Provider>
@@ -7366,7 +7395,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 </aside>
             ) : null}
             <BotFilePreview lang={lang} botId={selectedId} />
-            {visibleShot ? <BotShotPreview src={visibleShot} alt={text.screenshot} closeLabel={text.closePreview} onClose={closeShot} /> : null}
+            {visibleShot ? <BotShotPreview src={visibleShot} alt={text.screenshot} closeLabel={text.closePreview} zoomInLabel={text.zoomIn} zoomOutLabel={text.zoomOut} onClose={closeShot} /> : null}
             {createOpen ? (
                 <BotEditDialog
                     key="create"

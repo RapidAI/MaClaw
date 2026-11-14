@@ -1138,7 +1138,7 @@ func TestGetSettingsTabConfigFiltersByTab(t *testing.T) {
 	if pet["pet_enabled"] != true {
 		t.Fatalf("pet_enabled = %#v", pet["pet_enabled"])
 	}
-	if pet["pet_skin"] != "clawmate" {
+	if pet["pet_skin"] != "ragdoll" {
 		t.Fatalf("pet_skin = %#v", pet["pet_skin"])
 	}
 	if _, hasWeatherCity := pet["pet_ambient_city"]; hasWeatherCity {
@@ -2699,7 +2699,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if patched.UIZoomFactor != 2.0 || patched.ChatFontSize != 24 || patched.EnvCheckInterval != 14 || patched.LastEnvCheckTime != "2026-06-05T12:00:00Z" || patched.VectorSearchEnabled || patched.ScreenParsingEnabled == nil || *patched.ScreenParsingEnabled || patched.ASREnabled || patched.TTSEnabled || patched.TTSVoiceID != "zm_yunxi" || patched.MaclawAgentMaxIterations != 30 || patched.SubAgentConcurrency != corelib.MaxSubAgentConcurrency || !patched.TrialReflectEnabled {
 		t.Fatalf("ui/vector/agent fields not applied with normalization: %#v", patched)
 	}
-	if !patched.PetEnabled || patched.PetSkin != "clawmate" || patched.PetSize != 92 || patched.PetMotionEnabled == nil || !*patched.PetMotionEnabled || patched.PetMotionSound == nil || *patched.PetMotionSound || patched.PetMotionSoundPreset != "soft" || patched.PetTextInteraction == nil || !*patched.PetTextInteraction || !patched.PetVoiceInput || !patched.PetVoiceReadback || patched.PetFileDropEnabled == nil || *patched.PetFileDropEnabled || patched.PetInteractionMode != "active" || patched.PetConversationMode != "continuous" || patched.PetReadbackMode != "summary" || !patched.PetAutoRetryOnNoHear || patched.PetContinuousTimeout != 45 || !patched.PetQuietMode {
+	if !patched.PetEnabled || patched.PetSkin != "ragdoll" || patched.PetSize != 92 || patched.PetMotionEnabled == nil || !*patched.PetMotionEnabled || patched.PetMotionSound == nil || *patched.PetMotionSound || patched.PetMotionSoundPreset != "soft" || patched.PetTextInteraction == nil || !*patched.PetTextInteraction || !patched.PetVoiceInput || !patched.PetVoiceReadback || patched.PetFileDropEnabled == nil || *patched.PetFileDropEnabled || patched.PetInteractionMode != "active" || patched.PetConversationMode != "continuous" || patched.PetReadbackMode != "summary" || !patched.PetAutoRetryOnNoHear || patched.PetContinuousTimeout != 45 || !patched.PetQuietMode {
 		t.Fatalf("pet fields not applied: %#v", patched)
 	}
 	if patched.ScreenDimTimeoutMin != 9 || patched.RemoteHeartbeatSec != 5 || patched.AgentResponseTimeoutSec != 300 || patched.SkillRunnerTimeoutSec != 3600 || patched.MaclawLLMTimeoutSec != 480 {
@@ -3908,8 +3908,8 @@ func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() reload error = %v", err)
 	}
-	if reloaded.PetSkin != "clawmate" {
-		t.Fatalf("PetSkin = %q, want clawmate", reloaded.PetSkin)
+	if reloaded.PetSkin != "ragdoll" {
+		t.Fatalf("PetSkin = %q, want ragdoll", reloaded.PetSkin)
 	}
 	if reloaded.PetSize != 120 {
 		t.Fatalf("PetSize = %d, want 120", reloaded.PetSize)

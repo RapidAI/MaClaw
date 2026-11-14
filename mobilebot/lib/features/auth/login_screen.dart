@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/providers.dart';
 import 'auth_api.dart';
+import 'qr_login_screen.dart';
 
 /// 登录 — 邮箱验证码或手机验证码两步登录；`mode=add` 时标题变为“添加账号”。
 class LoginScreen extends ConsumerStatefulWidget {
@@ -334,6 +335,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Text('登录'),
+                  ),
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: _verifying
+                        ? null
+                        : () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => const QrLoginScreen(),
+                              ),
+                            ),
+                    icon: const Icon(Icons.qr_code_scanner),
+                    label: const Text('扫码登录'),
                   ),
                   const SizedBox(height: 12),
                   Text(
