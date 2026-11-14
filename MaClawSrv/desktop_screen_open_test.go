@@ -83,8 +83,8 @@ func TestScreenOpenWaitsOutTheMemoryGate(t *testing.T) {
 	desktopScreenLeaseOn = true
 	desktopMemoryRecheck = time.Millisecond
 	desktopMemoryWaitMax = 5 * time.Millisecond
-	desktopMemoryPressured = func(context.Context, string, string) (bool, string) {
-		return true, desktopMemoryWaitLine
+	desktopMemoryPressured = func(context.Context, string, string) (bool, string, error) {
+		return true, desktopMemoryWaitLine, nil
 	}
 	var opens atomic.Int32
 	openBotScreen = func(context.Context, agentruntime.Scope) error {

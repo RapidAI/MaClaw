@@ -18,12 +18,12 @@ func TestScreenLeaseWaitsWhileMemoryIsHigh(t *testing.T) {
 	})
 	desktopMemoryRecheck = time.Millisecond
 	n := 0
-	desktopMemoryPressured = func(context.Context, string, string) (bool, string) {
+	desktopMemoryPressured = func(context.Context, string, string) (bool, string, error) {
 		n++
 		if n < 3 {
-			return true, desktopMemoryWaitLine
+			return true, desktopMemoryWaitLine, nil
 		}
-		return false, ""
+		return false, "", nil
 	}
 	start := time.Now()
 	if err := waitDesktopMemory(context.Background(), "tenant-a", "alice", "run-mem"); err != nil {
@@ -48,8 +48,8 @@ func TestMemoryWaitGivesUpInsteadOfWaitingForever(t *testing.T) {
 	})
 	desktopMemoryRecheck = time.Millisecond
 	desktopMemoryWaitMax = 5 * time.Millisecond
-	desktopMemoryPressured = func(context.Context, string, string) (bool, string) {
-		return true, desktopMemoryWaitLine
+	desktopMemoryPressured = func(context.Context, string, string) (bool, string, error) {
+		return true, desktopMemoryWaitLine, nil
 	}
 	err := waitDesktopMemory(context.Background(), "tenant-a", "alice", "run-mem-giveup")
 	var admit *desktop.MemoryAdmission
@@ -64,15 +64,15 @@ func TestMemoryGaugeReadsTheContainer(t *testing.T) {
 	desktopRemoteMemory = func(context.Context, string, string) (int64, int64, error) {
 		return 90, 100, nil
 	}
-	pressed, line := readDesktopMemoryPressure(context.Background(), "tenant-a", "alice")
-	if !pressed || line != desktopMemoryWaitLine {
-		t.Fatalf("pressed=%v line=%q", pressed, line)
+	pressed, line, err := readDesktopMemoryPressure(context.Background(), "tenant-a", "alice")
+	if err != nil || !pressed || line != desktopMemoryWaitLine {
+		t.Fatalf("pressed=%v line=%q err=%v", pressed, line, err)
 	}
 	desktopRemoteMemory = func(context.Context, string, string) (int64, int64, error) {
 		return 10, 100, nil
 	}
-	pressed, line = readDesktopMemoryPressure(context.Background(), "tenant-a", "alice")
-	if pressed || line != "" {
-		t.Fatalf("recovered pressed=%v line=%q", pressed, line)
+	pressed, line, err = readDesktopMemoryPressure(context.Background(), "tenant-a", "alice")
+	if err != nil || pressed || line != "" {
+		t.Fatalf("recovered pressed=%v line=%q err=%v", pressed, line, err)
 	}
 }

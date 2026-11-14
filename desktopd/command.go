@@ -9,12 +9,13 @@ import (
 // shell, click, shot, and ctl run there. The docker exec line is only
 // the supervisor command; it does not name bash, xdotool, or sh.
 type commandRequest struct {
-	Op      string   `json:"op"`
-	Command string   `json:"command,omitempty"`
-	Display string   `json:"display,omitempty"`
-	Args    []string `json:"args,omitempty"`
-	Script  string   `json:"script,omitempty"`
-	Body    string   `json:"body,omitempty"`
+	Op       string   `json:"op"`
+	Command  string   `json:"command,omitempty"`
+	Display  string   `json:"display,omitempty"`
+	Args     []string `json:"args,omitempty"`
+	Script   string   `json:"script,omitempty"`
+	Body     string   `json:"body,omitempty"`
+	Sentinel string   `json:"sentinel,omitempty"`
 }
 
 func commandServiceArgs(container string, req commandRequest) ([]string, error) {

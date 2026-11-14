@@ -297,7 +297,11 @@ func (s *HTTPServer) routes() {
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	body := map[string]string{"status": "ok"}
+	for k, v := range memoryGateFields() {
+		body[k] = v
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 func (s *HTTPServer) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
@@ -414,7 +418,11 @@ func checkDirectoryWritable(name, target string) readinessCheck {
 	return check
 }
 func (s *HTTPServer) handleVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"version": serviceVersion, "commit": serviceCommit, "built_at": serviceBuiltAt})
+	body := map[string]string{"version": serviceVersion, "commit": serviceCommit, "built_at": serviceBuiltAt}
+	for k, v := range memoryGateFields() {
+		body[k] = v
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 func writeMetricsUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

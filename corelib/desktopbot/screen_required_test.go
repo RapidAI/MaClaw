@@ -1,23 +1,16 @@
 package desktopbot
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
-func TestXConnectionFailedReadsTheResultNotTheCommand(t *testing.T) {
-	yes := []string{
-		"firefox: cannot open display",
-		"Error: Can't open display: :21",
-		"qt.qpa.xcb: could not connect to display",
-		"no display name and no $DISPLAY environment variable",
-		"Missing X server or $DISPLAY",
+func TestScreenRequiredIsATypedRetry(t *testing.T) {
+	err := &ScreenRequiredError{Output: "Error: something failed"}
+	if !errors.Is(err, ErrScreenRequired) || err.Code() != CodeScreenRequired {
+		t.Fatalf("err=%v code=%s", err, err.Code())
 	}
-	for _, line := range yes {
-		if !XConnectionFailed(line) {
-			t.Errorf("expected an X connection failure: %q", line)
-		}
-	}
-	for _, line := range []string{"ValueError: bad batch", "firefox", "train.py", "cannot open file"} {
-		if XConnectionFailed(line) {
-			t.Errorf("not an X connection failure: %q", line)
-		}
+	if err.Error() == "Error: something failed" {
+		t.Fatal("the retry sentence was dropped")
 	}
 }

@@ -2,7 +2,10 @@ package desktopd
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -324,10 +327,15 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 		}
 		display = got
 	}
+	sentinel := ""
+	if spec.BotID != "" && !needsScreen {
+		sentinel = newSentinelToken()
+	}
 	shell := commandRequest{
-		Op:      "shell",
-		Command: strings.TrimSpace(command),
-		Display: display,
+		Op:       "shell",
+		Command:  strings.TrimSpace(command),
+		Display:  display,
+		Sentinel: sentinel,
 	}
 	if _, err := commandServiceArgs(containerName(spec.TenantID, spec.UserID), shell); err != nil {
 		return "", err
@@ -374,10 +382,38 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 	}
 	s.noteToolUse(spec, container, onDesktop)
 	text := desktop.ProgramOutput(output, exitCode, false)
-	if spec.BotID != "" && !needsScreen && exitCode != 0 && desktopbot.XConnectionFailed(output) {
+	if sentinel != "" && container != "" && s.sentinelConnected(ctx, container, sentinel) {
 		return text, &desktopbot.ScreenRequiredError{Output: text}
 	}
 	return text, nil
+}
+
+func newSentinelToken() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// sentinelConnected reads the supervisor's record of an X client connecting
+// to this command's sentinel display. The program's own output is not read.
+func (s *Service) sentinelConnected(ctx context.Context, container, token string) bool {
+	if s == nil || strings.TrimSpace(token) == "" || strings.TrimSpace(container) == "" {
+		return false
+	}
+	out, err := s.docker(ctx, "exec", container, "python3", "/desktop_supervisor.py", "sentinel", token)
+	if err != nil {
+		return false
+	}
+	var rec struct {
+		XClient bool `json:"x_client"`
+	}
+	line := statusLine(out)
+	if line == "" || json.Unmarshal([]byte(line), &rec) != nil {
+		return false
+	}
+	return rec.XClient
 }
 
 // ErrDesktopAsleep is a fetch that would have docker-exec'd curl into a

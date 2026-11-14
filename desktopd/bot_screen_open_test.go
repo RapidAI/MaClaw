@@ -34,8 +34,32 @@ func TestClosedScreenDisplayIsNotADisplay(t *testing.T) {
 	bot := desktop.BotDesktopUser("alice", "bot_a")
 	svc := &Service{
 		Run: func(_ context.Context, args ...string) (string, error) {
-			if strings.Contains(strings.Join(args, " "), " display ") {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, " sentinel ") {
+				return `{"x_client":true}`, nil
+			}
+			if strings.Contains(joined, " display ") {
 				return `{"display":":21","running":false}`, nil
+			}
+			return "", nil
+		},
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			return "Error: something failed\n", 1, nil
+		},
+	}
+	text, err := svc.Bash(context.Background(), "tenant", bot, "firefox")
+	var required *desktopbot.ScreenRequiredError
+	if !errors.As(err, &required) || !strings.Contains(text, "something failed") || required.Code() != desktopbot.CodeScreenRequired {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+}
+
+func TestOutputTextDoesNotDecideScreenRequired(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	svc := &Service{
+		Run: func(_ context.Context, args ...string) (string, error) {
+			if strings.Contains(strings.Join(args, " "), " sentinel ") {
+				return `{"x_client":false}`, nil
 			}
 			return "", nil
 		},
@@ -44,8 +68,7 @@ func TestClosedScreenDisplayIsNotADisplay(t *testing.T) {
 		},
 	}
 	text, err := svc.Bash(context.Background(), "tenant", bot, "firefox")
-	var required *desktopbot.ScreenRequiredError
-	if !errors.As(err, &required) || !strings.Contains(text, "cannot open display") || required.Code() != desktopbot.CodeScreenRequired {
+	if err != nil || !strings.Contains(text, "cannot open display") {
 		t.Fatalf("text=%q err=%v", text, err)
 	}
 }

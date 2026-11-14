@@ -82,12 +82,17 @@ func (c *desktopHubClient) Session(ctx context.Context, tenantID, userID string)
 
 // Memory reads the desktop container's used and limit bytes from Hub.
 // Hub reads them from desktopd. This does not start the desktop.
+// The memory gate prefers desktopd and uses this route only as a fallback.
 func (c *desktopHubClient) Memory(ctx context.Context, tenantID, userID string) (int64, int64, error) {
+	return c.memoryAt(ctx, "/api/v1/desktop-services/memory", tenantID, userID)
+}
+
+func (c *desktopHubClient) memoryAt(ctx context.Context, path, tenantID, userID string) (int64, int64, error) {
 	var out struct {
 		Used  int64 `json:"used_bytes"`
 		Limit int64 `json:"limit_bytes"`
 	}
-	if err := c.post(ctx, "/api/v1/desktop-services/memory", map[string]string{
+	if err := c.post(ctx, path, map[string]string{
 		"tenant_id": tenantID,
 		"user_id":   userID,
 	}, &out); err != nil {
@@ -349,6 +354,28 @@ func (e *desktopAPIError) Error() string {
 	return e.Code
 }
 
+// desktopUnreachableError is a transport failure. Callers classify it by
+// type. The text stays the sentence older logs already print.
+type desktopUnreachableError struct {
+	cause error
+}
+
+func (e *desktopUnreachableError) Error() string {
+	if e == nil || e.cause == nil {
+		return "desktop service is unreachable"
+	}
+	return "desktop service is unreachable: " + e.cause.Error()
+}
+
+func (e *desktopUnreachableError) Unwrap() error { return e.cause }
+
+// desktopInvalidBodyError is a 2xx body that is not the expected JSON.
+type desktopInvalidBodyError struct{}
+
+func (desktopInvalidBodyError) Error() string {
+	return "desktop service returned invalid status"
+}
+
 // desktopHubNotFound reports a Hub 404 whose code is NOT_FOUND. That status
 // is not itself a missing resume target: a file or another resource uses
 // the same code. The caller checks the instance it was resuming.
@@ -422,7 +449,7 @@ func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any,
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("desktop service is unreachable: %s", err.Error())
+		return &desktopUnreachableError{cause: err}
 	}
 	defer resp.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
@@ -431,7 +458,7 @@ func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any,
 	}
 	if dest != nil && len(bytes.TrimSpace(payload)) > 0 {
 		if err := json.Unmarshal(payload, dest); err != nil {
-			return fmt.Errorf("desktop service returned invalid status")
+			return desktopInvalidBodyError{}
 		}
 	}
 	return nil

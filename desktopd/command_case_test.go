@@ -55,7 +55,11 @@ func TestDesktopBotCommandCases(t *testing.T) {
 		botShells := [][]string{}
 		bot := &Service{
 			Run: func(_ context.Context, args ...string) (string, error) {
-				if strings.Contains(strings.Join(args, " "), " display ") {
+				joined := strings.Join(args, " ")
+				if strings.Contains(joined, " sentinel ") {
+					return `{"x_client":false}`, nil
+				}
+				if strings.Contains(joined, " display ") {
 					return `{"display":":21","running":true}`, nil
 				}
 				t.Fatalf("bot docker %v", args)

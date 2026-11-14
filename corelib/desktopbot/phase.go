@@ -47,29 +47,6 @@ func (e *ScreenRequiredError) Unwrap() error { return ErrScreenRequired }
 
 func (e *ScreenRequiredError) Code() string { return CodeScreenRequired }
 
-// XConnectionFailed reports that a program tried to open an X display and
-// the connection failed. It reads the program's result, not the command.
-func XConnectionFailed(output string) bool {
-	text := strings.ToLower(output)
-	for _, phrase := range []string{
-		"cannot open display",
-		"can't open display",
-		"could not connect to display",
-		"couldn't connect to display",
-		"could not open display",
-		"unable to open display",
-		"failed to open display",
-		"no display name and no $display",
-		"missing x server or $display",
-		"cannot connect to x server",
-	} {
-		if strings.Contains(text, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
 // AsleepError is a coded refusal to exec a stopped desktop container.
 type AsleepError struct{}
 
