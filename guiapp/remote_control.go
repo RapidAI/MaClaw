@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -265,8 +266,9 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage, grantIDs ...
 		return detail, err
 	case "create_task":
 		var req struct {
-			Name string `json:"name"`
-			Mode string `json:"mode"`
+			Name    string `json:"name"`
+			Mode    string `json:"mode"`
+			WorkDir string `json:"work_dir"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
 			return nil, errors.New("远控请求无效")
@@ -286,11 +288,24 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage, grantIDs ...
 		default:
 			return nil, errors.New("不支持的任务模式")
 		}
-		created := a.CreateTaskWithMode(name, "", mode)
+		// An explicit work_dir must normalize to an absolute path on this
+		// desktop; a directory that does not exist yet is still allowed so the
+		// coding agent can create a fresh project root (same rule as the
+		// local new-task wizard's typed path).
+		workDir := ""
+		if raw := strings.TrimSpace(req.WorkDir); raw != "" {
+			workDir = normalizeRecentTaskWorkingDir(raw)
+			if workDir == "" {
+				return nil, errors.New("对方电脑上的工作目录无效")
+			}
+		}
+		created := a.CreateTaskWithMode(name, workDir, mode)
 		if strings.TrimSpace(created.ProjectPath) == "" {
 			return nil, errors.New("没有建成这个任务")
 		}
 		return map[string]any{"task": created}, nil
+	case "list_dirs":
+		return a.remoteControlListDirs(body)
 	case "send_message":
 		var req struct {
 			ProjectPath string `json:"project_path"`
@@ -699,4 +714,106 @@ func trimRemoteControlText(value string, limit int) string {
 		return value
 	}
 	return string(runes[:limit]) + "…"
+}
+
+// remoteControlDirEntry is one subdirectory row in a list_dirs reply.
+type remoteControlDirEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// remoteControlListDirsResult is one browse page for the remote working
+// directory picker on the controller's new-task wizard.
+type remoteControlListDirsResult struct {
+	Path       string                  `json:"path"`
+	Parent     string                  `json:"parent,omitempty"`
+	Home       string                  `json:"home,omitempty"`
+	DefaultDir string                  `json:"default_dir,omitempty"`
+	Roots      []string                `json:"roots,omitempty"`
+	Dirs       []remoteControlDirEntry `json:"dirs"`
+	Truncated  bool                    `json:"truncated,omitempty"`
+}
+
+// remoteControlListDirsMax caps one listing so a huge folder does not stall
+// the Hub call.
+const remoteControlListDirsMax = 200
+
+// remoteControlListDirs lists the subdirectories of one folder on this
+// desktop so the controller can pick a task working directory without
+// typing the path blind. An empty path opens the desktop's own default
+// working directory (falling back to the home folder).
+func (a *App) remoteControlListDirs(body json.RawMessage) (remoteControlListDirsResult, error) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return remoteControlListDirsResult{}, errors.New("远控请求无效")
+	}
+	home, _ := os.UserHomeDir()
+	result := remoteControlListDirsResult{
+		Home:       normalizeProjectSessionPath(home),
+		DefaultDir: a.currentTaskManagementWorkingDir(),
+		Roots:      remoteControlListRoots(),
+		Dirs:       []remoteControlDirEntry{},
+	}
+	dir := strings.TrimSpace(req.Path)
+	if dir == "" {
+		dir = result.DefaultDir
+		if dir == "" {
+			dir = result.Home
+		}
+	}
+	normalized := normalizeRecentTaskWorkingDir(dir)
+	if normalized == "" {
+		return remoteControlListDirsResult{}, errors.New("没有找到这个目录")
+	}
+	info, err := os.Stat(normalized)
+	if err != nil || !info.IsDir() {
+		return remoteControlListDirsResult{}, errors.New("没有找到这个目录")
+	}
+	result.Path = normalized
+	if parent := filepath.Dir(normalized); parent != normalized {
+		result.Parent = parent
+	}
+	handle, err := os.Open(normalized)
+	if err != nil {
+		return remoteControlListDirsResult{}, errors.New("这个目录暂时无法读取")
+	}
+	defer handle.Close()
+	// Stream entries in batches and stop at the cap+1: os.ReadDir would scan a
+	// pathological folder (temp dirs can hold 100k+ names) inside the Hub call.
+	dirs := make([]remoteControlDirEntry, 0, 64)
+	for len(dirs) <= remoteControlListDirsMax {
+		batch, err := handle.ReadDir(128)
+		for _, entry := range batch {
+			if !entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			// Dot-folders (.git, .idea…) are tooling internals, not work roots;
+			// a typed path can still reach them.
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			dirs = append(dirs, remoteControlDirEntry{Name: name, Path: filepath.Join(normalized, name)})
+			if len(dirs) > remoteControlListDirsMax {
+				break
+			}
+		}
+		if err == io.EOF || len(dirs) > remoteControlListDirsMax {
+			break
+		}
+		if err != nil {
+			return remoteControlListDirsResult{}, errors.New("这个目录暂时无法读取")
+		}
+	}
+	if len(dirs) > remoteControlListDirsMax {
+		dirs = dirs[:remoteControlListDirsMax]
+		result.Truncated = true
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name)
+	})
+	result.Dirs = dirs
+	return result, nil
 }

@@ -2517,6 +2517,7 @@ export namespace corelib {
 	    tts_enabled: boolean;
 	    tts_voice_id?: string;
 	    tts_auto_voice_summary?: boolean;
+	    bot_voice_readback_enabled?: boolean;
 	    audio_input_device_id?: string;
 	    audio_output_device_id?: string;
 	    screen_parsing_enabled?: boolean;
@@ -2820,6 +2821,7 @@ export namespace corelib {
 	        this.tts_enabled = source["tts_enabled"];
 	        this.tts_voice_id = source["tts_voice_id"];
 	        this.tts_auto_voice_summary = source["tts_auto_voice_summary"];
+	        this.bot_voice_readback_enabled = source["bot_voice_readback_enabled"];
 	        this.audio_input_device_id = source["audio_input_device_id"];
 	        this.audio_output_device_id = source["audio_output_device_id"];
 	        this.screen_parsing_enabled = source["screen_parsing_enabled"];

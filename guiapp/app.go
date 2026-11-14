@@ -9649,6 +9649,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.TTSVoiceID = normalizeTTSVoiceID(v)
+		case "bot_voice_readback_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.BotVoiceReadback = v
 		case "maclaw_agent_max_iterations":
 			v, err := intField(key, value)
 			if err != nil {

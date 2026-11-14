@@ -180,6 +180,23 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     RestartDesktopComputer: async () => ({ busy: false }),
     LogFrontendDiagnostic: async () => undefined,
     UploadDesktopBotMaterialChunk: async (_botId: string, _uploadId: string, _name: string, _offset: number, total: number) => ({ received: total, done: true, path: '~/素材/bot_1/demo.png' }),
+    // Voice input (composer mic) and the voice settings tab. ASR reports not
+    // ready so the mic button stays inert; readback is a no-op.
+    DiarizeAndTranscribeAudioBase64: async () => [],
+    TranscribeAudioBase64: async () => '',
+    IsASRReady: async () => false,
+    SpeakPlainText: async () => undefined,
+    SpeakDesktopBotReply: async () => undefined,
+    NormalizeVoiceCommand: async () => ({}),
+    CorrectASRText: async (text: string) => text,
+    SetDesktopPetState: async () => undefined,
+    NotifyDesktopPetMicBusy: async () => undefined,
+    GetTTSEnabled: async () => false,
+    SetTTSEnabled: async () => undefined,
+    GetTTSVoiceID: async () => 'zf_xiaoyi',
+    SetTTSVoiceID: async () => undefined,
+    SynthesizeTTSPreview: async () => 'data:audio/wav;base64,',
+    PatchConfigFields: async (patch: Record<string, unknown>) => patch,
 }));
 
 const browserOpenURL = vi.hoisted(() => vi.fn());

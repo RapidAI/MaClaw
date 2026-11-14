@@ -149,6 +149,16 @@ describe('Bot settings tabs', () => {
         fireEvent.keyDown(screen.getByTestId('bot-settings-tabs'), { key: 'ArrowRight' });
         expect(onSelect).not.toHaveBeenCalled();
     });
+
+    it('shows the voice tab only when a label is supplied', () => {
+        const onSelect = vi.fn();
+        const view = render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={onSelect} />);
+        expect(screen.queryByTestId('bot-settings-tab-voice')).toBeNull();
+        view.rerender(<BotSettingsTabs active="voice" labels={{ model: '模型', network: '网络', computer: '电脑', voice: '语音' }} onSelect={onSelect} />);
+        expect(screen.getByTestId('bot-settings-tab-voice').getAttribute('aria-selected')).toBe('true');
+        fireEvent.click(screen.getByTestId('bot-settings-tab-model'));
+        expect(onSelect).toHaveBeenCalledWith('model');
+    });
 });
 
 describe('Bot model settings dialog', () => {

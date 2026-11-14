@@ -1820,4 +1820,59 @@ describe('useTaskConfigWiring remote machine target', () => {
         expect(openSpy).toHaveBeenCalledWith('g1', 'D:/remote/task-1');
         expect(vi.mocked(CreateTaskUnified)).not.toHaveBeenCalled();
     });
+
+    it('create_task carries the chosen remote work_dir', async () => {
+        const ops: Array<{ grantId: string; op: string; body: string }> = [];
+        (window as unknown as { go: unknown }).go = {
+            main: {
+                App: {
+                    RemoteControlOp: vi.fn(async (grantId: string, op: string, body: string) => {
+                        ops.push({ grantId, op, body });
+                        if (op === 'create_task') return JSON.stringify({ task: { project_path: 'D:/remote/task-2' } });
+                        return '{}';
+                    }),
+                },
+            },
+        };
+        bindRemoteTaskOpener(vi.fn());
+        publish([MACHINE]);
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            localGuideVisible: true,
+            inputValue: '整理这个仓库',
+        })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withMachine(defaultTaskDraft(), {
+                grantId: 'g1', machineName: '办公电脑', workDir: 'D:/remote/repo',
+            }));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(ops.some(o => o.op === 'create_task')).toBe(true));
+        const create = ops.find(o => o.op === 'create_task');
+        expect(JSON.parse(create?.body || '{}').work_dir).toBe('D:/remote/repo');
+    });
+
+    it('onListRemoteDirs calls the list_dirs op and returns the parsed listing', async () => {
+        const listing = { path: 'D:/work', parent: 'D:/', dirs: [{ name: 'repo', path: 'D:/work/repo' }] };
+        const op = vi.fn(async (_grantId: string, _op: string, _body: string) => JSON.stringify(listing));
+        (window as unknown as { go: unknown }).go = { main: { App: { RemoteControlOp: op } } };
+        publish([MACHINE]);
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({ localGuideVisible: true })));
+        const got = await result.current.taskConfig.onListRemoteDirs?.('g1', 'D:/work');
+        expect(op).toHaveBeenCalledWith('g1', 'list_dirs', JSON.stringify({ path: 'D:/work' }));
+        expect(got?.path).toBe('D:/work');
+        expect(got?.dirs?.[0]?.name).toBe('repo');
+    });
+
+    it('onListRemoteDirs rejects a reply with no path (stale controlled build)', async () => {
+        // Old controlled desktops answer list_dirs with an error or "{}"; an
+        // empty listing must surface as a failure, not a dead "no subfolders" pane.
+        (window as unknown as { go: unknown }).go = { main: { App: { RemoteControlOp: vi.fn(async () => '{}') } } };
+        publish([MACHINE]);
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({ localGuideVisible: true })));
+        const pending = result.current.taskConfig.onListRemoteDirs?.('g1', 'D:/work');
+        expect(pending).toBeTruthy();
+        await expect(pending).rejects.toThrow();
+    });
 });

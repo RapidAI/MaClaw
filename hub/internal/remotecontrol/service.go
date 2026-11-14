@@ -33,6 +33,7 @@ const (
 	OpFetchFile   = "fetch_file"
 	OpWatchTask   = "watch_task"
 	OpUnwatchTask = "unwatch_task"
+	OpListDirs    = "list_dirs"
 
 	inviteTTL = 7 * 24 * time.Hour
 	callWait  = 20 * time.Second
@@ -1118,7 +1119,7 @@ func permissionAllows(permission, op string) bool {
 	switch op {
 	case OpListTasks, OpGetTask, OpFetchFile, OpWatchTask, OpUnwatchTask:
 		return permission == PermView || permission == PermOperate
-	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask:
+	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpListDirs:
 		return permission == PermOperate
 	default:
 		return false
@@ -1127,7 +1128,7 @@ func permissionAllows(permission, op string) bool {
 
 func allowedOp(op string) bool {
 	switch op {
-	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask:
+	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask, OpListDirs:
 		return true
 	default:
 		return false

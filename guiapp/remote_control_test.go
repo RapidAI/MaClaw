@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -41,6 +42,94 @@ func TestExecuteRemoteControlCreateTaskRejectsSSHMode(t *testing.T) {
 	_, err := (&App{}).executeRemoteControl("create_task", json.RawMessage(`{"name":"x","mode":"ssh_host"}`))
 	if err == nil || !strings.Contains(err.Error(), "任务模式") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestExecuteRemoteControlCreateTaskWithWorkDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	dir := t.TempDir()
+	raw, err := app.executeRemoteControl("create_task", json.RawMessage(fmt.Sprintf(
+		`{"name":"远控任务","mode":"coding_dev","work_dir":%q}`, dir)))
+	if err != nil {
+		t.Fatalf("create_task err = %v", err)
+	}
+	result, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T", raw)
+	}
+	task, ok := result["task"].(ProjectSearchResult)
+	if !ok || task.ProjectPath == "" {
+		t.Fatalf("task = %+v", result["task"])
+	}
+	if got := app.recentTaskWorkingDir(task.ProjectPath); got != normalizeRecentTaskWorkingDir(dir) {
+		t.Fatalf("working dir = %q, want %q", got, dir)
+	}
+}
+
+func TestExecuteRemoteControlCreateTaskRejectsBadWorkDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	// A relative path never normalizes to a working directory; the task must
+	// not silently land in the desktop default.
+	_, err := app.executeRemoteControl("create_task", json.RawMessage(
+		`{"name":"x","work_dir":"relative/only"}`))
+	if err == nil || !strings.Contains(err.Error(), "工作目录无效") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestExecuteRemoteControlListDirs(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	root := t.TempDir()
+	for _, name := range []string{"sub-b", "sub-a", ".hidden"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := app.executeRemoteControl("list_dirs", json.RawMessage(fmt.Sprintf(`{"path":%q}`, root)))
+	if err != nil {
+		t.Fatalf("list_dirs err = %v", err)
+	}
+	result, ok := raw.(remoteControlListDirsResult)
+	if !ok {
+		t.Fatalf("result type = %T", raw)
+	}
+	if result.Path != normalizeRecentTaskWorkingDir(root) {
+		t.Fatalf("path = %q", result.Path)
+	}
+	if result.Parent == "" {
+		t.Fatal("parent should be set for a TempDir child")
+	}
+	if len(result.Dirs) != 2 || result.Dirs[0].Name != "sub-a" || result.Dirs[1].Name != "sub-b" {
+		// dot-folders and regular files are not directory rows
+		t.Fatalf("dirs = %+v", result.Dirs)
+	}
+	if runtime.GOOS == "windows" {
+		if len(result.Roots) == 0 {
+			t.Fatal("roots should list the machine's drives on windows")
+		}
+		for _, root := range result.Roots {
+			if !strings.HasSuffix(root, `:\`) {
+				t.Fatalf("root = %q, want a drive root", root)
+			}
+		}
+	} else if len(result.Roots) != 1 || result.Roots[0] != string(filepath.Separator) {
+		t.Fatalf("roots = %+v", result.Roots)
+	}
+}
+
+func TestExecuteRemoteControlListDirsMissingFolder(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	missing := filepath.Join(t.TempDir(), "not-there")
+	if _, err := app.executeRemoteControl("list_dirs", json.RawMessage(
+		fmt.Sprintf(`{"path":%q}`, missing))); err == nil {
+		t.Fatal("a missing folder must fail, not return an empty page")
+	}
+	if _, err := app.executeRemoteControl("list_dirs", json.RawMessage(
+		`{"path":"relative/only"}`)); err == nil {
+		t.Fatal("a relative path must fail")
 	}
 }
 

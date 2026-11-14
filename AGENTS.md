@@ -8,9 +8,14 @@
   (gitignored; build_win.bat generates then deletes it). To produce it for ad-hoc dev:
 
   ```bat
-  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\prepare_windows_resources.ps1 -Root . -Version 0.0.0 -AppName MaClaw
-  go -C tools\windowsresgen run . -arch amd64 -ico build\windows\icon.ico -manifest build\windows\wails.exe.manifest.tmp -versioninfo build\windows\versioninfo.json.tmp -out guiapp\resource_windows_amd64.syso
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\prepare_windows_resources.ps1 -Root . -Version 0.0.0.0 -AppName MaClaw
+  go -C tools\windowsresgen run . -arch amd64 -ico %CD%\build\windows\icon.ico -manifest %CD%\build\windows\wails.exe.manifest.tmp -versioninfo %CD%\build\windows\versioninfo.json.tmp -out %CD%\guiapp\resource_windows_amd64.syso
   ```
+
+  The version must have 4 numeric parts (`0.0.0` is rejected), and resgen
+  paths must be absolute — `go -C tools\windowsresgen` changes the working
+  directory before the binary runs, so relative `build\windows\...` paths
+  resolve against `tools\windowsresgen`.
 
 - A runnable GUI binary needs the embedded frontend assets:
 
@@ -177,6 +182,22 @@
   non-matching session becomes an offscreen live round adopted when its tab
   is opened. `display_text` is the user-row text (external origins use a
   `〔…〕` prefix, e.g. `〔远控〕`, `〔VS Code / ACP〕`).
+
+## Remote-control ops (guiapp ↔ hub)
+
+- Controller calls `App.RemoteControlOp(grantId, op, bodyJSON)`; the Hub
+  relays it as `remote_control.exec` and the controlled desktop dispatches in
+  `App.executeRemoteControl` (`guiapp/remote_control.go`). Adding an op means
+  THREE places: the `executeRemoteControl` switch, plus the Hub whitelist in
+  `hub/internal/remotecontrol/service.go` — `OpX` const + `allowedOp` +
+  `permissionAllows` (`PermView` read ops vs `PermOperate` writes; unknown
+  ops are rejected before the desktop sees them).
+- `create_task` accepts `{name, mode, work_dir?}`; `work_dir` must normalize
+  to an absolute path (missing dirs are allowed, like the local wizard's
+  typed path). `list_dirs` (`{path}`, empty = the desktop's own default
+  working dir) returns `{path,parent,home,default_dir,roots,dirs,truncated}`
+  for the new-task wizard's remote directory browser
+  (`RemoteDirPickerPopover` → `draft.machine.workDir`; operate-grants only).
 
 ## Model memory lifecycle
 

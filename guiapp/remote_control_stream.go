@@ -46,10 +46,10 @@ type remoteLiveSnapshot struct {
 // watcher can be handed the parts accumulated so far.
 type remoteLiveTurn struct {
 	snapshot     remoteLiveSnapshot
-	thinkingOpen bool           // the tail part is an unfinished thinking block
-	pending      []string       // content-lane deltas inside the coalesce window
-	pendingSeq   uint64         // sequence of the first pending delta
-	flushTimer   *time.Timer    // coalesce timer for pending
+	thinkingOpen bool        // the tail part is an unfinished thinking block
+	pending      []string    // content-lane deltas inside the coalesce window
+	pendingSeq   uint64      // sequence of the first pending delta
+	flushTimer   *time.Timer // coalesce timer for pending
 }
 
 const (
@@ -226,9 +226,29 @@ func (a *App) relayRemoteAssistantResponse(requestID string, resp *IMAgentRespon
 	if sessionKey == "" {
 		return
 	}
-	raw, err := json.Marshal(resp)
+	// Embedded media must not ride the mirror: a base64 voice/file/thumbnail
+	// blob blows the 240KiB envelope cap, which drops the terminal event and
+	// leaves the controller's round "unresponded" until it goes stale. The
+	// watcher only reads text and metadata; file paths stay so it can fetch
+	// the artifact itself.
+	trimmed := *resp
+	trimmed.FileData = ""
+	trimmed.VoiceData = ""
+	trimmed.VoiceParts = nil
+	trimmed.ThumbnailBase64 = ""
+	raw, err := json.Marshal(&trimmed)
 	if err != nil {
 		return
+	}
+	// A long answer plus its reasoning can still exceed the envelope. The
+	// terminal event is what settles the mirrored round, so degrade the body
+	// rather than drop the event — the transcript poll always has the full text.
+	if len(raw) > remoteStreamEnvelopeSkip {
+		trimmed.Reasoning = ""
+		trimmed.Text = trimRemoteStreamText(trimmed.Text, remoteStreamPartTextCap)
+		if raw, err = json.Marshal(&trimmed); err != nil {
+			return
+		}
 	}
 	reg.relayResponse(sessionKey, requestID, raw)
 }
@@ -370,7 +390,14 @@ func (r *remoteWatchRegistry) relayTokenLocked(send func(map[string]any), grants
 				r.sendLocked(send, grants, turn.snapshot.SessionKey, turn.snapshot.RequestID, event.Sequence, "thinking", map[string]any{"state": "started"})
 			}
 			body := strings.TrimPrefix(delta, "\x01")
-			part := &turn.snapshot.Parts[len(turn.snapshot.Parts)-1]
+			part := r.openThinkingPartLocked(turn)
+			if part == nil {
+				// Defensive: thinkingOpen without a part means a \x02 reset or
+				// a cap trim ate it — reopen so reasoning keeps its own lane
+				// instead of bleeding into a text part at the tail.
+				turn.snapshot.Parts = append(turn.snapshot.Parts, remoteStreamPart{Kind: "thinking", Seq: event.Sequence})
+				part = &turn.snapshot.Parts[len(turn.snapshot.Parts)-1]
+			}
 			part.Text = trimRemoteStreamTail(part.Text+body, remoteStreamPartThinkingCap)
 			thinkingDelta.WriteString(body)
 		default:
@@ -459,6 +486,19 @@ func (r *remoteWatchRegistry) flushPendingLocked(send func(map[string]any), gran
 		turn.snapshot.Parts = append(turn.snapshot.Parts, remoteStreamPart{Kind: "text", Seq: seq, Text: text})
 	}
 	r.sendLocked(send, grants, turn.snapshot.SessionKey, turn.snapshot.RequestID, seq, "token", map[string]any{"text": text})
+}
+
+// openThinkingPartLocked finds the live thinking block anywhere in the tail
+// run. Text parts appended after it opened (a \x02 reset keeps thinking live)
+// must not absorb reasoning text.
+func (r *remoteWatchRegistry) openThinkingPartLocked(turn *remoteLiveTurn) *remoteStreamPart {
+	for i := len(turn.snapshot.Parts) - 1; i >= 0; i-- {
+		part := &turn.snapshot.Parts[i]
+		if part.Kind == "thinking" && !part.Done {
+			return part
+		}
+	}
+	return nil
 }
 
 // closeThinkingLocked seals the open thinking block, shipping its full text
@@ -572,11 +612,16 @@ func (r *remoteWatchRegistry) relayResponse(sessionKey, requestID string, raw js
 	if len(grants) == 0 {
 		return
 	}
-	turn := r.turnForLocked(sessionKey, requestID)
-	r.flushPendingLocked(send, grants, turn, 0)
-	r.closeThinkingLocked(send, grants, turn, 0)
-	turn.snapshot.StreamDone = true
-	turn.snapshot.Responded = true
+	// Only settle the snapshot when the response belongs to the live turn. A
+	// stale response for an older request must not clobber a newer round's
+	// accumulated parts — turnForLocked would replace it, and a mid-turn
+	// watcher would then receive an empty snapshot for the live round.
+	if turn := r.turns[sessionKey]; turn != nil && (turn.snapshot.RequestID == "" || turn.snapshot.RequestID == requestID) {
+		r.flushPendingLocked(send, grants, turn, 0)
+		r.closeThinkingLocked(send, grants, turn, 0)
+		turn.snapshot.StreamDone = true
+		turn.snapshot.Responded = true
+	}
 	r.sendLocked(send, grants, sessionKey, requestID, 0, "response", map[string]any{
 		"response": raw,
 	})

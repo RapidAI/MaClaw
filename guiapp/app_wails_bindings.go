@@ -3421,7 +3421,14 @@ func (a *App) emitStreamingToken(requestID, sessionKey, text string) {
 // events. The panel routes each payload to a task tab by session_key and to
 // a live round by request_id.
 func (a *App) emitAIAssistantStreamEvent(name string, event AIAssistantStreamEvent) {
-	if a == nil || a.ctx == nil {
+	if a == nil {
+		return
+	}
+	// Remote-control mirror goes over the Hub, not the Wails bus, so it must
+	// not be gated on the local ctx — a watched turn relays even when the
+	// panel surface is not up yet.
+	a.relayRemoteStreamEvent(name, event)
+	if a.ctx == nil {
 		return
 	}
 	payload, err := json.Marshal(event)
@@ -3430,8 +3437,6 @@ func (a *App) emitAIAssistantStreamEvent(name string, event AIAssistantStreamEve
 		return
 	}
 	a.emitEvent(name, string(payload))
-	// Remote-control mirror: watchers get the same event over the Hub.
-	a.relayRemoteStreamEvent(name, event)
 }
 
 // emitAIAssistantForegroundRoundStarted announces a backend-initiated turn so
@@ -3486,6 +3491,9 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 		log.Printf("[emitAIAssistantResponse] marshal failed: %v", err)
 		return false
 	}
+	// The remote mirror goes over the Hub, not the Wails bus, so it must run
+	// even without a local ctx — same rule as emitAIAssistantStreamEvent.
+	a.relayRemoteAssistantResponse(requestID, resp)
 	if a == nil || a.ctx == nil {
 		log.Printf("[emitAIAssistantResponse] skip emit without Wails context request_id=%s session_key=%q", requestID, strings.TrimSpace(resp.SessionKey))
 		return false
@@ -3500,7 +3508,6 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 		}
 	}()
 	a.emitEvent("ai-assistant-response", string(payload))
-	a.relayRemoteAssistantResponse(requestID, resp)
 	return true
 }
 

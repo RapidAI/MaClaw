@@ -80,3 +80,18 @@ export function popoverItemStyle(t: Theme, options: { selected?: boolean; disabl
 export function popoverSepStyle(t: Theme): CSSProperties {
     return { height: 1, background: t.divider || t.fieldBorder, margin: "4px 6px" };
 }
+
+/** 弹层主体的纵向布局容器（搜索框在上、列表铺满剩余高度）。 */
+export function popoverBodyColumnStyle(): CSSProperties {
+    return { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 };
+}
+
+/** 弹层内的状态行（加载中 / 空列表 / 截断提示 / 错误提示）。 */
+export function popoverStatusLineStyle(t: Theme, options: { error?: boolean; small?: boolean } = {}): CSSProperties {
+    const compact = options.error || options.small;
+    return {
+        padding: compact ? "6px 10px" : "8px 10px",
+        fontSize: compact ? 12 : 13,
+        color: options.error ? t.errorText || "#ef4444" : t.textMuted,
+    };
+}

@@ -129,7 +129,10 @@
       llmModelsLoaded: '\u5df2\u83b7\u53d6 {n} \u4e2a\u6a21\u578b\uff0c\u70b9\u51fb\u8f93\u5165\u6846\u53ef\u76f4\u63a5\u9009\u62e9',
       llmModelsEmpty: '\u670d\u52a1\u5546\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868',
       llmFetchNeedURL: '\u8bf7\u5148\u586b\u5199\u63a5\u53e3\u5730\u5740\u548c API Key',
-      llmProviderGone: '\u670d\u52a1\u5546\u5df2\u4e0d\u5b58\u5728\uff0c\u5237\u65b0\u9875\u9762\u540e\u91cd\u8bd5'
+      llmProviderGone: '\u670d\u52a1\u5546\u5df2\u4e0d\u5b58\u5728\uff0c\u5237\u65b0\u9875\u9762\u540e\u91cd\u8bd5',
+      llmTagInUse: '\u524d\u53f0\u4f7f\u7528\u4e2d',
+      llmRolesColRole: '\u89d2\u8272',
+      llmRolesColProvider: '\u670d\u52a1\u5546'
     },
     en: {
       title: 'Bot management',
@@ -258,7 +261,10 @@
       llmModelsLoaded: '{n} models fetched; click the input to pick one',
       llmModelsEmpty: 'The provider returned no models',
       llmFetchNeedURL: 'Enter the API URL and API key first',
-      llmProviderGone: 'The provider no longer exists; reload the page and retry'
+      llmProviderGone: 'The provider no longer exists; reload the page and retry',
+      llmTagInUse: 'Used by chat',
+      llmRolesColRole: 'Role',
+      llmRolesColProvider: 'Provider'
     }
   };
 
@@ -391,28 +397,53 @@
       + '#tab-bots label{display:block;margin:0 0 5px;font-size:11px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:#64748b}'
       + '#tab-bots input:not([type=checkbox]):not([type=radio]),#tab-bots select{display:block;width:100%;height:36px;margin:0}'
       + '#tab-bots input[type=radio]{width:16px;height:16px;min-height:16px;margin:2px 0 0;flex:0 0 auto;accent-color:#2563eb}'
-      + '#tab-bots .bot-llm-list{display:grid;gap:10px}'
-      + '#tab-bots .bot-llm-roles{display:grid;gap:8px;margin-top:4px;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fff}'
-      + '#tab-bots .bot-llm-roles-title{margin:0;font-size:13px;font-weight:650;color:#172033}'
-      + '#tab-bots .bot-llm-roles-hint{margin:0;font-size:12px;line-height:1.45;color:#64748b}'
-      + '#tab-bots .bot-llm-role{display:grid;grid-template-columns:minmax(7em,0.4fr) minmax(0,0.9fr) minmax(0,1.1fr);gap:8px 12px;align-items:center}'
-      + '#tab-bots .bot-llm-role label{margin:0;text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;color:#172033}'
-      + '#tab-bots .bot-llm-role-model{display:flex;gap:6px;align-items:center;min-width:0}'
-      + '#tab-bots .bot-llm-role-model input{min-width:0}'
-      + '#tab-bots .bot-llm-role-model input:disabled{background:#f4f6fa;color:#94a3b8;cursor:default}'
-      + '#tab-bots .bot-llm-role-vision{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px;font-size:11px;color:#64748b}'
-      + '#tab-bots .bot-llm-role-vision select{font-size:12px}'
-      + '#tab-bots .bot-llm-default-note{margin:0;padding:9px 12px;border:1px dashed #d7e3f8;border-radius:10px;background:#f8fbff;color:#475569;font-size:11px;line-height:1.5}'
-      + '#tab-bots .bot-llm-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border:1px solid #e4e9f2;border-radius:12px;background:#fff;box-shadow:0 1px 2px rgba(23,34,54,.04);transition:border-color .15s ease}'
-      + '#tab-bots .bot-llm-row:hover{border-color:#c9d5e8}'
-      + '#tab-bots .bot-llm-row-name{min-width:0;flex:0 1 auto;font-size:13px;font-weight:650;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
-      + '#tab-bots .bot-llm-row-url{min-width:0;flex:1 1 200px;font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-llm-list{display:grid;gap:8px}'
+      /* Provider cards: identity block, state pills, then the row actions. */
+      + '#tab-bots .bot-llm-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:6px 14px;align-items:center;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fff;transition:border-color .15s ease,box-shadow .15s ease}'
+      + '#tab-bots .bot-llm-row:hover{border-color:#c9d5e8;box-shadow:0 3px 10px rgba(23,34,54,.06)}'
+      + '#tab-bots .bot-llm-row-active{border-color:#c7dbfb;background:linear-gradient(180deg,#fdfeff,#f8fbff)}'
+      + '#tab-bots .bot-llm-avatar{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;flex:0 0 32px;border-radius:9px;font-size:12px;font-weight:800;letter-spacing:.02em;background:#eef5ff;border:1px solid #dbe7ff;color:#1d4ed8}'
+      + '#tab-bots .bot-llm-avatar[data-protocol="anthropic"]{background:#fff4e0;border-color:#f3ddba;color:#9a5b00}'
+      + '#tab-bots .bot-llm-row-main{display:grid;gap:2px;min-width:0}'
+      + '#tab-bots .bot-llm-row-name{min-width:0;font-size:13px;font-weight:650;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-llm-row-url{min-width:0;font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
       + '#tab-bots .bot-llm-row-actions{display:flex;gap:6px;flex:0 0 auto}'
       + '#tab-bots .bot-llm-row-actions .btn-secondary,#tab-bots .bot-llm-row-actions .btn-danger{height:28px;min-height:28px;padding:0 10px;font-size:12px;box-shadow:none}'
       + '#tab-bots .bot-llm-tags{display:flex;gap:6px;flex:0 0 auto;margin-left:auto}'
-      + '#tab-bots .bot-llm-tag{padding:2px 8px;border-radius:999px;background:#eef5ff;color:#1d4ed8;font-size:10px;font-weight:700;letter-spacing:.02em;white-space:nowrap}'
+      + '#tab-bots .bot-llm-tag{padding:2px 9px;border-radius:999px;background:#f1f5f9;color:#475569;font-size:10px;font-weight:700;letter-spacing:.02em;white-space:nowrap}'
       + '#tab-bots .bot-llm-tag-ok{background:#e8f7ef;color:#15803d}'
-      + '#tab-bots .bot-llm-fetch{height:26px;min-height:26px;padding:0 10px;font-size:11px;border-radius:8px;box-shadow:none;white-space:nowrap}'
+      + '#tab-bots .bot-llm-tag-use{background:#2563eb;color:#fff}'
+      /* Role table: one shared grid for the header and the four role rows. */
+      + '#tab-bots .bot-llm-roles{display:grid;margin-top:2px;padding:0;border:1px solid #e4e9f2;border-radius:10px;background:#fff;overflow:hidden}'
+      + '#tab-bots .bot-llm-roles-title{margin:0;padding:11px 13px 3px;font-size:13px;font-weight:650;color:#172033}'
+      + '#tab-bots .bot-llm-roles-hint{margin:0;padding:0 13px 10px;font-size:11px;line-height:1.5;color:#64748b;border-bottom:1px solid #eef2f7}'
+      + '#tab-bots .bot-llm-roles-head,#tab-bots .bot-llm-role{display:grid;grid-template-columns:minmax(6.5em,.62fr) minmax(0,.95fr) minmax(0,1.3fr) minmax(0,1.05fr);gap:6px 12px;align-items:center}'
+      + '#tab-bots .bot-llm-roles-head{padding:6px 13px;background:#f8fafc;border-bottom:1px solid #eef2f7;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b}'
+      + '#tab-bots .bot-llm-roles-head span:last-child{text-align:right}'
+      + '#tab-bots .bot-llm-role{padding:8px 13px;border-bottom:1px solid #f1f5f9;transition:background .12s ease}'
+      + '#tab-bots .bot-llm-role:last-child{border-bottom:0}'
+      + '#tab-bots .bot-llm-role:hover{background:#fafcff}'
+      + '#tab-bots .bot-llm-role-name{display:flex;align-items:center;gap:7px;margin:0;min-width:0;text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-llm-role-dot{width:7px;height:7px;border-radius:999px;flex:0 0 auto;background:#94a3b8}'
+      + '#tab-bots .bot-llm-role-dot[data-role="foreground"]{background:#2563eb}'
+      + '#tab-bots .bot-llm-role-dot[data-role="background"]{background:#0f9f8f}'
+      + '#tab-bots .bot-llm-role-dot[data-role="computer_use"]{background:#8b5cf6}'
+      + '#tab-bots .bot-llm-role-dot[data-role="grounder"]{background:#d99012}'
+      + '#tab-bots .bot-llm-role select,#tab-bots .bot-llm-role-model input{height:34px;min-height:34px}'
+      + '#tab-bots .bot-llm-role-model{display:flex;gap:6px;align-items:center;min-width:0}'
+      + '#tab-bots .bot-llm-role-model input{min-width:0;flex:1 1 auto}'
+      + '#tab-bots .bot-llm-role-model input:disabled{background:#f4f6fa;color:#94a3b8;cursor:default}'
+      + '#tab-bots .bot-llm-role-blank{color:#cbd5e1;font-size:12px;user-select:none}'
+      + '#tab-bots .bot-llm-role-vision{display:flex;gap:6px;align-items:center;justify-content:flex-end;min-width:0;flex-wrap:wrap}'
+      + '#tab-bots .bot-llm-role-vision select{width:auto;min-width:78px;height:30px;min-height:30px;font-size:12px;flex:0 0 auto}'
+      + '#tab-bots .bot-llm-vision-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;min-width:0;height:24px;padding:0 9px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+      + '#tab-bots .bot-llm-vision-chip::before{content:"";width:6px;height:6px;border-radius:999px;background:currentColor;opacity:.75;flex:0 0 auto}'
+      + '#tab-bots .bot-llm-vision-unknown{background:#f1f5f9;color:#64748b}'
+      + '#tab-bots .bot-llm-vision-yes{background:#e8f7ef;color:#15803d}'
+      + '#tab-bots .bot-llm-vision-no{background:#fff7e6;color:#9a6700}'
+      + '#tab-bots .bot-llm-vision-detect{height:30px;min-height:30px;padding:0 10px;font-size:12px;box-shadow:none;flex:0 0 auto}'
+      + '#tab-bots .bot-llm-default-note{margin:0;padding:9px 12px;border:1px dashed #d7e3f8;border-radius:10px;background:#f8fbff;color:#475569;font-size:11px;line-height:1.5}'
+      + '#tab-bots .bot-llm-fetch{height:26px;min-height:26px;padding:0 10px;font-size:11px;border-radius:8px;background:#fff;color:#3b414d;border:1px solid #d9e1ec;box-shadow:none;white-space:nowrap}'
       + '#tab-bots .bot-llm-fetch:disabled,#tab-bots .bot-llm-fetch:disabled:hover{opacity:.55;cursor:default;transform:none}'
       + '#tab-bots .bot-modal-overlay{position:fixed;inset:0;z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:8vh 16px 16px;background:rgba(15,23,42,.42)}'
       + '#tab-bots .bot-modal-overlay[hidden]{display:none}'
@@ -486,7 +517,8 @@
       + '#tab-bots #botDesktopHost > section > h3::before{content:"";display:inline-block;width:6px;height:6px;margin-right:7px;border-radius:999px;background:#2563eb;vertical-align:middle}'
       + '#tab-bots #botDesktopHost > section > h3 + p{padding-bottom:11px;border-bottom:1px solid #eef2f7}'
       + '#tab-bots #desktopHint,#tab-bots #desktopAssignHint,#tab-bots #desktopRunHint{margin:0;font-size:11px;line-height:1.5;color:#64748b}'
-      + '@media (max-width:860px){#tab-bots .bot-form,#tab-bots .bot-split,#tab-bots .bot-llm-grid,#tab-bots .bot-llm-role{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}}'
+      + '@media (max-width:1080px){#tab-bots .bot-llm-roles-head,#tab-bots .bot-llm-role{grid-template-columns:minmax(6em,.7fr) minmax(0,1fr) minmax(0,1.3fr)}#tab-bots .bot-llm-roles-head span:last-child{display:none}#tab-bots .bot-llm-role .bot-llm-role-blank{display:none}#tab-bots .bot-llm-role .bot-llm-role-vision{grid-column:1/-1;grid-row:2;justify-content:flex-start}}'
+      + '@media (max-width:860px){#tab-bots .bot-form,#tab-bots .bot-split,#tab-bots .bot-llm-grid,#tab-bots .bot-llm-role{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}#tab-bots .bot-llm-roles-head{display:none}#tab-bots .bot-llm-role .bot-llm-role-name{grid-column:1/-1}#tab-bots .bot-llm-role .bot-llm-role-vision{grid-column:1/-1;grid-row:auto;justify-content:flex-start}#tab-bots .bot-llm-row{grid-template-columns:auto minmax(0,1fr) auto}#tab-bots .bot-llm-tags{grid-column:2;grid-row:2;margin-left:0;flex-wrap:wrap}}'
       + '@media (max-width:760px){#tab-bots .bot-tr{grid-template-columns:1fr;gap:6px}#tab-bots .bot-th{display:none}#tab-bots .bot-td{white-space:normal;overflow:visible}#tab-bots .bot-td-main{padding-bottom:6px;border-bottom:1px solid #eef2f7}#tab-bots .bot-td-labelled{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;align-items:baseline}#tab-bots .bot-td-labelled::before{content:attr(data-label);font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b;overflow:visible;text-overflow:clip}#tab-bots .bot-fields{grid-template-columns:1fr}}'
       + '</style>'
       + '<div class="bot-page">'
@@ -1611,10 +1643,18 @@
     var rows = (draft.providers || []).map(function (item) {
       var id = escapeHtml(item.id);
       var protocol = item.protocol === 'anthropic' ? 'anthropic' : 'openai';
-      return '<div class="bot-llm-row">'
+      // The foreground route is the one chat actually uses; surface it so the
+      // administrator can tell a parked provider from the active one.
+      var inUse = draft.current === item.id;
+      return '<div class="bot-llm-row' + (inUse ? ' bot-llm-row-active' : '') + '">'
+        + '<span class="bot-llm-avatar" data-protocol="' + protocol + '" aria-hidden="true">' + (protocol === 'anthropic' ? 'A' : 'O') + '</span>'
+        + '<span class="bot-llm-row-main">'
         + '<strong class="bot-llm-row-name" id="botLLMUse_' + id + '">' + escapeHtml(item.name || t.llmName) + '</strong>'
         + '<span class="bot-llm-row-url">' + escapeHtml(item.url) + '</span>'
-        + '<span class="bot-llm-tags"><span class="bot-llm-tag">' + (protocol === 'anthropic' ? 'Anthropic' : 'OpenAI') + '</span>'
+        + '</span>'
+        + '<span class="bot-llm-tags">'
+        + (inUse ? '<span class="bot-llm-tag bot-llm-tag-use">' + escapeHtml(t.llmTagInUse) + '</span>' : '')
+        + '<span class="bot-llm-tag">' + (protocol === 'anthropic' ? 'Anthropic' : 'OpenAI') + '</span>'
         + (item.key_set ? '<span class="bot-llm-tag bot-llm-tag-ok">' + escapeHtml(t.llmKeySet) + '</span>' : '') + '</span>'
         + '<span class="bot-llm-row-actions">'
         + '<button type="button" class="btn-secondary" id="botLLMEdit_' + id + '">' + escapeHtml(t.llmEdit) + '</button>'
@@ -1804,7 +1844,6 @@
       + '<input id="botLLMRoleModel_' + key + '" list="botLLMRoleModelList_' + key + '" value="' + value + '" placeholder="' + escapeHtml(placeholder) + '" autocomplete="off" spellcheck="false"' + disabled + '>'
       + '<datalist id="botLLMRoleModelList_' + key + '">' + options + '</datalist>'
       + fetch
-      + roleVisionHTML(draft, key, state.official)
       + '</div>';
   }
 
@@ -1827,14 +1866,30 @@
     return null;
   }
 
+  // llmVisionStatus is the chip line. The detection timestamp stays out of
+  // the chip (it would wrap the cell) and lives only in llmVisionTitle.
   function llmVisionStatus(record) {
     var t = text();
     if (!record || !record.known) return t.llmVisionUnknown;
-    var line = record.supported ? t.llmVisionYes : t.llmVisionNo;
-    if (record.detected_at) line += ' ' + record.detected_at;
+    return record.supported ? t.llmVisionYes : t.llmVisionNo;
+  }
+
+  function llmVisionTitle(record) {
+    var line = llmVisionStatus(record);
+    if (record && record.known && record.detected_at) line += ' ' + record.detected_at;
     return line;
   }
 
+  // llmVisionState colors the status chip: neutral until probed, green for a
+  // confirmed vision model, amber for a confirmed text-only one.
+  function llmVisionState(record) {
+    if (!record || !record.known) return 'unknown';
+    return record.supported ? 'yes' : 'no';
+  }
+
+  // roleVisionHTML is the last grid cell of a pinned role row: the override
+  // select, a state chip, and the detect action. The column header names the
+  // control, so the select carries the label via aria-label instead.
   function roleVisionHTML(draft, key, official) {
     if (official) return '';
     var role = (draft.roles || {})[key] || {};
@@ -1845,15 +1900,16 @@
     var record = visionRecord(provider, model);
     var override = record && (record.override === 'on' || record.override === 'off') ? record.override : 'auto';
     var t = text();
-    return '<label class="bot-llm-role-vision" for="botLLMRoleVision_' + key + '">' + escapeHtml(t.llmVision)
-      + '<select id="botLLMRoleVision_' + key + '">'
+    var status = llmVisionStatus(record);
+    return '<div class="bot-llm-role-vision">'
+      + '<select id="botLLMRoleVision_' + key + '" aria-label="' + escapeHtml(t.llmVision) + '">'
       + '<option value="auto"' + (override === 'auto' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionAuto) + '</option>'
       + '<option value="on"' + (override === 'on' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionOn) + '</option>'
       + '<option value="off"' + (override === 'off' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionOff) + '</option>'
       + '</select>'
-      + '<span id="botLLMRoleVisionStatus_' + key + '">' + escapeHtml(llmVisionStatus(record)) + '</span>'
-      + '<button type="button" class="btn-secondary" id="botLLMRoleVisionDetect_' + key + '">' + escapeHtml(t.llmVisionDetect) + '</button>'
-      + '</label>';
+      + '<span class="bot-llm-vision-chip bot-llm-vision-' + llmVisionState(record) + '" id="botLLMRoleVisionStatus_' + key + '" title="' + escapeHtml(llmVisionTitle(record)) + '">' + escapeHtml(status) + '</span>'
+      + '<button type="button" class="btn-secondary bot-llm-vision-detect" id="botLLMRoleVisionDetect_' + key + '">' + escapeHtml(t.llmVisionDetect) + '</button>'
+      + '</div>';
   }
 
   function ensureVisionRecord(provider, model, override) {
@@ -1867,12 +1923,23 @@
     return found;
   }
 
+  // paintLLMRoles lays the four roles out as a compact table: a shared
+  // header row names the columns, and every row keeps the same grid so the
+  // selects, model fields, and vision controls line up down the page. Cells
+  // that do not apply (a role that follows the foreground, or the disabled
+  // grounder) show a quiet dash instead of leaving the grid ragged.
   function paintLLMRoles() {
     var root = byID('botLLMRoles');
     if (!root) return;
     var t = text();
     var draft = llmDraft();
     coerceDraftRoles(draft);
+    var head = '<div class="bot-llm-roles-head" id="botLLMRolesHead">'
+      + '<span>' + escapeHtml(t.llmRolesColRole) + '</span>'
+      + '<span>' + escapeHtml(t.llmRolesColProvider) + '</span>'
+      + '<span>' + escapeHtml(t.llmModel) + '</span>'
+      + '<span>' + escapeHtml(t.llmVision) + '</span>'
+      + '</div>';
     var rows = [
       { key: 'foreground', label: t.llmRoleForeground, grounder: false },
       { key: 'background', label: t.llmRoleBackground, grounder: false },
@@ -1880,13 +1947,18 @@
       { key: 'grounder', label: t.llmRoleGrounder, grounder: true }
     ].map(function (row) {
       var selected = roleSelectValue(draft, row.key, row.grounder);
-      return '<div class="bot-llm-role"><label for="botLLMRole_' + row.key + '">' + escapeHtml(row.label) + '</label>'
+      var modelCell = roleModelFieldHTML(draft, row.key, row.grounder);
+      var visionCell = roleVisionHTML(draft, row.key, false);
+      return '<div class="bot-llm-role">'
+        + '<label class="bot-llm-role-name" for="botLLMRole_' + row.key + '"><span class="bot-llm-role-dot" data-role="' + row.key + '" aria-hidden="true"></span>' + escapeHtml(row.label) + '</label>'
         + '<select id="botLLMRole_' + row.key + '">' + llmRoleOptions(draft, row.key, row.grounder, selected) + '</select>'
-        + roleModelFieldHTML(draft, row.key, row.grounder) + '</div>';
+        + (modelCell || '<span class="bot-llm-role-blank" aria-hidden="true">\u2014</span>')
+        + (visionCell || '<span class="bot-llm-role-blank" aria-hidden="true">\u2014</span>')
+        + '</div>';
     }).join('');
     root.innerHTML = '<div class="bot-llm-roles-title" id="botLLMRolesTitle">' + escapeHtml(t.llmRolesTitle) + '</div>'
       + '<p class="bot-llm-roles-hint" id="botLLMRolesHint">' + escapeHtml(t.llmRolesHint) + '</p>'
-      + rows;
+      + head + rows;
   }
 
   function onLLMRoleChange(event) {
@@ -1945,7 +2017,11 @@
     var provider = llmProviderFromID(role.provider);
     var model = roleEffectiveModel(draft, key);
     var record = visionRecord(provider, model);
-    if (status) status.textContent = llmVisionStatus(record);
+    if (status) {
+      status.textContent = llmVisionStatus(record);
+      status.className = 'bot-llm-vision-chip bot-llm-vision-' + llmVisionState(record);
+      status.title = llmVisionTitle(record);
+    }
     if (select && document.activeElement !== select) {
       var override = record && (record.override === 'on' || record.override === 'off') ? record.override : 'auto';
       select.value = override;

@@ -2827,6 +2827,8 @@ export function ShowMessage(arg1:string,arg2:string):Promise<void>;
 
 export function ShowToast(arg1:string,arg2:string):Promise<void>;
 
+export function SpeakDesktopBotReply(arg1:string):Promise<void>;
+
 export function SpeakPlainText(arg1:string):Promise<void>;
 
 export function SpeakText(arg1:string):Promise<void>;

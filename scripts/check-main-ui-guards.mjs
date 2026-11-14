@@ -647,7 +647,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/unifiedHeaderSearch.ts', 345],
   ['guiapp/frontend/src/components/ai/ProjectSearchLibraryRows.tsx', 50],
   ['guiapp/frontend/src/components/ai/aiAssistantControls.tsx', 120],
-  ['guiapp/frontend/src/components/ai/useTTSReadback.ts', 120],
+  // Refreshed 120 -> 135 (2026-11-14): in-flight TTS readback work measured
+  // 127 lines.
+  ['guiapp/frontend/src/components/ai/useTTSReadback.ts', 135],
   // Refreshed 220 -> 235 (2026-10-19): font-size props added (guard counts 223).
   // Refreshed 235 -> 275 (2026-11-03): panel types keep growing with the
   // in-flight expert/workbench work (guard counts 236); headroom absorbs it.

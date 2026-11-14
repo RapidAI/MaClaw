@@ -23,9 +23,9 @@ export function normalizeDesktopProxyMode(raw: string | undefined | null): Deskt
     return 'smart';
 }
 
-export type BotSettingsTab = 'model' | 'network' | 'computer' | 'local';
+export type BotSettingsTab = 'model' | 'network' | 'computer' | 'local' | 'voice';
 
-export type BotSettingsTabsLabels = { model: string; network: string; computer: string; local?: string };
+export type BotSettingsTabsLabels = { model: string; network: string; computer: string; local?: string; voice?: string };
 
 function ModelTabIcon() {
     return (
@@ -65,6 +65,16 @@ function LocalTabIcon() {
     );
 }
 
+function VoiceTabIcon() {
+    return (
+        <svg className="bot-settings-tabs__icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="6" y="1.6" width="4" height="7" rx="2" />
+            <path d="M3.4 7.6a4.6 4.6 0 0 0 9.2 0" />
+            <path d="M8 12.2v2.2" />
+        </svg>
+    );
+}
+
 /** The tab strip shared by the tabs of the Settings dialog. Each tab saves on its own. */
 export function BotSettingsTabs({ active, labels, disabled, onSelect }: {
     active: BotSettingsTab;
@@ -77,6 +87,7 @@ export function BotSettingsTabs({ active, labels, disabled, onSelect }: {
         { id: 'network', icon: <NetworkTabIcon /> },
         { id: 'computer', icon: <ComputerTabIcon /> },
         ...(labels.local ? [{ id: 'local' as BotSettingsTab, icon: <LocalTabIcon /> }] : []),
+        ...(labels.voice ? [{ id: 'voice' as BotSettingsTab, icon: <VoiceTabIcon /> }] : []),
     ];
 
     // A tablist is one stop in the tab order; arrow keys move between its tabs.

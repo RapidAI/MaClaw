@@ -545,6 +545,9 @@ type AppConfig struct {
 	// include a voice summary version (语音摘要). Only affects IM channels
 	// (飞书/企微/QQ/钉钉), not the desktop panel.
 	TTSAutoVoiceSummary bool `json:"tts_auto_voice_summary,omitempty"`
+	// BotVoiceReadback reads a settled desktop-bot reply aloud on this
+	// computer when TTS is enabled. Toggled in the bot settings voice tab.
+	BotVoiceReadback bool `json:"bot_voice_readback_enabled,omitempty"`
 	// Audio device selection — stores the deviceId from navigator.mediaDevices.
 	// Empty string = system default device.
 	AudioInputDeviceID  string `json:"audio_input_device_id,omitempty"`

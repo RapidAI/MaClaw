@@ -492,6 +492,27 @@ describe('remote machine target', () => {
         expect(openRemoteMachineTask).toHaveBeenCalledWith({ grantId: 'gb', projectPath: 'D:/remote/t3' });
     });
 
+    it('passes the chosen remote workDir through to create_task', async () => {
+        const createRemoteMachineTask = vi.fn().mockResolvedValue({ projectPath: 'D:/remote/t4' });
+        const bindings = makeBindings({ createRemoteMachineTask, openRemoteMachineTask: vi.fn() });
+        const draft = withMachine(defaultTaskDraft(), { grantId: 'gb', machineName: 'B机', workDir: ' D:/remote/repo ' });
+        const result = await runTaskConfigSend({ text: '整理这个仓库', draft, bindings });
+        expect(result.ok).toBe(true);
+        expect(createRemoteMachineTask).toHaveBeenCalledWith(expect.objectContaining({
+            grantId: 'gb',
+            workDir: 'D:/remote/repo',
+        }));
+    });
+
+    it('omits workDir when none was chosen on the remote machine', async () => {
+        const createRemoteMachineTask = vi.fn().mockResolvedValue({ projectPath: 'D:/remote/t5' });
+        const bindings = makeBindings({ createRemoteMachineTask, openRemoteMachineTask: vi.fn() });
+        const draft = withMachine(defaultTaskDraft(), machine);
+        const result = await runTaskConfigSend({ text: '写个总结', draft, bindings });
+        expect(result.ok).toBe(true);
+        expect(createRemoteMachineTask).toHaveBeenCalledWith(expect.objectContaining({ workDir: undefined }));
+    });
+
     it('remote create failure surfaces the error and never opens', async () => {
         const createRemoteMachineTask = vi.fn().mockRejectedValue(new Error('对方离线'));
         const openRemoteMachineTask = vi.fn();

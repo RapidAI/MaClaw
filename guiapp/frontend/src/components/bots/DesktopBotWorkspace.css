@@ -2450,6 +2450,63 @@
     opacity: 0.55;
 }
 
+.desktop-bot-chat__voice {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 38px;
+    border: 1px solid var(--theme-border, #e6e6e8);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--theme-text-secondary, #475569);
+    cursor: pointer;
+    touch-action: none;
+    overflow: hidden;
+}
+
+.desktop-bot-chat__voice:hover:not(:disabled) {
+    color: var(--mc-accent, #2f6fbc);
+    border-color: color-mix(in srgb, var(--mc-accent, #2f6fbc) 45%, var(--theme-border, #e6e6e8));
+}
+
+.desktop-bot-chat__voice.is-listening {
+    color: var(--mc-accent, #2f6fbc);
+    border-color: var(--mc-accent, #2f6fbc);
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 8%, transparent);
+}
+
+.desktop-bot-chat__voice:disabled {
+    cursor: default;
+    opacity: 0.45;
+}
+
+.desktop-bot-chat__voice-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--theme-text-muted, #98a2b3);
+    border-top-color: transparent;
+    animation: desktop-bot-voice-spin 0.8s linear infinite;
+}
+
+.desktop-bot-chat__voice-error {
+    align-self: center;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--mc-danger, #d92d20);
+    font-size: 11px;
+}
+
+@keyframes desktop-bot-voice-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
 .desktop-bot-chat__continue {
     display: flex;
     align-items: center;

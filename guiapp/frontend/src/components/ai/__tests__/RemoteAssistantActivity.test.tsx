@@ -87,6 +87,87 @@ describe('RemoteAssistantActivity', () => {
         expect(screen.queryByTestId('assistant-reasoning-toggle-state')).toBeNull();
     });
 
+    it('renders the mirrored workbench checklist with live step states', () => {
+        renderActivity(session({
+            workbench: {
+                steps_revision: 2,
+                step_statuses: [
+                    { index: 1, title: '分析需求', status: 'passed' },
+                    { index: 2, title: '实现功能', status: 'running' },
+                    { index: 3, title: '验证', status: 'pending' },
+                ],
+            },
+            activity: { workflow: { status: 'active', phase: 'execute' } },
+        }));
+        const steps = screen.getByTestId('remote-workbench-steps');
+        expect(steps.textContent).toContain('T1 分析需求');
+        expect(steps.textContent).toContain('T2 实现功能');
+        expect(steps.textContent).toContain('T3 验证');
+        expect(steps.textContent).toContain('进行中');
+        // The running step also names the header object.
+        expect(screen.getByTestId('assistant-reasoning-object').textContent).toContain('T2 实现功能');
+    });
+
+    it('flags a mirrored plan that still waits for approval', () => {
+        renderActivity(session({
+            busy: false,
+            workbench: {
+                pending_approval: true,
+                step_statuses: [{ index: 1, title: '先做这个', status: 'pending' }],
+            },
+            activity: { workflow: { status: 'active', phase: 'plan' } },
+        }));
+        expect(screen.getByTestId('remote-workbench-approval')).toBeTruthy();
+    });
+
+    it('renders mirrored coding-agent progress through the feed renderer', () => {
+        renderActivity(session({
+            live: {
+                requestId: 'r1',
+                displayText: '',
+                streamDone: false,
+                responded: false,
+                baseline: -1,
+                lastEventAt: Date.now(),
+                parts: [{
+                    kind: 'progress',
+                    seq: 1,
+                    text: 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","title":"读取文件","detail":"read_file","files":["main.go"]}',
+                }],
+            },
+            activity: { workflow: { status: 'active', phase: 'execute' } },
+        }));
+        expect(screen.getByTestId('coding-agent-progress')).toBeTruthy();
+    });
+
+    it('keeps non-coding progress lines as plain trail text', () => {
+        renderActivity(session({
+            live: {
+                requestId: 'r1',
+                displayText: '',
+                streamDone: false,
+                responded: false,
+                baseline: -1,
+                lastEventAt: Date.now(),
+                parts: [{ kind: 'progress', seq: 1, text: '正在安装依赖' }],
+            },
+            activity: { workflow: { status: 'active', phase: 'execute' } },
+        }));
+        expect(screen.getByTestId('remote-progress').textContent).toContain('正在安装依赖');
+    });
+
+    it('labels a settled checklist as a plan instead of a live run', () => {
+        renderActivity(session({
+            busy: false,
+            workbench: {
+                step_statuses: [{ index: 1, title: '已完成的事', status: 'passed' }],
+            },
+            activity: {},
+        }));
+        expect(screen.getByTestId('assistant-reasoning-label').textContent).toBe('对方任务的工作清单');
+        expect(screen.getByTestId('assistant-reasoning-panel').getAttribute('data-live')).toBe('false');
+    });
+
     it('renders nothing while idle', () => {
         const { container } = renderActivity(session({ busy: false, activity: {} }));
         expect(container.firstChild).toBeNull();

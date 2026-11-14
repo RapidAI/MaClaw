@@ -5671,6 +5671,10 @@ export function ShowToast(arg1, arg2) {
   return window['go']['main']['App']['ShowToast'](arg1, arg2);
 }
 
+export function SpeakDesktopBotReply(arg1) {
+  return window['go']['main']['App']['SpeakDesktopBotReply'](arg1);
+}
+
 export function SpeakPlainText(arg1) {
   return window['go']['main']['App']['SpeakPlainText'](arg1);
 }

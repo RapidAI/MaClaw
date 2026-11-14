@@ -3,7 +3,14 @@ import { InputHistoryAutocomplete } from '../ai/InputHistoryAutocomplete';
 import { useAssistantInputHistory } from '../ai/useAssistantInputHistory';
 import { useInputHistoryAutocomplete } from '../ai/useInputHistoryAutocomplete';
 import { useTextCompositionGuard } from '../ai/useTextCompositionGuard';
-import { lightTheme } from '../ai/aiAssistantPanelTheme';
+import { AssistantInputIcon, lightTheme } from '../ai/aiAssistantPanelTheme';
+import { VoiceLevelVisualizer } from '../ai/aiAssistantControls';
+import { useAIAssistantVoiceControls } from '../ai/useAIAssistantVoiceControls';
+import { useVoiceInput } from '../ai/useVoiceInput';
+import { shouldDispatchASRText } from '../ai/asrTextUtils';
+import { LoadConfig } from '../../../wailsjs/go/main/App';
+import { EventsOn } from '../../../wailsjs/runtime';
+import { localizeText } from '../../i18n';
 import { botInputHistory, rememberBotInput } from './desktopBotInputHistory';
 import { filesFromTransfer } from './desktopBotMaterials';
 
@@ -25,6 +32,10 @@ interface DesktopBotComposerProps {
     onFiles?: (files: File[]) => void;
     readyWithoutText?: boolean;
     holdSend?: boolean;
+    /** Voice input: a finished ASR segment is handed back for direct send,
+     *  matching the assistant panel (voice never edits the draft). When
+     *  absent the mic button is hidden. */
+    onVoiceText?: (text: string) => void;
 }
 
 // The popup borrows the assistant list. These colors follow the bot surface
@@ -55,9 +66,10 @@ export function DesktopBotComposer({
     onFiles,
     readyWithoutText = false,
     holdSend = false,
+    onVoiceText,
 }: DesktopBotComposerProps) {
     const [dragging, setDragging] = useState(false);
-    const inputRef = useRef<HTMLTextAreaElement>(null);
+    const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const textComposition = useTextCompositionGuard();
     const [isComposing, setIsComposing] = useState(false);
     const [history, setHistory] = useState<string[]>(() => botInputHistory(userId));
@@ -109,6 +121,54 @@ export function DesktopBotComposer({
         inputRef,
         disabled: isComposing,
     });
+
+    // Voice input shares the assistant's ASR pipeline but never the pet: no
+    // pet-state signals, no "didn't hear" spoken retry, no global start event
+    // (the assistant panel stays mounted and would double-open the mic), and
+    // no command filter — the bot sends every recognized utterance, not only
+    // speech the normalizer classifies as a command.
+    const [voiceDeviceId, setVoiceDeviceId] = useState('');
+    const voiceEnabled = !!onVoiceText;
+    useEffect(() => {
+        // Gate on the boolean, not onVoiceText — the workspace passes a fresh
+        // closure each render, which would re-run this effect (LoadConfig +
+        // event resubscribe) on every chat repaint.
+        if (!voiceEnabled) return;
+        let live = true;
+        const load = () => {
+            LoadConfig().then((cfg) => {
+                const id = cfg?.audio_input_device_id;
+                if (live && typeof id === 'string') setVoiceDeviceId(id);
+            }).catch(() => {});
+        };
+        load();
+        // Pick up a mic-device change made in settings while this page is open.
+        const offChanged = EventsOn('config-changed', load);
+        const offUpdated = EventsOn('config-updated', load);
+        return () => {
+            live = false;
+            if (typeof offChanged === 'function') offChanged();
+            if (typeof offUpdated === 'function') offUpdated();
+        };
+    }, [voiceEnabled]);
+    const voiceInput = useVoiceInput(
+        useCallback((spoken: string) => {
+            // Same guards as submitTyped: never dispatch while the composer is
+            // disabled or a material upload is still in flight (holdSend).
+            if (!shouldDispatchASRText(spoken) || disabled || holdSend) return;
+            onVoiceText?.(spoken);
+        }, [onVoiceText, disabled, holdSend]),
+        voiceDeviceId,
+        { petIntegration: false, externalStartEvent: false, commandFilter: false },
+    );
+    const { finishVoicePointer, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave } = useAIAssistantVoiceControls({
+        inputRef,
+        petFocusInputSeq: 0,
+        petVoiceStartSeq: 0,
+        ready: !disabled,
+        voiceInput,
+    });
+    const voiceDisabled = disabled || voiceInput.state === 'transcribing' || !voiceInput.asrReady;
 
     const submitTyped = () => {
         const text = value.trim();
@@ -205,6 +265,44 @@ export function DesktopBotComposer({
                 }}
                 onKeyDown={onKeyDown}
             />
+            {onVoiceText ? (
+                <button
+                    type="button"
+                    className={`desktop-bot-chat__voice${voiceInput.state === 'listening' ? ' is-listening' : ''}`}
+                    data-testid="desktop-bot-voice-input"
+                    onClick={handleVoiceClick}
+                    onPointerDown={handleVoicePointerDown}
+                    onPointerUp={finishVoicePointer}
+                    onPointerCancel={finishVoicePointer}
+                    onPointerLeave={handleVoicePointerLeave}
+                    onContextMenu={event => event.preventDefault()}
+                    disabled={voiceDisabled}
+                    title={!voiceInput.asrReady
+                        ? localizeText(lang, 'Voice input unavailable - enable the ASR model in settings first', '语音输入不可用，请先在设置中启用 ASR 模型', '語音輸入不可用，請先在設定中啟用 ASR 模型')
+                        : voiceInput.state === 'listening'
+                            ? localizeText(lang, 'Listening - click to stop', '监听中，点击停止', '監聽中，點擊停止')
+                            : voiceInput.state === 'transcribing'
+                                ? localizeText(lang, 'Transcribing...', '识别中…', '識別中…')
+                                : localizeText(lang, 'Voice input', '语音输入', '語音輸入')}
+                    aria-label={localizeText(lang, 'Voice input', '语音输入', '語音輸入')}
+                >
+                    {voiceInput.state === 'transcribing' ? (
+                        <span aria-hidden="true" className="desktop-bot-chat__voice-spinner" />
+                    ) : voiceInput.state === 'listening' ? (
+                        <VoiceLevelVisualizer
+                            onAudioLevelRef={voiceInput.onAudioLevelRef}
+                            isSpeaking={voiceInput.isSpeaking}
+                            themeColor="var(--theme-text-secondary, #475569)"
+                            speakingColor="var(--mc-accent, #2f6fbc)"
+                        />
+                    ) : (
+                        <AssistantInputIcon name="mic" size={14} />
+                    )}
+                </button>
+            ) : null}
+            {onVoiceText && voiceInput.error ? (
+                <span className="desktop-bot-chat__voice-error" role="status" title={voiceInput.error}>{voiceInput.error}</span>
+            ) : null}
             <button type="submit" className="desktop-bot-chat__send" data-testid="desktop-bot-send" disabled={(!value.trim() && !readyWithoutText) || disabled || holdSend}>{sendLabel}</button>
         </form>
     );

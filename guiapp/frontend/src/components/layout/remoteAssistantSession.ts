@@ -151,11 +151,14 @@ function markKey(session: RemoteAssistantSession | null) {
 // The controlled desktop relays its assistant stream events while a task is
 // watched. This store folds them into one RemoteLiveRound per session, and
 // withEchoes projects the round onto the transcript as a synthetic assistant
-// row: streamed text plus the finished thinking blocks. Reasoning deltas are
-// never held live — the controlled side ships a thinking block only when it
-// closes, so the 思考 box appears first and fills in afterwards.
+// row: streamed text plus the thinking blocks. Reasoning rides live "delta"
+// events into the open block so the 思考 box grows with the controlled
+// desktop's, and the closing "done" event still carries the full text.
 
 const liveRounds = new Map<string, RemoteLiveRound>();
+// Progress parts kept per round — twice the backend snapshot cap so a watcher
+// that joined mid-turn keeps a margin of older lines.
+const REMOTE_PROGRESS_PARTS_KEPT = 80;
 // Session-level workbench checklist, keyed like liveRounds. Outlives a round:
 // the plan list belongs to the session, not to one request.
 const workbenchByKey = new Map<string, RemoteWorkbenchState>();
@@ -286,7 +289,19 @@ export function applyRemoteStreamPayload(payload: unknown) {
         case 'progress': {
             round = ensureLiveRound(key, requestId);
             const text = String(p.text || '');
-            if (text) round.parts.push({ kind: 'progress', seq, text });
+            if (text) {
+                round.parts.push({ kind: 'progress', seq, text });
+                // The trail is a tail view — bound it like the backend's
+                // snapshot cap so a long tool run cannot grow parts (and the
+                // sessionKey stringify over them) without limit.
+                let progressCount = 0;
+                for (const part of round.parts) if (part.kind === 'progress') progressCount++;
+                const overflow = progressCount - REMOTE_PROGRESS_PARTS_KEPT;
+                if (overflow > 0) {
+                    let dropped = 0;
+                    round.parts = round.parts.filter(part => part.kind !== 'progress' || ++dropped > overflow);
+                }
+            }
             break;
         }
         case 'new_round': {
@@ -301,6 +316,10 @@ export function applyRemoteStreamPayload(payload: unknown) {
             break;
         }
         case 'response': {
+            // A terminal event for a different request than the live round is
+            // a straggler: folding it would replace the newer round's parts.
+            round = liveRounds.get(key);
+            if (round && requestId && round.requestId && round.requestId !== requestId) return;
             round = ensureLiveRound(key, requestId);
             closeLiveThinking(round);
             round.streamDone = true;
@@ -332,13 +351,25 @@ type RemoteWatchSnapshot = {
 
 /** Installs the in-flight turn and workbench snapshot a watch_task reply carried (mid-turn catch-up). */
 export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, live: unknown, workbench?: unknown) {
-    const key = liveKey(grantId, String(projectPath || '').trim());
+    const p = (live && typeof live === 'object' ? live : null) as RemoteWatchSnapshot | null;
+    // The live snapshot's path is the backend's canonical spelling — the same
+    // one stream envelopes carry — so it stays the key when present. The
+    // watch path covers workbench-only replies where live is nil.
+    const key = liveKey(grantId, String((p && p.project_path) || projectPath || '').trim());
     if (!key) return;
     if (workbench && typeof workbench === 'object') {
         workbenchByKey.set(key, workbench as RemoteWorkbenchState);
     }
-    const p = (live && typeof live === 'object' ? live : null) as RemoteWatchSnapshot | null;
     if (!p || !String(p.request_id || '')) {
+        emit();
+        return;
+    }
+    // The reply rides a different ws write than queued stream events, so an
+    // older snapshot can land after newer ones. When the live round already
+    // tracks a different request, folding this one would regress the mirror —
+    // the next stream event rebuilds it anyway.
+    const current = liveRounds.get(key);
+    if (current && current.requestId && current.requestId !== String(p.request_id)) {
         emit();
         return;
     }

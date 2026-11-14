@@ -479,6 +479,21 @@ func TestFetchFileOpPermissions(t *testing.T) {
 	}
 }
 
+func TestListDirsOpRequiresOperate(t *testing.T) {
+	// list_dirs enumerates the controlled filesystem for the new-task
+	// directory picker. It reads only, but it stays an operate op — a view
+	// grant must not browse directories it has no business creating in.
+	if !allowedOp(OpListDirs) {
+		t.Fatal("list_dirs must be a known op")
+	}
+	if permissionAllows(PermView, OpListDirs) {
+		t.Fatal("list_dirs must reject view grants")
+	}
+	if !permissionAllows(PermOperate, OpListDirs) {
+		t.Fatal("list_dirs must be allowed for operate grants")
+	}
+}
+
 func TestRevokeNotifiesTheOtherSide(t *testing.T) {
 	svc, _, _, notes := testService(t)
 	ctx := context.Background()

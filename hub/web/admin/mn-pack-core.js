@@ -119,7 +119,10 @@ window.HUB_ADMIN_DICT_MN.BOT = {
   "llmModelsLoaded": "{n} загвар татагдлаа; оруулан дээр дарж сонгоно уу",
   "llmModelsEmpty": "Үйлчилгээ үзүүлэгч загварын жагсаалт буцаасангүй",
   "llmFetchNeedURL": "Эхлээд API URL болон API түлхүүрийг оруулна уу",
-  "llmProviderGone": "Үйлчилгээ үзүүлэгч байхгүй болсон; хуудсыг шинэчлээд дахин оролдоно уу"
+  "llmProviderGone": "Үйлчилгээ үзүүлэгч байхгүй болсон; хуудсыг шинэчлээд дахин оролдоно уу",
+  "llmTagInUse": "Урд талаас ашиглаж байна",
+  "llmRolesColRole": "Үүрэг",
+  "llmRolesColProvider": "Үйлчилгээ үзүүлэгч"
 };
 
 window.HUB_ADMIN_DICT_MN.DESKTOP = {

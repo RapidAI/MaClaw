@@ -17,6 +17,7 @@ import {
     withLocalWorkspace,
     withCloudWorkspace,
     withMachine,
+    withMachineWorkDir,
     withRemoteWorkspace,
     withLatexTemplate,
     withWorkflow,
@@ -38,6 +39,7 @@ import type { WorkflowOption } from "./WorkflowPickerPopover";
 import { WorkflowPickerPopover } from "./WorkflowPickerPopover";
 import type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 import { WorkspacePickerPopover } from "./WorkspacePickerPopover";
+import { RemoteDirPickerPopover, type RemoteDirListing } from "./RemoteDirPickerPopover";
 import { WorkspaceTypeBadge } from "./WorkspaceTypeBadge";
 import { tailText } from "../../../i18n/mnTail"
 
@@ -97,6 +99,8 @@ export interface TaskConfigBarProps {
      * 空或缺省 = 无远控主机，位置恒为本机且不显示该 chip。
      */
     remoteMachines?: RemoteMachineOption[];
+    /** 浏览对方电脑上的目录（remote_control list_dirs）；缺省时工作空间 chip 仍锁定为「对方电脑默认」。 */
+    onListRemoteDirs?: (grantId: string, path: string) => Promise<RemoteDirListing>;
     /**
      * 展示形态：chip（默认，圆角描边按钮）| bare（无边框轻量文字，用于
      * 输入卡片下方的配置条，视觉退居次位）。
@@ -154,6 +158,7 @@ export function TaskConfigBar({
     latexTemplates,
     onPrepareLatexTemplates,
     remoteMachines,
+    onListRemoteDirs,
     variant = "chip",
 }: TaskConfigBarProps) {
     const bare = variant === "bare";
@@ -396,7 +401,7 @@ export function TaskConfigBar({
                         title: remoteMachineLocked ? (REMOTE_LOCKED_TITLE) : workflowLocked ? (tailText(lang ?? "", "Expert specified", "已指定专家，工作流由专家决定")) : undefined,
                     })}
                     {renderChip('workspace', "task-config-chip-workspace", tailText(lang ?? "", "Workspace", "工作空间"), remoteMachineLocked ? (
-                        tailText(lang ?? "", "Default on that computer", "对方电脑默认")
+                        draft.machine?.workDir || tailText(lang ?? "", "Default on that computer", "对方电脑默认")
                     ) : (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: "100%" }}>
                             <WorkspaceTypeBadge
@@ -413,12 +418,14 @@ export function TaskConfigBar({
                             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspaceLabel}</span>
                         </span>
                     ), {
-                        active: !remoteMachineLocked && (draft.workspace.kind !== 'local' || localPathMissing),
+                        active: remoteMachineLocked ? !!draft.machine?.workDir : (draft.workspace.kind !== 'local' || localPathMissing),
                         warning: !remoteMachineLocked && localPathMissing,
-                        locked: remoteMachineLocked,
-                        noMenu: remoteMachineLocked,
+                        locked: remoteMachineLocked && !onListRemoteDirs,
+                        noMenu: remoteMachineLocked && !onListRemoteDirs,
                         title: remoteMachineLocked
-                            ? (REMOTE_LOCKED_TITLE)
+                            ? (onListRemoteDirs
+                                ? tailText(lang ?? "", "Choose a working directory on that computer", "选择对方电脑上的工作目录")
+                                : REMOTE_LOCKED_TITLE)
                             : localPathMissing
                                 ? (tailText(lang ?? "", "Coding tasks need a local directory", "编程任务需要选择本地目录"))
                                 : expertSpecified
@@ -494,7 +501,19 @@ export function TaskConfigBar({
                     onClose={() => closeMenu('workflow')}
                 />
             )}
-            {menu === 'workspace' && (
+            {menu === 'workspace' && draft.machine && onListRemoteDirs && (
+                <RemoteDirPickerPopover
+                    anchor={chipRefs.workspace.current}
+                    theme={t}
+                    lang={lang}
+                    machine={draft.machine}
+                    current={draft.machine.workDir || ""}
+                    onList={onListRemoteDirs}
+                    onSelect={(workDir) => { onChange(withMachineWorkDir(draft, workDir)); closeMenu('workspace'); }}
+                    onClose={() => closeMenu('workspace')}
+                />
+            )}
+            {menu === 'workspace' && !draft.machine && (
                 <WorkspacePickerPopover
                     anchor={chipRefs.workspace.current}
                     theme={t}
