@@ -528,6 +528,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/bots/{id}/runs/{runID}/images", GetBotRunImagesHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/runs/{runID}/files", GetBotRunFilesHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop-file", PostBotDesktopFileHandler(desktopPool, botSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/bots/{id}/desktop-media", DeleteBotDesktopMediaHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/tasks", GetBotTasksHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/runs/active", GetBotActiveRunsHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/ack", PostBotRunAckHandler(botSvc, identity))

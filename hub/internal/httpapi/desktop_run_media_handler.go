@@ -48,6 +48,23 @@ func GetBotRunFilesHandler(svc *botmgmt.Service, identity botAuthenticator) http
 	}
 }
 
+// DeleteBotDesktopMediaHandler DELETE /api/v1/bots/{id}/desktop-media
+// drops the pictures and files kept for this bot's runs. Clearing the chat
+// calls it. Deleting the bot does the same.
+func DeleteBotDesktopMediaHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		svc.ForgetDesktopRunMedia(principal.TenantID, principal.UserID, r.PathValue("id"))
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
 // PostBotDesktopFileHandler POST /api/v1/bots/{id}/desktop-file
 // reads one file from that bot's desktop through file_bytes. The path has
 // to be on the desktop. The bytes are size-limited.

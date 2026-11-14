@@ -51,6 +51,7 @@ type desktopTaskPin struct {
 	Started            string `json:"started,omitempty"`
 	Finished           string `json:"finished,omitempty"`
 	ClientMessageID    string `json:"client_message_id,omitempty"`
+	DesktopUser        string `json:"desktop_user,omitempty"`
 	TaskOutcome        string `json:"task_outcome,omitempty"`
 }
 
@@ -96,6 +97,7 @@ func newRunningDesktopTask(job admittedDesktopFollow) *desktopAdmitState {
 		started:         started,
 		clientMessageID: strings.TrimSpace(job.ClientMessageID),
 		session:         strings.TrimSpace(job.Session),
+		desktopUser:     strings.TrimSpace(job.DesktopUser),
 	}
 }
 
@@ -154,6 +156,7 @@ func (st *desktopAdmitState) pinLocked() *desktopTaskPin {
 		Attention:          strings.TrimSpace(st.reply.AttentionReason),
 		Delivered:          st.delivered,
 		ClientMessageID:    strings.TrimSpace(st.clientMessageID),
+		DesktopUser:        strings.TrimSpace(st.desktopUser),
 		TaskOutcome:        desktopTaskOutcome(st.reply.TaskOutcome),
 	}
 	if !st.started.IsZero() {
@@ -222,6 +225,7 @@ func (s *Service) restoreDesktopTasks(tenantID string, tasks map[string]*desktop
 			phase:           pin.Phase,
 			delivered:       pin.Delivered,
 			clientMessageID: strings.TrimSpace(pin.ClientMessageID),
+			desktopUser:     strings.TrimSpace(pin.DesktopUser),
 			reply: Reply{
 				Text:               pin.Text,
 				SendToUser:         pin.SendToUser,
@@ -255,14 +259,15 @@ func (s *Service) restoreDesktopTasks(tenantID string, tasks map[string]*desktop
 		s.desktopAdmits[key] = state
 		if running && state.instanceID != "" && state.runID != "" {
 			job := admittedDesktopFollow{
-				TenantID:   tenantID,
-				UserID:     state.userID,
-				BotID:      state.botID,
-				InstanceID: state.instanceID,
-				RunID:      state.runID,
-				Phase:      state.phase,
-				Task:       state.task,
-				Started:    state.started,
+				TenantID:    tenantID,
+				UserID:      state.userID,
+				BotID:       state.botID,
+				InstanceID:  state.instanceID,
+				RunID:       state.runID,
+				Phase:       state.phase,
+				Task:        state.task,
+				Started:     state.started,
+				DesktopUser: state.desktopUser,
 			}
 			go s.watchAdmittedDesktopRun(job, state)
 		}

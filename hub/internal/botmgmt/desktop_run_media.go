@@ -64,6 +64,11 @@ func (s *Service) keepDesktopRunMedia(tenantID, userID, botID, runID string, ima
 	return nil
 }
 
+// ForgetDesktopRunMedia drops the pictures and files kept for one bot.
+func (s *Service) ForgetDesktopRunMedia(tenantID, userID, botID string) {
+	s.forgetDesktopRunMedia(tenantID, userID, botID)
+}
+
 // forgetDesktopRunMedia drops the pictures and files kept for one bot.
 func (s *Service) forgetDesktopRunMedia(tenantID, userID, botID string) {
 	dir := s.desktopRunMediaDir(tenantID, userID, botID)

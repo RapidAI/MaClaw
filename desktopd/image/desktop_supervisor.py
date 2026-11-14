@@ -1898,6 +1898,22 @@ def file_bytes(path, limit):
     return base64.b64encode(file_read(path, limit))
 
 
+def deliverable_file(path):
+    """The real path of a file the person may fetch.
+
+    Symlinks are resolved before the work-tree and Desktop check, and
+    before a hidden directory is refused. The lexical path is not enough.
+    """
+    real = os.path.realpath(path)
+    parts = [part for part in real.split("/") if part not in ("", ".", "..")]
+    if any(part.startswith(".") for part in parts):
+        raise ValueError("path is invalid")
+    roots = (FILE_HOME + "/work", FILE_HOME + "/Desktop", FILE_HOME + "/桌面")
+    if not any(real == root or real.startswith(root + "/") for root in roots):
+        raise ValueError("path is invalid")
+    return real
+
+
 def file_list(path):
     proc = subprocess.run(file_list_command(path))
     return proc.returncode
@@ -1935,6 +1951,12 @@ def run_file(argv):
     elif len(argv) != 4:
         print(usage, file=sys.stderr)
         return 2
+    if op == "bytes":
+        try:
+            path = deliverable_file(path)
+        except ValueError:
+            print("path is invalid", file=sys.stderr)
+            return 2
     try:
         if op == "list":
             return file_list(path)

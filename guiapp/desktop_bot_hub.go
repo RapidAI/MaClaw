@@ -2598,6 +2598,12 @@ func (a *App) ForgetDesktopBotFiles(botID string) error {
 		log.Printf("[desktop-bot] delete files bot=%s: %v", botID, err)
 		return err
 	}
+	if a != nil {
+		path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/desktop-media"
+		if err := a.desktopBotCall(context.Background(), http.MethodDelete, path, nil, nil, 15*time.Second); err != nil {
+			log.Printf("[desktop-bot] clear run media bot=%s: %v", botID, err)
+		}
+	}
 	return nil
 }
 
