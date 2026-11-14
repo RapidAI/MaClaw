@@ -798,6 +798,9 @@ SCREEN_LOGIN_REL = (
     Path("Default") / "Login Data",
 )
 PROFILE_LOCK_NAMES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+# Chromium session files. A bot screen must not restore the owner's tabs.
+# Cookies and Login Data are not in this list.
+PROFILE_SESSION_NAMES = ("Sessions", "Current Session", "Current Tabs", "Last Session", "Last Tabs")
 
 
 def user_key_of(key):
@@ -920,6 +923,19 @@ def _chmod_private(path):
         pass
 
 
+def _ignore_profile_copy(bot):
+    """Clone helper. A new bot screen does not receive the owner's tabs."""
+    def ignore(directory, names):
+        skipped = _ignore_profile_locks(directory, names)
+        if not bot:
+            return skipped
+        for name in names:
+            if name in PROFILE_SESSION_NAMES and name not in skipped:
+                skipped.append(name)
+        return skipped
+    return ignore
+
+
 def _ignore_profile_locks(directory, names):
     """Skip Chromium's singleton files and symlinks while cloning."""
     skipped = []
@@ -1020,7 +1036,7 @@ def prepare_screen_profile(key, display):
             if src.exists() and not src.is_symlink():
                 _copy_login_path(src, work / rel, user)
     else:
-        shutil.copytree(str(master), str(work), ignore=_ignore_profile_locks)
+        shutil.copytree(str(master), str(work), ignore=_ignore_profile_copy(is_bot_key(key)))
     _chmod_private(work)
     _note_login_record(user, number, True, False)
     return work
@@ -1316,7 +1332,7 @@ def browser_argv(profile, chrome_port, bot=False):
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-session-crashed-bubble",
-        "--restore-last-session",
+    ] + ([] if bot else ["--restore-last-session"]) + [
         "--disable-features=" + ",".join(["TrackingProtection3pcd", "ThirdPartyStoragePartitioning"] + (BOT_DISABLE_FEATURES if bot else [])),
         "--remote-debugging-port=%d" % chrome_port,
         "--remote-allow-origins=*",
@@ -1585,7 +1601,29 @@ def release_profile_lock(profile):
             pass
 
 
-def keep_website_login(profile):
+def drop_bot_session_files(profile):
+    """Remove restored tabs from a bot profile. Cookies and logins stay."""
+    root = Path(profile)
+    default = root / "Default"
+    sessions = default / "Sessions"
+    try:
+        if sessions.is_dir() and not sessions.is_symlink():
+            shutil.rmtree(sessions)
+    except OSError:
+        pass
+    for base in (default, root):
+        for name in PROFILE_SESSION_NAMES:
+            if name == "Sessions":
+                continue
+            path = base / name
+            try:
+                if path.is_symlink() or path.is_file():
+                    path.unlink()
+            except OSError:
+                pass
+
+
+def keep_website_login(profile, bot=False):
     """Keep session cookies in this profile when the desktop stops.
 
     A clean exit otherwise deletes cookies that have no expiry. The next
@@ -1608,7 +1646,9 @@ def keep_website_login(profile):
     session = data.get("session")
     if not isinstance(session, dict):
         session = {}
-    session["restore_on_startup"] = 1
+    # 1 continues the last session. 5 opens a new tab and does not restore
+    # tabs. Only a bot screen uses 5; the owner's screen still continues.
+    session["restore_on_startup"] = 5 if bot else 1
     data["session"] = session
     # A login often finishes on another site and stores the session there.
     # Blocking those cookies, or keeping them only until exit, leaves this
@@ -5721,7 +5761,8 @@ def start_bot_desktop(key, display):
     profile = prepare_screen_profile(key, display)
     clear_flush_flag(key)
     release_profile_lock(profile)
-    keep_website_login(profile)
+    drop_bot_session_files(profile)
+    keep_website_login(profile, bot=True)
     log = open(home / "desktop.log", "ab")
     env = desktop_env(display)
     chrome_port = chrome_cdp_port(display)
