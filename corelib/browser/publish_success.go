@@ -17,14 +17,44 @@ import (
 	"time"
 )
 
-var successDigitsRe = regexp.MustCompile(`\d{5,}`)
+var (
+	successDigitsRe = regexp.MustCompile(`\d{5,}`)
+	successNumIDRe  = regexp.MustCompile(`^[0-9]{2,}$`)
+	successHexIDRe  = regexp.MustCompile(`^[0-9a-fA-F]{8,}$`)
+)
 
-// successPostID: the success_url's first capture group, else the URL's
-// last long number.
+// successIDToken keeps a capture group that is an article id. A query
+// string or a path fragment is not one.
+func successIDToken(s string) string {
+	s = strings.Trim(strings.TrimSpace(s), "/")
+	if s == "" || strings.ContainsAny(s, "?#&= ") {
+		return ""
+	}
+	// A group the profile marked is the id even when it is short (tests
+	// and some sites use a few digits). A query or a word is not.
+	if successNumIDRe.MatchString(s) || successHexIDRe.MatchString(s) {
+		return s
+	}
+	return ""
+}
+
+// SuccessPostID is the article id a success_url names: a capture group
+// that is an id, else the last long number in the path. A query capture
+// (Zhihu's ?utm=...) is not the id.
+func SuccessPostID(successURL, u string) string { return successPostID(successURL, u) }
+
+// successPostID: the success_url's first id-shaped capture group, else the
+// URL's last long number.
 func successPostID(successURL, u string) string {
 	if re, err := regexp.Compile(successURL); err == nil {
-		if m := re.FindStringSubmatch(u); len(m) > 1 && m[1] != "" {
-			return m[1]
+		if m := re.FindStringSubmatch(u); len(m) > 1 {
+			// The first group is not always the id. Zhihu's success_url
+			// captures the query (?utm=...), which then became the post id.
+			for _, g := range m[1:] {
+				if id := successIDToken(g); id != "" {
+					return id
+				}
+			}
 		}
 	}
 	path := strings.SplitN(u, "?", 2)[0]

@@ -59,10 +59,22 @@ func desktopTaskSpecOf(request string) desktopTaskSpec {
 var desktopTaskSpecs sync.Map // run id -> desktopTaskSpec
 
 // desktopNoteTaskSpec keeps the spec of a run's request (first one wins).
+func (s desktopTaskSpec) namesASite() bool {
+	return len(s.Sites) > 0 || s.Profile != nil
+}
+
 func desktopNoteTaskSpec(runID, request string) {
-	if runID != "" && request != "" {
-		desktopTaskSpecs.LoadOrStore(runID, desktopTaskSpecOf(request))
+	if runID == "" || request == "" {
+		return
 	}
+	spec := desktopTaskSpecOf(request)
+	// A restart sentence ("服务刚重启，这项任务接着做。") names no site.
+	// Storing it would lock the run to an empty list, so Zhihu and
+	// Xiaohongshu disappear from the reply after a process restart.
+	if !spec.namesASite() {
+		return
+	}
+	desktopTaskSpecs.LoadOrStore(runID, spec)
 }
 
 func desktopTaskSpecBase(runID string) desktopTaskSpec {

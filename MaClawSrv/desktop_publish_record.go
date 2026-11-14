@@ -257,21 +257,54 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 				r.URL = ""
 			}
 		}
+		// A creator console or the editor is not the article. Keeping it
+		// made https://editor.csdn.net/md/ the reported link. With no article
+		// id the submit is unconfirmed, not live.
+		if r.URL != "" && (browser.PublicPostURL(r.URL) == "" || browser.PublishURLIsBareOrigin(r.URL)) {
+			raw := r.URL
+			r.URL = ""
+			if r.PostID == "" && (r.State == browser.PublishLive || r.State == browser.PublishLiveIncomplete) {
+				// ?published=true is a real submit with no public link yet.
+				// The editor itself is not: calling it submitted ends the
+				// task and the reply says 点了发布.
+				if browser.URLConfirmsSubmit(raw) {
+					r.State = browser.PublishSubmitted
+				} else {
+					r.State = browser.PublishDraftOnly
+				}
+			}
+		}
 	})
 
 	desktopSideNotePublish(scope.RunID, spec, rep)
-	if rec.posted() {
+	if rec.posted() && desktopLedgerThisPost(rep, rec) {
 		// The post outlives the run: a resumed or new run must not post it again.
 		desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "posted", Host: desktopLedgerHost(firstNonEmptyStr(spec.EditorURL, rec.URL)), Title: spec.Title, URL: rec.URL, Run: scope.RunID, Detail: string(rec.State)})
 	}
 	return rec
 }
 
+// desktopLedgerThisPost: an editor or creator page that was only mistaken
+// for a live article must not sit in the ledger. Zhihu has no post list, so
+// that entry would skip the next publish as "already posted". A landing URL
+// that says the submit went through (?published=true) is a real submit.
+func desktopLedgerThisPost(rep *browser.PublishReport, rec desktopPublishRecord) bool {
+	if rep == nil {
+		return false
+	}
+	claimedLive := rep.State == browser.PublishLive || rep.State == browser.PublishLiveIncomplete
+	if claimedLive && rec.State == browser.PublishSubmitted && rec.URL == "" && rec.PostID == "" && !browser.URLConfirmsSubmit(rep.ResultURL) {
+		return false
+	}
+	return true
+}
+
 // desktopRecordVerifiedPage: a run that verified its own result page (a
 // submit, then a read-back of the filled text on a new page).
 func desktopRecordVerifiedPage(scope agentruntime.Scope, u string) {
 	u = strings.SplitN(strings.TrimSpace(u), "?", 2)[0]
-	if !strings.HasPrefix(u, "http") {
+	u = browser.PublicPostURL(u)
+	if u == "" || browser.PublishURLIsBareOrigin(u) {
 		return
 	}
 	desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) {

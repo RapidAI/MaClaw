@@ -11,6 +11,7 @@ describe('botCollab helpers', () => {
         const row = statusRowText([asg('1', 'a', 'progress', { last_report: '查资料' }), asg('2', 'b', 'running'), asg('3', 'c', 'queued'), asg('4', 'd', 'progress'), asg('5', 'a', 'completed')], bots);
         expect(row).toBe('小A 正在做：查资料；小B 在想：写一篇文章；小C 排队中：写一篇文章；还有 1 个机器人在忙');
         expect(statusRowText([asg('1', 'a', 'completed')], bots)).toBe('');
+        expect(statusRowText([asg('9', 'bot_ef9689c26eda5fa', 'running', { last_report: '训练' })], bots)).toBe('');
     });
     it('labels states in Chinese and prompts the person', () => {
         expect(stateLabel('needs_login')).not.toBe('needs_login');
@@ -25,6 +26,11 @@ describe('botCollab helpers', () => {
         // A bot with its own chat is heard only there, not again in the main bot's.
         expect(saidForChat(items, 'm', true, 0, ['m', 'a']).map(i => i.id)).toEqual(['2']);
         expect(saidForChat(items, 'a', false, 0, ['m', 'a']).map(i => i.id)).toEqual(['1']);
+        // Display name is not identity. bot_new may also be titled "Bot 1";
+        // the deleted id's line stays out of its chat.
+        const mixed = [said('1', 'a'), said('old', 'bot_ef9689c26eda5fa'), said('mine', 'bot_new')];
+        expect(saidForChat(mixed, 'bot_new', true, 0, ['bot_new', 'a'], ['bot_new', 'a']).map(i => i.id)).toEqual(['mine']);
+        expect(saidForChat(mixed, 'bot_new', false, 0, ['bot_new', 'a'], ['bot_new', 'a']).map(i => i.id)).toEqual(['mine']);
     });
     it('finds who answered after the last human message', () => {
         expect(answeredSinceLast([said('1', 'a'), said('2', 'human', 'room'), said('3', 'b'), said('4', 'a')])).toEqual(['b', 'a']);
@@ -75,6 +81,12 @@ describe('placeChatSays', () => {
         const placed = placeChatSays(items, 'b', false, messages);
         expect(placed.after.get(messages[0].id)?.map(item => item.id)).toEqual(['w']);
         expect(placed.trailing).toEqual([]);
+    });
+    it('does not pin a deleted bot id under a new bot', () => {
+        const items = [{ id: 'old', kind: 'say', target: 'human', from: 'bot_ef9689c26eda5fa', text: '训练报告', created_at: '2026-11-14T00:17:00Z' }] as SaidItem[];
+        const placed = placeChatSays(items, 'bot_new', true, [], ['bot_new'], ['bot_new']);
+        expect(placed.trailing).toEqual([]);
+        expect(placed.after.size).toBe(0);
     });
 });
 

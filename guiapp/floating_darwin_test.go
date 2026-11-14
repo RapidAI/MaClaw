@@ -9,14 +9,21 @@ import (
 	"github.com/RapidAI/CodeClaw/guiapp/petpack"
 )
 
-func TestDarwinPetPackRuntimeLevelIsStatic(t *testing.T) {
+func TestDarwinPetPackRuntimeLevelFollowsMotion(t *testing.T) {
 	w := &darwinFloatingWindow{}
 	got, reason := w.PetPackRuntimeLevel(petpack.RendererCharacter)
-	if got != petpack.RendererNative {
-		t.Fatalf("effective=%q, want %s", got, petpack.RendererNative)
+	if got != petpack.RendererNative || reason == "" {
+		t.Fatalf("motion off = %q %q", got, reason)
 	}
-	if reason == "" {
-		t.Fatal("expected degradation reason for character packs on macOS")
+	w.petMotionEnabled = true
+	got, reason = w.PetPackRuntimeLevel(petpack.RendererCharacter)
+	if got != petpack.RendererCharacter || reason != "" {
+		t.Fatalf("motion on = %q %q", got, reason)
+	}
+	w.petQuietMode = true
+	got, reason = w.PetPackRuntimeLevel(petpack.RendererCharacter)
+	if got != petpack.RendererNative || reason == "" {
+		t.Fatalf("quiet = %q %q", got, reason)
 	}
 	got, reason = w.PetPackRuntimeLevel(petpack.RendererNative)
 	if got != petpack.RendererNative || reason != "" {

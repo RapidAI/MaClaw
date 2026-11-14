@@ -2661,6 +2661,67 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toContain('→ 2. 物理内核');
     });
 
+    it('retires the checklist card when the goal is deleted (goal-cleared)', async () => {
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('goal-state-changed', {
+                user_id: 'desktop-user',
+                phase: 'execute',
+                steps: [
+                    { index: 1, title: '环境', status: 'done' },
+                    { index: 2, title: '物理内核', status: 'progress' },
+                ],
+                turns_used: 1,
+                max_turns: 50,
+            });
+        });
+        expect(result.current.messages.filter(message => message.kind === 'goalChecklist')).toHaveLength(1);
+
+        // Deleting the goal emits the cleared record; the card must go with it
+        // or the floating checklist would keep floating a goal that no longer
+        // exists.
+        await act(async () => {
+            emitRuntimeEvent('goal-state-changed', {
+                user_id: 'desktop-user',
+                goal_id: '',
+                objective: '',
+                status: 'cleared',
+                phase: '',
+                steps: null,
+                visible: false,
+            });
+        });
+        expect(result.current.messages.filter(message => message.kind === 'goalChecklist')).toHaveLength(0);
+
+        // A later state event for the same session re-creates the card (a new goal).
+        await act(async () => {
+            emitRuntimeEvent('goal-state-changed', {
+                user_id: 'desktop-user',
+                phase: 'plan',
+                steps: null,
+            });
+        });
+        expect(result.current.messages.filter(message => message.kind === 'goalChecklist')).toHaveLength(1);
+        expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toContain('正在分解');
+    });
+
+    it('keeps another session’s checklist card out of this transcript', async () => {
+        const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user' });
+
+        await act(async () => {
+            emitRuntimeEvent('goal-state-changed', {
+                user_id: 'desktop-user:C:/work/tasks/other',
+                phase: 'execute',
+                steps: [{ index: 1, title: '别的任务', status: 'done' }],
+                turns_used: 1,
+                max_turns: 50,
+            });
+        });
+        // Not owned and not the active session: the other session's card never lands here.
+        expect(result.current.messages.filter(message => message.kind === 'goalChecklist')).toHaveLength(0);
+    });
+
     it('echoes a user command at once while a goal round still owns the foreground', async () => {
         const { result } = renderAssistantHook();
         const goalRequestId = 'goal-cont-echo-race';

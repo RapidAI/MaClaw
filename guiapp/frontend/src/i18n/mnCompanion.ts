@@ -760,6 +760,8 @@ const ROWS: readonly Row[] = [
     ["保存后链接保持不变；权限按新范围立即执行，更换密码后旧访客需重新验证。", "The link stays unchanged. New access rules apply immediately, and existing guests must verify again after a password change.", "Холбоос хэвээр үлдэнэ. Шинэ эрх шууд хэрэгжиж, нууц үг солигдоход хуучин зочид дахин баталгаажуулна."],
     ["链接保持不变；参与者能否继续访问取决于当前范围和有效期。", "The link stays unchanged. Continued access depends on the current audience and expiry.", "Холбоос хэвээр үлдэнэ. Цаашид нэвтрэх эрх одоогийн хүрээ ба хугацаанаас хамаарна."],
     ["分享包含文档、高亮和聊天；后续更新仅同步给符合权限的参与者。", "The share includes the document, highlights, and chat. Later updates sync only to participants who still have access.", "Хуваалцалтад баримт, тодруулга, чат орно. Дараагийн шинэчлэл зөвхөн эрхтэй оролцогчдод синк хийгдэнэ."],
+    ["确认移除成员", "Confirm member removal", "Гишүүнийг хасахыг баталгаажуулах"],
+    ["确认移除？", "Remove this member?", "Энэ гишүүнийг хасах уу?"],
 ];
 
 const byZh = new Map<string, { en: string; mn: string }>();

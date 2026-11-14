@@ -20,6 +20,81 @@ type BotRoom struct {
 	CreatedAt string            `json:"created_at"`
 }
 
+// dropBotFromRooms takes a deleted bot id out of this person's rooms.
+// A room whose members are all gone is removed, so a later message does
+// not address that id.
+func dropBotFromRooms(rec *record, userID, _ string) {
+	sweepDeadRoomMembers(rec, userID)
+}
+
+// sweepDeadRoomMembers drops member ids that are not this person's bots.
+// A room with no bot left is removed. Other owners' rooms stay.
+func sweepDeadRoomMembers(rec *record, userID string) bool {
+	if rec == nil || len(rec.Rooms) == 0 {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	changed := false
+	for id, room := range rec.Rooms {
+		if room == nil || room.Owner != userID {
+			continue
+		}
+		members := make([]string, 0, len(room.Members))
+		roomChanged := false
+		for _, member := range room.Members {
+			if participantOwned(*rec, userID, member) {
+				members = append(members, member)
+				continue
+			}
+			roomChanged = true
+			if room.Attention != nil {
+				delete(room.Attention, member)
+			}
+		}
+		if !roomChanged {
+			continue
+		}
+		changed = true
+		if len(members) == 0 {
+			delete(rec.Rooms, id)
+			continue
+		}
+		room.Members = members
+	}
+	return changed
+}
+
+// roomVisible is the room the person sees: members that are still their bots.
+func roomVisible(rec record, userID string, room *BotRoom) (BotRoom, bool) {
+	if room == nil || room.Owner != userID {
+		return BotRoom{}, false
+	}
+	members := make([]string, 0, len(room.Members))
+	for _, member := range room.Members {
+		if participantOwned(rec, userID, member) {
+			members = append(members, member)
+		}
+	}
+	if len(members) == 0 {
+		return BotRoom{}, false
+	}
+	out := *room
+	out.Members = members
+	if room.Attention != nil {
+		att := map[string]string{}
+		for id, value := range room.Attention {
+			if participantOwned(rec, userID, id) {
+				att[id] = value
+			}
+		}
+		out.Attention = att
+	}
+	return out, true
+}
+
 func (r *BotRoom) hasMember(bot string) bool {
 	for _, m := range r.Members {
 		if m == bot {
@@ -89,8 +164,9 @@ func (s *Service) ListRooms(ctx context.Context, tenantID, userID string) ([]Bot
 	}
 	out := []BotRoom{}
 	for _, r := range rec.Rooms {
-		if r.Owner == userID {
-			out = append(out, *r)
+		visible, ok := roomVisible(rec, userID, r)
+		if ok {
+			out = append(out, visible)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
@@ -245,8 +321,12 @@ func (s *Service) PostRoomMessage(ctx context.Context, tenantID, userID, roomID,
 		s.mu.Unlock()
 		return BotCrossNote{}, nil, err
 	}
+	cleaned := sweepDeadRoomMembers(&rec, userID)
 	r := roomOf(rec, userID, roomID)
 	if r == nil {
+		if cleaned {
+			_ = s.save(ctx, tenantID, rec)
+		}
 		s.mu.Unlock()
 		return BotCrossNote{}, nil, ErrNotFound
 	}
@@ -271,7 +351,7 @@ func (s *Service) PostRoomMessage(ctx context.Context, tenantID, userID, roomID,
 		}
 		woken = append(woken, m)
 	}
-	if len(woken) == 0 && len(mentioned) == 0 {
+	if len(woken) == 0 && len(mentioned) == 0 && len(r.Members) > 0 {
 		woken = append(woken, r.Members[0]) // someone always hears the person
 	}
 	for _, m := range woken {
@@ -285,7 +365,7 @@ func (s *Service) PostRoomMessage(ctx context.Context, tenantID, userID, roomID,
 		body += "\n回复用 action=say room=" + r.ID + "。"
 		rec.CrossNotes = append(rec.CrossNotes, BotCrossNote{ID: newCrossNoteID(), Owner: userID, From: "human", Target: m, Kind: "report", Topic: "task", Text: body, ReplyTo: msg.ID, Key: "room-" + msg.ID + "-" + m, CreatedAt: now})
 	}
-	rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+	rec.CrossNotes = capCrossNotes(rec.CrossNotes, rec, userID)
 	err = s.save(ctx, tenantID, rec)
 	s.mu.Unlock()
 	if err != nil {

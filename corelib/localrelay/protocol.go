@@ -8,8 +8,8 @@
 // stream per request. Each stream starts with a JSON request line from Hub and
 // a JSON response line from the GUI; read, write and dial streams then carry
 // raw bytes. The GUI enforces the folder and network policy and asks the
-// person before anything new, so Hub and MaClawSrv never decide what may be
-// touched on that computer.
+// person before anything new, unless they chose full access in Bot settings.
+// Hub and MaClawSrv never decide what may be touched on that computer.
 package localrelay
 
 import (
@@ -106,6 +106,8 @@ type Summary struct {
 	OS             string  `json:"os,omitempty"`
 	// TunnelIdleMinutes closes an unused tunnel after this long.
 	TunnelIdleMinutes int `json:"tunnel_idle_minutes,omitempty"`
+	// Permission is ask or full. Empty means an older app that still asks.
+	Permission string `json:"permission,omitempty"`
 }
 
 // Response is the GUI's answer line.

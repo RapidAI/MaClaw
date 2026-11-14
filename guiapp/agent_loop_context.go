@@ -99,6 +99,17 @@ type LoopContext struct {
 	RuntimeEventSink agentruntime.EventSink
 	// Loop-scoped tools unlocked by discover_tool. Not a shared pin.
 	discoveredConditionalTools map[string]bool
+	// skillPreferenceReleased latches that this turn's forced skill
+	// preference was discharged mid-loop: a required market search ran, or a
+	// skill tool failed. BuildToolsForModelRequest recomputes the inbound
+	// posture every request; without this latch the recompute would silently
+	// re-force a preference the loop already resolved.
+	skillPreferenceReleased bool
+	// skillSearchRequiredSurface records whether the last surface build ran
+	// under the hard market-search contract (remote-required, not yet
+	// exhausted). discover_tool must report a grant made under it as
+	// deferred, not "granted for the next request".
+	skillSearchRequiredSurface bool
 	// discoveredMCPBinds are installed MCP tools this loop's discover_tool
 	// identified. The next legacy model request publishes them as x:mcp
 	// grants. They are not host-tool names and are not a shared pin.
@@ -1338,6 +1349,64 @@ func (c *LoopContext) noteDiscoverToolCall() int {
 	defer c.mu.Unlock()
 	c.discoverToolCalls++
 	return c.discoverToolCalls
+}
+
+func (c *LoopContext) discoveredConditionalToolNameSet() map[string]bool {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.discoveredConditionalTools) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(c.discoveredConditionalTools))
+	for name := range c.discoveredConditionalTools {
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// noteSkillPreferenceReleased discharges this turn's forced skill
+// preference. Callers mirror processSkillPreferenceToolExecutions: a required
+// market-search call, or a failed run_skill/get_skill_run/
+// search_and_install_skill.
+func (c *LoopContext) noteSkillPreferenceReleased() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.skillPreferenceReleased = true
+	c.mu.Unlock()
+}
+
+func (c *LoopContext) skillPreferenceWasReleased() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.skillPreferenceReleased
+}
+
+func (c *LoopContext) noteSkillSearchRequiredSurface(required bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.skillSearchRequiredSurface = required
+	c.mu.Unlock()
+}
+
+func (c *LoopContext) skillSearchRequiredSurfaceActive() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.skillSearchRequiredSurface
 }
 
 func (c *LoopContext) discoveredConditionalToolNames() []string {

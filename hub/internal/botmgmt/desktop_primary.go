@@ -288,7 +288,7 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 			note.Reviewer = assignmentReviewer(rec, userID, fromBotID, target, firstNonEmptyString(note.Order, note.Text), in.Reviewer)
 		}
 		rec.CrossNotes = append(rec.CrossNotes, note)
-		rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+		rec.CrossNotes = capCrossNotes(rec.CrossNotes, rec, userID)
 		if err := s.save(ctx, tenantID, rec); err != nil {
 			return BotCrossNote{}, err
 		}
@@ -322,7 +322,7 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 			ReplyTo:   parent.ID,
 		}
 		rec.CrossNotes = append(rec.CrossNotes, note)
-		rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+		rec.CrossNotes = capCrossNotes(rec.CrossNotes, rec, userID)
 		if err := s.save(ctx, tenantID, rec); err != nil {
 			return BotCrossNote{}, err
 		}
@@ -448,7 +448,7 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 	proto.apply(&note)
 	rec.CrossNotes = append(rec.CrossNotes, note)
 	rec.CrossNotes = capReportNotes(rec.CrossNotes, userID)
-	rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+	rec.CrossNotes = capCrossNotes(rec.CrossNotes, *rec, userID)
 	s.requestPeerReviewLocked(rec, userID, note)
 	return note, true, nil
 }
@@ -632,7 +632,8 @@ func pruneCrossNotes(notes []BotCrossNote, now time.Time) []BotCrossNote {
 	return out
 }
 
-func capCrossNotes(notes []BotCrossNote, userID string) []BotCrossNote {
+func capCrossNotes(notes []BotCrossNote, rec record, userID string) []BotCrossNote {
+	notes = dropOrphanSays(notes, rec, userID)
 	userID = strings.TrimSpace(userID)
 	owned := 0
 	for _, note := range notes {

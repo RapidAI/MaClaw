@@ -2547,6 +2547,27 @@ describe("FileCompanionWindow", () => {
         expect(await screen.findByText("这份文档已经以相同的范围分享过了，请先删除原分享，或修改原分享")).toBeTruthy();
     });
 
+    it("ignores a second share click while the first request is pending", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        let finish: (value: { url: string; name: string; visibility: string; permanent: boolean }) => void = () => undefined;
+        shareDocument.mockImplementation(() => new Promise<{ url: string; name: string; visibility: string; permanent: boolean }>((resolve) => { finish = resolve; }));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-share-open"));
+        await screen.findByTestId("file-companion-share-dialog");
+        const button = screen.getByTestId("file-companion-library-share");
+        fireEvent.click(button);
+        fireEvent.click(button);
+        expect(shareDocument).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            finish({ url: "https://hub.example/share", name: "a.md", visibility: "public", permanent: true });
+            await Promise.resolve();
+        });
+        await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    });
+
     it("offers sharing again after the previous share expired", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
         open.mockImplementation(async (path: string) => doc(path));
@@ -3933,9 +3954,14 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId(`file-companion-group-add-${groupID}`));
         await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(groupID, "13800138000"));
         await waitFor(() => expect(screen.getByTestId(`file-companion-group-contact-${groupID}`).hasAttribute("disabled")).toBe(false));
+        expect(screen.getByTestId(`file-companion-group-save-${groupID}`).hasAttribute("disabled")).toBe(true);
         fireEvent.click(screen.getByTestId(`file-companion-group-remove-${groupID}-reader@example.com`));
+        fireEvent.click(screen.getByTestId(`file-companion-group-remove-cancel-${groupID}-reader@example.com`));
+        expect(removeGroupMember).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId(`file-companion-group-remove-${groupID}-reader@example.com`));
+        fireEvent.click(screen.getByTestId(`file-companion-group-remove-confirm-${groupID}-reader@example.com`));
         await waitFor(() => expect(removeGroupMember).toHaveBeenCalledWith(groupID, "reader@example.com"));
-        await waitFor(() => expect(screen.getByTestId(`file-companion-group-save-${groupID}`).hasAttribute("disabled")).toBe(false));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-contact-${groupID}`).hasAttribute("disabled")).toBe(false));
         fireEvent.change(screen.getByTestId(`file-companion-group-rename-${groupID}`), { target: { value: "   " } });
         fireEvent.click(screen.getByTestId(`file-companion-group-save-${groupID}`));
         expect(updateGroup).not.toHaveBeenCalled();

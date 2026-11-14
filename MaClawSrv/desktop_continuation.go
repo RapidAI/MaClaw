@@ -96,6 +96,13 @@ func desktopTurnPhase(request agentruntime.TurnRequest) string {
 func desktopTurnPublishApproved(request agentruntime.TurnRequest) bool {
 	content, meta := desktopTurnMessage(request)
 	approved := desktopPreapproveRe.MatchString(content) || desktopPublishIntentRe.MatchString(content)
+	// The restart sentence is not an ask. The original message, kept on
+	// task_request, is. Without it a resumed posting task is refused.
+	if !approved && meta != nil {
+		if t := strings.TrimSpace(meta["task_request"]); t != "" {
+			approved = desktopPreapproveRe.MatchString(t) || desktopPublishIntentRe.MatchString(t)
+		}
+	}
 	key := desktopTurnMemKey(request, meta)
 	if key == "" {
 		return approved

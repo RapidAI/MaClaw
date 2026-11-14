@@ -1397,7 +1397,7 @@ func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage stri
 		PreferEmbeddingOnly:   true,
 		PreResolved:           preResolved,
 		CacheMessage:          classificationCacheMessageForTurn(ctx, userID, routeMessage, loopHistory(ctx)),
-		HostKeepTools:         h.hostKeepToolsForTurnScoped(ctx, routeMessage, !phase.ForceSkillPreference),
+		HostKeepTools:         h.hostKeepToolsForTurnScoped(ctx, routeMessage, !shouldRestrictToSkillSearch(phase)),
 	}
 	routed := router.RouteForSession(userID, routeMessage, allTools, routeOpts)
 	// Capture the router's raw ranked selection before the mandatory merges
@@ -1604,7 +1604,7 @@ func (h *IMMessageHandler) sealClassifierTimeoutExecutionFloor(userID string, ct
 	if ctx != nil && ctx.LansengerGroupPermissions != nil {
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
-	tools = applySkillPreferenceSurface(tools, phase)
+	tools = applySkillPreferenceSurface(tools, phase, ctx.discoveredConditionalToolNameSet())
 	if directMode {
 		tools = filterDirectModeAllowedTools(tools)
 	}

@@ -4374,6 +4374,8 @@ button.desktop-bot-feed__file {
 .desktop-bot-chat__chip:hover { border-color: currentColor; }
 
 /* Local relay: Bot 管理 → 设置 → 本地访问, transfer chips, and the access question. */
+.bot-local-dialog__permission { display: flex; flex-direction: column; gap: 10px; }
+.bot-local-dialog__permission > .bot-llm-dialog__label { margin: 0; }
 .bot-local-dialog__group { margin: 4px 0 12px 24px; display: flex; flex-direction: column; gap: 6px; }
 .bot-local-dialog__group.is-disabled { opacity: 0.55; }
 .bot-local-dialog__roots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }

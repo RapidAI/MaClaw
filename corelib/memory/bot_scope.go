@@ -226,9 +226,16 @@ func (s *Store) DeleteBotMemory(baseOwner, botID, id string) error {
 	return s.Delete(id)
 }
 
+func botMemoryEntryMatchesOwner(entry Entry, owner string) bool {
+	if !entry.IsActive() || !memoryOwnersEqual(entry.OwnerID, owner) {
+		return false
+	}
+	return entry.Boundary == nil || strings.TrimSpace(entry.Boundary.OwnerID) == "" || memoryOwnersEqual(entry.Boundary.OwnerID, owner)
+}
+
 func (s *Store) findBotOwnedEntry(owner, id string) (Entry, bool) {
 	for _, entry := range s.List("", "") {
-		if entry.ID == id && memoryOwnersEqual(entry.OwnerID, owner) && entry.IsActive() {
+		if entry.ID == id && botMemoryEntryMatchesOwner(entry, owner) {
 			return entry, true
 		}
 	}
@@ -259,7 +266,7 @@ func (s *Store) DeleteBotMemoriesAtomic(baseOwner, botID string, ids []string) (
 	}
 	entriesByID := make(map[string]Entry, len(deleteIDs))
 	for _, entry := range s.List("", "") {
-		if seen[entry.ID] && memoryOwnersEqual(entry.OwnerID, owner) && entry.IsActive() {
+		if seen[entry.ID] && botMemoryEntryMatchesOwner(entry, owner) {
 			entriesByID[entry.ID] = entry
 		}
 	}

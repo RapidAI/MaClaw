@@ -104,7 +104,7 @@ import { GoalChecklistOverlay } from "./GoalChecklistOverlay";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, goalChecklistOverlayBodyFromText, latestHostGoalChecklistText, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, isHostGoalChecklistText, logAIPanelDiagnostic, rewriteHostGoalChecklistBody, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, goalChecklistMessageId, goalChecklistOverlayBodyFromText, goalTerminalSessionKeysNext, latestHostGoalChecklistText, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, isHostGoalChecklistText, logAIPanelDiagnostic, rewriteHostGoalChecklistBody, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
 import { expertTabId } from "./expertTypes";
 import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
@@ -285,6 +285,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     remoteReconnectRef.current = remoteReconnect;
     /** Pure coding session plan editor (local + remote). */
     const [codingSessionPlan, setCodingSessionPlan] = useState("");
+    /** Sessions whose goal the backend reported complete/cleared: the checklist float retires. */
+    const [goalTerminalSessions, setGoalTerminalSessions] = useState<Set<string>>(() => new Set());
     const [codingExecutionPlan, setCodingExecutionPlan] = useState("");
     const [codingRequirementRestatement, setCodingRequirementRestatement] = useState("");
     const [codingPlanMode, setCodingPlanMode] = useState<"auto" | "approve" | "off">("auto");
@@ -976,6 +978,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         const off = EventsOn("goal-state-changed", (payload: any) => {
             syncGoalChecklistRef.current(payload);
+            // The live goal status retires the float outright on complete/clear
+            // (goalTerminalSessionKeysNext) — the transcript card can lag the
+            // record while the coding turn streams.
+            setGoalTerminalSessions(prev => goalTerminalSessionKeysNext(prev, payload?.user_id, payload?.status) || prev);
             if (!pureCodingTabRef.current) return;
             // Normalize path separators (Go may emit Windows `\`, FE uses `/`).
             const goalUser = normalizeAssistantSessionKey(String(payload?.user_id || ""));
@@ -2849,9 +2855,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
     }, []);
     syncGoalChecklistRef.current = (payload: unknown) => {
-        const content = formatGoalChecklistFromRecord(payload as Parameters<typeof formatGoalChecklistFromRecord>[0]);
+        const record = payload as Parameters<typeof formatGoalChecklistFromRecord>[0];
         const goalUser = normalizeAssistantSessionKey(String((payload as { user_id?: string } | null)?.user_id || ""));
-        if (!content || !goalUser) return;
+        if (!goalUser) return;
+        // A deleted goal (goal-cleared) retires its checklist card: the float
+        // reads that card, and a goal that no longer exists must not keep
+        // floating. Completion keeps the card; the float hides on its body.
+        const cleared = String((record as { status?: string } | null)?.status || "").trim().toLowerCase() === "cleared";
+        const content = cleared ? "" : formatGoalChecklistFromRecord(record);
+        if (!content && !cleared) return;
         const tabs = getTabs().filter(tab => (tab.type === "project" && tab.projectPath) || (tab.type === "expert" && tab.expertId));
         for (const tab of tabs) {
             const sessionKey = tab.type === "expert"
@@ -2860,6 +2872,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (normalizeAssistantSessionKey(sessionKey) !== goalUser) continue;
             const existingState = getTabState(tab.id);
             const history = (Array.isArray(existingState?.history) ? existingState.history : []) as ChatMessage[];
+            if (cleared) {
+                const cardId = goalChecklistMessageId(goalUser);
+                if (!history.some(message => message.id === cardId)) continue;
+                const nextHistory = history.filter(message => message.id !== cardId);
+                saveTabState(tab.id, { ...existingState, history: nextHistory });
+                if (activeTabIdRef.current === tab.id) {
+                    if (projectStreamHistoryRef.current?.tabId === tab.id) projectStreamHistoryRef.current = { tabId: tab.id, messages: nextHistory };
+                    setProjectTabMessages(nextHistory);
+                }
+                continue;
+            }
             const active = activeTabIdRef.current === tab.id;
             const nextHistory = nextGoalChecklistHistory({
                 history,
@@ -7716,7 +7739,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {!showWelcomeView && !remoteChat && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
                 {!showWelcomeView && !remoteChat && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => chatTaskInSession(task.sessionKey, activeSessionKey))} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
                 {!showWelcomeView && !remoteChat && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} />}
-                {!showWelcomeView && !wizardScreen && !projectSearch.open && ready && goalChecklistOverlayText ? (
+                {!showWelcomeView && !wizardScreen && !projectSearch.open && ready && goalChecklistOverlayText && !goalTerminalSessions.has(normalizeAssistantSessionKey(activeSessionKey)) ? (
                     <GoalChecklistOverlay
                         lang={lang}
                         theme={t}

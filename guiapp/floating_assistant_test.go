@@ -121,6 +121,40 @@ func TestUpdateSoundConfigUpdatesWindowWithoutMotionRefresh(t *testing.T) {
 	}
 }
 
+type reloadFloatingWindow struct {
+	mockFloatingWindow
+	reloads   int
+	reloadErr error
+}
+
+func (m *reloadFloatingWindow) ReloadAppearance(x, y, size int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reloads++
+	m.x, m.y = x, y
+	_ = size
+	return m.reloadErr
+}
+
+func TestRefreshAppearanceReloadsLiveWindow(t *testing.T) {
+	win := &reloadFloatingWindow{}
+	win.created = true
+	win.shown = true
+	manager := &FloatingAssistantManager{window: win, visible: true, posX: 12, posY: 24}
+	manager.RefreshAppearance(corelib.AppConfig{PetEnabled: true, PetSize: defaultPetSize})
+	win.mu.Lock()
+	defer win.mu.Unlock()
+	if win.destroyed {
+		t.Fatal("switching a live pet must not destroy the window")
+	}
+	if win.reloads != 1 {
+		t.Fatalf("reloads = %d, want 1", win.reloads)
+	}
+	if !win.shown {
+		t.Fatal("reloaded pet should stay shown")
+	}
+}
+
 func TestInvalidatePetPackAssetsRefreshesLiveWindow(t *testing.T) {
 	win := &mockFloatingWindow{}
 	manager := &FloatingAssistantManager{window: win}

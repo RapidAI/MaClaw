@@ -44,3 +44,15 @@ func TestDefaultHubDialVerifiesWSSCertificate(t *testing.T) {
 	}
 	conn.Close()
 }
+
+func TestDefaultHubDialRejectsCleartextPublicHub(t *testing.T) {
+	t.Setenv(remote.HubAllowHTTPEnv, "")
+	conn, err := defaultHubDial("ws://192.0.2.1/ws")
+	if err == nil {
+		conn.Close()
+		t.Fatal("cleartext public WebSocket connection was attempted")
+	}
+	if !strings.Contains(err.Error(), remote.HubAllowHTTPEnv) {
+		t.Fatalf("error = %v, want cleartext policy failure", err)
+	}
+}

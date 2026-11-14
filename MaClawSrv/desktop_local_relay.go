@@ -191,7 +191,7 @@ func (localRelayModule) Tools(_ context.Context, request agentruntime.TurnReques
 			"action=upload local_path= copies one file from their computer into this cloud desktop (remote_path= optional; default is this run's project folder). " +
 			"action=download remote_path= copies one file from this cloud desktop to their computer (local_folder= optional, default their MaClaw/<bot> folder; an existing file is never overwritten, a new name is chosen). Folders: zip/tar them first. " +
 			"action=tunnel_open host= port= makes 127.0.0.1:<port> in this desktop reach that host on their network, so ssh/scp/rsync/curl work normally (e.g. ssh -p <port> user@127.0.0.1). action=socks_open starts a SOCKS5 proxy for many hosts. action=tunnel_list, tunnel_close id=. " +
-			"The person approves new folders and hosts on their computer, so a call may wait for them; a refusal or timeout is final for that request: tell them, do not retry silently. " +
+			"With Ask (the default) the person approves new folders and hosts on their computer, so a call may wait; with Full access it does not wait and you can write files and reach local resources directly. A refusal or timeout is final for that request: tell them, do not retry silently. " +
 			"Report exactly what the result says (saved path, size); if the app is offline, say so and continue what you can without it.",
 		Parameters: map[string]any{
 			"type": "object",
@@ -322,8 +322,16 @@ func localRelayStatus(ctx context.Context, scope agentruntime.Scope) (string, er
 		}
 		b.WriteString(".\n")
 		if s.FilesEnabled {
-			fmt.Fprintf(&b, "Files: on, up to %d MB per file. Your own folder there: %s\nAllowed folders (anything else asks the person):\n", s.MaxTransferMB, s.BotFolder)
+			if s.Permission == localrelay.PermissionFull {
+				fmt.Fprintf(&b, "Files: on, full access, up to %d MB per file. Reading and writing do not ask, including folders that are not listed. Your own folder there: %s\nDefault folders:\n", s.MaxTransferMB, s.BotFolder)
+			} else {
+				fmt.Fprintf(&b, "Files: on, up to %d MB per file. Your own folder there: %s\nAllowed folders (anything else asks the person):\n", s.MaxTransferMB, s.BotFolder)
+			}
 			for _, root := range s.Roots {
+				if s.Permission == localrelay.PermissionFull {
+					fmt.Fprintf(&b, "- %s\n", root.Name)
+					continue
+				}
 				mode := "read"
 				if root.Write {
 					mode = "read+write"
@@ -334,7 +342,11 @@ func localRelayStatus(ctx context.Context, scope agentruntime.Scope) (string, er
 			b.WriteString("Files: turned off by the person.\n")
 		}
 		if s.NetworkEnabled {
-			fmt.Fprintf(&b, "Network relay: on (new hosts ask the person first; idle tunnels close after %d min).\n", s.TunnelIdleMinutes)
+			if s.Permission == localrelay.PermissionFull {
+				fmt.Fprintf(&b, "Network relay: on, full access (hosts do not ask; idle tunnels close after %d min).\n", s.TunnelIdleMinutes)
+			} else {
+				fmt.Fprintf(&b, "Network relay: on (new hosts ask the person first; idle tunnels close after %d min).\n", s.TunnelIdleMinutes)
+			}
 		} else {
 			b.WriteString("Network relay: turned off by the person.\n")
 		}
@@ -354,6 +366,13 @@ func localRelayList(ctx context.Context, scope agentruntime.Scope, p string) (st
 	}
 	var b strings.Builder
 	if strings.TrimSpace(p) == "" {
+		if r.Summary != nil && r.Summary.Permission == localrelay.PermissionFull {
+			b.WriteString("Folders on the person's computer (full access; other folders can be used without asking):\n")
+			for _, e := range r.Entries {
+				fmt.Fprintf(&b, "%s\n", e.Name)
+			}
+			return strings.TrimSpace(b.String()), nil
+		}
 		b.WriteString("Allowed folders on the person's computer:\n")
 		for _, e := range r.Entries {
 			mode := "read"

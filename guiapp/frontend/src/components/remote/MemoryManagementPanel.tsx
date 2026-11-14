@@ -562,6 +562,8 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                     category: String(item.category || ""),
                     tags: Array.isArray(item.tags) ? item.tags : [],
                     owner_id: `desktop-user:bot:${filterBot}`,
+                    status: String(item.status || ""),
+                    invalid_at: String(item.invalid_at || ""),
                     created_at: String(item.created_at || ""),
                     updated_at: String(item.updated_at || ""),
                     access_count: Number(item.access_count || 0),

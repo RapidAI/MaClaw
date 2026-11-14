@@ -236,7 +236,7 @@ func (a *App) fetchFileCompanionShareChanges(hub, viewer string) (fileCompanionS
 		return empty, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := hubHTTPClientWithTimeout(15 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return empty, err
@@ -2128,18 +2128,17 @@ func fileCompanionURLPort(value *url.URL) string {
 // host, and port must all match so credentials never cross services or downgrade
 // from HTTPS to HTTP.
 func fileCompanionDirectClient(timeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) == 0 || len(via) >= 3 || req == nil || req.URL == nil || req.URL.User != nil {
-				return http.ErrUseLastResponse
-			}
-			if !fileCompanionSameOrigin(via[len(via)-1].URL, req.URL) {
-				return http.ErrUseLastResponse
-			}
-			return nil
-		},
+	client := hubHTTPClientWithTimeout(timeout)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) == 0 || len(via) >= 3 || req == nil || req.URL == nil || req.URL.User != nil {
+			return http.ErrUseLastResponse
+		}
+		if !fileCompanionSameOrigin(via[len(via)-1].URL, req.URL) {
+			return http.ErrUseLastResponse
+		}
+		return nil
 	}
+	return client
 }
 
 const fileCompanionReaderGrantHeader = "X-Companion-Reader-Grant"
@@ -2171,7 +2170,7 @@ func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLi
 		return nil, false, false, time.Time{}, mark, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := hubHTTPClientWithTimeout(20 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, false, false, time.Time{}, mark, err
@@ -2795,7 +2794,7 @@ func postFileCompanionShareTo(endpoint, viewer, name, visibility, password, targ
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	client := &http.Client{Timeout: 3 * time.Minute}
+	client := hubHTTPClientWithTimeout(3 * time.Minute)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fileCompanionShareView{}, errors.New("暂时无法连接云端")

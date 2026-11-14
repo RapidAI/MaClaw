@@ -180,7 +180,9 @@ func TestLeftoverGenericChatDoesNotExposeSSH(t *testing.T) {
 	}
 }
 
-func TestSkillPreferenceLeftoverDoesNotApplyDiscoveryGrant(t *testing.T) {
+func TestSkillPreferenceSteerAppliesDiscoveryGrant(t *testing.T) {
+	// A local-skill steer narrows the surface, but a loop-scoped discovery
+	// grant is explicit host adjudication: it must land on the next request.
 	h := leftoverSSHCatalogHandler(t)
 	owner := "desktop-user"
 	loop := leftoverRoutingContext()
@@ -189,9 +191,123 @@ func TestSkillPreferenceLeftoverDoesNotApplyDiscoveryGrant(t *testing.T) {
 	if !strings.Contains(out, "(granted for the next request)") {
 		t.Fatalf("discover should grant ssh on this loop, got %q", out)
 	}
-	set := h.prepareAgentLoopTools(owner, "continue", loop, agentLoopPhase{ForceSkillPreference: true})
-	if toolListContainsName(set.Tools, "ssh") {
-		t.Fatalf("skill-preference leftover must not apply discovery grants, got %v", agentLoopToolNamesForLog(set.Tools))
+	set := h.prepareAgentLoopTools(owner, "continue", loop, agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceLocalOnly, PreferredSkillName: "pptx-gen"})
+	if !toolListContainsName(set.Tools, "ssh") {
+		t.Fatalf("a discovery grant must land through the skill-preference steer, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+}
+
+func TestDiscoverGrantPiercesSkillPreferenceSteer(t *testing.T) {
+	// The remote-control incident mechanism: a LocalOnly steer drops
+	// bash/craft_tool, and a discover grant for the blocked name must still
+	// land — the grant is the sanctioned petition for a tool the steer hides.
+	h := leftoverSSHCatalogHandler(t)
+	owner := "desktop-user"
+	loop := leftoverRoutingContext()
+	h.setSessionLoopCtx(owner, loop)
+	phase := agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceLocalOnly, PreferredSkillName: "pptx-gen"}
+	first := h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	if toolListContainsName(first.Tools, "bash") {
+		t.Fatalf("the steer must drop bash before any grant, got %v", agentLoopToolNamesForLog(first.Tools))
+	}
+	out := h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "bash compile"})
+	if !strings.Contains(out, "**bash** (granted for the next request)") {
+		t.Fatalf("discover should grant bash on this loop, got %q", out)
+	}
+	set := h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	if !toolListContainsName(set.Tools, "bash") {
+		t.Fatalf("a granted bash must pierce the skill-preference steer, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+}
+
+func TestRemoteSkillSearchDefersDiscoveryGrant(t *testing.T) {
+	// A required market-search round is a hard contract, not a steer: the
+	// surface is skill-search-only and the grant waits for the search to
+	// run. The discover output must report the hold, not promise the next
+	// request.
+	h := leftoverSSHCatalogHandler(t)
+	owner := "desktop-user"
+	loop := leftoverRoutingContext()
+	h.setSessionLoopCtx(owner, loop)
+	phase := agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceRemoteRequired}
+	// Build once so the search-required posture is published for discover.
+	h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	out := h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "bash compile"})
+	if strings.Contains(out, "(granted for the next request)") {
+		t.Fatalf("a grant under a required skill search must not promise the next request, got %q", out)
+	}
+	if !strings.Contains(out, "(held until this turn's required skill search runs") {
+		t.Fatalf("a grant under a required skill search must be reported as held, got %q", out)
+	}
+	set := h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	if toolListContainsName(set.Tools, "bash") {
+		t.Fatalf("a required skill-search round must not apply discovery grants, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+}
+
+func TestHostAuthoredContinuationSkipsSkillPreference(t *testing.T) {
+	h := &IMMessageHandler{}
+	marked := "[系统续接][execute] 按步骤执行目标：编写贪吃蛇游戏说明文档并编译"
+	for _, tc := range []struct {
+		name string
+		ctx  *LoopContext
+	}{
+		{"platform only", &LoopContext{Platform: "goal-continuation"}},
+		{"marker only", &LoopContext{}},
+		{"marker and platform", &LoopContext{Platform: "goal-continuation"}},
+		{"session round platform", &LoopContext{Platform: sessionRoundContinuationPlatform}},
+		{"unattended workflow platform", &LoopContext{Platform: unattendedWorkflowPlatform}},
+	} {
+		if ph := h.initialAgentLoopPhase(marked, tc.ctx); ph.ForceSkillPreference {
+			t.Fatalf("%s: a host-authored continuation wave must not enter skill preference, got %+v", tc.name, ph)
+		}
+	}
+	// An ordinary user turn with the same skill-hint text still prefers a
+	// skill: the exemption is the host author, not the words.
+	if ph := h.initialAgentLoopPhase("生成一份pdf报告文档", &LoopContext{}); !ph.ForceSkillPreference {
+		t.Fatal("a skill-hinting ordinary turn must still enter skill preference")
+	}
+}
+
+func TestSkillPreferenceReleasedOnLoopContextDischargesPhase(t *testing.T) {
+	h := &IMMessageHandler{}
+	ctx := &LoopContext{}
+	if ph := h.initialAgentLoopPhase("生成一份pdf报告文档", ctx); !ph.ForceSkillPreference {
+		t.Fatal("the un-released loop must still enter skill preference")
+	}
+	ctx.noteSkillPreferenceReleased()
+	ph := h.initialAgentLoopPhase("生成一份pdf报告文档", ctx)
+	if ph.ForceSkillPreference {
+		t.Fatalf("a released loop must not re-force skill preference, got %+v", ph)
+	}
+	if ph.SkillMode != skillPreferenceFallbackAllowed {
+		t.Fatalf("a released loop must report fallback-allowed, got %+v", ph.SkillMode)
+	}
+}
+
+func TestOnToolExecutedReleasesSkillPreferenceLikeDispatcher(t *testing.T) {
+	ctx := &LoopContext{}
+	cb := &sharedAgentLoopCallbacks{
+		loopCtx: ctx,
+		phase:   agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceRemoteRequired},
+	}
+	cb.OnToolExecuted("search_and_install_skill", "{}", "installed", true)
+	if !ctx.skillPreferenceWasReleased() {
+		t.Fatal("a required market-search call must release the skill preference")
+	}
+
+	ctxFailed := &LoopContext{}
+	cbFailed := &sharedAgentLoopCallbacks{
+		loopCtx: ctxFailed,
+		phase:   agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceLocalOnly, PreferredSkillName: "pptx-gen"},
+	}
+	cbFailed.OnToolExecuted("manage_skill", "{}", "listed", true)
+	if ctxFailed.skillPreferenceWasReleased() {
+		t.Fatal("a successful non-run skill call must not release the preference")
+	}
+	cbFailed.OnToolExecuted("run_skill", "{}", "failed", false)
+	if !ctxFailed.skillPreferenceWasReleased() {
+		t.Fatal("a failed skill-tool call must release the preference")
 	}
 }
 

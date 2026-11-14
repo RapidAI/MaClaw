@@ -2059,6 +2059,13 @@ func (p *publishRun) checkAPI(key string) (string, error) {
 // A landing URL that itself says the submit went through (?published=true).
 var publishSubmittedURL = regexp.MustCompile(`(?i)[?&#](published|publish_success|success|status)=(true|1|success|ok)`)
 
+// URLConfirmsSubmit reports a landing URL the site uses to say the submit
+// went through. The editor address does not. A confirmed submit must not be
+// published again; an editor page must not block the next attempt.
+func URLConfirmsSubmit(raw string) bool {
+	return publishSubmittedURL.MatchString(strings.TrimSpace(raw))
+}
+
 func (p *publishRun) checkResult(key string, budget time.Duration, listed bool) (string, error) {
 	deadline := time.Now().Add(budget)
 	reloaded := false

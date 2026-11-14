@@ -123,8 +123,15 @@ func (m *FloatingAssistantManager) HideFloatingButton() {
 	m.visible = false
 }
 
-// RefreshAppearance recreates the desktop pet window so native renderers pick up
-// pet skin, size, and interaction changes immediately.
+// petAppearanceReloader updates a live pet window in place. Destroying and
+// recreating the macOS panel on every skin change over-releases the window
+// and kills the process.
+type petAppearanceReloader interface {
+	ReloadAppearance(x, y, size int) error
+}
+
+// RefreshAppearance applies pet skin, size, and interaction changes. A live
+// window that can reload does so without being destroyed.
 func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	m.mu.Lock()
 	defer func() {
@@ -153,7 +160,16 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	} else {
 		m.posX, m.posY = clampFloatingPosition(m.posX, m.posY, winSize, getScreenWidth(), getScreenHeight())
 	}
-	if m.visible && m.window != nil {
+	if m.visible && m.window != nil && m.window.IsCreated() {
+		if reloader, ok := m.window.(petAppearanceReloader); ok {
+			if err := reloader.ReloadAppearance(m.posX, m.posY, winSize); err != nil {
+				log.Printf("[floating-assistant] RefreshAppearance: reload failed: %v", err)
+			} else {
+				m.window.Show()
+				m.visible = true
+				return
+			}
+		}
 		m.window.Destroy()
 	}
 	if err := m.window.Create(m.posX, m.posY, winSize, winSize); err != nil {

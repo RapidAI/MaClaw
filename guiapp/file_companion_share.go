@@ -1478,7 +1478,7 @@ func postFileCompanionShareMarks(target, viewer, grant, token, marks string) (in
 	}
 	fileCompanionShareAuthorize(req, viewer, grant)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := hubHTTPClientWithTimeout(60 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, errors.New("暂时无法连接云端")
@@ -1917,7 +1917,7 @@ func getFileCompanionShareChat(target, viewer, grant, token string) ([]byte, int
 		return nil, 0, err
 	}
 	fileCompanionShareAuthorize(req, viewer, grant)
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := hubHTTPClientWithTimeout(60 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, errors.New("暂时无法连接云端")
@@ -1972,7 +1972,7 @@ func postFileCompanionShareChat(target, viewer, grant, token string, body []byte
 	if base >= 0 {
 		req.Header.Set("X-Companion-Chat-Base", strconv.Itoa(base))
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := hubHTTPClientWithTimeout(60 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, errors.New("暂时无法连接云端")
@@ -2390,7 +2390,7 @@ func postFileCompanionShareSync(target, viewer, grant, token, name string, raw i
 	}
 	fileCompanionShareAuthorize(req, viewer, grant)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	client := &http.Client{Timeout: 3 * time.Minute}
+	client := hubHTTPClientWithTimeout(3 * time.Minute)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fileCompanionShareView{}, errors.New("暂时无法连接云端")

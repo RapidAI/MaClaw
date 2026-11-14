@@ -52,6 +52,24 @@ func loadRestartTrajectory(raw string) (restartTrajectory, bool) {
 // after the service process comes back.
 const restartNoticeContinue = "服务刚重启，这项任务接着做。"
 
+// clipTaskRequest keeps a resumed turn's original ask short enough for
+// message metadata. A long article often puts "发到知乎、CSDN和小红书" at
+// the end; cutting only the head would drop the sites.
+func clipTaskRequest(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || text == restartNoticeContinue {
+		return ""
+	}
+	r := []rune(text)
+	const limit = 2000
+	if len(r) <= limit {
+		return text
+	}
+	const tail = 700
+	head := limit - tail - 1
+	return string(r[:head]) + "\n" + string(r[len(r)-tail:])
+}
+
 // restartPersonAsk is the message the person sent, so a resumed turn still
 // knows they asked for a screenshot or a file. The restart notice is not
 // that message. The stored user message wins; the checkpoint's user rows
@@ -444,6 +462,9 @@ func (s *Service) resumeOne(ctx context.Context, p Principal, inst Instance, run
 	_ = inst
 	s.sayRestart(p, cp.InstanceID, cp.SessionID, restartNoticeContinue)
 	meta := map[string]string{"restart_resume": "1", "restart_from": run.ID}
+	if text := clipTaskRequest(restartPersonAsk(s, run)); text != "" {
+		meta["task_request"] = text
+	}
 	continuing := run
 	in := PostMessageInput{
 		Content:   restartNoticeContinue,

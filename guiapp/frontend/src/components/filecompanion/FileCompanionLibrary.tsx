@@ -3638,6 +3638,7 @@ export function CompanionGroupsDialog({
     const [groupContact, setGroupContact] = useState<Record<string, string>>({});
     const [groupEdits, setGroupEdits] = useState<Record<string, GroupEdit>>({});
     const [groupConfirm, setGroupConfirm] = useState<Record<string, "dissolve" | "leave">>({});
+    const [memberConfirm, setMemberConfirm] = useState<{ groupID: string; contact: string } | null>(null);
     const [groupBusy, setGroupBusy] = useState(false);
     // groupBusy is still false until the next paint, so a second click in this
     // turn would start another request and then toast a failure for one that worked.
@@ -3763,6 +3764,7 @@ export function CompanionGroupsDialog({
         if (!beginGroupAction()) return;
         try {
             rememberGroup(await RemoveFileCompanionGroupMember(id, contact));
+            setMemberConfirm(null);
             showToast(cs("已移出群组"), "success", 6000);
             await reload();
         } catch (err) {
@@ -3860,6 +3862,9 @@ export function CompanionGroupsDialog({
     // yet that is the only action.
     const cardRef = useDialogFocus<HTMLDivElement>(".file-companion-groups-create input", !loading);
     const selectedEdit = selected ? draftOf(selected) : null;
+    const selectedDirty = Boolean(selected && selectedEdit && (
+        selectedEdit.name.trim() !== selected.name || companionGroupIcon(selectedEdit.icon) !== companionGroupIcon(selected.icon)
+    ));
     const selectedConfirm = selected ? groupConfirm[selected.id] : undefined;
     const cancelConfirm = () => {
         if (!selected) return;
@@ -4062,7 +4067,7 @@ export function CompanionGroupsDialog({
                                                         [selected.id]: { name: event.target.value, icon: current[selected.id]?.icon ?? companionGroupIcon(selected.icon) },
                                                     }))}
                                                 />
-                                                <button type="button" className="file-companion-dialog-secondary" data-testid={`file-companion-group-save-${selected.id}`} disabled={groupBusy} onClick={() => { void saveGroup(selected.id); }}>{cs("保存设置")}</button>
+                                                <button type="button" className="file-companion-dialog-secondary" data-testid={`file-companion-group-save-${selected.id}`} disabled={groupBusy || !selectedDirty} onClick={() => { void saveGroup(selected.id); }}>{cs("保存设置")}</button>
                                             </div>
                                         </div>
                                         </section>
@@ -4101,27 +4106,49 @@ export function CompanionGroupsDialog({
                                                                 <span className="file-companion-library-member-contact">{member.contact}</span>
                                                                 <small className="file-companion-library-member-status" data-ok={member.status === "accepted" ? "true" : undefined}>{member.status === "accepted" ? cs("已加入") : member.status === "ignored" ? cs("已忽略邀请") : cs("等待接受邀请")}</small>
                                                             </div>
-                                                            {member.status !== "accepted" ? (
-                                                                <button
-                                                                    type="button"
-                                                                    className="file-companion-library-member-action"
-                                                                    data-testid={`file-companion-group-resend-${selected.id}-${member.contact}`}
-                                                                    disabled={groupBusy}
-                                                                    onClick={() => { void inviteMember(selected.id, member.contact, true); }}
-                                                                >{cs("重新邀请")}</button>
-                                                            ) : null}
-                                                            <button
-                                                                type="button"
-                                                                className="file-companion-library-x"
-                                                                data-testid={`file-companion-group-remove-${selected.id}-${member.contact}`}
-                                                                aria-label={companionFill(getCompanionUiLang(), "移除 ${name}", { name: member.contact })}
-                                                                title={companionFill(getCompanionUiLang(), "移除 ${name}", { name: member.contact })}
-                                                                disabled={groupBusy}
-                                                                onClick={() => { void removeMember(selected.id, member.contact); }}
-                                                            >
-                                                                <LibraryGlyph name="x" size={12} />
-                                                                <span className="file-companion-sr">{cs("移除")}</span>
-                                                            </button>
+                                                            {memberConfirm?.groupID === selected.id && memberConfirm.contact === member.contact ? (
+                                                                <div className="file-companion-library-member-confirm" role="group" aria-label={cs("确认移除成员")}>
+                                                                    <span>{cs("确认移除？")}</span>
+                                                                    <button
+                                                                        type="button"
+                                                                        className="file-companion-library-member-action file-companion-library-member-action--danger"
+                                                                        data-testid={`file-companion-group-remove-confirm-${selected.id}-${member.contact}`}
+                                                                        disabled={groupBusy}
+                                                                        onClick={() => { void removeMember(selected.id, member.contact); }}
+                                                                    >{cs("确认")}</button>
+                                                                    <button
+                                                                        type="button"
+                                                                        className="file-companion-library-member-action"
+                                                                        data-testid={`file-companion-group-remove-cancel-${selected.id}-${member.contact}`}
+                                                                        disabled={groupBusy}
+                                                                        onClick={() => setMemberConfirm(null)}
+                                                                    >{cs("取消")}</button>
+                                                                </div>
+                                                            ) : (
+                                                                <>
+                                                                    {member.status !== "accepted" ? (
+                                                                        <button
+                                                                            type="button"
+                                                                            className="file-companion-library-member-action"
+                                                                            data-testid={`file-companion-group-resend-${selected.id}-${member.contact}`}
+                                                                            disabled={groupBusy}
+                                                                            onClick={() => { void inviteMember(selected.id, member.contact, true); }}
+                                                                        >{cs("重新邀请")}</button>
+                                                                    ) : null}
+                                                                    <button
+                                                                        type="button"
+                                                                        className="file-companion-library-x"
+                                                                        data-testid={`file-companion-group-remove-${selected.id}-${member.contact}`}
+                                                                        aria-label={companionFill(getCompanionUiLang(), "移除 ${name}", { name: member.contact })}
+                                                                        title={companionFill(getCompanionUiLang(), "移除 ${name}", { name: member.contact })}
+                                                                        disabled={groupBusy}
+                                                                        onClick={() => setMemberConfirm({ groupID: selected.id, contact: member.contact })}
+                                                                    >
+                                                                        <LibraryGlyph name="x" size={12} />
+                                                                        <span className="file-companion-sr">{cs("移除")}</span>
+                                                                    </button>
+                                                                </>
+                                                            )}
                                                         </div>
                                                     ))}
                                                 </div>
@@ -4219,6 +4246,7 @@ export function CompanionShareDialog({
     // stored unless a new one is typed.
     const [password, setPassword] = useState("");
     const [shareBusy, setShareBusy] = useState(false);
+    const shareBusyRef = useRef(false);
     const [shareError, setShareError] = useState("");
     const [shareErrorField, setShareErrorField] = useState<ShareErrorField>("");
     const [shareURL, setShareURL] = useState(share?.shareUrl ?? "");
@@ -4233,6 +4261,7 @@ export function CompanionShareDialog({
     // to the owner, which used to hide 收回 even after the seat had moved.
     const [hostIsMe, setHostIsMe] = useState(share?.host !== false);
     const [hostBusy, setHostBusy] = useState(false);
+    const hostBusyRef = useRef(false);
     const [hostError, setHostError] = useState("");
     const echoVisibility = savedEcho?.visibility ?? share?.visibility ?? "public";
     const echoExpiresAt = savedEcho ? savedEcho.expiresAt : (share?.expiresAt ?? "");
@@ -4307,7 +4336,7 @@ export function CompanionShareDialog({
     const shareCurrent = async () => {
         // 修改 works from the share alone: a row this account created on
         // another machine has no local copy here, and it is still editable.
-        if ((!editing && !path) || shareBusy || hostBusy) return;
+        if ((!editing && !path) || shareBusy || hostBusy || shareBusyRef.current || hostBusyRef.current) return;
         setShareError("");
         // An edit that did not touch 有效期 sends -1, which the backend reads
         // as "keep the expiry already on the link".
@@ -4351,6 +4380,7 @@ export function CompanionShareDialog({
             rejectShare(cs("这个范围已经分享过了。请换一个对象，或去修改原来的分享。"), "");
             return;
         }
+        shareBusyRef.current = true;
         setShareBusy(true);
         try {
             const result = editing
@@ -4372,12 +4402,14 @@ export function CompanionShareDialog({
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
         } finally {
+            shareBusyRef.current = false;
             setShareBusy(false);
         }
     };
 
     const syncCurrent = async () => {
-        if (!path || shareBusy || hostBusy) return;
+        if (!path || shareBusy || hostBusy || shareBusyRef.current || hostBusyRef.current) return;
+        shareBusyRef.current = true;
         setShareBusy(true);
         try {
             await SyncFileCompanionShare(path, marksJSON);
@@ -4390,21 +4422,27 @@ export function CompanionShareDialog({
         try {
             await reload();
         } finally {
+            shareBusyRef.current = false;
             setShareBusy(false);
         }
     };
 
     const deleteCurrent = async () => {
         const token = share?.token ?? "";
-        if (!token || shareBusy || hostBusy) return;
+        if (!token || shareBusy || hostBusy || shareBusyRef.current || hostBusyRef.current) return;
         const docName = name || share?.name || cs("当前文档");
+        shareBusyRef.current = true;
+        setShareBusy(true);
         const ok = await showConfirm(
             companionFill(getCompanionUiLang(), "确认删除“${name}”的分享？\n链接会立即失效，其他人将无法再打开。\n没有其他分享时，这份文档会回到本机项目，高亮和阅读记录会保留。\n在本机项目里删除才会清除这些数据。", { name: docName }),
             cs("删除分享"),
             { confirmText: cs("删除"), cancelText: cs("取消"), confirmVariant: "danger" },
         );
-        if (!ok) return;
-        setShareBusy(true);
+        if (!ok) {
+            shareBusyRef.current = false;
+            setShareBusy(false);
+            return;
+        }
         try {
             const raw = await DeleteFileCompanionShare(token) as Record<string, unknown>;
             const rev = numberOf(raw, "libraryRev", "LibraryRev");
@@ -4413,6 +4451,7 @@ export function CompanionShareDialog({
             companionLibraryHideRow({ id: token, source: "cloud", token }, rev, 0);
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
+            shareBusyRef.current = false;
             setShareBusy(false);
             return;
         }
@@ -4422,6 +4461,8 @@ export function CompanionShareDialog({
         // Close before asking for the list: a slow hub must not keep a deleted
         // share's dialog on screen. The background refresh still pushes the
         // new list into 文档管理.
+        shareBusyRef.current = false;
+        setShareBusy(false);
         showToast(cs("已删除分享"), "success", 6000);
         onClose();
         await reload();
@@ -4432,11 +4473,12 @@ export function CompanionShareDialog({
     const transferHost = async () => {
         const token = share?.token ?? "";
         const contact = hostContact.trim();
-        if (!token || hostBusy || shareBusy) return;
+        if (!token || hostBusy || shareBusy || hostBusyRef.current || shareBusyRef.current) return;
         if (!contact) {
             setHostError(cs("请填写参与者邮箱或手机号"));
             return;
         }
+        hostBusyRef.current = true;
         setHostBusy(true);
         setHostError("");
         try {
@@ -4448,6 +4490,7 @@ export function CompanionShareDialog({
         } catch (err) {
             setHostError(libraryError(err));
         } finally {
+            hostBusyRef.current = false;
             setHostBusy(false);
         }
     };
@@ -4456,7 +4499,9 @@ export function CompanionShareDialog({
     // current host. The admin never loses management rights.
     const revokeHost = async () => {
         const token = share?.token ?? "";
-        if (!token || hostBusy || shareBusy) return;
+        if (!token || hostBusy || shareBusy || hostBusyRef.current || shareBusyRef.current) return;
+        hostBusyRef.current = true;
+        setHostBusy(true);
         const ok = await showConfirm(
             pendingHost
                 ? companionFill(getCompanionUiLang(), "确认取消提名 ${name} 接任主持人？", { name: pendingHost })
@@ -4464,9 +4509,12 @@ export function CompanionShareDialog({
             pendingHost ? cs("取消转移") : cs("收回主持权"),
             { confirmText: cs("确认"), cancelText: cs("取消"), confirmVariant: "danger" },
         );
-        if (!ok) return;
+        if (!ok) {
+            hostBusyRef.current = false;
+            setHostBusy(false);
+            return;
+        }
         const cancelling = Boolean(pendingHost);
-        setHostBusy(true);
         setHostError("");
         try {
             await RevokeFileCompanionShareHost(token, cancelling ? "cancel" : "revoke");
@@ -4480,6 +4528,7 @@ export function CompanionShareDialog({
             // instead of leaving the cancel button on a finished nomination.
             await reload();
         } finally {
+            hostBusyRef.current = false;
             setHostBusy(false);
         }
     };

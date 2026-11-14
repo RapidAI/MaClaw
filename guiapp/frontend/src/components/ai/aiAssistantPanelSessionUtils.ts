@@ -321,6 +321,30 @@ export function goalChecklistOverlayBodyFromMessages(messages: readonly ChatMess
 }
 
 /**
+ * Sessions whose goal the backend reported terminal (complete/cleared).
+ * The live status retires the float outright — belt and braces beside the
+ * transcript card's 已完成 rule, so an event that arrives before the card
+ * merges (or a card the display path drops) still ends the float. Any
+ * non-terminal status — a new or resumed goal — clears the mark and the
+ * float returns.
+ */
+export function goalTerminalSessionKeysNext(
+    prev: ReadonlySet<string>,
+    userID: unknown,
+    status: unknown,
+): Set<string> | null {
+    const key = normalizeAssistantSessionKey(String(userID ?? "").trim());
+    if (!key) return null;
+    const normalizedStatus = String(status ?? "").trim().toLowerCase();
+    const terminal = normalizedStatus === "complete" || normalizedStatus === "cleared";
+    if (terminal === prev.has(key)) return null;
+    const next = new Set(prev);
+    if (terminal) next.add(key);
+    else next.delete(key);
+    return next;
+}
+
+/**
  * The goal owns one checklist. Historical "/goal 执行步骤" rows are earlier
  * snapshots of that card. Show it once, directly above the latest goal
  * continuation reply. A later message from the user does not take the card.

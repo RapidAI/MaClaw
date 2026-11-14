@@ -317,7 +317,7 @@ func (h *IMMessageHandler) truncationFallbackToolCatalog(ctx *LoopContext, userI
 		if shouldRestrictToSkillSearch(phaseValue) {
 			catalog = filterToolsForRemoteSkillSearch(catalog)
 		} else {
-			catalog = filterToolsForSkillPreference(catalog)
+			catalog = filterToolsForSkillPreference(catalog, ctx.discoveredConditionalToolNameSet())
 		}
 	}
 	if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {

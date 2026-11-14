@@ -1586,14 +1586,24 @@ func (a *App) SetAutoCompress(enabled bool) error {
 		return fmt.Errorf("memory pipeline not initialized")
 	}
 	previous := pipeline.AutoCompressEnabled()
-	pipeline.SetAutoCompressEnabled(enabled)
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.MemoryAutoCompress = enabled
-	}); err != nil {
-		pipeline.SetAutoCompressEnabled(previous)
-		return err
+	previousConfig := previous
+	if cfg, err := a.LoadConfig(); err == nil {
+		previousConfig = cfg.MemoryAutoCompress
 	}
-	return nil
+	return runMemorySettingTransaction(
+		func() error { pipeline.SetAutoCompressEnabled(enabled); return nil },
+		func() error {
+			return a.PatchConfig(func(cfg *corelib.AppConfig) {
+				cfg.MemoryAutoCompress = enabled
+			})
+		},
+		func() error {
+			pipeline.SetAutoCompressEnabled(previous)
+			return a.PatchConfig(func(cfg *corelib.AppConfig) {
+				cfg.MemoryAutoCompress = previousConfig
+			})
+		},
+	)
 }
 
 // GetAutoCompressStatus returns the current state of the auto-compression service (Wails binding).
@@ -1790,23 +1800,39 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
-	if err := maintenance.SetMaxBackups(n); err != nil {
-		rollbackErr := maintenance.SetMaxBackups(previous)
-		if rollbackErr != nil {
-			return fmt.Errorf("%w; rollback retention: %v", err, rollbackErr)
-		}
-		return err
+	return runMemorySettingTransaction(
+		func() error { return maintenance.SetMaxBackups(n) },
+		func() error {
+			return a.PatchConfig(func(cfg *corelib.AppConfig) {
+				cfg.MemoryMaxBackups = n
+			})
+		},
+		func() error {
+			if err := maintenance.SetMaxBackups(previous); err != nil {
+				return err
+			}
+			return a.PatchConfig(func(cfg *corelib.AppConfig) {
+				cfg.MemoryMaxBackups = previous
+			})
+		},
+	)
+}
+
+func runMemorySettingTransaction(apply, persist, rollback func() error) error {
+	if err := apply(); err != nil {
+		return memorySettingRollbackError(err, rollback())
 	}
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.MemoryMaxBackups = n
-	}); err != nil {
-		rollbackErr := maintenance.SetMaxBackups(previous)
-		if rollbackErr != nil {
-			return fmt.Errorf("%w; rollback retention: %v", err, rollbackErr)
-		}
-		return err
+	if err := persist(); err != nil {
+		return memorySettingRollbackError(err, rollback())
 	}
 	return nil
+}
+
+func memorySettingRollbackError(err, rollbackErr error) error {
+	if rollbackErr != nil {
+		return fmt.Errorf("%w; rollback memory setting: %v", err, rollbackErr)
+	}
+	return err
 }
 
 // ListArchiveMemories returns archived (cold storage) entries filtered by category and keyword (Wails binding).

@@ -222,9 +222,14 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d matching tools:\n", len(ranked)))
+	// A hard market-search round defers non-skill grants: the surface is
+	// contractually skill-search-only until the search runs, so a grant made
+	// now cannot land on the next request. Say so instead of promising it.
+	deferGrants := loopCtx != nil && loopCtx.skillSearchRequiredSurfaceActive()
 	anyGranted := false
 	anyOnSurface := false
 	anyBlocked := false
+	anyDeferred := false
 	anyLegacy := false
 	for i, item := range ranked {
 		if mcp, ok := mcpMatches[item.name]; ok {
@@ -255,14 +260,19 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		if onSurface[item.name] {
 			anyOnSurface = true
 		}
-		if activated[item.name] && !onSurface[item.name] && !blocked {
+		deferred := activated[item.name] && !onSurface[item.name] && !blocked && deferGrants && !isSkillSearchToolName(item.name) && !isSkillProgressToolName(item.name)
+		if deferred {
+			anyDeferred = true
+		} else if activated[item.name] && !onSurface[item.name] && !blocked {
 			anyGranted = true
 		}
-		b.WriteString(discoverToolStatusLine(i+1, item.name, desc, onSurface[item.name], activated[item.name], blocked))
+		b.WriteString(discoverToolStatusLine(i+1, item.name, desc, onSurface[item.name], activated[item.name] && !deferred, blocked, deferred))
 	}
 	switch {
 	case anyGranted:
 		b.WriteString("\nGranted names will be on the next model request in this turn. Call them then; do not rediscover the same name.")
+	case anyDeferred:
+		b.WriteString("\nThis turn must run a skill search first; the held name joins the surface after it runs. Do not rediscover the same name.")
 	case anyOnSurface:
 		b.WriteString("\nA listed name is already on this turn's tool surface. Call it directly; do not keep calling discover_tool for the same name.")
 	case anyBlocked:
@@ -573,12 +583,14 @@ func discoveryPublishedDescription(name, desc string) string {
 	return desc
 }
 
-func discoverToolStatusLine(index int, name, desc string, onSurface, activated, blocked bool) string {
+func discoverToolStatusLine(index int, name, desc string, onSurface, activated, blocked, deferred bool) string {
 	switch {
 	case blocked:
 		return fmt.Sprintf("%d. **%s** (blocked by host policy — do not rediscover) - %s\n", index, name, desc)
 	case onSurface:
 		return fmt.Sprintf("%d. **%s** (already in this turn's tools — call it now) - %s\n", index, name, desc)
+	case deferred:
+		return fmt.Sprintf("%d. **%s** (held until this turn's required skill search runs — do not rediscover) - %s\n", index, name, desc)
 	case activated:
 		return fmt.Sprintf("%d. **%s** (granted for the next request) - %s\n", index, name, desc)
 	default:

@@ -1768,16 +1768,16 @@ const BotShot = memo(function BotShot({ path, alt, openLabel, onOpen }: { path: 
 });
 
 // Cards in a reply: a link opens in the system browser, a path opens the file
-// (or shows it in its folder).
-const botChipHandlers = {
-    openLink: (url: string) => BrowserOpenURL(url),
-    openPath: (event: { preventDefault: () => void; stopPropagation: () => void }, path: string) => openBotFile(event, path),
-};
+// (or shows it in its folder). botID selects the copy this bot delivered
+// when the card still quotes the cloud path.
+const botChipOpenLink = (url: string) => BrowserOpenURL(url);
 
-function openBotFile(event: { preventDefault: () => void; stopPropagation: () => void }, filePath: string) {
+function openBotFile(event: { preventDefault: () => void; stopPropagation: () => void }, filePath: string, botID?: string) {
     event.preventDefault();
     event.stopPropagation();
-    void OpenFileOrShowInFolder(filePath).catch(() => ShowItemInFolder(filePath));
+    const openForBot = (window as unknown as { go?: { main?: { App?: { OpenBotFile?: (id: string, path: string) => Promise<void> } } } }).go?.main?.App?.OpenBotFile;
+    const open = botID && openForBot ? openForBot(botID, filePath) : OpenFileOrShowInFolder(filePath);
+    void open.catch(() => ShowItemInFolder(filePath));
 }
 
 // loadSaidPicture fetches a picture a bot sent as its own message, so the
@@ -1800,10 +1800,11 @@ async function loadSaidPicture(noteId: string, name: string): Promise<{ mime: st
 // openFeedFile downloads a file a bot shared with a Hub message (the same
 // bytes on every client). A failure is thrown to the chip, which shows it.
 async function openFeedFile(noteId: string, name: string): Promise<void> {
-    const file = await FetchDesktopBotMailFile(noteId, name);
-    if (file?.local_path) {
+    const file = await FetchDesktopBotMailFile(noteId, name) as { name?: string; mime?: string; data?: string; local_path?: string; LocalPath?: string } | undefined;
+    const path = String(file?.local_path || file?.LocalPath || '');
+    if (path) {
         // A large file: this app downloaded it from Hub into the bot's folder.
-        await OpenFileOrShowInFolder(file.local_path).catch(() => ShowItemInFolder(file.local_path as string));
+        await OpenFileOrShowInFolder(path).catch(() => ShowItemInFolder(path));
         return;
     }
     if (!file || !file.data) throw new Error('Hub 上没有这个文件');
@@ -2625,7 +2626,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const stageEpoch = useRef(0);
     const selected = bots.find(bot => bot.id === selectedId) || null;
     const messages = selected ? (messagesByBot[selected.id] || []) : [];
-    const placedSays = placeChatSays(collab.said, selected?.id || '', !!selected?.primary, messages.filter(message => !message.pending), bots.map(bot => bot.id));
+    const liveBotIds = bots.map(bot => bot.id);
+    const placedSays = placeChatSays(collab.said, selected?.id || '', !!selected?.primary, messages.filter(message => !message.pending), liveBotIds, liveBotIds);
     useEffect(() => {
         if (!selected) return;
         releaseSettledAckCommands(ackCommandsRef.current, selected.id, messages);
@@ -4009,10 +4011,19 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 setScheduleNotice(error instanceof Error && error.message ? error.message : text.unavailable);
             });
         };
+        const refresh = () => {
+            if (typeof document !== 'undefined' && document.hidden) return;
+            load();
+        };
         load();
+        const timer = window.setInterval(refresh, 5000);
+        const onVisible = () => refresh();
+        document.addEventListener('visibilitychange', onVisible);
         const off = EventsOn('scheduled-tasks-changed', load);
         return () => {
             live = false;
+            window.clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVisible);
             if (typeof off === 'function') off();
         };
     }, [selectedId, panelSection, showDesktop, text.unavailable]);
@@ -6808,7 +6819,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             data-testid="desktop-bot-log"
                             onScroll={onLogScroll}
                         >
-                            <BotChipContext.Provider value={botChipHandlers}>
+                            <BotChipContext.Provider value={{ openLink: botChipOpenLink, openPath: (event, path) => openBotFile(event, path, selected.id) }}>
                             <div ref={logBodyRef} className="desktop-bot-chat__log-body">
                             {messages.length === 0 ? (
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>

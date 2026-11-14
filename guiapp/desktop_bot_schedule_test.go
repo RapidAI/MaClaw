@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -106,6 +107,50 @@ func TestListDesktopBotSchedulesShowsOnlyThisBot(t *testing.T) {
 	}
 	if len(kept) != 1 || kept[0].ID != other || kept[0].Hour != 8 || kept[0].Minute != 30 || kept[0].DayOfWeek != 1 {
 		t.Fatalf("other bot = %#v", kept)
+	}
+}
+
+func TestListDesktopBotSchedulesPrefersTheHostClock(t *testing.T) {
+	shareAccessRemoteUserOverride = "local"
+	t.Cleanup(func() {
+		shareAccessRemoteUserOverride = ""
+		desktopBotExchangeOverride = nil
+	})
+	mgr, err := scheduler.NewManager(filepath.Join(t.TempDir(), "tasks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{scheduledTaskManager: mgr}
+	localID, err := app.ArmDesktopBotSchedule("bot_1", "本机残留", "create", "只在这台电脑上。", 1, -1, -1, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if method == http.MethodGet && strings.HasSuffix(path, "/schedules") {
+			raw := []byte(`{"items":[{"id":"srv-weather","name":"天气","action":"报告天气","interval_minutes":5,"day_of_week":-1,"status":"active"}]}`)
+			if err := json.Unmarshal(raw, dest); err != nil {
+				return 0, err
+			}
+			return http.StatusOK, nil
+		}
+		return 0, fmt.Errorf("host clock refused")
+	}
+	listed, err := app.ListDesktopBotSchedules("bot_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != "srv-weather" || listed[0].IntervalMinutes != 5 {
+		t.Fatalf("list = %#v", listed)
+	}
+	if err := app.DeleteDesktopBotSchedule("bot_1", "srv-weather"); err == nil || !strings.Contains(err.Error(), "host clock refused") {
+		t.Fatalf("delete while the host refused = %v", err)
+	}
+	left, err := app.listLocalDesktopBotSchedules("bot_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].ID != localID {
+		t.Fatalf("local copy = %#v", left)
 	}
 }
 

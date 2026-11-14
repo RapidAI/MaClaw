@@ -1048,6 +1048,52 @@ class QueueView {
       );
 }
 
+/// One timer from `GET .../schedules`. The clock lives on the server.
+class BotSchedule {
+  final String id;
+  final String name;
+  final String action;
+  final int intervalMinutes;
+  final int hour;
+  final int minute;
+  final int dayOfWeek;
+  final String nextRunAt;
+  final String status;
+
+  const BotSchedule({
+    this.id = '',
+    this.name = '',
+    this.action = '',
+    this.intervalMinutes = 0,
+    this.hour = 0,
+    this.minute = 0,
+    this.dayOfWeek = -1,
+    this.nextRunAt = '',
+    this.status = '',
+  });
+
+  factory BotSchedule.fromJson(Map<String, dynamic> json) => BotSchedule(
+        id: (json['id'] as String? ?? '').trim(),
+        name: (json['name'] as String? ?? '').trim(),
+        action: (json['action'] as String? ?? '').trim(),
+        intervalMinutes: (json['interval_minutes'] as num? ?? 0).toInt(),
+        hour: (json['hour'] as num? ?? 0).toInt(),
+        minute: (json['minute'] as num? ?? 0).toInt(),
+        dayOfWeek: (json['day_of_week'] as num? ?? -1).toInt(),
+        nextRunAt: (json['next_run_at'] as String? ?? '').trim(),
+        status: (json['status'] as String? ?? '').trim(),
+      );
+
+  String get when {
+    if (intervalMinutes > 0) return '每 $intervalMinutes 分钟';
+    final hh = hour.toString().padLeft(2, '0');
+    final mm = minute.toString().padLeft(2, '0');
+    const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    final day = dayOfWeek >= 0 && dayOfWeek < days.length ? days[dayOfWeek] : '每天';
+    return '$day $hh:$mm';
+  }
+}
+
 /// Fixed confirmation sentence the person sends to approve a plan —
 /// matches `BOT_CONFIRM_TASK` in desktopBots.ts. The Hub recognises it
 /// (typed-confirm sentence) and folds the plan reading.

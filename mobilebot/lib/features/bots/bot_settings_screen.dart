@@ -25,10 +25,13 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
   late String _shape;
   late bool _primary;
   bool _saving = false;
+  List<BotSchedule> _schedules = const [];
+  String _scheduleNote = '';
 
   @override
   void initState() {
     super.initState();
+    _loadSchedules();
     _nameCtrl = TextEditingController(text: widget.bot.name);
     _descCtrl = TextEditingController(text: widget.bot.description);
     _desktopMode = widget.bot.desktopMode == 'isolated' ? 'isolated' : 'shared';
@@ -44,6 +47,48 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     _nameCtrl.dispose();
     _descCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadSchedules() async {
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
+    try {
+      final items = await api.schedules(widget.bot.id);
+      if (mounted) {
+        setState(() {
+          _schedules = items;
+          _scheduleNote = '';
+        });
+      }
+    } on Object catch (error) {
+      if (mounted) setState(() => _scheduleNote = failureMessage(error));
+    }
+  }
+
+  Future<void> _deleteSchedule(BotSchedule item) async {
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
+    final name = item.name.isEmpty ? item.action : item.name;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除定时任务'),
+        content: Text('确定删除定时任务「$name」？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await api.deleteSchedule(widget.bot.id, item.id);
+      await _loadSchedules();
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(failureMessage(error))));
+      }
+    }
   }
 
   Future<void> _save() async {
@@ -285,6 +330,35 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                     decoration: const InputDecoration(labelText: '简介'),
                     maxLines: 3,
                   ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('定时任务', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 4),
+                  if (_scheduleNote.isNotEmpty)
+                    Text(_scheduleNote, style: const TextStyle(fontSize: 12))
+                  else if (_schedules.isEmpty)
+                    const Text('还没有定时任务。', style: TextStyle(fontSize: 13))
+                  else
+                    for (final item in _schedules)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(item.name.isEmpty ? item.action : item.name),
+                        subtitle: Text(item.when),
+                        trailing: IconButton(
+                          tooltip: '删除',
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: () => _deleteSchedule(item),
+                        ),
+                      ),
                 ],
               ),
             ),

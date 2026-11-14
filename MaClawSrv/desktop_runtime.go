@@ -421,7 +421,7 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	if npErr == nil {
 		npErr = desktopAfterPublishCheck(desktopOwner(scope), actionName, args)
 	}
-	desktopNoteTaskSpec(scope.RunID, desktopMessageText(request))
+	desktopNoteTaskSpec(scope.RunID, desktopTaskRequestText(request))
 	desktopSeedEarlierPosts(request, scope)
 	if npErr == nil {
 		npErr = desktopDriftCheck(desktopOwner(scope), actionName, args, desktopMessageText(request))
@@ -3719,6 +3719,9 @@ func deliverDesktopDocument(ctx context.Context, scope agentruntime.Scope, args 
 	if err != nil {
 		return "", err
 	}
+	if desktopShotSlotFrom(ctx) == nil {
+		return deliverFileOnItsOwn(ctx, scope, name, raw)
+	}
 	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
 		return desktopSayFile(ctx, scope, name, raw)
 	}
@@ -3748,6 +3751,9 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 		if strings.Contains(err.Error(), "file is too large") {
 			// The desktop service refuses a file over the reply's inline
 			// budget; it goes as its own message instead.
+			if desktopShotSlotFrom(ctx) == nil {
+				return deliverLargeOnItsOwn(ctx, scope, resolved, name)
+			}
 			return deliverDesktopLarge(ctx, scope, resolved, name)
 		}
 		return "", err
@@ -3755,12 +3761,22 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 	raw, err := desktop.DecodeFileBytes(encoded)
 	if err != nil {
 		if strings.Contains(err.Error(), "too large") {
+			if desktopShotSlotFrom(ctx) == nil {
+				return deliverLargeOnItsOwn(ctx, scope, resolved, name)
+			}
 			return deliverDesktopLarge(ctx, scope, resolved, name)
 		}
 		if strings.Contains(err.Error(), "empty") {
 			return "", fmt.Errorf("desktop deliver file is empty")
 		}
 		return "", fmt.Errorf("desktop file could not be read")
+	}
+	if desktopShotSlotFrom(ctx) == nil {
+		// A timer turn and any other turn that did not come through the
+		// desktop HTTP handler has no reply to hang the file on. The file
+		// still goes to the person: its own message, saved in this bot's
+		// folder on their computer. The chat opens that copy.
+		return deliverFileOnItsOwn(ctx, scope, name, raw)
 	}
 	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
 		return desktopSayFile(ctx, scope, name, raw)
@@ -3769,6 +3785,65 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 		return "", err
 	}
 	return desktopDelivered(name, len(raw)), nil
+}
+
+// deliverLargeOnItsOwn sends a file the reply cannot carry, when the bytes
+// were not already read. The result never tells the model to hand out the
+// cloud path.
+func deliverLargeOnItsOwn(ctx context.Context, scope agentruntime.Scope, resolved, name string) (string, error) {
+	text, err := deliverDesktopLarge(ctx, scope, resolved, name)
+	if err != nil {
+		return "", deliverOwnError(err)
+	}
+	return deliverOwnText(text), nil
+}
+
+// deliverFileOnItsOwn sends bytes the reply itself cannot carry. The bytes
+// already read are what is sent: the container file is not read again. The
+// person's app saves the file in this bot's folder. The cloud path is not
+// what they open.
+func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name string, raw []byte) (string, error) {
+	ref, err := desktopSayUploadBytes(ctx, scope, name, desktopDeliverMIME(name), raw)
+	if err == nil {
+		text, sayErr := desktopSayFileRef(ctx, scope, name, ref, int64(len(raw)))
+		if sayErr != nil {
+			return "", deliverOwnError(sayErr)
+		}
+		return deliverOwnText(text), nil
+	}
+	if !saidFileFitsInbox(name, desktopDeliverMIME(name), len(raw)) {
+		return "", deliverOwnError(fmt.Errorf("desktop document (%d bytes) could not be sent: %v. Do not shrink it", len(raw), err))
+	}
+	if _, sayErr := desktopSayFile(ctx, scope, name, raw); sayErr != nil {
+		return "", deliverOwnError(sayErr)
+	}
+	return deliverOwnText(fmt.Sprintf("Delivered %s (%d bytes) as its own chat message. The person's MaClaw app has the file. Say that it was sent as a separate message.", name, len(raw))), nil
+}
+
+// deliverOwnText is the tool result for a file sent on its own. The cloud
+// path is not a file the person can open.
+func deliverOwnText(text string) string {
+	if strings.Contains(text, "cloud path") {
+		return text
+	}
+	return strings.TrimRight(text, ". ") + ". Do not give the cloud path as the file to open."
+}
+
+// deliverOwnError drops the instruction to paste the computer's path. That
+// path is on the bot's computer; the chat cannot open it.
+func deliverOwnError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.NewReplacer(
+		"Tell the person its path on the computer in your final reply", "Do not give the cloud path as the file to open",
+		"tell the person its path on the computer in your final reply", "do not give the cloud path as the file to open",
+		"tell the person the file's path on the computer and its size in your final reply", "do not give the cloud path as the file to open",
+	).Replace(err.Error())
+	if !strings.Contains(msg, "cloud path") {
+		msg = strings.TrimRight(msg, ". ") + ". Do not give the cloud path as the file to open"
+	}
+	return errors.New(msg)
 }
 
 func desktopDelivered(name string, size int) string {
@@ -4308,6 +4383,21 @@ func desktopPlanSummary(out string) string {
 		out = string(r[:300]) + "…"
 	}
 	return out
+}
+
+// desktopTaskRequestText is the person's ask. After a restart the current
+// message is the engine sentence; the original ask is on task_request.
+func desktopTaskRequestText(request agentruntime.TurnRequest) string {
+	cur := desktopMessageText(request)
+	if desktopTaskSpecOf(cur).namesASite() {
+		return cur
+	}
+	if meta := desktopMessageMeta(request); meta != nil {
+		if t := strings.TrimSpace(meta["task_request"]); desktopTaskSpecOf(t).namesASite() {
+			return t
+		}
+	}
+	return cur
 }
 
 func desktopMessageText(request agentruntime.TurnRequest) string {

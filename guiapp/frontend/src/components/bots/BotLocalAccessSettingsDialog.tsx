@@ -3,28 +3,41 @@ import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useModalFocusTrap } from '../../hooks/useModalFocusTrap';
 import { localizeText } from '../../i18n';
 import { GetBotLocalAccess, PickBotLocalAccessFolder, SaveBotLocalAccess } from '../../../wailsjs/go/main/App';
-import type { BotLocalAccessSettings, BotLocalAccessState } from './botLocalAccess';
+import { localPermission, type BotLocalAccessSettings, type BotLocalAccessState, type BotLocalPermission } from './botLocalAccess';
 
 function words(lang: string) {
     const L = (en: string, zh: string, hant?: string) => localizeText(lang, en, zh, hant);
     return {
         title: L('Access to this computer', '本地访问'),
         hint: L(
-            'Bots run in the cloud. Through this app they can read and save files in the folders below and reach hosts on this computer’s network (for example an intranet GPU server). Anything new asks you first; nothing is ever overwritten.',
-            'Bot 在云端运行。经由本机 MaClaw 中转，它们可以读写下面允许的文件夹，也可以访问这台电脑所在网络里的机器（例如内网 GPU 服务器）。任何新的文件夹或主机都会先问你；已有文件不会被覆盖。',
-            'Bot 在雲端執行。經由本機 MaClaw 中轉，它們可以讀寫下面允許的資料夾，也可以存取這台電腦所在網路裡的機器（例如內網 GPU 伺服器）。任何新的資料夾或主機都會先問你；已有檔案不會被覆蓋。'),
+            'Bots run in the cloud. Through this app they can read and save files on this computer and reach hosts on its network (for example an intranet GPU server). Permission below chooses whether that asks you first. Existing files are never overwritten.',
+            'Bot 在云端运行。经由本机 MaClaw 中转，它们可以读写这台电脑上的文件，也可以访问这台电脑所在网络里的机器（例如内网 GPU 服务器）。下面的权限决定要不要先询问。已有文件不会被覆盖。',
+            'Bot 在雲端執行。經由本機 MaClaw 中轉，它們可以讀寫這台電腦上的檔案，也可以存取這台電腦所在網路裡的機器（例如內網 GPU 伺服器）。下面的權限決定要不要先詢問。已有檔案不會被覆蓋。'),
+        permission: L('Permission', '权限', '權限'),
+        ask: L('Ask', '询问', '詢問'),
+        askHint: L(
+            'Ask before a bot writes a file here or reaches a new folder or host. This is the default.',
+            '写入本地文件，或访问新的文件夹和主机之前先询问。这是默认。',
+            '寫入本機檔案，或存取新的資料夾和主機之前先詢問。這是預設。',
+        ),
+        full: L('Full access', '完全权限', '完全權限'),
+        fullHint: L(
+            'Do not ask. Bots can write files on this computer and reach its files and network directly. The size limit still applies, and existing files are still never overwritten.',
+            '不再询问。Bot 可以直接写入本地文件，并访问这台电脑上的文件和网络。单个文件上限仍然有效，已有文件仍不会被覆盖。',
+            '不再詢問。Bot 可以直接寫入本機檔案，並存取這台電腦上的檔案和網路。單一檔案上限仍然有效，已有檔案仍不會被覆蓋。',
+        ),
         linkOn: L('Connected: bots can reach this computer now.', '已连接：Bot 现在可以经由本机中转。', '已連線：Bot 現在可以經由本機中轉。'),
         linkOff: L('Not connected to the server yet.', '尚未连上服务器。', '尚未連上伺服器。'),
         files: L('Allow bots to use files on this computer', '允许 Bot 使用本机文件', '允許 Bot 使用本機檔案'),
         folders: L('Allowed folders', '允许的文件夹', '允許的資料夾'),
-        foldersHint: L('Read-only unless “write” is checked. Bots save into MaClaw/<bot name> by default. Other folders ask each time.', '未勾选「可写」的文件夹只读。Bot 默认保存到 MaClaw/<Bot 名称>。其他位置每次都会询问。', '未勾選「可寫」的資料夾唯讀。Bot 預設儲存到 MaClaw/<Bot 名稱>。其他位置每次都會詢問。'),
+        foldersHint: L('Unchecked folders are not the default place to write. Bots save into MaClaw/<bot name>. Ask confirms every other place; Full access writes there without asking.', '未勾选「可写」的不是默认写入位置。Bot 默认保存到 MaClaw/<Bot 名称>。询问时，其他位置会先问你；完全权限则直接写入。', '未勾選「可寫」的不是預設寫入位置。Bot 預設儲存到 MaClaw/<Bot 名稱>。詢問時，其他位置會先問你；完全權限則直接寫入。'),
         write: L('write', '可写', '可寫'),
         remove: L('Remove', '移除', '移除'),
         add: L('Add folder…', '添加文件夹…', '新增資料夾…'),
         maxSize: L('Max file size (MB)', '单个文件上限（MB）', '單一檔案上限（MB）'),
         network: L('Allow bots to reach this computer’s network', '允许 Bot 经本机访问内网', '允許 Bot 經本機存取內網'),
         netAllow: L('Pre-approved hosts (one per line)', '预先允许的主机（每行一个）', '預先允許的主機（每行一個）'),
-        netHint: L('e.g. 192.168.1.0/24, 10.0.0.5:22, gpu.lab:22,8888. Hosts not listed ask you the first time.', '例如 192.168.1.0/24、10.0.0.5:22、gpu.lab:22,8888。未列出的主机第一次使用时会询问。', '例如 192.168.1.0/24、10.0.0.5:22、gpu.lab:22,8888。未列出的主機第一次使用時會詢問。'),
+        netHint: L('e.g. 192.168.1.0/24, 10.0.0.5:22, gpu.lab:22,8888. Ask confirms a host that is not listed. Full access connects without asking.', '例如 192.168.1.0/24、10.0.0.5:22、gpu.lab:22,8888。询问时，未列出的主机会先问你；完全权限则直接连接。', '例如 192.168.1.0/24、10.0.0.5:22、gpu.lab:22,8888。詢問時，未列出的主機會先問你；完全權限則直接連線。'),
         idle: L('Close idle tunnels after (minutes)', '隧道空闲多久后关闭（分钟）', '通道閒置多久後關閉（分鐘）'),
         confirm: L('Wait for my answer (seconds)', '询问等待时间（秒）', '詢問等待時間（秒）'),
         approved: (n: number) => L(`${n} remembered “always allow” answers`, `已记住 ${n} 条「始终允许」`, `已記住 ${n} 條「始終允許」`),
@@ -61,7 +74,7 @@ export function BotLocalAccessSettingsDialog({ heading, tabs, lang, onClose }: P
         GetBotLocalAccess().then((s: BotLocalAccessState) => {
             if (!live || !s) return;
             setState(s);
-            setDraft(s.settings);
+            setDraft({ ...s.settings, permission: localPermission(s.settings?.permission) });
             setNetText((s.settings.net_allow || []).join('\n'));
         }).catch((error: unknown) => setNotice(error instanceof Error ? error.message : String(error)));
         return () => { live = false; };
@@ -69,6 +82,8 @@ export function BotLocalAccessSettingsDialog({ heading, tabs, lang, onClose }: P
 
     const patch = (p: Partial<BotLocalAccessSettings>) => setDraft(d => (d ? { ...d, ...p } : d));
     const roots = draft?.roots || [];
+    const permission = localPermission(draft?.permission);
+    const choosePermission = (next: BotLocalPermission) => patch({ permission: next });
 
     const addFolder = async () => {
         try {
@@ -84,7 +99,7 @@ export function BotLocalAccessSettingsDialog({ heading, tabs, lang, onClose }: P
         setSaving(true);
         setNotice('');
         try {
-            const next = { ...draft, net_allow: netText.split('\n').map(s => s.trim()).filter(Boolean) };
+            const next = { ...draft, permission, net_allow: netText.split('\n').map(s => s.trim()).filter(Boolean) };
             const saved: BotLocalAccessState = await SaveBotLocalAccess(next);
             setState(saved);
             onClose();
@@ -115,6 +130,30 @@ export function BotLocalAccessSettingsDialog({ heading, tabs, lang, onClose }: P
                     {state ? <p className="bot-llm-dialog__status" data-testid="bot-local-link">{state.connected ? w.linkOn : `${w.linkOff}${state.link_error ? ` (${state.link_error})` : ''}`}</p> : null}
                     {!draft ? <p className="bot-llm-dialog__subhint">{w.loading}</p> : (
                         <>
+                            <div className="bot-local-dialog__permission" role="radiogroup" aria-labelledby={`${titleId}-permission`} data-testid="bot-local-permission">
+                                <p className="bot-llm-dialog__label" id={`${titleId}-permission`}>{w.permission}</p>
+                                {(['ask', 'full'] as const).map(value => (
+                                    <div
+                                        className={`bot-llm-dialog__option${permission === value ? ' is-selected' : ''}${saving ? ' is-disabled' : ''}`}
+                                        key={value}
+                                        onClick={() => { if (!saving) choosePermission(value); }}
+                                    >
+                                        <label className="bot-llm-dialog__radio">
+                                            <input
+                                                type="radio"
+                                                name="bot-local-permission"
+                                                value={value}
+                                                checked={permission === value}
+                                                disabled={saving}
+                                                data-testid={`bot-local-permission-${value}`}
+                                                onChange={() => choosePermission(value)}
+                                            />
+                                            <span>{value === 'ask' ? w.ask : w.full}</span>
+                                        </label>
+                                        <p className="bot-llm-dialog__subhint">{value === 'ask' ? w.askHint : w.fullHint}</p>
+                                    </div>
+                                ))}
+                            </div>
                             <label className="bot-llm-dialog__radio">
                                 <input type="checkbox" checked={draft.files_enabled} disabled={saving} data-testid="bot-local-files" onChange={e => patch({ files_enabled: e.target.checked })} />
                                 <span>{w.files}</span>
@@ -155,10 +194,12 @@ export function BotLocalAccessSettingsDialog({ heading, tabs, lang, onClose }: P
                                     <input type="number" className="form-input" min={1} value={draft.tunnel_idle_minutes} disabled={saving || !draft.network_enabled} onChange={e => patch({ tunnel_idle_minutes: Number(e.target.value) || 0 })} />
                                 </label>
                             </div>
-                            <label className="bot-local-dialog__field">
-                                <span>{w.confirm}</span>
-                                <input type="number" className="form-input" min={10} max={600} value={draft.confirm_seconds} disabled={saving} onChange={e => patch({ confirm_seconds: Number(e.target.value) || 0 })} />
-                            </label>
+                            {permission === 'ask' ? (
+                                <label className="bot-local-dialog__field">
+                                    <span>{w.confirm}</span>
+                                    <input type="number" className="form-input" min={10} max={600} value={draft.confirm_seconds} disabled={saving} data-testid="bot-local-confirm" onChange={e => patch({ confirm_seconds: Number(e.target.value) || 0 })} />
+                                </label>
+                            ) : null}
                             {(draft.approved || []).length > 0 ? (
                                 <p className="bot-llm-dialog__subhint">
                                     {w.approved((draft.approved || []).length)}{' '}

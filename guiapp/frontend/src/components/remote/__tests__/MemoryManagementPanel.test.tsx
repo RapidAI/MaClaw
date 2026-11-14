@@ -40,6 +40,7 @@ import {
     GetExperienceLearningSnapshot,
     GetMemoryStatus,
     IsMemoryCompressing,
+    ListBotMemories,
     ListDesktopBots,
     ListMemoryBackups,
     ListMemories,
@@ -177,5 +178,23 @@ describe('Memory pipeline completion', () => {
         act(() => listeners.get('memory:pipeline_completed')?.({ compress: {} }));
         await waitFor(() => expect(vi.mocked(ListMemoryBackups)).toHaveBeenCalledTimes(2));
         await waitFor(() => expect(vi.mocked(GetAutoCompressStatus)).toHaveBeenCalledTimes(2));
+    });
+});
+
+describe('Bot memory status projection', () => {
+    it('shows an expired bot memory as expired instead of active', async () => {
+        vi.clearAllMocks();
+        listeners.clear();
+        vi.mocked(ListDesktopBots).mockResolvedValue([{ id: 'bot-1', title: 'Bot One' }] as any);
+        vi.mocked(ListMemories).mockResolvedValue([] as any);
+        vi.mocked(ListBotMemories).mockResolvedValue([{
+            id: 'expired', content: 'expired bot content', category: 'user_fact', tags: [],
+            created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+            invalid_at: '2020-01-01T00:00:00Z', access_count: 0, status: '',
+        }] as any);
+        render(<MemoryManagementPanel lang="en" />);
+        fireEvent.change(await screen.findByTestId('memory-bot-filter'), { target: { value: 'bot-1' } });
+        expect(await screen.findByText('expired bot content')).toBeTruthy();
+        expect(screen.getByText('Expired')).toBeTruthy();
     });
 });

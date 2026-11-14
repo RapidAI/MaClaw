@@ -615,7 +615,8 @@ const extractedFileLineLimits = [
   // 7650 -> 7750 (2026-11-10): memory/task-bar batch pushed this past 7740.
   // 7750 -> 7830 (2026-11-11): receipt-replacement batch measured 7775 lines.
   // 7830 -> 7890 (2026-11-12): measured 7836 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7890],
+  // 7890 -> 7950 (2026-11-14): measured 7896 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7950],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -1285,7 +1286,10 @@ requireExcludes('guiapp/app_websearch.go', 'a.SaveConfig(cfg)', 'web search prov
 requireIncludes('guiapp/app_mis_data.go', 'return a.PatchConfig(func(cfg *corelib.AppConfig) {', 'MIS data settings save uses atomic config patch');
 requireExcludes('guiapp/app_mis_data.go', 'a.SaveConfig(cfg)', 'MIS data full-config save; use PatchConfig');
 requireIncludes('guiapp/app_wails_bindings.go', 'cfg.MemoryAutoCompress = enabled', 'memory auto-compress config write remains explicit');
-requireIncludes('guiapp/app_wails_bindings.go', 'if err := a.PatchConfig(func(cfg *corelib.AppConfig) {', 'memory auto-compress save uses atomic config patch');
+// 2026-11-12: needle matches the transactional callback form actually used
+// here (return a.PatchConfig(...) inside runMemorySettingTransaction), which
+// pins the atomic patch save together with the explicit field write.
+requireIncludes('guiapp/app_wails_bindings.go', 'PatchConfig(func(cfg *corelib.AppConfig) {\n\t\t\t\tcfg.MemoryAutoCompress = enabled', 'memory auto-compress save uses atomic config patch');
 requireIncludes('guiapp/app_yolo_model.go', 'PatchConfigFields(map[string]interface{}{"screen_parsing_enabled": enabled})', 'screen parsing setter uses atomic config patch');
 requireExcludes('guiapp/app_yolo_model.go', 'a.SaveConfig(cfg)', 'screen parsing setter full-config save; use PatchConfigFields');
 requireIncludes('guiapp/env_check_api.go', 'PatchConfigFields(map[string]interface{}{"env_check_interval": days})', 'environment interval setter uses atomic config patch');

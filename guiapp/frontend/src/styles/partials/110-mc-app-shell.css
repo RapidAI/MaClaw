@@ -8720,6 +8720,27 @@ body.companion-pdf-translation-dragging * {
   outline: 2px solid var(--theme-primary, #2563eb);
   outline-offset: 1px;
 }
+.file-companion-library-member-confirm {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+.file-companion-library-member-confirm > span {
+  margin-right: 2px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.file-companion-library-member-action--danger {
+  border-color: color-mix(in srgb, var(--theme-danger, #dc2626) 35%, var(--theme-border, #d5e0ef));
+  color: var(--theme-danger, #dc2626);
+}
+.file-companion-library-member-action--danger:hover:not(:disabled) {
+  border-color: var(--theme-danger, #dc2626);
+  background: color-mix(in srgb, var(--theme-danger, #dc2626) 7%, transparent);
+  color: var(--theme-danger, #dc2626);
+}
 .file-companion-library-member-action:disabled {
   opacity: 0.5;
   cursor: default;

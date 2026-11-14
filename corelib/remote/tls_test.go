@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -98,5 +99,81 @@ func TestHubTLSConfigRequiresExplicitInsecureOptIn(t *testing.T) {
 	}
 	if !cfg.InsecureSkipVerify {
 		t.Fatal("explicit legacy compatibility opt-in was not honored")
+	}
+}
+
+func TestHubHTTPClientDoesNotFollowCrossPortCredentialRedirect(t *testing.T) {
+	t.Setenv(HubCAFileEnv, "")
+	t.Setenv(HubTLSInsecureEnv, "")
+	var targetCalled atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetCalled.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer source.Close()
+	req, err := http.NewRequest(http.MethodGet, source.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer secret")
+	client := NewHubHTTPClient()
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want the unforwarded redirect", resp.StatusCode)
+	}
+	if targetCalled.Load() {
+		t.Fatal("Hub credential-bearing request followed a redirect to another service")
+	}
+}
+
+func TestValidateHubURLRequiresEncryptionOffLoopback(t *testing.T) {
+	t.Setenv(HubAllowHTTPEnv, "")
+	for _, test := range []struct {
+		raw     string
+		allowed bool
+	}{
+		{raw: "https://hub.example", allowed: true},
+		{raw: "wss://hub.example/ws", allowed: true},
+		{raw: "http://127.0.0.1:9399", allowed: true},
+		{raw: "ws://localhost:9399/ws", allowed: true},
+		{raw: "ws://[::1]:9399/ws", allowed: true},
+		{raw: "http://hub.example"},
+		{raw: "ws://hub.example/ws"},
+		{raw: "ftp://hub.example"},
+		{raw: "https://user:secret@hub.example"},
+	} {
+		err := ValidateHubURL(test.raw)
+		if (err == nil) != test.allowed {
+			t.Errorf("ValidateHubURL(%q) error = %v, allowed = %t", test.raw, err, test.allowed)
+		}
+	}
+
+	t.Setenv(HubAllowHTTPEnv, "1")
+	if err := ValidateHubURL("http://hub.example"); err != nil {
+		t.Fatalf("explicit legacy HTTP opt-in was rejected: %v", err)
+	}
+}
+
+func TestHubHTTPClientRejectsCleartextPublicHubBeforeDial(t *testing.T) {
+	t.Setenv(HubAllowHTTPEnv, "")
+	client := NewHubHTTPClient()
+	defer client.CloseIdleConnections()
+	resp, err := client.Get("http://192.0.2.1/api/private")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("cleartext public Hub request was sent")
+	}
+	if !strings.Contains(err.Error(), HubAllowHTTPEnv) {
+		t.Fatalf("error = %v, want explicit cleartext policy failure", err)
 	}
 }

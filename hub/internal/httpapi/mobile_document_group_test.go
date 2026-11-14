@@ -684,6 +684,13 @@ func TestCompanionDocumentGroupPendingInviteCanBeResent(t *testing.T) {
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("accept: %d %s", accepted.Code, accepted.Body.String())
 	}
+	companionDocGroups.Lock()
+	stored := companionDocGroups.items[groupID]
+	if len(stored.Members) == 1 {
+		stored.Members = append(stored.Members, companionDocGroupMember{Contact: "13900001111", Status: "accepted", UserID: stored.Members[0].UserID})
+		companionDocGroups.items[groupID] = stored
+	}
+	companionDocGroups.Unlock()
 	body = listCompanionGroups(t, identity, readerToken)
 	if !strings.Contains(body, `"member_count":2`) || !strings.Contains(body, `"pending_count":0`) {
 		t.Fatalf("accepted counts: %s", body)

@@ -44,6 +44,20 @@ func TestDrainInterruptsInsteadOfCancelling(t *testing.T) {
 	}
 }
 
+func TestClipTaskRequestKeepsTheEndingSites(t *testing.T) {
+	body := strings.Repeat("正文", 1500) + "发到知乎、CSDN和小红书"
+	got := clipTaskRequest(body)
+	if !strings.Contains(got, "小红书") || !strings.HasPrefix(got, "正文") {
+		t.Fatalf("tail dropped: %q", string([]rune(got)[len([]rune(got))-20:]))
+	}
+	if n := len([]rune(got)); n > 2000 {
+		t.Fatalf("len %d", n)
+	}
+	if clipTaskRequest(restartNoticeContinue) != "" {
+		t.Fatal("restart sentence kept")
+	}
+}
+
 func TestResumeInterruptedRunOnce(t *testing.T) {
 	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
 	defer svc.Close()
@@ -137,6 +151,19 @@ func TestResumeInstallsTheReplySlotWithThePersonsAsk(t *testing.T) {
 	}
 	if gotAsk != "运行后截屏发给我" {
 		t.Fatalf("ask=%q", gotAsk)
+	}
+	msgs, err := svc.store.ListMessages(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept string
+	for _, msg := range msgs {
+		if msg.Content == restartNoticeContinue && msg.Metadata != nil && msg.Metadata["task_request"] != "" {
+			kept = msg.Metadata["task_request"]
+		}
+	}
+	if kept != "运行后截屏发给我" {
+		t.Fatalf("task_request=%q", kept)
 	}
 }
 

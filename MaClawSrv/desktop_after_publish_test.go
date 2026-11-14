@@ -60,6 +60,25 @@ func TestReplyIsTheTemplateFromTheRecord(t *testing.T) {
 	}
 }
 
+func TestEditorPageIsNotAPublishedArticle(t *testing.T) {
+	editor := &desktopProgress{publishTried: true, filled: []string{"论文综述"}, lastURL: "https://editor.csdn.net/md/", writeURL: "https://zhuanlan.zhihu.com/write"}
+	if desktopVerifiedResult(editor, "论文综述") {
+		t.Fatal("csdn editor counted as the article")
+	}
+	console := &desktopProgress{publishTried: true, filled: []string{"论文综述"}, lastURL: "https://creator.xiaohongshu.com/publish/publish?published=true", writeURL: "https://creator.xiaohongshu.com/publish/publish"}
+	if desktopVerifiedResult(console, "论文综述") {
+		t.Fatal("xiaohongshu creator page counted as the note")
+	}
+	article := &desktopProgress{publishTried: true, filled: []string{"论文综述"}, lastURL: "https://zhuanlan.zhihu.com/p/2097265154266227495", writeURL: "https://zhuanlan.zhihu.com/write"}
+	if !desktopVerifiedResult(article, "论文综述") {
+		t.Fatal("zhihu article was not verified")
+	}
+	desktopRecordVerifiedPage(agentruntime.Scope{RunID: "run-ed"}, "https://editor.csdn.net/md/")
+	if got := desktopReplyWithLink("run-ed", "还在编辑器里"); got != "还在编辑器里" {
+		t.Fatal(got)
+	}
+}
+
 func TestReplyGetsTheVerifiedPageURL(t *testing.T) {
 	desktopRecordVerifiedPage(agentruntime.Scope{RunID: "run-v"}, "https://zhuanlan.zhihu.com/p/2097265154266227495?just_published=2")
 	if got := desktopReplyWithLink("run-v", "核验完成。"); !strings.Contains(got, "https://zhuanlan.zhihu.com/p/2097265154266227495") || strings.Contains(got, "just_published") {

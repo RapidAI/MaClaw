@@ -51,7 +51,10 @@ type srvThirdPartyGatewayManager struct {
 	clients          map[string]*srvThirdPartyClientState
 	runtimeInstances map[string]srvThirdPartyRuntimeInstance
 	media            map[string]*srvThirdPartyMediaObject
+	incomingSlots    chan struct{}
 }
+
+const srvThirdPartyMaxIncomingInFlight = 64
 
 type srvThirdPartyRuntimeInstance struct {
 	InstanceID         string
@@ -129,7 +132,7 @@ func newSrvThirdPartyGatewayManager(svc *agentservice.Service, dependencies ...a
 	if bindings == nil && svc != nil {
 		bindings = newSrvDeviceAgentBindingStore(svc.DataRoot())
 	}
-	return &srvThirdPartyGatewayManager{svc: svc, aiModels: asrManager, bindings: bindings, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}, media: map[string]*srvThirdPartyMediaObject{}}
+	return &srvThirdPartyGatewayManager{svc: svc, aiModels: asrManager, bindings: bindings, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}, media: map[string]*srvThirdPartyMediaObject{}, incomingSlots: make(chan struct{}, srvThirdPartyMaxIncomingInFlight)}
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayHealth(w http.ResponseWriter, r *http.Request) {
@@ -295,11 +298,12 @@ func (s *HTTPServer) handleThirdPartyGatewayIncoming(w http.ResponseWriter, r *h
 	}
 	maclawID := fmt.Sprintf("mc_in_%d_%s", time.Now().UnixMilli(), sanitizeThirdPartyGatewayID(req.EventID))
 	clientKey := thirdPartyClientKey(tp.Principal, req.ClientID)
-	duplicate, storedID := s.thirdPartyIM.markIncoming(clientKey, req.EventID, maclawID)
-	maclawID = storedID
-	if !duplicate {
-		go s.thirdPartyIM.processIncoming(context.Background(), tp.Principal, req, maclawID)
+	duplicate, storedID, admitted := s.thirdPartyIM.scheduleIncoming(tp.Principal, clientKey, req, maclawID)
+	if !admitted {
+		writeThirdPartyGatewayError(w, http.StatusTooManyRequests, "rate_limited", "too many incoming messages in progress; retry later")
+		return
 	}
+	maclawID = storedID
 	writeJSON(w, http.StatusOK, coreim.NewThirdPartyIncomingAcceptedResponse(coreim.NewThirdPartyGatewayRequestID(), maclawID, duplicate))
 }
 
@@ -403,11 +407,12 @@ func (s *HTTPServer) handleThirdPartyGatewayToolResult(w http.ResponseWriter, r 
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	clientKey := thirdPartyClientKey(tp.Principal, req.ClientID)
-	duplicate, storedID := s.thirdPartyIM.markIncoming(clientKey, incoming.EventID, maclawID)
-	maclawID = storedID
-	if !duplicate {
-		go s.thirdPartyIM.processIncoming(context.Background(), tp.Principal, incoming, maclawID)
+	duplicate, storedID, admitted := s.thirdPartyIM.scheduleIncoming(tp.Principal, clientKey, incoming, maclawID)
+	if !admitted {
+		writeThirdPartyGatewayError(w, http.StatusTooManyRequests, "rate_limited", "too many incoming messages in progress; retry later")
+		return
 	}
+	maclawID = storedID
 	writeJSON(w, http.StatusOK, coreim.NewThirdPartyIncomingAcceptedResponse(coreim.NewThirdPartyGatewayRequestID(), maclawID, duplicate))
 }
 
@@ -1283,6 +1288,24 @@ func (m *srvThirdPartyGatewayManager) stopDeviceClient(p agentservice.Principal,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.clients, clientKey)
+}
+
+func (m *srvThirdPartyGatewayManager) scheduleIncoming(p agentservice.Principal, clientKey string, req srvThirdPartyIncomingRequest, maclawID string) (duplicate bool, storedID string, admitted bool) {
+	select {
+	case m.incomingSlots <- struct{}{}:
+	default:
+		return false, maclawID, false
+	}
+	duplicate, storedID = m.markIncoming(clientKey, req.EventID, maclawID)
+	if duplicate {
+		<-m.incomingSlots
+		return true, storedID, true
+	}
+	go func() {
+		defer func() { <-m.incomingSlots }()
+		m.processIncoming(context.Background(), p, req, storedID)
+	}()
+	return false, storedID, true
 }
 
 func (m *srvThirdPartyGatewayManager) markIncoming(clientKey, eventID, maclawID string) (bool, string) {

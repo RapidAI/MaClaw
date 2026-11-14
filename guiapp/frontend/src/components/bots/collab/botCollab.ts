@@ -100,6 +100,8 @@ export function statusRowText(assignments: Assignment[], bots: BotRef[], max = 3
     const zh = isChineseLang(lang);
     for (const a of assignments) {
         if (!ACTIVE.has(a.state) || seen.has(a.target_bot)) continue;
+        // A deleted bot's id is not a name. Skip it once the live list is known.
+        if (bots.length > 0 && !bots.some(bot => bot.id === a.target_bot)) continue;
         seen.add(a.target_bot);
         if (parts.length >= max) continue;
         const name = botName(bots, a.target_bot, lang);
@@ -164,18 +166,28 @@ export function humanPrompt(a: Assignment, bots: BotRef[], lang = 'zh-Hans'): { 
 }
 
 /**
- * Messages to show in one bot's chat: its own direct messages. The main bot's
- * chat also shows what a bot without a chat of its own said; a bot that has
- * its own chat (ownChats) is heard only there (11-11 20:36: Bot 2's progress
- * note showed in Bot 2's chat and again in Bot 1's, the main bot).
+ * Messages to show in one bot's chat, matched by bot id. "Bot 1" / "Bot 2"
+ * are display names only. The main bot's chat also shows what a still-live
+ * bot without a chat of its own said; a bot that has its own chat (ownChats)
+ * is heard only there (11-11 20:36). A deleted id is not that case, even
+ * when a new bot reused the same display name (2026-11-14).
  */
-export function saidForChat(items: SaidItem[], botId: string, isPrimary: boolean, sinceMs = 0, ownChats?: string[]): SaidItem[] {
+export function saidForChat(items: SaidItem[], botId: string, isPrimary: boolean, sinceMs = 0, ownChats?: string[], liveBots?: string[]): SaidItem[] {
     // The inline block renders below the transcript, so only what was said
     // after the chat's latest message belongs there. 10-31: a 10-28 15:26
     // 「今天适合喝乌龙茶…」 say stayed pinned under every newer reply.
+    // liveBots is the ids that still exist. Omitted keeps the older rule.
     const own = new Set(ownChats || []);
-    return items.filter(i => i.kind === 'say' && i.target === 'human' && (i.from === botId || (isPrimary && !own.has(i.from)))
+    const live = liveBots ? new Set(liveBots) : null;
+    return items.filter(i => i.kind === 'say' && i.target === 'human' && hearsSay(i.from, botId, isPrimary, own, live)
         && (!sinceMs || Date.parse(String(i.created_at || '')) > sinceMs));
+}
+
+function hearsSay(from: string, botId: string, isPrimary: boolean, own: Set<string>, live: Set<string> | null): boolean {
+    if (from === botId) return true;
+    if (!isPrimary) return false;
+    if (live && !live.has(from)) return false;
+    return !own.has(from);
 }
 
 /** Time a GUI message id (m-<base36 ms>-…) was made, or 0. */
@@ -204,10 +216,10 @@ function routineReask(text: string): boolean {
  * stays under the transcript. A newer say that asks the person to choose
  * again is left out — they already answered in the chat.
  */
-export function placeChatSays(items: SaidItem[], botId: string, isPrimary: boolean, messages: Array<{ id: string; role: string; content?: string }>, ownChats?: string[]): PlacedSays {
+export function placeChatSays(items: SaidItem[], botId: string, isPrimary: boolean, messages: Array<{ id: string; role: string; content?: string }>, ownChats?: string[], liveBots?: string[]): PlacedSays {
     const after = new Map<string, SaidItem[]>();
     const trailing: SaidItem[] = [];
-    const mine = saidForChat(items, botId, isPrimary, 0, ownChats)
+    const mine = saidForChat(items, botId, isPrimary, 0, ownChats, liveBots)
         .slice()
         .sort((a, b) => Date.parse(String(a.created_at || '')) - Date.parse(String(b.created_at || '')));
     const anchors = messages

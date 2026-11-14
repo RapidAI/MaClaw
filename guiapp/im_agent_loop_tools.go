@@ -82,6 +82,9 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	platform := ""
 	if ctx != nil {
 		platform = ctx.Platform
+		// Publish this build's surface contract so discover_tool can tell a
+		// deferred grant (hard market-search round) from an ordinary one.
+		ctx.noteSkillSearchRequiredSurface(shouldRestrictToSkillSearch(phase))
 	}
 	// A short continuation already chose the previous turn's work tools.
 	// Ranking that reply classifies it again. Lookup continuation still
@@ -102,6 +105,7 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 
 	BrowserDiagCP1_Route(userText, tools)
 
+	grantsKeep := ctx.discoveredConditionalToolNameSet()
 	if phase.ForceSkillPreference {
 		switch {
 		case phase.SkillMode == skillPreferenceAgentGuided:
@@ -109,7 +113,7 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		case shouldRestrictToSkillSearch(phase):
 			tools = filterToolsForRemoteSkillSearch(baseTools)
 		default:
-			tools = filterToolsForSkillPreference(baseTools)
+			tools = filterToolsForSkillPreference(baseTools, grantsKeep)
 		}
 	}
 	beforeProfileFilter := len(tools)
@@ -122,7 +126,10 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	tools = mergeAmbientRetrievalTools(tools, allTools)
 	tools = applyRoutingMissLeftoverTools(tools, allTools, h.routingMissFloorDefinitions(), ctx)
 	baseTools = applyRoutingMissLeftoverTools(baseTools, allTools, h.routingMissFloorDefinitions(), ctx)
-	if !phase.ForceSkillPreference {
+	// A loop-scoped discovery grant is explicit host adjudication: it lands
+	// through the skill-preference steer but stays deferred while a required
+	// market-search round owns the surface.
+	if !shouldRestrictToSkillSearch(phase) {
 		tools, baseTools = applyLoopDiscoveredConditionalTools(tools, baseTools, allTools, ctx)
 	}
 	if profile.IsLight() || isLightPromptProfile(profile.PromptProfile) {
@@ -271,7 +278,7 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		// the fence: direct mode, skill search, workflow, expert, and group
 		// still remove a grant they do not allow. A light lookup never reaches
 		// this branch, so a grant cannot reopen bash there.
-		if ctx != nil && !phase.ForceSkillPreference {
+		if ctx != nil && !shouldRestrictToSkillSearch(phase) {
 			if grants := ctx.discoveredConditionalToolNames(); len(grants) > 0 {
 				tools, baseTools, routerRankedNames = restoreDiscoveredSurfaceGrants(tools, baseTools, lookupCatalog, routerRankedNames, grants)
 			}
@@ -282,8 +289,8 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	} else {
 		// Workflow ensure runs above and can put bash back onto a
 		// skill-search round. The timeout seal does this itself.
-		tools = applySkillPreferenceSurface(tools, phase)
-		baseTools = applySkillPreferenceSurface(baseTools, phase)
+		tools = applySkillPreferenceSurface(tools, phase, grantsKeep)
+		baseTools = applySkillPreferenceSurface(baseTools, phase, grantsKeep)
 	}
 	// Pin after the last host filter and before the closed plan. The
 	// continuation names goal(action=plan|step|complete|fail). A retrieval
@@ -305,7 +312,7 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		// this slice are protected, so a plan-phase narrow that already
 		// dropped the grant is not undone.
 		var grants []string
-		if ctx != nil && !phase.ForceSkillPreference {
+		if ctx != nil && !shouldRestrictToSkillSearch(phase) {
 			grants = ctx.discoveredConditionalToolNames()
 		}
 		tools = ensureNamedToolsPresent(tools, lookupCatalog, protectBudgetNames([]string{goalContinuationLifecycleTool}, tools, grants))
@@ -383,6 +390,7 @@ func (h *IMMessageHandler) parentCarryToolSet(userID, userText string, ctx *Loop
 	carried := h.parentExecutionTools(userID)
 	admitted := h.filterPolicyRejectedSurfaceTools(catalog)
 	tools := ensureNamedToolsPresent(nil, admitted, carried)
+	grantsKeep := ctx.discoveredConditionalToolNameSet()
 	if phase.ForceSkillPreference {
 		switch {
 		case phase.SkillMode == skillPreferenceAgentGuided:
@@ -390,10 +398,15 @@ func (h *IMMessageHandler) parentCarryToolSet(userID, userText string, ctx *Loop
 		case shouldRestrictToSkillSearch(phase):
 			tools = filterToolsForRemoteSkillSearch(tools)
 		default:
-			tools = filterToolsForSkillPreference(tools)
+			tools = filterToolsForSkillPreference(tools, grantsKeep)
 		}
 	}
-	tools = applySkillPreferenceSurface(tools, phase)
+	// Loop-scoped discovery grants land through the steer; a required
+	// market-search round still defers them.
+	if ctx != nil && !shouldRestrictToSkillSearch(phase) {
+		tools = ensureNamedToolsPresent(tools, admitted, ctx.discoveredConditionalToolNames())
+	}
+	tools = applySkillPreferenceSurface(tools, phase, grantsKeep)
 	policyOwnerID, policy, applyWorkflowFilter := h.workflowToolFilterOwnerPolicyAndDecision(userID, ctx)
 	if applyWorkflowFilter {
 		if policy == v2.ToolFilterNone {

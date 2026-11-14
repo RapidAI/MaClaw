@@ -308,6 +308,28 @@ class BotApi {
     ];
   }
 
+  Future<List<BotSchedule>> schedules(String botId) async {
+    final data = await _client.guard(
+      () => _client.dio.get<Map<String, dynamic>>(
+        _botPath(botId, '/schedules'),
+        options: _client.opts(),
+      ),
+    );
+    return [
+      for (final item in (data['items'] as List? ?? const []))
+        if (item is Map) BotSchedule.fromJson(Map<String, dynamic>.from(item)),
+    ];
+  }
+
+  Future<void> deleteSchedule(String botId, String taskId) async {
+    await _client.guard(
+      () => _client.dio.delete<Map<String, dynamic>>(
+        _botPath(botId, '/schedules/${Uri.encodeComponent(taskId)}'),
+        options: _client.opts(),
+      ),
+    );
+  }
+
   Future<void> cancelRun(String botId, String runId) async {
     await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(

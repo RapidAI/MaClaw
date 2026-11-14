@@ -11,8 +11,14 @@ int  createFloatingWindowDarwin(int x, int y, int w, int h, const void *pngData,
 void showFloatingWindowDarwin(void);
 void hideFloatingWindowDarwin(void);
 void destroyFloatingWindowDarwin(void);
-void moveFloatingWindowDarwin(int x, int y);
+void moveFloatingWindowDarwin(int x, int y, unsigned gen);
+void resizeFloatingWindowDarwin(int w, int h, unsigned gen);
 void setPetImageDarwin(const void *pngData, int pngLen);
+void setPetPixelsDarwin(const void *pixels, int w, int h, int stride, int pointW, int pointH, int faceLeft, unsigned gen);
+void setPetFaceDarwin(int faceLeft, unsigned gen);
+void darwinSetPaintGen(unsigned gen);
+void darwinPetDragClear(void);
+int darwinPetDragActive(void);
 int darwinScreenWidth(void);
 int darwinScreenHeight(void);
 int darwinBackingScale(void);

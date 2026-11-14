@@ -6,6 +6,8 @@ server:
 # Desktop/CLI clients verify HTTPS/WSS certificates by default. For a private
 # CA or self-signed Hub, set MACLAW_HUB_CA_FILE on each client to the explicitly
 # trusted PEM CA/certificate. MACLAW_HUB_TLS_INSECURE=1 is a legacy-only opt-out.
+# Desktop/CLI/A2A require HTTPS/WSS outside loopback. MACLAW_HUB_ALLOW_HTTP=1
+# explicitly permits a legacy cleartext deployment (not recommended).
 # Cross-Hub relay requires HTTPS outside loopback; the same CA setting applies.
 # MACLAW_HUB_FEDERATION_ALLOW_HTTP=1 is an explicit legacy-only HTTP opt-out.
 tls:

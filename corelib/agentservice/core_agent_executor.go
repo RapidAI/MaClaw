@@ -723,6 +723,20 @@ func contextWithDatabaseApproval(ctx context.Context, approval *database.Approva
 	return database.WithApprovalContext(ctx, copy)
 }
 
+// withDesktopBotScheduleArg marks manage_schedule with the bot that is
+// speaking. A value the model sent is replaced by this turn's own id.
+func withDesktopBotScheduleArg(args map[string]interface{}, botID string) map[string]interface{} {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return args
+	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	args["desktop_bot_id"] = botID
+	return args
+}
+
 func (e *CoreAgentExecutor) executeDirect(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
 	return e.executeDirectWithRuntimeBinding(ctx, req, nil, nil, nil)
 }
@@ -757,7 +771,9 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	if e.ScheduleHandlerContext != nil {
 		principal := req.Principal
 		instanceID := strings.TrimSpace(req.Instance.ID)
+		botID := botlog.FromMeta(req.Message.Metadata)
 		scheduleHandler = func(args map[string]interface{}) string {
+			args = withDesktopBotScheduleArg(args, botID)
 			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
 		}
 	}
@@ -2170,7 +2186,9 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 	if e.ScheduleHandlerContext != nil {
 		principal := req.Principal
 		instanceID := strings.TrimSpace(req.Instance.ID)
+		botID := botlog.FromMeta(req.Message.Metadata)
 		cb.scheduleHandler = func(args map[string]interface{}) string {
+			args = withDesktopBotScheduleArg(args, botID)
 			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
 		}
 	}

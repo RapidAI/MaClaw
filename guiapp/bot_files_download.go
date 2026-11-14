@@ -19,9 +19,10 @@ import (
 )
 
 // Large files a bot delivers stay on Hub's bot file store; the chat message
-// only names them. This app downloads them over HTTP (Range, resume) into
-// the bot's own folder (~/MaClaw/<bot> by default), shows a chip with the
-// progress, and remembers where each one was saved.
+// is the file. This app downloads them over HTTP (Range, resume) into the
+// bot's own folder (~/MaClaw/<bot> by default) so that message can open the
+// copy. The save is not another transfer: the composer strip is only for a
+// file the bot moves through the local relay.
 
 // botStoredFile is Hub's answer for a stored file: a fresh signed path.
 type botStoredFile struct {
@@ -67,8 +68,9 @@ func (a *App) botFileRefresh(ctx context.Context, ref string) (string, error) {
 	return out.URL, nil
 }
 
-// localRelayAgentForFiles is the running relay agent, or one made for
-// downloads when the relay link has not started yet.
+// localRelayAgentForFiles is the running relay agent, or one made only for
+// chat-file downloads when the relay link has not started. That standby
+// agent has no transfer reporter: a chat file is not a download chip.
 func (a *App) localRelayAgentForFiles() *localrelay.Agent {
 	localRelayState.mu.Lock()
 	agent := localRelayState.agent
@@ -82,7 +84,6 @@ func (a *App) localRelayAgentForFiles() *localrelay.Agent {
 		botFilesAgent = &localrelay.Agent{
 			Home:        localRelayHome(),
 			Load:        loadLocalRelaySettings,
-			Notify:      func(ev localrelay.TransferEvent) { a.emitEvent(localRelayTransferEvent, ev) },
 			Fetch:       a.botFileFetcher(),
 			RefreshLink: a.botFileRefresh,
 		}
@@ -95,17 +96,31 @@ var (
 	botFilesAgent   *localrelay.Agent
 	botFilesStarted = map[string]time.Time{}
 	botFilesGivenUp = map[string]bool{}
+	botFilesCached  map[string]string
 )
 
 func botFilesIndexPath() string {
 	return filepath.Join(maclawpath.DataDir(), "bot_files_saved.json")
 }
 
+// botFilesIndex is the saved-file index. The caller holds botFilesMu.
+// The map is cached for this process; every write replaces it.
 func botFilesIndex() map[string]string {
-	out := map[string]string{}
-	if raw, err := os.ReadFile(botFilesIndexPath()); err == nil {
-		_ = json.Unmarshal(raw, &out)
+	if botFilesCached != nil {
+		return botFilesCached
 	}
+	out := map[string]string{}
+	raw, err := os.ReadFile(botFilesIndexPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			botFilesCached = out
+		}
+		return out
+	}
+	if json.Unmarshal(raw, &out) != nil {
+		return map[string]string{}
+	}
+	botFilesCached = out
 	return out
 }
 
@@ -113,7 +128,15 @@ func botFilesRemember(ref, path string) {
 	botFilesMu.Lock()
 	defer botFilesMu.Unlock()
 	idx := botFilesIndex()
+	if idx[ref] == path {
+		return
+	}
 	idx[ref] = path
+	botFilesStore(idx)
+}
+
+func botFilesStore(idx map[string]string) {
+	botFilesCached = idx
 	raw, _ := json.MarshalIndent(idx, "", "  ")
 	p := botFilesIndexPath()
 	_ = os.MkdirAll(filepath.Dir(p), 0o700)
@@ -151,6 +174,7 @@ func (a *App) saveBotStoredFile(ctx context.Context, f botStoredFile) (string, e
 		return "", errors.New("not a stored file")
 	}
 	if p := botFileSavedPath(f.Ref); p != "" {
+		rememberDeliveryName(f.BotID, f.Name, p)
 		return p, nil
 	}
 	agent := a.localRelayAgentForFiles()
@@ -159,18 +183,156 @@ func (a *App) saveBotStoredFile(ctx context.Context, f botStoredFile) (string, e
 		return "", err
 	}
 	botFilesRemember(f.Ref, path)
+	rememberNewDelivery(f.BotID, f.Name, path)
 	log.Printf("[bot-files] saved ref=%s bot=%s size=%d path=%s", f.Ref, f.BotID, f.Size, path)
 	return path, nil
+}
+
+// rememberNewDelivery records a file that just finished saving. It is the
+// copy that opens, even when an older file was touched more recently.
+func rememberNewDelivery(botID, name, path string) {
+	rememberDelivery(botID, name, path, true)
+}
+
+// rememberDeliveryName records a copy already on disk. An older file does
+// not replace a newer one.
+func rememberDeliveryName(botID, name, path string) {
+	rememberDelivery(botID, name, path, false)
+}
+
+// rememberDelivery records where this delivery was saved. The key is the
+// name the chat shows, not a uniquified local name. A bot id keeps one bot's
+// file from opening for another bot that used the same name.
+func rememberDelivery(botID, name, path string, force bool) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = filepath.Base(path)
+	}
+	base := filepath.Base(filepath.ToSlash(name))
+	if base == "" || base == "." || base == "/" || base == `\` {
+		return
+	}
+	keys := []string{"name:" + base}
+	if botID = strings.TrimSpace(botID); botID != "" && botID != "human" {
+		keys = append(keys, "name:"+botID+":"+base)
+	}
+	botFilesMu.Lock()
+	defer botFilesMu.Unlock()
+	idx := botFilesIndex()
+	changed := false
+	for _, key := range keys {
+		if !deliveryReplaces(idx[key], path, force) {
+			continue
+		}
+		idx[key] = path
+		changed = true
+	}
+	if changed {
+		botFilesStore(idx)
+	}
+}
+
+// deliveryReplaces reports that path is the copy to open instead of current.
+// An older file must not take the place of a newer one: the chat list is
+// replayed on every refresh. force is set only for a file that just finished
+// saving, so that copy opens even when the previous file was touched later.
+func deliveryReplaces(current, path string, force bool) bool {
+	if path == "" || current == path {
+		return false
+	}
+	next, err := os.Stat(path)
+	if err != nil || next.IsDir() {
+		return false
+	}
+	if force || current == "" {
+		return true
+	}
+	prev, err := os.Stat(current)
+	if err != nil || prev.IsDir() {
+		return true
+	}
+	return next.ModTime().After(prev.ModTime())
+}
+
+// cloudDesktopOpenPath reports a path on the bot's computer. A drive path
+// on this computer is not one, even when the file is missing.
+func cloudDesktopOpenPath(path string) bool {
+	if filepath.VolumeName(path) != "" {
+		return false
+	}
+	slash := filepath.ToSlash(filepath.Clean(path))
+	if strings.HasPrefix(slash, "/home/desktop/") || slash == "/home/desktop" {
+		return true
+	}
+	for _, root := range []string{"/tmp/", "/var/", "/opt/", "/data/", "/workspace/", "/Volumes/", "/private/", "/mnt/", "/srv/", "/Users/"} {
+		if strings.HasPrefix(slash, root) {
+			return true
+		}
+	}
+	return strings.HasPrefix(slash, "~/")
+}
+
+// deliveredFileForOpen is the local copy of a file the chat named. The
+// requested path is often the cloud desktop path; the file the person can
+// open is the one this app saved.
+func deliveredFileForOpen(botID, requested string) string {
+	botFilesMu.Lock()
+	p := deliveryPath(botID, requested, botFilesIndex())
+	botFilesMu.Unlock()
+	return deliveredFileAt(p)
+}
+
+func deliveredFileNamed(botID, requested string, saved map[string]string) string {
+	return deliveredFileAt(deliveryPath(botID, requested, saved))
+}
+
+func deliveryPath(botID, requested string, saved map[string]string) string {
+	req := strings.TrimSpace(requested)
+	if req == "" || strings.HasSuffix(req, "/") || strings.HasSuffix(req, `\`) {
+		return ""
+	}
+	base := filepath.Base(filepath.ToSlash(req))
+	if base == "" || base == "." || base == "/" || base == `\` {
+		return ""
+	}
+	botID = strings.TrimSpace(botID)
+	if botID != "" {
+		// This bot's own copy only. Another bot's file of the same name
+		// stays closed.
+		return saved["name:"+botID+":"+base]
+	}
+	return saved["name:"+base]
+}
+
+func deliveredFileAt(p string) string {
+	if p == "" {
+		return ""
+	}
+	info, err := os.Stat(p)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+	return p
 }
 
 // autoSaveBotFiles starts the download of every stored file on these
 // messages that is not saved yet. A failure is tried again a minute later;
 // a file the server no longer has is not tried again.
 func (a *App) autoSaveBotFiles(items []BotSaidItem) {
-	for _, item := range items {
+	// Newest message last in the list. Walk backwards so an older file of
+	// the same name cannot replace the copy just saved.
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
 		for _, f := range item.Files {
 			ref := strings.TrimSpace(f.Ref)
 			if ref == "" {
+				continue
+			}
+			if p := botFileSavedPath(ref); p != "" {
+				rememberDeliveryName(item.From, f.Name, p)
 				continue
 			}
 			botFilesMu.Lock()
@@ -180,7 +342,7 @@ func (a *App) autoSaveBotFiles(items []BotSaidItem) {
 				botFilesStarted[ref] = time.Now()
 			}
 			botFilesMu.Unlock()
-			if skip || botFileSavedPath(ref) != "" {
+			if skip {
 				continue
 			}
 			noteID, name := item.ID, f.Name

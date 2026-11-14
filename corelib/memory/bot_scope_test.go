@@ -140,3 +140,29 @@ func TestBotMemoryRejectsProtectedLifecycleTrap(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBotMemoryMutationsRejectMismatchedBoundary(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	ownerA := "desktop-user:bot:bot_a"
+	entry := Entry{ID: "mismatched", Content: "do not mutate", Category: CategoryUserFact, OwnerID: ownerA, Boundary: &MemoryBoundary{OwnerID: "desktop-user:bot:bot_b"}}
+	store.SetEntries([]Entry{entry})
+	if entries, err := store.ListBotMemories("desktop-user", "bot_a", "", ""); err != nil || len(entries) != 0 {
+		t.Fatalf("mismatched boundary was listed: %+v, err=%v", entries, err)
+	}
+	if err := store.UpdateBotMemory("desktop-user", "bot_a", entry.ID, "hijack", string(CategoryUserFact), nil); err == nil {
+		t.Fatal("update accepted a mismatched boundary")
+	}
+	if err := store.DeleteBotMemory("desktop-user", "bot_a", entry.ID); err == nil {
+		t.Fatal("delete accepted a mismatched boundary")
+	}
+	if _, err := store.DeleteBotMemoriesAtomic("desktop-user", "bot_a", []string{entry.ID}); err == nil {
+		t.Fatal("batch delete accepted a mismatched boundary")
+	}
+	if got := store.SearchDirectByID(entry.ID); len(got) != 1 || got[0].Content != "do not mutate" {
+		t.Fatalf("entry after rejected mutations = %+v", got)
+	}
+}

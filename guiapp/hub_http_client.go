@@ -14,3 +14,11 @@ var hubHTTPClient = func() *http.Client {
 	client.Timeout = 30 * time.Second
 	return client
 }()
+
+func hubHTTPClientWithTimeout(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		Transport:     hubHTTPClient.Transport,
+		CheckRedirect: hubHTTPClient.CheckRedirect,
+	}
+}

@@ -462,6 +462,9 @@ func TestDesktopBotMessageResponseHasRoomForAScreenshot(t *testing.T) {
 	if desktopBotResponseLimit("/api/v1/bots/bot_1") != 1<<20 {
 		t.Fatal("non-message response limit changed")
 	}
+	if desktopBotResponseLimit("/api/v1/bots/main/inbox/n1/files/shot.png") != 1<<20 {
+		t.Fatal("inbox file response is not the shared body cap")
+	}
 	if cleanDesktopBotImages([]DesktopBotImage{{MIME: "image/png", Data: "iVB=Rw0KGgo="}}) != nil {
 		t.Fatal("broken padding was kept")
 	}

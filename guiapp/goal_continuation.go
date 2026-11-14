@@ -2357,8 +2357,9 @@ func goalClockHoldSeconds(g *goal.Goal) int64 {
 }
 
 // emitGoalCleared tells the chat bar this session no longer has a goal.
-// The transcript checklist is left as it was: an empty record does not
-// replace that card.
+// The frontend retires the transcript checklist card on this event: the
+// floating checklist reads that card, and a goal that no longer exists must
+// not keep floating.
 func (e *GoalContinuationEngine) emitGoalCleared(userID string) {
 	if e == nil || e.app == nil {
 		return

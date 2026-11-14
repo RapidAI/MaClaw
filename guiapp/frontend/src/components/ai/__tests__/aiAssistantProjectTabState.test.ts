@@ -102,6 +102,18 @@ describe('aiAssistantProjectTabState', () => {
             [essay, { ...placeholder, codingTimeline: [thought, startedTool] }],
             [essay, { ...placeholder, codingTimeline: [{ ...thought, content: '先核对指标。' }, startedTool] }],
         )).toBe(false);
+        // The goal checklist card updates in place; its completion flip is
+        // substantive even though the row is not an assistant row.
+        const checklistCard = (content: string) => ({ id: 'goal-checklist:desktop-user:D:/tasks/weather', role: 'system' as const, kind: 'goalChecklist' as const, content, sessionKey: 'desktop-user:D:/tasks/weather', timestamp: 1 });
+        expect(projectHistorySubstantiveDelta(
+            [essay, checklistCard('目标清单\n→ 2. 物理内核\n进度：第 3/50 轮')],
+            [essay, checklistCard('目标清单\n✓ 1. 环境\n✓ 2. 物理内核\n已完成\n进度：第 3/50 轮')],
+        )).toBe(true);
+        // Same content keeps the gate closed.
+        expect(projectHistorySubstantiveDelta(
+            [essay, checklistCard('目标清单\n已完成')],
+            [essay, checklistCard('目标清单\n已完成')],
+        )).toBe(false);
     });
 
     it('keeps a saved coding trail when the fresh row is thinner', () => {

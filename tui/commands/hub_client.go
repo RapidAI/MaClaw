@@ -41,6 +41,9 @@ func (c *HubClient) Connect() error {
 	if err != nil {
 		return fmt.Errorf("invalid hub URL: %w", err)
 	}
+	if err := remote.ValidateHubURL(u.String()); err != nil {
+		return err
+	}
 	dialer := websocket.Dialer{HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout}
 	if u.Scheme == "wss" {
 		tlsConfig, err := remote.HubTLSConfig()

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -277,6 +278,10 @@ type Service struct {
 	patrolOnce  sync.Once
 	patrolMu    sync.Mutex
 	patrolSight map[string]*patrolSight
+	// scheduleSweep is the last time this user asked the host to drop timers
+	// whose bot id is gone. Listing the panel does it, and not on every poll.
+	scheduleSweepMu sync.Mutex
+	scheduleSweep   map[string]time.Time
 	routerOnce  sync.Once
 	router      *routerInbox
 }
@@ -490,10 +495,17 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 	if err != nil {
 		return err
 	}
+	// The clock is the host's. Drop this id's timers before the instance so
+	// a recreated bot that reuses the display name does not keep firing them.
+	if err := s.cancelBotSchedules(ctx, rec, token, bot); err != nil {
+		log.Printf("[botmgmt] cancel schedules bot=%s: %v", bot.ID, err)
+	}
 	if err := s.deleteInstanceAfterStoppingRuns(ctx, rec, token, bot.InstanceID); err != nil && !errors.Is(err, ErrSrvNotFound) {
 		return err
 	}
 	rec.Bots = append(rec.Bots[:index], rec.Bots[index+1:]...)
+	rec.CrossNotes = dropOrphanSays(rec.CrossNotes, rec, bot.OwnerUserID)
+	dropBotFromRooms(&rec, bot.OwnerUserID, bot.ID)
 	// The slot is cleared in this same save. The next earliest remaining bot
 	// becomes primary by the read rule. The next id is not written here.
 	if rec.PrimaryBot != nil && strings.TrimSpace(rec.PrimaryBot[bot.OwnerUserID]) == bot.ID {

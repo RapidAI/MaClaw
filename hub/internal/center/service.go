@@ -23,6 +23,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
@@ -335,9 +336,11 @@ func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service 
 	return &Service{
 		cfg:      cfg,
 		settings: settings,
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		client: func() *http.Client {
+			client := remote.NewHubHTTPClient()
+			client.Timeout = 15 * time.Second
+			return client
+		}(),
 		usageBackfills: centerUserUsageBackfillSyncs,
 	}
 }

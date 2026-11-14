@@ -18,6 +18,8 @@ type BotMemoryEntry struct {
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
 	AccessCount int      `json:"access_count"`
+	Status      string   `json:"status"`
+	InvalidAt   string   `json:"invalid_at,omitempty"`
 }
 
 func normalizeBotMemoryCategory(category string) memory.Category {
@@ -29,6 +31,10 @@ func normalizeBotMemoryCategory(category string) memory.Category {
 }
 
 func projectBotMemory(botID string, entry memory.Entry) BotMemoryEntry {
+	invalidAt := ""
+	if entry.InvalidAt != nil {
+		invalidAt = entry.InvalidAt.Format(time.RFC3339Nano)
+	}
 	return BotMemoryEntry{
 		ID:          entry.ID,
 		BotID:       botID,
@@ -38,6 +44,8 @@ func projectBotMemory(botID string, entry memory.Entry) BotMemoryEntry {
 		CreatedAt:   entry.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:   entry.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		AccessCount: entry.AccessCount,
+		Status:      string(entry.Status),
+		InvalidAt:   invalidAt,
 	}
 }
 

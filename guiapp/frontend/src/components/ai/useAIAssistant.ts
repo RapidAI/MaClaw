@@ -1216,7 +1216,12 @@ function isLocalChatMessage(message: ChatMessage): boolean {
 }
 
 function hasPersistableMessageContent(message: ChatMessage): boolean {
-    if (message.role === 'progress' || message.role === 'system') return false;
+    if (message.role === 'progress') return false;
+    // The goal checklist card is the floating overlay's data source. Coding
+    // tabs keep theirs in tab-state localStorage; the chat session has no
+    // tab state, so the card must persist here or a paused goal loses its
+    // float across a reload.
+    if (message.role === 'system') return message.kind === 'goalChecklist' && !!message.content.trim();
     if (message.content.trim() !== '') return true;
     if (message.reasoning?.trim()) return true;
     if (message.fields?.length) return true;
@@ -1343,7 +1348,9 @@ function backendStateMessages(state: any): ChatMessage[] {
     const raw = state?.messages || state?.Messages || [];
     if (!Array.isArray(raw)) return [];
     return raw
-        .filter((m: any) => m && m.id && m.role && m.role !== 'progress' && m.role !== 'system')
+        // The persisted goal checklist card rides along (it feeds the float
+        // after a reload; coding tabs keep theirs in tab state instead).
+        .filter((m: any) => m && m.id && m.role && m.role !== 'progress' && (m.role !== 'system' || (m.kind === 'goalChecklist' && !!String(m.content || '').trim())))
         .map(sanitizeChatMessageForDisplay) as ChatMessage[];
 }
 
@@ -4504,10 +4511,27 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     useEffect(() => {
         const off = subscribeEvent("goal-state-changed", (payload: unknown) => {
             const record = goalChecklistRecord(payload);
-            const content = formatGoalChecklistFromRecord(record);
             const userID = String(record?.user_id || "").trim();
-            if (!content || !userID) return;
+            if (!userID) return;
             const sessionKey = normalizeRuntimeSessionKey(userID);
+            const status = String((record as { status?: string } | null)?.status || "").trim().toLowerCase();
+            // A deleted goal (goal-cleared) retires its checklist card: the
+            // float reads that card, and a goal that no longer exists must not
+            // keep floating. Completion keeps the card in history — the float
+            // hides on the card's 已完成 body instead.
+            if (status === "cleared") {
+                setMessages(prev => {
+                    const ownsSession = prev.some(message => messageBelongsToSession(message, sessionKey));
+                    const activeKey = normalizeRuntimeSessionKey(options?.activeSessionKey || getActiveSessionKey());
+                    if (!ownsSession && activeKey !== sessionKey) return prev;
+                    const cardId = goalChecklistMessageId(sessionKey);
+                    if (!prev.some(message => message.id === cardId)) return prev;
+                    return prev.filter(message => message.id !== cardId);
+                });
+                return;
+            }
+            const content = formatGoalChecklistFromRecord(record);
+            if (!content) return;
             const forgottenAt = forgottenEventSessionsRef.current.get(sessionKey);
             if (forgottenAt && Date.now() - forgottenAt < FORGOTTEN_EVENT_SESSION_TTL_MS) return;
             setMessages(prev => {

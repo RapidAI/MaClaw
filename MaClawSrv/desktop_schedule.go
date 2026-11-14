@@ -49,8 +49,8 @@ func armDesktopBotSchedule(mgr *scheduler.Manager, p agentservice.Principal, ins
 		mode = "create"
 	}
 	if mode == "cancel" {
-		n := cancelDesktopBotSchedules(mgr, instanceID, botID, decision.Schedule.Name)
-		log.Printf("[desktop-schedule] cancel bot=%s instance=%s n=%d", botID, instanceID, n)
+		n, runningLeft := cancelDesktopBotSchedules(mgr, instanceID, botID, decision.Schedule.Name)
+		log.Printf("[desktop-schedule] cancel bot=%s instance=%s n=%d running=%d", botID, instanceID, n, runningLeft)
 		return nil
 	}
 	if mode != "create" {
@@ -77,6 +77,7 @@ func armDesktopBotSchedule(mgr *scheduler.Manager, p agentservice.Principal, ins
 	if decision.Schedule.DayOfWeek != nil {
 		day = *decision.Schedule.DayOfWeek
 	}
+	claimUntaggedTimerByName(mgr, instanceID, botID, strings.TrimSpace(p.UserID), givenName)
 	var mine []scheduler.ScheduledTask
 	for _, existing := range mgr.List() {
 		if existing.Status != "active" || existing.InstanceID != instanceID || existing.DesktopBotID != botID {
@@ -167,9 +168,101 @@ func armDesktopBotSchedule(mgr *scheduler.Manager, p agentservice.Principal, ins
 	return nil
 }
 
-func cancelDesktopBotSchedules(mgr *scheduler.Manager, instanceID, botID, name string) int {
+// adoptUntaggedBotSchedules gives a timer back to the desktop bot that owns
+// its instance. manage_schedule used to store the row with only the instance,
+// so the bot's schedule list could not see it.
+func adoptUntaggedBotSchedules(svc *agentservice.Service, mgr *scheduler.Manager) {
+	if svc == nil || mgr == nil {
+		return
+	}
+	ctx := context.Background()
+	for _, task := range mgr.List() {
+		if strings.TrimSpace(task.DesktopBotID) != "" || strings.TrimSpace(task.InstanceID) == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(task.Name), desktopLongJobTaskPrefix) {
+			continue
+		}
+		p := agentservice.Principal{TenantID: strings.TrimSpace(task.OwnerTenantID), UserID: strings.TrimSpace(task.OwnerUserID)}
+		if p.TenantID == "" {
+			p.TenantID = "system"
+		}
+		inst, err := svc.GetInstance(ctx, p, task.InstanceID)
+		if err != nil || inst == nil || strings.TrimSpace(inst.Metadata["hub_bot"]) != "1" {
+			continue
+		}
+		botID := strings.TrimSpace(inst.Metadata["hub_desktop_bot"])
+		if botID == "" {
+			continue
+		}
+		if err := mgr.BindDesktopBot(task.ID, botID, task.OwnerUserID); err != nil {
+			log.Printf("[desktop-schedule] adopt %s: %v", task.ID, err)
+			continue
+		}
+		log.Printf("[desktop-schedule] adopt id=%s bot=%s", task.ID, botID)
+	}
+}
+
+func desktopBotTimerLeftRunning() string {
+	return "这条定时任务正在执行，没有取消，记录还在。同名的 create 会改这一条，不会另建一条。"
+}
+
+func desktopBotTimerRunsItself() string {
+	return "这条定时任务由这个 bot 自己执行。到点的那一轮自己把结果发出去，不另建推送。同名的 create 改这一条。"
+}
+
+func desktopBotTimerStaysOpen() string {
+	return "这条定时任务按周期一直重复，不设开始或结束日期，也不限每月几号。同名的 create 改这一条。"
+}
+
+// dropDesktopBotScheduleDelivery removes a channel push stored on a bot timer.
+// The occurrence is that bot's own turn. A stored push is not sent, and the
+// list line that advertised it is what made a later turn delete the timer
+// and create another.
+func dropDesktopBotScheduleDelivery(mgr *scheduler.Manager) {
+	if mgr == nil {
+		return
+	}
+	for _, task := range mgr.List() {
+		if strings.TrimSpace(task.DesktopBotID) == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(task.Name), desktopLongJobTaskPrefix) {
+			continue
+		}
+		if task.Delivery != nil {
+			if err := mgr.Update(task.ID, map[string]interface{}{"delivery": nil}); err != nil {
+				log.Printf("[desktop-schedule] drop delivery %s: %v", task.ID, err)
+			}
+		}
+		if scheduler.HasDeliveryWarning(task.LastResult) {
+			if err := mgr.ClearDeliveryWarning(task.ID); err != nil {
+				log.Printf("[desktop-schedule] drop delivery note %s: %v", task.ID, err)
+			}
+		}
+		// A one-shot window is not part of the reply. The row then disappears
+		// on that date, which is the same empty list as a cancelled timer.
+		if task.StartDate != "" || task.EndDate != "" || task.DayOfMonth > 0 {
+			fields := map[string]interface{}{}
+			if task.StartDate != "" {
+				fields["start_date"] = ""
+			}
+			if task.EndDate != "" {
+				fields["end_date"] = ""
+			}
+			if task.DayOfMonth > 0 {
+				fields["day_of_month"] = -1
+			}
+			if err := mgr.Update(task.ID, fields); err != nil {
+				log.Printf("[desktop-schedule] drop window %s: %v", task.ID, err)
+			}
+		}
+	}
+}
+
+func cancelDesktopBotSchedules(mgr *scheduler.Manager, instanceID, botID, name string) (removed, runningLeft int) {
 	name = strings.TrimSpace(name)
-	var ids []string
+	var idle []string
 	for _, task := range mgr.List() {
 		if task.InstanceID != instanceID || task.DesktopBotID != botID {
 			continue
@@ -177,15 +270,18 @@ func cancelDesktopBotSchedules(mgr *scheduler.Manager, instanceID, botID, name s
 		if name != "" && task.Name != name {
 			continue
 		}
-		ids = append(ids, task.ID)
+		if mgr.Running(task.ID) {
+			runningLeft++
+			continue
+		}
+		idle = append(idle, task.ID)
 	}
-	n := 0
-	for _, id := range ids {
+	for _, id := range idle {
 		if err := mgr.ForceDelete(id); err == nil {
-			n++
+			removed++
 		}
 	}
-	return n
+	return removed, runningLeft
 }
 
 // desktopBotScheduleTool is bot_schedule. The model names the timer. The
@@ -212,9 +308,15 @@ func desktopBotScheduleTool(mgr *scheduler.Manager, p agentservice.Principal, in
 		if name == "" {
 			return "取消要给出这条定时任务的 name"
 		}
-		n := cancelDesktopBotSchedules(mgr, instanceID, botID, name)
+		n, runningLeft := cancelDesktopBotSchedules(mgr, instanceID, botID, name)
+		if runningLeft > 0 && n == 0 {
+			return desktopBotTimerLeftRunning()
+		}
 		if n == 0 {
 			return "没有名为 " + name + " 的定时任务"
+		}
+		if runningLeft > 0 {
+			return "已取消 " + name + "。" + desktopBotTimerLeftRunning()
 		}
 		return "已取消 " + name
 	case "create":
@@ -326,7 +428,37 @@ func clipScheduleText(s string, n int) string {
 	return strings.TrimSpace(string(r[:n]))
 }
 
+// claimUntaggedTimerByName gives this bot the one timer manage_schedule stored
+// under name with only the instance. Other untagged rows on the instance,
+// including a host task, stay untagged.
+func claimUntaggedTimerByName(mgr *scheduler.Manager, instanceID, botID, owner, name string) {
+	if mgr == nil {
+		return
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	botID = strings.TrimSpace(botID)
+	owner = strings.TrimSpace(owner)
+	name = strings.TrimSpace(name)
+	if instanceID == "" || botID == "" || name == "" {
+		return
+	}
+	for _, task := range mgr.List() {
+		if task.InstanceID != instanceID || task.Name != name || strings.TrimSpace(task.DesktopBotID) != "" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(task.Name), desktopLongJobTaskPrefix) {
+			continue
+		}
+		rowOwner := strings.TrimSpace(task.OwnerUserID)
+		if rowOwner != "" && owner != "" && rowOwner != owner {
+			continue
+		}
+		_ = mgr.BindDesktopBot(task.ID, botID, owner)
+	}
+}
+
 func desktopBotScheduleList(mgr *scheduler.Manager, instanceID, botID string) string {
+	dropDesktopBotScheduleDelivery(mgr)
 	var lines []string
 	for _, task := range mgr.List() {
 		if task.Status != "active" || task.InstanceID != instanceID || task.DesktopBotID != botID {
@@ -539,6 +671,7 @@ func desktopBotScheduleMessage(task *scheduler.ScheduledTask) agentservice.SendM
 		"bot_phase":       "execute",
 		"computer_helper": "1",
 		"bot_origin":      "schedule",
+		"bot_task":        strings.TrimSpace(task.Action),
 	}
 	return in
 }

@@ -408,14 +408,21 @@ func companionShareReceived(share companionDocShare, ownerID string, contacts, g
 
 func companionGroupView(group companionDocGroup, ownerID string) map[string]any {
 	admin := group.OwnerID == ownerID
-	accepted := 0
-	pending := 0
+	accepted := map[string]struct{}{}
+	pending := map[string]struct{}{}
 	for _, member := range group.Members {
+		key := strings.TrimSpace(member.UserID)
+		if key == "" {
+			key = member.Contact
+		}
+		if key == "" {
+			continue
+		}
 		switch member.Status {
 		case "accepted":
-			accepted++
+			accepted[key] = struct{}{}
 		case "pending":
-			pending++
+			pending[key] = struct{}{}
 		}
 	}
 	view := map[string]any{
@@ -425,8 +432,8 @@ func companionGroupView(group companionDocGroup, ownerID string) map[string]any 
 		"owner":         group.OwnerLabel,
 		"admin":         admin,
 		"created_at":    group.CreatedAt.UTC().Format(time.RFC3339),
-		"member_count":  accepted + 1,
-		"pending_count": pending,
+		"member_count":  len(accepted) + 1,
+		"pending_count": len(pending),
 	}
 	if admin {
 		members := make([]map[string]any, 0, len(group.Members))

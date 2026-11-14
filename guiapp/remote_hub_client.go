@@ -399,6 +399,9 @@ func thirdPartyClientIDFromSessionUserID(userID string) string {
 }
 
 func defaultHubDial(urlStr string) (*websocket.Conn, error) {
+	if err := remote.ValidateHubURL(urlStr); err != nil {
+		return nil, err
+	}
 	dialer := *websocket.DefaultDialer
 	if strings.HasPrefix(strings.ToLower(urlStr), "wss://") {
 		tlsConfig, err := remote.HubTLSConfig()

@@ -322,7 +322,13 @@ export function projectHistorySubstantiveDelta(previous: ChatMessage[] | undefin
             if (message.role !== "assistant" || assistantSubstantiveBody(message)) return true;
             continue;
         }
-        if (message.role !== "assistant") continue;
+        if (message.role !== "assistant") {
+            // The goal checklist card updates in place (same id, new body).
+            // Its completion flip must reach the visible transcript even
+            // mid-stream, or the float keeps a finished goal's stale card.
+            if (message.kind === "goalChecklist" && (before.content || "") !== (message.content || "")) return true;
+            continue;
+        }
         const prevContent = before.content || "";
         const nextContent = message.content || "";
         if (nextContent !== prevContent) {

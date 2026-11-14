@@ -110,3 +110,38 @@ func TestMultiSiteReplyNamesMissingSite(t *testing.T) {
 		t.Fatalf("reply: %s", got)
 	}
 }
+
+func TestReplyWithoutARecordDropsTheEditorLink(t *testing.T) {
+	got := desktopReplyWithLink("run-no-record", "已发布\n链接：https://editor.csdn.net/md/")
+	if strings.Contains(got, "editor.csdn.net") || strings.Contains(got, "已发布") {
+		t.Fatalf("editor link kept: %s", got)
+	}
+	if got := desktopReplyWithLink("run-no-record", "知乎要登录，停住了。"); got != "知乎要登录，停住了。" {
+		t.Fatalf("explanation changed: %s", got)
+	}
+	login := "要登录才能发，打开 https://passport.csdn.net/login"
+	if got := desktopReplyWithLink("run-no-record", login); got != login {
+		t.Fatalf("login link dropped: %s", got)
+	}
+	if got := desktopReplyWithLink("run-no-record", "已发布\n链接：https://zhuanlan.zhihu.com/p/2097265154266227495"); !strings.Contains(got, "/p/2097265154266227495") {
+		t.Fatalf("public link dropped: %s", got)
+	}
+}
+
+func TestMultiSiteReplyDropsTheEditorLink(t *testing.T) {
+	run := "run_multisite_editor"
+	scope := agentruntime.Scope{RunID: run}
+	desktopNoteTaskSpec(run, multiSiteReq)
+	defer desktopTaskSpecs.Delete(run)
+	desktopPublishUseSite(run, "csdn")
+	desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) {
+		r.Site, r.State = "csdn", browser.PublishDraftOnly
+	})
+	got := desktopReplyWithLink(run, "已发布\n链接：https://editor.csdn.net/md/\n知乎要登录。")
+	if strings.Contains(got, "editor.csdn.net") || strings.Contains(got, "已发布") {
+		t.Fatalf("editor link kept: %s", got)
+	}
+	if !strings.Contains(got, "CSDN：还在编辑器里") || !strings.Contains(got, "知乎要登录") {
+		t.Fatalf("reply: %s", got)
+	}
+}

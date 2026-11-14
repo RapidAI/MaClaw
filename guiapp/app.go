@@ -261,9 +261,9 @@ type App struct {
 	toolInstallLocks                   map[string]bool // Track which tools are currently being installed
 	toolLockMutex                      sync.Mutex      // Mutex for toolInstallLocks map
 	remoteSessions                     *RemoteSessionManager
-	remoteInfraMu                      sync.RWMutex // publishes remote infrastructure pointers after initialization
+	remoteInfraMu                      sync.RWMutex         // publishes remote infrastructure pointers after initialization
 	remoteWatches                      *remoteWatchRegistry // remote-control live mirror watches; nil until first watch_task op
-	remoteActivationBackgroundDisabled bool         // test-only: skip post-activation background connect
+	remoteActivationBackgroundDisabled bool                 // test-only: skip post-activation background connect
 	browserSessions                    *BrowserAgentManager
 	powerStateMutex                    sync.Mutex
 	powerStateProcess                  *exec.Cmd
@@ -13353,13 +13353,32 @@ func (a *App) ShowItemInFolder(path string) error {
 }
 
 func (a *App) OpenFileOrShowInFolder(path string) error {
+	return a.openShownFile(path, "")
+}
+
+// OpenBotFile opens a path from one bot's chat. A path on that bot's
+// computer opens the copy this app saved for the same bot.
+func (a *App) OpenBotFile(botID, path string) error {
+	return a.openShownFile(path, botID)
+}
+
+func (a *App) openShownFile(path, botID string) error {
 	path, err := a.normalizeOpenPathForApp(path)
 	if err != nil {
 		return err
 	}
 	if _, err := os.Stat(path); err != nil {
-		log.Printf("[app-open-file] path unavailable path=%q err=%v", path, err)
-		return err
+		// Only a path on the bot's computer may open a file this app saved.
+		// A missing local path stays missing.
+		if cloudDesktopOpenPath(path) {
+			if local := deliveredFileForOpen(botID, path); local != "" {
+				path = local
+			}
+		}
+		if _, statErr := os.Stat(path); statErr != nil {
+			log.Printf("[app-open-file] path unavailable path=%q err=%v", path, err)
+			return err
+		}
 	}
 	if err := startSystemOpen(path); err != nil {
 		log.Printf("[app-open-file] system open failed path=%q err=%v; falling back to reveal", path, err)

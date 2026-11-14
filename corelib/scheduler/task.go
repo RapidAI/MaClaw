@@ -672,6 +672,17 @@ func (m *Manager) List() []ScheduledTask {
 	return out
 }
 
+// Running reports an executor that has claimed this id and has not finished.
+func (m *Manager) Running(id string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.runningTasks[strings.TrimSpace(id)]
+	return ok
+}
+
 // Get returns a task by ID, or nil if not found.
 func (m *Manager) Get(id string) *ScheduledTask {
 	m.mu.RLock()
@@ -890,6 +901,68 @@ func (m *Manager) writeTask(id string, args map[string]interface{}, status strin
 			if cancel, running := m.runningTasks[id]; running {
 				cancel()
 			}
+		}
+		return nil
+	}
+	return fmt.Errorf("scheduler: task %q not found", id)
+}
+
+// ClearDeliveryWarning removes a stored push failure from this row. The run
+// text before that note stays. A missing row or a result with no note is a no-op.
+func (m *Manager) ClearDeliveryWarning(id string) error {
+	if m == nil {
+		return fmt.Errorf("scheduler: task %q not found", id)
+	}
+	id = strings.TrimSpace(id)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.tasks {
+		if m.tasks[i].ID != id {
+			continue
+		}
+		if !HasDeliveryWarning(m.tasks[i].LastResult) {
+			return nil
+		}
+		prev := m.tasks[i]
+		m.tasks[i].LastResult = StripDeliveryWarning(m.tasks[i].LastResult)
+		if err := m.save(); err != nil {
+			m.tasks[i] = prev
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("scheduler: task %q not found", id)
+}
+
+// BindDesktopBot fills a timer that was stored without a bot. A row that
+// already names a bot is left as it is.
+func (m *Manager) BindDesktopBot(id, botID, owner string) error {
+	id = strings.TrimSpace(id)
+	botID = strings.TrimSpace(botID)
+	owner = strings.TrimSpace(owner)
+	if id == "" || botID == "" {
+		return fmt.Errorf("scheduler: desktop bot id is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.tasks {
+		if m.tasks[i].ID != id {
+			continue
+		}
+		if strings.TrimSpace(m.tasks[i].DesktopBotID) != "" {
+			return nil
+		}
+		prev := m.tasks[i]
+		m.tasks[i].DesktopBotID = botID
+		if strings.TrimSpace(m.tasks[i].DesktopBotOwner) == "" && owner != "" {
+			m.tasks[i].DesktopBotOwner = owner
+		}
+		if strings.TrimSpace(m.tasks[i].TaskType) == "" {
+			m.tasks[i].TaskType = TaskTypeReminder
+		}
+		if err := m.save(); err != nil {
+			m.tasks[i] = prev
+			return err
 		}
 		return nil
 	}

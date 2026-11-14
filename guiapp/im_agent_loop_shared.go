@@ -10786,6 +10786,20 @@ func (c *sharedAgentLoopCallbacks) OnToolExecuted(name, argsJSON, result string,
 		return
 	}
 	c.toolCalls++
+	// Mirror processSkillPreferenceToolExecutions's release conditions on the
+	// shared loop: a required market-search call, or a failed run_skill/
+	// get_skill_run/search_and_install_skill, discharges this turn's forced
+	// skill preference. The latch lives on the loop context so the next
+	// request-boundary posture recompute honors it instead of re-narrowing
+	// the surface.
+	if c.loopCtx != nil && c.phase.ForceSkillPreference {
+		kind := classifyAgentToolKind(name)
+		searchAttempted := c.phase.SkillMode == skillPreferenceRemoteRequired && kind.IsSkillSearchTool()
+		skillToolFailed := !success && (kind == agentToolKindRunSkill || kind == agentToolKindGetSkillRun || kind == agentToolKindSearchAndInstallSkill)
+		if searchAttempted || skillToolFailed {
+			c.loopCtx.noteSkillPreferenceReleased()
+		}
+	}
 	c.maybeEscalateAfterTools()
 }
 

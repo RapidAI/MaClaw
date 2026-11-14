@@ -13,6 +13,7 @@ import (
 	"time"
 
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // GatewayClient talks to MaClaw GUI third-party IM Gateway (loopback HTTP).
@@ -27,6 +28,8 @@ type GatewayClient struct {
 }
 
 func NewGatewayClient(ep GatewayEndpoint) *GatewayClient {
+	client := remote.NewHubHTTPClient()
+	client.Timeout = 0 // per-request timeouts via context
 	return &GatewayClient{
 		BaseURL:    strings.TrimRight(strings.TrimSpace(ep.BaseURL), "/"),
 		Token:      strings.TrimSpace(ep.Token),
@@ -34,7 +37,7 @@ func NewGatewayClient(ep GatewayEndpoint) *GatewayClient {
 		ClientName: "MaClaw ACP Bridge",
 		UserID:     "vscode",
 		UserName:   "VS Code",
-		HTTP:       &http.Client{Timeout: 0}, // per-request timeouts via context
+		HTTP:       client,
 	}
 }
 
@@ -162,9 +165,13 @@ func (g *GatewayClient) doJSON(ctx context.Context, method, endpoint string, bod
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	const maxGatewayResponseBytes = 16 << 20
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxGatewayResponseBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(data) > maxGatewayResponseBytes {
+		return fmt.Errorf("gateway response exceeds %d bytes", maxGatewayResponseBytes)
 	}
 	if len(data) == 0 {
 		data = []byte("{}")
@@ -174,15 +181,23 @@ func (g *GatewayClient) doJSON(ctx context.Context, method, endpoint string, bod
 		if json.Unmarshal(data, &env) == nil && env.Error != nil {
 			return fmt.Errorf("gateway HTTP %d [%s] %s", resp.StatusCode, env.Error.Code, env.Error.Message)
 		}
-		return fmt.Errorf("gateway HTTP %d: %s", resp.StatusCode, string(data))
+		return fmt.Errorf("gateway HTTP %d: %s", resp.StatusCode, gatewayResponsePreview(data))
 	}
 	if out == nil {
 		return nil
 	}
 	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("decode gateway response: %w: %s", err, string(data))
+		return fmt.Errorf("decode gateway response: %w: %s", err, gatewayResponsePreview(data))
 	}
 	return nil
+}
+
+func gatewayResponsePreview(data []byte) string {
+	const maxPreviewBytes = 4 << 10
+	if len(data) <= maxPreviewBytes {
+		return string(data)
+	}
+	return string(bytes.ToValidUTF8(data[:maxPreviewBytes], []byte("�"))) + "…"
 }
 
 // FormatCursor returns a decimal cursor string.

@@ -8,6 +8,34 @@ import (
 	"time"
 )
 
+func TestBindDesktopBotFillsOnlyABlankID(t *testing.T) {
+	mgr, err := NewManager(filepath.Join(t.TempDir(), "scheduled_tasks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Stop)
+	id, err := mgr.Add(ScheduledTask{
+		Name: "天气", Action: "报告天气", InstanceID: "inst_4",
+		Hour: 8, Minute: 0, DayOfWeek: -1, DayOfMonth: -1, Status: "active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.BindDesktopBot(id, "bot_4", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	got := mgr.Get(id)
+	if got == nil || got.DesktopBotID != "bot_4" || got.DesktopBotOwner != "alice" || got.TaskType != TaskTypeReminder {
+		t.Fatalf("bound = %+v", got)
+	}
+	if err := mgr.BindDesktopBot(id, "bot_other", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if again := mgr.Get(id); again == nil || again.DesktopBotID != "bot_4" {
+		t.Fatalf("overwrote = %+v", again)
+	}
+}
+
 func TestEligibleClockSkipsOtherRows(t *testing.T) {
 	mgr, err := NewManager(filepath.Join(t.TempDir(), "scheduled_tasks.json"))
 	if err != nil {

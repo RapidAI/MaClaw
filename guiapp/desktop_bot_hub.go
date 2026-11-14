@@ -2665,15 +2665,16 @@ func abandonDesktopSurface() {
 	}
 }
 
+// desktopSaidPictureMax is the largest picture the chat still shows inline.
+// A mail file is at most 8 MB; anything larger stays a chip.
+const desktopSaidPictureMax = 8 << 20
+
 // ReadDesktopBotShot returns one screenshot saved for a bot bubble.
-// The path has to stay under this machine's bot-files directory.
+// The path is either a shot this app stored under bot-files, or a file
+// it downloaded from the shared store into the bot's folder.
 func (a *App) ReadDesktopBotShot(path string) (*DesktopBotImage, error) {
 	abs, err := filepath.Abs(filepath.Clean(strings.TrimSpace(path)))
-	if err != nil {
-		return nil, fmt.Errorf("screenshot is not on this machine")
-	}
-	root, err := filepath.Abs(filepath.Join(corelib.MaclawDataDir(), "bot-files"))
-	if err != nil || !desktopBotPathInside(root, abs) {
+	if err != nil || !desktopShotPathAllowed(abs) {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
 	mime := ""
@@ -2682,11 +2683,15 @@ func (a *App) ReadDesktopBotShot(path string) (*DesktopBotImage, error) {
 		mime = "image/png"
 	case ".jpg", ".jpeg":
 		mime = "image/jpeg"
+	case ".gif":
+		mime = "image/gif"
+	case ".webp":
+		mime = "image/webp"
 	default:
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
 	info, err := os.Stat(abs)
-	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > 1_000_000 {
+	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > desktopSaidPictureMax {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
 	raw, err := os.ReadFile(abs)
@@ -2694,6 +2699,33 @@ func (a *App) ReadDesktopBotShot(path string) (*DesktopBotImage, error) {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
 	return &DesktopBotImage{MIME: mime, Data: base64.StdEncoding.EncodeToString(raw)}, nil
+}
+
+// desktopShotPathAllowed is a picture this app itself saved. A shot from
+// the run lives under bot-files. A file said to the person is downloaded
+// from the shared store and recorded in the delivery index; that recorded
+// path is the copy this machine shows.
+func desktopShotPathAllowed(abs string) bool {
+	root, err := filepath.Abs(filepath.Join(corelib.MaclawDataDir(), "bot-files"))
+	if err == nil && desktopBotPathInside(root, abs) {
+		return true
+	}
+	return deliveredPathRecorded(abs)
+}
+
+func deliveredPathRecorded(abs string) bool {
+	botFilesMu.Lock()
+	defer botFilesMu.Unlock()
+	for _, p := range botFilesIndex() {
+		got, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(got, abs) {
+			return true
+		}
+	}
+	return false
 }
 
 func desktopBotPathInside(root, path string) bool {

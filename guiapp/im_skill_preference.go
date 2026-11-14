@@ -317,24 +317,28 @@ func shouldRestrictToSkillSearch(phase agentLoopPhase) bool {
 
 // applySkillPreferenceSurface drops host tools a skill-search round must
 // not regain. Agent-guided mode keeps those tools and is resealed later.
-func applySkillPreferenceSurface(tools []map[string]interface{}, phase agentLoopPhase) []map[string]interface{} {
+// keep names explicit loop-scoped discovery grants: the model petitioned a
+// tool through the sanctioned channel and the host granted it, so the
+// steering strip must not take it back. A required market-search round is
+// a hard contract, not a steer, and still defers every non-skill name.
+func applySkillPreferenceSurface(tools []map[string]interface{}, phase agentLoopPhase, keep map[string]bool) []map[string]interface{} {
 	if !phase.ForceSkillPreference || phase.SkillMode == skillPreferenceAgentGuided {
 		return tools
 	}
 	if shouldRestrictToSkillSearch(phase) {
 		return filterToolsForRemoteSkillSearch(tools)
 	}
-	return filterToolsForSkillPreference(tools)
+	return filterToolsForSkillPreference(tools, keep)
 }
 
-func filterToolsForSkillPreference(toolDefs []map[string]interface{}) []map[string]interface{} {
+func filterToolsForSkillPreference(toolDefs []map[string]interface{}, keep map[string]bool) []map[string]interface{} {
 	if len(toolDefs) == 0 {
 		return toolDefs
 	}
 	filtered := make([]map[string]interface{}, 0, len(toolDefs))
 	for _, def := range toolDefs {
 		name := extractToolName(def)
-		if classifyAgentToolKind(name).IsBlockedBySkillPreference() {
+		if classifyAgentToolKind(name).IsBlockedBySkillPreference() && !keep[name] {
 			continue
 		}
 		filtered = append(filtered, def)
@@ -357,7 +361,7 @@ func filterToolsForRemoteSkillSearch(toolDefs []map[string]interface{}) []map[st
 		}
 	}
 	if len(filtered) == 0 {
-		return filterToolsForSkillPreference(toolDefs)
+		return filterToolsForSkillPreference(toolDefs, nil)
 	}
 	return filtered
 }

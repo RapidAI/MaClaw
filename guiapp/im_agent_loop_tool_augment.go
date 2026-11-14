@@ -77,7 +77,7 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 		// Light and operational supplements do not seal the baseline. The
 		// fresh route and workflow ensure can still bring back bash or a
 		// tool this round already blocked.
-		tools = applySkillPreferenceSurface(tools, phase)
+		tools = applySkillPreferenceSurface(tools, phase, ctx.discoveredConditionalToolNameSet())
 		if directMode {
 			tools = filterDirectModeAllowedTools(tools)
 		}

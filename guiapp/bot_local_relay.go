@@ -370,8 +370,29 @@ func (a *App) SaveBotLocalAccess(in localrelay.Settings) (*BotLocalAccessState, 
 	if err != nil {
 		return nil, err
 	}
+	if s.FullAccess() {
+		// A question already on screen would otherwise time out as a deny.
+		settleLocalRelayPrompts(localrelay.AnswerOnce)
+	}
 	a.startLocalRelay()
 	return localRelaySnapshot(s), nil
+}
+
+// settleLocalRelayPrompts releases every question still waiting. The lock is
+// not held across the send: the waiter locks it again while finishing.
+func settleLocalRelayPrompts(ans localrelay.Answer) {
+	localRelayState.mu.Lock()
+	pending := make([]chan localrelay.Answer, 0, len(localRelayState.pending))
+	for _, p := range localRelayState.pending {
+		pending = append(pending, p.answer)
+	}
+	localRelayState.mu.Unlock()
+	for _, ch := range pending {
+		select {
+		case ch <- ans:
+		default:
+		}
+	}
 }
 
 // PickBotLocalAccessFolder opens the folder chooser for a new allowed root.
