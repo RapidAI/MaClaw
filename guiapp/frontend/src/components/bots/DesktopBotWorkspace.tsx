@@ -99,6 +99,7 @@ import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAc
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
+import { pictureFromWatch, stateFromFailure, stateFromStreamEvent } from './desktopViewState';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
 import { wakeFailureReason } from './desktopWake';
 import {
@@ -952,6 +953,7 @@ function copy(lang: string) {
             isolatedDesktopHint: 'This bot uses its own virtual desktop. Off means it shares yours.',
             desktopModeFailed: 'The desktop mode was not changed.',
             watching: 'Watching the desktop.',
+            asleepTitle: 'Desktop is asleep',
             desktopAsleep: 'Desktop is asleep. It wakes when the bot needs it, or when you click Wake.',
             wakeDesktop: 'Wake',
             wakingDesktop: 'Waking the computer…',
@@ -1177,6 +1179,7 @@ function copy(lang: string) {
             isolatedDesktopHint: '這個 Bot 使用自己的虛擬桌面。關閉後改回共用你的桌面。',
             desktopModeFailed: '桌面模式沒有改成。',
             watching: '正在觀看桌面。',
+            asleepTitle: '桌面在休眠',
             desktopAsleep: '桌面在休眠。Bot 需要桌面步驟時會喚醒，或你點「喚醒」。',
             wakeDesktop: '喚醒',
             wakingDesktop: '正在喚醒電腦…',
@@ -1400,6 +1403,7 @@ function copy(lang: string) {
         isolatedDesktopHint: '这个 bot 使用自己的虚拟桌面。关闭后改回共用你的桌面。',
         desktopModeFailed: '桌面模式没有改成。',
         watching: '正在观看桌面。',
+        asleepTitle: '桌面在休眠',
         desktopAsleep: '桌面在休眠。Bot 需要桌面步骤时会唤醒，或你点「唤醒」。',
         wakeDesktop: '唤醒',
         wakingDesktop: '正在唤醒电脑…',
@@ -3168,12 +3172,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending = true;
             try {
                 const requestedAt = Date.now();
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; desktop_mode?: string } | undefined;
+                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; desktop_mode?: string; desktop_state?: string } | undefined;
                 if (!alive) return;
-                const url = String(view?.novnc_url || '');
-                if (!url) {
-                    // Asleep is the normal idle state. Do not start the desktop
-                    // and do not show a connection error — offer 唤醒 instead.
+                const picture = pictureFromWatch(view);
+                if (picture.state !== 'running') {
+                    // Asleep and a stopped display are the same picture: no
+                    // frame. A remembered page is not a frame. Do not start
+                    // the desktop and do not show a connection error.
                     watchMisses.current[botId] = 0;
                     setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                     setLiveDesktop(prev => {
@@ -3182,9 +3187,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         delete next[botId];
                         return next;
                     });
+                    setScreenByBot(prev => {
+                        const existing = prev[botId];
+                        if (!existing?.url) return prev;
+                        return { ...prev, [botId]: { ...existing, url: '' } };
+                    });
                     setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
                     return;
                 }
+                const url = picture.url;
                 setAsleepByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                 watchMisses.current[botId] = 0;
                 setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -3247,7 +3258,25 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         return { ...prev, [botId]: { url: url || existing?.url || '', mode } };
                     });
                 }
-            } catch {
+            } catch (err) {
+                if (stateFromFailure(err)) {
+                    if (!alive) return;
+                    watchMisses.current[botId] = 0;
+                    setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+                    setLiveDesktop(prev => {
+                        if (!(botId in prev)) return prev;
+                        const next = { ...prev };
+                        delete next[botId];
+                        return next;
+                    });
+                    setScreenByBot(prev => {
+                        const existing = prev[botId];
+                        if (!existing?.url) return prev;
+                        return { ...prev, [botId]: { ...existing, url: '' } };
+                    });
+                    setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+                    return;
+                }
                 fail();
             } finally {
                 pending = false;
@@ -3276,6 +3305,33 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             });
         };
     }, [selectedId, showDesktop]);
+
+    // The player posts this when its stream closes (H.264 WebSocket, or the
+    // same message from noVNC). Drop the frame immediately. The next watch
+    // that reports running mounts it again, which is how a bot step that
+    // woke the desktop reconnects without a click.
+    useEffect(() => {
+        if (!selectedId) return;
+        const botId = selectedId;
+        const onMessage = (ev: MessageEvent) => {
+            if (stateFromStreamEvent(ev.data) !== 'display_stopped') return;
+            setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+            setLiveDesktop(prev => {
+                if (!(botId in prev)) return prev;
+                const next = { ...prev };
+                delete next[botId];
+                return next;
+            });
+            setScreenByBot(prev => {
+                const existing = prev[botId];
+                if (!existing?.url) return prev;
+                return { ...prev, [botId]: { ...existing, url: '' } };
+            });
+            setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+        };
+        window.addEventListener('message', onMessage);
+        return () => window.removeEventListener('message', onMessage);
+    }, [selectedId]);
 
     const botScreenKey = bots.map(bot => bot.id).join('\n');
     useEffect(() => {
@@ -3337,20 +3393,32 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (pending) return;
             pending = true;
             try {
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; desktop_mode?: string } | undefined;
+                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; desktop_mode?: string; desktop_state?: string } | undefined;
                 if (!alive) return;
-                const url = String(view?.novnc_url || '');
+                const picture = pictureFromWatch(view);
+                const url = picture.state === 'running' ? picture.url : '';
+                setAsleepByBot(prev => {
+                    const down = picture.state !== 'running';
+                    if (!!prev[botId] === down) return prev;
+                    return { ...prev, [botId]: down };
+                });
                 setScreenByBot(prev => {
                     const existing = prev[botId];
                     const next = {
-                        url: url || existing?.url || '',
+                        url,
                         mode: view?.desktop_mode ? desktopModeOf(view.desktop_mode) : (existing?.mode || 'shared'),
                     };
                     if (existing && existing.url === next.url && existing.mode === next.mode) return prev;
                     return { ...prev, [botId]: next };
                 });
-            } catch {
-                // The last picture stays up while this display is still starting.
+            } catch (err) {
+                if (!stateFromFailure(err)) return;
+                setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+                setScreenByBot(prev => {
+                    const existing = prev[botId];
+                    if (!existing?.url) return prev;
+                    return { ...prev, [botId]: { ...existing, url: '' } };
+                });
             } finally {
                 pending = false;
             }
@@ -7207,8 +7275,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             {handBackError ? <p className="desktop-screen-switch__error" data-testid="desktop-bot-handback-error" role="status">{handBackError}</p> : null}
                             {selectedAsleep ? (
                                 <div className="desktop-bot-sleep" data-testid="desktop-bot-sleep">
+                                    <p className="desktop-bot-sleep__label" data-testid="desktop-bot-asleep-label">{text.asleepTitle}</p>
                                     <button type="button" className="desktop-bot-sleep__wake" data-testid="desktop-bot-wake" title={text.wakeDesktop} aria-label={text.desktopAsleep} onClick={() => void retryConnection(selected.id)}>
                                         <ComputerSleepScene />
+                                        <span>{text.wakeDesktop}</span>
                                     </button>
                                     {wakeByBot[selected.id]?.state === 'waking' ? (
                                         <p className="desktop-bot-sleep__status" data-testid="desktop-bot-waking" role="status">{text.wakingDesktop}</p>

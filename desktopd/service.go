@@ -453,6 +453,10 @@ type Session struct {
 	Display   string `json:"display"`
 	Container string `json:"container"`
 	Novnc     string `json:"novnc_url,omitempty"`
+	// State is running, asleep, or display_stopped. A viewer hides the
+	// picture unless it is running. Empty on session opens that did not
+	// look.
+	State string `json:"desktop_state,omitempty"`
 }
 
 func (s *Service) OpenSession(ctx context.Context, spec Spec) (Session, error) {

@@ -31,6 +31,8 @@ func peekDocker(t *testing.T, calls *[]string, screens map[string]struct {
 				return "", errDocker("screen missing")
 			}
 			return `{"display":"` + screen.display + `","cdp":"http://127.0.0.1:18021","profile":"` + screen.profile + `","token":"` + screen.token + `"}`, nil
+		case args[0] == "inspect":
+			return "true", nil
 		case args[0] == "exec" && strings.Contains(line, "desktop_supervisor.py display"):
 			key := args[len(args)-1]
 			screen, ok := screens[key]

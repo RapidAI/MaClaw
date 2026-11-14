@@ -681,6 +681,60 @@ func (p *Pool) PeekDesktopView(ctx context.Context, tenantID, userID string) (st
 	return strings.TrimSpace(out.Novnc), nil
 }
 
+// DesktopViewState is the typed picture of a screen that is already up.
+// It never starts, wakes, or pins the desktop. state is running, asleep,
+// or display_stopped. A 409 DESKTOP_ASLEEP and an empty page are asleep.
+// A transport failure is display_stopped: a viewer must not keep a frame
+// it can no longer confirm.
+func (p *Pool) DesktopViewState(ctx context.Context, tenantID, userID string) (string, string, error) {
+	if p == nil {
+		return "asleep", "", nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return "", "", ctx.Err()
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "asleep", "", nil
+	}
+	var out struct {
+		Novnc string `json:"novnc_url"`
+		State string `json:"desktop_state"`
+	}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/view", body, &out); err != nil {
+		var statusErr *upstream.StatusError
+		if errors.As(err, &statusErr) && statusErr.Status == http.StatusConflict {
+			return "asleep", "", nil
+		}
+		if desktopbot.IsDesktopAsleep(err) {
+			return "asleep", "", nil
+		}
+		return "display_stopped", "", nil
+	}
+	state, novnc := reportedViewState(out.State, out.Novnc)
+	return state, novnc, nil
+}
+
+// reportedViewState keeps a typed state from desktopd. An older desktopd
+// omits the field: a page means running, and no page means asleep.
+func reportedViewState(state, novnc string) (string, string) {
+	state = strings.TrimSpace(state)
+	novnc = strings.TrimSpace(novnc)
+	switch state {
+	case "running", "asleep", "display_stopped":
+		return state, novnc
+	default:
+		if novnc == "" {
+			return "asleep", ""
+		}
+		return "running", novnc
+	}
+}
+
 // RunApp forwards one xdotool command to the Docker service that owns the user.
 func (p *Pool) RunApp(ctx context.Context, tenantID, userID, display string, args []string) (string, error) {
 	server, err := p.resolve(ctx, tenantID, userID)

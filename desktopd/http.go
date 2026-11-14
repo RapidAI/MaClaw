@@ -140,7 +140,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		if !decodeBody(w, r, &in) {
 			return
 		}
-		session, err := svc.PeekSession(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID})
+		session, err := svc.ViewState(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID})
 		if err != nil {
 			writeServiceErr(w, err)
 			return

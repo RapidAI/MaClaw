@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // UserDesktopViewHold is how long an explicit human 唤醒 session refreshes
@@ -185,6 +187,9 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 		}
 	}
 	novnc := s.desktopViewURL(tenantID, userID)
+	if novnc != "" && !s.desktopPictureRunning(ctx, tenantID, userID) {
+		return "", false, nil
+	}
 	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 }
 
@@ -350,7 +355,7 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 	gate := s.desktopUserGate(tenantID, userID)
 	gate.Lock()
 	defer gate.Unlock()
-	if novnc := s.desktopViewURL(tenantID, userID); novnc != "" {
+	if novnc := s.desktopViewURL(tenantID, userID); novnc != "" && s.desktopPictureRunning(ctx, tenantID, userID) {
 		return novnc, s.desktopKeyboardForBot(tenantID, userID, botID), nil
 	}
 	if !s.desktopWatchStillCurrent(tenantID, userID, epoch) {
@@ -361,6 +366,9 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 	openCtx = WithDesktopWakeReason(openCtx, DesktopWakeHuman)
 	novnc, openErr := s.Desktop.Open(openCtx, tenantID, userID)
 	if openErr != nil {
+		if desktopbot.IsDesktopAsleep(openErr) {
+			return "", false, desktopbot.AsleepError{}
+		}
 		return "", false, fmt.Errorf("%w: %s", ErrSrv, openErr.Error())
 	}
 	if novnc = strings.TrimSpace(novnc); novnc != "" {

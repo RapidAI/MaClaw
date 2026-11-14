@@ -759,6 +759,53 @@ describe('DesktopBotWorkspace', () => {
         }
     });
 
+    it('drops a stale frame when the display is stopped or the stream disconnects, then reconnects when a bot step wakes it', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        const stale = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        const live = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1&fresh=1';
+        getScreen.mockResolvedValue({ novnc_url: stale, user_control: false, desktop_mode: 'shared' });
+        watchBot.mockResolvedValue({ novnc_url: stale, desktop_state: 'display_stopped', user_control: false, desktop_mode: 'shared' });
+        wakeBot.mockClear();
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            expect(screen.getByTestId('desktop-bot-asleep-label').textContent).toBe('桌面在休眠');
+            expect(screen.getByTestId('desktop-bot-wake').textContent).toContain('唤醒');
+            expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+            watchBot.mockResolvedValue({ novnc_url: stale, desktop_state: 'running', user_control: false, desktop_mode: 'shared' });
+            await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+            await act(async () => {
+                window.dispatchEvent(new MessageEvent('message', { data: { source: 'maclaw-desktop', event: 'disconnect' } }));
+            });
+            expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+            expect(screen.getByTestId('desktop-bot-asleep-label').textContent).toBe('桌面在休眠');
+            watchBot.mockResolvedValue({ novnc_url: live, desktop_state: 'running', user_control: false, desktop_mode: 'shared' });
+            await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('fresh=1');
+            expect(screen.queryByTestId('desktop-bot-sleep')).toBeNull();
+            expect(wakeBot).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('shows 桌面在休眠 when open answers DESKTOP_ASLEEP, not a dead frame', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        getScreen.mockResolvedValue({ novnc_url: 'http://hub.example/stale/vnc.html', user_control: false, desktop_mode: 'shared' });
+        watchBot.mockRejectedValue(Object.assign(new Error('DESKTOP_ASLEEP'), { code: 'DESKTOP_ASLEEP' }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        expect((await screen.findByTestId('desktop-bot-asleep-label')).textContent).toBe('桌面在休眠');
+        expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+        expect(screen.queryByText('桌面画面连不上。可以重试连接，不用重发任务。')).toBeNull();
+    });
+
     it('warns in the chat when the account credits are too low to finish a task', async () => {
         getHubCredits.mockResolvedValue({ active: true, credits_total: 100, credits_used: 80, credits_remaining: 20 });
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
