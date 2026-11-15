@@ -6,7 +6,7 @@ require (
 	github.com/RapidAI/OfficeRead v0.0.0-20260809051355-9682f0878d08
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20261110213740-d7496429564d
-	github.com/VantageDataChat/GoPDF2 v0.0.0-20261114130120-d3c49501f780
+	github.com/VantageDataChat/GoPDF2 v0.0.0-20261115000656-3f2acc9f753c
 	github.com/Vantagics/GoPPT v0.0.0-20261114111005-940ea4c2a005
 	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
 	github.com/braheezy/shine-mp3 v0.1.0
@@ -80,7 +80,7 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/andybalholm/brotli v1.3.0 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/klauspost/compress v1.17.4
 	github.com/richardlehane/mscfb v1.0.7

@@ -30,6 +30,8 @@ github.com/VantageDataChat/GoPDF2 v0.0.0-20261114113814-65a1cea11ab0 h1:pOCaTc8A
 github.com/VantageDataChat/GoPDF2 v0.0.0-20261114113814-65a1cea11ab0/go.mod h1:/6mN3faaCqGb7BloWQE1NXva6rpQBiN2lw9fja7w9IU=
 github.com/VantageDataChat/GoPDF2 v0.0.0-20261114130120-d3c49501f780 h1:YkEM3mWVyyRdKr9d/FuzOgDc1ytkhPxcNbn9YNMpAG8=
 github.com/VantageDataChat/GoPDF2 v0.0.0-20261114130120-d3c49501f780/go.mod h1:/6mN3faaCqGb7BloWQE1NXva6rpQBiN2lw9fja7w9IU=
+github.com/VantageDataChat/GoPDF2 v0.0.0-20261115000656-3f2acc9f753c h1:W+di2fW34YP8SFlOc6f7g8iKqhdkTPiZMzyiAeBThxQ=
+github.com/VantageDataChat/GoPDF2 v0.0.0-20261115000656-3f2acc9f753c/go.mod h1:Vx3xAhoFM9srUJumDQXbUwIFfGIsk6YQm1DLNpWKs14=
 github.com/Vantagics/GoPPT v0.0.0-20261107035927-beb3aba0f510 h1:CPWadNt7vlLTCDnxQwY2E+YrUHlKuxr76ebVDBInwno=
 github.com/Vantagics/GoPPT v0.0.0-20261107035927-beb3aba0f510/go.mod h1:dyyn71qnVef/gY6q+hTw21MFQzIBFcL/ewGQeYG2JsY=
 github.com/Vantagics/GoPPT v0.0.0-20261111231545-296b21989382 h1:TInXEyFALxmVR9//Tg7+U4Ewn5pUz4tDP8vN7Ev3XOs=
@@ -42,6 +44,8 @@ github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0 h1:gUrYWktqvF8PV
 github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0/go.mod h1:c5eyz5amZqTKvY3ipqerFO/74a/8CYmXOahSr40c+Ww=
 github.com/andybalholm/brotli v1.0.6 h1:Yf9fFpf49Zrxb9NlQaluyE92/+X7UVHlhMNJN2sxfOI=
 github.com/andybalholm/brotli v1.0.6/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
+github.com/andybalholm/brotli v1.3.0 h1:IdkhjSe/+34U+fP7FSR2Q6Poj1hnHUa2GoWmzXJd6qY=
+github.com/andybalholm/brotli v1.3.0/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/anthropics/anthropic-sdk-go v1.50.1 h1:XTd1RkdeHCPusPpzcBY5RIWj/WW6ZktjftxrHvQBJfU=
 github.com/anthropics/anthropic-sdk-go v1.50.1/go.mod h1:3EfIfmFqxH6rbiLcIP4tPFyXL/IHakx2wDG4OU+TIEI=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
