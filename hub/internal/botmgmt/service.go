@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/botcapability"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
@@ -46,6 +47,11 @@ var (
 	// ErrDesktopNotRunning: the bot's own display is asleep, so a demo
 	// recording would capture nothing.
 	ErrDesktopNotRunning = errors.New("这个 Bot 的桌面现在没有运行，先打开它的桌面，再开始录制。")
+	// ErrNoDesktop is a wake or watch of a bot that was created without a
+	// cloud desktop. Callers must not start a container for it.
+	ErrNoDesktop = errors.New("这个 bot 没有电脑")
+	// ErrDesktopQuota is a desktop bot past the grant's desktop-bot limit.
+	ErrDesktopQuota = errors.New("电脑额度已用完，请在新版客户端里创建无电脑 bot")
 	// ErrNotPrimary is a bot other than this account's primary trying to
 	// notify or hand work to another bot.
 	ErrNotPrimary = errors.New("我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。")
@@ -86,8 +92,11 @@ type Bot struct {
 	CreatedAt   string `json:"created_at"`
 	// DesktopMode is "isolated" when this bot drives its own virtual display
 	// in the owner's desktop container; empty or "shared" is the owner's
-	// desktop, as before.
+	// desktop, as before. "none" is a bot with no desktop.
 	DesktopMode string `json:"desktop_mode,omitempty"`
+	// DesktopOver is set only on the admin list when this owner's desktop
+	// bots already exceed the matching grant. It is not stored.
+	DesktopOver bool `json:"desktop_over,omitempty"`
 	// Color and Shape are the bot's badge look chosen in the GUI, stored
 	// here so it follows the account across computers. Empty is "not set";
 	// the GUI then derives a default. See bot_appearance.go.
@@ -129,6 +138,12 @@ type record struct {
 	// principal so the choice survives a principal that has not been
 	// provisioned yet; it is applied on that owner's first bot open.
 	OwnerBotLLMs map[string]*ownerBotLLM `json:"owner_bot_llms,omitempty"`
+	// OwnerCapabilities is the MCP servers and skills every bot of that owner
+	// may use, keyed by hub user id. Stdio env is not stored.
+	OwnerCapabilities map[string]*botcapability.Document `json:"owner_capabilities,omitempty"`
+	// OwnerCapabilityStamps is the hash last pushed into MaClawSrv. A mismatch
+	// means the next bot open pushes again.
+	OwnerCapabilityStamps map[string]string `json:"owner_capability_stamps,omitempty"`
 	// OwnerDesktopModeDefaults is the desktop_mode a new bot of that owner
 	// starts with, keyed by hub user id. Absent means shared, as before; it
 	// does not change existing bots or other owners.
@@ -158,6 +173,10 @@ type Service struct {
 	convJournal *convHub
 	Directory   Directory
 	Desktop     DesktopControl
+	// NodeTransport carries a handoff whose noVNC origin is a Bot node's
+	// virtual host (desktopd.<id>.node.invalid). Nil leaves those pages
+	// unavailable; every other origin keeps the default transport.
+	NodeTransport func(host string) http.RoundTripper
 	// MaterialStageDir holds partial material uploads; empty is a temp dir.
 	MaterialStageDir string
 	// MailFileDir keeps files shared in bot messages; empty is a temp dir.
@@ -177,6 +196,9 @@ type Service struct {
 
 	mu       sync.RWMutex
 	bearerMu sync.Mutex
+	// desktopMetaMu keeps two mode changes from writing instance metadata
+	// out of order. The later change reloads the bot and writes last.
+	desktopMetaMu sync.Mutex
 	// ownerBearers keeps a MaClaw access token for an owner API key. Issuing
 	// one verifies the API secret with scrypt and is rate-limited, so a bot
 	// command reuses the token until shortly before it expires.
@@ -282,8 +304,8 @@ type Service struct {
 	// whose bot id is gone. Listing the panel does it, and not on every poll.
 	scheduleSweepMu sync.Mutex
 	scheduleSweep   map[string]time.Time
-	routerOnce  sync.Once
-	router      *routerInbox
+	routerOnce      sync.Once
+	router          *routerInbox
 }
 
 // asyncPreferKey marks one MaClawSrv call as Prefer: respond-async.
@@ -433,7 +455,7 @@ func (s *Service) countInstances(ctx context.Context, rec record, bearer string)
 }
 
 func (s *Service) CreateBot(ctx context.Context, tenantID, name, description string) (Bot, error) {
-	return s.createBot(ctx, tenantID, "", name, description, false)
+	return s.createBot(ctx, tenantID, "", name, description, false, nil)
 }
 
 func (s *Service) UpdateBot(ctx context.Context, tenantID, botID, name, description string) (Bot, error) {
@@ -604,6 +626,10 @@ func (s *Service) save(ctx context.Context, tenantID string, rec record) error {
 	}
 	if rec.Grants == nil {
 		rec.Grants = []Grant{}
+	}
+	// desktop_over is an admin-list mark. Drop it before the record is stored.
+	for i := range rec.Bots {
+		rec.Bots[i].DesktopOver = false
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {

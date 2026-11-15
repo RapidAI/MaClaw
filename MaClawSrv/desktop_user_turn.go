@@ -18,10 +18,15 @@ import (
 // person's answer continues that goal. A secret value lives only in this
 // map and in the bash environment; it is not put back into the chat.
 type desktopBotTurn struct {
-	mu      sync.Mutex
-	goal    string
-	waiting bool
-	secrets map[string]string
+	mu           sync.Mutex
+	goal         string
+	waiting      bool
+	tenant       string
+	secrets      map[string]string
+	gitlabBearer bool
+	repoPick     map[string]bool
+	repoAll      map[string]bool
+	repoPaths    map[string]map[string]bool
 }
 
 var (
@@ -102,6 +107,9 @@ func desktopPrepareUserTurn(botID, content string, meta map[string]string) strin
 	for name, value := range found {
 		turn.secrets[name] = value
 	}
+	if repoAuthTouched(carried) || repoAuthTouched(found) {
+		desktopWriteRepoAuth(botID, turn)
+	}
 	// The answer to a stopped run is the secret the GUI saved and carried
 	// with this message (bot_secret_name/value metadata). That structured
 	// value, not the wording of the message, resumes the original goal.
@@ -159,6 +167,7 @@ func desktopSecretsForScope(scope agentruntime.Scope) map[string]string {
 	if bot == "" {
 		bot = desktopBotOfInstance(scope.InstanceID)
 	}
+	desktopEnsureRepoAuth(scope.TenantID, bot)
 	turn := desktopBotTurnOf(bot)
 	if turn == nil {
 		return nil

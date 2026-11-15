@@ -46,8 +46,14 @@ class _FakeApi extends BotApi {
     String description = '',
     String? color,
     String? shape,
+    bool needsComputer = true,
   }) async =>
-      Bot(id: 'new-1', name: name, description: description);
+      Bot(
+        id: 'new-1',
+        name: name,
+        description: description,
+        desktopMode: needsComputer ? 'shared' : 'none',
+      );
 
   @override
   Future<void> deleteBot(String botId) async {
@@ -187,5 +193,20 @@ void main() {
     await container.read(botsProvider.notifier).remove(_botA);
     expect(api.deletedBotId, 'a');
     expect(container.read(botsProvider).bots.map((b) => b.id), ['new-1']);
+  });
+
+  test('creating without a computer does not spend a full quota', () async {
+    final api = _FakeApi()
+      ..desktopQuota = const DesktopBotQuota(limit: 1, used: 1, known: true);
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _settle(container);
+
+    expect(container.read(botsProvider).quota.exhausted, isTrue);
+    final created = await container
+        .read(botsProvider.notifier)
+        .create('文书', '', needsComputer: false);
+    expect(created.desktopMode, 'none');
+    expect(container.read(botsProvider).quota.used, 1);
   });
 }

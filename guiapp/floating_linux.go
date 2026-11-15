@@ -603,15 +603,16 @@ var floatingLogoPNGLinux []byte
 //
 // Runtime states still swap the matching pack still (or keep the logo).
 type linuxFloatingWindow struct {
-	app              *App
-	created          bool
-	mu               sync.Mutex
-	size             int
-	petSkin          string
-	petVariant       string
-	petRuntimeState  string
-	petStateDeadline time.Time
-	packFrameCache   *petpack.FrameCache
+	app               *App
+	created           bool
+	mu                sync.Mutex
+	size              int
+	petSkin           string
+	petVariant        string
+	petRearingVariant string
+	petRuntimeState   string
+	petStateDeadline  time.Time
+	packFrameCache    *petpack.FrameCache
 }
 
 func newFloatingWindow(app *App) floatingWindow {
@@ -665,7 +666,7 @@ func init() {
 }
 
 func (w *linuxFloatingWindow) petPNGBytesLocked() []byte {
-	return desktopPetStillPNG(w.petSkin, w.petVariant, w.petRuntimeState, w.size, w.packFrameCache, floatingLogoPNGLinux)
+	return desktopPetStillPNG(w.petSkin, petAppearanceVariant(w.petVariant, w.petRearingVariant), w.petRuntimeState, w.size, w.packFrameCache, floatingLogoPNGLinux)
 }
 
 func (w *linuxFloatingWindow) applyPetImageLocked() {
@@ -791,6 +792,29 @@ func (w *linuxFloatingWindow) InvalidatePetPackAssets() {
 	w.applyPetImageLocked()
 }
 
+// ApplyPetDuty keeps the still in step with task duty. Linux has no character
+// loop and no beep path; the pose is the whole reminder.
+func (w *linuxFloatingWindow) ApplyPetDuty(state string, ttlMs int, _, _ string) {
+	w.SetPetRuntimeState(state, ttlMs)
+}
+
+// ApplyPetRearing swaps the stage still at the current window size. There is
+// no GTK resize helper, so a stage scale does not change the window. Linux
+// draws that still only, so adornment slots are not composited.
+func (w *linuxFloatingWindow) ApplyPetRearing(variant string, _ int, _ string, _ []string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if variant == w.petRearingVariant {
+		return
+	}
+	w.petRearingVariant = variant
+	w.packFrameCache = petpack.NewFrameCache()
+	w.applyPetImageLocked()
+}
+
 func (w *linuxFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -854,8 +878,29 @@ func maclawLinuxPetClicked() {
 	if w == nil || w.app == nil {
 		return
 	}
-	go w.app.onFloatingButtonClicked()
+	app := w.app
+	now := time.Now()
+	class, epoch := app.recordDesktopPetClick(now)
+	if class != petClickNone {
+		go app.finishDesktopPetClick(class, epoch)
+	}
 }
+
+func (w *linuxFloatingWindow) PetClickLook() (string, bool) {
+	if w == nil {
+		return petpack.DefaultPackID, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	skin := w.petSkin
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	// Linux swaps stills only, so a click never starts a clip.
+	return skin, false
+}
+
+func (w *linuxFloatingWindow) PlayPetClickClip(string) {}
 
 //export maclawLinuxPetDragged
 func maclawLinuxPetDragged(x, y C.int) {

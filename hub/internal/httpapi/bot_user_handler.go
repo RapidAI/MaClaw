@@ -116,7 +116,12 @@ func ListBotsHandler(svc *botmgmt.Service, identity botAuthenticator) http.Handl
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": bots})
+		quota, qerr := svc.DesktopQuotaForUser(r.Context(), principal.TenantID, principal.UserID)
+		if qerr != nil {
+			writeBotUserError(w, r, principal, qerr, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": bots, "desktop_quota": quota})
 	}
 }
 
@@ -135,6 +140,7 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 			Description string  `json:"description"`
 			Color       *string `json:"color"`
 			Shape       *string `json:"shape"`
+			Desktop     *bool   `json:"desktop"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
@@ -144,7 +150,11 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
-		bot, err := svc.CreateBotForUser(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description)
+		wantDesktop := true
+		if in.Desktop != nil {
+			wantDesktop = *in.Desktop
+		}
+		bot, err := svc.CreateBotForUserDesktop(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description, &wantDesktop)
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return
@@ -602,12 +612,7 @@ func GetBotDesktopHandler(svc *botmgmt.Service, identity botAuthenticator) http.
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"novnc_url":        novnc,
-			"user_control":     userControl,
-			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
-			"desktop_mode":     botDesktopModeOf(r, svc, principal.TenantID, principal.UserID, botID),
-		})
+		writeJSON(w, http.StatusOK, desktopWatchBody(r, svc, principal.TenantID, principal.UserID, botID, novnc, userControl))
 	}
 }
 
@@ -650,13 +655,21 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"novnc_url":        novnc,
-			"user_control":     userControl,
-			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
-			"desktop_mode":     botDesktopModeOf(r, svc, principal.TenantID, principal.UserID, botID),
-		})
+		writeJSON(w, http.StatusOK, desktopWatchBody(r, svc, principal.TenantID, principal.UserID, botID, novnc, userControl))
 	}
+}
+
+func desktopWatchBody(r *http.Request, svc *botmgmt.Service, tenantID, userID, botID, novnc string, userControl bool) map[string]any {
+	body := map[string]any{
+		"novnc_url":        novnc,
+		"user_control":     userControl,
+		"attention_reason": svc.DesktopAttention(tenantID, userID, botID),
+		"desktop_mode":     botDesktopModeOf(r, svc, tenantID, userID, botID),
+	}
+	if direct := edgeDirectURL(tenantID, userID, svc.DesktopViewRaw(tenantID, userID), userControl); direct != "" {
+		body["direct_url"] = direct
+	}
+	return body
 }
 
 // botWatchRelease reads optional {"release":true,"wake":true,"epoch":n}.

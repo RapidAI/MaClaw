@@ -15,6 +15,8 @@ import (
 	_ "embed"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,32 +34,35 @@ var floatingLogoPNGDarwin []byte
 // stay on one still. The panel is never released on close: ARC owns it, and
 // an extra release crashes the process when the pet is switched.
 type darwinFloatingWindow struct {
-	app              *App
-	created          bool
-	mu               sync.Mutex
-	size             int
-	petSkin          string
-	petVariant       string
-	petRuntimeState  string
-	petStateDeadline time.Time
-	petMotionEnabled bool
-	petQuietMode     bool
-	petReducedMotion bool
-	petInteraction   string
-	packFrameCache   *petpack.FrameCache
-	anim             petDesktopAnimator
-	animStop         chan struct{}
-	paintGen         uint64
-	configGen        uint64
-	painting         int32
-	lastFrameSig     uint64
-	haveFrameSig     bool
-	lastFaceLeft     bool
-	staticReady      bool
-	staticSkin       string
-	staticVariant    string
-	staticState      string
-	staticPixels     int
+	app                  *App
+	created              bool
+	mu                   sync.Mutex
+	size                 int
+	petSkin              string
+	petVariant           string
+	petRearingVariant    string
+	petRearingAdornments []string
+	petRuntimeState      string
+	petStateDeadline     time.Time
+	petMotionEnabled     bool
+	petMotionSound       bool
+	petQuietMode         bool
+	petReducedMotion     bool
+	petInteraction       string
+	packFrameCache       *petpack.FrameCache
+	anim                 petDesktopAnimator
+	animStop             chan struct{}
+	paintGen             uint64
+	configGen            uint64
+	painting             int32
+	lastFrameSig         uint64
+	haveFrameSig         bool
+	lastFaceLeft         bool
+	staticReady          bool
+	staticSkin           string
+	staticVariant        string
+	staticState          string
+	staticPixels         int
 }
 
 func newFloatingWindow(app *App) floatingWindow {
@@ -144,11 +149,28 @@ func (w *darwinFloatingWindow) loadPetConfigLocked() {
 	}
 	w.petVariant = petpack.ResolveVariantForRuntime(cfg.PetVariant)
 	w.petMotionEnabled = isPetMotionEnabled(cfg) && !cfg.PetReducedMotion
+	w.petMotionSound = petMotionSoundEnabled(cfg)
 	w.petQuietMode = cfg.PetQuietMode
 	w.petReducedMotion = cfg.PetReducedMotion
 	if cfg.PetInteractionMode != "" {
 		w.petInteraction = cfg.PetInteractionMode
 	}
+}
+
+// seedRearingAdornmentsLocked publishes the saved prop list before the first
+// paint. Caller holds w.mu. The rearing database lock is not held by the
+// caller, and this does not take the window lock again.
+func (w *darwinFloatingWindow) seedRearingAdornmentsLocked() {
+	if w == nil {
+		return
+	}
+	skin := w.petSkin
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	slots := w.app.copyPetRearingAdornmentSlots(skin)
+	w.petRearingAdornments = slots
+	w.anim.SetVisibleAdornmentSlots(slots)
 }
 
 func (w *darwinFloatingWindow) pushAnimatorLocked() {
@@ -161,7 +183,7 @@ func (w *darwinFloatingWindow) pushAnimatorLocked() {
 	}
 	w.anim.Configure(petAnimConfig{
 		Skin:          w.petSkin,
-		Variant:       w.petVariant,
+		Variant:       petAppearanceVariant(w.petVariant, w.petRearingVariant),
 		State:         state,
 		PixelSize:     w.pixelSizeLocked(),
 		WindowSize:    w.size,
@@ -250,11 +272,12 @@ func (w *darwinFloatingWindow) paintOnce() bool {
 	}
 	pixels := w.pixelSizeLocked()
 	staticPose := w.petQuietMode || w.petReducedMotion || !w.petMotionEnabled
+	appearance := petAppearanceVariant(w.petVariant, w.petRearingVariant)
 	skipRender := staticPose && w.staticReady &&
-		w.staticSkin == w.petSkin && w.staticVariant == w.petVariant &&
+		w.staticSkin == w.petSkin && w.staticVariant == appearance &&
 		w.staticState == state && w.staticPixels == pixels
 	skin := w.petSkin
-	variant := w.petVariant
+	variant := appearance
 	w.mu.Unlock()
 
 	now := time.Now()
@@ -334,7 +357,7 @@ func (w *darwinFloatingWindow) currentPNGLocked() []byte {
 	if png := encodeNRGBAToPNG(w.anim.Render(time.Now())); len(png) > 0 {
 		return png
 	}
-	return desktopPetStillPNG(w.petSkin, w.petVariant, w.petRuntimeState, w.pixelSizeLocked(), w.packFrameCache, floatingLogoPNGDarwin)
+	return desktopPetStillPNG(w.petSkin, petAppearanceVariant(w.petVariant, w.petRearingVariant), w.petRuntimeState, w.pixelSizeLocked(), w.packFrameCache, floatingLogoPNGDarwin)
 }
 
 func (w *darwinFloatingWindow) Create(x, y, width, height int) error {
@@ -350,6 +373,7 @@ func (w *darwinFloatingWindow) Create(x, y, width, height int) error {
 	w.anim.ResetAssets()
 	w.invalidateFrameLocked()
 	w.loadPetConfigLocked()
+	w.seedRearingAdornmentsLocked()
 	w.anim.SetPos(x, y)
 	png := w.currentPNGLocked()
 	skin := w.petSkin
@@ -384,6 +408,7 @@ func (w *darwinFloatingWindow) ReloadAppearance(x, y, size int) error {
 	w.anim.ResetAssets()
 	w.invalidateFrameLocked()
 	w.loadPetConfigLocked()
+	w.seedRearingAdornmentsLocked()
 	w.anim.SetPos(x, y)
 	w.pushAnimatorLocked()
 	w.ensureAnimationLocked()
@@ -518,6 +543,126 @@ func (w *darwinFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
 	}
 }
 
+// ApplyPetDuty stores the duty pose and, once the panel exists, plays one
+// reminder off the main thread. A pack clip replaces the host cue; an empty
+// clip cue is author silence. An uncreated window only remembers the pose.
+func (w *darwinFloatingWindow) ApplyPetDuty(state string, ttlMs int, event, cue string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.petRuntimeState = string(petpack.NormalizeState(state))
+	if ttlMs > 0 {
+		w.petStateDeadline = time.Now().Add(time.Duration(ttlMs) * time.Millisecond)
+	} else {
+		w.petStateDeadline = time.Time{}
+	}
+	w.invalidateFrameLocked()
+	created := w.created
+	app := w.app
+	sound := w.petMotionSound
+	quiet := w.petQuietMode
+	reduced := w.petReducedMotion
+	if created {
+		w.pushAnimatorLocked()
+	}
+	w.mu.Unlock()
+	if !created {
+		return
+	}
+	allowed := dutyCueAllowed(app, sound, quiet, reduced)
+	play := cue
+	if event != "" {
+		if boundCue, bound := w.anim.TriggerDuty(event, time.Now()); bound {
+			play = boundCue
+		}
+	}
+	if play != "" && allowed {
+		darwinPlayDutyCue(play)
+	}
+	w.paintAnimatedFrame()
+}
+
+// ApplyPetRearing swaps the stage look in place. The saved pet size stays in
+// config; only this window's point size changes, and only when the result does.
+func (w *darwinFloatingWindow) ApplyPetRearing(variant string, windowSize int, cue string, adornments []string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	sameVariant := variant == w.petRearingVariant
+	resized := windowSize > 0 && windowSize != w.size
+	sameAdorn := sameAdornmentSlots(adornments, w.petRearingAdornments)
+	if sameVariant && !resized && cue == "" && sameAdorn {
+		w.mu.Unlock()
+		return
+	}
+	slots := append([]string(nil), adornments...)
+	w.petRearingVariant = variant
+	w.petRearingAdornments = slots
+	if resized {
+		w.size = windowSize
+	}
+	lookChanged := !sameVariant || resized || !sameAdorn
+	if lookChanged {
+		w.invalidateFrameLocked()
+	}
+	if !sameAdorn {
+		w.anim.SetVisibleAdornmentSlots(slots)
+	}
+	created := w.created
+	app := w.app
+	sound := w.petMotionSound
+	quiet := w.petQuietMode
+	reduced := w.petReducedMotion
+	gen := w.paintGen
+	if created && lookChanged {
+		w.pushAnimatorLocked()
+	}
+	w.mu.Unlock()
+	if !created {
+		return
+	}
+	allowed := dutyCueAllowed(app, sound, quiet, reduced)
+	if resized {
+		C.resizeFloatingWindowDarwin(C.int(windowSize), C.int(windowSize), C.uint(uint32(gen)))
+	}
+	if cue != "" && allowed {
+		darwinPlayDutyCue(cue)
+	}
+	if lookChanged {
+		w.paintAnimatedFrame()
+	}
+}
+
+// darwinPlayDutyCue writes a short WAV and plays it with afplay. The call
+// returns immediately. It does not hop to the AppKit main queue.
+func darwinPlayDutyCue(cue string) {
+	resolved := petpack.ResolveActionSound(cue, nil)
+	if len(resolved) == 0 {
+		return
+	}
+	wav := writeDutyWAV(resolved, 1)
+	if len(wav) < 44 {
+		return
+	}
+	go func() {
+		file, err := os.CreateTemp("", "maclaw-pet-cue-*.wav")
+		if err != nil {
+			return
+		}
+		name := file.Name()
+		_, writeErr := file.Write(wav)
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			_ = os.Remove(name)
+			return
+		}
+		defer os.Remove(name)
+		_ = exec.Command("afplay", name).Run()
+	}()
+}
+
 func (w *darwinFloatingWindow) CurrentPetRuntimeState() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -544,7 +689,39 @@ func maclawDarwinPetClicked() {
 	if w == nil || w.app == nil {
 		return
 	}
-	go w.app.onFloatingButtonClicked()
+	app := w.app
+	now := time.Now()
+	class, epoch := app.recordDesktopPetClick(now)
+	if class != petClickNone {
+		go app.finishDesktopPetClick(class, epoch)
+	}
+}
+
+func (w *darwinFloatingWindow) PetClickLook() (string, bool) {
+	if w == nil {
+		return petpack.DefaultPackID, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	skin := w.petSkin
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	return skin, w.petMotionEnabled && !w.petQuietMode && !w.petReducedMotion
+}
+
+func (w *darwinFloatingWindow) PlayPetClickClip(clip string) {
+	if w == nil || clip == "" {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.petQuietMode || w.petReducedMotion || !w.petMotionEnabled {
+		return
+	}
+	if w.anim.TriggerClip(clip, time.Now()) {
+		w.invalidateFrameLocked()
+	}
 }
 
 //export maclawDarwinPetDragged

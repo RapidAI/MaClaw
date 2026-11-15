@@ -50,9 +50,9 @@ final _botStatusProvider = FutureProvider.autoDispose
       if (api == null) {
         return (runs: const <ActiveRun>[], tasks: const <DesktopTaskStatus>[]);
       }
-      final runs = await api.activeRuns(botId);
-      final tasks = await api.taskStatuses(botId);
-      return (runs: runs, tasks: tasks);
+      final runsFuture = api.activeRuns(botId);
+      final tasksFuture = api.taskStatuses(botId);
+      return (runs: await runsFuture, tasks: await tasksFuture);
     });
 
 class _BotStatusBody extends ConsumerWidget {
@@ -421,7 +421,11 @@ Future<void> shareInboxFile(
     if (file.data.isEmpty || !context.mounted) return;
     final bytes = base64Decode(file.data);
     final dir = await getTemporaryDirectory();
-    final safe = file.displayName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    // Keep the requested artifact name (extension included): a server-side
+    // empty name would otherwise save an extensionless "文件" the system
+    // share sheet cannot open.
+    final rawName = file.name.trim().isNotEmpty ? file.name.trim() : name;
+    final safe = rawName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final path = '${dir.path}${Platform.pathSeparator}$safe';
     await File(path).writeAsBytes(bytes, flush: true);
     await SharePlus.instance.share(
@@ -798,21 +802,22 @@ final _globalStatusProvider =
           deliveries: const <PendingDelivery>[],
         );
       }
-      final runs = <ActiveRun>[];
-      for (final bot in bots) {
-        try {
-          runs.addAll(await api.activeRuns(bot.id));
-        } on Object {
-          // One failing bot must not hide the others.
-        }
-      }
-      var deliveries = const <PendingDelivery>[];
-      try {
-        deliveries = await api.pendingDeliveries();
-      } on Object {
-        // Same isolation: a pending-pull outage must not blank the runs.
-      }
-      return (runs: runs, deliveries: deliveries);
+      // Fan out across bots in parallel — a serial loop makes the page
+      // wait on N round trips even though the runs are independent. One
+      // failing bot (or a pending-pull outage) must not hide the rest.
+      final runListsFuture = Future.wait([
+        for (final bot in bots)
+          api.activeRuns(bot.id).onError((_, _) => const <ActiveRun>[]),
+      ]);
+      final deliveriesFuture = api
+          .pendingDeliveries()
+          .onError((_, _) => const <PendingDelivery>[]);
+      final runLists = await runListsFuture;
+      final deliveries = await deliveriesFuture;
+      return (
+        runs: [for (final list in runLists) ...list],
+        deliveries: deliveries,
+      );
     });
 
 class _GlobalStatusBody extends ConsumerWidget {

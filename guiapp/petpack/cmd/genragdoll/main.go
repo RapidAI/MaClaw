@@ -3,6 +3,10 @@
 // Run from guiapp/petpack:
 //
 //	go run ./cmd/genragdoll
+//	go run ./cmd/genragdoll -adornments-only
+//
+// -adornments-only writes the three growth props and leaves the body art,
+// native stills, and frontend image untouched.
 //
 // Layers are drawn in code so each texture's joint sits on the geometric
 // center, which is the pivot the skeleton renderer uses. DeepSeek Harness
@@ -23,10 +27,20 @@ import (
 )
 
 func main() {
+	adornmentsOnly := false
+	for _, arg := range os.Args[1:] {
+		if arg == "-adornments-only" {
+			adornmentsOnly = true
+		}
+	}
 	if _, err := os.Stat("bundled"); err != nil {
 		panic("run from guiapp/petpack so bundled/ is the output root")
 	}
 	dir := filepath.Join("bundled", "ragdoll")
+	if adornmentsOnly {
+		writeAdornmentTextures(filepath.Join(dir, "rig"))
+		return
+	}
 	for _, sub := range []string{"native", "rig", "character"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			panic(err)
@@ -156,7 +170,7 @@ name: Ragdoll
 version: 3.0.0
 author: MaClaw Official
 license: proprietary
-description: "A ragdoll cat-girl desktop companion who walks, runs, jumps, bows, and sings"
+description: "A ragdoll cat-girl who walks the desktop, grows while she stays with you, and gains a charm, slippers, and a little mouse"
 tier: figurative
 min_maclaw_version: "0.0.0"
 label:
@@ -164,9 +178,9 @@ label:
   zh-Hans: 布偶猫
   zh-Hant: 布偶貓
 description_i18n:
-  en: "A ragdoll cat-girl who walks the desktop, runs, jumps, bows, and sings"
-  zh-Hans: "会在桌面上走动、奔跑、跳跃、弯腰和唱歌的布偶猫女娘"
-  zh-Hant: "會在桌面上走動、奔跑、跳躍、彎腰和唱歌的布偶貓女娘"
+  en: "A ragdoll cat-girl who walks the desktop and grows as she stays with you: a mouse charm, then slippers, then a small mouse beside her. She signals when work starts, needs you, finishes, or fails"
+  zh-Hans: "会在桌面上走动、奔跑、跳跃、弯腰和唱歌的布偶猫女娘。陪伴越久会稍稍长大，先在手上挂一只小老鼠，再穿上拖鞋，后来身旁多一只小老鼠，并在任务开始、需要你、完成或失败时提醒你"
+  zh-Hant: "會在桌面上走動、奔跑、跳躍、彎腰和唱歌的布偶貓女娘。陪伴越久會稍稍長大，先在手上掛一隻小老鼠，再穿上拖鞋，後來身旁多一隻小老鼠，並在任務開始、需要你、完成或失敗時提醒你"
 preview: preview.png
 default_size: 224
 tone: balanced
@@ -195,6 +209,9 @@ assets:
       - rig/head.png
       - rig/mouth.png
       - rig/eyes.png
+      - rig/mouse-charm.png
+      - rig/slipper.png
+      - rig/mouse-pet.png
   character:
     definition: character/ragdoll.performer.json
 fallback:
@@ -226,6 +243,9 @@ variants:
           - rig/head.png
           - rig/mouth.png
           - rig/eyes.png
+          - rig/mouse-charm.png
+          - rig/slipper.png
+          - rig/mouse-pet.png
       character:
         definition: character/ragdoll.performer.json
   - id: classic
@@ -244,6 +264,31 @@ capabilities:
   supports_done_state: true
   supports_alert_state: true
   pet_performance_v3: true
+  supports_task_duty: true
+adornments:
+  - id: mouse-charm
+    slots: [mouse_charm]
+  - id: slippers
+    slots: [slipper_l, slipper_r]
+  - id: mouse-pet
+    slots: [mouse_pet]
+rearing:
+  stages:
+    - id: familiar
+      after_ms: 7200000
+      scale: 1.04
+      cue: notice
+      adornments: [mouse-charm]
+    - id: grown
+      after_ms: 86400000
+      scale: 1.1
+      cue: celebrate
+      adornments: [mouse-charm, slippers]
+    - id: settled
+      after_ms: 259200000
+      scale: 1.18
+      cue: celebrate
+      adornments: [mouse-charm, slippers, mouse-pet]
 `
 
 func buildRig() *petpack.Rig {
@@ -392,10 +437,15 @@ func buildRig() *petpack.Rig {
 		k("root", kf(0, 0, 0, 0, ""), kf(420, 0, 2, 0, "ease-in-out")).
 		k("head", kf(0, 0, 0, 0, ""), kf(420, 2, -2, 8, "ease-in-out")).
 		k("arm_l", kf(0, 0, 0, 0, ""), kf(420, 6, -10, 48, "ease-out"))))
-	add("think_loop", clip(1800, true, 72, "step", true, march(1800, 14, 22, 4)))
+	// Thinking stays on the chin-rest from think_in. Idle clips are what travel.
+	add("think_loop", clip(1800, true, 0, "", false, tr().
+		k("root", kf(0, 0, 2, 0, ""), kf(900, 0, 0, 0, "ease-in-out"), kf(1800, 0, 2, 0, "ease-in-out")).
+		k("head", kf(0, 2, -2, 8, ""), kf(900, 1, -4, 6, "ease-in-out"), kf(1800, 2, -2, 8, "ease-in-out")).
+		k("arm_l", kf(0, 6, -10, 48, ""), kf(900, 5, -12, 52, "ease-in-out"), kf(1800, 6, -10, 48, "ease-in-out"))))
 	add("think_out", clip(360, false, 0, "", false, tr().
-		k("head", kf(0, 2, -2, 6, ""), kf(360, 0, 0, 0, "ease-in-out")).
-		k("arm_l", kf(0, 4, -6, 30, ""), kf(360, 0, 0, 0, "ease-in-out"))))
+		k("head", kf(0, 2, -2, 8, ""), kf(360, 0, 0, 0, "ease-in-out")).
+		k("arm_l", kf(0, 6, -10, 48, ""), kf(360, 0, 0, 0, "ease-in-out")).
+		k("root", kf(0, 0, 2, 0, ""), kf(360, 0, 0, 0, "ease-in-out"))))
 
 	add("done_in", clip(420, false, 0, "celebrate", false, tr().
 		k("root", kf(0, 0, 4, 0, ""), kf(160, 0, 10, 0, "ease-out"), kf(420, 0, -36, 0, "ease-out")).
@@ -475,8 +525,10 @@ func buildRig() *petpack.Rig {
 	add("react_task_focus", clip(860, false, 0, "focus", false, tr().
 		k("head", kf(0, 0, 0, 0, ""), kf(300, 2, -4, 6, "ease-out"), kf(860, 0, 0, 0, "ease-in-out")).
 		k("arm_l", kf(0, 0, 0, 0, ""), kf(400, 4, -8, 40, "ease-out"), kf(860, 0, 0, 0, "ease-in-out"))))
-	add("react_task_listen", clip(780, false, 0, "notice", false, tr().
-		k("head", kf(0, 0, 0, 0, ""), kf(240, -4, 0, -16, "ease-out"), kf(780, 0, 0, 0, "ease-in-out"))))
+	add("react_task_listen", clip(920, false, 0, "notice", false, tr().
+		k("root", kf(0, 0, 0, 0, ""), kf(280, 0, -14, 0, "ease-out"), kf(920, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, 0, 0, 0, ""), kf(260, 0, -6, -10, "ease-out"), kf(920, 0, 0, 0, "ease-in-out")).
+		k("arm_r", kf(0, 0, 0, 0, ""), kf(360, 0, -6, -70, "ease-out"), kf(920, 0, 0, 0, "ease-in-out"))))
 	add("react_task_celebrate", clip(1100, false, 0, "celebrate", false, tr().
 		k("root", kf(0, 0, 2, 0, ""), kf(180, 0, 10, 0, "ease-out"), kf(480, 0, -40, 0, "ease-out"), kf(780, 0, -8, 0, "ease-in-out"), kf(1100, 0, 0, 0, "ease-in-out")).
 		k("arm_l", kf(0, 0, 0, 0, ""), kf(480, 0, 0, 150, "ease-out"), kf(1100, 0, 0, 0, "ease-in-out")).
@@ -504,6 +556,7 @@ func buildRig() *petpack.Rig {
 			{Name: "leg_l", Parent: "hip", X: -8, Y: 2},
 			{Name: "leg_r", Parent: "hip", X: 8, Y: 2},
 			{Name: "tail", Parent: "hip", X: 4, Y: -8, Rotate: -20},
+			{Name: "mouse", Parent: "root", X: -52, Y: 78},
 		},
 		Slots: []petpack.RigSlot{
 			{Name: "tail", Bone: "tail", Texture: "rig/tail.png", Z: 0},
@@ -515,6 +568,10 @@ func buildRig() *petpack.Rig {
 			{Name: "head", Bone: "head", Texture: "rig/head.png", Z: 4},
 			{Name: "mouth", Bone: "mouth", Texture: "rig/mouth.png", Z: 5},
 			{Name: "eyes", Bone: "eyes", Texture: "rig/eyes.png", Z: 6},
+			{Name: "mouse_charm", Bone: "arm_l", Texture: "rig/mouse-charm.png", Y: 70, Z: 7},
+			{Name: "slipper_l", Bone: "leg_l", Texture: "rig/slipper.png", Y: 54, Z: 3},
+			{Name: "slipper_r", Bone: "leg_r", Texture: "rig/slipper.png", Y: 54, ScaleX: -1, Z: 3},
+			{Name: "mouse_pet", Bone: "mouse", Texture: "rig/mouse-pet.png", Z: 7},
 		},
 		Clips: clips,
 	}
@@ -606,14 +663,15 @@ func buildPerformer() *petpack.Performer {
 			"quiet":     {Enter: "quiet_in", Loop: "quiet_loop", Exit: "quiet_out", Mood: "tired", Expression: "expr_tired", Gaze: "gaze_center", Secondary: "secondary_quiet"},
 		},
 		Events: map[string]petpack.PerformerEvent{
-			"click":        ev("react_click_greet", "soft", "pleased", 2800),
-			"hover":        ev("react_hover_peek", "soft", "curious", 4000),
-			"drag_start":   ev("react_drag_brace", "soft", "concerned", 800),
-			"drag_end":     ev("react_drag_release", "soft", "calm", 800),
-			"task_started": ev("react_task_focus", "after_loop", "focused", 4000),
-			"task_done":    ev("react_task_celebrate", "after_loop", "pleased", 6000),
-			"task_failed":  ev("react_task_concern", "after_loop", "concerned", 6000),
-			"long_idle":    ev("react_long_idle_rest", "after_loop", "tired", 20000),
+			"click":          ev("react_click_greet", "soft", "pleased", 2800),
+			"hover":          ev("react_hover_peek", "soft", "curious", 4000),
+			"drag_start":     ev("react_drag_brace", "soft", "concerned", 800),
+			"drag_end":       ev("react_drag_release", "soft", "calm", 800),
+			"task_started":   ev("react_task_focus", "soft", "focused", 4000),
+			"task_needs_you": ev("react_task_listen", "soft", "curious", 4000),
+			"task_done":      ev("react_task_celebrate", "soft", "pleased", 6000),
+			"task_failed":    ev("react_task_concern", "soft", "concerned", 6000),
+			"long_idle":      ev("react_long_idle_rest", "after_loop", "tired", 20000),
 		},
 		Reactions: map[string]petpack.PerformerReaction{
 			"click_greet":    rc("click", "react_click_greet", "soft", "pleased", 2800, 4),
@@ -622,11 +680,12 @@ func buildPerformer() *petpack.Performer {
 			"hover_blink":    rc("hover", "react_hover_blink", "soft", "calm", 4500, 1),
 			"drag_brace":     rc("drag_start", "react_drag_brace", "soft", "concerned", 800, 3),
 			"drag_release":   rc("drag_end", "react_drag_release", "soft", "calm", 800, 3),
-			"task_focus":     rc("task_started", "react_task_focus", "after_loop", "focused", 4000, 3),
-			"task_listen":    rc("task_started", "react_task_listen", "after_loop", "curious", 4500, 1),
-			"task_celebrate": rc("task_done", "react_task_celebrate", "after_loop", "pleased", 6000, 3),
-			"task_settle":    rc("task_done", "react_task_settle", "after_loop", "calm", 7000, 1),
-			"task_concern":   rc("task_failed", "react_task_concern", "after_loop", "concerned", 6000, 3),
+			"task_focus":     rc("task_started", "react_task_focus", "soft", "focused", 4000, 3),
+			"task_listen":    rc("task_needs_you", "react_task_listen", "soft", "curious", 4000, 3),
+			"task_celebrate": rc("task_done", "react_task_celebrate", "soft", "pleased", 6000, 3),
+			// task_cheer keeps the reaction floor without offering a quieter finish.
+			"task_cheer":     rc("task_done", "react_task_celebrate", "soft", "pleased", 6000, 1),
+			"task_concern":   rc("task_failed", "react_task_concern", "soft", "concerned", 6000, 3),
 			"long_idle_rest": rc("long_idle", "react_long_idle_rest", "after_loop", "tired", 20000, 3),
 		},
 		Rules: petpack.PerformerRules{NoRepeatLast: 3, CrossfadeMS: 160, MaxInterruptMS: 800},
@@ -658,6 +717,78 @@ func sc(at int, sx, sy float64, ease string) petpack.RigKeyframe {
 	return petpack.RigKeyframe{AtMS: at, ScaleX: sx, ScaleY: sy, Ease: ease}
 }
 
+func writeAdornmentTextures(dir string) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		panic(err)
+	}
+	for _, part := range adornmentParts() {
+		path := filepath.Join(dir, part.name)
+		if err := writePNG(path, part.img); err != nil {
+			panic(err)
+		}
+		fmt.Println("wrote", path)
+	}
+}
+
+func adornmentParts() []struct {
+	name string
+	img  *image.NRGBA
+} {
+	return []struct {
+		name string
+		img  *image.NRGBA
+	}{
+		{"mouse-charm.png", drawMouseCharm()},
+		{"slipper.png", drawSlipper()},
+		{"mouse-pet.png", drawMousePet()},
+	}
+}
+
+func drawMouseCharm() *image.NRGBA {
+	const w, h = 36, 36
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	cx := float64(w) / 2
+	cy := float64(h)/2 + 1
+	fillEllipse(img, cx-9, cy-8, 5, 6, hair)
+	fillEllipse(img, cx+9, cy-8, 5, 6, hair)
+	fillEllipse(img, cx-9, cy-8, 2.2, 3, earPink)
+	fillEllipse(img, cx+9, cy-8, 2.2, 3, earPink)
+	fillEllipse(img, cx, cy+1, 11, 10, hair)
+	fillEllipse(img, cx, cy+3, 6, 5, skin)
+	fillEllipse(img, cx-3.2, cy+1, 1.3, 1.5, pupil)
+	fillEllipse(img, cx+3.2, cy+1, 1.3, 1.5, pupil)
+	fillEllipse(img, cx, cy+3.2, 1.5, 1.1, nose)
+	fillEllipse(img, cx, cy-14, 3.4, 2.4, bow)
+	fillEllipse(img, cx-4, cy-12, 2.2, 1.6, bowDeep)
+	fillEllipse(img, cx+4, cy-12, 2.2, 1.6, bowDeep)
+	return img
+}
+
+func drawSlipper() *image.NRGBA {
+	const w, h = 36, 18
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	fillEllipse(img, 20, 11, 14, 5.5, dress)
+	fillEllipse(img, 24, 9, 7, 2.6, dressLite)
+	fillEllipse(img, 11, 8, 2.6, 1.8, bow)
+	fillEllipse(img, 8, 10, 1.6, 1.2, bowDeep)
+	return img
+}
+
+func drawMousePet() *image.NRGBA {
+	const w, h = 48, 44
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	fillCapsule(img, 6, 30, 16, 24, 2.2, hairLite)
+	fillEllipse(img, 24, 26, 12, 8, hair)
+	fillEllipse(img, 32, 18, 8, 7, hair)
+	fillEllipse(img, 28, 10, 4.2, 5, hair)
+	fillEllipse(img, 36, 10, 4.2, 5, hair)
+	fillEllipse(img, 28, 10, 1.8, 2.2, earPink)
+	fillEllipse(img, 36, 10, 1.8, 2.2, earPink)
+	fillEllipse(img, 34, 17, 1.2, 1.4, pupil)
+	fillEllipse(img, 35, 19.5, 1.3, 0.9, nose)
+	return img
+}
+
 func drawTextures(dir string) []string {
 	parts := []struct {
 		name string
@@ -673,6 +804,7 @@ func drawTextures(dir string) []string {
 		{"mouth.png", drawMouth()},
 		{"eyes.png", drawEyes()},
 	}
+	parts = append(parts, adornmentParts()...)
 	rels := make([]string, 0, len(parts))
 	for _, part := range parts {
 		rel := "rig/" + part.name

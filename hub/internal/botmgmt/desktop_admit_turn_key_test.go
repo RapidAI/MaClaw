@@ -21,7 +21,10 @@ type turnKeySrv struct {
 	messages []string
 	status   string
 	content  string
-	blinks   int
+	// attachments is a raw JSON array folded into the finished run's
+	// message — media MaClawSrv still holds after the ledger forgot it.
+	attachments string
+	blinks      int
 	// runReads counts every read of this bot's run. Two watchers polling
 	// the same run double this number, which is how a doubled settle is
 	// observed without reaching into the service.
@@ -34,7 +37,7 @@ func (s *turnKeySrv) handler(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
 	case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/runs/"):
 		s.mu.Lock()
-		status, content := s.status, s.content
+		status, content, attachments := s.status, s.content, s.attachments
 		s.runReads++
 		s.mu.Unlock()
 		if status == "" {
@@ -44,7 +47,11 @@ func (s *turnKeySrv) handler(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"id":"run_turn","status":"running"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"id":"run_turn","status":"` + status + `","desktop_ready":true,"message":{"content":"` + content + `"}}`))
+		extra := ""
+		if attachments != "" {
+			extra = `,"attachments":` + attachments
+		}
+		_, _ = w.Write([]byte(`{"id":"run_turn","status":"` + status + `","desktop_ready":true,"message":{"content":"` + content + `"` + extra + `}}`))
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
 		s.mu.Lock()
 		blink := s.blinks > 0
@@ -195,6 +202,60 @@ func TestDesktopRunResultAsksSrvWhenTheLedgerLostTheRun(t *testing.T) {
 	}
 	if !done || reply.Text != "重启后找回的回复" {
 		t.Fatalf("reply=%q done=%v", reply.Text, done)
+	}
+}
+
+// A reply restored from the text pin keeps no media bytes — the journal
+// never carries them either. Polling the finished run re-reads MaClawSrv
+// and folds its attachments back into the answer, so a synced bubble with
+// only attachment ids still gets its screenshot.
+func TestDesktopRunResultRefillsMediaFromSrv(t *testing.T) {
+	srvSvc := &turnKeySrv{
+		status:      "succeeded",
+		content:     "截图在这儿",
+		attachments: `[{"type":"image","mime_type":"image/png","data":"aGVsbG8="}]`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(srvSvc.handler))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv)
+
+	// Pin-restored ledger state: done, sentence kept, media bytes gone.
+	key := desktopAdmitKey("tenant-a", "alice", "bot_alice", "run_media")
+	svc.mu.Lock()
+	if svc.desktopAdmits == nil {
+		svc.desktopAdmits = map[string]*desktopAdmitState{}
+	}
+	svc.desktopAdmits[key] = &desktopAdmitState{
+		done:       true,
+		status:     "succeeded",
+		userID:     "alice",
+		botID:      "bot_alice",
+		runID:      "run_media",
+		instanceID: "inst_alice",
+		reply:      Reply{Text: "截图在这儿", SendToUser: "截图在这儿"},
+		finished:   time.Now(),
+	}
+	svc.mu.Unlock()
+
+	reply, done, err := svc.DesktopRunResult(context.Background(), "tenant-a", "alice", "bot_alice", "run_media")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !done || len(reply.Images) != 1 || reply.Images[0].Data != "aGVsbG8=" {
+		t.Fatalf("reply=%#v done=%v", reply, done)
+	}
+	// mediaFetched latched — the next read does not ask MaClawSrv again.
+	srvSvc.mu.Lock()
+	srvSvc.runReads = 0
+	srvSvc.mu.Unlock()
+	if _, _, err := svc.DesktopRunResult(context.Background(), "tenant-a", "alice", "bot_alice", "run_media"); err != nil {
+		t.Fatal(err)
+	}
+	srvSvc.mu.Lock()
+	reads := srvSvc.runReads
+	srvSvc.mu.Unlock()
+	if reads != 0 {
+		t.Fatalf("srv asked again: %d reads", reads)
 	}
 }
 

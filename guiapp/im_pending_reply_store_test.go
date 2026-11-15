@@ -1,6 +1,9 @@
 package guiapp
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +25,37 @@ func TestPendingAskUserSurvivesHandlerRestart(t *testing.T) {
 		Question: "which color?", Options: []string{"blue", "red"}, InputType: "choice",
 		History: history, Timestamp: time.Now(), WorkingState: agent.NewWorkingState("make a deck"),
 	})
+	store := h.ensurePendingReplyStore()
+	var question string
+	if err := store.db.QueryRow(`SELECT ask_question FROM pending_reply_sessions WHERE user_id=?`, desktopUserID).Scan(&question); err != nil {
+		t.Fatal(err)
+	}
+	if question != "which color?" {
+		t.Fatalf("question column = %q", question)
+	}
+	var options int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pending_reply_options WHERE user_id=?`, desktopUserID).Scan(&options); err != nil {
+		t.Fatal(err)
+	}
+	if options != 2 {
+		t.Fatalf("option rows = %d", options)
+	}
+	historyPath := sqliteArrayFieldPath(sqliteMapFieldPath("", "History"), 0)
+	historyPath = sqliteMapFieldPath(historyPath, "role")
+	var role string
+	if err := store.db.QueryRow(`SELECT value_text FROM pending_reply_fields WHERE user_id=? AND field_path=?`, desktopUserID, historyPath).Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	if role != "user" {
+		t.Fatalf("history role = %q", role)
+	}
+	var jsonColumns int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%payload%' OR sql LIKE '%_json%'`).Scan(&jsonColumns); err != nil {
+		t.Fatal(err)
+	}
+	if jsonColumns != 0 {
+		t.Fatalf("pending reply schema contains JSON document columns: %d", jsonColumns)
+	}
 
 	restarted := &IMMessageHandler{app: app, memory: memory}
 	if !restarted.freshPendingAskUser(desktopUserID) {
@@ -132,5 +166,36 @@ func TestPendingReplyStoreSkipsTheUserProfileWhenTheTestHasNoHome(t *testing.T) 
 	isolated := &IMMessageHandler{app: &App{testHomeDir: t.TempDir()}}
 	if isolated.ensurePendingReplyStore() == nil {
 		t.Fatal("a test app with its own profile has no pending-reply store")
+	}
+}
+
+func TestPendingReplyStoreMigratesLegacyJSONOnce(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	path := filepath.Join(app.GetDataDir(), "pending_replies.json")
+	snapshot := pendingReplyDiskSnapshot{Version: pendingReplyStoreVersion, Sessions: map[string]pendingReplyDiskSession{
+		desktopUserID: {
+			Ask: &pendingAskUserState{Question: "legacy question", Options: []string{"yes"}, History: []agent.ConversationEntry{{Role: "assistant", Content: "legacy question"}}, Timestamp: time.Now()},
+		},
+	}}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := &IMMessageHandler{app: app}
+	handler.ensurePendingReplyStore()
+	if _, ok := handler.takePendingAskUser(desktopUserID); !ok {
+		t.Fatal("legacy pending ask was not imported")
+	}
+	closePendingReplyDiskStores()
+	reloaded := &IMMessageHandler{app: app}
+	reloaded.ensurePendingReplyStore()
+	if _, ok := reloaded.pendingAskUser.Load(desktopUserID); ok {
+		t.Fatal("legacy JSON resurrected a consumed pending ask")
 	}
 }

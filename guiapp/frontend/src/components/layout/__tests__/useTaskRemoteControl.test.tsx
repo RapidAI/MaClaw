@@ -206,6 +206,125 @@ describe('useTaskRemoteControl', () => {
         expect(target.machines[0].machineName).toBe('A机');
     });
 
+    it('coalesces remote state refreshes while one is in flight', async () => {
+        const pending = deferred();
+        const listState = vi.fn(() => pending.promise);
+        setBindings({ ListRemoteControlState: listState, RemoteControlOp: vi.fn(async () => '{}') });
+        const { result } = renderHook(() => useTaskRemoteControl());
+        let first!: Promise<void>;
+        let second!: Promise<void>;
+        act(() => {
+            first = result.current.refresh();
+            second = result.current.refresh();
+        });
+        expect(listState).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            pending.resolve(remoteState());
+            await Promise.all([first, second]);
+        });
+    });
+
+    it('skips reparsing a byte-identical conversation snapshot', async () => {
+        const raw = JSON.stringify({ task: { project_path: 'D:/a' }, messages: [{ role: 'assistant', content: 'done' }], artifacts: [] });
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'get_task') return Promise.resolve(raw);
+            if (op === 'list_tasks') return Promise.resolve(JSON.stringify({ tasks: [] }));
+            return Promise.resolve('{}');
+        });
+        const parseSpy = vi.spyOn(JSON, 'parse');
+        try {
+            setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))), RemoteControlOp: op });
+            const { result } = renderHook(() => useTaskRemoteControl());
+            await act(async () => {});
+            act(() => result.current.selectGrant('ga'));
+            await act(async () => {});
+            await act(async () => { await result.current.openTask('D:/a'); });
+            await act(async () => { await result.current.openTask('D:/a'); });
+            const parses = parseSpy.mock.calls.filter(call => typeof call[0] === 'string' && call[0].includes('"messages"'));
+            expect(parses).toHaveLength(1);
+            expect(result.current.detail?.messages).toHaveLength(1);
+        } finally {
+            parseSpy.mockRestore();
+        }
+    });
+
+    it('skips reparsing a byte-identical task snapshot', async () => {
+        const raw = JSON.stringify({ tasks: [{ id: 'ta', name: 'A任务', project_path: 'D:/a' }] });
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'list_tasks') return Promise.resolve(raw);
+            return Promise.resolve('{}');
+        });
+        const parseSpy = vi.spyOn(JSON, 'parse');
+        try {
+            setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))), RemoteControlOp: op });
+            const { result } = renderHook(() => useTaskRemoteControl());
+            await act(async () => {});
+            act(() => result.current.openTaskForGrant('ga', 'D:/a'));
+            await act(async () => {});
+            act(() => result.current.openTaskForGrant('ga', 'D:/a'));
+            await act(async () => {});
+            const parses = parseSpy.mock.calls.filter(call => typeof call[0] === 'string' && call[0].includes('"tasks"'));
+            expect(parses).toHaveLength(1);
+            expect(result.current.tasks.map(task => task.id)).toEqual(['ta']);
+        } finally {
+            parseSpy.mockRestore();
+        }
+    });
+
+    it('coalesces list_tasks requests for the same grant', async () => {
+        const pending = deferred();
+        let listCalls = 0;
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'list_tasks') {
+                listCalls += 1;
+                return pending.promise;
+            }
+            return Promise.resolve('{}');
+        });
+        setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))), RemoteControlOp: op });
+        const { result } = renderHook(() => useTaskRemoteControl());
+        await act(async () => {});
+        act(() => {
+            result.current.openTaskForGrant('ga', 'D:/slow');
+            result.current.openTaskForGrant('ga', 'D:/slow');
+        });
+        expect(listCalls).toBe(1);
+        await act(async () => {
+            pending.resolve(JSON.stringify({ tasks: [] }));
+        });
+    });
+
+    it('coalesces duplicate get_task requests while one is in flight', async () => {
+        const pending = deferred();
+        let getTaskCalls = 0;
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'get_task') {
+                getTaskCalls += 1;
+                return pending.promise;
+            }
+            if (op === 'list_tasks') return Promise.resolve(JSON.stringify({ tasks: [] }));
+            return Promise.resolve('{}');
+        });
+        setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))), RemoteControlOp: op });
+        const { result } = renderHook(() => useTaskRemoteControl());
+        await act(async () => {});
+        act(() => result.current.selectGrant('ga'));
+        await act(async () => {});
+
+        let first!: Promise<void>;
+        let second!: Promise<void>;
+        act(() => {
+            first = result.current.openTask('D:/slow');
+            second = result.current.openTask('D:/slow');
+        });
+        expect(getTaskCalls).toBe(1);
+        await act(async () => {
+            pending.resolve(JSON.stringify({ messages: [], artifacts: [] }));
+            await Promise.all([first, second]);
+        });
+        expect(result.current.detailPath).toBe('D:/slow');
+    });
+
     it('refuses to send a message on a view-only grant', async () => {
         const viewOnly = remoteState({
             grants: [{ id: 'gv', machine_id: 'mac-v', machine_name: 'V机', permission: 'view', status: 'active', online: true }],

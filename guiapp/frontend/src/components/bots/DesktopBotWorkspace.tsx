@@ -35,6 +35,7 @@ export {
     handleDesktopBotView,
     runWasInterrupted,
 } from './desktopBotResultStore';
+import { desktopPictureURL } from './directDesktop';
 import { HubConnectionBadge } from './HubConnectionBadge';
 import { normalizeSidebarHubCredits } from '../../utils/sidebarHubCredits';
 import { openSettingsTab } from '../../utils/settingsNavigation';
@@ -42,7 +43,8 @@ import {
     ArmDesktopBotSchedule,
     ArmDesktopBotAdmitCancel,
     LogFrontendDiagnostic,
-    CreateDesktopBot,
+    CreateDesktopBotWithComputer,
+    GetDesktopBotQuota,
     CancelDesktopBotRun,
     AppendDesktopBotSupplement,
     UploadDesktopBotMaterialChunk,
@@ -177,12 +179,16 @@ import { BotAvatar } from './BotAvatar';
 import { appearancesForUser, botNameTaken, captureBotLookRevisions, defaultAppearance, hubAppearance, hydrateBotLooks, looksToMigrate, markLookMigrated, mergeLooks, nextAppearance, saveBotAppearance, storeHubLooks, type BotAppearance } from './botAppearance';
 import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMRolesSetting, type BotLLMRoleSetting, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
 import { BotComputerSettingsDialog, type DesktopComputerAction, type DesktopComputerState } from './BotComputerSettingsDialog';
+import { BotDesktopNodesDialog } from './BotDesktopNodesDialog';
 import { BotStyleDialog } from './BotStyleDialog';
 import { BotLocalAccessSettingsDialog } from './BotLocalAccessSettingsDialog';
+import { BotCapabilitySettingsDialog } from './BotCapabilitySettingsDialog';
 import { DesktopBotLocalTransfers } from './DesktopBotLocalTransfers';
 import { BotNetworkSettingsDialog, BotSettingsTabs, type BotSettingsTab, type DesktopProxyModeState, type DesktopProxyModeValue } from './BotNetworkSettingsDialog';
 import { BotVoiceSettingsDialog } from './BotVoiceSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
+import { BotArtifactTable, BotFileArtifactCard } from './BotFileArtifactCard';
+import { artifactFileSizes, collectBotArtifacts, ensureSaidFilePath, saveDesktopDeliveredFile, type BotArtifactRow } from './botFileArtifacts';
 import { BotFilePreview } from './BotFilePreview';
 import { BotRailIcon } from '../layout/SidebarNavIcons';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
@@ -875,6 +881,12 @@ function copy(lang: string) {
             shape: 'Shape',
             nameTaken: 'Another bot already has this name',
             createTitle: 'New bot',
+            needsComputer: 'This bot needs a computer',
+            quotaUsed: (used: number, limit: number) => `Using ${used} / ${limit}`,
+            quotaOpen: (used: number) => `Using ${used}`,
+            modeShared: 'Computer · shared',
+            modeIsolated: 'Computer · own',
+            modeNone: 'No computer',
             description: 'Description',
             persona: 'Persona',
             personaEmpty: 'No persona yet.',
@@ -994,6 +1006,11 @@ function copy(lang: string) {
             scheduleStopped: 'The schedule is stopped.',
             schedules: 'Schedules',
             tasks: 'Tasks',
+            artifacts: 'Artifacts',
+            artifactsEmpty: 'No documents yet.',
+            artifactName: 'Name',
+            artifactSize: 'Size',
+            artifactTime: 'Time',
             tasksEmpty: 'No ongoing tasks.',
             taskRunning: 'Running',
             taskQueued: 'Queued',
@@ -1026,10 +1043,19 @@ function copy(lang: string) {
             netSmart: 'Smart',
             netSmartHint: 'Mainland China sites (JD, Taobao, Baidu…) go direct, everything else through the proxy. Recommended.',
             netLocked: 'Your administrator fixed this setting for the organization, so it cannot be changed here.',
+            netIntranetTitle: 'Intranet desktop network',
+            netIntranetHint: 'This is the desktopd you installed. Websites are reached from that machine. The cloud proxy does not apply.',
+            netIntranet: 'This is your intranet desktop, so traffic leaves from that machine. The cloud proxy choices do not apply.',
             settingsTabComputer: 'Computer',
+            settingsTabDesktop: 'Desktops',
             settingsTabLocal: 'This computer',
+            settingsTabTools: 'MCP & skills',
             settingsTabVoice: 'Voice',
             pcTitle: 'Cloud computer',
+            pcIntranetTitle: 'Intranet desktop',
+            pcIntranetShared: 'This is the intranet desktopd you installed under Desktops. You and all of your bots share it; restarting or resetting it affects every bot.',
+            pcIntranetRestartConfirm: 'Restart this intranet desktop?',
+            pcIntranetResetConfirm: 'Reset this intranet desktop?',
             pcShared: 'You and all of your bots share this one computer. Restarting or resetting it affects every bot at the same time.',
             pcRestart: 'Restart computer',
             pcRestartShort: 'Restart',
@@ -1102,6 +1128,12 @@ function copy(lang: string) {
             shape: '形狀',
             nameTaken: '已有同名 Bot',
             createTitle: '新建 Bot',
+            needsComputer: '這個 bot 需要電腦',
+            quotaUsed: (used: number, limit: number) => `已用 ${used} / ${limit}`,
+            quotaOpen: (used: number) => `已用 ${used}`,
+            modeShared: '電腦·共用',
+            modeIsolated: '電腦·獨立',
+            modeNone: '無電腦',
             description: '描述',
             persona: '人設',
             personaEmpty: '還沒有人設。',
@@ -1221,6 +1253,11 @@ function copy(lang: string) {
             scheduleStopped: '定時安排已停止。',
             schedules: '定時任務',
             tasks: '任務',
+            artifacts: '產出物',
+            artifactsEmpty: '還沒有產出物。',
+            artifactName: '名稱',
+            artifactSize: '大小',
+            artifactTime: '時間',
             tasksEmpty: '目前沒有進行中的任務。',
             taskRunning: '進行中',
             taskQueued: '排隊中',
@@ -1253,10 +1290,19 @@ function copy(lang: string) {
             netSmart: '智慧',
             netSmartHint: '國內網站（京東、淘寶、百度等）直連，其餘經代理。建議使用。',
             netLocked: '管理員已統一設定此項，這裡無法修改。',
+            netIntranetTitle: '內網桌面網路',
+            netIntranetHint: '這是你在「桌面」裡安裝的 desktopd。網站從那台機器直接存取，不走雲端代理。',
+            netIntranet: '這是你的內網桌面，網路從那台機器直接出去，雲端代理選項不適用。',
             settingsTabComputer: '電腦',
+            settingsTabDesktop: '桌面',
             settingsTabLocal: '本地訪問',
+            settingsTabTools: 'MCP 與技能',
             settingsTabVoice: '語音',
             pcTitle: '雲端電腦',
+            pcIntranetTitle: '內網桌面',
+            pcIntranetShared: '這是你在「桌面」裡安裝的內網桌面，你和所有 Bot 共用它，重新啟動或重設會同時影響所有 Bot。',
+            pcIntranetRestartConfirm: '確定重新啟動這台內網桌面？',
+            pcIntranetResetConfirm: '確定重設這台內網桌面？',
             pcShared: '這台電腦由你和你所有的 Bot 共用，重新啟動或重設會同時影響所有 Bot。',
             pcRestart: '重新啟動電腦',
             pcRestartShort: '重新啟動',
@@ -1327,6 +1373,12 @@ function copy(lang: string) {
         shape: '形状',
         nameTaken: '已有同名 Bot',
         createTitle: '新建 Bot',
+        needsComputer: '这个 bot 需要电脑',
+        quotaUsed: (used: number, limit: number) => `已用 ${used} / ${limit}`,
+        quotaOpen: (used: number) => `已用 ${used}`,
+        modeShared: '电脑·共用',
+        modeIsolated: '电脑·独立',
+        modeNone: '无电脑',
         description: '描述',
         persona: '人设',
         personaEmpty: '还没有人设。',
@@ -1446,6 +1498,11 @@ function copy(lang: string) {
         scheduleStopped: '定时安排已停止。',
         schedules: '定时任务',
         tasks: '任务',
+        artifacts: '产出物',
+        artifactsEmpty: '还没有产出物。',
+        artifactName: '名称',
+        artifactSize: '大小',
+        artifactTime: '时间',
         tasksEmpty: '目前没有进行中的任务。',
         taskRunning: '进行中',
         taskQueued: '排队中',
@@ -1478,10 +1535,19 @@ function copy(lang: string) {
         netSmart: '智能',
         netSmartHint: '国内网站（京东、淘宝、百度等）直连，其余走代理。推荐。',
         netLocked: '管理员已统一设置该项，这里无法修改。',
+        netIntranetTitle: '内网桌面网络',
+        netIntranetHint: '这是你在「桌面」里安装的 desktopd。网站从那台机器直接访问，不走云端代理。',
+        netIntranet: '这是你的内网桌面，网络从那台机器直接出去，云端代理选项不适用。',
         settingsTabComputer: '电脑',
+        settingsTabDesktop: '桌面',
         settingsTabLocal: '本地访问',
+        settingsTabTools: 'MCP 与技能',
         settingsTabVoice: '语音',
         pcTitle: '云电脑',
+        pcIntranetTitle: '内网桌面',
+        pcIntranetShared: '这是你在「桌面」里安装的内网桌面，你和所有 Bot 共用它，重启或重置会同时影响所有 Bot。',
+        pcIntranetRestartConfirm: '确定重启这台内网桌面？',
+        pcIntranetResetConfirm: '确定重置这台内网桌面？',
         pcShared: '这台电脑由你和你所有的 Bot 共用，重启或重置会同时影响所有 Bot。',
         pcRestart: '重启电脑',
         pcRestartShort: '重启',
@@ -1772,12 +1838,14 @@ const BotShot = memo(function BotShot({ path, alt, openLabel, onOpen }: { path: 
 // when the card still quotes the cloud path.
 const botChipOpenLink = (url: string) => BrowserOpenURL(url);
 
-function openBotFile(event: { preventDefault: () => void; stopPropagation: () => void }, filePath: string, botID?: string) {
+function openBotFile(event: { preventDefault: () => void; stopPropagation: () => void }, filePath: string, botID?: string): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
     const openForBot = (window as unknown as { go?: { main?: { App?: { OpenBotFile?: (id: string, path: string) => Promise<void> } } } }).go?.main?.App?.OpenBotFile;
     const open = botID && openForBot ? openForBot(botID, filePath) : OpenFileOrShowInFolder(filePath);
-    void open.catch(() => ShowItemInFolder(filePath));
+    // Showing the folder is the fallback. If that fails too, the caller can
+    // say so; swallowing both left a click that did nothing.
+    return open.catch(() => ShowItemInFolder(filePath));
 }
 
 // loadSaidPicture fetches a picture a bot sent as its own message, so the
@@ -1840,7 +1908,7 @@ export function setDesktopBotParallelRuns(n: number) {
 // so the stage stops flashing away, 'user' by the identity chip / 接管, and
 // 'off' by 收起 — an auto event never reopens a panel the person collapsed.
 type DesktopPanelState = 'auto' | 'user' | 'off' | undefined;
-type PanelSection = 'details' | 'computer' | 'schedules' | 'tasks';
+type PanelSection = 'details' | 'computer' | 'schedules' | 'tasks' | 'artifacts';
 
 function requestOwnsStoredMessage(userId: string, sessionKey: string, requestId: string): boolean {
     if (!requestId) return false;
@@ -2204,6 +2272,8 @@ function deleteBotFailureMessage(error: unknown, busyText: string, unavailable: 
     return raw || unavailable;
 }
 
+const NO_BOT_MESSAGES: DesktopBotMessage[] = [];
+
 export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: string }) {
     const text = copy(lang);
     const { showConfirm, showAlert } = useDialog();
@@ -2246,6 +2316,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [createOpen, setCreateOpen] = useState(false);
     const [createSaving, setCreateSaving] = useState(false);
     const [createNotice, setCreateNotice] = useState('');
+    const [createQuota, setCreateQuota] = useState<{ limit: number | null; used: number } | null>(null);
+    const createQuotaGen = useRef(0);
     const [looks, setLooks] = useState<Record<string, BotAppearance>>(() => appearancesForUser(userId));
     const lookOf = (bot: { id: string; title: string }): BotAppearance => looks[bot.id] || defaultAppearance(bot.title);
     // Hub is the store for the look. SQLite keeps a copy for an older Hub that
@@ -2401,7 +2473,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // the desktop proxy mode. Each tab loads and saves on its own.
     const [netOpen, setNetOpen] = useState(false);
     const [localOpen, setLocalOpen] = useState(false);
+    const [toolsOpen, setToolsOpen] = useState(false);
     const [voiceOpen, setVoiceOpen] = useState(false);
+    const [desktopOpen, setDesktopOpen] = useState(false);
     const [netState, setNetState] = useState<DesktopProxyModeState | null>(null);
     const [netSaving, setNetSaving] = useState(false);
     const [netNotice, setNetNotice] = useState('');
@@ -2442,10 +2516,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // The picture follows the panel, not the desktop address. 'auto' is a screen
     // handoff, 'user' is the identity chip / 人类接管, 'off' is 收起. Unset stays closed.
     const [desktopPanels, setDesktopPanels] = useState<Record<string, Exclude<DesktopPanelState, undefined>>>( {});
-    // Last section this bot left open. Unset opens on 电脑. 详情 and 定时任务 are restored.
+    // Last section this bot left open. Unset opens on 电脑. 详情, 定时任务, 任务 and 产出物 are restored.
     const [sectionByBot, setSectionByBot] = useState<Record<string, PanelSection>>({});
     const [schedulesByBot, setSchedulesByBot] = useState<Record<string, DesktopBotScheduleInfo[]>>({});
     const [scheduleNotice, setScheduleNotice] = useState('');
+    const [artifactNotice, setArtifactNotice] = useState('');
+    const [artifactNoticeError, setArtifactNoticeError] = useState(false);
+    const [pathSizes, setPathSizes] = useState<Record<string, number>>({});
     const [activeRunsByBot, setActiveRunsByBot] = useState<Record<string, DesktopBotActiveRunRow[]>>({});
     // true: the last ListDesktopBotActiveRuns succeeded. false: it failed.
     // Absent: this page has not heard from Hub yet, so the clock still applies.
@@ -2624,14 +2701,109 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // The stage watches one bot at a time. A newer open replaces this before
     // the previous bot's release runs, so two open bots keep the shared desktop.
     const stageEpoch = useRef(0);
+    const artifactOpening = useRef('');
+    const artifactNoticeGen = useRef(0);
+    // window.setTimeout returns a number; keep the browser handle type so
+    // clearTimeout (also window.*) and the identity check stay consistent.
+    const artifactNoticeTimer = useRef<number | undefined>(undefined);
+    // Sizes already asked for, including files that were missing. Kept off
+    // state so a dash does not render the panel again.
+    const knownPathSizes = useRef<Record<string, number>>({});
     const selected = bots.find(bot => bot.id === selectedId) || null;
-    const messages = selected ? (messagesByBot[selected.id] || []) : [];
-    const liveBotIds = bots.map(bot => bot.id);
-    const placedSays = placeChatSays(collab.said, selected?.id || '', !!selected?.primary, messages.filter(message => !message.pending), liveBotIds, liveBotIds);
+    const messages = (selected && messagesByBot[selected.id]) || NO_BOT_MESSAGES;
+    // Keystrokes rebuild this component. Placement and the document list depend
+    // on the transcript and what bots said, not on the characters being typed.
+    const placedSays = useMemo(() => {
+        const ids = bots.map(bot => bot.id);
+        return placeChatSays(collab.said, selected?.id || '', !!selected?.primary, messages.filter(message => !message.pending), ids, ids);
+    }, [bots, collab.said, messages, selected]);
+    const artifactRows = useMemo(() => {
+        if (!selected) return [];
+        return collectBotArtifacts({
+            botId: selected.id,
+            selfName: selected.title,
+            messages,
+            said: [...placedSays.after.values()].flat().concat(placedSays.trailing),
+        });
+    }, [messages, placedSays, selected]);
+    const artifactShown = useMemo(() => artifactRows.map(row => {
+        if (row.size || row.source.kind !== 'path') return row;
+        const size = pathSizes[row.source.path];
+        return size > 0 ? { ...row, size } : row;
+    }), [artifactRows, pathSizes]);
+    const openArtifactRow = (row: BotArtifactRow) => {
+        if (artifactOpening.current === row.key) return;
+        const gen = ++artifactNoticeGen.current;
+        const openingText = localizeText(lang, `Opening ${row.name}…`, `正在打开 ${row.name}…`, `正在打開 ${row.name}…`);
+        setArtifactNotice('');
+        setArtifactNoticeError(false);
+        artifactOpening.current = row.key;
+        let failed = false;
+        let showed = false;
+        const still = () => artifactNoticeGen.current === gen;
+        // A local file opens at once. Wait briefly so that case does not flash
+        // a status line; a Hub fetch or a cloud path still gets one.
+        window.clearTimeout(artifactNoticeTimer.current);
+        const noticeTimer = window.setTimeout(() => {
+            if (failed || !still()) return;
+            showed = true;
+            setArtifactNotice(openingText);
+            setArtifactNoticeError(false);
+        }, 300);
+        artifactNoticeTimer.current = noticeTimer;
+        const finish = () => {
+            window.clearTimeout(noticeTimer);
+            if (artifactNoticeTimer.current === noticeTimer) artifactNoticeTimer.current = undefined;
+            if (artifactOpening.current === row.key) artifactOpening.current = '';
+            if (failed || !showed || !still()) return;
+            setArtifactNotice(current => current === openingText ? '' : current);
+        };
+        const fail = (err: unknown) => {
+            failed = true;
+            if (!still()) return;
+            const raw = err instanceof Error ? err.message : String(err || '');
+            setArtifactNoticeError(true);
+            setArtifactNotice(raw.trim() || localizeText(lang, 'Could not open this file', '打不开这个文件', '打不開這個檔案'));
+        };
+        const openPath = (path: string) => OpenFileOrShowInFolder(path).catch(() => ShowItemInFolder(path));
+        const source = row.source;
+        if (source.kind === 'path') {
+            void openBotFile({ preventDefault() {}, stopPropagation() {} }, source.path, source.botId).catch(fail).finally(finish);
+            return;
+        }
+        if (source.kind === 'said') {
+            void ensureSaidFilePath(source.botId, source.noteId, row.name).then(path => openPath(path).catch(fail)).catch(fail).finally(finish);
+            return;
+        }
+        if (source.kind !== 'inline') {
+            finish();
+            return;
+        }
+        const message = messages.find(item => item.id === source.messageId);
+        const file = message?.files?.find(item => item.name === row.name);
+        if (!file?.data) {
+            fail(new Error(localizeText(lang, 'This file is no longer on the message', '文件不在这条消息里', '檔案不在這則訊息裡')));
+            finish();
+            return;
+        }
+        // Saving can fall back to a browser download. Opening a path that
+        // was just written must not download the bytes a second time.
+        void saveDesktopDeliveredFile(source.botId, file).then(
+            path => openPath(path).catch(fail),
+            () => {
+                try {
+                    saveDesktopFile(file);
+                } catch (err) {
+                    fail(err);
+                }
+            },
+        ).finally(finish);
+    };
     useEffect(() => {
         if (!selected) return;
         releaseSettledAckCommands(ackCommandsRef.current, selected.id, messages);
     }, [selected, messages]);
+    useEffect(() => () => window.clearTimeout(artifactNoticeTimer.current), []);
     // pendingRef is the turn this process admitted. Message age is only the
     // escape hatch after a reload, when that map is empty.
     // Runs of this bot this window is following right now. Hub admits up to
@@ -2827,7 +2999,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // not missing.
     const ownerDesktopMissing = screenPickNow === 'mine' && !!selected && screenByBot[selected.id]?.mode === 'isolated' && !holdBotId && bots.length > 0 && bots.every(bot => !!screenByBot[bot.id]) && mineScreenURL(bots, screenByBot) === '';
     const storedSection = selected ? sectionByBot[selected.id] : undefined;
-    const panelSection: PanelSection = storedSection === 'details' || storedSection === 'schedules' || storedSection === 'tasks' ? storedSection : 'computer';
+    const selectedNoComputer = desktopModeOf(selected?.desktopMode) === 'none';
+    let panelSection: PanelSection = storedSection === 'details' || storedSection === 'schedules' || storedSection === 'tasks' || storedSection === 'artifacts' ? storedSection : 'computer';
+    if (selectedNoComputer && panelSection === 'computer') panelSection = 'details';
     const retryForSelected = !!selected && retryByBot[selected.id] === true;
     // Asleep: hide the whole screen (no video, no viewer chrome). The wake
     // control is a line drawing of a sleeping computer.
@@ -3220,7 +3394,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const requestedAt = Date.now();
                 const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; desktop_mode?: string } | undefined;
                 if (!alive) return;
-                const url = String(view?.novnc_url || '');
+                const url = await desktopPictureURL(view);
                 if (!url) {
                     // Asleep is the normal idle state. Do not start the desktop
                     // and do not show a connection error — offer 唤醒 instead.
@@ -3336,7 +3510,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const loaded = await Promise.all(ids.map(async id => {
                 try {
                     const view = await GetDesktopBotScreen(id) as { novnc_url?: string; desktop_mode?: string } | undefined;
-                    return [id, { url: String(view?.novnc_url || ''), mode: desktopModeOf(view?.desktop_mode) }] as const;
+                    return [id, { url: await desktopPictureURL(view), mode: desktopModeOf(view?.desktop_mode) }] as const;
                 } catch {
                     return null;
                 }
@@ -3389,7 +3563,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             try {
                 const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; desktop_mode?: string } | undefined;
                 if (!alive) return;
-                const url = String(view?.novnc_url || '');
+                const url = await desktopPictureURL(view);
                 setScreenByBot(prev => {
                     const existing = prev[botId];
                     const next = {
@@ -3731,6 +3905,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 description: item.description || '',
                 createdAt: createdMillis(item.created_at),
                 primary: item.primary === true,
+                desktopMode: item.desktop_mode,
             }));
             applyHubLooks(items || [], lookRevAtList);
             const merged = mergeListed(list);
@@ -3997,6 +4172,33 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     }, [userId]);
 
     useEffect(() => {
+        if (panelSection !== 'artifacts') return;
+        const paths: string[] = [];
+        for (const row of artifactRows) {
+            if (row.source.kind !== 'path' || (row.size && row.size > 0)) continue;
+            if (knownPathSizes.current[row.source.path] != null) continue;
+            paths.push(row.source.path);
+        }
+        if (paths.length === 0) return;
+        let live = true;
+        void artifactFileSizes(paths).then(sizes => {
+            if (!live || !sizes) return;
+            const found: Record<string, number> = {};
+            paths.forEach((path, index) => {
+                const size = sizes[index];
+                // -1 was not checked (the list was capped). Leave it unset so
+                // a later visit can ask again. 0 was checked and is not there.
+                if (size == null || size < 0) return;
+                knownPathSizes.current[path] = size;
+                if (size > 0) found[path] = size;
+            });
+            if (Object.keys(found).length === 0) return;
+            setPathSizes(prev => ({ ...prev, ...found }));
+        });
+        return () => { live = false; };
+    }, [panelSection, artifactRows]);
+
+    useEffect(() => {
         if (!selectedId || panelSection !== 'schedules' || !showDesktop) return;
         const botId = selectedId;
         let live = true;
@@ -4183,8 +4385,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setScreenPick(pick);
         setHandBackError('');
         if (pick === 'mine' || screenByBot[pick]?.url) return;
-        void GetDesktopBotScreen(pick).then(view => {
-            const url = String(view?.novnc_url || '');
+        void GetDesktopBotScreen(pick).then(async view => {
+            const url = await desktopPictureURL(view);
             setScreenByBot(prev => ({
                 ...prev,
                 [pick]: { url: prev[pick]?.url || url, mode: desktopModeOf(view?.desktop_mode) },
@@ -4291,9 +4493,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // as the new mode's screen; the GET below refills the right one.
             setScreenByBot(prev => ({ ...prev, [botId]: { url: prev[botId]?.mode === next ? (prev[botId]?.url || '') : '', mode: next } }));
             const view = await GetDesktopBotScreen(botId);
+            const url = await desktopPictureURL(view);
             setScreenByBot(prev => ({
                 ...prev,
-                [botId]: { url: String(view?.novnc_url || prev[botId]?.url || ''), mode: desktopModeOf(view?.desktop_mode || next) },
+                [botId]: { url: url || prev[botId]?.url || '', mode: desktopModeOf(view?.desktop_mode || next) },
             }));
         } catch (error) {
             setModeError(failureMessage(error).trim() || text.desktopModeFailed);
@@ -4318,24 +4521,37 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const create = () => {
         setListNotice('');
         setCreateNotice('');
+        setCreateQuota(null);
         setCreateOpen(true);
+        const quotaGen = createQuotaGen.current + 1;
+        createQuotaGen.current = quotaGen;
+        void GetDesktopBotQuota().then(quota => {
+            if (quotaGen !== createQuotaGen.current) return;
+            const limit = quota?.limit;
+            setCreateQuota({
+                limit: typeof limit === 'number' ? limit : null,
+                used: Number(quota?.used || 0),
+            });
+        }).catch(() => {
+            if (quotaGen === createQuotaGen.current) setCreateQuota(null);
+        });
     };
 
-    const submitCreate = async (title: string, description: string, look: BotAppearance) => {
+    const submitCreate = async (title: string, description: string, look: BotAppearance, needsComputer = true) => {
         if (createSaving) return;
         const gen = loadGen.current;
         setListNotice('');
         setCreateNotice('');
         setCreateSaving(true);
         const desc = description || text.defaultDescription;
-        let created: Awaited<ReturnType<typeof CreateDesktopBot>> | null = null;
+        let created: Awaited<ReturnType<typeof CreateDesktopBotWithComputer>> | null = null;
         try {
-            created = await CreateDesktopBot(title, desc, look.color, look.shape);
+            created = await CreateDesktopBotWithComputer(title, desc, look.color, look.shape, needsComputer);
         } catch (error) {
             if (gen !== loadGen.current) return;
             const message = botCallMessage(error) || text.unavailable;
-            // A taken name is fixed in the dialog: keep it open with the reason.
-            if (message.includes('已经有一个叫')) {
+            // A taken name or a used-up computer grant is fixed in the dialog.
+            if (message.includes('已经有一个叫') || message.includes('额度') || message.includes('DESKTOP_QUOTA')) {
                 setCreateNotice(message);
                 return;
             }
@@ -4357,6 +4573,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             title: created?.title || title,
             description: created?.description || desc,
             createdAt: createdMillis(created?.created_at),
+            desktopMode: created?.desktop_mode || (needsComputer ? 'shared' : 'none'),
         };
         // Hub already created the bot. A local badge copy must not paint that as a failed create.
         try {
@@ -4477,6 +4694,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (llmOpen) return;
         const gen = loadGen.current;
         setVoiceOpen(false);
+        setToolsOpen(false);
+        setDesktopOpen(false);
         setLlmNotice('');
         try {
             const [current, rawProviders] = await Promise.all([
@@ -4507,6 +4726,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (netOpen) return;
         const gen = loadGen.current;
         setVoiceOpen(false);
+        setDesktopOpen(false);
         setNetNotice('');
         try {
             const current = await GetDesktopProxyMode();
@@ -4527,6 +4747,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (pcOpen) return;
         const gen = loadGen.current;
         setVoiceOpen(false);
+        setDesktopOpen(false);
         setPcNotice('');
         setPcBusy(null);
         try {
@@ -4574,19 +4795,40 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setLlmOpen(false);
             setNetOpen(false);
             setPcOpen(false);
+            setDesktopOpen(false);
             setLocalOpen(false);
+            setToolsOpen(false);
             setVoiceOpen(true);
             return;
         }
         setVoiceOpen(false);
+        if (tab === 'tools') {
+            setLlmOpen(false);
+            setNetOpen(false);
+            setPcOpen(false);
+            setDesktopOpen(false);
+            setLocalOpen(false);
+            setToolsOpen(true);
+            return;
+        }
+        setToolsOpen(false);
         if (tab === 'local') {
             setLlmOpen(false);
             setNetOpen(false);
             setPcOpen(false);
+            setDesktopOpen(false);
             setLocalOpen(true);
             return;
         }
         setLocalOpen(false);
+        if (tab === 'desktop') {
+            setLlmOpen(false);
+            setNetOpen(false);
+            setPcOpen(false);
+            setDesktopOpen(true);
+            return;
+        }
+        setDesktopOpen(false);
         if (tab === 'computer') {
             void openComputerSettings();
             return;
@@ -4599,7 +4841,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setNetOpen(false);
         void openLLMSettings();
     };
-    const settingsTabLabels = { model: text.settingsTabModel, network: text.settingsTabNetwork, computer: text.settingsTabComputer, local: text.settingsTabLocal, voice: text.settingsTabVoice };
+    const settingsTabLabels = { model: text.settingsTabModel, network: text.settingsTabNetwork, computer: text.settingsTabComputer, desktop: text.settingsTabDesktop, local: text.settingsTabLocal, tools: text.settingsTabTools, voice: text.settingsTabVoice };
 
     const submitNetwork = async (mode: DesktopProxyModeValue) => {
         if (netSaving) return;
@@ -6276,7 +6518,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (stageEpoch.current !== epoch) return;
             const panel = panelsRef.current[botId];
             if (panel !== 'auto' && panel !== 'user') return;
-            const url = String(view?.novnc_url || '');
+            const url = await desktopPictureURL(view);
             if (!url) {
                 setAsleepByBot(prev => ({ ...prev, [botId]: true }));
                 setWakeByBot(prev => ({ ...prev, [botId]: { state: 'failed', reason: wakeFailureReason('') } }));
@@ -6728,17 +6970,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         {bots.map(bot => {
                             const description = bot.description || text.defaultDescription;
                             const rowPhase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id));
+                            const modeKind = desktopModeOf(bot.desktopMode);
+                            const modeLabel = modeKind === 'none' ? text.modeNone : modeKind === 'isolated' ? text.modeIsolated : text.modeShared;
                             return (
                                 <li key={bot.id} className={'desktop-bot-workspace__row' + (selectedId === bot.id ? ' is-selected' : '')} data-testid={`desktop-bot-${bot.id}`}>
                                     <button type="button" className="desktop-bot-workspace__open" aria-pressed={selectedId === bot.id} onClick={() => selectBot(bot)}>
                                         <BotAvatar className="desktop-bot-workspace__avatar" color={lookOf(bot).color} shape={lookOf(bot).shape} />
                                         <span className="desktop-bot-workspace__who">
-                                            {bot.primary ? (
-                                                <span className="desktop-bot-workspace__titleline">
-                                                    <strong>{bot.title}</strong>
-                                                    <em className="desktop-bot-workspace__primary" data-testid={`desktop-bot-primary-${bot.id}`}>{text.primaryMark}</em>
-                                                </span>
-                                            ) : <strong>{bot.title}</strong>}
+                                            <span className="desktop-bot-workspace__titleline">
+                                                <strong>{bot.title}</strong>
+                                                {bot.primary ? <em className="desktop-bot-workspace__primary" data-testid={`desktop-bot-primary-${bot.id}`}>{text.primaryMark}</em> : null}
+                                                <em className="desktop-bot-workspace__mode" data-testid={`desktop-bot-mode-${bot.id}`}>{modeLabel}</em>
+                                            </span>
                                             <span>{description}</span>
                                         </span>
                                         {rowPhase ? (
@@ -6819,7 +7062,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             data-testid="desktop-bot-log"
                             onScroll={onLogScroll}
                         >
-                            <BotChipContext.Provider value={{ openLink: botChipOpenLink, openPath: (event, path) => openBotFile(event, path, selected.id) }}>
+                            <BotChipContext.Provider value={{ openLink: botChipOpenLink, openPath: (event, path) => { void openBotFile(event, path, selected.id).catch(() => {}); } }}>
                             <div ref={logBodyRef} className="desktop-bot-chat__log-body">
                             {messages.length === 0 ? (
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>
@@ -6881,30 +7124,33 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             />
                                         )) : null}
                                         {message.role === 'assistant' && !message.failed && message.localPaths?.length ? (
-                                            <TaskResultArtifacts paths={message.localPaths} messageId={message.id} lang={lang} onOpen={openBotFile} />
+                                            <TaskResultArtifacts paths={message.localPaths} messageId={message.id} lang={lang} onOpen={(event, path) => { void openBotFile(event, path, selected.id).catch(() => {}); }} />
                                         ) : null}
-                                        {message.role === 'assistant' && !message.failed && !message.localPaths?.length && message.files?.length ? message.files.map(file => (
-                                            saidFileIsImage(file) && file.data ? (
-                                                <InlineChatShot
-                                                    key={file.name}
-                                                    mime={file.mime}
-                                                    data={file.data}
-                                                    alt={file.name}
-                                                    openLabel={text.viewShot}
-                                                    onOpen={openShot}
-                                                />
-                                            ) : (
-                                            <button
-                                                type="button"
-                                                key={file.name}
-                                                className="desktop-bot-chat__file"
-                                                data-testid="desktop-bot-file"
-                                                onClick={() => saveDesktopFile(file)}
-                                            >
-                                                {text.download} {file.name}
-                                            </button>
-                                            )
-                                        )) : null}
+                                        {message.role === 'assistant' && !message.failed && !message.localPaths?.length && message.files?.length ? (
+                                            <>
+                                                {message.files.filter(file => saidFileIsImage(file) && file.data).map(file => (
+                                                    <InlineChatShot
+                                                        key={file.name}
+                                                        mime={file.mime}
+                                                        data={file.data}
+                                                        alt={file.name}
+                                                        openLabel={text.viewShot}
+                                                        onOpen={openShot}
+                                                    />
+                                                ))}
+                                                {message.files.some(file => !(saidFileIsImage(file) && file.data)) ? (
+                                                    <BotFileArtifactCard
+                                                        messageId={message.id}
+                                                        lang={lang}
+                                                        files={message.files.filter(file => !(saidFileIsImage(file) && file.data)).map(file => ({
+                                                            name: file.name,
+                                                            ensurePath: () => saveDesktopDeliveredFile(selected.id, file),
+                                                            onOpen: async () => { saveDesktopFile(file); },
+                                                        }))}
+                                                    />
+                                                ) : null}
+                                            </>
+                                        ) : null}
                                     </div>
                                     {message.role === 'user' && message.routedTo && !message.routedUndone ? (
                                         <div className="desktop-bot-chat__routed" data-testid="desktop-bot-routed">
@@ -6992,7 +7238,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     ) : null}
                                 </div>
                                 {collab.features.say && placedSays.after.get(message.id)?.length ? (
-                                    <BotSaidInline items={placedSays.after.get(message.id) || []} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} loadFile={loadSaidPicture} onOpenShot={openShot} openLabel={text.viewShot} />
+                                    <BotSaidInline items={placedSays.after.get(message.id) || []} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} ensureFile={ensureSaidFilePath} loadFile={loadSaidPicture} onOpenShot={openShot} openLabel={text.viewShot} />
                                 ) : null}
                                 </Fragment>
                                 );
@@ -7003,7 +7249,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </p>
                             ) : null}
                             {collab.features.say ? (
-                                <BotSaidInline items={placedSays.trailing} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} loadFile={loadSaidPicture} onOpenShot={openShot} openLabel={text.viewShot} />
+                                <BotSaidInline items={placedSays.trailing} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} ensureFile={ensureSaidFilePath} loadFile={loadSaidPicture} onOpenShot={openShot} openLabel={text.viewShot} />
                             ) : null}
                             </div>
                             </BotChipContext.Provider>
@@ -7100,7 +7346,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         <button type="button" role="tab" id="desktop-bot-tab-details" aria-selected={panelSection === 'details'} aria-controls="desktop-bot-details" data-testid="desktop-bot-tab-details" onClick={() => setSectionByBot(prev => prev[selected.id] === 'details' ? prev : { ...prev, [selected.id]: 'details' })}>{text.details}</button>
                         <button type="button" role="tab" id="desktop-bot-tab-schedules" aria-selected={panelSection === 'schedules'} aria-controls="desktop-bot-schedules" data-testid="desktop-bot-tab-schedules" onClick={() => setSectionByBot(prev => prev[selected.id] === 'schedules' ? prev : { ...prev, [selected.id]: 'schedules' })}>{text.schedules}</button>
                         <button type="button" role="tab" id="desktop-bot-tab-tasks" aria-selected={panelSection === 'tasks'} aria-controls="desktop-bot-tasks" data-testid="desktop-bot-tab-tasks" onClick={() => setSectionByBot(prev => prev[selected.id] === 'tasks' ? prev : { ...prev, [selected.id]: 'tasks' })}>{text.tasks}</button>
-                        <button type="button" role="tab" id="desktop-bot-tab-computer" aria-selected={panelSection === 'computer'} aria-controls="desktop-bot-computer" data-testid="desktop-bot-tab-computer" onClick={() => showComputer(selected.id)}>{text.computer}</button>
+                        <button type="button" role="tab" id="desktop-bot-tab-artifacts" aria-selected={panelSection === 'artifacts'} aria-controls="desktop-bot-artifacts" data-testid="desktop-bot-tab-artifacts" onClick={() => setSectionByBot(prev => prev[selected.id] === 'artifacts' ? prev : { ...prev, [selected.id]: 'artifacts' })}>{text.artifacts}</button>
+                        {selectedNoComputer ? null : <button type="button" role="tab" id="desktop-bot-tab-computer" aria-selected={panelSection === 'computer'} aria-controls="desktop-bot-computer" data-testid="desktop-bot-tab-computer" onClick={() => showComputer(selected.id)}>{text.computer}</button>}
                     </div>
                     {panelSection === 'details' ? (
                         <div className="desktop-bot-panel__details" id="desktop-bot-details" data-testid="desktop-bot-details" role="tabpanel" aria-labelledby="desktop-bot-tab-details">
@@ -7216,6 +7463,19 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     })}
                                 </ul>
                             )}
+                        </div>
+                    ) : panelSection === 'artifacts' ? (
+                        <div className="desktop-bot-panel__artifacts" id="desktop-bot-artifacts" data-testid="desktop-bot-artifacts" role="tabpanel" aria-labelledby="desktop-bot-tab-artifacts">
+                            <BotArtifactTable
+                                rows={artifactShown}
+                                nameLabel={text.artifactName}
+                                sizeLabel={text.artifactSize}
+                                timeLabel={text.artifactTime}
+                                emptyLabel={text.artifactsEmpty}
+                                notice={artifactNotice}
+                                noticeError={artifactNoticeError}
+                                onOpen={openArtifactRow}
+                            />
                         </div>
                     ) : (
                         <div className="desktop-bot-panel__computer" id="desktop-bot-computer" data-testid="desktop-bot-computer" role="tabpanel" aria-labelledby="desktop-bot-tab-computer">
@@ -7390,7 +7650,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet', 'panel-stop')}
                                         >{text.stopBot}</button>
                                     </>
-                                ) : <button
+                                ) : selectedNoComputer ? null : <button
                                     type="button"
                                     data-testid="desktop-bot-takeover"
                                     className={'desktop-bot-chat__takeover' + (takeover ? ' is-active' : '')}
@@ -7428,8 +7688,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     }}
                     notice={createNotice}
                     saving={createSaving}
+                    computer={{
+                        label: text.needsComputer,
+                        quota: createQuota == null ? '' : (createQuota.limit == null ? text.quotaOpen(createQuota.used) : text.quotaUsed(createQuota.used, createQuota.limit)),
+                        locked: createQuota != null && createQuota.limit != null && createQuota.used >= createQuota.limit,
+                    }}
                     onClose={() => setCreateOpen(false)}
-                    onSubmit={(title, description, look) => { void submitCreate(title, description, look); }}
+                    onSubmit={(title, description, look, needsComputer) => { void submitCreate(title, description, look, needsComputer !== false); }}
                 />
             ) : null}
             {roomsOpen && collab.features.rooms ? <BotRoomsDialog bots={bots} lang={lang} onClose={() => setRoomsOpen(false)} /> : null}
@@ -7496,15 +7761,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 <BotNetworkSettingsDialog
                     labels={{
                         heading: text.settingsTitle,
-                        title: text.netTitle,
-                        hint: text.netHint,
+                        title: netState.intranet ? text.netIntranetTitle : text.netTitle,
+                        hint: netState.intranet ? text.netIntranetHint : text.netHint,
                         current: text.netCurrent,
                         modes: {
                             proxy: { name: text.netProxy, hint: text.netProxyHint },
                             direct: { name: text.netDirect, hint: text.netDirectHint },
                             smart: { name: text.netSmart, hint: text.netSmartHint },
                         },
-                        locked: text.netLocked,
+                        locked: netState.intranet ? text.netIntranet : text.netLocked,
                         save: text.save,
                         cancel: text.cancel,
                         close: text.close,
@@ -7525,6 +7790,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     onClose={() => setLocalOpen(false)}
                 />
             ) : null}
+            {toolsOpen ? (
+                <BotCapabilitySettingsDialog
+                    heading={text.settingsTitle}
+                    lang={lang}
+                    tabs={<BotSettingsTabs active="tools" labels={settingsTabLabels} onSelect={switchSettingsTab} />}
+                    onClose={() => setToolsOpen(false)}
+                />
+            ) : null}
+            {desktopOpen ? (
+                <BotDesktopNodesDialog
+                    heading={text.settingsTitle}
+                    lang={lang}
+                    tabs={<BotSettingsTabs active="desktop" labels={settingsTabLabels} onSelect={switchSettingsTab} />}
+                    onClose={() => setDesktopOpen(false)}
+                />
+            ) : null}
             {voiceOpen ? (
                 <BotVoiceSettingsDialog
                     heading={text.settingsTitle}
@@ -7537,17 +7818,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 <BotComputerSettingsDialog
                     labels={{
                         heading: text.settingsTitle,
-                        title: text.pcTitle,
-                        shared: text.pcShared,
+                        title: pcState.intranet ? text.pcIntranetTitle : text.pcTitle,
+                        shared: pcState.intranet ? text.pcIntranetShared : text.pcShared,
                         actions: {
                             restart: {
                                 name: text.pcRestart, button: text.pcRestart, short: text.pcRestartShort, description: text.pcRestartDesc,
-                                confirmTitle: text.pcRestartConfirm, confirmButton: text.pcRestart, forceButton: text.pcRestartForce,
+                                confirmTitle: pcState.intranet ? text.pcIntranetRestartConfirm : text.pcRestartConfirm, confirmButton: text.pcRestart, forceButton: text.pcRestartForce,
                                 working: text.pcRestartWorking,
                             },
                             reset: {
                                 name: text.pcReset, button: text.pcReset, short: text.pcResetShort, description: text.pcResetDesc,
-                                confirmTitle: text.pcResetConfirm, confirmButton: text.pcResetAck, forceButton: text.pcResetForce,
+                                confirmTitle: pcState.intranet ? text.pcIntranetResetConfirm : text.pcResetConfirm, confirmButton: text.pcResetAck, forceButton: text.pcResetForce,
                                 working: text.pcResetWorking,
                             },
                         },

@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:uuid/uuid.dart';
+import 'message_order.dart';
 
 import '../../core/hub_config.dart';
 import '../../core/providers.dart';
@@ -9,7 +9,7 @@ import 'bot_api.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
 
-const _uuid = Uuid();
+
 
 class ChatState {
   final String botId;
@@ -69,6 +69,11 @@ class BotChatController extends Notifier<ChatState> {
   /// its reply bubble so a per-run thread offers "继续这个任务".
   String _sessionForRun = '';
 
+  /// Message ids whose media a run re-fetch was already tried for. Journal
+  /// projections never carry the bytes, so a synced bubble with
+  /// `attachmentIds` gets one `GET /runs/{id}` per controller lifetime.
+  final Set<String> _mediaFetches = {};
+
   @override
   ChatState build() {
     final botId = ref.read(botChatBotIdProvider);
@@ -83,9 +88,32 @@ class BotChatController extends Notifier<ChatState> {
 
   Future<void> _loadHistory() async {
     try {
-      final page = await _api.conversation(botId: state.botId, limit: 300);
-      _cursor = page.head;
-      _mergeEntries(page.entries);
+      var after = 0;
+      var head = 0;
+      var caughtUp = false;
+      for (var guard = 0; guard < 20; guard++) {
+        final page = await _api.conversation(
+          botId: state.botId,
+          after: after,
+          limit: 300,
+        );
+        head = page.head;
+        if (page.reset) {
+          after = 0;
+          _mergeEntries(page.entries, replace: true);
+          continue;
+        }
+        _mergeEntries(page.entries);
+        if (!page.more) {
+          caughtUp = true;
+          break;
+        }
+        if (page.next <= after) break;
+        after = page.next;
+      }
+      // A partial read must stay on the page it reached. Jumping to head
+      // would skip the lines that did not fit.
+      _cursor = caughtUp && head > 0 ? head : after;
       // Surface runs that finished while no client was watching.
       unawaited(_drainPendingDeliveries());
       // And adopt a turn that is still running so the composer lock,
@@ -123,12 +151,17 @@ class BotChatController extends Notifier<ChatState> {
       );
       if (_disposed) return;
       if (page.reset) {
-        _cursor = page.head;
+        _cursor = 0;
         _mergeEntries(page.entries, replace: true);
       } else {
-        if (page.head > _cursor) _cursor = page.head;
-        if (page.next > _cursor) _cursor = page.next;
         _mergeEntries(page.entries);
+        if (page.more && page.next > _cursor) {
+          _cursor = page.next;
+        } else if (!page.more && page.head > _cursor) {
+          _cursor = page.head;
+        } else if (page.next > _cursor) {
+          _cursor = page.next;
+        }
       }
       unawaited(_refreshQueued());
       _scheduleSync();
@@ -172,12 +205,30 @@ class BotChatController extends Notifier<ChatState> {
     }
   }
 
+  /// A line keeps the sequence of its first write. A later edit, or a second
+  /// copy of the same server line, must not move it down the chat.
+  ChatMessage _keepEarlierSeq(ChatMessage current, ChatMessage incoming) {
+    if (current.syncSeq > 0 &&
+        (incoming.syncSeq <= 0 || current.syncSeq < incoming.syncSeq)) {
+      return incoming.copyWith(syncSeq: current.syncSeq);
+    }
+    return incoming;
+  }
+
+  int _entryDisplaySeq(ConversationEntry entry) =>
+      entry.createdSeq > 0 ? entry.createdSeq : entry.seq;
+
+  /// A still-pending bubble older than the reply wait was orphaned — the
+  /// run that would settle it died (app killed, reply lost to another
+  /// channel) and no answer is coming. Mirrors the desktop side.
+  bool _isOrphanedPending(ChatMessage m, int nowMs) => pendingReplyIsStale(
+      pending: m.pending, id: m.id, at: m.at, nowMs: nowMs);
+
   /// Merge journal entries into the transcript (mirrors desktopBotSync):
   /// upsert by id in created order, patch merges flags, deleted drops it.
   void _mergeEntries(List<ConversationEntry> entries, {bool replace = false}) {
-    final ordered = [...entries]
-      ..sort((a, b) {
-        final byCreated = a.createdSeq.compareTo(b.createdSeq);
+    final ordered = [...entries]..sort((a, b) {
+        final byCreated = _entryDisplaySeq(a).compareTo(_entryDisplaySeq(b));
         return byCreated != 0 ? byCreated : a.seq.compareTo(b.seq);
       });
     // On a journal reset keep local in-flight bubbles; everything synced is
@@ -194,8 +245,15 @@ class BotChatController extends Notifier<ChatState> {
       final index = messages.indexWhere((m) => m.id == entry.id);
       final data = entry.data;
       if (data['deleted'] == true) {
-        if (index >= 0) {
-          messages.removeAt(index);
+        final requestId = syncText(data['requestId']);
+        for (var i = messages.length - 1; i >= 0; i--) {
+          final item = messages[i];
+          final sameId = item.id == entry.id;
+          final sameRequest =
+              requestId.isNotEmpty && item.requestId == requestId;
+          if (!sameId && !sameRequest) continue;
+          if (!sameId && item.pending) continue;
+          messages.removeAt(i);
           changed = true;
         }
         continue;
@@ -206,6 +264,8 @@ class BotChatController extends Notifier<ChatState> {
                   data.containsKey('optionsUsed')));
       if (isPatch) {
         if (index >= 0) {
+          final seq = _entryDisplaySeq(entry);
+          final currentSeq = messages[index].syncSeq;
           messages[index] = messages[index].copyWith(
             askResolved: data['askResolved'] == true
                 ? true
@@ -213,7 +273,9 @@ class BotChatController extends Notifier<ChatState> {
             optionsUsed: data['optionsUsed'] == true
                 ? true
                 : messages[index].optionsUsed,
-            syncSeq: entry.createdSeq > 0 ? entry.createdSeq : entry.seq,
+            syncSeq: currentSeq > 0 && (seq <= 0 || currentSeq < seq)
+                ? currentSeq
+                : seq,
           );
           changed = true;
         }
@@ -227,11 +289,58 @@ class BotChatController extends Notifier<ChatState> {
       );
       if (index >= 0) {
         // Never clobber a local pending bubble with its older projection.
-        if (!messages[index].pending) {
-          messages[index] = incoming;
+        // Still keep the sequence: without it the next sort treats the
+        // question as unsynced and drops it below the reply.
+        if (messages[index].pending) {
+          final seq = incoming.syncSeq;
+          if (seq > 0 &&
+              (messages[index].syncSeq <= 0 || seq < messages[index].syncSeq)) {
+            messages[index] = messages[index].copyWith(syncSeq: seq);
+            changed = true;
+          }
+        } else {
+          messages[index] = _keepEarlierSeq(messages[index], incoming);
           changed = true;
         }
       } else {
+        // requestId is the line's own key; runId is the turn, so it only
+        // collapses assistant-to-assistant copies — a person's line and the
+        // reply of the same turn must never merge. Mirrors the GUI twin
+        // rule (`item.runId === runId || requestId === desktop-bot-deliver-…`).
+        final requestId = syncText(data['requestId']);
+        final runId = incoming.role == 'assistant'
+            ? syncText(data['runId'])
+            : '';
+        final twin = (requestId.isEmpty && runId.isEmpty)
+            ? -1
+            : messages.indexWhere((m) =>
+                (runId.isNotEmpty &&
+                    m.role == 'assistant' &&
+                    (m.runId == runId ||
+                        m.requestId == 'desktop-bot-deliver-$runId')) ||
+                (requestId.isNotEmpty && m.requestId == requestId));
+        if (twin >= 0) {
+          final current = messages[twin];
+          var next = current;
+          if (incoming.syncSeq > 0 &&
+              (current.syncSeq <= 0 || incoming.syncSeq < current.syncSeq)) {
+            next = next.copyWith(syncSeq: incoming.syncSeq);
+          }
+          // Adopt the fetch keys the local copy lacks — a synced line can
+          // carry attachment ids for media the local reply never staged.
+          if (next.attachmentIds.isEmpty &&
+              incoming.attachmentIds.isNotEmpty) {
+            next = next.copyWith(attachmentIds: incoming.attachmentIds);
+          }
+          if (next.runId.isEmpty && incoming.runId.isNotEmpty) {
+            next = next.copyWith(runId: incoming.runId);
+          }
+          if (!identical(next, current)) {
+            messages[twin] = next;
+            changed = true;
+          }
+          continue;
+        }
         messages.add(incoming);
         changed = true;
         if (incoming.role == 'assistant' &&
@@ -242,13 +351,16 @@ class BotChatController extends Notifier<ChatState> {
       }
     }
     if (changed) {
-      // Journal order for synced bubbles; local unsynced bubbles (in-flight
-      // sends) keep their relative order at the tail until the journal echo
-      // lands them a real seq.
+      // Hub's first-write sequence is the order. Client clocks in the id
+      // disagree, so they are not used once a line has a sequence.
       final synced = messages.where((m) => m.syncSeq > 0).toList()
         ..sort((a, b) => a.syncSeq.compareTo(b.syncSeq));
       final unsynced = messages.where((m) => m.syncSeq <= 0).toList();
       final merged = [...synced, ...unsynced];
+      // Sweep orphaned pending bubbles — a spinner that can never settle is
+      // worse than admitting the turn died.
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      merged.removeWhere((m) => _isOrphanedPending(m, nowMs));
       // The queue is serial per bot: every real reply that landed in this
       // page consumes the oldest still-queued user instruction, so the
       // "排队中" tag clears exactly when its turn produces an answer.
@@ -260,6 +372,46 @@ class BotChatController extends Notifier<ChatState> {
         }
       }
       state = state.copyWith(messages: merged);
+    }
+    _restoreSyncedMedia();
+  }
+
+  /// Attachment bytes never travel in the journal — a synced assistant
+  /// bubble only carries `attachmentIds` + `runId`. Re-fetch the finished
+  /// run and patch its media in, like the desktop staging the picture on
+  /// first paint.
+  void _restoreSyncedMedia() {
+    if (_disposed) return;
+    for (final m in state.messages) {
+      if (m.role != 'assistant' || m.failed) continue;
+      if (m.images.isNotEmpty || m.files.isNotEmpty) continue;
+      if (m.attachmentIds.isEmpty || m.runId.isEmpty) continue;
+      if (!_mediaFetches.add(m.id)) continue;
+      unawaited(_fetchRunMedia(m.id, m.runId));
+    }
+  }
+
+  Future<void> _fetchRunMedia(String messageId, String runId) async {
+    try {
+      final reply = await _api.pollRun(state.botId, runId);
+      if (_disposed || reply == null) return;
+      if (reply.images.isEmpty && reply.files.isEmpty) return;
+      final index =
+          state.messages.indexWhere((m) => m.id == messageId);
+      if (index < 0) return;
+      final current = state.messages[index];
+      if (current.images.isNotEmpty || current.files.isNotEmpty) return;
+      final messages = [...state.messages];
+      messages[index] =
+          current.copyWith(images: reply.images, files: reply.files);
+      state = state.copyWith(messages: messages);
+    } on Object catch (error) {
+      // Text stays. A 4xx means the run is reaped — no point asking again;
+      // a transport or 5xx error may succeed on a later sync tick.
+      final status = error is HubApiException ? error.statusCode : null;
+      if (status == null || status >= 500) {
+        _mediaFetches.remove(messageId);
+      }
     }
   }
 
@@ -284,6 +436,9 @@ class BotChatController extends Notifier<ChatState> {
           question: reply.question,
           images: reply.images,
           files: reply.files,
+          runId: delivery.runId,
+          // The GUI twin-matches a delivery bubble on this request id.
+          requestId: 'desktop-bot-deliver-${delivery.runId}',
           at: DateTime.now(),
         );
         if (messages.any((m) => m.id == message.id)) continue;
@@ -326,7 +481,7 @@ class BotChatController extends Notifier<ChatState> {
       return false;
     }
     final userMessage = ChatMessage(
-      id: _uuid.v4(),
+      id: newDesktopMessageId(),
       role: 'user',
       content: text,
       pending: true,
@@ -421,7 +576,7 @@ class BotChatController extends Notifier<ChatState> {
     state = state.copyWith(messages: [
       ...state.messages,
       ChatMessage(
-        id: _uuid.v4(),
+        id: newDesktopMessageId(),
         role: 'assistant',
         content: content,
         ack: true,
@@ -507,7 +662,7 @@ class BotChatController extends Notifier<ChatState> {
                     const Duration(minutes: 5)));
     if (!alreadyShown) {
       final assistantMessage = ChatMessage(
-        id: _uuid.v4(),
+        id: newDesktopMessageId(),
         role: 'assistant',
         content: text,
         phase: reply.phase?.wireValue ?? '',
@@ -518,6 +673,7 @@ class BotChatController extends Notifier<ChatState> {
         images: reply.images,
         files: reply.files,
         requestId: state.activeRunId ?? '',
+        runId: state.activeRunId ?? '',
         conversation: _sessionForRun,
         at: DateTime.now(),
       );
@@ -631,11 +787,15 @@ class BotChatController extends Notifier<ChatState> {
     }
     // Route the answer back into the run that asked: continue_session names
     // the thread, ask_run names the run itself (matching the desktop's
-    // `send(reply, …, message.conversation, message.runId)`). Only mark the
-    // card resolved once the answer actually left — otherwise a failed or
-    // blocked send would lock the card with the answer lost.
+    // `send(reply, …, message.conversation, message.runId)`). A synced card's
+    // requestId is the asking client's message id, not the run — prefer
+    // runId, with requestId covering bubbles written before it existed.
+    // Only mark the card resolved once the answer actually left — a failed
+    // or blocked send would otherwise lock it with the answer lost.
     final sent = await send(answer,
-        askRun: message.requestId.isEmpty ? null : message.requestId,
+        askRun: message.runId.isEmpty
+            ? (message.requestId.isEmpty ? null : message.requestId)
+            : message.runId,
         continueSession:
             message.conversation.isEmpty ? null : message.conversation);
     if (sent) _patchFlags(message.id, askResolved: true);
@@ -643,7 +803,9 @@ class BotChatController extends Notifier<ChatState> {
 
   Future<void> pickOption(ChatMessage message, String option) async {
     final sent = await send(option,
-        askRun: message.requestId.isEmpty ? null : message.requestId,
+        askRun: message.runId.isEmpty
+            ? (message.requestId.isEmpty ? null : message.requestId)
+            : message.runId,
         continueSession:
             message.conversation.isEmpty ? null : message.conversation);
     if (sent) _patchFlags(message.id, optionsUsed: true);

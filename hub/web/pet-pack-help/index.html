@@ -329,6 +329,17 @@ fallback:
       <h2>资源、安全与降级</h2>
       <ul><li>安全预算：最多 24 根骨骼、32 个 slot、32 张贴图；每条轨道最多 240 个关键帧，整套 rig 最多 4,800 个关键帧。</li><li>每张贴图及静态回退帧最多 512 KiB、1024×1024；贴图总计最多 4,194,304 像素。</li><li>压缩包文件最大 3 MiB；解压后的资源总量最大 2 MiB（用于防止压缩炸弹）；最多 64 个文件，单文件最多 512 KiB，路径最长 180 字符。</li><li>仅允许 PNG、WebP、YAML、JSON、TXT、MD、SVG。禁止绝对路径、<code>..</code>、盘符、重复路径以及所有代码文件。</li><li>ZIP 建议只含运行所需文件；大体积源图目录（<code>_src</code>/<code>native_src</code>）可留在工程内但不打进安装包。</li><li>降级顺序固定：<code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>。任何异常都不得阻塞桌面主界面。</li></ul>
 
+      <h2>养成与挂件</h2>
+      <p>可选 <code>rearing.stages</code> 按这只宠物被加载的时间换装。<code>schema_version</code> 仍是 3。不新增 JS、Live2D 或第二种运行时。宿主决定何时进入阶段，包决定阶段长什么样。</p>
+      <ul>
+        <li><code>after_ms</code> 至少 60000，并且严格递增。当前阶段是已达到的最后一档。</li>
+        <li><code>scale</code> 省略或 0 表示 1，写出时为 0.5–1.5。用户保存的尺寸不改。</li>
+        <li><code>variant</code> 指向 <code>selectable: false</code> 的造型，做整身变装。省略则保持用户当前造型。</li>
+        <li><code>cue</code> 只能是空、<code>notice</code>、<code>focus</code>、<code>celebrate</code>、<code>concern</code>。只在阶段真正跨过时响一次。</li>
+        <li><code>adornments</code> 是这一档穿戴的完整清单。挂件 id 用变体 id 写法（小写和连字符），slot 名用骨骼名写法。手上、脚上或身旁的小物件都是已有 rig slot，不是新的表演层。后一档要留住前一档的物件，必须把 id 再写一遍。没到第一档时全部隐藏。</li>
+        <li>静态回退图和 Linux 静止帧不合成挂件。</li>
+      </ul>
+
       <h2>Agent 发布前自检</h2>
       <ol class="checklist"><li>目标客户端声明 <code>pet-performance-v3</code>；否则已输出 2.0 兼容包。</li><li>manifest 只有一个；<code>schema_version</code> 为整数 3；ID、ZIP 根目录与安装目录一致。</li><li>每个 behavior/state/event 所引用的 clip 均存在；所有时间、权重、冷却、interrupt 枚举均有效。</li><li>idle 行为不少于 10 个，且 <code>no_repeat_last</code> 不小于 3；每个主要状态有自然进出场。</li><li>所有 slot 贴图都在 <code>assets.rig.textures</code> 白名单（含 hair/face/collar_overlay）；每张 PNG/WebP 都可解码。</li><li>分件接缝：七态均无横缝、无漂浮头、无双脸、无双下巴、无脖子插头；身体无五官残留；长发包七态发型外轮廓固定。</li><li>七态表情头/脸为独立全尺寸；说话态张嘴可辨；default 变体 native 表列齐七态。</li><li>存在有效 <code>native/idle.png</code>，在 56px、88px、120px 下仍可识别角色；黑发/金发完整。</li><li>没有 JS、WASM、远程 URL、可执行内容、未知事件或越权的屏幕/音频数据访问。</li></ol>
     </section>
@@ -462,6 +473,17 @@ fallback: { renderer: native-skeleton, idle: native/idle.png }</code></pre>
       </ul>
       <h2>Budgets, safety, fallback</h2>
       <ul><li>Budgets: 24 bones, 32 slots/textures, 240 keyframes per track, 4,800 keyframes total; images are 512 KiB and 1024×1024 each; total texture pixels ≤ 4,194,304.</li><li>ZIP file maximum: 3 MiB. Unpacked resource total: 2 MiB (to prevent compression bombs). Maximum 64 files; single file ≤ 512 KiB; path ≤ 180 characters; no unsafe or duplicate paths.</li><li>Local PNG/WebP, YAML, JSON, TXT, MD, SVG only. No JS/WASM/URL/executables.</li><li>Fallback is fixed: <code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>.</li></ul>
+      <h2>Rearing and adornments</h2>
+      <p>Optional <code>rearing.stages</code> change the look from how long this pet has been loaded. <code>schema_version</code> stays 3. This does not add JS, Live2D, or a second runtime. The host decides when a stage is reached. The pack decides what that stage looks like.</p>
+      <ul>
+        <li><code>after_ms</code> is at least 60000 and strictly increasing. The current stage is the last one already reached.</li>
+        <li><code>scale</code> omitted or 0 means 1. A written scale is 0.5–1.5. The saved user size stays.</li>
+        <li><code>variant</code> points at a form with <code>selectable: false</code> for a full costume change. Omit it to keep the user's presentation.</li>
+        <li><code>cue</code> is empty, <code>notice</code>, <code>focus</code>, <code>celebrate</code>, or <code>concern</code>. It plays once, and only on a real crossing.</li>
+        <li><code>adornments</code> is the full set worn at that stage. An adornment id uses the variant-id form (lowercase and hyphens). Slot names use the rig-name form. A charm in the hand, slippers on the feet, or a small companion are existing rig slots, not a new performance layer. A later stage repeats any id it wants to keep. Before the first stage every prop is hidden.</li>
+        <li>The static fallback and the Linux still do not composite adornments.</li>
+      </ul>
+
       <h2>Agent self-check</h2><ol class="checklist"><li>Target supports <code>pet-performance-v3</code>, or a 2.0 fallback was emitted.</li><li><code>schema_version</code> is integer 3; every referenced clip and allowlisted image exists and decodes.</li><li>Timing, weights, cooldowns, state/event names, and interrupt modes are valid.</li><li>Idle has ten or more varied behaviors and <code>no_repeat_last</code> is at least three.</li><li>Multi-part join QA for <strong>all seven states</strong>: no horizontal crack, no floating head, no double face, no double chin, no exposed neck plug; body has no leftover face; long-hair packs keep hair silhouette fixed across states.</li><li>Expression heads/faces are full-size; speaking mouth is open; default variant lists all seven native frames; textures list is complete (incl. hair/face/collar_overlay if used).</li><li>The static idle remains recognizable at 56px, 88px, and 120px; black/blonde hair intact.</li><li>No code, remote URL, executable content, or unauthorized data access is present.</li></ol>
     </section>
 
@@ -592,6 +614,17 @@ fallback: { renderer: native-skeleton, idle: native/idle.png }</code></pre>
       </ul>
       <h2>Төсөв, аюулгүй байдал, нөөц горим</h2>
       <ul><li>Төсөв: 24 яс, 32 slot/текстур, зам бүрт 240 түлхүүр кадр, нийт 4,800 түлхүүр кадр; зураг тус бүр 512 KiB ба 1024×1024; текстурын нийт пиксел ≤ 4,194,304.</li><li>ZIP файлын дээд хэмжээ: 3 MiB. Задласан ресурсын нийлбэр: 2 MiB (шахалтын бөмбөгөөс сэргийлнэ). Хамгийн ихдээ 64 файл; нэг файл ≤ 512 KiB; зам ≤ 180 тэмдэгт; аюултай эсвэл давхардсан зам байхгүй.</li><li>Зөвхөн дотоод PNG/WebP, YAML, JSON, TXT, MD, SVG. JS/WASM/URL/гүйцэтгэх файл байхгүй.</li><li>Нөөц горим тогтмол: <code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>.</li></ul>
+      <h2>Өсгөлт ба жижиг эд зүйл</h2>
+      <p>Сонголтот <code>rearing.stages</code> нь энэ багц ачаалагдсан хугацаагаар дүрсийг сольдог. <code>schema_version</code> 3 хэвээр. JS, Live2D эсвэл хоёр дахь ажиллуулагч нэмэхгүй. Хост хэзээ шатанд хүрэхийг, багц тухайн шат ямар харагдахыг шийднэ.</p>
+      <ul>
+        <li><code>after_ms</code> хамгийн багадаа 60000 бөгөөд хатуу өснө. Одоогийн шат нь хүрсэн сүүлийн шат.</li>
+        <li><code>scale</code> хоосон эсвэл 0 бол 1. Бичвэл 0.5–1.5. Хэрэглэгчийн хадгалсан хэмжээ өөрчлөгдөхгүй.</li>
+        <li><code>variant</code> нь <code>selectable: false</code> хэлбэр рүү зааж бүтэн хувцас солино. Хоосон бол хэрэглэгчийн одоогийн дүрс үлдэнэ.</li>
+        <li><code>cue</code> нь хоосон, <code>notice</code>, <code>focus</code>, <code>celebrate</code>, <code>concern</code> л байна. Шат үнэхээр давах үед нэг удаа дуугарна.</li>
+        <li><code>adornments</code> нь тухайн шатны бүрэн жагсаалт. Эд зүйлийн id нь variant id-ийн хэлбэр (жижиг үсэг, зураас), slot нэр нь ясны нэрийн хэлбэр. Гар, хөл, хажуугийн жижиг амьтан нь байгаа rig slot бөгөөд шинэ тоглолтын давхарга биш. Өмнөх эд зүйлийг үлдээх бол id-г дахин бичнэ. Эхний шатнаас өмнө бүгд нуугдана.</li>
+        <li>Статик нөөц зураг болон Linux-ийн хөдөлгөөнгүй кадр эд зүйлийг нийлүүлдэггүй.</li>
+      </ul>
+
       <h2>Agent-ийн өөрийн шалгалт</h2><ol class="checklist"><li>Зорилт <code>pet-performance-v3</code>-ийг дэмждэг, эсвэл 2.0 нөөц багц гарсан.</li><li><code>schema_version</code> бүхэл тоо 3; иш татсан clip болон зөвшөөрлийн жагсаалтын зураг бүр байна, тайлагдана.</li><li>Хугацаа, жин, cooldown, төлөв/үйл явдлын нэр болон interrupt горим хүчинтэй.</li><li>Idle нь арав буюу түүнээс олон ялгаатай behavior-тэй, <code>no_repeat_last</code> дор хаяж гурав.</li><li>Олон хэсгийн заадсын QA <strong>бүх долоон төлөвт</strong>: хэвтээ ан цавгүй, хөвөх толгойгүй, давхар нүүргүй, давхар эрүүгүй, ил хүзүүний залгуургүй; бие дээр үлдэгдэл нүүр байхгүй; урт үстэй багцын үсний силуэт төлөв даяар тогтмол.</li><li>Илэрхийллийн толгой/нүүр бүтэн хэмжээтэй; speaking-ийн ам ангайсан; default хувилбар долоон native кадрыг бүгдийг жагсаасан; текстурын жагсаалт бүрэн (ашигласан бол hair/face/collar_overlay орно).</li><li>Статик idle 56px, 88px, 120px дээр танигдах хэвээр; хар/шаргал үс бүтэн.</li><li>Код, алсын URL, гүйцэтгэх агуулга эсвэл зөвшөөрөлгүй өгөгдлийн хандалт байхгүй.</li></ol>
     </section>
   </main>

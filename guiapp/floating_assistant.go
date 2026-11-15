@@ -4,6 +4,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/guiapp/petpack"
@@ -21,13 +22,15 @@ const (
 // FloatingAssistantManager manages the MaClaw desktop pet window lifecycle.
 // The pet is independent from the main window and is configured from Settings > Pet.
 type FloatingAssistantManager struct {
-	app       *App
-	visible   bool
-	posX      int
-	posY      int
-	mu        sync.Mutex
-	window    floatingWindow
-	companion *PetCompanionSession
+	app           *App
+	visible       bool
+	posX          int
+	posY          int
+	mu            sync.Mutex
+	window        floatingWindow
+	companion     *PetCompanionSession
+	companionPose bool
+	lastDuty      petDutyDecision
 }
 
 // NewFloatingAssistantManager creates a new FloatingAssistantManager.
@@ -48,6 +51,7 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 	defer func() {
 		m.mu.Unlock()
 		m.syncCompanion()
+		m.syncPetRearing()
 	}()
 
 	defer func() {
@@ -79,33 +83,45 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 		return
 	}
 
-	// Restore persisted position, or compute default (top-right corner).
-	// Always re-clamp: a 1920-wide fallback or a position saved on a larger
-	// display will otherwise place the pet off a 1280×800 remote desktop.
-	if m.posX == 0 && m.posY == 0 {
-		m.posX, m.posY = m.loadOrDefaultPosition(config)
-	} else {
-		m.posX, m.posY = clampFloatingPosition(m.posX, m.posY, floatingWindowSize(config), getScreenWidth(), getScreenHeight())
-	}
-
-	log.Printf("[floating-assistant] ShowFloatingButton: pos=(%d,%d) window=%v", m.posX, m.posY, m.window != nil)
-
 	// Create platform-specific floating window.
 	if m.window == nil {
 		log.Printf("[floating-assistant] ShowFloatingButton: window is nil, cannot show")
 		return
 	}
 
-	winSize := floatingWindowSize(config)
+	// Commit the session before Create. The Win32 window is WS_VISIBLE inside
+	// that call, so a click can arrive before Show returns and before the
+	// deferred sync. fresh means the clock started here; time until the
+	// window is up is not time on screen.
+	_, _, fresh := m.app.stagePetRearingAt(petSkinID(config), petUserSize(config), true, time.Now())
+
+	// Restore persisted position, or compute default (top-right corner).
+	// Always re-clamp: a 1920-wide fallback or a position saved on a larger
+	// display will otherwise place the pet off a 1280×800 remote desktop.
+	if m.posX == 0 && m.posY == 0 {
+		m.posX, m.posY = m.loadOrDefaultPosition(config)
+	} else {
+		m.posX, m.posY = clampFloatingPosition(m.posX, m.posY, rearedWindowSize(m.app, config.PetSkin, config.PetSize), getScreenWidth(), getScreenHeight())
+	}
+
+	log.Printf("[floating-assistant] ShowFloatingButton: pos=(%d,%d) window=%v", m.posX, m.posY, m.window != nil)
+
+	winSize := rearedWindowSize(m.app, config.PetSkin, config.PetSize)
 	log.Printf("[floating-assistant] ShowFloatingButton: calling window.Create(%d,%d,%d,%d)", m.posX, m.posY, winSize, winSize)
 	if err := m.window.Create(m.posX, m.posY, winSize, winSize); err != nil {
 		log.Printf("[floating-assistant] ShowFloatingButton: window.Create FAILED: %v", err)
+		if fresh {
+			m.app.rebasePetRearingClock(time.Now())
+		}
 		return
 	}
 	log.Printf("[floating-assistant] ShowFloatingButton: window.Create succeeded, calling Show()")
 	m.window.Show()
 
 	m.visible = true
+	if fresh {
+		m.app.rebasePetRearingClock(time.Now())
+	}
 	log.Printf("[floating-assistant] ShowFloatingButton: done, visible=true")
 }
 
@@ -115,6 +131,7 @@ func (m *FloatingAssistantManager) HideFloatingButton() {
 	defer func() {
 		m.mu.Unlock()
 		m.syncCompanion()
+		m.syncPetRearing()
 	}()
 
 	if m.window != nil {
@@ -137,6 +154,7 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	defer func() {
 		m.mu.Unlock()
 		m.syncCompanion()
+		m.syncPetRearing()
 	}()
 
 	if !config.PetEnabled {
@@ -153,8 +171,15 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 		}
 		m.window = newFloatingWindow(m.app)
 	}
+	// Same order as show: the click session is live before the window is
+	// touched. A skin change retires the old gesture and opens the new one
+	// before this reload, while the previous window can still take a click.
+	var fresh bool
+	if m.app != nil {
+		_, _, fresh = m.app.stagePetRearingAt(petSkinID(config), petUserSize(config), true, time.Now())
+	}
 
-	winSize := floatingWindowSize(config)
+	winSize := rearedWindowSize(m.app, config.PetSkin, config.PetSize)
 	if m.posX == 0 && m.posY == 0 {
 		m.posX, m.posY = m.loadOrDefaultPosition(config)
 	} else {
@@ -167,6 +192,9 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 			} else {
 				m.window.Show()
 				m.visible = true
+				if fresh {
+					m.app.rebasePetRearingClock(time.Now())
+				}
 				return
 			}
 		}
@@ -175,10 +203,16 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	if err := m.window.Create(m.posX, m.posY, winSize, winSize); err != nil {
 		log.Printf("[floating-assistant] RefreshAppearance: window.Create FAILED: %v", err)
 		m.visible = false
+		if fresh {
+			m.app.rebasePetRearingClock(time.Now())
+		}
 		return
 	}
 	m.window.Show()
 	m.visible = true
+	if fresh {
+		m.app.rebasePetRearingClock(time.Now())
+	}
 }
 
 // IsVisible returns whether the desktop pet is currently shown.
@@ -223,7 +257,7 @@ func (m *FloatingAssistantManager) persistPosition(x, y int) {
 func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfig) (int, int) {
 	screenW := getScreenWidth()
 	screenH := getScreenHeight()
-	winSize := floatingWindowSize(config)
+	winSize := rearedWindowSize(m.app, config.PetSkin, config.PetSize)
 	if config.FloatingBtnPositionSet || config.FloatingBtnX > 0 || config.FloatingBtnY > 0 {
 		x, y := clampFloatingPosition(config.FloatingBtnX, config.FloatingBtnY, winSize, screenW, screenH)
 		log.Printf("[floating-assistant] loadOrDefaultPosition: restored from config (%d, %d) clamped=(%d,%d) screen=%dx%d", config.FloatingBtnX, config.FloatingBtnY, x, y, screenW, screenH)
@@ -506,6 +540,7 @@ func (m *FloatingAssistantManager) UpdateMotionConfig(config corelib.AppConfig) 
 // changes. This is separate from motion config because a market upgrade may
 // keep the same skin and variant selected.
 func (m *FloatingAssistantManager) InvalidatePetPackAssets() {
+	forgetPetClickClipSets()
 	m.mu.Lock()
 	win := m.window
 	m.mu.Unlock()
@@ -514,17 +549,104 @@ func (m *FloatingAssistantManager) InvalidatePetPackAssets() {
 	}
 }
 
-// SetPetRuntimeState bridges FE/runtime pet states to the native window (K11).
-// ttlMs <= 0 keeps the state until the next update; >0 auto-returns to idle.
+// SetPetRuntimeState bridges companion and microphone poses to the native window.
+// Listening and speaking outrank task duty. Idle restores the duty pose
+// without playing the reminder again.
 func (m *FloatingAssistantManager) SetPetRuntimeState(state string, ttlMs int) {
+	if m == nil {
+		return
+	}
+	st := petpack.NormalizeState(state)
 	m.mu.Lock()
+	switch st {
+	case petpack.StateListening, petpack.StateSpeaking:
+		m.companionPose = true
+	case petpack.StateIdle:
+		m.companionPose = false
+	}
 	win := m.window
+	hold := m.companionPose
+	last := m.lastDuty
 	m.mu.Unlock()
 	if win == nil {
 		return
 	}
-	st := petpack.NormalizeState(state)
+	if st == petpack.StateIdle && last.Pose != "" {
+		m.pushDutyWindow(win, dutyDecisionStillLive(last, time.Now()))
+		return
+	}
+	if hold && st != petpack.StateListening && st != petpack.StateSpeaking {
+		return
+	}
 	win.SetPetRuntimeState(string(st), ttlMs)
+}
+
+func (m *FloatingAssistantManager) applyDuty(decision petDutyDecision) {
+	if m == nil || decision.Unchanged {
+		return
+	}
+	decision.since = time.Now()
+	m.mu.Lock()
+	m.lastDuty = decision
+	hold := m.companionPose
+	win := m.window
+	m.mu.Unlock()
+	if hold || win == nil {
+		return
+	}
+	m.pushDutyWindow(win, decision)
+}
+
+func (m *FloatingAssistantManager) pushDutyWindow(win floatingWindow, decision petDutyDecision) {
+	if applier, ok := win.(interface {
+		ApplyPetDuty(state string, ttlMs int, event, cue string)
+	}); ok {
+		applier.ApplyPetDuty(decision.Pose, decision.TTLMS, decision.Event, decision.Cue)
+		return
+	}
+	win.SetPetRuntimeState(decision.Pose, decision.TTLMS)
+}
+
+func (m *FloatingAssistantManager) applyRearing(cmd rearingWindow) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	win := m.window
+	visible := m.visible
+	m.mu.Unlock()
+	if !visible || win == nil {
+		return
+	}
+	applier, ok := win.(interface {
+		ApplyPetRearing(variant string, windowSize int, cue string, adornments []string)
+	})
+	if !ok {
+		return
+	}
+	applier.ApplyPetRearing(cmd.variant, cmd.windowSize, cmd.cue, cmd.adornments)
+}
+
+func (m *FloatingAssistantManager) syncPetRearing() {
+	if m == nil || m.app == nil {
+		return
+	}
+	visible := m.IsVisible()
+	cfg, err := m.app.LoadConfig()
+	userSize := defaultPetSize
+	pack := ""
+	enabled := false
+	if err == nil {
+		if cfg.PetSize > 0 {
+			userSize = cfg.PetSize
+		}
+		enabled = cfg.PetEnabled
+		pack = strings.TrimSpace(cfg.PetSkin)
+		if pack == "" {
+			pack = petpack.DefaultPackID
+		}
+	}
+	m.app.syncPetRearing(pack, visible && enabled, userSize)
 }
 
 // CurrentPetRuntimeState returns the native window's selected runtime state (for tests).
@@ -558,7 +680,7 @@ func floatingWindowSizeForCurrentConfig(app *App) int {
 	if err != nil {
 		return defaultPetSize + 16
 	}
-	return floatingWindowSize(config)
+	return rearedWindowSize(app, config.PetSkin, config.PetSize)
 }
 
 // DisablePetFromMenu hides the desktop pet and persists the same setting as

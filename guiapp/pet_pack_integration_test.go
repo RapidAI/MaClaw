@@ -99,7 +99,6 @@ func TestFloatingAppearanceIncludesReducedMotion(t *testing.T) {
 }
 
 func TestSetPetRuntimeStateOnManager(t *testing.T) {
-	// Use real manager + platform window (windows: layered; others: stub).
 	m := NewFloatingAssistantManager(nil)
 	if m == nil || m.window == nil {
 		t.Fatal("manager/window nil")
@@ -108,22 +107,97 @@ func TestSetPetRuntimeStateOnManager(t *testing.T) {
 	if got := m.CurrentPetRuntimeState(); got != "listening" {
 		t.Fatalf("state = %q, want listening", got)
 	}
-	m.SetPetRuntimeState("thinking", 50)
-	if got := m.CurrentPetRuntimeState(); got != "thinking" {
-		t.Fatalf("state = %q, want thinking", got)
+	// Companion listening outranks a later thinking or done push.
+	m.SetPetRuntimeState("thinking", 0)
+	if got := m.CurrentPetRuntimeState(); got != "listening" {
+		t.Fatalf("state = %q, want listening while the companion holds", got)
 	}
-	// Wait TTL → idle
-	time.Sleep(80 * time.Millisecond)
+	m.SetPetRuntimeState("done", 0)
+	if got := m.CurrentPetRuntimeState(); got != "listening" {
+		t.Fatalf("state = %q, want listening while the companion holds", got)
+	}
+	// Idle releases the companion. With no stored duty the pet wanders.
+	m.SetPetRuntimeState("idle", 0)
 	if got := m.CurrentPetRuntimeState(); got != "idle" {
-		t.Fatalf("after ttl state = %q, want idle", got)
+		t.Fatalf("after release state = %q, want idle", got)
 	}
 	m.SetPetRuntimeState("speaking", 0)
 	if got := m.CurrentPetRuntimeState(); got != "speaking" {
 		t.Fatalf("speaking = %q", got)
 	}
+	m.SetPetRuntimeState("idle", 0)
+	m.SetPetRuntimeState("thinking", 0)
+	if got := m.CurrentPetRuntimeState(); got != "thinking" {
+		t.Fatalf("thinking = %q", got)
+	}
 	m.SetPetRuntimeState("done", 0)
 	if got := m.CurrentPetRuntimeState(); got != "done" {
 		t.Fatalf("done = %q", got)
+	}
+}
+
+// dutyRestoreWindow records the duty push, including a cue the noop window drops.
+type dutyRestoreWindow struct {
+	mockFloatingWindow
+	ttl   int
+	event string
+	cue   string
+}
+
+func (w *dutyRestoreWindow) ApplyPetDuty(state string, ttlMs int, event, cue string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.runtimeState = state
+	w.ttl = ttlMs
+	w.event = event
+	w.cue = cue
+}
+
+func (w *dutyRestoreWindow) SetPetRuntimeState(state string, ttlMs int) {
+	w.ApplyPetDuty(state, ttlMs, "", "")
+}
+
+func (w *dutyRestoreWindow) snapshot() (state string, ttl int, event, cue string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.runtimeState, w.ttl, w.event, w.cue
+}
+
+func TestDutyRestoreKeepsOnlyTheLivePose(t *testing.T) {
+	m := NewFloatingAssistantManager(nil)
+	win := &dutyRestoreWindow{}
+	m.window = win
+
+	m.applyDuty(petDutyDecision{
+		Pose: string(petpack.StateDone), TTLMS: 1600,
+		Event: "task_done", Cue: "celebrate",
+	})
+	m.mu.Lock()
+	m.lastDuty.since = time.Now().Add(-2 * time.Second)
+	m.mu.Unlock()
+	m.SetPetRuntimeState("listening", 0)
+	m.SetPetRuntimeState("idle", 0)
+	pose, ttl, event, cue := win.snapshot()
+	if pose != string(petpack.StateIdle) || ttl != 0 || event != "" || cue != "" {
+		t.Fatalf("expired restore = %s ttl=%d event=%q cue=%q", pose, ttl, event, cue)
+	}
+
+	m.applyDuty(petDutyDecision{
+		Pose: string(petpack.StateDone), TTLMS: 1600,
+		Event: "task_done", Cue: "celebrate",
+	})
+	m.SetPetRuntimeState("idle", 0)
+	pose, ttl, event, cue = win.snapshot()
+	if pose != string(petpack.StateDone) || ttl < 1 || ttl > 1600 || event != "" || cue != "" {
+		t.Fatalf("live restore = %s ttl=%d event=%q cue=%q", pose, ttl, event, cue)
+	}
+
+	m.applyDuty(petDutyDecision{Pose: string(petpack.StateThinking)})
+	m.SetPetRuntimeState("speaking", 0)
+	m.SetPetRuntimeState("idle", 0)
+	pose, ttl, event, cue = win.snapshot()
+	if pose != string(petpack.StateThinking) || ttl != 0 || event != "" || cue != "" {
+		t.Fatalf("thinking restore = %s ttl=%d event=%q cue=%q", pose, ttl, event, cue)
 	}
 }
 

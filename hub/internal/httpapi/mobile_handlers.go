@@ -568,6 +568,23 @@ var mobileRealtimeUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+const mobileRealtimeMaxInputInFlight = 64
+
+var mobileRealtimeInputSlots = make(chan struct{}, mobileRealtimeMaxInputInFlight)
+
+func mobileRealtimeInputAdmit() bool {
+	select {
+	case mobileRealtimeInputSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func mobileRealtimeInputRelease() {
+	<-mobileRealtimeInputSlots
+}
+
 type mobileRealtimeJSONWriter interface {
 	WriteJSON(v any) error
 }
@@ -584,6 +601,8 @@ type mobileRealtimeClient struct {
 	binaryPty bool                       // client advertised caps=["pty_binary"]
 	mu        sync.Mutex
 }
+
+const mobileRealtimeMaxClientsPerUser = 16
 
 var mobileRealtimeClients = struct {
 	sync.Mutex
@@ -613,11 +632,54 @@ func mobileRealtimeRegister(tenantID, userID string, conn mobileRealtimeJSONWrit
 	if mobileRealtimeClients.clients[client.key] == nil {
 		mobileRealtimeClients.clients[client.key] = make(map[*mobileRealtimeClient]struct{})
 	}
-	mobileRealtimeClients.clients[client.key][client] = struct{}{}
+	bucket := mobileRealtimeClients.clients[client.key]
+	if len(bucket) >= mobileRealtimeMaxClientsPerUser {
+		mobileRealtimeClients.Unlock()
+		mobileKnowledgePurgeState.RUnlock()
+		return nil, func() {}
+	}
+	bucket[client] = struct{}{}
 	mobileRealtimeClients.Unlock()
 	mobileKnowledgePurgeState.RUnlock()
 	return client, func() {
 		mobileRealtimeUnregister(client)
+	}
+}
+
+func mobileRealtimeCloseTenant(tenantID string) {
+	keyPrefix := strings.TrimSpace(tenantID) + "\x00"
+	mobileRealtimeClients.Lock()
+	clients := make([]*mobileRealtimeClient, 0)
+	for key, bucket := range mobileRealtimeClients.clients {
+		if !strings.HasPrefix(key, keyPrefix) {
+			continue
+		}
+		for client := range bucket {
+			clients = append(clients, client)
+		}
+	}
+	mobileRealtimeClients.Unlock()
+	for _, client := range clients {
+		mobileRealtimeUnregister(client)
+		if conn, ok := client.conn.(interface{ Close() error }); ok {
+			_ = conn.Close()
+		}
+	}
+}
+
+func mobileRealtimeCloseUser(tenantID, userID string) {
+	key := mobileRealtimeKey(tenantID, userID)
+	mobileRealtimeClients.Lock()
+	clients := make([]*mobileRealtimeClient, 0, len(mobileRealtimeClients.clients[key]))
+	for client := range mobileRealtimeClients.clients[key] {
+		clients = append(clients, client)
+	}
+	mobileRealtimeClients.Unlock()
+	for _, client := range clients {
+		mobileRealtimeUnregister(client)
+		if conn, ok := client.conn.(interface{ Close() error }); ok {
+			_ = conn.Close()
+		}
 	}
 }
 
@@ -633,6 +695,17 @@ func mobileRealtimeUnregister(client *mobileRealtimeClient) {
 		}
 	}
 	mobileRealtimeClients.Unlock()
+}
+
+const mobileRealtimeWriteTimeout = 5 * time.Second
+
+func mobileRealtimeArmWriteDeadline(client *mobileRealtimeClient) {
+	if client == nil {
+		return
+	}
+	if writer, ok := client.conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = writer.SetWriteDeadline(time.Now().Add(mobileRealtimeWriteTimeout))
+	}
 }
 
 func mobileRealtimeBroadcast(tenantID, userID string, event map[string]any) {
@@ -652,6 +725,7 @@ func mobileRealtimeBroadcast(tenantID, userID string, event map[string]any) {
 	}
 	for _, client := range clients {
 		client.mu.Lock()
+		mobileRealtimeArmWriteDeadline(client)
 		err := client.conn.WriteJSON(payload)
 		// Dual-write PTY output as MCP1 binary when client opted in.
 		if err == nil && client.binaryPty && client.binary != nil {
@@ -823,6 +897,7 @@ func MobileRealtimeHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 		defer conn.Close()
+		conn.SetReadLimit(1 << 20)
 		client, unregister := mobileRealtimeRegister(principal.TenantID, principal.UserID, conn)
 		defer unregister()
 		if client == nil {
@@ -847,7 +922,14 @@ func MobileRealtimeHandler(identity *auth.IdentityService) http.HandlerFunc {
 				return
 			}
 			if msgType == websocket.BinaryMessage {
-				go mobileHandleRealtimeBinaryMessage(client, principal, data)
+				if !mobileRealtimeInputAdmit() {
+					mobileRealtimeWriteClient(client, map[string]any{"type": "pty_error", "error": "input queue full", "retryable": true})
+					continue
+				}
+				go func() {
+					defer mobileRealtimeInputRelease()
+					mobileHandleRealtimeBinaryMessage(client, principal, data)
+				}()
 				continue
 			}
 			// Text frames: JSON control / legacy pty_input.
@@ -885,7 +967,14 @@ func MobileRealtimeHandler(identity *auth.IdentityService) http.HandlerFunc {
 				input, _ := msg["input"].(string)
 				dataB64, _ := msg["data_b64"].(string)
 				raw, _ := msg["raw"].(bool)
-				go mobileHandleRealtimePtyInput(client, principal, sessionID, input, dataB64, raw)
+				if !mobileRealtimeInputAdmit() {
+					mobileRealtimeWriteClient(client, map[string]any{"type": "pty_error", "error": "input queue full", "retryable": true})
+					continue
+				}
+				go func() {
+					defer mobileRealtimeInputRelease()
+					mobileHandleRealtimePtyInput(client, principal, sessionID, input, dataB64, raw)
+				}()
 			}
 		}
 	}
@@ -1135,6 +1224,7 @@ func mobileRealtimeWriteClient(client *mobileRealtimeClient, event map[string]an
 	if client.conn == nil {
 		return
 	}
+	mobileRealtimeArmWriteDeadline(client)
 	_ = client.conn.WriteJSON(event)
 }
 

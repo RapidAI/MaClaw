@@ -12,11 +12,12 @@ import (
 // and visibility are recorded as flags instead of going to the OS. The flags
 // keep IsCreated-based assertions working exactly like the real backends.
 type noopFloatingWindow struct {
-	app     *App
-	mu      sync.Mutex
-	created bool
-	shown   bool
-	runtime string
+	app            *App
+	mu             sync.Mutex
+	created        bool
+	shown          bool
+	runtime        string
+	rearingVariant string
 }
 
 func (w *noopFloatingWindow) Create(_, _, _, _ int) error {
@@ -63,6 +64,19 @@ func (w *noopFloatingWindow) SetPetRuntimeState(state string, _ int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.runtime = string(petpack.NormalizeState(state))
+}
+
+func (w *noopFloatingWindow) ApplyPetDuty(state string, ttlMs int, _, _ string) {
+	w.SetPetRuntimeState(state, ttlMs)
+}
+
+func (w *noopFloatingWindow) ApplyPetRearing(variant string, _ int, _ string, _ []string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.rearingVariant = variant
+	w.mu.Unlock()
 }
 
 func (w *noopFloatingWindow) CurrentPetRuntimeState() string {

@@ -74,6 +74,28 @@ void main() {
     expect(api.updateCalled, isFalse);
   });
 
+  testWidgets('a no-computer bot stays none and hides recording',
+      (tester) async {
+    const none = Bot(
+      id: 'b1',
+      name: '小助',
+      description: '帮我干活',
+      desktopMode: 'none',
+    );
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        botApiProvider.overrideWithValue(_FakeApi()),
+        sessionProvider.overrideWith(_FakeSession.new),
+      ],
+      child: const MaterialApp(home: BotSettingsScreen(bot: none)),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('无电脑'), findsOneWidget);
+    expect(find.text('这个 Bot 不使用电脑'), findsOneWidget);
+    expect(find.text('演示录制'), findsNothing);
+  });
+
   testWidgets('BotStyleScreen stops loading when no api is bound',
       (tester) async {
     await tester.pumpWidget(ProviderScope(

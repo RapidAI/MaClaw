@@ -166,6 +166,10 @@ type AppConfig struct {
 	// MCP Server registry
 	MCPServers      []MCPServerEntry      `json:"mcp_servers,omitempty"`
 	LocalMCPServers []LocalMCPServerEntry `json:"local_mcp_servers,omitempty"`
+	// DesktopBotCapabilities is the MCP servers and skills every desktop bot
+	// of this account may use. Hub writes it. The GUI does not edit this
+	// copy; it edits the Hub record, which pushes here. Stdio env is absent.
+	DesktopBotCapabilities json.RawMessage `json:"desktop_bot_capabilities,omitempty"`
 	// NL Skills
 	NLSkills          []NLSkillEntry  `json:"nl_skills,omitempty"`
 	SkillHubURLs      []SkillHubEntry `json:"skill_hub_urls,omitempty"`

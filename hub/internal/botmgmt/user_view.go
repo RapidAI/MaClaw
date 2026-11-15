@@ -149,6 +149,9 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", false, ErrNotFound
 	}
+	if botNone(rec.Bots[index]) {
+		return "", false, ErrNoDesktop
+	}
 	owner := userID
 	userID = desktopUserForBot(userID, rec.Bots[index])
 	if ctx != nil && ctx.Err() != nil {
@@ -338,6 +341,9 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 	index := indexOf(rec.Bots, botID)
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", false, ErrNotFound
+	}
+	if botNone(rec.Bots[index]) {
+		return "", false, ErrNoDesktop
 	}
 	userID = desktopUserForBot(userID, rec.Bots[index])
 	if ctx != nil && ctx.Err() != nil {

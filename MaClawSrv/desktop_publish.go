@@ -121,7 +121,7 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if desktopPlaceholderText(spec.Title) || desktopPlaceholderText(spec.Body) {
 		return "", fmt.Errorf("publish refused: title or body is a placeholder (%q / %q); pass the full finished title and body text (nothing was filled or posted)", desktopRuneHead(spec.Title, 20), desktopRuneHead(spec.Body, 20))
 	}
-	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.posted() {
+	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.posted() && !desktopPublishListMayResolve(r, args) {
 		text := desktopPublishStepText(scope, r)
 		// Already on the site with pictures missing: do not post again,
 		// and do not report the repeat as a success.
@@ -266,6 +266,13 @@ func desktopPostURLTemplate(spec browser.PublishSpec) string {
 
 func desktopPostURLFor(spec browser.PublishSpec, id, user string) string {
 	return browser.PostURLFrom(desktopPostURLTemplate(spec), id, user)
+}
+
+// desktopPublishListMayResolve: an unconfirmed submit still has to be
+// looked up. check_posted is that lookup. Returning the stored
+// "没能确认" here skips the post list, which is the only proof.
+func desktopPublishListMayResolve(r desktopPublishRecord, args map[string]any) bool {
+	return r.State == browser.PublishSubmitted && desktopArgBool(args, "check_posted")
 }
 
 func desktopArgBool(args map[string]any, key string) bool {

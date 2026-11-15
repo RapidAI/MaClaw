@@ -2249,6 +2249,12 @@ type AIAssistantSendRequest struct {
 	// The message must run as that task, not as a local slash command or an
 	// open task-panel action.
 	RemoteControl bool `json:"-"`
+	// BackendDisplayText marks a turn the backend started for a GUI feature
+	// (for example a desktopd deploy). The round is announced with this user
+	// row text, since the panel never sent the request.
+	BackendDisplayText string `json:"-"`
+	// OnDone runs once with the final response of this turn.
+	OnDone func(*IMAgentResponse) `json:"-"`
 }
 
 type AIAssistantContextMessage struct {
@@ -3102,6 +3108,11 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		}
 		resp.SessionKey = userID
 		responseEmitted = a.emitAIAssistantResponse(requestID, resp)
+		if req.OnDone != nil {
+			done := req.OnDone
+			req.OnDone = nil
+			done(resp)
+		}
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -3216,6 +3227,8 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	// Mode B) or every token/progress below is dropped as unmatched.
 	if req.RemoteControl {
 		a.emitAIAssistantForegroundRoundStarted(requestID, userID, text, remoteControlTurnDisplayText(text))
+	} else if display := strings.TrimSpace(req.BackendDisplayText); display != "" {
+		a.emitAIAssistantForegroundRoundStarted(requestID, userID, text, display)
 	}
 	streamEvents = newAIAssistantStreamEventEmitter(a, requestID, userID)
 	emitEvent := func(name, value string) {

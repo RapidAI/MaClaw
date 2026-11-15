@@ -5,14 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/RapidAI/CodeClaw/corelib/configfile"
 )
 
 const agentViewSchemaVersionField = "_agent_view_schema_version"
@@ -41,9 +37,8 @@ type agentViewSchemaSnapshot struct {
 
 var agentViewSchemaPersistentStore = struct {
 	sync.Mutex
-	loadedPath string
-	items      map[string]agentViewSchemaRecord
-}{items: map[string]agentViewSchemaRecord{}}
+	database *agentViewSchemaDatabase
+}{}
 
 func agentViewSchemaVersion(source, id string, contract interface{}) string {
 	source = strings.TrimSpace(source)
@@ -107,80 +102,21 @@ func recordAgentViewSchema(path string, view map[string]interface{}) error {
 	if version == "" || source == "" || id == "" {
 		return nil
 	}
+	now := time.Now()
+	record := agentViewSchemaRecord{
+		Version:   version,
+		Source:    source,
+		ID:        id,
+		ViewID:    strings.TrimSpace(fmt.Sprint(view["id"])),
+		ViewType:  strings.TrimSpace(fmt.Sprint(view["type"])),
+		Title:     strings.TrimSpace(fmt.Sprint(view["title"])),
+		FirstSeen: now,
+		LastSeen:  now,
+		UseCount:  1,
+	}
 	agentViewSchemaPersistentStore.Lock()
 	defer agentViewSchemaPersistentStore.Unlock()
-	if err := ensureAgentViewSchemaStoreLoadedLocked(path); err != nil {
-		return err
-	}
-	now := time.Now()
-	record := agentViewSchemaPersistentStore.items[version]
-	if record.Version == "" {
-		record = agentViewSchemaRecord{
-			Version:   version,
-			Source:    source,
-			ID:        id,
-			FirstSeen: now,
-		}
-	}
-	record.Source = source
-	record.ID = id
-	record.ViewID = strings.TrimSpace(fmt.Sprint(view["id"]))
-	record.ViewType = strings.TrimSpace(fmt.Sprint(view["type"]))
-	record.Title = strings.TrimSpace(fmt.Sprint(view["title"]))
-	record.LastSeen = now
-	record.UseCount++
-	agentViewSchemaPersistentStore.items[version] = record
-	return saveAgentViewSchemaStoreLocked(path)
-}
-
-func ensureAgentViewSchemaStoreLoadedLocked(path string) error {
-	if agentViewSchemaPersistentStore.loadedPath == path {
-		return nil
-	}
-	agentViewSchemaPersistentStore.loadedPath = path
-	agentViewSchemaPersistentStore.items = map[string]agentViewSchemaRecord{}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	var snapshot agentViewSchemaSnapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return err
-	}
-	for _, record := range snapshot.Records {
-		if strings.TrimSpace(record.Version) != "" {
-			agentViewSchemaPersistentStore.items[record.Version] = record
-		}
-	}
-	return nil
-}
-
-func saveAgentViewSchemaStoreLocked(path string) error {
-	snapshot := agentViewSchemaSnapshot{UpdatedAt: time.Now()}
-	for _, record := range agentViewSchemaPersistentStore.items {
-		snapshot.Records = append(snapshot.Records, record)
-	}
-	sortAgentViewSchemaRecords(snapshot.Records)
-	data, err := json.MarshalIndent(snapshot, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return configfile.AtomicWrite(path, append(data, '\n'))
-}
-
-func sortAgentViewSchemaRecords(records []agentViewSchemaRecord) {
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].LastSeen.Equal(records[j].LastSeen) {
-			return records[i].Version < records[j].Version
-		}
-		return records[i].LastSeen.After(records[j].LastSeen)
-	})
+	return upsertAgentViewSchemaRecordLocked(path, record)
 }
 
 func appendAgentViewHiddenField(view map[string]interface{}, name string, value interface{}) {

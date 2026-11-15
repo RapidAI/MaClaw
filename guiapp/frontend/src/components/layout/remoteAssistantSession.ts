@@ -502,10 +502,14 @@ function sessionKey(session: RemoteAssistantSession | null) {
     ].join('\n');
 }
 
+let currentSessionKey = '';
+
 function emit() {
     const next = withEchoes(raw);
-    if (sessionKey(next) === sessionKey(current)) return;
+    const nextSessionKey = sessionKey(next);
+    if (nextSessionKey === currentSessionKey) return;
     current = next;
+    currentSessionKey = nextSessionKey;
     listeners.forEach(listener => listener());
 }
 

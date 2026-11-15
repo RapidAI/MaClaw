@@ -99,6 +99,7 @@ var (
 	procSetCapture            = floatUser32.NewProc("SetCapture")
 	procReleaseCapture        = floatUser32.NewProc("ReleaseCapture")
 	procGetCursorPos          = floatUser32.NewProc("GetCursorPos")
+	procGetDoubleClickTime    = floatUser32.NewProc("GetDoubleClickTime")
 	procCreatePopupMenu       = floatUser32.NewProc("CreatePopupMenu")
 	procAppendMenuW           = floatUser32.NewProc("AppendMenuW")
 	procTrackPopupMenu        = floatUser32.NewProc("TrackPopupMenu")
@@ -219,6 +220,10 @@ type windowsFloatingWindow struct {
 	petInteractionMode      string
 	petSkin                 string
 	petVariant              string
+	petRearingVariant       string
+	petRearingAdornments    []string
+	dutySuppressCue         string
+	dutySuppressUntil       time.Time
 	petSoundPreset          string
 	petReducedMotion        bool
 	petRuntimeState         string
@@ -317,6 +322,13 @@ func currentGlobalFloatingWindow() *windowsFloatingWindow {
 }
 
 func init() {
+	petClickIntervalFn = func() time.Duration {
+		ms, _, _ := procGetDoubleClickTime.Call()
+		if ms < 1 {
+			return 500 * time.Millisecond
+		}
+		return time.Duration(ms) * time.Millisecond
+	}
 	// Use SPI_GETWORKAREA to get the usable desktop area (excludes taskbar,
 	// and returns DPI-scaled logical pixels - not physical pixels).
 	// This fixes the issue where GetSystemMetrics returns 3840 on a 4K display
@@ -406,6 +418,9 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	if err != nil {
 		return fmt.Errorf("renderFloatingBase: %w", err)
 	}
+	// The first frame is drawn inside this call, before Show's rearing sync.
+	// Seed the saved stage first so a reared pet does not flash bare.
+	rearingSlots := w.app.copyPetRearingAdornmentSlots(petSkin)
 
 	w.mu.Lock()
 	w.baseImg = base
@@ -422,6 +437,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petInteractionMode = petInteractionMode
 	w.petSkin = petSkin
 	w.petVariant = petVariant
+	w.petRearingAdornments = rearingSlots
 	w.petMotionAmplitude = petMotionAmplitude
 	w.petSoundPreset = petSoundPreset
 	w.packPitch = packPitch
@@ -444,15 +460,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.renderDirty = true
 	w.stopCh = make(chan struct{})
 
-	w.distMap = make([]float64, sz*sz)
-	cx, cy := float64(sz)/2, float64(sz)/2
-	for py := 0; py < sz; py++ {
-		for px := 0; px < sz; px++ {
-			dx := float64(px) - cx + 0.5
-			dy := float64(py) - cy + 0.5
-			w.distMap[py*sz+px] = math.Sqrt(dx*dx + dy*dy)
-		}
-	}
+	w.distMap = floatingDistanceMap(sz)
 	setGlobalFloatingWindow(w)
 	w.mu.Unlock()
 
@@ -707,23 +715,163 @@ func resolvePetMotionAmplitude(skin, interactionMode string, quiet, reducedMotio
 func (w *windowsFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
 	st := string(petpack.NormalizeState(state))
 	w.mu.Lock()
-	previous := w.petRuntimeState
 	w.setPetRuntimeStateLocked(st, ttlMs)
 	// A state push counts as activity: it rearms the long-idle event latch.
 	w.notePetInteractionLocked()
 	// Keep cached state frames warm; the renderer crossfades only briefly when
 	// the state changes, then reuses the current frame.
 	w.mu.Unlock()
-	if previous != st {
-		switch st {
-		case string(petpack.StateThinking):
-			w.triggerCharacterEvent("task_started")
-		case string(petpack.StateDone):
-			w.triggerCharacterEvent("task_done")
-		case string(petpack.StateAlert):
-			w.triggerCharacterEvent("task_failed")
+}
+
+func (w *windowsFloatingWindow) ApplyPetDuty(state string, ttlMs int, event, cue string) {
+	if w == nil {
+		return
+	}
+	st := string(petpack.NormalizeState(state))
+	w.mu.Lock()
+	w.setPetRuntimeStateLocked(st, ttlMs)
+	w.notePetInteractionLocked()
+	skin := w.petSkin
+	variant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
+	pitch := w.packPitch
+	app := w.app
+	sound := w.petMotionSoundRequested
+	quiet := w.petQuietMode
+	reduced := w.petReducedMotion
+	w.mu.Unlock()
+	allowed := dutyCueAllowed(app, sound, quiet, reduced)
+	play := cue
+	if event != "" {
+		w.triggerCharacterEvent(event)
+		if renderer := w.characterRenderer(skin, variant); renderer != nil {
+			if boundCue, bound := renderer.EventCue(event); bound {
+				play = boundCue
+			}
 		}
 	}
+	if play == "" || !allowed {
+		w.rememberDutyCue(play)
+		return
+	}
+	w.rememberDutyCue(play)
+	w.playDutyCue(play, pitch)
+}
+
+func (w *windowsFloatingWindow) rememberDutyCue(cue string) {
+	if w == nil || cue == "" {
+		return
+	}
+	w.mu.Lock()
+	w.dutySuppressCue = cue
+	w.dutySuppressUntil = time.Now().Add(2 * time.Second)
+	w.mu.Unlock()
+}
+
+func (w *windowsFloatingWindow) ApplyPetRearing(variant string, windowSize int, cue string, adornments []string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	sameVariant := variant == w.petRearingVariant
+	resized := windowSize > 0 && windowSize != w.size
+	sameAdorn := sameAdornmentSlots(adornments, w.petRearingAdornments)
+	if sameVariant && !resized && cue == "" && sameAdorn {
+		w.mu.Unlock()
+		return
+	}
+	slots := append([]string(nil), adornments...)
+	hwnd := w.hwnd
+	x, y := w.windowStartX, w.windowStartY
+	petEnabled := w.petEnabled
+	skin := w.petSkin
+	userVariant := w.petVariant
+	state := w.petRuntimeState
+	pitch := w.packPitch
+	app := w.app
+	sound := w.petMotionSoundRequested
+	quiet := w.petQuietMode
+	reduced := w.petReducedMotion
+	w.mu.Unlock()
+	// The halo indexes one distance per pixel of the current window. Publish
+	// the new map with the new size, or the next frame reads off the end.
+	var nextMap []float64
+	var nextBase *image.NRGBA
+	if resized {
+		nextMap = floatingDistanceMap(windowSize)
+		if base, err := renderFloatingBase(windowSize, petEnabled, skin, userVariant, state); err == nil {
+			nextBase = base
+		}
+	}
+	w.mu.Lock()
+	w.petRearingVariant = variant
+	w.petRearingAdornments = slots
+	if !sameAdorn {
+		w.applyAdornmentSlotsLocked(slots)
+		w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
+		w.petNativeFrameAvailable = nil
+		w.petNativeFrameLoading = nil
+	}
+	if resized && windowSize != w.size {
+		w.size = windowSize
+		w.distMap = nextMap
+		if nextBase != nil {
+			w.baseImg = nextBase
+		}
+	}
+	if !sameVariant || resized || !sameAdorn {
+		w.renderDirty = true
+	}
+	w.mu.Unlock()
+	allowed := dutyCueAllowed(app, sound, quiet, reduced)
+	if resized && hwnd != 0 {
+		procMoveWindowProc.Call(hwnd, uintptr(x), uintptr(y), uintptr(windowSize), uintptr(windowSize), 1)
+	}
+	if cue != "" {
+		w.rememberDutyCue(cue)
+		if allowed {
+			w.playDutyCue(cue, pitch)
+		}
+	}
+}
+
+func (w *windowsFloatingWindow) playDutyCue(cue string, packPitch float64) {
+	resolved := petpack.ResolveActionSound(cue, nil)
+	if w == nil || len(resolved) == 0 {
+		return
+	}
+	pitch := packPitch
+	if pitch <= 0 {
+		pitch = 1
+	}
+	if pitch < 0.8 {
+		pitch = 0.8
+	}
+	if pitch > 1.25 {
+		pitch = 1.25
+	}
+	w.mu.Lock()
+	w.actionSoundGen++
+	gen := w.actionSoundGen
+	app := w.app
+	w.mu.Unlock()
+	go func() {
+		for index, tone := range resolved {
+			w.mu.Lock()
+			currentGen := w.actionSoundGen == gen
+			sound := w.petMotionSoundRequested
+			quiet := w.petQuietMode
+			reduced := w.petReducedMotion
+			w.mu.Unlock()
+			if !currentGen || !dutyCueAllowed(app, sound, quiet, reduced) {
+				return
+			}
+			frequency := petpack.ClampActionToneHz(float64(tone.Hz) * pitch)
+			procBeep.Call(uintptr(frequency), uintptr(tone.Ms))
+			if index+1 < len(resolved) {
+				time.Sleep(8 * time.Millisecond)
+			}
+		}
+	}()
 }
 
 // petLongIdleThreshold is the idle dwell after which the long_idle character
@@ -752,7 +900,7 @@ func (w *windowsFloatingWindow) triggerCharacterEvent(event string) {
 	}
 	w.mu.Lock()
 	skin := w.petSkin
-	variant := petpack.ResolveVariantForRuntime(w.petVariant)
+	variant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
 	state := w.petRuntimeState
 	if skin == "" {
 		skin = petpack.DefaultPackID
@@ -776,6 +924,62 @@ func (w *windowsFloatingWindow) triggerCharacterEvent(event string) {
 		w.renderDirty = true
 		w.mu.Unlock()
 	}
+}
+
+// triggerCharacterClip plays one chosen body clip. A missing clip is ignored.
+func (w *windowsFloatingWindow) triggerCharacterClip(clip string) {
+	if w == nil || clip == "" {
+		return
+	}
+	w.mu.Lock()
+	skin := w.petSkin
+	variant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
+	state := w.petRuntimeState
+	quiet := w.petQuietMode
+	reduced := w.petReducedMotion
+	motion := w.petMotionEnabled && !quiet && !reduced
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	if state == "" {
+		state = string(petpack.StateIdle)
+	}
+	renderer := w.characterRenderers[skin+"\x00"+variant]
+	w.mu.Unlock()
+	if !motion {
+		return
+	}
+	if renderer == nil {
+		_ = w.renderCharacterPackFrame(w.currentSize(), skin, variant, state)
+		w.mu.Lock()
+		renderer = w.characterRenderers[skin+"\x00"+variant]
+		w.mu.Unlock()
+	}
+	if renderer != nil && renderer.TriggerClip(clip, time.Now().UnixMilli()) {
+		w.mu.Lock()
+		w.renderDirty = true
+		w.mu.Unlock()
+	}
+}
+
+// PetClickLook reports the skin and whether a click may animate. Quiet mode
+// and reduced motion stay still.
+func (w *windowsFloatingWindow) PetClickLook() (string, bool) {
+	if w == nil {
+		return petpack.DefaultPackID, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	skin := w.petSkin
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	return skin, w.petMotionEnabled && !w.petQuietMode && !w.petReducedMotion
+}
+
+// PlayPetClickClip starts the gesture clip when motion is allowed.
+func (w *windowsFloatingWindow) PlayPetClickClip(clip string) {
+	w.triggerCharacterClip(clip)
 }
 
 func (w *windowsFloatingWindow) setPetRuntimeStateLocked(state string, ttlMs int) {
@@ -822,7 +1026,7 @@ func (w *windowsFloatingWindow) PetPackRuntimeLevel(declared string) (string, st
 	quiet := w.petQuietMode
 	reduced := w.petReducedMotion
 	motionEnabled := w.petMotionEnabled
-	key := w.petSkin + "\x00" + petpack.ResolveVariantForRuntime(w.petVariant)
+	key := w.petSkin + "\x00" + petAppearanceVariant(w.petVariant, w.petRearingVariant)
 	characterFailed := w.characterRendererFailed[key]
 	rigFailed := w.rigRendererFailed[key]
 	w.mu.Unlock()
@@ -889,15 +1093,35 @@ func (w *windowsFloatingWindow) messageLoop() {
 
 // Circular logo rendering with glow
 
-func normalizeFloatingNativeSize(sz int) int {
+// normalizeFloatingNativeSize clamps the Win32 pet window to the host pet
+// range plus the 16px frame. The previous 136 cap was an old default plus
+// that frame, so Create stored a small window and rearing resized it after.
+// floatingDistanceMap is one distance from the center per pixel. renderFrame
+// indexes it with the same side length it captured under the window lock.
+func floatingDistanceMap(sz int) []float64 {
 	if sz <= 0 {
-		return 72
+		return nil
 	}
-	if sz < 72 {
-		return 72
+	distMap := make([]float64, sz*sz)
+	cx, cy := float64(sz)/2, float64(sz)/2
+	for py := 0; py < sz; py++ {
+		for px := 0; px < sz; px++ {
+			dx := float64(px) - cx + 0.5
+			dy := float64(py) - cy + 0.5
+			distMap[py*sz+px] = math.Sqrt(dx*dx + dy*dy)
+		}
 	}
-	if sz > 136 {
-		return 136
+	return distMap
+}
+
+func normalizeFloatingNativeSize(sz int) int {
+	minWindow := minPetSize + 16
+	maxWindow := maxPetSize + 16
+	if sz < minWindow {
+		return minWindow
+	}
+	if sz > maxWindow {
+		return maxWindow
 	}
 	return sz
 }
@@ -906,7 +1130,7 @@ func (w *windowsFloatingWindow) currentSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.size <= 0 {
-		return 72
+		return minPetSize + 16
 	}
 	return w.size
 }
@@ -1512,11 +1736,25 @@ func (w *windowsFloatingWindow) renderCharacterPackFrame(sz int, skin, variant, 
 		if existing := w.characterRenderers[key]; existing != nil {
 			renderer = existing
 		} else {
+			renderer.SetVisibleAdornmentSlots(w.petRearingAdornments)
 			w.characterRenderers[key] = renderer
 		}
 		w.mu.Unlock()
 	}
 	return renderer.RenderState(petpack.NormalizeState(state), time.Now().UnixMilli(), sz)
+}
+
+func (w *windowsFloatingWindow) applyAdornmentSlotsLocked(slots []string) {
+	for _, renderer := range w.characterRenderers {
+		if renderer != nil {
+			renderer.SetVisibleAdornmentSlots(slots)
+		}
+	}
+	for _, renderer := range w.rigRenderers {
+		if renderer != nil {
+			renderer.SetVisibleAdornmentSlots(slots)
+		}
+	}
 }
 
 // cachedStaticPetFrame is the accessibility path: reduced motion and quiet
@@ -1577,6 +1815,7 @@ func (w *windowsFloatingWindow) renderSkeletonPackFrame(sz int, skin, variant, s
 		if existing := w.rigRenderers[key]; existing != nil {
 			renderer = existing
 		} else {
+			renderer.SetVisibleAdornmentSlots(w.petRearingAdornments)
 			w.rigRenderers[key] = renderer
 		}
 		w.mu.Unlock()
@@ -1852,7 +2091,9 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petReducedMotion := w.petReducedMotion
 	petInteractionMode := w.petInteractionMode
 	petSkin := w.petSkin
-	petVariant := w.petVariant
+	petVariant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
+	dutySuppressCue := w.dutySuppressCue
+	dutySuppressUntil := w.dutySuppressUntil
 	petPreviousState := w.petPreviousState
 	petStateChangedAt := w.petStateChangedAt
 	petMotionAmplitude := w.petMotionAmplitude
@@ -1888,6 +2129,15 @@ func (w *windowsFloatingWindow) renderFrame() {
 		w.mu.Unlock()
 		return
 	}
+	sz := w.size
+	if sz <= 0 {
+		sz = minPetSize + 16
+	}
+	if len(w.distMap) != sz*sz {
+		w.distMap = floatingDistanceMap(sz)
+	}
+	distMap = w.distMap
+	base = w.baseImg
 	w.renderDirty = false
 	w.petLastRenderedState = petState
 	w.mu.Unlock()
@@ -1899,7 +2149,6 @@ func (w *windowsFloatingWindow) renderFrame() {
 		return
 	}
 
-	sz := w.currentSize()
 	frame := image.NewNRGBA(image.Rect(0, 0, sz, sz))
 	if petEnabled {
 		petScale := 1.0
@@ -1971,7 +2220,8 @@ func (w *windowsFloatingWindow) renderFrame() {
 					w.stepPetLocomotion(vx, vy, sz)
 				}
 				cue, tones := renderer.TakeActionSound(nowMS)
-				if actionSoundAllowed(petMotionSound, petQuietMode, petReducedMotion, petState, cue) && (cue != "" || len(tones) > 0) {
+				suppressed := cue != "" && cue == dutySuppressCue && time.Now().Before(dutySuppressUntil)
+				if !suppressed && actionSoundAllowed(petMotionSound, petQuietMode, petReducedMotion, petState, cue) && (cue != "" || len(tones) > 0) {
 					w.playActionSound(cue, tones, packPitch)
 				}
 				if w.petFacesLeft() && petFrame != nil {
@@ -2241,7 +2491,7 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		dx := pt.X - w.dragStartX
 		dy := pt.Y - w.dragStartY
 		if !w.dragMoved {
-			if abs32(dx) > 5 || abs32(dy) > 5 {
+			if petPointerPastDrag(int(dx), int(dy)) {
 				w.dragMoved = true
 				w.triggerCharacterEvent("drag_start")
 			} else {
@@ -2265,12 +2515,18 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		w.dragging = false
 		w.notePetInteraction()
 		if !w.dragMoved {
-			w.triggerCharacterEvent("click")
-			go func() {
-				if w.app != nil {
-					w.app.onFloatingButtonClicked()
-				}
-			}()
+			// Wait out the double-click interval before choosing 单击, 双击, or
+			// 多击. The single-click window side effect waits with that choice.
+			app := w.app
+			now := time.Now()
+			var class petClickClass
+			var epoch uint64
+			if app != nil {
+				class, epoch = app.recordDesktopPetClick(now)
+			}
+			if class != petClickNone {
+				go app.finishDesktopPetClick(class, epoch)
+			}
 		} else {
 			w.triggerCharacterEvent("drag_end")
 			var pt point

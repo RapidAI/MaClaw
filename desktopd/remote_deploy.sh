@@ -8,6 +8,14 @@ set -eu
 : "${DESKTOPD_BIND_ADDR:=127.0.0.1:18081}"
 : "${DESKTOPD_PORT:=18081}"
 : "${DESKTOPD_ADVERTISE_HOST:=}"
+# 1 marks a desktop installed from the MaClaw GUI. It lives on the user's
+# network and has no public name; Hub reaches it through the node's link.
+: "${DESKTOPD_INTRANET:=0}"
+# Accept the same truthy values as desktopd.IntranetEnv, then stick to 1/0.
+case "$(printf '%s' "$DESKTOPD_INTRANET" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on) DESKTOPD_INTRANET=1 ;;
+  *) DESKTOPD_INTRANET=0 ;;
+esac
 : "${DESKTOPD_IMAGE:=maclaw-gui:2}"
 # Build inputs for maclaw-gui:2 (desktopd/image/Dockerfile.v2). Empty means
 # auto: Tencent Cloud mirrors when the Tencent metadata service answers (no
@@ -83,7 +91,9 @@ case "$DESKTOPD_IMAGE_FROM" in
   *) echo "[remote] DESKTOPD_IMAGE_FROM must be build, pull, or auto (got $DESKTOPD_IMAGE_FROM). Set DESKTOPD_IMAGE_FROM=auto and rerun." >&2; exit 1 ;;
 esac
 
-if [ -z "$DESKTOPD_ADVERTISE_HOST" ]; then
+if [ "$DESKTOPD_INTRANET" = "1" ]; then
+  DESKTOPD_ADVERTISE_HOST=""
+elif [ -z "$DESKTOPD_ADVERTISE_HOST" ]; then
   echo "[remote] DESKTOPD_ADVERTISE_HOST is unset. export DESKTOPD_ADVERTISE_HOST=<this host's public address> and rerun remote_deploy.sh." >&2
   exit 1
 fi
@@ -116,9 +126,13 @@ if [ ! -f "$DESKTOPD_DEPLOY_DIR/.env" ]; then
   cat > "$DESKTOPD_DEPLOY_DIR/.env" << ENVEOF
 DESKTOPD_ADDR=$DESKTOPD_BIND_ADDR
 DESKTOPD_TOKEN=$TOKEN
-DESKTOPD_ADVERTISE_HOST=$DESKTOPD_ADVERTISE_HOST
 DESKTOPD_STATE_DIR=$DESKTOPD_DEPLOY_DIR/state
 ENVEOF
+  if [ "$DESKTOPD_INTRANET" = "1" ]; then
+    echo "DESKTOPD_INTRANET=1" >> "$DESKTOPD_DEPLOY_DIR/.env"
+  elif [ -n "$DESKTOPD_ADVERTISE_HOST" ]; then
+    echo "DESKTOPD_ADVERTISE_HOST=$DESKTOPD_ADVERTISE_HOST" >> "$DESKTOPD_DEPLOY_DIR/.env"
+  fi
   chmod 600 "$DESKTOPD_DEPLOY_DIR/.env"
   echo "[remote] Created $DESKTOPD_DEPLOY_DIR/.env with a generated token."
 else
@@ -128,7 +142,9 @@ else
     sed -i "s/^DESKTOPD_ADDR=.*/DESKTOPD_ADDR=127.0.0.1:${DESKTOPD_PORT}/" "$DESKTOPD_DEPLOY_DIR/.env"
   fi
   grep -q '^DESKTOPD_TOKEN=' "$DESKTOPD_DEPLOY_DIR/.env" || echo "DESKTOPD_TOKEN=$(rand_secret)" >> "$DESKTOPD_DEPLOY_DIR/.env"
-  grep -q '^DESKTOPD_ADVERTISE_HOST=' "$DESKTOPD_DEPLOY_DIR/.env" || echo "DESKTOPD_ADVERTISE_HOST=$DESKTOPD_ADVERTISE_HOST" >> "$DESKTOPD_DEPLOY_DIR/.env"
+  if [ "$DESKTOPD_INTRANET" != "1" ]; then
+    grep -q '^DESKTOPD_ADVERTISE_HOST=' "$DESKTOPD_DEPLOY_DIR/.env" || echo "DESKTOPD_ADVERTISE_HOST=$DESKTOPD_ADVERTISE_HOST" >> "$DESKTOPD_DEPLOY_DIR/.env"
+  fi
   grep -q '^DESKTOPD_STATE_DIR=' "$DESKTOPD_DEPLOY_DIR/.env" || echo "DESKTOPD_STATE_DIR=$DESKTOPD_DEPLOY_DIR/state" >> "$DESKTOPD_DEPLOY_DIR/.env"
 fi
 mkdir -p "$DESKTOPD_DEPLOY_DIR/state"
@@ -208,12 +224,30 @@ PROXYEOF
 # set_env_key KEY VALUE replaces or appends one .env line (values are image
 # references or durations; no secrets).
 set_env_key() {
-  if grep -q "^$1=" "$DESKTOPD_DEPLOY_DIR/.env"; then
-    sed -i "s|^$1=.*|$1=$2|" "$DESKTOPD_DEPLOY_DIR/.env"
+  envfile="$DESKTOPD_DEPLOY_DIR/.env"
+  if grep -q "^$1=" "$envfile"; then
+    sed -i "s|^$1=.*|$1=$2|" "$envfile"
   else
-    echo "$1=$2" >> "$DESKTOPD_DEPLOY_DIR/.env"
+    # A missing trailing newline would glue this key onto the previous line,
+    # which can swallow DESKTOPD_TOKEN.
+    if [ -s "$envfile" ]; then
+      last=$(tail -c 1 "$envfile" || true)
+      if [ -n "$last" ]; then
+        echo >> "$envfile"
+      fi
+    fi
+    echo "$1=$2" >> "$envfile"
   fi
+  chmod 600 "$envfile"
 }
+# A GUI install is an intranet desktop. Replace a previous 0, and delete a
+# public name or DESKTOPD_PUBLIC_URL in place. A second copy of the token file
+# is not created, and a missing line does not abort under set -e.
+if [ "$DESKTOPD_INTRANET" = "1" ]; then
+  sed -i -e '/^DESKTOPD_ADVERTISE_HOST=/d' -e '/^DESKTOPD_PUBLIC_URL=/d' "$DESKTOPD_DEPLOY_DIR/.env"
+  set_env_key DESKTOPD_INTRANET 1
+  chmod 600 "$DESKTOPD_DEPLOY_DIR/.env"
+fi
 if [ -n "$IMAGE_SOURCE_GIVEN" ]; then set_env_key DESKTOPD_IMAGE_SOURCE "$DESKTOPD_IMAGE_SOURCE"; fi
 if [ -n "$PULL_TIMEOUT_GIVEN" ]; then set_env_key DESKTOPD_IMAGE_PULL_TIMEOUT "$DESKTOPD_IMAGE_PULL_TIMEOUT"; fi
 

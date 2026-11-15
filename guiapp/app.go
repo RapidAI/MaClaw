@@ -372,25 +372,28 @@ type App struct {
 	devinLogin               *devinLoginFlow             // in-progress Devin account login
 	devinSaveMu              sync.Mutex                  // serializes Devin credential writes
 	// Smart session components
-	memoryStore          *memory.Store
-	memoryStoreMu        sync.RWMutex
-	memRuntime           atomic.Pointer[memoryRuntimeState]
-	memRuntimeGeneration atomic.Uint64
-	sceneIndexCacheMu    sync.Mutex
-	sceneIndexCacheGen   uint64
-	sceneIndexCacheLimit int
-	sceneIndexCache      []memory.SceneRecord
-	sceneIndexCacheAt    time.Time
-	answerCacheMu        sync.Mutex
-	answerCache          *answerCacheStore
-	configManager        *ConfigManager
-	templateManager      *remote.SessionTemplateManager
-	contextResolver      *SessionContextResolver
-	sessionPrecheck      *SessionPrecheck
-	conversationArchiver *ConversationArchiver
-	sessionCheckpointer  *SessionCheckpointer
-	startupFeedback      *SessionStartupFeedback
-	imHandler            *IMMessageHandler
+	memoryStore           *memory.Store
+	memoryStoreMu         sync.RWMutex
+	memRuntime            atomic.Pointer[memoryRuntimeState]
+	memRuntimeGeneration  atomic.Uint64
+	sceneIndexCacheMu     sync.Mutex
+	sceneIndexCacheGen    uint64
+	sceneIndexCacheLimit  int
+	sceneIndexCache       []memory.SceneRecord
+	sceneIndexCacheAt     time.Time
+	answerCacheMu         sync.Mutex
+	answerCache           *answerCacheStore
+	aiAssistantUIStateDB  *aiAssistantUIStateDatabase
+	maclawAppRunHistoryDB *maclawAppRunHistoryDatabase
+	maclawAppApprovalDB   *maclawAppApprovalDatabase
+	configManager         *ConfigManager
+	templateManager       *remote.SessionTemplateManager
+	contextResolver       *SessionContextResolver
+	sessionPrecheck       *SessionPrecheck
+	conversationArchiver  *ConversationArchiver
+	sessionCheckpointer   *SessionCheckpointer
+	startupFeedback       *SessionStartupFeedback
+	imHandler             *IMMessageHandler
 	// arxivSearchMu guards the one in-memory expansion for the companion
 	// search dialog. A later page of the same goal reuses it, so the model
 	// is not called again.
@@ -561,6 +564,15 @@ type App struct {
 	deepCrawlMode              string                         // active deep crawl owner: crawl or preview
 	floatingAssistant          *FloatingAssistantManager
 	floatingAssistantMu        sync.Mutex
+	petDuty                    petDutyState
+	petRearing                 petRearingState
+	petClickMu                 sync.Mutex
+	petClickBurst              petClickBurst
+	petClickTimer              *time.Timer
+	petClickGen                uint64
+	petClickEpoch              atomic.Uint64
+	petClickClosed             bool
+	petClickExit               bool
 	agentViewEmissionSeq       atomic.Int64
 	agentViewOpenMu            sync.Mutex
 	agentViewOpen              map[string]agentViewOpenRecord // view_id → open revision/schema
@@ -3392,6 +3404,8 @@ func (a *App) SetCodingFontFamily(id string) error {
 // owns no tray icon — without the relay a tray quit left a window-less
 // companion process behind.
 func (a *App) prepareProcessExit() {
+	a.sealDesktopPetClick()
+	a.flushPetRearingForExit()
 	a.signalFileCompanionQuit()
 	a.persistSessionsForShutdown()
 }
@@ -3480,6 +3494,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if confirmationStore != nil {
 		confirmationStore.stop()
 	}
+	a.saveAndCloseUserModel("shutdown")
 	if a.memoryMaintenance != nil {
 		a.memoryMaintenance.Stop()
 	} else {
@@ -3550,6 +3565,24 @@ func (a *App) shutdown(ctx context.Context) {
 		_ = a.projectTabSessionPersist.Close()
 		a.projectTabSessionPersist = nil
 	}
+	if a.taskOrchestrator2 != nil {
+		a.taskOrchestrator2.Close()
+		a.taskOrchestrator2 = nil
+	}
+	a.closeRunWindowManager()
+	aiAssistantUIStateMu.Lock()
+	a.closeAIAssistantUIStateDBLocked()
+	aiAssistantUIStateMu.Unlock()
+	maclawAppRunHistoryMu.Lock()
+	a.closeMaclawAppRunHistoryDB()
+	maclawAppRunHistoryMu.Unlock()
+	maclawAppApprovalDBMu.Lock()
+	a.closeMaclawAppApprovalDB()
+	maclawAppApprovalDBMu.Unlock()
+	agentViewSchemaPersistentStore.Lock()
+	closeAgentViewSchemaStoreLocked()
+	agentViewSchemaPersistentStore.Unlock()
+	closePendingReplyDiskStores()
 	a.stopSemanticEffectReceiptWorker()
 	a.closeHopJITPersistence()
 	a.closeSemanticInvocationStore()
@@ -4551,9 +4584,22 @@ func (a *App) sessionSearchDBPath() string {
 	return filepath.Join(a.GetDataDir(), "session_search.db")
 }
 
-// userModelPath returns the path to the user model JSON file.
+// userModelPath returns the legacy JSON path used to locate the user model store.
 func (a *App) userModelPath() string {
 	return filepath.Join(a.GetDataDir(), "user_model.json")
+}
+
+func (a *App) saveAndCloseUserModel(stage string) {
+	if a == nil || a.userModel == nil {
+		return
+	}
+	if err := a.userModel.Save(); err != nil {
+		log.Printf("[lifecycle] stage=%s user model save failed: %v", stage, err)
+	}
+	if err := a.userModel.Close(); err != nil {
+		log.Printf("[lifecycle] stage=%s user model close failed: %v", stage, err)
+	}
+	a.userModel = nil
 }
 
 // GetTempDir returns the temporary directory for maclaw.
@@ -5699,7 +5745,7 @@ func (a *App) logStoragePaths(stage string, config *corelib.AppConfig) {
 	dataDir := a.GetDataDir()
 	conversationPath := filepath.Join(dataDir, "ai_assistant_conversation.json")
 	confirmationPath := filepath.Join(dataDir, "ai_assistant_confirmation.json")
-	uiStatePath := filepath.Join(dataDir, "ai_assistant_ui_state.json")
+	uiStatePath := filepath.Join(dataDir, "ai_assistant_ui_state.db")
 	log.Printf("[paths] stage=%s cwd=%q exe=%q home=%q config_path=%q base_dir=%q data_dir=%q ai_conversation=%q ai_confirmation=%q ai_ui_state=%q configured_data_dir=%q configured_working_dir=%q",
 		stage, cwd, exe, home, configPath, baseDir, dataDir, conversationPath, confirmationPath, uiStatePath, configuredDataDir, configuredWorkingDir)
 }
@@ -6629,6 +6675,18 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 	if answerCache != nil {
 		answerCache.close()
 	}
+	aiAssistantUIStateMu.Lock()
+	a.closeAIAssistantUIStateDBLocked()
+	aiAssistantUIStateMu.Unlock()
+	maclawAppRunHistoryMu.Lock()
+	a.closeMaclawAppRunHistoryDB()
+	maclawAppRunHistoryMu.Unlock()
+	maclawAppApprovalDBMu.Lock()
+	a.closeMaclawAppApprovalDB()
+	maclawAppApprovalDBMu.Unlock()
+	agentViewSchemaPersistentStore.Lock()
+	closeAgentViewSchemaStoreLocked()
+	agentViewSchemaPersistentStore.Unlock()
 	a.conversationMemoryMu.Lock()
 	conversationMemory := a.aiConversationMemory
 	a.aiConversationMemory = nil
@@ -6666,12 +6724,7 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		a.codingKnowledgeStore = nil
 		codingKnowledgeStoreMu.Unlock()
 	}
-	if a.userModel != nil {
-		if err := a.userModel.Save(); err != nil {
-			log.Printf("[config] data_dir_change: user model save failed: %v", err)
-		}
-		a.userModel = nil
-	}
+	a.saveAndCloseUserModel("data_dir_change")
 	a.userModelMu = sync.Once{}
 	a.evidenceCollector = nil
 	a.evidenceCollectorMu = sync.Once{}
@@ -6680,8 +6733,15 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		_ = a.projectTabSessionPersist.Close()
 		a.projectTabSessionPersist = nil
 	}
+	if a.taskOrchestrator2 != nil {
+		a.taskOrchestrator2.Close()
+		a.taskOrchestrator2 = nil
+	}
+	a.closeRunWindowManager()
+	closePendingReplyDiskStores()
 	retiredRuntime := a.detachMemoryRuntime()
 	for handler := range a.sharedMemoryStoreHandlers() {
+		handler.resetPendingReplyStoreForDataDirChange()
 		handler.cancelAllBackgroundLLM("data_dir_change")
 	}
 	if a.memoryMaintenance != nil {

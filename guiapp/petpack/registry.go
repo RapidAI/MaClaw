@@ -273,7 +273,7 @@ func (r *Registry) annotateStatus(m *PetPackManifest, fsys fs.FS, root string) e
 	// This matches Pet Store publication and prevents an invalid custom variant
 	// from sitting unnoticed until a later client version exposes it.
 	for _, rigAssets := range SkeletonRigAssets(m) {
-		if err := validateRigAssets(fsys, root, rigAssets); err != nil {
+		if err := validateRigAssets(fsys, root, m, rigAssets); err != nil {
 			return err
 		}
 	}
@@ -383,7 +383,7 @@ func validateCharacterDefinitionAssets(fsys fs.FS, root string, assets *PetPackC
 	return nil
 }
 
-func validateRigAssets(fsys fs.FS, root string, rigAssets *PetPackRigAssets) error {
+func validateRigAssets(fsys fs.FS, root string, manifest *PetPackManifest, rigAssets *PetPackRigAssets) error {
 	if rigAssets == nil {
 		return fmt.Errorf("native-skeleton missing rig assets")
 	}
@@ -404,6 +404,9 @@ func validateRigAssets(fsys fs.FS, root string, rigAssets *PetPackRigAssets) err
 		return fmt.Errorf("invalid rig definition: %w", err)
 	}
 	if err := ValidateRig(&rig, rigAssets); err != nil {
+		return err
+	}
+	if err := ValidateAdornmentSlots(manifest, &rig); err != nil {
 		return err
 	}
 	textureFS := fsys
@@ -529,7 +532,7 @@ func (r *Registry) List() []PackInfo {
 func packInfoFrom(m *PetPackManifest) PackInfo {
 	variants := make([]string, 0, len(m.Variants))
 	for _, v := range m.Variants {
-		if v.ID != "" {
+		if v.ID != "" && VariantSelectable(v) {
 			variants = append(variants, v.ID)
 		}
 	}

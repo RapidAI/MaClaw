@@ -248,6 +248,15 @@ func (s *PetCompanionSession) SetPanelMicBusy(busy bool) {
 	petLogf("panel mic busy=%t", busy)
 }
 
+func (s *PetCompanionSession) PanelMicBusy() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.yielded
+}
+
 func (s *PetCompanionSession) Transcript() string {
 	if s == nil {
 		return ""

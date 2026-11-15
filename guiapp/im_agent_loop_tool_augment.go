@@ -42,6 +42,17 @@ func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, i
 
 func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, userID string, tools []map[string]interface{}, phase agentLoopPhase) ([]map[string]interface{}, int) {
 	catalog := h.unmanagedLegacyHostCatalog()
+	lookupCatalog := h.filterPolicyRejectedSurfaceTools(catalog)
+	if ctx != nil {
+		// This replacement IS a surface build: publish its grant contract so
+		// discover_tool's reporting reflects the last build, not the one
+		// before it.
+		ctx.noteSurfaceGrantContract(surfaceGrantContractForPhase(ctx, phase))
+	}
+	// A pending discovery grant is the next request's contract. The
+	// injection replacement IS that next request surface, so the grant must
+	// land here too — early, so every fence below still adjudicates it.
+	tools = ensureNamedToolsPresent(tools, lookupCatalog, discoveryGrantNamesForPhase(ctx, phase))
 	if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
 		tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, catalog)
 	}
@@ -59,7 +70,6 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 	}
 	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
 	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), h.routingMissFloorDefinitions(), ctx)
-	lookupCatalog := h.filterPolicyRejectedSurfaceTools(catalog)
 	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, lookupCatalog)
 	tools = h.pinExecutionBaseline(userID, ctx, tools, lookupCatalog)
 	directMode := h.mainLoopInDirectMode(userID, ctx)
@@ -67,7 +77,13 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 		// The baseline pin reopens the execution floor. Skill search and
 		// truncation still belong to this round. A timeout injection had no
 		// router result and may ensure from the host catalog; an ordinary
-		// injection only narrows the tools it already holds.
+		// injection only narrows the tools it already holds. The pin can also
+		// evict a grant landing above: restore it now so the seal — which
+		// re-runs the workflow, skill, group, and direct-mode fences — gets
+		// the final say, matching the request-boundary path.
+		if grants := discoveryGrantNamesForPhase(ctx, phase); len(grants) > 0 {
+			tools = ensureNamedToolsPresent(tools, lookupCatalog, protectBudgetNames(grants, tools, nil))
+		}
 		var bound []map[string]interface{}
 		if !loopContextHasClassifierTimeoutLookup(ctx) {
 			bound = boundFloorCatalog(tools)
@@ -77,7 +93,7 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 		// Light and operational supplements do not seal the baseline. The
 		// fresh route and workflow ensure can still bring back bash or a
 		// tool this round already blocked.
-		tools = applySkillPreferenceSurface(tools, phase, ctx.discoveredConditionalToolNameSet())
+		tools = applySkillPreferenceSurface(tools, phase, discoveryGrantNameSetForPhase(ctx, phase))
 		if directMode {
 			tools = filterDirectModeAllowedTools(tools)
 		}
@@ -93,6 +109,12 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 			log.Printf("[legacy-adapter] injection replacement rejected user=%q reason=%v", userID, err)
 		}
 		return nil, 0
+	}
+	// The rendered replacement is what the model actually sees this request —
+	// publish it so grant reporting and the unlanded-grant ledger reflect the
+	// last closed surface, not the build the injection just replaced.
+	if ctx != nil {
+		ctx.setExposedToolNames(agentLoopToolNamesForLog(rendered))
 	}
 	return rendered, estimateToolsTokens(rendered)
 }

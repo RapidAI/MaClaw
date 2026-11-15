@@ -153,12 +153,19 @@ function createHarness(options) {
     calls.push({ path: url, body: request && request.body, method: request && request.method });
     if (url === '/api/admin/desktop-services') {
       return Promise.resolve({
-        servers: [{ id: 's1', name: 'dockerd-a', base_url: 'http://docker-host:18081', token_set: true, image: 'maclaw-gui:1', memory: '2500m', cpus: '1.5', shm_size: '512m' }],
+        servers: opts.servers || [{ id: 's1', name: 'dockerd-a', base_url: 'http://docker-host:18081', token_set: true, image: 'maclaw-gui:1', memory: '2500m', cpus: '1.5', shm_size: '512m' }],
         assignments: [{ id: 'a1', scope: 'global', target_id: '', server_id: 's1' }],
         users: opts.viewUsers === undefined
           ? [{ id: 'u_alice', label: 'alice@example.com' }, { id: 'u_bob', label: 'bob@example.com' }]
           : opts.viewUsers
       });
+    }
+    if (url === '/api/admin/bots/nodes') {
+      if (!opts.nodes) return Promise.reject(new Error('edge disabled'));
+      return Promise.resolve({ nodes: opts.nodes });
+    }
+    if (url.indexOf('/api/admin/bots/nodes/') === 0 && request && request.method === 'DELETE') {
+      return Promise.resolve({ deleted: true });
     }
     if (url === '/api/admin/desktop-services/desktops/view') {
       if (opts.viewError) return Promise.reject(new Error(opts.viewError));
@@ -226,6 +233,49 @@ function createHarness(options) {
     pickUser: pickUser,
     releaseView: function (value) { releaseView(value); }
   };
+}
+
+async function testRelayHintShowsWhenTheDesktopIsOnAnotherNode() {
+  console.log('  Test: assigning a desktop on another node warns about delay');
+  const harness = createHarness({
+    servers: [{ id: 's-node', name: 'lab', base_url: 'http://desktopd.n1.node.invalid', node_id: 'n1', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' }],
+    nodes: [{ id: 'n1', name: 'lab', has_desktopd: true, has_srv: false }]
+  });
+  harness.mount();
+  await harness.load();
+  assertIncludes(harness.elements.desktopRelayHint.textContent, '\u5ef6\u8fdf\u8f83\u9ad8', 'cross-node assignment warns');
+
+  const local = createHarness({
+    servers: [{ id: 's-node', name: 'lab', base_url: 'http://desktopd.n1.node.invalid', node_id: 'n1', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' }],
+    nodes: [{ id: 'n1', name: 'lab', has_desktopd: true, has_srv: true }]
+  });
+  local.mount();
+  await local.load();
+  assertEqual(local.elements.desktopRelayHint.textContent, '', 'same-node srv does not warn');
+}
+
+async function testIntranetNodesStayHiddenUntilTheFeatureIsOn() {
+  console.log('  Test: the intranet node block stays hidden when edge nodes are off');
+  const harness = createHarness();
+  harness.mount();
+  await harness.load();
+  assertEqual(harness.elements.desktopNodeBox.hidden, true, 'intranet block is hidden');
+}
+
+async function testIntranetNodeListShowsStatusCapabilityAndVersion() {
+  console.log('  Test: an intranet node shows status, capability, and version');
+  const harness = createHarness({
+    nodes: [{ id: 'n1', name: 'lab', online: true, has_desktopd: true, has_srv: false, version: 'v9' }]
+  });
+  harness.mount();
+  await harness.load();
+  assertEqual(harness.elements.desktopNodeBox.hidden, false, 'intranet block is shown');
+  const html = harness.elements.desktopNodeList.innerHTML;
+  assertIncludes(html, 'lab', 'the node name is listed');
+  assertIncludes(html, '\u5728\u7ebf', 'online status is listed');
+  assertIncludes(html, 'desktopd', 'desktopd capability is listed');
+  assertIncludes(html, 'v9', 'version is listed');
+  assertIncludes(html, 'data-node-delete="n1"', 'delete is offered');
 }
 
 async function testUserListCarriesOnlyAuthorizedUsers() {
@@ -405,6 +455,9 @@ async function testSwitchingUserOpensThatDesktop() {
 }
 
 Promise.resolve()
+  .then(testRelayHintShowsWhenTheDesktopIsOnAnotherNode)
+  .then(testIntranetNodesStayHiddenUntilTheFeatureIsOn)
+  .then(testIntranetNodeListShowsStatusCapabilityAndVersion)
   .then(testUserListCarriesOnlyAuthorizedUsers)
   .then(testUserListEmptyShowsTheAssignmentHint)
   .then(testViewButtonFollowsStopButton)

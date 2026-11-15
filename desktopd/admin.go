@@ -143,6 +143,12 @@ func (a *adminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.withSession(w, r, a.handleEgressProxy)
 	case path == "/api/egress-proxy/test":
 		a.withSession(w, r, a.handleEgressProxyTest)
+	case path == "/api/hub-link":
+		a.withSession(w, r, a.handleHubLink)
+	case path == "/api/hub-link/disconnect":
+		a.withSession(w, r, a.handleHubLinkDisconnect)
+	case path == "/api/hub-link/connect":
+		a.withSession(w, r, a.handleHubLinkConnect)
 	default:
 		http.NotFound(w, r)
 	}
@@ -336,6 +342,93 @@ func (a *adminServer) withSession(w http.ResponseWriter, r *http.Request, next f
 
 // ---------------------------------------------------------------------------
 // handlers
+
+func (a *adminServer) hubLinkView() map[string]any {
+	link := a.svc.HubLink
+	if link == nil {
+		return map[string]any{"enabled": false}
+	}
+	st := link.Status()
+	return map[string]any{
+		"enabled":  true,
+		"enrolled": st.Enrolled,
+		"hub_url":  st.HubURL,
+		"node_id":  st.NodeID,
+		"online":   st.Online,
+		"error":    st.Error,
+		"since":    st.Since,
+		"srv_addr": st.SrvAddr,
+		"self":     strings.TrimSpace(link.Self),
+	}
+}
+
+func (a *adminServer) handleHubLink(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		writeJSON(w, http.StatusOK, a.hubLinkView())
+	case http.MethodPost:
+		if a.svc.HubLink == nil {
+			writeErr(w, http.StatusNotFound, "hub link is disabled")
+			return
+		}
+		var in struct {
+			HubURL   string `json:"hub_url"`
+			Code     string `json:"code"`
+			HasSrv   bool   `json:"has_srv"`
+			SrvAddr  string `json:"srv_addr"`
+			SrvAdmin string `json:"srv_admin_secret"`
+		}
+		if !decodeBody(w, r, &in) {
+			return
+		}
+		if _, err := a.svc.HubLink.EnrollWith(r.Context(), HubLinkEnroll{
+			HubURL: in.HubURL, Code: in.Code, HasSrv: in.HasSrv, SrvAddr: in.SrvAddr, SrvAdmin: in.SrvAdmin,
+		}); err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, a.hubLinkView())
+	case http.MethodDelete:
+		if a.svc.HubLink == nil {
+			writeJSON(w, http.StatusOK, a.hubLinkView())
+			return
+		}
+		if err := a.svc.HubLink.Leave(); err != nil {
+			writeErr(w, http.StatusInternalServerError, "hub link state could not be removed")
+			return
+		}
+		writeJSON(w, http.StatusOK, a.hubLinkView())
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (a *adminServer) handleHubLinkDisconnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if a.svc.HubLink != nil {
+		a.svc.HubLink.Disconnect()
+	}
+	writeJSON(w, http.StatusOK, a.hubLinkView())
+}
+
+func (a *adminServer) handleHubLinkConnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if a.svc.HubLink == nil {
+		writeErr(w, http.StatusNotFound, "hub link is disabled")
+		return
+	}
+	if _, err := a.svc.HubLink.Reconnect(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, a.hubLinkView())
+}
 
 func (a *adminServer) handleState(w http.ResponseWriter, r *http.Request) {
 	creds, err := a.credentials()

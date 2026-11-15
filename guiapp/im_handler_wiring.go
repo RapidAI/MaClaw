@@ -291,6 +291,7 @@ type IMMessageHandler struct {
 	// the chat tab's serialization mutex.
 	chatTasksOnce sync.Once
 	chatTasks     *chatTaskRegistry
+	chatTasksPub  atomic.Pointer[chatTaskRegistry]
 
 	// horizonSessions is independent of sessionLoops. A LongHorizon supervisor
 	// must not look like an IM agent loop or follow-up text is serialized/interrupted.
@@ -1397,7 +1398,7 @@ func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage stri
 		PreferEmbeddingOnly:   true,
 		PreResolved:           preResolved,
 		CacheMessage:          classificationCacheMessageForTurn(ctx, userID, routeMessage, loopHistory(ctx)),
-		HostKeepTools:         h.hostKeepToolsForTurnScoped(ctx, routeMessage, !shouldRestrictToSkillSearch(phase)),
+		HostKeepTools:         h.hostKeepToolsForTurnScoped(ctx, routeMessage, discoveryGrantNamesForPhase(ctx, phase)),
 	}
 	routed := router.RouteForSession(userID, routeMessage, allTools, routeOpts)
 	// Capture the router's raw ranked selection before the mandatory merges
@@ -1446,10 +1447,10 @@ func hostKeepMessageForTurn(ctx *LoopContext, userMessage string) string {
 }
 
 func (h *IMMessageHandler) hostKeepToolsForTurn(ctx *LoopContext, userMessage string) []string {
-	return h.hostKeepToolsForTurnScoped(ctx, userMessage, true)
+	return h.hostKeepToolsForTurnScoped(ctx, userMessage, ctx.discoveredConditionalToolNames())
 }
 
-func (h *IMMessageHandler) hostKeepToolsForTurnScoped(ctx *LoopContext, userMessage string, includeDiscoveryGrants bool) []string {
+func (h *IMMessageHandler) hostKeepToolsForTurnScoped(ctx *LoopContext, userMessage string, discoveryGrants []string) []string {
 	var names []string
 	if h != nil && h.databaseManager != nil && h.databaseManager.HostReadGrant(userMessage) {
 		names = append(names, database.HostReadToolNames...)
@@ -1460,11 +1461,9 @@ func (h *IMMessageHandler) hostKeepToolsForTurnScoped(ctx *LoopContext, userMess
 	// discover_tool grants are loop-scoped. Putting them in HostKeep makes
 	// them mustKeepCore so the closed leftover plan cannot prune an unranked
 	// write_file after "granted for the next request" (2026-09-21 生成markdown).
-	// A forced skill-preference round is a narrowed surface: the grant is
-	// deferred, matching the applyLoopDiscoveredConditionalTools guard.
-	if ctx != nil && includeDiscoveryGrants {
-		names = append(names, ctx.discoveredConditionalToolNames()...)
-	}
+	// Callers pass discoveryGrantNamesForPhase: a required market-search
+	// round keeps only its contract names here, matching the surface guard.
+	names = append(names, discoveryGrants...)
 	if chatTaskWorkerLoop(ctx) {
 		names = append(names, chatTaskPromptToolNames(userMessage)...)
 	}
@@ -1604,7 +1603,7 @@ func (h *IMMessageHandler) sealClassifierTimeoutExecutionFloor(userID string, ct
 	if ctx != nil && ctx.LansengerGroupPermissions != nil {
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
-	tools = applySkillPreferenceSurface(tools, phase, ctx.discoveredConditionalToolNameSet())
+	tools = applySkillPreferenceSurface(tools, phase, discoveryGrantNameSetForPhase(ctx, phase))
 	if directMode {
 		tools = filterDirectModeAllowedTools(tools)
 	}

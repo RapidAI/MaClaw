@@ -9,6 +9,8 @@ export interface DesktopBot {
     createdAt: number;
     // Copied from the hub list. This client does not recompute it from CreatedAt.
     primary?: boolean;
+    // shared, isolated, or none. Missing means the shared computer.
+    desktopMode?: string;
 }
 
 export type BotPhase = 'plan' | 'execute';
@@ -932,6 +934,10 @@ export interface DesktopBotMessage {
     // bubble is shown only; this client never sends or recovers it.
     syncSeq?: number;
     syncOrigin?: string;
+    // Hub's display sequence for this bubble, including one this client
+    // wrote. The chat is shown in this order. It stays off the journal body
+    // (syncSeq already means "another client's bubble").
+    orderSeq?: number;
 }
 
 export interface DesktopBotNoticeBot {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobilebot/core/account_store.dart';
@@ -22,6 +24,8 @@ class _FakeApi extends BotApi {
 
   int conversationCalls = 0;
   ConversationPage page = const ConversationPage();
+  List<ConversationPage> scripted = const [];
+  int _scriptedAt = 0;
   SendResult? sendResult;
   Object? sendError;
   final pollAnswers = <BotReply?>[];
@@ -29,6 +33,7 @@ class _FakeApi extends BotApi {
   String? lastContinueSession;
   String? lastAskRun;
   String? lastSent;
+  Completer<void>? sendGate;
 
   @override
   Future<ConversationPage> conversation({
@@ -38,6 +43,11 @@ class _FakeApi extends BotApi {
     int waitSeconds = 0,
   }) async {
     conversationCalls++;
+    if (scripted.isNotEmpty && waitSeconds == 0) {
+      final i = _scriptedAt < scripted.length ? _scriptedAt : scripted.length - 1;
+      if (_scriptedAt < scripted.length) _scriptedAt++;
+      return scripted[i];
+    }
     return page;
   }
 
@@ -53,16 +63,23 @@ class _FakeApi extends BotApi {
     lastContinueSession = continueSession;
     lastAskRun = askRun;
     lastSent = content;
+    if (sendGate != null) await sendGate!.future;
     if (sendError != null) throw sendError!;
     return sendResult ??
         SendResult.settled(const BotReply(text: '好的，收到'));
   }
 
+  int pollCalls = 0;
+  final polledRuns = <String>[];
+
   @override
-  Future<BotReply?> pollRun(String botId, String runId) async =>
-      pollAnswers.isEmpty
-          ? const BotReply(text: '跑完了')
-          : pollAnswers.removeAt(0);
+  Future<BotReply?> pollRun(String botId, String runId) async {
+    pollCalls++;
+    polledRuns.add(runId);
+    return pollAnswers.isEmpty
+        ? const BotReply(text: '跑完了')
+        : pollAnswers.removeAt(0);
+  }
 
   List<ActiveRun> runs = const [];
 
@@ -119,18 +136,27 @@ Future<void> _until(bool Function() ok,
   expect(ok(), isTrue);
 }
 
-ConversationEntry _msg(int seq, String id, String role, String content) =>
+ConversationEntry _msg(int seq, String id, String role, String content,
+        {int? created,
+        String requestId = '',
+        bool withAt = true,
+        String runId = '',
+        List<String> attachmentIds = const []}) =>
     ConversationEntry(
       seq: seq,
-      createdSeq: seq,
+      createdSeq: created ?? seq,
       botId: 'b1',
       id: id,
       kind: 'message',
       data: {
         'role': role,
         'content': content,
-        'at': DateTime.fromMillisecondsSinceEpoch(seq * 1000, isUtc: true)
-            .toIso8601String(),
+        if (requestId.isNotEmpty) 'requestId': requestId,
+        if (runId.isNotEmpty) 'runId': runId,
+        if (attachmentIds.isNotEmpty) 'attachmentIds': attachmentIds,
+        if (withAt)
+          'at': DateTime.fromMillisecondsSinceEpoch(seq * 1000, isUtc: true)
+              .toIso8601String(),
       },
     );
 
@@ -152,6 +178,171 @@ void main() {
     final messages = container.read(botChatProvider).messages;
     expect(messages.map((m) => m.id), ['m1', 'm2', 'm3']);
     expect(messages.first.role, 'user');
+  });
+
+  test('history keeps an edited line at its first sequence', () async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 5,
+        entries: [
+          _msg(5, 'm1', 'user', '先', created: 1, withAt: false),
+          _msg(2, 'm2', 'user', '后', created: 2, withAt: false),
+        ],
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+    expect(
+      container.read(botChatProvider).messages.map((m) => m.id),
+      ['m1', 'm2'],
+    );
+  });
+
+  test('a pending send keeps its sequence so the reply stays below it', () async {
+    final api = _FakeApi()..sendGate = Completer<void>();
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    final send = container.read(botChatProvider.notifier).send('先问');
+    await _until(() =>
+        container.read(botChatProvider).messages.any((m) => m.pending));
+    final id = container
+        .read(botChatProvider)
+        .messages
+        .firstWhere((m) => m.pending)
+        .id;
+    api.page = ConversationPage(
+      head: 2,
+      entries: [
+        ConversationEntry(
+          seq: 1,
+          createdSeq: 1,
+          botId: 'b1',
+          id: id,
+          kind: 'message',
+          data: {'role': 'user', 'content': '先问'},
+        ),
+        ConversationEntry(
+          seq: 2,
+          createdSeq: 2,
+          botId: 'b1',
+          id: 'ans',
+          kind: 'message',
+          data: {'role': 'assistant', 'content': '答'},
+        ),
+      ],
+    );
+    await _until(() {
+      final messages = container.read(botChatProvider).messages;
+      return messages.length >= 2 && messages.first.syncSeq == 1;
+    });
+    final messages = container.read(botChatProvider).messages;
+    expect(messages.map((m) => m.content), ['先问', '答']);
+    expect(messages.first.pending, isTrue);
+    api.sendGate!.complete();
+    await send;
+  });
+
+  test('history follows the server sequence when client clocks disagree', () async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 3,
+        entries: [
+          _msg(2, 'm-2z-bbb', 'assistant', '后发', created: 2, withAt: false),
+          _msg(1, 'm-k0-aaa', 'user', '先发', created: 1, withAt: false),
+        ],
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+    expect(
+      container.read(botChatProvider).messages.map((m) => m.id),
+      ['m-k0-aaa', 'm-2z-bbb'],
+    );
+  });
+
+  test('a synced line with attachment ids re-fetches the run media', () async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 2,
+        entries: [
+          _msg(1, 'm1', 'user', '看下屏幕', withAt: false),
+          _msg(2, 'm2', 'assistant', '截图在这儿',
+              withAt: false, runId: 'run-9', attachmentIds: ['shot-1']),
+        ],
+      )
+      ..pollAnswers.add(const BotReply(
+        text: '截图在这儿',
+        images: [
+          BotReplyImage(
+              mime: 'image/png', data: 'aW1n', attachmentId: 'shot-1'),
+        ],
+      ));
+    final container = _container(api);
+    addTearDown(container.dispose);
+
+    await _until(() => container
+        .read(botChatProvider)
+        .messages
+        .any((m) => m.images.isNotEmpty));
+    final message = container
+        .read(botChatProvider)
+        .messages
+        .firstWhere((m) => m.id == 'm2');
+    expect(message.images.single.attachmentId, 'shot-1');
+    expect(message.images.single.data, 'aW1n');
+    expect(api.polledRuns, ['run-9']);
+  });
+
+  test('a synced line without attachment ids does not poll the run', () async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'm1', 'assistant', '纯文本', withAt: false, runId: 'run-8'),
+        ],
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    // No attachmentIds on the line means no media fetch fired for it.
+    expect(api.pollCalls, 0);
+    expect(
+        container.read(botChatProvider).messages.single.images, isEmpty);
+  });
+
+  test('history reads every page and keeps one copy of a server line', () async {
+    final api = _FakeApi()
+      ..scripted = [
+        ConversationPage(
+          head: 5,
+          next: 4,
+          more: true,
+          entries: [
+            _msg(4, 'copy', 'assistant', '第一条', created: 4, requestId: 'n1:target'),
+            _msg(2, 'm2', 'user', '后', created: 2),
+          ],
+        ),
+        ConversationPage(
+          head: 5,
+          next: 5,
+          more: false,
+          entries: [
+            _msg(5, 'm3', 'assistant', '第三条', created: 3),
+            _msg(1, 'orig', 'assistant', '第一条', created: 1, requestId: 'n1:target'),
+          ],
+        ),
+      ];
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+    final messages = container.read(botChatProvider).messages;
+    expect(messages.map((m) => m.content), ['第一条', '后', '第三条']);
+    expect(messages.first.syncSeq, 1);
+    expect(api.conversationCalls, greaterThanOrEqualTo(2));
   });
 
   test('send settles a synchronous reply', () async {
@@ -480,6 +671,64 @@ void main() {
     final messages = container.read(botChatProvider).messages;
     expect(messages.single.id, 'q1');
     expect(messages.single.askResolved, isTrue);
+    expect(messages.single.syncSeq, 1);
+  });
+
+  test('a second copy of an assistant line folds in by run id', () async {
+    // The GUI publishes the same server line under its own bubble id and
+    // request id — the run id is what says it is the same turn's answer.
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 2,
+        entries: [
+          _msg(1, 'm1', 'assistant', '答', withAt: false, runId: 'r7'),
+          _msg(2, 'm2', 'assistant', '答',
+              withAt: false,
+              runId: 'r7',
+              requestId: 'req-other',
+              attachmentIds: ['shot-2']),
+        ],
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+    final messages = container.read(botChatProvider).messages;
+    expect(messages.length, 1);
+    expect(messages.single.id, 'm1');
+    expect(messages.single.attachmentIds, ['shot-2']);
+    expect(messages.single.runId, 'r7');
+  });
+
+  test('a run id does not collapse two different bubbles', () async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 2,
+        entries: [
+          ConversationEntry(
+            seq: 1,
+            createdSeq: 1,
+            botId: 'b1',
+            id: 'u1',
+            kind: 'message',
+            data: {'role': 'user', 'content': '问', 'runId': 'r1'},
+          ),
+          ConversationEntry(
+            seq: 2,
+            createdSeq: 2,
+            botId: 'b1',
+            id: 'a1',
+            kind: 'message',
+            data: {'role': 'assistant', 'content': '答', 'runId': 'r1'},
+          ),
+        ],
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+    expect(
+      container.read(botChatProvider).messages.map((m) => m.content),
+      ['问', '答'],
+    );
   });
 
   // A poll-settled reply that the journal already showed (another client
@@ -534,5 +783,71 @@ void main() {
         .where((m) => m.role == 'assistant' && m.content == '跑完了')
         .toList();
     expect(replies, hasLength(1));
+  });
+
+  // A malformed journal entry (non-string fields, numeric seq) must not
+  // throw inside the merge — one bad line would otherwise poison every
+  // later sync tick on the same page and stall the transcript forever.
+  test('a malformed journal entry does not stall the merge', () async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 3,
+        entries: [
+          const ConversationEntry(
+            seq: 1,
+            createdSeq: 1,
+            botId: 'b1',
+            id: 'bad',
+            kind: 'message',
+            data: {
+              'role': 42,
+              'content': {'x': 1},
+              'requestId': 7,
+              'runId': true,
+              'options': 'not-a-list',
+              'images': 'not-a-list',
+            },
+          ),
+          _msg(2, 'good', 'assistant', '正常回复', withAt: false),
+        ],
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+    final messages = container.read(botChatProvider).messages;
+    // The malformed line is skipped by the role guard; the valid one lands.
+    expect(messages.single.id, 'good');
+    expect(messages.single.content, '正常回复');
+  });
+
+  test('malformed entry fields parse defensively in the model layer',
+      () async {
+    final entry = ConversationEntry.fromJson({
+      'seq': '12',
+      'created_seq': 5,
+      'bot_id': 'b1',
+      'id': 99,
+      'data': 'not-a-map',
+      'at': 12345,
+    });
+    expect(entry.seq, 12);
+    expect(entry.createdSeq, 5);
+    expect(entry.data, isEmpty);
+
+    final message = ChatMessage.fromSyncData('x', {
+      'role': 'assistant',
+      'content': 'hi',
+      'requestId': 7,
+      'runId': 'r1',
+      'options': 'oops',
+      'images': [
+        {'mime': 'image/png', 'data': 'aW1n', 'attachment_id': 5},
+      ],
+    });
+    expect(message.runId, 'r1');
+    expect(message.requestId, 'r1'); // empty requestId falls back to runId
+    expect(message.options, isEmpty);
+    expect(message.images.single.data, 'aW1n');
+    expect(message.images.single.attachmentId, '');
   });
 }

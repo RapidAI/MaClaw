@@ -154,10 +154,15 @@ export function BotLocalAccessSettingsDialog({ heading, tabs, lang, onClose }: P
                                     </div>
                                 ))}
                             </div>
-                            <label className="bot-llm-dialog__radio">
-                                <input type="checkbox" checked={draft.files_enabled} disabled={saving} data-testid="bot-local-files" onChange={e => patch({ files_enabled: e.target.checked })} />
-                                <span>{w.files}</span>
-                            </label>
+                            <div className="bot-setting-row">
+                                <div className="bot-setting-row__text">
+                                    <span className="bot-setting-row__title">{w.files}</span>
+                                </div>
+                                <label className="bot-switch">
+                                    <input type="checkbox" checked={draft.files_enabled} disabled={saving} data-testid="bot-local-files" onChange={e => patch({ files_enabled: e.target.checked })} />
+                                    <span className="bot-switch__track" aria-hidden="true" />
+                                </label>
+                            </div>
                             <div className={`bot-local-dialog__group${draft.files_enabled ? '' : ' is-disabled'}`}>
                                 <p className="bot-llm-dialog__label">{w.folders}</p>
                                 <p className="bot-llm-dialog__subhint">{w.foldersHint}</p>
@@ -179,10 +184,15 @@ export function BotLocalAccessSettingsDialog({ heading, tabs, lang, onClose }: P
                                     <input type="number" className="form-input" min={1} max={4096} value={draft.max_transfer_mb} disabled={saving || !draft.files_enabled} onChange={e => patch({ max_transfer_mb: Number(e.target.value) || 0 })} />
                                 </label>
                             </div>
-                            <label className="bot-llm-dialog__radio">
-                                <input type="checkbox" checked={draft.network_enabled} disabled={saving} data-testid="bot-local-network" onChange={e => patch({ network_enabled: e.target.checked })} />
-                                <span>{w.network}</span>
-                            </label>
+                            <div className="bot-setting-row">
+                                <div className="bot-setting-row__text">
+                                    <span className="bot-setting-row__title">{w.network}</span>
+                                </div>
+                                <label className="bot-switch">
+                                    <input type="checkbox" checked={draft.network_enabled} disabled={saving} data-testid="bot-local-network" onChange={e => patch({ network_enabled: e.target.checked })} />
+                                    <span className="bot-switch__track" aria-hidden="true" />
+                                </label>
+                            </div>
                             <div className={`bot-local-dialog__group${draft.network_enabled ? '' : ' is-disabled'}`}>
                                 <label className="bot-local-dialog__field bot-local-dialog__field--block">
                                     <span>{w.netAllow}</span>

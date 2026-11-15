@@ -18,14 +18,16 @@ import (
 // authored at 256px, so preserving that resolution avoids first shrinking to
 // 128px and then magnifying to 220px on the LCD.
 const (
-	devicePetAssetWidth    = 256
-	devicePetAssetHeight   = 256
-	devicePetFrameCount    = 8
-	devicePetFrameMS       = 450
-	devicePetRouteFrameMS  = 320
-	devicePetTrackMargin   = 4
-	devicePetRouteSlack    = 96
-	devicePetRouteMinScale = 0.82
+	devicePetAssetWidth   = 256
+	devicePetAssetHeight  = 256
+	devicePetFrameCount   = 8
+	devicePetFrameMS      = 450
+	devicePetRouteFrameMS = 320
+	devicePetTrackMargin  = 4
+	devicePetRouteSlack   = 96
+	// The dial paints the whole asset, so this floor has to leave the slack
+	// above actually free. A higher floor pins a full-height pet in place.
+	devicePetRouteMinScale = 0.60
 )
 
 type devicePetAsset struct {
@@ -46,8 +48,11 @@ func (a *App) devicePetAssetForConfig(cfg corelib.AppConfig) devicePetAsset {
 	if packID == "" {
 		packID = petpack.DefaultPackID
 	}
-	variant := petpack.ResolveVariantForRuntime(cfg.PetVariant)
-	frames, frameMS := devicePetFramesForPack(reg, packID, variant)
+	// Rearing is companionship time already stored for the desktop pet.
+	// The stage's variant and scale are the points that change the look.
+	rearingVariant, growth := a.petRearingLook(packID)
+	variant := petAppearanceVariant(cfg.PetVariant, rearingVariant)
+	frames, frameMS := devicePetFramesForPack(reg, packID, variant, growth, a.petRearingAdornmentSlots(packID))
 	if len(frames) == 0 {
 		raw, _, err := reg.LoadStateFrameBytes(packID, "idle", variant)
 		if err != nil || len(raw) == 0 {
@@ -57,7 +62,7 @@ func (a *App) devicePetAssetForConfig(cfg corelib.AppConfig) devicePetAsset {
 		if err != nil || fallback == nil {
 			return devicePetAsset{}
 		}
-		frames = []image.Image{fallback}
+		frames = devicePetApplyGrowth([]image.Image{fallback}, growth)
 	}
 	frames = ensureDevicePetMotionFrames(frames)
 	encoded := make([]string, 0, len(frames))
@@ -79,33 +84,34 @@ func (a *App) devicePetAssetForConfig(cfg corelib.AppConfig) devicePetAsset {
 	return asset
 }
 
-func devicePetRenderedFrames(reg *petpack.Registry, packID, variant string) []image.Image {
-	frames, _ := devicePetFramesForPack(reg, packID, variant)
+func devicePetRenderedFrames(reg *petpack.Registry, packID, variant string, growth float64, adornments []string) []image.Image {
+	frames, _ := devicePetFramesForPack(reg, packID, variant, growth, adornments)
 	return frames
 }
 
 // devicePetFramesForPack renders the loop a paired screen actually plays.
-// Character and skeleton packs that declare the 2.0 action clips (walk, run,
-// jump, bend, sing, stretch) get that reel. Packs without those clips keep
-// the closed idle loop.
-func devicePetFramesForPack(reg *petpack.Registry, packID, variant string) ([]image.Image, int) {
+// Character and skeleton packs that can stroll (walk_loop, or run_loop when
+// the pack has no walk) get the desktop idle-roam reel. Packs without a
+// traveling clip keep the closed idle loop. growth is the rearing stage
+// scale (0 or 1 leaves the authored size).
+func devicePetFramesForPack(reg *petpack.Registry, packID, variant string, growth float64, adornments []string) ([]image.Image, int) {
 	resolved, err := reg.Resolve(packID, variant)
 	if err != nil || resolved == nil {
 		return nil, 0
 	}
 	switch resolved.Renderer {
 	case petpack.RendererCharacter, petpack.RendererSkeleton:
-		// The desktop performance director is intentionally non-periodic. Sampling
-		// it into eight frames jumps when the device wraps to frame zero. Rich
-		// actions are therefore a fixed reel of authored clips. Walk and run
-		// advance a route inside the frame and turn at the safe-area edge, the
-		// same clamp the floating window applies to travel_x, so the pet stays
-		// on the small round display.
+		// The desktop idle state strolls by playing walk_loop and stepping
+		// DesktopRoam: the heading cycles through right, down, left, and up,
+		// and the sprite turns when the horizontal direction changes. That
+		// clock is not periodic, so eight frames cannot sample it live. The
+		// reel bakes one closed stroll inside the safe area instead.
 		renderer, renderErr := petpack.NewRigRenderer(resolved)
 		if renderErr != nil || renderer == nil {
 			return nil, 0
 		}
-		if frames, frameMS := devicePetRichRigFrames(renderer); len(frames) > 0 {
+		renderer.SetVisibleAdornmentSlots(adornments)
+		if frames, frameMS := devicePetRichRigFrames(renderer, growth); len(frames) > 0 {
 			return frames, frameMS
 		}
 		frames := make([]image.Image, 0, devicePetFrameCount)
@@ -115,7 +121,7 @@ func devicePetFramesForPack(reg *petpack.Registry, packID, variant string) ([]im
 				frames = append(frames, rendered)
 			}
 		}
-		return frames, devicePetFrameMS
+		return devicePetApplyGrowth(frames, growth), devicePetFrameMS
 	case petpack.RendererProcedural:
 		// The desktop fallback animates native/procedural packs with the same
 		// articulated pose used by the floating pet. Export a full cycle so
@@ -125,93 +131,96 @@ func devicePetFramesForPack(reg *petpack.Registry, packID, variant string) ([]im
 			phase := 2 * math.Pi * float64(frame) / devicePetFrameCount
 			frames = append(frames, renderDeviceProceduralPet(devicePetAssetWidth, packID, phase))
 		}
-		return frames, devicePetFrameMS
+		return devicePetApplyGrowth(frames, growth), devicePetFrameMS
 	}
 	return nil, 0
 }
 
-// devicePetShot is one authored pose in the eight-frame device reel.
-// along is the fraction of the remaining safe track, -1..1. Positive moves
-// the pet right. faceLeft mirrors the pose, matching a window turn at the edge.
+// devicePetShot is one pose in the eight-frame stroll the buddy loops.
+// alongX and alongY are fractions of the remaining safe track, -1..1.
+// Positive alongX moves the pet right; positive alongY moves it down.
+// faceLeft mirrors the pose, the same turn keepFacing applies when a roam
+// heading points left.
 type devicePetShot struct {
 	body     string
 	expr     string
 	at       int
-	along    float64
+	alongX   float64
+	alongY   float64
 	faceLeft bool
 }
 
-func devicePetRichShots(rr *petpack.RigRenderer) []devicePetShot {
+// devicePetWanderShots builds the desktop idle roam as one closed loop.
+// idle_walk plays walk_loop; a pack with only a run still strolls on that
+// clip. The lap is clockwise on the screen (right, down, left, up). Facing
+// uses the same horizontal threshold as desktop keepFacing. Frame time stays
+// monotonic so a looping walk is two gait cycles and layered gaze does not
+// restart halfway around the lap.
+func devicePetWanderShots(rr *petpack.RigRenderer) []devicePetShot {
 	if rr == nil {
 		return nil
 	}
-	rich := false
-	for _, name := range []string{"walk_loop", "run_loop", "jump_loop", "bend_loop", "sing_loop", "stretch_loop"} {
-		if rr.Clip(name) != nil {
-			rich = true
-			break
-		}
-	}
-	if !rich {
+	body := ""
+	switch {
+	case rr.Clip("walk_loop") != nil:
+		body = "walk_loop"
+	case rr.Clip("run_loop") != nil:
+		body = "run_loop"
+	default:
 		return nil
 	}
-	calm := devicePetExpr(rr, "expr_calm", "expr_soft", "expr_idle")
-	pleased := devicePetExpr(rr, "expr_pleased", "expr_calm", "expr_soft", "expr_idle")
-	speak := devicePetExpr(rr, "expr_speak", "expr_talk", "expr_pleased", calm)
-	idleBody := ""
-	for _, name := range []string{"idle_breathe_loop", "idle_loop", "idle"} {
-		if rr.Clip(name) != nil {
-			idleBody = name
-			break
-		}
+	expr := devicePetExpr(rr, "expr_calm", "expr_soft", "expr_idle")
+	faceLeft := false
+	shots := make([]devicePetShot, 0, devicePetFrameCount)
+	for i := 0; i < devicePetFrameCount; i++ {
+		theta := -math.Pi/2 + float64(i)*2*math.Pi/float64(devicePetFrameCount)
+		heading := math.Atan2(math.Cos(theta), -math.Sin(theta))
+		faceLeft = devicePetFaceLeft(heading, faceLeft)
+		shots = appendDevicePetShot(shots, rr, body, expr, i, 4, math.Cos(theta), math.Sin(theta), faceLeft)
 	}
-	var shots []devicePetShot
-	if idleBody != "" {
-		shots = appendDevicePetShot(shots, rr, idleBody, calm, 0, 1, 0, false)
-	}
-	if rr.Clip("walk_loop") != nil {
-		shots = appendDevicePetShot(shots, rr, "walk_loop", calm, 0, 1, 0.55, false)
-		shots = appendDevicePetShot(shots, rr, "walk_loop", calm, 1, 2, 1, true)
-	}
-	if rr.Clip("run_loop") != nil {
-		shots = appendDevicePetShot(shots, rr, "run_loop", pleased, 0, 1, 0.45, true)
-		shots = appendDevicePetShot(shots, rr, "run_loop", pleased, 1, 2, 0, true)
-	} else if rr.Clip("walk_loop") != nil {
-		shots = appendDevicePetShot(shots, rr, "walk_loop", calm, 1, 4, 0.45, true)
-		shots = appendDevicePetShot(shots, rr, "walk_loop", calm, 3, 4, 0, true)
-	}
-	if rr.Clip("jump_loop") != nil {
-		shots = appendDevicePetShot(shots, rr, "jump_loop", pleased, 2, 5, 0, true)
-	}
-	if rr.Clip("bend_loop") != nil {
-		shots = appendDevicePetShot(shots, rr, "bend_loop", calm, 2, 5, 0, false)
-	}
-	if rr.Clip("sing_loop") != nil {
-		shots = appendDevicePetShot(shots, rr, "sing_loop", speak, 3, 8, 0, false)
-	} else if rr.Clip("stretch_loop") != nil {
-		shots = appendDevicePetShot(shots, rr, "stretch_loop", calm, 1, 2, 0, false)
-	}
-	if len(shots) == 0 {
+	if len(shots) < 2 {
 		return nil
-	}
-	if len(shots) > devicePetFrameCount {
-		shots = shots[:devicePetFrameCount]
-	}
-	for len(shots) < devicePetFrameCount {
-		body := idleBody
-		if body == "" {
-			body = shots[0].body
-		}
-		before := len(shots)
-		shots = appendDevicePetShot(shots, rr, body, calm, len(shots), devicePetFrameCount, 0, false)
-		if len(shots) == before {
-			break
-		}
 	}
 	return shots
 }
 
-func appendDevicePetShot(shots []devicePetShot, rr *petpack.RigRenderer, body, expr string, numer, denom int, along float64, faceLeft bool) []devicePetShot {
+// devicePetFaceLeft matches petpack keepFacing: a nearly vertical heading
+// keeps the side the pet is already showing.
+func devicePetFaceLeft(heading float64, current bool) bool {
+	c := math.Cos(heading)
+	if c < -0.2 {
+		return true
+	}
+	if c > 0.2 {
+		return false
+	}
+	return current
+}
+
+// devicePetStrollRadius is the lap radius, in asset pixels, that makes one
+// gait cycle cover about half the circle. That matches the clip's desktop
+// travel, so the feet are not skating across the dial.
+func devicePetStrollRadius(clip *petpack.RigClip) float64 {
+	travel := 110.0
+	if clip != nil {
+		if d := math.Hypot(clip.TravelX, clip.TravelY); d >= 40 {
+			travel = d
+		}
+	}
+	return travel / math.Pi
+}
+
+// devicePetFacingBox is the opaque box after a left-facing mirror, so the
+// route scale reserves room for the turned pose and not only the right-facing one.
+func devicePetFacingBox(box petOpaqueBox, faceLeft bool) petOpaqueBox {
+	if !box.ok || !faceLeft {
+		return box
+	}
+	box.minX, box.maxX = devicePetAssetWidth-1-box.maxX, devicePetAssetWidth-1-box.minX
+	return box
+}
+
+func appendDevicePetShot(shots []devicePetShot, rr *petpack.RigRenderer, body, expr string, numer, denom int, alongX, alongY float64, faceLeft bool) []devicePetShot {
 	clip := rr.Clip(body)
 	if clip == nil {
 		return shots
@@ -220,7 +229,7 @@ func appendDevicePetShot(shots []devicePetShot, rr *petpack.RigRenderer, body, e
 	if denom > 0 && clip.DurationMS > 0 {
 		at = clip.DurationMS * numer / denom
 	}
-	return append(shots, devicePetShot{body: body, expr: expr, at: at, along: along, faceLeft: faceLeft})
+	return append(shots, devicePetShot{body: body, expr: expr, at: at, alongX: alongX, alongY: alongY, faceLeft: faceLeft})
 }
 
 func devicePetExpr(rr *petpack.RigRenderer, names ...string) string {
@@ -240,7 +249,11 @@ func devicePetLayers(rr *petpack.RigRenderer, body, expr string) []string {
 	if expr != "" && rr.Clip(expr) != nil {
 		layers = append(layers, expr)
 	}
-	for _, name := range []string{"gaze_center", "secondary_idle"} {
+	gaze := "gaze_center"
+	if clip := rr.Clip("gaze_wander"); clip != nil && len(clip.Tracks) > 0 {
+		gaze = "gaze_wander"
+	}
+	for _, name := range []string{gaze, "secondary_idle"} {
 		clip := rr.Clip(name)
 		if clip != nil && len(clip.Tracks) > 0 {
 			layers = append(layers, name)
@@ -249,8 +262,8 @@ func devicePetLayers(rr *petpack.RigRenderer, body, expr string) []string {
 	return layers
 }
 
-func devicePetRichRigFrames(rr *petpack.RigRenderer) ([]image.Image, int) {
-	shots := devicePetRichShots(rr)
+func devicePetRichRigFrames(rr *petpack.RigRenderer, growth float64) ([]image.Image, int) {
+	shots := devicePetWanderShots(rr)
 	if len(shots) == 0 || rr == nil {
 		return nil, 0
 	}
@@ -269,13 +282,16 @@ func devicePetRichRigFrames(rr *petpack.RigRenderer) ([]image.Image, int) {
 	}
 	boxes := make([]petOpaqueBox, len(raw))
 	for i, frame := range raw {
-		boxes[i] = petOpaqueBoxOf(frame)
+		boxes[i] = devicePetFacingBox(petOpaqueBoxOf(frame), kept[i].faceLeft)
 	}
-	scale := devicePetRouteScale(boxes)
-	frames := make([]image.Image, 0, len(raw))
-	for i, frame := range raw {
-		frames = append(frames, layoutDevicePetFrame(frame, scale, kept[i].along, kept[i].faceLeft))
+	// Stage growth is applied after the stroll floor, then capped at 1 so a
+	// larger pet uses the slack instead of walking off the dial.
+	scale := devicePetRouteScale(boxes) * devicePetGrowthFactor(growth)
+	if scale > 1 {
+		scale = 1
 	}
+	radius := devicePetStrollRadius(rr.Clip(kept[0].body))
+	frames := layoutDevicePetReel(raw, kept, scale, radius)
 	frameMS := devicePetFrameMS
 	if rr.Clip("walk_loop") != nil || rr.Clip("run_loop") != nil {
 		frameMS = devicePetRouteFrameMS
@@ -318,8 +334,8 @@ func petOpaqueBoxOf(src *image.NRGBA) petOpaqueBox {
 	return box
 }
 
-// devicePetRouteScale shrinks a reel just enough that the widest pose still
-// has room to travel, and the tallest pose (a jump) still fits the canvas.
+// devicePetRouteScale shrinks a reel just enough that the widest and tallest
+// poses still have room to stroll inside the frame.
 func devicePetRouteScale(boxes []petOpaqueBox) float64 {
 	minX, minY := devicePetAssetWidth, devicePetAssetHeight
 	maxX, maxY := -1, -1
@@ -351,12 +367,16 @@ func devicePetRouteScale(boxes []petOpaqueBox) float64 {
 		return 1
 	}
 	scale := 1.0
-	if contentH > availH {
-		scale = float64(availH) / float64(contentH)
+	roomH := float64(availH - devicePetRouteSlack)
+	if roomH < 1 {
+		roomH = 1
+	}
+	if float64(contentH) > roomH {
+		scale = roomH / float64(contentH)
 	}
 	roomW := float64(availW - devicePetRouteSlack)
-	if roomW < float64(availW)*devicePetRouteMinScale {
-		roomW = float64(availW) * devicePetRouteMinScale
+	if roomW < 1 {
+		roomW = 1
 	}
 	if float64(contentW)*scale > roomW {
 		scale = roomW / float64(contentW)
@@ -370,55 +390,160 @@ func devicePetRouteScale(boxes []petOpaqueBox) float64 {
 	return scale
 }
 
-// layoutDevicePetFrame keeps one pose inside the frame while shifting it along
-// the walk/run route. along is clamped to the opaque silhouette's own slack,
-// which is the device analogue of the floating window stopping at the work area.
-func layoutDevicePetFrame(src *image.NRGBA, scale, along float64, faceLeft bool) *image.NRGBA {
-	if src == nil {
+// layoutDevicePetFrame places one pose. A single frame is its own union, so
+// this stays the per-image primitive the layout test calls.
+func layoutDevicePetFrame(src *image.NRGBA, scale, alongX, alongY float64, faceLeft bool) *image.NRGBA {
+	frames := layoutDevicePetReel([]*image.NRGBA{src}, []devicePetShot{{
+		alongX: alongX, alongY: alongY, faceLeft: faceLeft,
+	}}, scale, math.Inf(1))
+	if len(frames) == 0 || frames[0] == nil {
 		return nil
 	}
-	if faceLeft {
-		src = mirrorDevicePet(src)
+	out, _ := frames[0].(*image.NRGBA)
+	return out
+}
+
+// layoutDevicePetReel shifts every pose by the same baseline. Recentering each
+// silhouette on its own box would cancel the gait and make a wide step jump
+// farther than a narrow one. radius caps the lap so one walk cycle stays near
+// the clip's desktop travel; math.Inf uses the full safe slack.
+func layoutDevicePetReel(frames []*image.NRGBA, shots []devicePetShot, scale, radius float64) []image.Image {
+	if len(frames) == 0 || len(frames) != len(shots) {
+		return nil
 	}
-	fitted := src
-	if scale < 0.999 {
-		fitted = scaleDevicePetAboutCenter(src, scale)
+	fitted := make([]*image.NRGBA, len(frames))
+	boxes := make([]petOpaqueBox, len(frames))
+	union := petOpaqueBox{}
+	has := false
+	for i, src := range frames {
+		if src == nil {
+			continue
+		}
+		img := src
+		if shots[i].faceLeft {
+			img = mirrorDevicePet(img)
+		}
+		if scale > 0 && math.Abs(scale-1) > 0.001 {
+			img = scaleDevicePetAboutCenter(img, scale)
+		}
+		fitted[i] = img
+		box := petOpaqueBoxOf(img)
+		boxes[i] = box
+		if !box.ok {
+			continue
+		}
+		if !has {
+			union = box
+			has = true
+			continue
+		}
+		if box.minX < union.minX {
+			union.minX = box.minX
+		}
+		if box.minY < union.minY {
+			union.minY = box.minY
+		}
+		if box.maxX > union.maxX {
+			union.maxX = box.maxX
+		}
+		if box.maxY > union.maxY {
+			union.maxY = box.maxY
+		}
 	}
-	box := petOpaqueBoxOf(fitted)
-	if !box.ok {
-		return fitted
+	out := make([]image.Image, len(frames))
+	if !has {
+		for i := range fitted {
+			out[i] = fitted[i]
+		}
+		return out
 	}
-	width, height := fitted.Bounds().Dx(), fitted.Bounds().Dy()
-	slackRight := (width - 1 - devicePetTrackMargin) - box.maxX
-	slackLeft := box.minX - devicePetTrackMargin
-	if slackRight < 0 {
-		slackRight = 0
+	width, height := devicePetAssetWidth, devicePetAssetHeight
+	for _, img := range fitted {
+		if img != nil {
+			width, height = img.Bounds().Dx(), img.Bounds().Dy()
+			break
+		}
 	}
-	if slackLeft < 0 {
-		slackLeft = 0
-	}
-	dx := 0
-	if along > 0 {
-		dx = int(math.Round(along * float64(slackRight)))
-	} else if along < 0 {
-		dx = int(math.Round(along * float64(slackLeft)))
-	}
-	dy := 0
+	limitLeft := devicePetTrackMargin
+	limitRight := width - 1 - devicePetTrackMargin
 	limitTop := devicePetTrackMargin
 	limitBottom := height - 1 - devicePetTrackMargin
-	if box.minY < limitTop {
-		dy = limitTop - box.minY
+	unionW := union.maxX - union.minX + 1
+	unionH := union.maxY - union.minY + 1
+	safeW := limitRight - limitLeft + 1
+	safeH := limitBottom - limitTop + 1
+	slackX := safeW - unionW
+	slackY := safeH - unionH
+	if slackX < 0 {
+		slackX = 0
 	}
-	if box.maxY+dy > limitBottom {
-		dy = limitBottom - box.maxY
+	if slackY < 0 {
+		slackY = 0
+	}
+	// One baseline for the whole lap. A pose that stands on the bottom edge
+	// would otherwise have no room to stroll downward.
+	dx0 := limitLeft + (safeW-unionW)/2 - union.minX
+	dy0 := limitTop + (safeH-unionH)/2 - union.minY
+	ampX := float64(slackX) / 2
+	ampY := float64(slackY) / 2
+	if radius > 0 && !math.IsInf(radius, 0) {
+		if ampX > radius {
+			ampX = radius
+		}
+		if ampY > radius {
+			ampY = radius
+		}
+	}
+	for i := range fitted {
+		if fitted[i] == nil || !boxes[i].ok {
+			out[i] = fitted[i]
+			continue
+		}
+		dx := dx0 + int(math.Round(clampDevicePetAlong(shots[i].alongX)*ampX))
+		dy := dy0 + int(math.Round(clampDevicePetAlong(shots[i].alongY)*ampY))
+		dx, dy = clampDevicePetShift(boxes[i], dx, dy, limitLeft, limitRight, limitTop, limitBottom)
+		if dx == 0 && dy == 0 {
+			out[i] = fitted[i]
+			continue
+		}
+		out[i] = translateDevicePet(fitted[i], dx, dy)
+	}
+	return out
+}
+
+func clampDevicePetAlong(v float64) float64 {
+	if math.IsNaN(v) {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	if v < -1 {
+		return -1
+	}
+	return v
+}
+
+func clampDevicePetShift(box petOpaqueBox, dx, dy, limitLeft, limitRight, limitTop, limitBottom int) (int, int) {
+	if box.minX+dx < limitLeft {
+		dx = limitLeft - box.minX
+	}
+	if box.maxX+dx > limitRight {
+		dx -= box.maxX + dx - limitRight
+	}
+	if box.minX+dx < limitLeft {
+		dx = limitLeft - box.minX
 	}
 	if box.minY+dy < limitTop {
 		dy = limitTop - box.minY
 	}
-	if dx == 0 && dy == 0 {
-		return fitted
+	if box.maxY+dy > limitBottom {
+		dy -= box.maxY + dy - limitBottom
 	}
-	return translateDevicePet(fitted, dx, dy)
+	if box.minY+dy < limitTop {
+		dy = limitTop - box.minY
+	}
+	return dx, dy
 }
 
 func mirrorDevicePet(src *image.NRGBA) *image.NRGBA {
@@ -433,6 +558,157 @@ func mirrorDevicePet(src *image.NRGBA) *image.NRGBA {
 			dst.SetNRGBA(width-1-x, y, src.NRGBAAt(bounds.Min.X+x, bounds.Min.Y+y))
 		}
 	}
+	return dst
+}
+
+// devicePetGrowthFactor clamps a rearing scale. Zero means the stage did not
+// ask for a size change. Pack validation allows 0.5–1.5.
+func devicePetGrowthFactor(growth float64) float64 {
+	if growth == 0 || math.IsNaN(growth) || math.IsInf(growth, 0) {
+		return 1
+	}
+	if growth < 0.5 {
+		return 0.5
+	}
+	if growth > 1.5 {
+		return 1.5
+	}
+	return growth
+}
+
+// devicePetApplyGrowth scales idle and procedural frames about the opaque
+// body and keeps that body inside the margin. Stroll frames do not use this:
+// their growth is baked into the route scale before the shared lap shift.
+func devicePetApplyGrowth(frames []image.Image, growth float64) []image.Image {
+	factor := devicePetGrowthFactor(growth)
+	if len(frames) == 0 || math.Abs(factor-1) < 0.001 {
+		return frames
+	}
+	imgs := make([]*image.NRGBA, len(frames))
+	union := petOpaqueBox{}
+	has := false
+	width, height := 0, 0
+	for i, frame := range frames {
+		img := devicePetNRGBA(frame)
+		imgs[i] = img
+		if img == nil {
+			continue
+		}
+		if width == 0 {
+			width, height = img.Bounds().Dx(), img.Bounds().Dy()
+		}
+		box := petOpaqueBoxOf(img)
+		if !box.ok || img.Bounds().Dx() != width || img.Bounds().Dy() != height {
+			continue
+		}
+		if !has {
+			union = box
+			has = true
+			continue
+		}
+		if box.minX < union.minX {
+			union.minX = box.minX
+		}
+		if box.minY < union.minY {
+			union.minY = box.minY
+		}
+		if box.maxX > union.maxX {
+			union.maxX = box.maxX
+		}
+		if box.maxY > union.maxY {
+			union.maxY = box.maxY
+		}
+	}
+	if !has || width < 1 || height < 1 {
+		return frames
+	}
+	cx := float64(union.minX+union.maxX) / 2
+	cy := float64(union.minY+union.maxY) / 2
+	limitLeft := float64(devicePetTrackMargin)
+	limitRight := float64(width - 1 - devicePetTrackMargin)
+	limitTop := float64(devicePetTrackMargin)
+	limitBottom := float64(height - 1 - devicePetTrackMargin)
+	fit := factor
+	clampFit := func(span, room float64) {
+		if span <= 0.5 {
+			return
+		}
+		if room <= 0 {
+			if fit > 1 {
+				fit = 1
+			}
+			return
+		}
+		if room/span < fit {
+			fit = room / span
+		}
+	}
+	clampFit(cx-float64(union.minX), cx-limitLeft)
+	clampFit(float64(union.maxX)-cx, limitRight-cx)
+	clampFit(cy-float64(union.minY), cy-limitTop)
+	clampFit(float64(union.maxY)-cy, limitBottom-cy)
+	if fit < 0.05 {
+		fit = 0.05
+	}
+	if math.Abs(fit-1) < 0.001 {
+		return frames
+	}
+	out := make([]image.Image, len(frames))
+	limitL := devicePetTrackMargin
+	limitR := width - 1 - devicePetTrackMargin
+	limitT := devicePetTrackMargin
+	limitB := height - 1 - devicePetTrackMargin
+	for i, img := range imgs {
+		if img == nil || img.Bounds().Dx() != width || img.Bounds().Dy() != height {
+			out[i] = frames[i]
+			continue
+		}
+		scaled := scaleDevicePetAbout(img, fit, cx, cy)
+		box := petOpaqueBoxOf(scaled)
+		if box.ok {
+			dx, dy := clampDevicePetShift(box, 0, 0, limitL, limitR, limitT, limitB)
+			if dx != 0 || dy != 0 {
+				scaled = translateDevicePet(scaled, dx, dy)
+			}
+		}
+		out[i] = scaled
+	}
+	return out
+}
+
+func devicePetNRGBA(src image.Image) *image.NRGBA {
+	if src == nil {
+		return nil
+	}
+	if img, ok := src.(*image.NRGBA); ok && img.Bounds().Min.X == 0 && img.Bounds().Min.Y == 0 {
+		return img
+	}
+	bounds := src.Bounds()
+	dst := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	draw.Draw(dst, dst.Bounds(), src, bounds.Min, draw.Src)
+	return dst
+}
+
+// scaleDevicePetAbout keeps the anchor pixel in place. Growing about the
+// canvas center would push a bottom-standing pet's feet off the frame.
+func scaleDevicePetAbout(src *image.NRGBA, scale, ax, ay float64) *image.NRGBA {
+	if src == nil || scale <= 0 || math.IsNaN(scale) {
+		return src
+	}
+	bounds := src.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, width, height))
+	dw := int(math.Round(float64(width) * scale))
+	dh := int(math.Round(float64(height) * scale))
+	if dw < 1 {
+		dw = 1
+	}
+	if dh < 1 {
+		dh = 1
+	}
+	x0 := int(math.Round(ax * (1 - scale)))
+	y0 := int(math.Round(ay * (1 - scale)))
+	xdraw.CatmullRom.Scale(dst, image.Rect(x0, y0, x0+dw, y0+dh), src, bounds, draw.Over, nil)
 	return dst
 }
 

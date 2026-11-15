@@ -90,7 +90,7 @@ class AuthApi {
       method: method,
       hub: hub,
       hubCenterUrl: resolve.hubCenterUrl,
-      message: (data['message'] as String? ?? '').trim(),
+      message: (data['message'] ?? '').toString().trim(),
     );
   }
 
@@ -133,12 +133,11 @@ class AuthApi {
       throw hubExceptionFrom(error);
     }
     final data = response.data ?? const <String, dynamic>{};
-    final status = (data['status'] as String? ?? '').trim();
-    final token = (data['access_token'] as String? ??
-            data['viewer_token'] as String? ??
-            '')
+    final status = (data['status'] ?? '').toString().trim();
+    final token = (data['access_token'] ?? data['viewer_token'] ?? '')
+        .toString()
         .trim();
-    final message = (data['message'] as String? ?? '').trim();
+    final message = (data['message'] ?? '').toString().trim();
     if (token.isEmpty) {
       return VerifyResult(
         status: status.isNotEmpty ? status : 'pending',
@@ -151,19 +150,19 @@ class AuthApi {
       hubUrl: normalizeHubUrl(hub.baseUrl),
       hubId: hub.hubId,
       hubCenterUrl: request.hubCenterUrl,
-      tenantId: (data['tenant_id'] as String? ?? hub.tenantId).trim(),
+      tenantId: (data['tenant_id'] ?? hub.tenantId).toString().trim(),
       tenantName:
-          (data['tenant_name'] as String? ?? hub.tenantName).trim(),
-      userId: (data['user_id'] as String? ?? '').trim(),
-      email: (data['email'] as String? ??
-              (isPhone ? '' : request.identity))
+          (data['tenant_name'] ?? hub.tenantName).toString().trim(),
+      userId: (data['user_id'] ?? '').toString().trim(),
+      email: (data['email'] ?? (isPhone ? '' : request.identity))
+          .toString()
           .trim(),
-      phoneNumber: (data['phone_number'] as String? ??
-              (isPhone ? request.identity : ''))
+      phoneNumber: (data['phone_number'] ?? (isPhone ? request.identity : ''))
+          .toString()
           .trim(),
       token: token,
-      machineId: (data['machine_id'] as String? ?? '').trim(),
-      machineToken: (data['machine_token'] as String? ?? '').trim(),
+      machineId: (data['machine_id'] ?? '').toString().trim(),
+      machineToken: (data['machine_token'] ?? '').toString().trim(),
       clientId: clientId,
       addedAt: DateTime.now(),
     );
@@ -200,33 +199,32 @@ class AuthApi {
       throw hubExceptionFrom(error);
     }
     final data = response.data ?? const <String, dynamic>{};
-    final status = (data['status'] as String? ?? '').trim();
-    final token = (data['access_token'] as String? ??
-            data['viewer_token'] as String? ??
-            '')
+    final status = (data['status'] ?? '').toString().trim();
+    final token = (data['access_token'] ?? data['viewer_token'] ?? '')
+        .toString()
         .trim();
-    final message = (data['message'] as String? ?? '').trim();
+    final message = (data['message'] ?? '').toString().trim();
     if (token.isEmpty) {
       return VerifyResult(
         status: status.isNotEmpty ? status : 'pending',
         message: message.isNotEmpty ? message : '注册已提交，等待审批通过后再登录',
       );
     }
-    final phone = (data['phone_number'] as String? ?? '').trim();
-    final email = (data['email'] as String? ?? '').trim();
+    final phone = (data['phone_number'] ?? '').toString().trim();
+    final email = (data['email'] ?? '').toString().trim();
     final identity = phone.isNotEmpty ? phone : email;
     final account = Account(
       key: phone.isNotEmpty ? 'phone:$phone' : 'email:${email.toLowerCase()}',
       label: email.isNotEmpty ? email : identity,
       hubUrl: normalizeHubUrl(payload.hubUrl),
-      tenantId: (data['tenant_id'] as String? ?? '').trim(),
-      tenantName: (data['tenant_name'] as String? ?? '').trim(),
-      userId: (data['user_id'] as String? ?? '').trim(),
+      tenantId: (data['tenant_id'] ?? '').toString().trim(),
+      tenantName: (data['tenant_name'] ?? '').toString().trim(),
+      userId: (data['user_id'] ?? '').toString().trim(),
       email: email,
       phoneNumber: phone,
       token: token,
-      machineId: (data['machine_id'] as String? ?? '').trim(),
-      machineToken: (data['machine_token'] as String? ?? '').trim(),
+      machineId: (data['machine_id'] ?? '').toString().trim(),
+      machineToken: (data['machine_token'] ?? '').toString().trim(),
       clientId: clientId,
       addedAt: DateTime.now(),
     );

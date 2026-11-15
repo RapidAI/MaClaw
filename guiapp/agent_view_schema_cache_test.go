@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestAgentViewSchemaVersionStableAndChangesWithContract(t *testing.T) {
@@ -93,18 +94,7 @@ func TestRecordAgentViewSchemaPersistsAcrossLoads(t *testing.T) {
 		t.Fatalf("recordAgentViewSchema second call error = %v", err)
 	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	var snapshot agentViewSchemaSnapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
-	}
-	if len(snapshot.Records) != 1 {
-		t.Fatalf("expected one schema record, got %#v", snapshot.Records)
-	}
-	record := snapshot.Records[0]
+	record := loadAgentViewSchemaRecordForTest(t, "abc123")
 	if record.Version != "abc123" || record.Source != "tool.adapter" || record.ID != "expense" {
 		t.Fatalf("unexpected schema record identity: %#v", record)
 	}
@@ -122,21 +112,88 @@ func TestRecordAgentViewSchemaPersistsAcrossLoads(t *testing.T) {
 	if err := recordAgentViewSchema(path, view); err != nil {
 		t.Fatalf("recordAgentViewSchema reload call error = %v", err)
 	}
-	data, err = os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile after reload error = %v", err)
-	}
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		t.Fatalf("Unmarshal after reload error = %v", err)
-	}
-	if len(snapshot.Records) != 1 || snapshot.Records[0].UseCount != 3 {
-		t.Fatalf("expected persisted use_count to increment to 3, got %#v", snapshot.Records)
+	record = loadAgentViewSchemaRecordForTest(t, "abc123")
+	if record.UseCount != 3 {
+		t.Fatalf("expected persisted use_count to increment to 3, got %#v", record)
 	}
 }
 
 func resetAgentViewSchemaPersistentStoreForTest() {
 	agentViewSchemaPersistentStore.Lock()
 	defer agentViewSchemaPersistentStore.Unlock()
-	agentViewSchemaPersistentStore.loadedPath = ""
-	agentViewSchemaPersistentStore.items = map[string]agentViewSchemaRecord{}
+	closeAgentViewSchemaStoreLocked()
+}
+
+func loadAgentViewSchemaRecordForTest(t *testing.T, version string) agentViewSchemaRecord {
+	t.Helper()
+	agentViewSchemaPersistentStore.Lock()
+	defer agentViewSchemaPersistentStore.Unlock()
+	if agentViewSchemaPersistentStore.database == nil {
+		t.Fatal("schema database is not open")
+	}
+	var record agentViewSchemaRecord
+	var firstSeen, lastSeen int64
+	if err := agentViewSchemaPersistentStore.database.db.QueryRow(`SELECT version, source, schema_id, view_id, view_type, title,
+		first_seen_unix_nano, last_seen_unix_nano, use_count FROM agent_view_schemas WHERE version=?`, version).Scan(
+		&record.Version, &record.Source, &record.ID, &record.ViewID, &record.ViewType, &record.Title,
+		&firstSeen, &lastSeen, &record.UseCount); err != nil {
+		t.Fatal(err)
+	}
+	record.FirstSeen = agentViewSchemaTimeFromUnixNano(firstSeen)
+	record.LastSeen = agentViewSchemaTimeFromUnixNano(lastSeen)
+	return record
+}
+
+func TestRecordAgentViewSchemaMigratesLegacyJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent_view_schemas.json")
+	now := time.Now().Add(-time.Hour)
+	data, err := json.Marshal(agentViewSchemaSnapshot{Records: []agentViewSchemaRecord{{
+		Version: "legacy", Source: "tool.adapter", ID: "expense", FirstSeen: now, LastSeen: now, UseCount: 4,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resetAgentViewSchemaPersistentStoreForTest()
+	view := map[string]interface{}{
+		"type": "form", "id": "tool:run:expense",
+		"meta": map[string]interface{}{"schemaVersion": "legacy", "schemaSource": "tool.adapter", "schemaID": "expense"},
+	}
+	if err := recordAgentViewSchema(path, view); err != nil {
+		t.Fatal(err)
+	}
+	record := loadAgentViewSchemaRecordForTest(t, "legacy")
+	if record.UseCount != 5 || !record.FirstSeen.Equal(now) {
+		t.Fatalf("legacy record = %#v", record)
+	}
+}
+
+func TestRecordAgentViewSchemaPreservesLegacyZeroFirstSeen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent_view_schemas.json")
+	data, err := json.Marshal(agentViewSchemaSnapshot{Records: []agentViewSchemaRecord{{
+		Version: "zero-time", Source: "tool.adapter", ID: "expense", UseCount: 2,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resetAgentViewSchemaPersistentStoreForTest()
+	view := map[string]interface{}{
+		"type": "form", "id": "tool:run:expense",
+		"meta": map[string]interface{}{"schemaVersion": "zero-time", "schemaSource": "tool.adapter", "schemaID": "expense"},
+	}
+	if err := recordAgentViewSchema(path, view); err != nil {
+		t.Fatal(err)
+	}
+	record := loadAgentViewSchemaRecordForTest(t, "zero-time")
+	if !record.FirstSeen.IsZero() {
+		t.Fatalf("zero first_seen changed to %s", record.FirstSeen)
+	}
+	if record.LastSeen.IsZero() || record.UseCount != 3 {
+		t.Fatalf("last_seen/use_count = %s/%d", record.LastSeen, record.UseCount)
+	}
 }

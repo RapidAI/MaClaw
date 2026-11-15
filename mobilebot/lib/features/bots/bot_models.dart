@@ -66,18 +66,59 @@ class Bot {
   }
 
   factory Bot.fromJson(Map<String, dynamic> json) => Bot(
-        id: (json['id'] as String? ?? '').trim(),
-        name: (json['name'] as String? ?? json['title'] as String? ?? '')
+        id: syncText(json['id']).trim(),
+        name: syncTextAny(json['name'], json['title'])
             .trim(),
-        description: (json['description'] as String? ?? '').trim(),
-        instanceId: (json['instance_id'] as String? ?? '').trim(),
-        desktopMode: (json['desktop_mode'] as String? ?? '').trim(),
-        color: (json['color'] as String? ?? '').trim(),
-        shape: (json['shape'] as String? ?? '').trim(),
+        description: syncText(json['description']).trim(),
+        instanceId: syncText(json['instance_id']).trim(),
+        desktopMode: syncText(json['desktop_mode']).trim(),
+        color: syncText(json['color']).trim(),
+        shape: syncText(json['shape']).trim(),
         primary: json['primary'] == true,
-        createdAt: DateTime.tryParse(json['created_at'] as String? ?? ''),
+        createdAt: DateTime.tryParse(syncText(json['created_at'])),
       );
 }
+
+/// Owner grant for bots that use a computer. A null [limit] is unlimited.
+/// [known] is false when the list response has no `desktop_quota` (an older Hub).
+class DesktopBotQuota {
+  final int? limit;
+  final int used;
+  final bool known;
+
+  const DesktopBotQuota({this.limit, this.used = 0, this.known = false});
+
+  bool get exhausted => known && limit != null && used >= limit!;
+
+  String get label {
+    if (!known) return '';
+    if (limit == null) return '已用 $used';
+    return '已用 $used / $limit';
+  }
+
+  DesktopBotQuota bump() =>
+      DesktopBotQuota(limit: limit, used: used + 1, known: known);
+
+  factory DesktopBotQuota.fromJson(Object? raw) {
+    if (raw is! Map) return const DesktopBotQuota();
+    final limitRaw = raw['limit'];
+    final usedRaw = raw['used'];
+    return DesktopBotQuota(
+      limit: limitRaw is num ? limitRaw.toInt() : null,
+      used: usedRaw is num ? usedRaw.toInt() : 0,
+      known: true,
+    );
+  }
+}
+
+/// List mark. An empty mode is the shared computer, matching the desktop client.
+String desktopModeMark(String mode) => switch (mode) {
+      'none' => '无电脑',
+      'isolated' => '电脑·独立',
+      _ => '电脑·共用',
+    };
+
+bool botHasComputer(String mode) => mode != 'none';
 
 class BotAccess {
   final bool enabled;
@@ -89,7 +130,7 @@ class BotAccess {
 
   factory BotAccess.fromJson(Map<String, dynamic> json) => BotAccess(
         enabled: json['enabled'] == true,
-        message: (json['message'] as String? ?? '').trim(),
+        message: syncText(json['message']).trim(),
       );
 }
 
@@ -125,9 +166,9 @@ class BotQuestion {
       question.trim().isNotEmpty || isChoice || isSecret;
 
   factory BotQuestion.fromJson(Map<String, dynamic> json) => BotQuestion(
-        inputType: (json['ask_user_input_type'] as String? ?? '').trim(),
-        secretName: (json['ask_user_secret_name'] as String? ?? '').trim(),
-        question: (json['ask_user_question'] as String? ?? '').trim(),
+        inputType: syncText(json['ask_user_input_type']).trim(),
+        secretName: syncText(json['ask_user_secret_name']).trim(),
+        question: syncText(json['ask_user_question']).trim(),
         options: parseBotAskOptions(json['ask_user_options_json']),
       );
 }
@@ -167,11 +208,19 @@ class BotReplyImage {
   final String mime;
   final String data;
 
-  const BotReplyImage({required this.mime, required this.data});
+  /// Server/volume id for this picture. Bytes are fetched on demand by the
+  /// client that staged them; the id alone travels in the shared journal.
+  final String attachmentId;
+
+  const BotReplyImage(
+      {required this.mime, required this.data, this.attachmentId = ''});
 
   factory BotReplyImage.fromJson(Map<String, dynamic> json) => BotReplyImage(
-        mime: (json['mime'] as String? ?? '').trim(),
-        data: (json['data'] as String? ?? '').trim(),
+        mime: syncText(json['mime']),
+        data: syncText(json['data']),
+        attachmentId: syncText(json['attachment_id']).isNotEmpty
+            ? syncText(json['attachment_id'])
+            : syncText(json['attachmentId']),
       );
 }
 
@@ -179,16 +228,36 @@ class BotReplyFile {
   final String name;
   final String mime;
   final String data;
+  final String attachmentId;
 
-  const BotReplyFile({this.name = '', this.mime = '', this.data = ''});
+  const BotReplyFile(
+      {this.name = '', this.mime = '', this.data = '', this.attachmentId = ''});
 
   String get displayName => name.trim().isEmpty ? '文件' : name.trim();
 
   factory BotReplyFile.fromJson(Map<String, dynamic> json) => BotReplyFile(
-        name: (json['name'] as String? ?? '').trim(),
-        mime: (json['mime'] as String? ?? '').trim(),
-        data: (json['data'] as String? ?? '').trim(),
+        name: syncText(json['name']),
+        mime: syncText(json['mime']),
+        data: syncText(json['data']),
+        attachmentId: syncText(json['attachment_id']).isNotEmpty
+            ? syncText(json['attachment_id'])
+            : syncText(json['attachmentId']),
       );
+}
+
+/// Portable media ids — `desktop_attachment_ids` on a run result,
+/// `attachmentIds` in a shared journal projection (mirrors
+/// `attachmentIdsFrom` in desktopBotResultStore.ts).
+List<String> attachmentIdsFrom(Map<String, dynamic> data) {
+  final raw = data['attachmentIds'] ??
+      data['desktop_attachment_ids'] ??
+      data['DesktopAttachmentIDs'];
+  if (raw is! List) return const [];
+  final ok = RegExp(r'^[A-Za-z0-9_.:-]{1,80}$');
+  return [
+    for (final item in raw)
+      if (ok.hasMatch(item.toString().trim())) item.toString().trim(),
+  ];
 }
 
 /// One finished turn — the synchronous message answer and the run poll answer
@@ -227,23 +296,23 @@ class BotReply {
   }
 
   factory BotReply.fromJson(Map<String, dynamic> json) => BotReply(
-        text: (json['text'] as String? ?? '').toString(),
-        novncUrl: (json['novnc_url'] as String? ?? '').trim(),
+        text: syncText(json['text']).toString(),
+        novncUrl: syncText(json['novnc_url']).trim(),
         handoff: json['handoff'] == true,
         userControl: json['user_control'] == true,
-        attentionReason: (json['attention_reason'] as String? ?? '').trim(),
+        attentionReason: syncText(json['attention_reason']).trim(),
         question: BotQuestion.fromJson(json),
         images: [
-          for (final item in (json['images'] as List? ?? const []))
+          for (final item in syncList(json['images']))
             if (item is Map)
               BotReplyImage.fromJson(Map<String, dynamic>.from(item)),
         ],
         files: [
-          for (final item in (json['files'] as List? ?? const []))
+          for (final item in syncList(json['files']))
             if (item is Map)
               BotReplyFile.fromJson(Map<String, dynamic>.from(item)),
         ],
-        phase: BotPhaseWire.fromWire(json['phase'] as String? ?? ''),
+        phase: BotPhaseWire.fromWire(syncText(json['phase'])),
       );
 }
 
@@ -256,8 +325,8 @@ class BotRun {
   bool get accepted => runId.trim().isNotEmpty;
 
   factory BotRun.fromJson(Map<String, dynamic> json) => BotRun(
-        runId: (json['run_id'] as String? ?? '').trim(),
-        status: (json['status'] as String? ?? 'running').trim(),
+        runId: syncText(json['run_id']).trim(),
+        status: syncTextOr(syncText(json['status']), 'running').trim(),
       );
 }
 
@@ -280,10 +349,10 @@ class BotDesktop {
   bool get isRunning => novncUrl.trim().isNotEmpty;
 
   factory BotDesktop.fromJson(Map<String, dynamic> json) => BotDesktop(
-        novncUrl: (json['novnc_url'] as String? ?? '').trim(),
+        novncUrl: syncText(json['novnc_url']).trim(),
         userControl: json['user_control'] == true,
-        attentionReason: (json['attention_reason'] as String? ?? '').trim(),
-        desktopMode: (json['desktop_mode'] as String? ?? '').trim(),
+        attentionReason: syncText(json['attention_reason']).trim(),
+        desktopMode: syncText(json['desktop_mode']).trim(),
         released: json['released'] == true,
       );
 }
@@ -319,18 +388,18 @@ class ActiveRun {
   });
 
   factory ActiveRun.fromJson(Map<String, dynamic> json) => ActiveRun(
-        runId: (json['run_id'] as String? ?? '').trim(),
-        botId: (json['bot_id'] as String? ?? '').trim(),
-        source: (json['source'] as String? ?? '').trim(),
-        status: (json['status'] as String? ?? '').trim(),
-        task: (json['task'] as String? ?? '').trim(),
-        step: (json['step'] as String? ?? '').trim(),
-        nextStep: (json['next_step'] as String? ?? '').trim(),
-        phase: (json['phase'] as String? ?? '').trim(),
+        runId: syncText(json['run_id']).trim(),
+        botId: syncText(json['bot_id']).trim(),
+        source: syncText(json['source']).trim(),
+        status: syncText(json['status']).trim(),
+        task: syncText(json['task']).trim(),
+        step: syncText(json['step']).trim(),
+        nextStep: syncText(json['next_step']).trim(),
+        phase: syncText(json['phase']).trim(),
         waitingForUser: json['waiting_for_user'] == true,
         paused: json['paused'] == true,
         stale: json['stale'] == true,
-        startedAt: DateTime.tryParse(json['started_at'] as String? ?? ''),
+        startedAt: DateTime.tryParse(syncText(json['started_at'])),
       );
 }
 
@@ -356,12 +425,12 @@ class PendingDelivery {
 
   factory PendingDelivery.fromJson(Map<String, dynamic> json) =>
       PendingDelivery(
-        botId: (json['bot_id'] as String? ?? '').trim(),
-        runId: (json['run_id'] as String? ?? '').trim(),
-        task: (json['task'] as String? ?? '').trim(),
-        status: (json['status'] as String? ?? '').trim(),
-        phase: (json['phase'] as String? ?? '').trim(),
-        error: (json['error'] as String? ?? '').trim(),
+        botId: syncText(json['bot_id']).trim(),
+        runId: syncText(json['run_id']).trim(),
+        task: syncText(json['task']).trim(),
+        status: syncText(json['status']).trim(),
+        phase: syncText(json['phase']).trim(),
+        error: syncText(json['error']).trim(),
         reply: json['reply'] is Map
             ? BotReply.fromJson(Map<String, dynamic>.from(json['reply']))
             : const BotReply(),
@@ -394,15 +463,15 @@ class DesktopTaskStatus {
 
   factory DesktopTaskStatus.fromJson(Map<String, dynamic> json) =>
       DesktopTaskStatus(
-        runId: (json['run_id'] as String? ?? '').trim(),
-        task: (json['task'] as String? ?? '').trim(),
-        status: (json['status'] as String? ?? '').trim(),
-        text: (json['text'] as String? ?? '').trim(),
-        error: (json['error'] as String? ?? '').trim(),
-        whereWeAre: (json['where_we_are'] as String? ?? '').trim(),
-        nextStep: (json['next_step'] as String? ?? '').trim(),
-        openProblems: (json['open_problems'] as String? ?? '').trim(),
-        taskOutcome: (json['task_outcome'] as String? ?? '').trim(),
+        runId: syncText(json['run_id']).trim(),
+        task: syncText(json['task']).trim(),
+        status: syncText(json['status']).trim(),
+        text: syncText(json['text']).trim(),
+        error: syncText(json['error']).trim(),
+        whereWeAre: syncText(json['where_we_are']).trim(),
+        nextStep: syncText(json['next_step']).trim(),
+        openProblems: syncText(json['open_problems']).trim(),
+        taskOutcome: syncText(json['task_outcome']).trim(),
       );
 }
 
@@ -431,16 +500,16 @@ class ConversationEntry {
 
   factory ConversationEntry.fromJson(Map<String, dynamic> json) =>
       ConversationEntry(
-        seq: (json['seq'] as num? ?? 0).toInt(),
-        createdSeq: (json['created_seq'] as num? ?? 0).toInt(),
-        botId: (json['bot_id'] as String? ?? '').trim(),
-        id: (json['id'] as String? ?? '').trim(),
-        kind: (json['kind'] as String? ?? '').trim(),
-        origin: (json['origin'] as String? ?? '').trim(),
+        seq: syncInt(json['seq']),
+        createdSeq: syncInt(json['created_seq']),
+        botId: syncText(json['bot_id']),
+        id: syncText(json['id']),
+        kind: syncText(json['kind']),
+        origin: syncText(json['origin']),
         data: json['data'] is Map
             ? Map<String, dynamic>.from(json['data'] as Map)
             : const {},
-        at: (json['at'] as String? ?? '').trim(),
+        at: syncText(json['at']),
       );
 }
 
@@ -462,12 +531,12 @@ class ConversationPage {
   factory ConversationPage.fromJson(Map<String, dynamic> json) =>
       ConversationPage(
         entries: [
-          for (final item in (json['entries'] as List? ?? const []))
+          for (final item in syncList(json['entries']))
             if (item is Map)
               ConversationEntry.fromJson(Map<String, dynamic>.from(item)),
         ],
-        next: (json['next'] as num? ?? 0).toInt(),
-        head: (json['head'] as num? ?? 0).toInt(),
+        next: syncInt(json['next']),
+        head: syncInt(json['head']),
         reset: json['reset'] == true,
         more: json['more'] == true,
       );
@@ -492,9 +561,9 @@ class BotCredits {
   factory BotCredits.fromJson(Map<String, dynamic> json) => BotCredits(
         applies: json['applies'] == true,
         unlimited: json['unlimited'] == true,
-        limit: (json['limit'] as num? ?? 0).toDouble(),
-        used: (json['used'] as num? ?? 0).toDouble(),
-        remaining: (json['remaining'] as num? ?? 0).toDouble(),
+        limit: syncDouble(json['limit']),
+        used: syncDouble(json['used']),
+        remaining: syncDouble(json['remaining']),
       );
 }
 
@@ -528,17 +597,17 @@ class FeedNote {
   DateTime? get at => DateTime.tryParse(createdAt);
 
   factory FeedNote.fromJson(Map<String, dynamic> json) => FeedNote(
-        id: (json['id'] as String? ?? '').trim(),
-        from: (json['from'] as String? ?? '').trim(),
-        target: (json['target'] as String? ?? '').trim(),
-        kind: (json['kind'] as String? ?? '').trim(),
-        text: (json['text'] as String? ?? '').trim(),
-        order: (json['order'] as String? ?? '').trim(),
-        topic: (json['topic'] as String? ?? '').trim(),
-        runId: (json['run_id'] as String? ?? '').trim(),
-        createdAt: (json['created_at'] as String? ?? '').trim(),
+        id: syncText(json['id']).trim(),
+        from: syncText(json['from']).trim(),
+        target: syncText(json['target']).trim(),
+        kind: syncText(json['kind']).trim(),
+        text: syncText(json['text']).trim(),
+        order: syncText(json['order']).trim(),
+        topic: syncText(json['topic']).trim(),
+        runId: syncText(json['run_id']).trim(),
+        createdAt: syncText(json['created_at']).trim(),
         artifacts: [
-          for (final item in (json['artifacts'] as List? ?? const []))
+          for (final item in syncList(json['artifacts']))
             item.toString(),
         ],
       );
@@ -565,12 +634,12 @@ class MaterialUpload {
 
   factory MaterialUpload.fromJson(Map<String, dynamic> json) =>
       MaterialUpload(
-        uploadId: (json['upload_id'] as String? ?? '').trim(),
-        name: (json['name'] as String? ?? '').trim(),
-        received: (json['received'] as num? ?? 0).toInt(),
-        total: (json['total'] as num? ?? 0).toInt(),
+        uploadId: syncText(json['upload_id']).trim(),
+        name: syncText(json['name']).trim(),
+        received: syncInt(json['received']),
+        total: syncInt(json['total']),
         done: json['done'] == true,
-        path: (json['path'] as String? ?? '').trim(),
+        path: syncText(json['path']).trim(),
       );
 }
 
@@ -604,20 +673,20 @@ class BotAssignment {
   });
 
   factory BotAssignment.fromJson(Map<String, dynamic> json) => BotAssignment(
-        id: (json['id'] as String? ?? '').trim(),
-        ownerBot: (json['owner_bot'] as String? ?? '').trim(),
-        targetBot: (json['target_bot'] as String? ?? '').trim(),
-        task: (json['task'] as String? ?? '').trim(),
-        state: (json['state'] as String? ?? '').trim(),
-        lastReport: (json['last_report'] as String? ?? '').trim(),
-        openQuestion: (json['open_question'] as String? ?? '').trim(),
-        review: (json['review'] as String? ?? '').trim(),
+        id: syncText(json['id']).trim(),
+        ownerBot: syncText(json['owner_bot']).trim(),
+        targetBot: syncText(json['target_bot']).trim(),
+        task: syncText(json['task']).trim(),
+        state: syncText(json['state']).trim(),
+        lastReport: syncText(json['last_report']).trim(),
+        openQuestion: syncText(json['open_question']).trim(),
+        review: syncText(json['review']).trim(),
         artifacts: [
-          for (final item in (json['artifacts'] as List? ?? const []))
+          for (final item in syncList(json['artifacts']))
             item.toString(),
         ],
-        resultNoteId: (json['result_note_id'] as String? ?? '').trim(),
-        createdAt: DateTime.tryParse(json['created_at'] as String? ?? ''),
+        resultNoteId: syncText(json['result_note_id']).trim(),
+        createdAt: DateTime.tryParse(syncText(json['created_at'])),
       );
 }
 
@@ -638,10 +707,10 @@ class BotRoom {
   });
 
   factory BotRoom.fromJson(Map<String, dynamic> json) => BotRoom(
-        id: (json['id'] as String? ?? '').trim(),
-        name: (json['name'] as String? ?? '').trim(),
+        id: syncText(json['id']).trim(),
+        name: syncText(json['name']).trim(),
         members: [
-          for (final item in (json['members'] as List? ?? const []))
+          for (final item in syncList(json['members']))
             item.toString(),
         ],
         attention: json['attention'] is Map
@@ -650,7 +719,7 @@ class BotRoom {
                   e.key.toString(): e.value.toString(),
               }
             : const {},
-        createdAt: DateTime.tryParse(json['created_at'] as String? ?? ''),
+        createdAt: DateTime.tryParse(syncText(json['created_at'])),
       );
 }
 
@@ -680,31 +749,85 @@ class SaidNote {
 
   factory SaidNote.fromJson(Map<String, dynamic> json) {
     final files = <String>[
-      for (final item in (json['artifacts'] as List? ?? const []))
+      for (final item in syncList(json['artifacts']))
         item.toString(),
     ];
-    for (final item in (json['files'] as List? ?? const [])) {
+    for (final item in syncList(json['files'])) {
       if (item is Map) {
-        final name = (item['name'] as String? ?? '').trim();
+        final name = syncText(item['name']).trim();
         if (name.isNotEmpty && !files.contains(name)) files.add(name);
       }
     }
     return SaidNote(
-      id: (json['id'] as String? ?? '').trim(),
-      from: (json['from'] as String? ?? '').trim(),
-      kind: (json['kind'] as String? ?? '').trim(),
-      text: (json['text'] as String? ?? '').trim(),
+      id: syncText(json['id']).trim(),
+      from: syncText(json['from']).trim(),
+      kind: syncText(json['kind']).trim(),
+      text: syncText(json['text']).trim(),
       files: files,
       answeredBy: [
-        for (final item in (json['answered_by'] as List? ?? const []))
+        for (final item in syncList(json['answered_by']))
           item.toString(),
       ],
-      createdAt: DateTime.tryParse(json['created_at'] as String? ?? ''),
+      createdAt: DateTime.tryParse(syncText(json['created_at'])),
     );
   }
 }
 
 /// One chat bubble. Local state for pending/failed flags; everything else is
+/// Journal `at` may arrive as an ISO string (this app's projection) or a
+/// millisecond number (other clients); anything else reads as no timestamp.
+DateTime? parseMessageAt(Object? value) {
+  if (value is num) {
+    return DateTime.fromMillisecondsSinceEpoch(value.toInt());
+  }
+  return DateTime.tryParse(value is String ? value : '');
+}
+
+/// A journal field that should be text: strings pass through trimmed,
+/// anything else reads as empty rather than throwing — one malformed entry
+/// must not poison the whole sync merge.
+String syncText(Object? value) => value is String ? value.trim() : '';
+
+/// Same tolerance for list fields.
+List<dynamic> syncList(Object? value) =>
+    value is List ? value : const [];
+
+/// First non-empty text among candidates (multi-key fallbacks).
+String syncTextAny(Object? a, [Object? b, Object? c]) {
+  for (final v in [a, b, c]) {
+    final text = syncText(v);
+    if (text.isNotEmpty) return text;
+  }
+  return '';
+}
+
+/// Text with a non-empty-string fallback.
+String syncTextOr(Object? value, String fallback) {
+  final text = syncText(value);
+  return text.isEmpty ? fallback : text;
+}
+
+/// And for ints that may arrive as a JSON number or a numeric string.
+int syncInt(Object? value) {
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value.trim()) ?? 0;
+  return 0;
+}
+
+/// Int with a non-zero fallback (e.g. day_of_week's "weekly" sentinel).
+int syncIntOr(Object? value, int fallback) {
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value.trim()) ?? fallback;
+  return fallback;
+}
+
+/// Double with the same tolerance.
+double syncDouble(Object? value) {
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value.trim()) ?? 0;
+  return 0;
+}
+
 /// a projection compatible with the desktop journal entry data.
 class ChatMessage {
   final String id;
@@ -737,6 +860,14 @@ class ChatMessage {
   final bool optionsUsed;
   final List<BotReplyImage> images;
   final List<BotReplyFile> files;
+
+  /// The run this turn produced. Attachment bytes never travel in the
+  /// journal; a synced bubble re-fetches them through this id.
+  final String runId;
+
+  /// Media the owning client staged under these ids (screenshots, files).
+  /// Its presence on a synced bubble says the run is worth re-fetching.
+  final List<String> attachmentIds;
   final int syncSeq;
   final DateTime? at;
 
@@ -764,6 +895,8 @@ class ChatMessage {
     this.optionsUsed = false,
     this.images = const [],
     this.files = const [],
+    this.runId = '',
+    this.attachmentIds = const [],
     this.syncSeq = 0,
     this.at,
   });
@@ -779,6 +912,10 @@ class ChatMessage {
     bool? queueHeld,
     bool? askResolved,
     bool? optionsUsed,
+    List<BotReplyImage>? images,
+    List<BotReplyFile>? files,
+    String? runId,
+    List<String>? attachmentIds,
     int? syncSeq,
   }) =>
       ChatMessage(
@@ -803,8 +940,10 @@ class ChatMessage {
         askResolved: askResolved ?? this.askResolved,
         options: options,
         optionsUsed: optionsUsed ?? this.optionsUsed,
-        images: images,
-        files: files,
+        images: images ?? this.images,
+        files: files ?? this.files,
+        runId: runId ?? this.runId,
+        attachmentIds: attachmentIds ?? this.attachmentIds,
         syncSeq: syncSeq ?? this.syncSeq,
         at: at,
       );
@@ -841,6 +980,15 @@ class ChatMessage {
         'options': question.options,
       };
     }
+    if (runId.isNotEmpty) out['runId'] = runId;
+    final mediaIds = [
+      for (final image in images)
+        if (image.attachmentId.isNotEmpty) image.attachmentId,
+      for (final file in files)
+        if (file.attachmentId.isNotEmpty) file.attachmentId,
+      ...attachmentIds,
+    ];
+    if (mediaIds.isNotEmpty) out['attachmentIds'] = mediaIds;
     if (at != null) out['at'] = at!.toIso8601String();
     return out;
   }
@@ -852,44 +1000,54 @@ class ChatMessage {
   }) {
     final ask = data['askUser'];
     final askMap = ask is Map ? Map<String, dynamic>.from(ask) : const {};
+    final requestId = syncText(data['requestId']);
+    final runId = syncText(data['runId']);
     return ChatMessage(
       id: id,
-      role: (data['role'] as String? ?? 'assistant').trim(),
-      content: (data['content'] as String? ?? '').toString(),
+      role: data['role'] is String ? (data['role'] as String).trim() : 'assistant',
+      content: syncText(data['content']),
       failed: data['failed'] == true,
       queued: data['queued'] == true,
       ack: data['ack'] == true,
       chat: data['chat'] == true,
-      phase: (data['phase'] as String? ?? '').trim(),
-      requestId: (data['requestId'] as String? ??
-              data['runId'] as String? ??
-              '')
-          .trim(),
-      workOrder: (data['workOrder'] as String? ?? '').trim(),
-      handoffUrl: (data['handoffUrl'] as String? ?? '').trim(),
+      phase: syncText(data['phase']),
+      requestId: requestId.isNotEmpty ? requestId : runId,
+      workOrder: syncText(data['workOrder']),
+      handoffUrl: syncText(data['handoffUrl']),
       userControl: data['userControl'] == true,
-      attentionReason: (data['attentionReason'] as String? ?? '').trim(),
-      conversation: (data['conversation'] as String? ??
-              data['Conversation'] as String? ??
-              '')
-          .trim(),
+      attentionReason: syncText(data['attentionReason']),
+      conversation: syncText(data['conversation']).isNotEmpty
+          ? syncText(data['conversation'])
+          : syncText(data['Conversation']),
       question: BotQuestion(
-        inputType: (askMap['inputType'] as String? ?? '').trim(),
-        secretName: (askMap['secretName'] as String? ?? '').trim(),
-        question: (askMap['question'] as String? ?? '').trim(),
+        inputType: syncText(askMap['inputType']),
+        secretName: syncText(askMap['secretName']),
+        question: syncText(askMap['question']),
         options: [
-          for (final item in (askMap['options'] as List? ?? const []))
+          for (final item in syncList(askMap['options']))
             item.toString().trim(),
         ].where((s) => s.isNotEmpty).toList(),
       ),
       askResolved: data['askResolved'] == true,
       options: [
-        for (final item in (data['options'] as List? ?? const []))
+        for (final item in syncList(data['options']))
           item.toString().trim(),
       ].where((s) => s.isNotEmpty).toList(),
       optionsUsed: data['optionsUsed'] == true,
+      images: [
+        for (final item in syncList(data['images']))
+          if (item is Map)
+            BotReplyImage.fromJson(Map<String, dynamic>.from(item)),
+      ],
+      files: [
+        for (final item in syncList(data['files']))
+          if (item is Map)
+            BotReplyFile.fromJson(Map<String, dynamic>.from(item)),
+      ],
+      runId: runId.isNotEmpty ? runId : syncText(data['run_id']),
+      attachmentIds: attachmentIdsFrom(data),
       syncSeq: syncSeq,
-      at: DateTime.tryParse(data['at'] as String? ?? ''),
+      at: parseMessageAt(data['at']),
     );
   }
 }
@@ -913,11 +1071,11 @@ class SupplementResult {
 
   factory SupplementResult.fromJson(Map<String, dynamic> json) =>
       SupplementResult(
-        supplementId: (json['supplement_id'] as String? ?? '').trim(),
+        supplementId: syncText(json['supplement_id']).trim(),
         accepted: json['accepted'] == true,
-        state: (json['state'] as String? ?? '').trim(),
-        detail: (json['detail'] as String? ?? '').trim(),
-        runId: (json['run_id'] as String? ?? '').trim(),
+        state: syncText(json['state']).trim(),
+        detail: syncText(json['detail']).trim(),
+        runId: syncText(json['run_id']).trim(),
       );
 }
 
@@ -940,10 +1098,10 @@ class FollowUpRoute {
 
   factory FollowUpRoute.fromJson(Map<String, dynamic> json) => FollowUpRoute(
         routed: json['routed'] == true,
-        reason: (json['reason'] as String? ?? '').trim(),
-        botId: (json['bot_id'] as String? ?? '').trim(),
-        runId: (json['run_id'] as String? ?? '').trim(),
-        supplementId: (json['supplement_id'] as String? ?? '').trim(),
+        reason: syncText(json['reason']).trim(),
+        botId: syncText(json['bot_id']).trim(),
+        runId: syncText(json['run_id']).trim(),
+        supplementId: syncText(json['supplement_id']).trim(),
       );
 }
 
@@ -972,12 +1130,12 @@ class DesktopProxyMode {
 
   factory DesktopProxyMode.fromJson(Map<String, dynamic> json) =>
       DesktopProxyMode(
-        mode: (json['mode'] as String? ?? 'smart').trim(),
-        userMode: (json['user_mode'] as String? ?? '').trim(),
-        tenantDefault: (json['tenant_default'] as String? ?? '').trim(),
+        mode: syncTextOr(syncText(json['mode']), 'smart').trim(),
+        userMode: syncText(json['user_mode']).trim(),
+        tenantDefault: syncText(json['tenant_default']).trim(),
         locked: json['locked'] == true,
         applied: json['applied'] != false,
-        warning: (json['warning'] as String? ?? '').trim(),
+        warning: syncText(json['warning']).trim(),
       );
 }
 
@@ -1013,11 +1171,11 @@ class ComputerResult {
   });
 
   factory ComputerResult.fromJson(Map<String, dynamic> json) => ComputerResult(
-        action: (json['action'] as String? ?? '').trim(),
-        container: (json['container'] as String? ?? '').trim(),
-        image: (json['image'] as String? ?? '').trim(),
-        status: (json['status'] as String? ?? '').trim(),
-        backup: (json['backup'] as String? ?? '').trim(),
+        action: syncText(json['action']).trim(),
+        container: syncText(json['container']).trim(),
+        image: syncText(json['image']).trim(),
+        status: syncText(json['status']).trim(),
+        backup: syncText(json['backup']).trim(),
       );
 }
 
@@ -1039,12 +1197,12 @@ class QueueView {
   });
 
   factory QueueView.fromJson(Map<String, dynamic> json) => QueueView(
-        state: (json['state'] as String? ?? '').trim(),
-        runId: (json['run_id'] as String? ?? json['runId'] as String? ?? '')
+        state: syncText(json['state']).trim(),
+        runId: syncTextAny(json['run_id'], json['runId'])
             .trim(),
         held: json['held'] == true,
-        position: (json['position'] as num? ?? 0).toInt(),
-        outcome: (json['outcome'] as String? ?? '').trim(),
+        position: syncInt(json['position']),
+        outcome: syncText(json['outcome']).trim(),
       );
 }
 
@@ -1073,15 +1231,15 @@ class BotSchedule {
   });
 
   factory BotSchedule.fromJson(Map<String, dynamic> json) => BotSchedule(
-        id: (json['id'] as String? ?? '').trim(),
-        name: (json['name'] as String? ?? '').trim(),
-        action: (json['action'] as String? ?? '').trim(),
-        intervalMinutes: (json['interval_minutes'] as num? ?? 0).toInt(),
-        hour: (json['hour'] as num? ?? 0).toInt(),
-        minute: (json['minute'] as num? ?? 0).toInt(),
-        dayOfWeek: (json['day_of_week'] as num? ?? -1).toInt(),
-        nextRunAt: (json['next_run_at'] as String? ?? '').trim(),
-        status: (json['status'] as String? ?? '').trim(),
+        id: syncText(json['id']).trim(),
+        name: syncText(json['name']).trim(),
+        action: syncText(json['action']).trim(),
+        intervalMinutes: syncInt(json['interval_minutes']),
+        hour: syncInt(json['hour']),
+        minute: syncInt(json['minute']),
+        dayOfWeek: syncIntOr(json['day_of_week'], -1),
+        nextRunAt: syncText(json['next_run_at']).trim(),
+        status: syncText(json['status']).trim(),
       );
 
   String get when {

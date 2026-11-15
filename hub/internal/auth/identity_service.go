@@ -2113,6 +2113,9 @@ func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, ra
 	if user == nil || user.Status != "active" {
 		return nil, ErrMachineUnauthorized
 	}
+	if err := s.ensureTenantActive(ctx, machine.TenantID); err != nil {
+		return nil, err
+	}
 	return &MachinePrincipal{TenantID: machine.TenantID, UserID: machine.UserID, MachineID: machine.ID}, nil
 }
 
@@ -2137,6 +2140,9 @@ func (s *IdentityService) IssueViewerTokenForUser(ctx context.Context, userID st
 	}
 	if tenantID == "" {
 		tenantID = store.DefaultTenantID
+	}
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return "", err
 	}
 	raw, err := randomToken(32)
 	if err != nil {
@@ -2177,18 +2183,21 @@ func (s *IdentityService) AuthenticateViewer(ctx context.Context, rawToken strin
 		return nil, ErrInvalidUserCredentials
 	}
 
-	// Sliding expiration: if less than half the lifetime remains, extend to 30 days from now.
-	remaining := time.Until(viewerToken.ExpiresAt)
-	if remaining < 15*24*time.Hour {
-		_ = s.viewerTok.ExtendExpiry(ctx, viewerToken.ID, time.Now().Add(30*24*time.Hour))
-	}
-
 	tenantID := strings.TrimSpace(user.TenantID)
 	if tenantID == "" {
 		tenantID = strings.TrimSpace(viewerToken.TenantID)
 	}
 	if tenantID == "" {
 		tenantID = store.DefaultTenantID
+	}
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return nil, err
+	}
+
+	// Sliding expiration: if less than half the lifetime remains, extend to 30 days from now.
+	remaining := time.Until(viewerToken.ExpiresAt)
+	if remaining < 15*24*time.Hour {
+		_ = s.viewerTok.ExtendExpiry(ctx, viewerToken.ID, time.Now().Add(30*24*time.Hour))
 	}
 	return &ViewerPrincipal{TenantID: tenantID, UserID: user.ID, Email: user.Email}, nil
 }

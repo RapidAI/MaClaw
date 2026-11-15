@@ -132,7 +132,9 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     RecallBotSecret: (name: string) => recallSecret(name),
     FillBotSecret: (botId: string, name: string) => fillSecret(botId, name),
     ListDesktopBots: () => listBots(),
+    GetDesktopBotQuota: async () => ({ limit: null, used: 0 }),
     CreateDesktopBot: (name: string, description: string) => createBot(name, description),
+    CreateDesktopBotWithComputer: (name: string, description: string) => createBot(name, description),
     SetDesktopBotAppearance: (botId: string, color: string, shape: string) => setAppearance(botId, color, shape),
     GetDesktopBotStyle: vi.fn(),
     SaveDesktopBotStyle: vi.fn(),
@@ -2123,8 +2125,11 @@ describe('DesktopBotWorkspace', () => {
                 { name: '自我描述.docx', mime: docx, data: 'd29yZA==' },
             ],
         });
-        expect(await screen.findByTestId('desktop-bot-file')).toBeTruthy();
-        expect(screen.getByText('下载 自我描述.docx')).toBeTruthy();
+        expect(await screen.findByText('产出物')).toBeTruthy();
+        expect(screen.getByText('自我描述.docx')).toBeTruthy();
+        expect(screen.getByText('查看文档')).toBeTruthy();
+        expect(screen.getByText('预览')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-file')).toBeNull();
         expect(screen.queryByText('下载 ../secret.docx')).toBeNull();
     });
 
@@ -2150,9 +2155,41 @@ describe('DesktopBotWorkspace', () => {
                 { name: '北京天气.pdf', mime: 'application/pdf', data: 'd29yZA==' },
             ],
         });
-        expect(await screen.findByTestId('desktop-bot-file')).toBeTruthy();
-        expect(screen.getByText('下载 北京天气.pdf')).toBeTruthy();
+        expect(await screen.findByText('产出物')).toBeTruthy();
+        expect(screen.getByText('北京天气.pdf')).toBeTruthy();
+        expect(screen.getByText('查看文档')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-file')).toBeNull();
         expect(screen.queryByText('下载 ../secret.pdf')).toBeNull();
+    });
+
+    it('lists a saved document on the artifacts tab and opens it', async () => {
+        const docPath = 'C:\\Users\\alice\\MaClaw\\bot-files\\北京天气.pdf';
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'desktop-bot-artifacts',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 1'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '把天气 PDF 发给我' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('把天气 PDF 发给我')).toBeTruthy();
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-artifacts',
+            session_key: 'alice:bot_1',
+            text: '天气文件已放好',
+            send_to_user: '天气文件已放好',
+            local_file_paths: [docPath],
+        });
+        expect(await screen.findByText('北京天气.pdf')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-tab-artifacts'));
+        const table = await screen.findByTestId('desktop-bot-artifact-table');
+        expect(table.textContent).toContain('名称');
+        expect(table.textContent).toContain('北京天气.pdf');
+        fireEvent.click(screen.getByTestId('desktop-bot-artifact-row'));
+        expect(openFile).toHaveBeenCalledWith(docPath);
     });
 
     it('clears the busy row whichever path delivers the final reply', async () => {
@@ -4480,7 +4517,8 @@ describe('DesktopBotWorkspace', () => {
         expect(panel.querySelector('.desktop-bot-panel__avatar')?.getAttribute('data-shape')).toBeTruthy();
         expect(panel.querySelector('.desktop-bot-panel__avatar')?.className).toContain('desktop-bot-panel__avatar');
         expect(panel.textContent).toContain('远程电脑上的7x24小时数字助理。');
-        expect(screen.getAllByRole('tab')).toHaveLength(4);
+        expect(screen.getAllByRole('tab')).toHaveLength(5);
+        expect(screen.getByRole('tab', { name: '产出物' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: '任务' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: '定时任务' })).toBeTruthy();
         expect(screen.queryByRole('tab', { name: '资料库' })).toBeNull();

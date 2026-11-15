@@ -1,0 +1,394 @@
+package guiapp
+
+import (
+	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/guiapp/petpack"
+)
+
+func TestPetClickGesture(t *testing.T) {
+	t.Run("burst", testPetClickBurst)
+	t.Run("drag", testPetClickDrag)
+	t.Run("clips", testPetClickClips)
+	t.Run("credit", testPetClickCredit)
+	t.Run("sideEffect", testPetClickSideEffect)
+	t.Run("hostWait", testPetClickHostWaits)
+	t.Run("session", testPetClickSession)
+	t.Run("clipCache", testPetClickClipCache)
+}
+
+func testPetClickBurst(t *testing.T) {
+	interval := 500 * time.Millisecond
+	t0 := time.Unix(1_700_000_000, 0)
+
+	var b petClickBurst
+	var class petClickClass
+	b, class = petClickNote(b, t0, interval)
+	if class != petClickNone || !b.open || b.count != 1 {
+		t.Fatalf("first release = %+v class %d", b, class)
+	}
+	b, class = petClickAdvance(b, t0.Add(interval-time.Millisecond), interval)
+	if class != petClickNone || b.count != 1 {
+		t.Fatalf("interval still open: %+v class %d", b, class)
+	}
+	b, class = petClickAdvance(b, t0.Add(interval), interval)
+	if class != petClickSingle || b.open {
+		t.Fatalf("single = %+v class %d", b, class)
+	}
+
+	b = petClickBurst{}
+	b, _ = petClickNote(b, t0, interval)
+	b, class = petClickNote(b, t0.Add(interval-time.Millisecond), interval)
+	if class != petClickNone || b.count != 2 {
+		t.Fatalf("second release = %+v class %d", b, class)
+	}
+	b, class = petClickAdvance(b, t0.Add(interval-time.Millisecond+interval), interval)
+	if class != petClickDouble || b.open {
+		t.Fatalf("double = %+v class %d", b, class)
+	}
+
+	b = petClickBurst{}
+	for i := 0; i < 3; i++ {
+		b, class = petClickNote(b, t0.Add(time.Duration(i)*100*time.Millisecond), interval)
+		if class != petClickNone {
+			t.Fatalf("multi release %d resolved early as %d", i, class)
+		}
+	}
+	b, class = petClickAdvance(b, t0.Add(200*time.Millisecond+interval), interval)
+	if class != petClickMulti || b.open {
+		t.Fatalf("multi = %+v class %d", b, class)
+	}
+
+	b = petClickBurst{}
+	for i := 0; i < 4; i++ {
+		b, class = petClickNote(b, t0.Add(time.Duration(i)*50*time.Millisecond), interval)
+		if class != petClickNone {
+			t.Fatalf("fourth release resolved early as %d", class)
+		}
+	}
+	if b.count != 4 {
+		t.Fatalf("count = %d", b.count)
+	}
+	b, class = petClickAdvance(b, t0.Add(150*time.Millisecond+interval), interval)
+	if class != petClickMulti {
+		t.Fatalf("four releases = %d", class)
+	}
+
+	b = petClickBurst{}
+	b, _ = petClickNote(b, t0, interval)
+	b, class = petClickNote(b, t0.Add(interval), interval)
+	if class != petClickSingle || !b.open || b.count != 1 {
+		t.Fatalf("late click = %+v class %d", b, class)
+	}
+	b, class = petClickAdvance(b, t0.Add(2*interval), interval)
+	if class != petClickSingle || b.open {
+		t.Fatalf("new burst = %+v class %d", b, class)
+	}
+}
+
+func testPetClickDrag(t *testing.T) {
+	interval := 500 * time.Millisecond
+	t0 := time.Unix(1_700_000_000, 0)
+	if petPointerPastDrag(petDragThresholdPx, 0) || petPointerPastDrag(0, -petDragThresholdPx) {
+		t.Fatal("the existing drag slack is a click")
+	}
+	if !petPointerPastDrag(petDragThresholdPx+1, 0) || !petPointerPastDrag(0, -(petDragThresholdPx+1)) {
+		t.Fatal("one pixel past the slack is a drag")
+	}
+
+	var b petClickBurst
+	b, class := petClickOnRelease(b, t0, interval, true)
+	if class != petClickNone || b.open {
+		t.Fatalf("drag release = %+v class %d", b, class)
+	}
+	if petClickCreditMS(class) != 0 {
+		t.Fatal("drag credited rearing time")
+	}
+
+	b, _ = petClickNote(b, t0, interval)
+	b, class = petClickOnRelease(b, t0.Add(10*time.Millisecond), interval, petPointerPastDrag(8, -2))
+	if class != petClickNone || !b.open || b.count != 1 {
+		t.Fatalf("drag changed the open burst: %+v class %d", b, class)
+	}
+	b, class = petClickAdvance(b, t0.Add(10*time.Millisecond+interval), interval)
+	if class != petClickSingle {
+		t.Fatalf("open click after a later drag = %d", class)
+	}
+}
+
+func testPetClickClips(t *testing.T) {
+	single := petClickReactionClip("ragdoll", petClickSingle, true)
+	double := petClickReactionClip("ragdoll", petClickDouble, true)
+	multi := petClickReactionClip("ragdoll", petClickMulti, true)
+	if single == "" || double == "" || multi == "" || single == double || double == multi || single == multi {
+		t.Fatalf("ragdoll clips single=%q double=%q multi=%q", single, double, multi)
+	}
+	if petClickReactionClip("ragdoll", petClickSingle, false) != "" ||
+		petClickReactionClip("ragdoll", petClickDouble, false) != "" ||
+		petClickReactionClip("ragdoll", petClickMulti, false) != "" {
+		t.Fatal("motion off still named a clip")
+	}
+	testPetClickWindowMotion(t)
+
+	reg := petpack.EnsureGlobal()
+	if reg == nil {
+		t.Fatal("no pet registry")
+	}
+	resolved, err := reg.Resolve("ragdoll", petpack.VariantDefault)
+	if err != nil || resolved == nil {
+		t.Fatalf("resolve ragdoll: %v", err)
+	}
+	renderer, err := petpack.NewCharacterRenderer(resolved)
+	if err != nil || renderer == nil {
+		t.Fatalf("ragdoll renderer: %v", err)
+	}
+	for i, clip := range []string{single, double, multi} {
+		if !renderer.TriggerClip(clip, int64(i*20)) {
+			t.Fatalf("clip %s did not play", clip)
+		}
+	}
+	if renderer.TriggerClip("not-a-real-clip", 80) || renderer.TriggerClip("", 90) {
+		t.Fatal("missing clip was played")
+	}
+	if petClickReactionClip("mini-claw", petClickSingle, true) != "" ||
+		petClickReactionClip("mini-claw", petClickDouble, true) != "" ||
+		petClickReactionClip("mini-claw", petClickMulti, true) != "" {
+		t.Fatal("mini-claw was given a ragdoll clip")
+	}
+}
+
+func testPetClickCredit(t *testing.T) {
+	single := petClickCreditMS(petClickSingle)
+	double := petClickCreditMS(petClickDouble)
+	multi := petClickCreditMS(petClickMulti)
+	if single <= 0 || double < single || multi < double {
+		t.Fatalf("credit order single=%d double=%d multi=%d", single, double, multi)
+	}
+	if single >= petpack.RearingMinAfterMS || double >= petpack.RearingMinAfterMS || multi >= petpack.RearingMinAfterMS {
+		t.Fatalf("one gesture reaches a legal stage: %d %d %d", single, double, multi)
+	}
+	if petClickCreditMS(petClickNone) != 0 {
+		t.Fatal("empty gesture has credit")
+	}
+
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.stopPetClickTimer()
+		app.closePetRearingDBLocked()
+	})
+	app.petRearing.pack = "ragdoll"
+	app.petRearing.running = true
+	app.petRearing.userSize = 224
+	now := time.Now()
+	app.petRearing.last = now.Add(-5 * time.Second)
+	app.petRearing.mu.Lock()
+	app.flushPetRearingLocked(now)
+	app.petRearing.mu.Unlock()
+	if app.petRearing.loaded != int64(5*time.Second/time.Millisecond) {
+		t.Fatalf("visible wall clock = %d", app.petRearing.loaded)
+	}
+	added, stage := app.applyPetClickGesture("ragdoll", petClickSingle, app.petClickEpoch.Load())
+	if added != single || stage.cue != "" || stage.stageID != "" {
+		t.Fatalf("early click added=%d stage=%+v", added, stage)
+	}
+	if app.petRearing.loaded != int64(5*time.Second/time.Millisecond)+single {
+		t.Fatalf("click stacked on wall clock: %d", app.petRearing.loaded)
+	}
+
+	app.petRearing.running = false
+	app.petRearing.last = now.Add(-time.Hour)
+	hidden := app.petRearing.loaded
+	app.petRearing.mu.Lock()
+	app.flushPetRearingLocked(now.Add(time.Hour))
+	app.petRearing.mu.Unlock()
+	if added, _ := app.applyPetClickGesture("ragdoll", petClickMulti, app.petClickEpoch.Load()); added != 0 || app.petRearing.loaded != hidden {
+		t.Fatalf("hidden progress changed to %d (added %d)", app.petRearing.loaded, added)
+	}
+	app.petRearing.running = true
+	if added, _ := app.applyPetClickGesture("ragdoll", petClickNone, app.petClickEpoch.Load()); added != 0 || app.petRearing.loaded != hidden {
+		t.Fatal("drag credit changed the counter")
+	}
+
+	app.petRearing.mu.Lock()
+	app.closePetRearingDBLocked()
+	app.petRearing.loaded = 0
+	loaded, _ := app.loadPetRearingLocked("ragdoll")
+	app.petRearing.mu.Unlock()
+	if loaded != hidden {
+		t.Fatalf("reloaded progress = %d, want %d", loaded, hidden)
+	}
+
+	reg := petpack.EnsureGlobal()
+	manifest, ok := reg.Get("ragdoll")
+	if !ok || manifest == nil || len(manifest.Rearing.Stages) == 0 {
+		t.Fatal("ragdoll has no rearing stages")
+	}
+	threshold := manifest.Rearing.Stages[0].AfterMS
+	if threshold < petpack.RearingMinAfterMS {
+		t.Fatalf("first stage %d is under the legal minimum", threshold)
+	}
+	app.petRearing.running = true
+	app.petRearing.pack = "ragdoll"
+	app.petRearing.userSize = 224
+	app.petRearing.loaded = threshold - single
+	app.petRearing.announced = ""
+	app.petRearing.observed = false
+	app.petRearing.mu.Lock()
+	pre := app.planPetRearingLocked()
+	app.petRearing.mu.Unlock()
+	if pre.cue != "" || pre.stageID != "" || len(pre.adornments) != 0 {
+		t.Fatalf("before the crossing = %+v", pre)
+	}
+	added, crossed := app.applyPetClickGesture("ragdoll", petClickSingle, app.petClickEpoch.Load())
+	if added != single {
+		t.Fatalf("crossing credit = %d", added)
+	}
+	want, found := petpack.ActiveRearingStage(manifest.Rearing.Stages, app.petRearing.loaded)
+	if !found {
+		t.Fatal("summed progress did not reach a stage")
+	}
+	if crossed.stageID != want.ID || crossed.cue != want.Cue {
+		t.Fatalf("crossing = %+v, stage cue %q id %q", crossed, want.Cue, want.ID)
+	}
+	if !sameAdornmentSlots(crossed.adornments, petpack.ActiveAdornmentSlots(manifest, app.petRearing.loaded)) {
+		t.Fatalf("adornments = %v", crossed.adornments)
+	}
+	if crossed.windowSize != rearingWindowSize(224, petpack.StageScale(&want)) {
+		t.Fatalf("window = %d", crossed.windowSize)
+	}
+	app.petRearing.mu.Lock()
+	again := app.planPetRearingLocked()
+	app.petRearing.mu.Unlock()
+	if again.cue != "" || again.stageID != want.ID {
+		t.Fatalf("cue repeated = %+v", again)
+	}
+
+	bare := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(bare.closePetRearingDBLocked)
+	bare.petRearing.pack = "mini-claw"
+	bare.petRearing.running = true
+	bare.petRearing.userSize = 224
+	added, _ = bare.applyPetClickGesture("mini-claw", petClickDouble, bare.petClickEpoch.Load())
+	if added != double || bare.petRearing.loaded != double {
+		t.Fatalf("pack without the clip rejected the gesture: added %d loaded %d", added, bare.petRearing.loaded)
+	}
+}
+
+func testPetClickHostWaits(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.stopPetClickTimer()
+		app.closePetRearingDBLocked()
+	})
+	app.petRearing.pack = "ragdoll"
+	app.petRearing.running = true
+	app.petRearing.userSize = 224
+	interval := petHostClickInterval()
+	t0 := time.Now()
+	if class, _ := app.recordDesktopPetClick(t0); class != petClickNone {
+		t.Fatalf("first click resolved as %d", class)
+	}
+	if class, _ := app.recordDesktopPetClick(t0.Add(interval / 4)); class != petClickNone {
+		t.Fatalf("second click resolved as %d", class)
+	}
+	app.petClickMu.Lock()
+	gen := app.petClickGen
+	app.petClickMu.Unlock()
+	app.pollDesktopPetClick(t0.Add(interval/4+interval), gen)
+	if app.petRearing.loaded != petClickCreditMS(petClickDouble) {
+		t.Fatalf("host burst credited %d", app.petRearing.loaded)
+	}
+	app.petClickMu.Lock()
+	open := app.petClickBurst.open
+	app.petClickMu.Unlock()
+	if open {
+		t.Fatal("burst stayed open after the interval")
+	}
+}
+
+func testPetClickSession(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.stopPetClickTimer()
+		app.closePetRearingDBLocked()
+	})
+	now := time.Now()
+	app.syncPetRearingAt("ragdoll", true, 224, now)
+
+	if class, _ := app.recordDesktopPetClick(now); class != petClickNone {
+		t.Fatalf("first click resolved as %d", class)
+	}
+	app.syncPetRearingAt("ragdoll", true, 224, now.Add(time.Millisecond))
+	app.petClickMu.Lock()
+	open := app.petClickBurst.open
+	gen := app.petClickGen
+	app.petClickMu.Unlock()
+	if !open {
+		t.Fatal("a same-pack refresh closed the click")
+	}
+	app.pollDesktopPetClick(now.Add(petHostClickInterval()), gen)
+
+	_, epoch := app.recordDesktopPetClick(now.Add(petHostClickInterval() + time.Millisecond))
+	app.syncPetRearingAt("ragdoll", false, 224, now.Add(petHostClickInterval()+2*time.Millisecond))
+	afterHide := app.petRearing.loaded
+	hidden := app.finishDesktopPetClick(petClickSingle, epoch)
+	if hidden.OpenMain || hidden.CreditMS != 0 || hidden.Clip != "" {
+		t.Fatalf("hidden pet still finished the click: %+v", hidden)
+	}
+	if app.petRearing.loaded != afterHide {
+		t.Fatalf("a retired click changed loaded time from %d to %d", afterHide, app.petRearing.loaded)
+	}
+	app.petClickMu.Lock()
+	open = app.petClickBurst.open
+	app.petClickMu.Unlock()
+	if open {
+		t.Fatal("hide left the burst open")
+	}
+	if class, _ := app.recordDesktopPetClick(now.Add(2 * petHostClickInterval())); class != petClickNone {
+		t.Fatal("a hidden pet accepted a click")
+	}
+	app.petClickMu.Lock()
+	open = app.petClickBurst.open
+	app.petClickMu.Unlock()
+	if open {
+		t.Fatal("a hidden pet opened a burst")
+	}
+
+	app.syncPetRearingAt("ragdoll", true, 224, now.Add(3*petHostClickInterval()))
+	before := app.petRearing.loaded
+	clickAt := now.Add(3 * petHostClickInterval())
+	if class, _ := app.recordDesktopPetClick(clickAt); class != petClickNone {
+		t.Fatal("show did not accept a click")
+	}
+	app.petClickMu.Lock()
+	gen = app.petClickGen
+	app.petClickMu.Unlock()
+	app.pollDesktopPetClick(clickAt.Add(petHostClickInterval()), gen)
+	if app.petRearing.loaded != before+petClickCreditMS(petClickSingle) {
+		t.Fatalf("shown pet credited %d, want %d more than %d", app.petRearing.loaded, petClickCreditMS(petClickSingle), before)
+	}
+
+	_, epoch = app.recordDesktopPetClick(clickAt.Add(petHostClickInterval() + time.Millisecond))
+	app.syncPetRearingAt("mini-claw", true, 224, clickAt.Add(petHostClickInterval()+2*time.Millisecond))
+	switched := app.finishDesktopPetClick(petClickDouble, epoch)
+	if switched.CreditMS != 0 || app.petRearing.pack != "mini-claw" || app.petRearing.loaded != 0 {
+		t.Fatalf("switch kept the old click: result %+v pack %s loaded %d", switched, app.petRearing.pack, app.petRearing.loaded)
+	}
+}
+
+func testPetClickClipCache(t *testing.T) {
+	if petClickReactionClip("ragdoll", petClickSingle, true) == "" {
+		t.Fatal("ragdoll clip missing")
+	}
+	petClipSetMu.Lock()
+	petClipSets["ragdoll"] = map[string]bool{}
+	petClipSetMu.Unlock()
+	if petClickReactionClip("ragdoll", petClickSingle, true) != "" {
+		t.Fatal("an empty clip memo still named a reaction")
+	}
+	(&FloatingAssistantManager{}).InvalidatePetPackAssets()
+	if petClickReactionClip("ragdoll", petClickSingle, true) == "" {
+		t.Fatal("pack invalidation left the empty clip memo in place")
+	}
+}

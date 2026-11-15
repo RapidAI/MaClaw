@@ -33,6 +33,38 @@ func TestRevokeReleasesStreamRateLimitState(t *testing.T) {
 	}
 }
 
+func TestInvalidStreamLookupDropsRateLimitState(t *testing.T) {
+	svc, _, _, _ := testService(t)
+	ctx := context.Background()
+	grant, err := svc.GrantSameAccount(ctx, "tenant", "user-a", "mac-a", "mac-b", PermView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		grantID   string
+		machineID string
+	}{
+		{name: "unknown grant", grantID: "rc_unknown", machineID: "mac-b"},
+		{name: "wrong machine", grantID: grant.ID, machineID: "mac-attacker"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if !svc.AllowStream(test.grantID) {
+				t.Fatal("new bucket did not receive initial capacity")
+			}
+			if _, err := svc.StreamGrant(ctx, test.grantID, test.machineID); err == nil {
+				t.Fatal("invalid stream passed validation")
+			}
+			svc.streamMu.Lock()
+			_, present := svc.streamBuckets[test.grantID]
+			svc.streamMu.Unlock()
+			if present {
+				t.Fatal("invalid stream retained its rate-limit bucket")
+			}
+		})
+	}
+}
+
 func TestInactiveStreamLookupDropsLegacyRateLimitState(t *testing.T) {
 	svc, _, _, _ := testService(t)
 	ctx := context.Background()

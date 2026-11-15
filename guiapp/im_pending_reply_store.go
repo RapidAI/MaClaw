@@ -1,9 +1,8 @@
 package guiapp
 
 import (
-	"encoding/json"
+	"database/sql"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,6 +24,7 @@ type pendingReplyDiskSession struct {
 
 type pendingReplyDiskStore struct {
 	path          string
+	db            *sql.DB
 	mu            sync.Mutex
 	loadOnce      sync.Once
 	snapshot      pendingReplyDiskSnapshot
@@ -78,18 +78,22 @@ func (h *IMMessageHandler) ensurePendingReplyStore() *pendingReplyDiskStore {
 		path := filepath.Join(h.app.GetDataDir(), "pending_replies.json")
 		store := sharedPendingReplyDiskStore(path)
 		h.pendingReplyStore = store
+		store.mu.Lock()
+		defer store.mu.Unlock()
 		store.loadOnce.Do(func() {
-			blob, err := os.ReadFile(path)
+			db, err := openPendingReplyDatabase(path)
 			if err != nil {
-				if !os.IsNotExist(err) {
-					log.Printf("[PendingReply] load failed: %v", err)
-				}
+				log.Printf("[PendingReply] open database failed: %v", err)
 				return
 			}
-			if err := json.Unmarshal(blob, &store.snapshot); err != nil {
-				log.Printf("[PendingReply] parse failed: %v", err)
-				store.snapshot = pendingReplyDiskSnapshot{}
+			snapshot, err := loadPendingReplySnapshot(db)
+			if err != nil {
+				_ = db.Close()
+				log.Printf("[PendingReply] load failed: %v", err)
+				return
 			}
+			store.db = db
+			store.snapshot = snapshot
 		})
 		for userID, session := range store.snapshot.Sessions {
 			if session.Ask != nil && pendingAskUserSafeToPersist(session.Ask) {
@@ -102,6 +106,23 @@ func (h *IMMessageHandler) ensurePendingReplyStore() *pendingReplyDiskStore {
 		h.pendingReplyDiskRev = store.revision
 	})
 	return h.pendingReplyStore
+}
+
+func (h *IMMessageHandler) resetPendingReplyStoreForDataDirChange() {
+	if h == nil {
+		return
+	}
+	h.pendingReplyStoreOnce = sync.Once{}
+	h.pendingReplyStore = nil
+	h.pendingReplyDiskRev = 0
+	h.pendingAskUser.Range(func(key, _ interface{}) bool {
+		h.pendingAskUser.Delete(key)
+		return true
+	})
+	h.pendingUserReply.Range(func(key, _ interface{}) bool {
+		h.pendingUserReply.Delete(key)
+		return true
+	})
 }
 
 func (h *IMMessageHandler) syncPendingReplyStore(store *pendingReplyDiskStore) {
@@ -237,22 +258,12 @@ func (h *IMMessageHandler) persistPendingReplies(userID string, removedAsk, remo
 	}
 	snapshot.Version = pendingReplyStoreVersion
 	store.snapshot = snapshot
-	blob, err := json.Marshal(snapshot)
-	if err != nil {
-		log.Printf("[PendingReply] marshal failed: %v", err)
+	if store.db == nil {
+		log.Printf("[PendingReply] database unavailable")
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(store.path), 0o755); err != nil {
-		log.Printf("[PendingReply] mkdir failed: %v", err)
-		return
-	}
-	tmp := store.path + ".tmp"
-	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
-		log.Printf("[PendingReply] write failed: %v", err)
-		return
-	}
-	if err := os.Rename(tmp, store.path); err != nil {
-		log.Printf("[PendingReply] rename failed: %v", err)
+	if err := savePendingReplySession(store.db, userID, session); err != nil {
+		log.Printf("[PendingReply] save failed: %v", err)
 		return
 	}
 	store.revision++

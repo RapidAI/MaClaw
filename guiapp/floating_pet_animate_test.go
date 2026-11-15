@@ -72,6 +72,25 @@ func TestPetDesktopAnimatorPlaysRagdollAndWalks(t *testing.T) {
 	if level != petpack.RendererNative || reason == "" {
 		t.Fatalf("quiet level=%q reason=%q", level, reason)
 	}
+	anim.Configure(petAnimConfig{
+		Skin:          petpack.DefaultPackID,
+		Variant:       petpack.VariantDefault,
+		State:         string(petpack.StateThinking),
+		PixelSize:     96,
+		WindowSize:    256,
+		MotionEnabled: true,
+	})
+	thinkAt := cursor
+	for i := 0; i < 20; i++ {
+		thinkAt = thinkAt.Add(200 * time.Millisecond)
+		if anim.Render(thinkAt) == nil {
+			t.Fatal("thinking frame dropped")
+		}
+		tx, ty, moved := anim.Advance(thinkAt, false, 2000, 2000)
+		if moved || tx != x || ty != y {
+			t.Fatalf("thinking moved to (%d,%d) from (%d,%d)", tx, ty, x, y)
+		}
+	}
 }
 
 func TestPetDesktopAnimatorReusesStaticFrame(t *testing.T) {

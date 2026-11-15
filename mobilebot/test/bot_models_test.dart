@@ -25,6 +25,22 @@ void main() {
       expect(bot.createdAt, isNotNull);
     });
 
+    test('quota line and computer mark', () {
+      final open = DesktopBotQuota.fromJson({'limit': null, 'used': 2});
+      expect(open.known, isTrue);
+      expect(open.exhausted, isFalse);
+      expect(open.label, '已用 2');
+      final full = DesktopBotQuota.fromJson({'limit': 1, 'used': 1});
+      expect(full.exhausted, isTrue);
+      expect(full.label, '已用 1 / 1');
+      expect(DesktopBotQuota.fromJson(null).known, isFalse);
+      expect(desktopModeMark(''), '电脑·共用');
+      expect(desktopModeMark('isolated'), '电脑·独立');
+      expect(desktopModeMark('none'), '无电脑');
+      expect(botHasComputer('none'), isFalse);
+      expect(botHasComputer('shared'), isTrue);
+    });
+
     test('title falls back to description then id', () {
       expect(
           Bot.fromJson({'id': 'b2', 'description': ' d '}).title, 'd');

@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
 
 // desktopIntakeBudget bounds the srv decision. The ack is part of that
-// answer. On timeout or error the message is a new task.
+// answer. On timeout or error the message is a new task. MaClawSrv finishes
+// inside 1500ms, and this wait stays above that so a held spec arrives here.
 var desktopIntakeBudget = 2 * time.Second
 
 // DesktopSchedule is a timer MaClawSrv decided and armed on its own clock
@@ -104,13 +106,18 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 		Schedule:        decision.Schedule,
 	}
 	if in.Admit && !actionReturn && decision.Kind == "new" && s.personHasBotKeyboard(in.TenantID, in.UserID, in.BotID) {
+		order := firstNonEmptyString(strings.TrimSpace(decision.Instruction), content)
+		phase := strings.TrimSpace(decision.Phase)
+		if phase == "" {
+			phase = in.Phase
+		}
 		pos, err := s.enqueueDesktopMessage(in.TenantID, in.UserID, in.BotID, desktopQueueItem{
 			ClientMessageID: in.ClientMessageID,
 			Content:         content,
-			Phase:           in.Phase,
+			Phase:           phase,
 			ContinueSession: in.ContinueSession,
 			Kind:            "new",
-			Instruction:     content,
+			Instruction:     order,
 			Ack:             decision.Ack,
 			Held:            true,
 			Secrets:         desktopSecretBag(ctx),
@@ -293,8 +300,12 @@ func (s *Service) earlierDesktopLines(ctx context.Context, tenantID, userID, bot
 		return nil
 	}
 	current = strings.TrimSpace(current)
+	entries := append([]ConversationEntry(nil), page.Entries...)
+	sort.SliceStable(entries, func(i, j int) bool {
+		return convDisplaySeq(entries[i]) < convDisplaySeq(entries[j])
+	})
 	var lines []string
-	for _, entry := range page.Entries {
+	for _, entry := range entries {
 		if entry.Kind != convKindMessage || len(entry.Data) == 0 {
 			continue
 		}

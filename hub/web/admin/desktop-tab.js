@@ -44,6 +44,7 @@
       userEmpty: '\u8fd8\u6ca1\u6709\u53ef\u68c0\u67e5\u7684\u7528\u6237\u3002\u5148\u5728\u5f00\u901a\u8303\u56f4\u91cc\u6388\u6743\uff0c\u5e76\u5728\u4e0a\u65b9\u5206\u914d Docker \u670d\u52a1',
       server: 'Docker \u670d\u52a1',
       assign: '\u4fdd\u5b58\u5206\u914d',
+      relayDelay: '\u8fd9\u4e2a\u7ec4\u5408\u5ef6\u8fdf\u8f83\u9ad8',
       desktop: '\u68c0\u67e5\u684c\u9762',
       desktopHint: '\u6309\u8fd9\u4e2a\u7528\u6237\u7684\u5206\u914d\u62c9\u8d77\u6216\u505c\u6b62\u684c\u9762\u3002\u53ea\u5217\u51fa\u5f00\u901a\u8303\u56f4\u91cc\u5df2\u6388\u6743\u3001\u4e14\u5df2\u5206\u914d Docker \u670d\u52a1\u7684\u7528\u6237\u3002',
       userId: '\u7528\u6237',
@@ -72,7 +73,20 @@
       assignedDelete: '\u5148\u53d6\u6d88\u5206\u914d\uff0c\u518d\u5220\u9664\u8fd9\u4e2a\u670d\u52a1',
       alreadyAssigned: '\u8fd9\u4e2a\u8303\u56f4\u5df2\u7ecf\u5206\u914d\u8fc7\u4e86',
       notAssigned: '\u8fd9\u4e2a\u7528\u6237\u8fd8\u6ca1\u6709\u5206\u914d\u5230 Docker \u670d\u52a1',
-      failed: '\u64cd\u4f5c\u5931\u8d25'
+      failed: '\u64cd\u4f5c\u5931\u8d25',
+      nodeDoc: '\u5185\u7f51\u8282\u70b9\u4e0d\u8981\u586b\u4e0a\u9762\u7684\u5730\u5740\u3002\u628a\u8fd9\u4efd\u8bf4\u660e\u4ea4\u7ed9\u5185\u7f51\u673a\u5668\u4e0a\u7684 agent\uff1a',
+      nodeName: '\u5185\u7f51\u8282\u70b9\u540d\u79f0',
+      nodeCode: '\u751f\u6210\u5185\u7f51\u6ce8\u518c\u7801',
+      nodeCodeReady: '\u628a\u6ce8\u518c\u7801\u4ea4\u7ed9\u5185\u7f51 agent\uff0c10 \u5206\u949f\u5185\u6709\u6548\uff0c\u53ea\u80fd\u7528\u4e00\u6b21\uff1a',
+      nodesTitle: 'Bot \u8282\u70b9',
+      nodesHint: '\u516c\u7f51\u8282\u70b9\u7528\u4e0b\u9762\u7684\u670d\u52a1\u5730\u5740\u6dfb\u52a0\u3002\u5185\u7f51\u8282\u70b9\u53ea\u53d1\u6ce8\u518c\u7801\u3002',
+      nodeEmpty: '\u8fd8\u6ca1\u6709\u5185\u7f51\u8282\u70b9\u3002',
+      nodeOnline: '\u5728\u7ebf',
+      nodeOffline: '\u79bb\u7ebf',
+      nodeDesktop: '\u6709 desktopd',
+      nodeSrv: '\u6709 srv',
+      nodeVersion: '\u7248\u672c',
+      confirmDeleteNode: '\u5220\u9664\u8fd9\u4e2a Bot \u8282\u70b9\uff1f'
     },
     en: {
       servers: 'Docker services',
@@ -104,6 +118,7 @@
       userEmpty: 'No one to check yet. Enable a user or department under Who can use bots, and assign a Docker service above',
       server: 'Docker service',
       assign: 'Save assignment',
+      relayDelay: 'This pairing goes through the Hub, so it is slower',
       desktop: 'Check a desktop',
       desktopHint: 'Starts or stops a desktop using the service assigned to this user. Only users enabled under Who can use bots who also have a Docker service are listed.',
       userId: 'User',
@@ -132,7 +147,20 @@
       assignedDelete: 'Remove its assignments before deleting this service',
       alreadyAssigned: 'This scope already has an assignment',
       notAssigned: 'No Docker service is assigned to this user',
-      failed: 'Request failed'
+      failed: 'Request failed',
+      nodeDoc: 'An intranet node does not use the address above. Give this page to the agent on that machine:',
+      nodeName: 'Intranet node name',
+      nodeCode: 'Issue an intranet code',
+      nodeCodeReady: 'Give this code to the intranet agent. It works once, for 10 minutes:',
+      nodesTitle: 'Bot nodes',
+      nodesHint: 'Add a public node with the service address below. An intranet node only gets a code, which that desktopd enters on its Hub connection card.',
+      nodeEmpty: 'No intranet nodes yet.',
+      nodeOnline: 'Online',
+      nodeOffline: 'Offline',
+      nodeDesktop: 'desktopd',
+      nodeSrv: 'srv',
+      nodeVersion: 'Version',
+      confirmDeleteNode: 'Delete this Bot node? Cancel its assignment first.'
     }
   };
 
@@ -158,7 +186,7 @@
   }
   function messageOf(err) {
     var raw = err && err.message ? err.message : '';
-    if (raw.indexOf('server is still assigned') !== -1) return text().assignedDelete;
+    if (raw.indexOf('server is still assigned') !== -1 || raw.indexOf('cancel the assignment') !== -1) return text().assignedDelete;
     if (raw.indexOf('assignment already exists') !== -1) return text().alreadyAssigned;
     if (raw.indexOf('no docker service is assigned') !== -1) return text().notAssigned;
     if (raw.indexOf('memory is invalid') !== -1 || raw.indexOf('image is invalid') !== -1 || raw.indexOf('cpus is invalid') !== -1 || raw.indexOf('shm_size is invalid') !== -1) return text().badResources;
@@ -178,6 +206,16 @@
     var t = text();
     setLabel('desktopServersTitle', t.servers);
     setLabel('desktopHint', t.hint);
+    setLabel('desktopNodesTitle', t.nodesTitle);
+    setLabel('desktopNodesHint', t.nodesHint);
+    setLabel('desktopNodeDocLabel', t.nodeDoc);
+    setLabel('desktopNodeNameLabel', t.nodeName);
+    setLabel('desktopNodeCode', t.nodeCode);
+    var nodeDoc = byID('desktopNodeDoc');
+    if (nodeDoc && global.location) {
+      nodeDoc.href = global.location.origin + '/docs/botnode';
+      nodeDoc.textContent = nodeDoc.href;
+    }
     setLabel('desktopNameLabel', t.name);
     setLabel('desktopUrlLabel', t.url);
     setLabel('desktopTokenLabel', t.token);
@@ -208,6 +246,7 @@
     }
     fillTargets();
     render(panel._view || { servers: [], assignments: [] });
+    if (panel._nodes) renderNodes(panel._nodes);
     applyVncI18n();
   }
 
@@ -216,6 +255,12 @@
     if (!panel || panel.dataset.ready === '1') return;
     panel.dataset.ready = '1';
     panel.innerHTML = ''
+      + '<section id="desktopNodeBox" hidden><h3 id="desktopNodesTitle"></h3><p id="desktopNodesHint"></p>'
+      + '<p class="bot-hint"><span id="desktopNodeDocLabel"></span> <a id="desktopNodeDoc" href="/docs/botnode" target="_blank" rel="noopener">/docs/botnode</a></p>'
+      + '<label id="desktopNodeNameLabel" for="desktopNodeName"></label><input id="desktopNodeName" maxlength="80" autocomplete="off">'
+      + '<div class="bot-actions"><button type="button" class="btn-secondary" id="desktopNodeCode"></button></div>'
+      + '<p class="bot-hint" id="desktopNodeCodeOut" hidden></p>'
+      + '<div id="desktopNodeList"></div></section>'
       + '<section><h3 id="desktopServersTitle"></h3><p id="desktopHint"></p>'
       + '<label id="desktopNameLabel" for="desktopName"></label><input id="desktopName" maxlength="80" autocomplete="off">'
       + '<label id="desktopUrlLabel" for="desktopUrl"></label><input id="desktopUrl" placeholder="http://docker-host:18081" autocomplete="off" spellcheck="false">'
@@ -234,6 +279,7 @@
       + '<label id="desktopScopeLabel" for="desktopScope"></label><select id="desktopScope"><option value="global"></option><option value="department"></option><option value="user"></option></select>'
       + '<label id="desktopTargetLabel" for="desktopTarget"></label><select id="desktopTarget"></select>'
       + '<label id="desktopServerLabel" for="desktopServer"></label><select id="desktopServer"></select>'
+      + '<p class="bot-hint" id="desktopRelayHint"></p>'
       + '<div class="bot-actions"><button type="button" class="btn-primary" id="desktopAssign"></button></div><div id="desktopAssignList"></div></section>'
       + '<section><h3 id="desktopRunTitle"></h3><p id="desktopRunHint"></p>'
       + '<label id="desktopUserLabel" for="desktopUser"></label><select id="desktopUser"></select>'
@@ -243,8 +289,11 @@
     byID('desktopCpus').value = defaults.cpus;
     byID('desktopShm').value = defaults.shm;
     byID('desktopAdd').addEventListener('click', saveServer);
+    byID('desktopNodeCode').addEventListener('click', issueNodeCode);
+    byID('desktopNodeList').addEventListener('click', onNodeListClick);
     byID('desktopCancel').addEventListener('click', function () { clearForm(); });
     byID('desktopAssign').addEventListener('click', addAssignment);
+    byID('desktopServer').addEventListener('change', relayHint);
     byID('desktopScope').addEventListener('change', fillTargets);
     byID('desktopStart').addEventListener('click', function () { runDesktop(true); });
     byID('desktopStop').addEventListener('click', function () { runDesktop(false); });
@@ -354,8 +403,58 @@
 
   function load() {
     mount();
-    return api('/api/admin/desktop-services').then(function (view) {
+    var services = api('/api/admin/desktop-services').then(function (view) {
       render(view || { servers: [], assignments: [] });
+    }).catch(function (err) { showToast(messageOf(err), 'error'); });
+    return Promise.all([services, loadNodes()]);
+  }
+
+  function showNodeBox(on) {
+    var box = byID('desktopNodeBox');
+    if (box) box.hidden = !on;
+  }
+
+  function loadNodes() {
+    return api('/api/admin/bots/nodes').then(function (view) {
+      showNodeBox(true);
+      renderNodes(view || {});
+      relayHint();
+    }, function () {
+      showNodeBox(false);
+    });
+  }
+
+  function renderNodes(view) {
+    var panel = host();
+    if (panel) panel._nodes = view || { nodes: [] };
+    var list = byID('desktopNodeList');
+    if (!list) return;
+    var nodes = view.nodes || [];
+    if (!nodes.length) {
+      list.innerHTML = '<p>' + escapeHtml(text().nodeEmpty) + '</p>';
+      return;
+    }
+    list.innerHTML = nodes.map(function (node) {
+      var caps = [];
+      if (node.has_desktopd) caps.push(text().nodeDesktop);
+      if (node.has_srv) caps.push(text().nodeSrv);
+      var status = node.online ? text().nodeOnline : text().nodeOffline;
+      var version = node.version ? text().nodeVersion + ' ' + node.version : '';
+      return '<div class="bot-row"><div><strong>' + escapeHtml(node.name || node.id) + '</strong>'
+        + '<div>' + escapeHtml(status) + (caps.length ? ' / ' + escapeHtml(caps.join(' / ')) : '')
+        + (version ? ' / ' + escapeHtml(version) : '') + '</div></div>'
+        + '<button type="button" class="btn-danger" data-node-delete="' + escapeHtml(node.id) + '">' + escapeHtml(text().remove) + '</button></div>';
+    }).join('');
+  }
+
+  function onNodeListClick(event) {
+    var button = event && event.target;
+    var id = button && button.getAttribute && button.getAttribute('data-node-delete');
+    if (!id) return;
+    var ask = global.confirm;
+    if (typeof ask === 'function' && !ask(text().confirmDeleteNode)) return;
+    api('/api/admin/bots/nodes/' + encodeURIComponent(id), { method: 'DELETE' }).then(function () {
+      return loadNodes();
     }).catch(function (err) { showToast(messageOf(err), 'error'); });
   }
 
@@ -406,8 +505,32 @@
         return '<option value="' + escapeHtml(server.id) + '">' + escapeHtml(server.name) + '</option>';
       }).join('');
       if (selected) select.value = selected;
+      if (!select.value && servers[0]) select.value = servers[0].id;
     }
     renderAssignments(view);
+    relayHint();
+  }
+
+  function relayHint() {
+    var hint = byID('desktopRelayHint');
+    if (!hint) return;
+    var panel = host();
+    var view = (panel && panel._view) || {};
+    var nodes = (panel && panel._nodes && panel._nodes.nodes) || [];
+    var selected = byID('desktopServer') && byID('desktopServer').value;
+    var server = null;
+    (view.servers || []).forEach(function (item) {
+      if (item && item.id === selected) server = item;
+    });
+    if (!server || !server.node_id) {
+      hint.textContent = '';
+      return;
+    }
+    var local = false;
+    nodes.forEach(function (node) {
+      if (node && node.id === server.node_id && node.has_srv) local = true;
+    });
+    hint.textContent = local ? '' : text().relayDelay;
   }
 
   function renderAssignments(view) {
@@ -436,6 +559,22 @@
       cpus: byID('desktopCpus').value.trim(),
       shm_size: byID('desktopShm').value.trim()
     };
+  }
+
+  function issueNodeCode() {
+    var name = byID('desktopNodeName').value.trim();
+    var button = byID('desktopNodeCode');
+    if (button) button.disabled = true;
+    api('/api/admin/bots/nodes/codes', { method: 'POST', body: JSON.stringify({ name: name }) }).then(function (out) {
+      var el = byID('desktopNodeCodeOut');
+      if (!el) return;
+      el.hidden = false;
+      el.textContent = text().nodeCodeReady + ' ' + (out && out.code ? out.code : '');
+    }).catch(function (err) {
+      showToast(messageOf(err), 'error');
+    }).then(function () {
+      if (button) button.disabled = false;
+    });
   }
 
   function saveServer() {

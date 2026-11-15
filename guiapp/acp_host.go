@@ -19,7 +19,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/acpagent"
-	"github.com/RapidAI/CodeClaw/corelib/configfile"
 )
 
 // Mode B: GUI hosts industry ACP (Agent Client Protocol) on loopback so
@@ -1134,10 +1133,9 @@ func (a *App) appendACPRoundToUIState(userDisplay, requestID, uiSession string) 
 	}
 	aiAssistantUIStateMu.Lock()
 	defer aiAssistantUIStateMu.Unlock()
-	path := a.aiAssistantUIStatePath()
-	state := AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &state)
+	state, err := a.loadAIAssistantUIStateLocked()
+	if err != nil {
+		return
 	}
 	now := float64(time.Now().UnixMilli())
 	state.Messages = append(state.Messages,
@@ -1161,7 +1159,10 @@ func (a *App) appendACPRoundToUIState(userDisplay, requestID, uiSession string) 
 	)
 	normalizeAIAssistantUIState(&state)
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	_ = writeAIAssistantUIStateUnlocked(path, state)
+	if a.windowAIAssistantUIStateLocked(&state, true) != nil {
+		return
+	}
+	_ = a.saveAIAssistantUIStateLocked(state)
 }
 
 func (a *App) patchACPAssistantUIState(requestID, assistantText string) {
@@ -1170,13 +1171,8 @@ func (a *App) patchACPAssistantUIState(requestID, assistantText string) {
 	}
 	aiAssistantUIStateMu.Lock()
 	defer aiAssistantUIStateMu.Unlock()
-	path := a.aiAssistantUIStatePath()
-	data, err := os.ReadFile(path)
+	state, err := a.loadAIAssistantUIStateLocked()
 	if err != nil {
-		return
-	}
-	var state AIAssistantUIState
-	if json.Unmarshal(data, &state) != nil {
 		return
 	}
 	changed := false
@@ -1200,12 +1196,10 @@ func (a *App) patchACPAssistantUIState(requestID, assistantText string) {
 	}
 	normalizeAIAssistantUIState(&state)
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	_ = writeAIAssistantUIStateUnlocked(path, state)
-}
-
-func writeAIAssistantUIStateUnlocked(path string, state AIAssistantUIState) error {
-	state.StoragePath = ""
-	return configfile.AtomicWriteJSON(path, state)
+	if a.windowAIAssistantUIStateLocked(&state, true) != nil {
+		return
+	}
+	_ = a.saveAIAssistantUIStateLocked(state)
 }
 
 // --- discovery files ---

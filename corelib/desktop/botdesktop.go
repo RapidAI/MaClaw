@@ -23,6 +23,9 @@ const BotUserSep = "::desk::"
 const (
 	BotDesktopModeShared   = "shared"
 	BotDesktopModeIsolated = "isolated"
+	// BotDesktopModeNone is a bot with no cloud desktop. It does not wake a
+	// container and is not offered desktop, computer, or browser tools.
+	BotDesktopModeNone = "none"
 )
 
 var botIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,80}$`)

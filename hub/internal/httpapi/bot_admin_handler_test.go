@@ -79,6 +79,31 @@ func (m *botAuditMem) List(context.Context, store.AdminAuditLogFilter) ([]*store
 	return m.logs, nil
 }
 
+func TestBotSettingsSaveKeepsTheOverQuotaMark(t *testing.T) {
+	mem := &botSettingsMem{}
+	mem.value = `{"bots":[{"id":"a","name":"one","owner_user_id":"alice","desktop_mode":"shared","desktop_over":true},{"id":"b","name":"two","owner_user_id":"alice","desktop_mode":"isolated"},{"id":"c","name":"plain","owner_user_id":"alice","desktop_mode":"none","desktop_over":true}],"grants":[{"id":"g","scope":"user","target_id":"alice","desktop_bot_limit":1}]}`
+	svc := botmgmt.NewService(mem)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/bots/settings", strings.NewReader(`{"base_url":"https://maclawsrv.example"}`))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant-a"}))
+	rec := httptest.NewRecorder()
+	PutBotSettingsAdminHandler(svc, &botAuditMem{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		Bots []botmgmt.Bot `json:"bots"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Bots) != 3 || !view.Bots[0].DesktopOver || !view.Bots[1].DesktopOver || view.Bots[2].DesktopOver {
+		t.Fatalf("response bots = %+v", view.Bots)
+	}
+	if strings.Contains(mem.value, "desktop_over") {
+		t.Fatalf("stored record kept the mark: %s", mem.value)
+	}
+}
+
 func TestBotSettingsSaveIsAuditedWithoutSecrets(t *testing.T) {
 	svc := botmgmt.NewService(&botSettingsMem{})
 	audit := &botAuditMem{}

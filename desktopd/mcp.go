@@ -9,7 +9,6 @@ package desktopd
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"os"
@@ -59,12 +58,24 @@ func (g *gateScreens) lookup(token string) (gateScreen, bool) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	for known, screen := range g.m {
-		if subtle.ConstantTimeCompare([]byte(known), []byte(token)) == 1 {
-			return screen, true
+	screen, ok := g.m[token]
+	if !ok {
+		return gateScreen{}, false
+	}
+	return screen, true
+}
+
+func (g *gateScreens) tokenFor(tenantID, userID string) (string, bool) {
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for token, screen := range g.m {
+		if screen.TenantID == tenantID && screen.UserID == userID {
+			return token, true
 		}
 	}
-	return gateScreen{}, false
+	return "", false
 }
 
 func (g *gateScreens) forget(tenantID, userID string) {

@@ -63,7 +63,7 @@ func (a *App) buildWorkflowV2StateWithLLM(store v2.WorkflowStore) *workflowV2Sta
 	log.Printf("[workflow-v2] engine ready: router=%v machine=%v store=%v", st.router != nil, st.machine != nil, st.store != nil)
 
 	// On startup, dismiss any stale frontend workflow board state.
-	// The frontend persists board state to ai_assistant_ui_state.json and restores it
+	// The frontend persists board state to ai_assistant_ui_state.db and restores it
 	// on reload, but the backend workflow may have been cancelled or completed since then.
 	// We emit a dismiss event so the frontend starts clean; if there's an active workflow,
 	// the next user message will re-emit the correct phase_update via routeWithWorkflowV2.

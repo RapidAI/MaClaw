@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
@@ -446,7 +447,11 @@ func PostDesktopViewAdminHandler(pool *desktoppool.Pool, bots *botmgmt.Service) 
 			writeError(w, http.StatusBadGateway, "DESKTOP_NOVNC_UNAVAILABLE", "hub could not publish a vnc address")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"novnc_url": gated})
+		body := map[string]string{"novnc_url": gated}
+		if direct := edgeDirectURL(tenantID, in.UserID, novnc, true); direct != "" {
+			body["direct_url"] = direct
+		}
+		writeJSON(w, http.StatusOK, body)
 	}
 }
 
@@ -457,11 +462,133 @@ func desktopAPIToken() string {
 func authorizeDesktopAPI(w http.ResponseWriter, r *http.Request) bool {
 	token := desktopAPIToken()
 	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if token == "" || len(got) != len(token) || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
-		writeError(w, http.StatusUnauthorized, "DESKTOP_API_UNAUTHORIZED", "desktop api token is required")
+	// The global token is compared exactly as before. A node token is a
+	// second branch and never replaces this one.
+	if token != "" && len(got) == len(token) && subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
+		return true
+	}
+	if edgeRegistry != nil && got != "" {
+		if tenant := edgeRegistry.TenantForHubToken(got); tenant != "" {
+			if !edgeBodyTenantAllowed(w, r, tenant) {
+				return false
+			}
+			return true
+		}
+	}
+	writeError(w, http.StatusUnauthorized, "DESKTOP_API_UNAUTHORIZED", "desktop api token is required")
+	return false
+}
+
+// edgeBodyTenantAllowed rejects a node token whose tenant_id names another
+// tenant. The query is checked too, because uploads put tenant_id there.
+// A body larger than 1MB is put back in full; only a prefix is inspected.
+func edgeBodyTenantAllowed(w http.ResponseWriter, r *http.Request, tenant string) bool {
+	queryTenant := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if queryTenant != "" && edgeTenantMismatch(queryTenant, tenant) {
+		writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
+		return false
+	}
+	if r.Body == nil || r.ContentLength == 0 {
+		if queryTenant == "" {
+			writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
+			return false
+		}
+		return true
+	}
+	const max = 1 << 20
+	raw, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+		return false
+	}
+	if len(raw) > max {
+		orig := r.Body
+		r.Body = stitchBody{Reader: io.MultiReader(bytes.NewReader(raw), orig), Closer: orig}
+		if !edgeLargeBodyTenantOK(r, raw, queryTenant, tenant) {
+			writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
+			return false
+		}
+		return true
+	}
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	if edgeBodyIsJSON(r, raw) {
+		var probe struct {
+			TenantID string `json:"tenant_id"`
+		}
+		if json.Unmarshal(raw, &probe) != nil || edgeTenantMismatch(probe.TenantID, tenant) || strings.TrimSpace(probe.TenantID) == "" {
+			writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
+			return false
+		}
+		return true
+	}
+	if queryTenant == "" {
+		writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
 		return false
 	}
 	return true
+}
+
+// edgeLargeBodyTenantOK checks a body that was too big to unmarshal. JSON
+// must name this tenant in the first 8KB. Anything else must already have
+// named it in the query.
+func edgeLargeBodyTenantOK(r *http.Request, raw []byte, queryTenant, tenant string) bool {
+	if !edgeBodyIsJSON(r, raw) {
+		return queryTenant != ""
+	}
+	head := raw
+	if len(head) > 8192 {
+		head = head[:8192]
+	}
+	id := strings.TrimSpace(jsonStringField(head, "tenant_id"))
+	return id != "" && !edgeTenantMismatch(id, tenant)
+}
+
+func edgeBodyIsJSON(r *http.Request, raw []byte) bool {
+	ct := strings.ToLower(r.Header.Get("Content-Type"))
+	if strings.Contains(ct, "json") {
+		return true
+	}
+	if strings.Contains(ct, "octet-stream") {
+		return false
+	}
+	return bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{"))
+}
+
+// stitchBody keeps the unread tail of a request and still closes it.
+type stitchBody struct {
+	io.Reader
+	io.Closer
+}
+
+func edgeTenantMismatch(got, want string) bool {
+	got = strings.TrimSpace(got)
+	if got == "" {
+		return false
+	}
+	return store.NormalizeTenantID(got) != store.NormalizeTenantID(want)
+}
+
+func jsonStringField(raw []byte, key string) string {
+	needle := []byte(`"` + key + `"`)
+	i := bytes.Index(raw, needle)
+	if i < 0 {
+		return ""
+	}
+	rest := bytes.TrimLeft(raw[i+len(needle):], " \t\r\n")
+	if len(rest) == 0 || rest[0] != ':' {
+		return ""
+	}
+	rest = bytes.TrimLeft(rest[1:], " \t\r\n")
+	if len(rest) == 0 || rest[0] != '"' {
+		return ""
+	}
+	rest = rest[1:]
+	end := bytes.IndexByte(rest, '"')
+	if end < 0 {
+		return ""
+	}
+	return string(rest[:end])
 }
 
 // PostDesktopSessionHandler is called by MaClawSrv. It resolves the user's
@@ -487,6 +614,10 @@ func PostDesktopSessionHandler(pool *desktoppool.Pool, bots *botmgmt.Service) ht
 			return
 		}
 		if strings.TrimSpace(in.BotID) != "" && bots != nil {
+			if bots.BotHasNoDesktop(r.Context(), in.TenantID, in.UserID, in.BotID) {
+				writeError(w, http.StatusConflict, "NO_DESKTOP", botmgmt.ErrNoDesktop.Error())
+				return
+			}
 			in.UserID = bots.IsolatedDesktopUser(r.Context(), in.TenantID, in.UserID, in.BotID)
 		}
 		session, err := pool.OpenDesktop(r.Context(), in.TenantID, in.UserID)
@@ -501,7 +632,13 @@ func PostDesktopSessionHandler(pool *desktoppool.Pool, bots *botmgmt.Service) ht
 		// screen step). Its browser work then goes straight over CDP, so this
 		// is the step the 电脑 tab learns the run is on the screen from.
 		pool.NoteBotGUIUse(in.TenantID, in.UserID, session.Novnc)
-		writeJSON(w, http.StatusOK, map[string]string{"cdp_url": session.CDP, "display": session.Display})
+		ctx := withEdgeCaller(withEdgeOrigin(r.Context(), r), r)
+		cdp, cdpErr := cdpURLForSession(ctx, in.TenantID, in.UserID, session)
+		if cdpErr != nil {
+			writeError(w, http.StatusBadGateway, "DESKTOP_CDP_UNAVAILABLE", "desktop cdp relay is unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"cdp_url": cdp, "display": session.Display})
 	}
 }
 
@@ -526,6 +663,10 @@ func PostDesktopMemoryHandler(pool *desktoppool.Pool, bots *botmgmt.Service) htt
 			return
 		}
 		if strings.TrimSpace(in.BotID) != "" && bots != nil {
+			if bots.BotHasNoDesktop(r.Context(), in.TenantID, in.UserID, in.BotID) {
+				writeError(w, http.StatusConflict, "NO_DESKTOP", botmgmt.ErrNoDesktop.Error())
+				return
+			}
 			in.UserID = bots.IsolatedDesktopUser(r.Context(), in.TenantID, in.UserID, in.BotID)
 		}
 		used, limit, err := pool.ContainerMemory(r.Context(), in.TenantID, in.UserID)

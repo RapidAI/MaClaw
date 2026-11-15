@@ -117,6 +117,25 @@ func TestPostURLHasIDIsAPathSegment(t *testing.T) {
 	if got := pickResultURL(tmpl, id, true, "https://mp.csdn.net/mp_blog/manage/article", links[0], nil); got != "" {
 		t.Fatalf("avatar stored while the article link was absent: %q", got)
 	}
+	img := "https://i-blog.csdnimg.cn/a/b/c/d.png"
+	if acceptResultURL(tmpl, "", img) {
+		t.Fatal("image host accepted as the article")
+	}
+	if got := pickResultURL(tmpl, "", true, "https://mp.csdn.net/mp_blog/manage/article", img, []string{img, article}); got != article {
+		t.Fatalf("image hid the article: %q", got)
+	}
+	xhs := "https://www.xiaohongshu.com/explore/{id}"
+	note := "https://www.xiaohongshu.com/explore/6af8cb58000000002b01b5e9"
+	profile := "https://www.xiaohongshu.com/user/profile/abc"
+	if acceptResultURL(xhs, "", profile) {
+		t.Fatal("profile accepted as the note")
+	}
+	if !acceptResultURL(xhs, "", note) {
+		t.Fatal("note link rejected before the id is known")
+	}
+	if got := pickResultURL(xhs, "", true, "https://creator.xiaohongshu.com/new/note-manager", profile, []string{profile, img, note}); got != note {
+		t.Fatalf("cover hid the note: %q", got)
+	}
 	home := "https://blog.csdn.net/znsoft"
 	if got := resolvePostLink(tmpl, id, home, "znsoft"); got != article {
 		t.Fatalf("homepage from the submit answer kept: %q", got)

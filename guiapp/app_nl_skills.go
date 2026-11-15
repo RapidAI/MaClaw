@@ -4307,7 +4307,7 @@ func recordMaclawSingleAppRunEvidence(skillName string, skillDir string, appID s
 	// app definition for every successful execution changes the packaged app
 	// checksum, which makes Hub/HubCenter create a needless new version. One
 	// successful proof is sufficient for an unchanged definition; detailed
-	// per-run evidence is stored separately in app_run_history.json.
+	// per-run evidence is stored separately in app_run_history.db.
 	if maclawAppRunEvidenceAlreadyProvesDefinition(maclawAppExistingRunEvidence(governance), evidence) {
 		result := maclawAppRunEvidenceResult(skillName, "maclaw.app.json", data, evidence, artifactName)
 		result["manifest_updated"] = false

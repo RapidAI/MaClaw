@@ -5111,3 +5111,30 @@ func TestListSkillEvolutionAuditIncludesStatusAndVia(t *testing.T) {
 		t.Fatalf("legacy row should have no via key: %#v", legacy)
 	}
 }
+
+func TestSaveAndCloseUserModelPersistsPendingUpdates(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	model, err := user.NewModel(app.userModelPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.userModel = model
+	if err := model.UpdateDimension("preferred_languages", "Go", user.Evidence{
+		Observation: "uses Go", Timestamp: time.Now(), Source: "pattern",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.saveAndCloseUserModel("test")
+	if app.userModel != nil {
+		t.Fatal("user model was not released")
+	}
+	reloaded, err := user.NewModel(app.userModelPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	profile := reloaded.GetProfile()
+	if profile.PreferredLanguages.Value != "Go" || len(profile.PreferredLanguages.Evidence) != 1 || profile.PreferredLanguages.Evidence[0].Observation != "uses Go" {
+		t.Fatalf("pending user model update was not persisted: %#v", profile.PreferredLanguages)
+	}
+}

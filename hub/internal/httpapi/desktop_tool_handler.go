@@ -128,7 +128,7 @@ func PostDesktopToolHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", err.Error())
 			return
 		}
-		text, attachmentID, err := dispatchDesktopTool(r.Context(), pool, call)
+		text, attachmentID, err := dispatchDesktopTool(withEdgeCaller(withEdgeOrigin(r.Context(), r), r), pool, call)
 		noteDesktopToolUse(r.Context(), pool, call, err)
 		if err != nil {
 			writeDesktopError(w, err)
@@ -228,7 +228,11 @@ func dispatchDesktopTool(ctx context.Context, pool *desktoppool.Pool, call deskt
 		// The worker gets only display and cdp_url; the noVNC page stays in
 		// Hub for the 电脑 tab of this bot step.
 		pool.NoteBotGUIUse(call.Tenant, call.User, session.Novnc)
-		raw, err := json.Marshal(map[string]string{"display": session.Display, "cdp_url": session.CDP})
+		cdp, err := cdpURLForSession(ctx, call.Tenant, call.User, session)
+		if err != nil {
+			return "", "", err
+		}
+		raw, err := json.Marshal(map[string]string{"display": session.Display, "cdp_url": cdp})
 		return string(raw), "", err
 	case "stop":
 		if _, err := pool.StopDesktop(ctx, call.Tenant, call.User); err != nil {

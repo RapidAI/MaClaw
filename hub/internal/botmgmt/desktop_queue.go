@@ -275,13 +275,21 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 	s.queueDraining[key] = true
 	s.mu.Unlock()
 	s.expireMemoryQueue(tenantID, userID, botID)
+	noneBot := false
+	if rec, err := s.load(context.Background(), tenantID); err == nil {
+		if i := indexOf(rec.Bots, botID); i >= 0 {
+			noneBot = botNone(rec.Bots[i])
+		}
+	}
 	defer func() {
 		s.mu.Lock()
 		delete(s.queueDraining, key)
 		s.mu.Unlock()
 	}()
 	for {
-		if s.desktopMemoryPressured(context.Background(), tenantID, userID) {
+		// A bot with no desktop does not use the container, so a full
+		// desktop must not keep its parked messages waiting.
+		if !noneBot && s.desktopMemoryPressured(context.Background(), tenantID, userID) {
 			s.noteQueueBlockedByMemory(tenantID, userID, botID)
 			return
 		}

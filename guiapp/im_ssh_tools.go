@@ -291,12 +291,18 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	host, _ := args["host"].(string)
 	user, _ := args["user"].(string)
 	label, _ := args["label"].(string)
+	password := sshStrArg(args, "password")
 
 	// Resolve pre-configured host by label.
 	if (host == "" || user == "") && label != "" {
 		if entry := h.resolveSSHHostByLabel(label); entry != nil {
 			host = entry.Host
 			user = entry.User
+			// The entry's secret is applied here and never written back into
+			// args: those are the model's tool call and may be replayed.
+			if password == "" {
+				password = entry.Password
+			}
 			if args["port"] == nil && entry.Port > 0 {
 				args["port"] = float64(entry.Port)
 			}
@@ -317,7 +323,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		Port:               port,
 		AuthMethod:         sshStrArg(args, "auth_method"),
 		KeyPath:            sshStrArg(args, "key_path"),
-		Password:           sshStrArg(args, "password"),
+		Password:           password,
 		Label:              label,
 		HostKeyFingerprint: sshStrArg(args, "host_key_fingerprint"),
 	}
@@ -1388,6 +1394,9 @@ func (h *IMMessageHandler) bumpSSHLoopIteration(sessionID string) {
 
 // resolveSSHHostByLabel looks up a pre-configured SSH host by label.
 func (h *IMMessageHandler) resolveSSHHostByLabel(label string) *corelib.SSHHostEntry {
+	if entry, ok := ephemeralSSHHost(label); ok {
+		return &entry
+	}
 	hosts := h.loadSSHHosts()
 	label = strings.ToLower(strings.TrimSpace(label))
 	for i := range hosts {

@@ -85,6 +85,21 @@ func adminJSON(t *testing.T, srv *httptest.Server, client *http.Client, method, 
 	return resp.StatusCode, payload
 }
 
+func TestAdminHubLinkReportsDisabledWithoutALink(t *testing.T) {
+	srv, client := newAdminTestServer(t)
+	if code, _ := adminJSON(t, srv, client, http.MethodGet, "/admin/api/hub-link", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("hub link must require login, got %d", code)
+	}
+	code, _ := adminJSON(t, srv, client, http.MethodPost, "/admin/api/setup", `{"username":"ops","password":"correct horse battery"}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("setup failed: %d", code)
+	}
+	code, view := adminJSON(t, srv, client, http.MethodGet, "/admin/api/hub-link", "", nil)
+	if code != http.StatusOK || view["enabled"] != false {
+		t.Fatalf("hub link view: %d %v", code, view)
+	}
+}
+
 func TestAdminSetupLoginAndTokenLifecycle(t *testing.T) {
 	srv, client := newAdminTestServer(t)
 

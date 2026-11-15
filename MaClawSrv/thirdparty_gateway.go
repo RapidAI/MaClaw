@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -431,6 +432,14 @@ func (s *HTTPServer) authorizeThirdPartyGateway(w http.ResponseWriter, r *http.R
 }
 
 func (s *HTTPServer) thirdPartyPrincipalByToken(ctx context.Context, token string) (srvThirdPartyPrincipal, error) {
+	cacheKey := sha256.Sum256([]byte(token))
+	s.thirdPartyAuthMu.RLock()
+	cached, ok := s.thirdPartyAuthCache[cacheKey]
+	authVersion := s.thirdPartyAuthVersion
+	s.thirdPartyAuthMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
 	users, err := s.svc.ListAllUsers(ctx, agentservice.ListAllUsersAdminInput{Status: agentservice.UserStatusActive})
 	if err != nil {
 		return srvThirdPartyPrincipal{}, err
@@ -458,9 +467,35 @@ func (s *HTTPServer) thirdPartyPrincipalByToken(ctx context.Context, token strin
 		}
 	}
 	if matched != nil {
+		if err := s.cacheThirdPartyPrincipal(cacheKey, authVersion, *matched); err != nil {
+			return srvThirdPartyPrincipal{}, err
+		}
 		return *matched, nil
 	}
 	return srvThirdPartyPrincipal{}, errors.New("third-party gateway token not found")
+}
+
+func (s *HTTPServer) cacheThirdPartyPrincipal(cacheKey [32]byte, authVersion uint64, principal srvThirdPartyPrincipal) error {
+	s.thirdPartyAuthMu.Lock()
+	defer s.thirdPartyAuthMu.Unlock()
+	if authVersion != s.thirdPartyAuthVersion {
+		return errors.New("third-party gateway authentication state changed")
+	}
+	if s.thirdPartyAuthCache == nil {
+		s.thirdPartyAuthCache = map[[32]byte]srvThirdPartyPrincipal{}
+	}
+	s.thirdPartyAuthCache[cacheKey] = principal
+	return nil
+}
+
+func (s *HTTPServer) invalidateThirdPartyAuthCache() {
+	if s == nil {
+		return
+	}
+	s.thirdPartyAuthMu.Lock()
+	s.thirdPartyAuthCache = nil
+	s.thirdPartyAuthVersion++
+	s.thirdPartyAuthMu.Unlock()
 }
 
 func (s *HTTPServer) validateThirdPartyGatewayTokenUnique(ctx context.Context, p agentservice.Principal, cfg corelib.AppConfig) error {

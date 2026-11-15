@@ -132,6 +132,7 @@ func (a *App) startLocalRelay() {
 		// Cloud files reach this computer from Hub's file store over HTTP.
 		Fetch:       a.botFileFetcher(),
 		RefreshLink: a.botFileRefresh,
+		MCP:         a.localRelayMCP,
 	}
 	agent := localRelayState.agent
 	localRelayState.mu.Unlock()

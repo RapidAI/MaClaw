@@ -34,7 +34,11 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     _loadSchedules();
     _nameCtrl = TextEditingController(text: widget.bot.name);
     _descCtrl = TextEditingController(text: widget.bot.description);
-    _desktopMode = widget.bot.desktopMode == 'isolated' ? 'isolated' : 'shared';
+    _desktopMode = switch (widget.bot.desktopMode) {
+      'isolated' => 'isolated',
+      'none' => 'none',
+      _ => 'shared',
+    };
     _color = botColors.contains(widget.bot.color.toLowerCase())
         ? widget.bot.color.toLowerCase()
         : botColors.first;
@@ -91,6 +95,16 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     }
   }
 
+  /// A none bot cannot take a computer once the grant is already used up.
+  bool _computerChoiceEnabled(String mode) {
+    if (mode == 'none') return true;
+    if (widget.bot.desktopMode == 'none' &&
+        ref.read(botsProvider).quota.exhausted) {
+      return false;
+    }
+    return true;
+  }
+
   Future<void> _save() async {
     final api = ref.read(botApiProvider);
     if (api == null) return;
@@ -107,12 +121,13 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
         name: _nameCtrl.text.trim(),
         description: _descCtrl.text.trim(),
       );
-      if (_desktopMode != widget.bot.desktopMode) {
-        await api.setDesktopMode(widget.bot.id, _desktopMode);
-      }
-      if (_color != widget.bot.color || _shape != widget.bot.shape) {
-        await api.setAppearance(widget.bot.id, color: _color, shape: _shape);
-      }
+      // Mode and appearance are independent endpoints — send them together.
+      await Future.wait([
+        if (_desktopMode != widget.bot.desktopMode)
+          api.setDesktopMode(widget.bot.id, _desktopMode),
+        if (_color != widget.bot.color || _shape != widget.bot.shape)
+          api.setAppearance(widget.bot.id, color: _color, shape: _shape),
+      ]);
       await ref.read(botsProvider.notifier).refresh();
       if (mounted) {
         ScaffoldMessenger.of(
@@ -203,6 +218,25 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                   TextButton.icon(
                     onPressed: () async {
                       final navigator = Navigator.of(context);
+                      // Irreversible — wipe every recorded preference.
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('撤回全部偏好？'),
+                          content: const Text('将移除这个 Bot 已记录的全部长期偏好，不可恢复。'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(context).pop(false),
+                              child: const Text('取消'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.of(context).pop(true),
+                              child: const Text('撤回'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirmed != true || !context.mounted) return;
                       try {
                         await api.withdrawPreference(widget.bot.id);
                         navigator.pop();
@@ -428,32 +462,54 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: SegmentedButton<String>(
-                      segments: const [
+                      segments: [
                         ButtonSegment(
                           value: 'shared',
-                          label: Text('共享电脑'),
-                          icon: Icon(Icons.computer),
+                          label: const Text('共用'),
+                          icon: const Icon(Icons.computer),
+                          enabled: _computerChoiceEnabled('shared'),
                         ),
                         ButtonSegment(
                           value: 'isolated',
-                          label: Text('独立电脑'),
-                          icon: Icon(Icons.desktop_windows),
+                          label: const Text('独立'),
+                          icon: const Icon(Icons.desktop_windows),
+                          enabled: _computerChoiceEnabled('isolated'),
+                        ),
+                        const ButtonSegment(
+                          value: 'none',
+                          label: Text('无电脑'),
+                          icon: Icon(Icons.desktop_access_disabled_outlined),
                         ),
                       ],
                       selected: {_desktopMode},
-                      onSelectionChanged: (v) =>
-                          setState(() => _desktopMode = v.first),
+                      onSelectionChanged: (v) {
+                        final next = v.first;
+                        if (!_computerChoiceEnabled(next)) return;
+                        setState(() => _desktopMode = next);
+                      },
                     ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    _desktopMode == 'isolated'
-                        ? 'Bot 使用自己的独立电脑画面'
-                        : 'Bot 使用你账号下的共享电脑画面',
+                    switch (_desktopMode) {
+                      'none' => '这个 Bot 不使用电脑',
+                      'isolated' => 'Bot 使用自己的独立电脑画面',
+                      _ => 'Bot 使用你账号下的共享电脑画面',
+                    },
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
+                  if (ref.watch(botsProvider).quota.label.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        ref.watch(botsProvider).quota.label,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -479,16 +535,18 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _preferenceSheet,
                 ),
-                const Divider(height: 1, indent: 16, endIndent: 16),
-                ListTile(
-                  leading: const Icon(Icons.smart_display_outlined),
-                  title: const Text('演示录制'),
-                  subtitle:
-                      const Text('录一段操作过程，提炼成 Bot 的技能（需独立电脑）'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => context
-                      .push('/bot/${Uri.encodeComponent(widget.bot.id)}/demo'),
-                ),
+                if (_desktopMode != 'none') ...[
+                  const Divider(height: 1, indent: 16, endIndent: 16),
+                  ListTile(
+                    leading: const Icon(Icons.smart_display_outlined),
+                    title: const Text('演示录制'),
+                    subtitle:
+                        const Text('录一段操作过程，提炼成 Bot 的技能（需独立电脑）'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => context.push(
+                        '/bot/${Uri.encodeComponent(widget.bot.id)}/demo'),
+                  ),
+                ],
               ],
             ),
           ),
@@ -572,10 +630,10 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
           : const <String, dynamic>{};
       setState(() {
         _enabled = view['enabled'] != false;
-        _soulCtrl.text = (current['soul'] as String? ?? '').toString();
-        _memoryCtrl.text = (current['memory'] as String? ?? '').toString();
+        _soulCtrl.text = (current['soul'] ?? '').toString();
+        _memoryCtrl.text = (current['memory'] ?? '').toString();
         _history = [
-          for (final item in (view['history'] as List? ?? const []))
+          for (final item in syncList(view['history']))
             if (item is Map) Map<String, dynamic>.from(item),
         ];
         _loading = false;
@@ -700,7 +758,7 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
                       title: Text('版本 ${item['version']}'),
                       subtitle: Text(
                         DateTime.tryParse(
-                              item['updated_at'] as String? ?? '',
+                              (item['updated_at'] ?? '').toString(),
                             )?.toLocal().toString().substring(0, 16) ??
                             '',
                         style: theme.textTheme.bodySmall,
@@ -708,9 +766,7 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
                       trailing: TextButton(
                         onPressed: _saving
                             ? null
-                            : () => _rollback(
-                                (item['version'] as num? ?? 0).toInt(),
-                              ),
+                            : () => _rollback(syncInt(item['version'])),
                         child: const Text('回滚'),
                       ),
                     ),

@@ -119,7 +119,7 @@ func (s *Service) ListBotsForUser(ctx context.Context, tenantID, userID string) 
 	primary := primaryBotID(rec, userID)
 	out := make([]BotListItem, 0, len(bots))
 	for _, bot := range bots {
-		out = append(out, BotListItem{Bot: bot, Primary: primary != "" && bot.ID == primary})
+		out = append(out, BotListItem{Bot: withDesktopModeView(bot), Primary: primary != "" && bot.ID == primary})
 	}
 	return out, nil
 }

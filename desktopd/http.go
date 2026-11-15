@@ -38,6 +38,9 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy": SnapshotProxyMetrics()})
 	})
+	if svc != nil && svc.HubLink != nil {
+		registerHubLinkRoutes(mux, svc.HubLink, authOK)
+	}
 	mux.HandleFunc("POST /v1/desktops/memory", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -554,6 +557,10 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 	// Dispatch before the mux: ServeMux redirects a ".." path to its cleaned
 	// form, which would turn a climb into some other user's tunnel.
 	tunnel := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL != nil && strings.HasPrefix(r.URL.Path, viewerPrefix) {
+			svc.serveViewer(w, r)
+			return
+		}
 		if r.URL != nil && strings.HasPrefix(r.URL.Path, tunnelPrefix) {
 			svc.serveTunnel(w, r)
 			return

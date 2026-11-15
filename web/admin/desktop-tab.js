@@ -72,7 +72,11 @@
       assignedDelete: '\u5148\u53d6\u6d88\u5206\u914d\uff0c\u518d\u5220\u9664\u8fd9\u4e2a\u670d\u52a1',
       alreadyAssigned: '\u8fd9\u4e2a\u8303\u56f4\u5df2\u7ecf\u5206\u914d\u8fc7\u4e86',
       notAssigned: '\u8fd9\u4e2a\u7528\u6237\u8fd8\u6ca1\u6709\u5206\u914d\u5230 Docker \u670d\u52a1',
-      failed: '\u64cd\u4f5c\u5931\u8d25'
+      failed: '\u64cd\u4f5c\u5931\u8d25',
+      nodeDoc: '\u5185\u7f51\u8282\u70b9\u4e0d\u8981\u586b\u4e0a\u9762\u7684\u5730\u5740\u3002\u628a\u8fd9\u4efd\u8bf4\u660e\u4ea4\u7ed9\u5185\u7f51\u673a\u5668\u4e0a\u7684 agent\uff1a',
+      nodeName: '\u5185\u7f51\u8282\u70b9\u540d\u79f0',
+      nodeCode: '\u751f\u6210\u5185\u7f51\u6ce8\u518c\u7801',
+      nodeCodeReady: '\u628a\u6ce8\u518c\u7801\u4ea4\u7ed9\u5185\u7f51 agent\uff0c10 \u5206\u949f\u5185\u6709\u6548\uff0c\u53ea\u80fd\u7528\u4e00\u6b21\uff1a'
     },
     en: {
       servers: 'Docker services',
@@ -132,7 +136,11 @@
       assignedDelete: 'Remove its assignments before deleting this service',
       alreadyAssigned: 'This scope already has an assignment',
       notAssigned: 'No Docker service is assigned to this user',
-      failed: 'Request failed'
+      failed: 'Request failed',
+      nodeDoc: 'An intranet node does not use the address above. Give this page to the agent on that machine:',
+      nodeName: 'Intranet node name',
+      nodeCode: 'Issue an intranet code',
+      nodeCodeReady: 'Give this code to the intranet agent. It works once, for 10 minutes:'
     }
   };
 
@@ -171,6 +179,14 @@
     var t = text();
     setLabel('desktopServersTitle', t.servers);
     setLabel('desktopHint', t.hint);
+    setLabel('desktopNodeDocLabel', t.nodeDoc);
+    setLabel('desktopNodeNameLabel', t.nodeName);
+    setLabel('desktopNodeCode', t.nodeCode);
+    var nodeDoc = byID('desktopNodeDoc');
+    if (nodeDoc && global.location) {
+      nodeDoc.href = global.location.origin + '/docs/botnode';
+      nodeDoc.textContent = nodeDoc.href;
+    }
     setLabel('desktopNameLabel', t.name);
     setLabel('desktopUrlLabel', t.url);
     setLabel('desktopTokenLabel', t.token);
@@ -210,6 +226,10 @@
     panel.dataset.ready = '1';
     panel.innerHTML = ''
       + '<section><h3 id="desktopServersTitle"></h3><p id="desktopHint"></p>'
+      + '<p class="bot-hint"><span id="desktopNodeDocLabel"></span> <a id="desktopNodeDoc" href="/docs/botnode" target="_blank" rel="noopener">/docs/botnode</a></p>'
+      + '<label id="desktopNodeNameLabel" for="desktopNodeName"></label><input id="desktopNodeName" maxlength="80" autocomplete="off">'
+      + '<div class="bot-actions"><button type="button" class="btn-secondary" id="desktopNodeCode"></button></div>'
+      + '<p class="bot-hint" id="desktopNodeCodeOut" hidden></p>'
       + '<label id="desktopNameLabel" for="desktopName"></label><input id="desktopName" maxlength="80" autocomplete="off">'
       + '<label id="desktopUrlLabel" for="desktopUrl"></label><input id="desktopUrl" placeholder="http://docker-host:18081" autocomplete="off" spellcheck="false">'
       + '<label id="desktopTokenLabel" for="desktopToken"></label><input id="desktopToken" type="password" autocomplete="new-password">'
@@ -236,6 +256,7 @@
     byID('desktopCpus').value = defaults.cpus;
     byID('desktopShm').value = defaults.shm;
     byID('desktopAdd').addEventListener('click', saveServer);
+    byID('desktopNodeCode').addEventListener('click', issueNodeCode);
     byID('desktopCancel').addEventListener('click', function () { clearForm(); });
     byID('desktopAssign').addEventListener('click', addAssignment);
     byID('desktopScope').addEventListener('change', fillTargets);
@@ -429,6 +450,22 @@
       cpus: byID('desktopCpus').value.trim(),
       shm_size: byID('desktopShm').value.trim()
     };
+  }
+
+  function issueNodeCode() {
+    var name = byID('desktopNodeName').value.trim();
+    var button = byID('desktopNodeCode');
+    if (button) button.disabled = true;
+    api('/api/admin/bots/nodes/codes', { method: 'POST', body: JSON.stringify({ name: name }) }).then(function (out) {
+      var el = byID('desktopNodeCodeOut');
+      if (!el) return;
+      el.hidden = false;
+      el.textContent = text().nodeCodeReady + ' ' + (out && out.code ? out.code : '');
+    }).catch(function (err) {
+      showToast(messageOf(err), 'error');
+    }).then(function () {
+      if (button) button.disabled = false;
+    });
   }
 
   function saveServer() {

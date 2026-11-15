@@ -3571,15 +3571,18 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		}
 		if len(closed) == 0 {
 			c.setVisibleToolDefinitions(nil)
+			c.publishRequestSurface()
 			return nil
 		}
 		c.setVisibleToolDefinitions(closed)
+		c.publishRequestSurface()
 		return closed
 	}
 	if petCompanionToolsDisabled(c.userID) {
 		c.semanticSurface = nil
 		c.dropDiscoveredMCPSidecar()
 		c.setVisibleToolDefinitions(nil)
+		c.publishRequestSurface()
 		return nil
 	}
 	if c.loopCtx != nil && strings.TrimSpace(c.loopCtx.capabilityExtensionReason) != "" && c.semanticSurface == nil {
@@ -3591,6 +3594,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		}
 		c.tools = defs
 		c.legacySurface = c.legacySurface.replaceDefinitions(defs, nil)
+		c.publishRequestSurface()
 		return c.tools
 	}
 	if c.semanticSurface != nil {
@@ -3634,6 +3638,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		// The loop filters this list, then SyncDirectoryToRenderedTools
 		// rewrites the directory from the slice that will be sent.
 		c.projectSemanticDirectoryPrompt()
+		c.publishRequestSurface()
 		return c.tools
 	}
 	if c.handler == nil {
@@ -3672,7 +3677,21 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	// preference, and those would be a second program.
 	c.publishHostProcedureTools(procedureText)
 	c.legacySurface = c.legacySurface.replaceDefinitions(c.tools, toolSet.ClientToolNames)
+	c.publishRequestSurface()
 	return c.tools
+}
+
+// publishRequestSurface records the names on the request the shared loop is
+// about to send. prepareAgentLoopTools publishes its closed plan inside the
+// build, but request-control tools, procedure tools, installed MCP tools,
+// admitted skill tools, and the managed surface all join afterwards — the
+// grant ledger and discover_tool's on-surface status must see this final
+// list, not the intermediate build.
+func (c *sharedAgentLoopCallbacks) publishRequestSurface() {
+	if c == nil || c.loopCtx == nil {
+		return
+	}
+	c.loopCtx.setExposedToolNames(agentLoopToolNamesForLog(c.tools))
 }
 
 // PetitionToolCall implements agent.ToolCallPetitioner for the governed

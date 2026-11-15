@@ -5230,6 +5230,10 @@ export function ListDesktopBots() {
   return window['go']['main']['App']['ListDesktopBots']();
 }
 
+export function GetDesktopBotQuota() {
+  return window['go']['main']['App']['GetDesktopBotQuota']();
+}
+
 export function SetDesktopBotPrimary(arg1) {
   return window['go']['main']['App']['SetDesktopBotPrimary'](arg1);
 }
@@ -5264,6 +5268,10 @@ export function ArmDesktopBotCrossRun(arg1, arg2) {
 
 export function CreateDesktopBot(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateDesktopBot'](arg1, arg2, arg3, arg4);
+}
+
+export function CreateDesktopBotWithComputer(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['CreateDesktopBotWithComputer'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function RenameDesktopBot(arg1, arg2, arg3, arg4, arg5) {
@@ -5304,6 +5312,18 @@ export function GetDesktopBotCredits() {
 
 export function GetDesktopComputer() {
   return window['go']['main']['App']['GetDesktopComputer']();
+}
+
+export function ListDesktopNodes() {
+  return window['go']['main']['App']['ListDesktopNodes']();
+}
+
+export function UpgradeDesktopNode(arg1, arg2) {
+  return window['go']['main']['App']['UpgradeDesktopNode'](arg1, arg2);
+}
+
+export function DeployDesktopNode(arg1) {
+  return window['go']['main']['App']['DeployDesktopNode'](arg1);
 }
 
 export function RestartDesktopComputer(arg1) {
@@ -6588,6 +6608,18 @@ export function SyncSharedPageToHub(arg1, arg2) {
 
 export function GetBotLocalAccess() {
   return window['go']['main']['App']['GetBotLocalAccess']();
+}
+
+export function GetDesktopBotCapabilityPage() {
+  return window['go']['main']['App']['GetDesktopBotCapabilityPage']();
+}
+
+export function UpdateDesktopBotCapabilities(arg1) {
+  return window['go']['main']['App']['UpdateDesktopBotCapabilities'](arg1);
+}
+
+export function ImportDesktopBotMCP(arg1) {
+  return window['go']['main']['App']['ImportDesktopBotMCP'](arg1);
 }
 
 export function SaveBotLocalAccess(arg1) {

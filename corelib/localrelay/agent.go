@@ -88,6 +88,8 @@ type Agent struct {
 	// RefreshLink returns a new signed path for a stored file whose link
 	// expired; may be nil.
 	RefreshLink func(ctx context.Context, ref string) (string, error)
+	// MCP runs one stdio MCP tool configured on this computer. Nil refuses.
+	MCP func(ctx context.Context, serverID, toolName, argsJSON string) (string, error)
 
 	mu     sync.Mutex
 	grants map[string]time.Time
@@ -274,8 +276,24 @@ func (a *Agent) handle(ctx context.Context, stream net.Conn, req Request) error 
 			return errNetOff
 		}
 		return a.dial(ctx, stream, s, req)
+	case OpMCP:
+		return a.mcp(ctx, stream, req)
 	}
 	return &Err{Code: CodeInvalid, Message: "unknown request " + req.Op}
+}
+
+func (a *Agent) mcp(ctx context.Context, stream net.Conn, req Request) error {
+	if a == nil || a.MCP == nil {
+		return &Err{Code: CodeFailed, Message: "this computer cannot run MCP tools"}
+	}
+	text, err := a.MCP(ctx, strings.TrimSpace(req.Server), strings.TrimSpace(req.Tool), req.Args)
+	if err != nil {
+		return err
+	}
+	if len(text) > 200000 {
+		text = text[:200000] + "\n…truncated"
+	}
+	return WriteLine(stream, Response{OK: true, Text: text})
 }
 
 func (a *Agent) summary(s Settings, req Request) *Summary {

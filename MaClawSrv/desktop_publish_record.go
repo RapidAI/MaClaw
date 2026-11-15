@@ -299,6 +299,119 @@ func desktopLedgerThisPost(rep *browser.PublishReport, rec desktopPublishRecord)
 	return true
 }
 
+// desktopRecordConfirmedInList upgrades the current site's record when the
+// account's post list contains the article. An unconfirmed submit stays
+// "没能确认" in the reply until this proof arrives; the list is that proof.
+func desktopRecordConfirmedInList(scope agentruntime.Scope, title, link string) {
+	link = strings.SplitN(strings.TrimSpace(link), "?", 2)[0]
+	link = strings.SplitN(link, "#", 2)[0]
+	link = browser.PublicPostURL(link)
+	if link == "" || browser.PublishURLIsBareOrigin(link) {
+		return
+	}
+	if _, ok := desktopPublishRecordOf(scope.RunID); !ok {
+		return
+	}
+	linkSite := desktopProfileForLink(link)
+	desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) {
+		if !desktopRecordAcceptsLink(r, linkSite) {
+			return
+		}
+		if r.Title != "" && title != "" && !desktopSameTitle(r.Title, title) {
+			return
+		}
+		if r.Site == "" && linkSite != nil {
+			r.Site = linkSite.ID
+		}
+		if r.State == browser.PublishLive || r.State == browser.PublishLiveIncomplete {
+			if r.URL == "" {
+				r.URL = link
+			}
+			return
+		}
+		r.State = browser.PublishLive
+		r.URL = link
+		if r.Title == "" {
+			r.Title = title
+		}
+	})
+}
+
+// desktopProfileForLink is the site of a public article URL. The article
+// host is often not the editor host (blog.csdn.net, editor.csdn.net).
+func desktopProfileForLink(link string) *browser.SiteProfile {
+	if p := browser.ProfileForURL(link); p != nil {
+		return p
+	}
+	dom := desktopRegistrableHost(link)
+	if dom == "" {
+		return nil
+	}
+	for _, p := range browser.SiteProfiles() {
+		if desktopRegistrableHost(p.EditorURL) == dom {
+			return p
+		}
+		for _, h := range p.Hosts {
+			if desktopRegistrableHost(h) == dom {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
+func desktopRegistrableHost(raw string) string {
+	h := desktopLedgerHost(raw)
+	if h == "" {
+		return ""
+	}
+	parts := strings.Split(h, ".")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "." + parts[len(parts)-1]
+	}
+	return h
+}
+
+// desktopRecordAcceptsLink: a list hit for one site must not become another
+// site's published article. An empty site is filled by the caller. A link
+// that belongs to no known site is not that article.
+func desktopRecordAcceptsLink(r *desktopPublishRecord, linkSite *browser.SiteProfile) bool {
+	if r.Site == "" {
+		return true
+	}
+	if linkSite == nil {
+		return false
+	}
+	if r.Site == linkSite.ID {
+		return true
+	}
+	have := desktopProfileForLink("https://" + r.Site + "/")
+	return have != nil && have.ID == linkSite.ID
+}
+
+// desktopListProof is the public article URL when it belongs to host's
+// site. A link from another site, or one that belongs to no site, is not
+// proof this post went out.
+func desktopListProof(host, link string) (string, bool) {
+	pub := desktopConfirmedArticleLink(link)
+	if pub == "" {
+		return "", false
+	}
+	linkSite := desktopProfileForLink(pub)
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return pub, linkSite != nil
+	}
+	hostSite := desktopProfileForLink("https://" + host + "/")
+	if hostSite == nil {
+		return pub, linkSite != nil
+	}
+	if linkSite == nil || linkSite.ID != hostSite.ID {
+		return "", false
+	}
+	return pub, true
+}
+
 // desktopRecordVerifiedPage: a run that verified its own result page (a
 // submit, then a read-back of the filled text on a new page).
 func desktopRecordVerifiedPage(scope agentruntime.Scope, u string) {

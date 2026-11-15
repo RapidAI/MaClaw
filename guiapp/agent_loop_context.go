@@ -105,15 +105,21 @@ type LoopContext struct {
 	// posture every request; without this latch the recompute would silently
 	// re-force a preference the loop already resolved.
 	skillPreferenceReleased bool
-	// skillSearchRequiredSurface records whether the last surface build ran
-	// under the hard market-search contract (remote-required, not yet
-	// exhausted). discover_tool must report a grant made under it as
-	// deferred, not "granted for the next request".
-	skillSearchRequiredSurface bool
+	// grantSurfaceContract records which discovery grants the last surface
+	// build admitted (the zero value admits everything). discover_tool must
+	// report a grant the contract refuses or holds as such, not promise it
+	// for the next request.
+	grantSurfaceContract surfaceGrantContract
 	// discoveredMCPBinds are installed MCP tools this loop's discover_tool
 	// identified. The next legacy model request publishes them as x:mcp
 	// grants. They are not host-tool names and are not a shared pin.
 	discoveredMCPBinds map[string]discoveredMCPBind
+	// unlandedGrantNames records discovered grants absent from the last
+	// rendered surface. Contract holds (search/guided/light) explain some;
+	// the rest are names a mid-build fence (workflow, expert, group, direct
+	// mode, plan phase) removed after the grant landed — discover_tool
+	// reports either honestly instead of promising the next request.
+	unlandedGrantNames map[string]bool
 	// exposedToolNames is the last closed surface rendered for this loop.
 	// Discovery status is relative to this set, not the global core catalog.
 	exposedToolNames []string
@@ -1317,10 +1323,72 @@ func (c *LoopContext) setExposedToolNames(names []string) {
 	if c == nil {
 		return
 	}
-	copied := append([]string(nil), names...)
 	c.mu.Lock()
-	c.exposedToolNames = copied
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	c.exposedToolNames = append([]string(nil), names...)
+	if len(c.discoveredConditionalTools) == 0 {
+		c.unlandedGrantNames = nil
+		return
+	}
+	exposed := make(map[string]bool, len(c.exposedToolNames))
+	for _, name := range c.exposedToolNames {
+		exposed[name] = true
+	}
+	unlanded := make(map[string]bool)
+	for name := range c.discoveredConditionalTools {
+		if name != "" && !exposed[name] {
+			unlanded[name] = true
+		}
+	}
+	if len(unlanded) == 0 {
+		unlanded = nil
+	}
+	c.unlandedGrantNames = unlanded
+}
+
+// surfaceGrantSnapshot is every input discover_tool's status report needs,
+// read under one lock: reading the contract, recorded grants, rendered
+// names, and the unlanded ledger through four accessors could interleave a
+// publish between reads and print a torn status (e.g. a contract that says
+// hold next to a ledger that already landed).
+type surfaceGrantSnapshot struct {
+	contract surfaceGrantContract
+	recorded map[string]bool
+	exposed  map[string]bool
+	unlanded map[string]bool
+}
+
+func (c *LoopContext) surfaceGrantSnapshot() surfaceGrantSnapshot {
+	snap := surfaceGrantSnapshot{}
+	if c == nil {
+		return snap
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	snap.contract = c.grantSurfaceContract
+	if len(c.discoveredConditionalTools) > 0 {
+		snap.recorded = make(map[string]bool, len(c.discoveredConditionalTools))
+		for name := range c.discoveredConditionalTools {
+			if name != "" {
+				snap.recorded[name] = true
+			}
+		}
+	}
+	for _, name := range c.exposedToolNames {
+		if name != "" {
+			if snap.exposed == nil {
+				snap.exposed = make(map[string]bool, len(c.exposedToolNames))
+			}
+			snap.exposed[name] = true
+		}
+	}
+	if len(c.unlandedGrantNames) > 0 {
+		snap.unlanded = make(map[string]bool, len(c.unlandedGrantNames))
+		for name := range c.unlandedGrantNames {
+			snap.unlanded[name] = true
+		}
+	}
+	return snap
 }
 
 func (c *LoopContext) exposedToolNameSet() map[string]bool {
@@ -1391,23 +1459,15 @@ func (c *LoopContext) skillPreferenceWasReleased() bool {
 	return c.skillPreferenceReleased
 }
 
-func (c *LoopContext) noteSkillSearchRequiredSurface(required bool) {
+func (c *LoopContext) noteSurfaceGrantContract(contract surfaceGrantContract) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	c.skillSearchRequiredSurface = required
+	c.grantSurfaceContract = contract
 	c.mu.Unlock()
 }
 
-func (c *LoopContext) skillSearchRequiredSurfaceActive() bool {
-	if c == nil {
-		return false
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.skillSearchRequiredSurface
-}
 
 func (c *LoopContext) discoveredConditionalToolNames() []string {
 	if c == nil {

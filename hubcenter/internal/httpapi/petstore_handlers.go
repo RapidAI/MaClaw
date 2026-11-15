@@ -1007,7 +1007,7 @@ func petStoreArchiveSourcePackID(data []byte) (string, error) {
 		}
 	}
 	for _, rigAssets := range petpack.SkeletonRigAssets(&manifest) {
-		if err := petStoreValidateRigArchive(zr, rigAssets); err != nil {
+		if err := petStoreValidateRigArchive(zr, &manifest, rigAssets); err != nil {
 			return "", err
 		}
 	}
@@ -1049,7 +1049,7 @@ func petStoreValidateStaticFrameArchive(zr *zip.Reader, path string) error {
 	return fmt.Errorf("native idle fallback is missing: %s", path)
 }
 
-func petStoreValidateRigArchive(zr *zip.Reader, assets *petpack.PetPackRigAssets) error {
+func petStoreValidateRigArchive(zr *zip.Reader, manifest *petpack.PetPackManifest, assets *petpack.PetPackRigAssets) error {
 	if zr == nil || assets == nil {
 		return fmt.Errorf("native-skeleton pack is missing rig assets")
 	}
@@ -1084,6 +1084,9 @@ func petStoreValidateRigArchive(zr *zip.Reader, assets *petpack.PetPackRigAssets
 		return fmt.Errorf("invalid pet-rig definition: %w", err)
 	}
 	if err := petpack.ValidateRig(&rig, assets); err != nil {
+		return fmt.Errorf("invalid pet-rig definition: %w", err)
+	}
+	if err := petpack.ValidateAdornmentSlots(manifest, &rig); err != nil {
 		return fmt.Errorf("invalid pet-rig definition: %w", err)
 	}
 	textureData := make(map[string][]byte, len(assets.Textures))

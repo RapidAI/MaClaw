@@ -4,7 +4,7 @@ name: Ragdoll
 version: 3.0.0
 author: MaClaw Official
 license: proprietary
-description: "A ragdoll cat-girl desktop companion who walks, runs, jumps, bows, and sings"
+description: "A ragdoll cat-girl who walks the desktop, grows while she stays with you, and gains a charm, slippers, and a little mouse"
 tier: figurative
 min_maclaw_version: "0.0.0"
 label:
@@ -12,9 +12,9 @@ label:
   zh-Hans: 布偶猫
   zh-Hant: 布偶貓
 description_i18n:
-  en: "A ragdoll cat-girl who walks the desktop, runs, jumps, bows, and sings"
-  zh-Hans: "会在桌面上走动、奔跑、跳跃、弯腰和唱歌的布偶猫女娘"
-  zh-Hant: "會在桌面上走動、奔跑、跳躍、彎腰和唱歌的布偶貓女娘"
+  en: "A ragdoll cat-girl who walks the desktop and grows as she stays with you: a mouse charm, then slippers, then a small mouse beside her. She signals when work starts, needs you, finishes, or fails"
+  zh-Hans: "会在桌面上走动、奔跑、跳跃、弯腰和唱歌的布偶猫女娘。陪伴越久会稍稍长大，先在手上挂一只小老鼠，再穿上拖鞋，后来身旁多一只小老鼠，并在任务开始、需要你、完成或失败时提醒你"
+  zh-Hant: "會在桌面上走動、奔跑、跳躍、彎腰和唱歌的布偶貓女娘。陪伴越久會稍稍長大，先在手上掛一隻小老鼠，再穿上拖鞋，後來身旁多一隻小老鼠，並在任務開始、需要你、完成或失敗時提醒你"
 preview: preview.png
 default_size: 224
 tone: balanced
@@ -43,6 +43,9 @@ assets:
       - rig/head.png
       - rig/mouth.png
       - rig/eyes.png
+      - rig/mouse-charm.png
+      - rig/slipper.png
+      - rig/mouse-pet.png
   character:
     definition: character/ragdoll.performer.json
 fallback:
@@ -74,6 +77,9 @@ variants:
           - rig/head.png
           - rig/mouth.png
           - rig/eyes.png
+          - rig/mouse-charm.png
+          - rig/slipper.png
+          - rig/mouse-pet.png
       character:
         definition: character/ragdoll.performer.json
   - id: classic
@@ -92,3 +98,28 @@ capabilities:
   supports_done_state: true
   supports_alert_state: true
   pet_performance_v3: true
+  supports_task_duty: true
+adornments:
+  - id: mouse-charm
+    slots: [mouse_charm]
+  - id: slippers
+    slots: [slipper_l, slipper_r]
+  - id: mouse-pet
+    slots: [mouse_pet]
+rearing:
+  stages:
+    - id: familiar
+      after_ms: 7200000
+      scale: 1.04
+      cue: notice
+      adornments: [mouse-charm]
+    - id: grown
+      after_ms: 86400000
+      scale: 1.1
+      cue: celebrate
+      adornments: [mouse-charm, slippers]
+    - id: settled
+      after_ms: 259200000
+      scale: 1.18
+      cue: celebrate
+      adornments: [mouse-charm, slippers, mouse-pet]

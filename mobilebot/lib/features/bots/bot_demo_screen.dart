@@ -89,15 +89,21 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     if (!mounted) return;
     _narrateCtrl.clear();
     setState(
-      () => _narrations.add((out['text'] as String? ?? text).toString()),
+      () => _narrations.add(syncTextOr(out['text'], text)),
     );
   });
 
   Future<void> _toggleMic() async {
     if (_micRecording) {
       setState(() => _micRecording = false);
-      final path = await _recorder.stop();
-      if (path == null || path.isEmpty || !mounted) return;
+      final String path;
+      try {
+        path = await _recorder.stop() ?? '';
+      } on Object catch (error) {
+        if (mounted) setState(() => _error = failureMessage(error));
+        return;
+      }
+      if (path.isEmpty || !mounted) return;
       await _run(() async {
         final api = ref.read(botApiProvider);
         if (api == null) return;
@@ -111,21 +117,29 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         );
         if (!mounted) return;
         setState(
-          () => _narrations.add(
-            '🎙 ${(out['text'] as String? ?? '').toString()}',
-          ),
+          () => _narrations.add('🎙 ${syncText(out['text'])}'),
         );
       });
       return;
     }
-    if (!await _recorder.hasPermission()) return;
-    final dir = await getTemporaryDirectory();
-    final path =
-        '${dir.path}${Platform.pathSeparator}narrate-${const Uuid().v4()}.wav';
-    await _recorder.start(
-      const RecordConfig(encoder: AudioEncoder.wav),
-      path: path,
-    );
+    if (!await _recorder.hasPermission()) {
+      if (mounted) {
+        setState(() => _error = '没有麦克风权限，请在系统设置中授权后重试');
+      }
+      return;
+    }
+    try {
+      final dir = await getTemporaryDirectory();
+      final path =
+          '${dir.path}${Platform.pathSeparator}narrate-${const Uuid().v4()}.wav';
+      await _recorder.start(
+        const RecordConfig(encoder: AudioEncoder.wav),
+        path: path,
+      );
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = failureMessage(error));
+      return;
+    }
     if (mounted) setState(() => _micRecording = true);
   }
 
@@ -140,9 +154,9 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     setState(() {
       _phase = _DemoPhase.stopped;
       _timeline = timeline;
-      _demoId = (timeline['id'] as String? ?? '').toString();
+      _demoId = syncText(timeline['id']);
       _events = [
-        for (final e in (timeline['events'] as List? ?? const []))
+        for (final e in syncList(timeline['events']))
           if (e is Map) Map<String, dynamic>.from(e),
       ];
     });
@@ -172,11 +186,11 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   };
 
   String _eventLabel(Map<String, dynamic> e) {
-    final kind = (e['kind'] as String? ?? '').toString();
-    final action = (e['action'] as String? ?? '').toString();
-    final text = (e['text'] as String? ?? '').toString();
-    final app = (e['app'] as String? ?? '').toString();
-    final window = (e['window'] as String? ?? '').toString();
+    final kind = syncText(e['kind']);
+    final action = syncText(e['action']);
+    final text = syncText(e['text']);
+    final app = syncText(e['app']);
+    final window = syncText(e['window']);
     return [
       if (action.isNotEmpty) action,
       if (text.isNotEmpty) text,
@@ -394,7 +408,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Icon(
-                    _eventIcon((e['kind'] as String? ?? '')),
+                    _eventIcon(syncText(e['kind'])),
                     size: 18,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -405,10 +419,10 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                       style: theme.textTheme.bodySmall,
                     ),
                   ),
-                  if ((e['ref'] as String? ?? '').isNotEmpty)
+                  if (syncText(e['ref']).isNotEmpty)
                     ClipRRect(
                       borderRadius: BorderRadius.circular(6),
-                      child: _shot((e['ref'] as String).toString()),
+                      child: _shot(syncText(e['ref'])),
                     ),
                 ],
               ),
@@ -435,8 +449,8 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   }
 
   Widget _buildSkill(ThemeData theme) {
-    final name = (_skill['name'] as String? ?? '').toString();
-    final goal = (_skill['goal'] as String? ?? '').toString();
+    final name = syncText(_skill['name']);
+    final goal = syncText(_skill['goal']);
     final steps = _skill['steps'] is List ? _skill['steps'] as List : const [];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

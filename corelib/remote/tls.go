@@ -113,6 +113,21 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+type hubTransport struct {
+	base *http.Transport
+}
+
+func (t *hubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := ValidateHubURL(req.URL.String()); err != nil {
+		return nil, err
+	}
+	return t.base.RoundTrip(req)
+}
+
+func (t *hubTransport) CloseIdleConnections() {
+	t.base.CloseIdleConnections()
+}
+
 // NewHubHTTPClient creates a pooled Hub client. Invalid TLS configuration
 // fails every request explicitly; it never falls back to skipping verification.
 func NewHubHTTPClient() *http.Client {
@@ -138,11 +153,6 @@ func NewHubHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout:       30 * time.Second,
 		CheckRedirect: sameOriginRedirect,
-		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			if err := ValidateHubURL(req.URL.String()); err != nil {
-				return nil, err
-			}
-			return transport.RoundTrip(req)
-		}),
+		Transport:     &hubTransport{base: transport},
 	}
 }

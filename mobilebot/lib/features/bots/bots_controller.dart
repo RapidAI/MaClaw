@@ -13,12 +13,14 @@ final botApiProvider = Provider<BotApi?>((ref) {
 class BotsState {
   final BotAccess access;
   final List<Bot> bots;
+  final DesktopBotQuota quota;
   final String error;
   final bool loading;
 
   const BotsState({
     this.access = const BotAccess(enabled: true),
     this.bots = const [],
+    this.quota = const DesktopBotQuota(),
     this.error = '',
     this.loading = true,
   });
@@ -26,12 +28,14 @@ class BotsState {
   BotsState copyWith({
     BotAccess? access,
     List<Bot>? bots,
+    DesktopBotQuota? quota,
     String? error,
     bool? loading,
   }) =>
       BotsState(
         access: access ?? this.access,
         bots: bots ?? this.bots,
+        quota: quota ?? this.quota,
         error: error ?? this.error,
         loading: loading ?? this.loading,
       );
@@ -67,7 +71,12 @@ class BotsController extends Notifier<BotsState> {
       }
       final bots = await api.listBots();
       if (stale()) return;
-      state = state.copyWith(access: access, bots: bots, loading: false);
+      state = state.copyWith(
+        access: access,
+        bots: bots,
+        quota: api.desktopQuota,
+        loading: false,
+      );
     } on Object catch (error) {
       if (stale()) return;
       noteAuthFailure(ref, error);
@@ -86,13 +95,35 @@ class BotsController extends Notifier<BotsState> {
   }
 
   Future<Bot> create(String name, String description,
-      {String? color, String? shape}) async {
+      {String? color, String? shape, bool needsComputer = true}) async {
     final api = _api;
     if (api == null) throw StateError('not signed in');
-    final bot = await api.createBot(
-        name: name, description: description, color: color, shape: shape);
+    final created = await api.createBot(
+      name: name,
+      description: description,
+      color: color,
+      shape: shape,
+      needsComputer: needsComputer,
+    );
+    final bot = created.desktopMode.isNotEmpty
+        ? created
+        : Bot(
+            id: created.id,
+            name: created.name,
+            description: created.description,
+            instanceId: created.instanceId,
+            desktopMode: needsComputer ? 'shared' : 'none',
+            color: created.color,
+            shape: created.shape,
+            primary: created.primary,
+            createdAt: created.createdAt,
+          );
     if (identical(ref.read(botApiProvider), api)) {
-      state = state.copyWith(bots: [...state.bots, bot]);
+      final usesComputer = botHasComputer(bot.desktopMode);
+      state = state.copyWith(
+        bots: [...state.bots, bot],
+        quota: usesComputer ? state.quota.bump() : state.quota,
+      );
     }
     return bot;
   }

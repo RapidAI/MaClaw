@@ -72,6 +72,10 @@ type localRelayRequest struct {
 	ID         string `json:"id"`
 	// Ref is a file in the bot file store (op fetch_to_local).
 	Ref string `json:"ref"`
+	// Server, Tool and Args are one stdio MCP call (op mcp_call).
+	Server string `json:"server"`
+	Tool   string `json:"tool"`
+	Args   string `json:"args"`
 }
 
 func writeRelayFailure(w http.ResponseWriter, err error) {
@@ -87,7 +91,7 @@ func PostLocalRelayHandler(bots *botmgmt.Service) http.HandlerFunc {
 			return
 		}
 		var in localRelayRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid relay request")
 			return
 		}
@@ -225,6 +229,16 @@ func PostLocalRelayHandler(bots *botmgmt.Service) http.HandlerFunc {
 			}
 			g = localRelay.Mint(g)
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": g.ID, "token": g.Token, "kind": g.Kind, "addr": addr, "idle_minutes": g.IdleMin, "expires": g.Expires.Format(time.RFC3339)})
+		case "mcp_call":
+			req := base
+			req.Op = localrelay.OpMCP
+			req.Server, req.Tool, req.Args = strings.TrimSpace(in.Server), strings.TrimSpace(in.Tool), in.Args
+			resp, err := localRelay.Call(ctx, key, req)
+			if err != nil {
+				writeRelayFailure(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "text": resp.Text})
 		case "close":
 			found := localRelay.Revoke(key, strings.TrimSpace(in.ID))
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "closed": found})

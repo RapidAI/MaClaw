@@ -1985,29 +1985,35 @@ func (p *publishRun) verify() (string, error) {
 	return out, err
 }
 
-// publishAPIFindJS fetches a JSON list with the page's session and finds
-// the object whose string fields hold the title key; it returns the id and
-// link fields of that object.
+// publishAPIFindJS fetches a JSON list with the page's session and returns
+// the records whose text contains the title key. The caller keeps the
+// record whose text is this title, not the first record that shares the
+// opening.
 const publishAPIFindJS = `(async (url, key) => {
   const n = s => String(s || '').replace(/\s+/g, '');
   let j;
   try { const r = await fetch(url, {credentials: 'include'}); j = await r.json(); } catch (e) { return JSON.stringify({err: String(e).slice(0, 120)}); }
   const idKeys = ['article_id','articleId','post_id','postId','note_id','noteId','aid','cvid','id'];
   const urlKeys = ['url','link','article_url','share_url','post_url'];
-  let hit = null;
+  const hits = [];
   const walk = (x, d) => {
-    if (hit || !x || typeof x !== 'object' || d > 8) return;
+    if (hits.length >= 24 || !x || typeof x !== 'object' || d > 8) return;
     if (!Array.isArray(x)) {
-      for (const v of Object.values(x)) if (typeof v === 'string' && n(v).includes(key) && v.length < 400) { hit = x; return; }
+      const texts = [];
+      for (const v of Object.values(x)) if (typeof v === 'string' && n(v).includes(key) && v.length < 400) texts.push(v);
+      if (texts.length) {
+        let id = '', link = '';
+        for (const k of idKeys) if (!id && (typeof x[k] === 'string' || typeof x[k] === 'number') && String(x[k]).length >= 3) id = String(x[k]);
+        for (const k of urlKeys) if (!link && typeof x[k] === 'string' && /^(https?:)?\/\//.test(x[k])) link = x[k];
+        hits.push({texts, id, link});
+        return;
+      }
     }
     for (const v of Object.values(x)) walk(v, d + 1);
   };
   walk(j, 0);
-  if (!hit) return JSON.stringify({found: false});
-  let id = '', link = '';
-  for (const k of idKeys) if (!id && (typeof hit[k] === 'string' || typeof hit[k] === 'number') && String(hit[k]).length >= 3) id = String(hit[k]);
-  for (const k of urlKeys) if (!link && typeof hit[k] === 'string' && /^(https?:)?\/\//.test(hit[k])) link = hit[k];
-  return JSON.stringify({found: true, id, link});
+  if (!hits.length) return JSON.stringify({found: false});
+  return JSON.stringify({found: true, hits});
 })`
 
 // checkAPI reads the profile's post list API for the title.
@@ -2016,34 +2022,57 @@ func (p *publishRun) checkAPI(key string) (string, error) {
 	for {
 		out, err := p.evalWithin(publishAPIFindJS+"("+jsq(p.spec.VerifyAPI)+", "+jsq(normText(key))+")", 10*time.Second)
 		var o struct {
-			Found bool   `json:"found"`
-			ID    string `json:"id"`
-			Link  string `json:"link"`
-			Err   string `json:"err"`
+			Err  string `json:"err"`
+			Hits []struct {
+				Texts []string `json:"texts"`
+				ID    string   `json:"id"`
+				Link  string   `json:"link"`
+			} `json:"hits"`
 		}
 		_ = json.Unmarshal([]byte(out), &o)
-		if err == nil && o.Found {
+		want := p.listWant()
+		if want == "" {
+			want = key
+		}
+		var hitID, hitLink string
+		for _, h := range o.Hits {
+			ok := false
+			for _, text := range h.Texts {
+				if listTitleHit(want, text) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				continue
+			}
+			hitID, hitLink = h.ID, h.Link
+			if hitID != "" || hitLink != "" {
+				break
+			}
+		}
+		if err == nil && (hitID != "" || hitLink != "") {
 			// An id with no public URL is not the post when the profile
 			// builds that URL from the account name. CSDN's list answer is
 			// often just the id; stopping there published 170775764 with
 			// nothing to open.
-			if o.ID != "" {
-				p.rep.PostID = o.ID
+			if hitID != "" {
+				p.rep.PostID = hitID
 			}
-			link := resolvePostLink(p.spec.PostURL, o.ID, o.Link, "")
-			if link == "" && o.ID != "" && strings.Contains(p.spec.PostURL, "{user}") {
-				link = resolvePostLink(p.spec.PostURL, o.ID, "", p.accountName())
+			link := resolvePostLink(p.spec.PostURL, hitID, hitLink, "")
+			if link == "" && hitID != "" && strings.Contains(p.spec.PostURL, "{user}") {
+				link = resolvePostLink(p.spec.PostURL, hitID, "", p.accountName())
 			}
 			if link == "" && strings.Contains(p.spec.PostURL, "{user}") {
 				// The row is already in the list. Polling will not grow the
 				// account cookie or the public URL, and it would burn the
 				// step budget before the account's own list page is opened.
-				return "", fmt.Errorf("post list API %s lists %q (id %s) but not its public link", p.spec.VerifyAPI, key, o.ID)
+				return "", fmt.Errorf("post list API %s lists %q (id %s) but not its public link", p.spec.VerifyAPI, key, hitID)
 			}
 			if link != "" {
 				p.rep.ResultURL = strings.SplitN(link, "#", 2)[0]
 			}
-			return fmt.Sprintf("post list API lists %q (id %s)", key, o.ID), nil
+			return fmt.Sprintf("post list API lists %q (id %s)", key, hitID), nil
 		}
 		if time.Now().After(deadline) {
 			why := o.Err
@@ -2066,47 +2095,123 @@ func URLConfirmsSubmit(raw string) bool {
 	return publishSubmittedURL.MatchString(strings.TrimSpace(raw))
 }
 
+// publishListFindJS reads the open page for key. Each row is one place the
+// key shows: the text of that line and of its short ancestors (a title is
+// often split across spans), plus the anchors in the nearest ancestor that
+// holds a link. The caller keeps the row whose text is this title.
+const publishListFindJS = `(key) => {
+  const n = s => String(s || '').replace(/\s+/g, '');
+  const body = document.body ? document.body.innerText : '';
+  const has = n(body).includes(key);
+  const rows = [];
+  if (has) {
+    const els = [...document.querySelectorAll('body *')].filter(e => n(e.innerText).includes(key) && ![...e.children].some(c => n(c.innerText).includes(key)));
+    for (const start of els.slice(0, 12)) {
+      const texts = [];
+      let e = start;
+      for (let i = 0; e && i < 4; i++, e = e.parentElement) {
+        const t = String(e.innerText || '').slice(0, 240);
+        if (i > 0 && n(t).length > 200) break;
+        texts.push(t);
+      }
+      let links = [];
+      let id = '';
+      e = start;
+      for (let i = 0; e && i < 8 && links.length === 0; i++, e = e.parentElement) {
+        if (i > 0 && n(e.innerText).length > 1500) break;
+        links = [...e.querySelectorAll('a[href]')].map(a => a.href);
+        if (!id) {
+          for (const x of [e, ...e.querySelectorAll('*')]) {
+            for (const at of x.attributes || []) {
+              const m = String(at.value || '').match(/\b([0-9a-f]{24}|[0-9]{15,20})\b/);
+              if (m) { id = m[1]; break; }
+            }
+            if (id) break;
+          }
+        }
+      }
+      const own = start.closest ? start.closest('a[href]') : null;
+      if (own && own.href) links = [own.href, ...links.filter(h => h !== own.href)];
+      rows.push({texts, links, id});
+    }
+  }
+  return JSON.stringify({url: location.href, has, rows});
+}`
+
 func (p *publishRun) checkResult(key string, budget time.Duration, listed bool) (string, error) {
 	deadline := time.Now().Add(budget)
 	reloaded := false
 	for {
-		out, _ := p.eval(`(() => { const key = ` + jsq(normText(key)) + `; const n = s => (s || '').replace(/\s+/g, ''); const has = n(document.body ? document.body.innerText : '').includes(key); const anchors = [...document.querySelectorAll('a[href]')]; const own = anchors.find(a => n(a.innerText).includes(key)); const a = own || anchors.find(a => n(a.closest('section,li,article,div') ? a.closest('section,li,article,div').innerText : '').includes(key)); let id = ''; if (has && !a) { const els = [...document.querySelectorAll('body *')].filter(e => e.children.length < 3 && n(e.innerText).includes(key)); let e = els[0]; for (let i = 0; e && i < 6 && !id; i++, e = e.parentElement) { for (const x of [e, ...e.querySelectorAll('*')]) { for (const at of x.attributes) { const m = (at.value || '').match(/\b([0-9a-f]{24}|[0-9]{15,20})\b/); if (m) { id = m[1]; break; } } if (id) break; } } } return JSON.stringify({url: location.href, has, link: a ? a.href : '', id}); })()`)
+		out, _ := p.eval("(" + publishListFindJS + ")(" + jsq(normText(key)) + ")")
 		var o struct {
 			URL  string `json:"url"`
 			Has  bool   `json:"has"`
-			Link string `json:"link"`
-			ID   string `json:"id"`
+			Rows []struct {
+				Texts []string `json:"texts"`
+				Links []string `json:"links"`
+				ID    string   `json:"id"`
+			} `json:"rows"`
 		}
 		_ = json.Unmarshal([]byte(out), &o)
-		if o.Has {
+		want := p.listWant()
+		if want == "" {
+			want = key
+		}
+		var links []string
+		var rowID string
+		matched := false
+		for _, row := range o.Rows {
+			ok := false
+			for _, text := range row.Texts {
+				if listTitleHit(want, text) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				continue
+			}
+			matched = true
+			if row.ID != "" {
+				rowID = row.ID
+			}
+			if len(row.Links) > 0 {
+				links = append([]string{}, row.Links...)
+				break
+			}
+		}
+		if matched {
 			postID := ""
 			if p.rep != nil {
 				postID = p.rep.PostID
 			}
-			var links []string
 			if postID != "" {
-				links = p.pageLinksNow()
+				links = append(links, p.pageLinksNow()...)
 			}
-			result := pickResultURL(p.spec.PostURL, postID, listed, o.URL, o.Link, links)
+			anchor := ""
+			if len(links) > 0 {
+				anchor = links[0]
+			}
+			result := pickResultURL(p.spec.PostURL, postID, listed, o.URL, anchor, links)
 			if result != "" {
 				p.rep.ResultURL = result
-				if listed && o.ID != "" && p.rep.PostID == "" {
-					p.rep.PostID = o.ID
+				if listed && rowID != "" && p.rep.PostID == "" && PostURLHasID(result, rowID) {
+					p.rep.PostID = rowID
 				}
-				return fmt.Sprintf("result page %s shows %q", result, key), nil
+				return fmt.Sprintf("result page %s shows %q", result, want), nil
 			}
 			// The success page names the article and is still not the public
 			// link. Leave it at once so the account list can be read. A list
 			// that has not rendered its public link yet keeps waiting below.
 			if !listed && publishConsoleLink.MatchString(o.URL) {
-				return "", fmt.Errorf("result page %s shows %q but not its public link", o.URL, key)
+				return "", fmt.Errorf("result page %s shows %q but not its public link", o.URL, want)
 			}
 		}
 		if time.Now().After(deadline) {
-			if o.Has {
-				return "", fmt.Errorf("result page %s shows %q but not its public link", o.URL, key)
+			if matched {
+				return "", fmt.Errorf("result page %s shows %q but not its public link", o.URL, want)
 			}
-			return "", fmt.Errorf("result page %s does not show %q", o.URL, key)
+			return "", fmt.Errorf("result page %s does not show %q", o.URL, want)
 		}
 		// Lists load lazily; one reload halfway catches a stale first render.
 		if listed && !reloaded && time.Until(deadline) < budget/2 {

@@ -40,7 +40,7 @@ var desktopPublishPlan = map[desktopPublishPhase]struct {
 	// Leaving it off the list made Bot 2 run_5d1e7700 (2026-11-14) refuse the
 	// only call that could open the screen, then fail every publish as
 	// "the desktop will not start".
-	phaseResearch: {allow("probe", "script", "navigate", "bash", "job_status", "job_list", "file_read", "file_write", "file_edit", "file_list", "skill_list", "skill_run", "wait", "request_takeover", "publish", "check_inbox", "batch", "app_open", "open_screen"),
+	phaseResearch: {allow("probe", "script", "navigate", "bash", "job_status", "job_list", "file_read", "file_write", "file_edit", "file_list", "skill_list", "skill_run", "cap_list", "cap_skill", "cap_mcp", "wait", "request_takeover", "publish", "check_inbox", "batch", "app_open", "open_screen"),
 		"call action=open_screen once, then read pages as text (probe/script/fetch with bash), prepare the title, the full body with [[img:N]] anchors and the picture files in this run's scratch folder ($TMPDIR in bash), then call action=publish"},
 	phaseCompose: {allow("bash", "job_status", "job_list", "file_read", "file_write", "file_edit", "file_list", "navigate", "probe", "request_takeover", "publish", "app_open", "open_screen"),
 		"if the screen is closed, call action=open_screen once. The editor is open: put everything in with action=publish (title=, body=, files=, verify_url=); it uploads, fills, submits and reads the post back"},

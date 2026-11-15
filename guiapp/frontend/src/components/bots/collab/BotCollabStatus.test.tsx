@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { BotCollabStatus } from './BotCollabStatus';
 import { BotSaidInline, saidFileIsImage, saidPictureSource } from './BotSaidInline';
@@ -50,9 +50,26 @@ describe('BotSaidInline files', () => {
             lookOf={() => ({} as any)}
             onOpenFile={async (note, name) => { opened.push(note + '/' + name); }}
         />);
+        expect(screen.getByText('产出物')).toBeTruthy();
+        expect(screen.getByText('预览')).toBeTruthy();
+        expect(screen.getByText('查看文档')).toBeTruthy();
         fireEvent.click(screen.getByTestId('bot-said-file-n1-REPORT.md'));
         expect(opened).toEqual(['n1/REPORT.md']);
         expect(screen.queryByText(/\*\*报告\*\*/)).toBeNull();
+    });
+    it('preview asks for the note and the file, not the bot id in their place', async () => {
+        const asked: string[] = [];
+        render(<BotSaidInline
+            items={[{ id: 'n1', from: 'bot_4', target: 'human', kind: 'say', text: '文件：北京天气.pdf（44 KB）', created_at: '', files: [{ name: '北京天气.pdf', size: 44, sha256: 'abc' }] }]}
+            bots={[{ id: 'bot_4', title: 'Bot 4' } as any]}
+            lookOf={() => ({} as any)}
+            ensureFile={async (botId, noteId, name) => {
+                asked.push(`${botId}|${noteId}|${name}`);
+                return 'D:/weather.pdf';
+            }}
+        />);
+        fireEvent.click(screen.getByTestId('bot-artifact-preview'));
+        await waitFor(() => expect(asked).toEqual(['bot_4|n1|北京天气.pdf']));
     });
     it('shows a png as a picture, not a file chip', async () => {
         const { render, screen, fireEvent } = await import('@testing-library/react');

@@ -317,10 +317,13 @@ func shouldRestrictToSkillSearch(phase agentLoopPhase) bool {
 
 // applySkillPreferenceSurface drops host tools a skill-search round must
 // not regain. Agent-guided mode keeps those tools and is resealed later.
-// keep names explicit loop-scoped discovery grants: the model petitioned a
-// tool through the sanctioned channel and the host granted it, so the
-// steering strip must not take it back. A required market-search round is
-// a hard contract, not a steer, and still defers every non-skill name.
+// keep names the loop-scoped discovery grants the surface contract permits
+// (discoveryGrantNameSetForPhase): the model petitioned a tool through the
+// sanctioned channel and the host granted it, so the steering strip must
+// not take it back — but a name the contract refused (light-forbidden,
+// guided-suppressed) must not be kept either, since keeping it would land
+// the very tool the contract denied. A required market-search round is a
+// hard contract, not a steer, and still defers every non-skill name.
 func applySkillPreferenceSurface(tools []map[string]interface{}, phase agentLoopPhase, keep map[string]bool) []map[string]interface{} {
 	if !phase.ForceSkillPreference || phase.SkillMode == skillPreferenceAgentGuided {
 		return tools

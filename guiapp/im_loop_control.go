@@ -78,6 +78,7 @@ func (h *IMMessageHandler) finishUserSessionCancelExcept(userID string, wait boo
 		return "", fmt.Errorf("missing userID")
 	}
 	userID = strings.TrimSpace(userID)
+	h.noteDesktopPetTurnCanceled(userID)
 	twinText, loopStopped, timerStopped := h.signalSlashTwinGoalSessionExcept(userID, except)
 	// A fire can already have left the timer and not yet published a loop.
 	// Pause revokes that admit. Stop has to see it too, on every spelling.

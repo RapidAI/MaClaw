@@ -153,6 +153,23 @@ class _BotCard extends ConsumerWidget {
                               ),
                             ),
                           ),
+                        Container(
+                          margin: const EdgeInsets.only(left: 6),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            desktopModeMark(bot.desktopMode),
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                     if (bot.description.isNotEmpty)
@@ -170,14 +187,15 @@ class _BotCard extends ConsumerWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
-                    tooltip: '电脑画面',
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.desktop_windows_outlined),
-                    onPressed: () => context.push(
-                      '/bot/${Uri.encodeComponent(bot.id)}/desktop',
+                  if (botHasComputer(bot.desktopMode))
+                    IconButton(
+                      tooltip: '电脑画面',
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.desktop_windows_outlined),
+                      onPressed: () => context.push(
+                        '/bot/${Uri.encodeComponent(bot.id)}/desktop',
+                      ),
                     ),
-                  ),
                   Icon(
                     Icons.chevron_right,
                     color: theme.colorScheme.onSurfaceVariant,
@@ -207,6 +225,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
   String _error = '';
   String _color = botColors[0];
   String _shape = 'blob';
+  bool _needsComputer = true;
 
   @override
   void dispose() {
@@ -218,7 +237,10 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
+    final quota = ref.watch(botsProvider).quota;
+    final locked = quota.exhausted;
+    final needsComputer = locked ? false : _needsComputer;
+    return SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottom),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -281,6 +303,15 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
             ),
           ),
           const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('这个 bot 需要电脑'),
+            subtitle: quota.label.isEmpty ? null : Text(quota.label),
+            value: needsComputer,
+            onChanged: locked || _saving
+                ? null
+                : (value) => setState(() => _needsComputer = value),
+          ),
           Wrap(
             spacing: 6,
             children: [
@@ -333,7 +364,8 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
     try {
       final bot = await ref
           .read(botsProvider.notifier)
-          .create(name, _descCtrl.text.trim(), color: _color, shape: _shape);
+          .create(name, _descCtrl.text.trim(),
+              color: _color, shape: _shape, needsComputer: _needsComputer && !ref.read(botsProvider).quota.exhausted);
       if (mounted) Navigator.of(context).pop(bot);
     } on Object catch (error) {
       if (mounted) {

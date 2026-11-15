@@ -79,6 +79,30 @@ code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
       <dl class="kv" id="serviceInfo"></dl>
     </div>
 
+    <div class="card" id="hubLinkCard">
+      <h2>Hub 连接</h2>
+      <p class="muted" id="hubLinkStatus" style="font-size:13px">正在读取…</p>
+      <dl class="kv" id="hubLinkInfo"></dl>
+      <form id="hubLinkForm">
+        <label for="hubLinkURL">Hub 地址</label>
+        <input id="hubLinkURL" class="mono" placeholder="https://hub.example" autocomplete="off">
+        <label for="hubLinkCode">注册码</label>
+        <input id="hubLinkCode" class="mono" autocomplete="off">
+        <label style="margin:8px 0 0"><input type="checkbox" id="hubLinkSrv" style="width:auto"> 同机 srv</label>
+        <label for="hubLinkSrvAddr">srv 本地地址</label>
+        <input id="hubLinkSrvAddr" class="mono" placeholder="127.0.0.1:18080" autocomplete="off">
+        <label for="hubLinkSrvAdmin">srv 管理密钥（只在注册时发送，不保存在这张卡片里）</label>
+        <input id="hubLinkSrvAdmin" type="password" autocomplete="new-password">
+        <p class="err" id="hubLinkErr"></p>
+        <div class="row">
+          <button type="submit" id="hubLinkRegister">注册</button>
+          <button type="button" class="ghost" id="hubLinkConnect">重新连接</button>
+          <button type="button" class="ghost" id="hubLinkDisconnect">断开</button>
+          <button type="button" class="danger" id="hubLinkLeave">解除注册</button>
+        </div>
+      </form>
+    </div>
+
     <div class="card">
       <h2>API Key（Hub 接入凭据）</h2>
       <p class="muted" style="font-size:13px">Hub 桌面服务配置中的 access token 使用以下任意一个即可。主 key 来自 DESKTOPD_TOKEN 环境变量，不可在此删除。</p>
@@ -253,7 +277,63 @@ async function loadDash() {
     '<tr><td class="mono">' + esc(d.container) + '</td><td class="mono">' + esc(d.tenant_id) + '</td><td class="mono">' + esc(d.user_id) + '</td><td>' + esc(d.status) + '</td></tr>');
   $('desktopRows').innerHTML = rows2.join('');
   $('desktopEmpty').textContent = rows2.length ? '' : '当前没有运行中的桌面容器。';
+  loadHubLink();
 }
+
+async function loadHubLink() {
+  try {
+    const st = await api('hub-link');
+    const status = !st.enabled ? '这台 desktopd 没有 Hub 连接'
+      : !st.enrolled ? '未注册'
+      : st.online ? '在线' : '已断开';
+    $('hubLinkStatus').textContent = status + (st.error ? ' — ' + st.error : '');
+    $('hubLinkForm').style.display = st.enabled ? '' : 'none';
+    $('hubLinkInfo').innerHTML =
+      '<dt>Hub 地址</dt><dd class="mono">' + (esc(st.hub_url) || '<span class="muted">未登记</span>') + '</dd>' +
+      '<dt>节点</dt><dd class="mono">' + (esc(st.node_id) || '<span class="muted">未登记</span>') + '</dd>' +
+      '<dt>内网访问地址</dt><dd class="mono">' + (esc(st.self) || '<span class="muted">未设置</span>') + '</dd>' +
+      '<dt>同机 srv</dt><dd class="mono">' + (esc(st.srv_addr) || '<span class="muted">无</span>') + '</dd>';
+    if (st.hub_url && !$('hubLinkURL').value) $('hubLinkURL').value = st.hub_url;
+    if (st.srv_addr) $('hubLinkSrvAddr').value = st.srv_addr;
+    $('hubLinkSrv').checked = !!st.srv_addr;
+  } catch (err) {
+    $('hubLinkStatus').textContent = err.message;
+  }
+}
+
+$('hubLinkForm').onsubmit = async (e) => {
+  e.preventDefault();
+  $('hubLinkErr').textContent = '';
+  try {
+    await api('hub-link', { method: 'POST', body: {
+      hub_url: $('hubLinkURL').value.trim(),
+      code: $('hubLinkCode').value.trim(),
+      has_srv: $('hubLinkSrv').checked,
+      srv_addr: $('hubLinkSrvAddr').value.trim(),
+      srv_admin_secret: $('hubLinkSrvAdmin').value
+    }});
+    $('hubLinkCode').value = '';
+    $('hubLinkSrvAdmin').value = '';
+    toast('已注册');
+    loadHubLink();
+  } catch (err) { $('hubLinkErr').textContent = err.message; }
+};
+$('hubLinkDisconnect').onclick = async () => {
+  $('hubLinkErr').textContent = '';
+  try { await api('hub-link/disconnect', { method: 'POST', body: {} }); toast('已断开'); loadHubLink(); }
+  catch (err) { $('hubLinkErr').textContent = err.message; }
+};
+$('hubLinkConnect').onclick = async () => {
+  $('hubLinkErr').textContent = '';
+  try { await api('hub-link/connect', { method: 'POST', body: {} }); toast('正在重新连接'); loadHubLink(); }
+  catch (err) { $('hubLinkErr').textContent = err.message; }
+};
+$('hubLinkLeave').onclick = async () => {
+  if (!confirm('解除注册会删除这台机器上的 Hub 连接。')) return;
+  $('hubLinkErr').textContent = '';
+  try { await api('hub-link', { method: 'DELETE' }); toast('已解除注册'); loadHubLink(); }
+  catch (err) { $('hubLinkErr').textContent = err.message; }
+};
 
 $('setupForm').onsubmit = async (e) => {
   e.preventDefault();

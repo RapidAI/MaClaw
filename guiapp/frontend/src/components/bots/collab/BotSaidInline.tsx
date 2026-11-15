@@ -1,6 +1,7 @@
 import { BotAvatar } from '../BotAvatar';
 import type { BotAppearance } from '../botAppearance';
 import { useCallback, useEffect, useState } from 'react';
+import { BotFileArtifactCard } from '../BotFileArtifactCard';
 import { BotMessageBody, botMessageIsStructured } from '../botMessageBody';
 import { botName, type BotRef, type SaidItem } from './botCollab';
 
@@ -128,12 +129,13 @@ function SaidPicture({ noteId, name, loadFile, onOpenShot, openLabel, onReady, o
     );
 }
 
-function SaidEntry({ item, bots, lookOf, lang, onOpenFile, loadFile, onOpenShot, openLabel }: {
+function SaidEntry({ item, bots, lookOf, lang, onOpenFile, ensureFile, loadFile, onOpenShot, openLabel }: {
     item: SaidItem;
     bots: BotRef[];
     lookOf: (bot: { id: string; title: string }) => BotAppearance;
     lang: string;
     onOpenFile?: (noteId: string, name: string) => Promise<void>;
+    ensureFile?: (botId: string, noteId: string, name: string) => Promise<string>;
     loadFile?: (noteId: string, name: string) => Promise<SaidFileBytes | null | undefined>;
     onOpenShot?: (src: string, trigger: HTMLButtonElement) => void;
     openLabel: string;
@@ -154,6 +156,8 @@ function SaidEntry({ item, bots, lookOf, lang, onOpenFile, loadFile, onOpenShot,
     const hideLabel = pictureShown && files.every(saidFileIsImage) && saidTextIsOnlyFileLabel(item.text || '', pictures);
     const bot = bots.find(b => b.id === item.from) || { id: item.from, title: item.from };
     const chips = files.filter(file => !pictures.some(picture => picture.name === file.name) || failed[file.name]);
+    const documents = chips.filter(file => !saidFileIsImage(file));
+    const failedPictures = chips.filter(file => saidFileIsImage(file));
     return (
         <div className="desktop-bot-chat__entry desktop-bot-chat__entry--assistant bot-said" data-message-role="said" data-testid={`bot-said-${item.id}`}>
             <span className="bot-said__who">
@@ -169,9 +173,21 @@ function SaidEntry({ item, bots, lookOf, lang, onOpenFile, loadFile, onOpenShot,
             {pictures.filter(file => !failed[file.name]).map(file => (
                 <SaidPicture key={file.sha256 || file.name} noteId={item.id} name={file.name} loadFile={loadFile as NonNullable<typeof loadFile>} onOpenShot={onOpenShot} openLabel={openLabel} onReady={onReady} onFail={onFail} />
             ))}
-            {chips.length > 0 ? (
+            {documents.length > 0 ? (
+                <BotFileArtifactCard
+                    messageId={item.id}
+                    lang={lang}
+                    files={documents.map(file => ({
+                        name: file.name,
+                        testId: `bot-said-file-${item.id}-${file.name}`,
+                        ensurePath: ensureFile ? () => ensureFile(item.from, item.id, file.name) : undefined,
+                        onOpen: onOpenFile ? () => onOpenFile(item.id, file.name) : undefined,
+                    }))}
+                />
+            ) : null}
+            {failedPictures.length > 0 ? (
                 <div className="bot-said__files">
-                    {chips.map(file => <SaidFileChip key={file.sha256 || file.name} noteId={item.id} name={file.name} onOpenFile={onOpenFile} />)}
+                    {failedPictures.map(file => <SaidFileChip key={file.sha256 || file.name} noteId={item.id} name={file.name} onOpenFile={onOpenFile} />)}
                 </div>
             ) : null}
         </div>
@@ -179,12 +195,13 @@ function SaidEntry({ item, bots, lookOf, lang, onOpenFile, loadFile, onOpenShot,
 }
 
 /** Messages bots said to the person directly, shown in the chat with the speaker's name and avatar. */
-export function BotSaidInline({ items, bots, lookOf, lang = 'zh-Hans', onOpenFile, loadFile, onOpenShot, openLabel = '查看图片' }: {
+export function BotSaidInline({ items, bots, lookOf, lang = 'zh-Hans', onOpenFile, ensureFile, loadFile, onOpenShot, openLabel = '查看图片' }: {
     items: SaidItem[];
     bots: BotRef[];
     lookOf: (bot: { id: string; title: string }) => BotAppearance;
     lang?: string;
     onOpenFile?: (noteId: string, name: string) => Promise<void>;
+    ensureFile?: (botId: string, noteId: string, name: string) => Promise<string>;
     loadFile?: (noteId: string, name: string) => Promise<SaidFileBytes | null | undefined>;
     onOpenShot?: (src: string, trigger: HTMLButtonElement) => void;
     openLabel?: string;
@@ -193,7 +210,7 @@ export function BotSaidInline({ items, bots, lookOf, lang = 'zh-Hans', onOpenFil
     return (
         <>
             {items.map(item => (
-                <SaidEntry key={item.id} item={item} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={onOpenFile} loadFile={loadFile} onOpenShot={onOpenShot} openLabel={openLabel} />
+                <SaidEntry key={item.id} item={item} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={onOpenFile} ensureFile={ensureFile} loadFile={loadFile} onOpenShot={onOpenShot} openLabel={openLabel} />
             ))}
         </>
     );

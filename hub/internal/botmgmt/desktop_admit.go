@@ -1248,10 +1248,25 @@ func (s *Service) DesktopRunResult(ctx context.Context, tenantID, userID, botID,
 		return s.readmitDesktopRun(ctx, tenantID, userID, botID, instanceID, runID)
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
 	if !state.done {
+		state.mu.Unlock()
 		return Reply{}, false, nil
 	}
+	// A reply restored from the text pin keeps no media bytes; MaClawSrv
+	// still holds them until the run is reaped. Refill on demand, the same
+	// read the pending-delivery path performs — a journal line that only
+	// carried attachment ids relies on this fetch.
+	if !state.mediaFetched && state.instanceID != "" &&
+		len(state.reply.Images) == 0 && len(state.reply.Files) == 0 &&
+		desktopMediaDue(state.mediaNext, s.now()) {
+		instanceID := state.instanceID
+		state.mu.Unlock()
+		if s.refillDesktopRunMedia(ctx, tenantID, userID, state, instanceID, runID) {
+			s.persistDesktopTasks(tenantID)
+		}
+		state.mu.Lock()
+	}
+	defer state.mu.Unlock()
 	return state.reply, true, state.err
 }
 
@@ -1378,6 +1393,12 @@ func (s *Service) botDesktopUsers(tenantID, userID string) func(string) string {
 	bots := map[string]string{}
 	if rec, err := s.load(context.Background(), tenantID); err == nil {
 		for _, b := range rec.Bots {
+			if botNone(b) {
+				// A bot with no desktop must not share the owner's admit
+				// lock, and nothing here is sent to desktopd.
+				bots[b.ID] = "none\x00" + b.ID
+				continue
+			}
 			bots[b.ID] = desktopUserForBot(userID, b)
 		}
 	}

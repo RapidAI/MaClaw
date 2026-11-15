@@ -210,6 +210,15 @@ function createHarness(options) {
         assignments: [{ id: 'a1', scope: 'department', target_id: 'dept-finance', server_id: 's1' }]
       });
     }
+    if (request && request.method === 'PATCH' && /^\/api\/admin\/bots\/grants\//.test(url)) {
+      if (opts.failGrantPatch) return Promise.reject(new Error('cap rejected'));
+      const id = decodeURIComponent(String(url).split('/').pop());
+      const body = JSON.parse(request.body);
+      const grant = settings.grants.filter(function (item) { return item.id === id; })[0];
+      if (!grant) return Promise.reject(new Error('missing grant'));
+      grant.desktop_bot_limit = body.desktop_bot_limit;
+      return Promise.resolve(grant);
+    }
     if (url === '/api/admin/bots/grants' && request && request.method === 'POST') {
       const body = JSON.parse(request.body);
       settings.grants.push({ id: 'g' + settings.grants.length, scope: body.scope, target_id: body.target_id });
@@ -819,6 +828,84 @@ async function testDesktopCheckKeepsTheError() {
   assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u8fd8\u6ca1\u6709\u5206\u914d') !== -1; }), 'also toasts the failure');
 }
 
+async function testDesktopQuotaColumnAndGrantLimit() {
+  console.log('  Test: grant rows edit the desktop-bot cap and the list marks an over-quota desktop');
+  const harness = createHarness();
+  harness.settings.grants = [
+    { id: 'g-global', scope: 'global' },
+    { id: 'g-alice', scope: 'user', target_id: 'u_alice', desktop_bot_limit: 1 }
+  ];
+  harness.settings.bots = [
+    { name: 'desk', owner_user_id: 'u_alice', desktop_mode: 'shared', desktop_over: true, instance_id: 'inst-desk' },
+    { name: 'plain', owner_user_id: 'u_alice', desktop_mode: 'none', instance_id: 'inst-none' },
+    { name: 'own', owner_user_id: 'u_carol', desktop_mode: 'isolated', instance_id: 'inst-own' }
+  ];
+  await harness.open();
+  await flush();
+  const grants = harness.elements.botGrants._html;
+  assertIncludes(grants, 'data-grant-limit="g-alice"', 'a user grant has a desktop-bot limit field');
+  assertIncludes(grants, 'value="1"', 'the saved cap is shown');
+  assertIncludes(grants, '\u4e0d\u9650', 'an empty cap means unlimited');
+  assertIncludes(grants, '\u7535\u8111\u6570', 'the row uses a short label so the name still fits');
+  assertIncludes(grants, 'title="\u53ef\u7528\u7535\u8111\u7684 bot \u6570"', 'the full phrase stays on the field');
+  assert(harness.elements.botGlobalLimitRow.hidden === false, 'the everyone grant also has a cap');
+  assert(harness.elements.botOrgPane.hidden === true, 'the picker stays hidden while everyone is enabled');
+  assert(harness.elements.botAccessBody.hidden !== true, 'existing caps stay visible while everyone is enabled');
+  assertIncludes(harness.elements.botList._html, '\u5171\u7528 \u00b7 \u8d85\u989d', 'a desktop bot past the grant is marked over');
+  assertIncludes(harness.elements.botList._html, '\u65e0', 'a bot with no desktop is labeled none');
+  assertIncludes(harness.elements.botList._html, '\u72ec\u7acb', 'an isolated desktop is labeled own');
+  const before = harness.calls.length;
+  harness.elements.botGrants.listeners.change[0]({
+    target: { value: '3', getAttribute: function (name) { return name === 'data-grant-limit' ? 'g-alice' : null; } }
+  });
+  await flush();
+  const patch = harness.calls.slice(before).filter(function (call) { return call.method === 'PATCH'; })[0];
+  assert(patch && JSON.parse(patch.body).desktop_bot_limit === 3, 'a number saves that cap');
+  harness.elements.botGlobalLimit.value = '2';
+  harness.elements.botGlobalLimit.setAttribute('data-grant-limit', 'g-global');
+  const beforeSet = harness.calls.length;
+  harness.elements.botGlobalLimit.listeners.change[0]();
+  await flush();
+  const setGlobal = harness.calls.slice(beforeSet).filter(function (call) { return call.method === 'PATCH'; })[0];
+  assert(setGlobal && JSON.parse(setGlobal.body).desktop_bot_limit === 2, 'the everyone grant saves a cap');
+  harness.elements.botGlobalLimit.value = '';
+  const beforeClear = harness.calls.length;
+  harness.elements.botGlobalLimit.listeners.change[0]();
+  await flush();
+  const cleared = harness.calls.slice(beforeClear).filter(function (call) { return call.method === 'PATCH'; })[0];
+  assert(cleared && JSON.parse(cleared.body).desktop_bot_limit === null, 'a blank field clears the cap');
+  const bad = { value: '-1', getAttribute: function (name) { return name === 'data-grant-limit' ? 'g-alice' : null; } };
+  const beforeBad = harness.calls.length;
+  harness.elements.botGrants.listeners.change[0]({ target: bad });
+  await flush();
+  assert(harness.calls.length === beforeBad, 'a negative cap is not sent');
+  assert(bad.value === '3', 'a rejected cap is put back');
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error'; }), 'a negative cap explains the problem');
+  const padded = { value: '03', getAttribute: function (name) { return name === 'data-grant-limit' ? 'g-alice' : null; } };
+  const beforePadded = harness.calls.length;
+  harness.elements.botGrants.listeners.change[0]({ target: padded });
+  await flush();
+  assert(harness.calls.length === beforePadded, 'a leading zero is the same cap');
+  assert(padded.value === '3', 'a leading zero is shown as the stored number');
+}
+
+async function testDesktopCapSaveFailureRestoresTheOldNumber() {
+  console.log('  Test: a rejected cap save puts the previous number back');
+  const harness = createHarness({ failGrantPatch: true });
+  harness.settings.grants = [{ id: 'g-alice', scope: 'user', target_id: 'u_alice', desktop_bot_limit: 1 }];
+  await harness.open();
+  await flush();
+  const before = harness.calls.length;
+  harness.elements.botGrants.listeners.change[0]({
+    target: { value: '4', getAttribute: function (name) { return name === 'data-grant-limit' ? 'g-alice' : null; } }
+  });
+  await flush();
+  assert(harness.calls.slice(before).some(function (call) { return call.method === 'PATCH'; }), 'the new cap is sent');
+  assert(harness.settings.grants[0].desktop_bot_limit === 1, 'a failed save keeps the stored cap');
+  assertIncludes(harness.elements.botGrants._html, 'value="1"', 'the field shows the stored cap again');
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error'; }), 'the failure is explained');
+}
+
 async function testBotOwnerUsesDirectoryName() {
   console.log('  Test: a bot lists its owner by email after the directory arrives');
   const harness = createHarness({ delayUsers: true });
@@ -1262,6 +1349,8 @@ Promise.resolve()
   .then(testConnectionFailureIsExplainedInChinese)
   .then(testDesktopCheckNamesTheService)
   .then(testDesktopCheckKeepsTheError)
+  .then(testDesktopQuotaColumnAndGrantLimit)
+  .then(testDesktopCapSaveFailureRestoresTheOldNumber)
   .then(testBotOwnerUsesDirectoryName)
   .then(testLLMSettingsProvidersAreManagedAndRolesPickTheModel)
   .then(testLLMRoleSettingsFollowForegroundAndPinSeparately)

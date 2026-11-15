@@ -42,9 +42,9 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "open_screen", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check", "finish"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "cap_list", "cap_skill", "cap_mcp", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "open_screen", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check", "finish"}
 
-var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check", "finish"}
+var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "cap_list", "cap_skill", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check", "finish"}
 
 func desktopActionAllowed(action string) bool {
 	for _, allowed := range desktopExecuteActions {
@@ -98,6 +98,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) stay in that same script. " +
 			"The script must not read cookies, storage, or passwords, and it must not type into a password or card field. " +
 			"Pass name as kebab-case, such as save-draft, to keep a script that worked. action=skill_list shows saved scripts. action=skill_run with that name runs one again without another probe. " +
+			"action=cap_list shows the MCP servers and skills turned on for every bot of this user. action=cap_skill name= reads one skill; follow that text. action=cap_mcp calls one MCP tool (mcp_server, mcp_tool, mcp_arguments). Leave mcp_tool empty to list that server's tools. An http server is called from here. A stdio server runs in this cloud desktop from the command and env saved for this account, so the person's own computer can be off. " +
 			"action=task_run remains for a short ref sequence. Do not click the browser window with pixels. " +
 			"A probe with no filter that finds no element ref includes one desktop image so you can see the page. If a filter matches nothing, probe again without it. The next web step is still an element ref, not a pixel click. " +
 			"For other applications, action=app_open with program starts that program in a window on this desktop. xfce4-terminal is already installed. xterm is another terminal when it is installed. app_open is not a shell. The new window does not use the Chinese input method, so ASCII typed into it is literal. Then action=app_list, then action=app_run with steps focus, type, key, or click. One type step can contain several lines. The terminal is a shell, so write the source as a heredoc in that step and compile on the next line. app_run focus only activates a window that is already open. exit status 1 from focus means that window is not open; start it with app_open. " +
@@ -105,6 +106,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"action=file_read, file_write, file_edit, and file_list use a path inside this container. Each run has its own project folder (named in the first file or bash result): bash starts there and a relative path such as a.c resolves there. Keep code, logs and temporary files in it; the Desktop and the home folder are the person's, so write there only when the person asked for that place (user_location=true). action=bash runs one command in this container and returns its output. A one-off script is file_write, then bash. " +
 			"A job expected to run for minutes or more (training, a remote compile, a large download, anything started with nohup or background=true) must be started in the background: action=bash with background=true (or the same command you would have waited on). That starts it detached, stores its status, and a watcher polls pid, logs and metrics on a timer; this turn then ends. Do not block this run waiting for it to finish. Progress, stalls, failures and completion are sent to this chat with evidence from the last poll. action=job_status (optional job_id=) and job_list look at that state without waiting. " +
 			"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
+			"When the person asks you to develop, fix a bug, or ship, use the repo tool. Read the issue, clone, reproduce with desktop bash, then action=branch, edit, run the project's tests, commit, and action=pr (it pushes that branch and opens the pull or merge request; an open request for that branch is kept). Then action=runs with ref set to that branch. A failed run uses action=run_log, then fix, commit, and action=push onto the same branch. action=request reads that pull or merge request: whether it can merge, and the review comments. Address those comments, commit, and push. If it is behind or conflicting, action=sync fetches the base branch and merges it here without pushing; conflict markers stay in the files, so edit them, commit, and push. When it can merge and the person wants it on the default branch, action=merge. action=diff is the change. Package with the project's own command, then action=release with asset set to that file (up to 64MB). Do not browse github.com or gitlab.com yourself. If this bot is not authorized, action=connect and send the person that link. They approve the organizations and the listed scopes on that page. Then action=repos, they choose repositories, and action=grant saves the choice. Do not ask them to paste a token. A self-hosted GitLab still uses the saved GITLAB_HOST. push, pr, merge, dispatch, and release wait for 确认. To keep watching issues, call bot_schedule with an instruction that lists issues and continues the same loop. " +
 			"The screen stays off until action=open_screen. Call open_screen only when this task needs a visible desktop: a browser, a screenshot, a window, or clicking and typing on screen. Do not call it for ssh, training, compiling, files, or any command that only needs a shell. One open_screen is enough for the task. A screen step before that fails and tells you to call it. " +
 			"action=screenshot returns an image of the whole desktop as it is now and does not open or raise the browser; its pixel coordinates are the ones app_run click uses. A game or other SDL/OpenGL window is black from import -window or xwd; set window to that window's id or title and the shot raises it and crops the composited screen. " +
 			desktopScreenVisionPrompt(desktopTurnSeesImages(request)) +
@@ -127,7 +129,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":             map[string]any{"type": "string", "description": "probe, speculate (safe precheck only: check_login/check_posted/prepare_draft/snapshot_page; stays quiet when nothing useful; never publish/pay/delete), script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, open_screen (start this bot's visible screen only when the task needs a browser, screenshot, window, or clicks; never for ssh, training, compile, or shell-only work), computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash in this run's own scratch folder ($TMPDIR when set, else /tmp), open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
+				"action":             map[string]any{"type": "string", "description": "probe, speculate (safe precheck only: check_login/check_posted/prepare_draft/snapshot_page; stays quiet when nothing useful; never publish/pay/delete), script, upload, skill_list, skill_run, cap_list, cap_skill, cap_mcp, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, open_screen (start this bot's visible screen only when the task needs a browser, screenshot, window, or clicks; never for ssh, training, compile, or shell-only work), computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash in this run's own scratch folder ($TMPDIR when set, else /tmp), open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
 				"kind":               map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
 				"message":            map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
 				"target":             map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id. A partial name or number works (\"5\" or \"5号\" finds \"Bot 5\", \"写作\" finds \"写作助手\"); if several bots fit, or none, the error lists the names: ask the person which one."},
@@ -222,6 +224,9 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"height":             map[string]any{"type": "number", "description": "action=window resize: height in screenshot pixels."},
 				"for":                map[string]any{"type": "string", "description": "action=wait: change (the screen changes) or window (a window with title appears; gone=true waits for it to close)."},
 				"timeout":            map[string]any{"type": "number", "description": "action=wait: seconds, at most 60."},
+				"mcp_server":         map[string]any{"type": "string", "description": "action=cap_mcp: MCP id from cap_list."},
+				"mcp_tool":           map[string]any{"type": "string", "description": "action=cap_mcp: tool name on that server. Empty lists the tools."},
+				"mcp_arguments":      map[string]any{"type": "object", "description": "action=cap_mcp: arguments object for that tool."},
 			},
 			"required": []string{"action"},
 		},
@@ -615,14 +620,16 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 			"The current user has one cloud desktop through the desktop tool. " +
 			"This turn only inspects it. " +
 			"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. Do not use ask_user for permission to proceed in this phase. " +
-			"Use only probe, screenshot, app_list, file_read, file_list, or skill_list. That limit is this turn only. " +
+			"Use only probe, screenshot, app_list, file_read, file_list, skill_list, cap_list, or cap_skill. That limit is this turn only. " +
 			"action=skill_list shows browser scripts already saved. This turn does not run them. " +
+			"action=cap_list and action=cap_skill read this account's MCP servers and skills. action=cap_mcp with only mcp_server lists tools. Calling a tool waits until execute. " +
 			"Judge whether this turn already finished the request. A finished look or screenshot is the result: say it is done, and do not leave an arrangement. " +
 			"If work remains, the reply is one arrangement. Do not ask the user to choose a method, reply with a number, grant a permission, or carry out the work. The confirm control is the approval. " +
 			"Installing software belongs in the arrangement: name the Debian packages. This turn does not run apt-get. " +
 			"Starting a program belongs in the arrangement. This turn does not start it. " +
 			"file_read and file_list read files in this container. Writing a file or running a command belongs in the arrangement. This turn does not write it or run it. " +
 			"A machine outside this desktop uses the ssh tool. This turn may list its sessions. Connecting or running a command there belongs in the arrangement. This turn does not connect or run it. " +
+			"GitHub and GitLab use the repo tool. This turn may call whoami, issues, issue, status, diff, log, runs, run_log, request, connect, repos, and grant. Cloning, branching, committing, pushing, updating a branch from its base, opening a pull request, merging, dispatching CI, and releasing belong in the arrangement. " +
 			"A document the user asked for belongs in that arrangement. This turn does not create the file. After confirmation the chat receives the file, or that turn reports the failure. " +
 			"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
 			"The user message is the task order for this turn. Follow it. " +
@@ -630,10 +637,12 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 			desktopScreenVisionPrompt(desktopTurnSeesImages(request)) +
 			"app_list, probe, and screenshot also list every open browser page, including tabs behind that window. probe reads only the attached page. " +
 			"If the page needs a password, phone number, or verification code, the arrangement says this chat will ask for it. A cookie notice is accepted while carrying out the work. Only a QR-code login, a captcha, or a payment confirmation is finished by the person on this computer. Describe that and stop. Do not keep looking. " +
-			"This user's bots share this desktop. Other users have separate desktops.", nil
+			"This user's bots share this desktop. Other users have separate desktops. " +
+			desktopCapabilityPrompt(request), nil
 	}
 	prompt := "The current user has one cloud desktop through the desktop tool. " +
-		"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. "
+		"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. " +
+		desktopCapabilityPrompt(request)
 	if scope, _, err := desktopScopeForTurn(request); err == nil {
 		prompt += desktopUnwatchedJobsPrompt(scope)
 		prompt += desktopExperienceText(scope, "")
@@ -665,6 +674,7 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 		"web_search and web_fetch use this desktop's network. A site the user may have signed into stays in this desktop browser, because those two tools do not see that login. " +
 		"Files and commands use action=file_read, file_write, file_edit, file_list, and action=bash inside this container. " +
 		"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
+		"When the person asks you to develop, fix a bug, or ship, use the repo tool. Read the issue, clone, reproduce with desktop bash, then action=branch, edit, run the project's tests, commit, and action=pr (it pushes that branch and opens the pull or merge request; an open request for that branch is kept). Then action=runs with ref set to that branch. A failed run uses action=run_log, then fix, commit, and action=push onto the same branch. action=request reads that pull or merge request: whether it can merge, and the review comments. Address those comments, commit, and push. If it is behind or conflicting, action=sync fetches the base branch and merges it here without pushing; conflict markers stay in the files, so edit them, commit, and push. When it can merge and the person wants it on the default branch, action=merge. action=diff is the change. Package with the project's own command, then action=release with asset set to that file (up to 64MB). Do not browse github.com or gitlab.com yourself. If this bot is not authorized, action=connect and send the person that link. They approve the organizations and the listed scopes on that page. Then action=repos, they choose repositories, and action=grant saves the choice. Do not ask them to paste a token. A self-hosted GitLab still uses the saved GITLAB_HOST. push, pr, merge, dispatch, and release wait for 确认. To keep watching issues, call bot_schedule with an instruction that lists issues and continues the same loop. " +
 		"The screen stays off until action=open_screen. Call open_screen only when this task needs a visible desktop: a browser, a screenshot, a window, or clicking and typing on screen. Do not call it for ssh, training, compiling, files, or any command that only needs a shell. One open_screen is enough for the task. A screen step before that fails and tells you to call it. " +
 		"This user's bots are different instances of the same MaClawSrv user, and those instances share this desktop. Other users have separate desktops. " +
 		"Web pages: probe once. When the controls are listed, one action=script clicks, types, selects, presses, and scrolls them, including a cookie accept button. Do not probe again between those steps. name on that script keeps it. skill_list then skill_run repeats a saved script without another probe. A password, phone number, or verification code is requested in this chat and then filled in. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. Navigate only to another page of this site. Do not pixel-click the browser. " +
@@ -808,6 +818,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	if !desktopActionAllowed(action) {
 		return "", desktopUnknownActionError(action)
+	}
+	if action == "cap_list" || action == "cap_skill" || action == "cap_mcp" {
+		return desktopCapability(ctx, scope, action, args)
 	}
 	// Deliver attaches one file to this chat. A path reads that file from the
 	// desktop. A name and content build the file here. A login in progress
@@ -1660,6 +1673,9 @@ func desktopReplyCard(request agentruntime.TurnRequest) string {
 // desktopTurnUsesContainer is a bot turn. A digital-employee turn has neither
 // hub_bot nor bot_phase, and keeps the host filesystem, shell, and network.
 func desktopTurnUsesContainer(request agentruntime.TurnRequest) bool {
+	if desktopTurnHasNoDesktop(request) {
+		return false
+	}
 	switch botPhaseFromTurn(request) {
 	case "plan", "execute":
 		return true
@@ -1672,6 +1688,16 @@ func desktopTurnUsesContainer(request agentruntime.TurnRequest) bool {
 	default:
 		return false
 	}
+}
+
+// desktopTurnHasNoDesktop is a bot created without a cloud desktop.
+// Hub marks the turn (bot_desktop) and the instance (hub_bot_desktop).
+func desktopTurnHasNoDesktop(request agentruntime.TurnRequest) bool {
+	if strings.TrimSpace(desktopMessageMeta(request)["bot_desktop"]) == desktop.BotDesktopModeNone {
+		return true
+	}
+	inst, ok := turnInstance(request)
+	return ok && strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
 }
 
 func desktopMessageMeta(request agentruntime.TurnRequest) map[string]string {

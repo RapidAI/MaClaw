@@ -107,6 +107,9 @@ class BotApi {
     return BotAccess.fromJson(data);
   }
 
+  /// Filled by the last [listBots] call. Tests that override [listBots] can set it.
+  DesktopBotQuota desktopQuota = const DesktopBotQuota();
+
   Future<List<Bot>> listBots() async {
     final data = await _client.guard(
       () => _client.dio.get<Map<String, dynamic>>(
@@ -114,6 +117,7 @@ class BotApi {
         options: _client.opts(),
       ),
     );
+    desktopQuota = DesktopBotQuota.fromJson(data['desktop_quota']);
     final raw = data['items'];
     if (raw is! List) return const [];
     return [
@@ -127,6 +131,7 @@ class BotApi {
     String description = '',
     String? color,
     String? shape,
+    bool needsComputer = true,
   }) async {
     final data = await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
@@ -134,6 +139,7 @@ class BotApi {
         data: {
           'name': name.trim(),
           'description': description.trim(),
+          'desktop': needsComputer,
           'color': ?color,
           'shape': ?shape,
         },
@@ -246,16 +252,16 @@ class BotApi {
         ),
       ),
     );
-    final ack = (data['ack'] as String? ?? '').trim();
-    final routedVia = (data['routed_via'] as String? ?? '').trim();
-    final routedTitle = (data['routed_title'] as String? ?? '').trim();
-    final kind = (data['kind'] as String? ?? '').trim();
-    final session = (data['session'] as String? ?? '').trim();
+    final ack = syncText(data['ack']);
+    final routedVia = syncText(data['routed_via']);
+    final routedTitle = syncText(data['routed_title']);
+    final kind = syncText(data['kind']);
+    final session = syncText(data['session']);
     // Queued admissions carry no run yet: Hub starts the run when the slot
     // frees, and the reply lands through the shared journal.
     if (data['queued'] == true) {
       return SendResult.queued(
-        position: (data['position'] as num? ?? 0).toInt(),
+        position: syncInt(data['position']),
         ack: ack,
         routedVia: routedVia,
         routedTitle: routedTitle,
@@ -303,7 +309,7 @@ class BotApi {
       ),
     );
     return [
-      for (final item in (data['items'] as List? ?? const []))
+      for (final item in syncList(data['items']))
         if (item is Map) ActiveRun.fromJson(Map<String, dynamic>.from(item)),
     ];
   }
@@ -316,7 +322,7 @@ class BotApi {
       ),
     );
     return [
-      for (final item in (data['items'] as List? ?? const []))
+      for (final item in syncList(data['items']))
         if (item is Map) BotSchedule.fromJson(Map<String, dynamic>.from(item)),
     ];
   }
@@ -375,7 +381,7 @@ class BotApi {
       ),
     );
     return [
-      for (final item in (data['items'] as List? ?? const []))
+      for (final item in syncList(data['items']))
         if (item is Map) PendingDelivery.fromJson(Map<String, dynamic>.from(item)),
     ];
   }
@@ -388,7 +394,7 @@ class BotApi {
       ),
     );
     return [
-      for (final item in (data['items'] as List? ?? const []))
+      for (final item in syncList(data['items']))
         if (item is Map)
           DesktopTaskStatus.fromJson(Map<String, dynamic>.from(item)),
     ];
@@ -517,7 +523,7 @@ class BotApi {
       ),
     );
     return [
-      for (final item in (data['items'] as List? ?? const []))
+      for (final item in syncList(data['items']))
         if (item is Map) FeedNote.fromJson(Map<String, dynamic>.from(item)),
     ];
   }
@@ -665,7 +671,7 @@ class BotApi {
       ),
     );
     return [
-      for (final item in (data['items'] as List? ?? const []))
+      for (final item in syncList(data['items']))
         if (item is Map)
           BotAssignment.fromJson(Map<String, dynamic>.from(item)),
     ];
@@ -705,7 +711,7 @@ class BotApi {
       ),
     );
     return [
-      for (final item in (data['items'] as List? ?? const []))
+      for (final item in syncList(data['items']))
         if (item is Map) BotRoom.fromJson(Map<String, dynamic>.from(item)),
     ];
   }
@@ -760,7 +766,7 @@ class BotApi {
       ),
     );
     return [
-      for (final item in (data['woken'] as List? ?? const []))
+      for (final item in syncList(data['woken']))
         item.toString(),
     ];
   }
@@ -776,7 +782,7 @@ class BotApi {
       ),
     );
     return [
-      for (final item in (data['items'] as List? ?? const []))
+      for (final item in syncList(data['items']))
         if (item is Map) SaidNote.fromJson(Map<String, dynamic>.from(item)),
     ];
   }
@@ -864,8 +870,8 @@ class BotApi {
       ),
     );
     return (
-      mime: (out['mime'] as String? ?? '').trim(),
-      data: (out['data'] as String? ?? '').trim(),
+      mime: syncText(out['mime']),
+      data: syncText(out['data']),
     );
   }
 
@@ -998,8 +1004,10 @@ HubApiException hubException(Response<dynamic> response) {
       final inner = (rawError['message'] ?? '').toString().trim();
       if (inner.isNotEmpty) message = inner;
     } else {
-      code = (rawError as String? ?? code).toString();
-      message = (data['message'] as String? ?? message).toString();
+      final rawCode = rawError ?? data['code'];
+      if (rawCode != null) code = rawCode.toString();
+      final rawMessage = data['message'];
+      if (rawMessage != null) message = rawMessage.toString();
     }
   }
   return HubApiException(code, message, statusCode: response.statusCode);

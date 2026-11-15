@@ -150,6 +150,23 @@ type Server struct {
 	Memory      string `json:"memory"`
 	CPUs        string `json:"cpus"`
 	ShmSize     string `json:"shm_size"`
+	// NodeID is set when this service is reached through a Bot node tunnel.
+	// Empty means Hub dials BaseURL directly, which is every server created
+	// before nodes existed.
+	NodeID string `json:"node_id,omitempty"`
+	// OwnerUserID marks a service one user registered for their own desktop
+	// from the GUI. Only that user's assignment points at it.
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+	// Intranet is a desktopd the user installed from the desktop bot
+	// settings. It lives on their network: Hub reaches it through the node
+	// tunnel, and the desktop's own traffic leaves from that machine.
+	Intranet bool `json:"intranet,omitempty"`
+	// PrevServerID is the server that user was assigned to before
+	// registering; unregistering puts that assignment back.
+	PrevServerID string `json:"prev_server_id,omitempty"`
+	// TenantID is filled by resolve and is not stored. The tunnel dial
+	// refuses a node that belongs to a different tenant.
+	TenantID string `json:"-"`
 }
 
 // ServerView hides the access token.
@@ -162,6 +179,9 @@ type ServerView struct {
 	Memory   string `json:"memory"`
 	CPUs     string `json:"cpus"`
 	ShmSize  string `json:"shm_size"`
+	NodeID   string `json:"node_id,omitempty"`
+	OwnerID  string `json:"owner_user_id,omitempty"`
+	Intranet bool   `json:"intranet,omitempty"`
 }
 
 // Assignment binds global users, one department, or one user to a server.
@@ -226,6 +246,9 @@ type Pool struct {
 	Directory Directory
 	HTTP      *http.Client
 	Now       func() time.Time
+	// Nodes dials a Bot node. Nil, or a server with an empty NodeID, keeps
+	// the client() path.
+	Nodes func(ctx context.Context, tenantID, nodeID, target string) *http.Client
 
 	mu sync.Mutex
 
@@ -367,6 +390,14 @@ func (p *Pool) UpdateServer(ctx context.Context, tenantID, serverID string, in S
 	if !tokenProvided {
 		in.AccessToken = current.AccessToken
 	}
+	// The admin patch does not send node_id. Dropping it would reject the
+	// virtual host, or dial that host on the public network.
+	if strings.TrimSpace(in.NodeID) == "" {
+		in.NodeID = current.NodeID
+	}
+	in.OwnerUserID = current.OwnerUserID
+	in.PrevServerID = current.PrevServerID
+	in.Intranet = current.Intranet || strings.TrimSpace(current.OwnerUserID) != ""
 	server, err := normalizeServer(in, current.AccessToken)
 	if err != nil {
 		return ServerView{}, err
@@ -448,6 +479,7 @@ func (p *Pool) DeleteAssignment(ctx context.Context, tenantID, assignmentID stri
 	// Best effort: a dead server must not block removing the assignment.
 	if removed.Scope == ScopeUser {
 		if server, err := serverByID(rec.Servers, removed.ServerID); err == nil {
+			server, _ = p.stamp(tenantID, server, nil)
 			_, _ = p.stopOnServer(ctx, server, tenantID, removed.TargetID)
 		}
 	}
@@ -495,7 +527,7 @@ func (p *Pool) CreateDesktop(ctx context.Context, tenantID, userID string) (Desk
 		"cpus":      server.CPUs,
 		"shm_size":  server.ShmSize,
 	}
-	if mode := p.effectiveProxyMode(ctx, tenantID, userID); mode != "" {
+	if mode := p.desktopEgressMode(ctx, tenantID, userID, server); mode != "" {
 		body["proxy_mode"] = mode
 	}
 	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops", body, &out); err != nil {
@@ -576,6 +608,12 @@ type DesktopSession struct {
 	CDP     string
 	Display string
 	Novnc   string
+	// NodeID is the Bot node that owns this desktop. Empty is a public
+	// Docker service Hub dials directly.
+	NodeID string
+	// LocalCDP is the address desktopd published before Hub moved it onto
+	// the node virtual host. A srv on that same node dials this directly.
+	LocalCDP string
 }
 
 // OpenSession asks the assigned Docker service for a CDP URL MaClawSrv can
@@ -615,7 +653,7 @@ func (p *Pool) OpenDesktop(ctx context.Context, tenantID, userID string) (Deskto
 		"shm_size":    server.ShmSize,
 		"wake_reason": reason,
 	}
-	if mode := p.effectiveProxyMode(ctx, tenantID, userID); mode != "" {
+	if mode := p.desktopEgressMode(ctx, tenantID, userID, server); mode != "" {
 		body["proxy_mode"] = mode
 	}
 	// The session call is create-or-get for this (tenant, user): a service
@@ -627,7 +665,13 @@ func (p *Pool) OpenDesktop(ctx context.Context, tenantID, userID string) (Deskto
 	if !strings.HasPrefix(out.CDP, "http://") && !strings.HasPrefix(out.CDP, "https://") {
 		return DesktopSession{}, fmt.Errorf("%w: cdp url is invalid", ErrService)
 	}
-	return DesktopSession{CDP: out.CDP, Display: out.Display, Novnc: strings.TrimSpace(out.Novnc)}, nil
+	return DesktopSession{
+		CDP:      nodeEndpoint(server, out.CDP),
+		Display:  out.Display,
+		Novnc:    nodeEndpoint(server, out.Novnc),
+		NodeID:   strings.TrimSpace(server.NodeID),
+		LocalCDP: out.CDP,
+	}, nil
 }
 
 // ContainerMemory reads the desktop container's memory from desktopd.
@@ -678,7 +722,7 @@ func (p *Pool) PeekDesktopView(ctx context.Context, tenantID, userID string) (st
 	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/view", body, &out); err != nil {
 		return "", nil
 	}
-	return strings.TrimSpace(out.Novnc), nil
+	return nodeEndpoint(server, out.Novnc), nil
 }
 
 // RunApp forwards one xdotool command to the Docker service that owns the user.
@@ -747,7 +791,10 @@ func (p *Pool) RunInstall(ctx context.Context, tenantID, userID string, packages
 		"user_id":   strings.TrimSpace(userID),
 		"packages":  names,
 	}
-	client := &http.Client{Timeout: desktop.InstallClientTimeout}
+	client, err := p.withNodeTransport(ctx, server, &http.Client{Timeout: desktop.InstallClientTimeout})
+	if err != nil {
+		return "", err
+	}
 	if err := p.callClient(ctx, client, server, http.MethodPost, "/v1/desktops/install", body, &out); err != nil {
 		return "", err
 	}
@@ -830,7 +877,14 @@ func (p *Pool) UploadFile(ctx context.Context, tenantID, userID, filePath string
 	req.Header.Set("Authorization", "Bearer "+server.AccessToken)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	client := &http.Client{Timeout: 10 * time.Minute}
-	if p.HTTP != nil && p.HTTP.Transport != nil {
+	if strings.TrimSpace(server.NodeID) != "" {
+		// The tunnel client times out at two minutes. Keep the upload
+		// deadline and reuse only its dialer.
+		client, err = p.withNodeTransport(ctx, server, client)
+		if err != nil {
+			return "", err
+		}
+	} else if p.HTTP != nil && p.HTTP.Transport != nil {
 		client.Transport = p.HTTP.Transport
 	}
 	resp, err := client.Do(req)
@@ -869,7 +923,10 @@ func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (s
 		"user_id":   strings.TrimSpace(userID),
 		"command":   strings.TrimSpace(command),
 	}
-	client := &http.Client{Timeout: 2 * time.Minute}
+	client, err := p.withNodeTransport(ctx, server, &http.Client{Timeout: 2 * time.Minute})
+	if err != nil {
+		return "", err
+	}
 	if err := p.callClient(ctx, client, server, http.MethodPost, "/v1/desktops/bash", body, &out); err != nil {
 		return "", err
 	}
@@ -995,7 +1052,11 @@ func (p *Pool) ScreenshotWith(ctx context.Context, tenantID, userID, display, na
 	}
 	req.Header.Set("Authorization", "Bearer "+server.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := p.client().Do(req)
+	client := p.clientFor(ctx, server)
+	if client == nil {
+		return desktop.Shot{}, "", fmt.Errorf("%w: node is offline", ErrService)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrService, err.Error())
 	}
@@ -1080,7 +1141,10 @@ func (p *Pool) EnsureReason(ctx context.Context, tenantID, userID, reason string
 		return err
 	}
 	started := p.now()
-	client := &http.Client{Timeout: WarmStartBudget}
+	client, err := p.withNodeTransport(ctx, server, &http.Client{Timeout: WarmStartBudget})
+	if err != nil {
+		return err
+	}
 	if strings.TrimSpace(reason) == "" {
 		reason = WakeReasonBot
 	}
@@ -1139,17 +1203,28 @@ func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, er
 		return Server{}, err
 	}
 	if serverID := matchAssignment(rec.Assignments, ScopeUser, userID); serverID != "" {
-		return serverByID(rec.Servers, serverID)
+		server, err := serverByID(rec.Servers, serverID)
+		return p.stamp(tenantID, server, err)
 	}
 	for _, groupID := range p.departmentChain(ctx, userID) {
 		if serverID := matchAssignment(rec.Assignments, ScopeDepartment, groupID); serverID != "" {
-			return serverByID(rec.Servers, serverID)
+			server, err := serverByID(rec.Servers, serverID)
+			return p.stamp(tenantID, server, err)
 		}
 	}
 	if serverID := matchAssignment(rec.Assignments, ScopeGlobal, ""); serverID != "" {
-		return serverByID(rec.Servers, serverID)
+		server, err := serverByID(rec.Servers, serverID)
+		return p.stamp(tenantID, server, err)
 	}
 	return Server{}, ErrNotAssigned
+}
+
+func (p *Pool) stamp(tenantID string, server Server, err error) (Server, error) {
+	if err != nil {
+		return Server{}, err
+	}
+	server.TenantID = store.NormalizeTenantID(tenantID)
+	return server, nil
 }
 
 // directoryContext carries the assignment's tenant into department lookups.
@@ -1186,7 +1261,42 @@ func (p *Pool) departmentChain(ctx context.Context, userID string) []string {
 }
 
 func (p *Pool) call(ctx context.Context, server Server, method, path string, body any, dest any) error {
-	return p.callClient(ctx, p.client(), server, method, path, body, dest)
+	client := p.clientFor(ctx, server)
+	if client == nil {
+		return fmt.Errorf("%w: node is offline", ErrService)
+	}
+	return p.callClient(ctx, client, server, method, path, body, dest)
+}
+
+// clientFor returns the process-wide client when the server is dialed
+// directly. A node server gets a tunnel client, or nil when the tunnel is
+// not there. The two are never mixed: an empty NodeID does not call Nodes,
+// and a node server does not fall back to the public dialer.
+func (p *Pool) clientFor(ctx context.Context, server Server) *http.Client {
+	if strings.TrimSpace(server.NodeID) != "" {
+		if p == nil || p.Nodes == nil {
+			return nil
+		}
+		return p.Nodes(ctx, server.TenantID, server.NodeID, "desktopd")
+	}
+	return p.client()
+}
+
+// withNodeTransport keeps client as-is for a direct server. A node server
+// gets a client with the same timeout and the tunnel dialer. A missing
+// tunnel is an error, so the call does not try the placeholder host.
+func (p *Pool) withNodeTransport(ctx context.Context, server Server, client *http.Client) (*http.Client, error) {
+	if strings.TrimSpace(server.NodeID) == "" {
+		return client, nil
+	}
+	nodeClient := p.clientFor(ctx, server)
+	if nodeClient == nil || nodeClient.Transport == nil {
+		return nil, fmt.Errorf("%w: node is offline", ErrService)
+	}
+	if client == nil {
+		client = nodeClient
+	}
+	return &http.Client{Timeout: client.Timeout, Transport: nodeClient.Transport}, nil
 }
 
 // desktopIdempotentAttempts is how many times one create-or-read call to the
@@ -1322,6 +1432,9 @@ func normalizeServer(in Server, keepToken string) (Server, error) {
 	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return Server{}, fmt.Errorf("%w: base_url is invalid", ErrInvalidInput)
 	}
+	if strings.TrimSpace(in.NodeID) == "" && strings.HasSuffix(parsed.Hostname(), ".node.invalid") {
+		return Server{}, fmt.Errorf("%w: base_url is invalid", ErrInvalidInput)
+	}
 	if in.AccessToken == "" {
 		in.AccessToken = keepToken
 	}
@@ -1403,6 +1516,7 @@ func serverView(server Server) ServerView {
 		ID: server.ID, Name: server.Name, BaseURL: server.BaseURL,
 		TokenSet: strings.TrimSpace(server.AccessToken) != "",
 		Image:    server.Image, Memory: server.Memory, CPUs: server.CPUs, ShmSize: server.ShmSize,
+		NodeID: server.NodeID, OwnerID: server.OwnerUserID, Intranet: serverIntranet(server),
 	}
 }
 

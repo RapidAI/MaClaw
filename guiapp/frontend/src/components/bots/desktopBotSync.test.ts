@@ -157,7 +157,8 @@ describe('multi-client conversation sync', () => {
         const late = new Client('B', journal);
         late.messages = [{ id: at(1_800_000_000_005, 'own'), role: 'user', content: 'B 的' }];
         late.pull();
-        // Time order, not arrival order.
+        // A local line with no server sequence yet stays in clock order.
+        // Numbered lines from the journal keep their sequence around it.
         expect(late.messages.map(m => m.content)).toEqual(['一', 'B 的', '二']);
         late.cursor = 0;
         expect(late.pull()).toBe(false);
@@ -201,7 +202,7 @@ describe('multi-client conversation sync', () => {
     it('projects only settled, shareable fields', () => {
         expect(syncProjection({ id: 'm-1', role: 'assistant', content: '', pending: true })).toBeNull();
         expect(syncProjection({ id: 'm-1', role: 'user', content: 'x', noReading: { text: 'x', phase: 'execute', kind: 'unread' } })).toBeNull();
-        const out = syncProjection({ id: 'm-1', role: 'assistant', content: 'ok', requestId: 'local:1', images: [{ mime: 'image/png', data: 'AAA' }], shotPaths: ['C:/x.png'], localPaths: ['C:/a.docx'], queued: true, crossNoteId: 'n1' } as DesktopBotMessage);
+        const out = syncProjection({ id: 'm-1', role: 'assistant', content: 'ok', requestId: 'local:1', images: [{ mime: 'image/png', data: 'AAA' }], shotPaths: ['C:/x.png'], localPaths: ['C:/a.docx'], queued: true, crossNoteId: 'n1', orderSeq: 4, syncSeq: 4 } as DesktopBotMessage);
         expect(out).toEqual({ role: 'assistant', content: 'ok' });
     });
 
@@ -214,8 +215,189 @@ describe('multi-client conversation sync', () => {
             bot_id: 'bot_1', id, seq: 1, created_seq: 1, origin: 'A',
             data: { role: 'assistant', content: '收到，正在看。', ack: true, understood: true },
         }]);
-        expect(merged.changed).toBe(false);
         expect(merged.messages[0].content).toBe('我去网上查黄仁勋的资料，做成带照片的简历发给你。');
+        expect(merged.messages[0].orderSeq).toBe(1);
+        expect(merged.messages[0].syncSeq).toBe(2);
+    });
+
+    it('drops every copy of a server line when one GUI deletes it', () => {
+        const stored = [
+            { id: at(1_800_000_000_100, 'mine'), role: 'assistant' as const, content: '第一条', requestId: 'n1:target' },
+            { id: at(1_800_000_000_200, 'live'), role: 'assistant' as const, content: '', pending: true, requestId: 'desktop-bot-9' },
+        ];
+        const merged = mergeSyncEntries(stored, [{
+            bot_id: 'bot_1', id: at(1_800_000_000_050, 'other'), seq: 3, created_seq: 3, origin: 'B',
+            data: { deleted: true, requestId: 'n1:target' },
+        }]);
+        expect(merged.messages.map(m => m.requestId)).toEqual(['desktop-bot-9']);
+    });
+
+    it('names the request on a deleted server line so other GUIs can drop their copy', () => {
+        const id = at(1_800_000_000_300, 'line');
+        const keep = at(1_800_000_000_100, 'keep');
+        const requests = new Map([[`alice\0bot_1\0${id}`, 'n1:target']]);
+        const { writes } = syncWrites('alice', 'bot_1', [
+            { id: keep, role: 'user', content: '还在' },
+        ], [id, keep], () => false, true, requests);
+        expect(writes.find(w => w.id === id)?.data).toEqual({ deleted: true, requestId: 'n1:target' });
+    });
+
+    it('keeps one bubble for a server line and orders copies by the first sequence', () => {
+        const stored = [
+            { id: at(1_800_000_000_500, 'late'), role: 'assistant' as const, content: '第二条', requestId: 'n2:target', orderSeq: 5 },
+            { id: at(1_800_000_000_100, 'early'), role: 'assistant' as const, content: '第一条', requestId: 'n1:target' },
+        ];
+        const merged = mergeSyncEntries(stored, [
+            {
+                bot_id: 'bot_1', id: at(1_800_000_000_050, 'early-b'), seq: 2, created_seq: 2, origin: 'B',
+                data: { role: 'assistant', content: '第一条', requestId: 'n1:target' },
+            },
+            {
+                bot_id: 'bot_1', id: at(1_800_000_000_400, 'late-b'), seq: 4, created_seq: 4, origin: 'B',
+                data: { role: 'assistant', content: '第二条', requestId: 'n2:target' },
+            },
+        ]);
+        expect(merged.messages.map(m => m.content)).toEqual(['第一条', '第二条']);
+        expect(merged.messages[0].id).toBe(stored[1].id);
+        expect(merged.messages[0].orderSeq).toBe(2);
+        expect(merged.messages[1].orderSeq).toBe(4);
+    });
+
+    it('does not move a synced line down when a later copy of the same request arrives', () => {
+        const id = at(1_800_000_000_100, 'synced');
+        const stored = [
+            { id, role: 'assistant' as const, content: '第一条', requestId: 'n1:target', syncSeq: 2, syncOrigin: 'B' },
+            { id: at(1_800_000_000_800, 'after'), role: 'user' as const, content: '后说', orderSeq: 3 },
+        ];
+        const merged = mergeSyncEntries(stored, [{
+            bot_id: 'bot_1', id: at(1_800_000_000_500, 'copy'), seq: 5, created_seq: 5, origin: 'A',
+            data: { role: 'assistant', content: '第一条', requestId: 'n1:target' },
+        }]);
+        expect(merged.messages.map(m => m.content)).toEqual(['第一条', '后说']);
+        expect(merged.messages[0].syncSeq).toBe(2);
+        expect(merged.messages[0].orderSeq).toBeUndefined();
+    });
+
+    it('does not let this client\'s later sequence move a shared server line downward', () => {
+        const mine = at(1_800_000_000_500, 'mine');
+        const stored = [
+            { id: mine, role: 'assistant' as const, content: '同一条', requestId: 'n1:target' },
+            { id: at(1_800_000_000_800, 'after'), role: 'user' as const, content: '后说', orderSeq: 3 },
+        ];
+        const merged = mergeSyncEntries(stored, [
+            {
+                bot_id: 'bot_1', id: at(1_800_000_000_050, 'remote'), seq: 2, created_seq: 2, origin: 'B',
+                data: { role: 'assistant', content: '同一条', requestId: 'n1:target' },
+            },
+            { bot_id: 'bot_1', id: mine, seq: 4, created_seq: 4, own: true, data: null },
+        ]);
+        expect(merged.messages.map(m => m.content)).toEqual(['同一条', '后说']);
+        expect(merged.messages[0].orderSeq).toBe(2);
+    });
+
+    it('adopts an earlier sequence from the journal when the stored number is the edit', () => {
+        const early = at(1_800_000_000_100, 'early');
+        const stored = [
+            { id: at(1_800_000_000_800, 'late'), role: 'user' as const, content: '后', orderSeq: 4 },
+            { id: early, role: 'user' as const, content: '先', syncSeq: 9, orderSeq: 9, syncOrigin: 'A' },
+        ];
+        const merged = mergeSyncEntries(stored, [{
+            bot_id: 'bot_1', id: early, seq: 9, created_seq: 2, origin: 'A',
+            data: { role: 'user', content: '先' },
+        }]);
+        expect(merged.messages.map(m => m.content)).toEqual(['先', '后']);
+        expect(merged.messages[0].syncSeq).toBe(9);
+        expect(merged.messages[0].orderSeq).toBe(2);
+    });
+
+    it('moves a line stuck on its edit number back to the first-write sequence', () => {
+        const early = at(1_800_000_000_100, 'early');
+        const stored = [
+            { id: at(1_800_000_000_800, 'late'), role: 'user' as const, content: '后', orderSeq: 4 },
+            { id: early, role: 'user' as const, content: '先', syncSeq: 9, syncOrigin: 'A' },
+        ];
+        const merged = mergeSyncEntries(stored, [
+            { bot_id: 'bot_1', id: early, seq: 9, created_seq: 2, own: true, data: null },
+        ]);
+        expect(merged.messages.map(m => m.content)).toEqual(['先', '后']);
+        expect(merged.messages[0].syncSeq).toBe(9);
+        expect(merged.messages[0].orderSeq).toBe(2);
+    });
+
+    it('shows a fresh transcript in server order when clocks and edit numbers disagree', () => {
+        const merged = mergeSyncEntries([], [
+            {
+                bot_id: 'bot_1', id: at(1_800_000_000_100, 'slow'), seq: 9, created_seq: 1, origin: 'A',
+                data: { role: 'user', content: '先发' },
+            },
+            {
+                bot_id: 'bot_1', id: at(1_800_000_000_900, 'fast'), seq: 2, created_seq: 2, origin: 'B',
+                data: { role: 'user', content: '后发' },
+            },
+        ]);
+        expect(merged.messages.map(m => m.content)).toEqual(['先发', '后发']);
+    });
+
+    it('keeps a later message after an earlier one when the other GUI clock is behind', () => {
+        const stored = [
+            { id: at(1_800_000_000_500, 'fast'), role: 'user' as const, content: '先发', orderSeq: 1 },
+        ];
+        const merged = mergeSyncEntries(stored, [{
+            bot_id: 'bot_1', id: at(1_800_000_000_100, 'slow'), seq: 2, created_seq: 2, origin: 'B',
+            data: { role: 'user', content: '后发' },
+        }]);
+        expect(merged.messages.map(m => m.content)).toEqual(['先发', '后发']);
+    });
+
+    it('moves this client\'s bubble into server order once Hub assigns the sequence', () => {
+        const fast = at(1_800_000_000_500, 'fast');
+        const stored = [
+            { id: at(1_800_000_000_100, 'slow'), role: 'user' as const, content: '后发', syncSeq: 2, orderSeq: 2, syncOrigin: 'B' },
+            { id: fast, role: 'user' as const, content: '先发' },
+        ];
+        const merged = mergeSyncEntries(stored, [{
+            bot_id: 'bot_1', id: fast, seq: 1, created_seq: 1, own: true, data: null,
+        }]);
+        expect(merged.messages.map(m => m.content)).toEqual(['先发', '后发']);
+        expect(merged.messages[0].orderSeq).toBe(1);
+        expect(merged.messages[0].syncSeq).toBeUndefined();
+    });
+
+    it('stamps a local bubble from an earlier run of this app and sorts by that sequence', () => {
+        const fast = at(1_800_000_000_500, 'fast');
+        const stored = [
+            { id: at(1_800_000_000_100, 'slow'), role: 'user' as const, content: '后发', syncSeq: 2, orderSeq: 2 },
+            { id: fast, role: 'user' as const, content: '先发' },
+        ];
+        const merged = mergeSyncEntries(stored, [{
+            bot_id: 'bot_1', id: fast, seq: 4, created_seq: 1, origin: 'old-gui',
+            data: { role: 'user', content: '先发' },
+        }]);
+        expect(merged.messages.map(m => m.content)).toEqual(['先发', '后发']);
+        expect(merged.messages[0].orderSeq).toBe(1);
+        expect(merged.messages[0].syncSeq).toBeUndefined();
+    });
+
+    it('tombstones a removed line that is newer than the oldest kept, even when a later line is first', () => {
+        const t0 = 1_800_000_000_000;
+        const oldest = at(t0, 'old');
+        const removed = at(t0 + 100, 'mid');
+        const fellOff = at(t0 - 50, 'fell');
+        const newest = at(t0 + 500, 'new');
+        const kept = new Set([`alice\0bot_1\0${newest}`, `alice\0bot_1\0${oldest}`]);
+        const { writes } = syncWrites('alice', 'bot_1', [
+            { id: newest, role: 'user', content: '后', orderSeq: 2 },
+            { id: oldest, role: 'user', content: '先', orderSeq: 1 },
+        ], [newest, oldest, removed, fellOff], k => kept.has(k));
+        expect(writes.map(w => w.id)).toEqual([removed]);
+        expect(writes[0].data).toEqual({ deleted: true });
+    });
+
+    it('still publishes an own bubble after its sequence is stamped', () => {
+        const { writes } = syncWrites('alice', 'bot_1', [
+            { id: 'm-1', role: 'user', content: '先发', orderSeq: 1 },
+        ], undefined, () => false);
+        expect(writes).toEqual([{ bot_id: 'bot_1', id: 'm-1', kind: 'message', data: { role: 'user', content: '先发' } }]);
     });
 });
 

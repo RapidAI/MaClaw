@@ -8,6 +8,7 @@ describe('desktop screens', () => {
         expect(desktopModeOf(undefined)).toBe('shared');
         expect(desktopModeOf('shared')).toBe('shared');
         expect(desktopModeOf('isolated')).toBe('isolated');
+        expect(desktopModeOf('none')).toBe('none');
     });
 
     it('uses a shared bot URL for my desktop and keeps an isolated bot on its own URL', () => {

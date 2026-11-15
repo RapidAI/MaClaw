@@ -1,4 +1,4 @@
-export type DesktopMode = 'shared' | 'isolated';
+export type DesktopMode = 'shared' | 'isolated' | 'none';
 
 export type BotScreen = {
     url: string;
@@ -6,7 +6,9 @@ export type BotScreen = {
 };
 
 export function desktopModeOf(mode: string | undefined): DesktopMode {
-    return mode === 'isolated' ? 'isolated' : 'shared';
+    if (mode === 'isolated') return 'isolated';
+    if (mode === 'none') return 'none';
+    return 'shared';
 }
 
 // A shared bot's picture is the owner's desktop. The first one with a URL

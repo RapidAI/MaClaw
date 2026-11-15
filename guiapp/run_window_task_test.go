@@ -1,6 +1,8 @@
 package guiapp
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -683,5 +685,170 @@ func newTestRunWindowManager(t *testing.T) *runWindowManager {
 	if err != nil {
 		t.Fatalf("manager: %v", err)
 	}
+	t.Cleanup(m.Close)
 	return m
+}
+
+func TestRunWindowMigratesLegacyJSONIntoNormalizedRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run_window_tasks.json")
+	start := time.Now().Add(time.Hour).Truncate(time.Second)
+	legacy := []RunWindowTask{{
+		ID: "legacy-window", Name: "legacy", Prompt: "run", Status: runWindowPending,
+		StartAt: start, CreatedAt: start.Add(-time.Minute),
+		Draft: RunWindowDraft{
+			TaskType: "chat", WorkspaceKind: "remote", RemoteHost: "example.internal", RemotePort: 22,
+			WorkflowParams: map[string]string{"topic": "storage"},
+		},
+	}}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newRunWindowManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := manager.Get("legacy-window")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Draft.RemoteHost != "example.internal" || got.Draft.WorkflowParams["topic"] != "storage" || !got.StartAt.Equal(start) {
+		t.Fatalf("imported task = %#v", got)
+	}
+	var remoteHost string
+	if err := manager.store.db.QueryRow(`SELECT remote_host FROM run_window_tasks WHERE id='legacy-window'`).Scan(&remoteHost); err != nil {
+		t.Fatal(err)
+	}
+	if remoteHost != "example.internal" {
+		t.Fatalf("remote_host column = %q", remoteHost)
+	}
+	var topic string
+	if err := manager.store.db.QueryRow(`SELECT value FROM run_window_workflow_params WHERE task_id='legacy-window' AND key='topic'`).Scan(&topic); err != nil {
+		t.Fatal(err)
+	}
+	if topic != "storage" {
+		t.Fatalf("workflow parameter = %q", topic)
+	}
+	var jsonColumns int
+	if err := manager.store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%payload%' OR sql LIKE '%_json%'`).Scan(&jsonColumns); err != nil {
+		t.Fatal(err)
+	}
+	if jsonColumns != 0 {
+		t.Fatalf("run window schema contains JSON document columns: %d", jsonColumns)
+	}
+	if err := manager.Delete("legacy-window"); err != nil {
+		t.Fatal(err)
+	}
+	manager.Close()
+	reopened, err := newRunWindowManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.Get("legacy-window"); err == nil {
+		t.Fatal("legacy JSON resurrected a deleted run window")
+	}
+}
+
+func TestRunWindowIncrementalPersistenceAndSignatureBackfill(t *testing.T) {
+	manager := newTestRunWindowManager(t)
+	path := manager.path
+	now := time.Now()
+	for _, item := range []struct {
+		id    string
+		name  string
+		topic string
+	}{{"window-a", "first", "one"}, {"window-b", "second", "two"}} {
+		manager.tasks = append(manager.tasks, RunWindowTask{
+			ID: item.id, Name: item.name, Status: runWindowPending, StartAt: now.Add(time.Hour), CreatedAt: now,
+			Draft: RunWindowDraft{TaskType: "chat", WorkflowParams: map[string]string{"topic": item.topic}},
+		})
+	}
+	if err := manager.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.store.db.Exec(`
+CREATE TABLE run_window_write_audit(changes INTEGER NOT NULL);
+INSERT INTO run_window_write_audit VALUES(0);
+CREATE TRIGGER run_window_audit_insert AFTER INSERT ON run_window_tasks BEGIN UPDATE run_window_write_audit SET changes=changes+1; END;
+CREATE TRIGGER run_window_audit_update AFTER UPDATE ON run_window_tasks BEGIN UPDATE run_window_write_audit SET changes=changes+1; END;
+CREATE TRIGGER run_window_audit_delete AFTER DELETE ON run_window_tasks BEGIN UPDATE run_window_write_audit SET changes=changes+1; END;
+CREATE TRIGGER run_param_audit_insert AFTER INSERT ON run_window_workflow_params BEGIN UPDATE run_window_write_audit SET changes=changes+1; END;
+CREATE TRIGGER run_param_audit_update AFTER UPDATE ON run_window_workflow_params BEGIN UPDATE run_window_write_audit SET changes=changes+1; END;
+CREATE TRIGGER run_param_audit_delete AFTER DELETE ON run_window_workflow_params BEGIN UPDATE run_window_write_audit SET changes=changes+1; END;
+`); err != nil {
+		t.Fatal(err)
+	}
+	changes := func() int {
+		var count int
+		if err := manager.store.db.QueryRow(`SELECT changes FROM run_window_write_audit`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	if err := manager.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if got := changes(); got != 0 {
+		t.Fatalf("unchanged tasks rewrote %d rows", got)
+	}
+	manager.tasks[0].Name = "first edited"
+	if err := manager.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if got := changes(); got != 1 {
+		t.Fatalf("name-only edit wrote %d rows, want one task update", got)
+	}
+	manager.tasks[0].Draft.WorkflowParams["topic"] = "updated"
+	if err := manager.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if got := changes(); got != 4 {
+		t.Fatalf("parameter edit changed %d total rows, want one more update and parameter delete+insert", got)
+	}
+	manager.tasks[0], manager.tasks[1] = manager.tasks[1], manager.tasks[0]
+	if err := manager.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if got := changes(); got != 6 {
+		t.Fatalf("reordering changed %d total rows, want two task updates without parameter rewrites", got)
+	}
+	ordered, err := loadRunWindowTasks(manager.store.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ordered) != 2 || ordered[0].ID != "window-b" || ordered[1].ID != "window-a" {
+		t.Fatalf("reordered positions were not persisted: %#v", ordered)
+	}
+	manager.Close()
+
+	reopened, err := newRunWindowManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.store.db.Exec(`ALTER TABLE run_window_tasks DROP COLUMN signature`); err != nil {
+		t.Fatal(err)
+	}
+	reopened.Close()
+	backfilled, err := newRunWindowManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backfilled.Close()
+	for _, id := range []string{"window-a", "window-b"} {
+		var signature string
+		if err := backfilled.store.db.QueryRow(`SELECT signature FROM run_window_tasks WHERE id=?`, id).Scan(&signature); err != nil {
+			t.Fatal(err)
+		}
+		if signature == "" {
+			t.Fatalf("task %s signature was not backfilled", id)
+		}
+	}
+	got, err := backfilled.Get("window-a")
+	if err != nil || got.Name != "first edited" || got.Draft.WorkflowParams["topic"] != "updated" {
+		t.Fatalf("backfilled task = %#v, %v", got, err)
+	}
 }

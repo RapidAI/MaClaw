@@ -114,11 +114,16 @@ export function useTaskRemoteControl() {
     const [awaitingStop, setAwaitingStop] = useState(false);
     const taskGen = useRef(0);
     const detailGen = useRef(0);
+    const refreshFlight = useRef<Promise<void> | null>(null);
+    const taskFlights = useRef(new Map<string, Promise<void>>());
+    const detailFlights = useRef(new Map<string, Promise<void>>());
     const tasksForGrant = useRef('');
+    const tasksRaw = useRef('');
     const tasksRef = useRef(tasks);
     const selectedIdRef = useRef(selectedId);
     const detailPathRef = useRef(detailPath);
     const detailStamp = useRef('');
+    const detailRaw = useRef('');
     const detailFetchedAt = useRef(0);
     const detailFollowRef = useRef(0);
     const opRefreshGen = useRef(0);
@@ -152,7 +157,7 @@ export function useTaskRemoteControl() {
     selectedIdRef.current = selectedId;
     detailPathRef.current = detailPath;
 
-    const refresh = useCallback(async () => {
+    const refreshRequest = useCallback(async () => {
         try {
             const next = asState(await callBinding<RemoteControlState>('ListRemoteControlState', EMPTY_STATE));
             setState(prev => (sameSnapshot(prev, next) ? prev : next));
@@ -168,7 +173,7 @@ export function useTaskRemoteControl() {
         }
     }, []);
 
-    const loadTasks = useCallback(async (grantId: string) => {
+    const loadTasksRequest = useCallback(async (grantId: string) => {
         if (!grantId) {
             setTasks([]);
             tasksForGrant.current = '';
@@ -186,10 +191,15 @@ export function useTaskRemoteControl() {
         try {
             const raw = await callBinding<string>('RemoteControlOp', '{}', grantId, 'list_tasks', '');
             if (gen !== taskGen.current || selectedIdRef.current !== grantId) return;
+            if (tasksForGrant.current === grantId && raw === tasksRaw.current) {
+                if (errorOwner.current === 'tasks' || errorOwner.current === 'state') ownError('', '');
+                return;
+            }
             const parsed = JSON.parse(raw || '{}') as { tasks?: TaskManagementItem[]; error?: string };
             if (parsed.error) throw new Error(parsed.error);
             if (!Array.isArray(parsed.tasks)) throw new Error('对方任务暂时无法读取');
             setTasks(prev => (sameSnapshot(prev, parsed.tasks) ? prev : parsed.tasks || []));
+            tasksRaw.current = raw;
             tasksForGrant.current = grantId;
             if (errorOwner.current === 'tasks' || errorOwner.current === 'state') ownError('', '');
         } catch (err) {
@@ -209,7 +219,17 @@ export function useTaskRemoteControl() {
         }
     }, []);
 
-    const openTask = useCallback(async (grantId: string, projectPath: string) => {
+    const loadTasks = useCallback((grantId: string) => {
+        const existing = taskFlights.current.get(grantId);
+        if (existing) return existing;
+        const flight = loadTasksRequest(grantId);
+        taskFlights.current.set(grantId, flight);
+        return flight.finally(() => {
+            if (taskFlights.current.get(grantId) === flight) taskFlights.current.delete(grantId);
+        });
+    }, [loadTasksRequest]);
+
+    const openTaskRequest = useCallback(async (grantId: string, projectPath: string) => {
         // A poll for the previous machine can start after the person has
         // already returned to this computer. Leave the current tab alone.
         if (selectedIdRef.current !== grantId) return;
@@ -219,6 +239,7 @@ export function useTaskRemoteControl() {
         if (!refreshing) {
             // A different task's transcript must not render under the new
             // path while its own is still on the way.
+            detailRaw.current = '';
             setDetail(null);
             setDetailLoading(true);
             // A send waiting for a reply belongs to the previous task.
@@ -234,6 +255,13 @@ export function useTaskRemoteControl() {
         try {
             const raw = await callBinding<string>('RemoteControlOp', '{}', grantId, 'get_task', JSON.stringify({ project_path: projectPath }));
             if (gen !== detailGen.current || selectedIdRef.current !== grantId) return;
+            if (detailRef.current !== null && detailPathRef.current === projectPath && raw === detailRaw.current) {
+                setDetailLoading(false);
+                detailStamp.current = `${projectPath}:${detailRef.current.task?.last_activity || ''}`;
+                detailFetchedAt.current = Date.now();
+                if (errorOwner.current === 'conversation') ownError('', '');
+                return;
+            }
             const parsed = JSON.parse(raw || '{}') as RemoteTaskDetail & { error?: string };
             if (parsed.error) throw new Error(parsed.error);
             if (!Array.isArray(parsed.messages)) throw new Error('会话暂时无法读取');
@@ -242,6 +270,7 @@ export function useTaskRemoteControl() {
                 messages: parsed.messages || [],
                 artifacts: parsed.artifacts || [],
             };
+            detailRaw.current = raw;
             setDetail(prev => (sameSnapshot(prev, next) ? prev : next));
             setDetailLoading(false);
             detailStamp.current = `${projectPath}:${parsed.task?.last_activity || ''}`;
@@ -258,11 +287,32 @@ export function useTaskRemoteControl() {
             if (errorOwner.current === 'conversation') ownError('', '');
         } catch (err) {
             if (gen !== detailGen.current || selectedIdRef.current !== grantId) return;
+            detailRaw.current = '';
             if (!refreshing) setDetail({ messages: [], artifacts: [] });
             setDetailLoading(false);
             ownError('conversation', err instanceof SyntaxError ? '会话暂时无法读取' : errorText(err, '会话暂时无法读取'));
         }
     }, []);
+
+    const openTask = useCallback((grantId: string, projectPath: string) => {
+        const key = `${grantId}\u0000${projectPath}`;
+        const existing = detailFlights.current.get(key);
+        if (existing) return existing;
+        const flight = openTaskRequest(grantId, projectPath);
+        detailFlights.current.set(key, flight);
+        return flight.finally(() => {
+            if (detailFlights.current.get(key) === flight) detailFlights.current.delete(key);
+        });
+    }, [openTaskRequest]);
+
+    const refresh = useCallback(() => {
+        if (refreshFlight.current) return refreshFlight.current;
+        const flight = refreshRequest();
+        refreshFlight.current = flight;
+        return flight.finally(() => {
+            if (refreshFlight.current === flight) refreshFlight.current = null;
+        });
+    }, [refreshRequest]);
 
     useEffect(() => {
         bindRemoteStreamEvents();
@@ -639,7 +689,10 @@ export function useTaskRemoteControl() {
             return value !== null;
         },
         openTask: (projectPath: string) => {
-            if (selected && selected.online !== false) void openTask(selected.id, projectPath);
+            // Return the dedupe flight so concurrent callers can await the
+            // same open; UI callers ignore it.
+            if (selected && selected.online !== false) return openTask(selected.id, projectPath);
+            return Promise.resolve();
         },
         closeDetail: () => {
             detailGen.current += 1;

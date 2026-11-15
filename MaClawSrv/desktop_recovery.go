@@ -318,7 +318,7 @@ type desktopRecAttempt struct {
 	stop     chan struct{}
 }
 
-var desktopRecMutating = map[string]bool{"bash": true, "file_write": true, "file_edit": true, "script": true, "click": true, "type": true, "press": true, "computer": true, "app_run": true, "task_run": true, "upload": true, "rich_fill": true, "skill_run": true}
+var desktopRecMutating = map[string]bool{"bash": true, "file_write": true, "file_edit": true, "script": true, "click": true, "type": true, "press": true, "computer": true, "app_run": true, "task_run": true, "upload": true, "rich_fill": true, "skill_run": true, "cap_mcp": true}
 
 // desktopRecReopens: steps that can change a checked result file.
 var desktopRecReopens = map[string]bool{"bash": true, "file_write": true, "file_edit": true, "app_run": true, "task_run": true, "skill_run": true, "script": true}
@@ -447,7 +447,11 @@ func desktopRecoveryBefore(request agentruntime.TurnRequest, scope agentruntime.
 	if action != "publish" && !desktopRecMutating[action] {
 		return nil, nil
 	}
-	if action == "publish" && desktopArgBool(args, "explore") {
+	// explore and check_posted only read. A goal stopped by an unconfirmed
+	// submit tells the model to observe the real state; gating the post-list
+	// read as another publish makes that observation impossible (Bot 5,
+	// run_c3904ef9: check_posted was refused and CSDN stayed unconfirmed).
+	if action == "publish" && (desktopArgBool(args, "explore") || desktopArgBool(args, "check_posted")) {
 		return nil, nil
 	}
 	eng := desktopRecovery()

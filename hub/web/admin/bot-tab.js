@@ -71,6 +71,15 @@
       countUnit: '\u9879',
       botColumn: 'Bot',
       created: '\u521b\u5efa\u65f6\u95f4',
+      desktopBots: '\u53ef\u7528\u7535\u8111\u7684 bot \u6570',
+      desktopBotsShort: '\u7535\u8111\u6570',
+      desktopUnlimited: '\u4e0d\u9650',
+      desktopColumn: '\u7535\u8111',
+      desktopShared: '\u5171\u7528',
+      desktopIsolated: '\u72ec\u7acb',
+      desktopNone: '\u65e0',
+      desktopOver: '\u8d85\u989d',
+      desktopLimitBad: '\u8bf7\u586b\u5199\u4e0d\u5c0f\u4e8e 0 \u7684\u6574\u6570\uff0c\u6216\u7559\u7a7a\u8868\u793a\u4e0d\u9650',
       readOnly: '\u53ea\u8bfb',
       remove: '\u5220\u9664',
       failed: '\u64cd\u4f5c\u5931\u8d25',
@@ -205,6 +214,15 @@
       countUnit: 'entries',
       botColumn: 'Bot',
       created: 'Created',
+      desktopBots: 'Desktop bots allowed',
+      desktopBotsShort: 'Desktops',
+      desktopUnlimited: 'Unlimited',
+      desktopColumn: 'Computer',
+      desktopShared: 'Shared',
+      desktopIsolated: 'Own',
+      desktopNone: 'None',
+      desktopOver: 'Over limit',
+      desktopLimitBad: 'Enter a whole number, or leave it blank for no limit',
       readOnly: 'Read-only',
       remove: 'Delete',
       failed: 'Request failed',
@@ -357,6 +375,7 @@
     setLabel('botAccessHint', t.accessHint);
     setLabel('botGlobalLabel', t.global);
     setLabel('botGlobalHint', t.globalHint);
+    setLabel('botGlobalLimitLabel', t.desktopBots);
     setLabel('botGlobalOn', t.everyoneNote);
     setLabel('botGrantsTitle', t.enableList);
     setLabel('botOrgTitle', t.orgTitle);
@@ -485,9 +504,13 @@
       + '#tab-bots .bot-hint{margin:0;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fbfcfe;color:#64748b;font-size:11px;line-height:1.5}'
       + '#tab-bots .bot-empty{margin:0;padding:14px;border:1px dashed #dbe3ee;border-radius:10px;background:#fbfcfe;color:#64748b;font-size:11px;line-height:1.5;text-align:center}'
       + '#tab-bots .bot-grant-list{display:grid;gap:6px}'
-      + '#tab-bots .bot-grant{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 8px 8px 11px;border:1px solid #e4e9f2;border-radius:9px;background:#fff}'
+      + '#tab-bots .bot-grant{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:8px 8px 8px 11px;border:1px solid #e4e9f2;border-radius:9px;background:#fff}'
       + '#tab-bots .bot-grant-kind{flex:0 0 auto;padding:2px 7px;border-radius:999px;background:#eef5ff;color:#1d4ed8;font-size:10px;font-weight:800;letter-spacing:.03em}'
       + '#tab-bots .bot-grant-name{min-width:0;flex:1;font-size:12px;color:#243244;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-grant-limit{display:flex;align-items:center;gap:6px;flex:0 0 auto;font-size:11px;color:#64748b}'
+      + '#tab-bots .bot-grant-limit input,#tab-bots .bot-global-limit input{width:88px;height:28px;min-height:28px;margin:0;padding:0 8px}'
+      + '#tab-bots .bot-global-limit{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0 0;padding:8px 13px;border:1px solid #e4e9f2;border-radius:9px;background:#fff;font-size:12px;color:#475569}'
+      + '#tab-bots .bot-global-limit[hidden]{display:none}'
       /* Organization tree. */
       + '#tab-bots .bot-org-tree{max-height:340px;overflow:auto;border:1px solid #e4e9f2;border-radius:10px;padding:6px;background:#fbfcfe}'
       + '#tab-bots .bot-org-row{display:flex;align-items:center;gap:8px;min-height:32px;padding:3px 8px;border-radius:8px;cursor:pointer}'
@@ -503,7 +526,7 @@
       + '#tab-bots .bot-org-add{height:28px;min-height:28px;padding:0 10px;font-size:12px;box-shadow:none}'
       /* Bot list table. */
       + '#tab-bots .bot-table{display:grid;gap:6px}'
-      + '#tab-bots .bot-tr{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1.2fr) minmax(0,1.1fr) minmax(0,1fr);gap:10px;align-items:center;padding:9px 11px;border:1px solid #e4e9f2;border-radius:9px;background:#fff}'
+      + '#tab-bots .bot-tr{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1.2fr) minmax(0,.8fr) minmax(0,1.1fr) minmax(0,1fr);gap:10px;align-items:center;padding:9px 11px;border:1px solid #e4e9f2;border-radius:9px;background:#fff}'
       + '#tab-bots .bot-th{padding:0 11px;border:0;background:transparent;box-shadow:none;color:#64748b;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}'
       + '#tab-bots .bot-td{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#475569}'
       + '#tab-bots .bot-td strong{display:block;font-size:13px;font-weight:650;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
@@ -585,9 +608,12 @@
       + '<span class="bot-toggle-title" id="botGlobalLabel"></span>'
       + '<span class="bot-toggle-desc" id="botGlobalHint"></span></span>'
       + '<input id="botGlobal" type="checkbox"></label>'
+      + '<div class="bot-global-limit" id="botGlobalLimitRow" hidden>'
+      + '<label id="botGlobalLimitLabel" for="botGlobalLimit"></label>'
+      + '<input id="botGlobalLimit" type="number" min="0" step="1" inputmode="numeric"></div>'
       + '<p class="bot-hint" id="botGlobalOn" hidden></p>'
       + '<div class="bot-split" id="botAccessBody">'
-      + '<div class="bot-pane"><span class="bot-pane-title" id="botOrgTitle"></span>'
+      + '<div class="bot-pane" id="botOrgPane"><span class="bot-pane-title" id="botOrgTitle"></span>'
       + '<p class="bot-pane-desc" id="botOrgHint"></p>'
       + '<input id="botOrgFilter" type="search" autocomplete="off">'
       + '<div id="botOrgTree" class="bot-org-tree" role="tree"></div></div>'
@@ -617,6 +643,8 @@
     byID('botLLMPModal').addEventListener('click', onBotLLMPModalOverlayClick);
     document.addEventListener('keydown', onBotLLMPModalKeydown);
     byID('botGlobal').addEventListener('change', toggleGlobal);
+    byID('botGlobalLimit').addEventListener('change', function () { saveGrantLimit(byID('botGlobalLimit')); });
+    byID('botGrants').addEventListener('change', function (event) { saveGrantLimit(event && event.target); });
     byID('botOrgFilter').addEventListener('compositionstart', function () { orgState().composing = true; });
     byID('botOrgFilter').addEventListener('compositionend', function () {
       orgState().composing = false;
@@ -716,17 +744,91 @@
   function renderAccess(access) {
     var body = byID('botAccessBody');
     var note = byID('botGlobalOn');
-    if (body) body.hidden = access.everyone;
+    var orgPane = byID('botOrgPane');
+    if (orgPane) orgPane.hidden = access.everyone;
+    else if (body) body.hidden = access.everyone;
     if (note) note.hidden = !access.everyone;
     var t = text();
     setBadge('botAccessBadge', access.everyone ? t.global : access.specific.length + ' ' + t.countUnit,
       access.everyone ? 'ok' : 'info');
   }
 
+  function isWholeLimit(n) {
+    return typeof n === 'number' && isFinite(n) && Math.floor(n) === n && n <= 9007199254740991;
+  }
+
+  function grantLimitInput(item) {
+    var value = item.desktop_bot_limit == null || item.desktop_bot_limit === '' ? '' : String(item.desktop_bot_limit);
+    return '<label class="bot-grant-limit" title="' + escapeHtml(text().desktopBots) + '"><span>' + escapeHtml(text().desktopBotsShort) + '</span>'
+      + '<input type="number" min="0" step="1" inputmode="numeric" data-grant-limit="' + escapeHtml(item.id) + '"'
+      + ' placeholder="' + escapeHtml(text().desktopUnlimited) + '"'
+      + (value !== '' ? ' value="' + escapeHtml(value) + '"' : '')
+      + (grantLocked() ? ' disabled' : '')
+      + '></label>';
+  }
+
+  function renderGlobalLimit(view) {
+    var row = byID('botGlobalLimitRow');
+    var input = byID('botGlobalLimit');
+    if (!row || !input) return;
+    var grants = view && Array.isArray(view.grants) ? view.grants : [];
+    var current = null;
+    grants.forEach(function (item) { if (item.scope === 'global') current = item; });
+    row.hidden = !current;
+    if (!current) return;
+    input.setAttribute('data-grant-limit', current.id);
+    input.placeholder = text().desktopUnlimited;
+    input.disabled = grantLocked();
+    if (document.activeElement !== input) {
+      input.value = current.desktop_bot_limit == null || current.desktop_bot_limit === '' ? '' : String(current.desktop_bot_limit);
+    }
+  }
+
+  function saveGrantLimit(input) {
+    if (!input || !input.getAttribute || grantLocked()) return;
+    var id = String(input.getAttribute('data-grant-limit') || '').trim();
+    if (!id) return;
+    var raw = String(input.value || '').trim();
+    var panel = byID('tab-bots');
+    var view = panel && panel._botView;
+    var current = null;
+    (view && Array.isArray(view.grants) ? view.grants : []).forEach(function (item) {
+      if (item.id === id) current = item;
+    });
+    var prev = current && current.desktop_bot_limit != null && current.desktop_bot_limit !== '' ? String(current.desktop_bot_limit) : '';
+    var body;
+    if (raw === '') body = { desktop_bot_limit: null };
+    else if (!/^\d+$/.test(raw) || !isWholeLimit(Number(raw))) {
+      input.value = prev;
+      showToast(text().desktopLimitBad, 'error');
+      return;
+    } else body = { desktop_bot_limit: Number(raw) };
+    if (raw === '' && prev === '') return;
+    if (raw !== '' && String(body.desktop_bot_limit) === prev) {
+      if (raw !== prev) input.value = prev;
+      return;
+    }
+    // Show the typed cap immediately. The busy redraw reads this view, and
+    // putting the old number back makes a saved cap look discarded.
+    var previousLimit = current ? current.desktop_bot_limit : null;
+    if (current) current.desktop_bot_limit = body.desktop_bot_limit;
+    setGrantBusy(true);
+    return api('/api/admin/bots/grants/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      body: JSON.stringify(body)
+    }).then(function () {
+      return load();
+    }, function (err) {
+      if (current) current.desktop_bot_limit = previousLimit;
+      showToast(messageOf(err), 'error');
+    }).then(function () { setGrantBusy(false); });
+  }
+
   function renderGrants(view, access) {
     var summary = access || grantSummary(view);
     var list = byID('botGrants');
     var globalBox = byID('botGlobal');
+    renderGlobalLimit(view);
     /* While a grant request is in flight the switch shows the admin's intent,
        not the server's last known state, so leave it alone until the response lands. */
     if (globalBox && !grantLocked()) globalBox.checked = summary.everyone;
@@ -739,6 +841,7 @@
       return '<div class="bot-grant">'
         + '<span class="bot-grant-kind">' + escapeHtml(item.scope === 'user' ? text().user : text().department) + '</span>'
         + '<span class="bot-grant-name">' + escapeHtml(grantTargetLabel(item)) + '</span>'
+        + grantLimitInput(item)
         + '<button type="button" class="btn-danger" data-grant-delete="' + escapeHtml(item.id) + '"' + (grantLocked() ? ' disabled' : '') + '>'
         + escapeHtml(text().remove) + '</button></div>';
     }).join('');
@@ -1457,6 +1560,7 @@
     list.innerHTML = '<div class="bot-tr bot-th">'
       + '<span>' + escapeHtml(t.botColumn) + '</span>'
       + '<span>' + escapeHtml(t.owner) + '</span>'
+      + '<span>' + escapeHtml(t.desktopColumn) + '</span>'
       + '<span>' + escapeHtml(t.instance) + '</span>'
       + '<span>' + escapeHtml(t.created) + '</span></div>'
       + bots.map(function (bot) {
@@ -1464,10 +1568,19 @@
           + '<div class="bot-td bot-td-main"><strong>' + escapeHtml(bot.name) + '</strong>'
           + (bot.description ? '<small>' + escapeHtml(bot.description) + '</small>' : '') + '</div>'
           + labelled(t.owner, userLabel(bot.owner_user_id) || bot.owner_user_id || '')
+          + labelled(t.desktopColumn, desktopModeLabel(bot))
           + labelled(t.instance, bot.instance_id || '')
           + labelled(t.created, shortTime(bot.created_at))
           + '</div>';
       }).join('');
+  }
+
+  function desktopModeLabel(bot) {
+    var mode = String(bot && bot.desktop_mode || 'shared');
+    var t = text();
+    var label = mode === 'isolated' ? t.desktopIsolated : mode === 'none' ? t.desktopNone : t.desktopShared;
+    if (bot && bot.desktop_over && mode !== 'none') label += ' \u00b7 ' + t.desktopOver;
+    return label;
   }
 
   /* Narrow screens drop the header row, so each value carries its own column label. */

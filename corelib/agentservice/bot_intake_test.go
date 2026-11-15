@@ -2,9 +2,12 @@ package agentservice
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func TestIntakeSupplementChangeAndNew(t *testing.T) {
@@ -242,5 +245,714 @@ func TestIntakeKeepsTheArmedWeekdayWhenTheClockMoves(t *testing.T) {
 	})
 	if err != nil || got.Kind != "schedule" || got.Schedule == nil || got.Schedule.IntervalMinutes != 5 || got.Schedule.Hour != nil || got.Schedule.Minute != nil {
 		t.Fatalf("a partial clock converted the interval: %+v %v", got, err)
+	}
+}
+
+func TestIntakeSpecAsksUntilTheWorkIsSettled(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报"}, func(_ context.Context, system, user string) (string, error) {
+		if !strings.Contains(system, "规划模式") || !strings.Contains(system, "spec already open") {
+			t.Fatalf("prompt does not describe hidden specifying:\n%s", system)
+		}
+		if strings.Contains(user, "spec already open") {
+			t.Fatal("the first message has no spec yet")
+		}
+		return `{"kind":"new","run":0,"spec":true,"phase":"plan","instruction":"周报，收件人未定","ack":"我们进入规划模式，发给谁？","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || !got.Spec || got.Instruction != "周报，收件人未定" {
+		t.Fatalf("open spec = %+v %v", got, err)
+	}
+	if strings.Contains(got.Ack, "规划") || strings.Contains(strings.ToLower(got.Ack), "plan mode") || !strings.Contains(got.Ack, "发给谁") {
+		t.Fatalf("ack named a mode: %q", got.Ack)
+	}
+	if desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p") != "周报，收件人未定" {
+		t.Fatal("spec was not kept")
+	}
+
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(_ context.Context, _, user string) (string, error) {
+		if !strings.Contains(user, "spec already open") || !strings.Contains(user, "周报，收件人未定") {
+			t.Fatalf("follow-up lost the spec:\n%s", user)
+		}
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"把表格做成周报发给老王","ack":"我做成周报发给老王。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" || got.Instruction != "把表格做成周报发给老王" {
+		t.Fatalf("settled = %+v %v", got, err)
+	}
+	if desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p") != "" {
+		t.Fatal("settled spec was kept")
+	}
+}
+
+func TestIntakeSpecTimeoutDoesNotStartTheJob(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "周报，收件人未定")
+	prev := BotIntakeBudget
+	BotIntakeBudget = 40 * time.Millisecond
+	defer func() { BotIntakeBudget = prev }()
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(ctx context.Context, _, _ string) (string, error) {
+		<-ctx.Done()
+		return `{"kind":"new","run":0,"phase":"execute","instruction":"发给老王","ack":"开始","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Reason != "timeout" {
+		t.Fatalf("timeout = %+v %v", got, err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "周报，收件人未定") || !strings.Contains(stored, "这次补充：发给老王") || got.Instruction != stored {
+		t.Fatalf("timeout dropped the sentence: ack=%q stored=%q", got.Instruction, stored)
+	}
+}
+
+func TestRefineOpenSpecWritesTheCardAndDropsWhenTheTurnMoves(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	gen := desktopbot.NoteSpec("t", "u", "bot", "周报，收件人未定")
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, "周报，收件人未定", "做一份周报", nil, func(_ context.Context, system, user string) (string, error) {
+		if !strings.Contains(system, "完成标准") || !strings.Contains(user, "周报，收件人未定") {
+			t.Fatalf("refine prompt missing the draft:\n%s\n%s", system, user)
+		}
+		return `{"instruction":"进入规划模式\n目标：一份周报\n约束：不另发平台\n完成标准：指定的人收到文件\n还缺：发给谁"}`, nil
+	})
+	card := desktopbot.SpecOf("t", "u", "bot")
+	if !strings.Contains(card, "完成标准") || !strings.Contains(card, "\n") || strings.Contains(card, "规划") {
+		t.Fatalf("card = %q", card)
+	}
+	desktopbot.NoteSpec("t", "u", "bot", "周报发给老王")
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, "周报，收件人未定", "做一份周报", nil, func(context.Context, string, string) (string, error) {
+		t.Fatal("a moved turn was refined again")
+		return "", nil
+	})
+	if desktopbot.SpecOf("t", "u", "bot") != "周报发给老王" {
+		t.Fatalf("newer spec = %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+}
+
+func TestSettledRunCarriesTheBackgroundSpec(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：一份周报\n约束：不另发平台\n完成标准：老王收到文件\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"发给老王","ack":"我做成周报发给老王。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" {
+		t.Fatalf("settled = %+v %v", got, err)
+	}
+	if !strings.Contains(got.Instruction, "完成标准") || !strings.Contains(got.Instruction, "发给老王") || strings.Contains(got.Instruction, "还缺") {
+		t.Fatalf("instruction = %q", got.Instruction)
+	}
+	if !strings.Contains(got.Instruction, specDoneCheckPrefix) {
+		t.Fatalf("done check missing: %q", got.Instruction)
+	}
+	if desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p") != "" {
+		t.Fatal("the spec stayed open after it was sent")
+	}
+}
+
+func TestFollowUpKeepsTheBackgroundCard(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	const card = "目标：一份周报\n约束：不另发平台\n完成标准：老王收到文件\n还缺：发给谁"
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", card)
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "先做成 PDF"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报还要问形式","ack":"做成哪种文件？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Ack != "做成哪种文件？" {
+		t.Fatalf("follow-up = %+v %v", got, err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "完成标准") || !strings.Contains(stored, "不另发平台") || !strings.Contains(stored, "先做成 PDF") {
+		t.Fatalf("stored = %q", stored)
+	}
+	gen, draft := SpecDraftForRefine(p.TenantID, p.UserID, "bot_p", got.Instruction)
+	if gen == 0 || !strings.Contains(draft, "完成标准") || !strings.Contains(draft, "先做成 PDF") {
+		t.Fatalf("refine draft = %q gen %d", draft, gen)
+	}
+}
+
+func TestOpenGapHoldsTheRun(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"做一份周报","ack":"我开始做周报。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Ack != "发给谁？" {
+		t.Fatalf("held = %+v %v", got, err)
+	}
+	if strings.Contains(got.Ack, "规划") {
+		t.Fatalf("ack named a mode: %q", got.Ack)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "还缺") || !strings.Contains(stored, "完成标准") {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestOpenGapQuestionIsWhatTheyHear(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "用宋体"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"还要问字体","ack":"好的","told":"目标：做一份周报\n还缺：发给谁","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Ack != "发给谁？" || got.Told != "发给谁？" {
+		t.Fatalf("the open point was not the sentence they hear: %+v %v", got, err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "这次补充：用宋体") || !strings.Contains(stored, "还缺：发给谁") {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestOpenGapKeepsAQuestionThatAlreadyAsksIt(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报还要问收件人","ack":"这周报要发给谁？","told":"目标：做一份周报","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Ack != "这周报要发给谁？" || got.Told != "这周报要发给谁？" {
+		t.Fatalf("a question that already asks the point was replaced: %+v %v", got, err)
+	}
+}
+
+func TestOpenGapOnTheFirstCardDoesNotStart(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁","ack":"我开始做。","told":"目标：做一份周报\n还缺：发给谁","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Ack != "发给谁？" || got.Told != "发给谁？" {
+		t.Fatalf("first card started: %+v %v", got, err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "还缺：发给谁") || !strings.Contains(stored, "完成标准") {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestOpenGapQuestionIsNotTheDraft(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报，收件人未定","ack":"这周报要发给谁？","told":"目标：一份周报\n还缺：发给谁","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Ack != "这周报要发给谁？" || got.Told != "这周报要发给谁？" || got.Instruction != "周报，收件人未定" {
+		t.Fatalf("the draft was the sentence: %+v %v", got, err)
+	}
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_q", Content: "做一份周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报，收件人未定","ack":"目标：一份周报\n还缺：发给谁？","told":"目标：一份周报\n还缺：发给谁","pace":"ask"}`, nil
+	})
+	if err != nil || got.Ack != "发给谁？" || got.Told != "发给谁？" || strings.Contains(got.Ack, "目标") {
+		t.Fatalf("a card was spoken: %+v %v", got, err)
+	}
+}
+
+func TestOpenGapKeepsAQuestionFromTheOtherField(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报还要问收件人","ack":"好的","told":"这周报要发给谁？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Ack != "这周报要发给谁？" || got.Told != "这周报要发给谁？" {
+		t.Fatalf("the question in the other field was dropped: %+v %v", got, err)
+	}
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_q", Content: "做一份周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报，收件人未定","ack":"好的","told":"这周报要发给谁？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Ack != "这周报要发给谁？" || got.Told != "这周报要发给谁？" || got.Instruction != "周报，收件人未定" {
+		t.Fatalf("an unwritten spec kept the receipt: %+v %v", got, err)
+	}
+}
+
+func TestOpenGapStartSentenceStaysWhenTheOtherFieldAsks(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"把周报发给老王","ack":"我做成周报发给老王。","told":"还有别的吗？","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" || got.Ack != "我做成周报发给老王" || got.Told != "我做成周报发给老王" {
+		t.Fatalf("a question replaced the start sentence: %+v %v", got, err)
+	}
+}
+
+func TestOpenGapIsTheQuestion(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报还要问收件人","ack":"还有别的吗？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Ack != "发给谁？" {
+		t.Fatalf("question = %+v %v", got, err)
+	}
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "先做成 PDF"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报还要问形式","ack":"做成哪种文件？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Ack != "做成哪种文件？" {
+		t.Fatalf("new fact kept its own question: %+v %v", got, err)
+	}
+}
+
+func TestSupplementsStayOnOneLine(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁\n这次补充：先做成 PDF")
+	_, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "用宋体"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"还要问字体","ack":"用哪种字体？","pace":"ask"}`, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if strings.Count(stored, "这次补充：") != 1 || !strings.Contains(stored, "先做成 PDF") || !strings.Contains(stored, "用宋体") {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestClosedSpecStartsWhenTheModelKeepsAsking(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：一份周报\n完成标准：老王收到文件\n还缺：无")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "好"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报","ack":"还有别的吗？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" || strings.Contains(got.Ack, "？") {
+		t.Fatalf("closed spec stayed a question: %+v %v", got, err)
+	}
+	if !strings.Contains(got.Instruction, "完成标准") || !strings.Contains(got.Instruction, specDoneCheckPrefix) || strings.Contains(got.Instruction, "还缺") {
+		t.Fatalf("instruction = %q", got.Instruction)
+	}
+	if desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p") != "" {
+		t.Fatal("the settled spec stayed open")
+	}
+}
+
+func TestClosedSpecStartsWhenTheMarkIsAQuestion(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：一份周报\n完成标准：老王收到文件\n还缺：无？")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "好"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报","ack":"还有别的吗？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" || strings.Contains(got.Ack, "？") {
+		t.Fatalf("a closed mark stayed a question: %+v %v", got, err)
+	}
+	if !strings.Contains(got.Instruction, "完成标准") || !strings.Contains(got.Instruction, specDoneCheckPrefix) || strings.Contains(got.Instruction, "还缺") {
+		t.Fatalf("instruction = %q", got.Instruction)
+	}
+	if desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p") != "" {
+		t.Fatal("the settled spec stayed open")
+	}
+}
+
+func TestNewGapOnAClosedSpecStaysAQuestion(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：一份周报\n完成标准：老王收到文件\n还缺：无")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "先等一下"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"目标：一份周报\n完成标准：老王收到文件\n还缺：用什么格式","ack":"还有别的吗？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Ack != "用什么格式？" {
+		t.Fatalf("new gap started the run: %+v %v", got, err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "还缺：用什么格式") || !strings.Contains(stored, "完成标准") || strings.Contains(stored, "还缺：无") {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestAnsweredGapStartsEvenOnAPlanPhase(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"发给老王","ack":"发给老王。","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" || strings.Contains(got.Instruction, "还缺") {
+		t.Fatalf("answered gap stayed a question: %+v %v", got, err)
+	}
+	if !strings.Contains(got.Instruction, "发给老王") || !strings.Contains(got.Instruction, specDoneCheckPrefix) {
+		t.Fatalf("instruction = %q", got.Instruction)
+	}
+	if desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p") != "" {
+		t.Fatal("the settled spec stayed open")
+	}
+}
+
+func TestPlanOrderThatStillHasAGapDoesNotStart(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁\n这次补充：发给老王","ack":"还有别的吗？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" {
+		t.Fatalf("open point in the order started the run: %+v %v", got, err)
+	}
+	if !strings.Contains(desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p"), "还缺：发给谁") {
+		t.Fatal("the open point was cleared")
+	}
+}
+
+func TestRepeatedGoalWithPunctuationDoesNotStart(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报。"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"做一份周报。","ack":"我开始做周报。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Ack != "发给谁？" {
+		t.Fatalf("punctuated goal started the run: %+v %v", got, err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "还缺：发给谁") || strings.Contains(stored, "这次补充") {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestRefineKeepsTheDoneCheck(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	const card = "目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁"
+	gen := desktopbot.NoteSpec("t", "u", "bot", card)
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "随便", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"周报"}`, nil
+	})
+	if desktopbot.SpecOf("t", "u", "bot") != card {
+		t.Fatalf("rewrite dropped the card: %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+}
+
+func TestUnrelatedLineDoesNotCloseTheGap(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "用宋体"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"做一份周报","ack":"我开始做周报。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Ack != "发给谁？" {
+		t.Fatalf("unrelated line started the run: %+v %v", got, err)
+	}
+	if !strings.Contains(desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p"), "还缺：发给谁") {
+		t.Fatal("the open point was cleared")
+	}
+}
+
+func TestAnswerKeptOnTheSupplementStillCloses(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁\n这次补充：发给老王")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"发给老王","ack":"发给老王。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" || strings.Contains(got.Instruction, "还缺") {
+		t.Fatalf("answer already on the card did not start: %+v %v", got, err)
+	}
+	if !strings.Contains(got.Instruction, "发给老王") || !strings.Contains(got.Instruction, specDoneCheckPrefix) {
+		t.Fatalf("instruction = %q", got.Instruction)
+	}
+}
+
+func TestAnswerInsideTheGoalStillCloses(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：把周报发给老王\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"发给老王","ack":"发给老王。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" || strings.Contains(got.Instruction, "还缺") {
+		t.Fatalf("answer inside the goal did not start: %+v %v", got, err)
+	}
+	if !strings.Contains(got.Instruction, "发给老王") {
+		t.Fatalf("instruction = %q", got.Instruction)
+	}
+}
+
+func TestAnswerInsideTheGoalKeepsTheQuestion(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：把周报发给老王\n完成标准：文件送到指定的人\n还缺：用什么格式")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报还要问格式","ack":"做成 PDF 可以吗？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Ack != "做成 PDF 可以吗？" {
+		t.Fatalf("a fact already in the goal replaced the question: %+v %v", got, err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "还缺：用什么格式") || strings.Contains(stored, "这次补充") {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestAnswerInsideTheOpenPointStaysAQuestion(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给老王还是老李")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给老王还是老李","ack":"做成 PDF 可以吗？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Ack != "做成 PDF 可以吗？" {
+		t.Fatalf("a choice inside the open point replaced the question: %+v %v", got, err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "这次补充：发给老王") || !strings.Contains(stored, "还缺：发给老王还是老李") {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestOpenGapAsksAgainWhenTheSupplementIsRepeated(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁\n这次补充：先做成 PDF")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "先做成 PDF"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"spec":true,"phase":"plan","instruction":"周报还要问收件人","ack":"还有别的吗？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Ack != "发给谁？" {
+		t.Fatalf("a repeated supplement kept a new question: %+v %v", got, err)
+	}
+}
+
+func TestAnswerInsideTheOpenPointStillCloses(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给老王还是老李")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给老王"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"发给老王","ack":"发给老王。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" || strings.Contains(got.Instruction, "还缺") || strings.Contains(got.Instruction, "老李") {
+		t.Fatalf("answer inside the open point did not start cleanly: %+v %v", got, err)
+	}
+	if !strings.Contains(got.Instruction, "发给老王") || !strings.Contains(got.Instruction, specDoneCheckPrefix) {
+		t.Fatalf("instruction = %q", got.Instruction)
+	}
+}
+
+func TestRepeatingTheOpenPointDoesNotStart(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "发给谁。"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"发给谁。","ack":"我开始做周报。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Ack != "发给谁？" {
+		t.Fatalf("the open point started the run: %+v %v", got, err)
+	}
+	stored := desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p")
+	if !strings.Contains(stored, "还缺：发给谁") || strings.Contains(stored, "这次补充") {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestRefineLeavesTheAnswerOnTheSupplement(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	const card = "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给谁"
+	gen := desktopbot.NoteSpec("t", "u", "bot", card)
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"目标：把周报发给老王\n完成标准：文件送到指定的人\n还缺：发给谁"}`, nil
+	})
+	if desktopbot.SpecOf("t", "u", "bot") != card {
+		t.Fatalf("rewrite moved the answer into the goal: %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给谁\n这次补充：发给老王"}`, nil
+	})
+	if !strings.Contains(desktopbot.SpecOf("t", "u", "bot"), "这次补充：发给老王") || !strings.Contains(desktopbot.SpecOf("t", "u", "bot"), "还缺：发给谁") {
+		t.Fatalf("supplement was not kept: %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+}
+
+func TestRefineKeepsTheChoiceInsideTheOpenPoint(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	const card = "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给老王还是老李"
+	gen := desktopbot.NoteSpec("t", "u", "bot", card)
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"目标：把周报发给老王\n完成标准：文件送到指定的人\n还缺：发给老王还是老李"}`, nil
+	})
+	if desktopbot.SpecOf("t", "u", "bot") != card {
+		t.Fatalf("rewrite lifted the choice into the goal: %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给老王还是老李\n这次补充：发给老王"}`, nil
+	})
+	if !strings.Contains(desktopbot.SpecOf("t", "u", "bot"), "这次补充：发给老王") || !strings.Contains(desktopbot.SpecOf("t", "u", "bot"), "还缺：发给老王还是老李") {
+		t.Fatalf("choice was not kept on the supplement: %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+}
+
+func TestRefineKeepsTheChoiceWithPunctuation(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	const card = "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给老王还是老李"
+	gen := desktopbot.NoteSpec("t", "u", "bot", card)
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王。", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"目标：把周报发给老王\n完成标准：文件送到指定的人\n还缺：发给老王还是老李"}`, nil
+	})
+	if desktopbot.SpecOf("t", "u", "bot") != card {
+		t.Fatalf("rewrite lifted the punctuated choice into the goal: %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+}
+
+func TestRefineKeepsTheWrittenFacts(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	const card = "目标：一份周报\n约束：不另发平台\n完成标准：老王收到文件\n还缺：发给谁"
+	gen := desktopbot.NoteSpec("t", "u", "bot", card)
+	keep := func(rewritten string) {
+		t.Helper()
+		body, err := json.Marshal(map[string]string{"instruction": rewritten})
+		if err != nil {
+			t.Fatal(err)
+		}
+		RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "随便", nil, func(context.Context, string, string) (string, error) {
+			return string(body), nil
+		})
+		if desktopbot.SpecOf("t", "u", "bot") != card {
+			t.Fatalf("rewrite replaced a written fact: %q", desktopbot.SpecOf("t", "u", "bot"))
+		}
+	}
+	keep("目标：一份月报\n约束：不另发平台\n完成标准：老王收到文件\n还缺：发给谁")
+	keep("目标：一份周报\n约束：不另发平台\n完成标准：老王收到文件\n还缺：用什么格式")
+	keep("目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁")
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "随便", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"目标：一份周报，限一页\n约束：不另发平台\n完成标准：老王收到文件\n还缺：发给谁"}`, nil
+	})
+	got := desktopbot.SpecOf("t", "u", "bot")
+	if !strings.Contains(got, "一份周报") || !strings.Contains(got, "限一页") || !strings.Contains(got, "不另发平台") || !strings.Contains(got, "还缺：发给谁") {
+		t.Fatalf("a longer line was dropped: %q", got)
+	}
+	const ascii = "目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁\n这次补充:发给老王"
+	gen = desktopbot.NoteSpec("t", "u", "bot", ascii)
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, ascii, "发给老王", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁"}`, nil
+	})
+	if desktopbot.SpecOf("t", "u", "bot") != ascii {
+		t.Fatalf("ascii supplement was dropped: %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+}
+
+func TestRefineKeepsTheOpenPoint(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	const card = "目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁"
+	gen := desktopbot.NoteSpec("t", "u", "bot", card)
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "一份周报", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"目标：一份周报\n完成标准：老王收到文件"}`, nil
+	})
+	if desktopbot.SpecOf("t", "u", "bot") != card {
+		t.Fatalf("rewrite cleared the open point: %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+}
+
+func TestRefineKeepsTheSupplementLine(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	const card = "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给谁\n这次补充：发给老王"
+	gen := desktopbot.NoteSpec("t", "u", "bot", card)
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+		return `{"instruction":"目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给谁"}`, nil
+	})
+	if desktopbot.SpecOf("t", "u", "bot") != card {
+		t.Fatalf("rewrite dropped the supplement: %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+}
+
+func TestEarlierSupplementDoesNotCloseTheGap(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁\n这次补充：先做成 PDF")
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"spec":true,"phase":"execute","instruction":"做一份周报","ack":"我开始做周报。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Ack != "发给谁？" {
+		t.Fatalf("supplement closed the gap: %+v %v", got, err)
+	}
+	if !strings.Contains(desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p"), "还缺") {
+		t.Fatal("the open point was dropped")
+	}
+}
+
+func TestTimeoutAsksTheOpenGap(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	gen := desktopbot.NoteSpec(p.TenantID, p.UserID, "bot_p", "目标：做一份周报\n完成标准：文件送到指定的人\n还缺：发给谁")
+	prev := BotIntakeBudget
+	BotIntakeBudget = 40 * time.Millisecond
+	defer func() { BotIntakeBudget = prev }()
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "做一份周报"}, func(ctx context.Context, _, _ string) (string, error) {
+		<-ctx.Done()
+		return "", nil
+	})
+	if err != nil || got.Kind != "ask" || got.Reason != "timeout" || got.Ack != "发给谁？" {
+		t.Fatalf("timeout = %+v %v", got, err)
+	}
+	if desktopbot.SpecGen(p.TenantID, p.UserID, "bot_p") == gen || desktopbot.ReplaceSpec(p.TenantID, p.UserID, "bot_p", gen, "过期的规范") {
+		t.Fatal("a background write from before the timeout can still land")
+	}
+	if !strings.Contains(desktopbot.SpecOf(p.TenantID, p.UserID, "bot_p"), "还缺：发给谁") {
+		t.Fatal("timeout replaced the spec")
 	}
 }

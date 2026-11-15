@@ -91,7 +91,9 @@ type PetPackManifest struct {
 	Fallback         PetPackFallback   `yaml:"fallback" json:"fallback,omitempty"`
 	Variants         []PetPackVariant  `yaml:"variants" json:"variants"`
 	Motion           PetPackMotion     `yaml:"motion" json:"motion"`
-	Capabilities     PetPackCaps       `yaml:"capabilities" json:"capabilities"`
+	Rearing          PetPackRearing     `yaml:"rearing,omitempty" json:"rearing,omitempty"`
+	Adornments       []PetPackAdornment `yaml:"adornments,omitempty" json:"adornments,omitempty"`
+	Capabilities     PetPackCaps        `yaml:"capabilities" json:"capabilities"`
 	Integrity        *PetPackIntegrity `yaml:"integrity" json:"integrity"`
 
 	// Runtime fields (not in yaml)
@@ -136,7 +138,10 @@ type PetPackVariant struct {
 	Tier        string        `yaml:"tier" json:"tier"`
 	Renderer    string        `yaml:"renderer" json:"renderer"`
 	FaceOverlay *bool         `yaml:"face_overlay" json:"face_overlay"`
-	Assets      PetPackAssets `yaml:"assets" json:"assets"`
+	// Selectable nil or true lists the variant in settings. False hides a
+	// rearing wardrobe or form so it cannot be picked as a skin style.
+	Selectable *bool `yaml:"selectable,omitempty" json:"selectable,omitempty"`
+	Assets     PetPackAssets `yaml:"assets" json:"assets"`
 }
 
 // DefaultPresentation returns the renderer and static idle path selected by
@@ -232,11 +237,13 @@ type PetPackMotion struct {
 	Pitch        float64 `yaml:"pitch" json:"pitch"`
 }
 
-// PetPackCaps are asset-presence hints only.
+// PetPackCaps are asset-presence hints only. They do not decide duty or growth.
 type PetPackCaps struct {
 	SupportsDoneState  bool `yaml:"supports_done_state" json:"supports_done_state"`
 	SupportsAlertState bool `yaml:"supports_alert_state" json:"supports_alert_state"`
 	PetPerformanceV3   bool `yaml:"pet_performance_v3" json:"pet_performance_v3"`
+	// SupportsTaskDuty hints that the performer binds the task events.
+	SupportsTaskDuty bool `yaml:"supports_task_duty,omitempty" json:"supports_task_duty,omitempty"`
 }
 
 // PetPackIntegrity optional hash map.
@@ -403,6 +410,9 @@ func ValidateManifest(m *PetPackManifest) error {
 		}
 	default:
 		m.Motion.SoundProfile = "classic"
+	}
+	if err := validateRearing(m); err != nil {
+		return err
 	}
 	return nil
 }

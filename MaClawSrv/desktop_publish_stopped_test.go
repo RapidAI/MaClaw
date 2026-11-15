@@ -36,6 +36,12 @@ func TestStoppedPublishGoalIsRecheckedOnANewRun(t *testing.T) {
 	if _, err := desktopRecoveryBefore(old, old.Scope, "publish", args); err == nil || !strings.Contains(err.Error(), "never repeated") {
 		t.Fatalf("same run: %v", err)
 	}
+	// Looking the post up is not another submit. Bot 5's check_posted was
+	// refused here, so CSDN stayed unconfirmed.
+	look := map[string]any{"action": "publish", "check_posted": true, "title": "短标题", "editor_url": "https://write.example.org/new", "verify_url": "https://write.example.org/list"}
+	if _, err := desktopRecoveryBefore(old, old.Scope, "publish", look); err != nil {
+		t.Fatalf("check_posted: %v", err)
+	}
 	// A new run passes the gate, marked for a recheck.
 	req.Scope.RunID = recRunID("run-new")
 	att, err := desktopRecoveryBefore(req, req.Scope, "publish", args)
@@ -59,4 +65,42 @@ func TestStoppedPublishGoalIsRecheckedOnANewRun(t *testing.T) {
 		t.Fatalf("after check: %v", err)
 	}
 	desktopRecoveryAbortPublish(req.Scope, got)
+}
+
+// An unconfirmed submit used to answer check_posted from the stored record
+// and never open the post list (Bot 5, CSDN).
+func TestCheckPostedReadsTheListAfterAnUnconfirmedSubmit(t *testing.T) {
+	req := d97Env(t)
+	desktopPublishRecordUpdate(req.Scope, func(r *desktopPublishRecord) {
+		r.Title = "综述"
+		r.Site = "csdn"
+		r.State = browser.PublishSubmitted
+	})
+	out, err := desktopPublish(req.Scope, &browser.BrowserAgentSession{}, map[string]any{
+		"action":       "publish",
+		"check_posted": true,
+		"title":        "综述",
+		"editor_url":   "https://editor.csdn.net/md/",
+		"verify_url":   "https://mp.csdn.net/mp_blog/manage/article",
+	})
+	if err == nil || !strings.Contains(err.Error(), "post list") {
+		t.Fatalf("list was not read: out=%q err=%v", out, err)
+	}
+	rec, ok := desktopPublishRecordOf(req.Scope.RunID)
+	if !ok || rec.State != browser.PublishSubmitted {
+		t.Fatalf("record: ok=%v %+v", ok, rec)
+	}
+	desktopPublishRecordUpdate(req.Scope, func(r *desktopPublishRecord) {
+		r.State = browser.PublishLive
+		r.URL = "https://zhuanlan.zhihu.com/p/2105161721778278920"
+	})
+	live, err := desktopPublish(req.Scope, &browser.BrowserAgentSession{}, map[string]any{
+		"action":       "publish",
+		"check_posted": true,
+		"title":        "综述",
+		"editor_url":   "https://zhuanlan.zhihu.com/write",
+	})
+	if err != nil || !strings.Contains(live, "2105161721778278920") {
+		t.Fatalf("live record should answer without the list: out=%q err=%v", live, err)
+	}
 }

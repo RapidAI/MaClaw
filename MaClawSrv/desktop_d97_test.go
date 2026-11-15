@@ -258,6 +258,82 @@ func TestDesktopD97SideEffectsInNotice(t *testing.T) {
 	}
 }
 
+// A later confirmed post of the same host retires the "click didn't go out"
+// note. Another host's unconfirmed note stays. Bot 5's reply said 知乎 and
+// 小红书 both did and did not publish.
+func TestSideNoteDropsAHostThatLaterPublished(t *testing.T) {
+	req := d97Env(t)
+	run := req.Scope.RunID
+	long := "能力榜第一，可靠性只排第七：SO-Arena 用 2919 道题体检 System One 模型"
+	desktopLedgerAdd(desktopLedgerKey(req.Scope), desktopLedgerEntry{
+		Kind: "posted", Host: "zhuanlan.zhihu.com", Title: long,
+		URL: "https://zhuanlan.zhihu.com/p/2105161721778278920", Run: run, Detail: "published",
+	})
+	desktopSideNote(run, "zhuanlan.zhihu.com：编辑器里留下了《"+desktopRuneHead(long, 30)+"》，点过一次发布，没有发出去")
+	desktopSideNote(run, "zhuanlan.zhihu.com：编辑器里留下了《另一篇草稿》，点过一次发布，没有发出去")
+	desktopSideNote(run, "editor.csdn.net：编辑器里留下了《"+desktopRuneHead(long, 30)+"》，点过发布但没能确认是否发出，请以页面为准")
+	n := desktopSideNotice(run)
+	if strings.Contains(n, "zhuanlan.zhihu.com：编辑器里留下了《能力榜第一") {
+		t.Fatalf("confirmed article stayed: %s", n)
+	}
+	if !strings.Contains(n, "另一篇草稿") || !strings.Contains(n, "editor.csdn.net") {
+		t.Fatalf("other leftovers dropped: %s", n)
+	}
+	desktopSideNote(run, "zhuanlan.zhihu.com：编辑器里留下了《能力》，点过一次发布，没有发出去")
+	n = desktopSideNotice(run)
+	if !strings.Contains(n, "《能力》") {
+		t.Fatalf("short title retired by a longer one: %s", n)
+	}
+}
+
+// The post list is the proof an unconfirmed submit went out. The landing
+// query is not part of the article link, and an editor URL is not proof.
+func TestListProofUpgradesAnUnconfirmedRecord(t *testing.T) {
+	req := d97Env(t)
+	desktopPublishRecordUpdate(req.Scope, func(r *desktopPublishRecord) {
+		r.Title = "综述"
+		r.State = browser.PublishSubmitted
+	})
+	desktopRecordConfirmedInList(req.Scope, "综述", "https://zhuanlan.zhihu.com/p/2105161721778278920?just_published=2")
+	rec, ok := desktopPublishRecordOf(req.Scope.RunID)
+	if !ok || rec.State != browser.PublishLive || strings.Contains(rec.URL, "just_published") || !strings.Contains(rec.URL, "/p/2105161721778278920") {
+		t.Fatalf("%+v ok=%v", rec, ok)
+	}
+	desktopRecordConfirmedInList(req.Scope, "另一篇", "https://editor.csdn.net/md/")
+	rec, _ = desktopPublishRecordOf(req.Scope.RunID)
+	if rec.State != browser.PublishLive || strings.Contains(rec.URL, "editor.csdn") {
+		t.Fatalf("editor overwrote the article: %+v", rec)
+	}
+	desktopPublishRecordUpdate(req.Scope, func(r *desktopPublishRecord) {
+		r.Site = "csdn"
+		r.State = browser.PublishSubmitted
+		r.URL = ""
+		r.Title = "综述"
+	})
+	desktopRecordConfirmedInList(req.Scope, "综述", "https://zhuanlan.zhihu.com/p/2105161721778278920")
+	rec, _ = desktopPublishRecordOf(req.Scope.RunID)
+	if rec.State != browser.PublishSubmitted || strings.Contains(rec.URL, "zhihu") {
+		t.Fatalf("zhihu link became the csdn post: %+v", rec)
+	}
+	desktopRecordConfirmedInList(req.Scope, "综述", "https://blog.csdn.net/znsoft/article/details/170300001")
+	rec, _ = desktopPublishRecordOf(req.Scope.RunID)
+	if rec.State != browser.PublishLive || !strings.Contains(rec.URL, "blog.csdn.net") {
+		t.Fatalf("csdn article was rejected: %+v", rec)
+	}
+	if pub, ok := desktopListProof("editor.csdn.net", "https://blog.csdn.net/znsoft/article/details/170300001?x=1"); !ok || pub != "https://blog.csdn.net/znsoft/article/details/170300001" {
+		t.Fatalf("csdn article proof: %q %v", pub, ok)
+	}
+	if _, ok := desktopListProof("editor.csdn.net", "https://zhuanlan.zhihu.com/p/2105161721778278920"); ok {
+		t.Fatal("a zhihu link proved a csdn post")
+	}
+	if _, ok := desktopListProof("editor.csdn.net", "https://i-blog.csdnimg.cn/abc.png"); ok {
+		t.Fatal("an image host proved the article")
+	}
+	if pub, ok := desktopListProof("creator.xiaohongshu.com", "https://www.xiaohongshu.com/explore/6af8cb58000000002b01b5e9"); !ok || !strings.Contains(pub, "/explore/6af8cb58000000002b01b5e9") {
+		t.Fatalf("xiaohongshu note: %q %v", pub, ok)
+	}
+}
+
 // check_posted is read-only: without a post list it refuses, never fills.
 func TestDesktopD97CheckPostedIsReadOnly(t *testing.T) {
 	req := d97Env(t)

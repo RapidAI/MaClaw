@@ -3,6 +3,8 @@ package remote
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestHubHTTPClientRejectsUntrustedCertificate(t *testing.T) {
@@ -175,5 +178,38 @@ func TestHubHTTPClientRejectsCleartextPublicHubBeforeDial(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), HubAllowHTTPEnv) {
 		t.Fatalf("error = %v, want explicit cleartext policy failure", err)
+	}
+}
+
+func TestHubHTTPClientCloseIdleConnections(t *testing.T) {
+	t.Setenv(HubAllowHTTPEnv, "")
+	states := make(chan http.ConnState, 8)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		states <- state
+	}
+	server.Start()
+	defer server.Close()
+	client := NewHubHTTPClient()
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	client.CloseIdleConnections()
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case state := <-states:
+			if state == http.StateClosed {
+				return
+			}
+		case <-deadline:
+			t.Fatal("idle connection was not closed by the client")
+		}
 	}
 }

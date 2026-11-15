@@ -269,19 +269,25 @@
     },
     "task_done": {
       "play": "react_task_celebrate",
-      "interrupt": "after_loop",
+      "interrupt": "soft",
       "mood": "pleased",
       "cooldown_ms": 6000
     },
     "task_failed": {
       "play": "react_task_concern",
-      "interrupt": "after_loop",
+      "interrupt": "soft",
       "mood": "concerned",
       "cooldown_ms": 6000
     },
+    "task_needs_you": {
+      "play": "react_task_listen",
+      "interrupt": "soft",
+      "mood": "curious",
+      "cooldown_ms": 4000
+    },
     "task_started": {
       "play": "react_task_focus",
-      "interrupt": "after_loop",
+      "interrupt": "soft",
       "mood": "focused",
       "cooldown_ms": 4000
     }
@@ -346,15 +352,23 @@
     "task_celebrate": {
       "event": "task_done",
       "play": "react_task_celebrate",
-      "interrupt": "after_loop",
+      "interrupt": "soft",
       "mood": "pleased",
       "cooldown_ms": 6000,
       "weight": 3
     },
+    "task_cheer": {
+      "event": "task_done",
+      "play": "react_task_celebrate",
+      "interrupt": "soft",
+      "mood": "pleased",
+      "cooldown_ms": 6000,
+      "weight": 1
+    },
     "task_concern": {
       "event": "task_failed",
       "play": "react_task_concern",
-      "interrupt": "after_loop",
+      "interrupt": "soft",
       "mood": "concerned",
       "cooldown_ms": 6000,
       "weight": 3
@@ -362,26 +376,18 @@
     "task_focus": {
       "event": "task_started",
       "play": "react_task_focus",
-      "interrupt": "after_loop",
+      "interrupt": "soft",
       "mood": "focused",
       "cooldown_ms": 4000,
       "weight": 3
     },
     "task_listen": {
-      "event": "task_started",
+      "event": "task_needs_you",
       "play": "react_task_listen",
-      "interrupt": "after_loop",
+      "interrupt": "soft",
       "mood": "curious",
-      "cooldown_ms": 4500,
-      "weight": 1
-    },
-    "task_settle": {
-      "event": "task_done",
-      "play": "react_task_settle",
-      "interrupt": "after_loop",
-      "mood": "calm",
-      "cooldown_ms": 7000,
-      "weight": 1
+      "cooldown_ms": 4000,
+      "weight": 3
     }
   },
   "rules": {

@@ -18,9 +18,10 @@ type buddyPetAsset struct {
 
 // buildBuddyPetAsset renders the GUI pet via the same pipeline the ESP32
 // gateway uses (8 frames, RGB565+A8), then downscales each 256px frame to the
-// buddy's 128px target. Character packs contribute a reel of authored actions.
-// Walk and run frames are already shifted along a route that turns at the
-// frame edge, so the round screen keeps the pet visible. Alpha is preserved
+// buddy's 128px target. Character packs that stroll on the desktop contribute
+// one closed idle-roam loop: the walk gait plays while the pet moves right,
+// down, left, and up inside the frame and turns with the heading. A rearing
+// stage's variant and scale are baked into those frames. Alpha is preserved
 // so the pet composites over the device's own weather ring.
 func (a *App) buildBuddyPetAsset() (*buddyPetAsset, error) {
 	cfg, err := a.LoadConfig()

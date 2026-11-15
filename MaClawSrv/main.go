@@ -16,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/logx"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -68,6 +69,9 @@ func runServer(ctx context.Context) error {
 	}
 	if err := configureServiceLogging(dataRoot); err != nil {
 		return fmt.Errorf("configure logging: %w", err)
+	}
+	if err := desktopbot.BindSpecFile(filepath.Join(dataRoot, "desktop-bot-specs.json")); err != nil {
+		srvLog().Warn("desktop bot spec file", slog.String("error", err.Error()))
 	}
 
 	executor, err := buildCoreAgentExecutorFromEnv()
@@ -216,6 +220,7 @@ func runServer(ctx context.Context) error {
 	// so profile CRUD/rotation hot-refreshes cached per-user managers.
 	server.SetDatabaseProfileRuntime(executor, executor.DatabaseSecretResolver)
 	server.SetMailboxSecretDir(filepath.Join(dataRoot, "mailbox-secrets"), executor)
+	desktopRepoAuthDir = filepath.Join(dataRoot, "desktop-repo-auth")
 	// Route database tool audit events into the central tenant audit chain
 	// (replaces the per-user JSONL fallback inside the executor).
 	wireDatabaseAuditSink(svc, executor)

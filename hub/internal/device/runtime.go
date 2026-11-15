@@ -594,6 +594,40 @@ func (s *Service) GracefulCloseAll() {
 	}
 }
 
+// CloseTenant closes every desktop connection in one tenant. Reauthentication
+// is blocked separately by IdentityService.ensureTenantActive.
+func (s *Service) CloseTenant(tenantID string) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	s.runtime.mu.RLock()
+	conns := make([]*ws.ConnContext, 0)
+	for _, conn := range s.runtime.desktopsByMachine {
+		if conn != nil && conn.Conn != nil && store.NormalizeTenantID(conn.TenantID) == tenantID {
+			conns = append(conns, conn)
+		}
+	}
+	s.runtime.mu.RUnlock()
+	for _, conn := range conns {
+		_ = conn.Conn.Close()
+	}
+}
+
+// CloseUser closes every desktop connection owned by one user.
+func (s *Service) CloseUser(tenantID, userID string) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	s.runtime.mu.RLock()
+	conns := make([]*ws.ConnContext, 0)
+	for _, conn := range s.runtime.desktopsByMachine {
+		if conn != nil && conn.Conn != nil && store.NormalizeTenantID(conn.TenantID) == tenantID && conn.UserID == userID {
+			conns = append(conns, conn)
+		}
+	}
+	s.runtime.mu.RUnlock()
+	for _, conn := range conns {
+		_ = conn.Conn.Close()
+	}
+}
+
 // FindOnlineMachineByName returns the machine ID of an online device belonging
 // to the given user whose Name matches (case-insensitive). Returns ("", false)
 // if no match is found.

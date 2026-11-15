@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -31,17 +32,26 @@ func main() {
 		AdvertiseHost: strings.TrimSpace(os.Getenv("DESKTOPD_ADVERTISE_HOST")),
 		ComputerDir:   desktopd.ComputerDirFromEnv(os.Getenv("DESKTOPD_COMPUTER_DIR")),
 	}
+	// Installed from the desktop bot settings: this machine is an intranet
+	// desktop. A leftover advertise host must not make it look public.
+	if desktopd.IntranetEnv(os.Getenv("DESKTOPD_INTRANET")) {
+		svc.Intranet = true
+		svc.AdvertiseHost = ""
+		log.Printf("[desktopd] intranet desktop: published URLs use the hub link")
+	}
 	publishBind, err := desktopd.ParsePublishBind(os.Getenv("DESKTOPD_PUBLISH_BIND"))
 	if err != nil {
 		log.Fatalf("[desktopd] %v", err)
 	}
 	svc.PublishBind = publishBind
-	if raw := strings.TrimSpace(os.Getenv("DESKTOPD_PUBLIC_URL")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("DESKTOPD_PUBLIC_URL")); raw != "" && !svc.Intranet {
 		canonical, err := desktopd.ParsePublicURL(raw)
 		if err != nil {
 			log.Fatalf("[desktopd] %v", err)
 		}
 		svc.PublicURL = canonical
+	} else if raw != "" {
+		log.Printf("[desktopd] intranet desktop ignores DESKTOPD_PUBLIC_URL")
 	}
 	// DESKTOPD_IMAGE_SOURCE: where a missing maclaw-gui:2 comes from. Empty
 	// means the public ghcr.io/rapidai/maclaw-gui:2; "off" disables pulls
@@ -202,6 +212,19 @@ func main() {
 	panelDir := stateDir
 	if adminDisabled {
 		panelDir = ""
+	}
+	// The Hub link lets a desktopd with no public address serve Hub through a
+	// tunnel it dials itself. It stays idle until the GUI posts an
+	// enrollment code; DESKTOPD_HUB_LINK=off removes the routes.
+	if !adminDisabled && !strings.EqualFold(strings.TrimSpace(os.Getenv("DESKTOPD_HUB_LINK")), "off") {
+		svc.HubLink = &desktopd.HubLink{
+			StatePath: filepath.Join(stateDir, "hub_link.json"),
+			Self:      desktopd.SelfAddr(addr),
+			Key:       token,
+		}
+		if err := svc.HubLink.Start(ctx); err != nil {
+			log.Printf("[desktopd] hub link state unreadable: %v", err)
+		}
 	}
 	server := &http.Server{
 		Addr:              addr,

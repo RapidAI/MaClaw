@@ -93,6 +93,10 @@ type Grant struct {
 	ID       string `json:"id"`
 	Scope    string `json:"scope"`
 	TargetID string `json:"target_id,omitempty"`
+	// DesktopBotLimit is how many of this grant's users may own a bot that
+	// has a cloud desktop. Nil is unlimited, which is every grant saved
+	// before the field existed. Zero means only bots with no desktop.
+	DesktopBotLimit *int `json:"desktop_bot_limit,omitempty"`
 }
 
 // Directory resolves a user's department chain. Nil skips department grants.
@@ -238,10 +242,22 @@ func (s *Service) BotsForUser(ctx context.Context, tenantID, userID string) ([]B
 }
 
 func (s *Service) CreateBotForUser(ctx context.Context, tenantID, userID, name, description string) (Bot, error) {
+	want := true
+	return s.CreateBotForUserDesktop(ctx, tenantID, userID, name, description, &want)
+}
+
+// CreateBotForUserDesktop creates a bot. wantDesktop nil or true asks for a
+// cloud desktop (subject to the grant limit). False creates a bot with no
+// desktop, which is always allowed.
+func (s *Service) CreateBotForUserDesktop(ctx context.Context, tenantID, userID, name, description string, wantDesktop *bool) (Bot, error) {
 	if _, err := s.loadForUser(ctx, tenantID, userID); err != nil {
 		return Bot{}, err
 	}
-	return s.createBot(ctx, tenantID, userID, name, description, true)
+	bot, err := s.createBot(ctx, tenantID, userID, name, description, true, wantDesktop)
+	if err != nil {
+		return Bot{}, err
+	}
+	return withDesktopModeView(bot), nil
 }
 
 func (s *Service) UpdateBotForUser(ctx context.Context, tenantID, userID, botID, name, description string) (Bot, error) {
@@ -662,7 +678,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// The container's memory is read from desktopd. Over the line, this run
 	// waits in the same queue as a busy desktop and starts when a later
 	// read is under the line.
-	if admit && !hubStartedTurn(clientMessageID) && s.desktopMemoryPressured(ctx, tenantID, userID) {
+	noDesktop := botNone(rec.Bots[index])
+	if admit && !noDesktop && !hubStartedTurn(clientMessageID) && s.desktopMemoryPressured(ctx, tenantID, userID) {
 		// A replay is the queue itself. Returning the error puts the item
 		// back instead of starting it or queueing a second copy.
 		if desktopReplay(ctx) || desktopQueueSuppressed(ctx) {
@@ -796,6 +813,11 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, llmErr
 	}
+	// MCP and skills are not required for the turn. A missed push is retried
+	// on the next open; the tools read whatever MaClawSrv already has.
+	step = time.Now()
+	capErr := s.ensureBotCapabilities(ctx, tenantID, userID)
+	traceBot(botID, "capabilities", capErr, "dur_ms", traceMS(time.Since(step)))
 	path := instancePath + "/messages"
 	messageMeta := map[string]string{"bot_id": rec.Bots[index].ID}
 	// The client's phase is ignored except an explicit execute, which is the
@@ -810,6 +832,10 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	}
 	messageMeta["bot_phase"] = phase
 	messageMeta["bot_intake_phase"] = phase
+	if noDesktop {
+		messageMeta["bot_desktop"] = desktop.BotDesktopModeNone
+		delete(messageMeta, "computer_helper")
+	}
 	if askRun, _ := ctx.Value(desktopAskRunKey{}).(string); strings.TrimSpace(askRun) != "" {
 		messageMeta["bot_ask_run"] = strings.TrimSpace(askRun)
 	}
@@ -1155,6 +1181,11 @@ func (s *Service) desktopIdentityMetadata(ctx context.Context, rec *record, toke
 		metadata[desktopBotMetadataKey] = bot.ID
 	} else {
 		delete(metadata, desktopBotMetadataKey)
+	}
+	if botNone(bot) {
+		metadata["hub_bot_desktop"] = desktop.BotDesktopModeNone
+	} else {
+		delete(metadata, "hub_bot_desktop")
 	}
 	// Bot turns bill the MaClaw official group. A group copied from an older
 	// instance, including system-free, would skip that deduction channel.
@@ -1613,7 +1644,7 @@ func (s *Service) clearDesktopHeld(tenantID, userID, botID string, turn ...strin
 	s.mu.Unlock()
 }
 
-func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, description string, requireOwner bool) (Bot, error) {
+func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, description string, requireOwner bool, wantDesktop *bool) (Bot, error) {
 	name = strings.TrimSpace(name)
 	description = strings.TrimSpace(description)
 	ownerUserID = strings.TrimSpace(ownerUserID)
@@ -1625,6 +1656,12 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 	}
 	if requireOwner && !desktop.ValidUserID(ownerUserID) {
 		return Bot{}, fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	// Department membership is a directory call. Read it before the bot lock
+	// so one slow lookup does not stall every other bot.
+	var departments []string
+	if ownerUserID != "" && (wantDesktop == nil || *wantDesktop) {
+		departments = s.departmentChain(directoryContext(ctx, tenantID), ownerUserID)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1644,6 +1681,21 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 	if err != nil {
 		return Bot{}, err
 	}
+	mode := ownerDefaultDesktopMode(rec, ownerUserID)
+	if wantDesktop != nil {
+		if *wantDesktop {
+			if mode == desktop.BotDesktopModeNone {
+				mode = ""
+			}
+		} else {
+			mode = desktop.BotDesktopModeNone
+		}
+	}
+	if mode != desktop.BotDesktopModeNone {
+		if err := desktopQuotaAllows(rec, ownerUserID, departments); err != nil {
+			return Bot{}, err
+		}
+	}
 	meta := map[string]string{
 		"hub_bot":              "1",
 		"llm_service_group_id": botLLMServiceGroupID,
@@ -1651,6 +1703,9 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 	if ownerUserID != "" {
 		meta["hub_user_id"] = ownerUserID
 		meta["hub_tenant_id"] = tenantID
+	}
+	if mode == desktop.BotDesktopModeNone {
+		meta["hub_bot_desktop"] = desktop.BotDesktopModeNone
 	}
 	var created struct {
 		ID string `json:"id"`
@@ -1674,7 +1729,7 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 		InstanceID:  strings.TrimSpace(created.ID),
 		OwnerUserID: ownerUserID,
 		CreatedAt:   s.now().UTC().Format(time.RFC3339),
-		DesktopMode: ownerDefaultDesktopMode(rec, ownerUserID),
+		DesktopMode: mode,
 	}
 	rec.Bots = append(rec.Bots, bot)
 	if err := s.save(ctx, tenantID, rec); err != nil {
@@ -1777,6 +1832,9 @@ func (s *Service) DesktopWatch(ctx context.Context, tenantID, userID, botID stri
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", false, ErrNotFound
 	}
+	if botNone(rec.Bots[index]) {
+		return "", false, ErrNoDesktop
+	}
 	userID = desktopUserForBot(userID, rec.Bots[index])
 	novnc := s.desktopViewURL(tenantID, userID)
 	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
@@ -1820,6 +1878,18 @@ func (s *Service) rememberDesktopView(tenantID, userID, raw string) {
 // open the same gated picture the chat hands out.
 func (s *Service) DesktopViewURL(tenantID, userID string) string {
 	return s.desktopViewURL(tenantID, userID)
+}
+
+// DesktopViewRaw is the noVNC address desktopd published, before Hub hid it
+// behind a handoff token. Empty when no picture is published.
+func (s *Service) DesktopViewRaw(tenantID, userID string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	defer s.mu.Unlock()
+	return s.desktopView[desktopViewKey(tenantID, userID)].raw
 }
 
 func (s *Service) desktopViewURL(tenantID, userID string) string {
@@ -2050,6 +2120,9 @@ func normalizeGrant(in Grant, existing []Grant) (Grant, error) {
 		}
 	default:
 		return Grant{}, fmt.Errorf("%w: scope must be global, department, or user", ErrInvalidInput)
+	}
+	if in.DesktopBotLimit != nil && *in.DesktopBotLimit < 0 {
+		return Grant{}, fmt.Errorf("%w: desktop bot limit must be zero or more", ErrInvalidInput)
 	}
 	return in, nil
 }

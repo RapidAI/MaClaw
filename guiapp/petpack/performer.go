@@ -125,6 +125,24 @@ func (d *PerformanceDirector) SelectState(state PetRuntimeState, nowMS int64) Pe
 	return PerformanceStep{Body: entry, Loop: s.Loop, Exit: s.Exit, Expression: s.Expression, Gaze: s.Gaze, Secondary: s.Secondary, EntryMS: clipDuration(d.rig, entry), DurationMS: clipDuration(d.rig, entry), CrossfadeMS: d.performer.Rules.CrossfadeMS, Mood: d.currentMood}
 }
 
+// EventCue reports the body clip cue bound to a host event. bound is false
+// when the pack did not declare that event. An empty cue with bound true
+// means the author chose a silent reaction.
+func (d *PerformanceDirector) EventCue(event string) (cue string, bound bool) {
+	if d == nil || d.performer == nil || d.rig == nil || !allowedPerformerEvents[event] {
+		return "", false
+	}
+	e, ok := d.performer.Events[event]
+	if !ok || e.Play == "" {
+		return "", false
+	}
+	clip, ok := d.rig.Clips[e.Play]
+	if !ok {
+		return "", true
+	}
+	return clip.Cue, true
+}
+
 // SelectEvent returns a short reaction. An unknown/cooling-down event returns
 // an empty decision and leaves the current performance uninterrupted.
 func (d *PerformanceDirector) SelectEvent(event string, nowMS int64) PerformanceStep {
@@ -278,7 +296,8 @@ var allowedPerformerStates = map[string]bool{
 	"idle": true, "listening": true, "thinking": true, "speaking": true, "done": true, "alert": true, "quiet": true,
 }
 var allowedPerformerEvents = map[string]bool{
-	"click": true, "hover": true, "drag_start": true, "drag_end": true, "task_started": true, "task_done": true, "task_failed": true, "long_idle": true,
+	"click": true, "hover": true, "drag_start": true, "drag_end": true,
+	"task_started": true, "task_needs_you": true, "task_done": true, "task_failed": true, "long_idle": true,
 }
 
 // IsAllowedPerformerEvent reports whether a host event is part of the fixed

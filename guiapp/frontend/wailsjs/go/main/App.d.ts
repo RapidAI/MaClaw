@@ -2606,7 +2606,9 @@ export function DeleteDesktopBotSchedule(arg1:string,arg2:string):Promise<void>;
 
 export function DesktopBotAccess():Promise<{enabled:boolean,message?:string}>;
 
-export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>>;
+export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string}>>;
+
+export function GetDesktopBotQuota():Promise<{limit?:number | null,used:number}>;
 
 export function SetDesktopBotPrimary(arg1:string):Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>>;
 
@@ -2624,7 +2626,9 @@ export function ClaimDesktopBotCrossStart(arg1:string,arg2:string):Promise<{clai
 
 export function ArmDesktopBotCrossRun(arg1:string,arg2:string):Promise<void>;
 
-export function CreateDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
+export function CreateDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string}>;
+
+export function CreateDesktopBotWithComputer(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string}>;
 
 export function RenameDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
 
@@ -2644,15 +2648,21 @@ export function DeleteDesktopBot(arg1:string):Promise<void>;
 
 export function GetDesktopBotCredits():Promise<{ applies: boolean; unlimited: boolean; limit: number; used: number; remaining: number }>;
 
-export function GetDesktopComputer():Promise<{ restart_allowed: boolean; reset_allowed: boolean; active_runs: number }>;
+export function GetDesktopComputer():Promise<{ restart_allowed: boolean; reset_allowed: boolean; active_runs: number; intranet?: boolean }>;
+
+export function ListDesktopNodes():Promise<{ enabled: boolean; hub_error?: string; nodes: Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; message?: string; node_id?: string; desktopd_url?: string; registered: boolean; online: boolean; active: boolean }> }>;
+
+export function UpgradeDesktopNode(arg1:string, arg2:string):Promise<{ id: string; status: string; message?: string }>;
+
+export function DeployDesktopNode(arg1:{ name?: string; host: string; port?: number; user: string; password: string }):Promise<{ id: string; status: string; message?: string }>;
 
 export function RestartDesktopComputer(arg1:boolean):Promise<{ ok: boolean; busy: boolean; action?: string; status?: string; backup?: string; message?: string }>;
 
 export function ResetDesktopComputer(arg1:boolean):Promise<{ ok: boolean; busy: boolean; action?: string; status?: string; backup?: string; message?: string }>;
 
-export function GetDesktopProxyMode():Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string }>;
+export function GetDesktopProxyMode():Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string; intranet?: boolean }>;
 
-export function SaveDesktopProxyMode(arg1:string):Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string }>;
+export function SaveDesktopProxyMode(arg1:string):Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string; intranet?: boolean }>;
 
 export function GetDesktopBotLLM():Promise<{ mode: string; choice?: string; stored?: boolean; needs_role_save?: boolean; name?: string; url?: string; model?: string; key_set: boolean; warning?: string; roles?: { foreground: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; background: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; computer_use: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; grounder: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean } } }>;
 
@@ -3153,10 +3163,10 @@ export function TokenBankPreviewGiftLink(arg1:string):Promise<Record<string, any
 export function TokenBankClaimGiftLink(arg1:string):Promise<Record<string, any>>;
 export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
 
-export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
-export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
+export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
+export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
 
-export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
+export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
 
 export function HandBackDesktopBot(arg1:string):Promise<{handed_back:boolean,accepted?:boolean,run_id?:string,status?:string,client_message_id?:string}>;
 
@@ -3255,6 +3265,12 @@ export function ActivateBotCatalogAssignments(arg1:string):Promise<void>;
 export function SyncSharedPageToHub(arg1:string,arg2:string):Promise<void>;
 
 export function GetBotLocalAccess():Promise<any>;
+
+export function GetDesktopBotCapabilityPage():Promise<any>;
+
+export function UpdateDesktopBotCapabilities(arg1:any):Promise<any>;
+
+export function ImportDesktopBotMCP(arg1:string):Promise<any>;
 
 export function SaveBotLocalAccess(arg1:any):Promise<any>;
 

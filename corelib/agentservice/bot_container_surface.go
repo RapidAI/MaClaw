@@ -198,7 +198,7 @@ func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) [
 			kept = append(kept, def)
 		}
 	}
-	return kept
+	return c.withRepoTool(kept)
 }
 
 // withBotScheduleTool keeps bot_schedule on a desktop-bot turn, including a

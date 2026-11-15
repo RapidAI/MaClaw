@@ -77,10 +77,21 @@ class ApiClient {
         onAuthRejected?.call();
       } else {
         final data = response.data;
-        final code = data == null
-            ? ''
-            : (data['error'] as String? ?? data['code'] as String? ?? '')
-                .trim();
+        var code = '';
+        if (data != null) {
+          final rawError = data['error'];
+          if (rawError is String) {
+            code = rawError;
+          } else if (rawError is Map) {
+            // A gateway/proxy answer nests the failure — same shape
+            // hubExceptionFrom tolerates.
+            code = (rawError['code'] ?? rawError['name'] ?? rawError['error'] ?? '')
+                .toString();
+          }
+          if (code.isEmpty) {
+            code = (data['code'] ?? '').toString().trim();
+          }
+        }
         if (code == 'UNAUTHORIZED' || code == 'MACHINE_UNAUTHORIZED') {
           onAuthRejected?.call();
         }

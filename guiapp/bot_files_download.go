@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -285,6 +286,62 @@ func deliveredFileForOpen(botID, requested string) string {
 	return deliveredFileAt(p)
 }
 
+// mailFileSavedCopy is the file this machine already saved under name.
+// rememberDelivery writes that name key for every saved mail file. Hub is
+// how the bytes arrive; once they are here, a later Hub error is not a
+// reason to tell the person the file is missing.
+func mailFileSavedCopy(noteID, name string) (DesktopBotMailFileData, bool) {
+	botFilesMu.Lock()
+	idx := botFilesIndex()
+	p := ""
+	if key := mailNoteKey(noteID, name); key != "" {
+		p = idx[key]
+	}
+	botFilesMu.Unlock()
+	p = deliveredFileAt(p)
+	if p == "" {
+		// Saved before a note key existed. A unique name still has one copy.
+		p = deliveredFileForOpen("", name)
+	}
+	if p == "" {
+		return DesktopBotMailFileData{}, false
+	}
+	size := int64(0)
+	if info, err := os.Stat(p); err == nil && !info.IsDir() {
+		size = info.Size()
+	}
+	return DesktopBotMailFileData{Name: filepath.Base(p), LocalPath: p, Size: size}, true
+}
+
+// mailNoteKey is one file on one said note. The name alone is shared by
+// every later report that reused it, so a Hub miss would open the newest
+// copy instead of the message the person clicked.
+func mailNoteKey(noteID, name string) string {
+	noteID = strings.TrimSpace(noteID)
+	base := filepath.Base(filepath.ToSlash(strings.TrimSpace(name)))
+	if noteID == "" || base == "" || base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	return "note:" + noteID + ":" + base
+}
+
+// rememberMailNote records which saved path belongs to this note.
+func rememberMailNote(noteID, name, path string) {
+	key := mailNoteKey(noteID, name)
+	path = strings.TrimSpace(path)
+	if key == "" || path == "" {
+		return
+	}
+	botFilesMu.Lock()
+	defer botFilesMu.Unlock()
+	idx := botFilesIndex()
+	if idx[key] == path {
+		return
+	}
+	idx[key] = path
+	botFilesStore(idx)
+}
+
 func deliveredFileNamed(botID, requested string, saved map[string]string) string {
 	return deliveredFileAt(deliveryPath(botID, requested, saved))
 }
@@ -333,6 +390,7 @@ func (a *App) autoSaveBotFiles(items []BotSaidItem) {
 			}
 			if p := botFileSavedPath(ref); p != "" {
 				rememberDeliveryName(item.From, f.Name, p)
+				rememberMailNote(item.ID, f.Name, p)
 				continue
 			}
 			botFilesMu.Lock()
@@ -350,8 +408,12 @@ func (a *App) autoSaveBotFiles(items []BotSaidItem) {
 				ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 				defer cancel()
 				info, err := a.mailFileInfo(ctx, noteID, name)
+				var path string
 				if err == nil {
-					_, err = a.saveBotStoredFile(ctx, info)
+					path, err = a.saveBotStoredFile(ctx, info)
+				}
+				if err == nil {
+					rememberMailNote(noteID, name, path)
 				}
 				if err != nil {
 					code := localrelay.CodeOf(err)
@@ -367,26 +429,42 @@ func (a *App) autoSaveBotFiles(items []BotSaidItem) {
 	}
 }
 
-// fetchMailFileForChat is FetchDesktopBotMailFile's body: a large stored
-// file is saved on this computer and its path returned; a small one comes
-// back as base64 like before.
+// fetchMailFileForChat is FetchDesktopBotMailFile's body. A stored file and
+// an inlined mail file are both saved here and returned as a path. The
+// webview does not carry the bytes back through the chat-attachment cap.
 func (a *App) fetchMailFileForChat(noteID, name string) (DesktopBotMailFileData, error) {
 	info, err := a.mailFileInfo(context.Background(), noteID, name)
 	if err != nil {
+		// Hub could not answer. A copy already saved for this name still opens.
+		// The 08:16 weather PDF was on disk while preview showed Hub's error.
+		if saved, ok := mailFileSavedCopy(noteID, name); ok {
+			return saved, nil
+		}
 		return DesktopBotMailFileData{}, err
 	}
 	if info.Ref == "" {
 		raw, err := base64.StdEncoding.DecodeString(info.Data)
+		if err != nil || len(raw) == 0 {
+			return DesktopBotMailFileData{}, fmt.Errorf("文件内容无效")
+		}
+		fileName := firstNonEmptyMB(info.Name, name)
+		path, err := saveInlineMailFile(noteID, fileName, raw)
 		if err != nil {
 			return DesktopBotMailFileData{}, err
 		}
-		return DesktopBotMailFileData{Name: firstNonEmptyMB(info.Name, name), MIME: firstNonEmptyMB(info.MIME, "application/octet-stream"), Data: base64.StdEncoding.EncodeToString(raw)}, nil
+		rememberNewDelivery(noteID, fileName, path)
+		rememberMailNote(noteID, fileName, path)
+		return DesktopBotMailFileData{Name: fileName, MIME: firstNonEmptyMB(info.MIME, "application/octet-stream"), LocalPath: path, Size: int64(len(raw))}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 	path, err := a.saveBotStoredFile(ctx, info)
 	if err != nil {
+		if saved, ok := mailFileSavedCopy(noteID, firstNonEmptyMB(info.Name, name)); ok {
+			return saved, nil
+		}
 		return DesktopBotMailFileData{}, err
 	}
+	rememberMailNote(noteID, firstNonEmptyMB(info.Name, name), path)
 	return DesktopBotMailFileData{Name: filepath.Base(path), MIME: info.MIME, LocalPath: path, Size: info.Size}, nil
 }

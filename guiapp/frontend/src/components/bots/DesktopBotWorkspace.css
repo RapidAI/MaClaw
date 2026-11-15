@@ -428,6 +428,21 @@
     min-width: 0;
 }
 
+.desktop-bot-workspace__who .desktop-bot-workspace__mode {
+    flex: 0 0 auto;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
+    font-style: normal;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.4;
+    padding: 1px 6px;
+    border-radius: 999px;
+    color: var(--mc-text-secondary, #5c6b7a);
+    background: color-mix(in srgb, var(--mc-text-secondary, #5c6b7a) 12%, transparent);
+}
+
 .desktop-bot-workspace__who .desktop-bot-workspace__primary {
     flex: 0 0 auto;
     overflow: visible;
@@ -619,6 +634,19 @@
     padding: 8px 12px;
     border-radius: 8px;
     font-size: 0.875rem;
+}
+
+.bot-edit-dialog__computer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+}
+
+.bot-edit-dialog__quota {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--mc-text-secondary, #5c6b7a);
 }
 
 .bot-edit-dialog__notice {
@@ -2665,7 +2693,7 @@
 
 .desktop-bot-panel__tabs {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 2px;
     padding: 3px;
     border-radius: 10px;
@@ -2701,6 +2729,7 @@
 
 .desktop-bot-panel__details,
 .desktop-bot-panel__schedules,
+.desktop-bot-panel__artifacts,
 .desktop-bot-panel__computer {
     display: flex;
     flex-direction: column;
@@ -2719,9 +2748,83 @@
 }
 
 .desktop-bot-panel__details,
-.desktop-bot-panel__schedules {
+.desktop-bot-panel__schedules,
+.desktop-bot-panel__artifacts {
     gap: 12px;
     padding-top: 4px;
+}
+
+.desktop-bot-artifacts {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 13px;
+}
+
+.desktop-bot-artifacts th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--theme-text-secondary, #667085);
+    padding: 4px 8px 8px;
+    border-bottom: 1px solid var(--theme-border, #e4e7ec);
+}
+
+.desktop-bot-artifacts th:nth-child(2),
+.desktop-bot-artifacts td:nth-child(2) {
+    width: 22%;
+}
+
+.desktop-bot-artifacts th:nth-child(3),
+.desktop-bot-artifacts td:nth-child(3) {
+    width: 38%;
+}
+
+.desktop-bot-artifacts td {
+    padding: 8px;
+    border-bottom: 1px solid var(--theme-border, #e4e7ec);
+    vertical-align: middle;
+}
+
+.desktop-bot-artifacts__row {
+    cursor: pointer;
+}
+
+.desktop-bot-artifacts__row:hover td,
+.desktop-bot-artifacts__row:focus-visible td {
+    background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 8%, var(--theme-surface, #fff));
+}
+
+.desktop-bot-artifacts__row:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: -2px;
+}
+
+.desktop-bot-artifacts__name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--mc-accent, #2f6fbc);
+}
+
+.desktop-bot-artifacts__meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--theme-text-secondary, #667085);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.bot-file-artifact__error {
+    margin: 0;
+    padding: 0 12px 8px;
+    color: var(--theme-danger, #a33b32);
+    font-size: 12px;
+    line-height: 1.4;
 }
 
 .desktop-bot-panel__empty {
@@ -2729,6 +2832,19 @@
     color: var(--theme-text-muted, #657384);
     font-size: 13px;
     line-height: 1.45;
+}
+
+.desktop-bot-panel__empty.is-error {
+    color: var(--theme-danger, #a33b32);
+}
+
+.desktop-bot-panel__artifacts > .desktop-bot-panel__empty {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin: 0 0 8px;
+    padding: 8px 2px;
+    background: var(--theme-surface, #fff);
 }
 
 .desktop-bot-schedule-list {
@@ -3521,7 +3637,9 @@ button.desktop-bot-feed__file {
 }
 
 /* 标签页做成滑块：两枚按钮浮在浅槽上，选中的一枚抬成表面色。
-   槽收缩到内容宽，不横贯整个弹窗 —— 它是一组开关，不是一条分隔带。 */
+   槽收缩到内容宽，不横贯整个弹窗 —— 它是一组开关，不是一条分隔带。
+   七个页签在 560px 弹窗里放不下：槽允许横向滚动、滚动条藏起，
+   页签文字不再折成两行（折行的中文标签是之前的破相）。 */
 .bot-settings-tabs {
     display: flex;
     width: fit-content;
@@ -3533,12 +3651,19 @@ button.desktop-bot-feed__file {
     border: 1px solid var(--theme-border-subtle, #dde9fa);
     border-radius: 9px;
     background: color-mix(in srgb, var(--theme-text-muted, #667085) 7%, var(--theme-surface, #fff));
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.bot-settings-tabs::-webkit-scrollbar {
+    display: none;
 }
 
 .bot-settings-tabs__tab {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    flex: 0 0 auto;
     min-height: 28px;
     padding: 0 14px;
     border: none;
@@ -3547,6 +3672,7 @@ button.desktop-bot-feed__file {
     font-size: 13px;
     font-weight: 500;
     line-height: 1;
+    white-space: nowrap;
     color: var(--theme-text-muted, #667085);
     cursor: pointer;
     transition: background var(--transition-fast, 120ms ease), color var(--transition-fast, 120ms ease);
@@ -3668,6 +3794,119 @@ button.desktop-bot-feed__file {
     color: var(--theme-text-muted, #667085);
 }
 
+/* ── 设置行：标题/说明居左，iOS 风格开关居右 ─────────────────────────
+   「语音播报」「自动朗读」这类布尔设置用一行卡片承载，说明跟着标题走，
+   开关永远在右缘 —— 不再是"复选框一行、说明又一行"的散排。开关样式
+   复用全局 tokens（00-tokens.css 的 --theme-switch-*），和安全策略页的
+   .sec-policy__switch 同源，光暗两套主题自动跟随。 */
+.bot-setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 11px 14px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+}
+
+.bot-setting-row__text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.bot-setting-row__title {
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.45;
+    color: var(--theme-text-primary, #101828);
+}
+
+.bot-setting-row__hint {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--theme-text-muted, #667085);
+}
+
+.bot-switch {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    cursor: pointer;
+}
+
+/* 输入框视觉隐藏但保持可聚焦：Tab 落在开关上，focus 环画在滑轨上。 */
+.bot-switch input[type="checkbox"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.bot-switch__track {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-switch-track-off);
+    transition: background-color var(--transition-fast, 120ms ease), border-color var(--transition-fast, 120ms ease);
+}
+
+.bot-switch__track::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-switch-thumb, #fff);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast, 120ms ease);
+}
+
+.bot-switch input:checked + .bot-switch__track {
+    border-color: var(--theme-primary, #2e75cb);
+    background: var(--theme-primary, #2e75cb);
+}
+
+.bot-switch input:checked + .bot-switch__track::after {
+    transform: translateX(16px);
+}
+
+.bot-switch input:focus-visible + .bot-switch__track {
+    box-shadow: 0 0 0 3px var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+}
+
+.bot-switch input:disabled + .bot-switch__track {
+    opacity: 0.55;
+}
+
+/* 试听行：文本框占满剩余宽，按钮同高一行 —— 不再整宽横贯。 */
+.bot-voice__preview-row {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.bot-voice__preview-row .form-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.bot-voice__preview-row .btn-secondary {
+    flex: 0 0 auto;
+    min-width: 76px;
+}
+
 .bot-llm-dialog__fields {
     margin-top: 12px;
     padding: 12px 0 0 25px;
@@ -3752,6 +3991,10 @@ button.desktop-bot-feed__file {
 [data-ai-theme='dark'] .bot-llm-dialog__option {
     border-color: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 16%, transparent);
     background: var(--theme-surface, #1c1c1c);
+}
+
+[data-ai-theme='dark'] .bot-setting-row {
+    border-color: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 16%, transparent);
 }
 
 [data-ai-theme='dark'] .bot-llm-dialog__option.is-selected {
@@ -4384,6 +4627,8 @@ button.desktop-bot-feed__file {
 .bot-local-dialog__write { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
 .bot-local-dialog__remove { padding: 2px 8px; font-size: 12px; }
 .bot-local-dialog__field { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+/* 标签不参与收缩：「音色」这类两字标签曾被压成竖排，一字一行。 */
+.bot-local-dialog__field > span { flex: 0 0 auto; white-space: nowrap; }
 .bot-local-dialog__field input[type="number"] { width: 90px; }
 .bot-local-dialog__field--block { flex-direction: column; align-items: stretch; }
 .desktop-bot-local-transfers { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; }
@@ -4398,4 +4643,179 @@ button.desktop-bot-feed__file {
     margin-top: 4px;
     font-size: 12px;
     opacity: 0.75;
+}
+
+.bot-cap__title {
+    margin: 0 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--theme-text-primary, #101828);
+}
+
+.bot-cap__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0;
+}
+
+/* MCP 与技能页的行内按钮统一成次级按钮观感，替代浏览器默认灰按钮。 */
+.bot-cap__actions button,
+.bot-cap__list button,
+.bot-cap__form > button,
+.bot-llm-dialog__section > button {
+    padding: 5px 12px;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: 8px;
+    background: var(--theme-surface, #fff);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--theme-text-secondary, #475467);
+    cursor: pointer;
+    transition: border-color var(--transition-fast, 120ms ease), color var(--transition-fast, 120ms ease);
+}
+
+.bot-cap__actions button:hover:not(:disabled),
+.bot-cap__list button:hover:not(:disabled),
+.bot-cap__form > button:hover:not(:disabled),
+.bot-llm-dialog__section > button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 38%, var(--theme-border, #d5e0ef));
+    color: var(--theme-primary, #2e75cb);
+}
+
+.bot-cap__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.bot-cap__list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 10px 14px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+}
+
+/* 技能行：复选框与多行文字顶端对齐，名称/说明/标记纵向排。 */
+.bot-cap__list label {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    cursor: pointer;
+    min-width: 0;
+}
+
+.bot-cap__list label > span {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.bot-cap__list label input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin: 2px 0 0;
+    accent-color: var(--theme-primary, #2e75cb);
+}
+
+.bot-cap__list label input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+}
+
+.bot-cap__meta {
+    display: block;
+    font-size: 12px;
+    opacity: 0.75;
+}
+
+.bot-cap__form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 8px 0;
+    padding: 12px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+}
+
+.bot-cap__form textarea,
+.bot-cap__form input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 10px;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: 8px;
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #101828);
+    font-family: inherit;
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+
+.bot-cap__form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--theme-text-secondary, #475467);
+}
+
+.bot-cap__form button {
+    align-self: flex-start;
+}
+
+.bot-desktop-nodes {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.bot-desktop-nodes__row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-text-primary, #1d2433) 12%, transparent);
+    border-radius: 10px;
+}
+
+.bot-desktop-nodes__main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.bot-desktop-nodes__name {
+    font-weight: 600;
+}
+
+.bot-desktop-nodes__actions {
+    flex: none;
+}
+
+.bot-desktop-nodes__confirm {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+.bot-desktop-nodes__confirm .form-input {
+    width: 140px;
 }

@@ -1628,8 +1628,8 @@ func TestMaclawAppApprovalInstancesPersistAndFilter(t *testing.T) {
 	if created.CreatedAt == "" || created.Applicant != "alice" || created.BusinessEntity != "expense" || created.BusinessAction != "submit" || created.BusinessNote != "taxi receipt" {
 		t.Fatalf("approval instance should persist submission context: %#v", created)
 	}
-	if _, err := os.Stat(app.maclawAppApprovalRegistryPath()); err != nil {
-		t.Fatalf("approval registry should exist: %v", err)
+	if _, err := os.Stat(app.maclawAppApprovalDBPath()); err != nil {
+		t.Fatalf("approval registry database should exist: %v", err)
 	}
 	if _, err := app.RecordMaclawAppApprovalInstance(maclawAppApprovalInstance{AppID: "other-app", Title: "Other", Lane: "my_requests"}); err != nil {
 		t.Fatalf("record other app: %v", err)
@@ -4544,5 +4544,79 @@ func TestSyncMaclawAppApprovalInstanceToDataSrvResolvesObjectRole(t *testing.T) 
 	}
 	if captured[3].Method != http.MethodPost || captured[3].Path != "/api/v1/data/datasets/finance.expenses/records/exp-2/approvals" {
 		t.Fatalf("unexpected approval create request: %#v", captured[3])
+	}
+}
+
+func TestMaclawAppApprovalRegistryMigratesLegacyJSONAndReorders(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	legacy := maclawAppApprovalRegistry{
+		Schema: "maclaw.app.approvals.v1", UpdatedAt: "2026-01-01T00:00:00Z",
+		Instances: []maclawAppApprovalInstance{{
+			InstanceID: "legacy-approval", AppID: "expense", Title: "Legacy", Lane: "pending_my_approval",
+			Status: "pending", CurrentNode: "manager", Owner: "alice", Approver: "manager", UpdatedAt: "2026-01-01T00:00:00Z",
+			CurrentNodeIDs: []string{"submit", "manager"}, WorkflowNodeIDs: []string{"submit", "manager", "done"},
+			ResultPayload: map[string]any{"business_record": map[string]any{"id": "exp-1"}},
+			Outputs:       []maclawAppApprovalOutput{{Type: "text", Text: "waiting"}},
+			Events:        []maclawAppApprovalEvent{{At: "2026-01-01T00:00:00Z", Decision: "pending"}},
+		}},
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := app.maclawAppApprovalRegistryPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := app.readMaclawAppApprovalRegistry()
+	if err != nil || len(registry.Instances) != 1 {
+		t.Fatalf("legacy import = %#v, %v", registry, err)
+	}
+	if got := registry.Instances[0]; got.ResultPayload["business_record"].(map[string]any)["id"] != "exp-1" || len(got.CurrentNodeIDs) != 2 || len(got.Outputs) != 1 {
+		t.Fatalf("legacy fields changed during import: %#v", got)
+	}
+	db, err := app.maclawAppApprovalDBOpen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fieldPath := sqliteMapFieldPath(sqliteMapFieldPath("", "result_payload"), "business_record")
+	fieldPath = sqliteMapFieldPath(fieldPath, "id")
+	var recordID string
+	if err := db.QueryRow(`SELECT value_text FROM app_approval_fields WHERE instance_id='legacy-approval' AND field_path=?`, fieldPath).Scan(&recordID); err != nil {
+		t.Fatal(err)
+	}
+	if recordID != "exp-1" {
+		t.Fatalf("nested result field = %q", recordID)
+	}
+	var jsonColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%payload%' OR sql LIKE '%_json%'`).Scan(&jsonColumns); err != nil {
+		t.Fatal(err)
+	}
+	if jsonColumns != 0 {
+		t.Fatalf("approval schema contains JSON document columns: %d", jsonColumns)
+	}
+	registry.Instances = append(registry.Instances, maclawAppApprovalInstance{InstanceID: "second-approval", AppID: "expense", Title: "Second"})
+	registry.Instances[0], registry.Instances[1] = registry.Instances[1], registry.Instances[0]
+	if err := app.writeMaclawAppApprovalRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	registry, err = app.readMaclawAppApprovalRegistry()
+	if err != nil || len(registry.Instances) != 2 || registry.Instances[0].InstanceID != "second-approval" || registry.Instances[1].InstanceID != "legacy-approval" {
+		t.Fatalf("reordered registry = %#v, %v", registry.Instances, err)
+	}
+	registry.Instances = nil
+	if err := app.writeMaclawAppApprovalRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	app.closeMaclawAppApprovalDB()
+	registry, err = app.readMaclawAppApprovalRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registry.Instances) != 0 {
+		t.Fatalf("legacy JSON resurrected cleared approvals: %#v", registry.Instances)
 	}
 }

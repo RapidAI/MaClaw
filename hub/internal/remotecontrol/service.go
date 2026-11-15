@@ -720,9 +720,7 @@ func (s *Service) StreamGrant(ctx context.Context, grantID, fromMachineID string
 	}
 	grant, err := s.load(ctx, grantID)
 	if err != nil || grant.TargetMachineID != strings.TrimSpace(fromMachineID) || grant.Status != StatusActive {
-		if err == nil && grant.Status != StatusActive {
-			s.dropStreamBucket(grantID)
-		}
+		s.dropStreamBucket(grantID)
 		return Grant{}, ErrNotFound
 	}
 	return grant, nil

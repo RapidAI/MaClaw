@@ -223,6 +223,44 @@ listening 不要出声。speaking 期间宿主只播放 `sing`。安静模式和
 
 ---
 
+## 6.1 养成阶段与挂件
+
+可选 `rearing.stages` 按这只宠物被加载的时间换装。`schema_version` 仍是 3。不新增 JS、Live2D 或第二种运行时。宿主决定何时进入阶段，包决定阶段长什么样。
+
+| 字段 | 规则 |
+| --- | --- |
+| `after_ms` | 至少 60000，并且严格递增。当前阶段是已达到的最后一档。 |
+| `scale` | 省略或 0 表示 1。写出时为 0.5–1.5。用户保存的尺寸不改。 |
+| `variant` | 指向 `selectable: false` 的造型，做整身变装。省略则保持用户当前造型。 |
+| `cue` | 只能是空、`notice`、`focus`、`celebrate`、`concern`。只在阶段真正跨过时响一次。 |
+| `adornments` | 这一档穿戴的完整清单。后一档要留住前一档的物件，必须把 id 再写一遍。没到第一档时全部隐藏。 |
+
+挂件写在包级 `adornments` 里。每一项有 id，并列出 1–4 个已有 rig slot。id 用变体 id 的写法：小写字母和连字符。slot 名用骨骼名的写法，可以有下划线。手上的物件挂在手臂骨骼靠近手的位置，脚上的物件挂在腿骨骼靠近脚的位置，身旁的小宠物是挂在 `root` 上的新骨骼。它们仍是 slot，不是第五个表演层。一个 slot 只能属于一个挂件。静态回退图和 Linux 静止帧不合成挂件。
+
+```yaml
+adornments:
+  - id: mouse-charm
+    slots: [mouse_charm]
+  - id: slippers
+    slots: [slipper_l, slipper_r]
+rearing:
+  stages:
+    - id: familiar
+      after_ms: 7200000
+      scale: 1.04
+      cue: notice
+      adornments: [mouse-charm]
+    - id: grown
+      after_ms: 86400000
+      scale: 1.1
+      cue: celebrate
+      adornments: [mouse-charm, slippers]
+```
+
+Hub `/pet-pack-help` 与本节一致。
+
+---
+
 ## 2.0 最小骨骼示例（兼容路径）
 
 仅需骨骼、无 performer 时：

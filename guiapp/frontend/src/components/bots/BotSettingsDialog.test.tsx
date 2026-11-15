@@ -332,6 +332,14 @@ describe('Bot network settings dialog', () => {
     });
 
     // A lock is a fact about the account, not a failure: it reads as a note.
+    it('hides the cloud choices on an intranet desktop', () => {
+        renderDialog({ mode: 'direct', intranet: true, locked: true });
+        expect(screen.queryByTestId('bot-network-mode-proxy')).toBeNull();
+        expect(screen.queryByTestId('bot-network-mode-smart')).toBeNull();
+        expect(screen.getByTestId('bot-network-locked')).toBeTruthy();
+        expect(screen.getByTestId('bot-network-save')).toHaveProperty('disabled', true);
+    });
+
     it('states the lock as a note instead of an error', () => {
         renderDialog({ mode: 'direct', locked: true });
         const locked = screen.getByTestId('bot-network-locked');

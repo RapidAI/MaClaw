@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -50,6 +52,10 @@ func writeBotError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", err.Error())
 	case errors.Is(err, botmgmt.ErrDisabled):
 		writeError(w, http.StatusForbidden, "BOT_DISABLED", botmgmt.DisabledMessage)
+	case errors.Is(err, botmgmt.ErrNoDesktop):
+		writeError(w, http.StatusConflict, "NO_DESKTOP", botmgmt.ErrNoDesktop.Error())
+	case errors.Is(err, botmgmt.ErrDesktopQuota):
+		writeError(w, http.StatusConflict, "DESKTOP_QUOTA_EXCEEDED", botmgmt.ErrDesktopQuota.Error())
 	case errors.Is(err, botmgmt.ErrSrv), errors.Is(err, botmgmt.ErrSrvNotFound):
 		writeError(w, http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", botmgmt.SrvRejectionMessage(err))
 	default:
@@ -102,6 +108,10 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 		status, code, message = http.StatusConflict, "DESKTOP_BUSY", botmgmt.ErrDesktopBusy.Error()
 	case errors.Is(err, botmgmt.ErrDesktopNotRunning):
 		status, code, message = http.StatusConflict, "DESKTOP_NOT_RUNNING", botmgmt.ErrDesktopNotRunning.Error()
+	case errors.Is(err, botmgmt.ErrNoDesktop):
+		status, code, message = http.StatusConflict, "NO_DESKTOP", botmgmt.ErrNoDesktop.Error()
+	case errors.Is(err, botmgmt.ErrDesktopQuota):
+		status, code, message = http.StatusConflict, "DESKTOP_QUOTA_EXCEEDED", botmgmt.ErrDesktopQuota.Error()
 	case errors.Is(err, botmgmt.ErrNotPrimary):
 		status, code, message = http.StatusForbidden, "NOT_PRIMARY", botmgmt.ErrNotPrimary.Error()
 	case errors.Is(err, botmgmt.ErrNoSuchBot):
@@ -134,7 +144,7 @@ func GetBotSettingsAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
 			writeBotError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, view)
+		writeBotSettings(w, r, svc, view)
 	}
 }
 
@@ -179,8 +189,18 @@ func PutBotSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepo
 			"token_changed":        in.AccessToken != nil,
 			"admin_secret_changed": in.AdminSecret != nil,
 		})
-		writeJSON(w, http.StatusOK, view)
+		writeBotSettings(w, r, svc, view)
 	}
+}
+
+// writeBotSettings sends an admin settings payload with the over-quota mark
+// filled in. Saving the connection or the LLM settings returns the same
+// shape the page renders, so those responses have to carry the mark too.
+func writeBotSettings(w http.ResponseWriter, r *http.Request, svc *botmgmt.Service, view botmgmt.SettingsView) {
+	if svc != nil {
+		view.Bots = svc.MarkDesktopOver(r.Context(), botTenantID(r), view.Bots, view.Grants)
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 // PutBotLLMSettingsAdminHandler PUT /api/admin/bots/llm
@@ -222,7 +242,7 @@ func PutBotLLMSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditR
 			"system_free_credits_limit": view.LLM.SystemFreeCreditsLimit,
 			"roles":                     view.LLM.Roles,
 		})
-		writeJSON(w, http.StatusOK, view)
+		writeBotSettings(w, r, svc, view)
 	}
 }
 
@@ -331,6 +351,58 @@ func PostBotGrantAdminHandler(svc *botmgmt.Service, audit store.AdminAuditReposi
 		})
 		writeJSON(w, http.StatusCreated, grant)
 	}
+}
+
+// PatchBotGrantAdminHandler PATCH /api/admin/bots/grants/{id}
+// {"desktop_bot_limit": n} sets the cap. {"desktop_bot_limit": null} clears it.
+// A body that omits the field is rejected, so a partial patch cannot clear it.
+func PatchBotGrantAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			return
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		limit, err := desktopBotLimitPatch(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "desktop_bot_limit is required")
+			return
+		}
+		grant, err := svc.UpdateGrant(r.Context(), botTenantID(r), r.PathValue("id"), limit)
+		if err != nil {
+			writeBotError(w, err)
+			return
+		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "bot.grant.update", map[string]any{
+			"grant_id": grant.ID,
+		})
+		writeJSON(w, http.StatusOK, grant)
+	}
+}
+
+// desktopBotLimitPatch reads a grant patch. The field must be present.
+// Null clears the cap. A missing field is an error, not a clear.
+func desktopBotLimitPatch(raw []byte) (*int, error) {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	val, ok := body["desktop_bot_limit"]
+	if !ok {
+		return nil, errors.New("desktop_bot_limit is required")
+	}
+	if string(bytes.TrimSpace(val)) == "null" {
+		return nil, nil
+	}
+	var n int
+	if err := json.Unmarshal(val, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
 }
 
 // DeleteBotGrantAdminHandler DELETE /api/admin/bots/grants/{id}

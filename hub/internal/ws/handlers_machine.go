@@ -2112,6 +2112,58 @@ func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 	g.removeViewer(ctx)
 }
 
+// CloseTenantViewers closes every viewer subscription in one tenant. The read
+// loops perform their normal unregister cleanup after the socket closes.
+func (g *Gateway) CloseTenantViewers(tenantID string) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	seen := map[*ConnContext]struct{}{}
+	g.mu.RLock()
+	for _, watchers := range g.viewersByMachine {
+		for watcher := range watchers {
+			if watcher != nil && watcher.Conn != nil && store.NormalizeTenantID(watcher.TenantID) == tenantID {
+				seen[watcher] = struct{}{}
+			}
+		}
+	}
+	for _, watchers := range g.viewersBySession {
+		for watcher := range watchers {
+			if watcher != nil && watcher.Conn != nil && store.NormalizeTenantID(watcher.TenantID) == tenantID {
+				seen[watcher] = struct{}{}
+			}
+		}
+	}
+	g.mu.RUnlock()
+	for watcher := range seen {
+		_ = watcher.Conn.Close()
+	}
+}
+
+// CloseUserViewers closes every viewer subscription owned by one user.
+func (g *Gateway) CloseUserViewers(tenantID, userID string) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	seen := map[*ConnContext]struct{}{}
+	g.mu.RLock()
+	for _, watchers := range g.viewersByMachine {
+		for watcher := range watchers {
+			if watcher != nil && watcher.Conn != nil && store.NormalizeTenantID(watcher.TenantID) == tenantID && watcher.UserID == userID {
+				seen[watcher] = struct{}{}
+			}
+		}
+	}
+	for _, watchers := range g.viewersBySession {
+		for watcher := range watchers {
+			if watcher != nil && watcher.Conn != nil && store.NormalizeTenantID(watcher.TenantID) == tenantID && watcher.UserID == userID {
+				seen[watcher] = struct{}{}
+			}
+		}
+	}
+	g.mu.RUnlock()
+	for watcher := range seen {
+		_ = watcher.Conn.Close()
+	}
+}
+
 func (g *Gateway) removeViewer(ctx *ConnContext) {
 	if ctx == nil || ctx.Role != "viewer" {
 		return

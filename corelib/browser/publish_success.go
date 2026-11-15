@@ -166,11 +166,12 @@ func PostURLHasID(raw, id string) bool {
 	return false
 }
 
-// acceptResultURL: a list or landing page may link to a tag or a profile
-// next to the title. When the template includes {id}, the link has to name
-// that id once it is known, and it has to be at least as specific as the
-// template. A profile or a homepage is shorter than
-// /{user}/article/details/{id}, so it is not the article.
+// acceptResultURL: a list or landing page may link to a cover, a profile or
+// an image host next to the title. When the template includes {id}, the
+// link has to be that template (same host, same literal path segments;
+// {id} and {user} each stand for one segment), and it has to name the id
+// once the id is known. A longer path is not the article: a profile or a
+// picture can be deeper than /explore/{id}.
 func acceptResultURL(postURL, postID, result string) bool {
 	if result == "" {
 		return false
@@ -178,10 +179,59 @@ func acceptResultURL(postURL, postID, result string) bool {
 	if !strings.Contains(postURL, "{id}") {
 		return true
 	}
+	if !postURLMatchesTemplate(postURL, result) {
+		return false
+	}
 	if postID != "" && !PostURLHasID(result, postID) {
 		return false
 	}
-	return pathSegments(result) >= pathSegments(postURL)
+	return true
+}
+
+// postURLMatchesTemplate reports that result is the template's public
+// article shape. Placeholders match one path segment; every other segment
+// and the host have to be the template's. www is ignored.
+func postURLMatchesTemplate(tmpl, result string) bool {
+	tu, err1 := url.Parse(strings.TrimSpace(tmpl))
+	ru, err2 := url.Parse(strings.TrimSpace(result))
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	if tu.Host != "" {
+		if ru.Host == "" || hostKey(tu.Host) != hostKey(ru.Host) {
+			return false
+		}
+	}
+	ts, rs := pathSegs(tu.Path), pathSegs(ru.Path)
+	if len(ts) == 0 || len(ts) != len(rs) {
+		return false
+	}
+	for i := range ts {
+		if strings.HasPrefix(ts[i], "{") && strings.HasSuffix(ts[i], "}") {
+			if rs[i] == "" {
+				return false
+			}
+			continue
+		}
+		if !strings.EqualFold(ts[i], rs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func hostKey(h string) string {
+	return strings.TrimPrefix(strings.ToLower(h), "www.")
+}
+
+func pathSegs(path string) []string {
+	var out []string
+	for _, seg := range strings.Split(path, "/") {
+		if seg != "" {
+			out = append(out, seg)
+		}
+	}
+	return out
 }
 
 func pathSegments(raw string) int {
@@ -193,13 +243,7 @@ func pathSegments(raw string) int {
 	if err != nil {
 		return 0
 	}
-	n := 0
-	for _, seg := range strings.Split(u.Path, "/") {
-		if seg != "" {
-			n++
-		}
-	}
-	return n
+	return len(pathSegs(u.Path))
 }
 
 // resolvePostLink keeps a response or list link that is this article, and
@@ -215,22 +259,28 @@ func resolvePostLink(postURL, id, link, user string) string {
 }
 
 // pickResultURL chooses the public article link on a page that shows the
-// title. links are the page's anchors, so an avatar that sits before the
-// title does not hide the article once its id is known. anchor is the
-// title's own link, or the first link in a block that merely contains the
-// title. The page URL itself is the post only for a non-list landing page;
-// a list still tries it last, and a console page fails the public-link check.
+// title. links are the anchors in the title's row (cover, profile, then
+// the article). The first of those is often not the article; each one is
+// kept only when it matches post_url. anchor is the title's own link.
+// The page URL itself is the post only for a non-list landing page; a list
+// still tries it last, and a console page fails the public-link check.
 func pickResultURL(postURL, postID string, listed bool, pageURL, anchor string, links []string) string {
 	if link := linkForPost(links, postID); link != "" {
 		return link
 	}
-	cands := []string{}
+	var cands []string
 	if listed {
 		cands = append(cands, anchor)
+		cands = append(cands, links...)
 	}
 	cands = append(cands, pageURL)
+	seen := map[string]bool{}
 	for _, c := range cands {
 		c = publishPublicLink(c)
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
 		if acceptResultURL(postURL, postID, c) {
 			return c
 		}

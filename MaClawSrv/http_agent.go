@@ -258,6 +258,7 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
 	if botID != "" {
 		desktopNoteBotInstance(instanceID, botID)
+		desktopNoteRepoTenant(botID, desktopTenantID)
 		in.Content = desktopPrepareUserTurn(botID, in.Content, in.Metadata)
 	}
 	shotID := strings.TrimSpace(r.PathValue("instanceId"))
@@ -509,6 +510,7 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	}
 	if botID != "" {
 		desktopNoteBotInstance(instanceID, botID)
+		desktopNoteRepoTenant(botID, desktopTenantID)
 		in.Content = desktopPrepareUserTurn(botID, in.Content, in.Metadata)
 	}
 	if wantsAsync {

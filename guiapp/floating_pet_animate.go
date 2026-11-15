@@ -51,6 +51,7 @@ type petDesktopAnimator struct {
 	stillVariant    string
 	stillState      string
 	stillSize       int
+	adornmentSlots  []string
 }
 
 func (a *petDesktopAnimator) Configure(cfg petAnimConfig) {
@@ -105,6 +106,32 @@ func (a *petDesktopAnimator) resetAssetsLocked() {
 	a.stillVariant = ""
 	a.stillState = ""
 	a.stillSize = 0
+}
+
+// SetVisibleAdornmentSlots remembers the rearing props and applies them to a
+// renderer that already exists. The next renderer created for this animator
+// reads the same list. A still drawn before the change is dropped.
+func (a *petDesktopAnimator) SetVisibleAdornmentSlots(slots []string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if sameAdornmentSlots(a.adornmentSlots, slots) {
+		return
+	}
+	a.adornmentSlots = append([]string(nil), slots...)
+	a.still = nil
+	a.stillSkin = ""
+	a.stillVariant = ""
+	a.stillState = ""
+	a.stillSize = 0
+	if a.character != nil {
+		a.character.SetVisibleAdornmentSlots(a.adornmentSlots)
+	}
+	if a.rig != nil {
+		a.rig.SetVisibleAdornmentSlots(a.adornmentSlots)
+	}
 }
 
 func (a *petDesktopAnimator) SetPos(x, y int) {
@@ -201,6 +228,42 @@ func (a *petDesktopAnimator) FacingLeft() bool {
 	return a.roam.FaceLeft
 }
 
+// TriggerDuty starts a pack-authored task reaction when the loaded character
+// binds that event. bound is false for packs that leave the event to the host
+// still. The returned cue is the clip cue, which may be empty on purpose.
+func (a *petDesktopAnimator) TriggerDuty(event string, now time.Time) (cue string, bound bool) {
+	if a == nil || !petpack.IsAllowedPerformerEvent(event) {
+		return "", false
+	}
+	a.mu.Lock()
+	renderer := a.characterRendererLocked(a.skin, a.variant)
+	a.mu.Unlock()
+	if renderer == nil {
+		return "", false
+	}
+	cue, bound = renderer.EventCue(event)
+	if !bound {
+		return "", false
+	}
+	renderer.TriggerEvent(event, now.UnixMilli())
+	return cue, true
+}
+
+// TriggerClip forces one body clip. Packs that do not ship the clip return
+// false so the host can still count the gesture.
+func (a *petDesktopAnimator) TriggerClip(clip string, now time.Time) bool {
+	if a == nil || clip == "" {
+		return false
+	}
+	a.mu.Lock()
+	renderer := a.characterRendererLocked(a.skin, a.variant)
+	a.mu.Unlock()
+	if renderer == nil {
+		return false
+	}
+	return renderer.TriggerClip(clip, now.UnixMilli())
+}
+
 func (a *petDesktopAnimator) characterRendererLocked(skin, variant string) *petpack.CharacterRenderer {
 	key := skin + "\x00" + variant
 	if a.characterFailed[key] {
@@ -225,6 +288,7 @@ func (a *petDesktopAnimator) characterRendererLocked(skin, variant string) *petp
 		a.characterFailed[key] = true
 		return nil
 	}
+	renderer.SetVisibleAdornmentSlots(a.adornmentSlots)
 	a.character = renderer
 	a.characterKey = key
 	return renderer
@@ -252,6 +316,7 @@ func (a *petDesktopAnimator) rigRendererLocked(skin, variant string, now time.Ti
 			a.rigFailed[key] = true
 			return nil, 0
 		}
+		renderer.SetVisibleAdornmentSlots(a.adornmentSlots)
 		a.rig = renderer
 		a.rigKey = key
 		a.rigClock = now
@@ -263,9 +328,9 @@ func (a *petDesktopAnimator) rigRendererLocked(skin, variant string, now time.Ti
 	return a.rig, elapsed
 }
 
-// Advance moves the window from the active clip's speed. Dragging, a still
-// pose, and frozen motion modes leave the position unchanged. maxX and maxY
-// are the inclusive travel limits.
+// Advance moves the window from the active idle clip's speed. Dragging, a
+// still pose, frozen motion, and every non-idle duty pose leave the position
+// unchanged. maxX and maxY are the inclusive travel limits.
 func (a *petDesktopAnimator) Advance(now time.Time, dragging bool, maxX, maxY int) (x, y int, moved bool) {
 	if a == nil {
 		return 0, 0, false

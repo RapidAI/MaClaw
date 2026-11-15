@@ -41,6 +41,107 @@ func TestEarlierDesktopLinesOmitsTheMessageJustSent(t *testing.T) {
 	}
 }
 
+func TestConversationSaveKeepsCreatedSeq(t *testing.T) {
+	svc, _ := convService(t)
+	ctx := context.Background()
+	first, err := svc.SaveConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_a", "m-1", `{"role":"user","content":"先"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.SaveConversation(ctx, "t", "alice", "B", []ConversationWrite{
+		convMsg("bot_a", "m-2", `{"role":"user","content":"后"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Head != 1 || second.Head != 2 || len(first.Assigned) != 1 || len(second.Assigned) != 1 {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	if first.Assigned[0].CreatedSeq != 1 || second.Assigned[0].CreatedSeq != 2 {
+		t.Fatalf("created seq first=%d second=%d", first.Assigned[0].CreatedSeq, second.Assigned[0].CreatedSeq)
+	}
+	// The same text again takes no new sequence, and still reports the first one.
+	again, err := svc.SaveConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_a", "m-1", `{"role":"user","content":"先"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Head != 2 || len(again.Assigned) != 1 || again.Assigned[0].CreatedSeq != 1 || again.Assigned[0].Seq != 1 {
+		t.Fatalf("rewrite %+v", again)
+	}
+	// An edit keeps the original display sequence.
+	edited, err := svc.SaveConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_a", "m-1", `{"role":"user","content":"先，改过"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited.Head != 3 || edited.Assigned[0].CreatedSeq != 1 || edited.Assigned[0].Seq != 3 {
+		t.Fatalf("edit %+v", edited)
+	}
+}
+
+func TestConversationOldJournalKeepsDisplayOrder(t *testing.T) {
+	ctx := context.Background()
+	svc, settings := convService(t)
+	raw := `{"head":3,"entries":[` +
+		`{"seq":3,"bot_id":"bot_a","id":"m-1","kind":"message","origin":"A","by":"A","data":{"role":"user","content":"xian"},"at":"2026-11-01T00:00:03Z"},` +
+		`{"seq":2,"bot_id":"bot_a","id":"m-2","kind":"message","origin":"B","by":"B","data":{"role":"user","content":"hou"},"at":"2026-11-01T00:00:02Z"}` +
+		`]}`
+	if err := settings.Set(ctx, storageKey("t")+convSettingsTag+"alice", raw); err != nil {
+		t.Fatal(err)
+	}
+	page, err := svc.ReadConversation(ctx, "t", "alice", "bot_a", 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for _, e := range page.Entries {
+		got[e.ID] = e.CreatedSeq
+	}
+	if got["m-1"] != 3 || got["m-2"] != 2 {
+		t.Fatalf("backfill %+v", got)
+	}
+	edited, err := svc.SaveConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_a", "m-2", `{"role":"user","content":"hou-edited"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edited.Assigned) != 1 || edited.Assigned[0].CreatedSeq != 2 || edited.Assigned[0].Seq == 2 {
+		t.Fatalf("edit moved the old line: %+v", edited)
+	}
+}
+
+func TestConversationPruneKeepsNewestDisplayOrder(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := convService(t)
+	for i := 0; i < convPerBotKeep; i++ {
+		_, _ = svc.WriteConversation(ctx, "t", "alice", "A", []ConversationWrite{
+			convMsg("bot_a", fmt.Sprintf("m-%03d", i), `{"role":"user","content":"x"}`),
+		})
+	}
+	_, _ = svc.WriteConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_a", "m-000", `{"role":"user","content":"edited"}`),
+	})
+	_, _ = svc.WriteConversation(ctx, "t", "alice", "A", []ConversationWrite{
+		convMsg("bot_a", "m-new", `{"role":"user","content":"new"}`),
+	})
+	page, _ := svc.ReadConversation(ctx, "t", "alice", "bot_a", 0, 0, 0)
+	ids := map[string]bool{}
+	for _, e := range page.Entries {
+		if e.Kind == convKindMessage {
+			ids[e.ID] = true
+		}
+	}
+	if ids["m-000"] || !ids["m-001"] || !ids["m-new"] || len(ids) != convPerBotKeep {
+		t.Fatalf("kept %d m-000=%v m-001=%v m-new=%v", len(ids), ids["m-000"], ids["m-001"], ids["m-new"])
+	}
+}
+
 func convMsg(bot, id, body string) ConversationWrite {
 	return ConversationWrite{BotID: bot, ID: id, Kind: convKindMessage, Data: json.RawMessage(body)}
 }

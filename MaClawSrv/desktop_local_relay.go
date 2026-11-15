@@ -95,6 +95,7 @@ type localRelayReply struct {
 	MaxBytes  int64               `json:"max_bytes"`
 	Addr      string              `json:"addr"`
 	Kind      string              `json:"kind"`
+	Text      string              `json:"text"`
 	IdleMin   int                 `json:"idle_minutes"`
 	Closed    bool                `json:"closed"`
 	Grants    []localrelay.Grant  `json:"grants"`

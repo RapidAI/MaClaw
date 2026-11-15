@@ -2988,6 +2988,10 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 	if c != nil && strings.TrimSpace(name) == "bot_schedule" && c.botScheduleHandler != nil && strings.TrimSpace(c.botID) != "" {
 		return true
 	}
+	// A short "look at the issues" message is still a development turn.
+	if c != nil && strings.TrimSpace(name) == "repo" && c.botUsesContainer() && DesktopRepo != nil {
+		return true
+	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
 		if _, ok := c.dynamicSemanticSurface.grants[strings.TrimSpace(name)]; ok {
 			return coretool.GrantSelectionIsLightPromptSafe(c.dynamicSemanticSurface.plan, c.dynamicSemanticSurface.grants, name)
@@ -3145,8 +3149,17 @@ func (c *coreAgentCallbacks) mergeConnectorAsk(metadata map[string]string) {
 func connectorCallURL(args map[string]interface{}) string {
 	for _, key := range []string{"url", "site", "host"} {
 		if value := stringArg(args, key); value != "" {
+			switch strings.ToLower(value) {
+			case "github":
+				return "https://github.com"
+			case "gitlab":
+				return "https://gitlab.com"
+			}
 			return value
 		}
+	}
+	if repo := stringArg(args, "repo"); strings.Contains(repo, "://") {
+		return repo
 	}
 	return ""
 }
@@ -3364,6 +3377,8 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 			return agent.ToolExecutionResult{Result: "Error: this turn has no desktop bot timer", Outcome: agent.ToolExecutionOutcomeError}
 		}
 		return toolTextResult(c.botScheduleHandler(args))
+	case "repo":
+		return toolTextResult(c.executeRepo(args))
 	case "im_message":
 		if c.imMessageHandler == nil {
 			return agent.ToolExecutionResult{Result: "IM message tool is not initialized", Outcome: agent.ToolExecutionOutcomeError}

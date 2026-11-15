@@ -181,6 +181,24 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
   Future<void> _delete() async {
     final api = ref.read(botApiProvider);
     if (api == null || widget.room == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除房间？'),
+        content: Text('「${widget.room!.name.isEmpty ? '未命名房间' : widget.room!.name}」及其成员注意力设置将被移除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
     setState(() => _saving = true);
     try {
       await api.deleteRoom(widget.room!.id);

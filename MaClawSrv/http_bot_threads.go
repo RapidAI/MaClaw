@@ -90,6 +90,10 @@ func (s *HTTPServer) handleBotIntake(w http.ResponseWriter, r *http.Request, p a
 		return
 	}
 	persistDesktopBotSchedule(p, r.PathValue("instanceId"), in, out)
+	if out.Spec && out.Phase == "plan" {
+		gen, draft := agentservice.SpecDraftForRefine(p.TenantID, p.UserID, in.BotID, out.Instruction)
+		go agentservice.RefineOpenSpec(context.Background(), p.TenantID, p.UserID, in.BotID, gen, draft, in.Content, in.Earlier, s.specRefineClassifier(p))
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -118,6 +122,34 @@ func (s *HTTPServer) botIntakeClassifier(p agentservice.Principal) agentservice.
 		}
 		client := &http.Client{Timeout: agentservice.BotIntakeBudget + time.Second}
 		resp, err := agent.DoSimpleLLMRequestContext(ctx, cfg, messages, client, agentservice.BotIntakeBudget)
+		if err != nil {
+			return "", err
+		}
+		return resp.Content, nil
+	}
+}
+
+// specRefineClassifier is the background spec. It is not the 2s intake call:
+// the person already has the question, and this rewrite can take longer.
+func (s *HTTPServer) specRefineClassifier(p agentservice.Principal) agentservice.BotIntakeClassifier {
+	if botIntakeClassifierOverride != nil {
+		return botIntakeClassifierOverride
+	}
+	return func(ctx context.Context, system, user string) (string, error) {
+		cfg, err := s.svc.DemoSkillLLMConfig(p)
+		if err != nil {
+			return "", err
+		}
+		cfg = srvIntentLLMConfig(cfg)
+		if cfg.MaxOutputTokens == 0 || cfg.MaxOutputTokens > 800 {
+			cfg.MaxOutputTokens = 800
+		}
+		messages := []interface{}{
+			map[string]string{"role": "system", "content": system},
+			map[string]string{"role": "user", "content": user},
+		}
+		client := &http.Client{Timeout: agentservice.SpecRefineBudget + time.Second}
+		resp, err := agent.DoSimpleLLMRequestContext(ctx, cfg, messages, client, agentservice.SpecRefineBudget)
 		if err != nil {
 			return "", err
 		}

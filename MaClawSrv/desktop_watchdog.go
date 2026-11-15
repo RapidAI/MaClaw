@@ -14,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 // Independent run watchdog (Super-agent prototype: a supervisor outside the
@@ -861,21 +862,68 @@ func desktopPostedNotice(runID, content string) string {
 	seen := map[string]bool{}
 	for _, key := range desktopLedgerKeysForRun(runID) {
 		for _, e := range desktopLedgerEntries(key) {
-			if e.Kind != "posted" || e.Run != runID || e.Detail == "submitted_unconfirmed" || e.URL == "" || seen[e.URL] {
+			show, proved := desktopListProof(e.Host, e.URL)
+			if e.Kind != "posted" || e.Run != runID || e.Detail == "submitted_unconfirmed" || !proved || seen[show] {
 				continue
 			}
-			seen[e.URL] = true
-			if strings.Contains(content, e.URL) {
+			seen[show] = true
+			if desktopReplyMentionsLink(content, show) {
 				continue
 			}
 			line := "已确认发布：" + e.Host
 			if e.Title != "" {
 				line += "《" + e.Title + "》"
 			}
-			lines = append(lines, line+" "+e.URL)
+			lines = append(lines, line+" "+show)
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// desktopReplyLinkBare drops the landing query and hash. ?just_published=2
+// is the same article as the path alone.
+func desktopReplyLinkBare(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	return strings.TrimRight(raw, "/")
+}
+
+// desktopConfirmedArticleLink is the public article URL without its landing
+// query. A creator console is not an article, so it is not announced.
+func desktopConfirmedArticleLink(raw string) string {
+	pub := browser.PublicPostURL(strings.TrimSpace(raw))
+	if pub == "" || browser.PublishURLIsBareOrigin(pub) {
+		return ""
+	}
+	return desktopReplyLinkBare(pub)
+}
+
+// desktopReplyMentionsLink reports whether the reply already names this
+// article. A longer path that only starts with the URL is a different link.
+func desktopReplyMentionsLink(content, raw string) bool {
+	raw = desktopReplyLinkBare(raw)
+	if raw == "" {
+		return false
+	}
+	rest := content
+	for {
+		i := strings.Index(rest, raw)
+		if i < 0 {
+			return false
+		}
+		end := i + len(raw)
+		if end >= len(rest) || !desktopURLContinues(rest[end]) {
+			return true
+		}
+		rest = rest[end:]
+	}
+}
+
+func desktopURLContinues(b byte) bool {
+	return b == '/' || b == '%' || b == '_' || b == '-' ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 var watchdogNumberRe = regexp.MustCompile(`[0-9]+(\.[0-9]+)?`)

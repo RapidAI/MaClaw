@@ -47,12 +47,12 @@ class HubRoute {
   });
 
   factory HubRoute.fromJson(Map<String, dynamic> json) => HubRoute(
-        hubId: json['hub_id'] as String? ?? '',
-        tenantId: json['tenant_id'] as String? ?? '',
-        tenantName: json['tenant_name'] as String? ?? '',
-        name: json['name'] as String? ?? '',
-        baseUrl: json['base_url'] as String? ?? '',
-        status: json['status'] as String? ?? '',
+        hubId: (json['hub_id'] ?? '').toString(),
+        tenantId: (json['tenant_id'] ?? '').toString(),
+        tenantName: (json['tenant_name'] ?? '').toString(),
+        name: (json['name'] ?? '').toString(),
+        baseUrl: (json['base_url'] ?? '').toString(),
+        status: (json['status'] ?? '').toString(),
       );
 
   int get completenessScore =>
@@ -79,9 +79,9 @@ class EntryResolveResult {
   factory EntryResolveResult.fromJson(Map<String, dynamic> json) {
     final raw = json['hubs'];
     return EntryResolveResult(
-      mode: json['mode'] as String? ?? '',
-      message: json['message'] as String? ?? '',
-      defaultHubId: json['default_hub_id'] as String? ?? '',
+      mode: (json['mode'] ?? '').toString(),
+      message: (json['message'] ?? '').toString(),
+      defaultHubId: (json['default_hub_id'] ?? '').toString(),
       hubs: raw is List
           ? raw
               .whereType<Map>()
@@ -186,10 +186,11 @@ HubApiException hubExceptionFrom(Object error) {
             .trim();
         message = (rawError['message'] ?? '').toString().trim();
       } else {
-        code = (rawError as String? ?? data['code'] as String? ?? '').trim();
+        final rawCode = rawError ?? data['code'];
+        if (rawCode != null) code = rawCode.toString().trim();
       }
       if (message.isEmpty) {
-        message = (data['message'] as String? ?? '').trim();
+        message = (data['message'] ?? '').toString().trim();
       }
     }
     final status = error.response?.statusCode;

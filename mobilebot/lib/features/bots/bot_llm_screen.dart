@@ -35,10 +35,10 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
       final view = await api.getLLMSettings();
       if (!mounted) return;
       setState(() {
-        _mode = (view['mode'] as String? ?? 'default') == 'custom'
+        _mode = (view['mode'] ?? 'default').toString() == 'custom'
             ? 'custom'
             : 'default';
-        _warning = (view['warning'] as String? ?? '').toString();
+        _warning = (view['warning'] ?? '').toString();
         _effective = view['effective'] is Map
             ? Map<String, dynamic>.from(view['effective'] as Map)
             : const {};
@@ -149,8 +149,8 @@ class _EffectiveRoleRow extends StatelessWidget {
         : official
             ? '官方模型'
             : [
-                (map['name'] as String? ?? '').toString(),
-                (map['model'] as String? ?? '').toString(),
+                (map['name'] ?? '').toString(),
+                (map['model'] ?? '').toString(),
               ].where((s) => s.isNotEmpty).join(' · ');
     return ListTile(
       dense: true,

@@ -347,9 +347,8 @@ interface AgentViewLifecyclePayload {
 type DesktopPetState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'done' | 'alert';
 
 export function emitDesktopPetState(state: DesktopPetState, source: string, ttlMs?: number) {
-    // Bridge to Windows native layered pet (K11). Fire-and-forget. This is the
-    // only pet state channel; the legacy 'pet:state' runtime event had no
-    // listeners left and was removed.
+    // Companion, microphone, and the sensitive-request alert still use this.
+    // Task duty and rearing are applied by the host. Chat tokens must not.
     try {
         void SetDesktopPetState(state, typeof ttlMs === 'number' ? ttlMs : 0);
     } catch {
@@ -4556,7 +4555,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const hasExplicitAgentViewSessionRef = useRef(!!String(initialActiveSessionKey || '').trim());
     const scrollOnNextNewsRef = useRef(true);
     const refreshSessionsOnlyRef = useRef(options?.refreshSessionsOnly);
-    const lastPetSpeakingEmitAtRef = useRef(0);
 
     const stopResponseTimeout = useCallback((requestId?: string) => {
         const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
@@ -4587,17 +4585,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             controller.stop();
         }
         responseTimeoutControllersByRequestRef.current.clear();
-    }, []);
-
-    const emitPetStateForAssistant = useCallback((state: DesktopPetState, source: string, ttlMs?: number) => {
-        if (state === 'speaking') {
-            const now = Date.now();
-            if (now - lastPetSpeakingEmitAtRef.current < 900) return;
-            lastPetSpeakingEmitAtRef.current = now;
-        } else if (state === 'idle') {
-            lastPetSpeakingEmitAtRef.current = 0;
-        }
-        emitDesktopPetState(state, source, ttlMs);
     }, []);
 
     useEffect(() => {
@@ -5433,9 +5420,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (activeRoundRef.current.generation !== generation) return;
         clearTransientProgress();
         resetActiveRound();
-        // Show done frame briefly, then TTL returns native pet to idle (K11 / criterion 4).
-        emitPetStateForAssistant('done', 'ai:round-done', 1600);
-    }, [clearTransientProgress, emitPetStateForAssistant, resetActiveRound]);
+    }, [clearTransientProgress, resetActiveRound]);
 
     const startResponseTimeout = useCallback((round: { generation: number; assistantMessageId: string; requestId: string; source: string }) => {
         stopResponseTimeout(round.requestId);
@@ -5466,7 +5451,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             clearTransientProgress(currentRound.sessionKey || 'desktop-user');
             if (activeRoundRef.current.requestId === activeRequestId) resetActiveRound(round.generation);
             else forgetInFlightRound(activeRequestId);
-            emitPetStateForAssistant('idle', `${round.source}:timeout`);
         };
 
         const resetController = () => {
@@ -5485,7 +5469,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         responseTimeoutControllersByRequestRef.current.set(round.requestId, controller);
         controller.reset();
         return controller;
-    }, [clearTransientProgress, emitPetStateForAssistant, forgetInFlightRound, resetActiveRound, responseActivityTimeoutSec, stopResponseTimeout]);
+    }, [clearTransientProgress, forgetInFlightRound, resetActiveRound, responseActivityTimeoutSec, stopResponseTimeout]);
 
     const startEventDrivenForegroundRound = useCallback((event: AIAssistantStreamEvent, startOptions?: { silent?: boolean }) => {
         const requestId = event.request_id?.trim();
@@ -5533,7 +5517,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         rememberInFlightRound(nextRound);
         forgetOffscreenLiveRound(requestId);
         setRoundState(nextRound);
-        emitPetStateForAssistant('thinking', 'ai:event-round-start', 15000);
         const goalRound = requestId.startsWith('goal-cont-');
         setMessages(prev => {
             // An adopted offscreen round already passed its start event. It has
@@ -5570,7 +5553,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         });
         startResponseTimeout({ generation, assistantMessageId, requestId, source: 'ai:event-round' });
         return nextRound;
-    }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, forgetOffscreenLiveRound, goalContinuationDisplayText, rememberInFlightRound, rememberOffscreenLiveRound, setRoundState, startResponseTimeout]);
+    }, [activeSessionKeyForEvents, clearTransientProgress, forgetOffscreenLiveRound, goalContinuationDisplayText, rememberInFlightRound, rememberOffscreenLiveRound, setRoundState, startResponseTimeout]);
 
     // A continuation that started while another tab was visible is not a round
     // yet, so its tokens and final response would be dropped after the user
@@ -6277,7 +6260,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (!isActiveRequest) return;
             if (!currentRound.assistantMessageId || pieces.length === 0) return;
             resetResponseTimeoutForActiveRound();
-            emitPetStateForAssistant('speaking', 'ai:stream-token', 1800);
             queueStreamToken(currentRound, event.text || '', event.sequence, pieces);
         };
 
@@ -6315,7 +6297,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (!isMatchingSessionOrActiveRequest(event, currentRound, activeSessionKeyForEvents())) return;
             if (!matchesActiveRequest(currentRound, event)) return;
             resetResponseTimeoutForActiveRound();
-            emitPetStateForAssistant('thinking', 'ai:new-round', 10000);
             beginRoundStream(currentRound);
             ensureRoundPlaceholder(currentRound.generation);
         };
@@ -6343,7 +6324,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (!isMatchingSessionOrActiveRequest(event, currentRound, activeSessionKeyForEvents())) return;
             if (!matchesActiveRequest(currentRound, event)) return;
             resetResponseTimeoutForActiveRound();
-            emitPetStateForAssistant('thinking', 'ai:stream-done', 2500);
             flushStreamTokenBuffer(currentRound.requestId);
             resetStreamAppendStateForMessage(currentRound.assistantMessageId);
             transitionRound(current => {
@@ -6363,7 +6343,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             offStreamDone();
             resetAllStreamTokenBuffers();
         };
-    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, clearStreamTokenFlushTimer, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, recoverGoalContinuationRound, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, resetStreamAppendStateForMessage, startEventDrivenForegroundRound, touchOffscreenLiveRound, transitionRound, updateInFlightRound]);
+    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, clearStreamTokenFlushTimer, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, recoverGoalContinuationRound, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, resetStreamAppendStateForMessage, startEventDrivenForegroundRound, touchOffscreenLiveRound, transitionRound, updateInFlightRound]);
 
     // Listen for the async response event. When SendAIAssistantMessage returns
     // {deferred: true} (non-blocking mode), the actual response arrives here.
@@ -6539,12 +6519,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 forceResetAgentViewForActiveSession();
             } else {
                 setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, normalized, preferences));
-                if (normalized.confirmation) {
-                    // A confirmation request just surfaced: brief pet alert. It briefly
-                    // overrides an in-progress speaking state; the next speaking push
-                    // (≤900ms throttle) reasserts itself, and the TTL drops back to idle.
-                    emitPetStateForAssistant('alert', 'ai:confirmation-request', 1500);
-                }
                 if (canMutateLocalHistory && normalized.clear_ui) {
                     contextBoundaryMessageIDRef.current = '';
                     persistContextBoundaryMessageID('');
@@ -6577,7 +6551,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
         const off = subscribeEvent(RESPONSE_EVENT, handler);
         return () => { off(); };
-    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, forgetOffscreenLiveRound, holdQuietOffscreenSession, preferences, recoverGoalContinuationRound, resetActiveRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
+    }, [clearPendingTaskForRequest, clearTransientProgress, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, forgetOffscreenLiveRound, holdQuietOffscreenSession, preferences, recoverGoalContinuationRound, resetActiveRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
 
     // P0-1 (0b-i) degraded-turn recovery channel. When a degraded write turn
     // self-recovers, the backend re-runs it and streams the result on
@@ -6644,7 +6618,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     setMessages(prev => setCredentialCardStatusInMessages(prev, 'expired', cardNoticeMatch[1]));
                 }
                 if (!text) return;
-                emitPetStateForAssistant('alert', 'ai:continuation-notice', 1500);
                 // as_error is a host failure (goal stop, missed plan). It stays
                 // an error row. A notice must not open a user bubble.
                 setMessages(prev => [...prev, {
@@ -6667,7 +6640,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 const confirmation = normalizeConfirmation(rawEvent.confirmation as any);
                 if (!confirmation) return;
                 const actions = normalizeActions(rawEvent.actions);
-                emitPetStateForAssistant('alert', 'ai:confirmation-request', 1500);
                 setMessages(prev => [...prev, {
                     id: nextId(),
                     role: 'assistant' as const,
@@ -6683,7 +6655,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (event.kind === 'token') {
                 const delta = String(event.text || '');
                 if (!delta) return;
-                emitPetStateForAssistant('speaking', 'ai:continuation-token', 1800);
                 if (tokenCoalescer.push(requestId, { delta, sessionKey })) {
                     publishContinuationToken(requestId, delta, sessionKey);
                 }
@@ -6691,7 +6662,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             }
             if (event.kind === 'final') {
                 const text = String(event.text || '');
-                emitPetStateForAssistant('done', 'ai:continuation-final', 1500);
                 tokenCoalescer.flush(requestId);
                 const applyFinal = (messages: ChatMessage[]): ChatMessage[] => {
                     const idx = messages.findIndex(m => m.requestId === requestId && m.role === 'assistant');
@@ -6719,7 +6689,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             sideStreamCoalescersRef.current.delete(tokenCoalescer);
             off();
         };
-    }, [emitPetStateForAssistant]);
+    }, []);
 
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
@@ -6852,7 +6822,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         } as ActiveRound;
         rememberInFlightRound(nextRound);
         setRoundState(nextRound);
-        emitPetStateForAssistant('thinking', 'ai:send', 15000);
         setMessages(prev => {
             const nextMessages = approvalMessage ? markLatestConfirmationAsRunning(prev) : prev;
             if (!foregroundBusyAtSubmit) return [...nextMessages, userMsg, placeholderMsg];
@@ -6926,9 +6895,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 // from the message, so buffered pieces have to land first.
                 flushStreamTokenBuffer(effectiveRequestId);
                 setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
-                if (response.confirmation) {
-                    emitPetStateForAssistant('alert', 'ai:confirmation-request', 1500);
-                }
                 stopResponseTimeout(effectiveRequestId);
                 resetStreamTokenBuffer(effectiveRequestId);
                 clearPendingTaskForRequest(effectiveRequestId);
@@ -6980,9 +6946,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     forceResetAgentViewForActiveSession();
                 } else {
                     setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
-                    if (response.confirmation) {
-                        emitPetStateForAssistant('alert', 'ai:confirmation-request', 1500);
-                    }
                     if (canMutateLocalHistory && response.clear_ui) {
                         contextBoundaryMessageIDRef.current = userMsg.id;
                         persistContextBoundaryMessageID(userMsg.id);
@@ -7010,7 +6973,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             }
         }
         return true;
-    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, rememberInFlightRound, replaceInFlightRoundRequestId, resetActiveRound, resetStreamTokenBuffer, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, waitForForegroundIdle]);
+    }, [clearPendingTaskForRequest, clearTransientProgress, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, rememberInFlightRound, replaceInFlightRoundRequestId, resetActiveRound, resetStreamTokenBuffer, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, waitForForegroundIdle]);
 
     const optionsForActiveSession = useCallback((options?: SendMessageOptions): SendMessageOptions | undefined => {
         const explicitProjectPath = typeof options?.project_path === 'string' ? options.project_path.trim() : '';
@@ -7083,7 +7046,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             requestId: '',
             sessionKey,
         });
-        emitPetStateForAssistant('thinking', 'ai:background-send', 15000);
 
         try {
             const response = await StartAIAssistantBackgroundTask({
@@ -7106,7 +7068,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         } finally {
             finalizeRound(generation);
         }
-    }, [emitPetStateForAssistant, finalizeRound, isSessionIdle, setRoundState]);
+    }, [finalizeRound, isSessionIdle, setRoundState]);
 
     // sendBtwMessage sends a /btw side query via a dedicated backend binding.
     // Unlike sendMessage, this does NOT check activeRound.phase - it can run
@@ -7150,7 +7112,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
         latestMessagesRef.current = [...latestMessagesRef.current, userMsg, placeholderMsg];
         setMessages(prev => [...prev, userMsg, placeholderMsg]);
-        emitPetStateForAssistant('thinking', 'ai:btw-send', 10000);
 
         // Listen for streaming tokens on the /btw-specific channel. The first
         // token still paints immediately; later tokens share a 80ms coalesced
@@ -7182,7 +7143,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (event?.request_id !== requestId) return;
             const delta = event?.text || '';
             if (!delta) return;
-            emitPetStateForAssistant('speaking', 'ai:btw-token', 1800);
             if (tokenCoalescer.push(requestId, delta)) publishBtwToken(delta);
         };
         const progressHandler = (payload: unknown) => {
@@ -7209,9 +7169,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             offBtwProgress();
             tokenCoalescer.dispose();
             sideStreamCoalescersRef.current.delete(tokenCoalescer);
-            emitPetStateForAssistant('done', 'ai:btw-done', 1600);
         }
-    }, [activeSessionKeyForEvents, emitPetStateForAssistant]);
+    }, [activeSessionKeyForEvents]);
 
     const browseFile = useCallback(async () => {
         const sessionKey = activeSelectedFilesSessionKeyRef.current;
@@ -7780,11 +7739,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const confirmLabel = typeof actionPayload[0]?.label === 'string' ? actionPayload[0].label : fallbackConfirmLabel;
             const rejectLabel = typeof actionPayload[1]?.label === 'string' ? actionPayload[1].label : fallbackRejectLabel;
             if (!confirmID) return;
-            // A confirmation request just surfaced: brief pet alert, then a
-            // dialog. A chat card on desktop-user never appears on the task
-            // tab, so the only outcome used to be a timeout and a rejected
-            // install.
-            emitPetStateForAssistant('alert', 'ai:critical-risk-confirm', 1500);
+            // A chat card on desktop-user never appears on the task tab, so the
+            // only outcome used to be a timeout and a rejected install.
             const title = eventIsHant ? '安全風險' : eventIsHans ? '安全风险' : 'Security risk';
             const confirmed = await showConfirm(summary || title, title, { confirmText: confirmLabel, cancelText: rejectLabel });
             try {
@@ -7797,7 +7753,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return () => {
             offCriticalConfirm();
         };
-    }, [emitPetStateForAssistant, showConfirm]);
+    }, [showConfirm]);
 
     // Listen for skill installation result events (success/failure feedback after
     // the user confirms or the async install completes).
@@ -7872,7 +7828,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (pendingTaskAtCancel) {
             clearPendingTaskForRequest(pendingTaskAtCancel.requestId);
         }
-        emitPetStateForAssistant('idle', 'ai:cancel');
         const cancelBackend = (async (): Promise<CancelAIAssistantResult> => {
             try {
                 if (pendingTaskAtCancel?.sessionID) {
@@ -7908,7 +7863,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             clearTransientProgress();
         }
         return result;
-    }, [activeSessionKeyForEvents, clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, forgetInFlightRound, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
+    }, [activeSessionKeyForEvents, clearPendingTaskForRequest, clearTransientProgress, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, forgetInFlightRound, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
     // The round still writing this session. A steer belongs to that round.
     const inFlightRoundForSession = (sessionKey: string): ActiveRound | undefined => {
@@ -8050,7 +8005,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             rememberInFlightRound(nextRound);
             setRoundState(nextRound);
             setMessages(prev => appendAssistantPlaceholder(prev, assistantMessageId, requestId, sessionKey));
-            emitPetStateForAssistant('thinking', 'agent-view:submit', 15000);
 
             startResponseTimeout({ generation, assistantMessageId, requestId, source: 'agent-view' });
             return { generation, assistantMessageId, requestId };
@@ -8095,7 +8049,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 if (activeRoundRef.current.requestId === round.requestId) {
                     resetActiveRound(round.generation);
                 }
-                emitPetStateForAssistant('done', 'agent-view:done', 1600);
             }
             const toolArgs = data._tool_args;
             const databaseAction = String(
@@ -8130,7 +8083,6 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 if (activeRoundRef.current.requestId === round.requestId) {
                     resetActiveRound(round.generation);
                 }
-                emitPetStateForAssistant('idle', 'agent-view:error');
             }
             if (isWorkflowFormSubmit) return;
             // Older desktop bindings may not expose the structured task-panel API yet.
@@ -8143,7 +8095,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 displayText: localizeText(uiLang, "Submit structured data", "\u63d0\u4ea4\u7ed3\u6784\u5316\u6570\u636e", "\u63d0\u4ea4\u7d50\u69cb\u5316\u8cc7\u6599"),
             });
         }
-    }, [activeSessionKeyForEvents, clearTransientProgress, clearWorkflowFormAliasForView, emitPetStateForAssistant, flushStreamTokenBuffer, forgetInFlightRound, injectSupplementary, preferences, rememberInFlightRound, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, updateVisibleAgentViewForSession]);
+    }, [activeSessionKeyForEvents, clearTransientProgress, clearWorkflowFormAliasForView, flushStreamTokenBuffer, forgetInFlightRound, injectSupplementary, preferences, rememberInFlightRound, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, updateVisibleAgentViewForSession]);
 
     const dismissAgentView = useCallback(async (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => {
         // force: unconditionally clear frontend UI (even for workflow forms that

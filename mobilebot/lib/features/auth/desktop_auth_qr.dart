@@ -33,16 +33,16 @@ DesktopAuthQrPayload parseDesktopAuthQrPayload(String qrPayload) {
   if (decoded is! Map) {
     throw const FormatException('二维码不是 MaClaw 桌面端生成的 JSON');
   }
-  final type = (decoded['type'] as String? ?? '').trim();
+  final type = ((decoded['type'] ?? '').toString()).trim();
   if (type != desktopAuthQrType) {
     throw const FormatException('二维码不是桌面端"移动认证"会话');
   }
-  final sessionId = (decoded['session_id'] as String? ?? '').trim();
+  final sessionId = ((decoded['session_id'] ?? '').toString()).trim();
   if (sessionId.isEmpty ||
       !RegExp(r'^[A-Za-z0-9._:-]{6,}$').hasMatch(sessionId)) {
     throw const FormatException('二维码中的会话标识无效');
   }
-  final hubUrl = (decoded['hub_url'] as String? ?? '').trim();
+  final hubUrl = ((decoded['hub_url'] ?? '').toString()).trim();
   final parsedHubUrl = Uri.tryParse(hubUrl);
   if (parsedHubUrl == null ||
       parsedHubUrl.scheme != 'https' ||

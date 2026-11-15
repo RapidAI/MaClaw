@@ -9,6 +9,48 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
+func TestPostedNoticeTreatsTheQueryAsTheSameLink(t *testing.T) {
+	dir := t.TempDir()
+	old := desktopLedgerDir
+	desktopLedgerDir = func() string { return dir }
+	t.Cleanup(func() { desktopLedgerDir = old })
+	run := "run-posted-query"
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u", InstanceID: "i", RunID: run}
+	raw := "https://zhuanlan.zhihu.com/p/2105161721778278920?just_published=2"
+	desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{
+		Kind: "posted", Host: "zhuanlan.zhihu.com", Title: "综述", URL: raw, Run: run, Detail: "published",
+	})
+	bare := "知乎：已发布\n链接：https://zhuanlan.zhihu.com/p/2105161721778278920"
+	if got := desktopPostedNotice(run, bare); got != "" {
+		t.Fatalf("same article listed twice: %q", got)
+	}
+	got := desktopPostedNotice(run, "还没有链接")
+	if !strings.Contains(got, "https://zhuanlan.zhihu.com/p/2105161721778278920") || strings.Contains(got, "just_published") {
+		t.Fatalf("missing link not named as the article: %q", got)
+	}
+	desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{
+		Kind: "posted", Host: "editor.csdn.net", Title: "综述", URL: "https://editor.csdn.net/md/", Run: run, Detail: "published",
+	})
+	if strings.Contains(desktopPostedNotice(run, "还没有链接"), "editor.csdn.net") {
+		t.Fatal("editor page announced as the article")
+	}
+	short := "https://zhuanlan.zhihu.com/p/21"
+	desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{
+		Kind: "posted", Host: "zhuanlan.zhihu.com", Title: "另一篇", URL: short, Run: run, Detail: "published",
+	})
+	longer := "正文里只有 https://zhuanlan.zhihu.com/p/2105161721778278920"
+	desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{
+		Kind: "posted", Host: "editor.csdn.net", Title: "另一篇", URL: "https://zhuanlan.zhihu.com/p/99", Run: run, Detail: "found_in_list",
+	})
+	notice := desktopPostedNotice(run, longer)
+	if !strings.Contains(notice, short) {
+		t.Fatalf("a longer id hid the other article: %s", notice)
+	}
+	if strings.Contains(notice, "/p/99") {
+		t.Fatal("another site's link was announced for csdn")
+	}
+}
+
 func TestRunningNoticeKeepsTheJobOutOfTheSentence(t *testing.T) {
 	notice := desktopOutcomeNotice("running", "后台在跑：cd x && ./snake --demo（任务 fae1faef，running）", "")
 	if strings.Contains(notice, "依据") || strings.Contains(notice, "fae1faef") || strings.Contains(notice, "snake") {

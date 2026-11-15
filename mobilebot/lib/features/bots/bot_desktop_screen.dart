@@ -49,9 +49,12 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   /// h264 like the desktop default; 'vnc' falls back to the noVNC page.
   String _viewer = 'h264';
 
+  bool get _noComputer => widget.bot.desktopMode == 'none';
+
   @override
   void initState() {
     super.initState();
+    if (_noComputer) return;
     WidgetsBinding.instance.addObserver(this);
     _loadViewerPref();
     _hold(wake: false);
@@ -59,16 +62,19 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _holdTimer?.cancel();
-    _loadGuardTimer?.cancel();
-    // Let the desktop idle-sleep once nobody is watching.
-    unawaited(_release());
+    if (!_noComputer) {
+      WidgetsBinding.instance.removeObserver(this);
+      _holdTimer?.cancel();
+      _loadGuardTimer?.cancel();
+      // Let the desktop idle-sleep once nobody is watching.
+      unawaited(_release());
+    }
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_noComputer) return;
     if (state == AppLifecycleState.resumed && mounted) {
       _hold();
       return;
@@ -387,6 +393,12 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
 
   @override
   Widget build(BuildContext context) {
+    if (_noComputer) {
+      return Scaffold(
+        appBar: AppBar(title: Text('${widget.bot.title} 的电脑')),
+        body: const Center(child: Text('这个 bot 没有电脑')),
+      );
+    }
     final theme = Theme.of(context);
     final url = _watchUrl();
     return Scaffold(

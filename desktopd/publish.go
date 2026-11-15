@@ -33,6 +33,17 @@ func ParsePublishBind(raw string) (string, error) {
 	return ip.String(), nil
 }
 
+// IntranetEnv reports DESKTOPD_INTRANET. A desktop installed from the GUI
+// sets it so this process is an intranet desktop, not a public one.
+func IntranetEnv(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) publishBind() (string, error) {
 	raw := ""
 	if s != nil {
@@ -63,10 +74,22 @@ func ParsePublicURL(raw string) (string, error) {
 	return parsed.String(), nil
 }
 
-// publicBase is where Hub and MaClawSrv dial the tunnel. An explicit PublicURL
-// wins. Otherwise the scheme is https and the host is the advertise name,
-// which nginx already proxies to this process.
+// publicBase is where Hub and MaClawSrv dial the tunnel. An intranet desktop
+// uses its hub-link origin. Otherwise an explicit PublicURL wins, then
+// https plus the advertise name.
 func (s *Service) publicBase() (string, error) {
+	// A desktopd installed from the GUI is on the user's network. A leftover
+	// public URL or advertise host must not win: Hub rewrites this loopback
+	// origin onto the tunnel.
+	if s != nil && s.Intranet {
+		if s.HubLink != nil {
+			st := s.HubLink.Status()
+			if st.Enrolled && strings.TrimSpace(s.HubLink.Self) != "" {
+				return "http://" + strings.TrimSpace(s.HubLink.Self), nil
+			}
+		}
+		return "", fmt.Errorf("%w: intranet desktopd is waiting for its hub link", ErrInvalid)
+	}
 	raw := ""
 	if s != nil {
 		raw = strings.TrimSpace(s.PublicURL)
@@ -76,6 +99,11 @@ func (s *Service) publicBase() (string, error) {
 	}
 	host, err := s.advertiseHost()
 	if err != nil {
+		// A desktop reached only through its Hub link has no public name.
+		// Hub replaces this origin with the tunnel before anyone dials it.
+		if s != nil && s.HubLink != nil && s.HubLink.Status().Enrolled && s.HubLink.Self != "" {
+			return "http://" + s.HubLink.Self, nil
+		}
 		return "", err
 	}
 	return "https://" + host, nil

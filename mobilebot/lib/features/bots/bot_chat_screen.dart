@@ -266,13 +266,14 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: '电脑画面',
-            icon: const Icon(Icons.desktop_windows_outlined),
-            onPressed: () => context.push(
-              '/bot/${Uri.encodeComponent(widget.bot.id)}/desktop',
+          if (botHasComputer(widget.bot.desktopMode))
+            IconButton(
+              tooltip: '电脑画面',
+              icon: const Icon(Icons.desktop_windows_outlined),
+              onPressed: () => context.push(
+                '/bot/${Uri.encodeComponent(widget.bot.id)}/desktop',
+              ),
             ),
-          ),
           IconButton(
             tooltip: '任务状态',
             icon: const Icon(Icons.fact_check_outlined),
@@ -598,8 +599,9 @@ class _MessageBubble extends ConsumerWidget {
                   ],
                 ),
               ),
-            if (message.handoffUrl.isNotEmpty ||
-                message.attentionReason.isNotEmpty)
+            if (botHasComputer(bot.desktopMode) &&
+                (message.handoffUrl.isNotEmpty ||
+                    message.attentionReason.isNotEmpty))
               _HandoffBanner(message: message, bot: bot),
           ],
         ),

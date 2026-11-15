@@ -16,6 +16,14 @@ export type BotEditDialogLabels = {
     nameTaken?: string;
 };
 
+/** Create-only: whether this bot should use a computer, plus the quota line. */
+export type BotComputerChoice = {
+    label: string;
+    quota: string;
+    /** True when the grant is already used up, so a new bot cannot take a computer. */
+    locked: boolean;
+};
+
 type BotEditDialogProps = {
     initialTitle: string;
     initialDescription: string;
@@ -24,11 +32,13 @@ type BotEditDialogProps = {
     notice: string;
     saving: boolean;
     onClose: () => void;
-    onSubmit: (title: string, description: string, look: BotAppearance) => void;
+    onSubmit: (title: string, description: string, look: BotAppearance, needsComputer?: boolean) => void;
     initialAppearance?: BotAppearance;
     /** Returns true when the name is already used by another bot. */
     isNameTaken?: (title: string) => boolean;
     testId?: string;
+    /** Present only while creating. Editing a bot does not change this here. */
+    computer?: BotComputerChoice;
 };
 
 // Same caps as the rename inputs this dialog replaces.
@@ -39,7 +49,7 @@ const DESCRIPTION_MAX = 80;
  * Modal editor for a bot's name and description. Rendered inside #App, so the
  * custom-dialog classes pick up the theme variables directly.
  */
-export function BotEditDialog({ initialTitle, initialDescription, labels, notice, saving, onClose, onSubmit, initialAppearance, isNameTaken, testId }: BotEditDialogProps) {
+export function BotEditDialog({ initialTitle, initialDescription, labels, notice, saving, onClose, onSubmit, initialAppearance, isNameTaken, testId, computer }: BotEditDialogProps) {
     const titleId = useId();
     const nameId = useId();
     const descriptionId = useId();
@@ -51,6 +61,10 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !saving });
     const [color, setColor] = useState(initialAppearance?.color || BOT_COLORS[0]);
     const [shape, setShape] = useState<BotShape>(initialAppearance?.shape || 'circle');
+    const [needsComputer, setNeedsComputer] = useState(computer ? !computer.locked : true);
+    useEffect(() => {
+        if (computer?.locked) setNeedsComputer(false);
+    }, [computer?.locked]);
     const taken = !!isNameTaken && title.trim() !== '' && isNameTaken(title.trim());
     const canSave = title.trim() !== '' && !taken && !saving;
 
@@ -81,7 +95,7 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
 
     const submit = () => {
         if (!canSave) return;
-        onSubmit(title.trim(), description.trim(), { color, shape });
+        onSubmit(title.trim(), description.trim(), { color, shape }, computer ? needsComputer : undefined);
     };
 
     const onKeyDown = (event: ReactKeyboardEvent) => {
@@ -210,6 +224,21 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
                             ))}
                         </div>
                     </div>
+                    {computer ? (
+                        <div className="bot-edit-dialog__field">
+                            <label className="bot-edit-dialog__computer">
+                                <input
+                                    type="checkbox"
+                                    data-testid="bot-create-needs-computer"
+                                    checked={needsComputer}
+                                    disabled={saving || computer.locked}
+                                    onChange={event => setNeedsComputer(event.target.checked)}
+                                />
+                                <span>{computer.label}</span>
+                            </label>
+                            {computer.quota ? <p className="bot-edit-dialog__quota" data-testid="bot-create-quota">{computer.quota}</p> : null}
+                        </div>
+                    ) : null}
                     {notice ? <p className="bot-edit-dialog__notice" role="status">{notice}</p> : null}
                 </div>
                 <div className="modal-footer custom-dialog__footer">
