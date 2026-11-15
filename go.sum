@@ -36,6 +36,8 @@ github.com/VantageDataChat/GoPDF2 v0.0.0-20261115005422-b1c838726265 h1:qxJX/BJx
 github.com/VantageDataChat/GoPDF2 v0.0.0-20261115005422-b1c838726265/go.mod h1:Vx3xAhoFM9srUJumDQXbUwIFfGIsk6YQm1DLNpWKs14=
 github.com/VantageDataChat/GoPDF2 v0.0.0-20261115005442-fbfdc35a59aa h1:JzFvs6HppaRENEsfMV+DDGeXZdmfOS89uowuHVhg/XI=
 github.com/VantageDataChat/GoPDF2 v0.0.0-20261115005442-fbfdc35a59aa/go.mod h1:Vx3xAhoFM9srUJumDQXbUwIFfGIsk6YQm1DLNpWKs14=
+github.com/VantageDataChat/GoPDF2 v0.0.0-20261115014355-d86920cc89cf h1:wXaFiZ5AulA6xJuDcAW4cj2E9cAh5FZtsx4+PMiD7g4=
+github.com/VantageDataChat/GoPDF2 v0.0.0-20261115014355-d86920cc89cf/go.mod h1:Vx3xAhoFM9srUJumDQXbUwIFfGIsk6YQm1DLNpWKs14=
 github.com/Vantagics/GoPPT v0.0.0-20261107035927-beb3aba0f510 h1:CPWadNt7vlLTCDnxQwY2E+YrUHlKuxr76ebVDBInwno=
 github.com/Vantagics/GoPPT v0.0.0-20261107035927-beb3aba0f510/go.mod h1:dyyn71qnVef/gY6q+hTw21MFQzIBFcL/ewGQeYG2JsY=
 github.com/Vantagics/GoPPT v0.0.0-20261111231545-296b21989382 h1:TInXEyFALxmVR9//Tg7+U4Ewn5pUz4tDP8vN7Ev3XOs=
