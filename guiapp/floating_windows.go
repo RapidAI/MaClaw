@@ -878,6 +878,29 @@ func (w *windowsFloatingWindow) playDutyCue(cue string, packPitch float64) {
 // event fires once, until the next interaction or state change rearms it.
 const petLongIdleThreshold = 5 * time.Minute
 
+// petHoverCooldown is how long a pointer visit waits before another hover.
+// A click or drag release arms the same clock: hover is a soft interrupt and
+// would otherwise replace the click clip on the next pixel of hand jitter.
+const petHoverCooldown = 5 * time.Second
+
+func (w *windowsFloatingWindow) armPetPointerHover(now time.Time) {
+	if w == nil {
+		return
+	}
+	w.lastHoverAt = now
+}
+
+func (w *windowsFloatingWindow) petHoverDue(now time.Time) bool {
+	if w == nil {
+		return false
+	}
+	if !w.lastHoverAt.IsZero() && now.Sub(w.lastHoverAt) < petHoverCooldown {
+		return false
+	}
+	w.lastHoverAt = now
+	return true
+}
+
 // notePetInteraction records activity that resets the long-idle clock and
 // rearms the long_idle event latch.
 func (w *windowsFloatingWindow) notePetInteraction() {
@@ -934,15 +957,11 @@ func (w *windowsFloatingWindow) triggerCharacterClip(clip string) {
 	w.mu.Lock()
 	skin := w.petSkin
 	variant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
-	state := w.petRuntimeState
 	quiet := w.petQuietMode
 	reduced := w.petReducedMotion
 	motion := w.petMotionEnabled && !quiet && !reduced
 	if skin == "" {
 		skin = petpack.DefaultPackID
-	}
-	if state == "" {
-		state = string(petpack.StateIdle)
 	}
 	renderer := w.characterRenderers[skin+"\x00"+variant]
 	w.mu.Unlock()
@@ -950,10 +969,9 @@ func (w *windowsFloatingWindow) triggerCharacterClip(clip string) {
 		return
 	}
 	if renderer == nil {
-		_ = w.renderCharacterPackFrame(w.currentSize(), skin, variant, state)
-		w.mu.Lock()
-		renderer = w.characterRenderers[skin+"\x00"+variant]
-		w.mu.Unlock()
+		// Creating the renderer must not play the idle pose. RenderState
+		// would start that clip and its cue, then the click clip would follow.
+		renderer = w.ensureCharacterRenderer(skin, variant)
 	}
 	if renderer != nil && renderer.TriggerClip(clip, time.Now().UnixMilli()) {
 		w.mu.Lock()
@@ -1698,6 +1716,19 @@ func (w *windowsFloatingWindow) hasActiveCharacterRenderer(skin, variant string)
 // validated during registry scanning and is loaded once per selected pack.
 // Any issue falls through to the v2 skeleton and static fallback paths.
 func (w *windowsFloatingWindow) renderCharacterPackFrame(sz int, skin, variant, state string) *image.NRGBA {
+	renderer := w.ensureCharacterRenderer(skin, variant)
+	if renderer == nil {
+		return nil
+	}
+	return renderer.RenderState(petpack.NormalizeState(state), petCharacterFrameNow(), sz)
+}
+
+// ensureCharacterRenderer loads the v3 performer without painting. Painting
+// here would start the idle clip just to obtain a renderer.
+func (w *windowsFloatingWindow) ensureCharacterRenderer(skin, variant string) *petpack.CharacterRenderer {
+	if w == nil {
+		return nil
+	}
 	if skin == "" {
 		skin = petpack.DefaultPackID
 	}
@@ -1709,40 +1740,46 @@ func (w *windowsFloatingWindow) renderCharacterPackFrame(sz int, skin, variant, 
 	if failed {
 		return nil
 	}
-	if renderer == nil {
-		reg := petpack.EnsureGlobal()
-		if reg == nil {
-			return nil
-		}
-		resolved, err := reg.Resolve(skin, variant)
-		if err != nil || resolved == nil || resolved.Renderer != petpack.RendererCharacter {
-			return nil
-		}
-		renderer, err = petpack.NewCharacterRenderer(resolved)
-		w.mu.Lock()
-		// The maps are normally allocated in Create, but a window that only
-		// receives state pushes (never shown) must not panic on a nil map.
-		if w.characterRenderers == nil {
-			w.characterRenderers = make(map[string]*petpack.CharacterRenderer)
-		}
-		if w.characterRendererFailed == nil {
-			w.characterRendererFailed = make(map[string]bool)
-		}
-		if err != nil || renderer == nil {
-			w.characterRendererFailed[key] = true
-			w.mu.Unlock()
-			return nil
-		}
-		if existing := w.characterRenderers[key]; existing != nil {
-			renderer = existing
-		} else {
-			renderer.SetVisibleAdornmentSlots(w.petRearingAdornments)
-			w.characterRenderers[key] = renderer
-		}
-		w.mu.Unlock()
+	if renderer != nil {
+		return renderer
 	}
-	return renderer.RenderState(petpack.NormalizeState(state), time.Now().UnixMilli(), sz)
+	reg := petpack.EnsureGlobal()
+	if reg == nil {
+		return nil
+	}
+	resolved, err := reg.Resolve(skin, variant)
+	if err != nil || resolved == nil || resolved.Renderer != petpack.RendererCharacter {
+		return nil
+	}
+	renderer, err = petpack.NewCharacterRenderer(resolved)
+	w.mu.Lock()
+	// The maps are normally allocated in Create, but a window that only
+	// receives state pushes (never shown) must not panic on a nil map.
+	if w.characterRenderers == nil {
+		w.characterRenderers = make(map[string]*petpack.CharacterRenderer)
+	}
+	if w.characterRendererFailed == nil {
+		w.characterRendererFailed = make(map[string]bool)
+	}
+	if err != nil || renderer == nil {
+		w.characterRendererFailed[key] = true
+		w.mu.Unlock()
+		return nil
+	}
+	if existing := w.characterRenderers[key]; existing != nil {
+		renderer = existing
+	} else {
+		renderer.SetVisibleAdornmentSlots(w.petRearingAdornments)
+		w.characterRenderers[key] = renderer
+	}
+	w.mu.Unlock()
+	return renderer
 }
+
+// petCharacterFrameNow is the clock for one character frame. Production uses
+// the wall clock. A test that compares two frames pins it so the body pose
+// does not change between them.
+var petCharacterFrameNow = func() int64 { return time.Now().UnixMilli() }
 
 func (w *windowsFloatingWindow) applyAdornmentSlotsLocked(slots []string) {
 	for _, renderer := range w.characterRenderers {
@@ -2478,9 +2515,7 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		if !w.dragging {
 			// Acknowledge a visitor once, not once per moved pixel. This timestamp
 			// is owned by the message loop and carries no cursor coordinates.
-			now := time.Now()
-			if w.lastHoverAt.IsZero() || now.Sub(w.lastHoverAt) >= 5*time.Second {
-				w.lastHoverAt = now
+			if w.petHoverDue(time.Now()) {
 				w.notePetInteraction()
 				w.triggerCharacterEvent("hover")
 			}
@@ -2513,6 +2548,9 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			break
 		}
 		w.dragging = false
+		// Arm hover before the click clip starts. The clip waits out the
+		// double-click interval, and a soft hover in that window replaces it.
+		w.armPetPointerHover(time.Now())
 		w.notePetInteraction()
 		if !w.dragMoved {
 			// Wait out the double-click interval before choosing 单击, 双击, or

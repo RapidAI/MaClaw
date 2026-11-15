@@ -16,6 +16,7 @@ func TestPetClickGesture(t *testing.T) {
 	t.Run("hostWait", testPetClickHostWaits)
 	t.Run("session", testPetClickSession)
 	t.Run("clipCache", testPetClickClipCache)
+	t.Run("showGate", testPetClickShowGate)
 }
 
 func testPetClickBurst(t *testing.T) {
@@ -374,6 +375,179 @@ func testPetClickSession(t *testing.T) {
 	switched := app.finishDesktopPetClick(petClickDouble, epoch)
 	if switched.CreditMS != 0 || app.petRearing.pack != "mini-claw" || app.petRearing.loaded != 0 {
 		t.Fatalf("switch kept the old click: result %+v pack %s loaded %d", switched, app.petRearing.pack, app.petRearing.loaded)
+	}
+}
+
+// clickGateWindow records whether Create ran against an already-open click
+// session. The production window is visible inside Create, before Show returns.
+type clickGateWindow struct {
+	mockFloatingWindow
+	app                 *App
+	creates             int
+	ready               []bool
+	rewind              bool
+	reloads             int
+	reloadPack          string
+	reloadOpen          bool
+	destroyCalls        int
+	closedBeforeDestroy int
+}
+
+func (w *clickGateWindow) Destroy() {
+	w.app.petClickMu.Lock()
+	closed := w.app.petClickClosed
+	w.app.petClickMu.Unlock()
+	w.mu.Lock()
+	w.destroyCalls++
+	if closed {
+		w.closedBeforeDestroy++
+	}
+	w.mu.Unlock()
+	w.mockFloatingWindow.Destroy()
+}
+
+func (w *clickGateWindow) sessionReady() bool {
+	w.app.petClickMu.Lock()
+	closed := w.app.petClickClosed || w.app.petClickExit
+	w.app.petClickMu.Unlock()
+	w.app.petRearing.mu.Lock()
+	running := w.app.petRearing.running && w.app.petRearing.pack != ""
+	w.app.petRearing.mu.Unlock()
+	return running && !closed
+}
+
+func (w *clickGateWindow) Create(x, y, width, height int) error {
+	w.creates++
+	w.ready = append(w.ready, w.sessionReady())
+	if w.rewind {
+		w.app.petRearing.mu.Lock()
+		if w.app.petRearing.running {
+			w.app.petRearing.last = time.Now().Add(-5 * time.Second)
+		}
+		w.app.petRearing.mu.Unlock()
+	}
+	return w.mockFloatingWindow.Create(x, y, width, height)
+}
+
+func (w *clickGateWindow) ReloadAppearance(x, y, size int) error {
+	w.reloads++
+	w.app.petRearing.mu.Lock()
+	w.reloadPack = w.app.petRearing.pack
+	w.app.petRearing.mu.Unlock()
+	w.app.petClickMu.Lock()
+	w.reloadOpen = !w.app.petClickClosed && !w.app.petClickExit
+	w.app.petClickMu.Unlock()
+	w.mu.Lock()
+	w.x, w.y = x, y
+	w.created = true
+	w.shown = true
+	w.mu.Unlock()
+	_ = size
+	return nil
+}
+
+func testPetClickShowGate(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	win := &clickGateWindow{app: app}
+	manager := &FloatingAssistantManager{app: app, window: win}
+	app.floatingAssistant = manager
+	t.Cleanup(func() {
+		app.stopPetClickTimer()
+		app.petRearing.mu.Lock()
+		app.closePetRearingDBLocked()
+		app.petRearing.mu.Unlock()
+	})
+
+	manager.ShowFloatingButton()
+	if win.creates != 1 || len(win.ready) != 1 || !win.ready[0] {
+		t.Fatalf("first show Create ready=%v creates=%d", win.ready, win.creates)
+	}
+	before := app.petRearing.loaded
+	clickAt := time.Now()
+	if class, _ := app.recordDesktopPetClick(clickAt); class != petClickNone {
+		t.Fatalf("first click resolved as %d", class)
+	}
+	app.petClickMu.Lock()
+	gen := app.petClickGen
+	app.petClickMu.Unlock()
+	app.pollDesktopPetClick(clickAt.Add(petHostClickInterval()), gen)
+	if app.petRearing.loaded != before+petClickCreditMS(petClickSingle) {
+		t.Fatalf("shown pet credited %d, want %d more than %d", app.petRearing.loaded, petClickCreditMS(petClickSingle), before)
+	}
+
+	manager.HideFloatingButton()
+	if win.destroyCalls != 1 || win.closedBeforeDestroy != 1 {
+		t.Fatalf("hide destroyed the window before the click session ended: destroys=%d closedFirst=%d", win.destroyCalls, win.closedBeforeDestroy)
+	}
+	if class, _ := app.recordDesktopPetClick(time.Now()); class != petClickNone {
+		t.Fatal("a hidden pet accepted a click")
+	}
+	app.petClickMu.Lock()
+	if app.petClickBurst.open {
+		app.petClickMu.Unlock()
+		t.Fatal("a hidden pet opened a burst")
+	}
+	app.petClickMu.Unlock()
+
+	win.rewind = true
+	before = app.petRearing.loaded
+	manager.ShowFloatingButton()
+	win.rewind = false
+	if win.creates != 2 || len(win.ready) != 2 || !win.ready[1] {
+		t.Fatalf("show after hide Create ready=%v creates=%d", win.ready, win.creates)
+	}
+	if gap := app.petRearing.loaded - before; gap < 0 || gap >= 1000 {
+		t.Fatalf("showing the pet counted %dms from before the window existed", gap)
+	}
+	before = app.petRearing.loaded
+	clickAt = time.Now()
+	if class, _ := app.recordDesktopPetClick(clickAt); class != petClickNone {
+		t.Fatal("show after hide did not accept a click")
+	}
+	app.petClickMu.Lock()
+	gen = app.petClickGen
+	app.petClickMu.Unlock()
+	app.pollDesktopPetClick(clickAt.Add(petHostClickInterval()), gen)
+	if app.petRearing.loaded != before+petClickCreditMS(petClickSingle) {
+		t.Fatalf("reshown pet credited %d, want %d more than %d", app.petRearing.loaded, petClickCreditMS(petClickSingle), before)
+	}
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.PetSkin = "mini-claw"
+	manager.RefreshAppearance(cfg)
+	if win.reloads != 1 || win.reloadPack != "mini-claw" || !win.reloadOpen {
+		t.Fatalf("switch reload pack=%q open=%v reloads=%d", win.reloadPack, win.reloadOpen, win.reloads)
+	}
+	if win.destroyCalls != 1 {
+		t.Fatalf("skin switch destroyed the window: destroys=%d", win.destroyCalls)
+	}
+
+	disabled := cfg
+	disabled.PetEnabled = false
+	manager.RefreshAppearance(disabled)
+	if win.destroyCalls != 2 || win.closedBeforeDestroy != 2 {
+		t.Fatalf("disable destroyed the window before the click session ended: destroys=%d closedFirst=%d", win.destroyCalls, win.closedBeforeDestroy)
+	}
+
+	_, epoch := app.recordDesktopPetClick(time.Now())
+	app.sealDesktopPetClick()
+	app.allowDesktopPetClick()
+	sealed := app.finishDesktopPetClick(petClickSingle, epoch)
+	if sealed.OpenMain || sealed.CreditMS != 0 || sealed.Clip != "" {
+		t.Fatalf("exit still finished the click: %+v", sealed)
+	}
+	if class, _ := app.recordDesktopPetClick(time.Now()); class != petClickNone {
+		t.Fatal("exit accepted a click")
+	}
+	app.petClickMu.Lock()
+	open := app.petClickBurst.open
+	exit := app.petClickExit
+	app.petClickMu.Unlock()
+	if open || !exit {
+		t.Fatalf("exit gate open=%v exit=%v", open, exit)
 	}
 }
 

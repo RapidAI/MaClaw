@@ -2,7 +2,10 @@
 
 package guiapp
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // Quiet and reduced-motion windows live on the Windows floating type. The
 // shared burst and credit tests stay untagged so Linux CI still compiles them.
@@ -14,6 +17,18 @@ func testPetClickWindowMotion(t *testing.T) {
 	reduced := &windowsFloatingWindow{petSkin: "ragdoll", petMotionEnabled: true, petReducedMotion: true}
 	if _, motion := reduced.PetClickLook(); motion || petClickReactionClip("ragdoll", petClickMulti, motion) != "" {
 		t.Fatal("reduced motion would move")
+	}
+
+	// A release arms the hover clock the message loop consults. Hover is a
+	// soft interrupt, so a later pixel of jitter must not replace the click clip.
+	w := &windowsFloatingWindow{}
+	released := time.Unix(1_700_000_000, 0)
+	w.armPetPointerHover(released)
+	if w.petHoverDue(released.Add(time.Second)) {
+		t.Fatal("pointer release still started a hover")
+	}
+	if !w.petHoverDue(released.Add(petHoverCooldown)) {
+		t.Fatal("hover cooldown did not elapse")
 	}
 }
 

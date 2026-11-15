@@ -476,6 +476,9 @@ static gboolean on_motion(GtkWidget *widget, GdkEventMotion *e, gpointer data) {
 static gboolean on_button_release(GtkWidget *widget, GdkEventButton *e, gpointer data) {
 	(void)widget; (void)data;
 	if (e->button != 1) return FALSE;
+	// A release that never had a button-1 press is not a click. GTK can
+	// deliver one after a broken grab; counting it opened the main window.
+	if (!dragging) return FALSE;
 	dragging = FALSE;
 	if (!dragMoved) {
 		maclawLinuxPetClicked();

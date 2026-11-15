@@ -20,16 +20,16 @@ const petRearingDBFile = "pet-rearing.db"
 // petRearingState counts wall time while one pack is the live pet and applies
 // the highest stage that time has reached. The user's saved size is not rewritten.
 type petRearingState struct {
-	mu        sync.Mutex
-	db        *sql.DB
-	dbPath    string
-	pack      string
-	loaded    int64
-	announced string
-	userSize  int
-	running   bool
-	observed  bool
-	last      time.Time
+	mu               sync.Mutex
+	db               *sql.DB
+	dbPath           string
+	pack             string
+	loaded           int64
+	announced        string
+	userSize         int
+	running          bool
+	observed         bool
+	last             time.Time
 	loopOn           bool
 	stop             chan struct{}
 	needsDutyHydrate bool

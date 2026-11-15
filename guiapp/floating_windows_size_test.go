@@ -76,6 +76,9 @@ func TestRearingAdornmentChangeKeepsTheDistanceMap(t *testing.T) {
 }
 
 func TestSeededRearingAdornmentsReachTheFirstFrame(t *testing.T) {
+	prevNow := petCharacterFrameNow
+	petCharacterFrameNow = func() int64 { return 1_700_000_000_000 }
+	t.Cleanup(func() { petCharacterFrameNow = prevNow })
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() { app.closePetRearingDBLocked() })
 	app.petRearing.pack = "ragdoll"

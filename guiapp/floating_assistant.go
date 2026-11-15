@@ -93,7 +93,7 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 	// that call, so a click can arrive before Show returns and before the
 	// deferred sync. fresh means the clock started here; time until the
 	// window is up is not time on screen.
-	_, _, fresh := m.app.stagePetRearingAt(petSkinID(config), petUserSize(config), true, time.Now())
+	_, _, fresh := m.app.stagePetRearingAt(petSkinID(config), true, petUserSize(config), time.Now())
 
 	// Restore persisted position, or compute default (top-right corner).
 	// Always re-clamp: a 1920-wide fallback or a position saved on a larger
@@ -134,6 +134,13 @@ func (m *FloatingAssistantManager) HideFloatingButton() {
 		m.syncPetRearing()
 	}()
 
+	// End the click session before Destroy and before this lock is released.
+	// The deferred rearing sync used to retire only after companion sync, so a
+	// single click waiting out the double-click interval still opened the
+	// main window and added growth after the pet was gone.
+	if m.app != nil {
+		m.app.retirePetClickBurst()
+	}
 	if m.window != nil {
 		m.window.Destroy()
 	}
@@ -158,6 +165,9 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	}()
 
 	if !config.PetEnabled {
+		if m.app != nil {
+			m.app.retirePetClickBurst()
+		}
 		if m.window != nil {
 			m.window.Destroy()
 		}
@@ -176,7 +186,7 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	// before this reload, while the previous window can still take a click.
 	var fresh bool
 	if m.app != nil {
-		_, _, fresh = m.app.stagePetRearingAt(petSkinID(config), petUserSize(config), true, time.Now())
+		_, _, fresh = m.app.stagePetRearingAt(petSkinID(config), true, petUserSize(config), time.Now())
 	}
 
 	winSize := rearedWindowSize(m.app, config.PetSkin, config.PetSize)
@@ -627,11 +637,25 @@ func (m *FloatingAssistantManager) applyRearing(cmd rearingWindow) {
 	applier.ApplyPetRearing(cmd.variant, cmd.windowSize, cmd.cue, cmd.adornments)
 }
 
+func petSkinID(config corelib.AppConfig) string {
+	pack := strings.TrimSpace(config.PetSkin)
+	if pack == "" {
+		return petpack.DefaultPackID
+	}
+	return pack
+}
+
+func petUserSize(config corelib.AppConfig) int {
+	if config.PetSize > 0 {
+		return config.PetSize
+	}
+	return defaultPetSize
+}
+
 func (m *FloatingAssistantManager) syncPetRearing() {
 	if m == nil || m.app == nil {
 		return
 	}
-	visible := m.IsVisible()
 	cfg, err := m.app.LoadConfig()
 	userSize := defaultPetSize
 	pack := ""
@@ -646,7 +670,17 @@ func (m *FloatingAssistantManager) syncPetRearing() {
 			pack = petpack.DefaultPackID
 		}
 	}
-	m.app.syncPetRearing(pack, visible && enabled, userSize)
+	// Read visibility under the same lock Hide and Quit take, and commit the
+	// gate before releasing it. A snapshot taken before LoadConfig was already
+	// stale: allow() then reopened a click session whose window was gone.
+	m.mu.Lock()
+	cmd, live, _ := m.app.stagePetRearingAt(pack, m.visible && enabled, userSize, time.Now())
+	m.mu.Unlock()
+	if !live {
+		return
+	}
+	m.app.deliverPetRearing(cmd)
+	m.app.hydratePetDutyFromRuntimeIfNeeded()
 }
 
 // CurrentPetRuntimeState returns the native window's selected runtime state (for tests).
@@ -704,6 +738,12 @@ func (m *FloatingAssistantManager) QuitApp() {
 	// Destroy the floating window first so the WebView is cleaned up
 	// before the Wails shutdown sequence begins.
 	m.mu.Lock()
+	// Seal before Destroy. Retire alone is reopened by allow(), and a rearing
+	// sync can still be outside this lock. Quit is process exit: the gate
+	// must stay shut until the process is gone.
+	if m.app != nil {
+		m.app.sealDesktopPetClick()
+	}
 	if m.window != nil {
 		m.window.Destroy()
 	}
