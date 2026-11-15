@@ -33,6 +33,17 @@ type petRearingState struct {
 	loopOn           bool
 	stop             chan struct{}
 	needsDutyHydrate bool
+	planSeq          uint64
+	// deliverMu serializes window applies. Never take it while holding mu,
+	// and never call deliver while the floating-assistant lock is held:
+	// the apply takes that lock, then the window lock. delivered* is read
+	// only under deliverMu. Recording the look before the apply returns is
+	// what stops an older plan from restoring a stale size afterwards.
+	deliverMu           sync.Mutex
+	deliveredSeq        uint64
+	deliveredVariant    string
+	deliveredSize       int
+	deliveredAdornments []string
 }
 
 // rearedWindowSize is the window for this pack's current stage. Creating at
@@ -86,6 +97,9 @@ type rearingWindow struct {
 	stageID      string
 	adornments   []string
 	refreshBuddy bool
+	// seq is the plan order. Zero was not planned and must not move the
+	// delivered high-water mark.
+	seq uint64
 }
 
 func (a *App) syncPetRearing(packID string, visible bool, userSize int) {
@@ -101,13 +115,23 @@ func (a *App) syncPetRearingAt(packID string, visible bool, userSize int, now ti
 	a.hydratePetDutyFromRuntimeIfNeeded()
 }
 
-// stagePetRearingAt commits the live pack and opens the click gate before it
-// does the slow save. Callers that are about to create a visible window must
-// use this rather than waiting for deliver: Windows creates that window
-// already visible, and a click in the gap has to land on this session.
-// live is false when the pet is hidden. fresh is true when the clock just
-// started, so the caller can drop the time spent before the window was shown.
+// stagePetRearingAt commits the live pack, opens the click gate, and plans
+// the window. The plan is the one-shot stage cue: the caller has to deliver
+// the returned command. Show and Refresh must use openPetRearingSessionAt
+// instead, because they plan again from the deferred sync.
 func (a *App) stagePetRearingAt(packID string, visible bool, userSize int, now time.Time) (cmd rearingWindow, live bool, fresh bool) {
+	return a.stagePetRearing(packID, visible, userSize, now, true)
+}
+
+// openPetRearingSessionAt starts the visible-pet clock and the click gate
+// without planning. A plan here would announce a crossing and then throw
+// that cue away when the deferred sync plans again.
+func (a *App) openPetRearingSessionAt(packID string, visible bool, userSize int, now time.Time) (live bool, fresh bool) {
+	_, live, fresh = a.stagePetRearing(packID, visible, userSize, now, false)
+	return live, fresh
+}
+
+func (a *App) stagePetRearing(packID string, visible bool, userSize int, now time.Time, plan bool) (cmd rearingWindow, live bool, fresh bool) {
 	if a == nil {
 		return rearingWindow{}, false, false
 	}
@@ -157,7 +181,9 @@ func (a *App) stagePetRearingAt(packID string, visible bool, userSize int, now t
 	if !wasRunning {
 		a.petRearing.needsDutyHydrate = true
 	}
-	cmd = a.planPetRearingLocked()
+	if plan {
+		cmd = a.planPetRearingLocked()
+	}
 	a.ensurePetRearingLoopLocked()
 	a.petRearing.mu.Unlock()
 	return cmd, true, fresh
@@ -256,6 +282,7 @@ func (a *App) planPetRearingLocked() rearingWindow {
 	a.petRearing.announced = stageID
 	a.petRearing.observed = true
 	a.savePetRearingLocked()
+	a.petRearing.planSeq++
 	return rearingWindow{
 		variant:      variant,
 		windowSize:   rearingWindowSize(a.petRearing.userSize, scale),
@@ -263,6 +290,7 @@ func (a *App) planPetRearingLocked() rearingWindow {
 		stageID:      stageID,
 		adornments:   adornments,
 		refreshBuddy: refresh,
+		seq:          a.petRearing.planSeq,
 	}
 }
 
@@ -282,10 +310,35 @@ func (a *App) deliverPetRearing(cmd rearingWindow) {
 	if a == nil {
 		return
 	}
+	a.petRearing.deliverMu.Lock()
+	cmd = a.adoptPetRearingDeliveryLocked(cmd)
 	a.pushPetRearing(cmd)
-	if cmd.refreshBuddy {
-		go a.refreshBuddyPetFromRearing(cmd.stageID)
+	refresh := cmd.refreshBuddy
+	stageID := cmd.stageID
+	a.petRearing.deliverMu.Unlock()
+	if refresh {
+		go a.refreshBuddyPetFromRearing(stageID)
 	}
+}
+
+// adoptPetRearingDeliveryLocked keeps the newest stage look when an older
+// plan arrives late. The late plan still plays its cue: that one-shot is
+// what announces the crossing, and dropping the whole command would skip it.
+// Caller holds deliverMu.
+func (a *App) adoptPetRearingDeliveryLocked(cmd rearingWindow) rearingWindow {
+	if cmd.seq > 0 && cmd.seq < a.petRearing.deliveredSeq {
+		cmd.variant = a.petRearing.deliveredVariant
+		cmd.windowSize = a.petRearing.deliveredSize
+		cmd.adornments = append([]string(nil), a.petRearing.deliveredAdornments...)
+		return cmd
+	}
+	if cmd.seq > a.petRearing.deliveredSeq {
+		a.petRearing.deliveredSeq = cmd.seq
+		a.petRearing.deliveredVariant = cmd.variant
+		a.petRearing.deliveredSize = cmd.windowSize
+		a.petRearing.deliveredAdornments = append([]string(nil), cmd.adornments...)
+	}
+	return cmd
 }
 
 func (a *App) pushPetRearing(cmd rearingWindow) {

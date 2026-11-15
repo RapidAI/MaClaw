@@ -17,6 +17,8 @@ func TestPetClickGesture(t *testing.T) {
 	t.Run("session", testPetClickSession)
 	t.Run("clipCache", testPetClickClipCache)
 	t.Run("showGate", testPetClickShowGate)
+	t.Run("deliveryOrder", testPetClickDeliveryOrder)
+	t.Run("stageCue", testPetClickStageCue)
 }
 
 func testPetClickBurst(t *testing.T) {
@@ -564,5 +566,173 @@ func testPetClickClipCache(t *testing.T) {
 	(&FloatingAssistantManager{}).InvalidatePetPackAssets()
 	if petClickReactionClip("ragdoll", petClickSingle, true) == "" {
 		t.Fatal("pack invalidation left the empty clip memo in place")
+	}
+}
+
+type rearingOrderWindow struct {
+	mockFloatingWindow
+	applies []rearingOrderApply
+}
+
+type rearingOrderApply struct {
+	variant    string
+	windowSize int
+	cue        string
+	adornments []string
+}
+
+func (w *rearingOrderWindow) ApplyPetRearing(variant string, windowSize int, cue string, adornments []string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.applies = append(w.applies, rearingOrderApply{
+		variant:    variant,
+		windowSize: windowSize,
+		cue:        cue,
+		adornments: append([]string(nil), adornments...),
+	})
+}
+
+func (w *rearingOrderWindow) applied() []rearingOrderApply {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]rearingOrderApply, len(w.applies))
+	copy(out, w.applies)
+	return out
+}
+
+func testPetClickDeliveryOrder(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	win := &rearingOrderWindow{}
+	app.floatingAssistant = &FloatingAssistantManager{app: app, window: win, visible: true}
+	t.Cleanup(func() {
+		app.petRearing.mu.Lock()
+		app.closePetRearingDBLocked()
+		app.petRearing.mu.Unlock()
+	})
+
+	app.petRearing.mu.Lock()
+	app.petRearing.pack = "ragdoll"
+	app.petRearing.running = true
+	app.petRearing.userSize = 224
+	app.petRearing.loaded = 0
+	base := app.planPetRearingLocked()
+	app.petRearing.loaded = 7_200_000
+	familiar := app.planPetRearingLocked()
+	app.petRearing.mu.Unlock()
+	if base.seq == 0 || familiar.seq <= base.seq {
+		t.Fatalf("plans are not ordered: base %d familiar %d", base.seq, familiar.seq)
+	}
+	if base.windowSize == familiar.windowSize || familiar.windowSize < base.windowSize {
+		t.Fatalf("familiar window %d does not grow past %d", familiar.windowSize, base.windowSize)
+	}
+	if familiar.cue == "" || len(familiar.adornments) == 0 || base.cue != "" {
+		t.Fatalf("fixture cues base=%+v familiar=%+v", base, familiar)
+	}
+
+	app.deliverPetRearing(base)
+	app.deliverPetRearing(familiar)
+	got := win.applied()
+	if len(got) == 0 {
+		t.Fatal("newer plan never reached the window")
+	}
+	if last := got[len(got)-1]; last.windowSize != familiar.windowSize || !sameAdornmentSlots(last.adornments, familiar.adornments) {
+		t.Fatalf("newer plan did not replace the look: %+v", last)
+	}
+
+	win.mu.Lock()
+	win.applies = nil
+	win.mu.Unlock()
+	app.deliverPetRearing(familiar)
+	app.deliverPetRearing(base)
+	got = win.applied()
+	if len(got) != 2 {
+		t.Fatalf("reverse applies = %d", len(got))
+	}
+	if got[0].windowSize != familiar.windowSize || got[0].cue != familiar.cue {
+		t.Fatalf("newer plan was rewritten on the way in: %+v", got[0])
+	}
+	last := got[len(got)-1]
+	if last.windowSize != familiar.windowSize || !sameAdornmentSlots(last.adornments, familiar.adornments) {
+		t.Fatalf("older plan reverted the look: size %d adornments %v", last.windowSize, last.adornments)
+	}
+	if last.cue != "" {
+		t.Fatalf("older plan grew a cue: %q", last.cue)
+	}
+
+	app.petRearing.mu.Lock()
+	later := app.planPetRearingLocked()
+	app.petRearing.mu.Unlock()
+	if later.cue != "" || later.seq <= familiar.seq || later.windowSize != familiar.windowSize {
+		t.Fatalf("same-stage plan = %+v", later)
+	}
+	win.mu.Lock()
+	win.applies = nil
+	win.mu.Unlock()
+	app.deliverPetRearing(later)
+	app.deliverPetRearing(familiar)
+	got = win.applied()
+	if len(got) == 0 {
+		t.Fatal("late crossing never reached the window")
+	}
+	last = got[len(got)-1]
+	if last.windowSize != familiar.windowSize || last.cue != familiar.cue || !sameAdornmentSlots(last.adornments, familiar.adornments) {
+		t.Fatalf("late crossing lost its cue or look: %+v", last)
+	}
+}
+
+func testPetClickStageCue(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	win := &rearingOrderWindow{}
+	if err := win.Create(0, 0, 240, 240); err != nil {
+		t.Fatal(err)
+	}
+	app.floatingAssistant = &FloatingAssistantManager{app: app, window: win, visible: true}
+	t.Cleanup(func() {
+		app.petRearing.mu.Lock()
+		app.closePetRearingDBLocked()
+		app.petRearing.mu.Unlock()
+	})
+
+	reg := petpack.EnsureGlobal()
+	manifest, ok := reg.Get("ragdoll")
+	if !ok || manifest == nil || len(manifest.Rearing.Stages) == 0 {
+		t.Fatal("ragdoll has no rearing stages")
+	}
+	threshold := manifest.Rearing.Stages[0].AfterMS
+	app.petRearing.mu.Lock()
+	app.petRearing.pack = "ragdoll"
+	app.petRearing.running = true
+	app.petRearing.userSize = 224
+	app.petRearing.loaded = threshold - 10_000
+	app.petRearing.announced = ""
+	app.petRearing.observed = true
+	app.petRearing.last = time.Now().Add(-30 * time.Second)
+	app.petRearing.mu.Unlock()
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.PetEnabled = true
+	cfg.PetSkin = "ragdoll"
+	cfg.PetSize = 224
+	app.floatingAssistant.RefreshAppearance(cfg)
+
+	want, found := petpack.ActiveRearingStage(manifest.Rearing.Stages, app.petRearing.loaded)
+	if !found {
+		t.Fatalf("refresh did not cross a stage, loaded %d", app.petRearing.loaded)
+	}
+	got := win.applied()
+	if len(got) != 1 {
+		t.Fatalf("stage applies = %d %+v", len(got), got)
+	}
+	if got[0].cue != want.Cue || got[0].windowSize != rearingWindowSize(224, petpack.StageScale(&want)) || !sameAdornmentSlots(got[0].adornments, petpack.ActiveAdornmentSlots(manifest, app.petRearing.loaded)) {
+		t.Fatalf("crossing did not reach the window: %+v", got[0])
+	}
+	app.petRearing.mu.Lock()
+	again := app.planPetRearingLocked()
+	app.petRearing.mu.Unlock()
+	if again.cue != "" {
+		t.Fatalf("crossing cue still pending: %+v", again)
 	}
 }

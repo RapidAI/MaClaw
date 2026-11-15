@@ -91,9 +91,10 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 
 	// Commit the session before Create. The Win32 window is WS_VISIBLE inside
 	// that call, so a click can arrive before Show returns and before the
-	// deferred sync. fresh means the clock started here; time until the
-	// window is up is not time on screen.
-	_, _, fresh := m.app.stagePetRearingAt(petSkinID(config), true, petUserSize(config), time.Now())
+	// deferred sync. The stage cue stays unplanned until that sync: planning
+	// here would announce the crossing and then drop it. fresh means the
+	// clock started here; time until the window is up is not time on screen.
+	_, fresh := m.app.openPetRearingSessionAt(petSkinID(config), true, petUserSize(config), time.Now())
 
 	// Restore persisted position, or compute default (top-right corner).
 	// Always re-clamp: a 1920-wide fallback or a position saved on a larger
@@ -182,11 +183,12 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 		m.window = newFloatingWindow(m.app)
 	}
 	// Same order as show: the click session is live before the window is
-	// touched. A skin change retires the old gesture and opens the new one
-	// before this reload, while the previous window can still take a click.
+	// touched, and the stage cue is planned only by the deferred sync.
+	// A skin change retires the old gesture and opens the new one before
+	// this reload, while the previous window can still take a click.
 	var fresh bool
 	if m.app != nil {
-		_, _, fresh = m.app.stagePetRearingAt(petSkinID(config), true, petUserSize(config), time.Now())
+		_, fresh = m.app.openPetRearingSessionAt(petSkinID(config), true, petUserSize(config), time.Now())
 	}
 
 	winSize := rearedWindowSize(m.app, config.PetSkin, config.PetSize)
