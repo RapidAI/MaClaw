@@ -690,6 +690,82 @@ HEAD `a3d9ee82`（V8.2.0.12639），`build_number` 12640，工作区 133 个改�
 
 本轮期间 `build_number` 已被发布脚本推进到 12641——按巡检规则，树指纹会随之变化，下一轮稳定后自动跟进，不在本轮强行追。
 
+#### 12641（2026-11-15 20:05 CST，自动巡检轮）
+
+12640 发完后发布脚本把 `build_number` 推进到 12641（19:52:26 一次性写入，之后未再动）。稳定门这次加了一层实证：指纹连续两轮一致之外，还核对四个源码树 + `build_number` 的 mtime 都在 5 分钟以前（光比指纹可能只隔 12 秒，不足 5 分钟；19:52:26 的推进在 19:57 仍然过新，等满才放行）。
+
+源码在 19:40 构建之后**零变化**（`find -newer` 验证），因此重编 hub 与 desktopd 后逐字节等于线上（`2f2de882…` / `4803e4a4…`）——**不重发**；只有 maclawsrv 因版本串 12640→12641 改变（`877d72d4…`，74,813,705 字节）。两台线上 maclawsrv mtime 都早于本轮开始（19:48/19:54），无外来部署，按「哪台旧补哪台」两台都换。
+
+| 项 | mypapers | maclaw.top |
+| --- | --- | --- |
+| maclawsrv → `877d72d4…` | PID 3655 | PID 1604998 |
+| `/version` | `12641` / `a3d9ee82-dirty` | 同左 |
+| desktopd `/v1/health` | （未重启，上轮已 200） | 200 |
+| hub / desktopd | 未动（重编哈希 == 线上，逐字节验证） | 未动 |
+
+maclawsrv 的 `/proc/<pid>/exe` 复核两台均为 `877d72d4…`。孤儿进程照旧（mypapers 17571、maclaw.top 1229490）。备份：`maclawsrv.bak-12641-20261115`（各台一份）。
+
+这轮演示了「版本号推进但源码未变」的标准处理：**用重编哈希证明哪些组件是纯 no-op，只发真正变化的那个**，避免为版本标签整批重发三件。
+
+#### 12641·发版提交（2026-11-15 20:16 CST，自动巡检轮）
+
+12641 之后的发版提交 `464ebf96`（V8.2.0.12641 发版——hub 管理面/桌面池与调度、宠物包与前端、mobilebot APK 流水线、edgelink 本地链路批次）落树，四个构建相关目录共 **110 个文件**：hub 55（botmgmt/管理面前端）、desktopd 10（admin/http/hublink）、MaClawSrv 11（desktop_recovery/remote）、corelib 34。origin/main 同步在 `464ebf96`，无领先。`build_number` 仍 12641，maclawsrv 元数据用 `12641` / `464ebf96-dirty` / `2026-11-15T20:06:06+08:00`。
+
+两台线上仍停留在我 20:02 前发的那批（`877d72d4…`/`4803e4a4…`/`2f2de882…`），无外来部署 → 三份 × 两台全换：
+
+| 组件（新哈希） | mypapers | maclaw.top |
+| --- | --- | --- |
+| maclawsrv `6111184b…` | PID 7173 | PID 1608286 |
+| desktopd `a0f30f81…` | PID 6983 | PID 1608278 |
+| maclaw-hub `6a8a8c8b…` | PID 7283 | PID 1608334 |
+| `/version` | `12641` / `464ebf96-dirty` | 同左 |
+| `/v1/health`（带 token） | 200 | 200 |
+| hub 9399 bootstrap（不带 token） | 401 | 401 |
+| 桌面容器 | 3 个 Exited，ID 与状态前后一致 | （空） |
+
+`/proc/<pid>/exe` 复核六个进程全部新二进制，端口各归其主。孤儿进程照旧（mypapers 17571、maclaw.top 1229490）。hubcenter 未动。备份（各台三份）：`*.bak-12641-464ebf96-20261115`（带提交号，便于与上一轮 `877d72d4…` 那份区分——同名 bak 已经被 12641 首轮用掉了，之后备份名带上提交短号）。
+
+#### 12641·qoder WIP（2026-11-15 20:35 CST，自动巡检轮）
+
+20:16 发完 `464ebf96` 后，WIP 又落了 5 个文件（`corelib/qoder/*`，新的 qoder provider）。20:21:49 **对面流水线先发了一版 maclawsrv 到 mypapers**：`7ac5044c…`，元数据 `12641`/`464ebf96`（**干净树构建，不含 qoder WIP**）——本轮开始时间 20:19:46 之后的新外来工件，按规则不覆盖。
+
+本轮决策因此是「混合」的：
+
+| 组件 | 本地新编（含 qoder WIP） | mypapers | maclaw.top | 处理 |
+| --- | --- | --- | --- | --- |
+| maclawsrv | `1fd22097…`（弃用） | `7ac5044c…`（对方的，未动） | `6111184b…`（我的旧批） | **对齐到对方的**（经本地中转，maclaw.top 换成 `7ac5044c…`） |
+| desktopd | `8e37acde…` | `a0f30f81…`（我的旧批） | 同左 | 换成新编，两台都发 |
+| maclaw-hub | `858af41b…` | `6a8a8c8b…`（我的旧批） | 同左 | 换成新编，两台都发 |
+
+注意 maclawsrv 的元数据来源：maclaw.top 的 `/version` 现在报 `{"built_at":"2026-11-15T20:21:29+08:00","commit":"464ebf96","version":"12641"}`，来自对方工件。desktopd 与 hub 虽然也引用了 corelib/qoder，但对方没发这两件，两台仍以本地新编为准——**同一时刻不同组件可以来自不同分支状态（干净提交 vs 脏树），这是两条流水线并行的正常形态，只要每台内部一致即可**。
+
+| 组件（新哈希） | mypapers | maclaw.top |
+| --- | --- | --- |
+| maclawsrv `7ac5044c…` | PID 11540（对方的） | PID 1611925 |
+| desktopd `8e37acde…` | PID 13555 | PID 1611916 |
+| maclaw-hub `858af41b…` | PID 13665 | PID 1611975 |
+| `/v1/health`（带 token） | 200 | 200 |
+| hub 9399 bootstrap（不带 token） | 401 | 401 |
+| 桌面容器 | 3 个 Exited，ID 与状态前后一致 | （空） |
+
+`/proc/<pid>/exe` 复核六个进程哈希两台一致，端口各归其主。孤儿进程照旧（mypapers 17571、maclaw.top 1229490）。备份：mypapers `desktopd.bak-8e37acde-20261115`、`maclaw-hub.bak-858af41b-20261115`；maclaw.top 另有 `maclawsrv.bak-sync-20261115b`。
+
+#### 12641·对面二次发布对齐（2026-11-15 20:45 CST，自动巡检轮）
+
+20:31:58 **对面把 mypapers 的 maclawsrv 又发了一版**：仍是干净提交 `464ebf96`，`/version` 报 `12641`/`2026-11-15T20:31:33+08:00`，新哈希 `392e4f74…`（10 分钟内同一提交发了两版，只差 `built_at`）。desktopd/hub 两台维持我上一轮那份，无变化。
+
+空转判断在这轮差点误判：上一轮基线记的是 `7ac5044c…`，与 maclaw.top 实测一致，但 mypapers 已经悄悄变了。**基线比较必须每轮重新实测两台，不能只比状态文件。** maclaw.top 的 maclawsrv 落后一个版本（`7ac5044c…` → `392e4f74…`），按规则经本地中转对齐（mypapers 未动）。
+
+| 项 | mypapers | maclaw.top |
+| --- | --- | --- |
+| maclawsrv → `392e4f74…` | PID 11540（对方的，未动） | PID 1614961 |
+| `/version` | `12641` / `464ebf96` / `2026-11-15T20:31:33+08:00` | 同左 |
+| desktopd / hub | 未动（`8e37acde…` / `858af41b…`） | 未动 |
+
+maclaw.top maclawsrv `/proc/<pid>/exe` 复核为 `392e4f74…`。备份：maclaw.top `maclawsrv.bak-sync-20261115c`。
+
+教训一并记下：中转用的本地暂存目录（`/tmp/relay`）会被收尾清理掉，下轮再用时先 `mkdir -p`，否则 pscp 报 `Cannot create file`（本次踩中，重试即恢复）。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为

@@ -30,6 +30,15 @@ func TestViewerRejectsABadTicketAndLeavesPostView(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("bad ticket status %d", rec.Code)
 	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "*" || rec.Header().Get("Access-Control-Allow-Private-Network") != "true" {
+		t.Fatalf("probe headers: %v", rec.Header())
+	}
+	preflight := httptest.NewRequest(http.MethodOptions, "/v1/desktops/viewer/not-a-ticket/vnc.html", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, preflight)
+	if rec.Code != http.StatusNoContent || rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("preflight %d %v", rec.Code, rec.Header())
+	}
 
 	key, err := desktop.UserKey("tenant-a", "alice")
 	if err != nil {
@@ -54,6 +63,13 @@ func TestViewerRejectsABadTicketAndLeavesPostView(t *testing.T) {
 	handler.ServeHTTP(rec, wrong)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("other node status %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	rec.Header().Set("X-Frame-Options", "DENY")
+	(&frameOK{ResponseWriter: rec}).WriteHeader(http.StatusOK)
+	if rec.Header().Get("X-Frame-Options") != "" || !strings.Contains(rec.Header().Get("Content-Security-Policy"), "frame-ancestors") {
+		t.Fatalf("frame headers: %v", rec.Header())
 	}
 
 	page := httptest.NewRequest(http.MethodGet, "/v1/desktops/viewer/"+ticket+"/vnc.html", nil)

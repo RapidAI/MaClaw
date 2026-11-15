@@ -332,6 +332,7 @@ async function testIntranetNodeListShowsStatusCapabilityAndVersion() {
   assertIncludes(html, 'desktopd', 'desktopd capability is listed');
   assertIncludes(html, 'v9', 'version is listed');
   assertIncludes(html, 'data-node-delete="n1"', 'delete is offered');
+  assertIncludes(html, 'data-node-rotate="n1"', 'a new secret can be issued');
 }
 
 async function testUserListCarriesOnlyAuthorizedUsers() {

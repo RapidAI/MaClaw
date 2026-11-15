@@ -657,7 +657,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         setProviderModels([]);
         setProviderModelListOpen(false);
         try {
-            const models = await FetchProviderModels(fetchUrl, fetchKey, fetchProtocol, fetchAgent);
+            const fetchArgs: [string, string, string, string, string?] = [
+                fetchUrl,
+                fetchKey,
+                fetchProtocol,
+                fetchAgent,
+            ];
+            if (isQoderProvider(dlgProvider.name)) fetchArgs.push(dlgProvider.name);
+            const models = await FetchProviderModels(...fetchArgs);
             if (fetchSeq !== fetchModelsSeqRef.current) return;
             setProviderModels(models || []);
             const ids = (models || []).map(item => String(item?.id || "").trim()).filter(Boolean);
@@ -666,6 +673,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                     const copy = [...prev];
                     const current = copy[dlgSelectedIdx];
                     if (!current) return prev;
+                    if (isQoderProvider(current.name)) {
+                        copy[dlgSelectedIdx] = { ...current, models: ids };
+                        return copy;
+                    }
                     const merged: string[] = [];
                     const seen = new Set<string>();
                     const add = (value: string) => {
@@ -939,8 +950,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                     savingProviders as corelib.MaclawLLMProvider[], saveName, saveName,
                 );
                 const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
+                let savedModel = String(sp.model || "");
                 try {
-                    await refreshProviderList();
+                    const fresh = await refreshProviderList();
+                    const saved = fresh?.find(provider => provider.name === saveName);
+                    if (saved?.model) savedModel = String(saved.model);
                 } catch {
                     // Test & Save already persisted the authoritative result.
                 }
@@ -958,7 +972,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                             ? t("Vision support: enabled", "图片理解：支持")
                             : t("Vision support: disabled", "图片理解：不支持")}`,
                 });
-                await finishTestedProviderSave(saveName, String(sp.model || ""));
+                await finishTestedProviderSave(saveName, savedModel);
                 return;
             } catch (e) {
                 setDlgTestResult({ ok: false, msg: String(e) });
@@ -1009,8 +1023,12 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             // Refresh the provider snapshot from the backend so all persisted
             // fields (including connection_test_passed and capability data)
             // are reflected before model assignments refresh.
+            let savedModel = String(sp.model || "");
             try {
-                if (!await refreshProviderList()) {
+                const fresh = await refreshProviderList();
+                const saved = fresh?.find(provider => provider.name === saveName);
+                if (saved?.model) savedModel = String(saved.model);
+                if (!fresh) {
                     setDlgProviders(savingProviders);
                     setProviders(savingProviders.map((p: LLMProvider) => ({ ...p })));
                 }
@@ -1038,7 +1056,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             // The connection is saved. Offer to point the agent at this provider;
             // declining keeps the previous auto-close. Agreeing closes at once so
             // model assignment can take focus.
-            await finishTestedProviderSave(saveName, String(sp.model || ""));
+            await finishTestedProviderSave(saveName, savedModel);
             return;
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });

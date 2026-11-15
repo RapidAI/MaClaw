@@ -35,10 +35,11 @@ const (
 	ClientVersion = "1.1.64"
 	UserAgent     = "qoder/" + ClientVersion
 
-	// DefaultModel is the hardcoded fallback model of the official CLI
-	// (Qwen 3.8 Max, 1M context). The login flow replaces it with the
-	// server catalog default when that catalog is readable.
+	// DefaultModel is the legacy fallback name. The chat wire rewrites it
+	// to the catalog key qmodel_38max. DefaultModelLabel is the name shown
+	// in provider settings (Qwen 3.8 Max), which the same rewrite accepts.
 	DefaultModel         = "qwen3.8-max"
+	DefaultModelLabel    = "Qwen3.8-Max"
 	DefaultContextLength = 1000000
 
 	// ChatBase is the shared model server behind both editions. The official

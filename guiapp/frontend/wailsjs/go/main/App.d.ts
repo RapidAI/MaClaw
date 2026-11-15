@@ -829,7 +829,7 @@ export function FetchCodeGenModels():Promise<Array<main.CodeGenModelItem>>;
 
 export function FetchNews():Promise<Array<main.NewsArticle>>;
 
-export function FetchProviderModels(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Array<main.CodeGenModelItem>>;
+export function FetchProviderModels(arg1:string,arg2:string,arg3:string,arg4:string,arg5?:string):Promise<Array<main.CodeGenModelItem>>;
 
 export function FetchMaclawLLMProfileModels(arg1:string):Promise<Array<main.CodeGenModelItem>>;
 

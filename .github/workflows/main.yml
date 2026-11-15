@@ -2632,7 +2632,30 @@ jobs:
             echo "::warning::MOBILEBOT_KEYSTORE_BASE64 is not set — release APK falls back to debug signing"
             exit 0
           fi
-          echo "$MOBILEBOT_KEYSTORE_BASE64" | base64 -d > app/upload-keystore.jks
+          # A pasted secret often carries line wraps or spaces from the copy
+          # source — strip all whitespace before decoding instead of failing.
+          # A secret that exists but is not decodable (placeholder text,
+          # truncated paste) must degrade to debug signing too rather than
+          # fail the whole release; build.gradle.kts checks both files below.
+          if ! printf '%s' "$MOBILEBOT_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > app/upload-keystore.jks 2>/dev/null; then
+            echo "::warning::MOBILEBOT_KEYSTORE_BASE64 is not valid base64 — release APK falls back to debug signing"
+            rm -f app/upload-keystore.jks
+            exit 0
+          fi
+          # Decodable-but-garbage (e.g. pasted the wrong file's text) fails
+          # later inside Gradle with a cryptic keystore error — catch it now:
+          # JKS starts FEEDFEED, PKCS12 starts 3082 (ASN.1 SEQUENCE).
+          magic=$(head -c2 app/upload-keystore.jks | od -An -tx1 | tr -d '[:space:]')
+          if [ "$magic" != "feed" ] && [ "$magic" != "3082" ]; then
+            echo "::warning::upload-keystore.jks is neither JKS nor PKCS12 (magic=$magic) — release APK falls back to debug signing"
+            rm -f app/upload-keystore.jks
+            exit 0
+          fi
+          if [ -z "$MOBILEBOT_KEYSTORE_PASSWORD" ] || [ -z "$MOBILEBOT_KEY_ALIAS" ] || [ -z "$MOBILEBOT_KEY_PASSWORD" ]; then
+            echo "::warning::keystore decoded but MOBILEBOT_KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD incomplete — release APK falls back to debug signing"
+            rm -f app/upload-keystore.jks
+            exit 0
+          fi
           {
             echo "storeFile=upload-keystore.jks"
             echo "storePassword=$MOBILEBOT_KEYSTORE_PASSWORD"

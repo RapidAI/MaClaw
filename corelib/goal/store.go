@@ -699,6 +699,26 @@ func (s *Store) loadAll() {
 			}
 		}
 	}
+	repaired := make([]string, 0)
+	for userID, g := range s.goals {
+		if g == nil {
+			continue
+		}
+		if fixed, changed := repairEncodedStepTitles(g.Steps); changed {
+			g.Steps = fixed
+			repaired = append(repaired, userID)
+		}
+	}
+	for _, userID := range repaired {
+		g := s.goals[userID]
+		if g == nil {
+			continue
+		}
+		g.TextRev++
+		if wrote, err := s.updateGoalText(g); err != nil || !wrote {
+			_ = s.persist(userID, g)
+		}
+	}
 	s.seedWriteStamp()
 }
 

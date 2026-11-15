@@ -139,6 +139,62 @@ func PostEdgeCodeAdminHandler(reg *edgenode.Registry) http.HandlerFunc {
 	}
 }
 
+// PostEdgeRotateCodeAdminHandler POST /api/admin/bots/nodes/{id}/code
+// The code rotates that node's secret. It does not register another node.
+func PostEdgeRotateCodeAdminHandler(reg *edgenode.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if reg == nil || !edgenode.Enabled() {
+			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "edge nodes are disabled")
+			return
+		}
+		code, err := reg.IssueRotateCode(r.Context(), botTenantID(r), r.PathValue("id"))
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, edgenode.ErrNotFound) || errors.Is(err, edgenode.ErrTenant) {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, "EDGE_ENROLL", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"code":    code.Code,
+			"node_id": code.NodeID,
+			"until":   code.Until,
+		})
+	}
+}
+
+// refreshRotatedDesktop writes the new desktopd key onto the server this node
+// already has. A missing server is created. A second server is not.
+func refreshRotatedDesktop(ctx context.Context, pool *desktoppool.Pool, tenantID, nodeID, name, key string) error {
+	if pool == nil {
+		return errors.New("desktop service store is unavailable")
+	}
+	view, err := pool.View(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	key = strings.TrimSpace(key)
+	for _, server := range view.Servers {
+		if server.NodeID != nodeID {
+			continue
+		}
+		_, err = pool.UpdateServer(ctx, tenantID, server.ID, desktoppool.Server{
+			Name: server.Name, BaseURL: server.BaseURL, AccessToken: key,
+			Image: server.Image, Memory: server.Memory, CPUs: server.CPUs, ShmSize: server.ShmSize,
+			NodeID: server.NodeID, OwnerUserID: server.OwnerID, Intranet: server.Intranet,
+		}, true)
+		return err
+	}
+	if strings.TrimSpace(name) == "" {
+		name = nodeID
+	}
+	_, err = pool.CreateServer(ctx, tenantID, desktoppool.Server{
+		Name: name, BaseURL: desktoppool.NodeBaseURL(nodeID), AccessToken: key, NodeID: nodeID,
+	})
+	return err
+}
+
 // PostEdgeEnrollHandler POST /api/v1/edge/enroll
 func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +233,13 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots 
 			writeError(w, http.StatusBadRequest, "EDGE_ENROLL", err.Error())
 			return
 		}
-		if in.HasDesktopd {
+		if out.Rotated && in.HasDesktopd {
+			if err := refreshRotatedDesktop(r.Context(), pool, out.TenantID, out.NodeID, out.Previous.Name, in.DesktopdKey); err != nil {
+				_ = reg.Restore(r.Context(), out.Previous)
+				writeError(w, http.StatusBadGateway, "EDGE_ENROLL", "desktop service was not recorded; issue a new code")
+				return
+			}
+		} else if in.HasDesktopd {
 			node, authErr := reg.Authenticate(r.Context(), out.NodeID, out.NodeSecret)
 			var createErr error
 			switch {

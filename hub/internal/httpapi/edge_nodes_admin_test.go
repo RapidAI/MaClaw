@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -81,6 +83,61 @@ func TestEdgeNodeListHidesSecretsAndDeleteRemovesIt(t *testing.T) {
 	}
 	if _, err := reg.Lookup(context.Background(), enrolled.NodeID); err == nil {
 		t.Fatal("deleted node is still registered")
+	}
+}
+
+func TestRotateEnrollmentKeepsTheSameDesktopServer(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	ctx := context.Background()
+	code, err := reg.IssueCode(ctx, store.DefaultTenantID, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(`{"code":"`+code.Code+`","desktopd_key":"key-1","version":"v1","has_desktopd":true}`))
+	PostEdgeEnrollHandler(reg, pool, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("enroll %d %s", rec.Code, rec.Body.String())
+	}
+	var first edgenode.EnrollResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	rotateReq := httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+first.NodeID+"/code", strings.NewReader(`{}`))
+	rotateReq.SetPathValue("id", first.NodeID)
+	PostEdgeRotateCodeAdminHandler(reg).ServeHTTP(rec, rotateReq)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("rotate code %d %s", rec.Code, rec.Body.String())
+	}
+	var issued struct {
+		Code   string `json:"code"`
+		NodeID string `json:"node_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+	if issued.NodeID != first.NodeID || issued.Code == "" {
+		t.Fatalf("issued = %+v", issued)
+	}
+	rec = httptest.NewRecorder()
+	again := httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(`{"code":"`+issued.Code+`","desktopd_key":"key-2","version":"v2","has_desktopd":true}`))
+	PostEdgeEnrollHandler(reg, pool, nil).ServeHTTP(rec, again)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("second enroll %d %s", rec.Code, rec.Body.String())
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Servers) != 1 || view.Servers[0].NodeID != first.NodeID {
+		t.Fatalf("servers = %+v", view.Servers)
+	}
+	if _, err := reg.Authenticate(ctx, first.NodeID, first.NodeSecret); err == nil {
+		t.Fatal("the old secret still opens the tunnel")
 	}
 }
 

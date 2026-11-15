@@ -168,7 +168,8 @@ import { restoreCloudWorkspaceTasksShared } from './utils/cloudWorkspaceTaskRest
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider, sidebarEditorUsageProfile, sidebarTurnUsageProfile, sumSidebarProfileUsage, sumSidebarProviderProfiles } from './utils/sidebarProviderSelection';
-import { buildSidebarModelOptions } from './utils/sidebarModelOptions';
+import { buildSidebarModelOptions, replaceCachedModelsWithLiveCatalog } from './utils/sidebarModelOptions';
+import { isQoderProvider } from './components/remote/providerLogos';
 import { capabilityBandName, hubOfficialModelAliases, multipliersFromModelItems } from './utils/capabilityModelLabel';
 
 const EMPTY_MODEL_MULTIPLIERS: Record<string, number> = {};
@@ -4633,7 +4634,11 @@ function App() {
             let fetched: string[] = [];
             if (url && (key || isManagedAuth || isHub)) {
                 try {
-                    const items = await callBackend(() => FetchProviderModels(url, key, protocol, agentType)) as Array<{ id?: string; name?: string }>;
+                    const items = await callBackend(() => {
+                        const fetchArgs: [string, string, string, string, string?] = [url, key, protocol, agentType];
+                        if (isQoderProvider(currentName)) fetchArgs.push(currentName);
+                        return FetchProviderModels(...fetchArgs);
+                    }) as Array<{ id?: string; name?: string }>;
                     if (seq !== sidebarModelsSeqRef.current) return;
                     fetched = (items || []).map((m) => String(m?.id || m?.name || '').trim()).filter(Boolean);
                 } catch {
@@ -4643,11 +4648,14 @@ function App() {
             }
 
             if (seq !== sidebarModelsSeqRef.current) return;
-            const options = buildSidebarModelOptions({
+            const catalogInput = {
                 configuredModel: configured,
                 cachedModels: cached,
                 fetchedModels: fetched,
-            });
+            };
+            const options = isQoderProvider(currentName)
+                ? replaceCachedModelsWithLiveCatalog(catalogInput)
+                : buildSidebarModelOptions(catalogInput);
             setSidebarCurrentModel(configured);
             setSidebarModelOptions(options);
         } catch {
@@ -4754,12 +4762,15 @@ function App() {
         // Official model names are the four aliases. A live catalog must not
         // swap them for whatever upstream ids the hub advertised this request.
         if (quickProfileProvider?.isHubService) return hubOfficialModelAliases();
-        return buildSidebarModelOptions({
+        const catalogInput = {
             configuredModel: quickModel,
             cachedModels: quickProfileProvider?.models,
             fetchedModels: quickFetchedModelsByProvider[selectedQuickProviderID],
-        });
-    }, [quickFetchedModelsByProvider, quickModel, quickProfileProvider?.isHubService, quickProfileProvider?.models, selectedQuickProviderID]);
+        };
+        return isQoderProvider(quickProfileProvider?.name)
+            ? replaceCachedModelsWithLiveCatalog(catalogInput)
+            : buildSidebarModelOptions(catalogInput);
+    }, [quickFetchedModelsByProvider, quickModel, quickProfileProvider?.isHubService, quickProfileProvider?.models, quickProfileProvider?.name, selectedQuickProviderID]);
     const quickModelMultipliers = quickModelMultipliersByProvider[selectedQuickProviderID] ?? EMPTY_MODEL_MULTIPLIERS;
     const quickProfileProviders = useMemo((): SidebarLLMProviderSummary[] => {
         const providers = (llmProfilePanelState?.providers || []).map((provider: any) => ({

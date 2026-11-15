@@ -32,6 +32,8 @@ var cdpTicketTTL = 2 * time.Hour
 
 type edgeCallerKey struct{}
 
+type skipLocalKey struct{}
+
 type cdpTicket struct {
 	NodeID    string
 	TenantID  string
@@ -52,7 +54,11 @@ func withEdgeCaller(ctx context.Context, r *http.Request) context.Context {
 		return ctx
 	}
 	id := edgeRegistry.NodeIDForHubToken(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	return context.WithValue(ctx, edgeCallerKey{}, id)
+	ctx = context.WithValue(ctx, edgeCallerKey{}, id)
+	if strings.TrimSpace(r.Header.Get("X-Maclaw-Skip-Local")) == "1" {
+		ctx = context.WithValue(ctx, skipLocalKey{}, true)
+	}
+	return ctx
 }
 
 func edgeCallerNode(ctx context.Context) string {

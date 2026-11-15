@@ -3086,6 +3086,405 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.busySessionKeys).toEqual([session]);
     });
 
+    it('shows a desktop deploy turn when its task tab opens after the round started', async () => {
+        // Production switches tabs with setActiveSessionKey. The hook option
+        // is not passed, so a one-click desktopd install that starts on the
+        // task list used to stay on the welcome screen.
+        const session = 'desktop-user:C:/Users/ma139/.maclaw/data/tasks/deploy-desktopd';
+        const rawSession = 'desktop-user:C:\\Users\\ma139\\.maclaw\\data\\tasks\\deploy-desktopd';
+        const requestId = 'desktop-ai-1794750028698029700';
+        const displayText = '〔一键部署〕在 znsoft@192.168.1.49 上部署 desktopd';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '用 ssh 登录下面这台 Linux 服务器，按安装文档完成部署。',
+                display_text: displayText,
+            });
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '先看安装文档',
+            });
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '\u0001正在核对主机指纹',
+            });
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '准备登录远程服务器并阅读安装文档',
+            });
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '先看安装文档准备登录远程服务器并阅读安装文档。接下来执行命令。',
+            });
+            emitRuntimeEvent('ai-assistant-progress', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '工具 · 执行命令 (ssh)\nssh znsoft@192.168.1.49',
+            });
+        });
+
+        expect(result.current.offscreenLiveSessionKeys).toEqual([session]);
+        expect(result.current.messages).toHaveLength(0);
+
+        await act(async () => {
+            setActiveSessionKey(session);
+        });
+
+        expect(result.current.offscreenLiveSessionKeys).toEqual([]);
+        expect(result.current.sending).toBe(true);
+        const userRows = result.current.messages.filter(message => message.role === 'user');
+        expect(userRows).toHaveLength(1);
+        expect(userRows[0].content).toBe(displayText);
+        const assistant = assistantMessages(result.current.messages)[0] as {
+            content: string;
+            reasoning?: string;
+            toolCalls?: Array<{ name: string; detail: string }>;
+        };
+        expect(assistant.content).toContain('先看安装文档');
+        expect(assistant.content.split('准备登录远程服务器并阅读安装文档').length - 1).toBe(1);
+        expect(assistant.content).toContain('接下来执行命令');
+        expect(assistant.content).not.toContain('正在核对主机指纹');
+        expect(assistant.reasoning).toContain('正在核对主机指纹');
+        expect(assistant.toolCalls?.some(call => call.name === 'ssh' && call.detail.includes('ssh znsoft@192.168.1.49'))).toBe(true);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '，继续安装',
+            });
+        });
+        expect(assistantMessages(result.current.messages)[0].content).toContain('先看安装文档');
+        expect(assistantMessages(result.current.messages)[0].content).toContain('，继续安装');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '先看安装文档准备登录远程服务器并阅读安装文档。接下来执行命令。，继续安装。收尾。',
+            });
+            // The first token after adopt paints immediately. Later pieces wait
+            // for the stream flush.
+            await new Promise(resolve => setTimeout(resolve, 200));
+        });
+        const afterSnapshot = assistantMessages(result.current.messages)[0].content;
+        expect(afterSnapshot.split('准备登录远程服务器并阅读安装文档').length - 1).toBe(1);
+        expect(afterSnapshot).toContain('收尾');
+    });
+
+    it('keeps a finished desktop deploy when its task tab opens after the reply', async () => {
+        const session = 'desktop-user:C:/Users/ma139/.maclaw/data/tasks/deploy-desktopd-done';
+        const rawSession = 'desktop-user:C:\\Users\\ma139\\.maclaw\\data\\tasks\\deploy-desktopd-done';
+        const requestId = 'desktop-ai-1794750028698029701';
+        const displayText = '〔一键部署〕在 znsoft@192.168.1.49 上部署 desktopd';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '用 ssh 登录下面这台 Linux 服务器，按安装文档完成部署。',
+                display_text: displayText,
+            });
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '先看安装文档',
+            });
+            emitRuntimeEvent('ai-assistant-progress', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '工具 · 执行命令 (ssh)\nssh znsoft@192.168.1.49',
+            });
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: rawSession,
+                text: '部署完成：desktopd 已安装',
+                error: '',
+            });
+        });
+
+        expect(result.current.offscreenLiveSessionKeys).toEqual([]);
+        expect(result.current.sending).toBe(false);
+        const taskRows = result.current.messages.filter(message => message.sessionKey === session);
+        expect(taskRows.filter(message => message.role === 'user').map(message => message.content)).toEqual([displayText]);
+        const assistant = taskRows.find(message => message.role === 'assistant') as {
+            content: string;
+            resultText?: string;
+            toolCalls?: Array<{ name: string; detail: string }>;
+        };
+        expect(`${assistant.content}\n${assistant.resultText || ''}`).toContain('部署完成：desktopd 已安装');
+        expect(assistant.toolCalls?.some(call => call.name === 'ssh' && call.detail.includes('ssh znsoft@192.168.1.49'))).toBe(true);
+        expect(result.current.messages.filter(message => !message.sessionKey || message.sessionKey === 'desktop-user')).toHaveLength(0);
+
+        await act(async () => {
+            setActiveSessionKey(session);
+        });
+        expect(result.current.sending).toBe(false);
+        expect(result.current.offscreenLiveSessionKeys).toEqual([]);
+    });
+
+    it('keeps a hidden deploy when the final reply text is empty', async () => {
+        const session = 'desktop-user:C:/work/tasks/deploy-empty-final';
+        const requestId = 'desktop-ai-empty-final';
+        const displayText = '〔一键部署〕在 znsoft@192.168.1.49 上部署 desktopd';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '部署',
+                display_text: displayText,
+            });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '先看安装文档准备登录远程服务器并阅读安装文档。' });
+            emitRuntimeEvent('ai-assistant-progress', {
+                request_id: requestId,
+                session_key: session,
+                text: '工具 · 执行命令 (ssh)\nssh znsoft@192.168.1.49',
+            });
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: session,
+                text: '',
+                error: '',
+            });
+        });
+
+        expect(result.current.offscreenLiveSessionKeys).toEqual([]);
+        expect(result.current.sending).toBe(false);
+        const taskRows = result.current.messages.filter(message => message.sessionKey === session);
+        expect(taskRows.filter(message => message.role === 'user').map(message => message.content)).toEqual([displayText]);
+        const assistant = taskRows.find(message => message.role === 'assistant') as {
+            content: string;
+            toolCalls?: Array<{ name: string; detail: string }>;
+        };
+        expect(assistant.content).toContain('先看安装文档准备登录远程服务器并阅读安装文档。');
+        expect(assistant.toolCalls?.some(call => call.detail.includes('ssh znsoft@192.168.1.49'))).toBe(true);
+    });
+
+    it('drops a hidden draft when the round is rejected before its tab opens', async () => {
+        const session = 'desktop-user:C:/work/tasks/deploy-reject';
+        const requestId = 'desktop-ai-reject';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '部署',
+                display_text: '〔一键部署〕重写',
+            });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '先看安装文档' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0002' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '改写后的说明' });
+        });
+
+        await act(async () => {
+            setActiveSessionKey(session);
+        });
+
+        const content = assistantMessages(result.current.messages)[0].content;
+        expect(content).toContain('改写后的说明');
+        expect(content).not.toContain('先看安装文档');
+    });
+
+    it('keeps a hidden status bullet on its own reasoning line', async () => {
+        const session = 'desktop-user:C:/work/tasks/deploy-status';
+        const requestId = 'desktop-ai-status';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '部署',
+                display_text: '〔一键部署〕状态',
+            });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0001• 正在连接' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0001然后登录' });
+        });
+
+        await act(async () => {
+            setActiveSessionKey(session);
+        });
+
+        const reasoning = (assistantMessages(result.current.messages)[0] as { reasoning?: string }).reasoning || '';
+        expect(reasoning).toContain('• 正在连接\n然后登录');
+    });
+
+    it('replaces a hidden short draft when the next model round starts', async () => {
+        const session = 'desktop-user:C:/work/tasks/deploy-next-round';
+        const requestId = 'desktop-ai-next-round';
+        const first = '先看一下。';
+        const second = '正在复制 PDF 到当前工作区并投递到对话。';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '部署',
+                display_text: '〔一键部署〕下一轮',
+            });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: first });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0001thinking about bash' });
+            emitRuntimeEvent('ai-assistant-new-round', { request_id: requestId, session_key: session, text: '' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: second });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0001call bash now' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: `${second}收尾` });
+        });
+
+        await act(async () => {
+            setActiveSessionKey(session);
+        });
+
+        const assistant = assistantMessages(result.current.messages)[0] as { content: string; reasoning?: string };
+        expect(assistant.content).toContain(second);
+        expect(assistant.content).toContain('收尾');
+        expect(assistant.content.split(second).length - 1).toBe(1);
+        expect(assistant.content).not.toContain(first);
+        expect(assistant.reasoning).toBe('thinking about bash\ncall bash now');
+    });
+
+    it('keeps a hidden draft until the next round sends its first token', async () => {
+        const session = 'desktop-user:C:/work/tasks/deploy-next-round-wait';
+        const requestId = 'desktop-ai-next-round-wait';
+        const first = '先看一下。';
+        const second = '正在复制 PDF 到当前工作区并投递到对话。';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '部署',
+                display_text: '〔一键部署〕等待下一轮',
+            });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: first });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0001thinking about bash' });
+            emitRuntimeEvent('ai-assistant-new-round', { request_id: requestId, session_key: session, text: '' });
+        });
+
+        await act(async () => {
+            setActiveSessionKey(session);
+        });
+        const opened = assistantMessages(result.current.messages)[0] as { content: string; reasoning?: string };
+        expect(opened.content).toContain(first);
+        expect(opened.reasoning).toBe('thinking about bash');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: second });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0001call bash now' });
+            await new Promise(resolve => setTimeout(resolve, 200));
+        });
+        const assistant = assistantMessages(result.current.messages)[0] as { content: string; reasoning?: string };
+        expect(assistant.content).toBe(second);
+        expect(assistant.content).not.toContain(first);
+        expect(assistant.reasoning).toBe('thinking about bash\ncall bash now');
+    });
+
+    it('keeps hidden substantive prose when the next model round starts', async () => {
+        const session = 'desktop-user:C:/work/tasks/deploy-keep-prose';
+        const requestId = 'desktop-ai-keep-prose';
+        const kept = '这是上一轮已经保留的实质汇报，长度超过四十个字符，下一轮的预报草稿不能把它清掉。';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '部署',
+                display_text: '〔一键部署〕保留正文',
+            });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: kept });
+            emitRuntimeEvent('ai-assistant-new-round', { request_id: requestId, session_key: session, text: '' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '补充一句。' });
+        });
+
+        await act(async () => {
+            setActiveSessionKey(session);
+        });
+
+        const content = assistantMessages(result.current.messages)[0].content;
+        expect(content).toContain(`${kept}\n\n补充一句。`);
+    });
+
+    it('keeps a hidden report when the next round is rejected', async () => {
+        const session = 'desktop-user:C:/work/tasks/deploy-reject-next';
+        const requestId = 'desktop-ai-reject-next';
+        const kept = '这是上一轮已经保留的实质汇报，长度超过四十个字符，下一轮的预报草稿不能把它清掉。';
+        const forecast = '根据搜索到的公开预报信息：北京今天 26°C，适合出行。';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '部署',
+                display_text: '〔一键部署〕驳回下一轮',
+            });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: kept });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0001先核对主机。' });
+            emitRuntimeEvent('ai-assistant-new-round', { request_id: requestId, session_key: session, text: '' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: forecast });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0001这轮预报作废。' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '\u0002' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '改写后的说明' });
+        });
+
+        await act(async () => {
+            setActiveSessionKey(session);
+        });
+
+        const assistant = assistantMessages(result.current.messages)[0] as { content: string; reasoning?: string };
+        expect(assistant.content).toContain(`${kept}\n\n改写后的说明`);
+        expect(assistant.content).not.toContain(forecast);
+        expect(assistant.reasoning).toContain('先核对主机。');
+        expect(assistant.reasoning).toContain('这轮预报作废。');
+    });
+
+    it('keeps one hidden card when the same command is reported again', async () => {
+        const session = 'desktop-user:C:/work/tasks/deploy-ssh-once';
+        const requestId = 'desktop-ai-ssh-once';
+        const ssh = '工具 · 执行命令 (ssh)\nssh znsoft@192.168.1.49';
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '部署',
+                display_text: '〔一键部署〕同一条命令',
+            });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: requestId, session_key: session, text: ssh });
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '先看安装文档准备登录远程服务器并阅读安装文档。' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: requestId, session_key: session, text: ssh });
+            emitRuntimeEvent('ai-assistant-progress', {
+                request_id: requestId,
+                session_key: session,
+                text: '工具 · 执行命令 (ssh)\nssh znsoft@192.168.1.49 systemctl status desktopd',
+            });
+        });
+
+        await act(async () => {
+            setActiveSessionKey(session);
+        });
+
+        const calls = (assistantMessages(result.current.messages)[0] as {
+            toolCalls?: Array<{ name: string; detail: string }>;
+        }).toolCalls || [];
+        expect(calls.filter(call => call.detail.includes('ssh znsoft@192.168.1.49') && !call.detail.includes('systemctl'))).toHaveLength(1);
+        expect(calls.some(call => call.detail.includes('systemctl status desktopd'))).toBe(true);
+    });
+
     it('expires an offscreen continuation that never reports a final response', async () => {
         vi.useFakeTimers();
         try {

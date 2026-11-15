@@ -18,11 +18,18 @@ func issueLocalDataURL(ctx context.Context, pool *desktoppool.Pool, tenantID, us
 	if pool == nil || edgeRegistry == nil || !edgenode.Enabled() {
 		return "", nil
 	}
+	if skip, _ := ctx.Value(skipLocalKey{}).(bool); skip {
+		return "", nil
+	}
 	caller := strings.TrimSpace(edgeCallerNode(ctx))
 	if caller == "" {
 		return "", nil
 	}
-	server, err := pool.AuthorizeLocal(ctx, tenantID, userID)
+	op := desktoppool.WakeScreenshot
+	if action == "file" {
+		op = desktoppool.WakeFile
+	}
+	server, err := pool.AuthorizeLocal(ctx, tenantID, userID, op)
 	if err != nil {
 		return "", err
 	}

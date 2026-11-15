@@ -22,6 +22,9 @@ type viewerGrant struct {
 	UserID   string
 	Control  bool
 	Expires  time.Time
+	// Key is the desktopd key that signed this ticket. A rotation must
+	// not keep handing out a page the desktop will reject.
+	Key string
 }
 
 var viewerGrants struct {
@@ -57,7 +60,8 @@ func edgeDirectURL(tenantID, userID, raw string, control bool) string {
 	}
 	tenantID = store.NormalizeTenantID(tenantID)
 	userID = strings.TrimSpace(userID)
-	if page, ok := reuseViewerGrant(node.ID, tenantID, userID, control); ok {
+	dropStaleViewerGrants(node.ID, node.DesktopdKey)
+	if page, ok := reuseViewerGrant(node.ID, tenantID, userID, node.DesktopdKey, control); ok {
 		return page
 	}
 	if p, err := edgeRegistry.Policy(context.Background(), tenantID); err == nil && p.MaxViews > 0 && liveViewerCount(tenantID) >= p.MaxViews {
@@ -79,10 +83,7 @@ func edgeDirectURL(tenantID, userID, raw string, control bool) string {
 	if err != nil || claims.ID == "" {
 		return ""
 	}
-	page := strings.TrimRight(node.DirectBase, "/") + "/v1/desktops/viewer/" + ticket + "/vnc.html?autoconnect=1&resize=scale"
-	if !control {
-		page += "&view_only=1"
-	}
+	page := viewerPage(node.DirectBase, ticket, control)
 	rememberViewerGrant(claims.ID, viewerGrant{
 		Page:     page,
 		NodeID:   node.ID,
@@ -90,7 +91,19 @@ func edgeDirectURL(tenantID, userID, raw string, control bool) string {
 		UserID:   userID,
 		Control:  control,
 		Expires:  time.Unix(claims.Exp, 0),
+		Key:      node.DesktopdKey,
 	})
+	return page
+}
+
+// viewerPage is the noVNC document. path keeps the socket under this
+// ticket. Without it, noVNC opens /websockify on the desktopd root.
+func viewerPage(base, ticket string, control bool) string {
+	socket := "v1/desktops/viewer/" + ticket + "/websockify"
+	page := strings.TrimRight(base, "/") + "/v1/desktops/viewer/" + ticket + "/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=1000&path=" + url.QueryEscape(socket)
+	if !control {
+		page += "&view_only=1"
+	}
 	return page
 }
 
@@ -126,16 +139,38 @@ func tunnelUserKey(path string) string {
 	return key
 }
 
-func reuseViewerGrant(nodeID, tenantID, userID string, control bool) (string, bool) {
+func dropStaleViewerGrants(nodeID, key string) {
+	nodeID = strings.TrimSpace(nodeID)
+	key = strings.TrimSpace(key)
+	if nodeID == "" || key == "" {
+		return
+	}
+	viewerGrants.mu.Lock()
+	defer viewerGrants.mu.Unlock()
+	for id, grant := range viewerGrants.items {
+		if grant.NodeID == nodeID && grant.Key != key {
+			delete(viewerGrants.items, id)
+		}
+	}
+}
+
+func reuseViewerGrant(nodeID, tenantID, userID, key string, control bool) (string, bool) {
 	viewerGrants.mu.Lock()
 	defer viewerGrants.mu.Unlock()
 	now := time.Now()
+	key = strings.TrimSpace(key)
 	for id, grant := range viewerGrants.items {
 		if !now.Before(grant.Expires) {
 			delete(viewerGrants.items, id)
 			continue
 		}
-		if grant.NodeID == nodeID && grant.TenantID == tenantID && grant.UserID == userID && grant.Control == control {
+		if grant.NodeID == nodeID && grant.Key == key && grant.TenantID == tenantID && grant.UserID == userID && grant.Control == control {
+			// A page without path= asks noVNC for /websockify at the host
+			// root, which is not this ticket. Drop it and sign a new one.
+			if !strings.Contains(grant.Page, "websockify") {
+				delete(viewerGrants.items, id)
+				continue
+			}
 			return grant.Page, true
 		}
 	}

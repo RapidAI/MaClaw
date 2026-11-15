@@ -26714,6 +26714,20 @@ button.tbk-pill {
   color: var(--theme-text-primary);
 }
 .ndet-invite-actions button:disabled { opacity: 0.55; cursor: default; }
+.ndet-invite-decided {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid var(--theme-border-subtle, var(--theme-border));
+  background: var(--theme-surface-muted, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--theme-text-secondary);
+}
 .ndet-invite-error { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--theme-danger); }
 .ndet-invite-note { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--theme-text-muted); }
 
@@ -26853,6 +26867,11 @@ button.tbk-pill {
 /* CodingAgentPlanChecklist.tsx — summary bar; the T1/T2 list floats on hover. */
 .capc-checklist { position: relative; padding: 6px 10px; border-radius: 12px; box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.45; }
 .capc-checklist.capc-open { z-index: 6; }
+/* The changed-files chip (CodingAgentFileChanges) owns its open state, so the
+   host bar cannot carry a class for it. Lift whichever bar shows the open
+   file list so the popover paints above the composer below. */
+.capc-checklist:has(.capc-files.capc-open),
+.mc-goal-quick-bar:has(.capc-files.capc-open) { z-index: 6; }
 .capc-bar { display: flex; align-items: stretch; gap: 8px; min-width: 0; }
 .capc-hover { flex: 1 1 auto; min-width: 0; }
 .capc-files { flex: 0 0 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }
@@ -26868,6 +26887,9 @@ button.tbk-pill {
 .capc-files.capc-open .capc-files-popover { pointer-events: auto; visibility: visible; }
 .capc-file-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .capc-file-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 2px 0; }
+.capc-file-row[data-preview-path] { cursor: pointer; margin: 0 -4px; padding-left: 4px; padding-right: 4px; border-radius: 6px; }
+.capc-file-row[data-preview-path]:hover { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 7%, transparent); }
+.capc-file-row[data-preview-path]:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: -2px; }
 .capc-file-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .capc-file-stat { display: inline-flex; align-items: baseline; gap: 6px; flex-shrink: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
 .capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
@@ -27071,6 +27093,10 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 /* AssistantTitleBarNotifications.tsx — urgent notice toast, styled like the
    app's other floating cards (surface, themed border, shared elevation). */
 .atbn-anchor { position: relative; }
+/* Bell-less host (bellHidden): keep the bell's height so the absolutely
+   positioned panel's `top: 100%` still drops below the title bar instead of
+   collapsing onto it. */
+.atbn-anchor--bell-less { height: 30px; }
 .notification-toast {
   position: fixed;
   top: 48px;
@@ -28915,6 +28941,22 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-goal-quick-bar {
   overflow: hidden;
 }
+/* The changed-files chip floats its list above the bar: while it is hosted
+   the bar must unclip (overflow:hidden would crop the popover) and become
+   the popover's positioning ancestor. */
+.mc-goal-quick-bar:has(.capc-files) {
+  overflow: visible;
+  position: relative;
+}
+/* Same right-half divider the checklist draws between the plan summary and
+   the files chip (.capc-hover + .capc-files). Stretch fills the bar height:
+   the popover's bottom edge overlaps the bar's top 6px, and a centered chip
+   top could sit a pixel below that, opening a dead gap on the pointer path. */
+.mc-goal-quick-bar > .capc-files {
+  align-self: stretch;
+  border-left: 1px solid color-mix(in srgb, var(--theme-border, #d8dee8) 70%, transparent);
+  padding-left: 8px;
+}
 .mc-goal-quick-bar :focus-visible {
   outline-offset: 0;
 }
@@ -29817,6 +29859,22 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .aap-plan-text { white-space: pre-wrap; max-height: 120px; overflow: auto; }
 .aap-wf-icon { opacity: 0.7; display: inline-flex; }
 .aap-wf-title { font-size: 0.88rem; font-weight: 600; }
+.aap-remote-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 48px 0;
+    color: var(--theme-text-muted);
+}
+.aap-remote-empty-hint { color: var(--theme-text-muted); }
+.aap-remote-activity { margin: 5px 0 7px; }
+.aap-remote-activity-meta {
+    margin: -2px 2px 6px;
+    font-size: 11px;
+    color: var(--theme-text-muted);
+}
 .aap-wf-sub { font-size: 0.75rem; opacity: 0.7; }
 .aap-expert-icon { font-size: 36px; line-height: 1; }
 .aap-expert-desc { font-size: 0.8rem; max-width: 420px; line-height: 1.5; }
@@ -30623,10 +30681,11 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   .mc-sidebar-drag-strip { width: 64px !important; }
 }
 
-/* Under .mc-task-pane to beat `.sidebar button`. One shared panel holds both
-   filter lines (status + workspace): the panel carries the pill chrome, the
-   rows inside are borderless lines stretching full width, chips spread evenly
-   via justify-content. The wash is kept subtle (淡雅) on purpose. */
+/* Under .mc-task-pane to beat `.sidebar button`. One shared panel holds the
+   filter head (title + status chips on a single line) and, when non-local
+   workspaces exist, the workspace line below it: the panel carries the pill
+   chrome, the rows inside are borderless lines stretching full width, chips
+   spread evenly via justify-content. The wash is kept subtle (淡雅) on purpose. */
 .mc-task-pane .mc-task-filter-stack {
   display: flex;
   flex-direction: column;
@@ -30648,6 +30707,24 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   font-size: 11px;
   font-weight: 700;
 }
+/* One-line filter head: the panel title sits flush with the status chips so
+   the whole status block reads as a single row (我的任务列表 · 全部 29 · …).
+   The title never shrinks or ellipsizes; the chip line keeps the --line
+   geometry (full remaining width, even spread, hidden horizontal scroll). */
+.mc-task-pane .mc-task-filter-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.mc-task-pane .mc-task-filter-head .mc-task-filter-panel__title {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.mc-task-pane .mc-task-filter-head .mc-task-filter-row {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .mc-task-pane .mc-task-machine-bar {
   display: flex;
   flex-direction: column;
@@ -30662,6 +30739,15 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   min-width: 0;
   border-bottom: 1px solid var(--theme-border);
 }
+/* The strip scrolls with the scrollbar hidden; a wrapper hosts the fade
+   overlays that reveal where more tabs are waiting. */
+.mc-task-pane .mc-task-machine-tablist-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+}
 .mc-task-pane .mc-task-machine-tablist {
   display: flex;
   align-items: flex-end;
@@ -30672,7 +30758,28 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   scrollbar-width: none;
 }
 .mc-task-pane .mc-task-machine-tablist::-webkit-scrollbar { display: none; }
-.mc-task-pane .mc-task-machine-tablist > .mc-task-machine-tab,
+.mc-task-pane .mc-task-machine-tab-fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 18px;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 1;
+  transition: opacity 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-tab-fade[data-show='true'] { opacity: 1; }
+.mc-task-pane .mc-task-machine-tab-fade--left {
+  left: 0;
+  background: linear-gradient(to right, var(--theme-surface), transparent);
+}
+.mc-task-pane .mc-task-machine-tab-fade--right {
+  right: 0;
+  background: linear-gradient(to left, var(--theme-surface), transparent);
+}
+/* The local tab is a direct child of .mc-task-machine-tabs (pinned outside
+   the scroll strip); grant tabs live inside wraps in the scrollable list. */
+.mc-task-pane .mc-task-machine-tabs > .mc-task-machine-tab,
 .mc-task-pane .mc-task-machine-tab-wrap {
   flex: 0 0 auto;
 }
@@ -30688,12 +30795,15 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane .mc-task-machine-tab {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border-radius: 7px 7px 0 0;
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: -0.011em;
   line-height: 1;
-  padding: 8px 12px 9px;
+  padding: 8px 10px 9px;
   margin: 0;
 }
 .mc-task-pane .mc-task-machine-tab:hover {
@@ -30719,8 +30829,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   box-shadow: none;
   font-weight: 700;
 }
-.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab-close,
-.mc-task-pane .mc-task-machine-tab.is-active i {
+.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab-close {
   color: var(--mc-accent, #2e75cb);
 }
 .mc-task-pane .mc-task-machine-tab:active:not(.is-active) {
@@ -30734,22 +30843,28 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane .mc-task-machine-tab > span {
   display: inline-block;
-  max-width: 9em;
+  max-width: 8em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
 }
+/* Offline tabs read quieter: gray name text with the dot as the live signal. */
+.mc-task-pane .mc-task-machine-tab[data-offline='true'] {
+  color: var(--theme-text-tertiary);
+}
+.mc-task-pane .mc-task-machine-tab-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--theme-success);
+}
+.mc-task-pane .mc-task-machine-tab-dot[data-online='false'] {
+  background: color-mix(in srgb, var(--theme-text-muted) 55%, var(--theme-surface));
+}
 .mc-task-pane .mc-task-machine-tab-wrap .mc-task-machine-tab {
   padding-right: 2px;
-}
-.mc-task-pane .mc-task-machine-tab i {
-  margin-left: 6px;
-  font-style: normal;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0;
-  color: var(--theme-text-muted);
 }
 .mc-task-pane .mc-task-machine-tab-close {
   border-radius: 4px;
@@ -30769,6 +30884,32 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   font-size: 16px;
   font-weight: 400;
 }
+/* Edge scrollers appear only while the strip overflows (see the tabFades
+   state); they keep hidden tabs reachable without a visible scrollbar. */
+.mc-task-pane .mc-task-machine-tab-nav {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--theme-text-muted);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 8px 4px 9px;
+  margin: 0;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+.mc-task-pane .mc-task-machine-tab-nav:hover:not(:disabled) {
+  color: var(--theme-text-primary);
+  background: color-mix(in srgb, var(--theme-text-primary) 4%, transparent);
+}
+.mc-task-pane .mc-task-machine-tab-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
 .mc-task-pane .mc-task-machine-tabs .mc-task-machine-error {
   flex: 0 1 auto;
   min-width: 0;
@@ -30787,12 +30928,124 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane .mc-task-machine-note {
   border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--theme-primary) 45%, transparent);
   border-radius: 0;
   background: transparent;
-  padding: 5px 2px 2px;
+  padding: 4px 8px 4px;
   color: var(--theme-text-muted);
   font-size: 11.5px;
   line-height: 1.35;
+}
+/* Live remote sessions (being-controlled / pending invites): slim one-line
+   chips instead of the headed card, so the strip costs a single row. */
+.mc-task-pane .mc-task-machine-live {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 5px 2px 2px;
+}
+.mc-task-pane .mc-task-machine-session {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 4px 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border-subtle));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--theme-primary) 6%, var(--theme-surface));
+  font-size: 12px;
+  line-height: 1.2;
+}
+.mc-task-pane .mc-task-machine-session[data-state='pending'] {
+  border-color: color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border-subtle));
+  background: color-mix(in srgb, var(--theme-warning) 7%, var(--theme-surface));
+}
+.mc-task-pane .mc-task-machine-session-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--theme-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary) 18%, transparent);
+  animation: mc-task-machine-live-pulse 2.2s ease-in-out infinite;
+}
+.mc-task-pane .mc-task-machine-session-dot[data-state='pending'] {
+  background: var(--theme-warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-warning) 22%, transparent);
+  animation: none;
+}
+@keyframes mc-task-machine-live-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary) 18%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--theme-primary) 9%, transparent); }
+}
+.mc-task-pane .mc-task-machine-session-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.mc-task-pane .mc-task-machine-session-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-primary);
+  font-weight: 600;
+}
+.mc-task-pane .mc-task-machine-session-label {
+  flex: none;
+  color: var(--theme-text-muted);
+  font-size: 11.5px;
+}
+.mc-task-pane .mc-task-machine-session-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--theme-primary) 12%, transparent);
+  color: var(--theme-primary-strong);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.mc-task-pane .mc-task-machine-session[data-state='pending'] .mc-task-machine-session-badge {
+  background: color-mix(in srgb, var(--theme-warning) 16%, transparent);
+  color: color-mix(in srgb, var(--theme-warning) 65%, var(--theme-text-primary));
+}
+.mc-task-pane .mc-task-machine-session-btn {
+  flex: none;
+  appearance: none;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--theme-text-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.mc-task-pane .mc-task-machine-session-btn:hover:not(:disabled) {
+  color: var(--theme-text-primary);
+  background: color-mix(in srgb, var(--theme-text-primary) 6%, transparent);
+}
+.mc-task-pane .mc-task-machine-session[data-state='active'] .mc-task-machine-session-btn:hover:not(:disabled) {
+  color: var(--theme-danger, #b42318);
+  background: color-mix(in srgb, var(--theme-danger, #b42318) 8%, transparent);
+}
+.mc-task-pane .mc-task-machine-session-btn:active:not(:disabled) {
+  opacity: 0.72;
+}
+.mc-task-pane .mc-task-machine-session-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.mc-task-pane .mc-task-machine-session-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-task-pane .mc-task-machine-session-dot { animation: none; }
 }
 .mc-task-pane .mc-task-machine-add .mc-task-machine-error,
 .mc-task-pane .mc-task-machine-create .mc-task-machine-error,
@@ -30806,12 +31059,13 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane .mc-task-machine-add,
 .mc-task-pane .mc-task-machine-detail {
   margin: 8px 2px 4px;
-  border: 1px solid var(--theme-border);
-  border-radius: 10px;
-  padding: 10px;
-  background: color-mix(in srgb, var(--theme-surface-muted) 72%, var(--theme-surface));
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  background: var(--theme-surface);
   color: var(--theme-text-secondary);
   font-size: 12px;
+  box-shadow: var(--shadow-sm), var(--shadow-md);
 }
 .mc-task-pane .mc-task-machine-add button,
 .mc-task-pane .mc-task-machine-create button,
@@ -30855,6 +31109,17 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   border-radius: 8px;
   background: var(--theme-surface);
   color: var(--theme-text-primary);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-add input::placeholder,
+.mc-task-pane .mc-task-machine-create input::placeholder,
+.mc-task-pane .mc-task-machine-send input::placeholder { color: var(--theme-text-tertiary); }
+.mc-task-pane .mc-task-machine-add input:focus,
+.mc-task-pane .mc-task-machine-create input:focus,
+.mc-task-pane .mc-task-machine-send input:focus {
+  outline: none;
+  border-color: var(--theme-primary);
+  box-shadow: 0 0 0 3px var(--theme-primary-soft);
 }
 .mc-task-pane .mc-task-machine-messages {
   max-height: 180px;
@@ -30862,7 +31127,232 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane .mc-task-machine-messages p,
 .mc-task-pane .mc-task-machine-add p { margin: 4px 0; overflow-wrap: anywhere; }
-.mc-task-pane .mc-task-machine-permission { display: flex; gap: 12px; margin-bottom: 8px; }
+/* The add-machine flow opens as a modal dialog sharing the app dialog shell
+   (.modal-backdrop / .modal-content); the card chrome comes from the shell,
+   so the inner .mc-task-machine-add drops its own. */
+.mc-task-pane .mc-task-machine-dialog {
+  width: 400px;
+  max-width: calc(100vw - 40px);
+  max-height: 80vh;
+  overflow: auto;
+}
+.mc-task-pane .mc-task-machine-dialog .mc-task-machine-add {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+/* Segmented permission picker: a two-slot well with the active option raised
+   on a surface chip, replacing the bare radio pair. */
+.mc-task-pane .mc-task-machine-add .mc-task-machine-permission {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: var(--theme-control-well);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: calc(var(--radius-md) - 2px);
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option:hover { color: var(--theme-text-primary); }
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option:focus-within {
+  box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option.is-selected {
+  background: var(--theme-surface);
+  color: var(--theme-primary-strong);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm), 0 0 0 1px var(--theme-border-subtle);
+}
+/* The selected chip replaces the ring, so keyboard focus needs its own restack. */
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option.is-selected:focus-within {
+  box-shadow: var(--shadow-sm), 0 0 0 2px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own { margin: 0 0 12px; }
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own,
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite {
+  border-top: 1px solid var(--theme-border-subtle);
+  padding-top: 10px;
+}
+.mc-task-pane .mc-task-machine-add h3 {
+  margin: 0 0 8px;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+/* Device rows: full-width cards with a live status dot and, when the machine
+   is already granted, its current permission as a trailing pill. */
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item {
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface);
+  color: var(--theme-text-primary);
+  font-size: 12.5px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item:hover {
+  border-color: color-mix(in srgb, var(--theme-primary) 35%, var(--theme-border));
+  background: color-mix(in srgb, var(--theme-primary) 4%, var(--theme-surface));
+  box-shadow: var(--shadow-sm);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--theme-success);
+  box-shadow: 0 0 0 3px var(--theme-success-bg);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item[data-online='false'] {
+  color: var(--theme-text-muted);
+  background: color-mix(in srgb, var(--theme-surface-muted) 55%, var(--theme-surface));
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item[data-online='false'] .mc-task-machine-own-dot {
+  background: color-mix(in srgb, var(--theme-text-muted) 55%, var(--theme-surface));
+  box-shadow: none;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-text {
+  display: inline-flex;
+  flex: 1;
+  min-width: 0;
+  align-items: baseline;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-status {
+  flex: none;
+  color: var(--theme-text-muted);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item[data-online='false'] .mc-task-machine-own-status { color: var(--theme-text-tertiary); }
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--theme-primary-soft);
+  color: var(--theme-primary-strong);
+  font-size: 11px;
+  font-weight: 600;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-chevron {
+  flex: none;
+  color: var(--theme-text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-empty {
+  margin: 0;
+  padding: 10px;
+  border: 1px dashed var(--theme-border);
+  border-radius: var(--radius-md);
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+/* Cross-account invite: icon-led input plus a full-width primary CTA. */
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field {
+  position: relative;
+  margin: 4px 0 10px;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field svg {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+  color: var(--theme-text-muted);
+  pointer-events: none;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field input {
+  margin: 0;
+  padding: 7px 10px 7px 28px;
+  font-size: 12.5px;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field input::placeholder { color: var(--theme-text-tertiary); }
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field input:focus {
+  outline: none;
+  border-color: var(--theme-primary);
+  box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-primary {
+  width: 100%;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--theme-primary);
+  color: var(--theme-on-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-primary:hover:not(:disabled) {
+  background: var(--theme-primary-strong);
+  box-shadow: var(--shadow-md);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-primary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option,
+  .mc-task-pane .mc-task-machine-add .mc-task-machine-own-item,
+  .mc-task-pane .mc-task-machine-add .mc-task-machine-primary,
+  .mc-task-pane .mc-task-machine-add input,
+  .mc-task-pane .mc-task-machine-create input,
+  .mc-task-pane .mc-task-machine-send input,
+  .mc-task-pane .mc-task-machine-tab-fade {
+    transition: none;
+  }
+}
 .mc-task-pane .mc-task-filter-row {
   display: inline-flex;
   flex-wrap: wrap;
@@ -31159,6 +31649,174 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   box-sizing: border-box;
 }
 .mc-workbench-status-card + .sidebar-system-status__panel { display: none !important; }
+
+/* Collapsed account status row. The full workbench card moved into a hover
+   popover above the row; the sidebar scroll wrapper clips absolute overlays,
+   so the popover is position: fixed (see SidebarSystemStatus). */
+/* The container sheds its outer band (its own background, insets and top
+   divider): the row sits straight on the sidebar and stretches to the full
+   width the band used to occupy. The light-theme selector must be matched so
+   the tinted band background loses to transparent. */
+.sidebar-system-status,
+.sidebar[data-ai-theme='light'] .sidebar-system-status {
+  margin: 0 !important;
+  padding: 0 !important;
+  border-top: 0 !important;
+  background: transparent !important;
+}
+.mc-workbench-status-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: calc(100% - 16px);
+  margin: 8px 8px 10px;
+  padding: 3px 8px;
+  border: 1px solid var(--theme-border, #dce6f2);
+  border-radius: 9px;
+  background: var(--theme-surface);
+  box-shadow: 0 1px 2px rgba(35, 55, 80, .05);
+  color: var(--theme-text-primary);
+  box-sizing: border-box;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+.mc-workbench-status-row:hover {
+  border-color: var(--mc-accent, #2e75cb);
+  background: var(--theme-surface-muted, rgba(0, 0, 0, .03));
+  box-shadow: 0 2px 8px rgba(35, 55, 80, .10);
+}
+.mc-workbench-status-line {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.mc-workbench-status-line:focus-visible { outline: 2px solid var(--mc-accent, #2e75cb); outline-offset: 1px; border-radius: 8px; }
+.mc-workbench-status-line__avatar {
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #2e75cb, #5b8def);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+.mc-workbench-status-line[data-online='false'] .mc-workbench-status-line__avatar {
+  background: var(--theme-surface-muted, #e8eef6);
+  color: var(--theme-text-muted, #8a97a5);
+}
+.mc-workbench-status-line__name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-primary);
+  font-weight: 600;
+}
+.mc-workbench-status-line[data-online='false'] .mc-workbench-status-line__name { color: var(--theme-text-secondary); font-weight: 500; }
+.mc-workbench-status-line__state {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--theme-success-bg, rgba(17, 129, 58, .12));
+  color: var(--theme-success, #11813a);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.mc-workbench-status-line__state i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--theme-success, #11813a);
+}
+.mc-workbench-status-line__state[data-online='false'] {
+  background: var(--theme-surface-muted, #e8eef6);
+  color: var(--theme-text-muted, #8a97a5);
+}
+.mc-workbench-status-line__state[data-online='false'] i { background: var(--theme-text-muted, #8a97a5); }
+.mc-workbench-status-bell {
+  position: relative;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+}
+.mc-workbench-status-bell:hover { background: var(--theme-surface-muted, rgba(0, 0, 0, .05)); color: var(--mc-accent, #2e75cb); }
+.mc-workbench-status-bell:focus-visible { outline: 2px solid var(--mc-accent, #2e75cb); outline-offset: 1px; }
+/* Red unread count pill on the bell's top-right corner (9+ when capped).
+   Kept inside the 26px button: the state pill sits right of the bell, so an
+   overflowing badge would overlap it. */
+.mc-workbench-status-bell__badge {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 8px;
+  box-sizing: border-box;
+  background: var(--theme-danger, #b74a4a);
+  box-shadow: 0 0 0 2px var(--theme-surface, #fff);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.mc-workbench-status-popover {
+  /* position: fixed applied via inline style with computed coordinates;
+     inline width tracks the row width so the edges stay aligned. */
+  width: 320px;
+  padding: 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-lg);
+  background: var(--theme-surface);
+  box-shadow: 0 12px 30px rgba(27, 56, 93, .14);
+  color: var(--theme-text-primary);
+  box-sizing: border-box;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 99999;
+}
+.mc-workbench-status-popover[data-open='false'] { visibility: hidden; pointer-events: none; }
+/* The embedded card sheds its own chrome; the popover surface provides it.
+   #App prefix outranks the #App .mc-workbench-status-card theme overrides. */
+#App .mc-workbench-status-popover .mc-workbench-status-card,
+.mc-workbench-status-popover .mc-workbench-status-card {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.mc-workbench-status-popover + .sidebar-system-status__panel { display: none !important; }
 .mc-workbench-status-card__heading,
 .mc-workbench-status-card__row {
   display: flex;
@@ -35062,30 +35720,19 @@ input.cwshare-url {
   border-radius: var(--radius-sm);
   background: var(--theme-surface, #fff);
   color: var(--theme-text-primary, #1c2834);
-  font: 13px/1.4 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: var(--font-size-sm, 12.5px)/1.4 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
 }
 .companion-pdf-bookmark-editor input:focus {
   border-color: var(--theme-primary, #2e75cb);
   outline: none;
 }
-.companion-pdf-bookmark-editor-actions {
+/* Editor action rows only lay out the buttons; the look is
+   .companion-pdf-menu-btn, shared with the resizable annotation editor. */
+.companion-pdf-bookmark-editor-actions,
+.companion-pdf-menu-editor-actions {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
-}
-.companion-pdf-bookmark-editor-actions button {
-  min-height: 26px;
-  padding: 4px 8px;
-  border: 1px solid var(--theme-border, #d5e0ef);
-  border-radius: var(--radius-sm);
-  background: var(--theme-surface, #fff);
-  color: var(--theme-text-primary, #24364e);
-  font: 500 13px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
-  cursor: pointer;
-}
-.companion-pdf-bookmark-editor-actions button:disabled {
-  opacity: 0.45;
-  cursor: default;
 }
 .companion-pdf-menu-colors--bookmarks {
   flex-wrap: wrap;
@@ -35168,10 +35815,18 @@ mark.companion-preview-find[data-find-active="true"] {
   background: var(--theme-surface, #fff);
   box-shadow: var(--shadow-lg, 0 8px 28px -6px rgba(30, 58, 95, 0.18));
   color: var(--theme-text-primary, #24364e);
-  font: 13px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: var(--font-size-sm, 12.5px)/1.45 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   --wails-draggable: no-drag;
 }
-/* Note fields use the menu's 13px face. A bare control would keep the document size. */
+/* An open writing field can outgrow the menu's 280px cap: the reader drags
+   the editor's corner to size it, so the menu may stretch to the window edge.
+   The editor's own max bounds keep it on screen. */
+.companion-pdf-menu--editing {
+  max-width: calc(100vw - var(--pdf-menu-x, 8px) - 16px);
+  max-height: calc(100vh - var(--pdf-menu-y, 8px) - 16px);
+  overflow-y: auto;
+}
+/* Note fields inherit the menu face so writing matches the surrounding UI. */
 .companion-pdf-menu-field {
   box-sizing: border-box;
   width: 100%;
@@ -35182,15 +35837,74 @@ mark.companion-preview-find[data-find-active="true"] {
   border-radius: var(--radius-sm);
   background: var(--theme-surface, #fff);
   color: var(--theme-text-primary, #24364e);
-  font: 13px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: inherit;
   resize: vertical;
 }
 .companion-pdf-menu-field:focus {
   border-color: var(--theme-primary, #2e75cb);
   outline: none;
 }
-.companion-pdf-menu button:not(.companion-pdf-menu-item, .companion-pdf-menu-color) {
-  font: 500 13px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+/* The annotation editor is a resizable box: drag the bottom-right corner to
+   grow or shrink the writing area. The extra bottom padding keeps the grip
+   clear of the action row, and the menu's own custom properties cap the box
+   at the window edge nearest the click. */
+.companion-pdf-menu-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  min-width: 220px;
+  min-height: 110px;
+  /* The caps also cover the menu's own 5px padding on each side so a dragged
+     edge stops inside the window instead of forcing a menu scrollbar. */
+  max-width: calc(100vw - var(--pdf-menu-x, 8px) - 26px);
+  max-height: calc(100vh - var(--pdf-menu-y, 8px) - 26px);
+  padding: 6px 8px 14px;
+  resize: both;
+  overflow: auto;
+}
+.companion-pdf-menu-editor .companion-pdf-menu-field {
+  flex: 1 1 auto;
+  min-height: 56px;
+  resize: none;
+}
+.companion-pdf-menu button:not(.companion-pdf-menu-item, .companion-pdf-menu-color, .companion-pdf-menu-btn) {
+  font: 500 var(--font-size-sm, 12.5px)/1.2 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
+}
+/* Menu editor actions share the small companion buttons: compact, quiet, and
+   one soft accent for the commit action. "accent", not "primary": the office
+   theme repaints button[class*='primary'] solid and hides the label. */
+.companion-pdf-menu-btn {
+  min-height: 24px;
+  padding: 3px 10px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #24364e);
+  font: 500 var(--font-size-xs, 11.5px)/1.2 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+.companion-pdf-menu-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 40%, var(--theme-border, #d5e0ef));
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-menu-btn:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary, #2e75cb) 40%, transparent);
+}
+.companion-pdf-menu-btn--accent {
+  border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 38%, var(--theme-border, #d5e0ef));
+  background: var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-menu-btn--accent:hover:not(:disabled) {
+  background: var(--theme-primary, #2e75cb);
+  color: #fff;
+}
+.companion-pdf-menu-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 /* The selection is the reason the menu opened: show it, but keep it to one
    line so the menu stays compact and the actions keep a stable height. */
@@ -35200,7 +35914,7 @@ mark.companion-preview-find[data-find-active="true"] {
   border-radius: var(--radius-sm);
   background: var(--theme-surface-muted, #f1f6fc);
   color: var(--theme-text-secondary, #46586f);
-  font: 12px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: var(--font-size-xs, 11.5px)/1.45 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -35219,7 +35933,7 @@ mark.companion-preview-find[data-find-active="true"] {
   gap: 6px;
   margin: 2px 8px 4px;
   color: var(--theme-text-muted, #5b6b80);
-  font: 600 11px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: 600 var(--font-size-2xs, 11px)/1.2 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   letter-spacing: 0.02em;
 }
 .companion-pdf-menu-glyph {
@@ -35240,7 +35954,7 @@ mark.companion-preview-find[data-find-active="true"] {
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--theme-text-primary, #24364e);
-  font: 500 13px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: 500 var(--font-size-sm, 12.5px)/1.2 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   text-align: left;
   cursor: pointer;
   transition: background var(--transition-fast), color var(--transition-fast);
@@ -35264,7 +35978,7 @@ mark.companion-preview-find[data-find-active="true"] {
 .companion-pdf-menu-item-hint {
   flex: 0 0 auto;
   color: var(--theme-text-muted, #5b6b80);
-  font-size: 11px;
+  font-size: var(--font-size-2xs, 11px);
   font-weight: 500;
 }
 /* Named accent, not "primary": button[class*='primary'] in the office theme
@@ -35334,6 +36048,251 @@ mark.companion-preview-find[data-find-active="true"] {
 }
 ::highlight(companion-chat-pink) {
   background-color: #f6c1d8;
+}
+/* Document body highlights use the same API and the same palette, under a
+   separate name prefix so the transcript's buckets are not overwritten. */
+::highlight(companion-doc-yellow) {
+  background-color: #ffe08a;
+}
+::highlight(companion-doc-green) {
+  background-color: #b6e7c3;
+}
+::highlight(companion-doc-blue) {
+  background-color: #b9d4f5;
+}
+::highlight(companion-doc-pink) {
+  background-color: #f6c1d8;
+}
+/* 画线 styles: a mark can carry underline or strike instead of the colour
+   fill. The stroke uses the stronger ink palette so a 2px line stays readable
+   over every text colour, matching the freehand pen. */
+::highlight(companion-doc-underline-yellow),
+::highlight(companion-chat-underline-yellow) {
+  text-decoration: underline solid #c9930a 2px;
+  text-underline-offset: 2px;
+}
+::highlight(companion-doc-underline-green),
+::highlight(companion-chat-underline-green) {
+  text-decoration: underline solid #2f8f5b 2px;
+  text-underline-offset: 2px;
+}
+::highlight(companion-doc-underline-blue),
+::highlight(companion-chat-underline-blue) {
+  text-decoration: underline solid #2f6bbd 2px;
+  text-underline-offset: 2px;
+}
+::highlight(companion-doc-underline-pink),
+::highlight(companion-chat-underline-pink) {
+  text-decoration: underline solid #c74884 2px;
+  text-underline-offset: 2px;
+}
+::highlight(companion-doc-strike-yellow),
+::highlight(companion-chat-strike-yellow) {
+  text-decoration: line-through solid #c9930a 2px;
+}
+::highlight(companion-doc-strike-green),
+::highlight(companion-chat-strike-green) {
+  text-decoration: line-through solid #2f8f5b 2px;
+}
+::highlight(companion-doc-strike-blue),
+::highlight(companion-chat-strike-blue) {
+  text-decoration: line-through solid #2f6bbd 2px;
+}
+::highlight(companion-doc-strike-pink),
+::highlight(companion-chat-strike-pink) {
+  text-decoration: line-through solid #c74884 2px;
+}
+/* A document bookmark hangs on the page's right edge, not its left. */
+.companion-doc-bookmark-tick {
+  left: auto;
+}
+/* The annotator is a flex row: a PDF-style rail of bookmarks and notes on the
+   left, the rendered document body on the right. The rail only mounts when the
+   document has entries, so un-annotated files keep the full width. */
+.companion-doc-annotator {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+/* The rail rides inside the scrolled content so it can share the pane, but it
+   must not scroll away with the document: stick it to the viewport top. Its
+   height is capped so long bookmark/note lists scroll inside the column. */
+.companion-annotator-rail {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: 100vh;
+}
+.companion-doc-annotator-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 100%;
+}
+/* The pen toggle and tool panel pin to the pane top while the document
+   scrolls under them. height:0 keeps them out of the text flow. */
+.companion-doc-draw {
+  position: sticky;
+  top: 8px;
+  z-index: 8;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 8px;
+  height: 0;
+  padding-right: 10px;
+  overflow: visible;
+  --wails-draggable: no-drag;
+}
+/* Plain-text files render read-only inside the annotator, like a document
+   page rather than an editor. */
+.companion-doc-text {
+  margin: 0;
+  padding: 16px 20px 24px;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  font: 13px/1.65 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--theme-text-primary, #1c2834);
+}
+/* PPTX: the annotator shrink-wraps the slide image so normalized rect marks,
+   strokes, and note pins stay on the picture when the pane resizes. */
+.companion-pptx-annotator {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+  max-height: 100%;
+}
+.companion-pptx-annotator > .pptx-slide-img {
+  display: block;
+}
+.companion-pptx-mark {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid transparent;
+  border-radius: 3px;
+  pointer-events: none;
+}
+.companion-pptx-mark--draft {
+  border-style: dashed;
+}
+/* A note pin hangs on the anchored rect's top-right corner; the card opens
+   beside it. */
+.companion-pptx-note-pin {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: 50% 50% 50% 4px;
+  background: var(--theme-surface, #fff);
+  color: var(--theme-primary, #2e75cb);
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.2);
+  transform: translate(-50%, -50%);
+}
+.companion-pptx-note-pin svg {
+  width: 11px;
+  height: 11px;
+}
+.companion-pptx-note-card {
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  width: 220px;
+  max-width: 90%;
+  max-height: 70%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface, #fff);
+  box-shadow: var(--shadow-lg, 0 8px 28px -6px rgba(30, 58, 95, 0.18));
+  overflow: hidden;
+}
+.companion-pptx-note-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--theme-border-subtle, #e2e9f3);
+  cursor: grab;
+  touch-action: none;
+}
+.companion-pptx-note-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 12px/1.3 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--theme-text-primary, #1c2834);
+}
+.companion-pptx-note-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--theme-text-primary, #1c2834);
+}
+.companion-pptx-note-card textarea {
+  flex: 1 1 auto;
+  min-height: 72px;
+  resize: none;
+  margin: 8px;
+  padding: 6px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  font: 12px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--theme-text-primary, #1c2834);
+  background: var(--theme-surface, #fff);
+}
+.companion-pptx-note-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+.companion-pptx-note-card-actions button {
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #1c2834);
+  font: 12px/1.4 "Segoe UI", "Microsoft YaHei", sans-serif;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.companion-pptx-note-card-actions button[data-accent="true"] {
+  background: var(--theme-primary, #2e75cb);
+  border-color: var(--theme-primary, #2e75cb);
+  color: #fff;
+}
+.companion-pptx-note-card-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.companion-pptx-bookmark-tick {
+  position: absolute;
+  z-index: 3;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  filter: drop-shadow(0 1px 1.5px rgba(40, 24, 8, 0.32));
+}
+.companion-pptx-bookmark-tick svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 .companion-pdf-translation {
   position: absolute;
@@ -36751,28 +37710,27 @@ body.companion-pdf-translation-dragging * {
   line-height: 1.45;
   color: var(--theme-danger, #dc2626);
 }
-/* Audience: four equal tiles, icon over label, so the row reads as one
-   control instead of four loose chips of different widths. */
+/* Audience choices carry both a name and the credential they require. */
 .file-companion-audience {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 .file-companion-audience-option {
+  position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 5px;
+  justify-content: flex-start;
+  gap: 10px;
   box-sizing: border-box;
-  min-height: 62px;
-  padding: 8px 4px;
+  min-height: 68px;
+  padding: 11px 12px;
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
   color: var(--theme-text-secondary, #46586f);
-  font: 500 11.5px/1.25 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
-  text-align: center;
+  font: 500 12px/1.35 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  text-align: left;
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
 }
@@ -36886,10 +37844,11 @@ body.companion-pdf-translation-dragging * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  padding: 0;
+  min-width: 28px;
+  height: 30px;
+  padding: 0 10px;
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
@@ -36976,12 +37935,13 @@ body.companion-pdf-translation-dragging * {
 /* 阅读群组: a wider two-pane dialog. The rail lists groups; the pane edits the
    selected one. Both panes scroll on their own so the dialog never grows. */
 .file-companion-dialog-card.file-companion-groups-dialog {
-  width: min(720px, 100%);
-  max-height: min(640px, 100%);
+  width: min(840px, 100%);
+  max-height: min(680px, 100%);
+  min-height: min(520px, 100%);
 }
 .file-companion-groups-body {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 258px minmax(0, 1fr);
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -37255,8 +38215,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-library-inline button {
   flex: 0 0 auto;
 }
-/* Share link line: the URL keeps its own <p> for copy/select, with an
-   icon-only copy button beside it. */
+/* Share link line: the URL keeps its own <p> for copy/select. */
 /* Group cards: a bounded surface per group instead of bare rows. */
 .file-companion-library-group {
   display: flex;
@@ -37332,6 +38291,376 @@ body.companion-pdf-translation-dragging * {
   width: 18px;
   height: 18px;
   display: block;
+}
+/* Sharing and group management use a quiet, settings-like visual hierarchy. */
+.file-companion-dialog-card.file-companion-share-dialog-card {
+  width: min(640px, 100%);
+  max-height: min(820px, 100%);
+  border-radius: var(--radius-lg, 14px);
+}
+.file-companion-share-dialog-card .file-companion-dialog-head,
+.file-companion-groups-dialog .file-companion-dialog-head {
+  padding: 18px 20px 15px;
+}
+.file-companion-dialog-eyebrow {
+  color: var(--theme-primary, #2563eb);
+  font: 600 10px/1.2 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.file-companion-share-dialog-card .file-companion-dialog-heading h2,
+.file-companion-groups-dialog .file-companion-dialog-heading h2 {
+  font-size: 18px;
+  line-height: 1.35;
+}
+.file-companion-share-dialog-card .file-companion-dialog-body {
+  gap: 18px;
+  padding: 18px 20px 20px;
+}
+.file-companion-share-dialog-card .file-companion-dialog-section {
+  gap: 10px;
+}
+.file-companion-share-dialog-card .file-companion-dialog-label,
+.file-companion-groups-dialog .file-companion-dialog-label {
+  font-size: 12.5px;
+  color: var(--theme-text-primary, #1f2937);
+}
+.file-companion-audience-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.file-companion-audience-copy strong {
+  color: var(--theme-text-primary, #1f2937);
+  font-size: 13px;
+  font-weight: 600;
+}
+.file-companion-audience-copy small {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 11px;
+}
+.file-companion-audience-option[aria-pressed="true"] .file-companion-audience-copy strong,
+.file-companion-audience-option[aria-pressed="true"] .file-companion-audience-copy small {
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-audience-option:disabled {
+  opacity: 0.58;
+  cursor: default;
+}
+.file-companion-audience-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-border-subtle, #e6edf6);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface-muted, #f8fafc);
+}
+.file-companion-audience-summary-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-audience-summary p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 2px 0 0;
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.file-companion-share-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.file-companion-share-field .file-companion-dialog-input {
+  height: 38px;
+}
+.file-companion-dialog-input[aria-invalid="true"] {
+  border-color: var(--theme-danger, #dc2626);
+}
+.file-companion-share-error {
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--theme-danger, #dc2626) 6%, transparent);
+}
+.file-companion-share-existing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 2px;
+}
+.file-companion-share-existing ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.file-companion-share-existing li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-surface-muted, #f8fafc);
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 11.5px;
+}
+.file-companion-share-existing li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.file-companion-dialog-result {
+  padding: 12px;
+}
+.file-companion-dialog-result .file-companion-dialog-linkrow {
+  padding: 8px 8px 8px 10px;
+  border: 1px solid var(--theme-border-subtle, #e6edf6);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-surface, #ffffff);
+}
+.file-companion-share-host-current {
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border-left: 2px solid var(--theme-primary, #2563eb);
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.08));
+  color: var(--theme-text-secondary, #46586f);
+}
+.file-companion-share-dialog-card .file-companion-dialog-foot {
+  padding: 14px 20px;
+}
+.file-companion-groups-create-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file-companion-groups-search {
+  height: 34px;
+  background: var(--theme-surface, #ffffff);
+}
+.file-companion-groups-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 3px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.file-companion-groups-item {
+  min-height: 54px;
+  padding: 9px;
+}
+.file-companion-groups-item-text {
+  gap: 3px;
+}
+.file-companion-groups-item-meta {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 10.5px;
+}
+.file-companion-group-mark {
+  border-color: transparent;
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.09));
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-groups-detail {
+  gap: 16px;
+  padding: 20px 22px 22px;
+}
+.file-companion-groups-detail-head {
+  flex-wrap: wrap;
+  padding-bottom: 16px;
+}
+.file-companion-groups-title-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.file-companion-library-group-title strong {
+  font-size: 16px;
+}
+.file-companion-groups-role {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+  color: var(--theme-primary, #2563eb);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.file-companion-groups-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 11px;
+}
+.file-companion-groups-summary > span {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+.file-companion-groups-summary strong {
+  color: var(--theme-text-primary, #1f2937);
+  font-size: 18px;
+  font-weight: 600;
+}
+.file-companion-groups-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 14px 18px;
+  box-sizing: border-box;
+  padding: 14px;
+  border: 1px solid var(--theme-border-subtle, #e6edf6);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface-muted, #f8fafc);
+}
+.file-companion-groups-settings .file-companion-groups-field:first-child {
+  grid-column: 2;
+  grid-row: 1;
+}
+.file-companion-groups-settings .file-companion-groups-field:last-child {
+  grid-column: 1;
+  grid-row: 1;
+}
+.file-companion-groups-members-section {
+  gap: 10px;
+}
+.file-companion-library-members {
+  gap: 6px;
+}
+.file-companion-library-member {
+  gap: 10px;
+  min-height: 48px;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border: 1px solid var(--theme-border-subtle, #e6edf6);
+  border-radius: var(--radius-md);
+}
+.file-companion-library-member-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--theme-surface-muted, #eef3f8);
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.file-companion-library-member-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.file-companion-library-member-contact {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.file-companion-library-member-status {
+  font-size: 10.5px;
+}
+.file-companion-library-member-action {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-primary, #2563eb);
+  font: 600 11px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+}
+.file-companion-library-member-action:hover:not(:disabled) {
+  border-color: var(--theme-primary, #2563eb);
+  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.08));
+}
+.file-companion-library-member-action:focus-visible {
+  outline: 2px solid var(--theme-primary, #2563eb);
+  outline-offset: 1px;
+}
+.file-companion-library-member-confirm {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+.file-companion-library-member-confirm > span {
+  margin-right: 2px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.file-companion-library-member-action--danger {
+  border-color: color-mix(in srgb, var(--theme-danger, #dc2626) 35%, var(--theme-border, #d5e0ef));
+  color: var(--theme-danger, #dc2626);
+}
+.file-companion-library-member-action--danger:hover:not(:disabled) {
+  border-color: var(--theme-danger, #dc2626);
+  background: color-mix(in srgb, var(--theme-danger, #dc2626) 7%, transparent);
+  color: var(--theme-danger, #dc2626);
+}
+.file-companion-library-member-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.file-companion-groups-danger {
+  margin-top: auto;
+}
+@media (max-width: 560px) {
+  .file-companion-dialog {
+    padding: 12px;
+  }
+  .file-companion-groups-settings {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .file-companion-groups-settings .file-companion-groups-field:first-child,
+  .file-companion-groups-settings .file-companion-groups-field:last-child {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .file-companion-groups-summary {
+    width: 100%;
+    margin-left: 0;
+  }
+  .file-companion-share-dialog-card .file-companion-dialog-foot {
+    align-items: stretch;
+  }
+  .file-companion-share-dialog-card .file-companion-dialog-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+@media (max-width: 360px) {
+  .file-companion-audience {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .file-companion-library h3 {
   margin: 0;
@@ -37696,8 +39025,8 @@ body.companion-pdf-translation-dragging * {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   margin-top: 7px;
   color: var(--theme-text-muted, #64748b);
 }
@@ -38178,14 +39507,16 @@ body.companion-pdf-translation-dragging * {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 5px;
+  /* The visual gap is preview padding (12px) + this handle (12px); the
+     boundary between them is its midpoint. */
+  left: 0;
   width: 1px;
   background: var(--theme-border);
 }
 .file-companion-split-handle:hover::before,
 .file-companion-split-handle:focus-visible::before,
 .file-companion-split-handle:active::before {
-  left: 4px;
+  left: -1px;
   width: 3px;
   background: var(--theme-primary, #2e75cb);
 }
@@ -38480,8 +39811,8 @@ body.companion-pdf-translation-dragging * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -38788,7 +40119,8 @@ body.companion-pdf-translation-dragging * {
     font-variant-numeric: tabular-nums;
 }
 
-/* USB companion display (buddy) settings. */
+/* USB companion display (buddy) settings. Shares the im-settings-hardware
+   visual language: icon-chip heading, track/thumb switch, soft grouped rows. */
 
 .settings-hardware-stack {
     display: flex;
@@ -38796,73 +40128,236 @@ body.companion-pdf-translation-dragging * {
     gap: 16px;
 }
 
-.buddy-settings {
+.buddy-settings__loading {
+    color: var(--theme-text-muted);
+    font-size: 0.78rem;
+}
+
+/* ── Port picker toolbar ── */
+.buddy-settings__toolbar {
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 10px;
 }
 
-.buddy-settings__title {
-    margin: 0;
-    color: var(--theme-text-primary);
+.buddy-settings__port {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--theme-text-secondary);
+    font-size: 0.8rem;
+    font-weight: 600;
 }
 
-.buddy-settings__hint {
-    margin: 6px 0 0;
+.buddy-settings__port > span {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.buddy-settings__select {
+    box-sizing: border-box;
+    min-width: 240px;
+    min-height: 34px;
+    padding: 5px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+}
+
+.buddy-settings__select--effect {
+    min-width: 0;
+    width: 130px;
+}
+
+/* ── Link state strip: dot + state word + meta chips ── */
+.buddy-settings__status {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface-muted);
+}
+
+.buddy-settings__status-dot {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--theme-text-muted);
+}
+
+.buddy-settings__status-dot[data-connected='true'] {
+    background: var(--theme-success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-success) 18%, transparent);
+}
+
+.buddy-settings__state {
+    color: var(--theme-text-primary);
+    font-size: 0.82rem;
+}
+
+.buddy-settings__meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+
+.buddy-settings__chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-pill);
+    background: var(--theme-surface);
     color: var(--theme-text-secondary);
-    font-size: 13px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.buddy-settings__chip[data-tone='warning'] {
+    border-color: color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border-subtle));
+    background: var(--theme-warning-bg);
+    color: var(--theme-warning);
+}
+
+/* ── Grouped rows: actions + sound events ── */
+.buddy-settings__group {
+    display: grid;
+    gap: 8px;
+}
+
+.buddy-settings__group-head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+}
+
+.buddy-settings__group-head strong {
+    color: var(--theme-text-primary);
+    font-size: 0.84rem;
+}
+
+.buddy-settings__group-head span {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.buddy-settings__rows {
+    display: grid;
+    overflow: hidden;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface-muted);
 }
 
 .buddy-settings__row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 14px;
+}
+
+.buddy-settings__row + .buddy-settings__row {
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.buddy-settings__row[data-muted='true'] {
+    opacity: 0.62;
+}
+
+.buddy-settings__row-text {
+    display: grid;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 2px;
+}
+
+.buddy-settings__row-text > span {
     color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    font-weight: 600;
 }
 
-.buddy-settings__select {
-    min-width: 240px;
-}
-
-.buddy-settings__status {
-    font-size: 13px;
-    color: var(--theme-text-secondary);
-}
-
-.buddy-settings__note {
-    font-size: 13px;
+.buddy-settings__row-text small {
     color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.buddy-settings__row-controls {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 10px;
+}
+
+/* ── Warnings, errors, footnote ── */
+.buddy-settings__warn,
+.buddy-settings__error {
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    font-size: 0.76rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
 }
 
 .buddy-settings__warn {
-    font-size: 13px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border-subtle));
+    background: var(--theme-warning-bg);
     color: var(--theme-warning);
 }
 
 .buddy-settings__error {
-    font-size: 13px;
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 34%, var(--theme-border-subtle));
+    background: var(--theme-danger-bg);
     color: var(--theme-danger);
-    word-break: break-all;
 }
 
 .buddy-settings__footnote {
     margin: 0;
     color: var(--theme-text-muted);
-    font-size: 12px;
+    font-size: 0.72rem;
+    line-height: 1.5;
 }
 
-.buddy-settings__group {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding-top: 10px;
-    border-top: 1px solid var(--theme-border-subtle);
-}
+@media (max-width: 720px) {
+    .buddy-settings__toolbar {
+        align-items: stretch;
+        flex-direction: column;
+    }
 
-.buddy-settings__group-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--theme-text-secondary);
+    .buddy-settings__port,
+    .buddy-settings__port .buddy-settings__select {
+        width: 100%;
+    }
+
+    .buddy-settings__row {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .buddy-settings__row-controls {
+        justify-content: flex-end;
+        width: 100%;
+    }
+
+    .buddy-settings__select {
+        min-width: 0;
+        width: 100%;
+    }
 }
 
 /* Backend task monitor: give the page a deliberate breathing space below the

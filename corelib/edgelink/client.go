@@ -203,14 +203,26 @@ func RunLink(ctx context.Context, creds Credentials, routes map[string]string, s
 		if state != nil {
 			state(false, err)
 		}
-		if up {
-			wait = 2 * time.Second
-		} else if wait < 2*time.Second {
-			wait = 2 * time.Second
-		} else if wait < time.Minute {
-			wait *= 2
-		}
+		wait = nextLinkWait(wait, up)
 	}
+}
+
+// nextLinkWait is the reconnect delay after one link attempt. A connection
+// that came up starts again at 2s. A failed attempt doubles, and never waits
+// longer than 30s.
+func nextLinkWait(prev time.Duration, connected bool) time.Duration {
+	const (
+		start = 2 * time.Second
+		limit = 30 * time.Second
+	)
+	if connected || prev < start {
+		return start
+	}
+	next := prev * 2
+	if next > limit {
+		return limit
+	}
+	return next
 }
 
 // LoadCredentials reads a state file. A missing file is an empty result.

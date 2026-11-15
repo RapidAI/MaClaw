@@ -448,6 +448,7 @@ func NewRouter(
 		mux.HandleFunc("PUT /api/admin/platform/tenants/{tenantId}/edge-policy", requireGlobalAdmin(PutEdgePolicyPlatformHandler(edgeRegistry)))
 		mux.HandleFunc("DELETE /api/admin/bots/nodes/{id}", requireTenantAdmin(DeleteEdgeNodeAdminHandler(edgeRegistry, edgeBroker, desktopPool, botSvc)))
 		mux.HandleFunc("POST /api/admin/bots/nodes/codes", requireTenantAdmin(PostEdgeCodeAdminHandler(edgeRegistry)))
+		mux.HandleFunc("POST /api/admin/bots/nodes/{id}/code", requireTenantAdmin(PostEdgeRotateCodeAdminHandler(edgeRegistry)))
 		mux.HandleFunc("POST /api/v1/edge/enroll", PostEdgeEnrollHandler(edgeRegistry, desktopPool, botSvc))
 		botSvc.NodeHTTP = func(nodeID string) *http.Client {
 			if edgeBroker == nil || edgeRegistry == nil {

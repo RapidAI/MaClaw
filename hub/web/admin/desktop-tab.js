@@ -57,6 +57,7 @@
       viewNewTab: '\u65b0\u7a97\u53e3\u6253\u5f00',
       viewHold: '\u5173\u95ed\u6b64\u7a97\u53e3\u4e0d\u4f1a\u505c\u6b62\u684c\u9762\uff1a\u684c\u9762\u4f1a\u4fdd\u6301\u8fd0\u884c 30 \u5206\u949f\uff0c\u4e5f\u53ef\u4ee5\u76f4\u63a5\u70b9\u300c\u505c\u6b62\u684c\u9762\u300d\u3002',
       remove: '\u5220\u9664',
+      nodeRotate: '\u8f6e\u6362\u5bc6\u94a5',
       empty: '\u8fd8\u6ca1\u6709 Docker \u670d\u52a1\u3002',
       saved: '\u5df2\u4fdd\u5b58',
       started: '\u5df2\u8bf7\u6c42\u521b\u5efa\u684c\u9762',
@@ -131,6 +132,7 @@
       viewNewTab: 'Open in new tab',
       viewHold: 'Closing this window does not stop the desktop. It stays up for 30 minutes, or until you press Stop desktop.',
       remove: 'Delete',
+      nodeRotate: 'New secret',
       empty: 'No Docker services yet.',
       saved: 'Saved',
       started: 'Create request sent',
@@ -466,12 +468,23 @@
       return '<div class="bot-row"><div><strong>' + escapeHtml(node.name || node.id) + '</strong>'
         + '<div>' + escapeHtml(status) + (caps.length ? ' / ' + escapeHtml(caps.join(' / ')) : '')
         + (version ? ' / ' + escapeHtml(version) : '') + '</div></div>'
+        + '<button type="button" class="btn-ghost" data-node-rotate="' + escapeHtml(node.id) + '">' + escapeHtml(text().nodeRotate) + '</button>'
         + '<button type="button" class="btn-danger" data-node-delete="' + escapeHtml(node.id) + '">' + escapeHtml(text().remove) + '</button></div>';
     }).join('');
   }
 
   function onNodeListClick(event) {
     var button = event && event.target;
+    var rotate = button && button.getAttribute && button.getAttribute('data-node-rotate');
+    if (rotate) {
+      api('/api/admin/bots/nodes/' + encodeURIComponent(rotate) + '/code', { method: 'POST', body: '{}' }).then(function (out) {
+        var el = byID('desktopNodeCodeOut');
+        if (!el) return;
+        el.hidden = false;
+        el.textContent = text().nodeCodeReady + ' ' + (out && out.code ? out.code : '');
+      }).catch(function (err) { showToast(messageOf(err), 'error'); });
+      return;
+    }
     var id = button && button.getAttribute && button.getAttribute('data-node-delete');
     if (!id) return;
     var ask = global.confirm;

@@ -1,5 +1,6 @@
 // An intranet desktop offers a direct picture. Probe it once, briefly, and
-// keep the Hub address when that probe does not answer.
+// keep the Hub address when that probe does not answer. desktopd allows the
+// GUI page to read this status; an opaque failure stays on the Hub address.
 
 const remembered = new Map<string, { ok: boolean; at: number }>();
 

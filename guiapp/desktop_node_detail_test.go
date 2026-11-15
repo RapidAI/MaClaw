@@ -13,7 +13,7 @@ func TestDesktopNodeDetailLogRecordsTheStepAndHidesSecrets(t *testing.T) {
 	corelib.SetLogDetailEnabled(true)
 	t.Cleanup(func() { corelib.SetLogDetailEnabled(false) })
 	a := &App{testHomeDir: t.TempDir()}
-	a.desktopNodeDetail("dn_1", "finish", "health failed password=secret DESKTOPD_TOKEN=abc Bearer tok-value password=\"my secret\" desktopd_key:\"abcdef0123\" authorization: Bearer live-token https://user:pw@hub.example/x blob=0123456789abcdef0123456789abcdef0123456789abcdef\nnext")
+	a.desktopNodeDetail("dn_1", "finish", "health failed password=secret DESKTOPD_TOKEN=abc Bearer tok-value password=\"my secret\" 密码：zh-pass-99 密码:other-pass desktopd_key:\"abcdef0123\" authorization: Bearer live-token https://user:pw@hub.example/x blob=0123456789abcdef0123456789abcdef0123456789abcdef\nnext")
 	path := filepath.Join(a.getMaclawBaseDir(), "logs", "desktop-node-detail.log")
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -28,7 +28,7 @@ func TestDesktopNodeDetailLogRecordsTheStepAndHidesSecrets(t *testing.T) {
 	if strings.Count(text, "\n") != 1 {
 		t.Fatalf("detail line broke across lines: %q", text)
 	}
-	for _, secret := range []string{"secret", "abc", "tok-value", "abcdef0123", "user:pw", "live-token", "0123456789abcdef0123456789abcdef0123456789abcdef"} {
+	for _, secret := range []string{"secret", "abc", "tok-value", "abcdef0123", "user:pw", "live-token", "zh-pass-99", "other-pass", "0123456789abcdef0123456789abcdef0123456789abcdef"} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("logged secret %q in %s", secret, text)
 		}

@@ -5,6 +5,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -98,9 +100,19 @@ func blocksAdminPath(requestLine string) bool {
 	if len(fields) < 2 {
 		return false
 	}
-	path := fields[1]
-	if i := strings.IndexAny(path, "?#"); i >= 0 {
-		path = path[:i]
+	raw := fields[1]
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
 	}
-	return path == "/admin" || strings.HasPrefix(path, "/admin/")
+	// Go's mux unescapes each segment, and %2F is a slash on some servers.
+	// Clean also folds //admin and /foo/../admin back onto the panel.
+	decoded, err := url.PathUnescape(raw)
+	if err != nil {
+		decoded = raw
+	}
+	if strings.Contains(decoded, `\`) {
+		return true
+	}
+	decoded = path.Clean(decoded)
+	return decoded == "/admin" || strings.HasPrefix(decoded, "/admin/")
 }

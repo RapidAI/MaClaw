@@ -15,11 +15,15 @@ func TestDesktopNodeUpgradePromptRebuildsLatestAndKeepsToken(t *testing.T) {
 	}
 	stamp := "abc123stamp"
 	doc := "https://hub.example.test/docs/self-desktopd"
-	prompt := desktopNodeUpgradePrompt(rec, "maclaw-desktopd-1", desktopNodePrivilege{sudo: true}, stamp)
+	prompt := desktopNodeUpgradePrompt(rec, "secret-password", desktopNodePrivilege{sudo: true}, stamp)
 
 	for _, want := range []string{
-		"label=\"maclaw-desktopd-1\"",
-		"不要传 host/user/password",
+		"地址：10.0.0.8",
+		"端口：22",
+		"用户：deploy",
+		"密码：secret-password",
+		"同一条密码",
+		"要更新的组件：desktopd",
 		doc,
 		"更新步骤按文档第 4 节",
 		"不要改 .env",
@@ -32,14 +36,14 @@ func TestDesktopNodeUpgradePromptRebuildsLatestAndKeepsToken(t *testing.T) {
 			t.Errorf("prompt missing %q", want)
 		}
 	}
-	if strings.Contains(prompt, "password=") || strings.Contains(strings.ToLower(prompt), "secret-password") || strings.Contains(prompt, "hub.mypapers.top") {
-		t.Fatal("upgrade prompt must not carry a password or a hardcoded hub")
+	if strings.Contains(prompt, "要更新的组件：desktopd 和 MaClawSrv") || strings.Contains(prompt, "password=") || strings.Contains(prompt, "hub.mypapers.top") || strings.Contains(prompt, "tools_search") || strings.Contains(prompt, "action=connect") {
+		t.Fatal("upgrade prompt must name the password as a login field and leave tool calls to the agent")
 	}
 	if strings.Contains(prompt, "DESKTOPD_ADVERTISE_HOST="+rec.Host) {
 		t.Fatal("an intranet desktop must not be advertised at its own address")
 	}
-	deploy := desktopNodeDeployPrompt(rec, "maclaw-desktopd-1", desktopNodePrivilege{sudo: true})
-	if !strings.Contains(deploy, doc) || !strings.Contains(deploy, "这次的安装选择：只安装 desktopd") {
+	deploy := desktopNodeDeployPrompt(rec, "secret-password", desktopNodePrivilege{sudo: true})
+	if !strings.Contains(deploy, doc) || !strings.Contains(deploy, "要安装的组件：desktopd") || strings.Contains(deploy, "要安装的组件：desktopd 和 MaClawSrv") || !strings.Contains(deploy, "密码：secret-password") {
 		t.Fatal("deploy prompt must point at the self-desktopd runbook and name the desktop-only choice")
 	}
 	if strings.Contains(deploy, "DESKTOPD_ADVERTISE_HOST="+rec.Host) || strings.Contains(deploy, "hub.mypapers.top") {
@@ -52,9 +56,13 @@ func TestDesktopNodeUpgradePromptRebuildsLatestAndKeepsToken(t *testing.T) {
 		t.Fatal("desktop-only deploy must not install MaClawSrv")
 	}
 	rec.WithSrv = true
-	withSrv := desktopNodeDeployPrompt(rec, "maclaw-desktopd-1", desktopNodePrivilege{sudo: true})
-	if !strings.Contains(withSrv, "一并安装 desktopd 和 MaClawSrv") || !strings.Contains(withSrv, "不要创建 .env") {
+	withSrv := desktopNodeDeployPrompt(rec, "secret-password", desktopNodePrivilege{sudo: true})
+	if !strings.Contains(withSrv, "要安装的组件：desktopd 和 MaClawSrv") || !strings.Contains(withSrv, "不要创建 .env") {
 		t.Fatal("srv install must leave secrets to the desktop page")
+	}
+	upgraded := desktopNodeUpgradePrompt(rec, "secret-password", desktopNodePrivilege{sudo: true}, stamp)
+	if !strings.Contains(upgraded, "要更新的组件：desktopd 和 MaClawSrv") || !strings.Contains(upgraded, "把已经在运行的 desktopd 和 MaClawSrv") {
+		t.Fatal("an upgrade that includes MaClawSrv must name both components")
 	}
 	cmd := srvHubTokenWriteCommand("/data/soft/maclaw_srv", "hub-token-secret-value")
 	if strings.Contains(cmd, "hub-token-secret-value") || !strings.Contains(cmd, "MACLAW_DESKTOP_API_TOKEN") {
@@ -63,6 +71,21 @@ func TestDesktopNodeUpgradePromptRebuildsLatestAndKeepsToken(t *testing.T) {
 	envCmd := srvEnvWriteCommand("/data/soft/maclaw_srv", "admin-secret-value", "token-secret-value", "https://hub.example")
 	if strings.Contains(envCmd, "admin-secret-value") || strings.Contains(envCmd, "token-secret-value") {
 		t.Fatal("the admin secret must not appear in the remote command")
+	}
+}
+
+func TestPrepareDesktopNodeJobFillsPortAndRequiresHub(t *testing.T) {
+	rec := DesktopNodeRecord{Host: "10.0.0.8", User: "deploy"}
+	got, err := prepareDesktopNodeJob(rec, "https://hub.example.test/")
+	if err != nil || got.Port != 22 || got.HubURL != "https://hub.example.test" {
+		t.Fatalf("got %+v err=%v", got, err)
+	}
+	kept, err := prepareDesktopNodeJob(DesktopNodeRecord{Port: 2222, HubURL: "https://hub.example.test"}, "")
+	if err != nil || kept.Port != 2222 || kept.HubURL != "https://hub.example.test" {
+		t.Fatalf("kept %+v err=%v", kept, err)
+	}
+	if _, err := prepareDesktopNodeJob(rec, "  "); err == nil || err.Error() != "还没有连接 Hub" {
+		t.Fatalf("err = %v", err)
 	}
 }
 

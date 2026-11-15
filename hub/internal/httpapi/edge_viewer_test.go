@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -48,9 +49,27 @@ func TestDirectViewHidesTheGateTokenAndConfirmStopsWhenThePictureIsGone(t *testi
 	if !strings.HasPrefix(direct, "http://10.1.0.8:18081/v1/desktops/viewer/") || strings.Contains(direct, "gate-secret") || !strings.Contains(direct, "view_only=1") {
 		t.Fatalf("direct %s", direct)
 	}
+	parsed, err := url.Parse(direct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := parsed.Query().Get("path")
+	if !strings.HasPrefix(socket, "v1/desktops/viewer/") || !strings.HasSuffix(socket, "/websockify") {
+		t.Fatalf("socket path %q", socket)
+	}
 	again := edgeDirectURL("tenant-a", "alice", raw, false)
 	if again != direct {
 		t.Fatal("a second look minted another ticket")
+	}
+	rememberViewerGrant("rotated-grant", viewerGrant{
+		Page: direct, NodeID: enrolled.NodeID, TenantID: store.NormalizeTenantID("tenant-a"), UserID: "alice",
+		Control: false, Expires: time.Now().Add(time.Hour), Key: "previous-desk-key",
+	})
+	if rotated := edgeDirectURL("tenant-a", "alice", raw, false); rotated != direct {
+		t.Fatalf("rotated key changed the live page: %s", rotated)
+	}
+	if _, ok := lookupViewerGrant("rotated-grant"); ok {
+		t.Fatal("a ticket signed with the previous key was kept")
 	}
 	if edgeDirectURL("tenant-a", "alice", "http://dockerd.example:6080/vnc.html", false) != "" {
 		t.Fatal("a public desktop was given a direct url")

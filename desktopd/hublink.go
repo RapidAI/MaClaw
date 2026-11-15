@@ -91,6 +91,7 @@ func (h *HubLink) Start(ctx context.Context) error {
 type HubKeyStore interface {
 	PutHubKey(label, token string) error
 	DropHubKeys() error
+	HubKey(label string) (string, error)
 }
 
 // HubLinkEnroll is one registration. SrvAdmin is sent once and is not stored.
@@ -285,6 +286,24 @@ func (h *HubLink) BoundTenant() string {
 	return strings.TrimSpace(h.creds.TenantID)
 }
 
+// signingKey is the key Hub uses to sign direct-view and local-data tickets.
+// After enrollment that is the extra hub-<nodeID> key, and the primary
+// DESKTOPD_TOKEN no longer verifies those tickets. A desktop that never
+// stored an extra key still uses the primary token.
+func (h *HubLink) signingKey() string {
+	if h == nil {
+		return ""
+	}
+	if h.Keys != nil {
+		if label, err := hubKeyLabel(h.NodeID()); err == nil {
+			if key, err := h.Keys.HubKey(label); err == nil && strings.TrimSpace(key) != "" {
+				return strings.TrimSpace(key)
+			}
+		}
+	}
+	return strings.TrimSpace(h.Key)
+}
+
 // NodeID is the enrolled node, or "" before enrollment.
 func (h *HubLink) NodeID() string {
 	if h == nil {
@@ -402,6 +421,34 @@ func registerHubLinkRoutes(mux *http.ServeMux, link *HubLink, authOK func(*http.
 	})
 }
 
+// hubLinkRoutes is the only pair of addresses this tunnel will dial.
+// desktopd is this process. srv is the same-machine MaClawSrv when one was
+// enrolled. Anything else is absent, so the tunnel closes that stream.
+func hubLinkRoutes(self, srvAddr string) map[string]string {
+	routes := map[string]string{edgelink.TargetDesktopd: strings.TrimSpace(self)}
+	if addr := hubLinkDialAddr(srvAddr); addr != "" {
+		routes[edgelink.TargetSrv] = addr
+	}
+	return routes
+}
+
+// hubLinkDialAddr keeps a host:port and also accepts an http URL typed into
+// the panel, since Dial needs the host and not the path.
+func hubLinkDialAddr(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "://") {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		return parsed.Host
+	}
+	return raw
+}
+
 func (h *HubLink) runLocked() {
 	base := h.base
 	if base == nil {
@@ -410,7 +457,7 @@ func (h *HubLink) runLocked() {
 	ctx, cancel := context.WithCancel(base)
 	h.cancel = cancel
 	creds := h.creds
-	routes := map[string]string{edgelink.TargetDesktopd: h.Self}
+	routes := hubLinkRoutes(h.Self, creds.SrvAddr)
 	go func() {
 		_ = edgelink.RunLink(ctx, creds, routes, func(up bool, err error) {
 			h.mu.Lock()

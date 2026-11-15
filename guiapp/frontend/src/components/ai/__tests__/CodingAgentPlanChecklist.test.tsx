@@ -725,6 +725,35 @@ describe("CodingAgentPlanChecklist", () => {
         expect(row.getAttribute("data-preview-path")).toBeNull();
     });
 
+    it("hides the file chip while the goal bar hosts it", () => {
+        const { getByTestId, queryByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[{ index: 1, title: "定位入口", status: "running" }]}
+                fileChanges={[{ path: "guiapp/file_a.go", added: 4, removed: 1 }]}
+                hideFileChanges
+            />,
+        );
+        expect(getByTestId("coding-agent-plan-toggle")).toBeTruthy();
+        expect(queryByTestId("coding-agent-plan-files")).toBeNull();
+    });
+
+    it("renders nothing when its only content moved to the goal bar", () => {
+        const { container } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[]}
+                fileChanges={[{ path: "guiapp/file_a.go", added: 4, removed: 1 }]}
+                hideFileChanges
+            />,
+        );
+        expect(container.firstChild).toBeNull();
+    });
+
     it("uses the composer side inset so the card matches the input width", () => {
         const partial = readFileSync(resolve(process.cwd(), "src/styles/partials/100-pet-store-mc.css"), "utf8");
         const assembled = readFileSync(resolve(process.cwd(), "src/App.css"), "utf8");

@@ -13,7 +13,7 @@ import { isConversationBranchRewindCommand, isHistoryResetCommandText } from "./
 import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { liveStatusProgress } from "./aiAssistantProgressUtils";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
-import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
+import { ROUND_PROSE_PRESERVE_MIN_CHARS, clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
 import { capReasoningForDisplay, cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
 import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, resumeDesktopChatTask, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
@@ -808,6 +808,322 @@ function isThinkingStatusProgress(progressText: string): boolean {
 }
 
 const MAX_ASSISTANT_TOOL_CALLS = 40;
+// One hidden deploy turn can stream for minutes before its tab is opened.
+// Keep the prose and command cards that already arrived, and drop the oldest
+// prefix once the buffer would outgrow a single chat bubble.
+const OFFSCREEN_ROUND_TEXT_CAP = 256 * 1024;
+
+interface OffscreenRoundPart {
+    kind: 'text' | 'tool';
+    text: string;
+    // Model round that wrote this piece. A rejected draft drops only its own round.
+    round: number;
+}
+
+interface OffscreenLiveRound {
+    sessionKey: string;
+    lastSeenAt: number;
+    displayText: string;
+    parts: OffscreenRoundPart[];
+    // Dropped prefix stays in the array until a compact, so trim is not a shift per token.
+    start: number;
+    chars: number;
+    // Same dedup state the visible stream uses. A later snapshot must not be
+    // concatenated onto the text it already contains.
+    append?: StreamAppendState;
+    // ai-assistant-new-round arrived. The next piece applies the same prose
+    // replacement the visible stream applies on its first token of that round.
+    pendingRoundBoundary?: boolean;
+    // Incremented when a new model round's first piece is accepted. Parts from
+    // an earlier round stay, so a rejected draft cannot clear them.
+    contentRound: number;
+}
+
+function emptyOffscreenLiveRound(sessionKey: string, displayText: string): OffscreenLiveRound {
+    return {
+        sessionKey,
+        lastSeenAt: Date.now(),
+        displayText,
+        parts: [],
+        start: 0,
+        chars: 0,
+        contentRound: 0,
+    };
+}
+
+function ensureOffscreenAppend(entry: OffscreenLiveRound): StreamAppendState {
+    if (!entry.append) {
+        entry.append = {
+            content: '',
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+    }
+    return entry.append;
+}
+
+function offscreenTail(text: string, cap: number): string {
+    if (text.length <= cap) return text;
+    let start = text.length - cap;
+    // A slice on a raw UTF-16 index can cut a surrogate pair in half.
+    const code = text.charCodeAt(start);
+    if (code >= 0xDC00 && code <= 0xDFFF && text.charCodeAt(start - 1) >= 0xD800 && text.charCodeAt(start - 1) <= 0xDBFF) {
+        start += 1;
+    }
+    return text.slice(start);
+}
+
+function trimOffscreenLiveRound(entry: OffscreenLiveRound) {
+    while (entry.chars > OFFSCREEN_ROUND_TEXT_CAP && entry.start < entry.parts.length - 1) {
+        const dropped = entry.parts[entry.start];
+        entry.chars -= dropped.text.length;
+        // Drop the string now. The slot stays until a later compact so trim
+        // does not shift the array on every token.
+        dropped.text = '';
+        entry.start += 1;
+    }
+    if (entry.start > 32) {
+        entry.parts.splice(0, entry.start);
+        entry.start = 0;
+    }
+    const only = entry.parts[entry.start];
+    const single = !!only && entry.start === entry.parts.length - 1;
+    if (!single || only.kind !== 'text' || entry.chars <= OFFSCREEN_ROUND_TEXT_CAP) return;
+    if (only.text.startsWith('\x01')) {
+        const body = offscreenTail(only.text.slice(1), OFFSCREEN_ROUND_TEXT_CAP - 1);
+        only.text = `\x01${body}`;
+    } else {
+        only.text = offscreenTail(only.text, OFFSCREEN_ROUND_TEXT_CAP);
+    }
+    entry.chars = only.text.length;
+}
+
+const OFFSCREEN_TEXT_CHUNK = 4096;
+
+function offscreenTextCanExtend(last: OffscreenRoundPart | undefined, delta: string): boolean {
+    if (!last || last.kind !== 'text' || last.text.length >= OFFSCREEN_TEXT_CHUNK) return false;
+    if (isRejectedRoundContentToken(delta) || isRejectedRoundContentToken(last.text)) return false;
+    const lastReasoning = last.text.startsWith('\x01');
+    const nextReasoning = delta.startsWith('\x01');
+    if (lastReasoning !== nextReasoning) return false;
+    // A status bullet stays on its own line. Gluing the next thought onto it
+    // is what the live writer avoids with a boundary.
+    if (nextReasoning && lastReasoningLineIsStatusBullet(last.text.slice(1)) && !delta.slice(1).startsWith('\n')) return false;
+    return true;
+}
+
+function offscreenContentEndsWithBlankLine(parts: readonly OffscreenRoundPart[]): boolean {
+    for (let i = parts.length - 1; i >= 0; i--) {
+        const part = parts[i];
+        // A tool marker already ends the transcript with a blank line.
+        if (part.kind === 'tool') return true;
+        if (part.kind !== 'text' || part.text.startsWith('\x01') || isRejectedRoundContentToken(part.text)) continue;
+        return part.text.endsWith('\n\n');
+    }
+    return true;
+}
+
+function applyOffscreenRoundBoundary(entry: OffscreenLiveRound) {
+    entry.pendingRoundBoundary = false;
+    const visible = entry.parts.slice(entry.start);
+    let contentLen = 0;
+    let hasTool = false;
+    for (const part of visible) {
+        if (part.kind === 'tool' || (part.kind === 'text' && contentHasAssistantToolCall(part.text))) {
+            hasTool = true;
+            continue;
+        }
+        if (part.kind !== 'text' || part.text.startsWith('\x01') || isRejectedRoundContentToken(part.text)) continue;
+        contentLen += part.text.length;
+    }
+    const preserve = hasTool || contentLen >= ROUND_PROSE_PRESERVE_MIN_CHARS;
+    const kept: OffscreenRoundPart[] = [];
+    for (const part of visible) {
+        const content = part.kind === 'text' && !part.text.startsWith('\x01') && !isRejectedRoundContentToken(part.text);
+        if (!preserve && content) continue;
+        kept.push(part);
+    }
+    if (preserve && !offscreenContentEndsWithBlankLine(kept)) {
+        for (let i = kept.length - 1; i >= 0; i--) {
+            const part = kept[i];
+            if (part.kind === 'text' && !part.text.startsWith('\x01') && !isRejectedRoundContentToken(part.text)) {
+                part.text += '\n\n';
+                break;
+            }
+        }
+    }
+    for (let i = kept.length - 1; i >= 0; i--) {
+        const part = kept[i];
+        if (part.kind === 'text' && part.text.startsWith('\x01') && !part.text.endsWith('\n')) {
+            part.text += '\n';
+            break;
+        }
+    }
+    let chars = 0;
+    for (const part of kept) chars += part.text.length;
+    entry.parts = kept;
+    entry.start = 0;
+    entry.chars = chars;
+    entry.contentRound += 1;
+}
+
+function rejectOffscreenRoundDraft(entry: OffscreenLiveRound) {
+    // \x02 drops this round's answer draft. Earlier rounds stay, including a
+    // report that was long enough to keep. The visible stream restores that
+    // same baseline instead of clearing the bubble.
+    const round = entry.contentRound;
+    const kept: OffscreenRoundPart[] = [];
+    for (let i = entry.start; i < entry.parts.length; i++) {
+        const part = entry.parts[i];
+        const draft = part.round === round && part.kind === 'text' && !part.text.startsWith('\x01');
+        if (draft) continue;
+        kept.push(part);
+    }
+    entry.parts = kept;
+    entry.start = 0;
+    let chars = 0;
+    for (const part of kept) chars += part.text.length;
+    entry.chars = chars;
+    const append = entry.append;
+    if (!append) return;
+    append.content = '';
+    append.contentSnapshotMode = false;
+    append.contentBaseline = undefined;
+    append.contentRole = createRolePrefixStreamCursor('keep-body');
+}
+
+function pushOffscreenLiveRoundText(entry: OffscreenLiveRound, pieces: readonly string[]) {
+    const append = ensureOffscreenAppend(entry);
+    for (const piece of pieces) {
+        if (!piece) continue;
+        if (isRejectedRoundContentToken(piece)) {
+            // A new round can be rejected before any of its text lands. Apply
+            // the boundary first so the previous report is the baseline.
+            if (entry.pendingRoundBoundary) applyOffscreenRoundBoundary(entry);
+            rejectOffscreenRoundDraft(entry);
+            continue;
+        }
+        const delta = applyIncomingStreamDelta(append, piece);
+        if (!delta) continue;
+        // A new model round resets the backend normalizer. Drop the previous
+        // short draft here, before this piece joins the hidden buffer.
+        if (entry.pendingRoundBoundary) applyOffscreenRoundBoundary(entry);
+        const last = entry.parts[entry.parts.length - 1];
+        // Do not glue this round onto the previous one. A later rejection has
+        // to be able to drop this round without taking the report with it.
+        if (last && last.round === entry.contentRound && offscreenTextCanExtend(last, delta)) {
+            const extra = delta.startsWith('\x01') ? delta.slice(1) : delta;
+            last.text += extra;
+            entry.chars += extra.length;
+            continue;
+        }
+        entry.parts.push({ kind: 'text', text: delta, round: entry.contentRound });
+        entry.chars += delta.length;
+    }
+    trimOffscreenLiveRound(entry);
+}
+
+function offscreenToolLinesMatch(left: string, right: string): boolean {
+    if (left === right) return true;
+    const a = parseAssistantToolStatus(left);
+    const b = parseAssistantToolStatus(right);
+    return !!a && !!b && a.name === b.name && a.action === b.action && a.detail === b.detail;
+}
+
+function pushOffscreenLiveRoundTool(entry: OffscreenLiveRound, text: string) {
+    const line = text.trim();
+    if (!line || !isTranscriptToolCallText(line)) return;
+    // The visible writer collapses a repeat of the latest call even when prose
+    // arrived between the two progress lines. Match that, or one ssh command
+    // becomes two cards once the tab opens.
+    for (let i = entry.parts.length - 1; i >= entry.start; i--) {
+        const part = entry.parts[i];
+        if (part.kind !== 'tool' || !part.text) continue;
+        if (offscreenToolLinesMatch(part.text, line)) return;
+        break;
+    }
+    entry.parts.push({ kind: 'tool', text: line, round: entry.contentRound });
+    entry.chars += line.length;
+    trimOffscreenLiveRound(entry);
+}
+
+function replayOffscreenRoundOntoMessage(message: ChatMessage, parts: readonly OffscreenRoundPart[]): ChatMessage {
+    // The pieces were already deduped. Join a run of them and write once, so
+    // opening the tab does not copy the whole answer on every token.
+    let next = message;
+    let content: string[] = [];
+    const flushContent = () => {
+        if (content.length === 0) return;
+        next = appendTokenToMessage(next, content.join(''));
+        content = [];
+    };
+    for (const part of parts) {
+        if (part.kind === 'tool') {
+            flushContent();
+            next = appendAssistantToolCall(next, part.text);
+            continue;
+        }
+        // A rejected draft must clear the bubble on its own. Joining it into
+        // the surrounding prose would keep the draft and the rewrite together.
+        if (isRejectedRoundContentToken(part.text)) {
+            flushContent();
+            next = appendTokenToMessage(next, part.text);
+            continue;
+        }
+        if (part.text.startsWith('\x01')) {
+            flushContent();
+            // One thinking piece at a time. A joined block would paste the next
+            // sentence onto a status bullet.
+            next = appendTokenToMessage(next, part.text);
+            continue;
+        }
+        content.push(part.text);
+    }
+    flushContent();
+    return next;
+}
+
+function settleOffscreenTerminalMessages(
+    messages: ChatMessage[],
+    entry: OffscreenLiveRound,
+    requestId: string,
+    response: any,
+    preferences: AIAssistantPreferences,
+): ChatMessage[] {
+    const sessionKey = entry.sessionKey;
+    const silent = offscreenRoundIsContinuation(requestId) || !entry.displayText;
+    const assistantMessageId = nextId();
+    const assistant = replayOffscreenRoundOntoMessage({
+        id: assistantMessageId,
+        role: 'assistant',
+        content: '',
+        requestId,
+        sessionKey,
+        timestamp: Date.now(),
+    }, entry.parts.slice(entry.start));
+    const withRows = silent
+        ? [...messages, assistant]
+        : [...messages, {
+            id: nextId(),
+            role: 'user' as const,
+            content: entry.displayText,
+            sessionKey,
+            timestamp: Date.now(),
+        }, assistant];
+    return resolveSendResult(withRows, assistantMessageId, requestId, response, preferences);
+}
+
+function offscreenRoundIsContinuation(requestId: string): boolean {
+    return requestId.startsWith('session-round-') || requestId.startsWith('goal-cont-');
+}
+
+function offscreenEntryHasTranscript(entry: OffscreenLiveRound): boolean {
+    for (let i = entry.start; i < entry.parts.length; i++) {
+        if (entry.parts[i].text) return true;
+    }
+    return false;
+}
 
 function appendAssistantToolCall(message: ChatMessage, progressText: string): ChatMessage {
     if (message.role !== 'assistant' || message.codingTimeline?.length) return message;
@@ -4458,6 +4774,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const [pendingTaskVersion, setPendingTaskVersion] = useState(0);
     /** Bumped when a backend round for a session that is not on screen starts or ends. */
     const [offscreenLiveRoundVersion, setOffscreenLiveRoundVersion] = useState(0);
+    // Production switches tabs through setActiveSessionKey, not the hook option.
+    // The adoption effect has to re-run on that event or a deploy that started
+    // before its tab existed stays on the welcome screen.
+    const [visibleSessionEpoch, setVisibleSessionEpoch] = useState(0);
     const [agentView, setAgentView] = useState<AgentView | null>(null);
     const activeRoundRef = useRef<ActiveRound>(IDLE_ROUND);
     const pendingTaskRef = useRef<AIAssistantPendingTask | null>(null);
@@ -4483,7 +4803,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
      * was resumed from. Keyed by request id, refreshed by every event of the
      * round, and removed when its final response lands.
      */
-    const offscreenLiveRoundsByRequestRef = useRef<Map<string, { sessionKey: string; lastSeenAt: number }>>(new Map());
+    const offscreenLiveRoundsByRequestRef = useRef<Map<string, OffscreenLiveRound>>(new Map());
     const idleWaitersBySessionRef = useRef<Map<string, Set<() => void>>>(new Map());
     const expertIdleWaitersRef = useRef<Map<string, Set<() => void>>>(new Map());
     const notifyExpertIdleRef = useRef<() => void>(() => {});
@@ -4690,6 +5010,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             setAgentView(agentViewsBySessionRef.current.get(normalizedSessionKey) || null);
             setProgressMessages(progressMessagesBySessionRef.current.get(normalizedSessionKey) || []);
             setSelectedFilePaths(selectedFilePathsBySessionRef.current.get(normalizedSessionKey) || []);
+            setVisibleSessionEpoch(epoch => epoch + 1);
         };
         window.addEventListener(LOCAL_ACTIVE_SESSION_CHANGED_EVENT, handler);
         return () => window.removeEventListener(LOCAL_ACTIVE_SESSION_CHANGED_EVENT, handler);
@@ -5081,7 +5402,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     }, [notifyForegroundIdle]);
 
     /** Remember a backend round whose session is not the visible transcript. */
-    const rememberOffscreenLiveRound = useCallback((requestId: string, sessionKey: string) => {
+    const rememberOffscreenLiveRound = useCallback((requestId: string, sessionKey: string, displayText = '') => {
         const id = String(requestId || '').trim();
         const owner = normalizeRuntimeSessionKey(sessionKey || '');
         // The local assistant owns no task row, and an anonymous event names no
@@ -5091,16 +5412,47 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // fence must keep a hidden continuation from resurrecting the row.
         const forgottenAt = forgottenEventSessionsRef.current.get(owner);
         if (forgottenAt && Date.now() - forgottenAt < FORGOTTEN_EVENT_SESSION_TTL_MS) return;
+        const announced = displayText.trim();
         const existing = offscreenLiveRoundsByRequestRef.current.get(id);
         if (existing && existing.sessionKey === owner) {
             existing.lastSeenAt = Date.now();
+            if (announced && !existing.displayText) existing.displayText = announced;
             return;
         }
         // This wave owns the sidebar row. The previous handoff's hold would
         // otherwise keep the row running after this wave finishes.
         quietHoldReleaseRef.current(owner, id);
-        offscreenLiveRoundsByRequestRef.current.set(id, { sessionKey: owner, lastSeenAt: Date.now() });
+        offscreenLiveRoundsByRequestRef.current.set(id, emptyOffscreenLiveRound(owner, announced));
         setOffscreenLiveRoundVersion(version => version + 1);
+    }, []);
+
+    const noteOffscreenLiveRoundText = useCallback((requestId: string | undefined, pieces: readonly string[]): boolean => {
+        const entry = offscreenLiveRoundsByRequestRef.current.get(String(requestId || '').trim());
+        if (!entry) return false;
+        entry.lastSeenAt = Date.now();
+        if (pieces.length > 0) pushOffscreenLiveRoundText(entry, pieces);
+        return true;
+    }, []);
+
+    const noteOffscreenLiveRoundTool = useCallback((requestId: string | undefined, text: string) => {
+        const entry = offscreenLiveRoundsByRequestRef.current.get(String(requestId || '').trim());
+        if (!entry || !text) return;
+        entry.lastSeenAt = Date.now();
+        pushOffscreenLiveRoundTool(entry, text);
+    }, []);
+
+    /** A hidden model round ended. The next piece replaces a short draft. */
+    const markOffscreenLiveRoundBoundary = useCallback((requestId: string | undefined): boolean => {
+        const id = String(requestId || '').trim();
+        if (!id) return false;
+        const entry = offscreenLiveRoundsByRequestRef.current.get(id);
+        if (!entry) return false;
+        entry.lastSeenAt = Date.now();
+        entry.pendingRoundBoundary = true;
+        // The backend reset its stream normalizer. A snapshot of the new round
+        // must not be deduped against the previous round's text.
+        entry.append = undefined;
+        return true;
     }, []);
 
     /** Keep a remembered offscreen round from expiring while it still streams. */
@@ -5471,13 +5823,43 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return controller;
     }, [clearTransientProgress, forgetInFlightRound, resetActiveRound, responseActivityTimeoutSec, stopResponseTimeout]);
 
+    const replayOffscreenLiveRound = useCallback((requestId: string, assistantMessageId: string) => {
+        const entry = offscreenLiveRoundsByRequestRef.current.get(requestId);
+        if (!entry) return;
+        const parts = entry.parts.slice(entry.start);
+        const append = entry.append;
+        if (!assistantMessageId || parts.length === 0) {
+            forgetOffscreenLiveRound(requestId);
+            return;
+        }
+        let placed = false;
+        setMessages(prev => updateMessageById(prev, assistantMessageId, message => {
+            // A round that already shows text owns those tokens. Appending the
+            // hidden buffer again would paint the same answer twice.
+            if (message.content || message.reasoning || message.toolCalls?.length) {
+                placed = true;
+                return message;
+            }
+            placed = true;
+            if (append) streamAppendStatesByMessageRef.current.set(assistantMessageId, append);
+            if (entry.pendingRoundBoundary) replaceRoundProseOnFirstTokenRef.current.add(requestId);
+            return replayOffscreenRoundOntoMessage(message, parts);
+        }));
+        // The row is not in the transcript yet. Keep the buffer for the adopt
+        // that creates it, instead of dropping the prose here.
+        if (placed) forgetOffscreenLiveRound(requestId);
+    }, [forgetOffscreenLiveRound, setMessages]);
+
     const startEventDrivenForegroundRound = useCallback((event: AIAssistantStreamEvent, startOptions?: { silent?: boolean }) => {
         const requestId = event.request_id?.trim();
         if (!requestId) return null;
         if (activeRoundRef.current.requestId === requestId || inFlightRoundsByRequestRef.current.has(requestId)) {
-            // The visible transcript owns this round now; the sidebar hears about
-            // it through the regular in-flight list.
-            forgetOffscreenLiveRound(requestId);
+            // The visible transcript owns this round now. Flush anything that
+            // arrived while it was still hidden, then drop the buffer.
+            const owner = activeRoundRef.current.requestId === requestId
+                ? activeRoundRef.current
+                : inFlightRoundsByRequestRef.current.get(requestId);
+            replayOffscreenLiveRound(requestId, owner?.assistantMessageId || '');
             return null;
         }
         const explicitSession = String(event.session_key || '').trim();
@@ -5494,7 +5876,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // while the user looks at another task. Their tokens stay out of the
             // visible transcript, but the task is genuinely busy: publish the
             // identity so the sidebar stops showing the stale pause snapshot.
-            rememberOffscreenLiveRound(requestId, sessionKey);
+            rememberOffscreenLiveRound(requestId, sessionKey, event.display_text?.trim() || '');
             return null;
         }
         forgottenEventSessionsRef.current.delete(sessionKey);
@@ -5515,24 +5897,44 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // handoff look like the work stopped.
         if (!sessionRound) clearTransientProgress(sessionKey);
         rememberInFlightRound(nextRound);
+        const buffered = offscreenLiveRoundsByRequestRef.current.get(requestId);
+        const bufferedParts = buffered ? buffered.parts.slice(buffered.start) : [];
+        const bufferedAppend = buffered?.append;
+        const bufferedBoundary = !!buffered?.pendingRoundBoundary;
         forgetOffscreenLiveRound(requestId);
         setRoundState(nextRound);
+        // Install dedup state before the panel hears about the row. A snapshot
+        // that arrives in that notification must still see the hidden prose.
+        if (bufferedAppend) streamAppendStatesByMessageRef.current.set(assistantMessageId, bufferedAppend);
+        // The new round's first token has not arrived yet. Keep the previous
+        // draft visible, and let that token apply the same replacement.
+        if (bufferedBoundary) replaceRoundProseOnFirstTokenRef.current.add(requestId);
         const goalRound = requestId.startsWith('goal-cont-');
+        // One write. A first pass that inserts an empty bubble notifies the
+        // panel before the hidden prose is attached.
+        const assistantSeed: ChatMessage = bufferedParts.length > 0
+            ? replayOffscreenRoundOntoMessage({
+                id: assistantMessageId,
+                role: 'assistant',
+                content: '',
+                requestId,
+                sessionKey,
+                timestamp: Date.now(),
+            }, bufferedParts)
+            : {
+                id: assistantMessageId,
+                role: 'assistant',
+                content: '',
+                requestId,
+                sessionKey,
+                timestamp: Date.now(),
+            };
         setMessages(prev => {
             // An adopted offscreen round already passed its start event. It has
             // no display row to add now; only the placeholder its tokens need.
             // A session-round is the same task continuing. It does not insert
             // a user line the person did not send.
-            if (startOptions?.silent || sessionRound) {
-                return [...prev, {
-                    id: assistantMessageId,
-                    role: 'assistant' as const,
-                    content: '',
-                    requestId,
-                    sessionKey,
-                    timestamp: Date.now(),
-                }];
-            }
+            if (startOptions?.silent || sessionRound) return [...prev, assistantSeed];
             const base = goalRound
                 ? upsertGoalChecklistMessage(prev, sessionKey, displayText)
                 : [...prev, {
@@ -5542,23 +5944,20 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     sessionKey,
                     timestamp: Date.now(),
                 }];
-            return [...base, {
-                id: assistantMessageId,
-                role: 'assistant' as const,
-                content: '',
-                requestId,
-                sessionKey,
-                timestamp: Date.now(),
-            }];
+            return [...base, assistantSeed];
         });
         startResponseTimeout({ generation, assistantMessageId, requestId, source: 'ai:event-round' });
         return nextRound;
-    }, [activeSessionKeyForEvents, clearTransientProgress, forgetOffscreenLiveRound, goalContinuationDisplayText, rememberInFlightRound, rememberOffscreenLiveRound, setRoundState, startResponseTimeout]);
+    }, [activeSessionKeyForEvents, clearTransientProgress, forgetOffscreenLiveRound, goalContinuationDisplayText, rememberInFlightRound, rememberOffscreenLiveRound, replayOffscreenLiveRound, setMessages, setRoundState, startResponseTimeout]);
 
     // A continuation that started while another tab was visible is not a round
     // yet, so its tokens and final response would be dropped after the user
-    // opens that task. Adopt it silently the moment its session becomes the
-    // visible one: the placeholder appears and the rest of the round streams in.
+    // opens that task. Adopt it the moment its session becomes the visible one.
+    // Continuations stay silent (the user row is already in the transcript).
+    // A backend-started turn such as desktop deploy kept its display text and
+    // the prose/commands that arrived before the tab existed, and paints those
+    // now. visibleSessionEpoch covers setActiveSessionKey, which is how the
+    // desktop switches tabs; the hook option is not passed in production.
     // The version dependency also covers an event that is classified as
     // offscreen before the tab switch reaches this hook.
     useEffect(() => {
@@ -5573,13 +5972,15 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 continue;
             }
             if (normalizeRuntimeSessionKey(entry.sessionKey) !== activeKey) continue;
+            const continuation = offscreenRoundIsContinuation(requestId);
+            // start paints the buffered prose and drops the entry. A declined
+            // start (session no longer matches) leaves the buffer in place.
             startEventDrivenForegroundRound(
-                { request_id: requestId, session_key: entry.sessionKey, text: '', display_text: '' },
-                { silent: true },
+                { request_id: requestId, session_key: entry.sessionKey, text: '', display_text: entry.displayText },
+                { silent: continuation || !entry.displayText },
             );
-            forgetOffscreenLiveRound(requestId);
         }
-    }, [activeSessionKeyForEvents, forgetOffscreenLiveRound, offscreenLiveRoundTtlMs, offscreenLiveRoundVersion, startEventDrivenForegroundRound]);
+    }, [activeSessionKeyForEvents, forgetOffscreenLiveRound, offscreenLiveRoundTtlMs, offscreenLiveRoundVersion, startEventDrivenForegroundRound, visibleSessionEpoch]);
 
     const recoverGoalContinuationRound = useCallback((event: AIAssistantStreamEvent) => {
         const requestId = event.request_id?.trim() || '';
@@ -5587,6 +5988,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (activeRoundRef.current.requestId === requestId) return activeRoundRef.current;
         const existingRound = inFlightRoundsByRequestRef.current.get(requestId);
         if (existingRound) return existingRound;
+        // The hidden buffer already owns this round. Starting here would insert
+        // a checklist row; the tab switch adopts it without that row.
+        if (offscreenLiveRoundsByRequestRef.current.has(requestId)) return null;
         if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return null;
         const sessionKey = normalizeRuntimeSessionKey(event.session_key || activeSessionKeyForEvents() || 'desktop-user');
         const forgottenAt = forgottenEventSessionsRef.current.get(sessionKey);
@@ -6229,6 +6633,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // A desktop-bot run does not stream prose or thinking into a bubble
             // or a thinking panel. The sentence arrives later, from send_to_user.
             if (takeAssistantStreamToken(event.request_id || '', loggedText) == null) return;
+            // Still hidden: keep the piece in the offscreen buffer and do not
+            // also start a round. Starting here would drop the buffer, and
+            // applying the same piece again would paint it twice.
+            const acceptedPieces = pieces.length > 0 ? pieces : (loggedText ? [loggedText] : []);
+            if (noteOffscreenLiveRoundText(event.request_id, acceptedPieces)) return;
             let currentRound = activeRoundRef.current;
             const recoveredRound = recoverGoalContinuationRound(event);
             if (recoveredRound && activeRoundRef.current.requestId === recoveredRound.requestId) {
@@ -6265,6 +6674,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
         const newRoundHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
+            if (markOffscreenLiveRoundBoundary(event.request_id)) return;
             touchOffscreenLiveRound(event.request_id);
             let currentRound = activeRoundRef.current;
             const recoveredRound = recoverGoalContinuationRound(event);
@@ -6343,7 +6753,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             offStreamDone();
             resetAllStreamTokenBuffers();
         };
-    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, clearStreamTokenFlushTimer, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, recoverGoalContinuationRound, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, resetStreamAppendStateForMessage, startEventDrivenForegroundRound, touchOffscreenLiveRound, transitionRound, updateInFlightRound]);
+    }, [activeSessionKeyForEvents, appendTokenToDetachedRound, clearStreamTokenFlushTimer, ensureRoundPlaceholder, flushStreamTokenBuffer, markOffscreenLiveRoundBoundary, noteOffscreenLiveRoundText, queueStreamToken, recoverGoalContinuationRound, resetAllStreamTokenBuffers, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, resetStreamAppendStateForMessage, startEventDrivenForegroundRound, touchOffscreenLiveRound, transitionRound, updateInFlightRound]);
 
     // Listen for the async response event. When SendAIAssistantMessage returns
     // {deferred: true} (non-blocking mode), the actual response arrives here.
@@ -6365,11 +6775,37 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const normalized = normalizeSendResponse(resp, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(normalized) || '';
             const quietContinuation = responseIsQuietContinuation(normalized);
+            const hidden = offscreenLiveRoundsByRequestRef.current.get(responseRequestId);
             // A hidden handoff has no transcript round. Keep the sidebar row
             // through the gap, without a request id the tab could adopt.
             if (quietContinuation) {
-                const hidden = offscreenLiveRoundsByRequestRef.current.get(responseRequestId);
                 if (hidden) holdQuietOffscreenSession(hidden.sessionKey);
+            } else if (hidden && (hasRenderableTerminalPayload(normalized) || offscreenEntryHasTranscript(hidden))) {
+                const activeKey = normalizeRuntimeSessionKey(activeSessionKeyForEvents() || 'desktop-user');
+                const hiddenKey = normalizeRuntimeSessionKey(hidden.sessionKey);
+                if (hiddenKey && hiddenKey === activeKey) {
+                    // The tab is already open and the buffer has not been
+                    // adopted yet. Start the round so the reply below lands
+                    // on the prose and commands that already arrived.
+                    startEventDrivenForegroundRound(
+                        { request_id: responseRequestId, session_key: hidden.sessionKey, text: '', display_text: hidden.displayText },
+                        { silent: offscreenRoundIsContinuation(responseRequestId) || !hidden.displayText },
+                    );
+                } else {
+                    // The turn finished before its tab existed. Keep the
+                    // finished rows under that session. Forgetting the buffer
+                    // here used to leave the tab on the welcome screen.
+                    const entry = hidden;
+                    forgetOffscreenLiveRound(responseRequestId);
+                    setMessages(prev => settleOffscreenTerminalMessages(prev, entry, responseRequestId, normalized, preferences));
+                    if (responseRequestId) {
+                        clearPendingTaskForRequest(responseRequestId);
+                        stopResponseTimeout(responseRequestId);
+                        resetStreamTokenBuffer(responseRequestId);
+                    }
+                    clearTransientProgress(hiddenKey || entry.sessionKey);
+                    return;
+                }
             }
             // The round ended, whichever transcript it was writing. A hidden
             // continuation must stop marking its task as running here.
@@ -7509,6 +7945,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const matchesSessionRound = !!sessionRound && sessionRound.phase !== 'idle' && !event.request_id;
             const matchesPendingSession = hasExplicitEventSession && !event.request_id && !eventTargetsActiveRound && !!findPendingTaskBySession(eventSessionKey, currentRound.sessionKey || 'desktop-user');
             if (!matchesDetachedRound && !matchesSessionRound && !matchesPendingSession && !matchesActiveProgressActivity(currentRound, progressEvent, activeSessionKey)) {
+                noteOffscreenLiveRoundTool(event.request_id, progressText);
                 return;
             }
             // Reset the sliding-window activity timeout - backend is alive.
@@ -7592,7 +8029,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return () => {
             offProgress();
         };
-    }, [activeSessionKeyForEvents, appendCodingProgressToRound, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, touchOffscreenLiveRound]);
+    }, [activeSessionKeyForEvents, appendCodingProgressToRound, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, noteOffscreenLiveRoundTool, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, touchOffscreenLiveRound]);
 
     useEffect(() => {
         const handler = (payload: unknown) => {

@@ -32,7 +32,7 @@ func (s *Service) serveLocal(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	claims, err := edgelink.VerifyLocal(s.HubLink.Key, ticket, time.Now())
+	claims, err := verifyLocalTicket(s.HubLink, ticket, time.Now())
 	if err != nil || claims.NodeID != s.HubLink.NodeID() {
 		http.NotFound(w, r)
 		return
@@ -50,6 +50,13 @@ func (s *Service) serveLocal(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func verifyLocalTicket(link *HubLink, ticket string, now time.Time) (edgelink.LocalClaims, error) {
+	if link == nil {
+		return edgelink.VerifyLocal("", ticket, now)
+	}
+	return edgelink.VerifyLocal(link.signingKey(), ticket, now)
 }
 
 func localIdentityMatches(claims edgelink.LocalClaims, tenantID, userID string) bool {
@@ -73,15 +80,30 @@ func (s *Service) serveLocalScreenshot(w http.ResponseWriter, r *http.Request, c
 		writeServiceErr(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, localShotBody(shot, saved))
+}
+
+// localShotBody is the same screenshot document Hub returns on the public
+// path. A scaled or zoomed shot is useless without the screen size and scale.
+func localShotBody(shot desktop.Shot, saved string) map[string]any {
 	body := map[string]any{
-		"mime":         shot.MIME,
-		"image_base64": base64.StdEncoding.EncodeToString(shot.Data),
-		"bytes":        len(shot.Data),
+		"mime":          shot.MIME,
+		"image_base64":  base64.StdEncoding.EncodeToString(shot.Data),
+		"bytes":         len(shot.Data),
+		"screen_width":  shot.ScreenWidth,
+		"screen_height": shot.ScreenHeight,
+		"image_width":   shot.ImageWidth,
+		"image_height":  shot.ImageHeight,
+		"scale":         shot.Scale,
+		"region":        shot.Region,
+	}
+	if shot.HasCursor {
+		body["cursor"] = []int{shot.CursorX, shot.CursorY}
 	}
 	if saved != "" {
 		body["saved_path"] = saved
 	}
-	writeJSON(w, http.StatusOK, body)
+	return body
 }
 
 func (s *Service) serveLocalFile(w http.ResponseWriter, r *http.Request, claims edgelink.LocalClaims, raw []byte) {

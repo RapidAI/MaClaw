@@ -1000,11 +1000,11 @@ const maxScreenshotBytes = 16 << 20
 
 var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 
-// AuthorizeLocal wakes the assigned desktop and returns the server. A
-// same-node srv uses this before reading a screenshot or a file locally,
-// so Hub still records the wake and the bytes do not cross the tunnel.
-func (p *Pool) AuthorizeLocal(ctx context.Context, tenantID, userID string) (Server, error) {
-	if err := p.ensureOp(ctx, tenantID, userID, WakeScreenshot); err != nil {
+// AuthorizeLocal checks the assigned desktop and returns the server. op is
+// the same wake class as the public call: a screenshot may start the GUI,
+// a file or a shell must not. A same-node srv then reads the bytes locally.
+func (p *Pool) AuthorizeLocal(ctx context.Context, tenantID, userID, op string) (Server, error) {
+	if err := p.ensureOp(ctx, tenantID, userID, op); err != nil {
 		return Server{}, err
 	}
 	return p.resolve(ctx, tenantID, userID)

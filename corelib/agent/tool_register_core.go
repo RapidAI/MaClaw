@@ -487,7 +487,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"understanding": map[string]string{"type": "string", "description": "Restatement of the task (required for plan)"},
 			"steps": map[string]interface{}{
 				"type":        "array",
-				"description": "Ordered steps for plan. Each item needs title.",
+				"description": "Ordered steps for plan. Pass the array of objects itself, never a JSON string. Each item needs title.",
 				"items": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{

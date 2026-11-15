@@ -4933,6 +4933,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // A finished checklist is not pinned over the composer, even if the approval
     // flag is stale. A failed row is not finished, so that card stays.
     const codingChecklistRetired = !codingPlanGateOpen && codingChecklistSteps.length > 0 && codingChecklistAllDone(codingChecklistSteps);
+    // While a goal command owns the session, the goal quick bar hosts the
+    // changed-files chip in its right half; the plan checklist drops its copy.
+    const [goalQuickBarVisible, setGoalQuickBarVisible] = useState(false);
     const { workspace: remoteWorkspace, label: remoteWorkspaceLabel } = resolveRemoteWorkspaceDisplay({ isRemoteCodingDev: isRemoteCodingDevEnvironment, isLive: remoteReconnectStatusPath === activeRemoteProjectPath, liveHost: remoteReconnect.host, liveWorkDir: remoteReconnect.workDir, livePort: remoteReconnect.port, tabHost: activeTab.remoteHost, tags: activeTaskExecutionSnapshot.task?.tags });
     const activeTaskSnapshotRunning = useMemo(() => executionSnapshotRawIsRunning(activeTaskExecutionSnapshot.raw), [activeTaskExecutionSnapshot]);
     const hasExplicitStreamingSessionList = Array.isArray(rawStreamingSessionKeys);
@@ -7714,7 +7717,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         onDismiss={handleWelcomeTemplateOfferDismiss}
                     />
                 )}
-                {!showWelcomeView && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || codingTurnFiles.files.length > 0) && (
+                {/* The files clause mirrors hideFileChanges: while the goal bar
+                    hosts the chip, files alone must not mount an empty section. */}
+                {!showWelcomeView && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || (codingTurnFiles.files.length > 0 && !goalQuickBarVisible)) && (
                     <CodingAgentPlanChecklist
                         lang={lang}
                         theme={t}
@@ -7727,6 +7732,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         executionLive={taskExecutionLive}
                         executionStatusLabel={taskExecutionStatus.label}
                         onOpenFile={codingPreviewAllowed ? focusCodeFile : undefined}
+                        hideFileChanges={goalQuickBarVisible}
                         onApprove={() => { void handleCodingPlanGate("approve"); }}
                         onSkip={() => { void handleCodingPlanGate("skip"); }}
                         onReject={() => { void handleCodingPlanGate("reject"); }}
@@ -7738,7 +7744,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {!showWelcomeView && !remoteChat && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && !remoteChat && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
                 {!showWelcomeView && !remoteChat && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => chatTaskInSession(task.sessionKey, activeSessionKey))} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
-                {!showWelcomeView && !remoteChat && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} />}
+                {!showWelcomeView && !remoteChat && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} fileChanges={isPureCodingEnvironment ? codingTurnFiles.files : undefined} fileChangesChrome={codingBannerChrome} onOpenFile={codingPreviewAllowed ? focusCodeFile : undefined} onVisibilityChange={setGoalQuickBarVisible} />}
                 {!showWelcomeView && !wizardScreen && !projectSearch.open && ready && goalChecklistOverlayText && !goalTerminalSessions.has(normalizeAssistantSessionKey(activeSessionKey)) ? (
                     <GoalChecklistOverlay
                         lang={lang}

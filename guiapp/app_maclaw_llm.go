@@ -425,7 +425,7 @@ func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.Macl
 // ConnectionTestPassed explicitly.
 func sameMaclawLLMProviderConnectionShape(a, b corelib.MaclawLLMProvider) bool {
 	return strings.EqualFold(strings.TrimRight(strings.TrimSpace(a.URL), "/"), strings.TrimRight(strings.TrimSpace(b.URL), "/")) &&
-		strings.EqualFold(strings.TrimSpace(a.Model), strings.TrimSpace(b.Model)) &&
+		strings.EqualFold(maclawLLMConnectionModel(a), maclawLLMConnectionModel(b)) &&
 		maclawLLMConnectionProtocol(a) == maclawLLMConnectionProtocol(b) &&
 		maclawLLMConnectionWireAPI(a) == maclawLLMConnectionWireAPI(b) &&
 		strings.EqualFold(strings.TrimSpace(a.AuthType), strings.TrimSpace(b.AuthType)) &&
@@ -484,6 +484,19 @@ func maclawLLMProviderMatchesTestedConnection(provider corelib.MaclawLLMProvider
 		testedProvider.Model = effective.Model
 	}
 	return sameMaclawLLMProviderConnectionShape(effective, testedProvider)
+}
+
+// maclawLLMConnectionModel compares Qoder settings by the wire key, so
+// renaming dfmodel to DeepSeek-Flash does not look like a new connection.
+func maclawLLMConnectionModel(provider corelib.MaclawLLMProvider) string {
+	model := strings.TrimSpace(provider.Model)
+	if model == "" || !isQoderLLMProvider(provider) {
+		return model
+	}
+	if key := qoder.WireModelKey(model); key != "" {
+		return key
+	}
+	return model
 }
 
 func maclawLLMConnectionProtocol(provider corelib.MaclawLLMProvider) string {
@@ -583,7 +596,7 @@ func maclawLLMProviderConnectionIdentity(provider corelib.MaclawLLMProvider) str
 	return strings.Join([]string{
 		strings.ToLower(strings.TrimRight(strings.TrimSpace(provider.URL), "/")),
 		key,
-		strings.ToLower(strings.TrimSpace(provider.Model)),
+		strings.ToLower(maclawLLMConnectionModel(provider)),
 		maclawLLMConnectionProtocol(provider),
 		maclawLLMConnectionWireAPI(provider),
 		strings.ToLower(strings.TrimSpace(provider.AuthType)),
@@ -877,7 +890,7 @@ func qoderProvider(profile qoder.Profile) corelib.MaclawLLMProvider {
 	return corelib.MaclawLLMProvider{
 		Name:          profile.Name,
 		URL:           profile.ChatURL,
-		Model:         qoder.DefaultModel,
+		Model:         qoder.DefaultModelLabel,
 		Protocol:      "openai",
 		AuthType:      "oauth",
 		ContextLength: qoder.DefaultContextLength,
@@ -1428,6 +1441,9 @@ func (a *App) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 			return err
 		}
 	}
+	// Qoder assignments follow the catalog display name. Rewrite before the
+	// catalog merge so a saved short key is not copied back in beside it.
+	rewriteQoderAssignedModels(providers, profiles)
 	for i := range providers {
 		mergeProviderModelCatalog(&providers[i])
 	}
@@ -1585,7 +1601,7 @@ func (a *App) FetchMaclawLLMProfileModels(providerID string) ([]ProviderModelIte
 		if strings.TrimSpace(resolved.URL) == "" {
 			return nil, fmt.Errorf("provider %q has no endpoint", provider.Name)
 		}
-		items, err := a.fetchProviderModels(resolved.URL, resolved.Key, resolved.Protocol, resolved.UserAgent(), true)
+		items, err := a.fetchProviderModels(resolved.URL, resolved.Key, resolved.Protocol, resolved.UserAgent(), provider.Name, true)
 		if err != nil {
 			return nil, err
 		}
@@ -2546,6 +2562,91 @@ func appendMissingModelIDs(existing, extras []string) []string {
 	return out
 }
 
+func isQoderLLMProvider(provider corelib.MaclawLLMProvider) bool {
+	if _, ok := qoder.ProfileByName(provider.Name); ok {
+		return true
+	}
+	return qoder.IsChatBaseURL(provider.URL)
+}
+
+func rewriteQoderName(value string) string {
+	value = strings.TrimSpace(value)
+	if label := qoder.CanonicalDisplayName(value); label != "" {
+		return label
+	}
+	return value
+}
+
+func rewriteQoderNames(values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	renamed := make([]string, 0, len(values))
+	for _, value := range values {
+		renamed = append(renamed, rewriteQoderName(value))
+	}
+	return appendMissingModelIDs(nil, renamed)
+}
+
+func rewriteQoderVision(rows []corelib.ModelVision) {
+	for i := range rows {
+		rows[i].Model = rewriteQoderName(rows[i].Model)
+	}
+}
+
+// rewriteQoderAssignedModels replaces Qoder short keys with the catalog
+// display names on the provider row and on every assignment that points at it.
+func rewriteQoderAssignedModels(providers []corelib.MaclawLLMProvider, profiles *corelib.MaclawLLMProfiles) {
+	qoderIDs := make(map[string]struct{})
+	for i := range providers {
+		if !isQoderLLMProvider(providers[i]) {
+			continue
+		}
+		providers[i].Model = rewriteQoderName(providers[i].Model)
+		providers[i].Models = rewriteQoderNames(providers[i].Models)
+		providers[i].VisionModels = rewriteQoderNames(providers[i].VisionModels)
+		providers[i].VisionTestedModels = rewriteQoderNames(providers[i].VisionTestedModels)
+		rewriteQoderVision(providers[i].VisionByModel)
+		if id := maclawLLMProviderIDForRead(providers[i]); id != "" {
+			qoderIDs[id] = struct{}{}
+		}
+		if legacy := legacyMaclawLLMProviderID(providers[i].Name); legacy != "" {
+			qoderIDs[legacy] = struct{}{}
+		}
+	}
+	if profiles == nil || len(qoderIDs) == 0 {
+		return
+	}
+	rewriteProfile := func(profile *corelib.MaclawLLMProfile) {
+		if profile == nil {
+			return
+		}
+		if _, ok := qoderIDs[strings.TrimSpace(profile.ProviderID)]; !ok {
+			return
+		}
+		profile.Model = rewriteQoderName(profile.Model)
+	}
+	rewriteRole := func(role *corelib.MaclawLLMRoleAssignment) {
+		if role == nil {
+			return
+		}
+		if _, ok := qoderIDs[strings.TrimSpace(role.ProviderID)]; !ok {
+			return
+		}
+		role.Model = rewriteQoderName(role.Model)
+	}
+	rewriteProfile(&profiles.Assistant)
+	rewriteProfile(&profiles.Coding)
+	rewriteProfile(&profiles.Caption)
+	rewriteProfile(&profiles.Horizon.Manager)
+	rewriteProfile(&profiles.Horizon.Auditor)
+	rewriteProfile(&profiles.Horizon.Executor)
+	rewriteRole(&profiles.Foreground)
+	rewriteRole(&profiles.Background)
+	rewriteRole(&profiles.ComputerUse)
+	rewriteRole(&profiles.Grounder)
+}
+
 func mergeProviderModelCatalog(provider *corelib.MaclawLLMProvider, extra ...string) {
 	if provider == nil {
 		return
@@ -2607,7 +2708,7 @@ func (a *App) discoverMaclawLLMProviderModelIDs(provider corelib.MaclawLLMProvid
 	if strings.TrimSpace(resolved.URL) == "" {
 		return nil
 	}
-	items, err := a.fetchProviderModels(resolved.URL, resolved.Key, resolved.Protocol, resolved.UserAgent(), true)
+	items, err := a.fetchProviderModels(resolved.URL, resolved.Key, resolved.Protocol, resolved.UserAgent(), provider.Name, true)
 	if err != nil {
 		log.Printf("[LLM] discover provider models failed provider=%q: %v", provider.Name, err)
 		return nil
@@ -3414,12 +3515,22 @@ func (a *App) TestAndSaveMaclawLLMProviders(providers []corelib.MaclawLLMProvide
 	if err != nil {
 		return corelib.MaclawLLMTestResult{}, err
 	}
+	// Persist the live catalog so Model assignments can offer every name the
+	// provider actually supports, not only the single ID that was just tested.
+	// Qoder settings store the catalog display names (Qwen3.8-Max), not the
+	// short wire keys (qmodel_38max, auto). A successful catalog replaces the
+	// previous list so a lone default cannot keep hiding the rest.
+	discovered := a.discoverMaclawLLMProviderModelIDs(providers[providerIndex])
+	if isQoderLLMProvider(providers[providerIndex]) && len(discovered) > 0 {
+		providers[providerIndex].Models = nil
+		if label := qoder.CanonicalDisplayName(providers[providerIndex].Model); label != "" {
+			providers[providerIndex].Model = label
+		}
+	}
+	mergeProviderModelCatalog(&providers[providerIndex], discovered...)
 	if result.VisionProbeStatus != string(visionProbeInconclusive) {
 		markMaclawLLMProviderVisionTested(&providers[providerIndex], providers[providerIndex].Model, result.SupportsVision)
 	}
-	// Persist the live catalog so Model assignments can offer every name the
-	// provider actually supports, not only the single ID that was just tested.
-	mergeProviderModelCatalog(&providers[providerIndex], a.discoverMaclawLLMProviderModelIDs(providers[providerIndex])...)
 	if err := a.saveMaclawLLMProviders(providers, current, maclawLLMProviderRevision(cfg), providerID); err != nil {
 		return corelib.MaclawLLMTestResult{}, err
 	}
@@ -6500,7 +6611,7 @@ func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 		return nil, fmt.Errorf("CodeGen SSO 未完成，请先完成企业认证")
 	}
 
-	models, err := a.fetchProviderModels(codeGenProvider.URL, codeGenProvider.Key, "openai", codeGenProvider.UserAgent(), false)
+	models, err := a.fetchProviderModels(codeGenProvider.URL, codeGenProvider.Key, "openai", codeGenProvider.UserAgent(), "", false)
 	if err != nil {
 		if items := codeGenModelItemsFromSavedIDs(codeGenProvider.Models); len(items) > 0 {
 			log.Printf("[CodeGen] FetchCodeGenModels: live fetch failed, using cached provider models: %v", err)
@@ -7151,11 +7262,11 @@ func setFetchProviderModelsHTTPClientForTest(client *http.Client) {
 //
 // 前端在 MaClaw LLM 配置面板和编程工具配置面板中调用此函数，
 // 让用户从服务商实际支持的模型中选择，而非手动输入模型名。
-func (a *App) FetchProviderModels(baseURL, apiKey, protocol, userAgent string) ([]ProviderModelItem, error) {
-	return a.fetchProviderModels(baseURL, apiKey, protocol, userAgent, true)
+func (a *App) FetchProviderModels(baseURL, apiKey, protocol, userAgent, providerName string) ([]ProviderModelItem, error) {
+	return a.fetchProviderModels(baseURL, apiKey, protocol, userAgent, providerName, true)
 }
 
-func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, sortModels bool) ([]ProviderModelItem, error) {
+func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent, providerName string, sortModels bool) ([]ProviderModelItem, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
 	protocol = strings.TrimSpace(protocol)
@@ -7204,7 +7315,7 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 	// OpenAI-style /models endpoint to probe. Both editions share the chat
 	// URL, so fetchQoderCatalogModels resolves the edition from credentials.
 	if qoder.IsChatBaseURL(baseURL) {
-		return a.fetchQoderCatalogModels()
+		return a.fetchQoderCatalogModels(providerName)
 	}
 
 	// Trae serves its catalog on the realm chat host only; there is no

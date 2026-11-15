@@ -272,6 +272,25 @@ func (a *adminServer) PutHubKey(label, token string) error {
 	return a.saveTokens(kept)
 }
 
+// HubKey returns the extra key stored for this node. A missing key is
+// os.ErrNotExist. The primary DESKTOPD_TOKEN is not returned here.
+func (a *adminServer) HubKey(label string) (string, error) {
+	label = strings.TrimSpace(label)
+	tokens, err := a.tokens()
+	if err != nil {
+		return "", err
+	}
+	for _, item := range tokens {
+		if item.Label == label {
+			token := strings.TrimSpace(item.Token)
+			if token != "" {
+				return token, nil
+			}
+		}
+	}
+	return "", os.ErrNotExist
+}
+
 // DropHubKeys removes every hub- key. Panel-issued keys stay.
 func (a *adminServer) DropHubKeys() error {
 	a.writeMu.Lock()

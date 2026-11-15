@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSidebarModelOptions } from '../sidebarModelOptions';
+import { buildSidebarModelOptions, replaceCachedModelsWithLiveCatalog } from '../sidebarModelOptions';
 
 describe('buildSidebarModelOptions', () => {
     it('falls back to the configured model from LLM settings when fetch fails', () => {
@@ -35,5 +35,21 @@ describe('buildSidebarModelOptions', () => {
 
     it('returns empty when nothing is configured or discovered', () => {
         expect(buildSidebarModelOptions({})).toEqual([]);
+    });
+
+    it('drops cached short keys once a live catalog arrives and keeps the current model', () => {
+        expect(replaceCachedModelsWithLiveCatalog({
+            configuredModel: 'dfmodel',
+            cachedModels: ['auto', 'dfmodel', 'qmodel_38max'],
+            fetchedModels: ['Fast', 'DeepSeek-Flash', 'Qwen3.8-Max'],
+        })).toEqual(['dfmodel', 'Fast', 'DeepSeek-Flash', 'Qwen3.8-Max']);
+    });
+
+    it('keeps the configured name when the live catalog already lists it', () => {
+        expect(replaceCachedModelsWithLiveCatalog({
+            configuredModel: 'Qwen3.8-Max',
+            cachedModels: ['auto'],
+            fetchedModels: ['Fast', 'Qwen3.8-Max'],
+        })).toEqual(['Qwen3.8-Max', 'Fast']);
     });
 });

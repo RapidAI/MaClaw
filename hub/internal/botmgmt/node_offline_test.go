@@ -1,12 +1,39 @@
 package botmgmt
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 )
+
+func TestNodeClientDoesNotDialThePublicHost(t *testing.T) {
+	hits := 0
+	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer public.Close()
+	svc := NewService(nil)
+	svc.HTTP = public.Client()
+	svc.NodeHTTP = func(string) *http.Client { return nil }
+
+	err := svc.call(context.Background(), record{BaseURL: public.URL}, "", "", http.MethodGet, "/health", nil, nil)
+	if err != nil || hits != 1 {
+		t.Fatalf("public call err=%v hits=%d", err, hits)
+	}
+	err = svc.call(context.Background(), record{DialNode: "node-1", BaseURL: "http://srv.node-1.node.invalid"}, "", "", http.MethodGet, "/health", nil, nil)
+	if err == nil || hits != 1 {
+		t.Fatalf("node call err=%v hits=%d", err, hits)
+	}
+	if nodeLinkOffline(err) {
+		t.Fatal("a missing node link was queued as a brief drop")
+	}
+}
 
 func TestNodeOfflineMessageWaitsThenStops(t *testing.T) {
 	svc := NewService(&memSettings{})

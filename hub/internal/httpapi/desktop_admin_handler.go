@@ -534,10 +534,8 @@ func edgeBodyTenantAllowed(w http.ResponseWriter, r *http.Request, tenant string
 	_ = r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(raw))
 	if edgeBodyIsJSON(r, raw) {
-		var probe struct {
-			TenantID string `json:"tenant_id"`
-		}
-		if json.Unmarshal(raw, &probe) != nil || edgeTenantMismatch(probe.TenantID, tenant) || strings.TrimSpace(probe.TenantID) == "" {
+		named, ok := edgeJSONTenant(raw)
+		if !ok || named == "" || edgeTenantMismatch(named, tenant) {
 			writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
 			return false
 		}
@@ -561,8 +559,38 @@ func edgeLargeBodyTenantOK(r *http.Request, raw []byte, queryTenant, tenant stri
 	if len(head) > 8192 {
 		head = head[:8192]
 	}
-	id := strings.TrimSpace(jsonStringField(head, "tenant_id"))
-	return id != "" && !edgeTenantMismatch(id, tenant)
+	id, ok := edgeJSONTenant(head)
+	return ok && id != "" && !edgeTenantMismatch(id, tenant)
+}
+
+// edgeJSONTenant reads the tenant a desktop call names. Session and file
+// bodies use tenant_id. A machine tool call uses tenant. Both must name
+// this node, and they must not name two different tenants.
+func edgeJSONTenant(raw []byte) (string, bool) {
+	var probe struct {
+		TenantID string `json:"tenant_id"`
+		Tenant   string `json:"tenant"`
+	}
+	if json.Unmarshal(raw, &probe) == nil {
+		id := strings.TrimSpace(probe.TenantID)
+		alias := strings.TrimSpace(probe.Tenant)
+		if id != "" && alias != "" && edgeTenantMismatch(id, alias) {
+			return "", false
+		}
+		if id == "" {
+			id = alias
+		}
+		return id, true
+	}
+	id := strings.TrimSpace(jsonStringField(raw, "tenant_id"))
+	alias := strings.TrimSpace(jsonStringField(raw, "tenant"))
+	if id != "" && alias != "" && edgeTenantMismatch(id, alias) {
+		return "", false
+	}
+	if id == "" {
+		id = alias
+	}
+	return id, true
 }
 
 func edgeBodyIsJSON(r *http.Request, raw []byte) bool {
@@ -592,24 +620,28 @@ func edgeTenantMismatch(got, want string) bool {
 
 func jsonStringField(raw []byte, key string) string {
 	needle := []byte(`"` + key + `"`)
-	i := bytes.Index(raw, needle)
-	if i < 0 {
-		return ""
+	for len(raw) > 0 {
+		i := bytes.Index(raw, needle)
+		if i < 0 {
+			return ""
+		}
+		rest := raw[i+len(needle):]
+		trimmed := bytes.TrimLeft(rest, " \t\r\n")
+		if len(trimmed) > 0 && trimmed[0] == ':' {
+			trimmed = bytes.TrimLeft(trimmed[1:], " \t\r\n")
+			if len(trimmed) == 0 || trimmed[0] != '"' {
+				return ""
+			}
+			trimmed = trimmed[1:]
+			end := bytes.IndexByte(trimmed, '"')
+			if end < 0 {
+				return ""
+			}
+			return string(trimmed[:end])
+		}
+		raw = rest
 	}
-	rest := bytes.TrimLeft(raw[i+len(needle):], " \t\r\n")
-	if len(rest) == 0 || rest[0] != ':' {
-		return ""
-	}
-	rest = bytes.TrimLeft(rest[1:], " \t\r\n")
-	if len(rest) == 0 || rest[0] != '"' {
-		return ""
-	}
-	rest = rest[1:]
-	end := bytes.IndexByte(rest, '"')
-	if end < 0 {
-		return ""
-	}
-	return string(rest[:end])
+	return ""
 }
 
 // PostDesktopSessionHandler is called by MaClawSrv. It resolves the user's

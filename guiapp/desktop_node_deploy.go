@@ -638,7 +638,7 @@ func (a *App) UpgradeDesktopNode(id, password string) (*DesktopNodeRecord, error
 	}
 	updated, err := a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
 		r.Status = desktopNodeStatusUpgrading
-		r.Message = "agent 正在用最新代码升级 desktopd"
+		r.Message = desktopNodeUpgradeMessage(rec.WithSrv)
 	})
 	if err != nil {
 		releaseDesktopNodeJob(rec.ID)
@@ -1087,7 +1087,7 @@ func desktopNodeFatal(err error) bool {
 
 var desktopNodeDetailMu sync.Mutex
 
-var desktopNodeDetailSecret = regexp.MustCompile(`(?i)(password|DESKTOPD_TOKEN|MACLAW_ADMIN_SECRET|MACLAW_TOKEN_SECRET|MACLAW_DESKTOP_API_TOKEN|hub_token|node_secret|srv_admin_secret|desktopd_key|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|Bearer\s+\S+|\S+)`)
+var desktopNodeDetailSecret = regexp.MustCompile(`(?i)(password|DESKTOPD_TOKEN|MACLAW_ADMIN_SECRET|MACLAW_TOKEN_SECRET|MACLAW_DESKTOP_API_TOKEN|hub_token|node_secret|srv_admin_secret|desktopd_key|authorization|密码)\s*[:=：]\s*(?:"[^"]*"|'[^']*'|Bearer\s+\S+|\S+)`)
 var desktopNodeDetailBearer = regexp.MustCompile(`(?i)Bearer\s+\S+`)
 var desktopNodeDetailUserinfo = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@`)
 var desktopNodeDetailBlob = regexp.MustCompile(`[A-Za-z0-9+/]{40,}={0,2}`)
@@ -1186,25 +1186,34 @@ func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privileg
 	if job.upgrade() {
 		a.clearDesktopNodeStamp(rec, password, privilege)
 	}
-	if strings.TrimSpace(rec.HubURL) == "" {
-		hub, _, hubErr := a.getHubCredentials()
-		if strings.TrimSpace(hub) != "" {
-			rec.HubURL = strings.TrimRight(strings.TrimSpace(hub), "/")
-		} else if hubErr != nil {
+	hub, _, hubErr := a.getHubCredentials()
+	prepared, prepErr := prepareDesktopNodeJob(rec, hub)
+	if prepErr != nil {
+		if hubErr != nil {
 			a.desktopNodeDetail(rec.ID, "hub", hubErr.Error())
 		}
+		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, prepErr.Error())
+		return
 	}
-	taskName := "部署 desktopd · " + rec.User + "@" + rec.Host
-	prompt := desktopNodeDeployPrompt(rec, label, privilege)
-	display := fmt.Sprintf("〔一键部署〕在 %s@%s 上部署 desktopd", rec.User, rec.Host)
-	if rec.WithSrv {
-		taskName = "部署 desktopd 和 MaClawSrv · " + rec.User + "@" + rec.Host
-		display = fmt.Sprintf("〔一键部署〕在 %s@%s 上部署 desktopd 和 MaClawSrv", rec.User, rec.Host)
+	if prepared.Port != rec.Port || prepared.HubURL != rec.HubURL {
+		_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
+			if r.Port <= 0 || r.Port > 65535 {
+				r.Port = prepared.Port
+			}
+			if strings.TrimSpace(r.HubURL) == "" {
+				r.HubURL = prepared.HubURL
+			}
+		})
 	}
+	rec = prepared
+	what := desktopNodeComponentNames(rec.WithSrv)
+	taskName := "部署 " + what + " · " + rec.User + "@" + rec.Host
+	prompt := desktopNodeDeployPrompt(rec, password, privilege)
+	display := fmt.Sprintf("〔一键部署〕在 %s@%s 上部署 %s", rec.User, rec.Host, what)
 	if job.upgrade() {
-		taskName = "升级 desktopd · " + rec.User + "@" + rec.Host
-		prompt = desktopNodeUpgradePrompt(rec, label, privilege, job.stamp)
-		display = fmt.Sprintf("〔升级 desktopd〕在 %s@%s 上用最新代码重新编译部署", rec.User, rec.Host)
+		taskName = "升级 " + what + " · " + rec.User + "@" + rec.Host
+		prompt = desktopNodeUpgradePrompt(rec, password, privilege, job.stamp)
+		display = fmt.Sprintf("〔升级〕在 %s@%s 上用最新代码重新编译部署 %s", rec.User, rec.Host, what)
 	}
 	task := a.CreateTask(taskName, "")
 	if strings.TrimSpace(task.ProjectPath) == "" {
@@ -1770,9 +1779,22 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
-// desktopNodeDeployPrompt is the task for the existing assistant agent. It
-// names an SSH label, never the password, and tells the agent not to print
-// the desktopd token: this GUI reads it over its own SSH connection.
+// prepareDesktopNodeJob fills the login fields the agent is told. A missing
+// port is 22, the same default the dial uses. A missing hub is fatal: the
+// prompt would otherwise name an empty document.
+func prepareDesktopNodeJob(rec DesktopNodeRecord, hub string) (DesktopNodeRecord, error) {
+	if rec.Port <= 0 || rec.Port > 65535 {
+		rec.Port = 22
+	}
+	if strings.TrimSpace(rec.HubURL) == "" {
+		rec.HubURL = strings.TrimRight(strings.TrimSpace(hub), "/")
+	}
+	if strings.TrimSpace(rec.HubURL) == "" {
+		return rec, fmt.Errorf("还没有连接 Hub")
+	}
+	return rec, nil
+}
+
 func desktopNodePrivilegeLine(privilege desktopNodePrivilege, ending string) string {
 	switch {
 	case privilege.root:
@@ -1780,8 +1802,31 @@ func desktopNodePrivilegeLine(privilege desktopNodePrivilege, ending string) str
 	case privilege.tempSudoers != "":
 		return "登录用户已临时获得免密 sudo（" + ending + "结束后会自动撤销），需要 root 的命令用 sudo 执行。"
 	default:
-		return "登录用户可以 sudo：先调用 ssh 的 sudo_prepare（session_id 为 connect 返回的会话），之后需要 root 的命令用 sudo 执行。"
+		return "这个用户可以 sudo，sudo 使用上面的同一条密码。"
 	}
+}
+
+func desktopNodeServerLines(rec DesktopNodeRecord, password string, privilege desktopNodePrivilege, ending string) string {
+	return fmt.Sprintf("服务器：\n- 地址：%s\n- 端口：%d\n- 用户：%s\n- 密码：%s\n- 提权：%s\n",
+		rec.Host, rec.Port, rec.User, password, desktopNodePrivilegeLine(privilege, ending))
+}
+
+func desktopNodeComponentNames(withSrv bool) string {
+	if withSrv {
+		return "desktopd 和 MaClawSrv"
+	}
+	return "desktopd"
+}
+
+func desktopNodeComponentLine(withSrv, upgrade bool) string {
+	if upgrade {
+		return "要更新的组件：" + desktopNodeComponentNames(withSrv) + "\n"
+	}
+	return "要安装的组件：" + desktopNodeComponentNames(withSrv) + "\n"
+}
+
+func desktopNodeUpgradeMessage(withSrv bool) string {
+	return "agent 正在用最新代码升级 " + desktopNodeComponentNames(withSrv)
 }
 
 func desktopNodeDocURL(hub string) string {
@@ -1792,21 +1837,22 @@ func desktopNodeDocURL(hub string) string {
 	return hub + "/docs/self-desktopd"
 }
 
-func desktopNodeDeployPrompt(rec DesktopNodeRecord, label string, privilege desktopNodePrivilege) string {
+func desktopNodeDeployPrompt(rec DesktopNodeRecord, password string, privilege desktopNodePrivilege) string {
 	var b strings.Builder
-	b.WriteString("请在下面这台内网 Linux 服务器上安装。安装步骤和配置以安装文档为准。\n\n")
-	if rec.WithSrv {
-		b.WriteString("这次的安装选择：一并安装 desktopd 和 MaClawSrv。按文档第 2 节和第 3 节做。不要创建 .env，不要生成密钥，不要启动 MaClawSrv。\n\n")
-	} else {
-		b.WriteString("这次的安装选择：只安装 desktopd。按文档第 2 节做到健康检查为止。不要安装 MaClawSrv，也不要安装 botnode。\n\n")
-	}
-	fmt.Fprintf(&b, "服务器：\n- 地址：%s\n- 端口：%d\n- 用户：%s\n- 提权：%s\n", rec.Host, rec.Port, rec.User, desktopNodePrivilegeLine(privilege, "部署"))
-	fmt.Fprintf(&b, "- 连接：调用 ssh 工具 action=connect，label=%q（不要传 host/user/password，密码已由客户端托管）。\n\n", label)
+	b.WriteString("用 ssh 登录下面这台 Linux 服务器，按安装文档完成部署。\n\n")
+	b.WriteString(desktopNodeServerLines(rec, password, privilege, "部署"))
+	b.WriteString(desktopNodeComponentLine(rec.WithSrv, false))
+	b.WriteString("\n")
 	hub := strings.TrimRight(strings.TrimSpace(rec.HubURL), "/")
 	fmt.Fprintf(&b, "当前登录的 Hub：%s\n", hub)
 	fmt.Fprintf(&b, "安装文档：%s\n", desktopNodeDocURL(hub))
-	b.WriteString("文档里的 HUB_URL 用上面这个 Hub 地址，不要用文档里的示例域名。\n")
-	b.WriteString("不要输出或复述令牌和密钥。\n\n")
+	b.WriteString("文档里的 HUB_URL 用上面这个 Hub 地址，不要用文档里的示例域名。\n\n")
+	if rec.WithSrv {
+		b.WriteString("这次一并安装 desktopd 和 MaClawSrv。按文档第 2 节和第 3 节做。不要创建 .env，不要生成密钥，不要启动 MaClawSrv。\n")
+	} else {
+		b.WriteString("这次只安装 desktopd。按文档第 2 节做到健康检查为止。不要安装 MaClawSrv，也不要安装 botnode。\n")
+	}
+	b.WriteString("不要在回复里复述密码、令牌和密钥。\n\n")
 	b.WriteString("完成后最后一行输出 `DESKTOPD_DEPLOY: OK`；失败则输出 `DESKTOPD_DEPLOY: FAILED <原因>`。")
 	return b.String()
 }
@@ -1983,12 +2029,13 @@ func desktopNodeDeployPaths(rec DesktopNodeRecord) (dir string, port int) {
 // from the latest source on a machine that already runs it. The stamp is not
 // a secret: the GUI treats the file as the sign that this upgrade, not the
 // previous process, is the one answering health checks.
-func desktopNodeUpgradePrompt(rec DesktopNodeRecord, label string, privilege desktopNodePrivilege, stamp string) string {
+func desktopNodeUpgradePrompt(rec DesktopNodeRecord, password string, privilege desktopNodePrivilege, stamp string) string {
 	dir, _ := desktopNodeDeployPaths(rec)
 	var b strings.Builder
-	fmt.Fprintf(&b, "请把下面这台内网 Linux 服务器上已经在运行的 MaClaw desktopd 升级到文档里的最新代码。这是更新，不是新安装。\n\n")
-	fmt.Fprintf(&b, "服务器：\n- 地址：%s\n- 端口：%d\n- 用户：%s\n- 提权：%s\n", rec.Host, rec.Port, rec.User, desktopNodePrivilegeLine(privilege, "升级"))
-	fmt.Fprintf(&b, "- 连接：调用 ssh 工具 action=connect，label=%q（不要传 host/user/password，密码已由客户端托管）。\n\n", label)
+	fmt.Fprintf(&b, "用 ssh 登录下面这台 Linux 服务器，把已经在运行的 %s 升级到文档里的最新代码。这是更新，不是新安装。\n\n", desktopNodeComponentNames(rec.WithSrv))
+	b.WriteString(desktopNodeServerLines(rec, password, privilege, "升级"))
+	b.WriteString(desktopNodeComponentLine(rec.WithSrv, true))
+	b.WriteString("\n")
 	hub := strings.TrimRight(strings.TrimSpace(rec.HubURL), "/")
 	fmt.Fprintf(&b, "当前登录的 Hub：%s\n", hub)
 	fmt.Fprintf(&b, "安装文档：%s\n", desktopNodeDocURL(hub))
@@ -2001,7 +2048,7 @@ func desktopNodeUpgradePrompt(rec DesktopNodeRecord, label string, privilege des
 	b.WriteString("必须保留现有 DESKTOPD_TOKEN、环境文件、state 里的 Hub 连接，以及已有桌面容器和用户数据。不要重新注册，不要删除无关容器。\n")
 	fmt.Fprintf(&b, "开始前删除旧标记：rm -f %s/.upgrade-stamp\n", dir)
 	fmt.Fprintf(&b, "desktopd 健康之后才写入完成标记，内容必须正好是这一行：printf '%%s\\n' %s > %s/.upgrade-stamp && chmod 600 %s/.upgrade-stamp\n", stamp, dir, dir)
-	b.WriteString("不要输出或复述 DESKTOPD_TOKEN 和其他密钥。\n\n")
+	b.WriteString("不要在回复里复述密码、DESKTOPD_TOKEN 和其他密钥。\n\n")
 	b.WriteString("完成后最后一行输出 `DESKTOPD_DEPLOY: OK`；失败则输出 `DESKTOPD_DEPLOY: FAILED <原因>`。")
 	return b.String()
 }

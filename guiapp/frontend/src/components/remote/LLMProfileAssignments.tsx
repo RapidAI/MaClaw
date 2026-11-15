@@ -7,6 +7,7 @@ import { SuggestCombobox } from "../ui/SuggestCombobox";
 import { capabilityBandName, hubOfficialModelAliases, officialModelAlias } from "../../utils/capabilityModelLabel";
 import { panelText } from "../../i18n/mnPanel";
 import { presetProviderDisplayName } from "./presetProviderLabel";
+import { isQoderProvider } from "./providerLogos";
 import type { AgentProviderSwitchTarget } from "./agentProviderSwitchOffer";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
@@ -410,10 +411,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                 .map(item => String(item?.id ?? item?.ID ?? "").trim())
                 .filter(Boolean);
             if (ids.length === 0) return;
-            setCatalogByProvider(prev => {
-                const existing = prev[id] || [];
-                return { ...prev, [id]: Array.from(new Set([...ids, ...existing])) };
-            });
+            setCatalogByProvider(prev => ({ ...prev, [id]: ids }));
         } catch {
             // The persisted provider.models catalog remains the assignment list.
         }
@@ -441,6 +439,10 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         // MaClaw Official's model names are the four billing aliases. The live
         // /models catalog is an upstream id list and must not replace them.
         if (provider.is_hub_service) return hubOfficialModelAliases();
+        const live = catalogByProvider[id] || [];
+        if (isQoderProvider(provider.name) && live.length > 0) {
+            return Array.from(new Set(live.map(value => String(value || "").trim()).filter(Boolean)));
+        }
         const options = [
             ...(catalogByProvider[id] || []),
             provider.model,

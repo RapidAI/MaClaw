@@ -26867,6 +26867,11 @@ button.tbk-pill {
 /* CodingAgentPlanChecklist.tsx — summary bar; the T1/T2 list floats on hover. */
 .capc-checklist { position: relative; padding: 6px 10px; border-radius: 12px; box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.45; }
 .capc-checklist.capc-open { z-index: 6; }
+/* The changed-files chip (CodingAgentFileChanges) owns its open state, so the
+   host bar cannot carry a class for it. Lift whichever bar shows the open
+   file list so the popover paints above the composer below. */
+.capc-checklist:has(.capc-files.capc-open),
+.mc-goal-quick-bar:has(.capc-files.capc-open) { z-index: 6; }
 .capc-bar { display: flex; align-items: stretch; gap: 8px; min-width: 0; }
 .capc-hover { flex: 1 1 auto; min-width: 0; }
 .capc-files { flex: 0 0 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }
@@ -28935,6 +28940,22 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-goal-quick-bar {
   overflow: hidden;
+}
+/* The changed-files chip floats its list above the bar: while it is hosted
+   the bar must unclip (overflow:hidden would crop the popover) and become
+   the popover's positioning ancestor. */
+.mc-goal-quick-bar:has(.capc-files) {
+  overflow: visible;
+  position: relative;
+}
+/* Same right-half divider the checklist draws between the plan summary and
+   the files chip (.capc-hover + .capc-files). Stretch fills the bar height:
+   the popover's bottom edge overlaps the bar's top 6px, and a centered chip
+   top could sit a pixel below that, opening a dead gap on the pointer path. */
+.mc-goal-quick-bar > .capc-files {
+  align-self: stretch;
+  border-left: 1px solid color-mix(in srgb, var(--theme-border, #d8dee8) 70%, transparent);
+  padding-left: 8px;
 }
 .mc-goal-quick-bar :focus-visible {
   outline-offset: 0;

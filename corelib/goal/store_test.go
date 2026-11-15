@@ -391,6 +391,39 @@ func TestPersistence_SaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestPersistence_LoadRepairsEncodedStepTitle(t *testing.T) {
+	dir := t.TempDir()
+	s1 := NewStore(dir)
+	if _, err := s1.Set("user1", "build a snake game"); err != nil {
+		t.Fatal(err)
+	}
+	// The whole plan arrived double-encoded and an older build stored the
+	// JSON document as the only step's title. Loading must unfold it back
+	// into the real steps, keeping the reported work on the first one.
+	corrupt := `[{"index":1,"title":"[{\"title\": \"探测工具链\", \"detail\": \"只读探查\"}, {\"title\": \"搭建骨架\"}]","detail":"父步骤备注","status":"done","result":"第一步已完成"}]`
+	if _, err := s1.db.Exec(`UPDATE goals SET steps_json=? WHERE user_id=?`, corrupt, "user1"); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewStore(dir)
+	got := s2.Get("user1")
+	if got == nil {
+		t.Fatal("expected goal to load")
+	}
+	if len(got.Steps) != 2 {
+		t.Fatalf("steps = %#v", got.Steps)
+	}
+	if got.Steps[0].Title != "探测工具链" || got.Steps[0].Status != StepDone || got.Steps[0].Result != "第一步已完成" || got.Steps[0].Detail != "只读探查" {
+		t.Fatalf("step 1 = %#v", got.Steps[0])
+	}
+	if got.Steps[1].Title != "搭建骨架" || got.Steps[1].Status != StepPending || got.Steps[1].Index != 2 {
+		t.Fatalf("step 2 = %#v", got.Steps[1])
+	}
+	current, ok := got.CurrentStep()
+	if !ok || current.Index != 2 {
+		t.Fatalf("current = %#v ok=%v", current, ok)
+	}
+}
+
 func TestPersistence_StateUpdateRewritesMissingRow(t *testing.T) {
 	dir := t.TempDir()
 	s1 := NewStore(dir)

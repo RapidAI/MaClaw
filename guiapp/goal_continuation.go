@@ -1776,7 +1776,7 @@ func buildGoalPlanCorrectionPrompt(g *goal.Goal) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("[系统续接][plan] 上一轮没有把分解写入目标。本轮只补交规划，不要实现，不要问用户。\n\n目标：%s\n\n", objective))
 	b.WriteString("立刻调用 goal(action=\"plan\", understanding=\"...\", steps=[{\"title\":\"...\",\"detail\":\"...\"}], acceptance_criteria=[\"...\"]).\n")
-	b.WriteString("步骤和验收标准都必须非空。不要修改文件，不要运行实现，不要调用 complete。")
+	b.WriteString("steps 必须是对象数组本身，不要把它写成 JSON 字符串。步骤和验收标准都必须非空。不要修改文件，不要运行实现，不要调用 complete。")
 	return b.String()
 }
 
@@ -1805,7 +1805,7 @@ func buildGoalPlanPrompt(g *goal.Goal) string {
 	b.WriteString("1. 用你自己的话复述任务，确认你理解要交付的结果。\n")
 	b.WriteString("2. 把任务分解成有序、可独立执行的步骤。\n")
 	b.WriteString("3. 写出可以核对的验收标准。\n")
-	b.WriteString("4. 调用 goal(action=\"plan\", understanding=\"...\", steps=[{\"title\":\"...\",\"detail\":\"...\"}], acceptance_criteria=[\"...\"]).\n\n")
+	b.WriteString("4. 调用 goal(action=\"plan\", understanding=\"...\", steps=[{\"title\":\"...\",\"detail\":\"...\"}], acceptance_criteria=[\"...\"]). steps 传对象数组本身，不要写成 JSON 字符串。\n\n")
 	b.WriteString("禁止修改文件、运行实现或调用 complete。步骤或验收标准为空时不要调用 plan。")
 	return b.String()
 }

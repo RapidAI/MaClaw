@@ -415,6 +415,139 @@ func TestHubClientSendsTheWindow(t *testing.T) {
 	}
 }
 
+func TestHubClientReadsAnOptionedScreenshotLocally(t *testing.T) {
+	shot := desktopTestPNG(t, 8, 6, false)
+	var window, localAuth string
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localAuth = r.Header.Get("Authorization")
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		window, _ = in["window"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"mime": "image/png", "image_base64": base64.StdEncoding.EncodeToString(shot),
+			"screen_width": 16, "screen_height": 12, "image_width": 8, "image_height": 6,
+			"scale": 0.5, "region": map[string]int{"x": 0, "y": 0, "width": 16, "height": 12},
+		})
+	}))
+	defer local.Close()
+	var hubBodies int
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubBodies++
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket"})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	got, _, err := client.screenshotWith(context.Background(), "tenant", "alice", ":20", "", desktop.ShotOptions{Window: "NEON SERPENT"})
+	if err != nil || window != "NEON SERPENT" || got.ScreenWidth != 16 || got.Scale != 0.5 || got.ImageWidth != 8 {
+		t.Fatalf("window=%q shot=%+v err=%v", window, got, err)
+	}
+	if hubBodies != 1 || localAuth != "" {
+		t.Fatalf("hub bodies=%d local auth=%q", hubBodies, localAuth)
+	}
+}
+
+func TestDirectReadIgnoresTheHubProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("http_proxy", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("local request carried %q", r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "notes"})
+	}))
+	defer local.Close()
+	client := &desktopHubClient{http: &http.Client{Timeout: 2 * time.Second}}
+	var out struct {
+		Output string `json:"output"`
+	}
+	if err := client.postDirect(context.Background(), local.URL+"/v1/desktops/local/ticket", map[string]any{"action": "read"}, &out, 1<<20); err != nil || out.Output != "notes" {
+		t.Fatalf("out=%q err=%v", out.Output, err)
+	}
+}
+
+func TestDirectReadFallsBackThroughHub(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer local.Close()
+	var sawSkip bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Maclaw-Skip-Local") == "1" {
+			sawSkip = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"output": "from-hub"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket", "output": ""})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	out, err := client.postDesktopTool(context.Background(), desktopToolCall{
+		RunID: "run-1", ToolCallID: "call-1", Tenant: "tenant-a", User: "alice",
+		Action: "file_read", Args: map[string]any{"path": "/home/desktop/a.txt"},
+	})
+	if err != nil || out.Text != "from-hub" || !sawSkip {
+		t.Fatalf("out=%+v skip=%v err=%v", out, sawSkip, err)
+	}
+}
+
+func TestDirectContainerErrorDoesNotRunTwice(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "file is missing", http.StatusBadGateway)
+	}))
+	defer local.Close()
+	hubCalls := 0
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubCalls++
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket", "output": ""})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	_, err := client.postDesktopTool(context.Background(), desktopToolCall{
+		RunID: "run-1", ToolCallID: "call-1", Tenant: "tenant-a", User: "alice",
+		Action: "file_read", Args: map[string]any{"path": "/home/desktop/a.txt"},
+	})
+	if err == nil || hubCalls != 1 {
+		t.Fatalf("err=%v hubCalls=%d", err, hubCalls)
+	}
+}
+
+func TestDirectDialDoesNotWaitOutTheHubCall(t *testing.T) {
+	start := time.Now()
+	client := &desktopHubClient{}
+	err := client.postDirect(context.Background(), "http://192.0.2.1:18081/v1/desktops/local/ticket", map[string]any{"action": "read"}, nil, 1<<20)
+	if err == nil || time.Since(start) > 8*time.Second {
+		t.Fatalf("err=%v waited=%s", err, time.Since(start))
+	}
+}
+
+func TestHubToolFileReadStaysOnTheNode(t *testing.T) {
+	var localAction, localAuth string
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localAuth = r.Header.Get("Authorization")
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		localAction, _ = in["action"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "notes"})
+	}))
+	defer local.Close()
+	var hubBodies int
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubBodies++
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket", "output": ""})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	out, err := client.postDesktopTool(context.Background(), desktopToolCall{
+		RunID: "run-1", ToolCallID: "call-1", Tenant: "tenant-a", User: "alice",
+		Action: "file_read", Args: map[string]any{"path": "/home/desktop/a.txt"},
+	})
+	if err != nil || out.Text != "notes" || localAction != "read" || localAuth != "" || hubBodies != 1 {
+		t.Fatalf("out=%+v action=%q auth=%q hub=%d err=%v", out, localAction, localAuth, hubBodies, err)
+	}
+}
+
 func TestDesktopToolAdvertisesScreenshot(t *testing.T) {
 	t.Setenv(desktopCDPEnv, "http://127.0.0.1:9222/")
 	tools, err := desktopRuntimeModule{}.Tools(context.Background(), agentruntime.TurnRequest{

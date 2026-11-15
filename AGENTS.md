@@ -359,6 +359,34 @@
   flushes re-render the panel only — never add `messages` back to
   `panelState`/`useState` or App re-renders per flush again.
 
+## Goal plan arg encodings (corelib/goal)
+
+- `goal.ParseSteps` tolerates the encodings weak models emit for
+  `goal(action="plan")`: an array whose elements are JSON strings
+  (`["[{...}]"]` — the whole doc as one element), a JSON document as a bare
+  string (optionally ```-fenced, BOM-prefixed, or double-encoded), a single
+  step object, a `{"steps": [...]}` wrapper, and a map element whose `title`
+  is itself a document. `stepsDecodeCandidates` also completes a truncated
+  document — a missing `]`/`}` and a trailing partial element cut to the
+  last complete object (seen live: a weak model's over-long one-line array
+  lost its closer). A bare string that is not itself a document splits on
+  newlines and each LINE gets element-level decoding (a JSON-document line
+  expands, a plain line stays a title); elements inside an array never
+  split — one element is one step. Anything else falls back to the old
+  title behavior; a doc that yields no titled steps still errors so the
+  corrective plan turn fires. Depth is capped at `stepsJSONDepth`.
+- Rows written before this could store the JSON document as a single step's
+  `title` (plan collapsed to one step; marking it done finished the goal
+  early — the 目标清单 card showed raw JSON). `Store.loadAll` runs
+  `repairEncodedStepTitles`: a decoded title expands back into real steps,
+  the first keeps the parent's status/result/detail (the work actually
+  reported), the rest become pending, and the fix is persisted via
+  `updateGoalText`.
+- `g.Steps` has exactly one writer: `Store.SavePlan`, always fed by
+  `ParseSteps` (GUI `im_tool_goal.go`, TUI `corelib/agent/tool_goal.go`,
+  computeruse, desktopmcp). The plan/execute prompts and the goal tool
+  schema both tell the model to pass the array itself, never a JSON string.
+
 ## Logs
 
 - `~/.maclaw/logs/maclaw.log` — shared by main app, companion, and quit relays.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -226,7 +227,7 @@ func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, f
 	if strings.TrimSpace(out.DirectURL) != "" {
 		out.DirectURL = strings.TrimSpace(out.DirectURL)
 		out.Output = ""
-		if err := c.postDirect(ctx, out.DirectURL, body, &out, 1<<20); err != nil {
+		if err := c.recoverDirect(ctx, "/api/v1/desktop-services/file", body, body, &out, 1<<20, out.DirectURL); err != nil {
 			return "", err
 		}
 	}
@@ -309,7 +310,7 @@ func (c *desktopHubClient) screenshot(ctx context.Context, tenantID, userID, dis
 		return nil, "", err
 	}
 	if strings.TrimSpace(out.DirectURL) != "" && strings.TrimSpace(out.Image) == "" {
-		if err := c.postDirect(ctx, strings.TrimSpace(out.DirectURL), body, &out, desktop.MaxScreenshotBytes*2); err != nil {
+		if err := c.recoverDirect(ctx, "/api/v1/desktop-services/screenshot", body, body, &out, desktop.MaxScreenshotBytes*2, out.DirectURL); err != nil {
 			return nil, "", err
 		}
 	}
@@ -403,9 +404,20 @@ func (c *desktopHubClient) postDesktopTool(ctx context.Context, call desktopTool
 		ExecutorID   string `json:"executor_id"`
 		Volumes      string `json:"volumes"`
 		Replaced     bool   `json:"replaced"`
+		DirectURL    string `json:"direct_url"`
 	}
 	if err := c.post(ctx, "/api/v1/desktop-services/tool", payload, &out); err != nil {
 		return desktopToolOutcome{}, err
+	}
+	action, _ := payload["action"].(string)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(action)), "file_") && strings.TrimSpace(out.DirectURL) != "" && strings.TrimSpace(out.Output) == "" {
+		var local struct {
+			Output string `json:"output"`
+		}
+		if err := c.recoverDirect(ctx, "/api/v1/desktop-services/tool", payload, desktopToolLocalFileBody(payload), &local, 1<<20, out.DirectURL); err != nil {
+			return desktopToolOutcome{}, err
+		}
+		out.Output = local.Output
 	}
 	return desktopToolOutcome{
 		Text:         out.Output,
@@ -417,7 +429,55 @@ func (c *desktopHubClient) postDesktopTool(ctx context.Context, call desktopTool
 	}, nil
 }
 
+// desktopToolLocalFileBody is the file call desktopd accepts on the
+// same-machine path. The tool name file_read becomes the action read.
+func desktopToolLocalFileBody(payload map[string]any) map[string]any {
+	action, _ := payload["action"].(string)
+	wire := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(action)), "file_")
+	body := map[string]any{
+		"tenant_id": payload["tenant"],
+		"user_id":   payload["user"],
+		"action":    wire,
+	}
+	args, _ := payload["args"].(map[string]any)
+	if args == nil {
+		return body
+	}
+	for _, key := range []string{"path", "content", "old_string", "new_string"} {
+		if value, ok := args[key]; ok {
+			body[key] = value
+		}
+	}
+	return body
+}
+
 func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any, dest any, limit int64) error {
+	return c.postLimitHeaders(ctx, path, body, dest, limit, nil)
+}
+
+// recoverDirect reads the same-machine desktopd. When that address does not
+// answer, Hub carries the bytes on the tunnel instead of failing the call.
+func (c *desktopHubClient) recoverDirect(ctx context.Context, path string, hubBody, localBody any, dest any, limit int64, direct string) error {
+	err := c.postDirect(ctx, strings.TrimSpace(direct), localBody, dest, limit)
+	if err == nil || ctx.Err() != nil || !directNeedsHub(err) {
+		return err
+	}
+	return c.postLimitHeaders(ctx, path, hubBody, dest, limit, map[string]string{"X-Maclaw-Skip-Local": "1"})
+}
+
+// directNeedsHub is a shortcut that never ran: the address did not answer,
+// or desktopd rejected the ticket. A container error already happened there
+// and must not be run a second time through the tunnel.
+func directNeedsHub(err error) bool {
+	var api *desktopAPIError
+	if errors.As(err, &api) {
+		return api.Status == http.StatusNotFound
+	}
+	text := err.Error()
+	return strings.Contains(text, "desktop service is unreachable") || strings.Contains(text, "desktop direct url is invalid")
+}
+
+func (c *desktopHubClient) postLimitHeaders(ctx context.Context, path string, body any, dest any, limit int64, headers map[string]string) error {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -428,6 +488,9 @@ func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any,
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("desktop service is unreachable: %s", err.Error())
@@ -443,6 +506,21 @@ func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any,
 		}
 	}
 	return nil
+}
+
+// desktopDirectHTTP stays on the machine. The srv process proxy is how
+// Hub is reached; a same-node screenshot or file must not follow it.
+var desktopDirectHTTP = &http.Client{
+	Timeout: 2 * time.Minute,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+	Transport: &http.Transport{
+		Proxy:           func(*http.Request) (*url.URL, error) { return nil, nil },
+		DialContext:     (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+		IdleConnTimeout: 30 * time.Second,
+		MaxIdleConns:    4,
+	},
 }
 
 // postDirect reads a screenshot or a file from the machine's own desktopd.
@@ -461,7 +539,7 @@ func (c *desktopHubClient) postDirect(ctx context.Context, rawURL string, body a
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
+	resp, err := desktopDirectHTTP.Do(req)
 	if err != nil {
 		return fmt.Errorf("desktop service is unreachable: %s", err.Error())
 	}

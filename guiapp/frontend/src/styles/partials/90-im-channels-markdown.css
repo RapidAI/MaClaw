@@ -3826,6 +3826,11 @@
 /* CodingAgentPlanChecklist.tsx — summary bar; the T1/T2 list floats on hover. */
 .capc-checklist { position: relative; padding: 6px 10px; border-radius: 12px; box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.45; }
 .capc-checklist.capc-open { z-index: 6; }
+/* The changed-files chip (CodingAgentFileChanges) owns its open state, so the
+   host bar cannot carry a class for it. Lift whichever bar shows the open
+   file list so the popover paints above the composer below. */
+.capc-checklist:has(.capc-files.capc-open),
+.mc-goal-quick-bar:has(.capc-files.capc-open) { z-index: 6; }
 .capc-bar { display: flex; align-items: stretch; gap: 8px; min-width: 0; }
 .capc-hover { flex: 1 1 auto; min-width: 0; }
 .capc-files { flex: 0 0 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }

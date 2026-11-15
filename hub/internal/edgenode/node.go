@@ -86,6 +86,8 @@ type Code struct {
 	Name        string
 	OwnerUserID string
 	Until       time.Time
+	// Rotate replaces the secret of NodeID. It does not create a node.
+	Rotate bool
 }
 
 // Registry stores nodes per tenant and answers tunnel auth.
@@ -252,12 +254,50 @@ func (r *Registry) issue(ctx context.Context, tenantID, name, owner string) (Cod
 	return code, nil
 }
 
+// IssueRotateCode is a one-time code for a node that is already registered.
+// Spending it replaces that node's secret and hub token. The old secret stops
+// working. The node id, tenant, and owner stay, and the node cap is not used.
+func (r *Registry) IssueRotateCode(ctx context.Context, tenantID, nodeID string) (Code, error) {
+	if !Enabled() {
+		return Code{}, ErrDisabled
+	}
+	node, err := r.find(ctx, nodeID)
+	if err != nil {
+		return Code{}, err
+	}
+	if store.NormalizeTenantID(tenantID) != store.NormalizeTenantID(node.TenantID) {
+		return Code{}, ErrTenant
+	}
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return Code{}, err
+	}
+	code := Code{
+		Code:        strings.ToUpper(hex.EncodeToString(buf[:])),
+		TenantID:    node.TenantID,
+		NodeID:      node.ID,
+		Name:        node.Name,
+		OwnerUserID: node.OwnerUserID,
+		Until:       r.now().Add(10 * time.Minute),
+		Rotate:      true,
+	}
+	r.mu.Lock()
+	if r.codes == nil {
+		r.codes = map[string]Code{}
+	}
+	r.codes[code.Code] = code
+	r.mu.Unlock()
+	return code, nil
+}
+
 // EnrollResult is what the node keeps. Secrets are returned once.
 type EnrollResult struct {
 	NodeID     string `json:"node_id"`
 	NodeSecret string `json:"node_secret"`
 	HubToken   string `json:"hub_token"`
 	TenantID   string `json:"tenant_id,omitempty"`
+	Rotated    bool   `json:"-"`
+	Previous   Node   `json:"-"`
 }
 
 // Enroll spends a code and stores the node.
@@ -325,7 +365,23 @@ func (r *Registry) Enroll(ctx context.Context, code, desktopdKey, srvAdmin, vers
 		node.HubTokenHash = ""
 		token = ""
 	}
-	if err := r.admitNewNode(ctx, node.TenantID); err != nil {
+	var previous Node
+	if item.Rotate {
+		previous, err = r.find(ctx, item.NodeID)
+		if err != nil {
+			r.restoreCode(item)
+			return EnrollResult{}, err
+		}
+		if store.NormalizeTenantID(previous.TenantID) != store.NormalizeTenantID(item.TenantID) {
+			r.restoreCode(item)
+			return EnrollResult{}, ErrTenant
+		}
+		node.TenantID = previous.TenantID
+		node.Name = previous.Name
+		node.OwnerUserID = previous.OwnerUserID
+		node.CreatedAt = previous.CreatedAt
+		node.DirectBase = previous.DirectBase
+	} else if err := r.admitNewNode(ctx, node.TenantID); err != nil {
 		r.restoreCode(item)
 		return EnrollResult{}, err
 	}
@@ -334,7 +390,20 @@ func (r *Registry) Enroll(ctx context.Context, code, desktopdKey, srvAdmin, vers
 		return EnrollResult{}, err
 	}
 	r.remember(node)
-	return EnrollResult{NodeID: node.ID, NodeSecret: secret, HubToken: token, TenantID: node.TenantID}, nil
+	return EnrollResult{NodeID: node.ID, NodeSecret: secret, HubToken: token, TenantID: node.TenantID, Rotated: item.Rotate, Previous: previous}, nil
+}
+
+// Restore puts a node back after a rotation whose follow-up write failed.
+// The secret that rotation just issued stops working again.
+func (r *Registry) Restore(ctx context.Context, node Node) error {
+	if strings.TrimSpace(node.ID) == "" {
+		return ErrNotFound
+	}
+	if err := r.commit(ctx, node); err != nil {
+		return err
+	}
+	r.remember(node)
+	return nil
 }
 
 // ParseDirectBase checks an intranet address a GUI can probe. Empty is
@@ -1123,6 +1192,9 @@ func (r *Registry) rememberLocked(node Node) {
 	// Online is the broker's session flag. Keeping it here made a node look
 	// connected after the tunnel had already closed.
 	node.Online = false
+	if prev, ok := r.byID[node.ID]; ok && prev.HubTokenHash != "" && prev.HubTokenHash != node.HubTokenHash {
+		delete(r.tokens, prev.HubTokenHash)
+	}
 	r.byID[node.ID] = node
 	if node.HubTokenHash != "" {
 		r.tokens[node.HubTokenHash] = node.TenantID

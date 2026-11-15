@@ -36,6 +36,15 @@ const (
 // nodeOfflineQueueMax is how long a message waits for the tunnel to return.
 var nodeOfflineQueueMax = 2 * time.Minute
 
+// nodeLinkMissing is the dialer for a node call that has no tunnel client.
+// It must not be the public client: that client would dial
+// srv.<id>.node.invalid on the open network.
+type nodeLinkMissing struct{}
+
+func (nodeLinkMissing) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("edge node link is unavailable")
+}
+
 func nodeLinkOffline(err error) bool {
 	if err == nil {
 		return false

@@ -11,6 +11,33 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
+func TestBlocksAdminPathEncodings(t *testing.T) {
+	blocked := []string{
+		"GET /admin HTTP/1.1",
+		"GET /admin/keys?x=1 HTTP/1.1",
+		"GET /%61dmin HTTP/1.1",
+		"GET /%61dmin/keys HTTP/1.1",
+		"GET //admin HTTP/1.1",
+		"GET /foo/%2e%2e/admin HTTP/1.1",
+		"GET /admin%2Fkeys HTTP/1.1",
+	}
+	for _, line := range blocked {
+		if !blocksAdminPath(line) {
+			t.Fatalf("forwarded %s", line)
+		}
+	}
+	allowed := []string{
+		"GET /v1/health HTTP/1.1",
+		"GET /v1/desktops/session HTTP/1.1",
+		"GET /administrator HTTP/1.1",
+	}
+	for _, line := range allowed {
+		if blocksAdminPath(line) {
+			t.Fatalf("blocked %s", line)
+		}
+	}
+}
+
 func TestTunnelDoesNotForwardAdmin(t *testing.T) {
 	hit := make(chan string, 4)
 	upstream, err := net.Listen("tcp", "127.0.0.1:0")

@@ -128,7 +128,24 @@ func PostDesktopToolHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", err.Error())
 			return
 		}
-		text, attachmentID, err := dispatchDesktopTool(withEdgeCaller(withEdgeOrigin(r.Context(), r), r), pool, call)
+		ctx := withEdgeCaller(withEdgeOrigin(r.Context(), r), r)
+		if route, routeErr := desktopToolRoute(call.Action); routeErr == nil && route == "file" {
+			if direct, directErr := issueLocalDataURL(ctx, pool, call.Tenant, call.User, "file"); directErr != nil || direct != "" {
+				if directErr != nil {
+					writeDesktopError(w, directErr)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{
+					"direct_url":  direct,
+					"output":      "",
+					"executor_id": "assigned",
+					"volumes":     "desktops,home,opt,usr-local",
+					"replaced":    false,
+				})
+				return
+			}
+		}
+		text, attachmentID, err := dispatchDesktopTool(ctx, pool, call)
 		noteDesktopToolUse(r.Context(), pool, call, err)
 		if err != nil {
 			writeDesktopError(w, err)

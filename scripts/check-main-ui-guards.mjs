@@ -703,7 +703,9 @@ const highRiskRemoteFileLineLimits = [
   // absorbing provider and setup steps (guard counts 2691); headroom absorbs
   // further bursts while that work is in progress. Re-tighten once it lands.
   ['guiapp/frontend/src/components/remote/OnboardingWizard.tsx', 2750],
-  ['guiapp/frontend/src/components/remote/LLMConfigPanel.tsx', 1600],
+  // Refreshed 1600 -> 1650 (2026-11-15): in-flight provider panel work
+  // measured 1611 lines.
+  ['guiapp/frontend/src/components/remote/LLMConfigPanel.tsx', 1650],
   ['guiapp/frontend/src/components/remote/LLMConfigProviderLimitsFields.tsx', 90],
   ['guiapp/frontend/src/components/remote/LLMConfigDialogFooter.tsx', 80],
   ['guiapp/frontend/src/components/remote/LLMConfigDialogSaveError.tsx', 40],

@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useModalFocusTrap } from '../../hooks/useModalFocusTrap';
-import { buildSidebarModelOptions } from '../../utils/sidebarModelOptions';
+import { buildSidebarModelOptions, replaceCachedModelsWithLiveCatalog } from '../../utils/sidebarModelOptions';
+import { isQoderProvider } from '../remote/providerLogos';
 import { panelText } from '../../i18n/mnPanel';
 import { FetchProviderModels } from '../../../wailsjs/go/main/App';
 
@@ -129,15 +130,19 @@ type BotLLMSettingsDialogProps = {
 const ROLE_KEYS: RoleKey[] = ['foreground', 'background', 'computer_use', 'grounder'];
 
 function willFetchModels(provider: BotLLMProviderOption | undefined): provider is BotLLMProviderOption {
-    return provider != null && !provider.isHubService && provider.url.trim() !== '' && provider.key.trim() !== '';
+    if (provider == null || provider.isHubService || provider.url.trim() === '') return false;
+    return provider.key.trim() !== '' || isQoderProvider(provider.name);
 }
 
 function modelChoices(provider: BotLLMProviderOption | undefined, current: string, fetched: string[]): string[] {
-    return buildSidebarModelOptions({
+    const input = {
         configuredModel: current.trim() || provider?.model.trim() || '',
         cachedModels: provider?.models ?? [],
         fetchedModels: fetched,
-    });
+    };
+    return isQoderProvider(provider?.name)
+        ? replaceCachedModelsWithLiveCatalog(input)
+        : buildSidebarModelOptions(input);
 }
 
 function seedModel(provider: BotLLMProviderOption | undefined, current: string): string {
@@ -548,7 +553,14 @@ function RoleModelSelect({
             return;
         }
         setLoading(true);
-        FetchProviderModels(provider.url, provider.key, provider.protocol || 'openai', provider.agentType || 'openclaw')
+        const fetchArgs: [string, string, string, string, string?] = [
+            provider.url,
+            provider.key,
+            provider.protocol || 'openai',
+            provider.agentType || 'openclaw',
+        ];
+        if (isQoderProvider(provider.name)) fetchArgs.push(provider.name);
+        FetchProviderModels(...fetchArgs)
             .then(items => {
                 if (current !== seq.current) return;
                 const fetched = (Array.isArray(items) ? items : [])

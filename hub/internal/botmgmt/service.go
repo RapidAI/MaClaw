@@ -190,7 +190,8 @@ type Service struct {
 	// virtual host (desktopd.<id>.node.invalid). Nil leaves those pages
 	// unavailable; every other origin keeps the default transport.
 	NodeTransport func(host string) http.RoundTripper
-	// NodeHTTP dials a node's srv. Nil, or an empty DialNode, keeps s.HTTP.
+	// NodeHTTP dials a node's srv. An empty DialNode keeps s.HTTP. A node
+	// call does not use s.HTTP when this is missing or returns nil.
 	NodeHTTP func(nodeID string) *http.Client
 	// MaterialStageDir holds partial material uploads; empty is a temp dir.
 	MaterialStageDir string
@@ -960,9 +961,15 @@ func (s *Service) httpClient(path string) *http.Client {
 
 func (s *Service) httpClientFor(rec record, path string) *http.Client {
 	base := s.client()
-	if strings.TrimSpace(rec.DialNode) != "" && s != nil && s.NodeHTTP != nil {
-		if client := s.NodeHTTP(rec.DialNode); client != nil {
-			base = client
+	if node := strings.TrimSpace(rec.DialNode); node != "" {
+		var nodeClient *http.Client
+		if s != nil && s.NodeHTTP != nil {
+			nodeClient = s.NodeHTTP(node)
+		}
+		if nodeClient == nil {
+			base = &http.Client{Timeout: base.Timeout, CheckRedirect: base.CheckRedirect, Transport: nodeLinkMissing{}}
+		} else {
+			base = nodeClient
 		}
 	}
 	if strings.Contains(path, "/skills/demo/") {

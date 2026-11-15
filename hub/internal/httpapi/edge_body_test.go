@@ -73,6 +73,41 @@ func TestEdgeBodyTenantRequiresItsOwnTenant(t *testing.T) {
 	}
 }
 
+func TestEdgeBodyTenantAcceptsTheToolTenantField(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/desktop-services/tool", strings.NewReader(`{"tenant":"tenant-a","user":"alice","action":"file_read","args":{"path":"/home/desktop/a.txt"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(`{"tenant":"tenant-a","user":"alice","action":"file_read","args":{"path":"/home/desktop/a.txt"}}`))
+	rec := httptest.NewRecorder()
+	if !edgeBodyTenantAllowed(rec, req, "tenant-a") {
+		t.Fatalf("tool tenant status %d body %s", rec.Code, rec.Body.String())
+	}
+	other := httptest.NewRequest(http.MethodPost, "/api/v1/desktop-services/tool", strings.NewReader(`{"tenant":"other","action":"bash"}`))
+	other.Header.Set("Content-Type", "application/json")
+	other.ContentLength = int64(len(`{"tenant":"other","action":"bash"}`))
+	rec = httptest.NewRecorder()
+	if edgeBodyTenantAllowed(rec, other, "tenant-a") {
+		t.Fatal("another tenant's tool call was accepted")
+	}
+	both := httptest.NewRequest(http.MethodPost, "/api/v1/desktop-services/tool", strings.NewReader(`{"tenant_id":"tenant-a","tenant":"other"}`))
+	both.Header.Set("Content-Type", "application/json")
+	both.ContentLength = int64(len(`{"tenant_id":"tenant-a","tenant":"other"}`))
+	rec = httptest.NewRecorder()
+	if edgeBodyTenantAllowed(rec, both, "tenant-a") {
+		t.Fatal("two tenant names were accepted")
+	}
+}
+
+func TestJSONStringFieldSkipsALongerKey(t *testing.T) {
+	raw := []byte(`{"tenant_id":"tenant-a","tenant":"other"}`)
+	if jsonStringField(raw, "tenant_id") != "tenant-a" || jsonStringField(raw, "tenant") != "other" {
+		t.Fatalf("tenant_id=%q tenant=%q", jsonStringField(raw, "tenant_id"), jsonStringField(raw, "tenant"))
+	}
+	head := append([]byte(`{"tenant_id":"tenant-a","tenant":"other","blob":"`), bytes.Repeat([]byte("x"), 64)...)
+	if id, ok := edgeJSONTenant(head); ok {
+		t.Fatalf("disagreeing truncated body = %q", id)
+	}
+}
+
 func TestDesktopBotLimitPatchRequiresTheField(t *testing.T) {
 	if _, err := desktopBotLimitPatch([]byte(`{}`)); err == nil {
 		t.Fatal("missing field cleared the limit")

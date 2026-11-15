@@ -429,7 +429,7 @@ func TestFetchProviderModelsResolvesEmptyOAuthKey(t *testing.T) {
 	}
 
 	// Empty apiKey: must resolve from managed OAuth provider config.
-	items, err := app.fetchProviderModels(srv.URL, "", "openai", "openclaw", false)
+	items, err := app.fetchProviderModels(srv.URL, "", "openai", "openclaw", "", false)
 	if err != nil {
 		t.Fatalf("fetchProviderModels() error = %v", err)
 	}
@@ -1138,7 +1138,7 @@ func TestFetchProviderModelsKeepsKeyedOpenCodePaidCatalog(t *testing.T) {
 	t.Cleanup(func() { setFetchProviderModelsHTTPClientForTest(nil) })
 
 	app := &App{}
-	items, err := app.FetchProviderModels(configfile.OpenCodeZenBaseURL, "zen-key", "openai", configfile.ExternalAgentTypeOpenCode)
+	items, err := app.FetchProviderModels(configfile.OpenCodeZenBaseURL, "zen-key", "openai", configfile.ExternalAgentTypeOpenCode, "")
 	if err != nil {
 		t.Fatalf("FetchProviderModels: %v", err)
 	}
@@ -3070,7 +3070,7 @@ func TestFetchProviderModelsCodexSubscriptionUsesCodexEndpoint(t *testing.T) {
 	}
 
 	// Frontend may pass sk- key; backend must use JWT against codex/models.
-	items, err := app.fetchProviderModels(srv.URL+"/backend-api/codex", "sk-should-not-be-used", "openai", "openclaw", false)
+	items, err := app.fetchProviderModels(srv.URL+"/backend-api/codex", "sk-should-not-be-used", "openai", "openclaw", "", false)
 	if err != nil {
 		t.Fatalf("fetchProviderModels: %v", err)
 	}
@@ -3107,7 +3107,7 @@ func TestFetchProviderModelsCodexSubscriptionFallsBackToCatalogOn403(t *testing.
 	defer srv.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	items, err := app.fetchProviderModels(srv.URL+"/backend-api/codex", "eyJhbGciOiJub25lIn0.e30.sig", "openai", "openclaw", true)
+	items, err := app.fetchProviderModels(srv.URL+"/backend-api/codex", "eyJhbGciOiJub25lIn0.e30.sig", "openai", "openclaw", "", true)
 	if err != nil {
 		t.Fatalf("fetchProviderModels: %v", err)
 	}
@@ -3174,7 +3174,7 @@ func TestFetchProviderModelsAnthropicUsesOfficialSDK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	items, err := (&App{}).fetchProviderModels(srv.URL, "token", "anthropic", "claude code 2.0", false)
+	items, err := (&App{}).fetchProviderModels(srv.URL, "token", "anthropic", "claude code 2.0", "", false)
 	if err != nil {
 		t.Fatalf("fetchProviderModels() error = %v", err)
 	}
@@ -6075,11 +6075,11 @@ func TestNormalizeWorkBuddyProviderRestoresOAuthWithoutClobberingModel(t *testin
 
 func TestFetchWorkBuddyModelsUsesBuiltinCatalog(t *testing.T) {
 	app := &App{}
-	china, err := app.FetchProviderModels(workbuddy.ChinaProfile().ChatURL, "", "openai", "")
+	china, err := app.FetchProviderModels(workbuddy.ChinaProfile().ChatURL, "", "openai", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	global, err := app.FetchProviderModels(workbuddy.GlobalProfile().ChatURL, "", "openai", "")
+	global, err := app.FetchProviderModels(workbuddy.GlobalProfile().ChatURL, "", "openai", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
