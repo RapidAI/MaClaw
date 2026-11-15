@@ -14,25 +14,41 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
-func TestDesktopBotLimitPicksTheMostSpecificGrant(t *testing.T) {
-	userLimit, deptLimit, globalLimit := 1, 4, 9
+func TestDesktopBotLimitCascadesUserDepartmentGlobalDefault(t *testing.T) {
+	userLimit, deptLimit, globalLimit, defaultLimit := 1, 4, 9, 7
 	grants := []Grant{
 		{Scope: ScopeGlobal, DesktopBotLimit: &globalLimit},
 		{Scope: ScopeDepartment, TargetID: "root", DesktopBotLimit: &deptLimit},
 		{Scope: ScopeDepartment, TargetID: "lab", DesktopBotLimit: &deptLimit},
 		{Scope: ScopeUser, TargetID: "alice", DesktopBotLimit: &userLimit},
 	}
-	if got := desktopBotLimit(grants, "alice", []string{"lab", "root"}); got == nil || *got != 1 {
+	if got := desktopBotLimit(grants, nil, "alice", []string{"lab", "root"}); got == nil || *got != 1 {
 		t.Fatalf("user grant = %v", got)
 	}
-	if got := desktopBotLimit(grants, "bob", []string{"lab", "root"}); got == nil || *got != 4 {
+	if got := desktopBotLimit(grants, nil, "bob", []string{"lab", "root"}); got == nil || *got != 4 {
 		t.Fatalf("nearest department = %v", got)
 	}
-	if got := desktopBotLimit(grants, "cara", nil); got == nil || *got != 9 {
+	if got := desktopBotLimit(grants, nil, "cara", nil); got == nil || *got != 9 {
 		t.Fatalf("global = %v", got)
 	}
-	if got := desktopBotLimit([]Grant{{Scope: ScopeUser, TargetID: "alice"}}, "alice", nil); got != nil {
-		t.Fatalf("nil limit must stay unlimited, got %v", *got)
+	// A blank limit inherits the next level instead of staying unlimited.
+	inherit := []Grant{
+		{Scope: ScopeUser, TargetID: "alice"},
+		{Scope: ScopeDepartment, TargetID: "lab", DesktopBotLimit: &deptLimit},
+		{Scope: ScopeGlobal, DesktopBotLimit: &globalLimit},
+	}
+	if got := desktopBotLimit(inherit, nil, "alice", []string{"lab"}); got == nil || *got != 4 {
+		t.Fatalf("blank user grant inherits department, got %v", got)
+	}
+	if got := desktopBotLimit(inherit, nil, "dave", []string{"other"}); got == nil || *got != 9 {
+		t.Fatalf("uncovered department falls to global, got %v", got)
+	}
+	// The tenant default is the last level in the cascade.
+	if got := desktopBotLimit(nil, &defaultLimit, "erin", nil); got == nil || *got != 7 {
+		t.Fatalf("default = %v", got)
+	}
+	if got := desktopBotLimit(nil, nil, "erin", nil); got != nil {
+		t.Fatalf("every level blank stays unlimited, got %v", *got)
 	}
 }
 
@@ -196,6 +212,37 @@ func TestCreateBotDesktopQuota(t *testing.T) {
 	}
 }
 
+func TestDesktopQuotaFallsToTheTenantDefault(t *testing.T) {
+	svc := newDesktopQuotaService(t, nil)
+	ctx := context.Background()
+	limit := 1
+	if _, err := svc.SaveDefaultDesktopBotLimit(ctx, "tenant-a", &limit); err != nil {
+		t.Fatal(err)
+	}
+	// A blank user grant inherits the default instead of staying unlimited.
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	if _, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "desk-1", "", &yes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "desk-2", "", &yes); !errors.Is(err, ErrDesktopQuota) {
+		t.Fatalf("default cap: %v", err)
+	}
+	quota, err := svc.DesktopQuotaForUser(ctx, "tenant-a", "alice")
+	if err != nil || quota.Limit == nil || *quota.Limit != 1 {
+		t.Fatalf("inherited quota %+v %v", quota, err)
+	}
+	// Clearing the default lifts the cap again.
+	if _, err := svc.SaveDefaultDesktopBotLimit(ctx, "tenant-a", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "desk-2", "", &yes); err != nil {
+		t.Fatalf("cleared default: %v", err)
+	}
+}
+
 func TestConcurrentDesktopCreatesStopAtTheGrant(t *testing.T) {
 	svc := newDesktopQuotaService(t, nil)
 	ctx := context.Background()
@@ -239,7 +286,7 @@ func TestMarkDesktopOverFlagsOnlyDesktopBotsPastTheGrant(t *testing.T) {
 		{ID: "d", OwnerUserID: "bob"},
 	}
 	grants := []Grant{{Scope: ScopeUser, TargetID: "alice", DesktopBotLimit: &limit}}
-	got := (&Service{}).MarkDesktopOver(context.Background(), "tenant-a", bots, grants)
+	got := (&Service{}).MarkDesktopOver(context.Background(), "tenant-a", bots, grants, nil)
 	if !got[0].DesktopOver || !got[1].DesktopOver {
 		t.Fatalf("desktop bots past the grant: %+v", got[:2])
 	}

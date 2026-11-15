@@ -16,13 +16,35 @@ export type BotEditDialogLabels = {
     nameTaken?: string;
 };
 
+/** One local server the new bot can run on. */
+export type BotServerChoice = {
+    id: string;
+    label: string;
+};
+
 /** Create-only: whether this bot should use a computer, plus the quota line. */
 export type BotComputerChoice = {
     label: string;
     quota: string;
     /** True when the grant is already used up, so a new bot cannot take a computer. */
     locked: boolean;
+    /** Local servers with MaClawSrv. Empty hides the picker. */
+    servers?: BotServerChoice[];
+    /** Initially selected server. Empty is the cloud computer. */
+    server?: string;
+    cloudLabel?: string;
+    localLabel?: string;
+    serverLegend?: string;
+    /** Shown when local is selected but that server is no longer listed. */
+    serverMissing?: string;
 };
+
+function initialComputerChoice(computer?: BotComputerChoice): { place: 'cloud' | 'local'; server: string } {
+    const servers = computer?.servers ?? [];
+    const next = (computer?.server || '').trim();
+    if (servers.some(item => item.id === next)) return { place: 'local', server: next };
+    return { place: 'cloud', server: servers[0]?.id || '' };
+}
 
 type BotEditDialogProps = {
     initialTitle: string;
@@ -32,7 +54,7 @@ type BotEditDialogProps = {
     notice: string;
     saving: boolean;
     onClose: () => void;
-    onSubmit: (title: string, description: string, look: BotAppearance, needsComputer?: boolean) => void;
+    onSubmit: (title: string, description: string, look: BotAppearance, needsComputer?: boolean, serverID?: string) => void;
     initialAppearance?: BotAppearance;
     /** Returns true when the name is already used by another bot. */
     isNameTaken?: (title: string) => boolean;
@@ -62,9 +84,26 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
     const [color, setColor] = useState(initialAppearance?.color || BOT_COLORS[0]);
     const [shape, setShape] = useState<BotShape>(initialAppearance?.shape || 'circle');
     const [needsComputer, setNeedsComputer] = useState(computer ? !computer.locked : true);
+    const openingChoice = initialComputerChoice(computer);
+    const [place, setPlace] = useState<'cloud' | 'local'>(openingChoice.place);
+    const [server, setServer] = useState(openingChoice.server);
+    const [choiceError, setChoiceError] = useState('');
+    const choiceTouched = useRef(false);
     useEffect(() => {
         if (computer?.locked) setNeedsComputer(false);
     }, [computer?.locked]);
+    useEffect(() => {
+        if (choiceTouched.current) return;
+        const servers = computer?.servers ?? [];
+        const next = (computer?.server || '').trim();
+        if (servers.some(item => item.id === next)) {
+            setPlace('local');
+            setServer(next);
+            return;
+        }
+        setPlace('cloud');
+        setServer(servers[0]?.id || '');
+    }, [computer?.server, computer?.servers]);
     const taken = !!isNameTaken && title.trim() !== '' && isNameTaken(title.trim());
     const canSave = title.trim() !== '' && !taken && !saving;
 
@@ -95,6 +134,21 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
 
     const submit = () => {
         if (!canSave) return;
+        const servers = computer?.servers ?? [];
+        if (needsComputer && servers.length > 0) {
+            let picked = '';
+            if (place === 'local') {
+                picked = servers.find(item => item.id === server)?.id || '';
+                if (!picked && servers.length === 1) picked = servers[0].id;
+                if (!picked) {
+                    setChoiceError(computer?.serverMissing || 'Choose a local computer');
+                    return;
+                }
+            }
+            setChoiceError('');
+            onSubmit(title.trim(), description.trim(), { color, shape }, true, picked);
+            return;
+        }
         onSubmit(title.trim(), description.trim(), { color, shape }, computer ? needsComputer : undefined);
     };
 
@@ -237,6 +291,59 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
                                 <span>{computer.label}</span>
                             </label>
                             {computer.quota ? <p className="bot-edit-dialog__quota" data-testid="bot-create-quota">{computer.quota}</p> : null}
+                            {needsComputer && computer.servers && computer.servers.length > 0 ? (
+                                <div className="bot-edit-dialog__servers" data-testid="bot-create-servers">
+                                    <div role="radiogroup" aria-label={computer.serverLegend || 'Server'}>
+                                        <span className="form-label bot-edit-dialog__label">{computer.serverLegend || 'Server'}</span>
+                                        <label className="bot-edit-dialog__computer">
+                                            <input
+                                                type="radio"
+                                                name="bot-create-place"
+                                                data-testid="bot-create-place-cloud"
+                                                checked={place === 'cloud'}
+                                                disabled={saving}
+                                                onChange={() => { choiceTouched.current = true; setChoiceError(''); setPlace('cloud'); }}
+                                            />
+                                            <span>{computer.cloudLabel || 'Cloud computer'}</span>
+                                        </label>
+                                        <label className="bot-edit-dialog__computer">
+                                            <input
+                                                type="radio"
+                                                name="bot-create-place"
+                                                data-testid="bot-create-place-local"
+                                                checked={place === 'local'}
+                                                disabled={saving}
+                                                onChange={() => {
+                                                    choiceTouched.current = true;
+                                                    setChoiceError('');
+                                                    setPlace('local');
+                                                    if (!(computer.servers ?? []).some(item => item.id === server)) setServer(computer.servers?.[0]?.id || '');
+                                                }}
+                                            />
+                                            <span>{computer.localLabel || 'Local computer'}</span>
+                                            {computer.servers.length === 1 ? <span>{' · '}<span data-testid="bot-create-local-only">{computer.servers[0].label}</span></span> : null}
+                                        </label>
+                                    </div>
+                                    {place === 'local' && computer.servers.length > 1 ? (
+                                        <div className="bot-edit-dialog__servers" role="radiogroup" aria-label={computer.localLabel || 'Local computer'} data-testid="bot-create-local-servers">
+                                            {computer.servers.map(item => (
+                                                <label key={item.id} className="bot-edit-dialog__computer">
+                                                    <input
+                                                        type="radio"
+                                                        name="bot-create-server"
+                                                        data-testid={`bot-create-server-${item.id}`}
+                                                        checked={server === item.id}
+                                                        disabled={saving}
+                                                        onChange={() => { choiceTouched.current = true; setChoiceError(''); setServer(item.id); }}
+                                                    />
+                                                    <span>{item.label}</span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                    {choiceError ? <p className="bot-edit-dialog__notice" role="alert" data-testid="bot-create-server-missing">{choiceError}</p> : null}
+                                </div>
+                            ) : null}
                         </div>
                     ) : null}
                     {notice ? <p className="bot-edit-dialog__notice" role="status">{notice}</p> : null}

@@ -428,3 +428,39 @@
   backup→overwrite→`start.sh` on `hub.mypapers.top` (root, password auth —
   the password is never stored; ask the user). Compiled deploy binaries under
   `build/deploy/` are gitignored.
+- HarmonyOS NEXT: code is ohos-ready via `lib/core/platform.dart`
+  (`Platform.operatingSystem == 'ohos'` gates sideload update + voice input —
+  `record`/`speech_to_text`/`open_filex` have no ohos ports). Building the
+  .hap needs the OpenHarmony Flutter SDK (`flutter create --platforms ohos .`)
+  + uncommenting the dependency_overrides block at the top of
+  `mobilebot/pubspec.yaml`; see `mobilebot/README.md`「HarmonyOS NEXT」.
+  Updates on ohos go through AppGallery, not the R2 self-updater.
+
+## Bot 电脑数限额 (hub botmgmt)
+
+- `Grant.DesktopBotLimit` caps how many desktop bots a user may own. It
+  resolves as a CASCADE (`desktopBotLimit` in
+  `hub/internal/botmgmt/bot_desktop_quota.go`): user grant → department
+  grants nearest→root → global grant → `record.DefaultDesktopBotLimit`
+  (tenant default). A blank (nil) limit INHERITS the next level — it is not
+  "unlimited"; unlimited only when every level is blank. Zero still means
+  "no desktop bots".
+- Tenant default: `PATCH /api/admin/bots/settings`
+  `{"default_desktop_bot_limit": n|null}` (field required, null clears);
+  stored on the record, returned in `SettingsView`. Grant cap stays
+  `PATCH /api/admin/bots/grants/{id}` `{"desktop_bot_limit": …}`; both parse
+  through `optionalLimitPatch` (absent ≠ null).
+- Admin UI: bot tab access card has the global-grant cap row plus the new
+  "默认电脑数" row; grant rows in the list AND granted nodes in the org
+  tree carry the cap input (`data-grant-limit` + `saveGrantLimit`; the org
+  click walker returns early on INPUT/`bot-grant-limit` so typing can't
+  collapse the node). Security tab (企业管理) shows a "Bot 电脑数限额" card
+  on department/user detail and "Bot 默认电脑数" on the global panel —
+  `loadBotView`/`botQuotaCascade`/`saveSecBotQuota` mirror the Go cascade;
+  `results[2]` in `selectSecGlobal` stays the policy fetch, `loadBotView`
+  is appended last (index shifts there bit once).
+- Saving a quota for a target with no grant POSTs a grant — that ALSO
+  enables bots for it (the card warns). `desktopQuotaAllows` /
+  `MarkDesktopOver` / `DesktopQuotaForUser` all read the same resolved
+  limit, so the default shows up in the clients' `desktop_quota` payload
+  unchanged.

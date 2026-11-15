@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './UtilitiesPage.css';
 import { EventsOn, BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime';
+import { ClearHubDeployResult, DeployHub, ListHubDeploys } from '../../../wailsjs/go/main/App';
 import { EVENT_EXPERTS_CHANGED, EVENT_SURVEY_UPDATED } from '../../constants/events';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { useDialog } from '../CustomDialog';
@@ -54,7 +55,33 @@ import { tailText } from '../../i18n/mnTail'
 
 export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
 
-type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'virtual-repository' | 'browser-extension';
+type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'virtual-repository' | 'browser-extension' | 'hub-deploy';
+
+type HubDeployRow = {
+    id: string;
+    host: string;
+    port?: number;
+    user?: string;
+    email?: string;
+    public_url?: string;
+    admin_user?: string;
+    admin_password?: string;
+    hub_id?: string;
+    pending?: boolean;
+    status: string;
+    message?: string;
+};
+
+function hubDeployStatusText(row: HubDeployRow): string {
+    if (row.status === 'ready' && row.pending) return '等待确认';
+    switch (row.status) {
+        case 'deploying': return '正在安装';
+        case 'registering': return '正在注册';
+        case 'ready': return '已完成';
+        case 'failed': return '失败';
+        default: return row.status;
+    }
+}
 
 type BrowserExtensionRow = {
     browser: string;
@@ -179,7 +206,7 @@ function getApp(): Promise<any | null> {
 }
 
 /** Stroke icons for home tool cards — same conventions as the AppsPage icon set. */
-const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' }) => {
+const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' }) => {
     const common = {
         viewBox: '0 0 24 24',
         fill: 'none',
@@ -224,6 +251,14 @@ const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repos
                     <path d="M8 4h8a2 2 0 0 1 2 2v3" />
                     <rect x="3" y="8" width="12" height="10" rx="2" />
                     <path d="M7 13h4" />
+                </svg>
+            );
+        case 'hub':
+            return (
+                <svg {...common}>
+                    <rect x="3" y="4" width="18" height="6" rx="1.5" />
+                    <rect x="3" y="14" width="18" height="6" rx="1.5" />
+                    <path d="M7 7h.01M7 17h.01" />
                 </svg>
             );
     }
@@ -447,6 +482,14 @@ export const UtilitiesPage = ({
     const showExpertSurface = mode !== 'tools';
     const { showConfirm } = useDialog();
     const [view, setView] = useState<View>('home');
+    const [hubHost, setHubHost] = useState('');
+    const [hubPort, setHubPort] = useState('22');
+    const [hubUser, setHubUser] = useState('');
+    const [hubPassword, setHubPassword] = useState('');
+    const [hubEmail, setHubEmail] = useState('');
+    const [hubBusy, setHubBusy] = useState(false);
+    const [hubError, setHubError] = useState('');
+    const [hubRows, setHubRows] = useState<HubDeployRow[]>([]);
     // The tools and AI expert entries share the same lazy page instance. A
     // sub-page (for example, the survey editor) must never leak into the
     // other entry when the user switches the left rail button.
@@ -1265,6 +1308,13 @@ export const UtilitiesPage = ({
         vscodeExtCard: tailText(lang ?? "", 'Launch VS Code (Extension)', '启动 VS Code（扩展）'),
         vscodeExtDesc: tailText(lang ?? "", 'Install the first-party MaClaw extension — chat stays in the bottom panel, never hides the Explorer', '安装 MaClaw 一方扩展，聊天固定在 VS Code 底部面板，不遮挡文件管理器'),
         virtualRepositoryCard: tailText(lang ?? "", 'Virtual Repository', '虚拟仓库'),
+        hubDeployCard: tailText(lang ?? "", 'Deploy Hub', 'HUB部署工具'),
+        hubDeployDesc: tailText(lang ?? "", 'Install a Hub from source over SSH and register it with Hub Center', '填写 IP、SSH 账号后，从源码安装 Hub 并向 Hub Center 注册'),
+        hubDeployEmail: tailText(lang ?? "", 'Owner email', '注册邮箱'),
+        hubDeployEmailHint: tailText(lang ?? "", 'Hub Center uses this address as the owner of the new Hub', 'Hub Center 用这个邮箱作为新 Hub 的主人'),
+        hubDeployConfirm: tailText(lang ?? "", 'Install', '确认安装'),
+        hubDeployWorking: tailText(lang ?? "", 'Installing…', '正在安装…'),
+        hubDeployEmpty: tailText(lang ?? "", 'No Hub installs yet', '还没有部署记录'),
         browserExtensionCard: tailText(lang ?? "", 'Browser extension', '浏览器插件', '瀏覽器外掛'),
         browserExtensionDesc: tailText(lang ?? "", 'Download a paper from Chrome, Edge, or Safari into Companion.', '从 Chrome、Edge 或 Safari 把论文下载到伴读。', '從 Chrome、Edge 或 Safari 把論文下載到伴讀。'),
         browserExtensionRemove: tailText(lang ?? "", 'Remove registration', '移除登记', '移除登記'),
@@ -2287,6 +2337,88 @@ export const UtilitiesPage = ({
         return () => window.clearInterval(timer);
     }, [active, view, browserExtWaitsForLoad, refreshBrowserExtensionStatus]);
 
+    const refreshHubDeploys = useCallback(async () => {
+        try {
+            const rows = await ListHubDeploys();
+            if (!mountedRef.current) return;
+            setHubRows(Array.isArray(rows) ? rows as HubDeployRow[] : []);
+        } catch (err) {
+            if (!mountedRef.current) return;
+            setHubError(err instanceof Error ? err.message : String(err));
+        }
+    }, []);
+    useEffect(() => {
+        if (!active || view !== 'hub-deploy') return;
+        void refreshHubDeploys();
+        const off = EventsOn('hub-deploys-changed', () => { void refreshHubDeploys(); });
+        return () => { if (typeof off === 'function') off(); };
+    }, [active, view, refreshHubDeploys]);
+    const submitHubDeploy = async () => {
+        setHubError('');
+        setHubBusy(true);
+        try {
+            await DeployHub({
+                host: hubHost.trim(),
+                port: Number(hubPort) || 22,
+                user: hubUser.trim(),
+                password: hubPassword,
+                email: hubEmail.trim(),
+            });
+            setHubPassword('');
+            await refreshHubDeploys();
+        } catch (err) {
+            if (mountedRef.current) setHubError(err instanceof Error ? err.message : String(err));
+        } finally {
+            if (mountedRef.current) setHubBusy(false);
+        }
+    };
+    if (view === 'hub-deploy') {
+        return (
+            <div className="utilities-page" data-testid="hub-deploy-panel" data-mode={mode}>
+                <div className="utilities-page__header">
+                    <button type="button" className="utilities-link" onClick={() => setView('home')} disabled={hubBusy}>{t.back}</button>
+                    <h2 className="utilities-page__title">{t.hubDeployCard}</h2>
+                    <p className="utilities-page__subtitle">{t.hubDeployDesc}</p>
+                </div>
+                {hubError ? <p className="utilities-error" role="alert">{hubError}</p> : null}
+                <form className="utilities-field" onSubmit={(event) => { event.preventDefault(); void submitHubDeploy(); }}>
+                    <label className="utilities-field">IP
+                        <input className="utilities-input" value={hubHost} onChange={(event) => setHubHost(event.target.value)} autoComplete="off" required />
+                    </label>
+                    <label className="utilities-field">{tailText(lang ?? '', 'SSH port', 'SSH 端口')}
+                        <input className="utilities-input" value={hubPort} onChange={(event) => setHubPort(event.target.value)} inputMode="numeric" />
+                    </label>
+                    <label className="utilities-field">{tailText(lang ?? '', 'SSH user', 'SSH 用户')}
+                        <input className="utilities-input" value={hubUser} onChange={(event) => setHubUser(event.target.value)} autoComplete="off" required />
+                    </label>
+                    <label className="utilities-field">{tailText(lang ?? '', 'SSH password', 'SSH 密码')}
+                        <input className="utilities-input" type="password" value={hubPassword} onChange={(event) => setHubPassword(event.target.value)} autoComplete="off" required />
+                    </label>
+                    <label className="utilities-field">{t.hubDeployEmail}
+                        <input className="utilities-input" type="email" value={hubEmail} onChange={(event) => setHubEmail(event.target.value)} autoComplete="off" required />
+                    </label>
+                    <p className="utilities-page__subtitle">{t.hubDeployEmailHint}</p>
+                    <button type="submit" className="utilities-btn" disabled={hubBusy}>{hubBusy ? t.hubDeployWorking : t.hubDeployConfirm}</button>
+                </form>
+                {hubRows.length === 0 ? <p className="utilities-page__subtitle">{t.hubDeployEmpty}</p> : (
+                    <ul data-testid="hub-deploy-list">
+                        {hubRows.map((row) => (
+                            <li key={row.id}>
+                                <div>{row.user}@{row.host}:{row.port || 22} · {hubDeployStatusText(row)}</div>
+                                {row.public_url ? <div>{row.public_url}</div> : null}
+                                {row.hub_id ? <div>{row.hub_id}</div> : null}
+                                {row.message ? <div>{row.message}</div> : null}
+                                {row.admin_user && row.admin_password ? <div>{row.admin_user} · {row.admin_password}</div> : null}
+                                {row.status !== 'deploying' && row.status !== 'registering' ? (
+                                    <button type="button" className="utilities-link" onClick={() => { void ClearHubDeployResult(row.id).then(() => refreshHubDeploys()); }}>{t.delete}</button>
+                                ) : null}
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+        );
+    }
     if (view === 'browser-extension') {
         return (
             <div className="utilities-page browser-ext" data-testid="browser-extension-panel" data-mode={mode}>
@@ -2375,7 +2507,7 @@ export const UtilitiesPage = ({
     if (view === 'home') {
         const toolCards: Array<{
             key: string;
-            icon: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension';
+            icon: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub';
             title: string;
             desc: string;
             cta: string;
@@ -2383,6 +2515,14 @@ export const UtilitiesPage = ({
             disabled?: boolean;
             onClick: () => void;
         }> = [
+            {
+                key: 'hub-deploy',
+                icon: 'hub',
+                title: t.hubDeployCard,
+                desc: t.hubDeployDesc,
+                cta: t.open,
+                onClick: () => setView('hub-deploy'),
+            },
             {
                 key: 'virtual-repository',
                 icon: 'repository',

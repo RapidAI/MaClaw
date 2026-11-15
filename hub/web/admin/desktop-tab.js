@@ -155,7 +155,7 @@
       nodeCode: 'Issue an intranet code',
       nodeCodeReady: 'Give this code to the intranet agent. It works once, for 10 minutes:',
       nodesTitle: 'Bot nodes',
-      nodesHint: 'Add a public node with the service address below. An intranet node only gets a code, which that desktopd enters on its Hub connection card.',
+      nodesHint: 'Add a public node with the service address below. An intranet node only gets a code. Give that code to the agent; do not type it into a service URL.',
       nodeEmpty: 'No intranet nodes yet.',
       nodeOnline: 'Online',
       nodeOffline: 'Offline',
@@ -678,12 +678,10 @@
 
   function validResources(body) {
     if (body.image && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}$/.test(body.image)) return false;
-    if (body.memory && !/^[1-9][0-9]{0,6}([kmg]i?b?)?$/i.test(body.memory)) return false;
-    if (body.shm_size && !/^[1-9][0-9]{0,6}([kmg]i?b?)?$/i.test(body.shm_size)) return false;
-    if (body.cpus) {
-      var cpus = Number(body.cpus);
-      if (!isFinite(cpus) || cpus <= 0 || cpus > 64) return false;
-    }
+    if (!/^[1-9][0-9]{0,6}[kmg]i?b?$/i.test(body.memory || '')) return false;
+    if (!/^[1-9][0-9]{0,6}[kmg]i?b?$/i.test(body.shm_size || '')) return false;
+    var cpus = Number(body.cpus);
+    if (!body.cpus || !isFinite(cpus) || cpus <= 0 || cpus > 64) return false;
     return true;
   }
 

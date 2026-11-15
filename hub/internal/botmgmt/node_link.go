@@ -195,8 +195,8 @@ func (s *Service) AttachNodeSrv(ctx context.Context, tenantID, nodeID, baseURL, 
 }
 
 // PinOwnerNode sends this user's new bots, and calls that only know the
-// user, to the node srv. A node without a srv link is not a pin: the user
-// stays on the public connection. An empty nodeID clears the pin.
+// user, to the node srv. An empty nodeID clears the pin. A node that has
+// no srv link is refused and the current pin stays unchanged.
 func (s *Service) PinOwnerNode(ctx context.Context, tenantID, userID, nodeID string) error {
 	userID = strings.TrimSpace(userID)
 	nodeID = strings.TrimSpace(nodeID)
@@ -217,7 +217,7 @@ func (s *Service) PinOwnerNode(ctx context.Context, tenantID, userID, nodeID str
 		return s.save(ctx, tenantID, rec)
 	}
 	if findNodeLink(rec.NodeLinks, nodeID) == nil {
-		return nil
+		return fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
 	}
 	rec.OwnerNode[userID] = nodeID
 	return s.save(ctx, tenantID, rec)

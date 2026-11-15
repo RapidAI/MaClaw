@@ -295,6 +295,19 @@ async function testEditingANodeKeepsItsVirtualAddress() {
   const body = JSON.parse(saved[0].body);
   assertEqual(body.base_url, 'http://desktopd.n1.node.invalid', 'the node address stays');
   assertEqual(body.memory, '4g', 'the new memory is sent');
+  const beforeUnit = harness.calls.length;
+  harness.elements.desktopMemory.value = '4';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  assertEqual(harness.calls.length, beforeUnit, 'memory without a unit is not saved');
+  const unitToast = harness.toasts[harness.toasts.length - 1];
+  assertEqual(unitToast && unitToast.kind, 'error', 'a bare memory value is rejected');
+  assertIncludes(unitToast && unitToast.msg, '\u5185\u5b58', 'the operator is told to check the size');
+  const beforeEmpty = harness.calls.length;
+  harness.elements.desktopMemory.value = '';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  assertEqual(harness.calls.length, beforeEmpty, 'empty memory is not saved');
 
   const before = harness.calls.length;
   harness.elements.desktopUrl.value = 'http://desktopd.other.node.invalid';

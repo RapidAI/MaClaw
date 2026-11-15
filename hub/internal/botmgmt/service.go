@@ -121,10 +121,14 @@ type record struct {
 	// part overrides with their history, keyed by bot id (bot_style.go).
 	Styles map[string]*botStyleRecord `json:"styles,omitempty"`
 	// Rooms are group conversations between the person and their bots.
-	Rooms   map[string]*BotRoom `json:"rooms,omitempty"`
-	Grants  []Grant             `json:"grants,omitempty"`
-	Desktop *desktopStateRecord `json:"desktop,omitempty"`
-	LLM     llmSettings         `json:"llm,omitempty"`
+	Rooms  map[string]*BotRoom `json:"rooms,omitempty"`
+	Grants []Grant             `json:"grants,omitempty"`
+	// DefaultDesktopBotLimit is the tenant-wide fallback cap on desktop
+	// bots per user, applied when no covering grant sets a limit. Nil is
+	// unlimited, matching records saved before the field existed.
+	DefaultDesktopBotLimit *int                `json:"default_desktop_bot_limit,omitempty"`
+	Desktop                *desktopStateRecord `json:"desktop,omitempty"`
+	LLM                    llmSettings         `json:"llm,omitempty"`
 	// SystemFreeCreditsUsed is the credits each bot owner has spent on
 	// system-free, keyed by hub user id. It is independent of new-user benefits.
 	SystemFreeCreditsUsed map[string]float64 `json:"system_free_credits_used,omitempty"`
@@ -170,12 +174,13 @@ type record struct {
 
 // SettingsView is the admin payload. The access token is never returned.
 type SettingsView struct {
-	BaseURL        string          `json:"base_url"`
-	TokenSet       bool            `json:"token_set"`
-	AdminSecretSet bool            `json:"admin_secret_set"`
-	Bots           []Bot           `json:"bots"`
-	Grants         []Grant         `json:"grants"`
-	LLM            LLMSettingsView `json:"llm"`
+	BaseURL                string          `json:"base_url"`
+	TokenSet               bool            `json:"token_set"`
+	AdminSecretSet         bool            `json:"admin_secret_set"`
+	Bots                   []Bot           `json:"bots"`
+	Grants                 []Grant         `json:"grants"`
+	DefaultDesktopBotLimit *int            `json:"default_desktop_bot_limit,omitempty"`
+	LLM                    LLMSettingsView `json:"llm"`
 }
 
 // Service stores the tenant MaClawSrv connection and the bots created there.
@@ -417,6 +422,26 @@ func (s *Service) SaveAdminSecret(ctx context.Context, tenantID, secret string) 
 	return viewOf(rec), nil
 }
 
+// SaveDefaultDesktopBotLimit stores the tenant-wide fallback cap used when
+// no covering grant sets a desktop-bot limit. A nil limit clears it back
+// to unlimited.
+func (s *Service) SaveDefaultDesktopBotLimit(ctx context.Context, tenantID string, limit *int) (SettingsView, error) {
+	if limit != nil && *limit < 0 {
+		return SettingsView{}, ErrInvalidInput
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return SettingsView{}, err
+	}
+	rec.DefaultDesktopBotLimit = limit
+	if err := s.save(ctx, tenantID, rec); err != nil {
+		return SettingsView{}, err
+	}
+	return viewOf(rec), nil
+}
+
 func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, error) {
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {
@@ -474,7 +499,7 @@ func (s *Service) countInstances(ctx context.Context, rec record, bearer string)
 }
 
 func (s *Service) CreateBot(ctx context.Context, tenantID, name, description string) (Bot, error) {
-	return s.createBot(ctx, tenantID, "", name, description, false, nil)
+	return s.createBot(ctx, tenantID, "", name, description, false, nil, nil)
 }
 
 func (s *Service) UpdateBot(ctx context.Context, tenantID, botID, name, description string) (Bot, error) {
@@ -1029,12 +1054,13 @@ func viewOf(rec record) SettingsView {
 		grants = []Grant{}
 	}
 	return SettingsView{
-		BaseURL:        rec.BaseURL,
-		TokenSet:       strings.TrimSpace(rec.AccessToken) != "",
-		AdminSecretSet: strings.TrimSpace(rec.AdminSecret) != "",
-		Bots:           bots,
-		Grants:         grants,
-		LLM:            llmView(rec.LLM),
+		BaseURL:                rec.BaseURL,
+		TokenSet:               strings.TrimSpace(rec.AccessToken) != "",
+		AdminSecretSet:         strings.TrimSpace(rec.AdminSecret) != "",
+		Bots:                   bots,
+		Grants:                 grants,
+		DefaultDesktopBotLimit: rec.DefaultDesktopBotLimit,
+		LLM:                    llmView(rec.LLM),
 	}
 }
 

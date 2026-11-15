@@ -349,3 +349,92 @@ func TestEdgeDisabledByDefault(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestStreamCapStopsTheNextDial(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	desktopd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer desktopd.Close()
+	reg := NewRegistry(&memSettings{})
+	if err := reg.SetPolicy(context.Background(), "tenant-a", Policy{AllowSelf: true, MaxStreams: 1}); err != nil {
+		t.Fatal(err)
+	}
+	code, err := reg.IssueCode(context.Background(), "tenant-a", "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled, err := reg.Enroll(context.Background(), code.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := reg.Authenticate(context.Background(), enrolled.NodeID, enrolled.NodeSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, right := net.Pipe()
+	go func() {
+		_ = edgelink.Serve(left, map[string]string{edgelink.TargetDesktopd: desktopd.Listener.Addr().String()})
+	}()
+	broker := NewBroker(reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = broker.Attach(ctx, node, right) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var first net.Conn
+	for {
+		first, err = broker.Dial(context.Background(), "tenant-a", node.ID, edgelink.TargetDesktopd)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := broker.Dial(context.Background(), "tenant-a", node.ID, edgelink.TargetDesktopd); !errors.Is(err, ErrStreamLimit) {
+		t.Fatalf("second stream err = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := broker.Dial(context.Background(), "tenant-a", node.ID, edgelink.TargetDesktopd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = second.Close()
+	client := broker.Client("tenant-a", node.ID, edgelink.TargetDesktopd)
+	for i := 0; i < 2; i++ {
+		reqCtx, reqCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		req, reqErr := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://desktopd.node.invalid/v1/health", nil)
+		if reqErr != nil {
+			reqCancel()
+			t.Fatal(reqErr)
+		}
+		resp, reqErr := client.Do(req)
+		reqCancel()
+		if reqErr != nil {
+			t.Fatal(reqErr)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("health %d", resp.StatusCode)
+		}
+	}
+	if err := reg.SetPolicy(context.Background(), "tenant-a", Policy{AllowSelf: true}); err != nil {
+		t.Fatal(err)
+	}
+	held, err := broker.Dial(context.Background(), "tenant-a", node.ID, edgelink.TargetDesktopd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra, err := broker.Dial(context.Background(), "tenant-a", node.ID, edgelink.TargetDesktopd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = held.Close()
+	_ = extra.Close()
+}

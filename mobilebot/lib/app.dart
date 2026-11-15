@@ -1,10 +1,16 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'core/app_update.dart';
+import 'core/platform.dart' show supportsSideloadUpdate;
 import 'core/providers.dart';
 import 'core/theme.dart';
 import 'features/account/account_screen.dart';
+import 'features/account/update_dialog.dart';
 import 'features/auth/login_screen.dart';
 import 'features/bots/bot_chat_controller.dart';
 import 'features/bots/bot_chat_screen.dart';
@@ -271,12 +277,18 @@ class _BotRoute extends ConsumerWidget {
 }
 
 /// Bottom navigation shell: Bot 列表 / 工作状态 / 我的.
-class _HomeShell extends StatelessWidget {
+class _HomeShell extends ConsumerStatefulWidget {
   final Widget child;
 
   const _HomeShell({required this.child});
 
+  @override
+  ConsumerState<_HomeShell> createState() => _HomeShellState();
+}
+
+class _HomeShellState extends ConsumerState<_HomeShell> {
   static const _tabs = ['/', '/remote', '/status', '/account'];
+  Timer? _updateTimer;
 
   int _indexOf(String location) {
     if (location.startsWith('/remote')) return 1;
@@ -286,11 +298,46 @@ class _HomeShell extends StatelessWidget {
   }
 
   @override
+  void initState() {
+    super.initState();
+    // One silent update check per launch where sideloading is allowed
+    // (Android APK; iOS uses the App Store, HarmonyOS NEXT AppGallery).
+    // Network failures stay invisible; only a real update surfaces the sheet.
+    if (!supportsSideloadUpdate) return;
+    _updateTimer = Timer(const Duration(seconds: 4), _autoCheck);
+  }
+
+  Future<void> _autoCheck() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final last = prefs.getInt('mobilebot.update.lastCheck') ?? 0;
+      if (DateTime.now().millisecondsSinceEpoch - last <
+          const Duration(hours: 6).inMilliseconds) {
+        return;
+      }
+      final info = await PackageInfo.fromPlatform();
+      final result = await AppUpdater().check(info.version);
+      await prefs.setInt(
+          'mobilebot.update.lastCheck', DateTime.now().millisecondsSinceEpoch);
+      if (!mounted || !result.hasUpdate) return;
+      await showUpdateSheet(context, prechecked: result.update);
+    } on Object {
+      // A failed background check is silent — the 我的 tab offers retry.
+    }
+  }
+
+  @override
+  void dispose() {
+    _updateTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final location = GoRouterState.of(context).matchedLocation;
     final index = _indexOf(location);
     return Scaffold(
-      body: child,
+      body: widget.child,
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
         onDestinationSelected: (i) {

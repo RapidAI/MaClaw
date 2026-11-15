@@ -186,6 +186,45 @@ func (p *Pool) ActivateOwnedServer(ctx context.Context, tenantID, userID, server
 	return p.save(ctx, tenantID, rec)
 }
 
+// ReleaseOwnedDesktop points the user back at the desktop they had before
+// registering their own. The owned desktop stays registered, so they can
+// use it again. The returned id is the owned service they just left (""
+// when the current desktop is not one of theirs) and is the one to stop.
+func (p *Pool) ReleaseOwnedDesktop(ctx context.Context, tenantID, userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rec, err := p.load(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	activeID := matchAssignment(rec.Assignments, ScopeUser, userID)
+	index := serverIndex(rec.Servers, activeID)
+	if index < 0 || rec.Servers[index].OwnerUserID == "" || rec.Servers[index].OwnerUserID != userID {
+		return "", nil
+	}
+	left := rec.Servers[index]
+	kept := make([]Assignment, 0, len(rec.Assignments))
+	for _, item := range rec.Assignments {
+		if item.Scope == ScopeUser && item.TargetID == userID {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	prev := strings.TrimSpace(left.PrevServerID)
+	if prev != "" && serverIndex(rec.Servers, prev) >= 0 {
+		kept = pointUserAt(kept, userID, prev)
+	}
+	rec.Assignments = kept
+	if err := p.save(ctx, tenantID, rec); err != nil {
+		return "", err
+	}
+	return left.ID, nil
+}
+
 // DetachOwnedServer removes one of the user's own services. When it was the
 // active one, the newest remaining owned service takes over; with none left
 // the assignment the user had before registering comes back, if that server

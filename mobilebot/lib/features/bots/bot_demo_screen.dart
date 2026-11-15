@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/platform.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
 
@@ -350,7 +351,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                 ),
               ),
             ),
-            if (_asrAvailable)
+            if (_asrAvailable && supportsVoiceInput)
               IconButton(
                 tooltip: _micRecording ? '停止录音' : '语音旁白',
                 icon: Icon(

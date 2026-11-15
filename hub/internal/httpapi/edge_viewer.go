@@ -107,6 +107,18 @@ func viewerPage(base, ticket string, control bool) string {
 	return page
 }
 
+// viewerGrantClosed is a picture Hub has already withdrawn. Nil means a
+// ticket stays until it expires, which is what tests without a publisher use.
+func viewerGrantClosed(grant viewerGrant) bool {
+	return viewerStillOpen != nil && !viewerStillOpen(grant.TenantID, grant.UserID)
+}
+
+func dropViewerGrant(id string) {
+	viewerGrants.mu.Lock()
+	defer viewerGrants.mu.Unlock()
+	delete(viewerGrants.items, id)
+}
+
 func liveViewerCount(tenantID string) int {
 	tenantID = store.NormalizeTenantID(tenantID)
 	viewerGrants.mu.Lock()
@@ -114,7 +126,7 @@ func liveViewerCount(tenantID string) int {
 	now := time.Now()
 	n := 0
 	for id, grant := range viewerGrants.items {
-		if !now.Before(grant.Expires) {
+		if !now.Before(grant.Expires) || viewerGrantClosed(grant) {
 			delete(viewerGrants.items, id)
 			continue
 		}
@@ -160,7 +172,7 @@ func reuseViewerGrant(nodeID, tenantID, userID, key string, control bool) (strin
 	now := time.Now()
 	key = strings.TrimSpace(key)
 	for id, grant := range viewerGrants.items {
-		if !now.Before(grant.Expires) {
+		if !now.Before(grant.Expires) || viewerGrantClosed(grant) {
 			delete(viewerGrants.items, id)
 			continue
 		}
@@ -218,7 +230,8 @@ func EdgeViewerConfirmHandler(reg *edgenode.Registry) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		if viewerStillOpen != nil && !viewerStillOpen(grant.TenantID, grant.UserID) {
+		if viewerGrantClosed(grant) {
+			dropViewerGrant(id)
 			http.NotFound(w, r)
 			return
 		}

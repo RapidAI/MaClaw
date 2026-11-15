@@ -37,7 +37,7 @@ func main() {
 	if desktopd.IntranetEnv(os.Getenv("DESKTOPD_INTRANET")) {
 		svc.Intranet = true
 		svc.AdvertiseHost = ""
-		log.Printf("[desktopd] intranet desktop: published URLs use the hub link")
+		log.Printf("[desktopd] intranet desktop: advertise host and public URL are ignored")
 	}
 	publishBind, err := desktopd.ParsePublishBind(os.Getenv("DESKTOPD_PUBLISH_BIND"))
 	if err != nil {
@@ -230,6 +230,14 @@ func main() {
 	handler := desktopd.Handler(svc, token, panelDir, proxyKeys, egress)
 	if svc.HubLink != nil {
 		svc.HubLink.EnrollFromEnv(ctx)
+		go svc.HubLink.SyncDesktopSize(context.Background())
+	}
+	if svc.Intranet {
+		if svc.HubLink != nil {
+			log.Printf("[desktopd] intranet desktop: session URLs use the hub link after enrollment")
+		} else {
+			log.Printf("[desktopd] intranet desktop: session URLs use http://%s", desktopd.SelfAddr(addr))
+		}
 	}
 	server := &http.Server{
 		Addr:              addr,

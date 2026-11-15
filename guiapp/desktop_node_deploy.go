@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,9 +87,11 @@ type DesktopNodeRecord struct {
 // DesktopNodeEntry is a record merged with what Hub says about it.
 type DesktopNodeEntry struct {
 	DesktopNodeRecord
-	Registered bool `json:"registered"`
-	Online     bool `json:"online"`
-	Active     bool `json:"active"`
+	Registered bool   `json:"registered"`
+	Online     bool   `json:"online"`
+	Active     bool   `json:"active"`
+	Memory     string `json:"memory,omitempty"`
+	CPUs       string `json:"cpus,omitempty"`
 }
 
 type DesktopNodesView struct {
@@ -121,6 +122,8 @@ type hubSelfDesktopNode struct {
 	Online      bool   `json:"online"`
 	Active      bool   `json:"active"`
 	AccessToken string `json:"access_token"`
+	Memory      string `json:"memory"`
+	CPUs        string `json:"cpus"`
 }
 
 type hubSelfDesktopView struct {
@@ -328,6 +331,7 @@ func (a *App) ListLocalDesktopJobs() ([]LocalDesktopJob, error) {
 			StartedAt: started,
 		})
 	}
+	out = append(out, a.listLocalHubDeployJobs()...)
 	return out, nil
 }
 
@@ -436,6 +440,22 @@ func newDesktopNodeID() string {
 // Bindings
 // ---------------------------------------------------------------------------
 
+// desktopNodeHubRouteMessage is what the desktop page shows when Hub answers
+// the plain 404 of an unregistered route. That route exists only while
+// HUB_EDGE_NODES is on.
+const desktopNodeHubRouteMessage = "Hub 还没有内网节点接口。把 HUB_EDGE_NODES=on 放进 Hub 进程环境并重启"
+
+func desktopNodeHubCallError(err error) string {
+	var missing desktopHubMissingRouteError
+	if errors.As(err, &missing) {
+		return desktopNodeHubRouteMessage
+	}
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 // ListDesktopNodes merges this GUI's records with the desktops Hub has for
 // this user. A Hub-only entry (registered from another computer) is listed
 // with what Hub knows, including its token.
@@ -460,7 +480,7 @@ func (a *App) ListDesktopNodes() (*DesktopNodesView, error) {
 	view := &DesktopNodesView{Nodes: []DesktopNodeEntry{}}
 	var hub hubSelfDesktopView
 	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/desktop-node", nil, &hub, 20*time.Second); err != nil {
-		view.HubError = err.Error()
+		view.HubError = desktopNodeHubCallError(err)
 	} else {
 		view.Enabled = hub.Enabled
 	}
@@ -477,6 +497,8 @@ func (a *App) ListDesktopNodes() (*DesktopNodesView, error) {
 			entry.Online = node.Online
 			entry.Active = node.Active
 			entry.ServerID = node.ServerID
+			entry.Memory = node.Memory
+			entry.CPUs = node.CPUs
 			if entry.Token == "" {
 				entry.Token = node.AccessToken
 			}
@@ -496,6 +518,7 @@ func (a *App) ListDesktopNodes() (*DesktopNodesView, error) {
 				Token: node.AccessToken, Status: desktopNodeStatusReady,
 			},
 			Registered: true, Online: node.Online, Active: node.Active,
+			Memory: node.Memory, CPUs: node.CPUs,
 		})
 	}
 	sortDesktopNodeEntries(view.Nodes)
@@ -798,6 +821,17 @@ func (a *App) ActivateDesktopNode(id string) error {
 	return nil
 }
 
+// UseCloudDesktop points this user back at the computer they had before
+// their own desktopd. The desktopd stays registered.
+func (a *App) UseCloudDesktop() error {
+	var out hubSelfDesktopView
+	if err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/v1/bots/desktop-node/cloud", map[string]string{}, &out, 30*time.Second); err != nil {
+		return err
+	}
+	a.emitEvent(desktopNodesEvent, "")
+	return nil
+}
+
 // DeleteDesktopNode unregisters the desktopd on Hub and forgets the record.
 // The desktopd itself keeps running on its machine.
 func (a *App) DeleteDesktopNode(id string) error {
@@ -815,7 +849,7 @@ func (a *App) DeleteDesktopNode(id string) error {
 	}
 	if serverID != "" {
 		var out hubSelfDesktopView
-		if err := a.desktopBotCall(context.Background(), http.MethodDelete, "/api/v1/bots/desktop-node/"+url.PathEscape(serverID), nil, &out, 30*time.Second); err != nil {
+		if err := a.desktopBotCall(context.Background(), http.MethodDelete, "/api/v1/self-desktop-nodes/"+url.PathEscape(serverID), nil, &out, 30*time.Second); err != nil {
 			return err
 		}
 	}
@@ -1087,21 +1121,8 @@ func desktopNodeFatal(err error) bool {
 
 var desktopNodeDetailMu sync.Mutex
 
-var desktopNodeDetailSecret = regexp.MustCompile(`(?i)(password|DESKTOPD_TOKEN|MACLAW_ADMIN_SECRET|MACLAW_TOKEN_SECRET|MACLAW_DESKTOP_API_TOKEN|hub_token|node_secret|srv_admin_secret|desktopd_key|authorization|密码)\s*[:=：]\s*(?:"[^"]*"|'[^']*'|Bearer\s+\S+|\S+)`)
-var desktopNodeDetailBearer = regexp.MustCompile(`(?i)Bearer\s+\S+`)
-var desktopNodeDetailUserinfo = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@`)
-var desktopNodeDetailBlob = regexp.MustCompile(`[A-Za-z0-9+/]{40,}={0,2}`)
-
 func scrubDesktopNodeDetail(text string) string {
-	text = strings.NewReplacer("\r", " ", "\n", " ").Replace(text)
-	text = desktopNodeDetailBearer.ReplaceAllString(text, "Bearer <redacted>")
-	text = desktopNodeDetailSecret.ReplaceAllString(text, "$1=<redacted>")
-	text = desktopNodeDetailUserinfo.ReplaceAllString(text, "$1<redacted>@")
-	text = desktopNodeDetailBlob.ReplaceAllString(text, "<redacted>")
-	if len([]rune(text)) > 2000 {
-		text = string([]rune(text)[:2000]) + "..."
-	}
-	return strings.TrimSpace(text)
+	return OpsScrub(text)
 }
 
 // desktopNodeDetail appends one deploy step when detailed logging is on.
@@ -1215,139 +1236,107 @@ func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privileg
 		prompt = desktopNodeUpgradePrompt(rec, password, privilege, job.stamp)
 		display = fmt.Sprintf("〔升级〕在 %s@%s 上用最新代码重新编译部署 %s", rec.User, rec.Host, what)
 	}
-	task := a.CreateTask(taskName, "")
-	if strings.TrimSpace(task.ProjectPath) == "" {
-		a.desktopNodeDetail(rec.ID, "task", "无法创建部署任务")
-		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, "无法创建部署任务")
-		return
-	}
-	_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) { r.TaskPath = task.ProjectPath })
-	a.desktopNodeDetail(rec.ID, "start", fmt.Sprintf("host=%s port=%d user=%s with_srv=%v upgrade=%v hub=%s doc=%s label=%s task=%s", rec.Host, rec.Port, rec.User, rec.WithSrv, job.upgrade(), rec.HubURL, desktopNodeDocURL(rec.HubURL), label, task.ProjectPath))
-	done := make(chan *IMAgentResponse, 1)
-	_, err := a.SendAIAssistantMessage(AIAssistantSendRequest{
-		Text:               prompt,
-		ProjectPath:        task.ProjectPath,
-		BackendDisplayText: display,
-		OnDone: func(resp *IMAgentResponse) {
-			select {
-			case done <- resp:
-			default:
-			}
-		},
-	})
-	if err != nil {
-		a.desktopNodeDetail(rec.ID, "agent", err.Error())
-		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, "agent 启动失败: "+err.Error())
-		return
-	}
-
-	deadline := time.Now().Add(desktopNodeDeployBudget)
-	var agentDoneAt time.Time
-	agentSummary := ""
 	stampSeen := !job.upgrade()
-	lastProbe := ""
-	ticker := time.NewTicker(desktopNodeProbeEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case resp := <-done:
-			agentDoneAt = time.Now()
-			if resp != nil {
-				agentSummary = desktopNodeAgentVerdict(resp)
-			}
-			if agentSummary == "" {
-				a.desktopNodeDetail(rec.ID, "agent-done", "没有 DESKTOPD_DEPLOY 结论")
-			} else {
-				a.desktopNodeDetail(rec.ID, "agent-done", agentSummary)
-			}
-		case <-ticker.C:
-		}
-		var err error
-		if job.upgrade() && !stampSeen {
-			seen, probeErr := a.noteDesktopNodeStamp(rec, password, privilege, job.stamp)
-			if seen {
-				stampSeen = true
-				a.setDesktopNodeStatus(rec.ID, desktopNodeStatusUpgrading, "正在验证升级后的 desktopd")
-				err = probeErr
-			} else if probeErr != nil {
-				err = probeErr
-			} else {
-				err = fmt.Errorf("升级还未完成")
-			}
-		} else if agentDoneAt.IsZero() {
-			// Do not rewrite .env or enroll while the install script may still
-			// be writing that file. A half-old desktopd answering health is
-			// not the process we just built.
-			err = fmt.Errorf("desktopd 正在安装")
-		} else {
-			err = a.finishDesktopNodeDeploy(rec, password, privilege, job.upgrade())
-		}
-		if err == nil {
-			ready := "desktopd 已就绪"
-			if latest, findErr := a.findDesktopNode(rec.ID); findErr == nil && strings.TrimSpace(latest.NodeID) != "" {
-				ready += " node=" + latest.NodeID
-			}
-			a.desktopNodeDetail(rec.ID, "ready", ready)
-			return
-		}
-		failed := strings.HasPrefix(strings.ToUpper(agentSummary), "FAILED")
-		grace := 10 * time.Minute
-		if failed {
-			grace = 30 * time.Second
-		}
-		givingUp := desktopNodeFatal(err) || (!agentDoneAt.IsZero() && time.Since(agentDoneAt) > grace) || time.Now().After(deadline)
-		if givingUp {
-			msg := err.Error()
-			if !desktopNodeFatal(err) {
-				msg = "desktopd 没有就绪: " + err.Error()
-				if agentSummary != "" {
-					msg += "；agent: " + agentSummary
-				}
-			}
-			msg = scrubDesktopNodeDetail(msg)
-			a.desktopNodeDetail(rec.ID, "failed", msg)
-			a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, msg)
-			return
-		}
-		if msg := err.Error(); msg != lastProbe {
-			lastProbe = msg
-			step := "probe"
-			if strings.Contains(msg, "正在安装") || strings.Contains(msg, "还未完成") || strings.Contains(msg, "正在重启") || strings.Contains(msg, "正在重新连接") {
-				step = "wait"
-			}
-			a.desktopNodeDetail(rec.ID, step, msg)
-		}
-		if !agentDoneAt.IsZero() {
+	var posted string
+	_, err := RunOpsAgent(a, OpsAgentJob{
+		Name:      taskName,
+		Display:   display,
+		Prompt:    prompt,
+		Marker:    "DESKTOPD_DEPLOY",
+		Budget:    desktopNodeDeployBudget,
+		Every:     desktopNodeProbeEvery,
+		Log:       func(step, detail string) { a.desktopNodeDetail(rec.ID, step, detail) },
+		ProbeStep: desktopNodeProbeStep,
+		Fatal:     desktopNodeFatal,
+		OnTask: func(projectPath string) {
+			_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) { r.TaskPath = projectPath })
+			a.desktopNodeDetail(rec.ID, "start", fmt.Sprintf("host=%s port=%d user=%s with_srv=%v upgrade=%v hub=%s doc=%s label=%s task=%s", rec.Host, rec.Port, rec.User, rec.WithSrv, job.upgrade(), rec.HubURL, desktopNodeDocURL(rec.HubURL), label, projectPath))
+		},
+		OnWaiting: func(string) {
 			status := desktopNodeStatusDeploying
 			message := "agent 已结束，等待 desktopd 就绪"
 			if job.upgrade() {
 				status = desktopNodeStatusUpgrading
 				message = "agent 已结束，等待升级完成"
 			}
+			if posted == status+"\x00"+message {
+				return
+			}
+			posted = status + "\x00" + message
 			a.setDesktopNodeStatus(rec.ID, status, message)
+		},
+		Probe: func(agentDone bool, _ string) error {
+			if job.upgrade() && !stampSeen {
+				seen, probeErr := a.noteDesktopNodeStamp(rec, password, privilege, job.stamp)
+				if seen {
+					stampSeen = true
+					a.setDesktopNodeStatus(rec.ID, desktopNodeStatusUpgrading, "正在验证升级后的 desktopd")
+					return probeErr
+				}
+				if probeErr != nil {
+					return probeErr
+				}
+				return fmt.Errorf("升级还未完成")
+			}
+			if !agentDone {
+				// Do not rewrite .env or enroll while the install script may still
+				// be writing that file. A half-old desktopd answering health is
+				// not the process we just built.
+				return fmt.Errorf("desktopd 正在安装")
+			}
+			return a.finishDesktopNodeDeploy(rec, password, privilege, job.upgrade())
+		},
+	})
+	if err == nil {
+		ready := "desktopd 已就绪"
+		if latest, findErr := a.findDesktopNode(rec.ID); findErr == nil && strings.TrimSpace(latest.NodeID) != "" {
+			ready += " node=" + latest.NodeID
 		}
+		a.desktopNodeDetail(rec.ID, "ready", ready)
+		return
+	}
+	var opsErr *OpsAgentError
+	if !errors.As(err, &opsErr) {
+		msg := scrubDesktopNodeDetail(err.Error())
+		a.desktopNodeDetail(rec.ID, "failed", msg)
+		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, msg)
+		return
+	}
+	switch opsErr.Phase {
+	case OpsAgentPhaseTask:
+		a.desktopNodeDetail(rec.ID, "task", "无法创建部署任务")
+		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, "无法创建部署任务")
+	case OpsAgentPhaseStart:
+		a.desktopNodeDetail(rec.ID, "agent", opsErr.Err.Error())
+		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, "agent 启动失败: "+scrubDesktopNodeDetail(opsErr.Err.Error()))
+	default:
+		msg := opsErr.Error()
+		if !desktopNodeFatal(opsErr.Err) {
+			msg = "desktopd 没有就绪: " + msg
+			if opsErr.Verdict != "" {
+				msg += "；agent: " + opsErr.Verdict
+			}
+		}
+		msg = scrubDesktopNodeDetail(msg)
+		a.desktopNodeDetail(rec.ID, "failed", msg)
+		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, msg)
 	}
 }
 
 // desktopNodeAgentVerdict is the agent's last DESKTOPD_DEPLOY line, if any.
 func desktopNodeAgentVerdict(resp *IMAgentResponse) string {
-	text := resp.Text
-	if resp.Error != "" {
-		text += "\n" + resp.Error
+	return opsAgentVerdict(resp, "DESKTOPD_DEPLOY")
+}
+
+func desktopNodeProbeStep(err error) string {
+	if err == nil {
+		return "probe"
 	}
-	verdict := ""
-	for _, line := range strings.Split(text, "\n") {
-		if i := strings.Index(line, "DESKTOPD_DEPLOY:"); i >= 0 {
-			verdict = strings.TrimSpace(line[i+len("DESKTOPD_DEPLOY:"):])
-		}
+	msg := err.Error()
+	if strings.Contains(msg, "正在安装") || strings.Contains(msg, "还未完成") || strings.Contains(msg, "正在重启") || strings.Contains(msg, "正在重新连接") {
+		return "wait"
 	}
-	if verdict == "" && resp.Error != "" {
-		verdict = resp.Error
-	}
-	if len([]rune(verdict)) > 300 {
-		verdict = string([]rune(verdict)[:300])
-	}
-	return verdict
+	return "probe"
 }
 
 // desktopNodeRegisterError is a failure after desktopd was found healthy:
@@ -1447,67 +1436,27 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 		}
 		srvAdmin = admin
 	}
-	if preserveLink && strings.TrimSpace(rec.NodeID) != "" {
-		var link struct {
-			Enrolled bool   `json:"enrolled"`
-			NodeID   string `json:"node_id"`
-			Online   bool   `json:"online"`
-			Error    string `json:"error"`
-		}
-		if err := desktopdHubLinkCall(ctx, client, base, token, http.MethodGet, nil, &link); err != nil {
-			return err
-		}
-		if link.Enrolled && link.NodeID != "" {
-			if !link.Online {
-				return fmt.Errorf("desktopd 已升级，正在重新连接 Hub")
-			}
-			if rec.WithSrv && !rec.SrvTokenSet {
-				rec.NodeID = link.NodeID
-				rec.Token = token
-				rec.DesktopdPort = port
-				return a.writeDesktopNodeSrvToken(conn, rec, password, privilege)
-			}
-			_, err := a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
-				r.Token = token
-				r.DesktopdPort = port
-				r.NodeID = link.NodeID
-				r.Status = desktopNodeStatusReady
-				r.Message = ""
-				kind := "deploy"
-				if preserveLink {
-					kind = "upgrade"
-				}
-				recordDesktopNodeResult(r, kind, "")
-			})
-			return err
-		}
-	}
+	registerMessage := "desktopd 已就绪，正在注册到 Hub"
 	if strings.TrimSpace(rec.NodeID) != "" {
-		if rec.WithSrv && !rec.SrvTokenSet {
-			rec.Token = token
-			rec.DesktopdPort = port
-			return a.writeDesktopNodeSrvToken(conn, rec, password, privilege)
-		}
-		_, err := a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
-			r.Token = token
-			r.DesktopdPort = port
-			r.Status = desktopNodeStatusReady
-			r.Message = ""
-			kind := "deploy"
-			if preserveLink {
-				kind = "upgrade"
-			}
-			recordDesktopNodeResult(r, kind, "")
-		})
-		return err
+		registerMessage = "正在确认 Hub 连接"
 	}
 	_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
 		r.Token = token
 		r.DesktopdPort = port
-		r.Status = desktopNodeStatusRegistering
-		r.Message = "desktopd 已就绪，正在注册到 Hub"
+		if r.Status != desktopNodeStatusUpgrading {
+			r.Status = desktopNodeStatusRegistering
+		}
+		r.Message = registerMessage
 	})
 	nodeID, err := a.enrollDesktopd(ctx, client, base, token, rec, srvAdmin)
+	if nodeID != "" {
+		rec.NodeID = nodeID
+		_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
+			r.NodeID = nodeID
+			r.Token = token
+			r.DesktopdPort = port
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -1517,7 +1466,9 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 		rec.DesktopdPort = port
 		_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
 			r.NodeID = nodeID
-			r.Status = desktopNodeStatusRegistering
+			if r.Status != desktopNodeStatusUpgrading {
+				r.Status = desktopNodeStatusRegistering
+			}
 			r.Message = "正在写入 srv 令牌"
 		})
 		return a.writeDesktopNodeSrvToken(conn, rec, password, privilege)
@@ -1526,7 +1477,11 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 		r.NodeID = nodeID
 		r.Status = desktopNodeStatusReady
 		r.Message = ""
-		recordDesktopNodeResult(r, "deploy", "")
+		kind := "deploy"
+		if preserveLink {
+			kind = "upgrade"
+		}
+		recordDesktopNodeResult(r, kind, "")
 	})
 	log.Printf("[desktop-node] registered id=%s node=%s host=%s", rec.ID, nodeID, rec.Host)
 	return nil
@@ -1541,6 +1496,9 @@ func (a *App) registerDirectDesktopNode(rec DesktopNodeRecord) error {
 		return err
 	}
 	nodeID, err := a.enrollDesktopd(ctx, client, rec.DesktopdURL, rec.Token, rec, "")
+	if nodeID != "" {
+		_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) { r.NodeID = nodeID })
+	}
 	if err != nil {
 		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, err.Error())
 		return err
@@ -1567,8 +1525,40 @@ func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, tok
 		NodeID string `json:"node_id"`
 	}
 	a.desktopNodeDetail(rec.ID, "enroll", "hub="+strings.TrimRight(strings.TrimSpace(hubURL), "/")+" host="+rec.Host)
-	if err := a.desktopBotCall(ctx, http.MethodPost, "/api/v1/bots/desktop-node/code", map[string]string{"name": rec.Name}, &code, 20*time.Second); err != nil {
+	var linked struct {
+		Enrolled bool   `json:"enrolled"`
+		NodeID   string `json:"node_id"`
+		Online   bool   `json:"online"`
+		Error    string `json:"error"`
+	}
+	if err := desktopdHubLinkCall(ctx, client, base, token, http.MethodGet, nil, &linked); err != nil {
+		a.desktopNodeDetail(rec.ID, "enroll-link", err.Error())
+		return "", err
+	}
+	if linked.Enrolled && linked.NodeID != "" {
+		if err := a.waitDesktopNodeOnline(ctx, client, base, token, &linked); err != nil {
+			return linked.NodeID, err
+		}
+		a.retireReplacedDesktopNode(ctx, rec.NodeID, linked.NodeID)
+		return linked.NodeID, nil
+	}
+	issueCode := func() error {
+		return a.desktopBotCall(ctx, http.MethodPost, "/api/v1/bots/desktop-node/code", map[string]string{"name": rec.Name}, &code, 20*time.Second)
+	}
+	err = issueCode()
+	// A one-node cap counts the desktop this record already registered.
+	// Drop that node only after Hub says the cap is full, then ask once more.
+	// Any other failure leaves the existing node in place.
+	if desktopNodeCapFull(err) && strings.TrimSpace(rec.NodeID) != "" && a.retireReplacedDesktopNode(ctx, rec.NodeID, "") == nil {
+		a.desktopNodeDetail(rec.ID, "enroll-code", "节点数已到上限，已释放旧节点")
+		err = issueCode()
+	}
+	if err != nil {
 		a.desktopNodeDetail(rec.ID, "enroll-code", err.Error())
+		var missing desktopHubMissingRouteError
+		if errors.As(err, &missing) {
+			return "", desktopNodeRegisterError{msg: desktopNodeHubRouteMessage}
+		}
 		return "", fmt.Errorf("Hub 拒绝了桌面注册: %v", err)
 	}
 	var status struct {
@@ -1599,29 +1589,77 @@ func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, tok
 		a.desktopNodeDetail(rec.ID, "enroll-link", msg)
 		return "", errors.New(msg)
 	}
-	// The link comes up a moment after enrollment.
+	if err := a.waitDesktopNodeOnline(ctx, client, base, token, &status); err != nil {
+		a.desktopNodeDetail(rec.ID, "enroll-online", "node="+status.NodeID+" "+err.Error())
+		return status.NodeID, err
+	}
+	a.retireReplacedDesktopNode(ctx, rec.NodeID, status.NodeID)
+	return status.NodeID, nil
+}
+
+// desktopNodeCapFull is Hub refusing a new node because the tenant is at
+// its node limit. The message is edgenode.ErrNodeLimit.
+func desktopNodeCapFull(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "节点数已到上限")
+}
+
+// retireReplacedDesktopNode drops the desktop this record used to point at
+// once a different node is up. An empty newID frees the slot after Hub
+// rejected a replacement for being over the node cap. The same id is left
+// in place. A lookup or delete failure is returned so the caller can keep
+// the old node.
+func (a *App) retireReplacedDesktopNode(ctx context.Context, oldID, newID string) error {
+	oldID = strings.TrimSpace(oldID)
+	newID = strings.TrimSpace(newID)
+	if oldID == "" || oldID == newID {
+		return nil
+	}
+	serverID, err := a.hubServerIDForNode(oldID)
+	if err != nil {
+		return err
+	}
+	return a.desktopBotCall(ctx, http.MethodDelete, "/api/v1/self-desktop-nodes/"+url.PathEscape(serverID), nil, nil, 20*time.Second)
+}
+
+// waitDesktopNodeOnline polls a node that desktopd already enrolled. The
+// tunnel often comes up a moment later. Giving up here must stay retryable:
+// another attempt that asks Hub for a fresh code would register a second node.
+func (a *App) waitDesktopNodeOnline(ctx context.Context, client *http.Client, base, token string, status *struct {
+	Enrolled bool   `json:"enrolled"`
+	NodeID   string `json:"node_id"`
+	Online   bool   `json:"online"`
+	Error    string `json:"error"`
+}) error {
+	knownID := strings.TrimSpace(status.NodeID)
 	for i := 0; i < 20 && !status.Online; i++ {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			if strings.TrimSpace(status.NodeID) == "" {
+				status.NodeID = knownID
+			}
+			return ctx.Err()
 		case <-time.After(time.Second):
 		}
-		_ = desktopdHubLinkCall(ctx, client, base, token, http.MethodGet, nil, &status)
-	}
-	if !status.Online {
-		msg := "desktopd 已注册，但还没有连上 Hub"
-		if status.Error != "" {
-			msg += ": " + status.Error
+		if err := desktopdHubLinkCall(ctx, client, base, token, http.MethodGet, nil, status); err != nil {
+			continue
 		}
-		a.desktopNodeDetail(rec.ID, "enroll-online", "node="+status.NodeID+" "+msg)
-		return status.NodeID, desktopNodeRegisterError{msg: msg}
-	}
-	if old := strings.TrimSpace(rec.NodeID); old != "" && old != status.NodeID {
-		if serverID, err := a.hubServerIDForNode(old); err == nil {
-			_ = a.desktopBotCall(ctx, http.MethodDelete, "/api/v1/bots/desktop-node/"+url.PathEscape(serverID), nil, nil, 20*time.Second)
+		if id := strings.TrimSpace(status.NodeID); id != "" {
+			knownID = id
+		} else {
+			status.NodeID = knownID
 		}
 	}
-	return status.NodeID, nil
+	if strings.TrimSpace(status.NodeID) == "" {
+		status.NodeID = knownID
+	}
+	if status.Online {
+		return nil
+	}
+	msg := "desktopd 已注册，正在重新连接 Hub"
+	if status.Error != "" {
+		msg += ": " + status.Error
+	}
+	return errors.New(msg)
 }
 
 func desktopdHealth(ctx context.Context, client *http.Client, base, token string) error {

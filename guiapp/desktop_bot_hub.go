@@ -526,12 +526,14 @@ func desktopBotSettingsBody(name, description, color, shape string) map[string]s
 }
 
 func (a *App) CreateDesktopBot(name, description, color, shape string) (*DesktopBotInfo, error) {
-	return a.CreateDesktopBotWithComputer(name, description, color, shape, true)
+	return a.createDesktopBot(name, description, color, shape, true, "", false)
 }
 
 // desktopBotCreateBody is the create payload. desktop is a bool, so it cannot
-// ride in the string map used for rename.
-func desktopBotCreateBody(name, description, color, shape string, needsComputer bool) map[string]any {
+// ride in the string map used for rename. nodeID is sent only when this bot
+// needs a computer and the dialog picked a server; empty then means the
+// cloud computer. A bot without a computer does not pick a server.
+func desktopBotCreateBody(name, description, color, shape string, needsComputer bool, nodeID string, chooseNode bool) map[string]any {
 	body := map[string]any{"name": name, "description": description, "desktop": needsComputer}
 	if c := strings.TrimSpace(color); c != "" {
 		body["color"] = c
@@ -539,19 +541,27 @@ func desktopBotCreateBody(name, description, color, shape string, needsComputer 
 	if sh := strings.TrimSpace(shape); sh != "" {
 		body["shape"] = sh
 	}
+	if chooseNode && needsComputer {
+		body["node_id"] = strings.TrimSpace(nodeID)
+	}
 	return body
 }
 
-// CreateDesktopBotWithComputer creates a bot that uses a computer when
-// needsComputer is true, and a no-computer bot when it is false.
-func (a *App) CreateDesktopBotWithComputer(name, description, color, shape string, needsComputer bool) (*DesktopBotInfo, error) {
+func (a *App) createDesktopBot(name, description, color, shape string, needsComputer bool, nodeID string, chooseNode bool) (*DesktopBotInfo, error) {
 	var bot hubBot
-	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots", desktopBotCreateBody(name, description, color, shape, needsComputer), &bot, 30*time.Second)
+	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots", desktopBotCreateBody(name, description, color, shape, needsComputer, nodeID, chooseNode), &bot, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	info := desktopBotInfo(bot)
 	return &info, nil
+}
+
+// CreateDesktopBotWithComputer creates a bot that uses a computer when
+// needsComputer is true, and a no-computer bot when it is false. nodeID
+// picks one of the caller's local servers. Empty is the cloud computer.
+func (a *App) CreateDesktopBotWithComputer(name, description, color, shape string, needsComputer bool, nodeID string) (*DesktopBotInfo, error) {
+	return a.createDesktopBot(name, description, color, shape, needsComputer, nodeID, true)
 }
 
 // RenameDesktopBot updates name/description and, when given, the badge look.
@@ -2065,6 +2075,32 @@ func desktopGatewayStatus(status int) bool {
 	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 }
 
+// desktopHubMissingRouteError is Hub's own router answering for a path this
+// binary does not serve. The body is the plain "404 page not found" text, not
+// a JSON error from an API that exists.
+type desktopHubMissingRouteError struct{}
+
+func (desktopHubMissingRouteError) Error() string { return "Hub 没有这个接口" }
+
+func desktopHubStatusError(status int, payload []byte) error {
+	var failure struct {
+		Message string `json:"message"`
+	}
+	jsonErr := json.Unmarshal(payload, &failure)
+	if msg := strings.TrimSpace(failure.Message); msg != "" {
+		return fmt.Errorf("%s", msg)
+	}
+	if jsonErr != nil && desktopGatewayStatus(status) {
+		// A proxy in front of Hub answered for it (a restarting Hub):
+		// Hub never wrote this body.
+		return desktopHubNotReachedError{}
+	}
+	if status == http.StatusNotFound {
+		return desktopHubMissingRouteError{}
+	}
+	return fmt.Errorf("MaClawSrv 不可达")
+}
+
 // desktopDialFailed: the connection itself failed (refused, no route, name
 // not resolved), so no byte of the request reached the server.
 func desktopDialFailed(err error) bool {
@@ -3533,19 +3569,7 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 		return 0, readErr
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var failure struct {
-			Message string `json:"message"`
-		}
-		jsonErr := json.Unmarshal(payload, &failure)
-		callErr := fmt.Errorf("MaClawSrv 不可达")
-		if jsonErr != nil && desktopGatewayStatus(resp.StatusCode) {
-			// A proxy in front of Hub answered for it (a restarting Hub):
-			// Hub never wrote this body.
-			callErr = desktopHubNotReachedError{}
-		}
-		if strings.TrimSpace(failure.Message) != "" {
-			callErr = fmt.Errorf("%s", strings.TrimSpace(failure.Message))
-		}
+		callErr := desktopHubStatusError(resp.StatusCode, payload)
 		// The failure body is still decoded into dest when it carries the
 		// per-turn key echo. Hub names the key it received even on a 502,
 		// and that echo is the only proof this Hub forwards the key to

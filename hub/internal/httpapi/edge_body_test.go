@@ -60,8 +60,32 @@ func TestEdgeBodyTenantRequiresItsOwnTenant(t *testing.T) {
 	req.ContentLength = int64(len(buried))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
+	if !edgeBodyTenantAllowed(rec, req, "tenant-a") {
+		t.Fatalf("large body status %d %s", rec.Code, rec.Body.String())
+	}
+	got, err := io.ReadAll(req.Body)
+	if err != nil || !bytes.Equal(got, buried) {
+		t.Fatalf("large body was not put back: %d %v", len(got), err)
+	}
+
+	conflict := append([]byte(`{"tenant_id":"tenant-a","blob":"`), bytes.Repeat([]byte("x"), 1<<20)...)
+	conflict = append(conflict, []byte(`","tenant_id":"other"}`)...)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/desktops/session?tenant_id=tenant-a", bytes.NewReader(conflict))
+	req.ContentLength = int64(len(conflict))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
 	if edgeBodyTenantAllowed(rec, req, "tenant-a") {
-		t.Fatal("tenant past the inspected prefix was accepted")
+		t.Fatal("a second tenant after a large field was accepted")
+	}
+
+	wrong := append([]byte(`{"blob":"`), bytes.Repeat([]byte("y"), 1<<20)...)
+	wrong = append(wrong, []byte(`","tenant_id":"other"}`)...)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/desktops/notify", bytes.NewReader(wrong))
+	req.ContentLength = int64(len(wrong))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	if edgeBodyTenantAllowed(rec, req, "tenant-a") {
+		t.Fatal("another tenant after a large field was accepted")
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/desktops/upload?tenant_id=tenant-a", bytes.NewReader([]byte("file-bytes")))

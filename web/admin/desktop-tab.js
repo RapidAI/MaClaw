@@ -527,12 +527,10 @@
 
   function validResources(body) {
     if (body.image && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}$/.test(body.image)) return false;
-    if (body.memory && !/^[1-9][0-9]{0,6}([kmg]i?b?)?$/i.test(body.memory)) return false;
-    if (body.shm_size && !/^[1-9][0-9]{0,6}([kmg]i?b?)?$/i.test(body.shm_size)) return false;
-    if (body.cpus) {
-      var cpus = Number(body.cpus);
-      if (!isFinite(cpus) || cpus <= 0 || cpus > 64) return false;
-    }
+    if (!/^[1-9][0-9]{0,6}[kmg]i?b?$/i.test(body.memory || '')) return false;
+    if (!/^[1-9][0-9]{0,6}[kmg]i?b?$/i.test(body.shm_size || '')) return false;
+    var cpus = Number(body.cpus);
+    if (!body.cpus || !isFinite(cpus) || cpus <= 0 || cpus > 64) return false;
     return true;
   }
 

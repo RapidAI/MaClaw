@@ -16,6 +16,27 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 )
 
+func TestCDPRelayKeepsTheGateTokenOffTheCaller(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	const gate = "gate-secret"
+	session := desktoppool.DesktopSession{
+		CDP:    "http://desktop:" + gate + "@desktopd.abc.node.invalid/v1/desktops/tunnel/userkey/cdp",
+		NodeID: "abc",
+	}
+	if got, err := cdpURLForSession(context.Background(), "tenant-a", "alice", session); err == nil || strings.Contains(got, gate) {
+		t.Fatalf("missing origin returned %q err %v", got, err)
+	}
+	ctx := context.WithValue(context.Background(), edgeOriginKey{}, "https://hub.example")
+	got := edgeRelayCDP(ctx, session.CDP)
+	if strings.Contains(got, gate) || strings.Contains(got, "@") || !strings.HasPrefix(got, "https://hub.example/api/v1/edge/desktop/abc/v1/desktops/tunnel/userkey/cdp") {
+		t.Fatalf("relay %s", got)
+	}
+	public := edgeRelayCDP(ctx, "http://desktop:"+gate+"@dockerd.example:19020")
+	if public != "http://desktop:"+gate+"@dockerd.example:19020" {
+		t.Fatalf("public cdp changed: %s", public)
+	}
+}
+
 func TestCDPTicketRelaysAnotherNodeAndRewritesTheDebuggerURL(t *testing.T) {
 	t.Setenv("HUB_EDGE_NODES", "on")
 	const gate = "gate-secret"

@@ -417,6 +417,7 @@ func NewRouter(
 	}
 	mux.HandleFunc("GET /api/admin/bots/settings", requireTenantAdmin(GetBotSettingsAdminHandler(botSvc)))
 	mux.HandleFunc("PUT /api/admin/bots/settings", requireTenantAdmin(PutBotSettingsAdminHandler(botSvc, adminAudit)))
+	mux.HandleFunc("PATCH /api/admin/bots/settings", requireTenantAdmin(PatchBotSettingsAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("PUT /api/admin/bots/llm", requireTenantAdmin(PutBotLLMSettingsAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("POST /api/admin/bots/llm/models", requireTenantAdmin(PostBotLLMModelsAdminHandler(botSvc)))
 	mux.HandleFunc("POST /api/admin/bots/llm/vision", requireTenantAdmin(PostBotLLMVisionAdminHandler(botSvc)))
@@ -450,6 +451,9 @@ func NewRouter(
 		mux.HandleFunc("POST /api/admin/bots/nodes/codes", requireTenantAdmin(PostEdgeCodeAdminHandler(edgeRegistry)))
 		mux.HandleFunc("POST /api/admin/bots/nodes/{id}/code", requireTenantAdmin(PostEdgeRotateCodeAdminHandler(edgeRegistry)))
 		mux.HandleFunc("POST /api/v1/edge/enroll", PostEdgeEnrollHandler(edgeRegistry, desktopPool, botSvc))
+		mux.HandleFunc("POST /api/v1/edge/capacity", PostEdgeCapacityHandler(desktopPool, edgeRegistry))
+		mux.HandleFunc("POST /api/v1/edge/resources", PostEdgeResourcesHandler(desktopPool, edgeRegistry))
+		mux.HandleFunc("POST /api/v1/edge/direct-base", PostEdgeDirectBaseHandler(edgeRegistry))
 		botSvc.NodeHTTP = func(nodeID string) *http.Client {
 			if edgeBroker == nil || edgeRegistry == nil {
 				return nil
@@ -538,7 +542,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/bots/{id}/cross", PostBotCrossHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/cross-notes/{noteID}/start", PostBotCrossStartHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/cross-notes/{noteID}/run", PostBotCrossRunHandler(botSvc, identity))
-	mux.HandleFunc("POST /api/v1/bots", PostBotUserHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots", PostBotUserHandler(botSvc, desktopPool, edgeRegistry, identity))
 	mux.HandleFunc("PATCH /api/v1/bots/{id}", PatchBotUserHandler(botSvc, identity))
 	mux.HandleFunc("PUT /api/v1/bots/{id}/appearance", PutBotAppearanceHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/assignments", BotAssignmentsHandler(botSvc, identity))
@@ -593,8 +597,11 @@ func NewRouter(
 	if edgenode.Enabled() {
 		mux.HandleFunc("GET /api/v1/bots/desktop-node", GetSelfDesktopNodesHandler(desktopPool, edgeRegistry, edgeBroker, identity))
 		mux.HandleFunc("POST /api/v1/bots/desktop-node/code", PostSelfDesktopCodeHandler(edgeRegistry, identity))
-		mux.HandleFunc("PUT /api/v1/bots/desktop-node/{server_id}/active", PutSelfDesktopActiveHandler(desktopPool, edgeRegistry, edgeBroker, identity))
-		mux.HandleFunc("DELETE /api/v1/bots/desktop-node/{server_id}", DeleteSelfDesktopNodeHandler(desktopPool, edgeRegistry, edgeBroker, identity))
+		mux.HandleFunc("PUT /api/v1/bots/desktop-node/cloud", PutCloudDesktopHandler(desktopPool, edgeRegistry, edgeBroker, botSvc, identity))
+		mux.HandleFunc("PUT /api/v1/bots/desktop-node/{server_id}/active", PutSelfDesktopActiveHandler(desktopPool, edgeRegistry, edgeBroker, botSvc, identity))
+		// Not under /api/v1/bots/{id}/...: that shape overlaps
+		// DELETE /api/v1/bots/{id}/preference and Go's mux panics at startup.
+		mux.HandleFunc("DELETE /api/v1/self-desktop-nodes/{server_id}", DeleteSelfDesktopNodeHandler(desktopPool, edgeRegistry, edgeBroker, identity))
 	}
 	var computerViews desktopViewForgetter
 	if botSvc != nil {
@@ -1582,5 +1589,6 @@ func NewRouter(
 	registerHomeStaticRoutes(mux, "./web/home", "/")
 	registerBotnodeDoc(mux)
 	registerSelfDesktopdDoc(mux)
+	registerHubInstallDoc(mux)
 	return mux
 }

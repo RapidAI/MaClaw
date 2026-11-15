@@ -24,6 +24,7 @@ import (
 // the same file-backed sources the forward proxy and the desktop service use.
 func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, egress *EgressSource) http.Handler {
 	token = strings.TrimSpace(token)
+	LoadPanelResources(stateDir)
 	admin := newAdminServer(svc, token, stateDir, adminPage, proxyKeys, egress)
 	// /v1/* accepts the primary DESKTOPD_TOKEN and every key issued through
 	// the admin panel.

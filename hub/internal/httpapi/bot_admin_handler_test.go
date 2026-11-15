@@ -152,6 +152,40 @@ func TestBotSettingsSaveIsAuditedWithoutSecrets(t *testing.T) {
 	}
 }
 
+func TestBotSettingsPatchSetsTheDefaultDesktopLimit(t *testing.T) {
+	mem := &botSettingsMem{}
+	svc := botmgmt.NewService(mem)
+	audit := &botAuditMem{}
+	patch := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, "/api/admin/bots/settings", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "admin-1", Scope: "tenant", TenantID: "tenant-a"}))
+		rec := httptest.NewRecorder()
+		PatchBotSettingsAdminHandler(svc, audit).ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := patch(`{"default_desktop_bot_limit":3}`); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"default_desktop_bot_limit":3`) {
+		t.Fatalf("set status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(mem.value, `"default_desktop_bot_limit":3`) {
+		t.Fatalf("stored record = %s", mem.value)
+	}
+	if rec := patch(`{"default_desktop_bot_limit":null}`); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "default_desktop_bot_limit") {
+		t.Fatalf("clear status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(mem.value, "default_desktop_bot_limit") {
+		t.Fatalf("stored record kept the field: %s", mem.value)
+	}
+	if rec := patch(`{}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing field status=%d", rec.Code)
+	}
+	if rec := patch(`{"default_desktop_bot_limit":-1}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative status=%d", rec.Code)
+	}
+	if len(audit.logs) != 2 || audit.logs[0].Action != "bot.settings.update" {
+		t.Fatalf("audit = %+v", audit.logs)
+	}
+}
+
 func TestBotLLMSettingsSaveIsAuditedWithoutTheKey(t *testing.T) {
 	svc := botmgmt.NewService(&botSettingsMem{})
 	audit := &botAuditMem{}

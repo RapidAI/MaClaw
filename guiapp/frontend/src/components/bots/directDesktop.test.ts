@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { desktopPictureURL, preferDirectDesktop } from './directDesktop';
+import { desktopPictureURL, directPictureGaveUp, preferDirectDesktop } from './directDesktop';
 
 function answer(ok: boolean, delay = 0): typeof fetch {
     return ((_url: string, init?: RequestInit) => new Promise((resolve, reject) => {
@@ -27,5 +27,14 @@ describe('preferDirectDesktop', () => {
     it('keeps the hub address when no direct picture was offered', async () => {
         const view = { novnc_url: '/api/v1/desktop-handoff/abc/vnc.html' };
         expect(await desktopPictureURL(view, answer(true))).toBe(view.novnc_url);
+    });
+
+    it('returns to the hub address after the player gives up', async () => {
+        const direct = 'http://10.1.0.9:18081/v1/desktops/viewer/ticket/vnc.html';
+        const hub = '/api/v1/desktop-handoff/abc/vnc.html';
+        const view = { novnc_url: hub, direct_url: direct };
+        expect(await desktopPictureURL(view, answer(true))).toBe(direct);
+        expect(directPictureGaveUp(direct)).toBe(hub);
+        expect(await desktopPictureURL(view, answer(true))).toBe(hub);
     });
 });

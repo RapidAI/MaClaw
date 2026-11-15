@@ -83,6 +83,32 @@ flutter build apk --debug     :: 或 flutter run
 
 已验证：`flutter analyze` 零告警；`flutter test` 全过；`flutter build apk --debug` 通过。
 
+## HarmonyOS NEXT（纯血鸿蒙）
+
+代码已做 ohos 平台适配（`lib/core/platform.dart`）：`Platform.operatingSystem
+== 'ohos'` 检测，自更新（无侧载，走 AppGallery）、语音输入/录音
+（`record`/`speech_to_text` 无 ohos 移植）在该平台自动隐藏，其余功能同源。
+
+出包流程（需要独立工具链，非本仓库 CI 范围）：
+
+```bat
+:: 1. 安装 OpenHarmony Flutter SDK（3.41 分支）+ DevEco Studio/HarmonyOS SDK
+git clone -b br_3.41 https://gitee.com/openharmony-sig/flutter_flutter.git
+
+:: 2. 用该 SDK 的 flutter 生成 ohos 工程壳（一次性，产出 ohos/ 目录）
+flutter create --platforms ohos .
+
+:: 3. 打开 pubspec.yaml 顶部「HarmonyOS NEXT」注释块中的 dependency_overrides
+::    （webview/mobile_scanner/存储等插件的 ohos 移植版），再 pub get
+
+:: 4. 构建 hap（arm64 真机）
+flutter build hap --release --target-platform ohos-arm64
+```
+
+分发与更新：HarmonyOS NEXT 无下载包装机通道——hap 需经 AppGallery
+Connect 签名上架；「检查更新」在 ohos 上自动隐藏，版本更新由应用市场承担。
+签名使用 AppGallery Connect 签发的 .p12 + .cer（与 Android keystore 不同体系）。
+
 ## 范围说明
 
 - 电脑画面的“操作”沿用 WebView 内 noVNC/h264 页面自身的触控→鼠标键盘

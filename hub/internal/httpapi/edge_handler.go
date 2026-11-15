@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/localrelay"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
@@ -183,6 +184,7 @@ func refreshRotatedDesktop(ctx context.Context, pool *desktoppool.Pool, tenantID
 			Name: server.Name, BaseURL: server.BaseURL, AccessToken: key,
 			Image: server.Image, Memory: server.Memory, CPUs: server.CPUs, ShmSize: server.ShmSize,
 			NodeID: server.NodeID, OwnerUserID: server.OwnerID, Intranet: server.Intranet,
+			ResourcesAuto: server.ResourcesAuto, ResourcesPinned: server.ResourcesPinned,
 		}, true)
 		return err
 	}
@@ -211,6 +213,8 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots 
 			HasSrv       bool   `json:"has_srv"`
 			AdvertiseURL string `json:"advertise_url"`
 			DirectBase   string `json:"direct_base"`
+			HostRAMBytes uint64 `json:"host_ram_bytes"`
+			HostCPUs     int    `json:"host_cpus"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid enrollment")
@@ -246,7 +250,7 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots 
 			case authErr != nil:
 				createErr = authErr
 			case node.OwnerUserID != "":
-				createErr = attachOwnedNode(r.Context(), pool, node, in.DesktopdKey)
+				createErr = attachOwnedNode(r.Context(), pool, node, in.DesktopdKey, in.HostRAMBytes, in.HostCPUs)
 			default:
 				_, createErr = pool.CreateServer(r.Context(), node.TenantID, desktoppool.Server{
 					Name:        node.Name,
@@ -257,7 +261,11 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots 
 			}
 			if createErr != nil {
 				_ = reg.Remove(r.Context(), out.NodeID)
-				writeError(w, http.StatusBadGateway, "EDGE_ENROLL", "desktop service was not recorded; issue a new code")
+				msg := "desktop service was not recorded; issue a new code"
+				if errors.Is(createErr, desktop.ErrHostTooSmall) {
+					msg = createErr.Error()
+				}
+				writeError(w, http.StatusBadGateway, "EDGE_ENROLL", msg)
 				return
 			}
 		}
@@ -304,5 +312,140 @@ func GetEdgeLinkHandler(reg *edgenode.Registry, broker *edgenode.Broker, bots *b
 			}()
 		}
 		_ = broker.Attach(r.Context(), node, localrelay.NewWSConn(ws))
+	}
+}
+
+// PostEdgeCapacityHandler POST /api/v1/edge/capacity
+// The node reports the machine it is running on. An installed desktop is
+// sized from that. A cloud desktop is left on the size set for it.
+func PostEdgeCapacityHandler(pool *desktoppool.Pool, reg *edgenode.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if reg == nil || pool == nil || !edgenode.Enabled() {
+			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "edge nodes are disabled")
+			return
+		}
+		nodeID := strings.TrimSpace(r.Header.Get("X-Node-Id"))
+		secret := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		node, err := reg.Authenticate(r.Context(), nodeID, strings.TrimSpace(secret))
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "EDGE_AUTH", "node secret is required")
+			return
+		}
+		var in struct {
+			RAMBytes uint64 `json:"ram_bytes"`
+			CPUs     int    `json:"cpus"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "EDGE_CAPACITY", "invalid host capacity")
+			return
+		}
+		if err := pool.FitNodeResources(r.Context(), node.TenantID, node.ID, in.RAMBytes, in.CPUs); err != nil {
+			if errors.Is(err, desktop.ErrHostTooSmall) {
+				writeError(w, http.StatusBadRequest, "EDGE_CAPACITY", err.Error())
+				return
+			}
+			writeError(w, http.StatusBadGateway, "EDGE_CAPACITY", "desktop size was not stored")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// PostEdgeResourcesHandler POST /api/v1/edge/resources
+// An operator typed a desktop size on this machine. It replaces the size
+// chosen at install, and later measurements leave it in place.
+func PostEdgeResourcesHandler(pool *desktoppool.Pool, reg *edgenode.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if reg == nil || pool == nil || !edgenode.Enabled() {
+			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "edge nodes are disabled")
+			return
+		}
+		nodeID := strings.TrimSpace(r.Header.Get("X-Node-Id"))
+		secret := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		node, err := reg.Authenticate(r.Context(), nodeID, strings.TrimSpace(secret))
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "EDGE_AUTH", "node secret is required")
+			return
+		}
+		var in struct {
+			Memory      string `json:"memory"`
+			CPUs        string `json:"cpus"`
+			ShmSize     string `json:"shm_size"`
+			RestoreAuto bool   `json:"restore_auto"`
+			RAMBytes    uint64 `json:"ram_bytes"`
+			HostCPUs    int    `json:"host_cpus"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "EDGE_RESOURCES", "invalid desktop size")
+			return
+		}
+		if in.RestoreAuto {
+			if in.RAMBytes > 0 {
+				if _, err := desktop.FitHostResources(in.RAMBytes, in.HostCPUs); err != nil {
+					if errors.Is(err, desktop.ErrHostTooSmall) {
+						writeError(w, http.StatusBadRequest, "EDGE_RESOURCES", err.Error())
+						return
+					}
+					writeError(w, http.StatusBadGateway, "EDGE_RESOURCES", "desktop size was not stored")
+					return
+				}
+			}
+			if err := pool.AllowNodeRefit(r.Context(), node.TenantID, node.ID); err != nil {
+				writeError(w, http.StatusBadGateway, "EDGE_RESOURCES", "desktop size was not stored")
+				return
+			}
+			if in.RAMBytes > 0 {
+				if err := pool.FitNodeResources(r.Context(), node.TenantID, node.ID, in.RAMBytes, in.HostCPUs); err != nil {
+					writeError(w, http.StatusBadGateway, "EDGE_RESOURCES", "desktop size was not stored")
+					return
+				}
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if err := pool.SetNodeResources(r.Context(), node.TenantID, node.ID, in.Memory, in.CPUs, in.ShmSize); err != nil {
+			if errors.Is(err, desktoppool.ErrDesktopNotRecorded) {
+				writeError(w, http.StatusConflict, "EDGE_RESOURCES", "desktop was not recorded")
+				return
+			}
+			if errors.Is(err, desktop.ErrInvalid) {
+				writeError(w, http.StatusBadRequest, "EDGE_RESOURCES", "desktop size is invalid")
+				return
+			}
+			writeError(w, http.StatusBadGateway, "EDGE_RESOURCES", "desktop size was not stored")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// PostEdgeDirectBaseHandler POST /api/v1/edge/direct-base
+// The node replaces the intranet address a GUI probes. An empty address
+// clears it. This does not issue a new node secret.
+func PostEdgeDirectBaseHandler(reg *edgenode.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if reg == nil || !edgenode.Enabled() {
+			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "edge nodes are disabled")
+			return
+		}
+		nodeID := strings.TrimSpace(r.Header.Get("X-Node-Id"))
+		secret := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		node, err := reg.Authenticate(r.Context(), nodeID, strings.TrimSpace(secret))
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "EDGE_AUTH", "node secret is required")
+			return
+		}
+		var in struct {
+			DirectBase string `json:"direct_base"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "EDGE_DIRECT", "direct base must be an http url")
+			return
+		}
+		if err := reg.SetDirectBase(r.Context(), node.ID, in.DirectBase); err != nil {
+			writeError(w, http.StatusBadRequest, "EDGE_DIRECT", "direct base must be an http url")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }

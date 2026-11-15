@@ -766,6 +766,44 @@ maclaw.top maclawsrv `/proc/<pid>/exe` 复核为 `392e4f74…`。备份：maclaw
 
 教训一并记下：中转用的本地暂存目录（`/tmp/relay`）会被收尾清理掉，下轮再用时先 `mkdir -p`，否则 pscp 报 `Cannot create file`（本次踩中，重试即恢复）。
 
+#### 12645（2026-11-16 03:45 CST，自动巡检轮）
+
+HEAD `dc1ec0f7`，`build_number` 12645。上游 origin/main 已对齐本地 HEAD。
+
+动手前线上局面：
+- `maclaw-hub`：两台同哈希 `0cde8333efee...`，重编比对发现本地编译产物哈希与其完全一致，说明源码无变化，**不重复发布**。
+- `maclawsrv`：mypapers 线上为 `06ae73733d60...`（12641），maclaw.top 为 `392e4f74020c...`（12641），均落后于当前 12645。
+- `desktopd`：两台线上同为 `8e37acdeef21...`，落后于当前构建。
+
+本轮动作：
+- 重编生成新版二进制：`desktopd` (`fa4b914ff366...`)、`maclawsrv` (`2273de87f6f7...`)。
+- `desktopd` 与 `maclawsrv` 发布至 mypapers 和 maclaw.top 两台服务器。
+- 服务重启与验证：
+  - `/version` 两台均返回：`{"built_at":"2026-11-16T03:41:11+08:00","commit":"dc1ec0f7-dirty","version":"12645"}`
+  - `/v1/health` 均返回 200 `{"ok":true}`
+  - hub 9399 `/api/mobile/bootstrap` 均返回 401（正常鉴权响应）
+  - 容器状态与端口均正常。
+- 备份文件名：`*.bak-12645-dc1ec0f7-20261116`。
+
+#### 12645·双机对齐新版工件（2026-11-16 06:42 CST，自动巡检轮）
+
+HEAD 维持 `dc1ec0f7`，`build_number` 12645。
+
+巡检发现对面流水线在 06:30-06:31 向 mypapers 发布了新的干净树构建产物：
+- `maclawsrv`：`11fec0b26380...`，版本信息 `{"built_at":"2026-11-16T06:29:45+08:00","commit":"dc1ec0f7","version":"12645"}`（干净树构建，无 dirty 后缀）
+- `maclaw-hub`：`922c9d58c9fd...`（本地根据 HEAD 重编比对完全一致）
+- `desktopd`：两台均保持之前的 `fa4b914ff366...`，未改动
+
+本轮动作：
+- 按照规则，不覆盖 mypapers 上对面刚发布的工件。
+- 将 mypapers 上的最新 `maclawsrv` 与 `maclaw-hub` 经由本地中转推送到 maclaw.top，拉平双机差异。
+- maclaw.top 替换重启并验证：
+  - `/version`：返回 `{"built_at":"2026-11-16T06:29:45+08:00","commit":"dc1ec0f7","version":"12645"}`，与 mypapers 彻底对齐
+  - `/v1/health`：返回 200 `{"ok":true}`
+  - hub 9399 `/api/mobile/bootstrap`：返回 401（鉴权响应正常）
+- `/proc/<pid>/exe` 哈希核对：两台服务器全部三个组件（maclawsrv `11fec0b26380...`、desktopd `fa4b914ff366...`、maclaw-hub `922c9d58c9fd...`）完全一致。
+- 备份文件名：maclaw.top 存为 `*.bak-sync-20261116`。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为

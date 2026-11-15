@@ -300,6 +300,10 @@ func PatchDesktopServiceAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
 			return
 		}
+		if strings.TrimSpace(in.Memory) == "" || strings.TrimSpace(in.CPUs) == "" || strings.TrimSpace(in.ShmSize) == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "memory, cpus, and shm_size are required")
+			return
+		}
 		token := ""
 		if in.AccessToken != nil {
 			token = *in.AccessToken
@@ -502,7 +506,9 @@ func authorizeDesktopAPI(w http.ResponseWriter, r *http.Request) bool {
 
 // edgeBodyTenantAllowed rejects a node token whose tenant_id names another
 // tenant. The query is checked too, because uploads put tenant_id there.
-// A body larger than 1MB is put back in full; only a prefix is inspected.
+// A JSON body larger than 1MB is read up to the notify limit and every
+// tenant field in it must name this node. The handler still receives the
+// whole body.
 func edgeBodyTenantAllowed(w http.ResponseWriter, r *http.Request, tenant string) bool {
 	queryTenant := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	if queryTenant != "" && edgeTenantMismatch(queryTenant, tenant) {
@@ -523,9 +529,27 @@ func edgeBodyTenantAllowed(w http.ResponseWriter, r *http.Request, tenant string
 		return false
 	}
 	if len(raw) > max {
-		orig := r.Body
-		r.Body = stitchBody{Reader: io.MultiReader(bytes.NewReader(raw), orig), Closer: orig}
-		if !edgeLargeBodyTenantOK(r, raw, queryTenant, tenant) {
+		// Notify carries a few files and is the largest JSON a node posts.
+		const ceiling = 36 << 20
+		rest, readErr := io.ReadAll(io.LimitReader(r.Body, int64(ceiling-max)+1))
+		closer := r.Body
+		if readErr != nil {
+			_ = closer.Close()
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return false
+		}
+		if len(raw)+len(rest) > ceiling {
+			_ = closer.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "EDGE_TENANT", "this node cannot act for that tenant")
+			return false
+		}
+		_ = closer.Close()
+		full := make([]byte, 0, len(raw)+len(rest))
+		full = append(full, raw...)
+		full = append(full, rest...)
+		r.Body = io.NopCloser(bytes.NewReader(full))
+		r.ContentLength = int64(len(full))
+		if !edgeLargeBodyTenantOK(r, full, queryTenant, tenant) {
 			writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
 			return false
 		}
@@ -548,19 +572,25 @@ func edgeBodyTenantAllowed(w http.ResponseWriter, r *http.Request, tenant string
 	return true
 }
 
-// edgeLargeBodyTenantOK checks a body that was too big to unmarshal. JSON
-// must name this tenant in the first 8KB. Anything else must already have
-// named it in the query.
+// edgeLargeBodyTenantOK checks a body that was too big to unmarshal. Every
+// tenant_id and tenant value must name this node. A file sitting in front
+// of the tenant is still checked. A non-JSON upload keeps using the query.
 func edgeLargeBodyTenantOK(r *http.Request, raw []byte, queryTenant, tenant string) bool {
 	if !edgeBodyIsJSON(r, raw) {
 		return queryTenant != ""
 	}
-	head := raw
-	if len(head) > 8192 {
-		head = head[:8192]
+	found := false
+	for _, id := range append(jsonStringFields(raw, "tenant_id"), jsonStringFields(raw, "tenant")...) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		found = true
+		if edgeTenantMismatch(id, tenant) {
+			return false
+		}
 	}
-	id, ok := edgeJSONTenant(head)
-	return ok && id != "" && !edgeTenantMismatch(id, tenant)
+	return found
 }
 
 // edgeJSONTenant reads the tenant a desktop call names. Session and file
@@ -604,12 +634,6 @@ func edgeBodyIsJSON(r *http.Request, raw []byte) bool {
 	return bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{"))
 }
 
-// stitchBody keeps the unread tail of a request and still closes it.
-type stitchBody struct {
-	io.Reader
-	io.Closer
-}
-
 func edgeTenantMismatch(got, want string) bool {
 	got = strings.TrimSpace(got)
 	if got == "" {
@@ -619,29 +643,41 @@ func edgeTenantMismatch(got, want string) bool {
 }
 
 func jsonStringField(raw []byte, key string) string {
+	fields := jsonStringFields(raw, key)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func jsonStringFields(raw []byte, key string) []string {
 	needle := []byte(`"` + key + `"`)
+	var out []string
 	for len(raw) > 0 {
 		i := bytes.Index(raw, needle)
 		if i < 0 {
-			return ""
+			return out
 		}
 		rest := raw[i+len(needle):]
 		trimmed := bytes.TrimLeft(rest, " \t\r\n")
-		if len(trimmed) > 0 && trimmed[0] == ':' {
-			trimmed = bytes.TrimLeft(trimmed[1:], " \t\r\n")
-			if len(trimmed) == 0 || trimmed[0] != '"' {
-				return ""
-			}
-			trimmed = trimmed[1:]
-			end := bytes.IndexByte(trimmed, '"')
-			if end < 0 {
-				return ""
-			}
-			return string(trimmed[:end])
+		if len(trimmed) == 0 || trimmed[0] != ':' {
+			raw = rest
+			continue
 		}
-		raw = rest
+		trimmed = bytes.TrimLeft(trimmed[1:], " \t\r\n")
+		if len(trimmed) == 0 || trimmed[0] != '"' {
+			raw = rest
+			continue
+		}
+		trimmed = trimmed[1:]
+		end := bytes.IndexByte(trimmed, '"')
+		if end < 0 {
+			return out
+		}
+		out = append(out, string(trimmed[:end]))
+		raw = trimmed[end+1:]
 	}
-	return ""
+	return out
 }
 
 // PostDesktopSessionHandler is called by MaClawSrv. It resolves the user's

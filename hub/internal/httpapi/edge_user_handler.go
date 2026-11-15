@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 )
@@ -31,6 +32,8 @@ type selfDesktopNode struct {
 	Online      bool   `json:"online"`
 	Active      bool   `json:"active"`
 	AccessToken string `json:"access_token,omitempty"`
+	Memory      string `json:"memory,omitempty"`
+	CPUs        string `json:"cpus,omitempty"`
 }
 
 type selfDesktopView struct {
@@ -52,6 +55,8 @@ func selfDesktopList(ctx context.Context, pool *desktoppool.Pool, broker *edgeno
 			Online:      broker.Online(server.NodeID),
 			Active:      server.ID == active,
 			AccessToken: server.AccessToken,
+			Memory:      server.Memory,
+			CPUs:        server.CPUs,
 		})
 	}
 	return view, nil
@@ -111,7 +116,7 @@ func PostSelfDesktopCodeHandler(reg *edgenode.Registry, identity botAuthenticato
 }
 
 // PutSelfDesktopActiveHandler PUT /api/v1/bots/desktop-node/{server_id}/active
-func PutSelfDesktopActiveHandler(pool *desktoppool.Pool, reg *edgenode.Registry, broker *edgenode.Broker, identity botAuthenticator) http.HandlerFunc {
+func PutSelfDesktopActiveHandler(pool *desktoppool.Pool, reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok {
@@ -130,6 +135,7 @@ func PutSelfDesktopActiveHandler(pool *desktoppool.Pool, reg *edgenode.Registry,
 		if before != serverID {
 			pool.StopUserOnLater(principal.TenantID, before, principal.UserID)
 		}
+		pinDesktopChoice(r.Context(), bots, reg, principal.TenantID, principal.UserID, ownedNodeID(r.Context(), pool, principal.TenantID, principal.UserID, serverID))
 		view, err := selfDesktopList(r.Context(), pool, broker, principal.TenantID, principal.UserID)
 		if err != nil {
 			writeDesktopError(w, err)
@@ -139,7 +145,75 @@ func PutSelfDesktopActiveHandler(pool *desktoppool.Pool, reg *edgenode.Registry,
 	}
 }
 
-// DeleteSelfDesktopNodeHandler DELETE /api/v1/bots/desktop-node/{server_id}
+// PutCloudDesktopHandler PUT /api/v1/bots/desktop-node/cloud
+// leaves the caller's own desktopd registered and points their desktop at
+// the computer they used before it.
+func PutCloudDesktopHandler(pool *desktoppool.Pool, reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok {
+			return
+		}
+		if pool == nil || reg == nil || !edgeSelfDesktopEnabled() {
+			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "desktop registration is disabled on this hub")
+			return
+		}
+		left, err := pool.ReleaseOwnedDesktop(r.Context(), principal.TenantID, principal.UserID)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		if left != "" {
+			pool.StopUserOnLater(principal.TenantID, left, principal.UserID)
+		}
+		pinDesktopChoice(r.Context(), bots, reg, principal.TenantID, principal.UserID, "")
+		view, err := selfDesktopList(r.Context(), pool, broker, principal.TenantID, principal.UserID)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
+	}
+}
+
+// ownedNodeID is the node behind one of this user's own desktop services.
+func ownedNodeID(ctx context.Context, pool *desktoppool.Pool, tenantID, userID, serverID string) string {
+	if pool == nil {
+		return ""
+	}
+	servers, _, err := pool.OwnedServers(ctx, tenantID, userID)
+	if err != nil {
+		return ""
+	}
+	for _, server := range servers {
+		if server.ID == serverID {
+			return server.NodeID
+		}
+	}
+	return ""
+}
+
+// pinDesktopChoice sends new bots to the node srv when that node has one,
+// and back to the public connection when the desktop is the cloud computer
+// or a desktopd without srv.
+func pinDesktopChoice(ctx context.Context, bots *botmgmt.Service, reg *edgenode.Registry, tenantID, userID, nodeID string) {
+	if bots == nil {
+		return
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID != "" && reg != nil {
+		if node, err := reg.Lookup(ctx, nodeID); err == nil && node.HasSrv && !edgeTenantMismatch(node.TenantID, tenantID) {
+			if pinErr := bots.PinOwnerNode(ctx, tenantID, userID, nodeID); pinErr == nil {
+				return
+			}
+		}
+	}
+	// The new desktop cannot host bots. Drop the previous pin so new bots
+	// do not keep running on the machine the user just left.
+	_ = bots.PinOwnerNode(ctx, tenantID, userID, "")
+}
+
+// DeleteSelfDesktopNodeHandler DELETE /api/v1/self-desktop-nodes/{server_id}
 func DeleteSelfDesktopNodeHandler(pool *desktoppool.Pool, reg *edgenode.Registry, broker *edgenode.Broker, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
@@ -184,14 +258,20 @@ func retireEdgeNodes(ctx context.Context, reg *edgenode.Registry, broker *edgeno
 // attachOwnedNode records an enrolled personal node as one more desktop of
 // its owner and makes it the active one. The owner's desktop on the service
 // they used before is stopped in the background, as an assignment move does.
-func attachOwnedNode(ctx context.Context, pool *desktoppool.Pool, node edgenode.Node, key string) error {
+// ramBytes and logicalCPUs size that desktop from the machine it was
+// installed on. Zero keeps the standard size.
+func attachOwnedNode(ctx context.Context, pool *desktoppool.Pool, node edgenode.Node, key string, ramBytes uint64, logicalCPUs int) error {
 	before := pool.ResolvedServerID(ctx, node.TenantID, node.OwnerUserID)
-	view, err := pool.AttachOwnedServer(ctx, node.TenantID, node.OwnerUserID, desktoppool.Server{
+	server, err := desktoppool.PrepareOwnedResources(desktoppool.Server{
 		Name:        node.Name,
 		BaseURL:     desktoppool.NodeBaseURL(node.ID),
 		AccessToken: strings.TrimSpace(key),
 		NodeID:      node.ID,
-	})
+	}, ramBytes, logicalCPUs)
+	if err != nil {
+		return err
+	}
+	view, err := pool.AttachOwnedServer(ctx, node.TenantID, node.OwnerUserID, server)
 	if err != nil {
 		return err
 	}

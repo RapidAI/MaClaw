@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+
+import '../../core/platform.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -377,7 +379,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             canSupplement: state.activeRunId != null,
             onAttach: _uploadProgress == null ? _attach : null,
             listening: _listening,
-            onMic: _toggleListening,
+            onMic: supportsVoiceInput ? _toggleListening : null,
             onSend: () {
               final text = _inputCtrl.text;
               if (text.trim().isEmpty) return;
@@ -882,7 +884,7 @@ class _Composer extends StatelessWidget {
   final bool canSupplement;
   final VoidCallback? onAttach;
   final bool listening;
-  final VoidCallback onMic;
+  final VoidCallback? onMic;
   final VoidCallback onSend;
   final VoidCallback onSupplement;
   final VoidCallback onCancel;
@@ -940,15 +942,16 @@ class _Composer extends StatelessWidget {
                         ),
                       ),
                     ),
-                    IconButton(
-                      onPressed: onMic,
-                      visualDensity: VisualDensity.compact,
-                      icon: Icon(
-                        listening ? Icons.mic : Icons.mic_none,
-                        color: listening ? scheme.error : null,
+                    if (onMic != null)
+                      IconButton(
+                        onPressed: onMic,
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(
+                          listening ? Icons.mic : Icons.mic_none,
+                          color: listening ? scheme.error : null,
+                        ),
+                        tooltip: listening ? '停止语音输入' : '语音输入',
                       ),
-                      tooltip: listening ? '停止语音输入' : '语音输入',
-                    ),
                   ],
                 ),
               ),

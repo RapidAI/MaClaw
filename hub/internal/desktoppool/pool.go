@@ -161,6 +161,11 @@ type Server struct {
 	// settings. It lives on their network: Hub reaches it through the node
 	// tunnel, and the desktop's own traffic leaves from that machine.
 	Intranet bool `json:"intranet,omitempty"`
+	// ResourcesAuto means memory, CPU, and shared memory were chosen from
+	// the machine at install. A later report from that machine may replace
+	// them. ResourcesPinned means an operator set the size; reports leave it.
+	ResourcesAuto   bool `json:"resources_auto,omitempty"`
+	ResourcesPinned bool `json:"resources_pinned,omitempty"`
 	// PrevServerID is the server that user was assigned to before
 	// registering; unregistering puts that assignment back.
 	PrevServerID string `json:"prev_server_id,omitempty"`
@@ -171,17 +176,19 @@ type Server struct {
 
 // ServerView hides the access token.
 type ServerView struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	BaseURL  string `json:"base_url"`
-	TokenSet bool   `json:"token_set"`
-	Image    string `json:"image"`
-	Memory   string `json:"memory"`
-	CPUs     string `json:"cpus"`
-	ShmSize  string `json:"shm_size"`
-	NodeID   string `json:"node_id,omitempty"`
-	OwnerID  string `json:"owner_user_id,omitempty"`
-	Intranet bool   `json:"intranet,omitempty"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	BaseURL         string `json:"base_url"`
+	TokenSet        bool   `json:"token_set"`
+	Image           string `json:"image"`
+	Memory          string `json:"memory"`
+	CPUs            string `json:"cpus"`
+	ShmSize         string `json:"shm_size"`
+	NodeID          string `json:"node_id,omitempty"`
+	OwnerID         string `json:"owner_user_id,omitempty"`
+	Intranet        bool   `json:"intranet,omitempty"`
+	ResourcesAuto   bool   `json:"resources_auto,omitempty"`
+	ResourcesPinned bool   `json:"resources_pinned,omitempty"`
 }
 
 // Assignment binds global users, one department, or one user to a server.
@@ -403,6 +410,20 @@ func (p *Pool) UpdateServer(ctx context.Context, tenantID, serverID string, in S
 		return ServerView{}, err
 	}
 	server.ID = current.ID
+	// A token refresh copies the size and must not forget whether it was
+	// measured or typed. Compare the normalized sizes, so "4G" and "4g" are
+	// the same size. A size the operator actually changed is kept as typed.
+	sameSize := server.Memory == current.Memory && server.CPUs == current.CPUs && server.ShmSize == current.ShmSize
+	if currentSize, normErr := desktop.NormalizeResources("", current.Memory, current.CPUs, current.ShmSize); normErr == nil {
+		sameSize = server.Memory == currentSize.Memory && server.CPUs == currentSize.CPUs && server.ShmSize == currentSize.ShmSize
+	}
+	if sameSize {
+		server.ResourcesAuto = current.ResourcesAuto
+		server.ResourcesPinned = current.ResourcesPinned
+	} else {
+		server.ResourcesAuto = false
+		server.ResourcesPinned = true
+	}
 	if strings.TrimSpace(server.AccessToken) == "" {
 		return ServerView{}, fmt.Errorf("%w: access token is required", ErrInvalidInput)
 	}
@@ -1527,6 +1548,7 @@ func serverView(server Server) ServerView {
 		TokenSet: strings.TrimSpace(server.AccessToken) != "",
 		Image:    server.Image, Memory: server.Memory, CPUs: server.CPUs, ShmSize: server.ShmSize,
 		NodeID: server.NodeID, OwnerID: server.OwnerUserID, Intranet: serverIntranet(server),
+		ResourcesAuto: server.ResourcesAuto, ResourcesPinned: server.ResourcesPinned,
 	}
 }
 

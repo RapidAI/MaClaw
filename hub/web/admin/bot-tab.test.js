@@ -851,9 +851,9 @@ async function testDesktopQuotaColumnAndGrantLimit() {
   const grants = harness.elements.botGrants._html;
   assertIncludes(grants, 'data-grant-limit="g-alice"', 'a user grant has a desktop-bot limit field');
   assertIncludes(grants, 'value="1"', 'the saved cap is shown');
-  assertIncludes(grants, '\u4e0d\u9650', 'an empty cap means unlimited');
+  assertIncludes(grants, '\u8ddf\u968f\u4e0a\u7ea7', 'an empty cap inherits the next level');
   assertIncludes(grants, '\u7535\u8111\u6570', 'the row uses a short label so the name still fits');
-  assertIncludes(grants, 'title="\u53ef\u7528\u7535\u8111\u7684 bot \u6570"', 'the full phrase stays on the field');
+  assertIncludes(grants, 'title="\u9650\u989d\u6309 \u7528\u6237 \u2192 \u90e8\u95e8 \u2192 \u5168\u5c40 \u2192 \u9ed8\u8ba4 \u9010\u7ea7\u751f\u6548\uff0c\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u4e0a\u4e00\u7ea7"', 'the cascade phrase stays on the field');
   assert(harness.elements.botGlobalLimitRow.hidden === false, 'the everyone grant also has a cap');
   assert(harness.elements.botOrgPane.hidden === true, 'the picker stays hidden while everyone is enabled');
   assert(harness.elements.botAccessBody.hidden !== true, 'existing caps stay visible while everyone is enabled');

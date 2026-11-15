@@ -2628,7 +2628,7 @@ export function ArmDesktopBotCrossRun(arg1:string,arg2:string):Promise<void>;
 
 export function CreateDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string}>;
 
-export function CreateDesktopBotWithComputer(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string}>;
+export function CreateDesktopBotWithComputer(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string}>;
 
 export function RenameDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
 
@@ -2650,7 +2650,7 @@ export function GetDesktopBotCredits():Promise<{ applies: boolean; unlimited: bo
 
 export function GetDesktopComputer():Promise<{ restart_allowed: boolean; reset_allowed: boolean; active_runs: number; intranet?: boolean }>;
 
-export function ListDesktopNodes():Promise<{ enabled: boolean; hub_error?: string; nodes: Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; message?: string; node_id?: string; desktopd_url?: string; with_srv?: boolean; srv_token_set?: boolean; last_kind?: string; last_result?: string; last_at?: string; registered: boolean; online: boolean; active: boolean }> }>;
+export function ListDesktopNodes():Promise<{ enabled: boolean; hub_error?: string; nodes: Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; message?: string; node_id?: string; desktopd_url?: string; with_srv?: boolean; srv_token_set?: boolean; last_kind?: string; last_result?: string; last_at?: string; registered: boolean; online: boolean; active: boolean; memory?: string; cpus?: string }> }>;
 
 export function ListLocalDesktopJobs():Promise<Array<{ id: string; title: string; status: string; started_at: string }>>;
 
@@ -2658,11 +2658,21 @@ export function UpgradeDesktopNode(arg1:string, arg2:string):Promise<{ id: strin
 
 export function DeployDesktopNode(arg1:{ name?: string; host: string; port?: number; user: string; password: string; with_srv?: boolean }):Promise<{ id: string; status: string; message?: string }>;
 
+export function DeployHub(arg1:{ host: string; port?: number; user: string; password: string; email: string }):Promise<{ id: string; host: string; port: number; user: string; email: string; public_url: string; admin_user: string; admin_password?: string; hub_id?: string; pending?: boolean; status: string; message?: string }>;
+
+export function ListHubDeploys():Promise<Array<{ id: string; host: string; port: number; user: string; email: string; public_url: string; admin_user: string; admin_password?: string; hub_id?: string; pending?: boolean; status: string; message?: string }>>;
+
+export function ClearHubDeployResult(arg1:string):Promise<void>;
+
 export function ConfigureDesktopNodeToken(arg1:string, arg2:string):Promise<{ id: string; status: string; message?: string; with_srv?: boolean; srv_token_set?: boolean }>;
 
 export function RedeployDesktopNode(arg1:string, arg2:string, arg3:boolean):Promise<{ id: string; status: string; message?: string; with_srv?: boolean }>;
 
 export function ClearDesktopNodeResult(arg1:string):Promise<void>;
+
+export function ActivateDesktopNode(arg1:string):Promise<void>;
+
+export function UseCloudDesktop():Promise<void>;
 
 export function RestartDesktopComputer(arg1:boolean):Promise<{ ok: boolean; busy: boolean; action?: string; status?: string; backup?: string; message?: string }>;
 

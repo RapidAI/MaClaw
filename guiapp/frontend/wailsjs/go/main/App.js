@@ -5270,8 +5270,8 @@ export function CreateDesktopBot(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateDesktopBot'](arg1, arg2, arg3, arg4);
 }
 
-export function CreateDesktopBotWithComputer(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['CreateDesktopBotWithComputer'](arg1, arg2, arg3, arg4, arg5);
+export function CreateDesktopBotWithComputer(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['CreateDesktopBotWithComputer'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function RenameDesktopBot(arg1, arg2, arg3, arg4, arg5) {
@@ -5330,6 +5330,18 @@ export function DeployDesktopNode(arg1) {
   return window['go']['main']['App']['DeployDesktopNode'](arg1);
 }
 
+export function DeployHub(arg1) {
+  return window['go']['main']['App']['DeployHub'](arg1);
+}
+
+export function ListHubDeploys() {
+  return window['go']['main']['App']['ListHubDeploys']();
+}
+
+export function ClearHubDeployResult(arg1) {
+  return window['go']['main']['App']['ClearHubDeployResult'](arg1);
+}
+
 export function ConfigureDesktopNodeToken(arg1, arg2) {
   return window['go']['main']['App']['ConfigureDesktopNodeToken'](arg1, arg2);
 }
@@ -5340,6 +5352,14 @@ export function RedeployDesktopNode(arg1, arg2, arg3) {
 
 export function ClearDesktopNodeResult(arg1) {
   return window['go']['main']['App']['ClearDesktopNodeResult'](arg1);
+}
+
+export function ActivateDesktopNode(arg1) {
+  return window['go']['main']['App']['ActivateDesktopNode'](arg1);
+}
+
+export function UseCloudDesktop() {
+  return window['go']['main']['App']['UseCloudDesktop']();
 }
 
 export function RestartDesktopComputer(arg1) {

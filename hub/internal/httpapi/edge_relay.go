@@ -65,17 +65,18 @@ func edgeRelayCDP(ctx context.Context, raw string) string {
 	}
 	origin, _ := ctx.Value(edgeOriginKey{}).(string)
 	if origin == "" {
-		return raw
+		return ""
 	}
 	base, err := url.Parse(origin)
 	if err != nil || base.Host == "" {
-		return raw
+		return ""
 	}
 	tail := parsed.EscapedPath()
 	if !strings.HasPrefix(tail, edgeTunnelPath) {
-		return raw
+		return ""
 	}
 	out := *parsed
+	out.User = nil
 	out.Scheme = base.Scheme
 	out.Host = base.Host
 	rawPath := strings.TrimRight(base.EscapedPath(), "/") + edgeDesktopRelayPrefix + nodeID + tail

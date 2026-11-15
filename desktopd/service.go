@@ -1317,6 +1317,11 @@ func normalize(spec Spec) (Spec, error) {
 	if !desktop.ValidUserID(spec.UserID) {
 		return Spec{}, fmt.Errorf("%w: %s", ErrInvalid, desktopbot.MissingIdentityNextStep("user"))
 	}
+	if choice := panelResourceChoice(); choice != nil {
+		spec.Memory = choice.Memory
+		spec.CPUs = choice.CPUs
+		spec.ShmSize = choice.ShmSize
+	}
 	resources, err := desktop.NormalizeResources(spec.Image, spec.Memory, spec.CPUs, spec.ShmSize)
 	if err != nil {
 		return Spec{}, err

@@ -15,15 +15,16 @@ type DesktopQuota struct {
 	Used  int  `json:"used"`
 }
 
-// desktopBotLimit is the limit on the most specific grant that covers the
-// user: user, then department from nearest to root, then global. A matching
-// grant with a nil limit is unlimited. No matching grant is also unlimited;
-// access itself is decided elsewhere.
-func desktopBotLimit(grants []Grant, userID string, departments []string) *int {
+// desktopBotLimit resolves the user's effective cap as a cascade: the user
+// grant first, then department grants from nearest to root, then the global
+// grant, then the tenant default. A blank (nil) limit inherits the next
+// level; every level blank is unlimited. No covering grant is also
+// unlimited — access itself is decided elsewhere.
+func desktopBotLimit(grants []Grant, defaultLimit *int, userID string, departments []string) *int {
 	userID = strings.TrimSpace(userID)
 	if userID != "" {
 		for _, item := range grants {
-			if item.Scope == ScopeUser && strings.TrimSpace(item.TargetID) == userID {
+			if item.Scope == ScopeUser && strings.TrimSpace(item.TargetID) == userID && item.DesktopBotLimit != nil {
 				return item.DesktopBotLimit
 			}
 		}
@@ -34,17 +35,17 @@ func desktopBotLimit(grants []Grant, userID string, departments []string) *int {
 			continue
 		}
 		for _, item := range grants {
-			if item.Scope == ScopeDepartment && strings.TrimSpace(item.TargetID) == groupID {
+			if item.Scope == ScopeDepartment && strings.TrimSpace(item.TargetID) == groupID && item.DesktopBotLimit != nil {
 				return item.DesktopBotLimit
 			}
 		}
 	}
 	for _, item := range grants {
-		if item.Scope == ScopeGlobal {
+		if item.Scope == ScopeGlobal && item.DesktopBotLimit != nil {
 			return item.DesktopBotLimit
 		}
 	}
-	return nil
+	return defaultLimit
 }
 
 func countDesktopBots(bots []Bot, userID string) int {
@@ -71,7 +72,7 @@ func desktopQuotaAllows(rec record, ownerUserID string, departments []string) er
 	if ownerUserID == "" {
 		return nil
 	}
-	limit := desktopBotLimit(rec.Grants, ownerUserID, departments)
+	limit := desktopBotLimit(rec.Grants, rec.DefaultDesktopBotLimit, ownerUserID, departments)
 	if limit == nil {
 		return nil
 	}
@@ -82,9 +83,9 @@ func desktopQuotaAllows(rec record, ownerUserID string, departments []string) er
 }
 
 // MarkDesktopOver copies bots and marks each desktop bot whose owner is
-// already past the matching grant. A nil limit is not over. none bots are
-// not marked. The returned slice is not the stored record.
-func (s *Service) MarkDesktopOver(ctx context.Context, tenantID string, bots []Bot, grants []Grant) []Bot {
+// already past the effective limit. A nil resolved limit is not over. none
+// bots are not marked. The returned slice is not the stored record.
+func (s *Service) MarkDesktopOver(ctx context.Context, tenantID string, bots []Bot, grants []Grant, defaultLimit *int) []Bot {
 	if len(bots) == 0 {
 		return bots
 	}
@@ -101,7 +102,7 @@ func (s *Service) MarkDesktopOver(ctx context.Context, tenantID string, bots []B
 		}
 		flag, ok := over[owner]
 		if !ok {
-			limit := desktopBotLimit(grants, owner, s.departmentChainCached(ctx, owner, "", memo))
+			limit := desktopBotLimit(grants, defaultLimit, owner, s.departmentChainCached(ctx, owner, "", memo))
 			used := countDesktopBots(bots, owner)
 			flag = limit != nil && used > *limit
 			over[owner] = flag
@@ -137,7 +138,7 @@ func (s *Service) DesktopQuotaForUser(ctx context.Context, tenantID, userID stri
 	userID = strings.TrimSpace(userID)
 	departments := s.departmentChain(security.WithTenant(ctx, tenantID), userID)
 	return DesktopQuota{
-		Limit: desktopBotLimit(rec.Grants, userID, departments),
+		Limit: desktopBotLimit(rec.Grants, rec.DefaultDesktopBotLimit, userID, departments),
 		Used:  countDesktopBots(rec.Bots, userID),
 	}, nil
 }

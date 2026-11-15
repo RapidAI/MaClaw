@@ -813,6 +813,14 @@ func (b *Broker) Dial(ctx context.Context, tenantID, nodeID, target string) (net
 	}
 	held := b.acquireStream(node.TenantID, maxStreams)
 	if !held && maxStreams > 0 {
+		// A finished health check keeps its tunnel in the idle pool. That
+		// pool must not use up the last slot while nothing is in flight.
+		// The client that is dialing is left alone: closing it from inside
+		// its own Dial would wait on the lock that dial already holds.
+		b.closeIdleTenant(node.TenantID, dialingClient(ctx))
+		held = b.acquireStream(node.TenantID, maxStreams)
+	}
+	if !held && maxStreams > 0 {
 		return nil, ErrStreamLimit
 	}
 	release := func() {}
@@ -872,6 +880,38 @@ func (b *Broker) acquireStream(tenantID string, max int) bool {
 	}
 	b.streams[tenantID]++
 	return true
+}
+
+type dialingClientKey struct{}
+
+func dialingClient(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	key, _ := ctx.Value(dialingClientKey{}).(string)
+	return key
+}
+
+// closeIdleTenant drops keep-alive tunnels for one tenant so a new call
+// can take a slot that only an idle probe was holding. skip is the client
+// already inside Dial, which must not be closed from there.
+func (b *Broker) closeIdleTenant(tenantID, skip string) {
+	if b == nil {
+		return
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	b.mu.Lock()
+	prefix := tenantID + "\x00"
+	var clients []*http.Client
+	for key, client := range b.clients {
+		if client != nil && strings.HasPrefix(key, prefix) && key != skip {
+			clients = append(clients, client)
+		}
+	}
+	b.mu.Unlock()
+	for _, client := range clients {
+		client.CloseIdleConnections()
+	}
 }
 
 func (b *Broker) releaseStream(tenantID string) {
@@ -1157,6 +1197,10 @@ func (b *Broker) Client(tenantID, nodeID, target string) *http.Client {
 			// still rewrite the request, so the tunnel must not use one.
 			Proxy: func(*http.Request) (*url.URL, error) { return nil, nil },
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				ctx = context.WithValue(ctx, dialingClientKey{}, key)
 				return b.Dial(ctx, tenantID, nodeID, target)
 			},
 			MaxIdleConns:    4,

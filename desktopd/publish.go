@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -87,8 +88,13 @@ func (s *Service) publicBase() (string, error) {
 			if st.Enrolled && strings.TrimSpace(s.HubLink.Self) != "" {
 				return "http://" + strings.TrimSpace(s.HubLink.Self), nil
 			}
+			// The GUI install enrolls this link itself. Starting a desktop
+			// before that hands out a URL nothing can dial.
+			return "", fmt.Errorf("%w: intranet desktopd is waiting for its hub link", ErrInvalid)
 		}
-		return "", fmt.Errorf("%w: intranet desktopd is waiting for its hub link", ErrInvalid)
+		// Botnode owns the tunnel and desktopd's own link is off. Session
+		// URLs stay on this listener; Hub rewrites them onto the node.
+		return "http://" + SelfAddr(os.Getenv("DESKTOPD_ADDR")), nil
 	}
 	raw := ""
 	if s != nil {

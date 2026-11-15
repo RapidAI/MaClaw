@@ -96,6 +96,101 @@ func TestDirectViewHidesTheGateTokenAndConfirmStopsWhenThePictureIsGone(t *testi
 	}
 }
 
+func TestViewCapLeavesTheNextPictureOnTheHubRelay(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	reg := edgenode.NewRegistry(&edgeMemSettings{})
+	code, err := reg.IssueCode(context.Background(), "tenant-a", "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled, err := reg.Enroll(context.Background(), code.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SetDirectBase(context.Background(), enrolled.NodeID, "http://10.1.0.8:18081"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SetPolicy(context.Background(), "tenant-a", edgenode.Policy{AllowSelf: true, MaxViews: 1}); err != nil {
+		t.Fatal(err)
+	}
+	prev := edgeRegistry
+	edgeRegistry = reg
+	t.Cleanup(func() {
+		edgeRegistry = prev
+		viewerGrants.mu.Lock()
+		viewerGrants.items = nil
+		viewerGrants.mu.Unlock()
+	})
+	page := func(userID string) string {
+		key, keyErr := desktop.UserKey("tenant-a", userID)
+		if keyErr != nil {
+			t.Fatal(keyErr)
+		}
+		raw := "http://desktop:gate-secret@desktopd." + enrolled.NodeID + ".node.invalid/v1/desktops/tunnel/" + key + "/vnc/vnc.html"
+		return edgeDirectURL("tenant-a", userID, raw, false)
+	}
+	first := page("alice")
+	if !strings.HasPrefix(first, "http://10.1.0.8:18081/v1/desktops/viewer/") {
+		t.Fatalf("first picture %s", first)
+	}
+	if again := page("alice"); again != first {
+		t.Fatal("the open picture was dropped at the cap")
+	}
+	if page("bob") != "" {
+		t.Fatal("a second picture was opened past the view cap")
+	}
+}
+
+func TestViewCapFreesAPictureHubAlreadyClosed(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	reg := edgenode.NewRegistry(&edgeMemSettings{})
+	code, err := reg.IssueCode(context.Background(), "tenant-a", "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled, err := reg.Enroll(context.Background(), code.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SetDirectBase(context.Background(), enrolled.NodeID, "http://10.1.0.8:18081"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SetPolicy(context.Background(), "tenant-a", edgenode.Policy{AllowSelf: true, MaxViews: 1}); err != nil {
+		t.Fatal(err)
+	}
+	prev := edgeRegistry
+	prevOpen := viewerStillOpen
+	edgeRegistry = reg
+	watching := map[string]bool{"alice": true}
+	viewerStillOpen = func(_, userID string) bool { return watching[userID] }
+	t.Cleanup(func() {
+		edgeRegistry = prev
+		viewerStillOpen = prevOpen
+		viewerGrants.mu.Lock()
+		viewerGrants.items = nil
+		viewerGrants.mu.Unlock()
+	})
+	page := func(userID string) string {
+		key, keyErr := desktop.UserKey("tenant-a", userID)
+		if keyErr != nil {
+			t.Fatal(keyErr)
+		}
+		raw := "http://desktop:gate-secret@desktopd." + enrolled.NodeID + ".node.invalid/v1/desktops/tunnel/" + key + "/vnc/vnc.html"
+		return edgeDirectURL("tenant-a", userID, raw, false)
+	}
+	if page("alice") == "" {
+		t.Fatal("alice got no picture")
+	}
+	if page("bob") != "" {
+		t.Fatal("bob opened while alice is watching")
+	}
+	watching["alice"] = false
+	bob := page("bob")
+	if !strings.HasPrefix(bob, "http://10.1.0.8:18081/v1/desktops/viewer/") {
+		t.Fatalf("closed picture kept the slot: %q", bob)
+	}
+}
+
 func ticketID(t *testing.T, ticket string) string {
 	t.Helper()
 	claims, err := edgelink.VerifyViewer("desk-key", ticket, time.Now())

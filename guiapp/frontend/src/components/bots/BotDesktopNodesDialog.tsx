@@ -3,7 +3,7 @@ import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useModalFocusTrap } from '../../hooks/useModalFocusTrap';
 import { localizeText } from '../../i18n';
 import { EventsOn } from '../../../wailsjs/runtime';
-import { ClearDesktopNodeResult, ConfigureDesktopNodeToken, DeployDesktopNode, ListDesktopNodes, RedeployDesktopNode, UpgradeDesktopNode } from '../../../wailsjs/go/main/App';
+import { ActivateDesktopNode, ClearDesktopNodeResult, ConfigureDesktopNodeToken, DeployDesktopNode, ListDesktopNodes, RedeployDesktopNode, UpgradeDesktopNode, UseCloudDesktop } from '../../../wailsjs/go/main/App';
 
 export type DesktopNodeEntry = {
     id: string;
@@ -24,6 +24,8 @@ export type DesktopNodeEntry = {
     registered?: boolean;
     online?: boolean;
     active?: boolean;
+    memory?: string;
+    cpus?: string;
 };
 
 type DesktopNodesView = {
@@ -56,6 +58,8 @@ function words(lang: string) {
         online: L('Online', '在线', '線上'),
         offline: L('Offline', '离线', '離線'),
         active: L('In use', '使用中', '使用中'),
+        useThis: L('Use this computer', '使用这台', '使用這台'),
+        useCloud: L('Use the cloud computer', '改用云端电脑', '改用雲端電腦'),
         add: L('Deploy another', '部署一台', '部署一台'),
         host: L('IP', 'IP', 'IP'),
         port: L('Port', '端口', '連接埠'),
@@ -95,6 +99,13 @@ function targetOf(node: DesktopNodeEntry): string {
 
 function busy(node: DesktopNodeEntry): boolean {
     return node.status === 'upgrading' || node.status === 'deploying' || node.status === 'registering';
+}
+
+function desktopSizeLabel(memory: string | undefined, cpus: string | undefined): string {
+    const mem = (memory || '').trim().toUpperCase();
+    const cpu = (cpus || '').trim();
+    if (mem && cpu) return `${mem} · ${cpu} CPU`;
+    return mem || (cpu ? `${cpu} CPU` : '');
 }
 
 function installed(node: DesktopNodeEntry): boolean {
@@ -194,6 +205,34 @@ export function BotDesktopNodesDialog({ heading, tabs, lang, onClose }: Props) {
         }
     };
 
+    const useNode = async (id: string) => {
+        if (working) return;
+        setWorkingID(id);
+        setNotice('');
+        try {
+            await ActivateDesktopNode(id);
+            await reload();
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : String(error));
+        } finally {
+            setWorkingID('');
+        }
+    };
+
+    const useCloud = async () => {
+        if (working) return;
+        setWorkingID('cloud');
+        setNotice('');
+        try {
+            await UseCloudDesktop();
+            await reload();
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : String(error));
+        } finally {
+            setWorkingID('');
+        }
+    };
+
     const clearResult = async (id: string) => {
         setNotice('');
         try {
@@ -261,7 +300,7 @@ export function BotDesktopNodesDialog({ heading, tabs, lang, onClose }: Props) {
                         <ul className="bot-desktop-nodes" data-testid="bot-desktop-nodes">
                             {nodes.map(node => {
                                 const canUpdate = node.mode === 'ssh' && !!node.host;
-                                const rowBusy = busy(node) || workingID === node.id;
+                                const rowBusy = busy(node) || working;
                                 const fresh = !installed(node);
                                 const report = (node.last_result || '').trim();
                                 const target = targetOf(node);
@@ -271,6 +310,7 @@ export function BotDesktopNodesDialog({ heading, tabs, lang, onClose }: Props) {
                                     : (fresh ? (node.status === 'failed' ? w.redeploy : w.deploy) : w.update);
                                 const statusLabel = node.status ? (w.status[node.status] || node.status) : '';
                                 const finishedAt = whenOf(node.last_at);
+                                const sizeLabel = desktopSizeLabel(node.memory, node.cpus);
                                 const badgeCls = node.status === 'ready'
                                     ? 'bot-desktop-nodes__badge--ready'
                                     : node.status === 'failed'
@@ -291,13 +331,14 @@ export function BotDesktopNodesDialog({ heading, tabs, lang, onClose }: Props) {
                                                 {target && node.name ? <span className="bot-desktop-nodes__target">{target}</span> : null}
                                                 {statusLabel ? <span className={`bot-desktop-nodes__badge ${badgeCls}`}>{statusLabel}</span> : null}
                                             </div>
-                                            {node.registered || node.active || node.with_srv ? (
+                                            {node.registered || node.active || node.with_srv || sizeLabel ? (
                                                 <div className="bot-desktop-nodes__tags">
                                                     {node.registered ? (
                                                         <span className={`bot-desktop-nodes__tag${node.online ? ' is-online' : ' is-offline'}`}>{node.online ? w.online : w.offline}</span>
                                                     ) : null}
                                                     {node.active ? <span className="bot-desktop-nodes__tag">{w.active}</span> : null}
                                                     {node.with_srv ? <span className="bot-desktop-nodes__tag">{node.srv_token_set ? w.tokenReady : w.tokenMissing}</span> : null}
+                                                    {sizeLabel ? <span className="bot-desktop-nodes__tag" data-testid={`bot-desktop-size-${node.id}`}>{sizeLabel}</span> : null}
                                                 </div>
                                             ) : null}
                                             {live ? <p className="bot-desktop-nodes__live">{live}</p> : null}
@@ -312,6 +353,28 @@ export function BotDesktopNodesDialog({ heading, tabs, lang, onClose }: Props) {
                                             >
                                                 {action}
                                             </button>
+                                            {installed(node) && !node.active ? (
+                                                <button
+                                                    type="button"
+                                                    className="btn-secondary"
+                                                    disabled={rowBusy}
+                                                    data-testid={`bot-desktop-use-${node.id}`}
+                                                    onClick={() => { void useNode(node.id); }}
+                                                >
+                                                    {w.useThis}
+                                                </button>
+                                            ) : null}
+                                            {node.active ? (
+                                                <button
+                                                    type="button"
+                                                    className="btn-secondary"
+                                                    disabled={rowBusy}
+                                                    data-testid={`bot-desktop-cloud-${node.id}`}
+                                                    onClick={() => { void useCloud(); }}
+                                                >
+                                                    {w.useCloud}
+                                                </button>
+                                            ) : null}
                                             {node.with_srv ? (
                                                 <button
                                                     type="button"

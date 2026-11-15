@@ -35,7 +35,7 @@ export {
     handleDesktopBotView,
     runWasInterrupted,
 } from './desktopBotResultStore';
-import { desktopPictureURL } from './directDesktop';
+import { desktopPictureURL, directPictureGaveUp } from './directDesktop';
 import { HubConnectionBadge } from './HubConnectionBadge';
 import { normalizeSidebarHubCredits } from '../../utils/sidebarHubCredits';
 import { openSettingsTab } from '../../utils/settingsNavigation';
@@ -43,6 +43,7 @@ import {
     ArmDesktopBotSchedule,
     ArmDesktopBotAdmitCancel,
     LogFrontendDiagnostic,
+    CreateDesktopBot,
     CreateDesktopBotWithComputer,
     GetDesktopBotQuota,
     CancelDesktopBotRun,
@@ -344,6 +345,15 @@ function localRolesFromChoice(choice: { local_roles?: unknown; LocalRoles?: unkn
 function installedDesktopNode(node: { node_id?: string; registered?: boolean; status?: string } | null | undefined): boolean {
     if (!node) return false;
     return !!(node.node_id || node.registered || node.status === 'ready' || node.status === 'imported');
+}
+
+function intranetDesktopWhere(node: { mode?: string; host?: string; port?: number; user?: string; name?: string } | null | undefined): string {
+    if (!node) return '';
+    if (node.mode === 'ssh' && node.host) {
+        const port = node.port && node.port !== 22 ? `:${node.port}` : '';
+        return `${node.user || ''}@${node.host}${port}`.replace(/^@/, '');
+    }
+    return (node.name || '').trim();
 }
 
 function rolesFromBotLLM(choice: { roles?: unknown; Roles?: unknown } | null | undefined): BotLLMRolesSetting | null {
@@ -893,6 +903,10 @@ function copy(lang: string) {
             nameTaken: 'Another bot already has this name',
             createTitle: 'New bot',
             needsComputer: 'This bot needs a computer',
+            cloudComputer: 'Cloud computer',
+            localComputer: 'Local computer',
+            serverLegend: 'Which computer',
+            serverMissing: 'Choose a local computer',
             quotaUsed: (used: number, limit: number) => `Using ${used} / ${limit}`,
             quotaOpen: (used: number) => `Using ${used}`,
             modeShared: 'Computer · shared',
@@ -1141,6 +1155,10 @@ function copy(lang: string) {
             nameTaken: '已有同名 Bot',
             createTitle: '新建 Bot',
             needsComputer: '這個 bot 需要電腦',
+            cloudComputer: '雲端電腦',
+            localComputer: '本地電腦',
+            serverLegend: '用哪台電腦',
+            serverMissing: '請選擇一台本地電腦',
             quotaUsed: (used: number, limit: number) => `已用 ${used} / ${limit}`,
             quotaOpen: (used: number) => `已用 ${used}`,
             modeShared: '電腦·共用',
@@ -1387,6 +1405,10 @@ function copy(lang: string) {
         nameTaken: '已有同名 Bot',
         createTitle: '新建 Bot',
         needsComputer: '这个 bot 需要电脑',
+        cloudComputer: '云端电脑',
+        localComputer: '本地电脑',
+        serverLegend: '用哪台电脑',
+        serverMissing: '请选择一台本地电脑',
         quotaUsed: (used: number, limit: number) => `已用 ${used} / ${limit}`,
         quotaOpen: (used: number) => `已用 ${used}`,
         modeShared: '电脑·共用',
@@ -2331,6 +2353,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [createSaving, setCreateSaving] = useState(false);
     const [createNotice, setCreateNotice] = useState('');
     const [createQuota, setCreateQuota] = useState<{ limit: number | null; used: number } | null>(null);
+    const [createServers, setCreateServers] = useState<{ id: string; label: string }[]>([]);
+    const [createServer, setCreateServer] = useState('');
     const createQuotaGen = useRef(0);
     const [looks, setLooks] = useState<Record<string, BotAppearance>>(() => appearancesForUser(userId));
     const lookOf = (bot: { id: string; title: string }): BotAppearance => looks[bot.id] || defaultAppearance(bot.title);
@@ -3022,6 +3046,42 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const desktopUrl = showDesktop ? (live?.url || sharedOpenUrl) : '';
     const screenPickNow = effectiveScreenPick(screenPickTouched, screenPick, selected?.id || '', screenByBot[selected?.id || '']?.mode);
     const shownDesktopUrl = showDesktop ? shownScreenURL(screenPickNow, selected?.id || '', bots, screenByBot, desktopUrl) : '';
+    const shownDesktopUrlRef = useRef('');
+    shownDesktopUrlRef.current = shownDesktopUrl;
+    useEffect(() => {
+        const onMessage = (event: MessageEvent) => {
+            const data = event.data as { type?: string } | null;
+            if (!data || data.type !== 'maclaw-desktop-down') return;
+            if (event.source !== handoffRef.current?.contentWindow) return;
+            const current = shownDesktopUrlRef.current;
+            const next = directPictureGaveUp(current);
+            if (!next || next === current) return;
+            setLiveDesktop(prev => {
+                let changed = false;
+                const out = { ...prev };
+                for (const [id, view] of Object.entries(out)) {
+                    if (view?.url === current) {
+                        out[id] = { ...view, url: next };
+                        changed = true;
+                    }
+                }
+                return changed ? out : prev;
+            });
+            setScreenByBot(prev => {
+                let changed = false;
+                const out = { ...prev };
+                for (const [id, screen] of Object.entries(out)) {
+                    if (screen?.url === current) {
+                        out[id] = { ...screen, url: next };
+                        changed = true;
+                    }
+                }
+                return changed ? out : prev;
+            });
+        };
+        window.addEventListener('message', onMessage);
+        return () => window.removeEventListener('message', onMessage);
+    }, []);
     const holdBotId = screenNeedsOwnHold(screenPickNow, selectedId, screenByBot, bots);
     // "My desktop" is missing only for an isolated bot: a shared bot's "mine"
     // is its own display and already has retry/loading through its own poll.
@@ -4640,9 +4700,31 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setListNotice('');
         setCreateNotice('');
         setCreateQuota(null);
+        setCreateServers([]);
+        setCreateServer('');
         setCreateOpen(true);
         const quotaGen = createQuotaGen.current + 1;
         createQuotaGen.current = quotaGen;
+        void ListDesktopNodes().then(view => {
+            if (quotaGen !== createQuotaGen.current) return;
+            const nodes = Array.isArray(view?.nodes) ? view.nodes : [];
+            const choices: { id: string; label: string }[] = [];
+            const seen = new Set<string>();
+            for (const node of nodes) {
+                const id = (node?.node_id || '').trim();
+                if (!id || !node.with_srv || seen.has(id)) continue;
+                seen.add(id);
+                choices.push({ id, label: intranetDesktopWhere(node) || (node.name || '').trim() || id });
+            }
+            const activeID = (nodes.find(node => node?.active && (node.node_id || '').trim() && node.with_srv)?.node_id || '').trim();
+            setCreateServers(choices);
+            setCreateServer(seen.has(activeID) ? activeID : '');
+        }).catch(() => {
+            if (quotaGen === createQuotaGen.current) {
+                setCreateServers([]);
+                setCreateServer('');
+            }
+        });
         void GetDesktopBotQuota().then(quota => {
             if (quotaGen !== createQuotaGen.current) return;
             const limit = quota?.limit;
@@ -4655,7 +4737,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         });
     };
 
-    const submitCreate = async (title: string, description: string, look: BotAppearance, needsComputer = true) => {
+    const submitCreate = async (title: string, description: string, look: BotAppearance, needsComputer = true, nodeID?: string) => {
         if (createSaving) return;
         const gen = loadGen.current;
         setListNotice('');
@@ -4664,7 +4746,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const desc = description || text.defaultDescription;
         let created: Awaited<ReturnType<typeof CreateDesktopBotWithComputer>> | null = null;
         try {
-            created = await CreateDesktopBotWithComputer(title, desc, look.color, look.shape, needsComputer);
+            // No server argument means the list has not offered a choice, so a
+            // computer bot follows the computer already in use. A chosen id,
+            // or an explicit empty id, is that bot's own server.
+            created = needsComputer && nodeID === undefined
+                ? await CreateDesktopBot(title, desc, look.color, look.shape)
+                : await CreateDesktopBotWithComputer(title, desc, look.color, look.shape, needsComputer, nodeID || '');
         } catch (error) {
             if (gen !== loadGen.current) return;
             const message = botCallMessage(error) || text.unavailable;
@@ -7820,9 +7907,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         label: text.needsComputer,
                         quota: createQuota == null ? '' : (createQuota.limit == null ? text.quotaOpen(createQuota.used) : text.quotaUsed(createQuota.used, createQuota.limit)),
                         locked: createQuota != null && createQuota.limit != null && createQuota.used >= createQuota.limit,
+                        servers: createServers,
+                        server: createServer,
+                        cloudLabel: text.cloudComputer,
+                        localLabel: text.localComputer,
+                        serverLegend: text.serverLegend,
+                        serverMissing: text.serverMissing,
                     }}
                     onClose={() => setCreateOpen(false)}
-                    onSubmit={(title, description, look, needsComputer) => { void submitCreate(title, description, look, needsComputer !== false); }}
+                    onSubmit={(title, description, look, needsComputer, server) => { void submitCreate(title, description, look, needsComputer !== false, server); }}
                 />
             ) : null}
             {roomsOpen && collab.features.rooms ? <BotRoomsDialog bots={bots} lang={lang} onClose={() => setRoomsOpen(false)} /> : null}

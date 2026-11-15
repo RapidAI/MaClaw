@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
+	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 )
 
 // botAuthenticator is the machine identity a bot request needs. A viewer
@@ -126,7 +129,7 @@ func ListBotsHandler(svc *botmgmt.Service, identity botAuthenticator) http.Handl
 }
 
 // PostBotUserHandler POST /api/v1/bots
-func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+func PostBotUserHandler(svc *botmgmt.Service, pool *desktoppool.Pool, reg *edgenode.Registry, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {
@@ -141,6 +144,10 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 			Color       *string `json:"color"`
 			Shape       *string `json:"shape"`
 			Desktop     *bool   `json:"desktop"`
+			// NodeID chooses the server. Absent keeps the user's current pin.
+			// Empty is the cloud computer. A local id must be one of the
+			// caller's own desktop servers that has MaClawSrv.
+			NodeID *string `json:"node_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
@@ -154,7 +161,22 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 		if in.Desktop != nil {
 			wantDesktop = *in.Desktop
 		}
-		bot, err := svc.CreateBotForUserDesktop(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description, &wantDesktop)
+		var bot botmgmt.Bot
+		var err error
+		// A bot without a computer does not choose a server. The pin, when
+		// there is one, still decides which srv creates the instance.
+		if in.NodeID != nil && wantDesktop {
+			nodeID := strings.TrimSpace(*in.NodeID)
+			if nodeID != "" {
+				if err := userOwnsDesktopNode(r.Context(), pool, reg, principal.TenantID, principal.UserID, nodeID); err != nil {
+					writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", err.Error())
+					return
+				}
+			}
+			bot, err = svc.CreateBotForUserOnNode(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description, &wantDesktop, nodeID)
+		} else {
+			bot, err = svc.CreateBotForUserDesktop(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description, &wantDesktop)
+		}
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return
@@ -166,6 +188,38 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 		}
 		writeJSON(w, http.StatusCreated, bot)
 	}
+}
+
+// userOwnsDesktopNode reports whether this user may create a bot on nodeID.
+// A personal desktop is theirs. A shared node is not, unless they registered
+// that desktop themselves.
+func userOwnsDesktopNode(ctx context.Context, pool *desktoppool.Pool, reg *edgenode.Registry, tenantID, userID, nodeID string) error {
+	if pool == nil || reg == nil || !edgenode.Enabled() {
+		return errors.New("这台服务器不能用来创建 Bot")
+	}
+	node, err := reg.Lookup(ctx, nodeID)
+	if err != nil || edgeTenantMismatch(node.TenantID, tenantID) || edgeTenantMismatch(tenantID, node.TenantID) {
+		return errors.New("这台服务器不能用来创建 Bot")
+	}
+	if node.OwnerUserID != "" && node.OwnerUserID != userID {
+		return errors.New("这台服务器不能用来创建 Bot")
+	}
+	if !node.HasSrv {
+		return errors.New("这个节点还没有 srv")
+	}
+	servers, _, err := pool.OwnedServers(ctx, tenantID, userID)
+	if err != nil {
+		return errors.New("这台服务器不能用来创建 Bot")
+	}
+	for _, server := range servers {
+		if server.NodeID == nodeID {
+			return nil
+		}
+	}
+	if node.OwnerUserID == userID {
+		return nil
+	}
+	return errors.New("这台服务器不能用来创建 Bot")
 }
 
 // PatchBotUserHandler PATCH /api/v1/bots/{id}

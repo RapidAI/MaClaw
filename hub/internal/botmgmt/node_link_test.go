@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPublicAndNodeBotsUseDifferentSrvConnections(t *testing.T) {
@@ -24,6 +25,7 @@ func TestPublicAndNodeBotsUseDifferentSrvConnections(t *testing.T) {
 	defer nodeSrv.Close()
 
 	svc, settings := newStubService(publicSrv)
+	useDirectNodeDial(svc)
 	seedRecord(t, settings, "tenant-a", record{
 		BaseURL:     publicSrv.URL,
 		AccessToken: "public-access",
@@ -80,6 +82,77 @@ func TestPublicAndNodeBotsUseDifferentSrvConnections(t *testing.T) {
 	}
 }
 
+func TestCreateBotUsesTheServerTheUserPicked(t *testing.T) {
+	var publicHits, nodeHits []string
+	publicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicHits = append(publicHits, r.Method+" "+r.URL.Path)
+		writeNodeStub(w, r, "public-token")
+	}))
+	defer publicSrv.Close()
+	nodeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nodeHits = append(nodeHits, r.Method+" "+r.URL.Path)
+		writeNodeStub(w, r, "node-token")
+	}))
+	defer nodeSrv.Close()
+
+	svc, settings := newStubService(publicSrv)
+	useDirectNodeDial(svc)
+	alice := ownerPrincipal{HubUserID: "alice", TenantID: "t1", UserID: "u-alice", APIKey: "ak-alice", APISecret: "sk-alice"}
+	seedRecord(t, settings, "tenant-a", record{
+		BaseURL: publicSrv.URL, AccessToken: "public-access", AdminSecret: "public-admin",
+		Grants:     []Grant{{ID: "g-a", Scope: ScopeUser, TargetID: "alice"}},
+		Principals: []ownerPrincipal{alice},
+		NodeLinks: []nodeLink{{
+			NodeID: "node-1", BaseURL: nodeSrv.URL, AdminSecret: "node-admin",
+			Principals: []ownerPrincipal{alice},
+		}},
+		OwnerNode: map[string]string{"alice": "node-1"},
+	})
+	ctx := context.Background()
+	yes := true
+	cloud, err := svc.CreateBotForUserOnNode(ctx, "tenant-a", "alice", "cloud bot", "", &yes, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloud.NodeID != "" || cloud.InstanceID != "inst-public-token" {
+		t.Fatalf("cloud = %+v", cloud)
+	}
+	local, err := svc.CreateBotForUserOnNode(ctx, "tenant-a", "alice", "local bot", "", &yes, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.NodeID != "node-1" || local.InstanceID != "inst-node-token" {
+		t.Fatalf("local = %+v", local)
+	}
+	pinned, err := svc.CreateBotForUser(ctx, "tenant-a", "alice", "pinned bot", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned.NodeID != "node-1" || pinned.InstanceID != "inst-node-token" {
+		t.Fatalf("pinned = %+v", pinned)
+	}
+	if hitCount(publicHits, "POST /api/v1/instances") != 1 || hitCount(nodeHits, "POST /api/v1/instances") != 2 {
+		t.Fatalf("public %v node %v", publicHits, nodeHits)
+	}
+}
+
+func TestPinOwnerNodeRefusesAServerWithoutSrv(t *testing.T) {
+	settings := &memSettings{}
+	svc := NewService(settings)
+	seedRecord(t, settings, "tenant-a", record{
+		OwnerNode: map[string]string{"alice": "node-old"},
+		NodeLinks: []nodeLink{{NodeID: "node-old", BaseURL: "http://srv.node-old.node.invalid", AdminSecret: "secret"}},
+	})
+	err := svc.PinOwnerNode(context.Background(), "tenant-a", "alice", "node-new")
+	if !errors.Is(err, ErrSrv) {
+		t.Fatalf("err = %v", err)
+	}
+	stored := storedRecord(t, settings, "tenant-a")
+	if stored.OwnerNode["alice"] != "node-old" {
+		t.Fatalf("pin = %+v", stored.OwnerNode)
+	}
+}
+
 func TestNodeOnlyTenantCreatesOnTheNodeSrv(t *testing.T) {
 	var hits []string
 	nodeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +161,7 @@ func TestNodeOnlyTenantCreatesOnTheNodeSrv(t *testing.T) {
 	}))
 	defer nodeSrv.Close()
 	svc, settings := newStubService(nodeSrv)
+	useDirectNodeDial(svc)
 	seedRecord(t, settings, "tenant-a", record{
 		Grants: []Grant{{ID: "g-a", Scope: ScopeUser, TargetID: "alice"}, {ID: "g-b", Scope: ScopeUser, TargetID: "bob"}},
 		NodeLinks: []nodeLink{{
@@ -194,6 +268,14 @@ func TestNodeSrvGetsItsOwnConnectionCredential(t *testing.T) {
 	}
 	if len(hits) != before {
 		t.Fatalf("second provision called the node again: %v", hits[before:])
+	}
+}
+
+// useDirectNodeDial lets a unit test reach an httptest srv by its real
+// address. Production node calls go through the tunnel client instead.
+func useDirectNodeDial(svc *Service) {
+	svc.NodeHTTP = func(string) *http.Client {
+		return &http.Client{Timeout: 15 * time.Second}
 	}
 }
 

@@ -1,7 +1,9 @@
 package desktopd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +19,12 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/edgelink"
 )
+
+// errHubResourcesGone means this Hub does not have the desktop size route yet.
+var errHubResourcesGone = errors.New("hub has no desktop size route")
+
+// errHubDirectBaseGone means this Hub does not have the intranet address route yet.
+var errHubDirectBaseGone = errors.New("hub has no intranet address route")
 
 // HubLink keeps this desktopd connected to Hub as a desktop-only Bot node.
 // Hub reaches the desktop API and the CDP/noVNC tunnel through it, so an
@@ -44,13 +52,33 @@ type HubLink struct {
 
 // HubLinkStatus is what the GUI shows. It has no secret.
 type HubLinkStatus struct {
-	Enrolled bool   `json:"enrolled"`
-	HubURL   string `json:"hub_url,omitempty"`
-	NodeID   string `json:"node_id,omitempty"`
-	Online   bool   `json:"online"`
-	Error    string `json:"error,omitempty"`
-	Since    string `json:"since,omitempty"`
-	SrvAddr  string `json:"srv_addr,omitempty"`
+	Enrolled   bool   `json:"enrolled"`
+	HubURL     string `json:"hub_url,omitempty"`
+	NodeID     string `json:"node_id,omitempty"`
+	Online     bool   `json:"online"`
+	Error      string `json:"error,omitempty"`
+	Since      string `json:"since,omitempty"`
+	SrvAddr    string `json:"srv_addr,omitempty"`
+	DirectBase string `json:"direct_base,omitempty"`
+}
+
+// normalizeDirectBase checks the intranet address a GUI probes. Empty means
+// pictures stay on the Hub address. A virtual node host is refused.
+func normalizeDirectBase(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return "", errors.New("内网访问地址要写成 http://地址:端口")
+	}
+	if strings.HasSuffix(strings.ToLower(parsed.Hostname()), ".node.invalid") || strings.Contains(parsed.Path, "..") {
+		return "", errors.New("内网访问地址要写成 http://地址:端口")
+	}
+	parsed.RawQuery, parsed.Fragment = "", ""
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return parsed.String(), nil
 }
 
 // SelfAddr turns a listen address into one this host can dial.
@@ -152,6 +180,11 @@ func (h *HubLink) EnrollWith(ctx context.Context, in HubLinkEnroll) (HubLinkStat
 	if in.HasSrv && strings.TrimSpace(in.SrvAddr) == "" {
 		return HubLinkStatus{}, fmt.Errorf("%w: srv address is required", ErrInvalid)
 	}
+	direct, err := normalizeDirectBase(in.DirectBase)
+	if err != nil {
+		return HubLinkStatus{}, fmt.Errorf("%w: %s", ErrInvalid, err.Error())
+	}
+	in.DirectBase = direct
 	if strings.TrimSpace(h.Key) == "" && h.Keys == nil {
 		return HubLinkStatus{}, fmt.Errorf("%w: DESKTOPD_TOKEN is not set", ErrInvalid)
 	}
@@ -167,14 +200,17 @@ func (h *HubLink) EnrollWith(ctx context.Context, in HubLinkEnroll) (HubLinkStat
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	ram, cpus := HostCapacity()
 	creds, err := edgelink.Enroll(ctx, client, hub, edgelink.EnrollRequest{
-		Code:        code,
-		DesktopdKey: desktopdKey,
-		SrvAdmin:    in.SrvAdmin,
-		Version:     "desktopd",
-		HasDesktopd: true,
-		HasSrv:      in.HasSrv,
-		DirectBase:  in.DirectBase,
+		Code:         code,
+		DesktopdKey:  desktopdKey,
+		SrvAdmin:     in.SrvAdmin,
+		Version:      "desktopd",
+		HasDesktopd:  true,
+		HasSrv:       in.HasSrv,
+		DirectBase:   in.DirectBase,
+		HostRAMBytes: ram,
+		HostCPUs:     cpus,
 	})
 	if err != nil {
 		log.Printf("[desktopd] hub enroll failed hub=%s err=%s", hub, redactSecret(err.Error(), code))
@@ -193,6 +229,7 @@ func (h *HubLink) EnrollWith(ctx context.Context, in HubLinkEnroll) (HubLinkStat
 		log.Printf("[desktopd] hub key saved node=%s label=%s", creds.NodeID, label)
 	}
 	creds.SrvAddr = strings.TrimSpace(in.SrvAddr)
+	creds.DirectBase = in.DirectBase
 	if err := edgelink.SaveCredentials(h.StatePath, creds); err != nil {
 		log.Printf("[desktopd] hub credentials were not saved node=%s err=%v", creds.NodeID, err)
 		if h.Keys != nil {
@@ -207,7 +244,225 @@ func (h *HubLink) EnrollWith(ctx context.Context, in HubLinkEnroll) (HubLinkStat
 	h.runLocked()
 	h.mu.Unlock()
 	log.Printf("[desktopd] hub link enrolled node=%s hub=%s", creds.NodeID, creds.HubURL)
+	go h.SyncDesktopSize(context.Background())
 	return h.Status(), nil
+}
+
+// ReportCapacity tells Hub the memory and CPU of this machine so an installed
+// desktop can be sized from it. A missing measurement or a hub that does not
+// have the route yet leaves the current size in place.
+func (h *HubLink) ReportCapacity(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	creds := h.creds
+	client := h.Client
+	h.mu.Unlock()
+	if creds.NodeID == "" || creds.NodeSecret == "" || creds.HubURL == "" {
+		return
+	}
+	ram, cpus := HostCapacity()
+	if ram == 0 {
+		return
+	}
+	body, err := json.Marshal(map[string]any{"ram_bytes": ram, "cpus": cpus})
+	if err != nil {
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, strings.TrimRight(creds.HubURL, "/")+"/api/v1/edge/capacity", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+creds.NodeSecret)
+	req.Header.Set("X-Node-Id", creds.NodeID)
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[desktopd] host capacity was not reported node=%s err=%v", creds.NodeID, err)
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	if resp.StatusCode == http.StatusNotFound {
+		log.Printf("[desktopd] hub has no host-capacity route yet node=%s", creds.NodeID)
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("[desktopd] host capacity was not stored node=%s status=%d", creds.NodeID, resp.StatusCode)
+		return
+	}
+	log.Printf("[desktopd] host capacity reported node=%s ram_bytes=%d cpus=%d", creds.NodeID, ram, cpus)
+}
+
+// SyncDesktopSize tells Hub which size this machine should use. A size saved
+// in the admin panel is sent as a fixed choice, so a later measurement does
+// not replace it. With no saved choice, Hub measures the machine.
+func (h *HubLink) SyncDesktopSize(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	if choice := panelResourceChoice(); choice != nil {
+		err := h.PushResources(ctx, choice.Memory, choice.CPUs, choice.ShmSize, false)
+		if err == nil {
+			return
+		}
+		if errors.Is(err, errHubResourcesGone) {
+			log.Printf("[desktopd] hub has no desktop size route yet")
+			return
+		}
+		log.Printf("[desktopd] saved desktop size was not stored on hub err=%v", err)
+		return
+	}
+	h.ReportCapacity(ctx)
+}
+
+// PushResources stores a size typed in the admin panel on Hub. restore puts
+// the measured size back in front of later measurements.
+func (h *HubLink) PushResources(ctx context.Context, memory, cpus, shm string, restore bool) error {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	creds := h.creds
+	client := h.Client
+	h.mu.Unlock()
+	if creds.NodeID == "" || creds.NodeSecret == "" || creds.HubURL == "" {
+		return nil
+	}
+	payload := map[string]any{"memory": memory, "cpus": cpus, "shm_size": shm}
+	if restore {
+		ram, logical := HostCapacity()
+		payload = map[string]any{"restore_auto": true, "ram_bytes": ram, "host_cpus": logical}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, strings.TrimRight(creds.HubURL, "/")+"/api/v1/edge/resources", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+creds.NodeSecret)
+	req.Header.Set("X-Node-Id", creds.NodeID)
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if resp.StatusCode == http.StatusNotFound {
+		return errHubResourcesGone
+	}
+	if resp.StatusCode == http.StatusNoContent || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+		return nil
+	}
+	var reply struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &reply) == nil {
+		if msg := strings.TrimSpace(reply.Message); msg != "" && len(msg) <= 200 {
+			return errors.New(msg)
+		}
+	}
+	return fmt.Errorf("hub did not store the desktop size (%d)", resp.StatusCode)
+}
+
+// SaveDirectBase stores the intranet address on this machine and tells Hub.
+// A Hub that does not have the route yet leaves the local copy in place.
+// hubSaved is false when Hub did not record it. The node secret is not logged.
+func (h *HubLink) SaveDirectBase(ctx context.Context, raw string) (bool, error) {
+	base, err := normalizeDirectBase(raw)
+	if err != nil {
+		return false, fmt.Errorf("%w: %s", ErrInvalid, err.Error())
+	}
+	if h == nil {
+		return false, fmt.Errorf("%w: hub link is disabled", ErrInvalid)
+	}
+	h.mu.Lock()
+	if h.creds.NodeID == "" || h.creds.NodeSecret == "" || h.creds.HubURL == "" {
+		h.mu.Unlock()
+		return false, fmt.Errorf("%w: 还没有注册", ErrInvalid)
+	}
+	creds := h.creds
+	creds.DirectBase = base
+	path := h.StatePath
+	client := h.Client
+	h.mu.Unlock()
+	if err := edgelink.SaveCredentials(path, creds); err != nil {
+		return false, err
+	}
+	h.mu.Lock()
+	h.creds = creds
+	h.mu.Unlock()
+	if err := h.pushDirectBase(ctx, creds, client); err != nil {
+		if errors.Is(err, errHubDirectBaseGone) {
+			log.Printf("[desktopd] hub has no intranet address route yet node=%s", creds.NodeID)
+		} else {
+			log.Printf("[desktopd] hub did not store the intranet address node=%s", creds.NodeID)
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func (h *HubLink) syncDirectBase(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	creds := h.creds
+	client := h.Client
+	h.mu.Unlock()
+	if strings.TrimSpace(creds.DirectBase) == "" || creds.NodeID == "" || creds.NodeSecret == "" {
+		return
+	}
+	if err := h.pushDirectBase(ctx, creds, client); err != nil && !errors.Is(err, errHubDirectBaseGone) {
+		log.Printf("[desktopd] hub did not store the intranet address node=%s", creds.NodeID)
+	}
+}
+
+func (h *HubLink) pushDirectBase(ctx context.Context, creds edgelink.Credentials, client *http.Client) error {
+	body, err := json.Marshal(map[string]string{"direct_base": creds.DirectBase})
+	if err != nil {
+		return err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, strings.TrimRight(creds.HubURL, "/")+"/api/v1/edge/direct-base", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+creds.NodeSecret)
+	req.Header.Set("X-Node-Id", creds.NodeID)
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
+	if resp.StatusCode == http.StatusNotFound {
+		return errHubDirectBaseGone
+	}
+	if resp.StatusCode == http.StatusNoContent || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+		return nil
+	}
+	return fmt.Errorf("hub did not store the intranet address (%d)", resp.StatusCode)
 }
 
 // Disconnect stops the tunnel and keeps the saved credentials.
@@ -357,12 +612,13 @@ func (h *HubLink) Status() HubLinkStatus {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	out := HubLinkStatus{
-		Enrolled: h.creds.NodeID != "",
-		HubURL:   h.creds.HubURL,
-		NodeID:   h.creds.NodeID,
-		Online:   h.online,
-		Error:    h.lastErr,
-		SrvAddr:  h.creds.SrvAddr,
+		Enrolled:   h.creds.NodeID != "",
+		HubURL:     h.creds.HubURL,
+		NodeID:     h.creds.NodeID,
+		Online:     h.online,
+		Error:      h.lastErr,
+		SrvAddr:    h.creds.SrvAddr,
+		DirectBase: h.creds.DirectBase,
 	}
 	if !h.since.IsZero() {
 		out.Since = h.since.UTC().Format(time.RFC3339)
@@ -472,6 +728,7 @@ func (h *HubLink) runLocked() {
 			if up {
 				h.lastErr = ""
 				log.Printf("[desktopd] hub link up node=%s", creds.NodeID)
+				go h.syncDirectBase(context.Background())
 				return
 			}
 			if err != nil {

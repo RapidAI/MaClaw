@@ -198,9 +198,42 @@ func PutBotSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepo
 // shape the page renders, so those responses have to carry the mark too.
 func writeBotSettings(w http.ResponseWriter, r *http.Request, svc *botmgmt.Service, view botmgmt.SettingsView) {
 	if svc != nil {
-		view.Bots = svc.MarkDesktopOver(r.Context(), botTenantID(r), view.Bots, view.Grants)
+		view.Bots = svc.MarkDesktopOver(r.Context(), botTenantID(r), view.Bots, view.Grants, view.DefaultDesktopBotLimit)
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+// PatchBotSettingsAdminHandler PATCH /api/admin/bots/settings
+// {"default_desktop_bot_limit": n} sets the tenant-wide fallback cap used
+// when no covering grant sets a limit; null clears it. The field is
+// required so a partial patch cannot clear it.
+func PatchBotSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			return
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		limit, err := optionalLimitPatch(raw, "default_desktop_bot_limit")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", err.Error())
+			return
+		}
+		view, err := svc.SaveDefaultDesktopBotLimit(r.Context(), botTenantID(r), limit)
+		if err != nil {
+			writeBotError(w, err)
+			return
+		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "bot.settings.update", map[string]any{
+			"default_desktop_bot_limit":     limit,
+			"default_desktop_bot_limit_set": limit != nil,
+		})
+		writeBotSettings(w, r, svc, view)
+	}
 }
 
 // PutBotLLMSettingsAdminHandler PUT /api/admin/bots/llm
@@ -387,23 +420,29 @@ func PatchBotGrantAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepos
 // desktopBotLimitPatch reads a grant patch. The field must be present.
 // Null clears the cap. A missing field is an error, not a clear.
 func desktopBotLimitPatch(raw []byte) (*int, error) {
+	return optionalLimitPatch(raw, "desktop_bot_limit")
+}
+
+// optionalLimitPatch reads one tri-state integer field: absent is an
+// error, null clears, a non-negative integer sets.
+func optionalLimitPatch(raw []byte, field string) (*int, error) {
 	var body map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err
 	}
-	val, ok := body["desktop_bot_limit"]
+	val, ok := body[field]
 	if !ok {
-		return nil, errors.New("desktop_bot_limit is required")
+		return nil, errors.New(field + " is required")
 	}
 	if string(bytes.TrimSpace(val)) == "null" {
 		return nil, nil
 	}
 	var n int
 	if err := json.Unmarshal(val, &n); err != nil {
-		return nil, errors.New("desktop_bot_limit must be an integer")
+		return nil, errors.New(field + " must be an integer")
 	}
 	if n < 0 {
-		return nil, errors.New("desktop_bot_limit must be zero or greater")
+		return nil, errors.New(field + " must be zero or greater")
 	}
 	return &n, nil
 }

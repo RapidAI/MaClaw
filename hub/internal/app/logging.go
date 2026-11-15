@@ -123,6 +123,7 @@ func isHubRegistrationLogLine(line string) bool {
 		"[registration-contact]",
 		"[onboarding] ",
 		"[onboarding]",
+		"[center] register",
 	}
 	for _, n := range needles {
 		if strings.Contains(lower, n) {

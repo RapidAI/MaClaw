@@ -79,7 +79,12 @@
       desktopIsolated: '\u72ec\u7acb',
       desktopNone: '\u65e0',
       desktopOver: '\u8d85\u989d',
-      desktopLimitBad: '\u8bf7\u586b\u5199\u4e0d\u5c0f\u4e8e 0 \u7684\u6574\u6570\uff0c\u6216\u7559\u7a7a\u8868\u793a\u4e0d\u9650',
+      desktopLimitBad: '\u8bf7\u586b\u5199\u4e0d\u5c0f\u4e8e 0 \u7684\u6574\u6570\uff0c\u6216\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u4e0a\u4e00\u7ea7',
+      desktopCascade: '\u9650\u989d\u6309 \u7528\u6237 \u2192 \u90e8\u95e8 \u2192 \u5168\u5c40 \u2192 \u9ed8\u8ba4 \u9010\u7ea7\u751f\u6548\uff0c\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u4e0a\u4e00\u7ea7',
+      desktopInherit: '\u8ddf\u968f\u4e0a\u7ea7',
+      desktopDefault: '\u9ed8\u8ba4\u7535\u8111\u6570',
+      desktopDefaultHint: '\u5f00\u901a\u8303\u56f4\u5404\u5c42\u90fd\u6ca1\u586b\u9650\u989d\u65f6\u7528\u5b83\u515c\u5e95\uff1b\u7559\u7a7a\u8868\u793a\u4e0d\u9650',
+      desktopDefaultOf: '\u9ed8\u8ba4 {n}',
       readOnly: '\u53ea\u8bfb',
       remove: '\u5220\u9664',
       failed: '\u64cd\u4f5c\u5931\u8d25',
@@ -222,7 +227,12 @@
       desktopIsolated: 'Own',
       desktopNone: 'None',
       desktopOver: 'Over limit',
-      desktopLimitBad: 'Enter a whole number, or leave it blank for no limit',
+      desktopLimitBad: 'Enter a whole number, or leave it blank to inherit',
+      desktopCascade: 'Caps resolve user → department → global → default. Blank inherits the next level.',
+      desktopInherit: 'Inherit',
+      desktopDefault: 'Default desktops',
+      desktopDefaultHint: 'The fallback when every grant level is blank; leave empty for no limit',
+      desktopDefaultOf: 'Default {n}',
       readOnly: 'Read-only',
       remove: 'Delete',
       failed: 'Request failed',
@@ -377,6 +387,9 @@
     setLabel('botGlobalHint', t.globalHint);
     setLabel('botGlobalLimitLabel', t.desktopBots);
     setLabel('botGlobalOn', t.everyoneNote);
+    setLabel('botDefaultLimitLabel', t.desktopDefault);
+    setLabel('botDefaultLimitHint', t.desktopDefaultHint);
+    setLabel('botGrantsHint', t.desktopCascade);
     setLabel('botGrantsTitle', t.enableList);
     setLabel('botOrgTitle', t.orgTitle);
     setLabel('botOrgHint', t.orgHint);
@@ -508,6 +521,7 @@
       + '#tab-bots .bot-grant-kind{flex:0 0 auto;padding:2px 7px;border-radius:999px;background:#eef5ff;color:#1d4ed8;font-size:10px;font-weight:800;letter-spacing:.03em}'
       + '#tab-bots .bot-grant-name{min-width:0;flex:1;font-size:12px;color:#243244;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
       + '#tab-bots .bot-grant-limit{display:flex;align-items:center;gap:6px;flex:0 0 auto;font-size:11px;color:#64748b}'
+      + '#tab-bots .bot-limit-hint{font-size:10px;color:#94a3b8}'
       + '#tab-bots .bot-grant-limit input,#tab-bots .bot-global-limit input{width:88px;height:28px;min-height:28px;margin:0;padding:0 8px}'
       + '#tab-bots .bot-global-limit{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0 0;padding:8px 13px;border:1px solid #e4e9f2;border-radius:9px;background:#fff;font-size:12px;color:#475569}'
       + '#tab-bots .bot-global-limit[hidden]{display:none}'
@@ -611,6 +625,10 @@
       + '<div class="bot-global-limit" id="botGlobalLimitRow" hidden>'
       + '<label id="botGlobalLimitLabel" for="botGlobalLimit"></label>'
       + '<input id="botGlobalLimit" type="number" min="0" step="1" inputmode="numeric"></div>'
+      + '<div class="bot-global-limit" id="botDefaultLimitRow">'
+      + '<label id="botDefaultLimitLabel" for="botDefaultLimit"></label>'
+      + '<input id="botDefaultLimit" type="number" min="0" step="1" inputmode="numeric">'
+      + '<span class="bot-limit-hint" id="botDefaultLimitHint"></span></div>'
       + '<p class="bot-hint" id="botGlobalOn" hidden></p>'
       + '<div class="bot-split" id="botAccessBody">'
       + '<div class="bot-pane" id="botOrgPane"><span class="bot-pane-title" id="botOrgTitle"></span>'
@@ -618,6 +636,7 @@
       + '<input id="botOrgFilter" type="search" autocomplete="off">'
       + '<div id="botOrgTree" class="bot-org-tree" role="tree"></div></div>'
       + '<div class="bot-pane"><span class="bot-pane-title" id="botGrantsTitle"></span>'
+      + '<p class="bot-pane-desc" id="botGrantsHint"></p>'
       + '<div id="botGrants" class="bot-grant-list"></div></div>'
       + '</div></section>'
       + '<div id="botDesktopHost"></div>'
@@ -644,6 +663,7 @@
     document.addEventListener('keydown', onBotLLMPModalKeydown);
     byID('botGlobal').addEventListener('change', toggleGlobal);
     byID('botGlobalLimit').addEventListener('change', function () { saveGrantLimit(byID('botGlobalLimit')); });
+    byID('botDefaultLimit').addEventListener('change', function () { saveDefaultLimit(byID('botDefaultLimit')); });
     byID('botGrants').addEventListener('change', function (event) { saveGrantLimit(event && event.target); });
     byID('botOrgFilter').addEventListener('compositionstart', function () { orgState().composing = true; });
     byID('botOrgFilter').addEventListener('compositionend', function () {
@@ -655,6 +675,7 @@
       onOrgFilter();
     });
     byID('botOrgTree').addEventListener('click', onOrgClick);
+    byID('botOrgTree').addEventListener('change', function (event) { saveGrantLimit(event && event.target); });
     if (typeof global.mountBotDesktop === 'function') global.mountBotDesktop();
     applyBotI18n();
   }
@@ -759,9 +780,9 @@
 
   function grantLimitInput(item) {
     var value = item.desktop_bot_limit == null || item.desktop_bot_limit === '' ? '' : String(item.desktop_bot_limit);
-    return '<label class="bot-grant-limit" title="' + escapeHtml(text().desktopBots) + '"><span>' + escapeHtml(text().desktopBotsShort) + '</span>'
+    return '<label class="bot-grant-limit" title="' + escapeHtml(text().desktopCascade) + '"><span>' + escapeHtml(text().desktopBotsShort) + '</span>'
       + '<input type="number" min="0" step="1" inputmode="numeric" data-grant-limit="' + escapeHtml(item.id) + '"'
-      + ' placeholder="' + escapeHtml(text().desktopUnlimited) + '"'
+      + ' placeholder="' + escapeHtml(text().desktopInherit) + '"'
       + (value !== '' ? ' value="' + escapeHtml(value) + '"' : '')
       + (grantLocked() ? ' disabled' : '')
       + '></label>';
@@ -777,7 +798,8 @@
     row.hidden = !current;
     if (!current) return;
     input.setAttribute('data-grant-limit', current.id);
-    input.placeholder = text().desktopUnlimited;
+    var def = view && view.default_desktop_bot_limit;
+    input.placeholder = def == null ? text().desktopUnlimited : text().desktopDefaultOf.replace('{n}', String(def));
     input.disabled = grantLocked();
     if (document.activeElement !== input) {
       input.value = current.desktop_bot_limit == null || current.desktop_bot_limit === '' ? '' : String(current.desktop_bot_limit);
@@ -824,11 +846,56 @@
     }).then(function () { setGrantBusy(false); });
   }
 
+  function renderDefaultLimit(view) {
+    var input = byID('botDefaultLimit');
+    if (!input) return;
+    input.placeholder = text().desktopUnlimited;
+    input.disabled = grantLocked();
+    if (document.activeElement !== input) {
+      var value = view && view.default_desktop_bot_limit;
+      input.value = value == null || value === '' ? '' : String(value);
+    }
+  }
+
+  /* Blank means inherit: the cascade ends at this default, then unlimited. */
+  function saveDefaultLimit(input) {
+    if (!input || grantLocked()) return;
+    var raw = String(input.value || '').trim();
+    var panel = byID('tab-bots');
+    var view = panel && panel._botView;
+    var prev = view && view.default_desktop_bot_limit != null && view.default_desktop_bot_limit !== '' ? String(view.default_desktop_bot_limit) : '';
+    var body;
+    if (raw === '') body = { default_desktop_bot_limit: null };
+    else if (!/^\d+$/.test(raw) || !isWholeLimit(Number(raw))) {
+      input.value = prev;
+      showToast(text().desktopLimitBad, 'error');
+      return;
+    } else body = { default_desktop_bot_limit: Number(raw) };
+    if (raw === '' && prev === '') return;
+    if (raw !== '' && String(body.default_desktop_bot_limit) === prev) {
+      if (raw !== prev) input.value = prev;
+      return;
+    }
+    var previousLimit = view ? view.default_desktop_bot_limit : null;
+    if (view) view.default_desktop_bot_limit = body.default_desktop_bot_limit;
+    setGrantBusy(true);
+    return api('/api/admin/bots/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(body)
+    }).then(function () {
+      return load();
+    }, function (err) {
+      if (view) view.default_desktop_bot_limit = previousLimit;
+      showToast(messageOf(err), 'error');
+    }).then(function () { setGrantBusy(false); });
+  }
+
   function renderGrants(view, access) {
     var summary = access || grantSummary(view);
     var list = byID('botGrants');
     var globalBox = byID('botGlobal');
     renderGlobalLimit(view);
+    renderDefaultLimit(view);
     /* While a grant request is in flight the switch shows the admin's intent,
        not the server's last known state, so leave it alone until the response lands. */
     if (globalBox && !grantLocked()) globalBox.checked = summary.everyone;
@@ -1378,12 +1445,12 @@
   }
 
   function renderUserRow(member, pad) {
-    var granted = !!(member.userId && grantFor('user', member.userId));
+    var grant = member.userId ? grantFor('user', member.userId) : null;
     var action = member.userId
-      ? orgAddButton('data-org-add-user', member.userId, text().orgAddUser, granted, member.label)
+      ? orgAddButton('data-org-add-user', member.userId, text().orgAddUser, !!grant, member.label)
       : '<span class="bot-org-meta">' + escapeHtml(text().orgNoAccount) + '</span>';
     return '<div class="bot-org-row bot-org-user" role="treeitem" style="padding-left:' + String(30 + pad) + 'px">'
-      + '<span class="bot-org-name">' + escapeHtml(member.label) + '</span>' + action + '</div>';
+      + '<span class="bot-org-name">' + escapeHtml(member.label) + '</span>' + (grant ? grantLimitInput(grant) : '') + action + '</div>';
   }
 
   function revealForFilter() {
@@ -1420,11 +1487,13 @@
     var expanded = !!org.expanded[node.id];
     var pad = depth * 16;
     var nameMatches = named;
+    var deptGrant = grantFor('department', node.id);
     var html = '<div class="bot-org-row" role="treeitem" data-org-toggle="' + escapeHtml(node.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '" style="padding-left:' + String(8 + pad) + 'px">'
       + '<button type="button" class="bot-org-toggle" data-org-toggle="' + escapeHtml(node.id) + '" aria-label="' + escapeHtml(node.name || node.id) + '">'
       + (expanded ? '\u25bc' : '\u25b6') + '</button>'
       + '<span class="bot-org-name">' + escapeHtml(node.name || node.id) + '</span>'
-      + orgAddButton('data-org-add-dept', node.id, text().orgAddDepartment, !!grantFor('department', node.id), node.name || node.id)
+      + (deptGrant ? grantLimitInput(deptGrant) : '')
+      + orgAddButton('data-org-add-dept', node.id, text().orgAddDepartment, !!deptGrant, node.name || node.id)
       + '</div>';
     if (!expanded) return html;
     if (org.loadingMembers[node.id] && !org.members[node.id]) {
@@ -1499,6 +1568,9 @@
     var action = null;
     var kind = '';
     while (node && node !== tree) {
+      /* The per-grant cap input lives inside the toggle row; typing in it
+         must not collapse the department. */
+      if (node.tagName === 'INPUT' || (node.classList && node.classList.contains('bot-grant-limit'))) return;
       if (node.getAttribute) {
         if (node.getAttribute('data-org-add-dept')) { action = node; kind = 'dept'; break; }
         if (node.getAttribute('data-org-add-user')) { action = node; kind = 'user'; break; }

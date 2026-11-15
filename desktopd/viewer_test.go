@@ -88,3 +88,46 @@ func TestViewerRejectsABadTicketAndLeavesPostView(t *testing.T) {
 		t.Fatalf("unconfirmed socket status %d", rec.Code)
 	}
 }
+
+func TestViewerPageCarriesTheReconnectHook(t *testing.T) {
+	rec := httptest.NewRecorder()
+	page := &viewerHTMLWriter{ResponseWriter: &frameOK{ResponseWriter: rec}}
+	page.Header().Set("Content-Type", "text/html; charset=utf-8")
+	page.Header().Set("Content-Length", "9")
+	page.Header().Set("X-Frame-Options", "DENY")
+	page.WriteHeader(http.StatusOK)
+	if _, err := page.Write([]byte("<head><title>desktop</title></head>")); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatal("player html was sent before the hook")
+	}
+	page.finish()
+	body := rec.Body.String()
+	head := strings.Index(body, "<head>")
+	hook := strings.Index(body, "maclaw-desktop-down")
+	if head < 0 || hook < head || !strings.Contains(body, "<title>desktop</title>") {
+		t.Fatalf("hook placement: %s", body)
+	}
+	if rec.Header().Get("Content-Length") != "" || rec.Header().Get("X-Frame-Options") != "" {
+		t.Fatalf("headers: %v", rec.Header())
+	}
+	if strings.Count(body, "maclaw-desktop-down") != 1 {
+		t.Fatalf("hook repeated: %s", body)
+	}
+
+	script := httptest.NewRecorder()
+	js := &viewerHTMLWriter{ResponseWriter: script}
+	js.Header().Set("Content-Type", "application/javascript")
+	js.WriteHeader(http.StatusOK)
+	if _, err := js.Write([]byte("var x=1")); err != nil {
+		t.Fatal(err)
+	}
+	js.finish()
+	if script.Body.String() != "var x=1" {
+		t.Fatalf("script was rewritten: %s", script.Body.String())
+	}
+	if !viewerPageWantsFallback("vnc.html") || !viewerPageWantsFallback("h264.html") || viewerPageWantsFallback("websockify") {
+		t.Fatal("fallback pages")
+	}
+}

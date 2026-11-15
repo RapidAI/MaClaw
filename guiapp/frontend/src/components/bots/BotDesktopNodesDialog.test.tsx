@@ -2,13 +2,15 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BotDesktopNodesDialog } from './BotDesktopNodesDialog';
 
-const { listNodes, upgradeNode, deployNode, configureToken, redeployNode, clearResult } = vi.hoisted(() => ({
+const { listNodes, upgradeNode, deployNode, configureToken, redeployNode, clearResult, activateNode, useCloud } = vi.hoisted(() => ({
     listNodes: vi.fn(),
     upgradeNode: vi.fn(),
     deployNode: vi.fn(),
     configureToken: vi.fn(),
     redeployNode: vi.fn(),
     clearResult: vi.fn(),
+    activateNode: vi.fn(),
+    useCloud: vi.fn(),
 }));
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
@@ -18,6 +20,8 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ConfigureDesktopNodeToken: (id: string, password: string) => configureToken(id, password),
     RedeployDesktopNode: (id: string, password: string, withSrv: boolean) => redeployNode(id, password, withSrv),
     ClearDesktopNodeResult: (id: string) => clearResult(id),
+    ActivateDesktopNode: (id: string) => activateNode(id),
+    UseCloudDesktop: () => useCloud(),
 }));
 
 vi.mock('../../../wailsjs/runtime', () => ({
@@ -45,6 +49,10 @@ describe('intranet desktop update', () => {
         configureToken.mockReset();
         redeployNode.mockReset();
         clearResult.mockReset();
+        activateNode.mockReset();
+        useCloud.mockReset();
+        activateNode.mockResolvedValue(undefined);
+        useCloud.mockResolvedValue(undefined);
         listNodes.mockResolvedValue({ enabled: true, nodes: [sshNode] });
         upgradeNode.mockResolvedValue({ ...sshNode, status: 'upgrading' });
     });
@@ -156,6 +164,16 @@ describe('intranet desktop update', () => {
         expect(await screen.findByTestId('bot-desktop-result-dn_1')).toBeTruthy();
         // RFC3339 原文（含 T/Z）不直出；渲染成当地 YYYY-MM-DD HH:mm。
         expect(screen.getByTestId('bot-desktop-result-dn_1').textContent).toMatch(/20\d{2}-\d{2}-\d{2} \d{2}:\d{2}/);
+    });
+
+    it('switches the computer in use between this desktop and the cloud one', async () => {
+        const idle = { ...sshNode, id: 'dn_2', name: 'spare', active: false, registered: true };
+        listNodes.mockResolvedValue({ enabled: true, nodes: [sshNode, idle] });
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('bot-desktop-cloud-dn_1'));
+        await waitFor(() => expect(useCloud).toHaveBeenCalled());
+        fireEvent.click(screen.getByTestId('bot-desktop-use-dn_2'));
+        await waitFor(() => expect(activateNode).toHaveBeenCalledWith('dn_2'));
     });
 
     it('does not render the target twice when the node has no name', async () => {

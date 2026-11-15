@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
+
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -133,6 +135,8 @@ func (a *adminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.handleLogout(w, r)
 	case path == "/api/overview":
 		a.withSession(w, r, a.handleOverview)
+	case path == "/api/resources":
+		a.withSession(w, r, a.handleResources)
 	case path == "/api/tokens":
 		a.withSession(w, r, a.handleTokens)
 	case strings.HasPrefix(path, "/api/tokens/"):
@@ -149,6 +153,8 @@ func (a *adminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.withSession(w, r, a.handleHubLinkDisconnect)
 	case path == "/api/hub-link/connect":
 		a.withSession(w, r, a.handleHubLinkConnect)
+	case path == "/api/hub-link/direct":
+		a.withSession(w, r, a.handleHubLinkDirect)
 	default:
 		http.NotFound(w, r)
 	}
@@ -424,16 +430,78 @@ func (a *adminServer) hubLinkView() map[string]any {
 	}
 	st := link.Status()
 	return map[string]any{
-		"enabled":  true,
-		"enrolled": st.Enrolled,
-		"hub_url":  st.HubURL,
-		"node_id":  st.NodeID,
-		"online":   st.Online,
-		"error":    st.Error,
-		"since":    st.Since,
-		"srv_addr": st.SrvAddr,
-		"self":     strings.TrimSpace(link.Self),
+		"enabled":     true,
+		"enrolled":    st.Enrolled,
+		"hub_url":     st.HubURL,
+		"node_id":     st.NodeID,
+		"online":      st.Online,
+		"error":       st.Error,
+		"since":       st.Since,
+		"srv_addr":    st.SrvAddr,
+		"direct_base": st.DirectBase,
+		"self":        strings.TrimSpace(link.Self),
 	}
+}
+
+// srvAdminFromPanel reads the srv admin secret. A path on this machine
+// (the design's file) is read here and is not sent back to the browser.
+// A pasted secret is kept as itself, including one that happens to contain
+// a slash, unless that exact name is a file on this machine.
+func srvAdminFromPanel(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	path, isFile := srvAdminPath(raw)
+	if !isFile {
+		return raw, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return "", errors.New("srv 管理密钥文件打不开")
+	}
+	if info.Size() > 4096 {
+		return "", errors.New("srv 管理密钥文件太大")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", errors.New("srv 管理密钥文件打不开")
+	}
+	secret := strings.TrimSpace(string(body))
+	if secret == "" {
+		return "", errors.New("srv 管理密钥文件是空的")
+	}
+	return secret, nil
+}
+
+// srvAdminPath reports a panel value that names a file. A slash inside a
+// pasted secret is not enough: the value has to be a path, or an existing file.
+func srvAdminPath(raw string) (string, bool) {
+	if raw == "" {
+		return "", false
+	}
+	path := raw
+	home := path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`)
+	if home {
+		dir, err := os.UserHomeDir()
+		if err != nil {
+			return path, true
+		}
+		path = filepath.Join(dir, strings.TrimLeft(path[1:], `/\`))
+		return path, true
+	}
+	if !srvAdminPathShaped(raw) {
+		info, err := os.Stat(raw)
+		if err != nil || info.IsDir() {
+			return "", false
+		}
+		return raw, true
+	}
+	return path, true
+}
+
+func srvAdminPathShaped(raw string) bool {
+	if strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, `\\`) || strings.HasPrefix(raw, "./") || strings.HasPrefix(raw, `.\`) || strings.HasPrefix(raw, "../") || strings.HasPrefix(raw, `..\`) || strings.HasPrefix(raw, "~") {
+		return true
+	}
+	return len(raw) >= 3 && raw[1] == ':' && (raw[2] == '\\' || raw[2] == '/')
 }
 
 func (a *adminServer) handleHubLink(w http.ResponseWriter, r *http.Request) {
@@ -446,18 +514,33 @@ func (a *adminServer) handleHubLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in struct {
-			HubURL   string `json:"hub_url"`
-			Code     string `json:"code"`
-			HasSrv   bool   `json:"has_srv"`
-			SrvAddr  string `json:"srv_addr"`
-			SrvAdmin string `json:"srv_admin_secret"`
+			HubURL     string `json:"hub_url"`
+			Code       string `json:"code"`
+			DirectBase string `json:"direct_base"`
+			HasSrv     bool   `json:"has_srv"`
+			SrvAddr    string `json:"srv_addr"`
+			SrvAdmin   string `json:"srv_admin_secret"`
 		}
 		if !decodeBody(w, r, &in) {
 			return
 		}
+		if _, err := normalizeDirectBase(in.DirectBase); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		secret, secretErr := srvAdminFromPanel(in.SrvAdmin)
+		if secretErr != nil {
+			writeErr(w, http.StatusBadRequest, secretErr.Error())
+			return
+		}
 		if _, err := a.svc.HubLink.EnrollWith(r.Context(), HubLinkEnroll{
-			HubURL: in.HubURL, Code: in.Code, HasSrv: in.HasSrv, SrvAddr: in.SrvAddr, SrvAdmin: in.SrvAdmin,
+			HubURL: in.HubURL, Code: in.Code, DirectBase: in.DirectBase,
+			HasSrv: in.HasSrv, SrvAddr: in.SrvAddr, SrvAdmin: secret,
 		}); err != nil {
+			if errors.Is(err, ErrInvalid) {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			writeErr(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -475,6 +558,39 @@ func (a *adminServer) handleHubLink(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (a *adminServer) handleHubLinkDirect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if a.svc == nil || a.svc.HubLink == nil {
+		writeErr(w, http.StatusNotFound, "hub link is disabled")
+		return
+	}
+	var in struct {
+		DirectBase string `json:"direct_base"`
+	}
+	if !decodeBody(w, r, &in) {
+		return
+	}
+	hubSaved, err := a.svc.HubLink.SaveDirectBase(r.Context(), in.DirectBase)
+	if err != nil {
+		if errors.Is(err, ErrInvalid) {
+			msg := err.Error()
+			if i := strings.LastIndex(msg, ": "); i >= 0 {
+				msg = msg[i+2:]
+			}
+			writeErr(w, http.StatusBadRequest, msg)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "内网访问地址没有保存")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "hub_saved": hubSaved, "direct_base": a.svc.HubLink.Status().DirectBase,
+	})
 }
 
 func (a *adminServer) handleHubLinkDisconnect(w http.ResponseWriter, r *http.Request) {
@@ -627,22 +743,94 @@ type overviewDesktop struct {
 	Status    string `json:"status"`
 }
 
+func resourceSaveError(err error) (int, string) {
+	if !errors.Is(err, desktop.ErrInvalid) {
+		return http.StatusInternalServerError, "桌面大小没有保存"
+	}
+	switch {
+	case strings.Contains(err.Error(), "cpus"):
+		return http.StatusBadRequest, "CPU 要写成大于 0 的数字，例如 2"
+	case strings.Contains(err.Error(), "shm"):
+		return http.StatusBadRequest, "共享内存要带单位，例如 1g"
+	default:
+		return http.StatusBadRequest, "内存要带单位，例如 4g"
+	}
+}
+
+func (a *adminServer) handleResources(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var in struct {
+		Memory  string `json:"memory"`
+		CPUs    string `json:"cpus"`
+		ShmSize string `json:"shm_size"`
+		Restore bool   `json:"restore_auto"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid desktop size")
+		return
+	}
+	if in.Restore {
+		if a.svc != nil && a.svc.HubLink != nil {
+			if err := a.svc.HubLink.PushResources(r.Context(), "", "", "", true); err != nil && !errors.Is(err, errHubResourcesGone) {
+				writeErr(w, http.StatusBadGateway, err.Error())
+				return
+			}
+		}
+		a.writeMu.Lock()
+		err := ClearPanelResources(a.stateDir)
+		a.writeMu.Unlock()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "desktop size was not cleared")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "source": "auto"})
+		return
+	}
+	if strings.TrimSpace(in.Memory) == "" || strings.TrimSpace(in.CPUs) == "" || strings.TrimSpace(in.ShmSize) == "" {
+		writeErr(w, http.StatusBadRequest, "请填写内存、CPU 和共享内存，例如 4g、2、1g")
+		return
+	}
+	a.writeMu.Lock()
+	fitted, err := SavePanelResources(a.stateDir, in.Memory, in.CPUs, in.ShmSize)
+	a.writeMu.Unlock()
+	if err != nil {
+		status, message := resourceSaveError(err)
+		writeErr(w, status, message)
+		return
+	}
+	hubSaved := true
+	if a.svc != nil && a.svc.HubLink != nil {
+		if err := a.svc.HubLink.PushResources(r.Context(), fitted.Memory, fitted.CPUs, fitted.ShmSize, false); err != nil {
+			hubSaved = false
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "source": "panel", "hub_saved": hubSaved,
+		"memory": fitted.Memory, "cpus": fitted.CPUs, "shm_size": fitted.ShmSize,
+	})
+}
+
 func (a *adminServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 	tokens, err := a.tokens()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "api tokens are unreadable")
 		return
 	}
+	shownMemory, shownCPUs, shownShm, resourceSource := shownDesktopResources()
 	out := map[string]any{
-		"advertise_host": a.svc.advertiseHostOrEmpty(),
-		"primary_token":  a.primary,
-		"image":          DefaultImage,
-		"image_sources":  a.svc.ImagePullStatuses(),
-		"memory":         DefaultMemory,
-		"cpus":           DefaultCPUs,
-		"shm_size":       DefaultShmSize,
-		"tokens":         tokens,
-		"desktops":       a.desktops(r),
+		"advertise_host":   a.svc.advertiseHostOrEmpty(),
+		"primary_token":    a.primary,
+		"image":            DefaultImage,
+		"image_sources":    a.svc.ImagePullStatuses(),
+		"memory":           shownMemory,
+		"cpus":             shownCPUs,
+		"shm_size":         shownShm,
+		"resources_source": resourceSource,
+		"tokens":           tokens,
+		"desktops":         a.desktops(r),
 		// Forward-proxy display state comes straight from the process env:
 		// the panel shows this configuration, it does not own it.
 		"proxy": strings.EqualFold(strings.TrimSpace(os.Getenv("DESKTOPD_PROXY")), "1"),

@@ -818,8 +818,21 @@ func (s *Service) StartBackgroundSync() {
 		if ownerErr == nil && ownerEmail == "" {
 			ownerEmail = s.cfg.Center.OwnerEmail
 		}
-		if ownerErr == nil && strings.TrimSpace(ownerEmail) != "" {
-			if _, err := s.Register(ctx, ownerEmail); err == nil {
+		switch {
+		case ownerErr != nil:
+			log.Printf("[center] register on startup: %v", ownerErr)
+		case strings.TrimSpace(ownerEmail) == "":
+			err := errors.New("admin email is required for hub registration")
+			_ = s.updateRegistrationError(ctx, err.Error())
+			log.Printf("[center] register on startup: %v", err)
+		default:
+			if _, err := s.Register(ctx, ownerEmail); err != nil {
+				// Early failures (empty center URL, bad public URL) return
+				// before Register stores last_error. The install probe reads
+				// that field and must not restart a process that cannot succeed.
+				_ = s.updateRegistrationError(ctx, err.Error())
+				log.Printf("[center] register on startup: %v", err)
+			} else {
 				return
 			}
 		}

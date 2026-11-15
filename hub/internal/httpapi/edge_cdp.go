@@ -72,7 +72,7 @@ func edgeCallerNode(ctx context.Context) string {
 func cdpURLForSession(ctx context.Context, tenantID, userID string, session desktoppool.DesktopSession) (string, error) {
 	nodeID := strings.TrimSpace(session.NodeID)
 	if nodeID == "" || !edgenode.Enabled() {
-		return edgeRelayCDP(ctx, session.CDP), nil
+		return edgeRelayCDPResult(ctx, nodeID, session.CDP)
 	}
 	if edgeCallerNode(ctx) != "" && edgeCallerNode(ctx) == nodeID {
 		if local := strings.TrimSpace(session.LocalCDP); local != "" {
@@ -86,7 +86,17 @@ func cdpURLForSession(ctx context.Context, tenantID, userID string, session desk
 	if issued != "" {
 		return issued, nil
 	}
-	return edgeRelayCDP(ctx, session.CDP), nil
+	return edgeRelayCDPResult(ctx, nodeID, session.CDP)
+}
+
+// edgeRelayCDPResult rewrites a node CDP address onto Hub. A node address
+// that cannot be rewritten is an error, so the gate token is not returned.
+func edgeRelayCDPResult(ctx context.Context, nodeID, raw string) (string, error) {
+	relayed := edgeRelayCDP(ctx, raw)
+	if strings.TrimSpace(nodeID) != "" && relayed == "" {
+		return "", errCDPRelay
+	}
+	return relayed, nil
 }
 
 func issueCDPTicketURL(ctx context.Context, tenantID, userID string, session desktoppool.DesktopSession) (string, error) {

@@ -36,6 +36,9 @@ type Credentials struct {
 	TenantID string `json:"tenant_id,omitempty"`
 	// SrvAddr is the local MaClawSrv this node forwards to. It is not a secret.
 	SrvAddr string `json:"srv_addr,omitempty"`
+	// DirectBase is the intranet address a GUI on that network can open.
+	// Empty means pictures stay on the Hub address.
+	DirectBase string `json:"direct_base,omitempty"`
 }
 
 // EnrollRequest is the node side of one enrollment. The code is one-time.
@@ -48,6 +51,10 @@ type EnrollRequest struct {
 	HasSrv      bool
 	// DirectBase is the intranet address a GUI on that network can probe.
 	DirectBase string
+	// HostRAMBytes and HostCPUs describe the machine desktopd is running on.
+	// Zero leaves the desktop size unchanged.
+	HostRAMBytes uint64
+	HostCPUs     int
 }
 
 // NormalizeHubURL keeps scheme, host and path; it drops query and fragment.
@@ -79,6 +86,8 @@ func Enroll(ctx context.Context, client *http.Client, hubURL string, in EnrollRe
 		"has_desktopd":     in.HasDesktopd,
 		"has_srv":          in.HasSrv,
 		"direct_base":      strings.TrimSpace(in.DirectBase),
+		"host_ram_bytes":   in.HostRAMBytes,
+		"host_cpus":        in.HostCPUs,
 	})
 	if err != nil {
 		return Credentials{}, err

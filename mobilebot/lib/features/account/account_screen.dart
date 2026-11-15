@@ -4,8 +4,10 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/account_store.dart';
 import '../../core/providers.dart';
+import '../../core/platform.dart';
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
+import 'update_dialog.dart';
 
 /// 我的 — account card, multi-account switcher, logout.
 class AccountScreen extends ConsumerWidget {
@@ -33,6 +35,18 @@ class AccountScreen extends ConsumerWidget {
               onTap: () => context.push('/llm-settings'),
             ),
           ),
+          if (supportsSideloadUpdate) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.system_update_alt),
+                title: const Text('检查更新'),
+                subtitle: const Text('从 GitHub / Cloudflare R2 获取新版本'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => showUpdateSheet(context),
+              ),
+            ),
+          ],
           const SizedBox(height: 24),
           Row(
             children: [

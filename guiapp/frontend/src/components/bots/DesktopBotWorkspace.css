@@ -649,6 +649,13 @@
     color: var(--mc-text-secondary, #5c6b7a);
 }
 
+.bot-edit-dialog__servers {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
 .bot-edit-dialog__notice {
     margin: 14px 0 0;
     font-size: 12.5px;

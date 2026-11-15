@@ -2682,7 +2682,7 @@ jobs:
       - name: Stage release asset
         run: |
           mkdir -p dist/mobilebot
-          cp mobilebot/build/app/outputs/flutter-apk/app-release.apk dist/mobilebot/MaClawBot.apk
+          cp mobilebot/build/app/outputs/flutter-apk/app-release.apk dist/mobilebot/MaClawGo.apk
       - uses: actions/upload-artifact@v7
         with:
           name: mobilebot-release-apk
@@ -2800,7 +2800,7 @@ jobs:
                   "MaClaw-x86_64-u2204.AppImage",
                   "MaClaw-x86_64-u2404.AppImage",
                   "MaClaw-Setup.exe",
-                  "MaClawBot.apk",
+                  "MaClawGo.apk",
                   "MaClaw-Universal.pkg",
                   "maclawsrv-Setup.exe",
                   "maclawsrv-Universal.pkg",

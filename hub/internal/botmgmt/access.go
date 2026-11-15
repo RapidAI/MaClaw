@@ -94,8 +94,10 @@ type Grant struct {
 	Scope    string `json:"scope"`
 	TargetID string `json:"target_id,omitempty"`
 	// DesktopBotLimit is how many of this grant's users may own a bot that
-	// has a cloud desktop. Nil is unlimited, which is every grant saved
-	// before the field existed. Zero means only bots with no desktop.
+	// has a cloud desktop. Limits cascade user, then department from
+	// nearest to root, then global, then the tenant default: a nil limit
+	// inherits the next level, and every level nil is unlimited. Zero
+	// means only bots with no desktop.
 	DesktopBotLimit *int `json:"desktop_bot_limit,omitempty"`
 }
 
@@ -253,7 +255,21 @@ func (s *Service) CreateBotForUserDesktop(ctx context.Context, tenantID, userID,
 	if _, err := s.loadForUser(ctx, tenantID, userID); err != nil {
 		return Bot{}, err
 	}
-	bot, err := s.createBot(ctx, tenantID, userID, name, description, true, wantDesktop)
+	bot, err := s.createBot(ctx, tenantID, userID, name, description, true, wantDesktop, nil)
+	if err != nil {
+		return Bot{}, err
+	}
+	return withDesktopModeView(bot), nil
+}
+
+// CreateBotForUserOnNode creates a bot on one server. An empty nodeID is the
+// cloud computer, including when this user is pinned to a local node.
+func (s *Service) CreateBotForUserOnNode(ctx context.Context, tenantID, userID, name, description string, wantDesktop *bool, nodeID string) (Bot, error) {
+	if _, err := s.loadForUser(ctx, tenantID, userID); err != nil {
+		return Bot{}, err
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	bot, err := s.createBot(ctx, tenantID, userID, name, description, true, wantDesktop, &nodeID)
 	if err != nil {
 		return Bot{}, err
 	}
@@ -1666,7 +1682,7 @@ func (s *Service) clearDesktopHeld(tenantID, userID, botID string, turn ...strin
 	s.mu.Unlock()
 }
 
-func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, description string, requireOwner bool, wantDesktop *bool) (Bot, error) {
+func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, description string, requireOwner bool, wantDesktop *bool, nodeChoice *string) (Bot, error) {
 	name = strings.TrimSpace(name)
 	description = strings.TrimSpace(description)
 	ownerUserID = strings.TrimSpace(ownerUserID)
@@ -1692,6 +1708,9 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 		return Bot{}, err
 	}
 	nodeID := ownerNodeID(rec, ownerUserID)
+	if nodeChoice != nil {
+		nodeID = strings.TrimSpace(*nodeChoice)
+	}
 	callRec, err := callTarget(rec, nodeID)
 	if err != nil {
 		return Bot{}, err
@@ -1701,7 +1720,15 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 			return Bot{}, err
 		}
 	}
-	token, err := s.ensureOwnerToken(ctx, tenantID, &rec, ownerUserID)
+	var token string
+	switch {
+	case nodeID != "":
+		token, err = s.ensureNodeOwnerToken(ctx, tenantID, &rec, ownerUserID, nodeID)
+	case nodeChoice != nil:
+		token, err = s.ensurePublicOwnerToken(ctx, tenantID, &rec, ownerUserID)
+	default:
+		token, err = s.ensureOwnerToken(ctx, tenantID, &rec, ownerUserID)
+	}
 	if err != nil {
 		return Bot{}, err
 	}

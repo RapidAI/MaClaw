@@ -3,6 +3,7 @@ package guiapp
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -323,8 +324,38 @@ func TestDesktopNodeFatalLeavesABlipRetryable(t *testing.T) {
 	if desktopNodeFatal(fmt.Errorf("desktopd 已升级，正在重新连接 Hub")) {
 		t.Fatal("a reconnecting hub link should be tried again")
 	}
+	if desktopNodeFatal(fmt.Errorf("desktopd 已注册，正在重新连接 Hub")) {
+		t.Fatal("a registered node still connecting should be tried again")
+	}
+	if !desktopNodeCapFull(fmt.Errorf("Hub 拒绝了桌面注册: 这个租户的节点数已到上限")) {
+		t.Fatal("a full node cap should be recognized before another code is issued")
+	}
+	if desktopNodeCapFull(fmt.Errorf("Hub 没有这个接口")) {
+		t.Fatal("a missing route is not a node cap")
+	}
 	if !desktopNodeFatal(fmt.Errorf("Hub 拒绝了桌面注册")) {
 		t.Fatal("a hub rejection should stop the job")
+	}
+	if desktopNodeFatal(fmt.Errorf("Hub 拒绝了桌面注册: MaClawSrv 不可达")) {
+		t.Fatal("the old unreachable wording kept retrying a missing route")
+	}
+	if !desktopNodeFatal(desktopNodeRegisterError{msg: desktopNodeHubRouteMessage}) {
+		t.Fatal("a missing hub route should stop the job")
+	}
+	if got := desktopNodeHubCallError(desktopHubMissingRouteError{}); got != desktopNodeHubRouteMessage {
+		t.Fatalf("list error = %q", got)
+	}
+	if err := desktopHubStatusError(http.StatusNotFound, []byte("404 page not found\n")); err == nil || err.Error() != "Hub 没有这个接口" {
+		t.Fatalf("plain 404 = %v", err)
+	}
+	if err := desktopHubStatusError(http.StatusNotFound, []byte(`{}`)); err == nil || err.Error() != "Hub 没有这个接口" {
+		t.Fatalf("empty json 404 = %v", err)
+	}
+	if err := desktopHubStatusError(http.StatusNotFound, []byte(`{"message":"bot not found"}`)); err == nil || err.Error() != "bot not found" {
+		t.Fatalf("json 404 = %v", err)
+	}
+	if err := desktopHubStatusError(http.StatusBadGateway, []byte("<html>bad gateway</html>")); !desktopBotNotReached(err) {
+		t.Fatalf("gateway page = %v", err)
 	}
 	if !desktopNodeFatal(desktopNodeRegisterError{msg: "desktopd 拒绝了访问令牌"}) {
 		t.Fatal("a rejected token should stop the job")

@@ -30,3 +30,15 @@ func TestIntranetPublicBaseIgnoresAdvertiseHost(t *testing.T) {
 		t.Fatalf("public base = %q %v", got, err)
 	}
 }
+
+func TestIntranetPublicBaseWithoutHubLinkUsesListenAddr(t *testing.T) {
+	t.Setenv("DESKTOPD_ADDR", "127.0.0.1:18081")
+	got, err := (&Service{Intranet: true}).publicBase()
+	if err != nil || got != "http://127.0.0.1:18081" {
+		t.Fatalf("botnode desktop base = %q %v", got, err)
+	}
+	waiting := &HubLink{Self: "127.0.0.1:18081"}
+	if _, err := (&Service{Intranet: true, HubLink: waiting}).publicBase(); err == nil {
+		t.Fatal("an unenrolled hub link must not publish a session")
+	}
+}

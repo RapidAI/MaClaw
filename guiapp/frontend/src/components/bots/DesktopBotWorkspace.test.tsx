@@ -32,7 +32,8 @@ const recallSecret = vi.hoisted(() => vi.fn(async (_name?: string) => false));
 const fillSecret = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: string) => ({ filled: 'SITE_PASSWORD' })));
 type HubDesktopBot = { id: string; title: string; description: string; instance_id: string; created_at?: string; primary?: boolean; color?: string; shape?: string };
 const listBots = vi.hoisted(() => vi.fn(async (): Promise<HubDesktopBot[]> => []));
-const createBot = vi.hoisted(() => vi.fn(async (name: string, description: string): Promise<HubDesktopBot> => ({ id: 'bot_1', title: name, description, instance_id: '' })));
+const listDesktopNodes = vi.hoisted(() => vi.fn(async () => ({ enabled: false, nodes: [] as Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; active?: boolean; node_id?: string; with_srv?: boolean }> })));
+const createBot = vi.hoisted(() => vi.fn(async (name: string, description: string, _nodeID?: string): Promise<HubDesktopBot> => ({ id: 'bot_1', title: name, description, instance_id: '' })));
 const setAppearance = vi.hoisted(() => vi.fn(async (_botId?: string, _color?: string, _shape?: string): Promise<{ color?: string; shape?: string }> => ({})));
 const renameBot = vi.hoisted(() => vi.fn(async (_id: string, _name: string, _description: string) => undefined));
 const deleteBot = vi.hoisted(() => vi.fn(async (_id: string) => undefined));
@@ -136,7 +137,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ListDesktopBots: () => listBots(),
     GetDesktopBotQuota: async () => ({ limit: null, used: 0 }),
     CreateDesktopBot: (name: string, description: string) => createBot(name, description),
-    CreateDesktopBotWithComputer: (name: string, description: string) => createBot(name, description),
+    CreateDesktopBotWithComputer: (name: string, description: string, _color?: string, _shape?: string, _needs?: boolean, nodeID?: string) => createBot(name, description, nodeID),
     SetDesktopBotAppearance: (botId: string, color: string, shape: string) => setAppearance(botId, color, shape),
     GetDesktopBotStyle: vi.fn(),
     SaveDesktopBotStyle: vi.fn(),
@@ -156,7 +157,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     LoadConfig: () => loadConfig(),
     SaveDesktopBotLLM: (input: BotLLMIn) => saveBotLLM(input),
     GetMaclawLLMProviders: () => listProviders(),
-    ListDesktopNodes: () => Promise.resolve({ enabled: false, nodes: [] }),
+    ListDesktopNodes: () => listDesktopNodes(),
     FetchProviderModels: (...args: unknown[]) => fetchProviderModels(...(args as [string, string, string, string])),
     PersistDesktopBotPreference: (botId: string, persona: string) => persistPreference(botId, persona),
     QueryDesktopBotTaskStatus: (botId: string, hint: string, lang: string) => queryTaskStatus(botId, hint, lang),
@@ -374,6 +375,8 @@ beforeEach(() => {
     evaluateSupplement.mockResolvedValue(null);
     appendSupplement.mockReset();
     appendSupplement.mockResolvedValue(null);
+    listDesktopNodes.mockReset();
+    listDesktopNodes.mockResolvedValue({ enabled: false, nodes: [] });
     createBot.mockReset();
     createBot.mockImplementation(async (name: string, description: string) => ({ id: 'bot_1', title: name, description, instance_id: '' }));
     renameBot.mockReset();
@@ -3170,6 +3173,46 @@ describe('DesktopBotWorkspace', () => {
         const avatar = view.container.querySelector('.desktop-bot-workspace__avatar');
         expect(avatar?.getAttribute('data-color')).toBe('#16a34a');
         expect(avatar?.getAttribute('data-shape')).toBe('leaf');
+    });
+
+    it('offers each local server when creating a bot and sends the one that was picked', async () => {
+        listBots.mockResolvedValue([]);
+        listDesktopNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [
+                { id: 'n1', name: 'lab', mode: 'ssh', host: '192.168.1.49', user: 'znsoft', status: 'ready', active: true, node_id: 'dn_a', with_srv: true },
+                { id: 'n2', name: 'spare', mode: 'ssh', host: '192.168.1.50', user: 'znsoft', status: 'ready', active: false, node_id: 'dn_b', with_srv: true },
+                { id: 'n3', name: 'desktop-only', mode: 'ssh', host: '192.168.1.51', user: 'znsoft', status: 'ready', active: false, node_id: 'dn_c', with_srv: false },
+            ],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('bot-create-server-dn_a')).toBeTruthy();
+        expect(screen.queryByTestId('bot-create-server-dn_c')).toBeNull();
+        expect((screen.getByTestId('bot-create-server-dn_a') as HTMLInputElement).checked).toBe(true);
+        fireEvent.click(screen.getByTestId('bot-create-server-dn_b'));
+        fireEvent.click(screen.getByTestId('bot-edit-save'));
+        await waitFor(() => expect(createBot).toHaveBeenCalled());
+        expect(createBot.mock.calls.at(-1)?.[2]).toBe('dn_b');
+    });
+
+    it('defaults to the cloud computer when the desktop in use cannot host a bot', async () => {
+        listBots.mockResolvedValue([]);
+        listDesktopNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [
+                { id: 'n3', name: 'desktop-only', mode: 'ssh', host: '192.168.1.51', user: 'znsoft', status: 'ready', active: true, node_id: 'dn_c', with_srv: false },
+                { id: 'n2', name: 'spare', mode: 'ssh', host: '192.168.1.50', user: 'znsoft', status: 'ready', active: false, node_id: 'dn_b', with_srv: true },
+            ],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('bot-create-place-cloud')).toBeTruthy();
+        expect(screen.queryByTestId('bot-create-server-dn_c')).toBeNull();
+        expect(screen.queryByTestId('bot-create-server-dn_b')).toBeNull();
+        expect((screen.getByTestId('bot-create-place-cloud') as HTMLInputElement).checked).toBe(true);
+        fireEvent.click(screen.getByTestId('bot-create-place-local'));
+        expect(screen.getByTestId('bot-create-local-only').textContent).toBe('znsoft@192.168.1.50');
     });
 
     it('sends a new bot look that the hub list has not returned, then the color chosen while that copy is out', async () => {
