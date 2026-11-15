@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -220,6 +221,9 @@ func (r *Registry) issue(ctx context.Context, tenantID, name, owner string) (Cod
 	if len([]rune(name)) > 80 {
 		return Code{}, errors.New("node name is too long")
 	}
+	if err := r.admitNewNode(ctx, tenantID); err != nil {
+		return Code{}, err
+	}
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return Code{}, err
@@ -253,6 +257,7 @@ type EnrollResult struct {
 	NodeID     string `json:"node_id"`
 	NodeSecret string `json:"node_secret"`
 	HubToken   string `json:"hub_token"`
+	TenantID   string `json:"tenant_id,omitempty"`
 }
 
 // Enroll spends a code and stores the node.
@@ -305,22 +310,31 @@ func (r *Registry) Enroll(ctx context.Context, code, desktopdKey, srvAdmin, vers
 		OwnerUserID:  item.OwnerUserID,
 		CreatedAt:    r.now(),
 	}
-	if node.OwnerUserID != "" {
-		if hasSrv || !hasDesktopd {
-			r.restoreCode(item)
-			return EnrollResult{}, errors.New("a personal desktop code registers desktopd only")
-		}
-		// The machine belongs to the person. A hub token would let them call
-		// the desktop API for every user of the tenant.
+	if node.OwnerUserID != "" && !hasDesktopd {
+		r.restoreCode(item)
+		return EnrollResult{}, errors.New("a personal desktop code registers desktopd")
+	}
+	if hasSrv && node.OwnerUserID != "" && strings.TrimSpace(srvAdmin) == "" {
+		r.restoreCode(item)
+		return EnrollResult{}, errors.New("srv admin secret is required")
+	}
+	if node.OwnerUserID != "" && !hasSrv {
+		// Desktop only. A hub token would let this machine call the desktop
+		// API for every user of the tenant. A same-machine srv keeps the
+		// token, because that process is what calls Hub.
 		node.HubTokenHash = ""
 		token = ""
+	}
+	if err := r.admitNewNode(ctx, node.TenantID); err != nil {
+		r.restoreCode(item)
+		return EnrollResult{}, err
 	}
 	if err := r.commit(ctx, node); err != nil {
 		r.restoreCode(item)
 		return EnrollResult{}, err
 	}
 	r.remember(node)
-	return EnrollResult{NodeID: node.ID, NodeSecret: secret, HubToken: token}, nil
+	return EnrollResult{NodeID: node.ID, NodeSecret: secret, HubToken: token, TenantID: node.TenantID}, nil
 }
 
 // ParseDirectBase checks an intranet address a GUI can probe. Empty is
@@ -648,6 +662,7 @@ type Broker struct {
 	sessions map[string]*yamux.Session
 	nodes    map[string]Node
 	clients  map[string]*http.Client
+	streams  map[string]int
 }
 
 func NewBroker(reg *Registry) *Broker {
@@ -656,6 +671,7 @@ func NewBroker(reg *Registry) *Broker {
 		sessions: map[string]*yamux.Session{},
 		nodes:    map[string]Node{},
 		clients:  map[string]*http.Client{},
+		streams:  map[string]int{},
 	}
 }
 
@@ -693,6 +709,7 @@ func (b *Broker) Attach(ctx context.Context, node Node, conn net.Conn) error {
 	if b.Registry != nil {
 		b.Registry.remember(node)
 	}
+	go b.probe(node)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -719,6 +736,20 @@ func (b *Broker) Dial(ctx context.Context, tenantID, nodeID, target string) (net
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	maxStreams := 0
+	if b.Registry != nil {
+		if p, err := b.Registry.Policy(ctx, node.TenantID); err == nil {
+			maxStreams = p.MaxStreams
+		}
+	}
+	held := b.acquireStream(node.TenantID, maxStreams)
+	if !held && maxStreams > 0 {
+		return nil, ErrStreamLimit
+	}
+	release := func() {}
+	if held && maxStreams > 0 {
+		release = func() { b.releaseStream(node.TenantID) }
+	}
 	type opened struct {
 		conn net.Conn
 		err  error
@@ -737,18 +768,71 @@ func (b *Broker) Dial(ctx context.Context, tenantID, nodeID, target string) (net
 				_ = result.conn.Close()
 			}
 		}()
+		release()
 		return nil, ctx.Err()
 	case result := <-ch:
 		if result.err != nil {
+			release()
 			return nil, fmt.Errorf("%w: %s", ErrOffline, result.err.Error())
 		}
 		stream = result.conn
 	}
 	if err := edgelink.WriteTarget(stream, target); err != nil {
 		_ = stream.Close()
+		release()
 		return nil, err
 	}
+	if maxStreams > 0 {
+		stream = &streamLease{Conn: stream, release: release}
+	}
 	return stream, nil
+}
+
+func (b *Broker) acquireStream(tenantID string, max int) bool {
+	if b == nil || max <= 0 {
+		return false
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.streams == nil {
+		b.streams = map[string]int{}
+	}
+	if b.streams[tenantID] >= max {
+		return false
+	}
+	b.streams[tenantID]++
+	return true
+}
+
+func (b *Broker) releaseStream(tenantID string) {
+	if b == nil {
+		return
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.streams[tenantID] > 0 {
+		b.streams[tenantID]--
+	}
+}
+
+type streamLease struct {
+	net.Conn
+	once    sync.Once
+	release func()
+}
+
+func (c *streamLease) Close() error {
+	c.once.Do(func() {
+		if c.release != nil {
+			c.release()
+		}
+	})
+	if c.Conn == nil {
+		return nil
+	}
+	return c.Conn.Close()
 }
 
 // closeIdle drops pooled streams after the yamux session is replaced.
@@ -769,6 +853,128 @@ func (b *Broker) closeIdle(nodeID string) {
 	b.mu.Unlock()
 	for _, client := range idle {
 		client.CloseIdleConnections()
+	}
+}
+
+// probe asks the node, through the tunnel, whether desktopd is healthy and
+// which srv version is running. The result is what the node list shows as
+// 在线 / 能力 / 版本. The desktopd key is sent as a bearer and is not logged.
+func (b *Broker) probe(node Node) {
+	if b == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	var parts []string
+	if node.HasDesktopd && b.desktopdHealthy(ctx, node) {
+		parts = append(parts, "desktopd")
+	}
+	if node.HasSrv {
+		if ver := b.srvVersion(ctx, node); ver != "" {
+			parts = append(parts, "srv "+ver)
+		}
+	}
+	if len(parts) == 0 {
+		log.Printf("[edge] probe empty node=%s desktopd=%v srv=%v", node.ID, node.HasDesktopd, node.HasSrv)
+		return
+	}
+	shown := strings.Join(parts, " / ")
+	log.Printf("[edge] probe node=%s result=%s", node.ID, shown)
+	if len(shown) > 80 {
+		shown = shown[:80]
+	}
+	b.mu.Lock()
+	current, ok := b.nodes[node.ID]
+	sess := b.sessions[node.ID]
+	if ok && sess != nil && !sess.IsClosed() {
+		current.Version = shown
+		b.nodes[node.ID] = current
+	}
+	b.mu.Unlock()
+}
+
+func (b *Broker) desktopdHealthy(ctx context.Context, node Node) bool {
+	client := b.Client(node.TenantID, node.ID, edgelink.TargetDesktopd)
+	if client == nil {
+		log.Printf("[edge] probe desktopd node=%s no tunnel", node.ID)
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://desktopd.node.invalid/v1/health", nil)
+	if err != nil {
+		return false
+	}
+	if key := strings.TrimSpace(node.DesktopdKey); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[edge] probe desktopd node=%s err=%v", node.ID, err)
+		return false
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[edge] probe desktopd node=%s status=%d", node.ID, resp.StatusCode)
+		return false
+	}
+	var parsed struct {
+		OK bool `json:"ok"`
+	}
+	if json.Unmarshal(body, &parsed) != nil || !parsed.OK {
+		log.Printf("[edge] probe desktopd node=%s health not ok", node.ID)
+		return false
+	}
+	return true
+}
+
+func (b *Broker) srvVersion(ctx context.Context, node Node) string {
+	client := b.Client(node.TenantID, node.ID, edgelink.TargetSrv)
+	if client == nil {
+		log.Printf("[edge] probe srv node=%s no tunnel", node.ID)
+		return ""
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://srv.node.invalid/version", nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[edge] probe srv node=%s err=%v", node.ID, err)
+		return ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[edge] probe srv node=%s status=%d", node.ID, resp.StatusCode)
+		return ""
+	}
+	var parsed struct {
+		Version string `json:"version"`
+	}
+	if json.Unmarshal(body, &parsed) != nil {
+		log.Printf("[edge] probe srv node=%s version unreadable", node.ID)
+		return ""
+	}
+	ver := strings.TrimSpace(parsed.Version)
+	if ver == "" || strings.ContainsAny(ver, "\r\n") || len(ver) > 32 {
+		log.Printf("[edge] probe srv node=%s version rejected", node.ID)
+		return ""
+	}
+	return ver
+}
+
+// ApplyLive fills online and the probed version from the open tunnel.
+// Secrets on the broker's copy are not copied back.
+func (b *Broker) ApplyLive(node *Node) {
+	if b == nil || node == nil {
+		return
+	}
+	node.Online = b.Online(node.ID)
+	b.mu.Lock()
+	live, ok := b.nodes[node.ID]
+	b.mu.Unlock()
+	if ok && strings.TrimSpace(live.Version) != "" {
+		node.Version = live.Version
 	}
 }
 

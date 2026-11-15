@@ -284,6 +284,56 @@ func VerifyPackageIntegrity(skillDir string, manifest *PackageManifest) error {
 	return fmt.Errorf("%s", b.String())
 }
 
+// VerifySkillIntegrityForLoad re-verifies a skill directory against its
+// install-time manifest before the definition is loaded. Skills that were
+// never installed with a manifest (locally authored, external, legacy) load
+// unverified — the pin only governs packages that carry one. A manifest that
+// exists but fails verification fails closed: the skill does not load.
+func VerifySkillIntegrityForLoad(skillDir string) error {
+	// Fast path: nothing pinned, nothing to verify. Check for the manifest
+	// file directly so an unusual (e.g. symlinked) skill directory without a
+	// manifest keeps loading exactly as before — the pin only governs
+	// directories that carry one.
+	if _, err := os.Lstat(filepath.Join(skillDir, PackageManifestFileName)); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	manifest, err := ReadPackageManifest(skillDir)
+	if err != nil {
+		return err
+	}
+	if manifest == nil {
+		return nil
+	}
+	return VerifyPackageIntegrity(skillDir, manifest)
+}
+
+// RepinPackageManifestIfPresent regenerates the integrity manifest after a
+// host-sanctioned mutation of the skill directory (evolution, repair,
+// contract patch, rename, upload-time id injection). The pin attests "the
+// bytes the host last sanctioned", not "the bytes from the marketplace", so
+// a legitimate mutation must re-attest or the next load fails closed. It is
+// a no-op for skills that never had a manifest.
+func RepinPackageManifestIfPresent(skillDir string) error {
+	existing, err := ReadPackageManifest(skillDir)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return nil
+	}
+	regenerated, err := GeneratePackageManifest(skillDir, existing.SkillID, existing.Version)
+	if err != nil {
+		return err
+	}
+	// PackageSHA256 attests the uploaded zip, not the current install — keep
+	// the original upload evidence even though the file set moved.
+	regenerated.PackageSHA256 = existing.PackageSHA256
+	return WritePackageManifest(skillDir, regenerated)
+}
+
 // canonicalManifestRelativePath validates the portable slash-separated path
 // stored in a manifest and returns its canonical representation. Manifest
 // entries are untrusted input; accepting an absolute path or ".." component

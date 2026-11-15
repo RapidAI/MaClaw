@@ -22,6 +22,30 @@
       "y": -50
     },
     {
+      "name": "braid_l",
+      "parent": "head",
+      "x": -22,
+      "y": -2,
+      "rotate": 6
+    },
+    {
+      "name": "braid_l_tip",
+      "parent": "braid_l",
+      "y": 22
+    },
+    {
+      "name": "braid_r",
+      "parent": "head",
+      "x": 24,
+      "y": -4,
+      "rotate": -7
+    },
+    {
+      "name": "braid_r_tip",
+      "parent": "braid_r",
+      "y": 24
+    },
+    {
       "name": "eyes",
       "parent": "head",
       "y": -6
@@ -103,6 +127,32 @@
       "name": "arm_r",
       "bone": "arm_r",
       "texture": "rig/arm-r.png",
+      "z": 3
+    },
+    {
+      "name": "braid_l",
+      "bone": "braid_l",
+      "texture": "rig/braid.png",
+      "z": 3
+    },
+    {
+      "name": "braid_l_tip",
+      "bone": "braid_l_tip",
+      "texture": "rig/braid-tip.png",
+      "z": 3
+    },
+    {
+      "name": "braid_r",
+      "bone": "braid_r",
+      "texture": "rig/braid.png",
+      "scale_x": -1,
+      "z": 3
+    },
+    {
+      "name": "braid_r_tip",
+      "bone": "braid_r_tip",
+      "texture": "rig/braid-tip.png",
+      "scale_x": -1,
       "z": 3
     },
     {
@@ -277,6 +327,50 @@
             "ease": "ease-in-out"
           }
         ],
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": -2.2
+          },
+          {
+            "at_ms": 560,
+            "rotate": 22,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -1.2
+          },
+          {
+            "at_ms": 560,
+            "rotate": 12,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -2.2
+          },
+          {
+            "at_ms": 560,
+            "rotate": 22,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -1.2
+          },
+          {
+            "at_ms": 560,
+            "rotate": 12,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -344,6 +438,70 @@
             "at_ms": 1400,
             "y": 6,
             "rotate": 18
+          }
+        ],
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 22
+          },
+          {
+            "at_ms": 700,
+            "rotate": 25.3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1400,
+            "rotate": 22,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 12
+          },
+          {
+            "at_ms": 700,
+            "rotate": 13.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1400,
+            "rotate": 12,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": 22
+          },
+          {
+            "at_ms": 700,
+            "rotate": 25.3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1400,
+            "rotate": 22,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 12
+          },
+          {
+            "at_ms": 700,
+            "rotate": 13.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1400,
+            "rotate": 12,
+            "ease": "ease-in-out"
           }
         ],
         "head": [
@@ -418,6 +576,46 @@
             "at_ms": 0,
             "y": 4,
             "rotate": 14
+          },
+          {
+            "at_ms": 480,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 22
+          },
+          {
+            "at_ms": 480,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 12
+          },
+          {
+            "at_ms": 480,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": 22
+          },
+          {
+            "at_ms": 480,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 12
           },
           {
             "at_ms": 480,
@@ -942,7 +1140,6 @@
     "idle_breathe_loop": {
       "duration_ms": 3200,
       "loop": true,
-      "travel_x": 80,
       "tracks": {
         "root": [
           {
@@ -984,7 +1181,8 @@
             "ease": "ease-in-out"
           }
         ]
-      }
+      },
+      "travel_x": 80
     },
     "idle_breathe_out": {
       "duration_ms": 360,
@@ -1015,6 +1213,70 @@
     "idle_look_left_in": {
       "duration_ms": 420,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": -2.2
+          },
+          {
+            "at_ms": 120,
+            "rotate": -4.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": 9.9,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -1.2
+          },
+          {
+            "at_ms": 120,
+            "rotate": -2.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": 5.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -2.2
+          },
+          {
+            "at_ms": 120,
+            "rotate": -4.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": 9.9,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -1.2
+          },
+          {
+            "at_ms": 120,
+            "rotate": -2.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": 5.4,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -1038,6 +1300,90 @@
       "duration_ms": 2600,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 9.9
+          },
+          {
+            "at_ms": 900,
+            "rotate": 14.3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": 8.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": 9.9,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 5.4
+          },
+          {
+            "at_ms": 900,
+            "rotate": 7.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": 4.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": 5.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": 9.9
+          },
+          {
+            "at_ms": 900,
+            "rotate": 14.3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": 8.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": 9.9,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 5.4
+          },
+          {
+            "at_ms": 900,
+            "rotate": 7.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": 4.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": 5.4,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -1066,6 +1412,46 @@
     "idle_look_left_out": {
       "duration_ms": 380,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 8.8
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 4.8
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": 8.8
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 4.8
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -1082,6 +1468,70 @@
     "idle_look_right_in": {
       "duration_ms": 420,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 2.2
+          },
+          {
+            "at_ms": 120,
+            "rotate": 4.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": -9.9,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 1.2
+          },
+          {
+            "at_ms": 120,
+            "rotate": 2.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": -5.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": 2.2
+          },
+          {
+            "at_ms": 120,
+            "rotate": 4.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": -9.9,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 1.2
+          },
+          {
+            "at_ms": 120,
+            "rotate": 2.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 420,
+            "rotate": -5.4,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -1105,6 +1555,90 @@
       "duration_ms": 2600,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": -9.9
+          },
+          {
+            "at_ms": 900,
+            "rotate": -14.3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -8.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": -9.9,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -5.4
+          },
+          {
+            "at_ms": 900,
+            "rotate": -7.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -4.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": -5.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -9.9
+          },
+          {
+            "at_ms": 900,
+            "rotate": -14.3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -8.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": -9.9,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -5.4
+          },
+          {
+            "at_ms": 900,
+            "rotate": -7.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -4.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 2600,
+            "rotate": -5.4,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -1133,6 +1667,46 @@
     "idle_look_right_out": {
       "duration_ms": 380,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": -8.8
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -4.8
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -8.8
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -4.8
+          },
+          {
+            "at_ms": 380,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -1389,6 +1963,50 @@
     "listen_in": {
       "duration_ms": 400,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": -1.1
+          },
+          {
+            "at_ms": 400,
+            "rotate": 7.7,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -0.6
+          },
+          {
+            "at_ms": 400,
+            "rotate": 4.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -1.1
+          },
+          {
+            "at_ms": 400,
+            "rotate": 7.7,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -0.6
+          },
+          {
+            "at_ms": 400,
+            "rotate": 4.2,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -1417,6 +2035,70 @@
       "duration_ms": 1500,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 7.7
+          },
+          {
+            "at_ms": 700,
+            "rotate": 9.9,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1500,
+            "rotate": 7.7,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 4.2
+          },
+          {
+            "at_ms": 700,
+            "rotate": 5.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1500,
+            "rotate": 4.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": 7.7
+          },
+          {
+            "at_ms": 700,
+            "rotate": 9.9,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1500,
+            "rotate": 7.7,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 4.2
+          },
+          {
+            "at_ms": 700,
+            "rotate": 5.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1500,
+            "rotate": 4.2,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -1439,6 +2121,46 @@
     "listen_out": {
       "duration_ms": 340,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 6.6
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 3.6
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": 6.6
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 3.6
+          },
+          {
+            "at_ms": 340,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0,
@@ -1570,6 +2292,62 @@
             "ease": "ease-in-out"
           }
         ],
+        "braid_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 460,
+            "rotate": -4.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 980,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 460,
+            "rotate": -2.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 980,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 460,
+            "rotate": -4.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 980,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 460,
+            "rotate": -2.4,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 980,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0
@@ -1610,6 +2388,62 @@
     "react_click_notice": {
       "duration_ms": 760,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 220,
+            "rotate": 6.6,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 220,
+            "rotate": 3.6,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 220,
+            "rotate": 6.6,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 220,
+            "rotate": 3.6,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0
@@ -1762,6 +2596,82 @@
     "react_hover_peek": {
       "duration_ms": 720,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 180,
+            "rotate": -8.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 480,
+            "rotate": 4.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 720,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 180,
+            "rotate": -4.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 480,
+            "rotate": 2.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 720,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 180,
+            "rotate": -8.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 480,
+            "rotate": 4.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 720,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 180,
+            "rotate": -4.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 480,
+            "rotate": 2.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 720,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0
@@ -1894,6 +2804,62 @@
     "react_task_concern": {
       "duration_ms": 900,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 360,
+            "rotate": -6.6,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 360,
+            "rotate": -3.6,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 360,
+            "rotate": -6.6,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 360,
+            "rotate": -3.6,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0
@@ -1945,6 +2911,62 @@
             "ease": "ease-in-out"
           }
         ],
+        "braid_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 300,
+            "rotate": -3.3,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 860,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 300,
+            "rotate": -1.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 860,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 300,
+            "rotate": -3.3,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 860,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 300,
+            "rotate": -1.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 860,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0
@@ -1975,6 +2997,62 @@
             "at_ms": 360,
             "y": -6,
             "rotate": -70,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 920,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 260,
+            "rotate": 5.5,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 920,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 260,
+            "rotate": 3,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 920,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 260,
+            "rotate": 5.5,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 920,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 260,
+            "rotate": 3,
             "ease": "ease-out"
           },
           {
@@ -2060,6 +3138,46 @@
             "ease": "ease-in-out"
           }
         ],
+        "braid_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 520,
+            "rotate": -5.5,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 520,
+            "rotate": -3,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 520,
+            "rotate": -5.5,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 520,
+            "rotate": -3,
+            "ease": "ease-in-out"
+          }
+        ],
         "eyes": [
           {
             "at_ms": 0,
@@ -2136,6 +3254,46 @@
     "rest_out": {
       "duration_ms": 460,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": -5.5
+          },
+          {
+            "at_ms": 460,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -3
+          },
+          {
+            "at_ms": 460,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -5.5
+          },
+          {
+            "at_ms": 460,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -3
+          },
+          {
+            "at_ms": 460,
+            "ease": "ease-in-out"
+          }
+        ],
         "eyes": [
           {
             "at_ms": 0,
@@ -2368,6 +3526,170 @@
       "duration_ms": 800,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 2.26
+          },
+          {
+            "at_ms": 114,
+            "rotate": 5.58,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 228,
+            "rotate": 4.71,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 342,
+            "rotate": 0.28,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 457,
+            "rotate": -4.35,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 571,
+            "rotate": -5.71,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 685,
+            "rotate": -2.77,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 800,
+            "rotate": 2.26,
+            "ease": "linear"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -4.35
+          },
+          {
+            "at_ms": 114,
+            "rotate": 4.33,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 228,
+            "rotate": 9.75,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 342,
+            "rotate": 7.83,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 457,
+            "rotate": 0.01,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 571,
+            "rotate": -7.81,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 685,
+            "rotate": -9.75,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 800,
+            "rotate": -4.35,
+            "ease": "linear"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -2.26
+          },
+          {
+            "at_ms": 114,
+            "rotate": -5.58,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 228,
+            "rotate": -4.71,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 342,
+            "rotate": -0.28,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 457,
+            "rotate": 4.35,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 571,
+            "rotate": 5.71,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 685,
+            "rotate": 2.77,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 800,
+            "rotate": -2.26,
+            "ease": "linear"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 4.35
+          },
+          {
+            "at_ms": 114,
+            "rotate": -4.33,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 228,
+            "rotate": -9.75,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 342,
+            "rotate": -7.83,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 457,
+            "rotate": -0.01,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 571,
+            "rotate": 7.81,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 685,
+            "rotate": 9.75,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 800,
+            "rotate": 4.35,
+            "ease": "linear"
+          }
+        ],
         "tail": [
           {
             "at_ms": 0
@@ -2393,6 +3715,170 @@
       "duration_ms": 900,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 7.68
+          },
+          {
+            "at_ms": 128,
+            "rotate": 18.99,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 257,
+            "rotate": 16,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 385,
+            "rotate": 0.96,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 514,
+            "rotate": -14.8,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 642,
+            "rotate": -19.42,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 771,
+            "rotate": -9.41,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 900,
+            "rotate": 7.68,
+            "ease": "linear"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -14.79
+          },
+          {
+            "at_ms": 128,
+            "rotate": 14.72,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 257,
+            "rotate": 33.14,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 385,
+            "rotate": 26.61,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 514,
+            "rotate": 0.04,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 642,
+            "rotate": -26.56,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 771,
+            "rotate": -33.16,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 900,
+            "rotate": -14.79,
+            "ease": "linear"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -7.68
+          },
+          {
+            "at_ms": 128,
+            "rotate": -18.99,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 257,
+            "rotate": -16,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 385,
+            "rotate": -0.96,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 514,
+            "rotate": 14.8,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 642,
+            "rotate": 19.42,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 771,
+            "rotate": 9.41,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 900,
+            "rotate": -7.68,
+            "ease": "linear"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 14.79
+          },
+          {
+            "at_ms": 128,
+            "rotate": -14.72,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 257,
+            "rotate": -33.14,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 385,
+            "rotate": -26.61,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 514,
+            "rotate": -0.04,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 642,
+            "rotate": 26.56,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 771,
+            "rotate": 33.16,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 900,
+            "rotate": 14.79,
+            "ease": "linear"
+          }
+        ],
         "tail": [
           {
             "at_ms": 0
@@ -2418,6 +3904,170 @@
       "duration_ms": 2400,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 4.52
+          },
+          {
+            "at_ms": 342,
+            "rotate": 11.17,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 685,
+            "rotate": 9.41,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1028,
+            "rotate": 0.57,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1371,
+            "rotate": -8.71,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1714,
+            "rotate": -11.42,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2057,
+            "rotate": -5.54,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2400,
+            "rotate": 4.52,
+            "ease": "linear"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -8.7
+          },
+          {
+            "at_ms": 342,
+            "rotate": 8.66,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 685,
+            "rotate": 19.49,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1028,
+            "rotate": 15.65,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1371,
+            "rotate": 0.02,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1714,
+            "rotate": -15.62,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2057,
+            "rotate": -19.5,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2400,
+            "rotate": -8.7,
+            "ease": "linear"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -4.52
+          },
+          {
+            "at_ms": 342,
+            "rotate": -11.17,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 685,
+            "rotate": -9.41,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1028,
+            "rotate": -0.57,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1371,
+            "rotate": 8.71,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1714,
+            "rotate": 11.42,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2057,
+            "rotate": 5.54,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2400,
+            "rotate": -4.52,
+            "ease": "linear"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 8.7
+          },
+          {
+            "at_ms": 342,
+            "rotate": -8.66,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 685,
+            "rotate": -19.49,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1028,
+            "rotate": -15.65,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1371,
+            "rotate": -0.02,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1714,
+            "rotate": 15.62,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2057,
+            "rotate": 19.5,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2400,
+            "rotate": 8.7,
+            "ease": "linear"
+          }
+        ],
         "tail": [
           {
             "at_ms": 0
@@ -2443,6 +4093,170 @@
       "duration_ms": 1500,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 5.87
+          },
+          {
+            "at_ms": 214,
+            "rotate": 14.52,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 428,
+            "rotate": 12.23,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 642,
+            "rotate": 0.74,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 857,
+            "rotate": -11.32,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1071,
+            "rotate": -14.85,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1285,
+            "rotate": -7.2,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1500,
+            "rotate": 5.87,
+            "ease": "linear"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -11.31
+          },
+          {
+            "at_ms": 214,
+            "rotate": 11.25,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 428,
+            "rotate": 25.34,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 642,
+            "rotate": 20.35,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 857,
+            "rotate": 0.03,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1071,
+            "rotate": -20.31,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1285,
+            "rotate": -25.36,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1500,
+            "rotate": -11.31,
+            "ease": "linear"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -5.87
+          },
+          {
+            "at_ms": 214,
+            "rotate": -14.52,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 428,
+            "rotate": -12.23,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 642,
+            "rotate": -0.74,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 857,
+            "rotate": 11.32,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1071,
+            "rotate": 14.85,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1285,
+            "rotate": 7.2,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1500,
+            "rotate": -5.87,
+            "ease": "linear"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 11.31
+          },
+          {
+            "at_ms": 214,
+            "rotate": -11.25,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 428,
+            "rotate": -25.34,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 642,
+            "rotate": -20.35,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 857,
+            "rotate": -0.03,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1071,
+            "rotate": 20.31,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1285,
+            "rotate": 25.36,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1500,
+            "rotate": 11.31,
+            "ease": "linear"
+          }
+        ],
         "tail": [
           {
             "at_ms": 0
@@ -2468,6 +4282,170 @@
       "duration_ms": 3200,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 1.81
+          },
+          {
+            "at_ms": 457,
+            "rotate": 4.47,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 914,
+            "rotate": 3.76,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1371,
+            "rotate": 0.23,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1828,
+            "rotate": -3.48,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2285,
+            "rotate": -4.57,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2742,
+            "rotate": -2.21,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 3200,
+            "rotate": 1.81,
+            "ease": "linear"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -3.48
+          },
+          {
+            "at_ms": 457,
+            "rotate": 3.46,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 914,
+            "rotate": 7.8,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1371,
+            "rotate": 6.26,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1828,
+            "rotate": 0.01,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2285,
+            "rotate": -6.25,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2742,
+            "rotate": -7.8,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 3200,
+            "rotate": -3.48,
+            "ease": "linear"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -1.81
+          },
+          {
+            "at_ms": 457,
+            "rotate": -4.47,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 914,
+            "rotate": -3.76,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1371,
+            "rotate": -0.23,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1828,
+            "rotate": 3.48,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2285,
+            "rotate": 4.57,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2742,
+            "rotate": 2.21,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 3200,
+            "rotate": -1.81,
+            "ease": "linear"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 3.48
+          },
+          {
+            "at_ms": 457,
+            "rotate": -3.46,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 914,
+            "rotate": -7.8,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1371,
+            "rotate": -6.26,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1828,
+            "rotate": -0.01,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2285,
+            "rotate": 6.25,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 2742,
+            "rotate": 7.8,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 3200,
+            "rotate": 3.48,
+            "ease": "linear"
+          }
+        ],
         "tail": [
           {
             "at_ms": 0
@@ -2493,6 +4471,170 @@
       "duration_ms": 1100,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 6.78
+          },
+          {
+            "at_ms": 157,
+            "rotate": 16.75,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 314,
+            "rotate": 14.12,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 471,
+            "rotate": 0.85,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 628,
+            "rotate": -13.06,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 785,
+            "rotate": -17.13,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 942,
+            "rotate": -8.31,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1100,
+            "rotate": 6.78,
+            "ease": "linear"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -13.05
+          },
+          {
+            "at_ms": 157,
+            "rotate": 12.98,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 314,
+            "rotate": 29.24,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 471,
+            "rotate": 23.48,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 628,
+            "rotate": 0.04,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 785,
+            "rotate": -23.43,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 942,
+            "rotate": -29.26,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1100,
+            "rotate": -13.05,
+            "ease": "linear"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -6.78
+          },
+          {
+            "at_ms": 157,
+            "rotate": -16.75,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 314,
+            "rotate": -14.12,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 471,
+            "rotate": -0.85,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 628,
+            "rotate": 13.06,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 785,
+            "rotate": 17.13,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 942,
+            "rotate": 8.31,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1100,
+            "rotate": -6.78,
+            "ease": "linear"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 13.05
+          },
+          {
+            "at_ms": 157,
+            "rotate": -12.98,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 314,
+            "rotate": -29.24,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 471,
+            "rotate": -23.48,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 628,
+            "rotate": -0.04,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 785,
+            "rotate": 23.43,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 942,
+            "rotate": 29.26,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1100,
+            "rotate": 13.05,
+            "ease": "linear"
+          }
+        ],
         "tail": [
           {
             "at_ms": 0
@@ -2518,6 +4660,170 @@
       "duration_ms": 1800,
       "loop": true,
       "tracks": {
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 3.16
+          },
+          {
+            "at_ms": 257,
+            "rotate": 7.82,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 514,
+            "rotate": 6.59,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 771,
+            "rotate": 0.4,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1028,
+            "rotate": -6.09,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1285,
+            "rotate": -8,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1542,
+            "rotate": -3.88,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": 3.16,
+            "ease": "linear"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -6.09
+          },
+          {
+            "at_ms": 257,
+            "rotate": 6.06,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 514,
+            "rotate": 13.65,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 771,
+            "rotate": 10.96,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1028,
+            "rotate": 0.02,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1285,
+            "rotate": -10.94,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1542,
+            "rotate": -13.65,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -6.09,
+            "ease": "linear"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -3.16
+          },
+          {
+            "at_ms": 257,
+            "rotate": -7.82,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 514,
+            "rotate": -6.59,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 771,
+            "rotate": -0.4,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1028,
+            "rotate": 6.09,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1285,
+            "rotate": 8,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1542,
+            "rotate": 3.88,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -3.16,
+            "ease": "linear"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 6.09
+          },
+          {
+            "at_ms": 257,
+            "rotate": -6.06,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 514,
+            "rotate": -13.65,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 771,
+            "rotate": -10.96,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1028,
+            "rotate": -0.02,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1285,
+            "rotate": 10.94,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1542,
+            "rotate": 13.65,
+            "ease": "linear"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": 6.09,
+            "ease": "linear"
+          }
+        ],
         "tail": [
           {
             "at_ms": 0
@@ -2641,6 +4947,90 @@
           {
             "at_ms": 1280,
             "rotate": -110,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 2.2
+          },
+          {
+            "at_ms": 320,
+            "rotate": -5.5,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 4.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 2.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 1.2
+          },
+          {
+            "at_ms": 320,
+            "rotate": -3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 2.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 1.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": 2.2
+          },
+          {
+            "at_ms": 320,
+            "rotate": -5.5,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 4.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 2.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 1.2
+          },
+          {
+            "at_ms": 320,
+            "rotate": -3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 2.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 1.2,
             "ease": "ease-in-out"
           }
         ],
@@ -2920,6 +5310,90 @@
           {
             "at_ms": 1280,
             "rotate": -110,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": 2.2
+          },
+          {
+            "at_ms": 320,
+            "rotate": -5.5,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 4.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 2.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 1.2
+          },
+          {
+            "at_ms": 320,
+            "rotate": -3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 2.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 1.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": 2.2
+          },
+          {
+            "at_ms": 320,
+            "rotate": -5.5,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 4.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 2.2,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": 1.2
+          },
+          {
+            "at_ms": 320,
+            "rotate": -3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 640,
+            "rotate": 2.4,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1280,
+            "rotate": 1.2,
             "ease": "ease-in-out"
           }
         ],
@@ -3269,6 +5743,46 @@
             "ease": "ease-out"
           }
         ],
+        "braid_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 420,
+            "rotate": -4.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 420,
+            "rotate": -2.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 420,
+            "rotate": -4.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 420,
+            "rotate": -2.4,
+            "ease": "ease-in-out"
+          }
+        ],
         "head": [
           {
             "at_ms": 0
@@ -3316,6 +5830,70 @@
             "x": 6,
             "y": -10,
             "rotate": 48,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": -4.4
+          },
+          {
+            "at_ms": 900,
+            "rotate": -3.3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -4.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -2.4
+          },
+          {
+            "at_ms": 900,
+            "rotate": -1.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -2.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -4.4
+          },
+          {
+            "at_ms": 900,
+            "rotate": -3.3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -4.4,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -2.4
+          },
+          {
+            "at_ms": 900,
+            "rotate": -1.8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 1800,
+            "rotate": -2.4,
             "ease": "ease-in-out"
           }
         ],
@@ -3367,6 +5945,46 @@
             "x": 6,
             "y": -10,
             "rotate": 48
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": -4.4
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -2.4
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -4.4
+          },
+          {
+            "at_ms": 360,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -2.4
           },
           {
             "at_ms": 360,

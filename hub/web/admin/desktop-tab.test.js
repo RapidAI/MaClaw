@@ -109,7 +109,24 @@ function createHarness(options) {
         if (child.id) elements[child.id] = child;
         return child;
       },
-      querySelectorAll: function () { return []; },
+      querySelectorAll: function (selector) {
+        this._queries = this._queries || {};
+        if (this._queries[selector]) return this._queries[selector];
+        const name = /^\[([A-Za-z0-9_-]+)\]$/.exec(String(selector || ''));
+        if (!name) return [];
+        const attr = name[1];
+        const re = new RegExp(attr + '="([^"]*)"', 'g');
+        const html = this._html || '';
+        const out = [];
+        let match;
+        while ((match = re.exec(html))) {
+          const button = createElement('button');
+          button.setAttribute(attr, match[1]);
+          out.push(button);
+        }
+        this._queries[selector] = out;
+        return out;
+      },
       focus: function () {}
     };
     Object.defineProperty(el, 'innerHTML', {
@@ -117,6 +134,7 @@ function createHarness(options) {
       get: function () { return this._html || ''; },
       set: function (html) {
         this._html = String(html || '');
+        this._queries = {};
         this.childNodes = [];
         registerIds(this._html, this);
       }
@@ -251,7 +269,45 @@ async function testRelayHintShowsWhenTheDesktopIsOnAnotherNode() {
   });
   local.mount();
   await local.load();
-  assertEqual(local.elements.desktopRelayHint.textContent, '', 'same-node srv does not warn');
+  assertIncludes(local.elements.desktopRelayHint.textContent, '\u5ef6\u8fdf\u8f83\u9ad8', 'everyone still crosses networks');
+  local.elements.desktopScope.value = 'user';
+  local.fire(local.elements.desktopScope, 'change');
+  assertEqual(local.elements.desktopRelayHint.textContent, '', 'a user follows that node srv');
+  local.elements.desktopScope.value = 'department';
+  local.fire(local.elements.desktopScope, 'change');
+  assertIncludes(local.elements.desktopRelayHint.textContent, '\u5ef6\u8fdf\u8f83\u9ad8', 'a department stays on the public connection');
+}
+
+async function testEditingANodeKeepsItsVirtualAddress() {
+  console.log('  Test: editing a node service keeps its virtual address');
+  const harness = createHarness({
+    servers: [{ id: 's-node', name: 'lab', base_url: 'http://desktopd.n1.node.invalid', node_id: 'n1', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' }]
+  });
+  harness.mount();
+  await harness.load();
+  const edit = harness.elements.desktopServerList.querySelectorAll('[data-desktop-edit]')[0];
+  harness.fire(edit, 'click');
+  harness.elements.desktopMemory.value = '4g';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  const saved = harness.calls.filter(function (call) { return call.method === 'PATCH' && call.path === '/api/admin/desktop-services/s-node'; });
+  assertEqual(saved.length, 1, 'a resource change is saved');
+  const body = JSON.parse(saved[0].body);
+  assertEqual(body.base_url, 'http://desktopd.n1.node.invalid', 'the node address stays');
+  assertEqual(body.memory, '4g', 'the new memory is sent');
+
+  const before = harness.calls.length;
+  harness.elements.desktopUrl.value = 'http://desktopd.other.node.invalid';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  assertEqual(harness.calls.length, before, 'a different virtual host is not saved');
+  harness.fire(harness.elements.desktopCancel, 'click');
+  harness.elements.desktopName.value = 'public';
+  harness.elements.desktopUrl.value = 'http://desktopd.abc.NODE.INVALID';
+  harness.elements.desktopToken.value = 'secret';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  assertEqual(harness.calls.length, before, 'a new service cannot use a virtual host');
 }
 
 async function testIntranetNodesStayHiddenUntilTheFeatureIsOn() {
@@ -456,6 +512,7 @@ async function testSwitchingUserOpensThatDesktop() {
 
 Promise.resolve()
   .then(testRelayHintShowsWhenTheDesktopIsOnAnotherNode)
+  .then(testEditingANodeKeepsItsVirtualAddress)
   .then(testIntranetNodesStayHiddenUntilTheFeatureIsOn)
   .then(testIntranetNodeListShowsStatusCapabilityAndVersion)
   .then(testUserListCarriesOnlyAuthorizedUsers)

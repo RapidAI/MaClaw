@@ -371,6 +371,116 @@ func TestRagdollLargeActionsAndCues(t *testing.T) {
 	}
 }
 
+// TestRagdollBraidsSwingSofterThanTheHead checks the authored follow-through.
+// The tip of each plait swings farther and later than the upper bone, the two
+// sides do not copy each other, and a deep head tilt does not take the braid
+// with it at the same angle.
+func TestRagdollBraidsSwingSofterThanTheHead(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), BundledFS())
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := reg.Resolve(DefaultPackID, VariantDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig, err := LoadRig(resolved)
+	if err != nil || rig == nil {
+		t.Fatal(err)
+	}
+	idle := rig.Clips["secondary_idle"]
+	upper := idle.Tracks["braid_l"]
+	tip := idle.Tracks["braid_l_tip"]
+	right := idle.Tracks["braid_r"]
+	if len(upper) < 4 || len(tip) < 4 || len(right) < 4 {
+		t.Fatalf("secondary_idle braid keys upper=%d tip=%d right=%d", len(upper), len(tip), len(right))
+	}
+	if upper[0].AtMS != 0 || upper[len(upper)-1].AtMS != idle.DurationMS || upper[0].Rotate != upper[len(upper)-1].Rotate {
+		t.Fatalf("braid loop does not close: %+v", upper)
+	}
+	upperAmp := maxAbsRigRotate(upper)
+	tipAmp := maxAbsRigRotate(tip)
+	if tipAmp <= upperAmp {
+		t.Fatalf("tip amplitude %0.2f is not larger than upper %0.2f", tipAmp, upperAmp)
+	}
+	if tipAt, upperAt := maxRigRotateAt(tip), maxRigRotateAt(upper); tipAt <= upperAt {
+		t.Fatalf("tip peaks at %dms, upper at %dms", tipAt, upperAt)
+	}
+	differ := false
+	n := len(upper)
+	if len(right) < n {
+		n = len(right)
+	}
+	for i := 1; i < n-1; i++ {
+		if math.Abs(upper[i].Rotate-right[i].Rotate) > 1 {
+			differ = true
+			break
+		}
+	}
+	if !differ {
+		t.Fatal("left and right braids swing together")
+	}
+
+	bend := rig.Clips["bend_loop"]
+	head := bend.Tracks["head"]
+	braid := bend.Tracks["braid_l"]
+	if len(head) == 0 || len(braid) == 0 {
+		t.Fatal("bend_loop is missing the head or the braid")
+	}
+	checked := false
+	for _, key := range head {
+		if math.Abs(key.Rotate) < 6 {
+			continue
+		}
+		local, ok := rigRotateAt(braid, key.AtMS)
+		if !ok {
+			t.Fatalf("bend_loop braid has no key at %dms", key.AtMS)
+		}
+		if key.Rotate*local >= 0 {
+			t.Fatalf("braid %0.2f does not oppose head %0.2f", local, key.Rotate)
+		}
+		world := key.Rotate + local
+		if math.Abs(world) >= math.Abs(key.Rotate)*0.7 {
+			t.Fatalf("braid world tilt %0.2f is not softer than head %0.2f", world, key.Rotate)
+		}
+		checked = true
+	}
+	if !checked {
+		t.Fatal("bend_loop head never tilts")
+	}
+}
+
+func maxAbsRigRotate(frames []RigKeyframe) float64 {
+	max := 0.0
+	for _, frame := range frames {
+		if a := math.Abs(frame.Rotate); a > max {
+			max = a
+		}
+	}
+	return max
+}
+
+func maxRigRotateAt(frames []RigKeyframe) int {
+	best := frames[0].Rotate
+	at := frames[0].AtMS
+	for _, frame := range frames[1:] {
+		if frame.Rotate > best {
+			best = frame.Rotate
+			at = frame.AtMS
+		}
+	}
+	return at
+}
+
+func rigRotateAt(frames []RigKeyframe, at int) (float64, bool) {
+	for _, frame := range frames {
+		if frame.AtMS == at {
+			return frame.Rotate, true
+		}
+	}
+	return 0, false
+}
+
 func TestThinkingTravelDoesNotMoveTheWindow(t *testing.T) {
 	reg := NewRegistry(t.TempDir(), BundledFS())
 	if err := reg.Scan(); err != nil {

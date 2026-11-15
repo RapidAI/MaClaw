@@ -520,6 +520,12 @@ func floatingSoundChanged(oldConfig, newConfig corelib.AppConfig) bool {
 		petMotionSoundPreset(oldConfig) != petMotionSoundPreset(newConfig)
 }
 
+// floatingPositionLockChanged reports a pin toggle. It stops screen travel
+// only, so the window stays up and the pose keeps playing.
+func floatingPositionLockChanged(oldConfig, newConfig corelib.AppConfig) bool {
+	return oldConfig.PetPositionLocked != newConfig.PetPositionLocked
+}
+
 // UpdateSoundConfig updates the floating window's in-memory sound settings
 // without destroying and recreating the window.
 func (m *FloatingAssistantManager) UpdateSoundConfig(config corelib.AppConfig) {
@@ -528,6 +534,17 @@ func (m *FloatingAssistantManager) UpdateSoundConfig(config corelib.AppConfig) {
 	m.mu.Unlock()
 	if win != nil {
 		win.UpdateSoundConfig(petMotionSoundEnabled(config), petMotionSoundPreset(config))
+	}
+}
+
+// UpdatePositionLock pushes the pin onto the live window. The manager lock
+// is not held across the window call.
+func (m *FloatingAssistantManager) UpdatePositionLock(config corelib.AppConfig) {
+	m.mu.Lock()
+	win := m.window
+	m.mu.Unlock()
+	if win != nil {
+		win.UpdatePositionLock(config.PetPositionLocked)
 	}
 }
 

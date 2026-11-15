@@ -1899,60 +1899,100 @@ func (a *App) UnpinMemory(id string) error {
 
 // ensureSessionStore lazily initializes the session search store.
 func (a *App) ensureSessionStore() {
-	a.sessionStoreMu.Do(func() {
-		dbPath := a.sessionSearchDBPath()
-		store, err := session.NewStore(dbPath)
-		if err != nil {
-			log.Printf("[session_history] failed to open store: %v", err)
-			return
-		}
-		a.sessionSearchStore = store
-	})
+	if a == nil {
+		return
+	}
+	a.sessionSearchStoreMu.Lock()
+	defer a.sessionSearchStoreMu.Unlock()
+	if a.sessionSearchStore != nil {
+		return
+	}
+	store, err := session.NewStore(a.sessionSearchDBPath())
+	if err != nil {
+		log.Printf("[session_history] failed to open store: %v", err)
+		return
+	}
+	a.sessionSearchStore = store
+}
+
+func (a *App) acquireSessionStore() (*session.Store, func()) {
+	if a == nil {
+		return nil, func() {}
+	}
+	a.sessionSearchStoreMu.RLock()
+	if a.sessionSearchStore != nil {
+		return a.sessionSearchStore, a.sessionSearchStoreMu.RUnlock
+	}
+	a.sessionSearchStoreMu.RUnlock()
+	a.ensureSessionStore()
+	a.sessionSearchStoreMu.RLock()
+	if a.sessionSearchStore == nil {
+		a.sessionSearchStoreMu.RUnlock()
+		return nil, func() {}
+	}
+	return a.sessionSearchStore, a.sessionSearchStoreMu.RUnlock
+}
+
+func (a *App) closeSessionStore() {
+	if a == nil {
+		return
+	}
+	a.sessionSearchStoreMu.Lock()
+	defer a.sessionSearchStoreMu.Unlock()
+	if a.sessionSearchStore != nil {
+		_ = a.sessionSearchStore.Close()
+		a.sessionSearchStore = nil
+	}
 }
 
 // ListSessionHistory returns the most recent session summaries (Wails binding).
 func (a *App) ListSessionHistory(limit int) ([]session.SessionSummary, error) {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return nil, fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.ListRecent(limit)
+	return store.ListRecent(limit)
 }
 
 // SearchSessionHistory performs FTS5 full-text search across session transcripts (Wails binding).
 func (a *App) SearchSessionHistory(query string, maxResults int) ([]session.SearchResult, error) {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return nil, fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.Search(query, maxResults)
+	return store.Search(query, maxResults)
 }
 
 // GetSessionFullText returns the full transcript for a session ID (Wails binding).
 func (a *App) GetSessionFullText(sessionID string) (string, error) {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return "", fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.GetFullText(sessionID)
+	return store.GetFullText(sessionID)
 }
 
 // DeleteSession removes a session from the history (Wails binding).
 func (a *App) DeleteSession(sessionID string) error {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.Delete(sessionID)
+	return store.Delete(sessionID)
 }
 
 // GetSessionCount returns the total number of stored sessions (Wails binding).
 func (a *App) GetSessionCount() (int, error) {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return 0, fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.Count()
+	return store.Count()
 }
 
 // getOrCreateMemoryMaintenance returns the singleton corelib memory maintenance facade,
@@ -2064,13 +2104,26 @@ func (a *App) UpdateConfigBinding(section, key, value string) (string, error) {
 // Scheduled task Wails bindings
 // ---------------------------------------------------------------------------
 
-// ListScheduledTasks returns all scheduled tasks (Wails binding).
+// ListScheduledTasks returns this computer's own scheduled tasks.
+// A desktop bot's timer lives on the server clock. Rows left here by an
+// older build are not plan tasks, so they stay out of this list.
 func (a *App) ListScheduledTasks() []scheduler.ScheduledTask {
 	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return nil
 	}
-	return a.scheduledTaskManager.List()
+	return localPlanTasks(a.scheduledTaskManager.List())
+}
+
+func localPlanTasks(tasks []scheduler.ScheduledTask) []scheduler.ScheduledTask {
+	out := make([]scheduler.ScheduledTask, 0, len(tasks))
+	for _, task := range tasks {
+		if strings.TrimSpace(task.DesktopBotID) != "" {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
 }
 
 // CreateScheduledTask creates a new scheduled task (Wails binding).

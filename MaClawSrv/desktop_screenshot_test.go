@@ -345,6 +345,33 @@ func TestHubClientFetchesTheScreenshot(t *testing.T) {
 	if path != "/api/v1/desktop-services/screenshot" || auth != "Bearer hub-token" || user != "alice" {
 		t.Fatalf("path=%q auth=%q user=%q", path, auth, user)
 	}
+}
+
+func TestHubClientReadsASameNodeScreenshotLocally(t *testing.T) {
+	shot := desktopTestPNG(t, 8, 6, false)
+	var localAuth string
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string]any{"mime": "image/png", "image_base64": base64.StdEncoding.EncodeToString(shot)})
+	}))
+	defer local.Close()
+	var hubBodies int
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubBodies++
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket"})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	data, err := client.Screenshot(context.Background(), "tenant", "alice", ":20")
+	if err != nil || !bytes.Equal(data, shot) {
+		t.Fatalf("err=%v", err)
+	}
+	if hubBodies != 1 {
+		t.Fatalf("hub saw %d bodies; the png should stay on the local desktopd", hubBodies)
+	}
+	if localAuth != "" {
+		t.Fatalf("local desktopd saw a hub bearer: %q", localAuth)
+	}
 	var savedName string
 	saveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in map[string]string

@@ -773,6 +773,9 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		instanceID := strings.TrimSpace(req.Instance.ID)
 		botID := botlog.FromMeta(req.Message.Metadata)
 		scheduleHandler = func(args map[string]interface{}) string {
+			if text := scheduleFiringMustNotRearm(req.Message.Metadata, args); text != "" {
+				return text
+			}
 			args = withDesktopBotScheduleArg(args, botID)
 			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
 		}
@@ -783,6 +786,9 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		instanceID := strings.TrimSpace(req.Instance.ID)
 		botID := botlog.FromMeta(req.Message.Metadata)
 		botScheduleHandler = func(args map[string]interface{}) string {
+			if text := scheduleFiringMustNotRearm(req.Message.Metadata, args); text != "" {
+				return text
+			}
 			return e.DesktopBotSchedule(ctx, principal, instanceID, botID, args)
 		}
 	}
@@ -2977,7 +2983,7 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 	// still how that bot does the work, so the module tool stays visible even
 	// when a semantic grant uses the same name. ssh stays for the same reason
 	// when this account can open a remote host.
-	if c != nil && strings.TrimSpace(name) == "desktop" && c.runtimeToolExposed(name) {
+	if c != nil && strings.TrimSpace(name) == "desktop" && c.runtimeToolExposed(name) && !c.botHasNoDesktop() {
 		return true
 	}
 	if c != nil && strings.TrimSpace(name) == "ssh" && c.botUsesContainer() && c.canUseSSH() {
@@ -3037,6 +3043,9 @@ func (c *coreAgentCallbacks) hardwareExpertAdapterToolAllowed(name string, allow
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c != nil && c.botHasNoDesktop() && noneDesktopDropsTool(name) {
+		return false, "这个 bot 没有电脑"
+	}
 	if c != nil && c.botMissesContainer(name) {
 		return false, botContainerToolReason
 	}

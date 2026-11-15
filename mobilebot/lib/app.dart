@@ -15,6 +15,9 @@ import 'features/bots/bot_models.dart';
 import 'features/bots/bot_settings_screen.dart';
 import 'features/bots/bots_controller.dart';
 import 'features/bots/bots_screen.dart';
+import 'features/remote/remote_models.dart';
+import 'features/remote/remote_screen.dart';
+import 'features/remote/remote_task_screen.dart';
 import 'features/rooms/rooms_screen.dart';
 import 'features/status/status_screen.dart';
 
@@ -89,6 +92,10 @@ final _routerProvider = Provider<GoRouter>((ref) {
         routes: [
           GoRoute(path: '/', builder: (_, _) => const BotsScreen()),
           GoRoute(
+            path: '/remote',
+            builder: (_, _) => const RemoteScreen(),
+          ),
+          GoRoute(
             path: '/status',
             builder: (_, _) => const StatusScreen(),
           ),
@@ -152,6 +159,36 @@ final _routerProvider = Provider<GoRouter>((ref) {
                   FilledButton.tonal(
                     onPressed: () => context.go('/rooms'),
                     child: const Text('返回房间列表'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+      GoRoute(
+        path: '/remote/task',
+        builder: (context, state) {
+          final extra = state.extra;
+          if (extra
+              is ({RcGrant grant, String taskPath, String taskName})) {
+            return RemoteTaskScreen(
+              grant: extra.grant,
+              taskPath: extra.taskPath,
+              taskName: extra.taskName,
+            );
+          }
+          return Scaffold(
+            appBar: AppBar(),
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('找不到这个远程任务'),
+                  const SizedBox(height: 12),
+                  FilledButton.tonal(
+                    onPressed: () => context.go('/remote'),
+                    child: const Text('返回远程控制'),
                   ),
                 ],
               ),
@@ -239,11 +276,12 @@ class _HomeShell extends StatelessWidget {
 
   const _HomeShell({required this.child});
 
-  static const _tabs = ['/', '/status', '/account'];
+  static const _tabs = ['/', '/remote', '/status', '/account'];
 
   int _indexOf(String location) {
-    if (location.startsWith('/status')) return 1;
-    if (location.startsWith('/account')) return 2;
+    if (location.startsWith('/remote')) return 1;
+    if (location.startsWith('/status')) return 2;
+    if (location.startsWith('/account')) return 3;
     return 0;
   }
 
@@ -263,6 +301,11 @@ class _HomeShell extends StatelessWidget {
             icon: Icon(Icons.smart_toy_outlined),
             selectedIcon: Icon(Icons.smart_toy),
             label: 'Bot',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.connected_tv_outlined),
+            selectedIcon: Icon(Icons.connected_tv),
+            label: '远控',
           ),
           NavigationDestination(
             icon: Icon(Icons.fact_check_outlined),

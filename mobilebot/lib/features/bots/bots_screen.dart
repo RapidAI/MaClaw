@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -228,6 +230,18 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
   bool _needsComputer = true;
 
   @override
+  void initState() {
+    super.initState();
+    // Refresh so the computer switch locks against the live grant, not the
+    // quota cached by the last list fetch (mirrors the desktop dialog, which
+    // re-reads the quota when it opens).
+    unawaited(
+      Future.microtask(() => ref.read(botsProvider.notifier).refresh()),
+    );
+    _nameCtrl.addListener(() => setState(() {}));
+  }
+
+  @override
   void dispose() {
     _nameCtrl.dispose();
     _descCtrl.dispose();
@@ -240,6 +254,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
     final quota = ref.watch(botsProvider).quota;
     final locked = quota.exhausted;
     final needsComputer = locked ? false : _needsComputer;
+    final taken = botNameTaken(_nameCtrl.text, ref.watch(botsProvider).bots);
     return SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottom),
       child: Column(
@@ -327,6 +342,14 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
                 ),
             ],
           ),
+          if (taken)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                '已经有一个叫这个名字的 Bot 了，换个名字吧',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
           if (_error.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
@@ -337,7 +360,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
             ),
           const SizedBox(height: 8),
           FilledButton(
-            onPressed: _saving ? null : _create,
+            onPressed: _saving || taken ? null : _create,
             child: _saving
                 ? const SizedBox(
                     width: 20,

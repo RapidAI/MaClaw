@@ -2588,6 +2588,85 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
+  # MaClawBot Android: signed release APK
+  # ============================================================
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      # Same single-source pin as mobilebot.yml — read it from the repo so a
+      # Flutter bump touches one file.
+      - id: flutter-pin
+        run: echo "version=$(python3 -c 'import json; print(json.load(open("mobilebot/.fvmrc"))["flutter"])')" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ steps.flutter-pin.outputs.version }}
+          cache: true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('mobilebot/android/**/*.gradle*', 'mobilebot/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      # build.gradle.kts signs the release build with the upload key only when
+      # android/key.properties + the keystore exist; without the secrets the
+      # APK falls back to debug signing (workflow_dispatch validation on forks).
+      - name: Write Android signing config
+        env:
+          MOBILEBOT_KEYSTORE_BASE64: ${{ secrets.MOBILEBOT_KEYSTORE_BASE64 }}
+          MOBILEBOT_KEYSTORE_PASSWORD: ${{ secrets.MOBILEBOT_KEYSTORE_PASSWORD }}
+          MOBILEBOT_KEY_ALIAS: ${{ secrets.MOBILEBOT_KEY_ALIAS }}
+          MOBILEBOT_KEY_PASSWORD: ${{ secrets.MOBILEBOT_KEY_PASSWORD }}
+        working-directory: mobilebot/android
+        run: |
+          set -euo pipefail
+          if [ -z "$MOBILEBOT_KEYSTORE_BASE64" ]; then
+            echo "::warning::MOBILEBOT_KEYSTORE_BASE64 is not set — release APK falls back to debug signing"
+            exit 0
+          fi
+          echo "$MOBILEBOT_KEYSTORE_BASE64" | base64 -d > app/upload-keystore.jks
+          {
+            echo "storeFile=upload-keystore.jks"
+            echo "storePassword=$MOBILEBOT_KEYSTORE_PASSWORD"
+            echo "keyAlias=$MOBILEBOT_KEY_ALIAS"
+            echo "keyPassword=$MOBILEBOT_KEY_PASSWORD"
+          } > key.properties
+      - name: Build release APK
+        working-directory: mobilebot
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          flutter pub get
+          # Report the release version inside the APK — pubspec's 1.0.0+1 is
+          # only a fallback. Strip leading V/v/Ｖ from tags like VV5.8.1.x or
+          # Ｖ6.2.0.x; a non-version ref (workflow_dispatch on a branch) keeps
+          # the pubspec default.
+          ver="${RELEASE_TAG#V}"; ver="${ver#v}"; ver="${ver#V}"; ver="${ver#Ｖ}"
+          args=(--build-number "${{ github.run_number }}")
+          if [[ "$ver" =~ [0-9] ]]; then
+            args+=(--build-name "$ver")
+          fi
+          flutter build apk --release "${args[@]}"
+      - name: Stage release asset
+        run: |
+          mkdir -p dist/mobilebot
+          cp mobilebot/build/app/outputs/flutter-apk/app-release.apk dist/mobilebot/MaClawBot.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mobilebot-release-apk
+          if-no-files-found: error
+          path: dist/mobilebot/*
+
+  # ============================================================
   # Release: collect all artifacts and create GitHub Release
   # ============================================================
   release:
@@ -2595,7 +2674,7 @@ jobs:
     # workflow_dispatch supplies a branch name, so it may validate builds but
     # must never publish or enter the release boundary.
     if: github.ref_type == 'tag'
-    needs: [verify-agent-architecture, build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-clawmate-maker]
+    needs: [verify-agent-architecture, build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-clawmate-maker, build-android]
     runs-on: ubuntu-latest
     # The R2 credentials and firmware release keys may be environment
     # secrets. Keep asset generation, mirror upload and public read-back under
@@ -2698,6 +2777,7 @@ jobs:
                   "MaClaw-x86_64-u2204.AppImage",
                   "MaClaw-x86_64-u2404.AppImage",
                   "MaClaw-Setup.exe",
+                  "MaClawBot.apk",
                   "MaClaw-Universal.pkg",
                   "maclawsrv-Setup.exe",
                   "maclawsrv-Universal.pkg",

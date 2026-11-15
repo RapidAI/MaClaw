@@ -315,6 +315,27 @@ func TestCharacterRendererDefersFirstHostEventUntilInitialStateExists(t *testing
 	}
 }
 
+func TestCharacterRendererClipSupersedesDeferredHostEvent(t *testing.T) {
+	rig := performanceTestRig()
+	texture := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	texture.SetNRGBA(0, 0, color.NRGBA{R: 80, G: 140, B: 220, A: 255})
+	clips, fallback := rigClips(rig)
+	clips["gesture"] = &RigClip{DurationMS: 800}
+	renderer := &CharacterRenderer{
+		rig:      &RigRenderer{rig: rig, textures: map[string]*image.NRGBA{"rig/body.png": texture}, parentOrder: []int{0}, slots: rig.SortedSlots(), boneIndex: map[string]int{"root": 0}, clips: clips, fallbackClip: fallback},
+		director: NewPerformanceDirector(performanceTestPerformer(), rig, 43),
+	}
+	if !renderer.TriggerEvent("hover", 900) || renderer.deferredEvent != "hover" {
+		t.Fatal("hover was not waiting for the first pose")
+	}
+	if !renderer.TriggerClip("gesture", 950) || renderer.deferredEvent != "" || renderer.step.Body != "gesture" {
+		t.Fatalf("clip did not replace the deferred event: step=%+v deferred=%q", renderer.step, renderer.deferredEvent)
+	}
+	if renderer.RenderState(StateIdle, 1000, 16) == nil || renderer.step.Body != "gesture" || renderer.deferredEvent != "" {
+		t.Fatalf("next frame restored the deferred event: step=%+v deferred=%q", renderer.step, renderer.deferredEvent)
+	}
+}
+
 func TestCharacterRendererDeferredSoftEventDoesNotAdvanceImmediately(t *testing.T) {
 	rig := performanceTestRig()
 	texture := image.NewNRGBA(image.Rect(0, 0, 1, 1))

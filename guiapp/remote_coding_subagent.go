@@ -5795,7 +5795,7 @@ func buildRemoteFullCodingEnvironmentPromptPreamble() string {
 - ` + remoteCodingMutatingFileContract() + `
 - 不得猜测 Skill/MCP 的旧通用入口；只有本轮实际列出的受限别名才可调用。
 - 默认自主探索与实现。已有多步规划时按步骤推进；没有规划时先短计划再动手。
-- 子代理：复杂工作时用 spawn_coding_agent。explorer/reviewer 只读；远程 worker 顺序执行，并只改声明过的 files。
+- 子代理委派：探索、调查、评审类只读工作默认用 spawn_coding_agent 派生 explorer/reviewer（干净上下文、后台执行，有界结论由后续审阅轮自动接收并继续主任务），不要把大范围检索/原文堆进本轮上下文。远程 worker 顺序执行，并只改声明过的 files。
 - 最小必要改动。
 
 `
@@ -6306,7 +6306,7 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 		if err == nil && len(pack.Items) > 0 {
 			b.WriteString("\n## 知识库参考资料（来自通用知识库）\n")
 			b.WriteString("以下是与当前任务相关的知识库内容：\n")
-			b.WriteString(knowledge.FormatContextPackForLLM(pack))
+			b.WriteString(corememory.WrapUntrustedRecall("knowledge", knowledge.FormatContextPackForLLM(pack)))
 		}
 	}
 
@@ -6413,7 +6413,7 @@ func (c *remoteCodingCallbacks) executeRemoteKnowledgeSearch(argsJSON string) st
 		text := remoteKnowledgeSnippet(r)
 		b.WriteString(fmt.Sprintf("%d. [%.1f] **%s**\n   %s\n\n", i+1, r.Score, source, text))
 	}
-	return b.String()
+	return corememory.WrapUntrustedRecall("knowledge", b.String())
 }
 
 // executeRemoteKnowledgeImageSearch searches the local, display-capable image
@@ -6457,7 +6457,7 @@ func (c *remoteCodingCallbacks) executeRemoteKnowledgeImageSearch(argsJSON strin
 		}
 		b.WriteString("\n")
 	}
-	return b.String()
+	return corememory.WrapUntrustedRecall("knowledge", b.String())
 }
 
 // executeRemoteMemorySearch handles the memory_search tool call (read-only
@@ -6478,14 +6478,14 @@ func (c *remoteCodingCallbacks) executeRemoteMemorySearch(argsJSON string) strin
 		return "Error: query parameter is required"
 	}
 	owner, strict := codingMemoryOwner(c.agent.taskPermissionOwnerID())
-	return corememory.HandleTool(c.agent.memoryStore, map[string]interface{}{
+	return corememory.WrapUntrustedRecall("memory", corememory.HandleTool(c.agent.memoryStore, map[string]interface{}{
 		"action": string(corememory.MemoryToolActionRecall),
 		"query":  query,
 	}, corememory.ToolOptions{
 		ProjectPath: c.agent.projectDir,
 		OwnerID:     owner,
 		StrictOwner: strict,
-	})
+	}))
 }
 
 func remoteKnowledgeSnippet(r knowledge.SearchResult) string {

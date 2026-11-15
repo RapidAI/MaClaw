@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/localrelay"
+	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 	"github.com/gorilla/websocket"
@@ -41,7 +43,7 @@ func GetEdgeNodesAdminHandler(reg *edgenode.Registry, broker *edgenode.Broker) h
 		}
 		for i := range nodes {
 			if broker != nil {
-				nodes[i].Online = broker.Online(nodes[i].ID)
+				broker.ApplyLive(&nodes[i])
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
@@ -49,7 +51,7 @@ func GetEdgeNodesAdminHandler(reg *edgenode.Registry, broker *edgenode.Broker) h
 }
 
 // DeleteEdgeNodeAdminHandler DELETE /api/admin/bots/nodes/{id}
-func DeleteEdgeNodeAdminHandler(reg *edgenode.Registry, broker *edgenode.Broker, pool *desktoppool.Pool) http.HandlerFunc {
+func DeleteEdgeNodeAdminHandler(reg *edgenode.Registry, broker *edgenode.Broker, pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if reg == nil || !edgenode.Enabled() {
 			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "edge nodes are disabled")
@@ -71,6 +73,9 @@ func DeleteEdgeNodeAdminHandler(reg *edgenode.Registry, broker *edgenode.Broker,
 		}
 		if broker != nil {
 			broker.Drop(node.ID)
+		}
+		if bots != nil {
+			_ = bots.ForgetNodeSrv(r.Context(), node.TenantID, node.ID)
 		}
 		dropCDPTickets(node.ID)
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": node.ID})
@@ -135,7 +140,7 @@ func PostEdgeCodeAdminHandler(reg *edgenode.Registry) http.HandlerFunc {
 }
 
 // PostEdgeEnrollHandler POST /api/v1/edge/enroll
-func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool) http.HandlerFunc {
+func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if reg == nil || !edgenode.Enabled() {
 			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "edge nodes are disabled")
@@ -197,13 +202,21 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool) http.
 		if strings.TrimSpace(in.DirectBase) != "" {
 			_ = reg.SetDirectBase(r.Context(), out.NodeID, in.DirectBase)
 		}
+		if in.HasSrv && bots != nil {
+			if node, lookupErr := reg.Lookup(r.Context(), out.NodeID); lookupErr == nil {
+				_ = bots.AttachNodeSrv(r.Context(), node.TenantID, out.NodeID, "http://srv."+out.NodeID+".node.invalid", in.SrvAdmin)
+				if strings.TrimSpace(node.OwnerUserID) != "" {
+					_ = bots.PinOwnerNode(r.Context(), node.TenantID, node.OwnerUserID, out.NodeID)
+				}
+			}
+		}
 		writeJSON(w, http.StatusCreated, out)
 	}
 }
 
 // GetEdgeLinkHandler GET /api/v1/edge/link
 // The node authenticates with its node secret, not the desktop API token.
-func GetEdgeLinkHandler(reg *edgenode.Registry, broker *edgenode.Broker) http.HandlerFunc {
+func GetEdgeLinkHandler(reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if reg == nil || broker == nil || !edgenode.Enabled() {
 			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "edge nodes are disabled")
@@ -219,6 +232,14 @@ func GetEdgeLinkHandler(reg *edgenode.Registry, broker *edgenode.Broker) http.Ha
 		ws, err := edgeUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
+		}
+		if node.HasSrv && bots != nil {
+			tenantID, nodeID := node.TenantID, node.ID
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				_ = bots.ProvisionNodeConnection(ctx, tenantID, nodeID)
+			}()
 		}
 		_ = broker.Attach(r.Context(), node, localrelay.NewWSConn(ws))
 	}

@@ -65,6 +65,9 @@ func EnsureSkillIDBeforeUpload(entry *corelib.NLSkillEntry, uploaderEmail string
 			// would observe a different identity and could publish a second skill.
 			return "", fmt.Errorf("persist skill id %q: %w", skillID, err)
 		}
+		if err := RepinPackageManifestIfPresent(entry.SkillDir); err != nil {
+			log.Printf("[skill-id] repin integrity manifest for %s failed: %v", entry.SkillDir, err)
+		}
 	}
 
 	log.Printf("[skill-id] auto-generated id %q for skill %q (email: %s)", skillID, entry.Name, maskEmail(uploaderEmail))

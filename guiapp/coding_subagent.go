@@ -340,6 +340,13 @@ type CodingSubAgentResult struct {
 	// FilesRead lists files successfully read before or during execution.
 	FilesRead []string
 
+	// FilesDriftedAfterWrite lists files that changed again after the agent's
+	// last tracked write (later command output, formatter, or external actor).
+	// FilesDriftedReadOnly lists files the agent only read whose bytes moved
+	// during the task. Both are advisory drift audit results.
+	FilesDriftedAfterWrite []string
+	FilesDriftedReadOnly   []string
+
 	// GitDiffChecked indicates whether the SubAgent inspected the final diff.
 	// GitDiffSummary contains a compact, user-facing excerpt of that diff.
 	GitDiffChecked bool
@@ -1046,6 +1053,15 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	}
 	cb.emitDiffSummaryEvent(filesModified, filesCreated, diffSummary)
 
+	if len(audit.FilesDriftedAfterWrite)+len(audit.FilesDriftedReadOnly) > 0 {
+		log.Printf("[coding-subagent] task T%d workspace drift: post-write=%v read-only=%v",
+			taskDisplayNumber(task), audit.FilesDriftedAfterWrite, audit.FilesDriftedReadOnly)
+		if status == TaskExecPassed {
+			if note := codingSubAgentDriftNote(audit.FilesDriftedAfterWrite, audit.FilesDriftedReadOnly); note != "" {
+				summary = strings.TrimSpace(strings.TrimSpace(summary) + "\n\n" + note)
+			}
+		}
+	}
 	log.Printf("[coding-subagent] task T%d finished: status=%s iterations=%d tools=%d err=%q",
 		taskDisplayNumber(task), status, result.Iterations, result.ToolCalls, errMsg)
 	if s.onProgress != nil && !(status == TaskExecFailed && codingLoopIterationExhausted(errMsg)) {
@@ -1056,39 +1072,41 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 
 	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
 	return &CodingSubAgentResult{
-		Status:                status,
-		Summary:               summary,
-		Error:                 errMsg,
-		Iterations:            result.Iterations,
-		ToolCalls:             result.ToolCalls,
-		InputTokens:           inTok,
-		OutputTokens:          outTok,
-		EstCostRMB:            cost,
-		RouteModel:            result.Route.Model,
-		RouteSource:           result.Route.Source,
-		RouteTask:             result.Route.TaskType,
-		RouteReason:           result.Route.Reason,
-		FilesModified:         filesModified,
-		FilesCreated:          filesCreated,
-		FilesRead:             filesRead,
-		GitDiffChecked:        diffChecked,
-		GitDiffSummary:        diffSummary,
-		DiffStat:              cb.getDiffStat(),
-		CommandsRun:           commandsRun,
-		SearchesRun:           searchesRun,
-		GuardrailViolations:   guardrailViolations,
-		DynamicToolsRun:       dynamicToolsRun,
-		ExplorationStatus:     explorationStatus,
-		ExplorationSummary:    explorationSummary,
-		VerificationStatus:    verificationStatus,
-		VerificationSummary:   verificationSummary,
-		QualityStatus:         qualityStatus,
-		QualitySummary:        qualitySummary,
-		QualityIssueCount:     qualityIssueCount,
-		qualityGateDisabled:   !qualityGateEnabled && status == TaskExecPassed,
-		Localization:          cb.localization.snapshot(),
-		HorizonOwned:          s.horizonPosture,
-		RecalledExperienceIDs: cb.snapshotRecalledExperienceIDs(),
+		Status:                 status,
+		Summary:                summary,
+		Error:                  errMsg,
+		Iterations:             result.Iterations,
+		ToolCalls:              result.ToolCalls,
+		InputTokens:            inTok,
+		OutputTokens:           outTok,
+		EstCostRMB:             cost,
+		RouteModel:             result.Route.Model,
+		RouteSource:            result.Route.Source,
+		RouteTask:              result.Route.TaskType,
+		RouteReason:            result.Route.Reason,
+		FilesModified:          filesModified,
+		FilesCreated:           filesCreated,
+		FilesRead:              filesRead,
+		FilesDriftedAfterWrite: audit.FilesDriftedAfterWrite,
+		FilesDriftedReadOnly:   audit.FilesDriftedReadOnly,
+		GitDiffChecked:         diffChecked,
+		GitDiffSummary:         diffSummary,
+		DiffStat:               cb.getDiffStat(),
+		CommandsRun:            commandsRun,
+		SearchesRun:            searchesRun,
+		GuardrailViolations:    guardrailViolations,
+		DynamicToolsRun:        dynamicToolsRun,
+		ExplorationStatus:      explorationStatus,
+		ExplorationSummary:     explorationSummary,
+		VerificationStatus:     verificationStatus,
+		VerificationSummary:    verificationSummary,
+		QualityStatus:          qualityStatus,
+		QualitySummary:         qualitySummary,
+		QualityIssueCount:      qualityIssueCount,
+		qualityGateDisabled:    !qualityGateEnabled && status == TaskExecPassed,
+		Localization:           cb.localization.snapshot(),
+		HorizonOwned:           s.horizonPosture,
+		RecalledExperienceIDs:  cb.snapshotRecalledExperienceIDs(),
 	}
 }
 
@@ -1151,6 +1169,10 @@ type codingSubAgentAudit struct {
 	GuardrailViolations     []CodingSubAgentGuardrailViolation
 	DynamicToolsRun         []CodingSubAgentDynamicToolResult
 	ExploredBeforeFirstEdit bool
+	// FilesDriftedAfterWrite changed again after the agent's last tracked
+	// write; FilesDriftedReadOnly changed since the agent only read them.
+	FilesDriftedAfterWrite []string
+	FilesDriftedReadOnly   []string
 }
 
 func collectSubAgentAudit(cb *codingSubAgentCallbacks) codingSubAgentAudit {
@@ -1175,6 +1197,9 @@ func collectSubAgentAudit(cb *codingSubAgentCallbacks) codingSubAgentAudit {
 	audit.SearchesRun = limitSubAgentSearchResults(audit.AllSearchesRun, codingSubAgentResultAuditMax)
 	audit.GuardrailViolations = limitSubAgentGuardrailViolations(audit.AllGuardrailViolations, codingSubAgentResultAuditMax)
 	audit.DynamicToolsRun = limitSubAgentDynamicToolResults(audit.AllDynamicToolsRun, codingSubAgentResultAuditMax)
+	afterWrite, readOnly := cb.collectFileDriftAudit()
+	audit.FilesDriftedAfterWrite = limitSubAgentStringSlice(afterWrite, codingSubAgentResultFilesMax)
+	audit.FilesDriftedReadOnly = limitSubAgentStringSlice(readOnly, codingSubAgentResultFilesMax)
 	return audit
 }
 
@@ -1318,8 +1343,14 @@ type codingSubAgentCallbacks struct {
 	// codegraphExplored is every source path a codegraph explore named, including
 	// a file whose body was trimmed. It steers a later list_directory. It is not
 	// an edit snapshot.
-	codegraphExplored     map[string]struct{}
-	fileSnapshots         map[string]codingFileSnapshot
+	codegraphExplored map[string]struct{}
+	fileSnapshots     map[string]codingFileSnapshot
+	// filesWrittenCanonical marks, in canonical-key space, the files the agent
+	// itself wrote through the file tools (write_file/edit_file/edit_lines).
+	// filesModified/filesCreated live in display-path space, so the end-of-task
+	// drift audit cannot reuse them to classify whether a changed snapshot was
+	// an agent-authored write.
+	filesWrittenCanonical map[string]bool
 	fileLineDeltas        map[string]SubAgentFileDiffStat
 	gitDiffChecked        bool
 	lastGitDiff           string
@@ -5618,11 +5649,18 @@ func canonicalCodingSubAgentToolName(name string) string {
 
 func (c *codingSubAgentCallbacks) trackFile(path string) {
 	displayPath := c.displayProjectPath(path)
+	canonicalKey := canonicalCodingPath(path)
 	c.mu.Lock()
 	if c.filesModified == nil {
 		c.filesModified = make(map[string]bool)
 	}
 	c.filesModified[displayPath] = true
+	if canonicalKey != "" {
+		if c.filesWrittenCanonical == nil {
+			c.filesWrittenCanonical = make(map[string]bool)
+		}
+		c.filesWrittenCanonical[canonicalKey] = true
+	}
 	seq := c.nextEventSeqLocked()
 	if c.firstEditSeq == 0 {
 		c.firstEditSeq = seq
@@ -5634,12 +5672,20 @@ func (c *codingSubAgentCallbacks) trackFile(path string) {
 }
 
 func (c *codingSubAgentCallbacks) trackCreatedFile(path string) {
+	displayPath := c.displayProjectPath(path)
+	canonicalKey := canonicalCodingPath(path)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.filesCreated == nil {
 		c.filesCreated = make(map[string]bool)
 	}
-	c.filesCreated[c.displayProjectPath(path)] = true
+	c.filesCreated[displayPath] = true
+	if canonicalKey != "" {
+		if c.filesWrittenCanonical == nil {
+			c.filesWrittenCanonical = make(map[string]bool)
+		}
+		c.filesWrittenCanonical[canonicalKey] = true
+	}
 }
 
 func (c *codingSubAgentCallbacks) trackReadFile(path string) {
@@ -6495,6 +6541,28 @@ func codingFileSnapshotSummary(snap codingFileSnapshot) string {
 	return fmt.Sprintf("size=%d sha256=%s", snap.Size, hash)
 }
 
+// codingSubAgentDriftNote renders the advisory workspace-drift note appended
+// to a passing task summary. It names files whose bytes moved after the last
+// snapshot the agent recorded: agent-written files may have been re-touched by
+// a later command or an external actor; read-only files were moved under the
+// evidence the task was built on.
+func codingSubAgentDriftNote(afterWrite, readOnly []string) string {
+	var b strings.Builder
+	if len(afterWrite) > 0 {
+		fmt.Fprintf(&b, "以下文件在写入后又发生了变化（可能是后续命令、格式化工具或外部修改）：%s", compactSubAgentFileList(afterWrite, 5))
+	}
+	if len(readOnly) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("；")
+		}
+		fmt.Fprintf(&b, "以下文件在读取后被外部改动：%s", compactSubAgentFileList(readOnly, 5))
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "提示：" + b.String() + "。"
+}
+
 func (c *codingSubAgentCallbacks) refreshFileSnapshot(path string) {
 	snap, err := snapshotCodingFile(path)
 	if err != nil {
@@ -6512,6 +6580,44 @@ func (c *codingSubAgentCallbacks) refreshFileSnapshot(path string) {
 	c.dropCodegraphFileCacheIfChangedLocked(key, snap)
 	c.filesRead[key] = true
 	c.fileSnapshots[key] = snap
+}
+
+// collectFileDriftAudit re-snapshots every file the agent read or wrote and
+// reports which ones no longer match the last recorded snapshot. A drift on a
+// file the agent itself wrote means the delivered bytes changed again after
+// the tracked write (a later bash command, a formatter, or an external actor —
+// this audit cannot distinguish them); a drift on a file the agent only read
+// means the workspace moved under evidence its decisions were based on.
+// Advisory only: it never changes the task outcome.
+func (c *codingSubAgentCallbacks) collectFileDriftAudit() (afterWrite, readOnly []string) {
+	if c == nil {
+		return nil, nil
+	}
+	c.mu.Lock()
+	snapshots := make(map[string]codingFileSnapshot, len(c.fileSnapshots))
+	for k, v := range c.fileSnapshots {
+		snapshots[k] = v
+	}
+	written := make(map[string]bool, len(c.filesWrittenCanonical))
+	for k, v := range c.filesWrittenCanonical {
+		written[k] = v
+	}
+	c.mu.Unlock()
+	for path, prev := range snapshots {
+		current, err := snapshotCodingFile(path)
+		// An unreadable or missing file is also drift from the recorded state.
+		if err == nil && current == prev {
+			continue
+		}
+		if written[path] {
+			afterWrite = append(afterWrite, c.displayProjectPath(path))
+		} else {
+			readOnly = append(readOnly, c.displayProjectPath(path))
+		}
+	}
+	sort.Strings(afterWrite)
+	sort.Strings(readOnly)
+	return afterWrite, readOnly
 }
 
 // dropCodegraphFileCacheIfChangedLocked forgets a survey when the file bytes
@@ -6819,7 +6925,7 @@ func snapshotCodingFile(path string) (codingFileSnapshot, error) {
 	}
 	sum := sha256.Sum256(data)
 	return codingFileSnapshot{
-		Size: info.Size(),
+		Size: int64(len(data)),
 		Hash: fmt.Sprintf("%x", sum),
 	}, nil
 }
@@ -18425,10 +18531,12 @@ func buildFullCodingEnvironmentPromptPreamble() string {
 - 复杂任务：系统可能已给出多步「自动规划」；若有规划，严格按步骤推进并在每步验证。若无规划，先短计划（explore → implement → verify）再动手。
 - 多步任务自行拆解、实现、验证；工具失败时换策略，不要空转重试。
 - 外部知识判定是故障定位的必做步骤：遇到陌生概念/报错、第三方依赖/API/协议、版本或兼容性问题时，必须先 web_search 搜索精确错误与官方文档，再用 web_fetch 阅读最相关来源；不要靠记忆猜测。若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次；provider/网络/配置明确失败则不要重复空转。探索项目或实现新功能不要调用 report_localization。只有修复已有文件中的 bug 才提交定位报告；被接受后同任务轮次可直接改根因文件，不要把同一份完整报告再交一遍，除非门禁明确要求重交。
-- 子代理（Codex 风格）：复杂/可并行工作时用 spawn_coding_agent 派生子代理。
+- 子代理委派（Codex 风格）：探索、调查、评审类只读工作默认用 spawn_coding_agent 派生 explorer/reviewer 子代理在干净上下文执行，不要把大范围检索/原文堆进本轮上下文。
+  - 默认委派：代码库结构探索、行为/问题调查、设计文档或代码评审、跨文件调用链梳理等只读工作优先派生；单点、一次可达的小查找仍在本轮做。
   - explorer：只读探查（搜索/阅读），返回结构化发现
-  - worker：隔离 git worktree / 远程 isolate 实现/修复；必须声明 files 写集合；不可再嵌套 spawn
   - reviewer：只读审查（含 git_diff），不写文件
+  - worker：隔离 git worktree / 远程 isolate 实现/修复；必须声明 files 写集合；不可再嵌套 spawn
+  - 只读子代理后台执行：准入即完成本轮交接，交付后由新的审阅轮自动接收有界结论并继续主任务；派出时把必要上下文写进 task/context，审阅轮看不到本轮 transcript。
   - 可 agents[] 最多 3 路：全部为 explorer/reviewer 时可并行
   - 本地恰好 2 个 worker 且 files 不重叠时可并行执行，合并仍顺序；远程 worker 一律顺序；写集合重叠或与 explorer 混发则顺序执行
 - 保持工程师纪律：最小必要改动、验证优先、完成后 diff 与风险说明。

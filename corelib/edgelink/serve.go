@@ -1,9 +1,11 @@
 package edgelink
 
 import (
+	"bufio"
 	"io"
 	"log"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -60,10 +62,45 @@ func serveOne(stream net.Conn, routes map[string]string) {
 	if addr == "" {
 		return
 	}
+	if target == TargetDesktopd {
+		blocked, next, err := refuseDesktopAdmin(conn)
+		if err != nil || blocked {
+			return
+		}
+		conn = next
+	}
 	upstream, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return
 	}
 	defer upstream.Close()
 	Proxy(conn, upstream)
+}
+
+// refuseDesktopAdmin drops a tunnel request for the operator panel.
+// Other requests are returned with the peeked bytes put back.
+func refuseDesktopAdmin(conn net.Conn) (bool, net.Conn, error) {
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil && line == "" {
+		return false, nil, err
+	}
+	restored := prefixConn{Conn: conn, pre: io.MultiReader(strings.NewReader(line), br)}
+	if !blocksAdminPath(line) {
+		return false, restored, nil
+	}
+	_, _ = io.WriteString(conn, "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+	return true, nil, nil
+}
+
+func blocksAdminPath(requestLine string) bool {
+	fields := strings.Fields(requestLine)
+	if len(fields) < 2 {
+		return false
+	}
+	path := fields[1]
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	return path == "/admin" || strings.HasPrefix(path, "/admin/")
 }

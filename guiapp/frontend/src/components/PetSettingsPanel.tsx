@@ -34,7 +34,7 @@ import { normalizeLang } from '../i18n/langSelect';
 import { petMn } from '../i18n/mnPet';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
-type PetStoreListing = { id: string; status: string };
+type PetStoreListing = { id: string; status: string; name: string; version: string; price: number };
 
 function orderPackOptions(packs: unknown[], lang: Lang): PetSkinOption[] {
     const options = packs.map((p) => packInfoToSkinOption(p as Record<string, unknown>, lang));
@@ -629,7 +629,11 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             const next: Record<string, PetStoreListing> = {};
             uploads.forEach((entry: Record<string, unknown>) => {
                 const sourcePackID = String(entry.source_pack_id || '');
-                if (sourcePackID) next[sourcePackID] = { id: String(entry.id || ''), status: String(entry.status || '') };
+                // The uploads list is sorted newest-first and can contain both
+                // a withdrawn listing and its re-published replacement for the
+                // same source ID. Keep the newest row so a live listing is
+                // never masked by its older withdrawn predecessor.
+                if (sourcePackID && !next[sourcePackID]) next[sourcePackID] = { id: String(entry.id || ''), status: String(entry.status || ''), name: String(entry.name || ''), version: String(entry.version || ''), price: Number(entry.price) || 0 };
             });
             setPetStoreListings(next);
         } catch {
@@ -645,11 +649,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         shareSetupInvokerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setShareError('');
         setShareSuccess('');
-        setSharePrice('0');
-        setShareName(packToShare.label);
-        setShareVersion(packToShare.version || '1.0.0');
+        // Updating a listed pack keeps the listing's own fields as defaults so
+        // a version bump cannot silently reset its market name or paid price.
+        const listing = activeStoreListing(packToShare);
+        setSharePrice(listing ? String(Math.max(0, Math.trunc(listing.price))) : '0');
+        setShareName(listing?.name || packToShare.label);
+        setShareVersion(packToShare.version || listing?.version || '1.0.0');
         setShareSetupPack(packToShare);
-    }, [selectedSkinOption]);
+    }, [selectedSkinOption, petStoreListings]);
 
     const dismissShareSetup = useCallback((restoreFocus = true) => {
         if (shareSubmittingRef.current) return;
@@ -709,13 +716,20 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                 ));
                 return false;
             }
-            await SubmitPetStorePack(zipPath, name.trim(), description.trim(), version.trim() || '1.0.0', price, packToShare.id);
-            setShareSuccess(text(
-                lang,
-                '宠物包已发布到市场。你可以在“我的上传”中管理它。',
-                '寵物包已發佈到市場。你可以在「我的上傳」中管理它。',
-                'Pet pack published. Manage it in My Uploads.'
-            ));
+            const result = await SubmitPetStorePack(zipPath, name.trim(), description.trim(), version.trim() || '1.0.0', price, packToShare.id);
+            setShareSuccess(result && result.updated === true
+                ? text(
+                    lang,
+                    '宠物包已更新为新版本。市场发布保持不变，已获取用户仍可下载。',
+                    '寵物包已更新為新版本。市場發佈保持不變，已取得使用者仍可下載。',
+                    'Pet pack updated. The existing market listing now serves the new version.'
+                )
+                : text(
+                    lang,
+                    '宠物包已发布到市场。你可以在“我的上传”中管理它。',
+                    '寵物包已發佈到市場。你可以在「我的上傳」中管理它。',
+                    'Pet pack published. Manage it in My Uploads.'
+                ));
             await refreshPetStoreListings();
             return true;
         } catch (err) {
@@ -872,7 +886,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         } catch (err) {
             setInstallError(formatUnknownError(err));
         }
-    }, [lang, refreshPetStoreListings, showConfirm]);
+    }, [lang, petStoreListings, refreshPetStoreListings, showConfirm]);
 
     const installBusyRef = useRef(false);
 
@@ -1052,8 +1066,10 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     <form ref={shareSetupRef} className="pet-share-setup" role="dialog" aria-modal="true" aria-labelledby="pet-share-setup-title" onKeyDown={onShareSetupKeyDown} onSubmit={submitShareSetup}>
                         <header>
                             <div>
-                                <h4 id="pet-share-setup-title">{text(lang, '分享宠物包', '分享寵物包', 'Share pet pack')}</h4>
-                                <p>{text(lang, '选择免费发布，或设置一次性买断的 Credits 价格。不会创建订阅或自动续费。', '選擇免費發佈，或設定一次性買斷的 Credits 價格。不會建立訂閱或自動續費。', 'Choose free publishing or set a one-time Credits price. No subscription or renewal is created.')}</p>
+                                <h4 id="pet-share-setup-title">{activeStoreListing(shareSetupPack) ? text(lang, '更新宠物包发布', '更新寵物包發佈', 'Update pet pack listing') : text(lang, '分享宠物包', '分享寵物包', 'Share pet pack')}</h4>
+                                <p>{activeStoreListing(shareSetupPack)
+                                    ? text(lang, '该宠物包已在市场上架；本次发布会将在线分享包更新为新版本，发布 ID、下载和购买记录保持不变。', '該寵物包已在市場上架；本次發佈會將線上分享包更新為新版本，發佈 ID、下載和購買記錄保持不變。', 'This pack is already listed; publishing updates the online package to the new version while keeping its listing ID, downloads, and purchases.')
+                                    : text(lang, '选择免费发布，或设置一次性买断的 Credits 价格。不会创建订阅或自动续费。', '選擇免費發佈，或設定一次性買斷的 Credits 價格。不會建立訂閱或自動續費。', 'Choose free publishing or set a one-time Credits price. No subscription or renewal is created.')}</p>
                             </div>
                             <button ref={shareSetupCloseRef} type="button" className="pet-share-setup-close" disabled={shareSubmitting} onClick={() => dismissShareSetup()} aria-label={text(lang, '关闭对话框', '關閉對話框', 'Close dialog')}>×</button>
                         </header>
@@ -1069,7 +1085,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         {sharePrice !== '0' ? <label className="pet-share-setup-price">{text(lang, '价格（Credits）', '價格（Credits）', 'Price (Credits)')}<input autoFocus inputMode="numeric" disabled={shareSubmitting || !!shareSuccess} value={sharePrice} onChange={(event) => { setSharePrice(event.target.value); setShareError(''); }} /></label> : null}
                         {shareError ? <p className="pet-share-setup-feedback" data-tone="error" role="alert">{shareError}</p> : null}
                         {shareSuccess ? <p className="pet-share-setup-feedback" data-tone="success" role="status">{shareSuccess}</p> : null}
-                        <footer><button type="button" className="btn-secondary" disabled={shareSubmitting} onClick={() => dismissShareSetup()}>{shareSuccess ? text(lang, '关闭', '關閉', 'Close') : text(lang, '取消', '取消', 'Cancel')}</button>{!shareSuccess ? <button type="submit" className="btn-primary" disabled={shareSubmitting}>{shareSubmitting ? text(lang, '发布中…', '發佈中…', 'Publishing…') : text(lang, '发布宠物包', '發佈寵物包', 'Publish pet pack')}</button> : null}</footer>
+                        <footer><button type="button" className="btn-secondary" disabled={shareSubmitting} onClick={() => dismissShareSetup()}>{shareSuccess ? text(lang, '关闭', '關閉', 'Close') : text(lang, '取消', '取消', 'Cancel')}</button>{!shareSuccess ? <button type="submit" className="btn-primary" disabled={shareSubmitting}>{shareSubmitting ? text(lang, '发布中…', '發佈中…', 'Publishing…') : activeStoreListing(shareSetupPack) ? text(lang, '更新发布', '更新發佈', 'Update listing') : text(lang, '发布宠物包', '發佈寵物包', 'Publish pet pack')}</button> : null}</footer>
                     </form>
                 </div>
             ) : null}
@@ -1281,9 +1297,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         {petContextMenu ? (
                             <div className="pet-pack-context-menu" style={{ left: petContextMenu.x, top: petContextMenu.y }} role="menu" aria-label={text(lang, '宠物包菜单', '寵物包選單', 'Pet pack menu')}>
                                 {isShareableLocalPack(petContextMenu.pack) ? (activeStoreListing(petContextMenu.pack) ? (
-                                    <button type="button" role="menuitem" onClick={() => { const pack = petContextMenu.pack; setPetContextMenu(null); void withdrawSharedPetPack(pack); }}>
-                                        {text(lang, '下架', '下架', 'Unlist')}
-                                    </button>
+                                    <>
+                                        <button type="button" role="menuitem" onClick={() => { const pack = petContextMenu.pack; setPetContextMenu(null); sharePetPack(pack); }}>
+                                            {text(lang, '更新分享…', '更新分享…', 'Update listing…')}
+                                        </button>
+                                        <button type="button" role="menuitem" onClick={() => { const pack = petContextMenu.pack; setPetContextMenu(null); void withdrawSharedPetPack(pack); }}>
+                                            {text(lang, '下架', '下架', 'Unlist')}
+                                        </button>
+                                    </>
                                 ) : pausedStoreListing(petContextMenu.pack) ? (
                                     <button type="button" role="menuitem" disabled title={text(lang, '该宠物包已被管理员暂停发布，恢复发布前不能修改或重新上传。', '該寵物包已被管理員暫停發布，恢復發布前不能修改或重新上傳。', 'This pet pack is paused by an administrator and cannot be changed or re-uploaded until it is restored.')}>
                                         {text(lang, '已暂停发布', '已暫停發布', 'Publishing paused')}
@@ -1344,9 +1365,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         {selectedSkinOption.canUninstall ? (
                             <div className="pet-pack-context-row" role="group" aria-label={text(lang, '当前宠物包操作', '目前寵物包操作', 'Current pet pack actions')}>
                                 {isShareableLocalPack(selectedSkinOption) ? (activeStoreListing(selectedSkinOption) ? (
-                                    <button type="button" className="pet-context-button" onClick={() => void withdrawSharedPetPack(selectedSkinOption)}>
-                                        {text(lang, '下架', '下架', 'Unlist')}
-                                    </button>
+                                    <>
+                                        <button type="button" className="pet-context-button" onClick={() => openShareSetup()}>
+                                            {text(lang, '更新分享…', '更新分享…', 'Update listing…')}
+                                        </button>
+                                        <button type="button" className="pet-context-button" onClick={() => void withdrawSharedPetPack(selectedSkinOption)}>
+                                            {text(lang, '下架', '下架', 'Unlist')}
+                                        </button>
+                                    </>
                                 ) : pausedStoreListing(selectedSkinOption) ? (
                                     <button type="button" className="pet-context-button" disabled title={text(lang, '该宠物包已被管理员暂停发布，恢复发布前不能修改或重新上传。', '該寵物包已被管理員暫停發布，恢復發布前不能修改或重新上傳。', 'This pet pack is paused by an administrator and cannot be changed or re-uploaded until it is restored.')}>
                                         {text(lang, '已暂停发布', '已暫停發布', 'Publishing paused')}

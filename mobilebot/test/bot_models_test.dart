@@ -272,4 +272,26 @@ void main() {
       expect(r.status, 'restarted');
     });
   });
+
+  group('BotDesktop', () {
+    test('watch answer parses input_granted separately from user_control',
+        () {
+      final d = BotDesktop.fromJson({
+        'novnc_url': '/vnc.html?x=1',
+        'user_control': true,
+        'input_granted': false,
+        'desktop_mode': 'shared',
+      });
+      expect(d.isRunning, isTrue);
+      expect(d.userControl, isTrue);
+      expect(d.inputGranted, isFalse);
+    });
+
+    test('absent input_granted defaults to false', () {
+      final d = BotDesktop.fromJson({'novnc_url': '/vnc.html'});
+      expect(d.inputGranted, isFalse);
+      expect(d.userControl, isFalse);
+    });
+  });
+
 }

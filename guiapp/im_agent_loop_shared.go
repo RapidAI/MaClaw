@@ -3716,10 +3716,8 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if name == "" {
 		return false, ""
 	}
-	if name == "ssh" {
-		if _, rejected := semanticUserTextSSHDirectives(c.userText); rejected {
-			return false, ""
-		}
+	if name == "ssh" && semanticUserTextBansSSH(c.userText) {
+		return false, ""
 	}
 	if blocked, message := c.discoveryPetitionBlocked(name); blocked {
 		return false, message

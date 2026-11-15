@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -43,7 +44,13 @@ var ErrDigitalEmployeeYearsRequired = errors.New("digital employee authorization
 var ErrDigitalEmployeeTenantRequired = errors.New("tenant id is required for digital employee authorization")
 var ErrDigitalEmployeeAuthorizationStoreUnavailable = errors.New("digital employee authorization store is unavailable")
 
-var skillMarketAuthHTTPClient = &http.Client{Timeout: 10 * time.Second}
+func newHubsHTTPClient(timeout time.Duration) *http.Client {
+	client := remote.NewHubHTTPClient()
+	client.Timeout = timeout
+	return client
+}
+
+var skillMarketAuthHTTPClient = newHubsHTTPClient(10 * time.Second)
 
 const hubConfirmationPrefix = "hub_registration_confirm:"
 const (
@@ -384,7 +391,7 @@ func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, rou
 		settings:               settings,
 		mailer:                 mailer,
 		publicBaseURL:          strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
-		client:                 &http.Client{Timeout: 30 * time.Second},
+		client:                 newHubsHTTPClient(30 * time.Second),
 		heartbeatWriteInterval: 5 * time.Minute,
 	}
 }
@@ -2552,7 +2559,7 @@ func hubSupportsDirectUserMigration(hub *store.HubInstance) bool {
 
 func (s *Service) callHubUserMigration(ctx context.Context, hub *store.HubInstance, path string, payload remoteUserMigrationRequest, out any) error {
 	if s.client == nil {
-		s.client = &http.Client{Timeout: 30 * time.Second}
+		s.client = newHubsHTTPClient(30 * time.Second)
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -5170,7 +5177,7 @@ func (s *Service) AdminVerifyEmailRoute(ctx context.Context, email string) (*Adm
 // or (false, err) if the Hub is unreachable or doesn't support this endpoint.
 func (s *Service) probeHubUserExists(ctx context.Context, hub *store.HubInstance, email, tenantID string) (bool, error) {
 	if s.client == nil {
-		s.client = &http.Client{Timeout: 10 * time.Second}
+		s.client = newHubsHTTPClient(10 * time.Second)
 	}
 	baseURL := strings.TrimRight(strings.TrimSpace(hub.BaseURL), "/")
 	payload := map[string]string{"email": email}

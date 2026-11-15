@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,5 +184,11 @@ func (g *TagGenerator) WriteBackToYAML(skillDir string, meta *GeneratedMetadata)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(defPath, out, 0o644)
+	if err := os.WriteFile(defPath, out, 0o644); err != nil {
+		return err
+	}
+	if err := skill.RepinPackageManifestIfPresent(skillDir); err != nil {
+		log.Printf("[tag-generator] repin integrity manifest for %s failed: %v", skillDir, err)
+	}
+	return nil
 }

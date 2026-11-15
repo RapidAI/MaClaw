@@ -31,6 +31,9 @@ type Credentials struct {
 	NodeID     string `json:"node_id"`
 	NodeSecret string `json:"node_secret"`
 	HubToken   string `json:"hub_token"`
+	// TenantID is the tenant this desktop is bound to after enrollment.
+	// Empty means the process is not registered and still serves every tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 	// SrvAddr is the local MaClawSrv this node forwards to. It is not a secret.
 	SrvAddr string `json:"srv_addr,omitempty"`
 }

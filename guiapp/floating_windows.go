@@ -43,14 +43,15 @@ const (
 	csHredraw = 0x0002
 	csVredraw = 0x0001
 
-	wmDestroy     = 0x0002
-	wmClose       = 0x0010
-	wmLbuttondown = 0x0201
-	wmLbuttonup   = 0x0202
-	wmMousemove   = 0x0200
-	wmRbuttonup   = 0x0205
-	wmNchittest   = 0x0084
-	wmTimer       = 0x0113
+	wmDestroy        = 0x0002
+	wmClose          = 0x0010
+	wmLbuttondown    = 0x0201
+	wmLbuttonup      = 0x0202
+	wmMousemove      = 0x0200
+	wmCapturechanged = 0x0215
+	wmRbuttonup      = 0x0205
+	wmNchittest      = 0x0084
+	wmTimer          = 0x0113
 
 	smCxscreenFloat = 0
 	smCyscreenFloat = 1
@@ -74,6 +75,7 @@ const (
 	menuIdQuit        = 1003
 	menuIdOpenMain    = 1004
 	menuIdOpenPetChat = 1005
+	menuIdPin         = 1006
 
 	// Timer ID for halo animation
 	timerIdHalo = 1
@@ -203,7 +205,12 @@ type windowsFloatingWindow struct {
 	windowStartX int
 	windowStartY int
 	dragMoved    bool
-	lastHoverAt  time.Time
+	// releasingCapture is set only while button-up calls ReleaseCapture.
+	// That call reenters WM_CAPTURECHANGED on this thread; it is not a stolen grab.
+	releasingCapture bool
+	// lastHoverAt is guarded by mu. Button-up and the message loop write it,
+	// and the click clip starts on the gesture goroutine, after the double-click wait.
+	lastHoverAt time.Time
 
 	// Halo animation
 	haloPhase        float64 // 0..2*pi, advances each timer tick
@@ -250,10 +257,13 @@ type windowsFloatingWindow struct {
 	// Desktop travel. A clip's travel vector is a speed; the heading cycles
 	// through horizontal, vertical, and diagonal directions and bounces at
 	// the work-area edges. Remainders keep sub-pixel steps.
-	petRoam        petpack.DesktopRoam
-	petTravelAt    time.Time
-	petFaceLeft    bool
-	actionSoundGen uint64
+	petRoam     petpack.DesktopRoam
+	petTravelAt time.Time
+	petFaceLeft bool
+	// petPositionLocked stops autonomous screen travel. Clips still play,
+	// and the user can still drag the window.
+	petPositionLocked bool
+	actionSoundGen    uint64
 	// Increments for every motion update so an older, slower registry lookup
 	// cannot overwrite a newer setting snapshot.
 	motionConfigRevision uint64
@@ -368,6 +378,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	petEnabled := false
 	petMotionEnabled := true
 	petMotionSound := true
+	petPositionLocked := false
 	petQuietMode := false
 	petReducedMotion := false
 	petInteractionMode := "balanced"
@@ -383,6 +394,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 			petReducedMotion = cfg.PetReducedMotion
 			petMotionEnabled = isPetMotionEnabled(cfg)
 			petMotionSound = petMotionSoundEnabled(cfg)
+			petPositionLocked = cfg.PetPositionLocked
 			petSoundPreset = petMotionSoundPreset(cfg)
 			if cfg.PetInteractionMode != "" {
 				petInteractionMode = cfg.PetInteractionMode
@@ -430,6 +442,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petMotionEnabled = petMotionEnabled && !petReducedMotion
 	w.petMotionSoundRequested = petMotionSound
 	w.petMotionSound = petMotionSound && !petReducedMotion && !petQuietMode
+	w.petPositionLocked = petPositionLocked
 	w.lastPetSoundBucket = 0
 	w.lastPetSoundAt = time.Time{}
 	w.petQuietMode = petQuietMode
@@ -619,6 +632,12 @@ func (w *windowsFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset stri
 		amplitude := resolvePetMotionAmplitude(skin, interactionMode, quiet, reducedMotion, motionEnabled, effectiveSoundEnabled)
 		w.applyPetMotionAmplitude(revision, amplitude)
 	}
+}
+
+func (w *windowsFloatingWindow) UpdatePositionLock(locked bool) {
+	w.mu.Lock()
+	w.petPositionLocked = locked
+	w.mu.Unlock()
 }
 
 func (w *windowsFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
@@ -883,17 +902,46 @@ const petLongIdleThreshold = 5 * time.Minute
 // would otherwise replace the click clip on the next pixel of hand jitter.
 const petHoverCooldown = 5 * time.Second
 
+func (w *windowsFloatingWindow) finishPetDrag() {
+	if w == nil {
+		return
+	}
+	// Button-up arms this too. A grab stolen mid-drag never reaches that arm,
+	// and drag_end is a soft reaction the next move would replace.
+	w.armPetPointerHover(time.Now())
+	w.triggerCharacterEvent("drag_end")
+	var pt point
+	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	finalX := w.windowStartX + int(pt.X-w.dragStartX)
+	finalY := w.windowStartY + int(pt.Y-w.dragStartY)
+	w.windowStartX = finalX
+	w.windowStartY = finalY
+	app := w.app
+	go func() {
+		if app == nil {
+			return
+		}
+		if fa := app.existingFloatingAssistant(); fa != nil {
+			fa.UpdatePosition(finalX, finalY)
+		}
+	}()
+}
+
 func (w *windowsFloatingWindow) armPetPointerHover(now time.Time) {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
 	w.lastHoverAt = now
+	w.mu.Unlock()
 }
 
 func (w *windowsFloatingWindow) petHoverDue(now time.Time) bool {
 	if w == nil {
 		return false
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if !w.lastHoverAt.IsZero() && now.Sub(w.lastHoverAt) < petHoverCooldown {
 		return false
 	}
@@ -977,6 +1025,10 @@ func (w *windowsFloatingWindow) triggerCharacterClip(clip string) {
 		w.mu.Lock()
 		w.renderDirty = true
 		w.mu.Unlock()
+		// The button-up clock covers the double-click wait, which can be as
+		// long as the user's double-click setting. This clip starts after that
+		// wait, so it needs its own window or the next hover replaces it.
+		w.armPetPointerHover(time.Now())
 	}
 }
 
@@ -1946,7 +1998,9 @@ func (w *windowsFloatingWindow) petFacesLeft() bool {
 // stepPetLocomotion applies one clip's travel vector to the floating window.
 // vx and vy are design-canvas pixels per millisecond. The host keeps the
 // speed and changes heading, so the same walk can go across, up, down, or
-// on a diagonal. The window mutex is not held across MoveWindow.
+// on a diagonal. A pinned pet keeps the clock and drops the speed, so the
+// pose can keep walking in place and unlocking does not jump. The window
+// mutex is not held across MoveWindow.
 func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
 	if w == nil || sz <= 0 {
 		return
@@ -1958,6 +2012,7 @@ func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
 		dt = 0
 	}
 	w.petTravelAt = now
+	vx, vy = petScreenTravelVelocity(vx, vy, w.petPositionLocked)
 	state := w.petRoam
 	state.FaceLeft = w.petFaceLeft
 	x := w.windowStartX
@@ -2539,11 +2594,27 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		procMoveWindowProc.Call(hwnd, uintptr(newX), uintptr(newY), uintptr(sz), uintptr(sz), 1)
 		return 0
 
+	case wmCapturechanged:
+		if w == nil {
+			break
+		}
+		// ReleaseCapture on button-up posts this before the click is recorded.
+		// Only a grab taken by someone else ends the press, and it is never a click.
+		keepDragging, keepMoved, endDrag := petPointerCaptureChange(w.dragging, w.dragMoved, w.releasingCapture)
+		w.dragging = keepDragging
+		w.dragMoved = keepMoved
+		if endDrag {
+			w.finishPetDrag()
+		}
+		return 0
+
 	case wmLbuttonup:
 		if w == nil {
 			break
 		}
+		w.releasingCapture = true
 		procReleaseCapture.Call()
+		w.releasingCapture = false
 		if !w.dragging {
 			break
 		}
@@ -2566,18 +2637,7 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				go app.finishDesktopPetClick(class, epoch)
 			}
 		} else {
-			w.triggerCharacterEvent("drag_end")
-			var pt point
-			procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
-			finalX := w.windowStartX + int(pt.X-w.dragStartX)
-			finalY := w.windowStartY + int(pt.Y-w.dragStartY)
-			w.windowStartX = finalX
-			w.windowStartY = finalY
-			go func() {
-				if fa := w.app.existingFloatingAssistant(); fa != nil {
-					fa.UpdatePosition(finalX, finalY)
-				}
-			}()
+			w.finishPetDrag()
 		}
 		return 0
 
@@ -2594,13 +2654,19 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 
 		// "音效关闭" — checkable menu item
 		soundOffText, _ := syscall.UTF16PtrFromString("\u97f3\u6548\u5173\u95ed")
+		pinText, _ := syscall.UTF16PtrFromString("\u5b9a\u4f4f")
 		soundFlags := uintptr(mfString)
+		pinFlags := uintptr(mfString)
 		w.mu.Lock()
 		if !w.petMotionSound {
 			soundFlags |= mfChecked
 		}
+		if w.petPositionLocked {
+			pinFlags |= mfChecked
+		}
 		w.mu.Unlock()
 		procAppendMenuW.Call(hMenu, soundFlags, uintptr(menuIdSoundOff), uintptr(unsafe.Pointer(soundOffText)))
+		procAppendMenuW.Call(hMenu, pinFlags, uintptr(menuIdPin), uintptr(unsafe.Pointer(pinText)))
 
 		// Separator
 		procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
@@ -2634,6 +2700,17 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				// which updates w.petMotionSound without rebuilding the window.
 				_, _ = w.app.PatchConfigFields(map[string]interface{}{"pet_motion_sound_enabled": newEnabled})
 			}()
+		case menuIdPin:
+			if w.app == nil {
+				break
+			}
+			// Flip on this thread before any config lock. The next frame
+			// stops or resumes, and the next menu shows this checkmark.
+			w.mu.Lock()
+			next := !w.petPositionLocked
+			w.petPositionLocked = next
+			w.mu.Unlock()
+			w.app.persistPetPositionLockFromMenu(next)
 		case menuIdOpenMain:
 			go func() {
 				if w.app != nil {

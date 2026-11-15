@@ -1,17 +1,23 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BotDesktopNodesDialog } from './BotDesktopNodesDialog';
 
-const { listNodes, upgradeNode, deployNode } = vi.hoisted(() => ({
+const { listNodes, upgradeNode, deployNode, configureToken, redeployNode, clearResult } = vi.hoisted(() => ({
     listNodes: vi.fn(),
     upgradeNode: vi.fn(),
     deployNode: vi.fn(),
+    configureToken: vi.fn(),
+    redeployNode: vi.fn(),
+    clearResult: vi.fn(),
 }));
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
     ListDesktopNodes: () => listNodes(),
     UpgradeDesktopNode: (id: string, password: string) => upgradeNode(id, password),
     DeployDesktopNode: (req: unknown) => deployNode(req),
+    ConfigureDesktopNodeToken: (id: string, password: string) => configureToken(id, password),
+    RedeployDesktopNode: (id: string, password: string, withSrv: boolean) => redeployNode(id, password, withSrv),
+    ClearDesktopNodeResult: (id: string) => clearResult(id),
 }));
 
 vi.mock('../../../wailsjs/runtime', () => ({
@@ -36,6 +42,9 @@ describe('intranet desktop update', () => {
         listNodes.mockReset();
         upgradeNode.mockReset();
         deployNode.mockReset();
+        configureToken.mockReset();
+        redeployNode.mockReset();
+        clearResult.mockReset();
         listNodes.mockResolvedValue({ enabled: true, nodes: [sshNode] });
         upgradeNode.mockResolvedValue({ ...sshNode, status: 'upgrading' });
     });
@@ -72,5 +81,87 @@ describe('intranet desktop update', () => {
         const button = await screen.findByTestId('bot-desktop-update-hub-s1') as HTMLButtonElement;
         expect(button.disabled).toBe(true);
         expect(screen.getByText(/没有保存 SSH/)).toBeTruthy();
+    });
+
+    it('sends desktop-only unless MaClawSrv is chosen', async () => {
+        deployNode.mockResolvedValue({ id: 'dn_2', status: 'deploying' });
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('bot-desktop-deploy-toggle'));
+        fireEvent.change(screen.getByTestId('bot-desktop-deploy-host'), { target: { value: '10.0.0.9' } });
+        fireEvent.change(screen.getByTestId('bot-desktop-deploy-user'), { target: { value: 'deploy' } });
+        fireEvent.change(screen.getByTestId('bot-desktop-deploy-password'), { target: { value: 's3cret' } });
+        fireEvent.click(screen.getByTestId('bot-desktop-deploy-go'));
+        await waitFor(() => expect(deployNode).toHaveBeenCalledWith(expect.objectContaining({ host: '10.0.0.9', with_srv: false })));
+
+        fireEvent.click(screen.getByTestId('bot-desktop-deploy-toggle'));
+        fireEvent.click(screen.getByTestId('bot-desktop-install-srv'));
+        expect(screen.getByText(/不会显示出来/)).toBeTruthy();
+        fireEvent.change(screen.getByTestId('bot-desktop-deploy-password'), { target: { value: 's3cret' } });
+        fireEvent.click(screen.getByTestId('bot-desktop-deploy-go'));
+        await waitFor(() => expect(deployNode).toHaveBeenLastCalledWith(expect.objectContaining({ with_srv: true })));
+    });
+
+    it('keeps a deploy in the background and shows a result that can be cleared', async () => {
+        listNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [{ ...sshNode, status: 'deploying', message: 'agent 正在部署 desktopd', node_id: '', registered: false, online: false, active: false }],
+        });
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        expect(await screen.findByTestId('bot-desktop-background')).toBeTruthy();
+        expect(screen.getByTestId('bot-desktop-update-dn_1').textContent).toContain('部署中');
+        expect(screen.getAllByRole('button', { name: '关闭' }).some(button => (button as HTMLButtonElement).disabled)).toBe(false);
+        cleanup();
+        listNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [{ ...sshNode, last_kind: 'deploy', last_result: '部署完成。', status: 'ready' }],
+        });
+        clearResult.mockResolvedValue(undefined);
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        expect(await screen.findByTestId('bot-desktop-result-dn_1')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('bot-desktop-clear-dn_1'));
+        await waitFor(() => expect(clearResult).toHaveBeenCalledWith('dn_1'));
+    });
+
+    it('asks what to install when deploying a desktop that is not registered yet', async () => {
+        listNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [{ ...sshNode, status: 'failed', message: '失败', node_id: '', registered: false, online: false, active: false, last_result: '失败' }],
+        });
+        redeployNode.mockResolvedValue({ id: 'dn_1', status: 'deploying' });
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('bot-desktop-update-dn_1'));
+        fireEvent.click(screen.getByTestId('bot-desktop-row-srv-dn_1'));
+        fireEvent.change(screen.getByTestId('bot-desktop-update-password-dn_1'), { target: { value: 's3cret' } });
+        fireEvent.click(screen.getByTestId('bot-desktop-update-go-dn_1'));
+        await waitFor(() => expect(redeployNode).toHaveBeenCalledWith('dn_1', 's3cret', true));
+    });
+
+    it('configures the srv token from the desktop row', async () => {
+        listNodes.mockResolvedValue({ enabled: true, nodes: [{ ...sshNode, with_srv: true, srv_token_set: false }] });
+        configureToken.mockResolvedValue({ ...sshNode, with_srv: true, srv_token_set: true });
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        expect(await screen.findByText(/令牌未配置/)).toBeTruthy();
+        fireEvent.click(screen.getByTestId('bot-desktop-token-dn_1'));
+        fireEvent.change(screen.getByTestId('bot-desktop-update-password-dn_1'), { target: { value: 's3cret' } });
+        fireEvent.click(screen.getByTestId('bot-desktop-update-go-dn_1'));
+        await waitFor(() => expect(configureToken).toHaveBeenCalledWith('dn_1', 's3cret'));
+    });
+
+    it('shows the finished-run local time next to the last-result label', async () => {
+        listNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [{ ...sshNode, last_kind: 'deploy', last_result: '部署完成。', last_at: '2026-11-15T08:30:00Z' }],
+        });
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        expect(await screen.findByTestId('bot-desktop-result-dn_1')).toBeTruthy();
+        // RFC3339 原文（含 T/Z）不直出；渲染成当地 YYYY-MM-DD HH:mm。
+        expect(screen.getByTestId('bot-desktop-result-dn_1').textContent).toMatch(/20\d{2}-\d{2}-\d{2} \d{2}:\d{2}/);
+    });
+
+    it('does not render the target twice when the node has no name', async () => {
+        listNodes.mockResolvedValue({ enabled: true, nodes: [{ ...sshNode, name: '' }] });
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        // 名称缺省时目标充当名称；再渲染一个目标 span 就会重复同一行文字。
+        expect(await screen.findAllByText(/deploy@10\.0\.0\.8/)).toHaveLength(1);
     });
 });

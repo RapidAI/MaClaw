@@ -56,8 +56,16 @@ func (s *Service) writeBotOwnerLLM(ctx context.Context, tenantID string, rec rec
 		return err
 	}
 	settings := s.llmSettingsSnapshot(ctx, tenantID)
+	// Cloud and a local desktop run different configs, so each destination
+	// keeps its own stamp. A local-stage edit does not rewrite the cloud srv,
+	// and a cloud default/custom edit does not rewrite a node that already
+	// has these stages.
+	nodeID := strings.TrimSpace(rec.DialNode)
 	stamp := ownerLLMStamp(settings, choice)
-	token, reused, err := s.ownerLLMViewerToken(ctx, tenantID, hubUserID)
+	if nodeID != "" {
+		stamp = localDesktopLLMStamp(choice)
+	}
+	token, reused, err := s.ownerLLMViewerToken(ctx, tenantID, hubUserID, nodeID)
 	if err != nil {
 		return err
 	}
@@ -66,11 +74,14 @@ func (s *Service) writeBotOwnerLLM(ctx context.Context, tenantID string, rec rec
 	// force is the one rewrite after MaClaw reports the config is gone; the
 	// endpoint marker stays in place until this write itself succeeds, so a
 	// failed attempt does not make every later command rewrite too.
-	if !force && reused && s.ownerLLMConfigCurrent(ctx, tenantID, hubUserID, token, endpoint, stamp) {
+	if !force && reused && s.ownerLLMConfigCurrent(ctx, tenantID, hubUserID, nodeID, token, endpoint, stamp) {
 		return nil
 	}
 	if err := s.pushBotOwnerLLM(ctx, rec, *principal, endpoint, token, settings, choice); err != nil {
 		return err
+	}
+	if nodeID != "" {
+		return s.markNodeLLMPushed(ctx, tenantID, hubUserID, nodeID, token, endpoint, stamp)
 	}
 	return s.markOwnerLLMPushed(ctx, tenantID, hubUserID, token, endpoint, stamp)
 }
@@ -176,7 +187,7 @@ func llmRepairKey(tenantID, hubUserID string) string {
 	return strings.TrimSpace(tenantID) + "\x00" + strings.TrimSpace(hubUserID)
 }
 
-func (s *Service) ownerLLMViewerToken(ctx context.Context, tenantID, hubUserID string) (string, bool, error) {
+func (s *Service) ownerLLMViewerToken(ctx context.Context, tenantID, hubUserID, nodeID string) (string, bool, error) {
 	if token, ok := s.reusableOwnerLLMToken(ctx, tenantID, hubUserID); ok {
 		return token, true, nil
 	}
@@ -194,32 +205,89 @@ func (s *Service) ownerLLMViewerToken(ctx context.Context, tenantID, hubUserID s
 	if err != nil {
 		return "", false, err
 	}
-	idx := principalIndex(fresh.Principals, hubUserID)
-	if idx < 0 {
+	// The public principal keeps the token when this user has a cloud srv.
+	// A node-only account stores it on that node, which is the srv that calls Hub.
+	if !storeOwnerLLMToken(&fresh, hubUserID, nodeID, token, s.now().UTC().Format(time.RFC3339)) {
 		return "", false, fmt.Errorf("%w: bot owner is not provisioned", ErrSrv)
 	}
-	fresh.Principals[idx].LLMViewerToken = token
-	fresh.Principals[idx].LLMViewerIssuedAt = s.now().UTC().Format(time.RFC3339)
-	fresh.Principals[idx].LLMEndpoint = ""
 	if err := s.save(ctx, tenantID, fresh); err != nil {
 		return "", false, err
 	}
 	return token, false, nil
 }
 
-func (s *Service) ownerLLMConfigCurrent(ctx context.Context, tenantID, hubUserID, token, endpoint, stamp string) bool {
+func storeOwnerLLMToken(rec *record, hubUserID, nodeID, token, issued string) bool {
+	if rec == nil {
+		return false
+	}
+	set := func(principal *ownerPrincipal) {
+		principal.LLMViewerToken = token
+		principal.LLMViewerIssuedAt = issued
+		principal.LLMEndpoint = ""
+	}
+	if idx := principalIndex(rec.Principals, hubUserID); idx >= 0 {
+		set(&rec.Principals[idx])
+		return true
+	}
+	if link := findNodeLink(rec.NodeLinks, nodeID); link != nil {
+		if idx := principalIndex(link.Principals, hubUserID); idx >= 0 {
+			set(&link.Principals[idx])
+			return true
+		}
+	}
+	for i := range rec.NodeLinks {
+		if idx := principalIndex(rec.NodeLinks[i].Principals, hubUserID); idx >= 0 {
+			set(&rec.NodeLinks[i].Principals[idx])
+			return true
+		}
+	}
+	return false
+}
+
+func viewerTokenHeld(rec record, hubUserID, token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	holds := func(principal *ownerPrincipal) bool {
+		return principal != nil && strings.TrimSpace(principal.LLMViewerToken) == token
+	}
+	if holds(findPrincipal(rec.Principals, hubUserID)) {
+		return true
+	}
+	for i := range rec.NodeLinks {
+		if holds(findPrincipal(rec.NodeLinks[i].Principals, hubUserID)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) ownerLLMConfigCurrent(ctx context.Context, tenantID, hubUserID, nodeID, token, endpoint, stamp string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fresh, err := s.load(ctx, tenantID)
 	if err != nil {
 		return false
 	}
+	if !viewerTokenHeld(fresh, hubUserID, token) {
+		return false
+	}
 	principal := findPrincipal(fresh.Principals, hubUserID)
+	if strings.TrimSpace(nodeID) != "" {
+		link := findNodeLink(fresh.NodeLinks, nodeID)
+		if link == nil {
+			return false
+		}
+		principal = findPrincipal(link.Principals, hubUserID)
+		if principal == nil {
+			return false
+		}
+	}
 	if principal == nil {
 		return false
 	}
-	return strings.TrimSpace(principal.LLMViewerToken) == strings.TrimSpace(token) &&
-		strings.TrimSpace(principal.LLMEndpoint) == strings.TrimSpace(endpoint) &&
+	return strings.TrimSpace(principal.LLMEndpoint) == strings.TrimSpace(endpoint) &&
 		strings.TrimSpace(endpoint) != "" &&
 		principal.LLMConfigStamp == stamp
 }
@@ -245,6 +313,32 @@ func (s *Service) markOwnerLLMPushed(ctx context.Context, tenantID, hubUserID, t
 	return s.save(ctx, tenantID, fresh)
 }
 
+// markNodeLLMPushed records the four-stage config written to one local
+// desktop. The stamp is per node. The viewer token may live on the public
+// principal or, for a node-only account, on this node.
+func (s *Service) markNodeLLMPushed(ctx context.Context, tenantID, hubUserID, nodeID, token, endpoint, stamp string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fresh, err := s.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if !viewerTokenHeld(fresh, hubUserID, token) {
+		return nil
+	}
+	link := findNodeLink(fresh.NodeLinks, nodeID)
+	if link == nil {
+		return nil
+	}
+	idx := principalIndex(link.Principals, hubUserID)
+	if idx < 0 {
+		return nil
+	}
+	link.Principals[idx].LLMEndpoint = strings.TrimSpace(endpoint)
+	link.Principals[idx].LLMConfigStamp = stamp
+	return s.save(ctx, tenantID, fresh)
+}
+
 func (s *Service) reusableOwnerLLMToken(ctx context.Context, tenantID, hubUserID string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,8 +346,21 @@ func (s *Service) reusableOwnerLLMToken(ctx context.Context, tenantID, hubUserID
 	if err != nil {
 		return "", false
 	}
-	principal := findPrincipal(fresh.Principals, hubUserID)
-	if principal == nil {
+	// A cloud user keeps its own token. An old token left on a node must not
+	// be reused for the cloud srv, or the cloud stamp never matches that write.
+	if principal := findPrincipal(fresh.Principals, hubUserID); principal != nil {
+		return reusablePrincipalToken(s, principal)
+	}
+	for i := range fresh.NodeLinks {
+		if token, ok := reusablePrincipalToken(s, findPrincipal(fresh.NodeLinks[i].Principals, hubUserID)); ok {
+			return token, true
+		}
+	}
+	return "", false
+}
+
+func reusablePrincipalToken(s *Service, principal *ownerPrincipal) (string, bool) {
+	if s == nil || principal == nil {
 		return "", false
 	}
 	token := strings.TrimSpace(principal.LLMViewerToken)
@@ -281,6 +388,23 @@ func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal own
 		"key":            viewerToken,
 		"model":          botLLMModel,
 		"is_hub_service": true,
+	}
+	// A local MaClawSrv runs the four-stage choice. The cloud default/custom
+	// switch does not apply here, and the tenant provider catalog (its URLs
+	// and keys) is not copied onto that machine.
+	if strings.TrimSpace(rec.DialNode) != "" {
+		localChoice := localRuntimeChoice(choice)
+		providers := []map[string]any{hubProvider}
+		providers = appendCustomRoleProviders(providers, localChoice)
+		applyCustomFlat(current.AppConfig, localChoice, endpoint, viewerToken)
+		current.AppConfig["maclaw_llm_providers"] = providers
+		current.AppConfig["maclaw_llm_profiles"] = dropUnresolvedProfiles(customRoleProfiles(current.AppConfig["maclaw_llm_profiles"], localChoice), providers)
+		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawBotLLMModeCustom
+		delete(current.AppConfig, "maclaw_hub_bot_roles")
+		if err := s.doAdmin(ctx, rec, http.MethodPut, path, map[string]any{"app_config": current.AppConfig}, nil); err != nil {
+			return fmt.Errorf("%w: write bot llm config: %s", ErrSrv, err.Error())
+		}
+		return nil
 	}
 	providers := make([]map[string]any, 0, 2+len(settings.Providers))
 	providers = append(providers, hubProvider)

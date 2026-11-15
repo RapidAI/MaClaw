@@ -235,6 +235,7 @@ type DesktopBotWatch struct {
 	NovncURL        string `json:"novnc_url"`
 	DirectURL       string `json:"direct_url,omitempty"`
 	UserControl     bool   `json:"user_control"`
+	InputGranted    bool   `json:"input_granted"`
 	AttentionReason string `json:"attention_reason,omitempty"`
 	DesktopMode     string `json:"desktop_mode,omitempty"`
 }
@@ -245,6 +246,7 @@ type DesktopBotScreen struct {
 	NovncURL        string `json:"novnc_url"`
 	DirectURL       string `json:"direct_url,omitempty"`
 	UserControl     bool   `json:"user_control"`
+	InputGranted    bool   `json:"input_granted"`
 	AttentionReason string `json:"attention_reason,omitempty"`
 	DesktopMode     string `json:"desktop_mode"`
 }
@@ -283,6 +285,7 @@ func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*Deskto
 		NovncURL        string `json:"novnc_url"`
 		DirectURL       string `json:"direct_url"`
 		UserControl     bool   `json:"user_control"`
+		InputGranted    bool   `json:"input_granted"`
 		AttentionReason string `json:"attention_reason"`
 		DesktopMode     string `json:"desktop_mode"`
 	}
@@ -306,6 +309,7 @@ func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*Deskto
 		NovncURL:        a.absoluteHubPath(out.NovncURL),
 		DirectURL:       absoluteDirect(a, out.DirectURL),
 		UserControl:     out.UserControl,
+		InputGranted:    out.InputGranted,
 		AttentionReason: strings.TrimSpace(out.AttentionReason),
 		DesktopMode:     desktopModeLabel(out.DesktopMode),
 	}, nil
@@ -331,6 +335,7 @@ func (a *App) GetDesktopBotScreen(botID string) (*DesktopBotScreen, error) {
 		NovncURL        string `json:"novnc_url"`
 		DirectURL       string `json:"direct_url"`
 		UserControl     bool   `json:"user_control"`
+		InputGranted    bool   `json:"input_granted"`
 		AttentionReason string `json:"attention_reason"`
 		DesktopMode     string `json:"desktop_mode"`
 	}
@@ -342,9 +347,30 @@ func (a *App) GetDesktopBotScreen(botID string) (*DesktopBotScreen, error) {
 		NovncURL:        a.absoluteHubPath(out.NovncURL),
 		DirectURL:       absoluteDirect(a, out.DirectURL),
 		UserControl:     out.UserControl,
+		InputGranted:    out.InputGranted,
 		AttentionReason: strings.TrimSpace(out.AttentionReason),
 		DesktopMode:     desktopModeLabel(out.DesktopMode),
 	}, nil
+}
+
+// DesktopBotControl is the reply from POST /api/v1/bots/{id}/desktop/control.
+type DesktopBotControl struct {
+	InputGranted bool `json:"input_granted"`
+}
+
+// SetDesktopBotControl claims or releases this machine's keyboard on the bot's
+// screen. Another machine that already holds that screen is refused.
+func (a *App) SetDesktopBotControl(botID string, hold bool) (*DesktopBotControl, error) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil, fmt.Errorf("bot id is required")
+	}
+	var out DesktopBotControl
+	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop/control", map[string]any{"hold": hold}, &out, 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // HandBackDesktopBot ends the person's takeover of this bot's display and
@@ -570,8 +596,9 @@ func (a *App) DeleteDesktopBot(botID string) error {
 // credential into the frontend bundle or the chat transcript.
 //
 // Name, URL and Model mirror the foreground role so older code that still
-// reads one provider keeps working. Roles is the choice itself when Mode is
-// custom; it is absent in default mode.
+// reads one provider keeps working. Roles is the cloud choice when Mode is
+// custom; it is absent in default mode. LocalRoles is the four-stage model a
+// locally installed desktop runs, and it stays set in either mode.
 type DesktopBotLLM struct {
 	Mode          string              `json:"mode"`
 	Name          string              `json:"name,omitempty"`
@@ -579,6 +606,7 @@ type DesktopBotLLM struct {
 	Model         string              `json:"model,omitempty"`
 	KeySet        bool                `json:"key_set"`
 	Roles         *DesktopBotLLMRoles `json:"roles,omitempty"`
+	LocalRoles    *DesktopBotLLMRoles `json:"local_roles,omitempty"`
 	Stored        bool                `json:"stored"`
 	Choice        string              `json:"choice,omitempty"`
 	Effective     *DesktopBotLLMRoles `json:"effective,omitempty"`
@@ -612,14 +640,15 @@ type DesktopBotLLMRoles struct {
 // "custom" without Roles is the older single-provider body. A blank Key keeps
 // the key already stored for that role's provider when the name is unchanged.
 type DesktopBotLLMInput struct {
-	Mode     string                   `json:"mode"`
-	Name     string                   `json:"name,omitempty"`
-	URL      string                   `json:"url,omitempty"`
-	Key      string                   `json:"key,omitempty"`
-	Model    string                   `json:"model,omitempty"`
-	Protocol string                   `json:"protocol,omitempty"`
-	WireAPI  string                   `json:"wire_api,omitempty"`
-	Roles    *DesktopBotLLMRolesInput `json:"roles,omitempty"`
+	Mode       string                   `json:"mode"`
+	Name       string                   `json:"name,omitempty"`
+	URL        string                   `json:"url,omitempty"`
+	Key        string                   `json:"key,omitempty"`
+	Model      string                   `json:"model,omitempty"`
+	Protocol   string                   `json:"protocol,omitempty"`
+	WireAPI    string                   `json:"wire_api,omitempty"`
+	Roles      *DesktopBotLLMRolesInput `json:"roles,omitempty"`
+	LocalRoles *DesktopBotLLMRolesInput `json:"local_roles,omitempty"`
 }
 
 // DesktopBotLLMRoleInput is one role in a custom save.
@@ -1944,27 +1973,12 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		return desktopBotRelayResult{}, err
 	}
 	a.emitDesktopBotIntake(botID, requestID, out.Kind, out.Ack, out.Queued, out.Held, strings.TrimSpace(out.RunID))
-	if strings.EqualFold(out.Kind, "schedule") && out.Schedule != nil {
-		day := -1
-		if out.Schedule.DayOfWeek != nil {
-			day = *out.Schedule.DayOfWeek
-		} else if kept, ok := a.desktopBotScheduleWeekday(botID, out.Schedule.Name); ok {
-			day = kept
-		}
-		hour, minute := 0, 0
-		if out.Schedule.Hour != nil {
-			hour = *out.Schedule.Hour
-		}
-		if out.Schedule.Minute != nil {
-			minute = *out.Schedule.Minute
-		}
-		order := strings.TrimSpace(out.Instruction)
-		if _, armErr := a.ArmDesktopBotSchedule(botID, out.Schedule.Name, out.Schedule.Mode, order, out.Schedule.IntervalMinutes, hour, minute, day); armErr != nil && order == "" {
-			_, armErr = a.ArmDesktopBotSchedule(botID, out.Schedule.Name, out.Schedule.Mode, text, out.Schedule.IntervalMinutes, hour, minute, day)
-			if armErr != nil {
-				botlog.Write(botID, "gui.schedule", armErr)
-			}
-		} else if armErr != nil {
+	// The server clock already stored this timer. Copying it into the local
+	// scheduled-task list is what showed weather_report under 计划任务 and
+	// kept counting runs on this computer. A cancel still clears a copy
+	// that an older build left behind.
+	if strings.EqualFold(out.Kind, "schedule") && out.Schedule != nil && strings.EqualFold(strings.TrimSpace(out.Schedule.Mode), "cancel") {
+		if _, armErr := a.ArmDesktopBotSchedule(botID, out.Schedule.Name, "cancel", "", 0, 0, 0, -1); armErr != nil && !strings.Contains(armErr.Error(), "no desktop bot schedule matched") {
 			botlog.Write(botID, "gui.schedule", armErr)
 		}
 	}

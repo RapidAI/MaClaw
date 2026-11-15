@@ -228,7 +228,7 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 		if err == nil && len(pack.Items) > 0 {
 			b.WriteString("\n## 知识库参考资料（来自通用知识库）\n")
 			b.WriteString("以下是与当前任务相关的知识库内容：\n")
-			b.WriteString(knowledge.FormatContextPackForLLM(pack))
+			b.WriteString(corememory.WrapUntrustedRecall("knowledge", knowledge.FormatContextPackForLLM(pack)))
 		}
 	}
 
@@ -268,8 +268,7 @@ func codingMemoryPromptSection(store *corememory.Store, query, projectPath, user
 	var b strings.Builder
 	b.WriteString("\n## 长期记忆参考资料\n")
 	b.WriteString("以下是本机长期记忆中与当前任务相关的内容（需要更多时用 memory_search 继续查找）：\n")
-	b.WriteString(text)
-	b.WriteString("\n")
+	b.WriteString(corememory.WrapUntrustedRecall("memory", text))
 	return b.String()
 }
 
@@ -521,7 +520,7 @@ func (c *codingSubAgentCallbacks) executeKnowledgeSearch(argsJSON string) coding
 		fmt.Sprintf("%d results", len(results)), true)
 
 	return codingToolExecutionResult{
-		Text:    b.String(),
+		Text:    corememory.WrapUntrustedRecall("knowledge", b.String()),
 		Outcome: codingToolOutcomeSuccess,
 	}
 }
@@ -564,7 +563,7 @@ func (c *codingSubAgentCallbacks) executeKnowledgeImageSearch(argsJSON string) c
 		b.WriteString("\n")
 	}
 	c.trackSearchResult("knowledge_image_search", codingKnowledgeImageSearchAuditArgs(args), fmt.Sprintf("%d results", len(results)), true)
-	return codingToolExecutionResult{Text: b.String(), Outcome: codingToolOutcomeSuccess}
+	return codingToolExecutionResult{Text: corememory.WrapUntrustedRecall("knowledge", b.String()), Outcome: codingToolOutcomeSuccess}
 }
 
 // executeMemorySearch handles the memory_search tool call (read-only recall
@@ -597,7 +596,7 @@ func (c *codingSubAgentCallbacks) executeMemorySearch(argsJSON string) codingToo
 	})
 	c.trackSearchResult("memory_search", map[string]interface{}{"query": query}, text, true)
 	return codingToolExecutionResult{
-		Text:    text,
+		Text:    corememory.WrapUntrustedRecall("memory", text),
 		Outcome: codingToolOutcomeSuccess,
 	}
 }
@@ -835,7 +834,7 @@ func formatCodingExperienceSearchHits(experiences []knowledge.CodingExperience) 
 		}
 		b.WriteString("\n")
 	}
-	return b.String()
+	return corememory.WrapUntrustedRecall("knowledge", b.String())
 }
 
 // codingKnowledgePromptItemMaxRunes is the executor system-prompt budget for
@@ -869,9 +868,7 @@ func appendCodingKnowledgePromptItems(b *strings.Builder, items []knowledge.Cont
 	}
 	b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
 	b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
-	for _, line := range lines {
-		b.WriteString(line)
-	}
+	b.WriteString(corememory.WrapUntrustedRecall("knowledge", strings.Join(lines, "")))
 }
 
 // codingKnowledgeFallbackQuery builds a bounded recall query from prior turn

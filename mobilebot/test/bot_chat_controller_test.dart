@@ -850,4 +850,48 @@ void main() {
     expect(message.images.single.data, 'aW1n');
     expect(message.images.single.attachmentId, '');
   });
+
+  test('backgrounding pauses the journal long-poll until resumed', () async {
+    final api = _FakeApi()..page = const ConversationPage(head: 0);
+    final container = _container(api);
+    addTearDown(container.dispose);
+
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+    await _until(() => api.conversationCalls >= 2); // one long-poll round
+
+    container.read(botChatProvider.notifier).setForeground(false);
+    final paused = api.conversationCalls;
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    expect(api.conversationCalls, paused);
+
+    container.read(botChatProvider.notifier).setForeground(true);
+    await _until(() => api.conversationCalls > paused);
+  });
+
+  test('backgrounding pauses the run poll and resume re-attaches', () async {
+    final api = _FakeApi()
+      ..sendResult = SendResult.admitted(
+          const BotRun(runId: 'r1', status: 'running'))
+      ..pollAnswers.addAll([null, null, null, const BotReply(text: '跑完了')]);
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    await container.read(botChatProvider.notifier).send('干活');
+    expect(container.read(botChatProvider).activeRunId, 'r1');
+    await _until(() => api.pollCalls >= 1,
+        timeout: const Duration(seconds: 4));
+
+    container.read(botChatProvider.notifier).setForeground(false);
+    final paused = api.pollCalls;
+    await Future<void>.delayed(const Duration(milliseconds: 2200));
+    expect(api.pollCalls, paused); // no ticks while pocketed
+    expect(container.read(botChatProvider).activeRunId, 'r1');
+
+    container.read(botChatProvider.notifier).setForeground(true);
+    await _until(() => container.read(botChatProvider).activeRunId == null,
+        timeout: const Duration(seconds: 8));
+    expect(
+        container.read(botChatProvider).messages.last.content, '跑完了');
+  });
 }

@@ -24,8 +24,11 @@ class _FakeApi extends BotApi {
   BotAccess access = const BotAccess(enabled: true);
   List<Bot> bots = const [];
   Object? refreshError;
+  Object? createError;
   String? deletedBotId;
   Future<List<Bot>>? pendingBots;
+  int listCalls = 0;
+  DesktopBotQuota? quotaAfterFirstList;
 
   @override
   Future<BotAccess> fetchAccess() async {
@@ -35,8 +38,12 @@ class _FakeApi extends BotApi {
 
   @override
   Future<List<Bot>> listBots() async {
+    listCalls++;
     if (refreshError != null) throw refreshError!;
     if (pendingBots != null) return pendingBots!;
+    if (listCalls > 1 && quotaAfterFirstList != null) {
+      desktopQuota = quotaAfterFirstList!;
+    }
     return bots;
   }
 
@@ -47,13 +54,15 @@ class _FakeApi extends BotApi {
     String? color,
     String? shape,
     bool needsComputer = true,
-  }) async =>
-      Bot(
+  }) async {
+    if (createError != null) throw createError!;
+    return Bot(
         id: 'new-1',
         name: name,
         description: description,
-        desktopMode: needsComputer ? 'shared' : 'none',
-      );
+          desktopMode: needsComputer ? 'shared' : 'none',
+        );
+  }
 
   @override
   Future<void> deleteBot(String botId) async {
@@ -208,5 +217,59 @@ void main() {
         .create('文书', '', needsComputer: false);
     expect(created.desktopMode, 'none');
     expect(container.read(botsProvider).quota.used, 1);
+  });
+
+  test('creating with a computer spends the grant', () async {
+    final api = _FakeApi()
+      ..desktopQuota = const DesktopBotQuota(limit: 2, used: 1, known: true);
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _settle(container);
+
+    await container.read(botsProvider.notifier).create('画图', '');
+    expect(container.read(botsProvider).quota.used, 2);
+    expect(container.read(botsProvider).quota.exhausted, isTrue);
+  });
+
+  test('removing a computer bot releases the grant', () async {
+    const deskBot = Bot(id: 'd', name: '桌面', desktopMode: 'shared');
+    const freeBot = Bot(id: 'f', name: '文书', desktopMode: 'none');
+    final api = _FakeApi()
+      ..bots = const [deskBot, freeBot]
+      ..desktopQuota = const DesktopBotQuota(limit: 1, used: 1, known: true);
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _settle(container);
+
+    await container.read(botsProvider.notifier).remove(freeBot);
+    expect(container.read(botsProvider).quota.used, 1);
+    await container.read(botsProvider.notifier).remove(deskBot);
+    expect(container.read(botsProvider).quota.used, 0);
+    expect(container.read(botsProvider).quota.exhausted, isFalse);
+  });
+
+  test('a quota rejection resyncs the grant', () async {
+    final api = _FakeApi()
+      ..desktopQuota = const DesktopBotQuota(limit: 2, used: 0, known: true)
+      ..quotaAfterFirstList =
+          const DesktopBotQuota(limit: 1, used: 1, known: true)
+      ..createError = const HubApiException(
+          'DESKTOP_QUOTA_EXCEEDED', '额度已满', statusCode: 409);
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _settle(container);
+    expect(container.read(botsProvider).quota.exhausted, isFalse);
+
+    await expectLater(
+      container.read(botsProvider.notifier).create('新Bot', ''),
+      throwsA(isA<HubApiException>()),
+    );
+    for (var i = 0;
+        i < 50 && !container.read(botsProvider).quota.exhausted;
+        i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(api.listCalls, greaterThan(1));
+    expect(container.read(botsProvider).quota.exhausted, isTrue);
   });
 }

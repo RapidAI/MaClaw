@@ -298,6 +298,46 @@
   are silently absent from read-only surfaces (the earlier ordering bug had
   local inquiry agents fall back to `rg`/`Get-Content` on `knowledge.db-wal`).
 
+## Read-only coding children: auto review/resume (guiapp)
+
+- `spawn_coding_agent` read-only children (explorer/reviewer) run detached:
+  `AdmitReadOnlyChildren` seals the parent Attempt `waiting_child` and releases
+  its lease; `runAdmitted*ReadOnlyChild` executes on a ledger-detached context
+  (`guiAdmittedChildExecutions`), so normal parent completion can never cancel
+  them. `PrepareParentContinuation` is read-only and only succeeds once every
+  child result is durable and the parent task is re-queued.
+- A delivered handoff auto-resumes the main task — no manual 「审阅子任务结果」
+  click: each child-done hook calls `autoResumeCodingChildReviewIfReady`
+  (per-user `codingAutoChildReviewLocks` mutex; gates: usable checkpoint,
+  pending handoff for that parentTaskID, `hasActiveLoopForUser` false, ALL
+  targets ready) then `runAutoCodingChildReview` starts the fresh parent
+  Attempt on its own `LoopContext` + AI background session (user can
+  interrupt). `finalizeCodingImplementation` chains the same review when the
+  run finishes after all children already delivered.
+- `cp.AutoReviewHops` (persisted, cap `codingAutoChildReviewMaxHops` = 3)
+  bounds spawn→review→spawn chains; past it only the manual action remains.
+- Lineage fence: detached reviews write the checkpoint OUTSIDE the owner turn
+  window, so `cp.reviewEpoch`/`reviewBaseStamp` (in-memory only, `json:"-"`,
+  stripped on load) guard `storeCodingExecCheckpoint` — a write whose stored
+  checkpoint is newer than the lineage base AND belongs to a different
+  lineage is dropped (foreign turns win); a MISSING stored entry counts as
+  "cleared after base" and is also dropped (a live child implies the base was
+  in memory). ALL checkpoint stores and `clearCodingExecCheckpoint`'s Delete
+  share `codingExecCheckpointEpochMu` — the fence only works because foreign
+  writes cannot slip between a lineage's compare and its Store.
+  `codingExecCheckpointLineageCurrent` aborts superseded reviews before
+  spending a parent Attempt. Epoch 0 keeps every foreground writer
+  unconditional.
+- `emitCodingChildReviewChat` pushes the review response as an
+  `AIContinuationEvent` notice into the coding chat, mirroring
+  `emitCodingPlanReviewChat`. For IM-originated coding turns the detached
+  child hook also carries `trustedLoopDeliveryTarget(parent.loopCtx)` through
+  to `deliverCodingChildReviewToIM`, which converts the trusted destination
+  via `trustedDestinationToSchedulerTarget` + `codingChildReviewIMChannel`
+  (lansenger/telegram/weixin/qq scopes) and pushes through
+  `deliverIMTextForBot` — desktop scopes and unmapped channels skip silently.
+
+
 ## WebView renderer OOM (frontend stream hot path)
 
 - 2026-… incident: WebView2 renderer grew 773MB→3.5GB over ~15min of a coding
@@ -325,3 +365,38 @@
   `[file-companion]` = companion-side; `[exit-lifecycle]` = shutdown lifecycle;
   `[boot]` = early startup markers.
 - `~/.maclaw/logs/pet-companion.log`, `registration.log` for those subsystems.
+
+## mobilebot (Flutter client)
+
+- `mobilebot/` is the active MaClawBot phone client (login → bots → chat →
+  remote desktop → remote control → account). `mobile/maclaw_mobile/` is
+  DEPRECATED — its CI workflow was removed with it.
+- Flutter pin lives in `mobilebot/.fvmrc` (single source — both workflows
+  read it). Java 17. Verify loop: `flutter pub get`, `dart analyze lib test`
+  (must stay 0 issues), `flutter test`, `flutter build apk --debug`.
+  Release signing needs `android/key.properties` + a keystore in
+  `android/app/` (gitignored); without them the release build silently falls
+  back to debug signing.
+- Defensive parsing: every Hub JSON field goes through `lib/core/json_safe.dart`
+  (`syncText`/`syncList`/`syncInt`/`syncTextAny`…). `bot_models.dart`
+  re-exports it so existing imports keep working. Never read `json['x']`
+  directly in model factories.
+- Remote control (`features/remote/`): phone is an ACCOUNT-LEVEL controller —
+  no `X-Machine-Id` header, so Hub `controller_machine_id=''` and
+  `controllerIdentity` in `hub/internal/remotecontrol/service.go` resolves the
+  account itself. Selector reads `state.grants` (I control), `controlled` is
+  the reverse bucket (who controls my machines), `invites` incoming /
+  `pending` outgoing. Accepting an invite on mobile must bind a desktop via
+  `?machine_id=`. Ops ride `POST /grants/{id}/op` `{op, body}` — op names and
+  view/operate tiers are whitelisted hub-side; a new op needs the desktop
+  `executeRemoteControl` case AND the hub whitelist (see "Remote-control ops"
+  above).
+- CI: `.github/workflows/mobilebot.yml` (PR/push checks + debug APK artifact);
+  `.github/workflows/main.yml` `build-android` job ships signed
+  `MaClawBot.apk` into tagged Releases — needs secrets
+  `MOBILEBOT_KEYSTORE_BASE64` / `_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`.
+- Hub deploy: `.cursor/rules/deploy-hub-binaries.mdc` — cross-compile
+  `GOOS=linux go build -o build/deploy/maclaw-hub ./hub/cmd/hub`, then
+  backup→overwrite→`start.sh` on `hub.mypapers.top` (root, password auth —
+  the password is never stored; ask the user). Compiled deploy binaries under
+  `build/deploy/` are gitignored.

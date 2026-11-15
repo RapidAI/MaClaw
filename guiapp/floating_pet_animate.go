@@ -20,6 +20,8 @@ type petAnimConfig struct {
 	MotionEnabled bool
 	Quiet         bool
 	Reduced       bool
+	// PositionLocked stops screen travel. Render still advances the pose.
+	PositionLocked bool
 }
 
 // petDesktopAnimator plays a character or skeleton pack and walks it across
@@ -34,6 +36,7 @@ type petDesktopAnimator struct {
 	motionEnabled   bool
 	quiet           bool
 	reduced         bool
+	positionLocked  bool
 	character       *petpack.CharacterRenderer
 	characterKey    string
 	characterFailed map[string]bool
@@ -76,6 +79,7 @@ func (a *petDesktopAnimator) Configure(cfg petAnimConfig) {
 	a.motionEnabled = cfg.MotionEnabled
 	a.quiet = cfg.Quiet
 	a.reduced = cfg.Reduced
+	a.positionLocked = cfg.PositionLocked
 	if a.cache == nil {
 		a.cache = petpack.NewFrameCache()
 	}
@@ -329,8 +333,9 @@ func (a *petDesktopAnimator) rigRendererLocked(skin, variant string, now time.Ti
 }
 
 // Advance moves the window from the active idle clip's speed. Dragging, a
-// still pose, frozen motion, and every non-idle duty pose leave the position
-// unchanged. maxX and maxY are the inclusive travel limits.
+// pinned position, a still pose, frozen motion, and every non-idle duty pose
+// leave the position unchanged. maxX and maxY are the inclusive travel limits.
+// A pin stops the window only. Render still advances the pose.
 func (a *petDesktopAnimator) Advance(now time.Time, dragging bool, maxX, maxY int) (x, y int, moved bool) {
 	if a == nil {
 		return 0, 0, false
@@ -343,7 +348,8 @@ func (a *petDesktopAnimator) Advance(now time.Time, dragging bool, maxX, maxY in
 	if maxY < 0 {
 		maxY = 0
 	}
-	if dragging || a.staticLocked() {
+	// A pin is not a still pose: Render keeps playing. Only the window stays.
+	if dragging || a.staticLocked() || a.positionLocked {
 		a.travelAt = now
 		a.roam.RemX, a.roam.RemY = 0, 0
 		return a.x, a.y, false
@@ -366,6 +372,15 @@ func (a *petDesktopAnimator) Advance(now time.Time, dragging bool, maxX, maxY in
 	moved = nx != a.x || ny != a.y
 	a.x, a.y = nx, ny
 	return nx, ny, moved
+}
+
+// petScreenTravelVelocity drops authored travel while the pet is pinned.
+// The pose still plays; only the window stays where it is.
+func petScreenTravelVelocity(vx, vy float64, locked bool) (float64, float64) {
+	if locked {
+		return 0, 0
+	}
+	return vx, vy
 }
 
 // RuntimeLevel reports the renderer the animator can actually play.

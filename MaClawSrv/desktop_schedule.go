@@ -17,7 +17,7 @@ import (
 var runDesktopBotSchedule = runDesktopBotScheduledTask
 
 // persistDesktopBotSchedule writes the Intake decision onto the host clock.
-// The GUI may keep a display copy; it does not start the turn.
+// The desktop does not copy that row into its own scheduled-task list.
 func persistDesktopBotSchedule(p agentservice.Principal, instanceID string, in agentservice.BotIntakeInput, decision agentservice.BotIntake) {
 	if decision.Kind != "schedule" || decision.Schedule == nil {
 		return
@@ -650,11 +650,25 @@ func runDesktopBotScheduledTask(ctx context.Context, svc *agentservice.Service, 
 	return "", scheduler.AnnotateRunErrWithContext(ctx, nil)
 }
 
+// desktopScheduleDeliverEachTurn keeps a deliver-every-time order from being
+// read as a quiet patrol. The quiet line says to stop when nothing changed.
+// A weather PDF the person asked to receive each firing was then the previous
+// file, or no file. A look with nothing to hand over can still stay quiet.
+const desktopScheduleDeliverEachTurn = "这一轮要把上面这件事做完。这件事要求查询、生成或把文件发给这个人时，要在这一轮里重新查询并重新生成，再交付。上一轮留下的文件不能再发一次。没有变化就结束，只适用于上面没有要求交付的查看。"
+
+func desktopBotScheduleTurnText(task *scheduler.ScheduledTask) string {
+	action := ""
+	if task != nil {
+		action = task.Action
+	}
+	return scheduledTaskPrompt(action) + "\n" + desktopScheduleDeliverEachTurn
+}
+
 // desktopBotScheduleMessage is one occurrence of a desktop-bot timer.
 // ClientMessageID is stable for that due time, so a crash that fires the
 // same slot again replays the run instead of starting a second one.
 func desktopBotScheduleMessage(task *scheduler.ScheduledTask) agentservice.SendMessageInput {
-	in := scheduledTaskMessageInput(task, scheduledTaskPrompt(task.Action))
+	in := scheduledTaskMessageInput(task, desktopBotScheduleTurnText(task))
 	due := int64(0)
 	if task != nil && task.NextRunAt != nil {
 		due = task.NextRunAt.Unix()
@@ -672,6 +686,112 @@ func desktopBotScheduleMessage(task *scheduler.ScheduledTask) agentservice.SendM
 		"computer_helper": "1",
 		"bot_origin":      "schedule",
 		"bot_task":        strings.TrimSpace(task.Action),
+		"schedule_task":   id,
 	}
 	return in
+}
+
+// holdResumedDesktopSchedule keeps this bot's clock from starting another
+// turn until the restarted one finishes. The cancelled executor already
+// dropped its lease, and the next five-minute slot was then a second writer
+// on the same PDF.
+func holdResumedDesktopSchedule(svc *agentservice.Service, run agentservice.Run) func() {
+	if run.Metadata == nil || strings.TrimSpace(run.Metadata["bot_origin"]) != "schedule" {
+		return nil
+	}
+	mgr := getSrvSchedulerManager()
+	if mgr == nil {
+		return nil
+	}
+	var releases []func()
+	for _, id := range resumedScheduleTaskIDs(svc, mgr, run) {
+		release, ok := mgr.Hold(id)
+		if !ok || release == nil {
+			continue
+		}
+		releases = append(releases, release)
+		log.Printf("[desktop-schedule] hold %s while resumed run %s finishes", id, run.ID)
+	}
+	if len(releases) == 0 {
+		return nil
+	}
+	return func() {
+		for _, release := range releases {
+			release()
+		}
+	}
+}
+
+func resumedScheduleTaskIDs(svc *agentservice.Service, mgr *scheduler.Manager, run agentservice.Run) []string {
+	botID := ""
+	if run.Metadata != nil {
+		botID = strings.TrimSpace(run.Metadata["bot_id"])
+	}
+	instanceID := strings.TrimSpace(run.InstanceID)
+	if id := strings.TrimSpace(run.Metadata["schedule_task"]); scheduleRowMatches(mgr, id, instanceID, botID) {
+		return []string{id}
+	}
+	if id := scheduleTaskIDFromClientMessage(scheduleClientMessageID(svc, run)); scheduleRowMatches(mgr, id, instanceID, botID) {
+		return []string{id}
+	}
+	if botID == "" {
+		return nil
+	}
+	var ids []string
+	for _, task := range mgr.List() {
+		if task.Status != "active" || strings.TrimSpace(task.InstanceID) != instanceID || strings.TrimSpace(task.DesktopBotID) != botID {
+			continue
+		}
+		ids = append(ids, task.ID)
+	}
+	return ids
+}
+
+func scheduleRowMatches(mgr *scheduler.Manager, id, instanceID, botID string) bool {
+	if mgr == nil || strings.TrimSpace(id) == "" {
+		return false
+	}
+	task := mgr.Get(id)
+	if task == nil || task.Status != "active" || strings.TrimSpace(task.DesktopBotID) == "" {
+		return false
+	}
+	if instanceID != "" && strings.TrimSpace(task.InstanceID) != instanceID {
+		return false
+	}
+	if botID != "" && strings.TrimSpace(task.DesktopBotID) != botID {
+		return false
+	}
+	return true
+}
+
+func scheduleClientMessageID(svc *agentservice.Service, run agentservice.Run) string {
+	if svc == nil || strings.TrimSpace(run.UserMessageID) == "" || strings.TrimSpace(run.SessionID) == "" {
+		return ""
+	}
+	msg, err := svc.GetMessage(context.Background(), agentservice.Principal{TenantID: run.TenantID, UserID: run.UserID}, run.InstanceID, run.SessionID, run.UserMessageID)
+	if err != nil || msg == nil || msg.Metadata == nil {
+		return ""
+	}
+	return strings.TrimSpace(msg.Metadata["client_message_id"])
+}
+
+// scheduleTaskIDFromClientMessage reads sched-<taskID>-<unix>. The task id
+// itself contains a hyphen, so the due time is the trailing numeric field.
+func scheduleTaskIDFromClientMessage(id string) string {
+	id = strings.TrimSpace(id)
+	const prefix = "sched-"
+	if !strings.HasPrefix(id, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(id, prefix)
+	i := strings.LastIndex(rest, "-")
+	if i <= 0 || i >= len(rest)-1 {
+		return ""
+	}
+	for _, r := range rest[i+1:] {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return rest[:i]
 }

@@ -66,6 +66,13 @@ export type BotLLMSettingsSubmit = {
         computer_use: BotLLMRoleSubmit;
         grounder: BotLLMRoleSubmit;
     };
+    /** Four stages for a locally installed desktop. Independent of mode. */
+    localRoles?: {
+        foreground: BotLLMRoleSubmit;
+        background: BotLLMRoleSubmit;
+        computer_use: BotLLMRoleSubmit;
+        grounder: BotLLMRoleSubmit;
+    };
 };
 
 export type BotLLMSettingsDialogLabels = {
@@ -114,6 +121,9 @@ type BotLLMSettingsDialogProps = {
     /** Tab strip rendered under the header (Settings dialog). */
     tabs?: ReactNode;
     lang?: string;
+    /** A desktop service is installed locally, so the four local stages are required. */
+    localDesktop?: boolean;
+    initialLocalRoles?: BotLLMRolesSetting | null;
 };
 
 const ROLE_KEYS: RoleKey[] = ['foreground', 'background', 'computer_use', 'grounder'];
@@ -159,12 +169,16 @@ export function BotLLMSettingsDialog({
     heading,
     tabs,
     lang,
+    localDesktop = false,
+    initialLocalRoles,
 }: BotLLMSettingsDialogProps) {
     const titleId = useId();
     const t = (en: string, zhHans: string, zhHant = zhHans) => panelText(lang ?? '', en, zhHans, zhHant);
     const options = useMemo(() => collectProviderOptions(providers, initialRoles, initialMode === 'custom' ? initialName : '', initialMode === 'custom' ? initialModel : ''), [providers, initialRoles, initialMode, initialName, initialModel]);
+    const localOptions = useMemo(() => withOfficial(collectProviderOptions(providers, initialLocalRoles, '', '')), [providers, initialLocalRoles]);
     const [mode, setMode] = useState<'default' | 'custom'>(initialMode === 'custom' && options.length > 0 ? 'custom' : initialMode === 'custom' && options.length === 0 ? 'default' : initialMode);
     const [drafts, setDrafts] = useState<Record<RoleKey, RoleDraft>>(() => initialDrafts(options, initialMode, initialName, initialModel, initialRoles));
+    const [localDrafts, setLocalDrafts] = useState<Record<RoleKey, RoleDraft>>(() => initialLocalDrafts(localOptions, initialLocalRoles));
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !saving });
     const { onKeyDown } = useModalFocusTrap(dialogRef, { onEscape: () => { if (!saving) onClose(); } });
@@ -174,7 +188,8 @@ export function BotLLMSettingsDialog({
         if (key === 'grounder' && draft.unused) return true;
         return draft.providerName.trim() !== '' && draft.model.trim() !== '';
     };
-    const canSave = !saving && (mode === 'default' || (options.length > 0 && ROLE_KEYS.every(roleReady)));
+    const localReady = (key: RoleKey) => localDrafts[key].providerName.trim() !== '' && localDrafts[key].model.trim() !== '';
+    const canSave = !saving && (mode === 'default' || (options.length > 0 && ROLE_KEYS.every(roleReady))) && (!localDesktop || ROLE_KEYS.every(localReady));
 
     const chooseMode = (next: 'default' | 'custom') => {
         if (next === 'custom' && options.length === 0) return;
@@ -202,10 +217,28 @@ export function BotLLMSettingsDialog({
         setDrafts(prev => ({ ...prev, grounder: { ...prev.grounder, unused } }));
     };
 
+    const pickLocalProvider = (key: RoleKey, name: string) => {
+        const provider = localOptions.find(item => item.name === name);
+        setLocalDrafts(prev => ({
+            ...prev,
+            [key]: {
+                providerName: name,
+                model: seedModel(provider, prev[key].model),
+                unused: false,
+                inherit: false,
+            },
+        }));
+    };
+
+    const setLocalModel = (key: RoleKey, model: string) => {
+        setLocalDrafts(prev => (prev[key].model === model ? prev : { ...prev, [key]: { ...prev[key], model } }));
+    };
+
     const submit = () => {
         if (!canSave) return;
+        const localRoles = localDesktop ? localRolePayload(localDrafts, localOptions) : undefined;
         if (mode === 'default') {
-            onSubmit({ mode: 'default' });
+            onSubmit({ mode: 'default', localRoles });
             return;
         }
         const roles = {
@@ -224,6 +257,7 @@ export function BotLLMSettingsDialog({
             protocol: foreground.official ? undefined : foreground.protocol,
             wire_api: foreground.official ? undefined : foreground.wire_api,
             roles,
+            localRoles,
         });
     };
 
@@ -232,7 +266,7 @@ export function BotLLMSettingsDialog({
             const native = event.nativeEvent as KeyboardEvent;
             if (native.isComposing || native.keyCode === 229) return;
             if (event.target instanceof HTMLButtonElement) return;
-            if (event.target instanceof Element && event.target.closest('[data-testid="bot-llm-roles"]')) return;
+            if (event.target instanceof Element && event.target.closest('[data-testid="bot-llm-roles"], [data-testid="bot-local-roles"]')) return;
             event.preventDefault();
             event.stopPropagation();
             submit();
@@ -343,6 +377,36 @@ export function BotLLMSettingsDialog({
                         ) : null}
                     </div>
 
+                    {localDesktop ? (
+                        <div className="bot-llm-dialog__local" data-testid="bot-llm-local">
+                            <h4 className="bot-llm-dialog__section">{t('Local four-stage models', '本地四阶段模型', '本地四階段模型')}</h4>
+                            <p className="bot-llm-dialog__hint">{t(
+                                'A local desktop always uses these four stages. Default and Custom above apply only to the cloud. Each stage starts as MaClaw official.',
+                                '本地桌面固定使用这四个阶段。上面的默认和自定义只影响云端。每一阶段默认是 MaClaw 官方。',
+                                '本地桌面固定使用這四個階段。上面的預設和自訂只影響雲端。每一階段預設是 MaClaw 官方。',
+                            )}</p>
+                            <div className="bot-llm-dialog__roles" data-testid="bot-local-roles">
+                                {rows.map(([key, title]) => (
+                                    <RoleRow
+                                        key={key}
+                                        roleKey={key}
+                                        title={title}
+                                        hint={t('MaClaw official, or a provider on this computer.', 'MaClaw 官方，或这台电脑上的服务商。', 'MaClaw 官方，或這台電腦上的服務商。')}
+                                        draft={localDrafts[key]}
+                                        options={localOptions}
+                                        labels={labels}
+                                        saving={saving}
+                                        lang={lang}
+                                        savedModel={savedModelFor(key, initialLocalRoles, '', '')}
+                                        testIdPrefix="bot-local-role"
+                                        onProvider={name => pickLocalProvider(key, name)}
+                                        onModel={model => setLocalModel(key, model)}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
+
                     {notice ? <p className="bot-llm-dialog__notice" role="status">{notice}</p> : null}
                 </div>
                 <div className="modal-footer custom-dialog__footer">
@@ -364,6 +428,7 @@ function RoleRow({
     saving,
     lang,
     savedModel,
+    testIdPrefix = 'bot-role',
     onProvider,
     onModel,
     onUnused,
@@ -377,6 +442,7 @@ function RoleRow({
     saving: boolean;
     lang?: string;
     savedModel: string;
+    testIdPrefix?: string;
     onProvider: (name: string) => void;
     onModel: (model: string) => void;
     onUnused?: (unused: boolean) => void;
@@ -387,7 +453,7 @@ function RoleRow({
     const provider = options.find(item => item.name === draft.providerName) ?? options[0];
     const showFields = roleKey !== 'grounder' || !draft.unused;
     return (
-        <div className="bot-role-assignments__row is-customized" data-testid={`bot-role-${roleKey}`}>
+        <div className="bot-role-assignments__row is-customized" data-testid={`${testIdPrefix}-${roleKey}`}>
             <div className="bot-role-assignments__head">
                 <div className="bot-role-assignments__label" title={hint}>
                     <span className="bot-role-assignments__title">{title}</span>
@@ -417,7 +483,7 @@ function RoleRow({
                             aria-label={`${title} ${labels.providerLabel}`}
                             value={provider?.name ?? ''}
                             disabled={saving}
-                            data-testid={`bot-role-${roleKey}-provider`}
+                            data-testid={`${testIdPrefix}-${roleKey}-provider`}
                             onClick={event => event.stopPropagation()}
                             onChange={event => onProvider(event.target.value)}
                         >
@@ -434,7 +500,7 @@ function RoleRow({
                         savedModel={draft.providerName === provider?.name ? savedModel : ''}
                         labels={labels}
                         saving={saving}
-                        testId={`bot-role-${roleKey}-model`}
+                        testId={`${testIdPrefix}-${roleKey}-model`}
                         onChange={onModel}
                     />
                 </div>
@@ -592,6 +658,44 @@ function savedModelFor(key: RoleKey, roles: BotLLMRolesSetting | null | undefine
     if (role?.model?.trim()) return role.model.trim();
     if (!roles && key !== 'grounder') return legacyModel.trim();
     return '';
+}
+
+const OFFICIAL_PROVIDER: BotLLMProviderOption = {
+    name: 'MaClaw 官方',
+    url: '',
+    key: '',
+    model: 'auto',
+    protocol: '',
+    wireAPI: '',
+    models: ['auto'],
+    agentType: '',
+    isHubService: true,
+};
+
+function withOfficial(options: BotLLMProviderOption[]): BotLLMProviderOption[] {
+    const usableHub = options.some(item => item.isHubService && (item.model.trim() !== '' || item.models.length > 0));
+    if (usableHub) return options;
+    const rest = options.filter(item => !item.isHubService && item.name !== OFFICIAL_PROVIDER.name);
+    return [OFFICIAL_PROVIDER, ...rest];
+}
+
+function localRolePayload(drafts: Record<RoleKey, RoleDraft>, options: BotLLMProviderOption[]): BotLLMSettingsSubmit['localRoles'] {
+    return {
+        foreground: rolePayload(drafts.foreground, options, false),
+        background: rolePayload(drafts.background, options, false),
+        computer_use: rolePayload(drafts.computer_use, options, false),
+        grounder: rolePayload(drafts.grounder, options, false),
+    };
+}
+
+function initialLocalDrafts(options: BotLLMProviderOption[], roles: BotLLMRolesSetting | null | undefined): Record<RoleKey, RoleDraft> {
+    const official = { official: true, model: 'auto' };
+    return {
+        foreground: draftFor(roles?.foreground?.official || roles?.foreground?.name ? roles.foreground : official, options, false),
+        background: draftFor(roles?.background?.official || roles?.background?.name ? roles.background : official, options, false),
+        computer_use: draftFor(roles?.computer_use?.official || roles?.computer_use?.name ? roles.computer_use : official, options, false),
+        grounder: draftFor(roles?.grounder?.official || roles?.grounder?.name ? roles.grounder : official, options, false),
+    };
 }
 
 function initialDrafts(options: BotLLMProviderOption[], mode: 'default' | 'custom', legacyName: string, legacyModel: string, roles: BotLLMRolesSetting | null | undefined): Record<RoleKey, RoleDraft> {

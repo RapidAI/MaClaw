@@ -55,15 +55,14 @@ printf 'DESKTOPD_TOKEN=%s\n' "$DESKTOPD_TOKEN" > /etc/maclaw/desktopd.env
 cat >> /etc/maclaw/desktopd.env <<'EOF'
 DESKTOPD_ADDR=127.0.0.1:18081
 DESKTOPD_PUBLISH_BIND=127.0.0.1
-DESKTOPD_PUBLIC_URL=http://127.0.0.1:18081
 DESKTOPD_STATE_DIR=/var/lib/maclaw/desktopd
-DESKTOPD_ADVERTISE_HOST=127.0.0.1
+DESKTOPD_INTRANET=1
 EOF
 chmod 600 /etc/maclaw/desktopd.env
 mkdir -p /var/lib/maclaw/desktopd
 ```
 
-`DESKTOPD_PUBLIC_URL` 设成本机地址，是因为 MaClawSrv 和 desktopd 在同一台机器上，浏览器调试地址走本机，不走公网。
+`DESKTOPD_INTRANET=1` 表示这是内网桌面。不要写 `DESKTOPD_ADVERTISE_HOST`，也不要写 `DESKTOPD_PUBLIC_URL`。写了会被当成公网地址；内网桌面的访问地址由 Hub 隧道提供。
 
 写入 `/etc/systemd/system/maclaw-desktopd.service`：
 
@@ -97,10 +96,14 @@ curl -fsS -H "Authorization: Bearer ${DESKTOPD_TOKEN}" http://127.0.0.1:18081/v1
 
 ```sh
 MACLAW_ADMIN_SECRET=$(openssl rand -hex 32)
+MACLAW_TOKEN_SECRET=$(openssl rand -hex 32)
+mkdir -p /var/lib/maclaw/srv
 cat > /etc/maclaw/maclawsrv.env <<EOF
 MACLAW_HTTP_ADDR=127.0.0.1:18080
 MACLAW_HUB_URL=${HUB_URL}
 MACLAW_ADMIN_SECRET=${MACLAW_ADMIN_SECRET}
+MACLAW_TOKEN_SECRET=${MACLAW_TOKEN_SECRET}
+MACLAW_DATA_ROOT=/var/lib/maclaw/srv
 MACLAW_DESKTOP_API_TOKEN=
 EOF
 chmod 600 /etc/maclaw/maclawsrv.env
@@ -108,7 +111,7 @@ chmod 600 /etc/maclaw/maclawsrv.env
 
 把 `HUB_URL` 换成管理员给的地址，不要带路径，不要带末尾斜杠。例如 `https://hub.example.com`。
 
-`MACLAW_ADMIN_SECRET` 至少 24 个字符。上面的命令生成 64 个十六进制字符。
+`MACLAW_ADMIN_SECRET` 至少 24 个字符，`MACLAW_TOKEN_SECRET` 至少 32 个字符。上面的命令各生成 64 个十六进制字符。缺 `MACLAW_TOKEN_SECRET` 时 MaClawSrv 拒绝启动。监听地址是本机回环，不必再设 `MACLAW_ALLOW_INSECURE_HTTP`。
 
 先不要启动 maclawsrv。注册需要这个 admin secret，但服务可以在拿到 `hub_token` 之后再起。
 

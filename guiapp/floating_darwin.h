@@ -5,6 +5,7 @@
 extern void maclawDarwinPetClicked(void);
 extern void maclawDarwinPetDragged(int x, int y);
 extern void maclawDarwinPetMenu(int action);
+extern int maclawDarwinPetPositionLocked(void);
 
 // C API called from Go.
 int  createFloatingWindowDarwin(int x, int y, int w, int h, const void *pngData, int pngLen);

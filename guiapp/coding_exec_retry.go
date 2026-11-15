@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -9,11 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -43,8 +47,30 @@ type codingExecCheckpoint struct {
 	// phase output has not yet been durably projected. It is intentionally a
 	// presentation-only marker: recovery may retry only RecordOutput, never an
 	// executor, model call, tool invocation, or old command.
-	ProjectionPending bool      `json:"projection_pending,omitempty"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionPending bool `json:"projection_pending,omitempty"`
+	// AutoReviewHops counts host-driven child-result review chains that ran
+	// without an explicit 「审阅子任务结果」 action. The cap keeps a turn
+	// that keeps spawning read-only children from auto-resuming unbounded
+	// fresh parent attempts; past it the manual action remains available.
+	AutoReviewHops int       `json:"auto_review_hops,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
+
+	// Lineage guard (in-memory only). A detached auto-review writes the
+	// checkpoint outside the owner turn window; without a fence it could
+	// clobber a checkpoint a newer foreground turn wrote after this lineage
+	// loaded its base. reviewEpoch identifies the lineage's writes;
+	// reviewBaseStamp is the UpdatedAt it loaded. A lineage write is dropped
+	// when the stored checkpoint is newer than the base and belongs to a
+	// different lineage (or none). Epoch zero keeps every existing writer
+	// unconditional — foreground turns are already serialized by the owner
+	// turn window.
+	reviewEpoch     uint64    `json:"-"`
+	reviewBaseStamp time.Time `json:"-"`
+	// reviewDeliveryTarget carries the trusted IM target through the in-memory
+	// lineage: a chained auto-review hop creates its own loopCtx without an
+	// inbound message, and children spawned inside it would otherwise lose the
+	// channel their result should be pushed back to. In-memory only.
+	reviewDeliveryTarget *agent.DeliveryTarget `json:"-"`
 }
 
 const (
@@ -57,6 +83,12 @@ const (
 
 	codingExecCheckpointFileName = ".coding_exec_checkpoint.json"
 	codingExecCheckpointMaxAge   = 7 * 24 * time.Hour
+
+	// codingAutoChildReviewMaxHops bounds automatic child-result review
+	// continuations per checkpoint. Each hop is a full fresh parent Attempt;
+	// a turn that spawns read-only children on every hop stops auto-resuming
+	// here and falls back to the explicit action.
+	codingAutoChildReviewMaxHops = 3
 )
 
 func (h *IMMessageHandler) storeCodingExecCheckpoint(userID string, cp codingExecCheckpoint) {
@@ -74,8 +106,51 @@ func (h *IMMessageHandler) storeCodingExecCheckpoint(userID string, cp codingExe
 	}
 	cp.UserID = userID
 	cp.UpdatedAt = time.Now()
+	// Every writer takes the mutex, not just lineage ones: an unconditional
+	// store must not slip between a lineage's compare and its own Store, or
+	// the fence would clobber the foreign write it exists to protect.
+	codingExecCheckpointEpochMu.Lock()
+	defer codingExecCheckpointEpochMu.Unlock()
+	if cp.reviewEpoch != 0 {
+		// A live read-only child implies the base checkpoint was in memory
+		// when its run stored it; a missing entry therefore means it was
+		// cleared afterwards — foreign state wins, this write is dropped.
+		curRaw, ok := h.codingExecCheckpoint.Load(userID)
+		if !ok {
+			log.Printf("[coding-child-review] drop lineage checkpoint write: cleared user=%s epoch=%d", userID, cp.reviewEpoch)
+			return
+		}
+		if cur, ok2 := curRaw.(codingExecCheckpoint); ok2 && cur.reviewEpoch != cp.reviewEpoch && cur.UpdatedAt.After(cp.reviewBaseStamp) {
+			log.Printf("[coding-child-review] drop stale lineage checkpoint write user=%s epoch=%d", userID, cp.reviewEpoch)
+			return
+		}
+	}
 	h.codingExecCheckpoint.Store(userID, cp)
 	persistCodingExecCheckpointToDisk(userID, cp)
+}
+
+// codingExecCheckpointEpochMu serializes checkpoint writes: the lineage
+// compare and the Store+persist below must be one atomic section.
+var codingExecCheckpointEpochMu sync.Mutex
+
+// codingExecCheckpointLineageCurrent reports whether no foreign writer has
+// replaced the stored checkpoint since the lineage base was loaded. Callers
+// use it to abort a detached review before spending a fresh parent attempt
+// whose every checkpoint write would be dropped anyway.
+func (h *IMMessageHandler) codingExecCheckpointLineageCurrent(userID string, cp codingExecCheckpoint) bool {
+	if h == nil {
+		return false
+	}
+	raw, ok := h.codingExecCheckpoint.Load(strings.TrimSpace(userID))
+	if !ok {
+		// The base was cleared after this lineage loaded it — never resume.
+		return false
+	}
+	cur, ok := raw.(codingExecCheckpoint)
+	if !ok {
+		return true
+	}
+	return cur.reviewEpoch == cp.reviewEpoch || !cur.UpdatedAt.After(cp.reviewBaseStamp)
 }
 
 func (h *IMMessageHandler) loadCodingExecCheckpoint(userID string) (codingExecCheckpoint, bool) {
@@ -94,6 +169,10 @@ func (h *IMMessageHandler) loadCodingExecCheckpoint(userID string) (codingExecCh
 				h.clearCodingExecCheckpoint(userID)
 				return codingExecCheckpoint{}, false
 			}
+			// A lineage describes an in-flight write, not stored state:
+			// reloads must not inherit it into unrelated writers.
+			cp.reviewEpoch, cp.reviewBaseStamp = 0, time.Time{}
+			cp.reviewDeliveryTarget = nil
 			return cp, true
 		}
 	}
@@ -111,8 +190,14 @@ func (h *IMMessageHandler) loadCodingExecCheckpoint(userID string) (codingExecCh
 		}
 		return codingExecCheckpoint{}, false
 	}
-	// Re-hydrate session map so subsequent loads are cheap.
-	h.codingExecCheckpoint.Store(userID, cp)
+	// Re-hydrate session map so subsequent loads are cheap. Store only while
+	// the slot stays empty: a concurrent fresh write must not be regressed
+	// by an older disk snapshot landing between the miss check and here.
+	codingExecCheckpointEpochMu.Lock()
+	if _, exists := h.codingExecCheckpoint.Load(userID); !exists {
+		h.codingExecCheckpoint.Store(userID, cp)
+	}
+	codingExecCheckpointEpochMu.Unlock()
 	return cp, true
 }
 
@@ -132,7 +217,50 @@ func (h *IMMessageHandler) clearCodingExecCheckpoint(userID string) {
 	if projectPath == "" {
 		projectPath = projectPathFromSessionOwnerID(userID)
 	}
+	// Delete under the same mutex as lineage writes: a clear must not land
+	// between a lineage compare and its Store, resurrecting the checkpoint.
+	codingExecCheckpointEpochMu.Lock()
 	h.codingExecCheckpoint.Delete(userID)
+	codingExecCheckpointEpochMu.Unlock()
+	h.pendingCodingExecRetryAction.Delete(userID)
+	deleteCodingExecCheckpointFromDisk(userID, projectPath)
+}
+
+// clearCodingExecCheckpointIfLineage removes the stored checkpoint only when
+// it still belongs to cp's lineage (or is not newer than the base it loaded).
+// A detached review that reaches the allOK finalize path must not wipe a
+// checkpoint a foreign turn wrote after this lineage's base — the fence that
+// guards stores would be pointless if the trailing delete stayed
+// unconditional. Epoch-zero callers keep the unconditional semantics of
+// clearCodingExecCheckpoint.
+func (h *IMMessageHandler) clearCodingExecCheckpointIfLineage(userID string, cp codingExecCheckpoint) {
+	if h == nil {
+		return
+	}
+	if cp.reviewEpoch == 0 {
+		h.clearCodingExecCheckpoint(userID)
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	codingExecCheckpointEpochMu.Lock()
+	raw, ok := h.codingExecCheckpoint.Load(userID)
+	if !ok {
+		// Already cleared by a foreign path — nothing of ours remains.
+		codingExecCheckpointEpochMu.Unlock()
+		return
+	}
+	cur, _ := raw.(codingExecCheckpoint)
+	if cur.reviewEpoch != cp.reviewEpoch && cur.UpdatedAt.After(cp.reviewBaseStamp) {
+		codingExecCheckpointEpochMu.Unlock()
+		log.Printf("[coding-child-review] skip lineage checkpoint clear: superseded user=%s epoch=%d", userID, cp.reviewEpoch)
+		return
+	}
+	h.codingExecCheckpoint.Delete(userID)
+	codingExecCheckpointEpochMu.Unlock()
+	projectPath := strings.TrimSpace(cur.ProjectPath)
+	if projectPath == "" {
+		projectPath = projectPathFromSessionOwnerID(userID)
+	}
 	h.pendingCodingExecRetryAction.Delete(userID)
 	deleteCodingExecCheckpointFromDisk(userID, projectPath)
 }
@@ -823,5 +951,242 @@ func deleteCodingExecCheckpointFromDisk(userID, projectPath string) {
 		if p := projectPathFromSessionOwnerID(userID); p != "" {
 			_ = os.Remove(codingExecCheckpointFilePath(userID, p))
 		}
+	}
+}
+
+// codingChildReviewTargetsReady reports whether every Runtime child-result
+// handoff in the checkpoint is ready for a fresh parent review attempt. A
+// partially-delivered handoff is not ready: reviewCodingExecChildResults
+// refuses to start until every admitted read-only child has persisted its
+// bounded result, so callers must not launch it early.
+func codingChildReviewTargetsReady(store codingruntime.Store, cp codingExecCheckpoint) bool {
+	targets := childHandoffTaskItemsFromResults(cp.Tasks, cp.Results)
+	if len(targets) == 0 || store == nil {
+		return false
+	}
+	byIndex := make(map[int]v2.TaskRunResult, len(cp.Results))
+	for _, result := range cp.Results {
+		byIndex[result.TaskIndex] = result
+	}
+	service := codingruntime.ChildTaskService{Store: store}
+	for _, task := range targets {
+		if task == nil {
+			return false
+		}
+		result, ok := byIndex[task.Index]
+		if !ok || strings.TrimSpace(result.RuntimeTaskID) == "" {
+			return false
+		}
+		if _, err := service.PrepareParentContinuation(result.RuntimeTaskID); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// codingAutoChildReviewLocks serializes detached auto-resume attempts per
+// user so two children finishing at once cannot launch duplicate reviews.
+// A manual 「审阅子任务结果」 still races through the durable
+// lease/continuation gates and reports in-progress/consumed, unchanged.
+var codingAutoChildReviewLocks sync.Map // userID → *sync.Mutex
+
+// autoResumeCodingChildReviewIfReady is invoked by each detached read-only
+// child after its bounded result lands. Only the last-finishing child sees a
+// ready continuation — and only after the main run has already written the
+// handoff into the checkpoint — so it starts the review attempt in the
+// background instead of waiting for a manual 「审阅子任务结果」.
+func autoResumeCodingChildReviewIfReady(h *IMMessageHandler, userID, parentTaskID string, resumeTarget *agent.DeliveryTarget) {
+	if h == nil || h.app == nil {
+		return
+	}
+	userID, parentTaskID = strings.TrimSpace(userID), strings.TrimSpace(parentTaskID)
+	if userID == "" || parentTaskID == "" {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[coding-child-review] auto resume panic user=%s parent=%s: %v", userID, parentTaskID, rec)
+		}
+	}()
+	lockValue, _ := codingAutoChildReviewLocks.LoadOrStore(userID, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	store := h.app.ensureCodingRuntimeStore()
+	if store == nil {
+		return
+	}
+	cp, ok := h.loadCodingExecCheckpoint(userID)
+	if !ok || cp.Cancelled || !h.codingExecCheckpointUsable(userID, cp) {
+		return
+	}
+	// Never launch a background review while a live agent loop owns the
+	// session: a concurrent turn would race this checkpoint's rewrite, and
+	// its steered turns already serialize on the same checkpoint.
+	if h.hasActiveLoopForUser(userID) {
+		return
+	}
+	// Only resume while this parent's handoff is still pending review. A
+	// checkpoint written before the run recorded the handoff, or one where the
+	// review already landed, must not start a second parent attempt.
+	pending := false
+	for _, result := range cp.Results {
+		if result.RuntimeHandoff && result.RuntimeTaskID == parentTaskID {
+			pending = true
+			break
+		}
+	}
+	if !pending || cp.AutoReviewHops >= codingAutoChildReviewMaxHops {
+		return
+	}
+	if !codingChildReviewTargetsReady(store, cp) {
+		return
+	}
+	h.runAutoCodingChildReview(userID, parentTaskID, resumeTarget)
+}
+
+// runAutoCodingChildReview drives the fresh parent review attempt for a
+// delivered child handoff and reports the outcome as a background session plus
+// a chat continuation, mirroring the explicit 「审阅子任务结果」 action.
+func (h *IMMessageHandler) runAutoCodingChildReview(userID, parentTaskID string, resumeTarget *agent.DeliveryTarget) {
+	cp, ok := h.loadCodingExecCheckpoint(userID)
+	if !ok || cp.Cancelled {
+		return
+	}
+	// The lineage fence guards checkpoint writes but not Workflow machine
+	// writes (RecordOutput/MarkPhaseExecuting act on the ACTIVE workflow).
+	// A foreground turn that restarted the workflow after the caller probed
+	// must not receive this stale review's output — re-verify the checkpoint
+	// still belongs to the live workflow before running.
+	if !h.codingExecCheckpointUsable(userID, cp) {
+		return
+	}
+	// Re-verify readiness against the checkpoint just loaded: a chained
+	// finalize may have consumed the continuation since the caller probed.
+	// Skipping here avoids burning an AutoReviewHops slot on a stale probe.
+	store := h.app.ensureCodingRuntimeStore()
+	if store == nil || !codingChildReviewTargetsReady(store, cp) {
+		return
+	}
+	var state *v2.WorkflowState
+	if wf := h.getWorkflowV2(); wf != nil {
+		state = wf.machine.GetActive(userID)
+	}
+	projectPath := cp.ProjectPath
+	if state != nil && strings.TrimSpace(state.ProjectPath) != "" {
+		projectPath = state.ProjectPath
+	}
+	// Fence this review's checkpoint writes as one lineage: a foreign run
+	// that rewrites the checkpoint after this base must not be clobbered by
+	// the review's later finalize stores. Checked before any session/loop
+	// setup so an aborted resume never leaves a busy background session.
+	cp.reviewEpoch = uint64(time.Now().UnixNano())
+	cp.reviewBaseStamp = cp.UpdatedAt
+	cp.reviewDeliveryTarget = resumeTarget
+	if !h.codingExecCheckpointLineageCurrent(userID, cp) {
+		log.Printf("[coding-child-review] auto resume aborted: checkpoint superseded user=%s parent=%s", userID, parentTaskID)
+		return
+	}
+	loopCtx := NewLoopContext("coding-child-review-auto", h.getMaclawAgentMaxIterations(), h.client)
+	ensureLoopCtxUserID(loopCtx, userID)
+	// Children spawned inside a chained review hop inherit the trusted IM
+	// target through their parent's loopCtx — attach it so a later
+	// auto-resume can still push its result back to the inbound channel.
+	loopCtx.DeliveryTarget = resumeTarget
+	defer func() { loopCtx.Cancel(); loopCtx.Done() }()
+	var session *RemoteSession
+	if h.manager != nil {
+		session = h.manager.CreateAIBackgroundSession(codingExecText(
+			"Child-result review", "子任务结果审阅", "子任務結果審閱",
+		), projectPath, loopCtx)
+		defer func() {
+			// Panic path: the caller's recover must not leave a busy session.
+			h.manager.UpdateBackgroundAISummary(session.ID, func(s *RemoteSession) {
+				if s.Status == SessionBusy {
+					s.Status = SessionExited
+					s.Summary.Status = SessionExited.String()
+					s.Summary.WaitingForUser = false
+					s.Summary.ProgressSummary = codingExecText(
+						"Child-result review interrupted",
+						"子任务结果审阅中断",
+						"子任務結果審閱中斷",
+					)
+				}
+			})
+		}()
+	}
+	cp.AutoReviewHops++
+	h.storeCodingExecCheckpoint(userID, cp)
+	// The hop store is lineage-fenced: if a foreign write landed after the
+	// pre-check, this store was dropped and every later write in the review
+	// would be dropped too. Abort before spending the parent attempt — the
+	// deferred session/loop cleanup still runs.
+	if !h.codingExecCheckpointLineageCurrent(userID, cp) {
+		log.Printf("[coding-child-review] auto resume aborted: hop checkpoint superseded user=%s parent=%s", userID, parentTaskID)
+		return
+	}
+	log.Printf("[coding-child-review] auto resume start user=%s parent=%s hops=%d", userID, parentTaskID, cp.AutoReviewHops)
+	resp := h.reviewCodingExecChildResults(userID, state, cp, nil, nil, loopCtx)
+	text := ""
+	if resp != nil {
+		text = strings.TrimSpace(resp.Text)
+	}
+	if session != nil {
+		progress := codingExecText("Child-result review finished", "子任务结果审阅完成", "子任務結果審閱完成")
+		if loopCtx.IsCancelled() {
+			progress = codingExecText("Child-result review cancelled", "子任务结果审阅已取消", "子任務結果審閱已取消")
+		}
+		h.manager.UpdateBackgroundAISummary(session.ID, func(s *RemoteSession) {
+			s.Status = SessionExited
+			s.Summary.Status = SessionExited.String()
+			s.Summary.WaitingForUser = false
+			s.Summary.ProgressSummary = progress
+			s.Summary.LastResult = truncateRunesV2(text, 500)
+		})
+		if text != "" {
+			h.manager.AppendBackgroundAIOutput(session.ID, text)
+		}
+	}
+	log.Printf("[coding-child-review] auto resume done user=%s parent=%s text_len=%d", userID, parentTaskID, len(text))
+	emitCodingChildReviewChat(h, userID, resp)
+	h.deliverCodingChildReviewToIM(userID, text, resumeTarget)
+}
+
+// deliverCodingChildReviewToIM pushes the review result back to the inbound
+// IM channel when the coding run came from a trusted IM target. Desktop turns
+// have no trusted target and already saw the continuation notice.
+func (h *IMMessageHandler) deliverCodingChildReviewToIM(userID, text string, target *agent.DeliveryTarget) {
+	if h == nil || h.app == nil || target == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	channel, ok := codingChildReviewIMChannel(target.ChannelScope)
+	if !ok {
+		return
+	}
+	schedTarget, err := trustedDestinationToSchedulerTarget(target.DestinationID)
+	if err != nil {
+		return
+	}
+	if err := h.app.deliverIMTextForBot(context.Background(), channel, "", []scheduler.DeliveryTarget{schedTarget}, text); err != nil {
+		log.Printf("[coding-child-review] IM push failed user=%s: %v", userID, err)
+	}
+}
+
+// codingChildReviewIMChannel maps a trusted inbound channel scope to the
+// scheduler delivery channel used by deliverIMTextForBot. Broader than
+// scheduleDispatchFireChannel (which is intentionally lansenger-only for
+// schedule bindings); scopes without a delivery backend are skipped.
+func codingChildReviewIMChannel(channelScope string) (string, bool) {
+	switch normalizeIMMessagePlatformKind(channelScope) {
+	case imMessagePlatformLansenger, imMessagePlatformLansengerLocal:
+		return scheduler.DeliveryChannelLansenger, true
+	case imMessagePlatformTelegram, imMessagePlatformTelegramLocal:
+		return scheduler.DeliveryChannelTelegram, true
+	case imMessagePlatformWeixin, imMessagePlatformWeixinLocal:
+		return scheduler.DeliveryChannelWeixin, true
+	case imMessagePlatformQQBot, imMessagePlatformQQBotLocal:
+		return scheduler.DeliveryChannelQQ, true
+	default:
+		return "", false
 	}
 }

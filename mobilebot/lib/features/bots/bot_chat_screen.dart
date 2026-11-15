@@ -37,8 +37,26 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   bool _listening = false;
   String _speechPrefix = '';
 
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    // Pause the journal long-poll and run polling while pocketed — an
+    // unseen chat must not hold a 25s connection open. Resuming re-arms
+    // both so new lines and the in-flight turn resume instantly.
+    _lifecycle = AppLifecycleListener(
+      onStateChange: (state) {
+        final foreground = state == AppLifecycleState.resumed ||
+            state == AppLifecycleState.inactive;
+        ref.read(botChatProvider.notifier).setForeground(foreground);
+      },
+    );
+  }
+
   @override
   void dispose() {
+    _lifecycle.dispose();
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _speech.stop();

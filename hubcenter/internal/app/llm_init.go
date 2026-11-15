@@ -333,6 +333,7 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	})
 	httpapi.SetLLMRouteHook(func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service, smHandlers *httpapi.SkillMarketHandlers) {
 		if hubService != nil {
+			proxyCfg.VerifyHubSecret = hubService.VerifyHubSecret
 			cardStoreSvc.SetPublicBaseURLProvider(hubService.PublicBaseURL)
 			cardStoreSvc.SetHubTenantResolver(hubService.ResolveHubTenantDisplayNames)
 		}

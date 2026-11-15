@@ -19,6 +19,7 @@ type mockFloatingWindow struct {
 	assetInvalidations int
 	soundEnabled       bool
 	soundPreset        string
+	positionLocked     bool
 	mu                 sync.Mutex
 }
 
@@ -71,6 +72,12 @@ func (m *mockFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string)
 	m.soundEnabled, m.soundPreset = soundEnabled, preset
 }
 
+func (m *mockFloatingWindow) UpdatePositionLock(locked bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.positionLocked = locked
+}
+
 func (m *mockFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -118,6 +125,85 @@ func TestUpdateSoundConfigUpdatesWindowWithoutMotionRefresh(t *testing.T) {
 	}
 	if win.motionUpdates != 0 {
 		t.Fatalf("manager sound-only update should not request motion refresh, got %d", win.motionUpdates)
+	}
+}
+
+func TestPetPositionLockForApplyPrefersTheNewestPublish(t *testing.T) {
+	petPositionLockState.Lock()
+	prevValid, prevLocked := petPositionLockState.valid, petPositionLockState.locked
+	prevSeq, prevPending := petPositionLockState.seq, petPositionLockState.pending
+	petPositionLockState.valid = false
+	petPositionLockState.locked = false
+	petPositionLockState.seq = 0
+	petPositionLockState.pending = 0
+	petPositionLockState.Unlock()
+	t.Cleanup(func() {
+		petPositionLockState.Lock()
+		petPositionLockState.valid = prevValid
+		petPositionLockState.locked = prevLocked
+		petPositionLockState.seq = prevSeq
+		petPositionLockState.pending = prevPending
+		petPositionLockState.Unlock()
+	})
+
+	if got := petPositionLockForApply(true); !got {
+		t.Fatal("without a menu publish, the saved pin should apply")
+	}
+	first := rememberPetPositionLock(false)
+	if got := petPositionLockForApply(true); got {
+		t.Fatal("an older saved true must not override a newer unpin")
+	}
+	second := rememberPetPositionLock(true)
+	if got := petPositionLockForApply(false); !got {
+		t.Fatal("an older saved false must not override a newer pin")
+	}
+	if first == 0 || second <= first {
+		t.Fatalf("each publish should bump the sequence, got %d then %d", first, second)
+	}
+	if petPositionLockSeqCurrent(first) {
+		t.Fatal("an older pin sequence must not stay current")
+	}
+	if !petPositionLockSeqCurrent(second) {
+		t.Fatal("the newest pin sequence should stay current")
+	}
+	if rolled, _ := abandonPetPositionLock(first); rolled {
+		t.Fatal("an older sequence must not roll the newest pin back")
+	}
+	rolled, locked := abandonPetPositionLock(second)
+	if !rolled || locked {
+		t.Fatalf("a failed write of the current pin should roll it back, rolled=%v locked=%v", rolled, locked)
+	}
+	if !petPositionLockSeqCurrent(second) {
+		t.Fatal("a rollback should keep the current sequence")
+	}
+	if got := petPositionLockForApply(true); got {
+		t.Fatal("the rolled-back pin should apply")
+	}
+	if !petPositionLockWriteCurrent() {
+		t.Fatal("a patch that is not a menu write should keep the loaded pin")
+	}
+	notePetPositionLockWrite(first)
+	if petPositionLockWriteCurrent() {
+		t.Fatal("a menu write from an older sequence must not replace the newest pin")
+	}
+	notePetPositionLockWrite(second)
+	if !petPositionLockWriteCurrent() {
+		t.Fatal("the newest menu write should still be stored")
+	}
+	notePetPositionLockWrite(0)
+}
+
+func TestUpdatePositionLockUpdatesWindowWithoutMotionRefresh(t *testing.T) {
+	win := &mockFloatingWindow{}
+	manager := &FloatingAssistantManager{window: win}
+	manager.UpdatePositionLock(corelib.AppConfig{PetPositionLocked: true})
+	win.mu.Lock()
+	defer win.mu.Unlock()
+	if !win.positionLocked {
+		t.Fatal("position lock was not applied to the live window")
+	}
+	if win.motionUpdates != 0 {
+		t.Fatalf("pin should not request motion refresh, got %d", win.motionUpdates)
 	}
 }
 

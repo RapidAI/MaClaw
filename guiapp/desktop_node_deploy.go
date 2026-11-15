@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +36,8 @@ import (
 const (
 	desktopNodeDeployDir    = "/data/soft/maclaw_desktopd"
 	desktopNodeDesktopdPort = 18081
+	desktopNodeSrvDir       = "/data/soft/maclaw_srv"
+	desktopNodeSrvAddr      = "127.0.0.1:18080"
 	desktopNodesFile        = "desktop_nodes.json"
 	desktopNodesEvent       = "desktop-nodes-changed"
 
@@ -66,6 +70,19 @@ type DesktopNodeRecord struct {
 	TaskPath     string `json:"task_path,omitempty"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	UpdatedAt    string `json:"updated_at,omitempty"`
+	// WithSrv installs MaClawSrv on the same machine. SrvTokenSet means the
+	// Hub token was written into that srv; the token itself is not stored here.
+	WithSrv     bool `json:"with_srv,omitempty"`
+	SrvTokenSet bool `json:"srv_token_set,omitempty"`
+	// LastKind, LastResult and LastAt are the latest finished install or
+	// update. They stay after the live status line is cleared, until the
+	// person clears them. They never contain a token or a password.
+	LastKind   string `json:"last_kind,omitempty"`
+	LastResult string `json:"last_result,omitempty"`
+	LastAt     string `json:"last_at,omitempty"`
+	// JobStartedAt is when the current install or update began. It is empty
+	// once that job finishes. It is not a secret.
+	JobStartedAt string `json:"job_started_at,omitempty"`
 }
 
 // DesktopNodeEntry is a record merged with what Hub says about it.
@@ -88,6 +105,7 @@ type DesktopNodeDeployRequest struct {
 	Port     int    `json:"port"`
 	User     string `json:"user"`
 	Password string `json:"password"`
+	WithSrv  bool   `json:"with_srv"`
 }
 
 type DesktopNodeDirectRequest struct {
@@ -208,7 +226,9 @@ func (a *App) updateDesktopNode(id string, fn func(*DesktopNodeRecord)) (Desktop
 		desktopNodesMu.Unlock()
 		return DesktopNodeRecord{}, fmt.Errorf("desktopd 记录不存在")
 	}
+	prevStatus := records[index].Status
 	fn(&records[index])
+	noteDesktopNodeJobStart(&records[index], prevStatus)
 	records[index].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	out := records[index]
 	err = a.saveDesktopNodeRecords(records)
@@ -229,6 +249,7 @@ func (a *App) insertDesktopNode(rec DesktopNodeRecord) (DesktopNodeRecord, error
 		rec.CreatedAt = now
 	}
 	rec.UpdatedAt = now
+	noteDesktopNodeJobStart(&rec, "")
 	desktopNodesMu.Lock()
 	records, err := a.loadDesktopNodeRecords()
 	if err != nil {
@@ -245,13 +266,164 @@ func (a *App) insertDesktopNode(rec DesktopNodeRecord) (DesktopNodeRecord, error
 	return rec, nil
 }
 
+// noteDesktopNodeJobStart records when an install or update begins and
+// clears that mark when the job leaves the busy states.
+func noteDesktopNodeJobStart(rec *DesktopNodeRecord, prev string) {
+	if rec == nil {
+		return
+	}
+	if !desktopNodeBusyStatus(rec.Status) {
+		rec.JobStartedAt = ""
+		return
+	}
+	if rec.JobStartedAt == "" || !desktopNodeBusyStatus(prev) {
+		rec.JobStartedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+}
+
+// LocalDesktopJob is one install or update still running on this GUI.
+// It carries no token, password, or hub secret.
+type LocalDesktopJob struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	StartedAt string `json:"started_at"`
+}
+
+// ListLocalDesktopJobs is the task monitor's view of desktop installs and
+// updates. It reads the local records only and does not call Hub. A busy
+// record with no job in this process is the leftover of a crash, so it is
+// closed here and drops off the list.
+func (a *App) ListLocalDesktopJobs() ([]LocalDesktopJob, error) {
+	desktopNodesMu.Lock()
+	records, err := a.loadDesktopNodeRecords()
+	if err != nil {
+		desktopNodesMu.Unlock()
+		return nil, err
+	}
+	records, repaired := settleDesktopNodeJobs(records)
+	if repaired {
+		err = a.saveDesktopNodeRecords(records)
+	}
+	desktopNodesMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if repaired {
+		a.emitEvent(desktopNodesEvent, "")
+	}
+	out := make([]LocalDesktopJob, 0)
+	for _, rec := range records {
+		if !desktopNodeBusyStatus(rec.Status) {
+			continue
+		}
+		started := rec.JobStartedAt
+		if started == "" {
+			started = rec.UpdatedAt
+		}
+		out = append(out, LocalDesktopJob{
+			ID:        rec.ID,
+			Title:     localDesktopJobTitle(rec),
+			Status:    rec.Status,
+			StartedAt: started,
+		})
+	}
+	return out, nil
+}
+
+func localDesktopJobTitle(rec DesktopNodeRecord) string {
+	action := "部署"
+	if rec.Status == desktopNodeStatusUpgrading {
+		action = "更新"
+	}
+	what := "desktopd"
+	if rec.WithSrv {
+		what = "desktopd 和 MaClawSrv"
+	}
+	target := strings.TrimSpace(rec.User)
+	if rec.Host != "" {
+		if target != "" {
+			target += "@"
+		}
+		target += rec.Host
+	}
+	if target == "" {
+		target = strings.TrimSpace(rec.Name)
+	}
+	if target == "" {
+		return action + " " + what
+	}
+	return action + " " + what + " · " + target
+}
+
 func (a *App) setDesktopNodeStatus(id, status, message string) {
 	if _, err := a.updateDesktopNode(id, func(rec *DesktopNodeRecord) {
+		kind := "deploy"
+		if rec.Status == desktopNodeStatusUpgrading || strings.Contains(message, "升级") {
+			kind = "upgrade"
+		}
 		rec.Status = status
 		rec.Message = message
+		if status == desktopNodeStatusFailed || status == desktopNodeStatusReady {
+			recordDesktopNodeResult(rec, kind, message)
+		}
 	}); err != nil {
 		log.Printf("[desktop-node] save status failed id=%s err=%v", id, err)
 	}
+}
+
+// desktopNodeOutcomeKind keeps an upgrade labeled as an update when the
+// finishing step is the srv token write. A fresh install stays a deploy.
+func desktopNodeOutcomeKind(status string) string {
+	if status == desktopNodeStatusUpgrading {
+		return "upgrade"
+	}
+	return "deploy"
+}
+
+// recordDesktopNodeResult keeps the outcome of one install or update.
+// An empty message becomes a short finished sentence. The text is capped
+// and must not be a token.
+func recordDesktopNodeResult(rec *DesktopNodeRecord, kind, message string) {
+	if rec == nil {
+		return
+	}
+	if kind != "upgrade" {
+		kind = "deploy"
+	}
+	rec.LastKind = kind
+	rec.LastAt = time.Now().UTC().Format(time.RFC3339)
+	text := strings.TrimSpace(message)
+	if text == "" {
+		switch {
+		case kind == "upgrade":
+			text = "更新完成。访问令牌和 Hub 连接保持不变。"
+		case rec.WithSrv && rec.SrvTokenSet:
+			text = "部署完成。MaClawSrv 和桌面都已安装，令牌已写入。"
+		case rec.WithSrv:
+			text = "部署完成。MaClawSrv 已安装，令牌还没有写上。"
+		default:
+			text = "部署完成。"
+		}
+	}
+	if len([]rune(text)) > 500 {
+		text = string([]rune(text)[:500])
+	}
+	rec.LastResult = text
+}
+
+// ClearDesktopNodeResult removes the stored install or update report.
+// The desktop itself, and a job that is still running, stay.
+func (a *App) ClearDesktopNodeResult(id string) error {
+	_, err := a.updateDesktopNode(id, func(rec *DesktopNodeRecord) {
+		rec.LastKind = ""
+		rec.LastResult = ""
+		rec.LastAt = ""
+		if !desktopNodeBusyStatus(rec.Status) {
+			rec.Message = ""
+		}
+	})
+	return err
 }
 
 func newDesktopNodeID() string {
@@ -367,8 +539,9 @@ func (a *App) DeployDesktopNode(req DesktopNodeDeployRequest) (*DesktopNodeRecor
 		ID: id, Name: name, Mode: "ssh",
 		Host: req.Host, Port: req.Port, User: req.User, HostKey: conn.hostKey,
 		DeployDir: desktopNodeDeployDir, DesktopdPort: desktopNodeDesktopdPort,
-		HubURL: strings.TrimRight(strings.TrimSpace(hubURL), "/"),
-		Status: desktopNodeStatusDeploying, Message: "agent 正在部署 desktopd",
+		HubURL:  strings.TrimRight(strings.TrimSpace(hubURL), "/"),
+		WithSrv: req.WithSrv,
+		Status:  desktopNodeStatusDeploying, Message: desktopNodeDeployMessage(req.WithSrv),
 	})
 	if err != nil {
 		releaseDesktopNodeJob(id)
@@ -476,6 +649,92 @@ func (a *App) UpgradeDesktopNode(id, password string) (*DesktopNodeRecord, error
 		a.runDesktopNodeJob(updated, password, privilege, desktopNodeJob{kind: "upgrade", stamp: newDesktopNodeStamp()})
 	}()
 	return &updated, nil
+}
+
+// RedeployDesktopNode runs a fresh install on a desktop that has not
+// finished registering. withSrv is the choice made on the desktop page.
+// An already registered desktop is updated instead, so its token stays.
+func (a *App) RedeployDesktopNode(id, password string, withSrv bool) (*DesktopNodeRecord, error) {
+	rec, err := a.findDesktopNode(id)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(rec.NodeID) != "" {
+		return a.UpgradeDesktopNode(id, password)
+	}
+	if rec.Mode != "ssh" || strings.TrimSpace(rec.Host) == "" || strings.TrimSpace(rec.User) == "" {
+		return nil, fmt.Errorf("这台桌面没有保存 SSH 地址，无法重新部署")
+	}
+	if rec.Status == desktopNodeStatusDeploying || rec.Status == desktopNodeStatusUpgrading {
+		return nil, fmt.Errorf("这台桌面正在部署或升级")
+	}
+	if password == "" {
+		return nil, fmt.Errorf("请输入 %s@%s 的 SSH 密码", rec.User, rec.Host)
+	}
+	if rec.Port <= 0 {
+		rec.Port = 22
+	}
+	conn, err := dialDesktopNodeSSH(rec.Host, rec.Port, rec.User, password, rec.HostKey)
+	if err != nil {
+		return nil, fmt.Errorf("SSH 连接失败: %v", err)
+	}
+	privilege, privErr := conn.ensurePrivilege()
+	conn.Close()
+	if privErr != nil {
+		return nil, privErr
+	}
+	if !claimDesktopNodeJob(rec.ID) {
+		return nil, fmt.Errorf("这台桌面正在部署或更新")
+	}
+	updated, err := a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
+		r.WithSrv = withSrv
+		r.Status = desktopNodeStatusDeploying
+		r.Message = desktopNodeDeployMessage(withSrv)
+	})
+	if err != nil {
+		releaseDesktopNodeJob(rec.ID)
+		return nil, err
+	}
+	a.spawnDesktopNodeJob(updated, password, privilege, desktopNodeJob{})
+	return &updated, nil
+}
+
+// ConfigureDesktopNodeToken writes this machine's Hub token into the
+// same-machine MaClawSrv. The token is read over SSH and is not returned.
+func (a *App) ConfigureDesktopNodeToken(id, password string) (*DesktopNodeRecord, error) {
+	rec, err := a.findDesktopNode(id)
+	if err != nil {
+		return nil, err
+	}
+	if !rec.WithSrv {
+		return nil, fmt.Errorf("这台安装没有 MaClawSrv")
+	}
+	if rec.Mode != "ssh" || strings.TrimSpace(rec.Host) == "" || strings.TrimSpace(rec.User) == "" {
+		return nil, fmt.Errorf("这台桌面没有保存 SSH 地址，无法配置令牌")
+	}
+	if strings.TrimSpace(rec.NodeID) == "" {
+		return nil, fmt.Errorf("桌面还没有注册完成")
+	}
+	if password == "" {
+		return nil, fmt.Errorf("请输入 %s@%s 的 SSH 密码", rec.User, rec.Host)
+	}
+	if rec.Port <= 0 {
+		rec.Port = 22
+	}
+	conn, err := dialDesktopNodeSSH(rec.Host, rec.Port, rec.User, password, rec.HostKey)
+	if err != nil {
+		return nil, fmt.Errorf("SSH 连接失败: %v", err)
+	}
+	defer conn.Close()
+	privilege, privErr := conn.ensurePrivilege()
+	if privErr != nil {
+		return nil, privErr
+	}
+	if err := a.writeDesktopNodeSrvToken(conn, rec, password, privilege); err != nil {
+		return nil, err
+	}
+	out, err := a.findDesktopNode(id)
+	return &out, err
 }
 
 // spawnDesktopNodeJob runs the agent job. The caller already claimed rec.ID;
@@ -788,8 +1047,14 @@ func settleDesktopNodeJobs(records []DesktopNodeRecord) ([]DesktopNodeRecord, bo
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i := range records {
 		if desktopNodeBusyStatus(records[i].Status) && !desktopNodeJobLive(records[i].ID) {
+			kind := "deploy"
+			if records[i].Status == desktopNodeStatusUpgrading {
+				kind = "upgrade"
+			}
 			records[i].Status = desktopNodeStatusFailed
-			records[i].Message = "上次部署或更新已中断，请重新更新"
+			records[i].Message = "上次部署或更新已中断，请重新开始"
+			records[i].JobStartedAt = ""
+			recordDesktopNodeResult(&records[i], kind, records[i].Message)
 			records[i].UpdatedAt = now
 			changed = true
 		}
@@ -820,6 +1085,77 @@ func desktopNodeFatal(err error) bool {
 	return !strings.Contains(msg, "不可达") && !strings.Contains(msg, "正在重新连接") && !strings.Contains(msg, "正在重启")
 }
 
+var desktopNodeDetailMu sync.Mutex
+
+var desktopNodeDetailSecret = regexp.MustCompile(`(?i)(password|DESKTOPD_TOKEN|MACLAW_ADMIN_SECRET|MACLAW_TOKEN_SECRET|MACLAW_DESKTOP_API_TOKEN|hub_token|node_secret|srv_admin_secret|desktopd_key|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|Bearer\s+\S+|\S+)`)
+var desktopNodeDetailBearer = regexp.MustCompile(`(?i)Bearer\s+\S+`)
+var desktopNodeDetailUserinfo = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@`)
+var desktopNodeDetailBlob = regexp.MustCompile(`[A-Za-z0-9+/]{40,}={0,2}`)
+
+func scrubDesktopNodeDetail(text string) string {
+	text = strings.NewReplacer("\r", " ", "\n", " ").Replace(text)
+	text = desktopNodeDetailBearer.ReplaceAllString(text, "Bearer <redacted>")
+	text = desktopNodeDetailSecret.ReplaceAllString(text, "$1=<redacted>")
+	text = desktopNodeDetailUserinfo.ReplaceAllString(text, "$1<redacted>@")
+	text = desktopNodeDetailBlob.ReplaceAllString(text, "<redacted>")
+	if len([]rune(text)) > 2000 {
+		text = string([]rune(text)[:2000]) + "..."
+	}
+	return strings.TrimSpace(text)
+}
+
+// desktopNodeDetail appends one deploy step when detailed logging is on.
+// It goes to logs/desktop-node-detail.log and never keeps a secret.
+func (a *App) desktopNodeDetail(id, step, detail string) {
+	if !corelib.IsLogDetailEnabled() {
+		return
+	}
+	dir := a.desktopNodeDetailDir()
+	if dir == "" {
+		return
+	}
+	path := filepath.Join(dir, "desktop-node-detail.log")
+	line := fmt.Sprintf("%s id=%s step=%s %s\n", time.Now().Format("2006-01-02 15:04:05"), scrubDesktopNodeDetail(id), scrubDesktopNodeDetail(step), scrubDesktopNodeDetail(detail))
+	desktopNodeDetailMu.Lock()
+	defer desktopNodeDetailMu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	flag := os.O_APPEND | os.O_CREATE | os.O_WRONLY
+	if info, statErr := os.Stat(path); statErr == nil && info.Size() > 5*1024*1024 {
+		flag = os.O_TRUNC | os.O_CREATE | os.O_WRONLY
+	}
+	f, err := os.OpenFile(path, flag, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if flag&os.O_TRUNC != 0 {
+		_, _ = fmt.Fprintln(f, "[log truncated: exceeded 5MB]")
+	}
+	_, _ = f.WriteString(line)
+}
+
+// desktopNodeDetailDir is the same logs directory as maclaw.log.
+// A test app keeps the file under its temporary home.
+func (a *App) desktopNodeDetailDir() string {
+	if a != nil && strings.TrimSpace(a.testHomeDir) != "" {
+		return filepath.Join(a.getMaclawBaseDir(), "logs")
+	}
+	if dir := strings.TrimSpace(corelib.MaclawLogsDir()); dir != "" {
+		return dir
+	}
+	if a != nil {
+		if base := strings.TrimSpace(a.getMaclawBaseDir()); base != "" {
+			return filepath.Join(base, "logs")
+		}
+	}
+	if base := strings.TrimSpace(corelib.MaclawBaseDir()); base != "" {
+		return filepath.Join(base, "logs")
+	}
+	return ""
+}
+
 func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privilege desktopNodePrivilege, job desktopNodeJob) {
 	label := "maclaw-desktopd-" + strings.TrimPrefix(rec.ID, "dn_")
 	registerEphemeralSSHHost(corelib.SSHHostEntry{
@@ -831,11 +1167,15 @@ func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privileg
 		cleanupPrivilege = func() {
 			conn, err := dialDesktopNodeSSH(rec.Host, rec.Port, rec.User, password, rec.HostKey)
 			if err != nil {
-				log.Printf("[desktop-node] could not remove temporary sudoers id=%s err=%v", rec.ID, err)
+				log.Printf("[desktop-node] could not remove temporary sudoers id=%s err=%s", rec.ID, scrubDesktopNodeDetail(err.Error()))
+				a.desktopNodeDetail(rec.ID, "sudoers", err.Error())
 				return
 			}
 			defer conn.Close()
-			_, _ = conn.run(context.Background(), "rm -f "+privilege.tempSudoers, desktopNodePrivilege{su: true}, password)
+			if _, rmErr := conn.run(context.Background(), "rm -f "+privilege.tempSudoers, desktopNodePrivilege{su: true}, password); rmErr != nil {
+				log.Printf("[desktop-node] could not remove temporary sudoers id=%s err=%s", rec.ID, scrubDesktopNodeDetail(rmErr.Error()))
+				a.desktopNodeDetail(rec.ID, "sudoers", rmErr.Error())
+			}
 		}
 	}
 	defer func() {
@@ -846,9 +1186,21 @@ func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privileg
 	if job.upgrade() {
 		a.clearDesktopNodeStamp(rec, password, privilege)
 	}
+	if strings.TrimSpace(rec.HubURL) == "" {
+		hub, _, hubErr := a.getHubCredentials()
+		if strings.TrimSpace(hub) != "" {
+			rec.HubURL = strings.TrimRight(strings.TrimSpace(hub), "/")
+		} else if hubErr != nil {
+			a.desktopNodeDetail(rec.ID, "hub", hubErr.Error())
+		}
+	}
 	taskName := "部署 desktopd · " + rec.User + "@" + rec.Host
 	prompt := desktopNodeDeployPrompt(rec, label, privilege)
 	display := fmt.Sprintf("〔一键部署〕在 %s@%s 上部署 desktopd", rec.User, rec.Host)
+	if rec.WithSrv {
+		taskName = "部署 desktopd 和 MaClawSrv · " + rec.User + "@" + rec.Host
+		display = fmt.Sprintf("〔一键部署〕在 %s@%s 上部署 desktopd 和 MaClawSrv", rec.User, rec.Host)
+	}
 	if job.upgrade() {
 		taskName = "升级 desktopd · " + rec.User + "@" + rec.Host
 		prompt = desktopNodeUpgradePrompt(rec, label, privilege, job.stamp)
@@ -856,10 +1208,12 @@ func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privileg
 	}
 	task := a.CreateTask(taskName, "")
 	if strings.TrimSpace(task.ProjectPath) == "" {
+		a.desktopNodeDetail(rec.ID, "task", "无法创建部署任务")
 		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, "无法创建部署任务")
 		return
 	}
 	_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) { r.TaskPath = task.ProjectPath })
+	a.desktopNodeDetail(rec.ID, "start", fmt.Sprintf("host=%s port=%d user=%s with_srv=%v upgrade=%v hub=%s doc=%s label=%s task=%s", rec.Host, rec.Port, rec.User, rec.WithSrv, job.upgrade(), rec.HubURL, desktopNodeDocURL(rec.HubURL), label, task.ProjectPath))
 	done := make(chan *IMAgentResponse, 1)
 	_, err := a.SendAIAssistantMessage(AIAssistantSendRequest{
 		Text:               prompt,
@@ -873,6 +1227,7 @@ func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privileg
 		},
 	})
 	if err != nil {
+		a.desktopNodeDetail(rec.ID, "agent", err.Error())
 		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, "agent 启动失败: "+err.Error())
 		return
 	}
@@ -881,6 +1236,7 @@ func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privileg
 	var agentDoneAt time.Time
 	agentSummary := ""
 	stampSeen := !job.upgrade()
+	lastProbe := ""
 	ticker := time.NewTicker(desktopNodeProbeEvery)
 	defer ticker.Stop()
 	for {
@@ -889,6 +1245,11 @@ func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privileg
 			agentDoneAt = time.Now()
 			if resp != nil {
 				agentSummary = desktopNodeAgentVerdict(resp)
+			}
+			if agentSummary == "" {
+				a.desktopNodeDetail(rec.ID, "agent-done", "没有 DESKTOPD_DEPLOY 结论")
+			} else {
+				a.desktopNodeDetail(rec.ID, "agent-done", agentSummary)
 			}
 		case <-ticker.C:
 		}
@@ -913,27 +1274,39 @@ func (a *App) runDesktopNodeJob(rec DesktopNodeRecord, password string, privileg
 			err = a.finishDesktopNodeDeploy(rec, password, privilege, job.upgrade())
 		}
 		if err == nil {
+			ready := "desktopd 已就绪"
+			if latest, findErr := a.findDesktopNode(rec.ID); findErr == nil && strings.TrimSpace(latest.NodeID) != "" {
+				ready += " node=" + latest.NodeID
+			}
+			a.desktopNodeDetail(rec.ID, "ready", ready)
 			return
 		}
-		if desktopNodeFatal(err) {
-			a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, err.Error())
-			return
-		}
-		// The agent may leave a long step running in the background, so a
-		// finished turn gets a short grace before the deploy is called failed.
-		// An explicit FAILED line does not get that grace.
 		failed := strings.HasPrefix(strings.ToUpper(agentSummary), "FAILED")
 		grace := 10 * time.Minute
 		if failed {
 			grace = 30 * time.Second
 		}
-		if !agentDoneAt.IsZero() && time.Since(agentDoneAt) > grace || time.Now().After(deadline) {
-			msg := "desktopd 没有就绪: " + err.Error()
-			if agentSummary != "" {
-				msg += "；agent: " + agentSummary
+		givingUp := desktopNodeFatal(err) || (!agentDoneAt.IsZero() && time.Since(agentDoneAt) > grace) || time.Now().After(deadline)
+		if givingUp {
+			msg := err.Error()
+			if !desktopNodeFatal(err) {
+				msg = "desktopd 没有就绪: " + err.Error()
+				if agentSummary != "" {
+					msg += "；agent: " + agentSummary
+				}
 			}
+			msg = scrubDesktopNodeDetail(msg)
+			a.desktopNodeDetail(rec.ID, "failed", msg)
 			a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, msg)
 			return
+		}
+		if msg := err.Error(); msg != lastProbe {
+			lastProbe = msg
+			step := "probe"
+			if strings.Contains(msg, "正在安装") || strings.Contains(msg, "还未完成") || strings.Contains(msg, "正在重启") || strings.Contains(msg, "正在重新连接") {
+				step = "wait"
+			}
+			a.desktopNodeDetail(rec.ID, step, msg)
 		}
 		if !agentDoneAt.IsZero() {
 			status := desktopNodeStatusDeploying
@@ -994,8 +1367,11 @@ func (a *App) noteDesktopNodeStamp(rec DesktopNodeRecord, password string, privi
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	out, err := conn.run(ctx, "cat "+shellQuote(dir+"/.upgrade-stamp"), privilege, password)
 	cancel()
-	if err != nil || strings.TrimSpace(out) != stamp {
-		return false, nil
+	if err != nil {
+		return false, fmt.Errorf("升级还未完成: %s", scrubDesktopNodeDetail(err.Error()))
+	}
+	if strings.TrimSpace(out) != stamp {
+		return false, fmt.Errorf("升级还未完成: 标记还不是这次升级")
 	}
 	return true, a.finishDesktopNodeConn(conn, rec, password, privilege, true)
 }
@@ -1016,15 +1392,15 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 	if deployDir == "" {
 		deployDir = desktopNodeDeployDir
 	}
-	envText, err := conn.run(ctx, "cat "+shellQuote(deployDir+"/.env"), privilege, password)
+	envFile, envText, err := readDesktopNodeEnv(conn, ctx, deployDir, privilege, password)
 	if err != nil {
-		return fmt.Errorf("还没有 %s/.env", deployDir)
+		return err
 	}
 	env := parseDotEnv(envText)
 	if !desktopNodeIntranetReady(env) {
-		// The install script may be an older copy that stored a public name.
-		// Fix the file here so the command never contains the token.
-		if _, err := conn.run(ctx, intranetDesktopEnvCommand(deployDir), privilege, password); err != nil {
+		// The install script or an older copy of the runbook may have stored a
+		// public name. Fix that file here so the command never contains the token.
+		if _, err := conn.run(ctx, intranetDesktopEnvFileCommand(envFile), privilege, password); err != nil {
 			return fmt.Errorf("desktopd 正在重启为内网桌面: %v", err)
 		}
 		return fmt.Errorf("desktopd 正在重启为内网桌面")
@@ -1047,6 +1423,21 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 	if err := desktopdHealth(ctx, client, base, token); err != nil {
 		return err
 	}
+	if latest, findErr := a.findDesktopNode(rec.ID); findErr == nil {
+		rec.WithSrv = latest.WithSrv
+		rec.SrvTokenSet = latest.SrvTokenSet
+		if latest.NodeID != "" {
+			rec.NodeID = latest.NodeID
+		}
+	}
+	srvAdmin := ""
+	if rec.WithSrv {
+		admin, err := a.ensureRemoteSrvAdmin(conn, rec, password, privilege)
+		if err != nil {
+			return err
+		}
+		srvAdmin = admin
+	}
 	if preserveLink && strings.TrimSpace(rec.NodeID) != "" {
 		var link struct {
 			Enrolled bool   `json:"enrolled"`
@@ -1061,15 +1452,45 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 			if !link.Online {
 				return fmt.Errorf("desktopd 已升级，正在重新连接 Hub")
 			}
+			if rec.WithSrv && !rec.SrvTokenSet {
+				rec.NodeID = link.NodeID
+				rec.Token = token
+				rec.DesktopdPort = port
+				return a.writeDesktopNodeSrvToken(conn, rec, password, privilege)
+			}
 			_, err := a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
 				r.Token = token
 				r.DesktopdPort = port
 				r.NodeID = link.NodeID
 				r.Status = desktopNodeStatusReady
 				r.Message = ""
+				kind := "deploy"
+				if preserveLink {
+					kind = "upgrade"
+				}
+				recordDesktopNodeResult(r, kind, "")
 			})
 			return err
 		}
+	}
+	if strings.TrimSpace(rec.NodeID) != "" {
+		if rec.WithSrv && !rec.SrvTokenSet {
+			rec.Token = token
+			rec.DesktopdPort = port
+			return a.writeDesktopNodeSrvToken(conn, rec, password, privilege)
+		}
+		_, err := a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
+			r.Token = token
+			r.DesktopdPort = port
+			r.Status = desktopNodeStatusReady
+			r.Message = ""
+			kind := "deploy"
+			if preserveLink {
+				kind = "upgrade"
+			}
+			recordDesktopNodeResult(r, kind, "")
+		})
+		return err
 	}
 	_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
 		r.Token = token
@@ -1077,14 +1498,26 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 		r.Status = desktopNodeStatusRegistering
 		r.Message = "desktopd 已就绪，正在注册到 Hub"
 	})
-	nodeID, err := a.enrollDesktopd(ctx, client, base, token, rec)
+	nodeID, err := a.enrollDesktopd(ctx, client, base, token, rec, srvAdmin)
 	if err != nil {
 		return err
+	}
+	if rec.WithSrv {
+		rec.NodeID = nodeID
+		rec.Token = token
+		rec.DesktopdPort = port
+		_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
+			r.NodeID = nodeID
+			r.Status = desktopNodeStatusRegistering
+			r.Message = "正在写入 srv 令牌"
+		})
+		return a.writeDesktopNodeSrvToken(conn, rec, password, privilege)
 	}
 	_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
 		r.NodeID = nodeID
 		r.Status = desktopNodeStatusReady
 		r.Message = ""
+		recordDesktopNodeResult(r, "deploy", "")
 	})
 	log.Printf("[desktop-node] registered id=%s node=%s host=%s", rec.ID, nodeID, rec.Host)
 	return nil
@@ -1098,7 +1531,7 @@ func (a *App) registerDirectDesktopNode(rec DesktopNodeRecord) error {
 		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, err.Error())
 		return err
 	}
-	nodeID, err := a.enrollDesktopd(ctx, client, rec.DesktopdURL, rec.Token, rec)
+	nodeID, err := a.enrollDesktopd(ctx, client, rec.DesktopdURL, rec.Token, rec, "")
 	if err != nil {
 		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, err.Error())
 		return err
@@ -1107,6 +1540,7 @@ func (a *App) registerDirectDesktopNode(rec DesktopNodeRecord) error {
 		r.NodeID = nodeID
 		r.Status = desktopNodeStatusReady
 		r.Message = ""
+		recordDesktopNodeResult(r, "deploy", "")
 	})
 	return err
 }
@@ -1114,7 +1548,7 @@ func (a *App) registerDirectDesktopNode(rec DesktopNodeRecord) error {
 // enrollDesktopd asks Hub for a personal code and hands it to desktopd, which
 // enrolls itself and opens its tunnel. The old node of this record, if any,
 // is unregistered once the new one is up.
-func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, token string, rec DesktopNodeRecord) (string, error) {
+func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, token string, rec DesktopNodeRecord, srvAdmin string) (string, error) {
 	hubURL, _, err := a.getHubCredentials()
 	if err != nil || strings.TrimSpace(hubURL) == "" {
 		return "", fmt.Errorf("还没有连接 Hub")
@@ -1123,7 +1557,9 @@ func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, tok
 		Code   string `json:"code"`
 		NodeID string `json:"node_id"`
 	}
+	a.desktopNodeDetail(rec.ID, "enroll", "hub="+strings.TrimRight(strings.TrimSpace(hubURL), "/")+" host="+rec.Host)
 	if err := a.desktopBotCall(ctx, http.MethodPost, "/api/v1/bots/desktop-node/code", map[string]string{"name": rec.Name}, &code, 20*time.Second); err != nil {
+		a.desktopNodeDetail(rec.ID, "enroll-code", err.Error())
 		return "", fmt.Errorf("Hub 拒绝了桌面注册: %v", err)
 	}
 	var status struct {
@@ -1132,12 +1568,27 @@ func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, tok
 		Online   bool   `json:"online"`
 		Error    string `json:"error"`
 	}
-	body := map[string]string{"hub_url": strings.TrimRight(strings.TrimSpace(hubURL), "/"), "code": code.Code, "direct_base": strings.TrimSpace(base)}
+	body := map[string]any{
+		"hub_url":     strings.TrimRight(strings.TrimSpace(hubURL), "/"),
+		"code":        code.Code,
+		"direct_base": strings.TrimSpace(base),
+	}
+	if strings.TrimSpace(srvAdmin) != "" {
+		body["has_srv"] = true
+		body["srv_addr"] = desktopNodeSrvAddr
+		body["srv_admin_secret"] = srvAdmin
+	}
 	if err := desktopdHubLinkCall(ctx, client, base, token, http.MethodPost, body, &status); err != nil {
+		a.desktopNodeDetail(rec.ID, "enroll-link", err.Error())
 		return "", err
 	}
 	if !status.Enrolled || status.NodeID == "" {
-		return "", fmt.Errorf("desktopd 没有完成注册")
+		msg := "desktopd 没有完成注册"
+		if status.Error != "" {
+			msg += ": " + status.Error
+		}
+		a.desktopNodeDetail(rec.ID, "enroll-link", msg)
+		return "", errors.New(msg)
 	}
 	// The link comes up a moment after enrollment.
 	for i := 0; i < 20 && !status.Online; i++ {
@@ -1153,6 +1604,7 @@ func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, tok
 		if status.Error != "" {
 			msg += ": " + status.Error
 		}
+		a.desktopNodeDetail(rec.ID, "enroll-online", "node="+status.NodeID+" "+msg)
 		return status.NodeID, desktopNodeRegisterError{msg: msg}
 	}
 	if old := strings.TrimSpace(rec.NodeID); old != "" && old != status.NodeID {
@@ -1260,13 +1712,38 @@ func desktopNodeIntranetReady(env map[string]string) bool {
 // intranetDesktopEnvCommand removes a public name and sets the intranet
 // flag, then restarts desktopd. It does not read or write the token.
 func intranetDesktopEnvCommand(dir string) string {
-	q := shellQuote(dir + "/.env")
+	return intranetDesktopEnvFileCommand(dir + "/.env")
+}
+
+func intranetDesktopEnvFileCommand(path string) string {
+	q := shellQuote(path)
 	// Parentheses keep a failed edit from restarting, and a missing flag from
 	// being treated as success before the line is appended.
 	return "(sed -i -e '/^DESKTOPD_ADVERTISE_HOST=/d' -e '/^DESKTOPD_PUBLIC_URL=/d' -e 's/^DESKTOPD_INTRANET=.*/DESKTOPD_INTRANET=1/' " + q +
 		" && grep -q '^DESKTOPD_INTRANET=1$' " + q +
 		" || printf '\\nDESKTOPD_INTRANET=1\\n' >> " + q +
 		") && chmod 600 " + q + " && systemctl restart maclaw-desktopd"
+}
+
+// readDesktopNodeEnv reads the install the agent just finished. The runbook
+// writes /etc/maclaw/desktopd.env. Older GUI installs still use <dir>/.env.
+func readDesktopNodeEnv(conn *desktopNodeSSH, ctx context.Context, deployDir string, privilege desktopNodePrivilege, password string) (path, text string, err error) {
+	var notes []string
+	for _, candidate := range []string{deployDir + "/.env", "/etc/maclaw/desktopd.env"} {
+		body, catErr := conn.run(ctx, "cat "+shellQuote(candidate), privilege, password)
+		if catErr == nil && strings.TrimSpace(body) != "" {
+			return candidate, body, nil
+		}
+		if catErr != nil {
+			notes = append(notes, candidate+": "+scrubDesktopNodeDetail(catErr.Error()))
+		} else {
+			notes = append(notes, candidate+": 文件是空的")
+		}
+	}
+	if len(notes) > 0 {
+		return "", "", fmt.Errorf("还没有 %s/.env: %s", deployDir, strings.Join(notes, "; "))
+	}
+	return "", "", fmt.Errorf("还没有 %s/.env", deployDir)
 }
 
 func parseDotEnv(text string) map[string]string {
@@ -1296,57 +1773,198 @@ func shellQuote(s string) string {
 // desktopNodeDeployPrompt is the task for the existing assistant agent. It
 // names an SSH label, never the password, and tells the agent not to print
 // the desktopd token: this GUI reads it over its own SSH connection.
-func desktopNodeDeployPrompt(rec DesktopNodeRecord, label string, privilege desktopNodePrivilege) string {
-	var root string
+func desktopNodePrivilegeLine(privilege desktopNodePrivilege, ending string) string {
 	switch {
 	case privilege.root:
-		root = "登录用户就是 root，直接执行即可。"
+		return "登录用户就是 root，直接执行即可。"
 	case privilege.tempSudoers != "":
-		root = "登录用户已临时获得免密 sudo（部署结束后会自动撤销），需要 root 的命令用 sudo 执行。"
+		return "登录用户已临时获得免密 sudo（" + ending + "结束后会自动撤销），需要 root 的命令用 sudo 执行。"
 	default:
-		root = "登录用户可以 sudo：先调用 ssh 的 sudo_prepare（session_id 为 connect 返回的会话），之后需要 root 的命令用 sudo 执行。"
+		return "登录用户可以 sudo：先调用 ssh 的 sudo_prepare（session_id 为 connect 返回的会话），之后需要 root 的命令用 sudo 执行。"
 	}
+}
+
+func desktopNodeDocURL(hub string) string {
+	hub = strings.TrimRight(strings.TrimSpace(hub), "/")
+	if hub == "" {
+		return ""
+	}
+	return hub + "/docs/self-desktopd"
+}
+
+func desktopNodeDeployPrompt(rec DesktopNodeRecord, label string, privilege desktopNodePrivilege) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "请在远程 Linux 主机 %s@%s:%d 上部署 MaClaw 的 desktopd（Docker 桌面服务），这是用户在「桌面」设置里点的一键部署。\n\n", rec.User, rec.Host, rec.Port)
-	fmt.Fprintf(&b, "连接方式：调用 ssh 工具 action=connect，label=%q（不要传 host/user/password，密码已由客户端托管）。%s\n\n", label, root)
-	b.WriteString("目标：\n")
-	fmt.Fprintf(&b, "- desktopd 安装在 %s，systemd 服务名 maclaw-desktopd，监听 127.0.0.1:%d（不要对外暴露端口）。\n", desktopNodeDeployDir, desktopNodeDesktopdPort)
-	b.WriteString("- 主机上要有可用的 Docker，并且能得到 maclaw-gui:2 镜像。\n\n")
-	b.WriteString("建议步骤（遇到环境差异请自行判断处理，比如换国内镜像源、包管理器不是 apt 等）：\n")
-	b.WriteString("1. 确认系统（uname -m、/etc/os-release、systemd）。只支持 x86_64/aarch64 Linux。\n")
-	b.WriteString("2. 没有 Docker 就安装（如 curl -fsSL https://get.docker.com | sh，国内可加 --mirror Aliyun），并 systemctl enable --now docker。\n")
-	b.WriteString("3. 安装 git、curl、tar。安装 Go 1.26 或更新版本到 /usr/local/go（https://go.dev/dl/ 或 https://golang.google.cn/dl/），已有足够新的就跳过。\n")
-	b.WriteString("4. 获取源码：git clone --depth 1 https://github.com/RapidAI/MaClaw.git /opt/maclaw-src（已存在则 git -C /opt/maclaw-src pull --ff-only）。\n")
-	b.WriteString("5. 构建并打包（GOPROXY=https://goproxy.cn,direct）：\n")
-	b.WriteString("   mkdir -p /tmp/maclaw_desktopd_deploy/stage/bin /tmp/maclaw_desktopd_deploy/stage/image\n")
-	b.WriteString("   cd /opt/maclaw-src && CGO_ENABLED=0 /usr/local/go/bin/go build -ldflags \"-s -w\" -o /tmp/maclaw_desktopd_deploy/stage/bin/desktopd ./desktopd/cmd/desktopd\n")
-	b.WriteString("   cp desktopd/image/desktop_supervisor.py desktopd/image/Dockerfile desktopd/image/Dockerfile.v2 desktopd/image/close_range_shim.c desktopd/image/fcitx5-profile /tmp/maclaw_desktopd_deploy/stage/image/\n")
-	b.WriteString("   tar -czf /tmp/maclaw_desktopd_deploy/desktopd-deploy.tar.gz -C /tmp/maclaw_desktopd_deploy/stage . && cp desktopd/remote_deploy.sh /tmp/maclaw_desktopd_deploy/\n")
-	fmt.Fprintf(&b, "6. 以 root 运行安装脚本（耗时可能很长，用 exec_background 执行再 wait_task 等待）。这是用户内网里的桌面，第一次不要设置 DESKTOPD_ADVERTISE_HOST，不要把它配成公网地址：\n   REMOTE_TMP_DIR=/tmp/maclaw_desktopd_deploy DESKTOPD_DEPLOY_DIR=%s DESKTOPD_BIND_ADDR=127.0.0.1:%d DESKTOPD_PORT=%d DESKTOPD_INTRANET=1 DESKTOPD_IMAGE_FROM=auto sh /tmp/maclaw_desktopd_deploy/remote_deploy.sh\n", desktopNodeDeployDir, desktopNodeDesktopdPort, desktopNodeDesktopdPort)
-	b.WriteString(desktopNodeOldScriptFallback(desktopNodeDeployDir, desktopNodeDesktopdPort, "auto"))
-	fmt.Fprintf(&b, "7. 验证：systemctl is-active maclaw-desktopd，并执行 sh -c '. %s/.env; curl -fsS -H \"Authorization: Bearer $DESKTOPD_TOKEN\" http://127.0.0.1:%d/v1/health'（不要回显令牌）。\n\n", desktopNodeDeployDir, desktopNodeDesktopdPort)
-	b.WriteString("约束：\n")
-	b.WriteString("- 不要输出、复述或保存 .env 内容和 DESKTOPD_TOKEN；不要自己去 Hub 注册，客户端会在验证通过后自动注册。\n")
-	b.WriteString("- 不要修改 SSH 配置、防火墙对外规则，也不要删除主机上与本次部署无关的容器或数据。\n")
-	b.WriteString("- 已经部署过的主机按升级处理：脚本会保留现有 .env 和令牌。\n\n")
+	b.WriteString("请在下面这台内网 Linux 服务器上安装。安装步骤和配置以安装文档为准。\n\n")
+	if rec.WithSrv {
+		b.WriteString("这次的安装选择：一并安装 desktopd 和 MaClawSrv。按文档第 2 节和第 3 节做。不要创建 .env，不要生成密钥，不要启动 MaClawSrv。\n\n")
+	} else {
+		b.WriteString("这次的安装选择：只安装 desktopd。按文档第 2 节做到健康检查为止。不要安装 MaClawSrv，也不要安装 botnode。\n\n")
+	}
+	fmt.Fprintf(&b, "服务器：\n- 地址：%s\n- 端口：%d\n- 用户：%s\n- 提权：%s\n", rec.Host, rec.Port, rec.User, desktopNodePrivilegeLine(privilege, "部署"))
+	fmt.Fprintf(&b, "- 连接：调用 ssh 工具 action=connect，label=%q（不要传 host/user/password，密码已由客户端托管）。\n\n", label)
+	hub := strings.TrimRight(strings.TrimSpace(rec.HubURL), "/")
+	fmt.Fprintf(&b, "当前登录的 Hub：%s\n", hub)
+	fmt.Fprintf(&b, "安装文档：%s\n", desktopNodeDocURL(hub))
+	b.WriteString("文档里的 HUB_URL 用上面这个 Hub 地址，不要用文档里的示例域名。\n")
+	b.WriteString("不要输出或复述令牌和密钥。\n\n")
 	b.WriteString("完成后最后一行输出 `DESKTOPD_DEPLOY: OK`；失败则输出 `DESKTOPD_DEPLOY: FAILED <原因>`。")
 	return b.String()
+}
+
+func desktopNodeDeployMessage(withSrv bool) string {
+	if withSrv {
+		return "agent 正在部署 desktopd 和 MaClawSrv"
+	}
+	return "agent 正在部署 desktopd"
+}
+
+func (a *App) ensureRemoteSrvAdmin(conn *desktopNodeSSH, rec DesktopNodeRecord, password string, privilege desktopNodePrivilege) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := conn.run(ctx, "test -x "+shellQuote(desktopNodeSrvDir+"/bin/maclawsrv"), privilege, password); err != nil {
+		return "", fmt.Errorf("maclawsrv 正在安装: %s", scrubDesktopNodeDetail(err.Error()))
+	}
+	raw, err := conn.run(ctx, "cat "+shellQuote(desktopNodeSrvDir+"/.env"), privilege, password)
+	if err == nil {
+		if admin := strings.TrimSpace(parseDotEnv(raw)["MACLAW_ADMIN_SECRET"]); admin != "" {
+			return admin, nil
+		}
+	}
+	admin, err := desktopNodeRandomHex(32)
+	if err != nil {
+		return "", err
+	}
+	tokenSecret, err := desktopNodeRandomHex(32)
+	if err != nil {
+		return "", err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(rec.HubURL), "/")
+	if hubURL == "" {
+		hubURL, _, _ = a.getHubCredentials()
+		hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	}
+	if _, err := conn.run(ctx, srvEnvWriteCommand(desktopNodeSrvDir, admin, tokenSecret, hubURL), privilege, password); err != nil {
+		return "", fmt.Errorf("正在写入 srv 配置: %s", scrubDesktopNodeDetail(err.Error()))
+	}
+	return admin, nil
+}
+
+func (a *App) writeDesktopNodeSrvToken(conn *desktopNodeSSH, rec DesktopNodeRecord, password string, privilege desktopNodePrivilege) error {
+	dir := rec.DeployDir
+	if dir == "" {
+		dir = desktopNodeDeployDir
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	raw, err := conn.run(ctx, "cat "+shellQuote(dir+"/state/hub_link.json"), privilege, password)
+	if err != nil {
+		return fmt.Errorf("正在写入 srv 令牌: %s", scrubDesktopNodeDetail(err.Error()))
+	}
+	var creds struct {
+		HubToken string `json:"hub_token"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(raw)), &creds) != nil || strings.TrimSpace(creds.HubToken) == "" {
+		return desktopNodeRegisterError{msg: "Hub 没有签发 srv 令牌"}
+	}
+	if _, err := conn.run(ctx, srvHubTokenWriteCommand(desktopNodeSrvDir, strings.TrimSpace(creds.HubToken)), privilege, password); err != nil {
+		return fmt.Errorf("正在写入 srv 令牌: %s", scrubDesktopNodeDetail(err.Error()))
+	}
+	_, err = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
+		if rec.Token != "" {
+			r.Token = rec.Token
+		}
+		if rec.DesktopdPort > 0 {
+			r.DesktopdPort = rec.DesktopdPort
+		}
+		if rec.NodeID != "" {
+			r.NodeID = rec.NodeID
+		}
+		kind := desktopNodeOutcomeKind(r.Status)
+		r.SrvTokenSet = true
+		r.Status = desktopNodeStatusReady
+		r.Message = ""
+		recordDesktopNodeResult(r, kind, "")
+	})
+	if err != nil {
+		return err
+	}
+	log.Printf("[desktop-node] srv token configured id=%s host=%s", rec.ID, rec.Host)
+	return nil
+}
+
+func desktopNodeRandomHex(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func srvEnvWriteCommand(dir, admin, tokenSecret, hubURL string) string {
+	payload := base64.StdEncoding.EncodeToString([]byte(admin + "\n" + tokenSecret + "\n" + hubURL))
+	return fmt.Sprintf(`python3 -c 'import base64,pathlib,os
+p=pathlib.Path(%q)/".env"
+admin,token_secret,hub=base64.b64decode(%q).decode().split("\n",2)
+p.parent.mkdir(parents=True, exist_ok=True)
+(p.parent/"data").mkdir(exist_ok=True)
+(p.parent/"logs").mkdir(exist_ok=True)
+keys={"MACLAW_ADMIN_SECRET":admin,"MACLAW_TOKEN_SECRET":token_secret,"MACLAW_HTTP_ADDR":"127.0.0.1:18080","MACLAW_DATA_ROOT":str(p.parent/"data"),"MACLAW_HUB_URL":hub,"MACLAW_ALLOW_INSECURE_HTTP":"true"}
+lines=p.read_text().splitlines() if p.exists() else []
+seen=set(); out=[]
+for line in lines:
+    key=line.split("=",1)[0]
+    if key in keys:
+        out.append(key+"="+keys[key]); seen.add(key)
+    else:
+        out.append(line)
+for key,value in keys.items():
+    if key not in seen:
+        out.append(key+"="+value)
+p.write_text("\n".join(out)+"\n")
+os.chmod(p, 0o600)
+'`, dir, payload)
+}
+
+func srvHubTokenWriteCommand(dir, token string) string {
+	encoded := base64.StdEncoding.EncodeToString([]byte(token))
+	return fmt.Sprintf(`python3 -c 'import base64,pathlib,os
+p=pathlib.Path(%q)/".env"
+t=base64.b64decode(%q).decode()
+lines=p.read_text().splitlines() if p.exists() else []
+out=[]; seen=False
+for line in lines:
+    if line.startswith("MACLAW_DESKTOP_API_TOKEN="):
+        out.append("MACLAW_DESKTOP_API_TOKEN="+t); seen=True
+    else:
+        out.append(line)
+if not seen:
+    out.append("MACLAW_DESKTOP_API_TOKEN="+t)
+text="\n".join(out)+"\n"
+p.write_text(text)
+os.chmod(p, 0o600)
+unit=pathlib.Path("/etc/systemd/system/maclawsrv.service")
+unit.write_text("""[Unit]
+Description=MaClawSrv
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%s
+EnvironmentFile=%s/.env
+ExecStart=%s/bin/maclawsrv
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+""")
+' && { systemctl daemon-reload; systemctl enable maclawsrv.service; systemctl restart maclawsrv; }`, dir, encoded, dir, dir, dir)
 }
 
 func newDesktopNodeStamp() string {
 	var buf [16]byte
 	_, _ = rand.Read(buf[:])
 	return hex.EncodeToString(buf[:])
-}
-
-// desktopNodeOldScriptFallback is the second attempt when the cloned
-// install script still requires a public name. The loopback value is only
-// an environment variable for that old script. The cleanup edits two keys
-// and does not rewrite the token line.
-func desktopNodeOldScriptFallback(dir string, port int, imageFrom string) string {
-	return fmt.Sprintf("   若脚本因缺少 DESKTOPD_ADVERTISE_HOST 退出，说明脚本还是旧版。不要填这台机器的 IP 或域名，也不要改 .env。把下面这一整行再运行一次，127.0.0.1 只为通过旧脚本，客户端随后会删掉它：\n"+
-		"   REMOTE_TMP_DIR=/tmp/maclaw_desktopd_deploy DESKTOPD_DEPLOY_DIR=%s DESKTOPD_BIND_ADDR=127.0.0.1:%d DESKTOPD_PORT=%d DESKTOPD_INTRANET=1 DESKTOPD_ADVERTISE_HOST=127.0.0.1 DESKTOPD_IMAGE_FROM=%s sh /tmp/maclaw_desktopd_deploy/remote_deploy.sh\n",
-		dir, port, port, imageFrom)
 }
 
 func desktopNodeDeployPaths(rec DesktopNodeRecord) (dir string, port int) {
@@ -1366,40 +1984,24 @@ func desktopNodeDeployPaths(rec DesktopNodeRecord) (dir string, port int) {
 // a secret: the GUI treats the file as the sign that this upgrade, not the
 // previous process, is the one answering health checks.
 func desktopNodeUpgradePrompt(rec DesktopNodeRecord, label string, privilege desktopNodePrivilege, stamp string) string {
-	var root string
-	switch {
-	case privilege.root:
-		root = "登录用户就是 root，直接执行即可。"
-	case privilege.tempSudoers != "":
-		root = "登录用户已临时获得免密 sudo（升级结束后会自动撤销），需要 root 的命令用 sudo 执行。"
-	default:
-		root = "登录用户可以 sudo：先调用 ssh 的 sudo_prepare（session_id 为 connect 返回的会话），之后需要 root 的命令用 sudo 执行。"
-	}
-	dir, port := desktopNodeDeployPaths(rec)
+	dir, _ := desktopNodeDeployPaths(rec)
 	var b strings.Builder
-	fmt.Fprintf(&b, "请把远程 Linux 主机 %s@%s:%d 上已经在运行的 MaClaw desktopd 升级到最新代码。这是用户在「桌面」设置里对这台内网桌面点的「更新」。\n\n", rec.User, rec.Host, rec.Port)
-	fmt.Fprintf(&b, "连接方式：调用 ssh 工具 action=connect，label=%q（不要传 host/user/password，密码已由客户端托管）。%s\n\n", label, root)
-	b.WriteString("这是升级，不是新安装。必须保留：\n")
-	fmt.Fprintf(&b, "- %s/.env 里的 DESKTOPD_TOKEN 和其他配置\n", dir)
-	fmt.Fprintf(&b, "- %s/state（里面有这台 desktopd 自己保存的 Hub 连接）\n", dir)
-	b.WriteString("- 已有的桌面容器和用户数据。安装脚本会把新的 supervisor 拷进正在运行的桌面，不要 docker rm 它们。\n\n")
-	b.WriteString("步骤：\n")
-	fmt.Fprintf(&b, "1. 先删除旧的完成标记：rm -f %s/.upgrade-stamp\n", dir)
-	b.WriteString("2. 确认系统仍是 x86_64 或 aarch64 Linux，Docker 和 systemd 可用。缺 git、curl、tar 或 Go 1.26+ 就补上（Go 装到 /usr/local/go，下载可用 https://go.dev/dl/ 或 https://golang.google.cn/dl/）。\n")
-	b.WriteString("3. 取最新源码。/opt/maclaw-src 已存在时：git -C /opt/maclaw-src fetch --depth 1 origin，再 git -C /opt/maclaw-src reset --hard FETCH_HEAD。不存在则 git clone --depth 1 https://github.com/RapidAI/MaClaw.git /opt/maclaw-src。\n")
-	b.WriteString("4. 用这份最新源码重新编译并打包（GOPROXY=https://goproxy.cn,direct）：\n")
-	b.WriteString("   rm -rf /tmp/maclaw_desktopd_deploy && mkdir -p /tmp/maclaw_desktopd_deploy/stage/bin /tmp/maclaw_desktopd_deploy/stage/image\n")
-	b.WriteString("   cd /opt/maclaw-src && CGO_ENABLED=0 /usr/local/go/bin/go build -ldflags \"-s -w\" -o /tmp/maclaw_desktopd_deploy/stage/bin/desktopd ./desktopd/cmd/desktopd\n")
-	b.WriteString("   cp desktopd/image/desktop_supervisor.py desktopd/image/Dockerfile desktopd/image/Dockerfile.v2 desktopd/image/close_range_shim.c desktopd/image/fcitx5-profile /tmp/maclaw_desktopd_deploy/stage/image/\n")
-	b.WriteString("   tar -czf /tmp/maclaw_desktopd_deploy/desktopd-deploy.tar.gz -C /tmp/maclaw_desktopd_deploy/stage . && cp desktopd/remote_deploy.sh /tmp/maclaw_desktopd_deploy/\n")
-	fmt.Fprintf(&b, "5. 以 root 运行安装脚本（耗时可能很长，用 exec_background 执行再 wait_task 等待）。DESKTOPD_IMAGE_FROM=build，让桌面镜像也按最新 Dockerfile 重建。这是用户内网里的桌面，保留 DESKTOPD_INTRANET=1，第一次不要设置 DESKTOPD_ADVERTISE_HOST：\n   REMOTE_TMP_DIR=/tmp/maclaw_desktopd_deploy DESKTOPD_DEPLOY_DIR=%s DESKTOPD_BIND_ADDR=127.0.0.1:%d DESKTOPD_PORT=%d DESKTOPD_INTRANET=1 DESKTOPD_IMAGE_FROM=build sh /tmp/maclaw_desktopd_deploy/remote_deploy.sh\n", dir, port, port)
-	b.WriteString(desktopNodeOldScriptFallback(dir, port, "build"))
-	fmt.Fprintf(&b, "6. 确认 systemctl is-active maclaw-desktopd，并执行 sh -c '. %s/.env; curl -fsS -H \"Authorization: Bearer $DESKTOPD_TOKEN\" http://127.0.0.1:%d/v1/health'（不要回显令牌）。\n", dir, port)
-	fmt.Fprintf(&b, "7. 健康检查通过后才写入完成标记（内容必须正好是这一行）：printf '%%s\\n' %s > %s/.upgrade-stamp && chmod 600 %s/.upgrade-stamp\n\n", stamp, dir, dir)
-	b.WriteString("约束：\n")
-	b.WriteString("- 不要输出、复述或保存 .env 内容和 DESKTOPD_TOKEN；不要自己去 Hub 注册或注销，客户端会确认原连接恢复。\n")
-	b.WriteString("- 不要修改 SSH 配置、防火墙对外规则，也不要删除与本次升级无关的容器、镜像或数据。\n")
-	b.WriteString("- 不要在健康检查通过之前写 .upgrade-stamp。\n\n")
+	fmt.Fprintf(&b, "请把下面这台内网 Linux 服务器上已经在运行的 MaClaw desktopd 升级到文档里的最新代码。这是更新，不是新安装。\n\n")
+	fmt.Fprintf(&b, "服务器：\n- 地址：%s\n- 端口：%d\n- 用户：%s\n- 提权：%s\n", rec.Host, rec.Port, rec.User, desktopNodePrivilegeLine(privilege, "升级"))
+	fmt.Fprintf(&b, "- 连接：调用 ssh 工具 action=connect，label=%q（不要传 host/user/password，密码已由客户端托管）。\n\n", label)
+	hub := strings.TrimRight(strings.TrimSpace(rec.HubURL), "/")
+	fmt.Fprintf(&b, "当前登录的 Hub：%s\n", hub)
+	fmt.Fprintf(&b, "安装文档：%s\n", desktopNodeDocURL(hub))
+	b.WriteString("文档里的 HUB_URL 用上面这个 Hub 地址，不要用文档里的示例域名。更新步骤按文档第 4 节。\n\n")
+	if rec.WithSrv {
+		b.WriteString("这次一并更新 desktopd 和 MaClawSrv。两边都换成最新二进制。不要改 .env，不要重新生成密钥。\n")
+	} else {
+		b.WriteString("这次只更新 desktopd。不要安装 MaClawSrv，不要安装 botnode。不要改 .env。\n")
+	}
+	b.WriteString("必须保留现有 DESKTOPD_TOKEN、环境文件、state 里的 Hub 连接，以及已有桌面容器和用户数据。不要重新注册，不要删除无关容器。\n")
+	fmt.Fprintf(&b, "开始前删除旧标记：rm -f %s/.upgrade-stamp\n", dir)
+	fmt.Fprintf(&b, "desktopd 健康之后才写入完成标记，内容必须正好是这一行：printf '%%s\\n' %s > %s/.upgrade-stamp && chmod 600 %s/.upgrade-stamp\n", stamp, dir, dir)
+	b.WriteString("不要输出或复述 DESKTOPD_TOKEN 和其他密钥。\n\n")
 	b.WriteString("完成后最后一行输出 `DESKTOPD_DEPLOY: OK`；失败则输出 `DESKTOPD_DEPLOY: FAILED <原因>`。")
 	return b.String()
 }

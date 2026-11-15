@@ -46,6 +46,7 @@ type darwinFloatingWindow struct {
 	petStateDeadline     time.Time
 	petMotionEnabled     bool
 	petMotionSound       bool
+	petPositionLocked    bool
 	petQuietMode         bool
 	petReducedMotion     bool
 	petInteraction       string
@@ -150,6 +151,7 @@ func (w *darwinFloatingWindow) loadPetConfigLocked() {
 	w.petVariant = petpack.ResolveVariantForRuntime(cfg.PetVariant)
 	w.petMotionEnabled = isPetMotionEnabled(cfg) && !cfg.PetReducedMotion
 	w.petMotionSound = petMotionSoundEnabled(cfg)
+	w.petPositionLocked = cfg.PetPositionLocked
 	w.petQuietMode = cfg.PetQuietMode
 	w.petReducedMotion = cfg.PetReducedMotion
 	if cfg.PetInteractionMode != "" {
@@ -182,14 +184,15 @@ func (w *darwinFloatingWindow) pushAnimatorLocked() {
 		state = string(petpack.StateIdle)
 	}
 	w.anim.Configure(petAnimConfig{
-		Skin:          w.petSkin,
-		Variant:       petAppearanceVariant(w.petVariant, w.petRearingVariant),
-		State:         state,
-		PixelSize:     w.pixelSizeLocked(),
-		WindowSize:    w.size,
-		MotionEnabled: w.petMotionEnabled && !w.petReducedMotion,
-		Quiet:         w.petQuietMode,
-		Reduced:       w.petReducedMotion,
+		Skin:           w.petSkin,
+		Variant:        petAppearanceVariant(w.petVariant, w.petRearingVariant),
+		State:          state,
+		PixelSize:      w.pixelSizeLocked(),
+		WindowSize:     w.size,
+		MotionEnabled:  w.petMotionEnabled && !w.petReducedMotion,
+		Quiet:          w.petQuietMode,
+		Reduced:        w.petReducedMotion,
+		PositionLocked: w.petPositionLocked,
 	})
 }
 
@@ -477,6 +480,13 @@ func (w *darwinFloatingWindow) IsCreated() bool {
 func (w *darwinFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string) {
 }
 
+func (w *darwinFloatingWindow) UpdatePositionLock(locked bool) {
+	w.mu.Lock()
+	w.petPositionLocked = locked
+	w.pushAnimatorLocked()
+	w.mu.Unlock()
+}
+
 func (w *darwinFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
 	w.mu.Lock()
 	w.petMotionEnabled = motionEnabled && !reducedMotion
@@ -739,6 +749,21 @@ func maclawDarwinPetDragged(x, y C.int) {
 	}()
 }
 
+//export maclawDarwinPetPositionLocked
+func maclawDarwinPetPositionLocked() C.int {
+	w := currentDarwinFloating()
+	if w == nil {
+		return 0
+	}
+	w.mu.Lock()
+	locked := w.petPositionLocked
+	w.mu.Unlock()
+	if locked {
+		return 1
+	}
+	return 0
+}
+
 //export maclawDarwinPetMenu
 func maclawDarwinPetMenu(action C.int) {
 	w := currentDarwinFloating()
@@ -756,5 +781,14 @@ func maclawDarwinPetMenu(action C.int) {
 		go w.app.showMainWindowFromPet()
 	case 5:
 		go w.app.openPetConversationFromMenu()
+	case 6:
+		// Flip on this thread before any config lock, and push the animator
+		// now so it does not keep walking until the next paint.
+		w.mu.Lock()
+		next := !w.petPositionLocked
+		w.petPositionLocked = next
+		w.pushAnimatorLocked()
+		w.mu.Unlock()
+		w.app.persistPetPositionLockFromMenu(next)
 	}
 }

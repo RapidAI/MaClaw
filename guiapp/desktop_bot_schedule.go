@@ -565,6 +565,33 @@ func (a *App) noteDesktopBotBusy(botID, owner string, busy bool) {
 	a.emitEvent("desktop-bot-busy", string(raw))
 }
 
+// dropLocalDesktopBotScheduleRows removes bot timers from this computer's
+// schedule. A watch-job stays, including a paused historical patrol. The
+// server clock is the one that fires a bot timer.
+func dropLocalDesktopBotScheduleRows(mgr *scheduler.Manager) int {
+	if mgr == nil {
+		return 0
+	}
+	var ids []string
+	for _, task := range mgr.List() {
+		if strings.TrimSpace(task.DesktopBotID) == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(task.Name), "watch-job:") {
+			continue
+		}
+		ids = append(ids, task.ID)
+	}
+	n := 0
+	for _, id := range ids {
+		err := mgr.Delete(id)
+		if err == nil || strings.Contains(err.Error(), "cancellation requested") {
+			n++
+		}
+	}
+	return n
+}
+
 func cancelDesktopBotSchedules(mgr *scheduler.Manager, owner, botID, name string) int {
 	if mgr == nil {
 		return 0

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 )
@@ -948,7 +949,7 @@ func (c *codingSubAgentCallbacks) executeLedgerReadOnlySpawn(specs []codingSpawn
 	for i, handle := range handles {
 		spec := specs[i]
 		child := parent.newReadOnlyNestedCodingAgent(spec, c)
-		go runAdmittedLocalReadOnlyChild(store, parent.runtimeAttempt.TaskID, handle, policy, child, parent.onProgress)
+		go runAdmittedLocalReadOnlyChild(store, parent.runtimeAttempt.TaskID, handle, policy, child, parent.onProgress, parent.taskPermissionOwnerID(), trustedLoopDeliveryTarget(parent.loopCtx))
 	}
 	return codingToolExecutionResult{Text: formatAdmittedReadOnlyChildHandles(handles), Outcome: codingToolOutcomeSuccess}
 }
@@ -958,7 +959,7 @@ func (c *codingSubAgentCallbacks) executeLedgerReadOnlySpawn(specs []codingSpawn
 // execution to that stack would turn normal handoff into an accidental cancel.
 // Explicit cancellation/recovery remains ledger-driven and starts a new
 // Attempt rather than replaying this child.
-func runAdmittedLocalReadOnlyChild(store codingruntime.Store, parentTaskID string, handle codingruntime.ChildTaskHandle, policy codingruntime.PolicySnapshot, child *CodingSubAgent, onProgress func(string)) {
+func runAdmittedLocalReadOnlyChild(store codingruntime.Store, parentTaskID string, handle codingruntime.ChildTaskHandle, policy codingruntime.PolicySnapshot, child *CodingSubAgent, onProgress func(string), resumeOwnerID string, resumeTarget *agent.DeliveryTarget) {
 	if store == nil || child == nil {
 		return
 	}
@@ -970,18 +971,20 @@ func runAdmittedLocalReadOnlyChild(store codingruntime.Store, parentTaskID strin
 	service := codingruntime.ChildTaskService{Store: store}
 	runner := codingruntime.Runner{Store: store, LeaseOwner: "gui:child:" + handle.TaskID, LeaseDuration: 15 * time.Minute}
 	outcome := <-service.StartReadOnlyChild(ctx, runner, handle.TaskID, policy, child)
-	if onProgress == nil {
-		return
+	if onProgress != nil {
+		if outcome.Err != nil {
+			emitCodingSubAgentProgress(onProgress, fmt.Sprintf("read-only child %s failed: %s", handle.TaskID, compactSubAgentErrorSummary(outcome.Err.Error())))
+		} else {
+			status := codingruntime.TaskFailed
+			if outcome.Attempt != nil {
+				status = outcome.Attempt.Status
+			}
+			emitCodingSubAgentProgress(onProgress, fmt.Sprintf("read-only child %s completed: %s", handle.TaskID, status))
+		}
 	}
-	if outcome.Err != nil {
-		emitCodingSubAgentProgress(onProgress, fmt.Sprintf("read-only child %s failed: %s", handle.TaskID, compactSubAgentErrorSummary(outcome.Err.Error())))
-		return
-	}
-	status := codingruntime.TaskFailed
-	if outcome.Attempt != nil {
-		status = outcome.Attempt.Status
-	}
-	emitCodingSubAgentProgress(onProgress, fmt.Sprintf("read-only child %s completed: %s", handle.TaskID, status))
+	// Once this child's bounded result is durable, the last-finishing sibling
+	// continues the parent's main task automatically — no manual review action.
+	autoResumeCodingChildReviewIfReady(child.handler, resumeOwnerID, parentTaskID, resumeTarget)
 }
 
 func formatAdmittedReadOnlyChildHandles(handles []codingruntime.ChildTaskHandle) string {

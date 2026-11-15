@@ -462,6 +462,14 @@ func (s *Service) resumeOne(ctx context.Context, p Principal, inst Instance, run
 	_ = inst
 	s.sayRestart(p, cp.InstanceID, cp.SessionID, restartNoticeContinue)
 	meta := map[string]string{"restart_resume": "1", "restart_from": run.ID}
+	// A timer firing is its own recovery task. Dropping bot_origin here made
+	// the continuation look like the long-lived chat, so the 90-minute span
+	// of the first weather PDF refused the resumed one.
+	for _, key := range []string{"bot_id", "bot_phase", "bot_origin", "computer_helper", "bot_task", "schedule_task"} {
+		if v := strings.TrimSpace(run.Metadata[key]); v != "" {
+			meta[key] = v
+		}
+	}
 	if text := clipTaskRequest(restartPersonAsk(s, run)); text != "" {
 		meta["task_request"] = text
 	}
@@ -474,8 +482,24 @@ func (s *Service) resumeOne(ctx context.Context, p Principal, inst Instance, run
 	if s.ResumeExecutionHooks != nil {
 		in.PrepareExecution, in.FinishExecution = s.ResumeExecutionHooks(p, instLive, restartPersonAsk(s, run))
 	}
+	var release func()
+	if s.ResumeHold != nil {
+		release = s.ResumeHold(run)
+	}
+	if release != nil {
+		prev := in.FinishExecution
+		in.FinishExecution = func(ctx context.Context, finished *Run, msg *Message, err error) {
+			if prev != nil {
+				prev(ctx, finished, msg, err)
+			}
+			release()
+		}
+	}
 	_, err = s.PostMessageAsync(ctx, p, cp.InstanceID, cp.SessionID, in)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		log.Printf("[agentservice] resume run %s: %v", run.ID, err)
 		s.endInterrupted(p, run, restartNoticeStopped)
 		return false

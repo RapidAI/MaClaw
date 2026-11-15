@@ -85,4 +85,10 @@ func TestDesktopBotLimitPatchRequiresTheField(t *testing.T) {
 	if err != nil || limit == nil || *limit != 2 {
 		t.Fatalf("limit = %v %v", limit, err)
 	}
+	if _, err = desktopBotLimitPatch([]byte(`{"desktop_bot_limit":1.5}`)); err == nil || err.Error() != "desktop_bot_limit must be an integer" {
+		t.Fatalf("fraction = %v", err)
+	}
+	if _, err = desktopBotLimitPatch([]byte(`{"desktop_bot_limit":-1}`)); err == nil || err.Error() != "desktop_bot_limit must be zero or greater" {
+		t.Fatalf("negative = %v", err)
+	}
 }

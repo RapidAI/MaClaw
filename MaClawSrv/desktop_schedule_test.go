@@ -242,10 +242,10 @@ func TestDesktopBotScheduleMessageIsOneOccurrence(t *testing.T) {
 	if first.ClientSessionKey != "schedule:sched-1" {
 		t.Fatalf("session = %q", first.ClientSessionKey)
 	}
-	if first.Metadata["bot_id"] != "bot_1" || first.Metadata["bot_phase"] != "execute" || first.Metadata["computer_helper"] != "1" || first.Metadata["bot_origin"] != "schedule" {
+	if first.Metadata["bot_id"] != "bot_1" || first.Metadata["bot_phase"] != "execute" || first.Metadata["computer_helper"] != "1" || first.Metadata["bot_origin"] != "schedule" || first.Metadata["schedule_task"] != "sched-1" {
 		t.Fatalf("meta = %#v", first.Metadata)
 	}
-	if !strings.HasPrefix(first.Content, desktopbot.RoutineQuietPrompt) || !strings.Contains(first.Content, "打开首页") || strings.Contains(first.Content, "请直接执行以下操作并返回结果") {
+	if !strings.HasPrefix(first.Content, desktopbot.RoutineQuietPrompt) || !strings.Contains(first.Content, "打开首页") || strings.Contains(first.Content, "请直接执行以下操作并返回结果") || !strings.Contains(first.Content, "上一轮留下的文件不能再发一次") {
 		t.Fatalf("content = %q", first.Content)
 	}
 	due = due.Add(24 * time.Hour)

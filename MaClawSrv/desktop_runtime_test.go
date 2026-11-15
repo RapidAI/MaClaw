@@ -56,6 +56,36 @@ func TestDesktopModuleAdvertisesToolWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestNoneDesktopTurnOmitsDesktopAndLocalComputer(t *testing.T) {
+	t.Setenv(desktopCDPEnv, "http://127.0.0.1:9222/")
+	none := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{
+		Instance: agentservice.Instance{Metadata: map[string]string{"hub_bot": "1", "hub_bot_desktop": "none"}},
+		Message:  agentservice.Message{Metadata: map[string]string{"bot_desktop": "none"}},
+	}}
+	desktopTools, err := desktopRuntimeModule{}.Tools(context.Background(), none)
+	if err != nil || len(desktopTools) != 0 {
+		t.Fatalf("desktop tools=%v err=%v", desktopTools, err)
+	}
+	previous := localRelayTestEnabled
+	localRelayTestEnabled = true
+	t.Cleanup(func() { localRelayTestEnabled = previous })
+	relay, err := localRelayModule{}.Tools(context.Background(), none)
+	if err != nil || len(relay) != 0 {
+		t.Fatalf("relay tools=%v err=%v", relay, err)
+	}
+	normal := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{
+		Instance: agentservice.Instance{Metadata: map[string]string{"hub_bot": "1"}},
+	}}
+	got, err := desktopRuntimeModule{}.Tools(context.Background(), normal)
+	if err != nil || len(got) != 1 || got[0].Name != desktopToolName {
+		t.Fatalf("ordinary turn tools=%v err=%v", got, err)
+	}
+	relay, err = localRelayModule{}.Tools(context.Background(), normal)
+	if err != nil || len(relay) != 1 || relay[0].Name != localRelayToolName {
+		t.Fatalf("ordinary relay tools=%v err=%v", relay, err)
+	}
+}
+
 func TestDesktopPromptContinuesOnTheLoggedInSite(t *testing.T) {
 	t.Setenv(desktopCDPEnv, "http://127.0.0.1:9222/")
 	plain, err := desktopRuntimeModule{}.ContributePrompt(context.Background(), agentruntime.TurnRequest{})

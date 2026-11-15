@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 )
 
@@ -108,6 +109,23 @@ func (s *Service) MarkDesktopOver(ctx context.Context, tenantID string, bots []B
 		out[i].DesktopOver = flag
 	}
 	return out
+}
+
+const desktopOverWarning = "这个用户名下要电脑的 bot 已经超过额度。这次设置仍然生效。"
+
+// DesktopOverWarning is the sentence an admin response includes when saving
+// a desktop mode leaves the owner past the grant. A none bot and an owner
+// inside the grant return an empty string. The save itself is not rejected.
+func (s *Service) DesktopOverWarning(ctx context.Context, tenantID, userID, mode string) string {
+	mode, err := NormalizeDesktopMode(mode)
+	if s == nil || err != nil || mode == desktop.BotDesktopModeNone || strings.TrimSpace(userID) == "" {
+		return ""
+	}
+	quota, err := s.DesktopQuotaForUser(ctx, tenantID, userID)
+	if err != nil || quota.Limit == nil || quota.Used <= *quota.Limit {
+		return ""
+	}
+	return desktopOverWarning
 }
 
 // DesktopQuotaForUser is the quota the create-bot UI shows.

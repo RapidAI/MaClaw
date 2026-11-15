@@ -92,6 +92,16 @@ type stickyCodingWorkbenchMemory struct {
 	PendingPlanUserText string `json:"pending_plan_user_text,omitempty"`
 	// ApprovedPlanJSON is a one-shot plan ready to execute after /plan approve.
 	ApprovedPlanJSON string `json:"approved_plan_json,omitempty"`
+	// ApprovedPlanValidators are the labeled validation commands frozen into
+	// the execution contract at /plan approve. They outlive the first round so
+	// a plan that continues across session-round re-arms is still verified by
+	// the host at its terminal round, and they are dropped if the plan is
+	// redirected or abandoned before then.
+	ApprovedPlanValidators []string `json:"approved_plan_validators,omitempty"`
+	// ApprovedPlanValidatorDir is the write scope frozen at approval. It is
+	// stored with the commands because ProjectPath may be re-rooted by a later
+	// turn; validators must still run in the directory the user approved.
+	ApprovedPlanValidatorDir string `json:"approved_plan_validator_dir,omitempty"`
 	// SkipNextPlan forces the next resolve to single-task (from /plan skip).
 	SkipNextPlan bool `json:"skip_next_plan,omitempty"`
 	// SkipPlanText is the one request that skip is replaying. A later, different

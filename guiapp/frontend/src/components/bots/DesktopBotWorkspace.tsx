@@ -69,6 +69,7 @@ import {
     ArmDesktopBotCrossRun,
     ClaimDesktopBotCrossStart,
     ListDesktopBots,
+    ListDesktopNodes,
     ListDesktopBotSchedules,
     ListDesktopBotTasks,
     ListDesktopBotActiveRuns,
@@ -94,13 +95,14 @@ import {
     StageDesktopBotSecret,
     SendDesktopBotTaskTo,
     ShowItemInFolder,
+    SetDesktopBotControl,
     WatchDesktopBot,
     WakeDesktopBot,
 } from '../../../wailsjs/go/main/App';
 import { DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, firstAckCommandKeys, landFirstAck, releaseSettledAckCommands, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
-import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
+import { desktopModeOf, effectiveScreenPick, mineScreenURL, sameDesktopScreen, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
 import { wakeFailureReason } from './desktopWake';
 import {
@@ -333,6 +335,15 @@ function roleSettingFrom(raw: unknown): BotLLMRoleSetting {
         protocol: text('protocol', 'Protocol'),
         wireAPI: text('wire_api', 'WireAPI'),
     };
+}
+
+function localRolesFromChoice(choice: { local_roles?: unknown; LocalRoles?: unknown } | null | undefined): BotLLMRolesSetting | null {
+    return rolesFromBotLLM({ roles: choice?.local_roles ?? choice?.LocalRoles });
+}
+
+function installedDesktopNode(node: { node_id?: string; registered?: boolean; status?: string } | null | undefined): boolean {
+    if (!node) return false;
+    return !!(node.node_id || node.registered || node.status === 'ready' || node.status === 'imported');
 }
 
 function rolesFromBotLLM(choice: { roles?: unknown; Roles?: unknown } | null | undefined): BotLLMRolesSetting | null {
@@ -954,6 +965,7 @@ function copy(lang: string) {
             stopBot: 'Stop',
             stopWork: 'Stop',
             takeoverActive: 'You have the desktop. Release it to hand the keyboard back.',
+            controlHeldElsewhere: 'Another device is using this screen. This one can only watch.',
             myDesktop: 'My desktop',
             sharedScreen: 'Shared',
             screenSwitch: 'Desktops',
@@ -1091,9 +1103,9 @@ function copy(lang: string) {
             llmTitle: 'Model for your bots',
             llmSharedHint: 'Every bot on this account shares these models. A change here applies to all of them.',
             llmUseDefault: 'Default',
-            llmDefaultHint: 'The service decides every role — your Hub route, or the provider an administrator picked.',
+            llmDefaultHint: 'Cloud bots only. The service decides every role — your Hub route, or the provider an administrator picked.',
             llmUseCustom: 'Custom',
-            llmCustomHint: 'Choose a provider and model for each role on this computer.',
+            llmCustomHint: 'Cloud bots only. Choose a provider and model for each role on this computer.',
             llmProviderLabel: 'Provider',
             llmModelLabel: 'Model',
             llmModelLoading: 'Loading the model list…',
@@ -1201,6 +1213,7 @@ function copy(lang: string) {
             stopBot: '停止',
             stopWork: '停下',
             takeoverActive: '你已接管桌面。完成後退出接管，把鍵盤交還。',
+            controlHeldElsewhere: '另一台裝置正在操作這塊螢幕，這裡只能看。',
             myDesktop: '我的桌面',
             sharedScreen: '共享',
             screenSwitch: '桌面',
@@ -1338,9 +1351,9 @@ function copy(lang: string) {
             llmTitle: 'Bot 用的模型',
             llmSharedHint: '這個帳號底下的所有 Bot 共用這裡的模型，改了一起生效。',
             llmUseDefault: '預設',
-            llmDefaultHint: '交回服務自己決定：前台、後台、電腦操作和定位都跟著 Hub 或管理員的預設。',
+            llmDefaultHint: '只影響雲端 bot。前台、後台、電腦操作和定位都跟著 Hub 或管理員的預設。',
             llmUseCustom: '自訂',
-            llmCustomHint: '在這台電腦上為每個角色指定服務商和模型。',
+            llmCustomHint: '只影響雲端 bot。在這台電腦上為每個角色指定服務商和模型。',
             llmProviderLabel: '服務商',
             llmModelLabel: '模型',
             llmModelLoading: '正在取得模型清單…',
@@ -1445,7 +1458,8 @@ function copy(lang: string) {
         botDrivingNote: 'Bot 正在操作桌面，需要的话可以先停止它。',
         stopBot: '停止',
         stopWork: '停下',
-        takeoverActive: '你已接管桌面。完成后退出接管，把键盘交回。',
+            takeoverActive: '你已接管桌面。完成后退出接管，把键盘交回。',
+            controlHeldElsewhere: '另一台设备正在操作这块屏幕，这里只能看。',
         myDesktop: '我的桌面',
         sharedScreen: '共享',
         screenSwitch: '桌面',
@@ -1583,9 +1597,9 @@ function copy(lang: string) {
         llmTitle: 'Bot 用的模型',
         llmSharedHint: '这个账号下的所有 Bot 共用这里的模型，改了一起生效。',
         llmUseDefault: '默认',
-        llmDefaultHint: '交回服务自己决定：前台、后台、电脑操作和定位都跟着 Hub 或管理员的默认。',
+        llmDefaultHint: '只影响云端 bot。前台、后台、电脑操作和定位都跟着 Hub 或管理员的默认。',
         llmUseCustom: '自定义',
-        llmCustomHint: '在这台电脑上为每个角色指定服务商和模型。',
+        llmCustomHint: '只影响云端 bot。在这台电脑上为每个角色指定服务商和模型。',
         llmProviderLabel: '服务商',
         llmModelLabel: '模型',
         llmModelLoading: '正在获取模型列表…',
@@ -2463,6 +2477,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const creditSpentRef = useRef<Set<string>>(new Set());
     const [llmProviders, setLlmProviders] = useState<BotLLMProviderOption[]>([]);
     const [llmMode, setLlmMode] = useState<'default' | 'custom'>('default');
+    const [llmLocalDesktop, setLlmLocalDesktop] = useState(false);
+    const [llmLocalRoles, setLlmLocalRoles] = useState<BotLLMRolesSetting | null>(null);
     const [llmName, setLlmName] = useState('');
     const [llmModel, setLlmModel] = useState('');
     const [llmRoles, setLlmRoles] = useState<BotLLMRolesSetting | null>(null);
@@ -2555,6 +2571,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A handoff the person accepted from the chat. The bot asked them to take
     // the computer, so a still-open run must not take the keyboard back.
     const [takeoverHoldByBot, setTakeoverHoldByBot] = useState<Record<string, boolean>>({});
+    // Hub refused this machine the keyboard because another end of the same
+    // account already holds that screen.
+    const [controlBlockedByBot, setControlBlockedByBot] = useState<Record<string, boolean>>({});
+    const [controlGrantedByBot, setControlGrantedByBot] = useState<Record<string, boolean>>({});
+    const controlHeldRef = useRef<Record<string, boolean>>({});
+    const controlBotRef = useRef('');
+    const controlEpochRef = useRef(0);
+    const controlWantBotRef = useRef('');
+    // Bot id of the claim Hub recorded. A release must use this id: releasing
+    // the other shared bot is ignored, and the screen stays locked until the
+    // claim expires.
+    const controlLeaseBotRef = useRef('');
+    const screenByBotRef = useRef(screenByBot);
+    screenByBotRef.current = screenByBot;
     // A schedule uses that bot's own desktop and has no chat bubble. A positive
     // count means that bot's occurrence is still inside relay.
     const [desktopBusyByBot, setDesktopBusyByBot] = useState<Record<string, number>>({});
@@ -3032,12 +3062,95 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // the shared desktop for a shared bot, its own display for an isolated
     // one. They must not unlock a different display that happens to be up.
     const liveOnShownScreen = !!selected && (screenByBot[selected.id]?.mode === 'isolated' ? screenPickNow === selected.id : shownSharedScreen);
-    const stageInteractive = showDesktop && (otherIsolated
+    const wantsInput = showDesktop && (otherIsolated
         ? otherHandoff
         : takeoverHeld || (!agentOperating && (((liveControl || liveReason !== '') && liveOnShownScreen) || takeover)));
+    const controlBlocked = !!selected && !!controlBlockedByBot[selected.id];
+    const stageInteractive = wantsInput && !!selected && controlGrantedByBot[selected.id] === true;
     // Watch and control are different noVNC documents. Reusing the iframe leaves
     // the first page's viewOnly in place, so takeover looks active and clicks do nothing.
     const frameMode = stageInteractive ? 'live' : 'watch';
+    useEffect(() => {
+        const botId = selectedId || '';
+        const epoch = controlEpochRef.current + 1;
+        controlEpochRef.current = epoch;
+        const previous = controlBotRef.current;
+        const carry = wantsInput && !!previous && !!botId && previous !== botId && !!controlHeldRef.current[previous] && sameDesktopScreen(previous, botId, screenByBotRef.current);
+        if (carry) {
+            controlHeldRef.current[botId] = true;
+            controlHeldRef.current[previous] = false;
+            setControlGrantedByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+        } else if (previous && previous !== botId && controlHeldRef.current[previous]) {
+            controlHeldRef.current[previous] = false;
+            if (controlLeaseBotRef.current === previous) controlLeaseBotRef.current = '';
+            void SetDesktopBotControl(previous, false);
+        }
+        controlBotRef.current = botId;
+        if (!botId || !wantsInput) {
+            controlWantBotRef.current = '';
+            if (botId && controlHeldRef.current[botId]) {
+                controlHeldRef.current[botId] = false;
+                if (controlLeaseBotRef.current === botId) controlLeaseBotRef.current = '';
+                void SetDesktopBotControl(botId, false);
+            }
+            if (botId) {
+                setControlGrantedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+                setControlBlockedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+            }
+            return;
+        }
+        controlWantBotRef.current = botId;
+        const claim = async () => {
+            let granted = false;
+            let answered = false;
+            try {
+                const out = await SetDesktopBotControl(botId, true);
+                answered = true;
+                granted = out?.input_granted === true;
+            } catch {
+                answered = false;
+            }
+            if (controlEpochRef.current !== epoch) {
+                // This claim lost the race with a newer one. Releasing it is
+                // safe only when the screen we still want is a different one.
+                // Another shared bot is the same screen; releasing this bot
+                // would take the keyboard away from it.
+                const want = controlWantBotRef.current;
+                if (granted && want !== botId && !sameDesktopScreen(botId, want, screenByBotRef.current)) {
+                    void SetDesktopBotControl(botId, false);
+                }
+                return;
+            }
+            if (!answered) {
+                if (controlHeldRef.current[botId]) return;
+                granted = false;
+            }
+            controlHeldRef.current[botId] = granted;
+            if (granted) controlLeaseBotRef.current = botId;
+            else if (controlLeaseBotRef.current === botId || controlLeaseBotRef.current === previous) controlLeaseBotRef.current = '';
+            setControlGrantedByBot(prev => prev[botId] === granted ? prev : { ...prev, [botId]: granted });
+            setControlBlockedByBot(prev => {
+                const blocked = answered && !granted;
+                if (!!prev[botId] === blocked) return prev;
+                return { ...prev, [botId]: blocked };
+            });
+        };
+        void claim();
+        const timer = window.setInterval(() => { void claim(); }, 8000);
+        return () => window.clearInterval(timer);
+    }, [selectedId, wantsInput]);
+    useEffect(() => () => {
+        const lease = controlLeaseBotRef.current;
+        const shown = controlWantBotRef.current || controlBotRef.current;
+        controlWantBotRef.current = '';
+        controlLeaseBotRef.current = '';
+        controlEpochRef.current += 1;
+        const botId = lease || shown;
+        if (!botId || (!lease && !controlHeldRef.current[botId])) return;
+        if (lease) controlHeldRef.current[lease] = false;
+        if (shown) controlHeldRef.current[shown] = false;
+        void SetDesktopBotControl(botId, false);
+    }, []);
     const statusPhase = selected ? busyPhase(selected.id, messages) : '';
     const statusText = statusPhase === 'execute' ? text.workingTag : statusPhase === 'plan' ? text.arrangingTag : text.idleTag;
 
@@ -3392,7 +3505,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending = true;
             try {
                 const requestedAt = Date.now();
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; desktop_mode?: string } | undefined;
+                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; input_granted?: boolean; attention_reason?: string; desktop_mode?: string } | undefined;
                 if (!alive) return;
                 const url = await desktopPictureURL(view);
                 if (!url) {
@@ -3463,6 +3576,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     showComputer(botId);
                 }
                 syncLive(botId, { url, userControl, attentionReason: reason });
+                if (typeof view?.input_granted === 'boolean' && controlHeldRef.current[botId] && view.input_granted === false) {
+                    controlHeldRef.current[botId] = false;
+                    if (controlLeaseBotRef.current === botId) controlLeaseBotRef.current = '';
+                    setControlGrantedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+                }
                 if (view?.desktop_mode === 'isolated' || view?.desktop_mode === 'shared') {
                     const mode = desktopModeOf(view.desktop_mode);
                     setScreenByBot(prev => {
@@ -4698,9 +4816,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setDesktopOpen(false);
         setLlmNotice('');
         try {
-            const [current, rawProviders] = await Promise.all([
+            const [current, rawProviders, nodes] = await Promise.all([
                 SyncDesktopBotLLM(),
                 GetMaclawLLMProviders() as Promise<{ providers?: DesktopProviderWire[]; Providers?: DesktopProviderWire[] } | null>,
+                ListDesktopNodes().catch(() => null),
             ]);
             if (gen !== loadGen.current) return;
             const entries = rawProviders?.providers ?? rawProviders?.Providers ?? [];
@@ -4715,6 +4834,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setLlmName(String(current?.name ?? '').trim());
             setLlmModel(String(current?.model ?? '').trim());
             setLlmRoles(rolesFromBotLLM(current));
+            setLlmLocalRoles(localRolesFromChoice(current));
+            if (nodes) {
+                const listed = nodes.nodes ?? [];
+                setLlmLocalDesktop(Array.isArray(listed) && listed.some(installedDesktopNode));
+            }
             setLlmOpen(true);
         } catch (error) {
             if (gen !== loadGen.current) return;
@@ -4870,10 +4994,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const gen = loadGen.current;
         setLlmSaving(true);
         setLlmNotice('');
-        let saved: { mode?: string; name?: string; model?: string; warning?: string; roles?: BotLLMRolesSetting | null } | undefined;
+        let saved: { mode?: string; name?: string; model?: string; warning?: string; roles?: BotLLMRolesSetting | null; local_roles?: BotLLMRolesSetting | null } | undefined;
         try {
+            const localRoles = payload.localRoles;
             if (payload.mode === 'default') {
-                saved = await SaveDesktopBotLLM({ mode: 'default' });
+                saved = await SaveDesktopBotLLM({ mode: 'default', local_roles: localRoles });
             } else if (payload.roles) {
                 saved = await SaveDesktopBotLLM({
                     mode: 'custom',
@@ -4884,6 +5009,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     protocol: payload.protocol,
                     wire_api: payload.wire_api,
                     roles: payload.roles,
+                    local_roles: localRoles,
                 });
             }
         } catch (error) {
@@ -4914,6 +5040,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setLlmModel('');
             setLlmRoles(null);
         }
+        setLlmLocalRoles(localRolesFromChoice(saved));
         if (saved.warning) {
             setLlmNotice(saved.warning);
             return;
@@ -7520,6 +7647,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <div ref={stageRef} className={'desktop-bot-stage' + (stageInteractive ? ' is-user' : ' is-bot') + ((takeover || screenExpanded) ? ' is-fullscreen' : '')} data-testid="desktop-bot-stage">
                                     <div className="desktop-bot-stage__bar">
                                         <p title={stageStatusText}>{stageStatusText}</p>
+                                        {controlBlocked ? <p className="desktop-bot-stage__held" data-testid="desktop-bot-control-held" role="status">{text.controlHeldElsewhere}</p> : null}
                                         {takeover || showHandBack ? (
                                             <div className="desktop-bot-stage__bar-actions">
                                                 {showHandBack ? (
@@ -7749,6 +7877,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     initialName={llmName}
                     initialModel={llmModel}
                     initialRoles={llmRoles}
+                    localDesktop={llmLocalDesktop}
+                    initialLocalRoles={llmLocalRoles}
                     needsRoleSave={llmNeedsRoleSave}
                     notice={llmNotice}
                     saving={llmSaving}

@@ -455,6 +455,8 @@ func (h *IMMessageHandler) restoreApprovedCodingPlanAsPending(userID string) (co
 		mem.PendingPlanMarkdown = restored.Markdown
 		mem.PendingPlanUserText = restored.UserText
 		mem.ApprovedPlanJSON = ""
+		mem.ApprovedPlanValidators = nil
+		mem.ApprovedPlanValidatorDir = ""
 		if restored.Markdown != "" {
 			mem.ExecutionPlan = truncateRunesForSubAgent(restored.Markdown, codingWorkbenchExecutionPlanPersistRunes)
 		}

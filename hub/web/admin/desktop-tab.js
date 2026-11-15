@@ -294,7 +294,10 @@
     byID('desktopCancel').addEventListener('click', function () { clearForm(); });
     byID('desktopAssign').addEventListener('click', addAssignment);
     byID('desktopServer').addEventListener('change', relayHint);
-    byID('desktopScope').addEventListener('change', fillTargets);
+    byID('desktopScope').addEventListener('change', function () {
+      fillTargets();
+      relayHint();
+    });
     byID('desktopStart').addEventListener('click', function () { runDesktop(true); });
     byID('desktopStop').addEventListener('click', function () { runDesktop(false); });
     byID('desktopView').addEventListener('click', viewDesktop);
@@ -337,10 +340,30 @@
     if (panel && panel._view) renderAssignments(panel._view);
   }
 
+  function sameStoredUrl(raw, stored) {
+    return String(raw || '').trim().replace(/\/+$/, '') === String(stored || '').trim().replace(/\/+$/, '');
+  }
+
+  // A node's own address is filled in when that service is edited. A new
+  // service, or a different virtual host typed over it, is still rejected.
+  function keepsNodeUrl(raw) {
+    if (!editingId) return false;
+    var panel = host();
+    var servers = (panel && panel._view && panel._view.servers) || [];
+    for (var i = 0; i < servers.length; i++) {
+      var server = servers[i];
+      if (!server || server.id !== editingId || !server.node_id) continue;
+      return sameStoredUrl(raw, server.base_url);
+    }
+    return false;
+  }
+
   function validServiceUrl(value) {
     var raw = String(value || '').trim();
     var parsed;
     try { parsed = new URL(raw); } catch (err) { return false; }
+    var host = String(parsed.hostname || '').toLowerCase().replace(/\.+$/, '');
+    if ((host === 'node.invalid' || host.endsWith('.node.invalid')) && !keepsNodeUrl(raw)) return false;
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.host && !parsed.username && !parsed.password;
   }
 
@@ -526,10 +549,16 @@
       hint.textContent = '';
       return;
     }
+    // Only a user assignment moves that user's bots onto the node's srv.
+    // Everyone and department assignments keep the public connection, so
+    // the desktop and the bots stay on different networks.
+    var scope = byID('desktopScope') && byID('desktopScope').value;
     var local = false;
-    nodes.forEach(function (node) {
-      if (node && node.id === server.node_id && node.has_srv) local = true;
-    });
+    if (scope === 'user') {
+      nodes.forEach(function (node) {
+        if (node && node.id === server.node_id && node.has_srv) local = true;
+      });
+    }
     hint.textContent = local ? '' : text().relayDelay;
   }
 

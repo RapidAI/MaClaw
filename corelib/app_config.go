@@ -276,6 +276,10 @@ type AppConfig struct {
 	PetFigurativeUpgradePromptPending bool `json:"pet_figurative_upgrade_prompt_pending,omitempty"`
 	// PetReducedMotion forces static frames and disables halo/SFX (explicit setting).
 	PetReducedMotion bool `json:"pet_reduced_motion,omitempty"`
+	// PetPositionLocked pins the desktop pet. In-place animation continues and
+	// the user can still drag it. False, the zero value, roams freely.
+	// The right-click menu writes it. A full settings save must not clear it.
+	PetPositionLocked bool `json:"pet_position_locked,omitempty"`
 	// PetAmbientCity is the city used by GUI background weather lookup for
 	// hardware pets. Empty means auto-detect from the desktop's public network.
 	PetAmbientCity         string `json:"pet_ambient_city,omitempty"`

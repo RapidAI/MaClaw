@@ -279,7 +279,7 @@ func (s *Service) GrantSameAccount(ctx context.Context, tenantID, userID, contro
 	if err != nil {
 		return Grant{}, err
 	}
-	controller, err := s.requireOwnMachine(ctx, userID, controllerMachineID)
+	controller, err := s.controllerIdentity(ctx, userID, controllerMachineID)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -361,7 +361,7 @@ func (s *Service) Invite(ctx context.Context, tenantID, userID, controllerMachin
 	if err != nil {
 		return Grant{}, err
 	}
-	controller, err := s.requireOwnMachine(ctx, userID, controllerMachineID)
+	controller, err := s.controllerIdentity(ctx, userID, controllerMachineID)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -647,9 +647,14 @@ func (s *Service) Snapshot(ctx context.Context, tenantID, userID, machineID stri
 				Status:      StatusPending,
 				FromMachine: grant.ControllerMachineName,
 			})
-		case grant.TargetUserID == userID && grant.Status == StatusActive && grant.TargetMachineID == machineID:
+		case grant.TargetUserID == userID && grant.Status == StatusActive && (grant.TargetMachineID == machineID || machineID == ""):
+			// A viewer without a machine id (mobile app) sees every desktop of
+			// the account currently being controlled, so it can end sessions
+			// the same way any of the account's desktops could.
 			state.Controlled = append(state.Controlled, GrantView{
 				ID:          grant.ID,
+				MachineID:   grant.TargetMachineID,
+				MachineName: grant.TargetMachineName,
 				Permission:  grant.Permission,
 				Status:      StatusActive,
 				SameAccount: grant.SameAccount,
@@ -858,6 +863,22 @@ func (s *Service) requireOwnMachine(ctx context.Context, userID, machineID strin
 		return Machine{}, invalid("请先登录这台电脑")
 	}
 	return machine, nil
+}
+
+// accountControllerName labels a controller that is the account itself — a
+// signed-in viewer session without a desktop (the mobile app). The grant's
+// ControllerMachineID stays empty; every downstream check compares
+// ControllerMachineID == caller machineID, so "" matches only sessions that
+// likewise present no machine identity.
+const accountControllerName = "移动设备"
+
+// controllerIdentity resolves who starts a grant: the named desktop when one
+// is given, or the account itself when the caller has no machine (mobile).
+func (s *Service) controllerIdentity(ctx context.Context, userID, controllerMachineID string) (Machine, error) {
+	if strings.TrimSpace(controllerMachineID) == "" {
+		return Machine{Name: accountControllerName}, nil
+	}
+	return s.requireOwnMachine(ctx, userID, controllerMachineID)
 }
 
 func (s *Service) pendingForTarget(ctx context.Context, _ string, userID, grantID string) (Grant, error) {

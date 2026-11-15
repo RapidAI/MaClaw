@@ -238,6 +238,61 @@ func (a *adminServer) saveTokens(tokens []AdminToken) error {
 	return nil
 }
 
+// PutHubKey stores the extra key Hub uses after enrollment. A previous
+// hub- key is replaced. The primary DESKTOPD_TOKEN is left untouched.
+func (a *adminServer) PutHubKey(label, token string) error {
+	label = strings.TrimSpace(label)
+	token = strings.TrimSpace(token)
+	if !strings.HasPrefix(label, "hub-") || label == "hub-" {
+		return fmt.Errorf("%w: hub key label", ErrInvalid)
+	}
+	if len(token) < 16 || len(token) > 128 || !validTokenCharset(token) {
+		return fmt.Errorf("%w: hub key", ErrInvalid)
+	}
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	existing, err := a.tokens()
+	if err != nil {
+		return err
+	}
+	kept := make([]AdminToken, 0, len(existing)+1)
+	for _, item := range existing {
+		if strings.HasPrefix(item.Label, "hub-") {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	id, err := randomHex(8)
+	if err != nil {
+		return err
+	}
+	kept = append(kept, AdminToken{
+		ID: id, Label: label, Token: token, CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	return a.saveTokens(kept)
+}
+
+// DropHubKeys removes every hub- key. Panel-issued keys stay.
+func (a *adminServer) DropHubKeys() error {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	existing, err := a.tokens()
+	if err != nil {
+		return err
+	}
+	kept := make([]AdminToken, 0, len(existing))
+	for _, item := range existing {
+		if strings.HasPrefix(item.Label, "hub-") {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if len(kept) == len(existing) {
+		return nil
+	}
+	return a.saveTokens(kept)
+}
+
 func (a *adminServer) writeStateFile(name string, raw []byte) error {
 	return writeStateFile(a.stateDir, name, raw)
 }

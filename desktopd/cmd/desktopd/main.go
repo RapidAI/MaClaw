@@ -214,8 +214,9 @@ func main() {
 		panelDir = ""
 	}
 	// The Hub link lets a desktopd with no public address serve Hub through a
-	// tunnel it dials itself. It stays idle until the GUI posts an
-	// enrollment code; DESKTOPD_HUB_LINK=off removes the routes.
+	// tunnel it dials itself. It stays idle until the GUI posts an enrollment
+	// code, or DESKTOPD_HUB_URL and DESKTOPD_HUB_ENROLL_CODE are both set.
+	// DESKTOPD_HUB_LINK=off removes the routes.
 	if !adminDisabled && !strings.EqualFold(strings.TrimSpace(os.Getenv("DESKTOPD_HUB_LINK")), "off") {
 		svc.HubLink = &desktopd.HubLink{
 			StatePath: filepath.Join(stateDir, "hub_link.json"),
@@ -226,9 +227,13 @@ func main() {
 			log.Printf("[desktopd] hub link state unreadable: %v", err)
 		}
 	}
+	handler := desktopd.Handler(svc, token, panelDir, proxyKeys, egress)
+	if svc.HubLink != nil {
+		svc.HubLink.EnrollFromEnv(ctx)
+	}
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           desktopd.Handler(svc, token, panelDir, proxyKeys, egress),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       5 * time.Minute,
 		WriteTimeout:      5 * time.Minute,

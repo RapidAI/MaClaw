@@ -117,6 +117,10 @@ type Service struct {
 		func(context.Context) context.Context,
 		func(context.Context, *Run, *Message, error),
 	)
+	// ResumeHold is taken before a restarted turn is admitted and released
+	// when that turn finishes. The scheduler lease ended with the cancelled
+	// executor, so without this hold the next interval starts a second turn.
+	ResumeHold func(run Run) (release func())
 
 	runMu       sync.Mutex
 	runningRuns map[string]context.CancelFunc

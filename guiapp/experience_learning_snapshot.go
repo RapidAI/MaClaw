@@ -228,9 +228,10 @@ func (a *App) GetExperienceLearningSnapshot() ExperienceLearningSnapshot {
 		skills = a.skillExecutor.loadSkills()
 	}
 	snapshot := buildExperienceLearningSnapshot(a.usageTracker, a.memoryStore, skills)
-	a.ensureSessionStore()
-	if a.sessionSearchStore != nil {
-		if summaries, err := a.sessionSearchStore.ListRecent(experienceSnapshotSessionTraceLimit); err == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store != nil {
+		if summaries, err := store.ListRecent(experienceSnapshotSessionTraceLimit); err == nil {
 			sessionDetails := buildExperienceSessionTraceDetails(summaries)
 			snapshot.TraceDetails = append(snapshot.TraceDetails, sessionDetails...)
 			snapshot.ReviewRequiredTraceCount += countReviewRequiredExperienceTraces(sessionDetails)

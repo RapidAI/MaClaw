@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL } from './desktopScreens';
+import { desktopModeOf, effectiveScreenPick, mineScreenURL, sameDesktopScreen, screenNeedsOwnHold, shownScreenURL } from './desktopScreens';
 
 const bots = [{ id: 'a' }, { id: 'b' }];
 
@@ -25,6 +25,9 @@ describe('desktop screens', () => {
     });
 
     it('opens an isolated bot on its own screen until the person picks', () => {
+        expect(sameDesktopScreen('a', 'b', { a: { mode: 'shared' }, b: { mode: 'shared' } })).toBe(true);
+        expect(sameDesktopScreen('a', 'c', { a: { mode: 'shared' }, c: { mode: 'isolated' } })).toBe(false);
+        expect(sameDesktopScreen('a', 'e', {})).toBe(true);
         expect(effectiveScreenPick(false, 'mine', 'b', 'isolated')).toBe('b');
         expect(effectiveScreenPick(true, 'mine', 'b', 'isolated')).toBe('mine');
         expect(effectiveScreenPick(false, 'mine', 'a', 'shared')).toBe('mine');

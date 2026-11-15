@@ -435,7 +435,7 @@ describe('PetSettingsPanel localization', () => {
         expect(await screen.findByRole('dialog', { name: 'Uninstall pet pack' })).toBeTruthy();
     });
 
-    it('shows unlist instead of share after the created pack is published', async () => {
+    it('offers update-listing and unlist after the created pack is published', async () => {
         mockListPetPacks([{
             id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', scope: 'user', source: 'created', can_uninstall: true,
         }]);
@@ -445,9 +445,36 @@ describe('PetSettingsPanel localization', () => {
         await waitFor(() => expect(AppAPI.GetPetStoreAccount).toHaveBeenCalled());
         const skin = screen.getByRole('button', { name: /Creator pet/i });
         await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        expect(screen.getByRole('menuitem', { name: 'Update listing…' })).toBeTruthy();
         expect(screen.getByRole('menuitem', { name: 'Unlist' })).toBeTruthy();
         expect(screen.queryByRole('menuitem', { name: 'Share…' })).toBeNull();
         expect(screen.getByRole('menuitem', { name: 'Uninstall' })).toBeTruthy();
+    });
+
+    it('updates the online listing in place from the share dialog', async () => {
+        mockListPetPacks([{
+            id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', scope: 'user', source: 'created', can_uninstall: true,
+        }]);
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({ uploads: [{ id: 'pet_listing', source_pack_id: 'creator-pet', status: 'active', name: 'Market title', version: '1.0.0', price: 25 }] });
+        vi.mocked(AppAPI.SubmitPetStorePack).mockResolvedValue({ id: 'pet_listing', updated: true });
+        await act(async () => { renderPetSettings('en', { pet_skin: 'creator-pet' }); });
+        const skin = await screen.findByRole('button', { name: /Creator pet/i });
+        await waitFor(() => expect(AppAPI.GetPetStoreAccount).toHaveBeenCalled());
+        await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        await act(async () => { fireEvent.click(screen.getByRole('menuitem', { name: 'Update listing…' })); });
+
+        const dialog = await screen.findByRole('dialog', { name: 'Update pet pack listing' });
+        expect(dialog.textContent).toContain('updates the online package to the new version');
+        // The update dialog keeps the listing's own market name and paid price —
+        // a version bump must not silently reset them to the local defaults.
+        expect(screen.getByRole('textbox', { name: 'Name' })).toHaveProperty('value', 'Market title');
+        expect(screen.getByRole('textbox', { name: 'Price (Credits)' })).toHaveProperty('value', '25');
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Update listing' })); });
+
+        await waitFor(() => expect(AppAPI.SubmitPetStorePack).toHaveBeenCalledWith(
+            'C:/tmp/creator-pet.zip', 'Market title', 'Creator pet', '1.0.0', 25, 'creator-pet',
+        ));
+        await waitFor(() => expect(screen.getByText('Pet pack updated. The existing market listing now serves the new version.').getAttribute('role')).toBe('status'));
     });
 
     it('does not offer a paused listing for re-sharing', async () => {

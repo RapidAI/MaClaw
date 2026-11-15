@@ -418,6 +418,30 @@ var emitCodingPlanReviewChat = func(h *IMMessageHandler, userID, text string) {
 	})
 }
 
+// emitCodingChildReviewChat delivers an auto-resumed child-result review to
+// the coding chat so the user sees the main task continued without a manual
+// 「审阅子任务结果」 action. Kept as a var so tests can observe the payload.
+var emitCodingChildReviewChat = func(h *IMMessageHandler, userID string, resp *IMAgentResponse) {
+	if h == nil || h.app == nil || resp == nil {
+		return
+	}
+	userID = stickyCodingMemoryKey(userID)
+	if userID == "" {
+		return
+	}
+	text := strings.TrimSpace(resp.Text)
+	if text == "" {
+		return
+	}
+	h.app.emitAIContinuationEvent(AIContinuationEvent{
+		RequestID:  "coding-child-review-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		SessionKey: userID,
+		Kind:       "notice",
+		Text:       text,
+		Actions:    resp.Actions,
+	})
+}
+
 const codingPlanSelfReviewMaxRounds = 3
 
 const codingPlanSelfReviewSystemPrompt = `You review one coding plan before the user sees it. Return JSON only.

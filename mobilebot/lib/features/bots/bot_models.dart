@@ -6,6 +6,10 @@ import 'dart:convert';
 
 import 'package:characters/characters.dart';
 
+import '../../core/json_safe.dart';
+
+export '../../core/json_safe.dart';
+
 /// What a bot is doing right now, derived from run state + last reply.
 enum BotWorkState { idle, running, waitingForUser, awaitingAnswer, failed }
 
@@ -99,6 +103,9 @@ class DesktopBotQuota {
   DesktopBotQuota bump() =>
       DesktopBotQuota(limit: limit, used: used + 1, known: known);
 
+  DesktopBotQuota drop() =>
+      DesktopBotQuota(limit: limit, used: used > 0 ? used - 1 : 0, known: known);
+
   factory DesktopBotQuota.fromJson(Object? raw) {
     if (raw is! Map) return const DesktopBotQuota();
     final limitRaw = raw['limit'];
@@ -119,6 +126,16 @@ String desktopModeMark(String mode) => switch (mode) {
     };
 
 bool botHasComputer(String mode) => mode != 'none';
+
+/// True when another bot already has this name — the same quick check the
+/// desktop dialog runs (trim + collapse whitespace + fold case). The Hub is
+/// still authoritative for full-width and numbered-name forms.
+bool botNameTaken(String name, List<Bot> bots, {String exceptId = ''}) {
+  String norm(String s) => s.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+  final want = norm(name);
+  if (want.isEmpty) return false;
+  return bots.any((b) => b.id != exceptId && norm(b.name) == want);
+}
 
 class BotAccess {
   final bool enabled;
@@ -334,6 +351,11 @@ class BotRun {
 class BotDesktop {
   final String novncUrl;
   final bool userControl;
+
+  /// Whether the keyboard claim this device made via `desktop/control` is
+  /// the active one — `user_control` says the watcher may control at all,
+  /// `input_granted` says this end actually holds the input right now.
+  final bool inputGranted;
   final String attentionReason;
   final String desktopMode;
   final bool released;
@@ -341,6 +363,7 @@ class BotDesktop {
   const BotDesktop({
     this.novncUrl = '',
     this.userControl = false,
+    this.inputGranted = false,
     this.attentionReason = '',
     this.desktopMode = '',
     this.released = false,
@@ -351,6 +374,7 @@ class BotDesktop {
   factory BotDesktop.fromJson(Map<String, dynamic> json) => BotDesktop(
         novncUrl: syncText(json['novnc_url']).trim(),
         userControl: json['user_control'] == true,
+        inputGranted: json['input_granted'] == true,
         attentionReason: syncText(json['attention_reason']).trim(),
         desktopMode: syncText(json['desktop_mode']).trim(),
         released: json['released'] == true,
@@ -783,50 +807,6 @@ DateTime? parseMessageAt(Object? value) {
   return DateTime.tryParse(value is String ? value : '');
 }
 
-/// A journal field that should be text: strings pass through trimmed,
-/// anything else reads as empty rather than throwing — one malformed entry
-/// must not poison the whole sync merge.
-String syncText(Object? value) => value is String ? value.trim() : '';
-
-/// Same tolerance for list fields.
-List<dynamic> syncList(Object? value) =>
-    value is List ? value : const [];
-
-/// First non-empty text among candidates (multi-key fallbacks).
-String syncTextAny(Object? a, [Object? b, Object? c]) {
-  for (final v in [a, b, c]) {
-    final text = syncText(v);
-    if (text.isNotEmpty) return text;
-  }
-  return '';
-}
-
-/// Text with a non-empty-string fallback.
-String syncTextOr(Object? value, String fallback) {
-  final text = syncText(value);
-  return text.isEmpty ? fallback : text;
-}
-
-/// And for ints that may arrive as a JSON number or a numeric string.
-int syncInt(Object? value) {
-  if (value is num) return value.toInt();
-  if (value is String) return int.tryParse(value.trim()) ?? 0;
-  return 0;
-}
-
-/// Int with a non-zero fallback (e.g. day_of_week's "weekly" sentinel).
-int syncIntOr(Object? value, int fallback) {
-  if (value is num) return value.toInt();
-  if (value is String) return int.tryParse(value.trim()) ?? fallback;
-  return fallback;
-}
-
-/// Double with the same tolerance.
-double syncDouble(Object? value) {
-  if (value is num) return value.toDouble();
-  if (value is String) return double.tryParse(value.trim()) ?? 0;
-  return 0;
-}
 
 /// a projection compatible with the desktop journal entry data.
 class ChatMessage {

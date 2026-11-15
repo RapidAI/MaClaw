@@ -386,6 +386,7 @@ type App struct {
 	aiAssistantUIStateDB  *aiAssistantUIStateDatabase
 	maclawAppRunHistoryDB *maclawAppRunHistoryDatabase
 	maclawAppApprovalDB   *maclawAppApprovalDatabase
+	maclawAppInstallDB    *maclawAppInstallDatabase
 	configManager         *ConfigManager
 	templateManager       *remote.SessionTemplateManager
 	contextResolver       *SessionContextResolver
@@ -582,8 +583,8 @@ type App struct {
 	imAuditStoreMu sync.Once
 
 	// Session search store (FTS5 full-text search across historical conversations).
-	sessionSearchStore *session.Store
-	sessionStoreMu     sync.Once
+	sessionSearchStore   *session.Store
+	sessionSearchStoreMu sync.RWMutex
 
 	// User model (dialectic user modeling with confidence-scored dimensions).
 	userModel   *user.Model
@@ -1660,6 +1661,11 @@ func (a *App) ensureScheduledTaskManager() {
 		a.scheduledTaskManager.SetOnChange(func() {
 			a.emitEvent("scheduled-tasks-changed")
 		})
+		// Bot timers belong on the server clock. Copies saved into this
+		// manager showed up under 计划任务 and counted a run every tick.
+		if n := dropLocalDesktopBotScheduleRows(a.scheduledTaskManager); n > 0 {
+			log.Printf("[desktop-bot-schedule] removed %d bot timer(s) from the local schedule; the server clock owns them", n)
+		}
 		// Start the scheduler immediately with a local executor that doesn't
 		// depend on Hub connectivity. This ensures scheduled tasks fire even
 		// for desktop-only users who never connect to Hub.
@@ -3557,10 +3563,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.auditLog != nil {
 		a.auditLog.Close()
 	}
-	if a.sessionSearchStore != nil {
-		_ = a.sessionSearchStore.Close()
-		a.sessionSearchStore = nil
-	}
+	a.closeSessionStore()
 	if a.projectTabSessionPersist != nil {
 		_ = a.projectTabSessionPersist.Close()
 		a.projectTabSessionPersist = nil
@@ -3579,6 +3582,9 @@ func (a *App) shutdown(ctx context.Context) {
 	maclawAppApprovalDBMu.Lock()
 	a.closeMaclawAppApprovalDB()
 	maclawAppApprovalDBMu.Unlock()
+	maclawAppInstallDBMu.Lock()
+	a.closeMaclawAppInstallDB()
+	maclawAppInstallDBMu.Unlock()
 	agentViewSchemaPersistentStore.Lock()
 	closeAgentViewSchemaStoreLocked()
 	agentViewSchemaPersistentStore.Unlock()
@@ -6684,6 +6690,9 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 	maclawAppApprovalDBMu.Lock()
 	a.closeMaclawAppApprovalDB()
 	maclawAppApprovalDBMu.Unlock()
+	maclawAppInstallDBMu.Lock()
+	a.closeMaclawAppInstallDB()
+	maclawAppInstallDBMu.Unlock()
 	agentViewSchemaPersistentStore.Lock()
 	closeAgentViewSchemaStoreLocked()
 	agentViewSchemaPersistentStore.Unlock()
@@ -6708,11 +6717,7 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		_ = a.auditLog.Close()
 		a.auditLog = nil
 	}
-	if a.sessionSearchStore != nil {
-		_ = a.sessionSearchStore.Close()
-		a.sessionSearchStore = nil
-	}
-	a.sessionStoreMu = sync.Once{}
+	a.closeSessionStore()
 	if a.imAuditStore != nil {
 		_ = a.imAuditStore.Close()
 		a.imAuditStore = nil
@@ -7080,6 +7085,14 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	}
 	incoming.WorkingDirectory = ondisk.WorkingDirectory
 
+	// The desktop pet menu owns this flag. A settings snapshot does not know
+	// the field until the generated frontend model includes it, and a full
+	// save would otherwise clear a pin the user just turned on.
+	if incoming.PetPositionLocked != ondisk.PetPositionLocked {
+		restored = append(restored, "pet_position_locked")
+	}
+	incoming.PetPositionLocked = ondisk.PetPositionLocked
+
 	if len(restored) > 0 {
 		log.Printf("[config] SaveConfig:preserved_backend_fields=%v", restored)
 	}
@@ -7201,6 +7214,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	floatingChanged := floatingAppearanceChanged(oldConfig, config)
 	motionChanged := floatingMotionChanged(oldConfig, config)
 	soundChanged := floatingSoundChanged(oldConfig, config)
+	positionLockChanged := floatingPositionLockChanged(oldConfig, config)
 	devicePetChanged := !oldConfigLoaded || devicePetProfileChanged(oldConfig, config)
 	buddyPetChanged := !oldConfigLoaded || buddyPetAssetChanged(oldConfig, config)
 	hardwareCustomPetsDisabled := oldConfig.HardwareAllowCustomPets && !config.HardwareAllowCustomPets
@@ -7210,6 +7224,12 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	hubClient := (*RemoteHubClient)(nil)
 	if a.remoteSessions != nil {
 		hubClient = a.remoteSessions.hubClient
+	}
+	if positionLockChanged {
+		// Still holding configMu. A backup restore becomes the newest pin
+		// before a menu patch waiting on this lock is allowed to store the
+		// click it captured earlier.
+		rememberPetPositionLock(config.PetPositionLocked)
 	}
 	// Unified epilogue: publish cache → unlock → post-unlock drains → disk write.
 	// See config_txn.go protocol.
@@ -7252,7 +7272,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 			}
 		}(config)
 	}
-	if !floatingChanged && (soundChanged || motionChanged) {
+	if !floatingChanged && (soundChanged || motionChanged || positionLockChanged) {
 		go func(cfg corelib.AppConfig) {
 			if fa := a.existingFloatingAssistant(); fa != nil {
 				// Keep the requested sound preference current before recalculating
@@ -7262,6 +7282,9 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 				}
 				if motionChanged {
 					fa.UpdateMotionConfig(cfg)
+				}
+				if positionLockChanged {
+					applyPetPositionLock(fa, cfg.PetPositionLocked)
 				}
 			}
 		}(config)
@@ -9890,6 +9913,19 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.PetReducedMotion = v
 			petChanged = true
+		case "pet_position_locked":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			// The menu published this click before taking configMu. A newer
+			// click or a backup restore may have published since. Leave the
+			// loaded value alone so this write cannot replace it.
+			if !petPositionLockWriteCurrent() {
+				break
+			}
+			cfg.PetPositionLocked = v
+			petChanged = true
 		case "pet_figurative_upgrade_prompt_pending":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -9954,6 +9990,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	floatingChanged := petChanged && floatingAppearanceChanged(current, cfg)
 	motionChanged := petChanged && floatingMotionChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
+	positionLockChanged := petChanged && floatingPositionLockChanged(current, cfg)
 	devicePetChanged := devicePetProfileChanged(current, cfg)
 	buddyPetChanged := buddyPetAssetChanged(current, cfg)
 	hardwareCustomPetsDisabled := current.HardwareAllowCustomPets && !cfg.HardwareAllowCustomPets
@@ -10050,7 +10087,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 		}(cfg)
 	}
-	if !floatingChanged && (soundChanged || motionChanged) {
+	if !floatingChanged && (soundChanged || motionChanged || positionLockChanged) {
 		go func(cfg corelib.AppConfig) {
 			if fa := a.existingFloatingAssistant(); fa != nil {
 				if soundChanged {
@@ -10058,6 +10095,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				}
 				if motionChanged {
 					fa.UpdateMotionConfig(cfg)
+				}
+				if positionLockChanged {
+					applyPetPositionLock(fa, cfg.PetPositionLocked)
 				}
 			}
 		}(cfg)

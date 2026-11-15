@@ -108,22 +108,34 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
   Future<void> _save() async {
     final api = ref.read(botApiProvider);
     if (api == null) return;
-    if (_nameCtrl.text.trim().isEmpty) {
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('名称不能为空')));
+      return;
+    }
+    if (botNameTaken(name, ref.read(botsProvider).bots,
+        exceptId: widget.bot.id)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已经有一个叫这个名字的 Bot 了，换个名字吧')),
+      );
       return;
     }
     setState(() => _saving = true);
     try {
       await api.updateBot(
         widget.bot.id,
-        name: _nameCtrl.text.trim(),
+        name: name,
         description: _descCtrl.text.trim(),
       );
       // Mode and appearance are independent endpoints — send them together.
+      // The server stores "shared" as empty (omitempty), so normalize before
+      // comparing or every save re-PUTs the mode for shared bots.
+      final currentMode =
+          widget.bot.desktopMode.isEmpty ? 'shared' : widget.bot.desktopMode;
       await Future.wait([
-        if (_desktopMode != widget.bot.desktopMode)
+        if (_desktopMode != currentMode)
           api.setDesktopMode(widget.bot.id, _desktopMode),
         if (_color != widget.bot.color || _shape != widget.bot.shape)
           api.setAppearance(widget.bot.id, color: _color, shape: _shape),

@@ -687,7 +687,13 @@ async function testConnectionAndDockerUrls() {
   harness.elements.desktopName.value = 'dockerd';
   harness.elements.desktopUrl.value = 'docker-host:18081';
   harness.elements.desktopAdd.listeners.click[0]();
-  assert(puts().length === 0, 'does not save an empty or non-http address');
+  harness.elements.desktopName.value = 'lab';
+  harness.elements.desktopUrl.value = 'http://desktopd.abc.NODE.INVALID';
+  harness.elements.desktopToken.value = 'secret';
+  harness.elements.desktopAdd.listeners.click[0]();
+  harness.elements.botBaseUrl.value = 'https://srv.abc.Node.Invalid/v1';
+  harness.elements.botSave.listeners.click[0]();
+  assert(puts().length === 0, 'does not save an empty, non-http, or virtual node address');
   assert(harness.toasts.filter(function (toast) { return toast.kind === 'error'; }).length >= 3, 'explains why the save did not run');
   harness.elements.botBaseUrl.value = 'http://maclaw.example';
   harness.elements.botSave.listeners.click[0]();

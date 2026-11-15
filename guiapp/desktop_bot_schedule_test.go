@@ -66,6 +66,46 @@ func TestArmDesktopBotScheduleRepeatsAndUpdatesTheSameAction(t *testing.T) {
 	}
 }
 
+func TestDropLocalDesktopBotScheduleRowsKeepsOrdinaryTasksAndPausedPatrols(t *testing.T) {
+	mgr, err := scheduler.NewManager(filepath.Join(t.TempDir(), "tasks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Add(scheduler.ScheduledTask{Name: "喝水", Action: "提醒喝水", Hour: 9, Minute: 0, DayOfWeek: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Add(scheduler.ScheduledTask{
+		Name: "weather_report", Action: "Report the current weather conditions and deliver the report as a PDF file.",
+		DesktopBotID: "bot_old", DesktopBotOwner: "u_1", TaskType: scheduler.TaskTypeProcess,
+		IntervalMinutes: 5, DayOfWeek: -1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Add(scheduler.ScheduledTask{
+		Name: "watch-job:job_old", Action: "巡查", DesktopBotID: "bot_old", DesktopBotOwner: "u_1",
+		Status: "paused", IntervalMinutes: 5, DayOfWeek: -1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := dropLocalDesktopBotScheduleRows(mgr); n != 1 {
+		t.Fatalf("removed %d", n)
+	}
+	var names []string
+	for _, task := range mgr.List() {
+		names = append(names, task.Name)
+		if strings.TrimSpace(task.DesktopBotID) != "" && !strings.HasPrefix(task.Name, "watch-job:") {
+			t.Fatalf("bot timer stayed: %#v", task)
+		}
+	}
+	if len(names) != 2 {
+		t.Fatalf("left %v", names)
+	}
+	shown := localPlanTasks(mgr.List())
+	if len(shown) != 1 || shown[0].Name != "喝水" {
+		t.Fatalf("plan list = %#v", shown)
+	}
+}
+
 func TestListDesktopBotSchedulesShowsOnlyThisBot(t *testing.T) {
 	shareAccessRemoteUserOverride = "local"
 	t.Cleanup(func() { shareAccessRemoteUserOverride = "" })

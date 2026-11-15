@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/hub_config.dart';
@@ -98,13 +100,25 @@ class BotsController extends Notifier<BotsState> {
       {String? color, String? shape, bool needsComputer = true}) async {
     final api = _api;
     if (api == null) throw StateError('not signed in');
-    final created = await api.createBot(
-      name: name,
-      description: description,
-      color: color,
-      shape: shape,
-      needsComputer: needsComputer,
-    );
+    final Bot created;
+    try {
+      created = await api.createBot(
+        name: name,
+        description: description,
+        color: color,
+        shape: shape,
+        needsComputer: needsComputer,
+      );
+    } on Object catch (error) {
+      // The grant may have shrunk since the last list refresh — resync so
+      // the create sheet's lock reflects the server's actual state.
+      if (error is HubApiException &&
+          error.code == 'DESKTOP_QUOTA_EXCEEDED' &&
+          identical(ref.read(botApiProvider), api)) {
+        unawaited(refresh());
+      }
+      rethrow;
+    }
     final bot = created.desktopMode.isNotEmpty
         ? created
         : Bot(
@@ -135,6 +149,7 @@ class BotsController extends Notifier<BotsState> {
     if (identical(ref.read(botApiProvider), api)) {
       state = state.copyWith(
         bots: state.bots.where((b) => b.id != bot.id).toList(),
+        quota: botHasComputer(bot.desktopMode) ? state.quota.drop() : state.quota,
       );
     }
   }

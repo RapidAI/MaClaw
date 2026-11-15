@@ -21,6 +21,18 @@ type ownerBotLLM struct {
 	Background  *ownerLLMOverride `json:"background,omitempty"`
 	ComputerUse *ownerLLMOverride `json:"computer_use,omitempty"`
 	Grounder    *ownerLLMOverride `json:"grounder,omitempty"`
+	// Local is the four-stage model a locally installed desktop runs.
+	// Switching Mode does not clear it: default and custom are the cloud choice.
+	Local *localStageLLM `json:"local,omitempty"`
+}
+
+// localStageLLM is the four stages for a local MaClawSrv. Each role is set.
+// Official uses the Hub route and stores no provider credential.
+type localStageLLM struct {
+	Foreground  *ownerLLMOverride `json:"foreground,omitempty"`
+	Background  *ownerLLMOverride `json:"background,omitempty"`
+	ComputerUse *ownerLLMOverride `json:"computer_use,omitempty"`
+	Grounder    *ownerLLMOverride `json:"grounder,omitempty"`
 }
 
 // persistedOwnerBotLLM returns the stored choice, migrating a legacy
@@ -138,12 +150,26 @@ func ownerBotLLMIsCustom(rec record, hubUserID string) bool {
 }
 
 func cloneOwnerBotLLM(in ownerBotLLM) ownerBotLLM {
+	local := cloneLocalStages(in.Local)
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
 	if mode != corelib.MaclawBotLLMModeCustom {
-		return ownerBotLLM{Mode: corelib.MaclawBotLLMModeDefault}
+		return ownerBotLLM{Mode: corelib.MaclawBotLLMModeDefault, Local: local}
 	}
 	return ownerBotLLM{
 		Mode:        corelib.MaclawBotLLMModeCustom,
+		Foreground:  cloneOwnerLLMOverride(in.Foreground),
+		Background:  cloneOwnerLLMOverride(in.Background),
+		ComputerUse: cloneOwnerLLMOverride(in.ComputerUse),
+		Grounder:    cloneOwnerLLMOverride(in.Grounder),
+		Local:       local,
+	}
+}
+
+func cloneLocalStages(in *localStageLLM) *localStageLLM {
+	if in == nil {
+		return nil
+	}
+	return &localStageLLM{
 		Foreground:  cloneOwnerLLMOverride(in.Foreground),
 		Background:  cloneOwnerLLMOverride(in.Background),
 		ComputerUse: cloneOwnerLLMOverride(in.ComputerUse),
@@ -161,7 +187,9 @@ func cloneOwnerLLMOverride(in *ownerLLMOverride) *ownerLLMOverride {
 
 func (choice ownerBotLLM) view(stored bool) PrincipalLLMView {
 	if choice.Mode != corelib.MaclawBotLLMModeCustom {
-		return PrincipalLLMView{Mode: corelib.MaclawBotLLMModeDefault, Choice: corelib.MaclawBotLLMModeDefault, Stored: stored}
+		view := PrincipalLLMView{Mode: corelib.MaclawBotLLMModeDefault, Choice: corelib.MaclawBotLLMModeDefault, Stored: stored}
+		view.LocalRoles = localRolesView(choice.Local)
+		return view
 	}
 	roles := &PrincipalLLMRolesView{
 		Foreground:  roleView(choice.Foreground, false),
@@ -171,7 +199,7 @@ func (choice ownerBotLLM) view(stored bool) PrincipalLLMView {
 	}
 	view := PrincipalLLMView{
 		Mode: corelib.MaclawBotLLMModeCustom, Choice: corelib.MaclawBotLLMModeCustom,
-		Roles: roles, Stored: stored,
+		Roles: roles, Stored: stored, LocalRoles: localRolesView(choice.Local),
 	}
 	// Older GUIs read one provider. A concrete provider is selectable. An
 	// official foreground is the Hub route, which that dialog cannot pick, so
@@ -185,6 +213,18 @@ func (choice ownerBotLLM) view(stored bool) PrincipalLLMView {
 	}
 	view.Mode = corelib.MaclawBotLLMModeDefault
 	return view
+}
+
+func localRolesView(stages *localStageLLM) *PrincipalLLMRolesView {
+	if stages == nil {
+		return nil
+	}
+	return &PrincipalLLMRolesView{
+		Foreground:  roleView(stages.Foreground, false),
+		Background:  roleView(stages.Background, false),
+		ComputerUse: roleView(stages.ComputerUse, false),
+		Grounder:    roleView(stages.Grounder, false),
+	}
 }
 
 // effectiveServiceRoles is the model each role uses when the owner does not
@@ -272,7 +312,7 @@ func normalizeOwnerBotLLM(in PrincipalLLMInput, prev ownerBotLLM, providers []ll
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
 	switch mode {
 	case "", "default", "system":
-		return ownerBotLLM{Mode: corelib.MaclawBotLLMModeDefault}, nil
+		return withLocalStages(ownerBotLLM{Mode: corelib.MaclawBotLLMModeDefault}, in, prev)
 	case "custom", "provider":
 	default:
 		return ownerBotLLM{}, fmt.Errorf("%w: llm mode must be default or custom", ErrInvalidInput)
@@ -282,12 +322,12 @@ func normalizeOwnerBotLLM(in PrincipalLLMInput, prev ownerBotLLM, providers []ll
 		if err != nil {
 			return ownerBotLLM{}, err
 		}
-		return ownerBotLLM{
+		return withLocalStages(ownerBotLLM{
 			Mode:        corelib.MaclawBotLLMModeCustom,
 			Foreground:  cloneOwnerLLMOverride(one),
 			Background:  cloneOwnerLLMOverride(one),
 			ComputerUse: cloneOwnerLLMOverride(one),
-		}, nil
+		}, in, prev)
 	}
 	fg, err := normalizeOwnerLLMRole("foreground", in.Roles.Foreground, prev, providers, false)
 	if err != nil {
@@ -308,13 +348,105 @@ func normalizeOwnerBotLLM(in PrincipalLLMInput, prev ownerBotLLM, providers []ll
 	if err := consistentRoleProviders(fg, bg, cu, gr); err != nil {
 		return ownerBotLLM{}, err
 	}
-	return ownerBotLLM{
+	return withLocalStages(ownerBotLLM{
 		Mode:        corelib.MaclawBotLLMModeCustom,
 		Foreground:  fg,
 		Background:  bg,
 		ComputerUse: cu,
 		Grounder:    gr,
-	}, nil
+	}, in, prev)
+}
+
+// withLocalStages keeps the cloud choice and the local four-stage choice apart.
+// A save that omits local_roles leaves the stored local stages in place.
+func withLocalStages(choice ownerBotLLM, in PrincipalLLMInput, prev ownerBotLLM) (ownerBotLLM, error) {
+	if in.LocalRoles == nil {
+		choice.Local = cloneLocalStages(prev.Local)
+		return choice, nil
+	}
+	// Local stages are written to the user's own srv, which does not receive
+	// the tenant catalog, so a local provider may reuse a tenant provider's name.
+	local, err := normalizeLocalStages(*in.LocalRoles, prev)
+	if err != nil {
+		return ownerBotLLM{}, err
+	}
+	choice.Local = local
+	return choice, nil
+}
+
+func normalizeLocalStages(in PrincipalLLMRolesInput, prev ownerBotLLM) (*localStageLLM, error) {
+	base := ownerBotLLM{}
+	if prev.Local != nil {
+		base.Foreground = prev.Local.Foreground
+		base.Background = prev.Local.Background
+		base.ComputerUse = prev.Local.ComputerUse
+		base.Grounder = prev.Local.Grounder
+	}
+	fg, err := normalizeOwnerLLMRole("foreground", localStageInput(in.Foreground), base, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	bg, err := normalizeOwnerLLMRole("background", localStageInput(in.Background), base, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	cu, err := normalizeOwnerLLMRole("computer_use", localStageInput(in.ComputerUse), base, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	gr, err := normalizeOwnerLLMRole("grounder", localStageInput(in.Grounder), base, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	if fg == nil || bg == nil || cu == nil || gr == nil {
+		return nil, fmt.Errorf("%w: local desktop models must all be set", ErrInvalidInput)
+	}
+	if err := consistentRoleProviders(fg, bg, cu, gr); err != nil {
+		return nil, err
+	}
+	return &localStageLLM{Foreground: fg, Background: bg, ComputerUse: cu, Grounder: gr}, nil
+}
+
+func localStageInput(in PrincipalLLMRoleInput) PrincipalLLMRoleInput {
+	in.Unused = false
+	in.Inherit = false
+	if in.Official && strings.TrimSpace(in.Model) == "" {
+		in.Model = botLLMModel
+	}
+	return in
+}
+
+// localRuntimeChoice is what a local MaClawSrv runs. A stage that was never
+// saved uses MaClaw official.
+func localRuntimeChoice(choice ownerBotLLM) ownerBotLLM {
+	stage := func(role *ownerLLMOverride) *ownerLLMOverride {
+		if role == nil || (!role.Official && strings.TrimSpace(role.Name) == "") {
+			return &ownerLLMOverride{Official: true, Model: botLLMModel}
+		}
+		if role.Official && strings.TrimSpace(role.Model) == "" {
+			cp := *role
+			cp.Model = botLLMModel
+			return &cp
+		}
+		return role
+	}
+	var local *localStageLLM
+	if choice.Local != nil {
+		local = choice.Local
+	}
+	out := ownerBotLLM{Mode: corelib.MaclawBotLLMModeCustom}
+	if local == nil {
+		out.Foreground = stage(nil)
+		out.Background = stage(nil)
+		out.ComputerUse = stage(nil)
+		out.Grounder = stage(nil)
+		return out
+	}
+	out.Foreground = stage(local.Foreground)
+	out.Background = stage(local.Background)
+	out.ComputerUse = stage(local.ComputerUse)
+	out.Grounder = stage(local.Grounder)
+	return out
 }
 
 func normalizeOwnerLLMRole(role string, in PrincipalLLMRoleInput, prev ownerBotLLM, providers []llmProvider, grounder bool) (*ownerLLMOverride, error) {
@@ -402,6 +534,17 @@ func ownerBotLLMStamp(choice ownerBotLLM) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
+// localDesktopLLMStamp names the four stages a local MaClawSrv actually runs.
+// It stays off the cloud stamp: the two destinations are written separately.
+func localDesktopLLMStamp(choice ownerBotLLM) string {
+	runtime := localRuntimeChoice(choice)
+	hash := sha256.New()
+	for _, role := range []*ownerLLMOverride{runtime.Foreground, runtime.Background, runtime.ComputerUse, runtime.Grounder} {
+		_, _ = io.WriteString(hash, principalLLMStamp(role)+"\n")
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
 // roleProfilePin is the MaClawSrv maclaw_llm_profiles entry for one custom role.
 // The id is the legacy name id so it matches the provider row this push writes
 // even when that row has no separate durable id.
@@ -432,6 +575,36 @@ func customRoleProfiles(existing any, choice ownerBotLLM) map[string]any {
 	setRolePin(profiles, "background", choice.Background)
 	setRolePin(profiles, "computer_use", choice.ComputerUse)
 	setRolePin(profiles, "grounder", choice.Grounder)
+	return profiles
+}
+
+// dropUnresolvedProfiles removes pins that name a provider this push did not
+// write. A previous cloud push can leave an administrator provider id in an
+// unrelated profile; that provider and its key are no longer on this machine.
+func dropUnresolvedProfiles(profiles map[string]any, providers []map[string]any) map[string]any {
+	known := map[string]struct{}{}
+	for _, entry := range providers {
+		if id, _ := entry["id"].(string); strings.TrimSpace(id) != "" {
+			known[strings.TrimSpace(id)] = struct{}{}
+		}
+		if name, _ := entry["name"].(string); strings.TrimSpace(name) != "" {
+			known[corelib.MaclawLLMLegacyProviderID(name)] = struct{}{}
+		}
+	}
+	for key, value := range profiles {
+		pin, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := pin["provider_id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := known[id]; !ok {
+			delete(profiles, key)
+		}
+	}
 	return profiles
 }
 

@@ -28,7 +28,7 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
   Future<void> _load() async {
     final api = ref.read(botApiProvider);
     if (api == null) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
       return;
     }
     try {
@@ -60,72 +60,76 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
       appBar: AppBar(title: const Text('当前模型')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      _mode == 'custom' ? Icons.tune : Icons.auto_awesome,
-                      size: 18,
-                      color: theme.colorScheme.primary,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _mode == 'custom' ? '自定义模型服务' : '平台默认模型',
-                      style: theme.textTheme.titleSmall,
-                    ),
-                  ],
-                ),
-                if (_warning.isNotEmpty)
-                  Container(
-                    margin: const EdgeInsets.only(top: 12),
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.tertiaryContainer,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      _warning,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onTertiaryContainer,
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        _mode == 'custom' ? Icons.tune : Icons.auto_awesome,
+                        size: 18,
+                        color: theme.colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _mode == 'custom' ? '自定义模型服务' : '平台默认模型',
+                        style: theme.textTheme.titleSmall,
+                      ),
+                    ],
+                  ),
+                  if (_warning.isNotEmpty)
+                    Container(
+                      margin: const EdgeInsets.only(top: 12),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.tertiaryContainer,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        _warning,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onTertiaryContainer,
+                        ),
                       ),
                     ),
-                  ),
-                if (_error.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 12),
-                    child: Text(
-                      _error,
-                      style: TextStyle(color: theme.colorScheme.error),
+                  if (_error.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text(
+                        _error,
+                        style: TextStyle(color: theme.colorScheme.error),
+                      ),
                     ),
-                  ),
-                if (_effective.isNotEmpty) ...[
-                  const SizedBox(height: 20),
-                  Text('各阶段生效', style: theme.textTheme.titleSmall),
-                  const SizedBox(height: 4),
-                  for (final role in const [
-                    ('foreground', '前台对话'),
-                    ('background', '后台任务'),
-                    ('computer_use', '电脑操作'),
-                    ('grounder', '界面定位'),
-                  ])
-                    _EffectiveRoleRow(
-                      label: role.$2,
-                      role: _effective[role.$1],
+                  if (_effective.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    Text('各阶段生效', style: theme.textTheme.titleSmall),
+                    const SizedBox(height: 4),
+                    for (final role in const [
+                      ('foreground', '前台对话'),
+                      ('background', '后台任务'),
+                      ('computer_use', '电脑操作'),
+                      ('grounder', '界面定位'),
+                    ])
+                      _EffectiveRoleRow(
+                        label: role.$2,
+                        role: _effective[role.$1],
+                      ),
+                  ],
+                  if (_effective.isEmpty && _error.isEmpty && _warning.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 20),
+                      child: Text(
+                        '暂无生效配置',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
                     ),
                 ],
-                if (_effective.isEmpty && _error.isEmpty && _warning.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 20),
-                    child: Text(
-                      '暂无生效配置',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-              ],
+              ),
             ),
     );
   }
@@ -147,11 +151,11 @@ class _EffectiveRoleRow extends StatelessWidget {
     final detail = unused
         ? '未启用'
         : official
-            ? '官方模型'
-            : [
-                (map['name'] ?? '').toString(),
-                (map['model'] ?? '').toString(),
-              ].where((s) => s.isNotEmpty).join(' · ');
+        ? '官方模型'
+        : [
+            (map['name'] ?? '').toString(),
+            (map['model'] ?? '').toString(),
+          ].where((s) => s.isNotEmpty).join(' · ');
     return ListTile(
       dense: true,
       contentPadding: EdgeInsets.zero,
@@ -163,8 +167,9 @@ class _EffectiveRoleRow extends StatelessWidget {
           textAlign: TextAlign.end,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.bodySmall
-              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
         ),
       ),
     );

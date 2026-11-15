@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -207,9 +208,10 @@ func (c *desktopHubClient) Install(ctx context.Context, tenantID, userID string,
 
 func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, filePath, content, oldString, newString string) (string, error) {
 	var out struct {
-		Output string `json:"output"`
+		Output    string `json:"output"`
+		DirectURL string `json:"direct_url"`
 	}
-	if err := c.postLimit(ctx, "/api/v1/desktop-services/file", map[string]any{
+	body := map[string]any{
 		"tenant_id":  tenantID,
 		"user_id":    userID,
 		"action":     action,
@@ -217,8 +219,16 @@ func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, f
 		"content":    content,
 		"old_string": oldString,
 		"new_string": newString,
-	}, &out, 1<<20); err != nil {
+	}
+	if err := c.postLimit(ctx, "/api/v1/desktop-services/file", body, &out, 1<<20); err != nil {
 		return "", err
+	}
+	if strings.TrimSpace(out.DirectURL) != "" {
+		out.DirectURL = strings.TrimSpace(out.DirectURL)
+		out.Output = ""
+		if err := c.postDirect(ctx, out.DirectURL, body, &out, 1<<20); err != nil {
+			return "", err
+		}
 	}
 	return out.Output, nil
 }
@@ -282,9 +292,10 @@ func (c *desktopHubClient) Screenshot(ctx context.Context, tenantID, userID, dis
 // An empty path means the image was captured and no file was written.
 func (c *desktopHubClient) screenshot(ctx context.Context, tenantID, userID, display, name string) ([]byte, string, error) {
 	var out struct {
-		MIME  string `json:"mime"`
-		Image string `json:"image_base64"`
-		Saved string `json:"saved_path"`
+		MIME      string `json:"mime"`
+		Image     string `json:"image_base64"`
+		Saved     string `json:"saved_path"`
+		DirectURL string `json:"direct_url"`
 	}
 	body := map[string]string{
 		"tenant_id": tenantID,
@@ -296,6 +307,11 @@ func (c *desktopHubClient) screenshot(ctx context.Context, tenantID, userID, dis
 	}
 	if err := c.postLimit(ctx, "/api/v1/desktop-services/screenshot", body, &out, desktop.MaxScreenshotBytes*2); err != nil {
 		return nil, "", err
+	}
+	if strings.TrimSpace(out.DirectURL) != "" && strings.TrimSpace(out.Image) == "" {
+		if err := c.postDirect(ctx, strings.TrimSpace(out.DirectURL), body, &out, desktop.MaxScreenshotBytes*2); err != nil {
+			return nil, "", err
+		}
 	}
 	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out.Image))
 	if err != nil || !desktop.IsPNG(data) || len(data) > desktop.MaxScreenshotBytes {
@@ -411,6 +427,39 @@ func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any,
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("desktop service is unreachable: %s", err.Error())
+	}
+	defer resp.Body.Close()
+	payload, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return desktopStatusError(resp.StatusCode, payload)
+	}
+	if dest != nil && len(bytes.TrimSpace(payload)) > 0 {
+		if err := json.Unmarshal(payload, dest); err != nil {
+			return fmt.Errorf("desktop service returned invalid status")
+		}
+	}
+	return nil
+}
+
+// postDirect reads a screenshot or a file from the machine's own desktopd.
+// The ticket in the URL is the authorization. The Hub bearer is not sent.
+func (c *desktopHubClient) postDirect(ctx context.Context, rawURL string, body any, dest any, limit int64) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return fmt.Errorf("desktop direct url is invalid")
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -448,10 +448,11 @@ func TestReadBodyWithLimitDetectsTruncation(t *testing.T) {
 // independent response-header timeout so dead peers fail fast.
 func TestNewHAHTTPClientForcesHTTP1(t *testing.T) {
 	client := newHAHTTPClient(peerPullTimeout)
-	tr, ok := client.Transport.(*http.Transport)
+	wrapper, ok := client.Transport.(interface{ Base() *http.Transport })
 	if !ok {
-		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+		t.Fatalf("Transport = %T, want Hub transport wrapper", client.Transport)
 	}
+	tr := wrapper.Base()
 	protos := tr.TLSClientConfig.NextProtos
 	for _, p := range protos {
 		if p == "h2" {

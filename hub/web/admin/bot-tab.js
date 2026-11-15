@@ -2658,6 +2658,8 @@
     var raw = String(value || '').trim();
     var parsed;
     try { parsed = new URL(raw); } catch (err) { return false; }
+    var host = String(parsed.hostname || '').toLowerCase().replace(/\.+$/, '');
+    if (host === 'node.invalid' || host.endsWith('.node.invalid')) return false;
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.host && !parsed.username && !parsed.password;
   }
 

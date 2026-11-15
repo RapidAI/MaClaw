@@ -180,6 +180,11 @@ func (h *IMMessageHandler) administerTrustedMemory(principalID, content, query, 
 	if semanticTrustedMemoryResultFailed(out) {
 		return "", fmt.Errorf("%s", out)
 	}
+	if content == "" && id == "" {
+		// Recall or list: the output is recalled store data, not a write
+		// acknowledgement, so it carries the untrusted-data fence.
+		out = corememory.WrapUntrustedRecall("memory", out)
+	}
 	return out, nil
 }
 

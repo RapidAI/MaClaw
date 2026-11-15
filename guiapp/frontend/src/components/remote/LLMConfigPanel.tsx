@@ -14,6 +14,7 @@ import { localizeModelNote } from "../../config/providerCatalog";
 import { useDialog } from "../CustomDialog";
 import { KNOWN_USER_AGENTS, withLiveAgentType } from "./userAgent";
 import { useCustomUserAgentField } from "./useCustomUserAgentField";
+import { useProviderDialogDeepLink } from "./useProviderDialogDeepLink";
 import { ProviderModelCombobox } from "./ProviderModelCombobox";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { MobileQRCodeDialog } from "./MobileQRCodeDialog";
@@ -36,9 +37,11 @@ interface Props {
     onStatusChange?: (online: boolean, configured: boolean) => void;
     onProviderChanged?: () => void;
     onRequestIdentityVerification?: () => void;
+    /** Increments when a deep link (agent model menu) requests provider management. */
+    autoOpenProviderDialogSeq?: number;
 }
 
-export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequestIdentityVerification }: Props) {
+export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequestIdentityVerification, autoOpenProviderDialogSeq = 0 }: Props) {
     const { showAlert, showConfirm, showPrompt } = useDialog();
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
@@ -430,6 +433,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         void loadProviders();
         onProviderChanged?.();
     }, [loadProviders, onProviderChanged]);
+
+    useProviderDialogDeepLink(autoOpenProviderDialogSeq, providerListReady, openDialog);
 
     const handleImportExternalAgents = useCallback(async () => {
         if (importingAgentsRef.current) return;

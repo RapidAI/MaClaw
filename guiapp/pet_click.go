@@ -109,6 +109,18 @@ func petClickAdvance(b petClickBurst, now time.Time, interval time.Duration) (pe
 	return petClickBurst{}, petClickClassOf(b.count)
 }
 
+// petPointerCaptureChange is what happens when the pet stops owning the
+// pointer. ownRelease is the reentrant notice from this window's own
+// ReleaseCapture during button-up; that press is still resolved there.
+// A grab stolen by someone else is not a click. If the pointer had already
+// crossed the drag threshold, the drag ends instead of sticking to later moves.
+func petPointerCaptureChange(dragging, dragMoved, ownRelease bool) (keepDragging, keepMoved, endDrag bool) {
+	if ownRelease || !dragging {
+		return dragging, dragMoved, false
+	}
+	return false, false, dragMoved
+}
+
 // petClickOnRelease is the mouse-up decision. A press that already traveled
 // past the drag threshold is not a click and does not change the open burst.
 func petClickOnRelease(b petClickBurst, now time.Time, interval time.Duration, dragged bool) (petClickBurst, petClickClass) {
@@ -400,7 +412,14 @@ func (a *App) finishDesktopPetClick(class petClickClass, epoch uint64) petClickR
 		return result
 	}
 	if result.Clip != "" {
+		// Playing the clip can load a renderer. Hide, disable, and quit retire
+		// the session while that work runs; the side effect below has to see it.
 		a.playDesktopPetClickClip(result.Clip)
+	}
+	if a.petClickEpoch.Load() != epoch {
+		result.OpenMain = false
+		result.Clip = ""
+		return result
 	}
 	if result.OpenMain {
 		a.onFloatingButtonClicked()

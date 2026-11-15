@@ -1000,6 +1000,16 @@ const maxScreenshotBytes = 16 << 20
 
 var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 
+// AuthorizeLocal wakes the assigned desktop and returns the server. A
+// same-node srv uses this before reading a screenshot or a file locally,
+// so Hub still records the wake and the bytes do not cross the tunnel.
+func (p *Pool) AuthorizeLocal(ctx context.Context, tenantID, userID string) (Server, error) {
+	if err := p.ensureOp(ctx, tenantID, userID, WakeScreenshot); err != nil {
+		return Server{}, err
+	}
+	return p.resolve(ctx, tenantID, userID)
+}
+
 // Screenshot returns a PNG of the user's desktop from the Docker service that
 // owns the user. An empty display means the service's default (:20).
 func (p *Pool) Screenshot(ctx context.Context, tenantID, userID, display, name string) ([]byte, string, error) {
@@ -1432,7 +1442,7 @@ func normalizeServer(in Server, keepToken string) (Server, error) {
 	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return Server{}, fmt.Errorf("%w: base_url is invalid", ErrInvalidInput)
 	}
-	if strings.TrimSpace(in.NodeID) == "" && strings.HasSuffix(parsed.Hostname(), ".node.invalid") {
+	if strings.TrimSpace(in.NodeID) == "" && virtualNodeHost(parsed.Hostname()) {
 		return Server{}, fmt.Errorf("%w: base_url is invalid", ErrInvalidInput)
 	}
 	if in.AccessToken == "" {

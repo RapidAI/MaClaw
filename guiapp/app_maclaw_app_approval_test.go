@@ -4598,14 +4598,20 @@ func TestMaclawAppApprovalRegistryMigratesLegacyJSONAndReorders(t *testing.T) {
 	if jsonColumns != 0 {
 		t.Fatalf("approval schema contains JSON document columns: %d", jsonColumns)
 	}
-	registry.Instances = append(registry.Instances, maclawAppApprovalInstance{InstanceID: "second-approval", AppID: "expense", Title: "Second"})
+	registry.Instances = append(registry.Instances,
+		maclawAppApprovalInstance{InstanceID: "second-approval", AppID: "expense", Title: "Second"},
+		maclawAppApprovalInstance{InstanceID: "third-approval", AppID: "expense", Title: "Third"},
+		maclawAppApprovalInstance{InstanceID: "fourth-approval", AppID: "expense", Title: "Fourth"},
+	)
 	registry.Instances[0], registry.Instances[1] = registry.Instances[1], registry.Instances[0]
 	if err := app.writeMaclawAppApprovalRegistry(registry); err != nil {
 		t.Fatal(err)
 	}
 	registry, err = app.readMaclawAppApprovalRegistry()
-	if err != nil || len(registry.Instances) != 2 || registry.Instances[0].InstanceID != "second-approval" || registry.Instances[1].InstanceID != "legacy-approval" {
-		t.Fatalf("reordered registry = %#v, %v", registry.Instances, err)
+	if err != nil || len(registry.Instances) != 4 ||
+		registry.Instances[0].InstanceID != "second-approval" || registry.Instances[1].InstanceID != "legacy-approval" ||
+		registry.Instances[2].InstanceID != "third-approval" || registry.Instances[3].InstanceID != "fourth-approval" {
+		t.Fatalf("partially reordered registry = %#v, %v", registry.Instances, err)
 	}
 	registry.Instances = nil
 	if err := app.writeMaclawAppApprovalRegistry(registry); err != nil {

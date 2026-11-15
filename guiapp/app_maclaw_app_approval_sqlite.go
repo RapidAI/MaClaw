@@ -236,8 +236,16 @@ func writeMaclawAppApprovalRegistryTx(tx *sql.Tx, registry maclawAppApprovalRegi
 		}
 		kept[instance.InstanceID] = struct{}{}
 		stored := existing[instance.InstanceID]
-		if stored.signature == signature && stored.position == position {
-			continue
+		if stored.signature == signature {
+			if reordered {
+				if _, err := tx.Exec(`UPDATE app_approval_instances SET position=? WHERE instance_id=?`, position, instance.InstanceID); err != nil {
+					return err
+				}
+				continue
+			}
+			if stored.position == position {
+				continue
+			}
 		}
 		if err := writeMaclawAppApprovalInstance(tx, instance, position, signature); err != nil {
 			return err

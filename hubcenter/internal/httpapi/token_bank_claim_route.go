@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
 )
 
@@ -123,11 +124,10 @@ func (h *SkillMarketHandlers) proxyGiftClaim(w http.ResponseWriter, r *http.Requ
 			req.Header.Set(tokenBankPeerSecretHeader, secret)
 		}
 	}
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	client := remote.NewHubHTTPClient()
+	client.Timeout = 10 * time.Second
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	resp, err := client.Do(req)
 	if err != nil {

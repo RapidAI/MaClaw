@@ -39,6 +39,7 @@ static cairo_surface_t *surface_from_png(const void *data, int len);
 extern void maclawLinuxPetClicked(void);
 extern void maclawLinuxPetDragged(int x, int y);
 extern void maclawLinuxPetMenu(int action);
+extern int maclawLinuxPetPositionLocked(void);
 
 // ── PNG loading from memory ─────────────────────────────────────────────────
 
@@ -394,6 +395,11 @@ static gboolean on_timer(gpointer data) {
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
+static void on_menu_pin(GtkMenuItem *item, gpointer data) {
+	(void)item; (void)data;
+	maclawLinuxPetMenu(6);
+}
+
 static void on_menu_open_main(GtkMenuItem *item, gpointer data) {
 	(void)item; (void)data;
 	maclawLinuxPetMenu(4);
@@ -421,6 +427,10 @@ static void on_menu_quit(GtkMenuItem *item, gpointer data) {
 
 static void popup_pet_menu(GdkEventButton *e) {
 	GtkWidget *menu = gtk_menu_new();
+	GtkWidget *pin = gtk_check_menu_item_new_with_label("定住");
+	gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(pin), maclawLinuxPetPositionLocked() != 0);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), pin);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 	GtkWidget *openMain = gtk_menu_item_new_with_label("打开主窗口");
 	GtkWidget *openPet = gtk_menu_item_new_with_label("打开宠物对话");
 	GtkWidget *settings = gtk_menu_item_new_with_label("设置");
@@ -431,6 +441,7 @@ static void popup_pet_menu(GdkEventButton *e) {
 	gtk_menu_shell_append(GTK_MENU_SHELL(menu), settings);
 	gtk_menu_shell_append(GTK_MENU_SHELL(menu), hide);
 	gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit);
+	g_signal_connect(pin, "activate", G_CALLBACK(on_menu_pin), NULL);
 	g_signal_connect(openMain, "activate", G_CALLBACK(on_menu_open_main), NULL);
 	g_signal_connect(openPet, "activate", G_CALLBACK(on_menu_open_pet), NULL);
 	g_signal_connect(settings, "activate", G_CALLBACK(on_menu_settings), NULL);
@@ -615,6 +626,7 @@ type linuxFloatingWindow struct {
 	petRearingVariant string
 	petRuntimeState   string
 	petStateDeadline  time.Time
+	petPositionLocked bool
 	packFrameCache    *petpack.FrameCache
 }
 
@@ -699,6 +711,7 @@ func (w *linuxFloatingWindow) Create(x, y, width, height int) error {
 				w.petSkin = cfg.PetSkin
 			}
 			w.petVariant = petpack.ResolveVariantForRuntime(cfg.PetVariant)
+			w.petPositionLocked = cfg.PetPositionLocked
 		}
 	}
 
@@ -765,6 +778,12 @@ func (w *linuxFloatingWindow) IsCreated() bool {
 // Pet sound and motion posing remain stubs on Linux. Skin/variant changes
 // still reload the visible still so a settings switch is not a blank window.
 func (w *linuxFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string) {
+}
+
+func (w *linuxFloatingWindow) UpdatePositionLock(locked bool) {
+	w.mu.Lock()
+	w.petPositionLocked = locked
+	w.mu.Unlock()
 }
 
 func (w *linuxFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
@@ -914,6 +933,21 @@ func maclawLinuxPetDragged(x, y C.int) {
 	go w.app.onFloatingButtonDragged(int(x), int(y))
 }
 
+//export maclawLinuxPetPositionLocked
+func maclawLinuxPetPositionLocked() C.int {
+	w := currentLinuxFloating()
+	if w == nil {
+		return 0
+	}
+	w.mu.Lock()
+	locked := w.petPositionLocked
+	w.mu.Unlock()
+	if locked {
+		return 1
+	}
+	return 0
+}
+
 //export maclawLinuxPetMenu
 func maclawLinuxPetMenu(action C.int) {
 	w := currentLinuxFloating()
@@ -931,5 +965,13 @@ func maclawLinuxPetMenu(action C.int) {
 		go w.app.showMainWindowFromPet()
 	case 5:
 		go w.app.openPetConversationFromMenu()
+	case 6:
+		// Flip on this thread before any config lock. The file write stays
+		// off the GTK thread.
+		w.mu.Lock()
+		next := !w.petPositionLocked
+		w.petPositionLocked = next
+		w.mu.Unlock()
+		w.app.persistPetPositionLockFromMenu(next)
 	}
 }

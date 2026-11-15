@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 )
@@ -248,12 +249,12 @@ func (c *remoteCodingCallbacks) executeLedgerReadOnlyRemoteSpawn(specs []codingS
 	for i, handle := range handles {
 		child := parent.newReadOnlyNestedRemoteCodingAgent(specs[i], c)
 		prober := newGUIRemoteWorkspaceProber(parent.handler, parent.sessionID, parent.projectDir, remoteTarget)
-		go runAdmittedRemoteReadOnlyChild(store, parent.runtimeAttempt.TaskID, handle, policy, child, prober, parent.onProgress)
+		go runAdmittedRemoteReadOnlyChild(store, parent.runtimeAttempt.TaskID, handle, policy, child, prober, parent.onProgress, parent.taskPermissionOwnerID(), trustedLoopDeliveryTarget(parent.loopCtx))
 	}
 	return formatAdmittedReadOnlyChildHandles(handles)
 }
 
-func runAdmittedRemoteReadOnlyChild(store codingruntime.Store, parentTaskID string, handle codingruntime.ChildTaskHandle, policy codingruntime.PolicySnapshot, child *RemoteCodingSubAgent, prober codingruntime.WorkspaceProber, onProgress func(string)) {
+func runAdmittedRemoteReadOnlyChild(store codingruntime.Store, parentTaskID string, handle codingruntime.ChildTaskHandle, policy codingruntime.PolicySnapshot, child *RemoteCodingSubAgent, prober codingruntime.WorkspaceProber, onProgress func(string), resumeOwnerID string, resumeTarget *agent.DeliveryTarget) {
 	if store == nil || child == nil {
 		return
 	}
@@ -265,18 +266,20 @@ func runAdmittedRemoteReadOnlyChild(store codingruntime.Store, parentTaskID stri
 	service := codingruntime.ChildTaskService{Store: store}
 	runner := codingruntime.Runner{Store: store, LeaseOwner: "gui:remote-child:" + handle.TaskID, LeaseDuration: 15 * time.Minute, WorkspaceProber: prober}
 	outcome := <-service.StartReadOnlyChild(ctx, runner, handle.TaskID, policy, child)
-	if onProgress == nil {
-		return
+	if onProgress != nil {
+		if outcome.Err != nil {
+			emitCodingSubAgentProgress(onProgress, fmt.Sprintf("remote read-only child %s failed: %s", handle.TaskID, compactSubAgentErrorSummary(outcome.Err.Error())))
+		} else {
+			status := codingruntime.TaskFailed
+			if outcome.Attempt != nil {
+				status = outcome.Attempt.Status
+			}
+			emitCodingSubAgentProgress(onProgress, fmt.Sprintf("remote read-only child %s completed: %s", handle.TaskID, status))
+		}
 	}
-	if outcome.Err != nil {
-		emitCodingSubAgentProgress(onProgress, fmt.Sprintf("remote read-only child %s failed: %s", handle.TaskID, compactSubAgentErrorSummary(outcome.Err.Error())))
-		return
-	}
-	status := codingruntime.TaskFailed
-	if outcome.Attempt != nil {
-		status = outcome.Attempt.Status
-	}
-	emitCodingSubAgentProgress(onProgress, fmt.Sprintf("remote read-only child %s completed: %s", handle.TaskID, status))
+	// Once this child's bounded result is durable, the last-finishing sibling
+	// continues the parent's main task automatically — no manual review action.
+	autoResumeCodingChildReviewIfReady(child.handler, resumeOwnerID, parentTaskID, resumeTarget)
 }
 
 func (parent *RemoteCodingSubAgent) newReadOnlyNestedRemoteCodingAgent(spec codingSpawnSpec, _ *remoteCodingCallbacks) *RemoteCodingSubAgent {

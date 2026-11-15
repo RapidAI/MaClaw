@@ -59,8 +59,23 @@ func (c *coreAgentCallbacks) hubBotInstance() bool {
 	return strings.TrimSpace(c.instance.Metadata["hub_bot"]) == "1"
 }
 
-func (c *coreAgentCallbacks) botUsesContainer() bool {
+// botHasNoDesktop is a bot created with desktop_mode=none. Hub marks the
+// turn (bot_desktop) and the instance (hub_bot_desktop).
+func (c *coreAgentCallbacks) botHasNoDesktop() bool {
 	if c == nil {
+		return false
+	}
+	if strings.TrimSpace(c.messageMetadata["bot_desktop"]) == desktop.BotDesktopModeNone {
+		return true
+	}
+	if strings.TrimSpace(c.instance.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone {
+		return true
+	}
+	return strings.TrimSpace(c.runtimeRequest.Instance.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
+}
+
+func (c *coreAgentCallbacks) botUsesContainer() bool {
+	if c == nil || c.botHasNoDesktop() {
 		return false
 	}
 	if c.hubBotInstance() {
@@ -121,6 +136,31 @@ func botRejectsToolName(name string) bool {
 	return desktopLeavesLoggedInBrowser(rendered) || botHostSystemTool(rendered)
 }
 
+// noneDesktopDropsTool removes the desktop, the computer, and the browser
+// from a bot that has no cloud desktop. Search and page fetch stay on the
+// server. A bot that does have a desktop keeps the list it already had.
+func noneDesktopDropsTool(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "web_search" || name == "web_fetch" || name == "knowledge_save_url" {
+		return false
+	}
+	switch name {
+	case "desktop", "local_computer", "browser", "computer_use", "open", "download_file", "screenshot":
+		return true
+	}
+	if strings.HasPrefix(name, "computer_") || strings.HasPrefix(name, "gui_") {
+		return true
+	}
+	if botHostSystemTool(name) {
+		return true
+	}
+	rendered := coretool.SemanticModelFunctionName(name)
+	if rendered != "" && rendered != name {
+		return noneDesktopDropsTool(rendered)
+	}
+	return false
+}
+
 func botHostSystemTool(name string) bool {
 	switch name {
 	case "read_file", "write_file", "edit_file", "edit_lines", "list_directory",
@@ -149,6 +189,16 @@ func botHostSystemTool(name string) bool {
 
 func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) []map[string]interface{} {
 	tools = c.withBotScheduleTool(tools)
+	if c.botHasNoDesktop() {
+		kept := make([]map[string]interface{}, 0, len(tools))
+		for _, tool := range tools {
+			if noneDesktopDropsTool(tooldef.Name(tool)) {
+				continue
+			}
+			kept = append(kept, tool)
+		}
+		return kept
+	}
 	if !c.botUsesContainer() {
 		return tools
 	}

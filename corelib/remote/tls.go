@@ -79,7 +79,8 @@ func HubTLSConfig() (*tls.Config, error) {
 	return cfg, nil
 }
 
-func sameOriginRedirect(req *http.Request, via []*http.Request) error {
+// SameOriginRedirect allows redirects only within one scheme/host/port origin.
+func SameOriginRedirect(req *http.Request, via []*http.Request) error {
 	if req == nil || req.URL == nil || req.URL.User != nil || len(via) == 0 || len(via) >= 3 {
 		return http.ErrUseLastResponse
 	}
@@ -128,6 +129,15 @@ func (t *hubTransport) CloseIdleConnections() {
 	t.base.CloseIdleConnections()
 }
 
+func (t *hubTransport) Base() *http.Transport {
+	return t.base
+}
+
+// NewHubTransport applies Hub URL policy to a custom HTTP/1.1 or HTTP/2 transport.
+func NewHubTransport(base *http.Transport) http.RoundTripper {
+	return &hubTransport{base: base}
+}
+
 // NewHubHTTPClient creates a pooled Hub client. Invalid TLS configuration
 // fails every request explicitly; it never falls back to skipping verification.
 func NewHubHTTPClient() *http.Client {
@@ -152,7 +162,7 @@ func NewHubHTTPClient() *http.Client {
 	}
 	return &http.Client{
 		Timeout:       30 * time.Second,
-		CheckRedirect: sameOriginRedirect,
+		CheckRedirect: SameOriginRedirect,
 		Transport:     &hubTransport{base: transport},
 	}
 }

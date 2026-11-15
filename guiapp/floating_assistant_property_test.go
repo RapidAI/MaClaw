@@ -483,6 +483,8 @@ func (m *mockFloatingWindowForProps) IsCreated() bool {
 
 func (m *mockFloatingWindowForProps) UpdateSoundConfig(soundEnabled bool, preset string) {}
 
+func (m *mockFloatingWindowForProps) UpdatePositionLock(locked bool) {}
+
 func (m *mockFloatingWindowForProps) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
 }
 

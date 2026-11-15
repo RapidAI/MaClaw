@@ -41,6 +41,8 @@ assets:
       - rig/arm-l.png
       - rig/arm-r.png
       - rig/head.png
+      - rig/braid.png
+      - rig/braid-tip.png
       - rig/mouth.png
       - rig/eyes.png
       - rig/mouse-charm.png
@@ -75,6 +77,8 @@ variants:
           - rig/arm-l.png
           - rig/arm-r.png
           - rig/head.png
+          - rig/braid.png
+          - rig/braid-tip.png
           - rig/mouth.png
           - rig/eyes.png
           - rig/mouse-charm.png

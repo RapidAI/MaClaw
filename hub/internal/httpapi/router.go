@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/edgelink"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/localrelay"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -442,10 +443,23 @@ func NewRouter(
 			return edgeBroker.Client(tenantID, nodeID, target)
 		}
 		mux.HandleFunc("GET /api/admin/bots/nodes", requireTenantAdmin(GetEdgeNodesAdminHandler(edgeRegistry, edgeBroker)))
-		mux.HandleFunc("DELETE /api/admin/bots/nodes/{id}", requireTenantAdmin(DeleteEdgeNodeAdminHandler(edgeRegistry, edgeBroker, desktopPool)))
+		mux.HandleFunc("GET /api/admin/platform/edge-nodes", requireGlobalAdmin(GetEdgeNodesPlatformHandler(edgeRegistry, edgeBroker)))
+		mux.HandleFunc("GET /api/admin/platform/tenants/{tenantId}/edge-policy", requireGlobalAdmin(GetEdgePolicyPlatformHandler(edgeRegistry)))
+		mux.HandleFunc("PUT /api/admin/platform/tenants/{tenantId}/edge-policy", requireGlobalAdmin(PutEdgePolicyPlatformHandler(edgeRegistry)))
+		mux.HandleFunc("DELETE /api/admin/bots/nodes/{id}", requireTenantAdmin(DeleteEdgeNodeAdminHandler(edgeRegistry, edgeBroker, desktopPool, botSvc)))
 		mux.HandleFunc("POST /api/admin/bots/nodes/codes", requireTenantAdmin(PostEdgeCodeAdminHandler(edgeRegistry)))
-		mux.HandleFunc("POST /api/v1/edge/enroll", PostEdgeEnrollHandler(edgeRegistry, desktopPool))
-		mux.HandleFunc("GET /api/v1/edge/link", GetEdgeLinkHandler(edgeRegistry, edgeBroker))
+		mux.HandleFunc("POST /api/v1/edge/enroll", PostEdgeEnrollHandler(edgeRegistry, desktopPool, botSvc))
+		botSvc.NodeHTTP = func(nodeID string) *http.Client {
+			if edgeBroker == nil || edgeRegistry == nil {
+				return nil
+			}
+			node, err := edgeRegistry.Lookup(context.Background(), nodeID)
+			if err != nil {
+				return nil
+			}
+			return edgeBroker.Client(node.TenantID, node.ID, edgelink.TargetSrv)
+		}
+		mux.HandleFunc("GET /api/v1/edge/link", GetEdgeLinkHandler(edgeRegistry, edgeBroker, botSvc))
 		mux.HandleFunc(edgeDesktopRelayPrefix+"{node}/{rest...}", EdgeDesktopRelayHandler(edgeRegistry, edgeBroker))
 		mux.HandleFunc(edgeCDPPrefix+"{ticket}/{rest...}", EdgeCDPRelayHandler(edgeRegistry, edgeBroker))
 		mux.HandleFunc("GET /api/v1/edge/viewer/{id}", EdgeViewerConfirmHandler(edgeRegistry))
@@ -458,7 +472,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/desktop-services", requireTenantAdmin(PostDesktopServiceAdminHandler(desktopPool)))
 	mux.HandleFunc("PATCH /api/admin/desktop-services/{id}", requireTenantAdmin(PatchDesktopServiceAdminHandler(desktopPool)))
 	mux.HandleFunc("DELETE /api/admin/desktop-services/{id}", requireTenantAdmin(DeleteDesktopServiceAdminHandler(desktopPool)))
-	mux.HandleFunc("POST /api/admin/desktop-services/assignments", requireTenantAdmin(PostDesktopAssignmentAdminHandler(desktopPool)))
+	mux.HandleFunc("POST /api/admin/desktop-services/assignments", requireTenantAdmin(PostDesktopAssignmentAdminHandler(desktopPool, botSvc)))
 	mux.HandleFunc("DELETE /api/admin/desktop-services/assignments/{id}", requireTenantAdmin(DeleteDesktopAssignmentAdminHandler(desktopPool)))
 	mux.HandleFunc("POST /api/admin/desktop-services/desktops", requireTenantAdmin(PostDesktopCreateAdminHandler(desktopPool, botSvc)))
 	mux.HandleFunc("POST /api/admin/desktop-services/desktops/stop", requireTenantAdmin(PostDesktopStopAdminHandler(desktopPool, botSvc)))
@@ -559,6 +573,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/bots/{id}/desktop", GetBotDesktopHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop", PostBotDesktopWatchHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop/handback", PostBotDesktopHandBackHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/desktop/control", PostBotDesktopControlHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/demo/start", PostBotDemoStartHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/demo/narrate", PostBotDemoNarrateHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/demo/stop", PostBotDemoStopHandler(botSvc, identity))
@@ -1565,5 +1580,6 @@ func NewRouter(
 	registerStaticRoutes(mux, "./web/user-ranking", "/user-ranking")
 	registerHomeStaticRoutes(mux, "./web/home", "/")
 	registerBotnodeDoc(mux)
+	registerSelfDesktopdDoc(mux)
 	return mux
 }

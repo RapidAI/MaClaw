@@ -702,6 +702,12 @@ func HydrateRunMetadataFromDir(entry *corelib.NLSkillEntry) error {
 	if fallbackName == "" {
 		fallbackName = strings.TrimSpace(entry.DirName)
 	}
+	// Hydration re-reads the on-disk definition outside the scanner, so a dir
+	// tampered with after the last scan must fail the same integrity gate —
+	// a pinned skill whose bytes drifted does not get to run on stale trust.
+	if err := VerifySkillIntegrityForLoad(entry.SkillDir); err != nil {
+		return fmt.Errorf("skill integrity check failed: %w", err)
+	}
 	imported, _, err := loadSkillFromDir(entry.SkillDir, fallbackName)
 	if err != nil {
 		return err

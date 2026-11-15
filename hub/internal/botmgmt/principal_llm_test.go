@@ -69,6 +69,14 @@ func (r *ownerLLMRecorder) count() int {
 	return len(r.configs)
 }
 
+func (r *ownerLLMRecorder) snapshot() []map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]map[string]any, len(r.configs))
+	copy(out, r.configs)
+	return out
+}
+
 func newPrincipalLLMFixture(t *testing.T, issuer OwnerLLMIssuer, rec record) (*Service, *ownerLLMRecorder) {
 	t.Helper()
 	recorder := &ownerLLMRecorder{}
@@ -685,4 +693,307 @@ func TestLegacyBotLLMEndpointMapsOntoRoleRows(t *testing.T) {
 	if recorder.last(t)["maclaw_bot_llm_mode"] != "default" {
 		t.Fatalf("legacy default did not restore the service: %#v", recorder.last(t)["maclaw_bot_llm_mode"])
 	}
+}
+
+func officialLocalStages() *PrincipalLLMRolesInput {
+	role := PrincipalLLMRoleInput{Official: true, Model: "auto"}
+	return &PrincipalLLMRolesInput{Foreground: role, Background: role, ComputerUse: role, Grounder: role}
+}
+
+func TestCloudDefaultLeavesLocalStagesInPlace(t *testing.T) {
+	rec := ownerLLMTestRecordWithAdminDefault()
+	svc, _ := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	ctx := context.Background()
+	view, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{
+		Mode: "default", LocalRoles: officialLocalStages(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Mode != "default" || view.LocalRoles == nil || !view.LocalRoles.Foreground.Official || view.LocalRoles.Grounder.Model != "auto" {
+		t.Fatalf("view = %#v", view)
+	}
+	again, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "custom", Name: "MyProv", URL: "https://api.mine.example/v1", Key: "sk-mine", Model: "mine-large", Protocol: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Mode != "custom" || again.LocalRoles == nil || !again.LocalRoles.ComputerUse.Official {
+		t.Fatalf("cloud custom cleared local stages: %#v", again.LocalRoles)
+	}
+}
+
+func TestLocalSrvPushUsesStageModelsNotTheAdminCatalog(t *testing.T) {
+	rec := ownerLLMTestRecordWithAdminDefault()
+	svc, recorder := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	ctx := context.Background()
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default", LocalRoles: officialLocalStages()}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	choice := ownerBotLLMOf(stored, "alice")
+	stored.DialNode = "node-1"
+	principal := findPrincipal(stored.Principals, "alice")
+	if principal == nil {
+		t.Fatal("principal missing")
+	}
+	if err := svc.pushBotOwnerLLM(ctx, stored, *principal, ownerLLMTestEndpoint, "viewer-local", stored.LLM, choice); err != nil {
+		t.Fatal(err)
+	}
+	pushed := recorder.last(t)
+	raw, err := json.Marshal(pushed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	if strings.Contains(body, "sk-ant-admin") || strings.Contains(body, "api.anthropic.com") {
+		t.Fatalf("admin provider leaked onto the local srv: %s", body)
+	}
+	if pushed["maclaw_llm_url"] != ownerLLMTestEndpoint || pushed["maclaw_llm_key"] != "viewer-local" || pushed["maclaw_bot_llm_mode"] != "custom" {
+		t.Fatalf("local push = %#v", pushed)
+	}
+	if _, ok := pushed["maclaw_hub_bot_roles"]; ok {
+		t.Fatal("administrator role pins were copied to the local srv")
+	}
+	assertSameRolePin(t, pushed, "foreground", "hub-llm", "auto")
+	assertSameRolePin(t, pushed, "grounder", "hub-llm", "auto")
+}
+
+func TestDropUnresolvedProfilesRemovesAdminPins(t *testing.T) {
+	profiles := map[string]any{
+		"assistant":  map[string]any{"provider_id": corelib.MaclawLLMLegacyProviderID("Admin Pick"), "model": "claude"},
+		"foreground": map[string]any{"provider_id": corelib.MaclawLLMLegacyProviderID("hub-llm"), "model": "auto"},
+		"note":       "keep",
+	}
+	got := dropUnresolvedProfiles(profiles, []map[string]any{{"name": "hub-llm"}})
+	if _, ok := got["assistant"]; ok {
+		t.Fatalf("admin pin kept: %#v", got)
+	}
+	if got["foreground"] == nil || got["note"] != "keep" {
+		t.Fatalf("kept = %#v", got)
+	}
+}
+
+func TestCloudUserDoesNotReuseANodeViewerToken(t *testing.T) {
+	rec := ownerLLMTestRecordWithAdminDefault()
+	svc, recorder := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	ctx := context.Background()
+	stored, err := svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.NodeLinks = []nodeLink{{
+		NodeID: "node-1", BaseURL: stored.BaseURL, AdminSecret: stored.AdminSecret,
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice",
+			APIKey: "key-node", APISecret: "sec-node",
+			LLMViewerToken:    "viewer-from-node",
+			LLMViewerIssuedAt: svc.Now().UTC().Format(time.RFC3339),
+		}},
+	}}
+	if err := svc.save(ctx, "tenant-a", stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	writes := recorder.snapshot()
+	if len(writes) != 2 {
+		t.Fatalf("writes = %d, want cloud then node", len(writes))
+	}
+	for i, write := range writes {
+		if write["maclaw_llm_key"] == "viewer-from-node" {
+			t.Fatalf("write %d reused the node token: %#v", i, write["maclaw_llm_key"])
+		}
+	}
+	stored, err = svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := findPrincipal(stored.Principals, "alice")
+	if pub == nil || pub.LLMViewerToken == "" || pub.LLMViewerToken == "viewer-from-node" {
+		t.Fatalf("public token = %#v", pub)
+	}
+}
+
+func TestNodeOnlySavePushesLocalStages(t *testing.T) {
+	rec := ownerLLMTestRecordWithAdminDefault()
+	svc, recorder := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	ctx := context.Background()
+	stored, err := svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Principals = nil
+	stored.NodeLinks = []nodeLink{{
+		NodeID: "node-1", BaseURL: stored.BaseURL, AdminSecret: stored.AdminSecret,
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice",
+			APIKey: "key-node", APISecret: "sec-node",
+		}},
+	}}
+	if err := svc.save(ctx, "tenant-a", stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default", LocalRoles: officialLocalStages()}); err != nil {
+		t.Fatal(err)
+	}
+	writes := recorder.snapshot()
+	if len(writes) != 1 {
+		t.Fatalf("writes = %d, want the node only", len(writes))
+	}
+	raw, err := json.Marshal(writes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "sk-ant-admin") || strings.Contains(string(raw), "api.anthropic.com") {
+		t.Fatalf("node-only push leaked the admin catalog: %s", raw)
+	}
+	assertSameRolePin(t, writes[0], "grounder", "hub-llm", "auto")
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.count() != 1 {
+		t.Fatalf("unchanged resave rewrote the node, writes = %d", recorder.count())
+	}
+}
+
+func TestCloudStampIgnoresLocalStages(t *testing.T) {
+	plain := ownerBotLLM{Mode: corelib.MaclawBotLLMModeDefault}
+	withLocal := plain
+	withLocal.Local = &localStageLLM{
+		Foreground:  &ownerLLMOverride{Official: true, Model: "auto"},
+		Background:  &ownerLLMOverride{Official: true, Model: "worker"},
+		ComputerUse: &ownerLLMOverride{Official: true, Model: "auto"},
+		Grounder:    &ownerLLMOverride{Official: true, Model: "auto"},
+	}
+	if ownerBotLLMStamp(plain) != "" || ownerBotLLMStamp(withLocal) != "" {
+		t.Fatalf("cloud stamp moved with local stages: %q %q", ownerBotLLMStamp(plain), ownerBotLLMStamp(withLocal))
+	}
+	if localDesktopLLMStamp(plain) == localDesktopLLMStamp(withLocal) {
+		t.Fatal("local stamp ignored a stage model change")
+	}
+}
+
+func TestLocalStageMayReuseATenantProviderName(t *testing.T) {
+	rec := ownerLLMTestRecordWithAdminDefault()
+	svc, _ := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	ctx := context.Background()
+	role := PrincipalLLMRoleInput{
+		Name: "Admin Pick", URL: "https://api.mine.example/v1", Key: "sk-local", Model: "mine", Protocol: "anthropic",
+	}
+	stages := &PrincipalLLMRolesInput{Foreground: role, Background: role, ComputerUse: role, Grounder: role}
+	view, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default", LocalRoles: stages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Mode != "default" || view.LocalRoles == nil || view.LocalRoles.Foreground.Name != "Admin Pick" || !view.LocalRoles.Foreground.KeySet {
+		t.Fatalf("view = %#v", view)
+	}
+	role.Key = ""
+	role.Model = "mine-2"
+	stages = &PrincipalLLMRolesInput{Foreground: role, Background: role, ComputerUse: role, Grounder: role}
+	again, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default", LocalRoles: stages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.LocalRoles == nil || again.LocalRoles.Grounder.Model != "mine-2" || !again.LocalRoles.Grounder.KeySet {
+		t.Fatalf("blank key was not kept: %#v", again.LocalRoles)
+	}
+}
+
+func TestSavePushesLocalStagesToTheNodeSeparately(t *testing.T) {
+	rec := ownerLLMTestRecordWithAdminDefault()
+	svc, recorder := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	ctx := context.Background()
+	stored, err := svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.NodeLinks = []nodeLink{{
+		NodeID: "node-1", BaseURL: stored.BaseURL, AdminSecret: stored.AdminSecret,
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice",
+			APIKey: "key-node", APISecret: "sec-node",
+		}},
+	}}
+	if err := svc.save(ctx, "tenant-a", stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default", LocalRoles: officialLocalStages()}); err != nil {
+		t.Fatal(err)
+	}
+	writes := recorder.snapshot()
+	if len(writes) != 2 {
+		t.Fatalf("writes = %d, want cloud then node", len(writes))
+	}
+	cloudRaw, _ := json.Marshal(writes[0])
+	nodeRaw, _ := json.Marshal(writes[1])
+	if !strings.Contains(string(cloudRaw), "sk-ant-admin") {
+		t.Fatalf("cloud push dropped the admin catalog: %s", cloudRaw)
+	}
+	if strings.Contains(string(nodeRaw), "sk-ant-admin") || strings.Contains(string(nodeRaw), "api.anthropic.com") {
+		t.Fatalf("node push leaked the admin catalog: %s", nodeRaw)
+	}
+	if writes[1]["maclaw_bot_llm_mode"] != "custom" || writes[1]["maclaw_llm_key"] != "viewer-token-1" {
+		t.Fatalf("node push = %#v", writes[1])
+	}
+	assertSameRolePin(t, writes[1], "grounder", "hub-llm", "auto")
+
+	stored, err = svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := findPrincipal(stored.Principals, "alice")
+	link := findNodeLink(stored.NodeLinks, "node-1")
+	nodePrincipal := findPrincipal(link.Principals, "alice")
+	if pub == nil || nodePrincipal == nil || pub.LLMConfigStamp == "" || pub.LLMConfigStamp == nodePrincipal.LLMConfigStamp {
+		t.Fatalf("stamps public=%q node=%q", stampOf(pub), stampOf(nodePrincipal))
+	}
+	view, ok := nodeView(stored, "node-1")
+	if !ok {
+		t.Fatal("node view")
+	}
+	if err := svc.writeBotOwnerLLM(ctx, "tenant-a", view, "alice", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.writeBotOwnerLLM(ctx, "tenant-a", stored, "alice", false); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.count() != 2 {
+		t.Fatalf("a current stamp was rewritten, writes = %d", recorder.count())
+	}
+	// Saving the same cloud choice again must not rewrite either srv.
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.count() != 2 {
+		t.Fatalf("unchanged cloud resave rewrote config, writes = %d", recorder.count())
+	}
+	changed := officialLocalStages()
+	changed.Background.Model = "worker"
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default", LocalRoles: changed}); err != nil {
+		t.Fatal(err)
+	}
+	again := recorder.snapshot()
+	if len(again) != 3 {
+		t.Fatalf("local stage edit wrote %d configs, want one node write", len(again))
+	}
+	nodeAgain, err := json.Marshal(again[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(nodeAgain), "sk-ant-admin") {
+		t.Fatalf("local stage edit rewrote the cloud catalog: %s", nodeAgain)
+	}
+	assertSameRolePin(t, again[2], "background", "hub-llm", "worker")
+}
+
+func stampOf(principal *ownerPrincipal) string {
+	if principal == nil {
+		return ""
+	}
+	return principal.LLMConfigStamp
 }

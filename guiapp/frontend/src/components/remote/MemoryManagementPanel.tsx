@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { intlLocale, localizeText, normalizeLang } from "../../i18n";
+import { localizeText, normalizeLang } from "../../i18n";
+import { formatMemoryDate } from "./memoryDate";
 import {
     ListMemories,
     SaveMemory,
@@ -117,14 +118,6 @@ const inputStyle: React.CSSProperties = {
 const labelStyle: React.CSSProperties = {
     fontSize: "0.76rem", color: colors.textSecondary, marginBottom: 4, display: "block",
 };
-/** Shared date formatter. */
-function fmtDate(s: string, lang: string): string {
-    if (!s) return "-";
-    const locale = intlLocale(lang);
-    try { return new Date(s).toLocaleString(locale); }
-    catch { return s; }
-}
-
 /** Category value → display label. */
 function catLabel(cat: string, lang: string): string {
     const found = CATEGORIES.find(c => c.value === cat);
@@ -448,8 +441,8 @@ function MemoryStatusTab({ t, lang, traceFocus, revision }: { t: (en: string, zh
 
             {(data.oldest_entry || data.newest_entry) && (
                 <section className="memory-status-card memory-status-range" aria-label={t("Memory time range", "记忆时间范围")}>
-                    {data.oldest_entry && <span>{t("Oldest", "最早")}: {fmtDate(data.oldest_entry, lang)}</span>}
-                    {data.newest_entry && <span>{t("Newest", "最新")}: {fmtDate(data.newest_entry, lang)}</span>}
+                    {data.oldest_entry && <span>{t("Oldest", "最早")}: {formatMemoryDate(data.oldest_entry, lang)}</span>}
+                    {data.newest_entry && <span>{t("Newest", "最新")}: {formatMemoryDate(data.newest_entry, lang)}</span>}
                 </section>
             )}
 
@@ -769,7 +762,7 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                                     ))}
                                 </div>
                                 <div style={{ fontSize: "0.78rem", color: colors.text, whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 120, overflowY: "auto", paddingRight: 4, textAlign: "left" }}>{entry.content}</div>
-                                <div style={{ fontSize: "0.66rem", color: colors.textMuted, marginTop: 4, textAlign: "left" }}>{t("Updated", "更新")}: {fmtDate(entry.updated_at, lang)} · {t("Access", "访问")}: {entry.access_count}</div>
+                                <div style={{ fontSize: "0.66rem", color: colors.textMuted, marginTop: 4, textAlign: "left" }}>{t("Updated", "更新")}: {formatMemoryDate(entry.updated_at, lang)} · {t("Access", "访问")}: {entry.access_count}</div>
                             </div>
                             <div style={{ display: "flex", gap: 4, flexShrink: 0, alignSelf: "flex-start" }}>
                                 <button onClick={() => openEdit(entry)} aria-label={t("Edit", "编辑")} title={t("Edit", "编辑")} style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>EDIT</button>
@@ -1010,7 +1003,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
                         </span>
                         {serviceStatus?.last_run && (
                             <span style={{ fontSize: "0.66rem", color: colors.textMuted, fontWeight: 400 }}>
-                                · {fmtDate(serviceStatus.last_run, lang)}
+                                · {formatMemoryDate(serviceStatus.last_run, lang)}
                                 {serviceStatus.last_error && <span style={{ color: colors.danger }}> · {serviceStatus.last_error}</span>}
                             </span>
                         )}
@@ -1071,7 +1064,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
                             <div style={{ minWidth: 0 }}>
                                 <div style={{ fontSize: "0.76rem", color: colors.text, fontWeight: 500 }}>{bk.name}</div>
                                 <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: 2 }}>
-                                    {fmtDate(bk.created_at, lang)} · {bk.entry_count >= 0 ? `${bk.entry_count} ${t("entries", "条")}` : "?"} · {fmtSize(bk.size_bytes)}
+                                    {formatMemoryDate(bk.created_at, lang)} · {bk.entry_count >= 0 ? `${bk.entry_count} ${t("entries", "条")}` : "?"} · {fmtSize(bk.size_bytes)}
                                 </div>
                             </div>
                             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>

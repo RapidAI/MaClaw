@@ -28,6 +28,7 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 	if c == nil || strings.TrimSpace(c.messageMetadata["bot_phase"]) != "execute" {
 		return agent.DesktopOutcomeDecision{}
 	}
+	userText = desktopOutcomeAsk(c, userText)
 	if strings.TrimSpace(c.messageMetadata["bot_wake"]) == "1" {
 		// A mailbox wake answers teammates; it has no desktop result to
 		// prove. Checking it made the bot take ~25 desktop steps of

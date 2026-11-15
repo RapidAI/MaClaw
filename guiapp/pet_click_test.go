@@ -19,6 +19,65 @@ func TestPetClickGesture(t *testing.T) {
 	t.Run("showGate", testPetClickShowGate)
 	t.Run("deliveryOrder", testPetClickDeliveryOrder)
 	t.Run("stageCue", testPetClickStageCue)
+	t.Run("capture", testPetClickCapture)
+	t.Run("hideDuringClip", testPetClickHideDuringClip)
+}
+
+// petClickClipWindow ends the click session inside the clip. That is the
+// window between "the gesture was accepted" and "open the main window".
+type petClickClipWindow struct {
+	mockFloatingWindow
+	app *App
+}
+
+func (w *petClickClipWindow) PetClickLook() (string, bool) {
+	return "ragdoll", true
+}
+
+func (w *petClickClipWindow) PlayPetClickClip(string) {
+	if w == nil || w.app == nil {
+		return
+	}
+	w.app.retirePetClickBurst()
+}
+
+func testPetClickHideDuringClip(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.stopPetClickTimer()
+		app.closePetRearingDBLocked()
+	})
+	app.petRearing.pack = "ragdoll"
+	app.petRearing.running = true
+	app.petRearing.userSize = 224
+	app.floatingAssistant = &FloatingAssistantManager{app: app, window: &petClickClipWindow{app: app}}
+
+	got := app.finishDesktopPetClick(petClickSingle, app.petClickEpoch.Load())
+	if got.OpenMain || got.Clip != "" {
+		t.Fatalf("hide during the click clip still finished the side effect: %+v", got)
+	}
+	if got.CreditMS != petClickCreditMS(petClickSingle) {
+		t.Fatalf("credit = %d", got.CreditMS)
+	}
+}
+
+func testPetClickCapture(t *testing.T) {
+	keepDragging, keepMoved, endDrag := petPointerCaptureChange(true, false, true)
+	if !keepDragging || keepMoved || endDrag {
+		t.Fatalf("own release consumed the press: dragging=%v moved=%v end=%v", keepDragging, keepMoved, endDrag)
+	}
+	keepDragging, keepMoved, endDrag = petPointerCaptureChange(true, false, false)
+	if keepDragging || keepMoved || endDrag {
+		t.Fatalf("stolen press became a gesture: dragging=%v moved=%v end=%v", keepDragging, keepMoved, endDrag)
+	}
+	keepDragging, keepMoved, endDrag = petPointerCaptureChange(true, true, false)
+	if keepDragging || keepMoved || !endDrag {
+		t.Fatalf("stolen drag stuck: dragging=%v moved=%v end=%v", keepDragging, keepMoved, endDrag)
+	}
+	keepDragging, keepMoved, endDrag = petPointerCaptureChange(false, false, false)
+	if keepDragging || keepMoved || endDrag {
+		t.Fatalf("idle capture change started a gesture: dragging=%v moved=%v end=%v", keepDragging, keepMoved, endDrag)
+	}
 }
 
 func testPetClickBurst(t *testing.T) {

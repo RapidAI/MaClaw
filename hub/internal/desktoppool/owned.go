@@ -14,6 +14,14 @@ import (
 // Bot node tunnel: desktopd.<nodeID>.node.invalid. It never resolves.
 const NodeHostSuffix = ".node.invalid"
 
+// virtualNodeHost reports a hostname an administrator must not type. The
+// tunnel uses it internally. Letter case and a trailing dot do not make it
+// a public address.
+func virtualNodeHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), ".")
+	return host == "node.invalid" || strings.HasSuffix(host, ".node.invalid")
+}
+
 // NodeBaseURL is the virtual BaseURL recorded for a node's desktopd.
 func NodeBaseURL(nodeID string) string {
 	return "http://desktopd." + strings.TrimSpace(nodeID) + NodeHostSuffix

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -26,8 +27,10 @@ type HubLink struct {
 	// Self is the address Hub-opened streams are forwarded to: this
 	// process's own listener.
 	Self string
-	// Key is the desktopd API token Hub will present.
+	// Key is the primary DESKTOPD_TOKEN. It stays on this machine. When Keys
+	// is set, enrollment reports a separate hub-<nodeID> key instead.
 	Key    string
+	Keys   HubKeyStore
 	Client *http.Client
 
 	mu      sync.Mutex
@@ -83,6 +86,13 @@ func (h *HubLink) Start(ctx context.Context) error {
 	return nil
 }
 
+// HubKeyStore keeps the extra API key Hub uses to call this desktopd.
+// The primary DESKTOPD_TOKEN is not written here.
+type HubKeyStore interface {
+	PutHubKey(label, token string) error
+	DropHubKeys() error
+}
+
 // HubLinkEnroll is one registration. SrvAdmin is sent once and is not stored.
 type HubLinkEnroll struct {
 	HubURL     string
@@ -91,6 +101,32 @@ type HubLinkEnroll struct {
 	SrvAddr    string
 	SrvAdmin   string
 	DirectBase string
+}
+
+// EnrollFromEnv registers on first start when DESKTOPD_HUB_URL and
+// DESKTOPD_HUB_ENROLL_CODE are set. An enrolled node is left alone. The code
+// is not logged; Hub invalidates it when enrollment succeeds.
+func (h *HubLink) EnrollFromEnv(ctx context.Context) {
+	if h == nil || strings.TrimSpace(h.NodeID()) != "" {
+		return
+	}
+	hub := strings.TrimSpace(os.Getenv("DESKTOPD_HUB_URL"))
+	code := strings.TrimSpace(os.Getenv("DESKTOPD_HUB_ENROLL_CODE"))
+	if hub == "" || code == "" {
+		return
+	}
+	if _, err := h.Enroll(ctx, hub, code); err != nil {
+		log.Printf("[desktopd] hub enroll from env failed hub=%s err=%s", hub, redactSecret(err.Error(), code))
+		return
+	}
+	log.Printf("[desktopd] hub enroll from env ok hub=%s node=%s", hub, h.NodeID())
+}
+
+func redactSecret(msg, secret string) string {
+	if secret != "" {
+		msg = strings.ReplaceAll(msg, secret, "<redacted>")
+	}
+	return scrubDesktopdLog(msg)
 }
 
 // Enroll trades a one-time code from Hub for node credentials and starts the
@@ -115,8 +151,16 @@ func (h *HubLink) EnrollWith(ctx context.Context, in HubLinkEnroll) (HubLinkStat
 	if in.HasSrv && strings.TrimSpace(in.SrvAddr) == "" {
 		return HubLinkStatus{}, fmt.Errorf("%w: srv address is required", ErrInvalid)
 	}
-	if strings.TrimSpace(h.Key) == "" {
+	if strings.TrimSpace(h.Key) == "" && h.Keys == nil {
 		return HubLinkStatus{}, fmt.Errorf("%w: DESKTOPD_TOKEN is not set", ErrInvalid)
+	}
+	desktopdKey := strings.TrimSpace(h.Key)
+	if h.Keys != nil {
+		issued, err := randomHex(24)
+		if err != nil {
+			return HubLinkStatus{}, err
+		}
+		desktopdKey = issued
 	}
 	client := h.Client
 	if client == nil {
@@ -124,7 +168,7 @@ func (h *HubLink) EnrollWith(ctx context.Context, in HubLinkEnroll) (HubLinkStat
 	}
 	creds, err := edgelink.Enroll(ctx, client, hub, edgelink.EnrollRequest{
 		Code:        code,
-		DesktopdKey: h.Key,
+		DesktopdKey: desktopdKey,
 		SrvAdmin:    in.SrvAdmin,
 		Version:     "desktopd",
 		HasDesktopd: true,
@@ -132,10 +176,27 @@ func (h *HubLink) EnrollWith(ctx context.Context, in HubLinkEnroll) (HubLinkStat
 		DirectBase:  in.DirectBase,
 	})
 	if err != nil {
+		log.Printf("[desktopd] hub enroll failed hub=%s err=%s", hub, redactSecret(err.Error(), code))
 		return HubLinkStatus{}, err
+	}
+	if h.Keys != nil {
+		label, err := hubKeyLabel(creds.NodeID)
+		if err != nil {
+			log.Printf("[desktopd] hub key label rejected node=%s err=%v", creds.NodeID, err)
+			return HubLinkStatus{}, err
+		}
+		if err := h.Keys.PutHubKey(label, desktopdKey); err != nil {
+			log.Printf("[desktopd] hub key was not saved node=%s err=%v", creds.NodeID, err)
+			return HubLinkStatus{}, err
+		}
+		log.Printf("[desktopd] hub key saved node=%s label=%s", creds.NodeID, label)
 	}
 	creds.SrvAddr = strings.TrimSpace(in.SrvAddr)
 	if err := edgelink.SaveCredentials(h.StatePath, creds); err != nil {
+		log.Printf("[desktopd] hub credentials were not saved node=%s err=%v", creds.NodeID, err)
+		if h.Keys != nil {
+			_ = h.Keys.DropHubKeys()
+		}
 		return HubLinkStatus{}, err
 	}
 	h.mu.Lock()
@@ -189,7 +250,39 @@ func (h *HubLink) Leave() error {
 	if err := os.Remove(h.StatePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if h.Keys != nil {
+		if err := h.Keys.DropHubKeys(); err != nil {
+			log.Printf("[desktopd] hub key was not removed err=%v", err)
+			return err
+		}
+	}
 	return nil
+}
+
+func hubKeyLabel(nodeID string) (string, error) {
+	id := strings.TrimSpace(nodeID)
+	if id == "" || len(id) > 80 {
+		return "", fmt.Errorf("%w: node id", ErrInvalid)
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return "", fmt.Errorf("%w: node id", ErrInvalid)
+		}
+	}
+	return "hub-" + id, nil
+}
+
+// BoundTenant is the tenant this desktop accepted at enrollment.
+// Empty means it is not registered and still serves every tenant.
+func (h *HubLink) BoundTenant() string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return strings.TrimSpace(h.creds.TenantID)
 }
 
 // NodeID is the enrolled node, or "" before enrollment.
@@ -275,11 +368,17 @@ func registerHubLinkRoutes(mux *http.ServeMux, link *HubLink, authOK func(*http.
 			HubURL     string `json:"hub_url"`
 			Code       string `json:"code"`
 			DirectBase string `json:"direct_base"`
+			HasSrv     bool   `json:"has_srv"`
+			SrvAddr    string `json:"srv_addr"`
+			SrvAdmin   string `json:"srv_admin_secret"`
 		}
 		if !decodeBody(w, r, &in) {
 			return
 		}
-		status, err := link.EnrollWith(r.Context(), HubLinkEnroll{HubURL: in.HubURL, Code: in.Code, DirectBase: in.DirectBase})
+		status, err := link.EnrollWith(r.Context(), HubLinkEnroll{
+			HubURL: in.HubURL, Code: in.Code, DirectBase: in.DirectBase,
+			HasSrv: in.HasSrv, SrvAddr: in.SrvAddr, SrvAdmin: in.SrvAdmin,
+		})
 		if err != nil {
 			if errors.Is(err, ErrInvalid) {
 				writeErr(w, http.StatusBadRequest, err.Error())
@@ -329,7 +428,9 @@ func (h *HubLink) runLocked() {
 				return
 			}
 			if err != nil {
-				h.lastErr = err.Error()
+				h.lastErr = scrubDesktopdLog(err.Error())
+				log.Printf("[desktopd] hub link down node=%s err=%s", creds.NodeID, h.lastErr)
+				return
 			}
 			log.Printf("[desktopd] hub link down node=%s", creds.NodeID)
 		})
@@ -343,4 +444,16 @@ func (h *HubLink) stopLocked() {
 	}
 	h.online = false
 	h.since = time.Time{}
+}
+
+var desktopdLogSecret = regexp.MustCompile(`(?i)(password|DESKTOPD_TOKEN|MACLAW_ADMIN_SECRET|MACLAW_TOKEN_SECRET|MACLAW_DESKTOP_API_TOKEN|hub_token|node_secret|srv_admin_secret|desktopd_key|authorization)\s*[:=]\s*(?:"[^"]*"|'[^']*'|Bearer\s+\S+|\S+)`)
+var desktopdLogBearer = regexp.MustCompile(`(?i)Bearer\s+\S+`)
+var desktopdLogBlob = regexp.MustCompile(`[A-Za-z0-9+/]{40,}={0,2}`)
+
+func scrubDesktopdLog(text string) string {
+	text = strings.NewReplacer("\r", " ", "\n", " ").Replace(text)
+	text = desktopdLogBearer.ReplaceAllString(text, "Bearer <redacted>")
+	text = desktopdLogSecret.ReplaceAllString(text, "$1=<redacted>")
+	text = desktopdLogBlob.ReplaceAllString(text, "<redacted>")
+	return strings.TrimSpace(text)
 }

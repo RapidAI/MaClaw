@@ -1596,6 +1596,12 @@ func (h *SkillMarketHandlers) GetPetStorePack(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, publicPetStorePack(p))
 }
 
+// SubmitPetStorePack publishes a pet-pack archive as a market listing. When
+// the creator already has an active or paused listing for the same stable
+// source_pack_id, the submission is a version upgrade: the archive and its
+// descriptive fields are replaced on that listing (200 + updated:true), while
+// its ID, status, counters, buyer entitlements, and created_at are preserved.
+// A foreign creator claiming the same source_pack_id is still rejected 409.
 func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.Request) {
 	h.ensurePetStoreSchema()
 	userID, email, err := h.petStoreUser(r)
@@ -1665,60 +1671,108 @@ func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.
 			smError(w, http.StatusConflict, "this pet pack ID is already published by another creator")
 			return
 		}
-		var retainedListings int
-		if err := h.store.ReadDB().QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sm_pet_store_packs WHERE owner_user_id=? AND source_pack_id=? AND status IN ('active','paused')`, userID, sourcePackID).Scan(&retainedListings); err != nil {
-			smError(w, http.StatusInternalServerError, "check existing pet pack listing: "+err.Error())
-			return
-		}
-		if retainedListings > 0 {
-			smError(w, http.StatusConflict, "this local pet pack is already listed or paused; unlist it before publishing again")
-			return
-		}
 	}
 	if err := os.MkdirAll(h.petStoreDir(), 0o755); err != nil {
 		smError(w, http.StatusInternalServerError, "create pet store directory: "+err.Error())
 		return
 	}
-	id := "pet_" + petStoreUniqueID("pack")
-	zipPath := filepath.Join(h.petStoreDir(), id+".zip")
-	if err := writePetStoreArchiveAtomic(zipPath, data); err != nil {
-		smError(w, http.StatusInternalServerError, "save pet pack: "+err.Error())
+	now := petStoreNow()
+	// Re-submitting an already listed source_pack_id is a version upgrade of
+	// that listing, not a conflict: the package and its descriptive fields are
+	// replaced in place so the listing keeps its stable ID, counters, buyer
+	// entitlements, and created_at. A paused listing is updated the same way —
+	// it stays hidden until an administrator resumes it, and the new package
+	// gives the moderator the corrected build to review. All claim checks are
+	// repeated inside one IMMEDIATE transaction: a withdrawn listing retains
+	// its creator's identity claim, and a competing creator must not win by
+	// racing the earlier read.
+	tx, err := h.store.BeginImmediate(r.Context())
+	if err != nil {
+		smError(w, http.StatusInternalServerError, "create listing: "+err.Error())
 		return
 	}
-	archiveCommitted := false
-	defer func() {
-		if archiveCommitted {
-			return
-		}
-		_ = os.Remove(zipPath)
-	}()
-	now := petStoreNow()
-	p := &petStorePack{ID: id, OwnerID: userID, OwnerEmail: email, SourcePackID: sourcePackID, Name: name, Description: desc, Version: version, Price: price, Status: "active", ZipPath: zipPath, PackageSize: int64(len(data)), CreatedAt: now, UpdatedAt: now}
-	// The lightweight checks above give a quick conflict response before writing
-	// the archive. Repeat them inside one IMMEDIATE transaction immediately
-	// before insertion: a withdrawn listing retains its creator's identity claim,
-	// and a competing creator must not win by racing the earlier read.
-	tx, err := h.store.BeginImmediate(r.Context())
+	defer tx.Rollback()
+	var foreignListingID string
+	err = tx.QueryRowContext(r.Context(), `SELECT id FROM sm_pet_store_packs WHERE source_pack_id=? AND owner_user_id<>? ORDER BY updated_at DESC, id ASC LIMIT 1`, sourcePackID, userID).Scan(&foreignListingID)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	if err == nil && foreignListingID != "" {
+		err = fmt.Errorf("pet store source pack ID claimed")
+	}
+	var updateID, updateZipPath string
 	if err == nil {
-		defer tx.Rollback()
-		var foreignListingID string
-		err = tx.QueryRowContext(r.Context(), `SELECT id FROM sm_pet_store_packs WHERE source_pack_id=? AND owner_user_id<>? ORDER BY updated_at DESC, id ASC LIMIT 1`, sourcePackID, userID).Scan(&foreignListingID)
+		err = tx.QueryRowContext(r.Context(), `SELECT id, zip_path FROM sm_pet_store_packs WHERE owner_user_id=? AND source_pack_id=? AND status IN ('active','paused') ORDER BY updated_at DESC, id ASC LIMIT 1`, userID, sourcePackID).Scan(&updateID, &updateZipPath)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = nil
+			updateID = ""
 		}
-		if err == nil && foreignListingID != "" {
-			err = fmt.Errorf("pet store source pack ID claimed")
+	}
+	isUpdate := err == nil && updateID != ""
+	var p *petStorePack
+	var zipPath string
+	var oldArchive []byte
+	oldArchiveExists := false
+	archiveWritten := false
+	committed := false
+	defer func() {
+		if committed || !archiveWritten {
+			return
+		}
+		// The transaction rolled back, so keep the package file aligned with the
+		// row: restore a replaced archive, or remove a brand-new one.
+		if oldArchiveExists {
+			_ = writePetStoreArchiveAtomic(zipPath, oldArchive)
+		} else {
+			_ = os.Remove(zipPath)
+		}
+	}()
+	if err == nil {
+		if isUpdate {
+			zipPath = strings.TrimSpace(updateZipPath)
+			if zipPath == "" {
+				err = fmt.Errorf("listed pet pack has no archive path")
+			}
+		} else {
+			p = &petStorePack{ID: "pet_" + petStoreUniqueID("pack"), OwnerID: userID, OwnerEmail: email, SourcePackID: sourcePackID, Name: name, Description: desc, Version: version, Price: price, Status: "active", ZipPath: "", PackageSize: int64(len(data)), CreatedAt: now, UpdatedAt: now}
+			zipPath = filepath.Join(h.petStoreDir(), p.ID+".zip")
+			p.ZipPath = zipPath
+		}
+	}
+	if err == nil && isUpdate {
+		var readErr error
+		oldArchive, readErr = os.ReadFile(zipPath)
+		switch {
+		case readErr == nil:
+			oldArchiveExists = true
+		case errors.Is(readErr, os.ErrNotExist):
+		default:
+			err = fmt.Errorf("read existing pet pack archive: %w", readErr)
 		}
 	}
 	if err == nil {
-		var retainedListings int
-		err = tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sm_pet_store_packs WHERE owner_user_id=? AND source_pack_id=? AND status IN ('active','paused')`, userID, sourcePackID).Scan(&retainedListings)
-		if err == nil && retainedListings > 0 {
-			err = fmt.Errorf("pet store source pack already listed")
+		// A re-published archive that is byte-identical to the stored one is not
+		// rewritten: a redundant replace still bumps the file modtime, which
+		// drops the preview thumbnail cache entry and widens the window where a
+		// download reads a package newer than its listing row.
+		if isUpdate && oldArchiveExists && bytes.Equal(oldArchive, data) {
+			archiveWritten = false
+		} else {
+			err = writePetStoreArchiveAtomic(zipPath, data)
+			archiveWritten = err == nil
 		}
 	}
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO sm_pet_store_packs (`+petStorePackColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)`, p.ID, p.OwnerID, p.OwnerEmail, p.SourcePackID, p.Name, p.Description, p.Version, p.Price, p.Status, p.ZipPath, p.PackageSize, p.CreatedAt, p.UpdatedAt)
+		if isUpdate {
+			// The row is locked by this transaction, so the listing cannot lose
+			// or change its claim while the package file is being replaced.
+			_, err = tx.ExecContext(r.Context(), `UPDATE sm_pet_store_packs SET name=?, description=?, version=?, price=?, package_size=?, owner_email=?, updated_at=? WHERE id=?`, name, desc, version, price, int64(len(data)), email, now, updateID)
+			if err == nil {
+				p, err = scanPetStorePack(tx.QueryRowContext(r.Context(), `SELECT `+petStorePackColumns+` FROM sm_pet_store_packs WHERE id=?`, updateID))
+			}
+		} else {
+			_, err = tx.ExecContext(r.Context(), `INSERT INTO sm_pet_store_packs (`+petStorePackColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)`, p.ID, p.OwnerID, p.OwnerEmail, p.SourcePackID, p.Name, p.Description, p.Version, p.Price, p.Status, p.ZipPath, p.PackageSize, p.CreatedAt, p.UpdatedAt)
+		}
 	}
 	if err == nil {
 		err = tx.Commit()
@@ -1728,19 +1782,25 @@ func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.
 			smError(w, http.StatusConflict, "this pet pack ID is already published by another creator")
 			return
 		}
-		if strings.Contains(strings.ToLower(err.Error()), "already listed") {
-			smError(w, http.StatusConflict, "this local pet pack is already listed or paused; unlist it before publishing again")
-			return
-		}
 		if strings.Contains(strings.ToLower(err.Error()), "unique constraint") {
 			smError(w, http.StatusConflict, "this pet pack ID is already published by another creator")
 			return
 		}
-		smError(w, http.StatusInternalServerError, "create listing: "+err.Error())
+		smError(w, http.StatusInternalServerError, "save pet pack listing: "+err.Error())
 		return
 	}
-	archiveCommitted = true
-	writeJSON(w, http.StatusCreated, p)
+	committed = true
+	if isUpdate {
+		writeJSON(w, http.StatusOK, struct {
+			*petStorePack
+			// Updated tells market clients the submission refreshed an existing
+			// listing instead of creating a new one, so the UI can report the
+			// correct outcome.
+			Updated bool `json:"updated"`
+		}{petStorePack: p, Updated: true})
+	} else {
+		writeJSON(w, http.StatusCreated, p)
+	}
 	h.emitPetStoreSync(r.Context(), p.ID)
 }
 

@@ -64,6 +64,7 @@ class BotChatController extends Notifier<ChatState> {
   Timer? _syncTimer;
   int _cursor = 0;
   bool _disposed = false;
+  bool _foreground = true;
 
   /// The srv conversation the in-flight run was admitted into — echoed onto
   /// its reply bubble so a per-run thread offers "继续这个任务".
@@ -132,10 +133,27 @@ class BotChatController extends Notifier<ChatState> {
     }
   }
 
+  /// Foreground gate driven by the chat screen's lifecycle listener: the
+  /// long-poll holds a connection for up to 25s and must not burn a
+  /// pocketed phone's battery. Resuming re-arms the sync right away and
+  /// re-attaches the run poll when a turn is still in flight.
+  void setForeground(bool foreground) {
+    if (_disposed || foreground == _foreground) return;
+    _foreground = foreground;
+    if (!foreground) {
+      _syncTimer?.cancel();
+      _pollTimer?.cancel();
+      return;
+    }
+    _scheduleSync();
+    final runId = state.activeRunId;
+    if (runId != null) _pollRun(runId);
+  }
+
   /// Long-poll loop: Hub holds the read up to 25s and answers when the
   /// journal changed, so other clients' writes arrive promptly.
   void _scheduleSync({Duration delay = const Duration(milliseconds: 400)}) {
-    if (_disposed) return;
+    if (_disposed || !_foreground) return;
     _syncTimer?.cancel();
     _syncTimer = Timer(delay, _syncOnce);
   }
@@ -613,7 +631,7 @@ class BotChatController extends Notifier<ChatState> {
     _pollTimer?.cancel();
     final startedAt = DateTime.now();
     void tick() async {
-      if (_disposed || state.activeRunId != runId) return;
+      if (_disposed || !_foreground || state.activeRunId != runId) return;
       if (DateTime.now().difference(startedAt) > botTurnMaxWait) {
         _settleError('等待回复超时，Bot 可能仍在处理，可稍后查看任务状态');
         return;
@@ -622,7 +640,7 @@ class BotChatController extends Notifier<ChatState> {
         final reply = await _api.pollRun(state.botId, runId);
         if (_disposed || state.activeRunId != runId) return;
         if (reply == null) {
-          _pollTimer = Timer(botPollInterval, tick);
+          if (_foreground) _pollTimer = Timer(botPollInterval, tick);
           return;
         }
         _settleReply(reply);
@@ -635,7 +653,7 @@ class BotChatController extends Notifier<ChatState> {
         }
         // A transient poll failure must not kill the watch — reschedule
         // and let botTurnMaxWait bound the real timeout.
-        _pollTimer = Timer(botPollInterval, tick);
+        if (_foreground) _pollTimer = Timer(botPollInterval, tick);
       }
     }
 

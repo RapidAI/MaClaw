@@ -90,6 +90,8 @@ export type SettingsActiveContentProps = {
     tokenBankClaimCode?: string;
     /** Increments on every open so the same code is delivered again. */
     tokenBankClaimSeq?: number;
+    /** Increments when the agent model menu asks for provider management; the LLM panel auto-opens that dialog. */
+    llmProviderDialogAutoOpenSeq?: number;
     memoryTraceFocus: { value: string; seq: number };
     imSubTab: IMSubTab;
     setImSubTab: Dispatch<SetStateAction<IMSubTab>>;
@@ -200,6 +202,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         showToastMessage,
         tokenBankClaimCode,
         tokenBankClaimSeq,
+        llmProviderDialogAutoOpenSeq,
         memoryTraceFocus,
         imSubTab,
         setImSubTab,
@@ -440,6 +443,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     onStatusChange={onLLMStatusChange}
                     onProviderChanged={onProviderChanged}
                     onRequestIdentityVerification={onRequestIdentityVerification}
+                    autoOpenProviderDialogSeq={llmProviderDialogAutoOpenSeq}
                 />
             ));
             break;

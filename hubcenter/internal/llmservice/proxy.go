@@ -74,6 +74,9 @@ type ProxyConfig struct {
 	// endpoint reports zero releases (node has no HA binding manager).
 	ReleaseBinding func(ctx context.Context, hubID, nodeID string) (int, error)
 
+	// VerifyHubSecret authenticates the hub before ReleaseBinding may run.
+	VerifyHubSecret func(ctx context.Context, hubID, rawSecret string) error
+
 	// LookupNodeURL maps a HubCenter node ID to its client-facing base URL.
 	// Used to populate 409 redirect_url so Hub can jump to the tenant owner.
 	LookupNodeURL func(nodeID string) string

@@ -330,7 +330,23 @@ func DeleteDesktopServiceAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {
 	}
 }
 
-func PostDesktopAssignmentAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {
+func assignedServerNode(ctx context.Context, pool *desktoppool.Pool, tenantID, serverID string) string {
+	if pool == nil || strings.TrimSpace(serverID) == "" {
+		return ""
+	}
+	view, err := pool.View(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	for _, server := range view.Servers {
+		if server.ID == serverID {
+			return strings.TrimSpace(server.NodeID)
+		}
+	}
+	return ""
+}
+
+func PostDesktopAssignmentAdminHandler(pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pool == nil {
 			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
@@ -345,6 +361,11 @@ func PostDesktopAssignmentAdminHandler(pool *desktoppool.Pool) http.HandlerFunc 
 		if err != nil {
 			writeDesktopError(w, err)
 			return
+		}
+		if bots != nil && item.Scope == desktoppool.ScopeUser {
+			if nodeID := assignedServerNode(r.Context(), pool, desktopTenantID(r), item.ServerID); nodeID != "" {
+				_ = bots.PinOwnerNode(r.Context(), desktopTenantID(r), item.TargetID, nodeID)
+			}
 		}
 		writeJSON(w, http.StatusCreated, item)
 	}
@@ -1001,6 +1022,7 @@ func PostDesktopFileHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		if !authorizeDesktopAPI(w, r) {
 			return
 		}
+		ctx := withEdgeCaller(withEdgeOrigin(r.Context(), r), r)
 		var in struct {
 			TenantID  string `json:"tenant_id"`
 			UserID    string `json:"user_id"`
@@ -1012,6 +1034,14 @@ func PostDesktopFileHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		if direct, directErr := issueLocalDataURL(ctx, pool, in.TenantID, in.UserID, "file"); directErr != nil || direct != "" {
+			if directErr != nil {
+				writeDesktopError(w, directErr)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"direct_url": direct})
 			return
 		}
 		output, err := pool.RunFile(r.Context(), in.TenantID, in.UserID, in.Action, in.Path, in.Content, in.OldString, in.NewString)
@@ -1091,6 +1121,7 @@ func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		if !authorizeDesktopAPI(w, r) {
 			return
 		}
+		ctx := withEdgeCaller(withEdgeOrigin(r.Context(), r), r)
 		var in struct {
 			TenantID string `json:"tenant_id"`
 			UserID   string `json:"user_id"`
@@ -1100,6 +1131,15 @@ func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		if direct, directErr := issueLocalDataURL(ctx, pool, in.TenantID, in.UserID, "screenshot"); directErr != nil || direct != "" {
+			if directErr != nil {
+				writeDesktopError(w, directErr)
+				return
+			}
+			noteDesktopScreenUse(ctx, pool, in.TenantID, in.UserID)
+			writeJSON(w, http.StatusOK, map[string]any{"direct_url": direct})
 			return
 		}
 		shot, saved, err := pool.ScreenshotWith(r.Context(), in.TenantID, in.UserID, in.Display, in.Name, in.ShotOptions)

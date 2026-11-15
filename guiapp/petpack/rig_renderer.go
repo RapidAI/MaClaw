@@ -835,6 +835,10 @@ func (r *CharacterRenderer) TriggerClip(clip string, nowMS int64) bool {
 	r.pending = nil
 	r.pendingAfterLoop = false
 	r.pendingSinceMS = 0
+	// A host event queued before the first pose is replayed by the next
+	// RenderState. This clip is the newer instruction, so that event must
+	// not replace it on the following frame.
+	r.deferredEvent = ""
 	r.transitionToLockedWithoutExit(step, nowMS)
 	return true
 }

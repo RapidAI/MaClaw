@@ -207,6 +207,8 @@ assets:
       - rig/arm-l.png
       - rig/arm-r.png
       - rig/head.png
+      - rig/braid.png
+      - rig/braid-tip.png
       - rig/mouth.png
       - rig/eyes.png
       - rig/mouse-charm.png
@@ -241,6 +243,8 @@ variants:
           - rig/arm-l.png
           - rig/arm-r.png
           - rig/head.png
+          - rig/braid.png
+          - rig/braid-tip.png
           - rig/mouth.png
           - rig/eyes.png
           - rig/mouse-charm.png
@@ -495,13 +499,13 @@ func buildRig() *petpack.Rig {
 	add("gaze_up", clip(900, true, 0, "", false, tr().k("eyes", kf(0, 0, -3, 0, ""), kf(900, 1, -4, 0, "ease-in-out"))))
 	add("gaze_center", clip(800, true, 0, "", false, tr().k("eyes", kf(0, 0, 0, 0, ""), kf(800, 1, 0, 0, "ease-in-out"))))
 
-	add("secondary_idle", clip(2400, true, 0, "", false, tailSway(2400, 10)))
-	add("secondary_listen", clip(1500, true, 0, "", false, tailSway(1500, 16)))
-	add("secondary_think", clip(1800, true, 0, "", false, tailSway(1800, 8)))
-	add("secondary_speak", clip(1100, true, 0, "", false, tailSway(1100, 22)))
-	add("secondary_done", clip(900, true, 0, "", false, tailSway(900, 26)))
-	add("secondary_alert", clip(800, true, 0, "", false, tailSway(800, 6)))
-	add("secondary_quiet", clip(3200, true, 0, "", false, tailSway(3200, 4)))
+	add("secondary_idle", clip(2400, true, 0, "", false, secondaryMotion(2400, 10, 20)))
+	add("secondary_listen", clip(1500, true, 0, "", false, secondaryMotion(1500, 16, 26)))
+	add("secondary_think", clip(1800, true, 0, "", false, secondaryMotion(1800, 8, 14)))
+	add("secondary_speak", clip(1100, true, 0, "", false, secondaryMotion(1100, 22, 30)))
+	add("secondary_done", clip(900, true, 0, "", false, secondaryMotion(900, 26, 34)))
+	add("secondary_alert", clip(800, true, 0, "", false, secondaryMotion(800, 6, 10)))
+	add("secondary_quiet", clip(3200, true, 0, "", false, secondaryMotion(3200, 4, 8)))
 
 	add("react_click_greet", clip(980, false, 0, "greet", false, tr().
 		k("root", kf(0, 0, 2, 0, ""), kf(180, 0, 8, 0, "ease-out"), kf(460, 0, -18, 0, "ease-out"), kf(980, 0, 0, 0, "ease-in-out")).
@@ -542,6 +546,11 @@ func buildRig() *petpack.Rig {
 		k("root", kf(0, 0, 0, 0, ""), kf(400, 0, 12, 0, "ease-in-out"), kf(900, 0, 8, 0, "ease-in-out"), kf(1200, 0, 0, 0, "ease-in-out")).
 		k("eyes", kfs(0, 1, ""), kfs(500, 0.4, "ease-in-out"), kfs(1000, 0.7, "ease-out"), kfs(1200, 1, "ease-in-out"))))
 
+	// Head tilts are authored on the body clips. The braids counter-rotate
+	// here so a nod does not swing the whole plait as one rigid piece.
+	// Secondary sway is a separate clip and adds on top at render time.
+	hangHair(clips)
+
 	return &petpack.Rig{
 		Version: 1,
 		Bones: []petpack.RigBone{
@@ -549,6 +558,13 @@ func buildRig() *petpack.Rig {
 			{Name: "hip", Parent: "root", Y: 34},
 			{Name: "torso", Parent: "hip", Y: -34},
 			{Name: "head", Parent: "torso", Y: -50},
+			// Side locks follow the old hairline: the root sits inside the hair
+			// mass and the strand falls past the jaw. Rest rotation opens them
+			// a little. Slot names match the bones so a track is not applied twice.
+			{Name: "braid_l", Parent: "head", X: -22, Y: -2, Rotate: 6},
+			{Name: "braid_l_tip", Parent: "braid_l", Y: 22},
+			{Name: "braid_r", Parent: "head", X: 24, Y: -4, Rotate: -7},
+			{Name: "braid_r_tip", Parent: "braid_r", Y: 24},
 			{Name: "eyes", Parent: "head", Y: -6},
 			{Name: "mouth", Parent: "head", Y: 14},
 			{Name: "arm_l", Parent: "torso", X: -28, Y: -22},
@@ -565,6 +581,11 @@ func buildRig() *petpack.Rig {
 			{Name: "torso", Bone: "torso", Texture: "rig/torso.png", Z: 2},
 			{Name: "arm_l", Bone: "arm_l", Texture: "rig/arm-l.png", Z: 3},
 			{Name: "arm_r", Bone: "arm_r", Texture: "rig/arm-r.png", Z: 3},
+			// Behind the head so the roots tuck into the hair, in front of the dress.
+			{Name: "braid_l", Bone: "braid_l", Texture: "rig/braid.png", Z: 3},
+			{Name: "braid_l_tip", Bone: "braid_l_tip", Texture: "rig/braid-tip.png", Z: 3},
+			{Name: "braid_r", Bone: "braid_r", Texture: "rig/braid.png", ScaleX: -1, Z: 3},
+			{Name: "braid_r_tip", Bone: "braid_r_tip", Texture: "rig/braid-tip.png", ScaleX: -1, Z: 3},
 			{Name: "head", Bone: "head", Texture: "rig/head.png", Z: 4},
 			{Name: "mouth", Bone: "mouth", Texture: "rig/mouth.png", Z: 5},
 			{Name: "eyes", Bone: "eyes", Texture: "rig/eyes.png", Z: 6},
@@ -621,6 +642,88 @@ func march(ms int, lift, arm, bob float64) tracks {
 
 func tailSway(ms int, amp float64) tracks {
 	return tr().k("tail", kf(0, 0, 0, 0, ""), kf(ms/3, 0, 0, amp, "ease-in-out"), kf(ms*2/3, 0, 0, -amp*0.7, "ease-in-out"), kf(ms, 0, 0, 0, "ease-in-out"))
+}
+
+// secondaryMotion keeps the tail sway and adds a lagged braid swing.
+// The tip uses a larger amplitude and an earlier phase, so its peak arrives
+// after the upper bone. Linear samples keep the sine from being flattened.
+// The two sides are half a turn apart, so they do not swing as one piece.
+func secondaryMotion(ms int, tailAmp, hairAmp float64) tracks {
+	const lag = 0.85
+	const left = 0.4
+	upper := hairAmp * 0.58
+	right := left + math.Pi
+	return tailSway(ms, tailAmp).
+		k("braid_l", hairSwayKeys(ms, upper, left)...).
+		k("braid_l_tip", hairSwayKeys(ms, hairAmp, left-lag)...).
+		k("braid_r", hairSwayKeys(ms, upper, right)...).
+		k("braid_r_tip", hairSwayKeys(ms, hairAmp, right-lag)...)
+}
+
+func hairSwayKeys(ms int, amp, phase float64) []petpack.RigKeyframe {
+	const samples = 8
+	frames := make([]petpack.RigKeyframe, 0, samples)
+	prev := -1
+	for i := 0; i < samples; i++ {
+		at := ms * i / (samples - 1)
+		if i == samples-1 {
+			at = ms
+		}
+		if at <= prev {
+			continue
+		}
+		rot := math.Round(amp*math.Sin(phase+2*math.Pi*float64(i)/float64(samples-1))*100) / 100
+		ease := "linear"
+		if len(frames) == 0 {
+			ease = ""
+		}
+		frames = append(frames, kf(at, 0, 0, rot, ease))
+		prev = at
+	}
+	if len(frames) >= 2 {
+		frames[len(frames)-1].Rotate = frames[0].Rotate
+		frames[len(frames)-1].AtMS = ms
+	}
+	return frames
+}
+
+// hangHair lets the plaits trail a head turn. Local rotation is the opposite
+// of the head key, and the tip gives a little more, so the world tilt stays
+// closer to vertical than the skull. Clips whose head barely moves are left
+// alone. Click reactions do not play the secondary layer, so this is what
+// keeps those nods from locking the braids to the face.
+func hangHair(clips map[string]petpack.RigClip) {
+	for _, c := range clips {
+		head := c.Tracks["head"]
+		if len(head) == 0 {
+			continue
+		}
+		maxAbs := 0.0
+		for _, key := range head {
+			if a := math.Abs(key.Rotate); a > maxAbs {
+				maxAbs = a
+			}
+		}
+		if maxAbs < 6 {
+			continue
+		}
+		c.Tracks["braid_l"] = hangKeys(head, -0.55)
+		c.Tracks["braid_l_tip"] = hangKeys(head, -0.30)
+		c.Tracks["braid_r"] = hangKeys(head, -0.55)
+		c.Tracks["braid_r_tip"] = hangKeys(head, -0.30)
+	}
+}
+
+func hangKeys(head []petpack.RigKeyframe, frac float64) []petpack.RigKeyframe {
+	out := make([]petpack.RigKeyframe, len(head))
+	for i, key := range head {
+		out[i] = petpack.RigKeyframe{
+			AtMS:   key.AtMS,
+			Rotate: math.Round(frac*key.Rotate*100) / 100,
+			Ease:   key.Ease,
+		}
+	}
+	return out
 }
 
 func buildPerformer() *petpack.Performer {
@@ -801,6 +904,8 @@ func drawTextures(dir string) []string {
 		{"arm-l.png", drawArm(false)},
 		{"arm-r.png", drawArm(true)},
 		{"head.png", drawHead()},
+		{"braid.png", drawBraid(false)},
+		{"braid-tip.png", drawBraid(true)},
 		{"mouth.png", drawMouth()},
 		{"eyes.png", drawEyes()},
 	}
@@ -818,14 +923,12 @@ func drawTextures(dir string) []string {
 
 func drawHead() *image.NRGBA {
 	// Face center is the bitmap center, so the head turns around the face.
-	// Hair and ears extend above; side locks fall past the jaw.
+	// Hair and ears extend above. The side locks are their own bones.
 	const w, h = 96, 112
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	cx := float64(w) / 2
 	cy := float64(h) / 2
 	fillEllipse(img, cx, cy+6, 34, 42, hair)
-	fillCapsule(img, cx-18, cy-6, cx-24, cy+46, 9, hair)
-	fillCapsule(img, cx+18, cy-4, cx+26, cy+48, 9, hair)
 	fillEllipse(img, cx-26, cy-30, 11, 18, hair)
 	fillEllipse(img, cx+26, cy-30, 11, 18, hair)
 	fillEllipse(img, cx-26, cy-26, 5, 10, earPink)
@@ -844,6 +947,46 @@ func drawHead() *image.NRGBA {
 	fillEllipse(img, cx+30, cy-24, 7, 4, bow)
 	fillEllipse(img, cx+36, cy-20, 5, 3, bow)
 	fillEllipse(img, cx+32, cy-22, 2.2, 2.2, bowDeep)
+	return img
+}
+
+func drawBraid(tip bool) *image.NRGBA {
+	// The joint is the bitmap center. One tapered lock hangs through the
+	// lower half and overlaps its parent, so the two bones read as one plait
+	// instead of a stack of separate tufts.
+	w, h := 36, 84
+	if tip {
+		w, h = 32, 72
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	cx := float64(w) / 2
+	joint := float64(h) / 2
+	top := joint - 12
+	bot := joint + 32
+	r0, r1 := 9.0, 7.2
+	if tip {
+		bot = joint + 26
+		r0, r1 = 7.4, 5.2
+	}
+	mid := (top + bot) / 2
+	fillCapsule(img, cx, top, cx, mid, r0, hair)
+	fillCapsule(img, cx, mid, cx+0.4, bot, r1, hair)
+	// Highlight on local -x. The right slot mirrors it onto the outer edge.
+	fillCapsule(img, cx-2.6, top+3, cx-2.1, bot-3, r1*0.38, hairLite)
+	// Creases stay inside the strand so the plait does not break into blobs.
+	span := bot - top
+	steps := 3
+	if tip {
+		steps = 2
+	}
+	for i := 0; i < steps; i++ {
+		y := top + span*(float64(i)+0.45)/float64(steps)
+		side := 1.3
+		if i%2 == 1 {
+			side = -1.3
+		}
+		fillEllipse(img, cx+side, y, 3.1, 2.2, hairLite)
+	}
 	return img
 }
 

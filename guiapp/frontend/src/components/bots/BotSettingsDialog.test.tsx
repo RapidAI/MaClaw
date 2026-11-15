@@ -194,6 +194,40 @@ describe('Bot model settings dialog', () => {
 
     // The card is the control: clicking the description selects it, not just
     // the 16px radio. The selected card also has to look selected.
+    it('saves MaClaw official for each local stage without changing the cloud default', () => {
+        const { onSubmit } = renderDialog({ localDesktop: true });
+        expect(screen.getByTestId('bot-llm-local')).toBeTruthy();
+        expect(screen.getByTestId('bot-local-role-foreground-provider')).toHaveProperty('value', 'MaClaw 官方');
+        expect(screen.getByTestId('bot-llm-mode-default')).toHaveProperty('checked', true);
+        fireEvent.click(screen.getByTestId('bot-llm-save'));
+        expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+            mode: 'default',
+            localRoles: expect.objectContaining({
+                foreground: { official: true, model: 'auto' },
+                background: { official: true, model: 'auto' },
+                computer_use: { official: true, model: 'auto' },
+                grounder: { official: true, model: 'auto' },
+            }),
+        }));
+    });
+
+    it('keeps a cloud-only provider out of the local stage list', () => {
+        renderDialog({
+            localDesktop: true,
+            initialMode: 'custom',
+            initialRoles: {
+                foreground: { name: 'CloudOnly', model: 'cloud-model', url: 'https://cloud.example/v1' },
+                background: { name: 'CloudOnly', model: 'cloud-model', url: 'https://cloud.example/v1' },
+                computer_use: { name: 'CloudOnly', model: 'cloud-model', url: 'https://cloud.example/v1' },
+                grounder: { unused: true },
+            },
+        });
+        const local = screen.getByTestId('bot-local-role-foreground-provider') as HTMLSelectElement;
+        expect([...local.options].map(option => option.value)).toEqual(['MaClaw 官方', 'DeepSeek']);
+        const cloud = screen.getByTestId('bot-role-foreground-provider') as HTMLSelectElement;
+        expect([...cloud.options].map(option => option.value)).toContain('CloudOnly');
+    });
+
     it('selects the custom card from anywhere on the card and shows the state', () => {
         renderDialog();
         const defaultCard = screen.getByTestId('bot-llm-mode-default').closest('.bot-llm-dialog__option') as HTMLElement;
@@ -276,6 +310,12 @@ describe('Bot model settings dialog', () => {
             }),
         }));
         expect(saveProfiles).not.toHaveBeenCalled();
+    });
+
+    it('does not submit when Enter is pressed in a local stage row', () => {
+        const { onSubmit } = renderDialog({ localDesktop: true });
+        fireEvent.keyDown(screen.getByTestId('bot-local-role-foreground-provider'), { key: 'Enter' });
+        expect(onSubmit).not.toHaveBeenCalled();
     });
 
     it('does not submit when Enter is pressed in a role row', () => {

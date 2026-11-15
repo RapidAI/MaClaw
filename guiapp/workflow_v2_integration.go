@@ -2500,7 +2500,9 @@ func (h *IMMessageHandler) finalizeCodingImplementation(
 			// The coding phase itself is now durably projected. Any following
 			// auto-generated workflow phase is ordinary Workflow metadata and is
 			// never grounds to rerun the already completed coding executor.
-			h.clearCodingExecCheckpoint(userID)
+			// The clear is lineage-aware: a stale detached review must not wipe
+			// a checkpoint a foreign turn wrote after its base.
+			h.clearCodingExecCheckpointIfLineage(userID, cp)
 			if updatedState := wf.machine.GetActive(userID); updatedState != nil {
 				if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
 					if onProgress != nil {
@@ -2557,6 +2559,43 @@ func (h *IMMessageHandler) finalizeCodingImplementation(
 		}
 	}
 	h.storeCodingExecCheckpoint(userID, cp)
+	// A delivered child-result handoff continues automatically: the fresh
+	// review attempt consumes it under the same durable gates as the explicit
+	// 「审阅子任务结果」 action, so the main task keeps running without a
+	// manual click. The hop budget bounds repeated spawn→review chains.
+	if !cancelled && cp.AutoReviewHops < codingAutoChildReviewMaxHops {
+		if store, closeStore, storeErr := openGUICodingRuntimeStore(h); storeErr == nil {
+			ready := codingChildReviewTargetsReady(store, cp)
+			closeStore()
+			// A superseded lineage must not spend a fresh parent attempt:
+			// every checkpoint write from it would be dropped anyway.
+			if ready && cp.reviewEpoch != 0 && !h.codingExecCheckpointLineageCurrent(userID, cp) {
+				ready = false
+			}
+			if ready {
+				cp.AutoReviewHops++
+				h.storeCodingExecCheckpoint(userID, cp)
+				// The hop store itself is lineage-fenced: if a foreign write
+				// landed after the probe, this store was dropped and every
+				// later write in the review would be dropped too. Fall through
+				// to the ordinary incomplete response instead.
+				if cp.reviewEpoch != 0 && !h.codingExecCheckpointLineageCurrent(userID, cp) {
+					ready = false
+				}
+			}
+			if ready {
+				if onProgress != nil {
+					onProgress(codingExecText(
+						"▶ Child findings delivered — auto-reviewing and continuing the main task…",
+						"▶ 子任务结论已交付 — 自动审阅并继续主任务…",
+						"▶ 子任務結論已交付 — 自動審閱並繼續主任務…",
+					))
+				}
+				log.Printf("[coding-child-review] auto-chaining review user=%s hops=%d", userID, cp.AutoReviewHops)
+				return h.reviewCodingExecChildResults(userID, state, cp, onProgress, nil, nil)
+			}
+		}
+	}
 	if wf := h.getWorkflowV2(); wf != nil {
 		if err := wf.machine.SaveExecutionProgress(userID, report); err != nil {
 			log.Printf("[workflow-v2-exec] SaveExecutionProgress failed: %v", err)
@@ -2786,6 +2825,10 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsLocal(userID string, s
 	loopCtx := parentLoop
 	if loopCtx == nil {
 		loopCtx = NewLoopContext("workflow-local-child-review", h.getMaclawAgentMaxIterations(), h.client)
+		// Chained hops carry the trusted IM target inside the lineage
+		// checkpoint so grandchildren keep the channel this detached
+		// review's result should be pushed back to.
+		loopCtx.DeliveryTarget = cp.reviewDeliveryTarget
 		defer func() { loopCtx.Cancel(); loopCtx.Done() }()
 	}
 	ensureLoopCtxUserID(loopCtx, userID)
@@ -2835,6 +2878,7 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsRemote(userID string, 
 	loopCtx := parentLoop
 	if loopCtx == nil {
 		loopCtx = NewLoopContext("workflow-remote-child-review", h.getMaclawAgentMaxIterations(), h.client)
+		loopCtx.DeliveryTarget = cp.reviewDeliveryTarget
 		defer func() { loopCtx.Cancel(); loopCtx.Done() }()
 	}
 	ensureLoopCtxUserID(loopCtx, userID)
@@ -3699,6 +3743,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			decision = codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: true}
 			log.Printf("[coding-plan] continue resumes incomplete local plan user=%s", userID)
 		} else {
+			// A genuinely new request abandons any validators left pending by
+			// a redirected approved plan — drop them here rather than let a
+			// later resuming turn stamp them onto unrelated work.
+			h.clearApprovedPlanValidators(userID)
 			if got := h.publishCodingRequestUnderstanding(userID, recordUserText, sessionMem, onToken); got != "" {
 				sessionMem = h.getStickyCodingWorkbenchMemory(userID)
 				attachCodingWorkRoot(&sessionMem, projectPath)
@@ -4304,7 +4352,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	} else if strings.TrimSpace(report) != "" {
 		resp.TraceEventCount = 1
 	}
-	return resp
+	// Frozen-contract validators fire only at the approved plan's terminal
+	// round; a continuing or errored response is not the plan's delivery.
+	return h.finishApprovedPlanValidators(userID, resp, tookApprovedPlan || resumeIncompletePlan, continuing)
 }
 
 // buildRemoteCodingPlanStepText builds the user prompt for one remote pure-coding

@@ -618,7 +618,13 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"content_len", strconv.Itoa(len(content)),
 		"srv", botlogHost(rec.BaseURL),
 	)
-	if err := configured(rec); err != nil {
+	gate := rec
+	if id := strings.TrimSpace(rec.Bots[index].NodeID); id != "" {
+		if view, ok := nodeView(rec, id); ok {
+			gate = view
+		}
+	}
+	if err := configured(gate); err != nil {
 		traceBot(botID, "configured", err, "dur_ms", traceMS(time.Since(pipelineStarted)))
 		return BotAdmission{}, err
 	}
@@ -632,7 +638,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if !hubStartedTurn(clientMessageID) && desktopCanonicalContinue(botID, continueSession) == "" {
 		if sticky, replay := s.peekDesktopRouteState(tenantID, userID, botID, clientMessageID); !replay {
 			step := time.Now()
-			if f, tk, err := s.ownerToken(ctx, tenantID, userID); err == nil {
+			if f, tk, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID); err == nil {
 				fresh, token, haveToken = f, tk, true
 				route = s.routeDesktopMessage(ctx, tenantID, userID, &fresh, &token, instanceID, botID, content, sticky)
 			} else if sticky != "" {
@@ -765,10 +771,18 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	step = time.Now()
 	var tokenErr error
 	if !haveToken {
-		fresh, token, tokenErr = s.ownerToken(ctx, tenantID, userID)
+		fresh, token, tokenErr = s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	}
 	traceBot(botID, "owner_token", tokenErr, "dur_ms", traceMS(time.Since(step)))
 	if tokenErr != nil {
+		if nodeLinkOffline(tokenErr) && rec.Bots[index].NodeID != "" {
+			if desktopReplay(ctx) {
+				return BotAdmission{}, ErrNodeOffline
+			}
+			if parked, ok := s.parkOfflineNodeMessage(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession); ok {
+				return parked, nil
+			}
+		}
 		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
 		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, tokenErr
@@ -895,6 +909,14 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"timeout", traceYes(desktopCallTimedOut(callErr)),
 		"dur_ms", traceMS(time.Since(step)),
 	)
+	if nodeLinkOffline(callErr) && rec.Bots[index].NodeID != "" {
+		if desktopReplay(ctx) {
+			return BotAdmission{}, ErrNodeOffline
+		}
+		if parked, ok := s.parkOfflineNodeMessage(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession); ok {
+			return parked, nil
+		}
+	}
 	// A 202 is the run id, not a finished command and not a timeout.
 	// The desktop stays with that run until the follow-up sees it end.
 	if admit && callErr == nil && payload.Async && strings.TrimSpace(payload.Run.ID) != "" &&
@@ -1669,7 +1691,9 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 	if err != nil {
 		return Bot{}, err
 	}
-	if err := configured(rec); err != nil {
+	nodeID := ownerNodeID(rec, ownerUserID)
+	callRec, err := callTarget(rec, nodeID)
+	if err != nil {
 		return Bot{}, err
 	}
 	if ownerUserID != "" {
@@ -1680,6 +1704,13 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 	token, err := s.ensureOwnerToken(ctx, tenantID, &rec, ownerUserID)
 	if err != nil {
 		return Bot{}, err
+	}
+	if nodeID != "" {
+		view, ok := nodeView(rec, nodeID)
+		if !ok {
+			return Bot{}, fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
+		}
+		callRec = view
 	}
 	mode := ownerDefaultDesktopMode(rec, ownerUserID)
 	if wantDesktop != nil {
@@ -1716,7 +1747,7 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 		"allow_invalid_config": true,
 		"metadata":             meta,
 	}
-	if err := s.doAuth(ctx, rec, token, http.MethodPost, "/api/v1/instances", body, &created); err != nil {
+	if err := s.doAuth(ctx, callRec, token, http.MethodPost, "/api/v1/instances", body, &created); err != nil {
 		return Bot{}, err
 	}
 	if strings.TrimSpace(created.ID) == "" {
@@ -1730,6 +1761,7 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 		OwnerUserID: ownerUserID,
 		CreatedAt:   s.now().UTC().Format(time.RFC3339),
 		DesktopMode: mode,
+		NodeID:      nodeID,
 	}
 	rec.Bots = append(rec.Bots, bot)
 	if err := s.save(ctx, tenantID, rec); err != nil {

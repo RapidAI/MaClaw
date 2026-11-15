@@ -5318,12 +5318,28 @@ export function ListDesktopNodes() {
   return window['go']['main']['App']['ListDesktopNodes']();
 }
 
+export function ListLocalDesktopJobs() {
+  return window['go']['main']['App']['ListLocalDesktopJobs']();
+}
+
 export function UpgradeDesktopNode(arg1, arg2) {
   return window['go']['main']['App']['UpgradeDesktopNode'](arg1, arg2);
 }
 
 export function DeployDesktopNode(arg1) {
   return window['go']['main']['App']['DeployDesktopNode'](arg1);
+}
+
+export function ConfigureDesktopNodeToken(arg1, arg2) {
+  return window['go']['main']['App']['ConfigureDesktopNodeToken'](arg1, arg2);
+}
+
+export function RedeployDesktopNode(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RedeployDesktopNode'](arg1, arg2, arg3);
+}
+
+export function ClearDesktopNodeResult(arg1) {
+  return window['go']['main']['App']['ClearDesktopNodeResult'](arg1);
 }
 
 export function RestartDesktopComputer(arg1) {
@@ -6384,6 +6400,10 @@ export function TokenBankClaimGiftLink(arg1) {
 
 export function TokenBankWithdrawGift(arg1, arg2, arg3) {
   return window['go']['main']['App']['TokenBankWithdrawGift'](arg1, arg2, arg3);
+}
+
+export function SetDesktopBotControl(arg1, arg2) {
+  return window['go']['main']['App']['SetDesktopBotControl'](arg1, arg2);
 }
 
 export function WatchDesktopBot(arg1, arg2) {

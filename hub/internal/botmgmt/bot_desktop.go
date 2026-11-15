@@ -261,6 +261,7 @@ func (s *Service) HandBackDesktop(ctx context.Context, tenantID, userID, botID s
 		}
 	}
 	s.releaseDesktopKeyboard(tenantID, dUser, bot.ID)
+	s.releaseDesktopControlScreen(tenantID, dUser)
 	s.drainDesktopQueue(tenantID, userID, bot.ID)
 	return nil
 }

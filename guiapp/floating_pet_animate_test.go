@@ -174,3 +174,72 @@ func TestPetDesktopAnimatorKeepsChosenPositionWhileDragging(t *testing.T) {
 		t.Fatalf("drag position = (%d,%d) moved=%v", x, y, moved)
 	}
 }
+
+func TestPetScreenTravelVelocityDropsWhenLocked(t *testing.T) {
+	vx, vy := petScreenTravelVelocity(1.5, -0.4, true)
+	if vx != 0 || vy != 0 {
+		t.Fatalf("locked velocity = (%v,%v)", vx, vy)
+	}
+	vx, vy = petScreenTravelVelocity(1.5, -0.4, false)
+	if vx != 1.5 || vy != -0.4 {
+		t.Fatalf("unlocked velocity = (%v,%v)", vx, vy)
+	}
+}
+
+func TestPetDesktopAnimatorStaysPutWhilePositionLocked(t *testing.T) {
+	prev := petpack.EnsureGlobal()
+	t.Cleanup(func() { petpack.SetGlobalForTest(prev) })
+	reg := petpack.NewRegistry(t.TempDir(), petpack.BundledFS())
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	petpack.SetGlobalForTest(reg)
+
+	var anim petDesktopAnimator
+	anim.Configure(petAnimConfig{
+		Skin:           petpack.DefaultPackID,
+		Variant:        petpack.VariantDefault,
+		State:          string(petpack.StateIdle),
+		PixelSize:      96,
+		WindowSize:     256,
+		MotionEnabled:  true,
+		PositionLocked: true,
+	})
+	start := time.UnixMilli(1_700_000_000_000)
+	first := anim.Render(start)
+	later := anim.Render(start.Add(1200 * time.Millisecond))
+	if first == nil || later == nil {
+		t.Fatal("pinned ragdoll frame missing")
+	}
+	if bytes.Equal(first.Pix, later.Pix) {
+		t.Fatal("pinned ragdoll idle pose did not change")
+	}
+	anim.SetPos(20, 30)
+	cursor := start
+	for i := 0; i < 40; i++ {
+		cursor = cursor.Add(200 * time.Millisecond)
+		x, y, moved := anim.Advance(cursor, false, 2000, 2000)
+		if moved || x != 20 || y != 30 {
+			t.Fatalf("pinned pet moved to (%d,%d) moved=%v", x, y, moved)
+		}
+	}
+	anim.Configure(petAnimConfig{
+		Skin:          petpack.DefaultPackID,
+		Variant:       petpack.VariantDefault,
+		State:         string(petpack.StateIdle),
+		PixelSize:     96,
+		WindowSize:    256,
+		MotionEnabled: true,
+	})
+	roamed := false
+	for i := 0; i < 40; i++ {
+		cursor = cursor.Add(200 * time.Millisecond)
+		if _, _, moved := anim.Advance(cursor, false, 2000, 2000); moved {
+			roamed = true
+			break
+		}
+	}
+	if !roamed {
+		t.Fatal("unlock did not restore roaming")
+	}
+}

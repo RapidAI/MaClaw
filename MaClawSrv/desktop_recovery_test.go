@@ -740,3 +740,21 @@ func TestRecoveryTaskOutcomeMetadataForTheService(t *testing.T) {
 		t.Fatalf("%v", m)
 	}
 }
+
+func TestScheduleFiringDoesNotShareTheSessionRecoveryTask(t *testing.T) {
+	scope := agentruntime.Scope{RunID: "run_weather_2"}
+	req := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{
+		Session: agentservice.Session{ID: "sess_long"},
+		Message: agentservice.Message{Metadata: map[string]string{"bot_origin": "schedule"}},
+	}}
+	if got := desktopRecConversation(req, scope); got != "sched:run_weather_2" {
+		t.Fatalf("schedule conversation=%q", got)
+	}
+	again := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{
+		Session: agentservice.Session{ID: "sess_long"},
+		Message: agentservice.Message{Content: "再查一次天气"},
+	}}
+	if got := desktopRecConversation(again, scope); got != "s:sess_long" {
+		t.Fatalf("chat conversation=%q", got)
+	}
+}

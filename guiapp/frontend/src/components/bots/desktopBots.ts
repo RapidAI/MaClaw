@@ -505,6 +505,10 @@ export interface InProgressBotTask {
     phase?: BotPhase;
     status: BotTaskProgress;
     startedAt: number;
+    // local marks an install or update run by this GUI, not a cloud bot turn.
+    // localKind is that job's stage: deploying, upgrading, or registering.
+    local?: boolean;
+    localKind?: 'deploying' | 'upgrading' | 'registering';
 }
 
 // Turns this process admitted. The bots page can unmount while Go is still

@@ -237,6 +237,40 @@ func TestIssueCodeRejectsALongName(t *testing.T) {
 	}
 }
 
+func TestPersonalDesktopKeepsAHubTokenOnlyWithSrv(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	reg := NewRegistry(&memSettings{})
+	desktop, err := reg.IssueOwnedCode(context.Background(), "tenant-a", "alice", "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := reg.Enroll(context.Background(), desktop.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.HubToken != "" {
+		t.Fatal("a desktop-only personal node must not receive a hub token")
+	}
+	bare, err := reg.IssueOwnedCode(context.Background(), "tenant-a", "alice", "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Enroll(context.Background(), bare.Code, "desk-key", "", "v1", true, true, ""); err == nil {
+		t.Fatal("a personal srv enroll without an admin secret was accepted")
+	}
+	withSrv, err := reg.IssueOwnedCode(context.Background(), "tenant-a", "alice", "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = reg.Enroll(context.Background(), withSrv.Code, "desk-key", "admin-secret", "v1", true, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.HubToken == "" {
+		t.Fatal("the same-machine srv needs the hub token")
+	}
+}
+
 func TestEnrollRequiresAService(t *testing.T) {
 	t.Setenv("HUB_EDGE_NODES", "on")
 	reg := NewRegistry(&memSettings{})

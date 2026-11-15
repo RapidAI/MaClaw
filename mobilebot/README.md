@@ -29,6 +29,7 @@ Bot、与 Bot 聊天、查看工作状态、查看并操作 Bot 的电脑画面�
 | BotLLMSettingsDialog | `我的` → 模型设置：默认/自定义提供方（name/url/key/model/protocol/wire_api），展示各角色当前生效配置 |
 | 额度显示 | `我的` → Bot 额度卡：`GET /bots/credits`，用量进度或不限量 |
 | 登录 / 多账号 | 邮箱验证码或手机验证码登录；多账号并存、一键切换、退出/移除账号；token 过期（401/凭证显式拒绝）自动跳转重新验证，账号保留可一键恢复 |
+| TaskMachineBar 远程控制 | `远控` tab：远程机下拉选择（grants 桶=我能控制，在线点+权限档位）→ 任务列表/详情轮询；可操作档开放发消息/停止/重命名/置顶/新建任务（含 list_dirs 远程目录选择），仅查看档自动隐藏；产出物经 fetch_file base64 回传 → 本地保存 → 系统分享。管理面：我的设备配对（账号级控制方）、邀请他人（view/operate）、收到的邀请可代绑自己的电脑接受/拒绝/忽略、我发出的邀请可取消、我的电脑被远控时可结束 |
 
 ## 架构
 
@@ -46,6 +47,7 @@ lib/
     bots/                  /api/v1/bots 全部调用、模型、列表/聊天/设置/电脑画面
     status/                runs/active、tasks、pending deliveries 聚合
     account/               账号卡、切换、移除、退出
+    remote/                /api/remote-control/*：授权状态、机器选择、远程任务、产出物下载
 ```
 
 登录链路（与 `mobile/maclaw_mobile` 相同的官方 Hub 发现流程）：

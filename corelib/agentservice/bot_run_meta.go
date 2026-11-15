@@ -18,7 +18,7 @@ func stampBotRunIdentity(run *Run, meta map[string]string, content string) {
 	if run.Metadata == nil {
 		run.Metadata = map[string]string{}
 	}
-	for _, key := range []string{"bot_id", "bot_phase", "bot_origin"} {
+	for _, key := range []string{"bot_id", "bot_phase", "bot_origin", "schedule_task"} {
 		if strings.TrimSpace(run.Metadata[key]) != "" {
 			continue
 		}

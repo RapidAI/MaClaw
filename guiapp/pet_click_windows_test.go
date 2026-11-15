@@ -30,6 +30,22 @@ func testPetClickWindowMotion(t *testing.T) {
 	if !w.petHoverDue(released.Add(petHoverCooldown)) {
 		t.Fatal("hover cooldown did not elapse")
 	}
+
+	// The click clip starts after the double-click wait, so an expired
+	// button-up clock must not leave that clip open to the next hover.
+	playing := &windowsFloatingWindow{petSkin: "ragdoll", petMotionEnabled: true}
+	playing.armPetPointerHover(time.Now().Add(-petHoverCooldown - time.Second))
+	playing.triggerCharacterClip("react_click_greet")
+	if playing.petHoverDue(time.Now().Add(time.Second)) {
+		t.Fatal("click clip left hover free to replace it")
+	}
+
+	dragged := &windowsFloatingWindow{petSkin: "ragdoll", petMotionEnabled: true}
+	dragged.armPetPointerHover(time.Now().Add(-petHoverCooldown - time.Second))
+	dragged.finishPetDrag()
+	if dragged.petHoverDue(time.Now().Add(time.Second)) {
+		t.Fatal("drag end left hover free to replace it")
+	}
 }
 
 func testPetClickSideEffect(t *testing.T) {

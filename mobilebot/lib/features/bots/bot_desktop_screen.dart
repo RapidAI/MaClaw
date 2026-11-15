@@ -28,6 +28,10 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     with WidgetsBindingObserver {
   static const _holdRefresh = Duration(seconds: 45);
 
+  /// The hub's keyboard claim lapses after 20s (desktopControlTTL) — renew
+  /// well inside it while the takeover switch is on.
+  static const _claimRefresh = Duration(seconds: 10);
+
   /// One generation per open — a clock-based counter like the GUI's
   /// takeDesktopWatchEpoch: Hub compares epochs across every client of this
   /// user, so a random small int always loses to the GUI's Date.now() epochs
@@ -37,6 +41,8 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   final int _epoch = ++_nextEpoch;
   Timer? _holdTimer;
   Timer? _loadGuardTimer;
+  Timer? _claimTimer;
+  bool _claiming = false;
 
   BotDesktop _desktop = const BotDesktop();
   bool _waking = false;
@@ -66,8 +72,10 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
       WidgetsBinding.instance.removeObserver(this);
       _holdTimer?.cancel();
       _loadGuardTimer?.cancel();
+      _claimTimer?.cancel();
       // Let the desktop idle-sleep once nobody is watching.
       unawaited(_release());
+      if (_controlling) unawaited(_releaseControl());
     }
     super.dispose();
   }
@@ -86,6 +94,13 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
       _holdTimer?.cancel();
+      _claimTimer?.cancel();
+      if (_controlling) {
+        _pausedWithControl = true;
+        // Drop the keyboard hold right away instead of letting another
+        // device wait out the 20s TTL; on resume _hold() re-claims.
+        unawaited(_releaseControl());
+      }
     }
   }
 
@@ -130,6 +145,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
         if (!desktop.userControl) _controlling = false;
         _reloadTick++;
       });
+      _reconcileControl(desktop.inputGranted);
       _scheduleHold();
     } on Object catch (error) {
       if (!mounted) return;
@@ -161,6 +177,114 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     } on Object {
       // Release is best-effort; the hold expires on its own.
     }
+  }
+
+  /// True while the takeover switch is on but we released the claim for a
+  /// background pause — the next reconcile grabs it back silently instead
+  /// of reporting a loss we caused ourselves.
+  bool _pausedWithControl = false;
+
+  /// Release this device's keyboard claim — best-effort like the watch
+  /// release; the 20s TTL covers a dropped call.
+  Future<void> _releaseControl() async {
+    try {
+      await _api?.setDesktopControl(widget.bot.id, hold: false);
+    } on Object {
+      // Best-effort — the claim lapses on its own.
+    }
+  }
+
+  /// The takeover switch is a claim, not a local flag: ask the hub for the
+  /// keyboard and only flip on when this device actually got it.
+  Future<void> _setControlling(bool value) async {
+    final api = _api;
+    if (api == null || _claiming) return;
+    if (!value) {
+      _claimTimer?.cancel();
+      _pausedWithControl = false;
+      setState(() => _controlling = false);
+      unawaited(_releaseControl());
+      return;
+    }
+    setState(() => _claiming = true);
+    try {
+      final granted = await api.setDesktopControl(widget.bot.id, hold: true);
+      if (!mounted) return;
+      if (granted) {
+        setState(() => _controlling = true);
+        _scheduleClaim();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('另一台设备正在操作这台电脑')),
+        );
+      }
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(failureMessage(error))),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _claiming = false);
+    }
+  }
+
+  void _scheduleClaim() {
+    _claimTimer?.cancel();
+    _claimTimer = Timer(_claimRefresh, _renewClaim);
+  }
+
+  /// Re-claims inside the TTL. A refusal means another device took the
+  /// keyboard since — hand the switch back to watch-only.
+  Future<void> _renewClaim() async {
+    if (!_controlling) return;
+    final granted = await _grabControl();
+    if (!mounted || granted != false) return;
+    setState(() => _controlling = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('控制权已交给另一台设备')),
+    );
+  }
+
+  /// One claim round-trip — shared by the switch, the renewal tick and the
+  /// resume path. Returns null when the request itself failed (transient
+  /// network): the switch then stays on and the next tick retries, since a
+  /// dropped packet is not another machine taking the keyboard.
+  Future<bool?> _grabControl() async {
+    final api = _api;
+    if (api == null) return null;
+    try {
+      final granted = await api.setDesktopControl(widget.bot.id, hold: true);
+      if (_controlling) _scheduleClaim();
+      return granted;
+    } on Object {
+      if (_controlling) _scheduleClaim();
+      return null;
+    }
+  }
+
+  /// Every watch refresh reports who holds the keyboard. A lost grant while
+  /// the switch is on is either another device claiming it or our own claim
+  /// lapsing (pause release, a missed renewal) — try one silent re-grab and
+  /// only a real refusal hands the switch back to watch-only.
+  void _reconcileControl(bool inputGranted) {
+    if (!_controlling || inputGranted) {
+      if (_controlling && _claimTimer == null) _scheduleClaim();
+      return;
+    }
+    final wasPaused = _pausedWithControl;
+    _pausedWithControl = false;
+    unawaited(_grabControl().then((granted) {
+      if (!mounted || granted != false) return;
+      setState(() => _controlling = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(wasPaused
+              ? '另一台设备正在操作这台电脑'
+              : '控制权已交给另一台设备'),
+        ),
+      );
+    }));
   }
 
   String _wakeFailureText(Object error) {
@@ -476,8 +600,8 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                     ),
                     Switch(
                       value: _controlling,
-                      onChanged: (value) =>
-                          setState(() => _controlling = value),
+                      onChanged:
+                          _claiming ? null : (value) => _setControlling(value),
                     ),
                   ],
                 ),

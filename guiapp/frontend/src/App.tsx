@@ -979,6 +979,9 @@ function App() {
     }, [requestOnboarding]);
 
     const [creditGiftLaunch, setCreditGiftLaunch] = useState<{ code: string; seq: number }>({ code: '', seq: 0 });
+    // Increments on every agent model-menu "add custom model" click so the LLM
+    // settings panel auto-opens provider management (0 = no pending request).
+    const [llmProviderDialogAutoOpenSeq, setLLMProviderDialogAutoOpenSeq] = useState(0);
     useEffect(() => {
         const applyGift = (payload: any) => {
             const code = String(payload?.code || payload?.Code || '').trim();
@@ -4452,6 +4455,16 @@ function App() {
         selectSettingsTab('llm');
     }, [selectSettingsTab]);
 
+    // Deep link from the agent model menu's "add custom model" entry: opens the
+    // LLM settings tab with the provider-management dialog already up. The seq
+    // (same pattern as tokenBankClaimSeq) survives the settings panel's lazy
+    // mount; the panel consumes it once its provider list is ready.
+    const openLLMProviderManagementPage = useCallback(() => {
+        setNavTabNow('settings');
+        selectSettingsTab('llm');
+        setLLMProviderDialogAutoOpenSeq(seq => seq + 1);
+    }, [selectSettingsTab]);
+
     const openIMSettingsPage = useCallback(() => {
         setNavTabNow('settings');
         selectSettingsTab('im');
@@ -6267,6 +6280,7 @@ ${instruction}`;
                             activeExecutionProfile={quickWriteProfile}
                             codingInheritsAssistant={activeProfileSummary?.inherit_assistant === true}
                             onOpenLLMSettings={openLLMSettingsPage}
+                            onAddCustomModel={openLLMProviderManagementPage}
                             onActiveExecutionProfileChange={setActiveExecutionProfile}
                             onLanguageChange={applyLanguage}
                             tasks={taskItems}
@@ -6345,6 +6359,7 @@ ${instruction}`;
                             showToastMessage={showToastMessage}
                             tokenBankClaimCode={creditGiftLaunch.code}
                             tokenBankClaimSeq={creditGiftLaunch.seq}
+                            llmProviderDialogAutoOpenSeq={llmProviderDialogAutoOpenSeq}
                             memoryTraceFocus={memoryTraceFocus}
                             imSubTab={imSubTab}
                             setImSubTab={setImSubTab}

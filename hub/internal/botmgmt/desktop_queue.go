@@ -275,6 +275,7 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 	s.queueDraining[key] = true
 	s.mu.Unlock()
 	s.expireMemoryQueue(tenantID, userID, botID)
+	s.expireNodeQueue(tenantID, userID, botID)
 	noneBot := false
 	if rec, err := s.load(context.Background(), tenantID); err == nil {
 		if i := indexOf(rec.Bots, botID); i >= 0 {
@@ -301,7 +302,7 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 			if err == ErrDesktopMemory {
 				s.markItemMemoryWait(item)
 			}
-			if err == ErrDesktopBusy || err == ErrDesktopMemory {
+			if err == ErrDesktopBusy || err == ErrDesktopMemory || nodeLinkOffline(err) {
 				s.pushFrontDesktopQueue(tenantID, userID, botID, item)
 			}
 			return
@@ -311,6 +312,38 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 
 // expireMemoryQueue marks memory-parked messages that have waited out the
 // ceiling. They stay in the queue as gave_up so a poll can read the outcome.
+func (s *Service) expireNodeQueue(tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	key := desktopQueueKey(tenantID, userID, botID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	now := s.now()
+	for _, item := range s.desktopQueues[key] {
+		if item == nil || item.WaitKind != desktopQueueWaitNode {
+			continue
+		}
+		if item.State != "" && item.State != "queued" && item.State != "held" {
+			continue
+		}
+		start := item.EnqueuedAt
+		if !item.WaitSince.IsZero() {
+			start = item.WaitSince
+		}
+		if now.Sub(start) < nodeOfflineQueueMax {
+			continue
+		}
+		item.State = "gave_up"
+		item.Outcome = nodeOfflineOutcome
+		changed = true
+	}
+	if changed {
+		s.persistDesktopState(tenantID)
+	}
+}
+
 func (s *Service) expireMemoryQueue(tenantID, userID, botID string) {
 	if s == nil {
 		return
@@ -443,7 +476,11 @@ func (s *Service) popDesktopQueue(tenantID, userID, botID string) *desktopQueueI
 	s.dropExpiredQueueLocked(key)
 	items := s.desktopQueues[key]
 	var item *desktopQueueItem
+	passed := 0
 	for len(items) > 0 {
+		if passed > len(items) {
+			break
+		}
 		head := items[0]
 		items = items[1:]
 		if head == nil || head.State == "running" || head.State == "done" {
@@ -451,6 +488,7 @@ func (s *Service) popDesktopQueue(tenantID, userID, botID string) *desktopQueueI
 		}
 		if head.State == "gave_up" {
 			items = append(items, head)
+			passed++
 			continue
 		}
 		if runID, _ := s.queueAdmitLocked(tenantID, userID, botID, head.ClientMessageID); runID != "" {
@@ -489,6 +527,31 @@ func (s *Service) pushFrontDesktopQueue(tenantID, userID, botID string, item *de
 	}
 	s.desktopQueues[key] = append([]*desktopQueueItem{item}, s.desktopQueues[key]...)
 	s.persistDesktopState(tenantID)
+}
+
+func (s *Service) parkOfflineNodeMessage(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession string) (BotAdmission, bool) {
+	if !admit || strings.TrimSpace(nodeID) == "" || desktopReplay(ctx) || desktopQueueSuppressed(ctx) || hubStartedTurn(clientMessageID) {
+		return BotAdmission{}, false
+	}
+	pos, err := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
+		ClientMessageID: clientMessageID,
+		Content:         content,
+		Phase:           phase,
+		ContinueSession: continueSession,
+		Kind:            "new",
+		Instruction:     content,
+		Ack:             nodeOfflineAck,
+		WaitKind:        desktopQueueWaitNode,
+		WaitSince:       s.now(),
+		Secrets:         desktopSecretBag(ctx),
+	})
+	if err != nil {
+		return BotAdmission{}, false
+	}
+	return BotAdmission{
+		Accepted: true, Queued: true, Position: pos, Ack: nodeOfflineAck,
+		Kind: "new", ClientMessageID: clientMessageID,
+	}, true
 }
 
 func (s *Service) dispatchQueuedItem(tenantID, userID, botID string, item *desktopQueueItem) error {

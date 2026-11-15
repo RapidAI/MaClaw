@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
@@ -47,7 +48,35 @@ func TestCountDesktopBotsSkipsNone(t *testing.T) {
 	}
 }
 
-func TestCreateBotDesktopQuota(t *testing.T) {
+type quotaPatchLog struct {
+	mu   sync.Mutex
+	last map[string]string
+}
+
+func (p *quotaPatchLog) record(metadata map[string]string) {
+	if p == nil {
+		return
+	}
+	copied := map[string]string{}
+	for key, value := range metadata {
+		copied[key] = value
+	}
+	p.mu.Lock()
+	p.last = copied
+	p.mu.Unlock()
+}
+
+func (p *quotaPatchLog) desktop() (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	value, ok := p.last["hub_bot_desktop"]
+	return value, ok
+}
+
+func newDesktopQuotaService(t *testing.T, patches *quotaPatchLog) *Service {
+	t.Helper()
+	var seq sync.Mutex
+	n := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me":
@@ -67,29 +96,31 @@ func TestCreateBotDesktopQuota(t *testing.T) {
 				Metadata map[string]string `json:"metadata"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if _, stillNone := body.Metadata["hub_bot_desktop"]; stillNone || body.Metadata["hub_bot"] != "1" {
+			if body.Metadata["hub_bot"] != "1" {
 				http.Error(w, "metadata", http.StatusBadRequest)
 				return
 			}
+			patches.record(body.Metadata)
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/instances":
 			var body struct {
 				Metadata map[string]string `json:"metadata"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			id := "inst-" + body.Metadata["hub_user_id"]
+			seq.Lock()
+			n++
+			id := fmt.Sprintf("inst-%d", n)
+			seq.Unlock()
 			if body.Metadata["hub_bot_desktop"] == "none" {
 				id += "-none"
 			}
-			id += fmt.Sprintf("-%d", len(body.Metadata))
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id":"` + id + `"}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	defer srv.Close()
-
+	t.Cleanup(srv.Close)
 	svc := NewService(&memSettings{})
 	svc.HTTP = srv.Client()
 	ctx := context.Background()
@@ -99,6 +130,13 @@ func TestCreateBotDesktopQuota(t *testing.T) {
 	if _, err := svc.SaveAdminSecret(ctx, "tenant-a", "admin-secret"); err != nil {
 		t.Fatal(err)
 	}
+	return svc
+}
+
+func TestCreateBotDesktopQuota(t *testing.T) {
+	patches := &quotaPatchLog{}
+	svc := newDesktopQuotaService(t, patches)
+	ctx := context.Background()
 	limit := 1
 	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "alice", DesktopBotLimit: &limit}); err != nil {
 		t.Fatal(err)
@@ -128,9 +166,67 @@ func TestCreateBotDesktopQuota(t *testing.T) {
 	if _, err := svc.SetBotDesktopMode(ctx, "tenant-a", none.ID, "shared"); err != nil {
 		t.Fatalf("admin upgrade: %v", err)
 	}
+	if got := svc.DesktopOverWarning(ctx, "tenant-a", "alice", "shared"); got != desktopOverWarning {
+		t.Fatalf("admin warning = %q", got)
+	}
+	if got := svc.DesktopOverWarning(ctx, "tenant-a", "alice", "none"); got != "" {
+		t.Fatalf("none warning = %q", got)
+	}
 	quota, err := svc.DesktopQuotaForUser(ctx, "tenant-a", "alice")
 	if err != nil || quota.Limit == nil || *quota.Limit != 1 || quota.Used != 2 {
 		t.Fatalf("quota %+v %v", quota, err)
+	}
+	if _, kept := patches.desktop(); kept {
+		t.Fatal("upgrade left hub_bot_desktop on the instance")
+	}
+	if _, err := svc.SetBotDesktopModeForUser(ctx, "tenant-a", "alice", first.ID, "none"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetBotDesktopModeForUser(ctx, "tenant-a", "alice", none.ID, "none"); err != nil {
+		t.Fatal(err)
+	}
+	if mode, kept := patches.desktop(); !kept || mode != desktop.BotDesktopModeNone {
+		t.Fatalf("downgrade metadata kept=%v mode=%q", kept, mode)
+	}
+	if _, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "freed-desk", "", &yes); err != nil {
+		t.Fatalf("freed slot: %v", err)
+	}
+	if _, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "still-full", "", &yes); !errors.Is(err, ErrDesktopQuota) {
+		t.Fatalf("one desktop bot still fills the grant: %v", err)
+	}
+}
+
+func TestConcurrentDesktopCreatesStopAtTheGrant(t *testing.T) {
+	svc := newDesktopQuotaService(t, nil)
+	ctx := context.Background()
+	limit := 1
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "alice", DesktopBotLimit: &limit}); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	okN, quotaN, other := 0, 0, 0
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", fmt.Sprintf("desk-%d", i), "", &yes)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				okN++
+			case errors.Is(err, ErrDesktopQuota):
+				quotaN++
+			default:
+				other++
+			}
+		}(i)
+	}
+	wg.Wait()
+	if okN != 1 || quotaN != 5 || other != 0 {
+		t.Fatalf("created=%d rejected=%d other=%d", okN, quotaN, other)
 	}
 }
 

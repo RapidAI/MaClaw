@@ -36,6 +36,10 @@ hubcenter.exe
 CodeClaw.exe
 build/deploy/*.tar.gz
 build/deploy/stage/
+build/deploy/*.exe
+build/deploy/maclawsrv
+build/deploy/maclaw-hub
+build/deploy/desktopd
 build/deploy_last.log
 build/windows/*.tmp
 mobile/.gradle-user-home/

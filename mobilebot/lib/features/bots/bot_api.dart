@@ -441,6 +441,18 @@ class BotApi {
     );
   }
 
+  /// The identity this device types on a bot screen as. `desktop/control`
+  /// holds the keyboard per machine id — a phone has no registered machine
+  /// row, so it claims under a stable self-assigned one. Sent ONLY on the
+  /// /desktop endpoints: the remote-control viewer() reads the same header
+  /// and a non-empty id would hide the account-level grants the 远控 tab
+  /// depends on.
+  Map<String, dynamic> get _machineHeaders => {
+        'X-Machine-ID': _client.account.machineId.isNotEmpty
+            ? _client.account.machineId
+            : 'mobile-${_client.account.clientId.isNotEmpty ? _client.account.clientId : _client.account.userId}',
+      };
+
   /// Attach, wake, or release the bot's desktop view.
   ///
   /// Empty hold keeps the screen pinned while open; `wake` is the human
@@ -459,10 +471,27 @@ class BotApi {
           if (wake) 'wake': true,
           if (epoch > 0) 'epoch': epoch,
         },
-        options: _client.opts(receiveTimeout: const Duration(seconds: 75)),
+        options: _client.opts(
+          receiveTimeout: const Duration(seconds: 75),
+          headers: _machineHeaders,
+        ),
       ),
     );
     return BotDesktop.fromJson(data);
+  }
+
+  /// `POST .../desktop/control {"hold":bool}` — claim or release the
+  /// keyboard for this device. The hub answer says whether the claim won;
+  /// another machine holding it (within its 20s TTL) refuses the takeover.
+  Future<bool> setDesktopControl(String botId, {required bool hold}) async {
+    final data = await _client.guard(
+      () => _client.dio.post<Map<String, dynamic>>(
+        _botPath(botId, '/desktop/control'),
+        data: {'hold': hold},
+        options: _client.opts(headers: _machineHeaders),
+      ),
+    );
+    return data['input_granted'] == true;
   }
 
   /// Hand the bot's desktop back so it can keep working unattended.
@@ -470,7 +499,7 @@ class BotApi {
     await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
         _botPath(botId, '/desktop/handback'),
-        options: _client.opts(),
+        options: _client.opts(headers: _machineHeaders),
       ),
     );
   }

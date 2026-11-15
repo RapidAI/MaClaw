@@ -364,6 +364,13 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('已唤醒：$names')));
+        // Woken bots answer asynchronously — without a stream the first
+        // replies only show on a manual pull, so poll a few times.
+        for (final delay in const [4, 12, 30]) {
+          Future.delayed(Duration(seconds: delay), () {
+            if (mounted) ref.invalidate(_roomSaidProvider(widget.room.id));
+          });
+        }
       }
     } on Object catch (error) {
       if (mounted) {
@@ -472,6 +479,15 @@ class _RoomTranscript extends ConsumerWidget {
   String _botName(String id) =>
       bots.where((b) => b.id == id).firstOrNull?.title ?? id;
 
+  Future<void> _refresh(WidgetRef ref) async {
+    ref.invalidate(_roomSaidProvider(room.id));
+    try {
+      await ref.read(_roomSaidProvider(room.id).future);
+    } on Object {
+      // Error state renders via data.when(error:).
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
@@ -479,20 +495,31 @@ class _RoomTranscript extends ConsumerWidget {
         .watch(_roomSaidProvider(room.id))
         .when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (error, _) => Center(child: Text(failureMessage(error))),
+          error: (error, _) => RefreshIndicator(
+            onRefresh: () => _refresh(ref),
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                const SizedBox(height: 140),
+                Center(child: Text(failureMessage(error))),
+              ],
+            ),
+          ),
           data: (notes) {
             if (notes.isEmpty) {
-              return const Center(child: Text('在房间里说点什么，Bot 们会听到'));
+              return RefreshIndicator(
+                onRefresh: () => _refresh(ref),
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  children: const [
+                    SizedBox(height: 160),
+                    Center(child: Text('在房间里说点什么，Bot 们会听到')),
+                  ],
+                ),
+              );
             }
             return RefreshIndicator(
-              onRefresh: () async {
-                ref.invalidate(_roomSaidProvider(room.id));
-                try {
-                  await ref.read(_roomSaidProvider(room.id).future);
-                } on Object {
-                  // Error state renders via data.when(error:).
-                }
-              },
+              onRefresh: () => _refresh(ref),
               child: ListView.builder(
                 controller: scrollCtrl,
                 padding: const EdgeInsets.all(12),

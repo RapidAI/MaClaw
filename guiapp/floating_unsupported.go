@@ -53,6 +53,8 @@ func (w *unsupportedFloatingWindow) IsCreated() bool {
 
 func (w *unsupportedFloatingWindow) UpdateSoundConfig(bool, string) {}
 
+func (w *unsupportedFloatingWindow) UpdatePositionLock(bool) {}
+
 func (w *unsupportedFloatingWindow) UpdateMotionConfig(_, _, _ bool, _, skin, variant string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

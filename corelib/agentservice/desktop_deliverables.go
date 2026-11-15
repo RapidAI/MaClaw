@@ -45,6 +45,46 @@ func (c *coreAgentCallbacks) desktopDeliverablesApply() bool {
 	return strings.TrimSpace(c.userText) != ""
 }
 
+// desktopDeliverableRequestText is the request the checklist is read from.
+// A timer firing's order still says "every five minutes". That interval is
+// the clock's job. Read as a standard, it kept one weather turn going after
+// the PDF was already delivered, because one file cannot prove the cadence.
+// desktopAskedText is the person's order. A resumed turn's visible text is
+// the restart sentence, so the checklist was empty and the outcome check
+// accepted another copy of the PDF (Bot 4, 15:24).
+func desktopAskedText(c *coreAgentCallbacks, userText string) string {
+	text := strings.TrimSpace(userText)
+	if c == nil || c.messageMetadata == nil {
+		return text
+	}
+	resumed := text == restartNoticeContinue || strings.TrimSpace(c.messageMetadata["restart_resume"]) == "1"
+	if !resumed {
+		return text
+	}
+	if ask := strings.TrimSpace(c.messageMetadata["task_request"]); ask != "" {
+		return ask
+	}
+	if ask := strings.TrimSpace(c.messageMetadata["bot_task"]); ask != "" {
+		return ask
+	}
+	return text
+}
+
+func desktopOutcomeAsk(c *coreAgentCallbacks, userText string) string {
+	text := desktopAskedText(c, userText)
+	if c == nil || c.messageMetadata == nil || strings.TrimSpace(c.messageMetadata["bot_origin"]) != "schedule" {
+		return text
+	}
+	return "这是定时器已经到点的一轮。周期由定时器负责，不要把「每几分钟」或重复次数写成这一轮的标准。这一轮只交付这一次要求交给这个人的东西。\n" + text
+}
+
+func desktopDeliverableRequestText(c *coreAgentCallbacks) string {
+	if c == nil {
+		return ""
+	}
+	return desktopOutcomeAsk(c, c.userText)
+}
+
 // startDesktopDeliverables reads the explicit deliverables of this turn.
 func (c *coreAgentCallbacks) startDesktopDeliverables() {
 	if !c.desktopDeliverablesApply() || c.deliverables != nil {
@@ -52,7 +92,7 @@ func (c *coreAgentCallbacks) startDesktopDeliverables() {
 	}
 	st := &desktopDeliverablesState{done: make(chan struct{})}
 	c.deliverables = st
-	cfg, client, text := c.llmCfg, c.httpClient, c.userText
+	cfg, client, text := c.llmCfg, c.httpClient, desktopDeliverableRequestText(c)
 	go func() {
 		defer close(st.done)
 		items, err := desktopDeliverablesExtract(context.Background(), cfg, client, text)

@@ -7,7 +7,8 @@ export function resolveSessionTab(tab: string | undefined): SessionTab {
     return "background";
 }
 
-/** Bot is present only after Hub has granted this account. */
+/** Bot is present after Hub has granted this account, or while this computer
+ * still has a desktop install or update on the monitor. */
 export function visibleSessionTabs(botAllowed: boolean): SessionTab[] {
     return botAllowed ? [...SESSION_TABS, "bot"] : [...SESSION_TABS];
 }

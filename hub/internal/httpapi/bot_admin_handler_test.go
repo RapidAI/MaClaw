@@ -79,6 +79,28 @@ func (m *botAuditMem) List(context.Context, store.AdminAuditLogFilter) ([]*store
 	return m.logs, nil
 }
 
+func TestAdminDesktopModeWarnsWhenTheGrantIsPassed(t *testing.T) {
+	mem := &botSettingsMem{}
+	mem.value = `{"bots":[{"id":"plain","name":"plain","owner_user_id":"alice","desktop_mode":"none"}],"grants":[{"id":"g","scope":"user","target_id":"alice","desktop_bot_limit":0}]}`
+	svc := botmgmt.NewService(mem)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/bots/plain/desktop-mode", strings.NewReader(`{"desktop_mode":"shared"}`))
+	req.SetPathValue("id", "plain")
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant-a"}))
+	rec := httptest.NewRecorder()
+	PutBotDesktopModeAdminHandler(svc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"desktop_mode":"shared"`) || !strings.Contains(rec.Body.String(), "已经超过额度") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPut, "/api/admin/bots/plain/desktop-mode", strings.NewReader(`{"desktop_mode":"none"}`))
+	req.SetPathValue("id", "plain")
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant-a"}))
+	rec = httptest.NewRecorder()
+	PutBotDesktopModeAdminHandler(svc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "warning") {
+		t.Fatalf("none status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestBotSettingsSaveKeepsTheOverQuotaMark(t *testing.T) {
 	mem := &botSettingsMem{}
 	mem.value = `{"bots":[{"id":"a","name":"one","owner_user_id":"alice","desktop_mode":"shared","desktop_over":true},{"id":"b","name":"two","owner_user_id":"alice","desktop_mode":"isolated"},{"id":"c","name":"plain","owner_user_id":"alice","desktop_mode":"none","desktop_over":true}],"grants":[{"id":"g","scope":"user","target_id":"alice","desktop_bot_limit":1}]}`

@@ -251,6 +251,13 @@ func desktopRecHash(s string) string {
 // desktopRecConversation is the authoritative conversation of a turn (the
 // session the person writes in); a run without one is its own conversation.
 func desktopRecConversation(request agentruntime.TurnRequest, scope agentruntime.Scope) string {
+	// A timer fires into the bot's long-lived session. Recovery lineage follows
+	// the conversation, so every later weather PDF shared the first firing's
+	// goal. After 90 minutes the span was spent and bash was refused even
+	// though this occurrence had just started. Each firing is its own task.
+	if desktopTurnOrigin(request) == "schedule" && strings.TrimSpace(scope.RunID) != "" {
+		return "sched:" + strings.TrimSpace(scope.RunID)
+	}
 	switch in := request.Input.(type) {
 	case agentservice.ExecuteRequest:
 		if in.Session.ID != "" {
@@ -262,6 +269,18 @@ func desktopRecConversation(request agentruntime.TurnRequest, scope agentruntime
 		}
 	}
 	return "r:" + scope.RunID
+}
+
+func desktopTurnOrigin(request agentruntime.TurnRequest) string {
+	switch in := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		return strings.TrimSpace(in.Message.Metadata["bot_origin"])
+	case *agentservice.ExecuteRequest:
+		if in != nil {
+			return strings.TrimSpace(in.Message.Metadata["bot_origin"])
+		}
+	}
+	return ""
 }
 
 // desktopRecLineage is the logical task this run works on: one per

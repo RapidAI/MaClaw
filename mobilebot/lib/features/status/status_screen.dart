@@ -189,7 +189,7 @@ class _ActiveRunCard extends ConsumerWidget {
                     child: const Text('暂停'),
                   ),
                 TextButton(
-                  onPressed: () => _act(context, ref, 'cancel'),
+                  onPressed: () => _confirmCancel(context, ref),
                   child: Text(
                     '停止',
                     style: TextStyle(color: theme.colorScheme.error),
@@ -201,6 +201,31 @@ class _ActiveRunCard extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// Stopping a run kills work in progress on the bot's computer — confirm
+  /// first, same as the remote task screen does.
+  Future<void> _confirmCancel(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('停止这个任务？'),
+        content: Text('「${run.task.isNotEmpty ? run.task : run.runId}」将被终止，进行中的工作会中断。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('停止'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && context.mounted) {
+      await _act(context, ref, 'cancel');
+    }
   }
 
   Future<void> _act(BuildContext context, WidgetRef ref, String op) async {

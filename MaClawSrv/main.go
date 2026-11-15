@@ -267,6 +267,9 @@ func runServer(ctx context.Context) error {
 	// finishes before the clock fires.
 	schMgr := initScheduler(dataRoot, svc, executor)
 	svc.ResumeExecutionHooks = desktopResumeExecutionHooks
+	svc.ResumeHold = func(run agentservice.Run) func() {
+		return holdResumedDesktopSchedule(svc, run)
+	}
 	svc.ResumeInterruptedRuns(context.Background())
 	if schMgr != nil {
 		defer func() {

@@ -235,6 +235,14 @@ static void replacePetImage(NSImage *next) {
 
 - (void)showContextMenu:(NSEvent *)event {
 	NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+	NSMenuItem *pin = [[NSMenuItem alloc] initWithTitle:@"定住"
+												 action:@selector(maclawMenuAction:)
+										  keyEquivalent:@""];
+	pin.target = self;
+	pin.tag = 6;
+	pin.state = maclawDarwinPetPositionLocked() ? NSControlStateValueOn : NSControlStateValueOff;
+	[menu addItem:pin];
+	[menu addItem:[NSMenuItem separatorItem]];
 	struct { const char *title; NSInteger tag; } items[] = {
 		{"打开主窗口", 4},
 		{"打开宠物对话", 5},

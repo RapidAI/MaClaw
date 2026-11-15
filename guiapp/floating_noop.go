@@ -56,6 +56,8 @@ func (w *noopFloatingWindow) IsCreated() bool {
 
 func (w *noopFloatingWindow) UpdateSoundConfig(bool, string) {}
 
+func (w *noopFloatingWindow) UpdatePositionLock(bool) {}
+
 func (w *noopFloatingWindow) UpdateMotionConfig(_, _, _ bool, _, _, _ string) {}
 
 func (w *noopFloatingWindow) InvalidatePetPackAssets() {}

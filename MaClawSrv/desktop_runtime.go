@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -316,6 +319,13 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	scope, cloud, err := desktopScopeForTurn(request)
 	if err != nil {
 		return "", err
+	}
+	noteDesktopRunStart(scope.RunID)
+	if strings.TrimSpace(desktopMessageMeta(request)["bot_origin"]) == "schedule" {
+		ctx = context.WithValue(ctx, desktopScheduleTurnKey{}, true)
+	}
+	if dir := desktopTurnDataDir(request); dir != "" {
+		ctx = context.WithValue(ctx, desktopDataDirKey{}, dir)
 	}
 	// The person's "done" in the chat is the hand-back (desktop_handback_turn.go).
 	desktopHandBackOnDoneTurn(ctx, request, scope)
@@ -1587,6 +1597,23 @@ func desktopPageFlagsLine(text string) string {
 }
 
 type desktopPhaseKey struct{}
+
+type desktopScheduleTurnKey struct{}
+type desktopDataDirKey struct{}
+
+func desktopTurnDataDir(request agentruntime.TurnRequest) string {
+	switch input := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		return strings.TrimSpace(input.DataDir)
+	case *agentservice.ExecuteRequest:
+		if input == nil {
+			return ""
+		}
+		return strings.TrimSpace(input.DataDir)
+	default:
+		return ""
+	}
+}
 
 type desktopInsideBatchKey struct{}
 
@@ -3745,21 +3772,121 @@ func deliverDesktopDocument(ctx context.Context, scope agentruntime.Scope, args 
 	if err != nil {
 		return "", err
 	}
+	return deliverHeldBytes(ctx, scope, name, mime, raw)
+}
+
+// deliverHeldBytes sends bytes that are already in hand. A timer firing has
+// no reply slot and uses its own message. A turn continued after a restart
+// does have a slot, and that path used to skip the identical-bytes check, so
+// the resumed weather turn handed over the same PDF again.
+func deliverHeldBytes(ctx context.Context, scope agentruntime.Scope, name, mime string, raw []byte) (string, error) {
 	if desktopShotSlotFrom(ctx) == nil {
 		return deliverFileOnItsOwn(ctx, scope, name, raw)
 	}
-	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
-		return desktopSayFile(ctx, scope, name, raw)
-	}
-	if err := noteDesktopFile(ctx, name, mime, raw); err != nil {
+	if err := desktopRefuseRepeatScheduleFile(ctx, scope, name, raw); err != nil {
 		return "", err
 	}
-	return desktopDelivered(name, len(raw)), nil
+	var text string
+	var err error
+	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
+		text, err = desktopSayFile(ctx, scope, name, raw)
+	} else if err = noteDesktopFile(ctx, name, mime, raw); err != nil {
+		return "", err
+	} else {
+		text = desktopDelivered(name, len(raw))
+	}
+	if err != nil {
+		return "", err
+	}
+	desktopNoteScheduleDelivered(ctx, scope, name, raw)
+	return text, nil
 }
 
 // deliverDesktopPath attaches the file that is already on the desktop.
 // The bytes are that file, including a pdf. The download name is its base
 // name unless name is set.
+// A schedule firing was delivering the PDF left by the previous slot
+// (Bot 4, 14:39: bash only announced the scratch folder, then deliver
+// sent the same 43KB 北京天气报告.pdf). Two minutes covers clock skew
+// between this process and the container. A file this run writes is newer.
+const desktopScheduleFileSkew = 2 * time.Minute
+
+var desktopRunStarted sync.Map // run id -> time.Time
+
+func noteDesktopRunStart(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	if _, ok := desktopRunStarted.Load(runID); ok {
+		return
+	}
+	desktopRunStarted.LoadOrStore(runID, time.Now())
+	n := 0
+	desktopRunStarted.Range(func(_, _ any) bool {
+		n++
+		return n < 4096
+	})
+	if n >= 4096 {
+		desktopRunStarted = sync.Map{}
+		desktopRunStarted.Store(runID, time.Now())
+	}
+}
+
+func desktopRunStartedAt(runID string) time.Time {
+	v, ok := desktopRunStarted.Load(strings.TrimSpace(runID))
+	if !ok {
+		return time.Time{}
+	}
+	t, _ := v.(time.Time)
+	return t
+}
+
+func desktopScheduleFileIsStale(fileMTime, runStart time.Time) bool {
+	if fileMTime.IsZero() || runStart.IsZero() {
+		return false
+	}
+	return fileMTime.Before(runStart.Add(-desktopScheduleFileSkew))
+}
+
+func desktopFileMTime(ctx context.Context, scope agentruntime.Scope, resolved string) (time.Time, error) {
+	text, err := desktopContainerBash(ctx, scope, "stat -c %Y "+bashSingleQuote(resolved))
+	if err != nil {
+		return time.Time{}, err
+	}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return time.Time{}, fmt.Errorf("stat returned nothing")
+	}
+	sec, err := strconv.ParseInt(fields[len(fields)-1], 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(sec, 0), nil
+}
+
+func desktopRefuseStaleScheduleFile(ctx context.Context, scope agentruntime.Scope, resolved string) error {
+	if !desktopScheduleTurn(ctx) {
+		return nil
+	}
+	mtime, err := desktopFileMTime(ctx, scope, resolved)
+	if err != nil {
+		return nil
+	}
+	if !desktopScheduleFileIsStale(mtime, desktopRunStartedAt(scope.RunID)) {
+		return nil
+	}
+	return fmt.Errorf("这份文件在这一轮开始之前就在了，不是这一轮生成的。先查询并重新生成，再交付。不要把上一轮的文件再发一次")
+}
+
+func desktopScheduleTurn(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(desktopScheduleTurnKey{}).(bool)
+	return v
+}
+
 func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath, name string) (string, error) {
 	resolved, err := desktop.ContainerPath(filePath)
 	if err != nil {
@@ -3770,6 +3897,9 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 	}
 	name, err = desktopDeliverName(name)
 	if err != nil {
+		return "", err
+	}
+	if err := desktopRefuseStaleScheduleFile(ctx, scope, resolved); err != nil {
 		return "", err
 	}
 	encoded, err := desktopContainerFile(ctx, scope, "file_bytes", map[string]any{"path": resolved})
@@ -3797,20 +3927,7 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 		}
 		return "", fmt.Errorf("desktop file could not be read")
 	}
-	if desktopShotSlotFrom(ctx) == nil {
-		// A timer turn and any other turn that did not come through the
-		// desktop HTTP handler has no reply to hang the file on. The file
-		// still goes to the person: its own message, saved in this bot's
-		// folder on their computer. The chat opens that copy.
-		return deliverFileOnItsOwn(ctx, scope, name, raw)
-	}
-	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
-		return desktopSayFile(ctx, scope, name, raw)
-	}
-	if err := noteDesktopFile(ctx, name, desktopDeliverMIME(name), raw); err != nil {
-		return "", err
-	}
-	return desktopDelivered(name, len(raw)), nil
+	return deliverHeldBytes(ctx, scope, name, desktopDeliverMIME(name), raw)
 }
 
 // deliverLargeOnItsOwn sends a file the reply cannot carry, when the bytes
@@ -3829,12 +3946,16 @@ func deliverLargeOnItsOwn(ctx context.Context, scope agentruntime.Scope, resolve
 // person's app saves the file in this bot's folder. The cloud path is not
 // what they open.
 func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name string, raw []byte) (string, error) {
+	if err := desktopRefuseRepeatScheduleFile(ctx, scope, name, raw); err != nil {
+		return "", err
+	}
 	ref, err := desktopSayUploadBytes(ctx, scope, name, desktopDeliverMIME(name), raw)
 	if err == nil {
 		text, sayErr := desktopSayFileRef(ctx, scope, name, ref, int64(len(raw)))
 		if sayErr != nil {
 			return "", deliverOwnError(sayErr)
 		}
+		desktopNoteScheduleDelivered(ctx, scope, name, raw)
 		return deliverOwnText(text), nil
 	}
 	if !saidFileFitsInbox(name, desktopDeliverMIME(name), len(raw)) {
@@ -3843,7 +3964,118 @@ func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name str
 	if _, sayErr := desktopSayFile(ctx, scope, name, raw); sayErr != nil {
 		return "", deliverOwnError(sayErr)
 	}
+	desktopNoteScheduleDelivered(ctx, scope, name, raw)
 	return deliverOwnText(fmt.Sprintf("Delivered %s (%d bytes) as its own chat message. The person's MaClaw app has the file. Say that it was sent as a separate message.", name, len(raw))), nil
+}
+
+// A schedule firing was handing the person the same PDF again. Touching the
+// file makes its mtime look new, and the bytes were the copy already saved
+// on their computer (Bot 4, 14:59, after the mtime check was live).
+var (
+	desktopScheduleDeliverMu     sync.Mutex
+	desktopScheduleDelivered     = map[string]string{}
+	desktopScheduleDeliverLoaded bool
+	desktopScheduleDeliverFile   string
+	desktopScheduleDeliverPath   = func() string { return filepath.Join(corelib.MaclawDataDir(), "schedule-delivered.json") }
+)
+
+func desktopScheduleDeliverFilePath(ctx context.Context) string {
+	if ctx != nil {
+		if dir, _ := ctx.Value(desktopDataDirKey{}).(string); strings.TrimSpace(dir) != "" {
+			return filepath.Join(strings.TrimSpace(dir), "schedule-delivered.json")
+		}
+	}
+	return desktopScheduleDeliverPath()
+}
+
+func desktopScheduleDeliverKey(scope agentruntime.Scope, name string) string {
+	who := strings.TrimSpace(scope.UserID)
+	if who == "" {
+		who = strings.TrimSpace(scope.InstanceID)
+	}
+	return who + "\n" + path.Base(strings.TrimSpace(name))
+}
+
+func desktopScheduleDeliverSHA(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func desktopScheduleDeliverLoadLocked(file string) {
+	if desktopScheduleDeliverLoaded && desktopScheduleDeliverFile == file {
+		return
+	}
+	desktopScheduleDeliverLoaded = true
+	desktopScheduleDeliverFile = file
+	desktopScheduleDelivered = map[string]string{}
+	raw, err := os.ReadFile(file)
+	if err != nil || len(raw) == 0 {
+		return
+	}
+	_ = json.Unmarshal(raw, &desktopScheduleDelivered)
+	if desktopScheduleDelivered == nil {
+		desktopScheduleDelivered = map[string]string{}
+	}
+}
+
+func desktopScheduleDeliverFlushLocked(file string) {
+	if len(desktopScheduleDelivered) > 512 {
+		n := 0
+		for k := range desktopScheduleDelivered {
+			delete(desktopScheduleDelivered, k)
+			n++
+			if n >= 128 {
+				break
+			}
+		}
+	}
+	raw, err := json.Marshal(desktopScheduleDelivered)
+	if err != nil {
+		log.Printf("[desktop-schedule] remember deliver: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		log.Printf("[desktop-schedule] remember deliver: %v", err)
+		return
+	}
+	tmp := file + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		log.Printf("[desktop-schedule] remember deliver: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, file); err != nil {
+		log.Printf("[desktop-schedule] remember deliver: %v", err)
+	}
+}
+
+func desktopRefuseRepeatScheduleFile(ctx context.Context, scope agentruntime.Scope, name string, raw []byte) error {
+	if !desktopScheduleTurn(ctx) || len(raw) == 0 || strings.TrimSpace(name) == "" {
+		return nil
+	}
+	key := desktopScheduleDeliverKey(scope, name)
+	sum := desktopScheduleDeliverSHA(raw)
+	desktopScheduleDeliverMu.Lock()
+	desktopScheduleDeliverLoadLocked(desktopScheduleDeliverFilePath(ctx))
+	prev := desktopScheduleDelivered[key]
+	desktopScheduleDeliverMu.Unlock()
+	if prev == "" || prev != sum {
+		return nil
+	}
+	return fmt.Errorf("这份文件和上一轮交给这个人的是同一份，不是这一轮新生成的。先查询并重新生成，再交付。不要把上一轮的文件再发一次")
+}
+
+func desktopNoteScheduleDelivered(ctx context.Context, scope agentruntime.Scope, name string, raw []byte) {
+	if !desktopScheduleTurn(ctx) || len(raw) == 0 || strings.TrimSpace(name) == "" {
+		return
+	}
+	key := desktopScheduleDeliverKey(scope, name)
+	sum := desktopScheduleDeliverSHA(raw)
+	file := desktopScheduleDeliverFilePath(ctx)
+	desktopScheduleDeliverMu.Lock()
+	desktopScheduleDeliverLoadLocked(file)
+	desktopScheduleDelivered[key] = sum
+	desktopScheduleDeliverFlushLocked(file)
+	desktopScheduleDeliverMu.Unlock()
 }
 
 // deliverOwnText is the tool result for a file sent on its own. The cloud

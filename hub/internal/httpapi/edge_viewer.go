@@ -60,6 +60,9 @@ func edgeDirectURL(tenantID, userID, raw string, control bool) string {
 	if page, ok := reuseViewerGrant(node.ID, tenantID, userID, control); ok {
 		return page
 	}
+	if p, err := edgeRegistry.Policy(context.Background(), tenantID); err == nil && p.MaxViews > 0 && liveViewerCount(tenantID) >= p.MaxViews {
+		return ""
+	}
 	ticket, err := edgelink.SignViewer(node.DesktopdKey, edgelink.ViewerClaims{
 		NodeID:   node.ID,
 		TenantID: tenantID,
@@ -89,6 +92,24 @@ func edgeDirectURL(tenantID, userID, raw string, control bool) string {
 		Expires:  time.Unix(claims.Exp, 0),
 	})
 	return page
+}
+
+func liveViewerCount(tenantID string) int {
+	tenantID = store.NormalizeTenantID(tenantID)
+	viewerGrants.mu.Lock()
+	defer viewerGrants.mu.Unlock()
+	now := time.Now()
+	n := 0
+	for id, grant := range viewerGrants.items {
+		if !now.Before(grant.Expires) {
+			delete(viewerGrants.items, id)
+			continue
+		}
+		if store.NormalizeTenantID(grant.TenantID) == tenantID {
+			n++
+		}
+	}
+	return n
 }
 
 func tunnelUserKey(path string) string {

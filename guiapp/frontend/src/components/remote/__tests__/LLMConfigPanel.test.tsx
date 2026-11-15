@@ -800,6 +800,24 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(screen.queryByText(/请先填写 API Key/)).toBeNull();
     });
 
+    it('auto-opens provider management when a deep-link seq arrives (agent model menu)', async () => {
+        const { rerender } = render(<LLMConfigPanel lang="zh-Hans" onStatusChange={vi.fn()} autoOpenProviderDialogSeq={0} />);
+
+        // Ready, and no dialog until a seq is delivered.
+        await screen.findByRole('button', { name: '服务商管理' });
+        await waitFor(() => expect(screen.queryByPlaceholderText('sk-...')).toBeNull());
+
+        rerender(<LLMConfigPanel lang="zh-Hans" onStatusChange={vi.fn()} autoOpenProviderDialogSeq={1} />);
+        // The dialog opens with the current provider selected.
+        expect(await screen.findByPlaceholderText('sk-...')).toBeTruthy();
+
+        // A re-render with the same seq must not re-open over user state.
+        fireEvent.click(screen.getByRole('button', { name: '取消' }));
+        rerender(<LLMConfigPanel lang="zh-Hans" onStatusChange={vi.fn()} autoOpenProviderDialogSeq={1} />);
+        await new Promise((r) => setTimeout(r, 0));
+        expect(screen.queryByPlaceholderText('sk-...')).toBeNull();
+    });
+
     it('quick-fills Volcengine Agent Plan endpoint with the tested model defaults', async () => {
         TestAndSaveMaclawLLMProvidersMock.mockResolvedValue({ message: 'hello', supports_vision: false });
         GetMaclawLLMProvidersMock.mockResolvedValue({

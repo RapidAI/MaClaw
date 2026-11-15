@@ -486,6 +486,7 @@
       }
       // Render immediately so user sees the tenant list without delay.
       renderTenants(tenantCache);
+      if (typeof global.loadTenantEdgePolicy === 'function') global.loadTenantEdgePolicy();
       // Then fetch authorization data in background and re-render.
       if (!isTenantAdminProfile(profile)) {
         enrichTenantCacheWithAuthorization().then(function() {

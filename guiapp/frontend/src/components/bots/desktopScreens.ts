@@ -11,6 +11,16 @@ export function desktopModeOf(mode: string | undefined): DesktopMode {
     return 'shared';
 }
 
+// Shared bots use the owner's one display. Switching between them must keep
+// the keyboard. An isolated bot, or a bot with no desktop, is a different screen.
+export function sameDesktopScreen(a: string, b: string, screens: Record<string, { mode?: DesktopMode } | undefined>): boolean {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const mode = (id: string) => screens[id]?.mode;
+    if (mode(a) === 'isolated' || mode(b) === 'isolated' || mode(a) === 'none' || mode(b) === 'none') return false;
+    return true;
+}
+
 // A shared bot's picture is the owner's desktop. The first one with a URL
 // is enough: every shared bot is that same display.
 export function mineScreenURL(bots: Array<{ id: string }>, screens: Record<string, BotScreen | undefined>): string {

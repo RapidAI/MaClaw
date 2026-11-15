@@ -1088,11 +1088,209 @@ func TestSubmitPetStorePackPersistsSourcePackID(t *testing.T) {
 		t.Fatalf("stored source_pack_id=%q", stored)
 	}
 
+	// Re-submitting the same source_pack_id is an upgrade of the existing
+	// listing, not a conflict: the listing keeps its stable ID.
 	duplicateReq := newPetStoreSubmitRequest(t, session.Token, "creator-pet")
 	duplicateRec := httptest.NewRecorder()
 	h.SubmitPetStorePack(duplicateRec, duplicateReq)
-	if duplicateRec.Code != http.StatusConflict {
-		t.Fatalf("duplicate submit status=%d body=%s, want conflict", duplicateRec.Code, duplicateRec.Body.String())
+	if duplicateRec.Code != http.StatusOK {
+		t.Fatalf("duplicate submit status=%d body=%s, want in-place update", duplicateRec.Code, duplicateRec.Body.String())
+	}
+	var duplicate struct {
+		ID      string `json:"id"`
+		Updated bool   `json:"updated"`
+	}
+	if err := json.Unmarshal(duplicateRec.Body.Bytes(), &duplicate); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if !duplicate.Updated || duplicate.ID != response.ID {
+		t.Fatalf("update response id=%q updated=%v, want same listing %q", duplicate.ID, duplicate.Updated, response.ID)
+	}
+	var listingCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sm_pet_store_packs WHERE source_pack_id='creator-pet'`).Scan(&listingCount); err != nil {
+		t.Fatal(err)
+	}
+	if listingCount != 1 {
+		t.Fatalf("listings for source_pack_id=%d, want 1", listingCount)
+	}
+}
+
+func TestSubmitPetStorePackUpdatesOwnedListingInPlace(t *testing.T) {
+	for _, status := range []string{"active", "paused"} {
+		t.Run(status, func(t *testing.T) {
+			db, err := sql.Open("sqlite", ":memory:")
+			if err != nil {
+				t.Fatalf("open sqlite: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			store, err := skillmarket.NewStore(db, db)
+			if err != nil {
+				t.Fatalf("new skillmarket store: %v", err)
+			}
+			userSvc := skillmarket.NewUserService(store, nil)
+			authSvc := skillmarket.NewAuthService(store, nil, "")
+			h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, UserSvc: userSvc, AuthSvc: authSvc, CreditsSvc: skillmarket.NewCreditsService(store), DataDir: t.TempDir()})
+			owner, err := userSvc.EnsureAccountWithID(context.Background(), "upgrade-owner", "upgrade-owner@example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := authSvc.CreateSessionForUser(context.Background(), owner.ID, owner.Email)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.ensurePetStoreSchema()
+			oldArchive := validPetStoreTestArchiveWithMarker(t, "upgrade-pet", "old")
+			newArchive := validPetStoreTestArchiveWithMarker(t, "upgrade-pet", "new")
+			if err := os.MkdirAll(h.petStoreDir(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			zipPath := filepath.Join(h.petStoreDir(), "pet_upgrade_"+status+".zip")
+			if err := os.WriteFile(zipPath, oldArchive, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			older := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+			if _, err := db.Exec(`INSERT INTO sm_pet_store_packs (`+petStorePackColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "pet_upgrade_"+status, owner.ID, owner.Email, "upgrade-pet", "Old name", "old description", "1.0.0", 5, status, zipPath, int64(len(oldArchive)), 3, 2, 9, older, older); err != nil {
+				t.Fatal(err)
+			}
+
+			var body bytes.Buffer
+			mw := multipart.NewWriter(&body)
+			for name, value := range map[string]string{
+				"name":           "New name",
+				"description":    "new description",
+				"version":        "2.0.0",
+				"price":          "7",
+				"source_pack_id": "upgrade-pet",
+			} {
+				if err := mw.WriteField(name, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			part, err := mw.CreateFormFile("zip", "upgrade-pet.zip")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write(newArchive); err != nil {
+				t.Fatal(err)
+			}
+			if err := mw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/pet-store/packs", &body)
+			req.Header.Set("Authorization", "Bearer "+session.Token)
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+			rec := httptest.NewRecorder()
+			h.SubmitPetStorePack(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("update submit status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var response struct {
+				petStorePack
+				Updated bool `json:"updated"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode update response: %v", err)
+			}
+			if !response.Updated || response.ID != "pet_upgrade_"+status {
+				t.Fatalf("update response id=%q updated=%v", response.ID, response.Updated)
+			}
+
+			p, err := scanPetStorePack(db.QueryRow(`SELECT `+petStorePackColumns+` FROM sm_pet_store_packs WHERE id=?`, response.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Status != status || p.Name != "New name" || p.Description != "new description" || p.Version != "2.0.0" || p.Price != 7 || p.PackageSize != int64(len(newArchive)) {
+				t.Fatalf("updated row: %+v", p)
+			}
+			if p.CreatedAt != older {
+				t.Fatalf("update must keep created_at, got %q", p.CreatedAt)
+			}
+			if p.DownloadCount != 3 || p.PurchaseCount != 2 || p.SalesAmount != 9 {
+				t.Fatalf("update must keep counters, got downloads=%d purchases=%d sales=%d", p.DownloadCount, p.PurchaseCount, p.SalesAmount)
+			}
+			served, err := os.ReadFile(zipPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(served, newArchive) {
+				t.Fatal("existing archive was not replaced by the new upload")
+			}
+		})
+	}
+}
+
+func TestSubmitPetStorePackSkipsRewriteForIdenticalArchive(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := skillmarket.NewStore(db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSvc := skillmarket.NewUserService(store, nil)
+	authSvc := skillmarket.NewAuthService(store, nil, "")
+	h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, UserSvc: userSvc, AuthSvc: authSvc, CreditsSvc: skillmarket.NewCreditsService(store), DataDir: t.TempDir()})
+	owner, err := userSvc.EnsureAccountWithID(context.Background(), "identical-owner", "identical-owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := authSvc.CreateSessionForUser(context.Background(), owner.ID, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensurePetStoreSchema()
+	archive := validPetStoreTestArchive(t, "identical-pet")
+	if err := os.MkdirAll(h.petStoreDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	zipPath := filepath.Join(h.petStoreDir(), "pet_identical.zip")
+	if err := os.WriteFile(zipPath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleModTime := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(zipPath, staleModTime, staleModTime); err != nil {
+		t.Fatal(err)
+	}
+	now := petStoreNow()
+	if _, err := db.Exec(`INSERT INTO sm_pet_store_packs (`+petStorePackColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "pet_identical", owner.ID, owner.Email, "identical-pet", "Identical pet", "", "1.0.0", 0, "active", zipPath, int64(len(archive)), 0, 0, 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Submit the exact same bytes so the test does not depend on the DOS-time
+	// granularity of independently generated test archives.
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	for name, value := range map[string]string{"name": "Identical pet", "price": "0", "source_pack_id": "identical-pet"} {
+		if err := mw.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	part, err := mw.CreateFormFile("zip", "identical-pet.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pet-store/packs", &body)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	h.SubmitPetStorePack(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("identical re-submit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	info, err := os.Stat(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(staleModTime) {
+		t.Fatal("byte-identical archive was rewritten instead of left in place")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,6 +165,107 @@ func TestResumeInstallsTheReplySlotWithThePersonsAsk(t *testing.T) {
 	}
 	if kept != "运行后截屏发给我" {
 		t.Fatalf("task_request=%q", kept)
+	}
+}
+
+func TestResumeKeepsTheScheduleOrigin(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	updated, err := svc.UpdateInstance(context.Background(), principal, inst.ID, UpdateInstanceInput{Metadata: map[string]string{"hub_bot": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = *updated
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "weather"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	svc.ResumeExecutionHooks = func(Principal, Instance, string) (func(context.Context) context.Context, func(context.Context, *Run, *Message, error)) {
+		return func(ctx context.Context) context.Context { return ctx }, func(context.Context, *Run, *Message, error) {
+			close(done)
+		}
+	}
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		Status: RunStatusInterrupted, Error: runInterruptedError, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{
+			metaRestartCheckpoint: `{"session_id":"` + sess.ID + `","instance_id":"` + inst.ID + `"}`,
+			metaRestartTrajectory: `{"entries":[{"role":"user","content":"keep going"}]}`,
+			"bot_id":              "bot_4",
+			"bot_phase":           "execute",
+			"bot_origin":          "schedule",
+			"computer_helper":     "1",
+			"bot_task":            "北京天气PDF",
+		},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if n := svc.ResumeInterruptedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d", n)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume did not finish")
+	}
+	msgs, err := svc.store.ListMessages(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range msgs {
+		if msg.Metadata == nil || msg.Metadata["restart_from"] == "" {
+			continue
+		}
+		if msg.Metadata["bot_origin"] != "schedule" || msg.Metadata["bot_id"] != "bot_4" || msg.Metadata["bot_task"] != "北京天气PDF" || msg.Metadata["computer_helper"] != "1" {
+			t.Fatalf("metadata=%v", msg.Metadata)
+		}
+		return
+	}
+	t.Fatal("continuation message missing")
+}
+
+func TestResumeHoldLastsUntilTheContinuationFinishes(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	updated, err := svc.UpdateInstance(context.Background(), principal, inst.ID, UpdateInstanceInput{Metadata: map[string]string{"hub_bot": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = *updated
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "weather"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	var once sync.Once
+	svc.ResumeHold = func(run Run) func() {
+		if run.Metadata["bot_origin"] != "schedule" || run.Metadata["schedule_task"] != "task-1" {
+			t.Errorf("held run meta=%v", run.Metadata)
+		}
+		return func() { once.Do(func() { close(released) }) }
+	}
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		Status: RunStatusInterrupted, Error: runInterruptedError, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{
+			metaRestartCheckpoint: `{"session_id":"` + sess.ID + `","instance_id":"` + inst.ID + `"}`,
+			metaRestartTrajectory: `{"entries":[{"role":"user","content":"keep going"}]}`,
+			"bot_origin":          "schedule",
+			"schedule_task":       "task-1",
+		},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if n := svc.ResumeInterruptedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d", n)
+	}
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hold was not released when the continuation finished")
 	}
 }
 

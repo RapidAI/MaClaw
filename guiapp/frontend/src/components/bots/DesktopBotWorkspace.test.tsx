@@ -20,6 +20,7 @@ const listSchedules = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Ar
 const deleteSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _taskId?: string) => undefined));
 const wakeBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean } | undefined> => ({ novnc_url: '', user_control: false })));
 const watchBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string } | undefined> => ({ novnc_url: '', user_control: false })));
+const setDesktopControl = vi.hoisted(() => vi.fn(async (_botId?: string, _hold?: boolean) => ({ input_granted: true })));
 const getScreen = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode: string }> => ({ novnc_url: '', user_control: false, desktop_mode: 'shared' })));
 const hubLink = vi.hoisted(() => vi.fn(async () => ({ state: 'connected' }) as Record<string, unknown> | null));
 const handBack = vi.hoisted(() => vi.fn(async (_botId?: string) => ({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' })));
@@ -119,6 +120,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ListDesktopBotActiveRuns: (botId: string) => listTaskRuns(botId),
     DeleteDesktopBotSchedule: (botId: string, taskId: string) => deleteSchedule(botId, taskId),
     WatchDesktopBot: (arg: string, epoch?: number) => watchBot(arg, epoch),
+    SetDesktopBotControl: (botId: string, hold: boolean) => setDesktopControl(botId, hold),
     WakeDesktopBot: (arg: string, epoch?: number) => wakeBot(arg, epoch),
     ReleaseDesktopBotWatch: (arg: string, epoch?: number) => releaseWatch(arg, epoch),
     GetDesktopBotScreen: (botId: string) => getScreen(botId),
@@ -154,6 +156,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     LoadConfig: () => loadConfig(),
     SaveDesktopBotLLM: (input: BotLLMIn) => saveBotLLM(input),
     GetMaclawLLMProviders: () => listProviders(),
+    ListDesktopNodes: () => Promise.resolve({ enabled: false, nodes: [] }),
     FetchProviderModels: (...args: unknown[]) => fetchProviderModels(...(args as [string, string, string, string])),
     PersistDesktopBotPreference: (botId: string, persona: string) => persistPreference(botId, persona),
     QueryDesktopBotTaskStatus: (botId: string, hint: string, lang: string) => queryTaskStatus(botId, hint, lang),
@@ -330,6 +333,8 @@ beforeEach(() => {
         if (passedThrough(text, phase)) return { told: text.trim(), instruction: text.trim() };
         return { told: `表述:${text}`, instruction: `指令:${phase}:${text}:${earlier.join('|')}`, pace: 'direct' };
     });
+    setDesktopControl.mockReset();
+    setDesktopControl.mockResolvedValue({ input_granted: true });
     watchBot.mockReset();
     liveWatchView.current = { novnc_url: '', user_control: false };
     watchBot.mockImplementation(() => Promise.resolve({ ...liveWatchView.current }));
@@ -685,6 +690,27 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-take-computer')).toBeNull();
     });
 
+    it('stays view-only when another device already holds this bot screen', async () => {
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [{
+                    id: 'm-qr',
+                    role: 'assistant',
+                    content: '缺少用户扫描二维码登录小红书，笔记尚未发布。',
+                }],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        setDesktopControl.mockResolvedValue({ input_granted: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-take-computer'));
+        expect(await screen.findByTestId('desktop-bot-control-held')).toBeTruthy();
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('watch'));
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+    });
+
     it('shows a line drawing of a sleeping computer (no screen, no viewer chrome) when the desktop is asleep', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
         watchBot.mockResolvedValue({ novnc_url: '', user_control: false });
@@ -961,8 +987,10 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-ops').textContent || '').not.toContain('正在操作桌面');
         fireEvent.click(open);
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0');
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        await waitFor(() => {
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0');
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        });
     });
 
     it('keeps a takeover when another bot starts using its own desktop', async () => {
@@ -989,7 +1017,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         fireEvent.click(await screen.findByTestId('desktop-bot-takeover'));
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live'));
 
         openRow('bot_1');
         fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
@@ -2314,9 +2342,12 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
         expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
-        const loginSrc = (await screen.findByTestId('desktop-bot-handoff')).getAttribute('src') || '';
-        expect(loginSrc).toContain('view_only=0');
-        expect(loginSrc).not.toContain('view_only=1');
+        await screen.findByTestId('desktop-bot-handoff');
+        await waitFor(() => {
+            const loginSrc = screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '';
+            expect(loginSrc).toContain('view_only=0');
+            expect(loginSrc).not.toContain('view_only=1');
+        });
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-user');
     });
 
@@ -2955,9 +2986,12 @@ describe('DesktopBotWorkspace', () => {
             novnc_url: liveDesktop,
             user_control: true,
         });
-        const loginSrc = (await screen.findByTestId('desktop-bot-handoff')).getAttribute('src') || '';
-        expect(loginSrc).toContain('view_only=0');
-        expect(loginSrc).not.toContain('view_only=1');
+        await screen.findByTestId('desktop-bot-handoff');
+        await waitFor(() => {
+            const loginSrc = screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '';
+            expect(loginSrc).toContain('view_only=0');
+            expect(loginSrc).not.toContain('view_only=1');
+        });
         expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-stage').textContent).toContain('请在这个桌面的浏览器里完成登录或验证');
         // The person has not taken over, so the screen bar must not offer a

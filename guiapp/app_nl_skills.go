@@ -5848,6 +5848,9 @@ func restoreSkillDefinitionBytes(skillDir string, data []byte) error {
 				_ = os.Remove(tmp)
 				return err
 			}
+			if err := skill.RepinPackageManifestIfPresent(skillDir); err != nil {
+				log.Printf("[skill] repin integrity manifest for %s failed: %v", skillDir, err)
+			}
 			return nil
 		}
 	}

@@ -40,6 +40,9 @@ func (s *Service) ensureOwnerToken(ctx context.Context, tenantID string, rec *re
 	if owner == "" {
 		return s.sharedBearer(ctx, *rec), nil
 	}
+	if nodeID := ownerNodeID(*rec, owner); nodeID != "" {
+		return s.ensureNodeOwnerToken(ctx, tenantID, rec, owner, nodeID)
+	}
 	if strings.TrimSpace(rec.AdminSecret) == "" {
 		return "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
 	}
@@ -70,6 +73,9 @@ func (s *Service) ownerToken(ctx context.Context, tenantID, owner string) (recor
 	}
 	if owner == "" {
 		return rec, s.sharedBearer(ctx, rec), nil
+	}
+	if nodeID := ownerNodeID(rec, owner); nodeID != "" {
+		return s.finishNodeOwnerToken(ctx, tenantID, owner, nodeID)
 	}
 	if strings.TrimSpace(rec.AdminSecret) == "" {
 		return record{}, "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)

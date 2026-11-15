@@ -369,7 +369,7 @@ func PatchBotGrantAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepos
 		}
 		limit, err := desktopBotLimitPatch(raw)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "desktop_bot_limit is required")
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", err.Error())
 			return
 		}
 		grant, err := svc.UpdateGrant(r.Context(), botTenantID(r), r.PathValue("id"), limit)
@@ -400,7 +400,10 @@ func desktopBotLimitPatch(raw []byte) (*int, error) {
 	}
 	var n int
 	if err := json.Unmarshal(val, &n); err != nil {
-		return nil, err
+		return nil, errors.New("desktop_bot_limit must be an integer")
+	}
+	if n < 0 {
+		return nil, errors.New("desktop_bot_limit must be zero or greater")
 	}
 	return &n, nil
 }

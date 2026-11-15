@@ -648,6 +648,48 @@ hub 与 maclawsrv 都能从本地工区**逐字节复现**对方那份，等于�
 
 备份（各台三份）：`maclawsrv.bak-12624-20261114`、`desktopd.bak-12624-20261114`、`maclaw-hub.bak-12624-20261114`。
 
+#### 20261115.sched-rearm（2026-11-15 16:20 CST）
+
+HEAD `a3d9ee82`（V8.2.0.12639），`build_number` 12640，工作区 133 个改动。这轮**一件二进制都没编**：对面流水线已经把 mypapers 上的三件全部刷新（而且 desktopd 也开始由他们维护了），要做的是把 maclaw.top 对齐过去。
+
+| 组件 | mypapers（对方已发，未动） | maclaw.top（本轮前） | 处理 |
+| --- | --- | --- | --- |
+| maclaw-hub | `161d0a04…`（当天 15:54） | 同哈希 | 已一致，不碰 |
+| maclawsrv | `d174901a…`，`/version` 报 `{"built_at":"2026-11-15T07:36:05Z","commit":"a3d9ee82-dirty","version":"20261115.sched-rearm"}`（当天 15:36） | `3abcd1f6…`（上一轮我的 12624） | 换成对方的 |
+| desktopd | `0eb25ed4…`（11-14 19:07，**对面已接管 desktopd**） | `0de56340…`（上一轮我的） | 换成对方的 |
+
+做法：从 mypapers 把这两份 pscp 拉回本地、再推到 maclaw.top（校验哈希与线上逐字节相同后才替换）。**不重编**——本地工作区是 133 个改动的脏树，编出来既不等于对方 15:36 那份（那是当时树的状态），又会反过来覆盖对方刚发的工件；把两台对齐到对方验证过的同一工件才是这一轮的目的。maclaw.top 的 `/version` 从此也显示 `20261115.sched-rearm`，这是对方工件的元数据，不是本节流程发的。
+
+验证：maclaw.top `/version` 与 mypapers 完全一致、desktopd `/v1/health` 200、hub 9399 bootstrap 401；`/proc/<pid>/exe` 复核 maclaw.top `1552011=d174901a…`、`1551982=0eb25ed4…`，与 mypapers 的 `6595`/`30486` 同哈希；mypapers 全程未动（哈希与容器 ID 前后一致）。
+
+备份（maclaw.top 两份）：`maclawsrv.bak-sync-20261115`、`desktopd.bak-sync-20261115`。
+
+孤儿进程的后续：上一轮记的 11-04 那个 `model-serve` 孤儿（mypapers 17571 仍在；maclaw.top 2265518 已自行消失）之外，maclaw.top 又多了一个新一代的（PID 1229490，exe 指向已删除的 `3abcd1f6…`）——模式相同：每次替换重启都会把上一代 `model-serve` 子进程遗孤化。两台都是「不监听端口、无连接、惰性」，照旧留待空窗期由发布流程统一清理；要动手时先 `ss` 确认，再 `kill` 那个 PID。
+
+给后续维护者的提醒：**desktopd 从这轮起不再是「只有本节流程维护」的组件**——mypapers 上对方 11-14 已发过一版。再往下做「只补 desktopd」前，先看两台哈希：若两台都不一致且 mypapers 更新，直接对齐到 mypapers 的那份，别用本地重编覆盖。
+
+#### 12640（2026-11-15 19:55 CST，自动巡检轮）
+
+从本轮起部署由每 5 分钟一次的自动巡检执行：源码树指纹（HEAD + `build_number` + 变更清单，排除本文档）连续两轮相同才算「稳定 ≥5 分钟」，才进入构建部署；状态文件 `/tmp/maclaw-deploy-watch.state` 存指纹与六哈希基线，全等则空转。
+
+本轮触发时 HEAD `a3d9ee82`（V8.2.0.12639）、`build_number` 12640、工作区 133 个改动，origin/main 无新提交。线上两台已彼此对齐（六个哈希两台一致），但都是**旧源码的产物**：用对方 15:36 那份 maclawsrv 的冻结元数据（`20261115.sched-rearm` / `a3d9ee82-dirty` / `2026-11-15T07:36:05Z`）复现，得到 `cdc7bd78…` ≠ 线上 `d174901a…`（尺寸差 74KB）——源码在对方构建后又变了。desktopd 线上是 11-14 19:07 的（源码差 287KB），hub 是 15:54 的。**「两台互相对齐」不等于「在线源码」，决策时还要看源码是否已往前走。**
+
+按三种配方重编当前稳定树（maclawsrv 元数据：`12640` / `a3d9ee82-dirty` / `2026-11-15T19:40:16+08:00`）：hub `2f2de882…`（108,774,735 字节）、desktopd `4803e4a4…`（26,984,713）、maclawsrv `4c2aa90e…`（74,813,705）。三份 × 两台全换。
+
+| 组件（12640） | mypapers | maclaw.top |
+| --- | --- | --- |
+| maclawsrv `4c2aa90e…` | PID 30923 | PID 1602329 |
+| desktopd `4803e4a4…` | PID 30874 | PID 1602317 |
+| maclaw-hub `2f2de882…` | PID 30976 | PID 1602376 |
+| `/version` | `12640` / `a3d9ee82-dirty` | 同左 |
+| `/v1/health`（带 token） | 200 | 200 |
+| hub 9399 bootstrap（不带 token） | 401 | 401 |
+| 桌面容器 | 3 个 Exited，ID 与状态前后一致 | （空） |
+
+`/proc/<pid>/exe` 复核六个进程全部新二进制，端口 18080/18081/18082/18083/9399 各归其主。孤儿进程：mypapers 17571、maclaw.top 1229490 照旧在（惰性、无端口），未处理。hubcenter 未动。备份（各台三份）：`maclawsrv.bak-12640-20261115`、`desktopd.bak-12640-20261115`、`maclaw-hub.bak-12640-20261115`。
+
+本轮期间 `build_number` 已被发布脚本推进到 12641——按巡检规则，树指纹会随之变化，下一轮稳定后自动跟进，不在本轮强行追。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为

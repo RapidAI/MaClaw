@@ -235,6 +235,17 @@ func TestPreserveBackendOwnedFieldsKeepsSkillMarketSessionIssuer(t *testing.T) {
 	}
 }
 
+func TestPreserveBackendOwnedFieldsKeepsPetPositionLock(t *testing.T) {
+	ondisk := corelib.AppConfig{PetPositionLocked: true}
+	incoming := corelib.AppConfig{}
+
+	preserveBackendOwnedFields(&incoming, &ondisk)
+
+	if !incoming.PetPositionLocked {
+		t.Fatal("settings save cleared the pet position lock")
+	}
+}
+
 func TestPreserveBackendOwnedFieldsKeepsPersistedHubCenterCandidates(t *testing.T) {
 	// Once the backend has a persisted list, stale frontend snapshots must not
 	// overwrite failover state maintained by discovery/selection workers.
@@ -4015,6 +4026,18 @@ func TestFloatingAppearanceChangedIncludesPetRuntimeSettings(t *testing.T) {
 	}
 	if !floatingMotionChanged(base, withQuiet) {
 		t.Fatal("expected quiet mode toggle to use the live motion update path")
+	}
+
+	withPin := base
+	withPin.PetPositionLocked = true
+	if floatingAppearanceChanged(base, withPin) {
+		t.Fatal("position lock should hot-update without recreating the floating window")
+	}
+	if floatingMotionChanged(base, withPin) || floatingSoundChanged(base, withPin) {
+		t.Fatal("position lock is not a motion or sound change")
+	}
+	if !floatingPositionLockChanged(base, withPin) {
+		t.Fatal("expected position lock to use the live position update path")
 	}
 
 	withMode := base

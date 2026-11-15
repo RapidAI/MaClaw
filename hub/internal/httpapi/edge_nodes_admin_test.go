@@ -75,7 +75,7 @@ func TestEdgeNodeListHidesSecretsAndDeleteRemovesIt(t *testing.T) {
 	rec = httptest.NewRecorder()
 	del := httptest.NewRequest(http.MethodDelete, "/api/admin/bots/nodes/"+enrolled.NodeID, nil)
 	del.SetPathValue("id", enrolled.NodeID)
-	DeleteEdgeNodeAdminHandler(reg, broker, nil).ServeHTTP(rec, del)
+	DeleteEdgeNodeAdminHandler(reg, broker, nil, nil).ServeHTTP(rec, del)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete status %d body %s", rec.Code, rec.Body.String())
 	}
@@ -98,7 +98,7 @@ func TestEdgeNodeDeleteHidesAnotherTenant(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/admin/bots/nodes/"+enrolled.NodeID, nil)
 	req.SetPathValue("id", enrolled.NodeID)
-	DeleteEdgeNodeAdminHandler(reg, nil, nil).ServeHTTP(rec, req)
+	DeleteEdgeNodeAdminHandler(reg, nil, nil, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
