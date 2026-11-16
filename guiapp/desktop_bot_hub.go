@@ -227,6 +227,8 @@ type DesktopBotInfo struct {
 	// DesktopMode is shared, isolated, or none. Empty from an older Hub
 	// means shared.
 	DesktopMode string `json:"desktop_mode,omitempty"`
+	// NodeID is the local computer this bot uses. Empty is the cloud computer.
+	NodeID string `json:"node_id,omitempty"`
 }
 
 // DesktopBotWatch is one watch poll result: the live noVNC page for this
@@ -463,6 +465,8 @@ type hubBot struct {
 	Color       string `json:"color,omitempty"`
 	Shape       string `json:"shape,omitempty"`
 	DesktopMode string `json:"desktop_mode,omitempty"`
+	// NodeID is the local computer this bot uses. Empty is the cloud computer.
+	NodeID string `json:"node_id,omitempty"`
 }
 
 func (a *App) DesktopBotAccess() (*DesktopBotAccess, error) {
@@ -495,9 +499,12 @@ func (a *App) ListDesktopBots() ([]DesktopBotInfo, error) {
 }
 
 // DesktopBotQuota is the owner's desktop-bot grant. A nil Limit is unlimited.
+// CloudDesktop reports whether the account has an assigned cloud computer;
+// nil means an older hub that does not send the field, treated as available.
 type DesktopBotQuota struct {
-	Limit *int `json:"limit"`
-	Used  int  `json:"used"`
+	Limit        *int  `json:"limit"`
+	Used         int   `json:"used"`
+	CloudDesktop *bool `json:"cloud_desktop"`
 }
 
 // GetDesktopBotQuota reads the same list the bots come from, and returns only
@@ -824,8 +831,10 @@ func (a *App) SaveDesktopProxyMode(mode string) (*DesktopProxyMode, error) {
 }
 
 // DesktopComputerInfo drives the Settings dialog's "电脑" tab.
-// ActiveRuns counts bot turns this client has in flight on the shared
-// computer (waiting-for-answer runs are over and not counted).
+// ActiveRuns counts bot turns this client has in flight on the computer
+// that restart and reset will touch. A cloud bot's task does not count
+// while the tab is the local machine, and the other way around.
+// Waiting-for-answer runs are over and are not counted.
 type DesktopComputerInfo struct {
 	RestartAllowed bool `json:"restart_allowed"`
 	ResetAllowed   bool `json:"reset_allowed"`
@@ -858,13 +867,81 @@ func countActiveDesktopRuns() int {
 	return n
 }
 
-// GetDesktopComputer reads what this user may do with their cloud computer.
+// desktopComputerNode is the computer the settings tab will restart.
+// An empty id is the cloud computer. known is false when the local
+// machine cannot be named, so the caller counts every in-flight run
+// instead of warning about the wrong bots.
+func (a *App) desktopComputerNode(intranet bool) (string, bool) {
+	if !intranet {
+		return "", true
+	}
+	if a == nil {
+		return "", false
+	}
+	view, err := a.ListDesktopNodes()
+	if err != nil || view == nil {
+		return "", false
+	}
+	for _, node := range view.Nodes {
+		if !node.Active {
+			continue
+		}
+		if id := strings.TrimSpace(node.NodeID); id != "" {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// desktopRunsOnThisComputer counts live turns whose bot uses computerNode.
+// An empty computerNode is the cloud computer. A bot missing from botNode
+// is left out: its computer is not known, so it is not this restart.
+func desktopRunsOnThisComputer(runs map[string]*ActiveDesktopRun, botNode map[string]string, computerNode string) int {
+	computerNode = strings.TrimSpace(computerNode)
+	n := 0
+	for _, run := range runs {
+		if run == nil || run.WaitingForUser {
+			continue
+		}
+		node, ok := botNode[strings.TrimSpace(run.BotID)]
+		if !ok || strings.TrimSpace(node) != computerNode {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// countRunsOnThisComputer is the restart warning for the computer the
+// settings tab is showing. When that computer or the bot list cannot be
+// read, every in-flight run is counted so a busy computer is not shown as idle.
+func (a *App) countRunsOnThisComputer(intranet bool) int {
+	computerNode, known := a.desktopComputerNode(intranet)
+	if !known {
+		return countActiveDesktopRuns()
+	}
+	bots, err := a.ListDesktopBots()
+	if err != nil {
+		return countActiveDesktopRuns()
+	}
+	nodes := make(map[string]string, len(bots))
+	for _, bot := range bots {
+		nodes[strings.TrimSpace(bot.ID)] = strings.TrimSpace(bot.NodeID)
+	}
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	return desktopRunsOnThisComputer(activeDesktopRuns, nodes, computerNode)
+}
+
+// GetDesktopComputer reads what this user may do with the computer their
+// settings tab restarts: the installed machine when one is active, otherwise
+// the cloud computer.
 func (a *App) GetDesktopComputer() (*DesktopComputerInfo, error) {
 	var out DesktopComputerInfo
 	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/desktop-computer", nil, &out, 20*time.Second); err != nil {
 		return nil, err
 	}
-	out.ActiveRuns = countActiveDesktopRuns()
+	out.ActiveRuns = a.countRunsOnThisComputer(out.Intranet)
 	return &out, nil
 }
 
@@ -3713,6 +3790,7 @@ func desktopBotInfo(bot hubBot) DesktopBotInfo {
 		Color:       strings.TrimSpace(bot.Color),
 		Shape:       strings.TrimSpace(bot.Shape),
 		DesktopMode: strings.TrimSpace(bot.DesktopMode),
+		NodeID:      strings.TrimSpace(bot.NodeID),
 	}
 }
 

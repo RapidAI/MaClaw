@@ -7,6 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/app_update.dart';
 import 'core/platform.dart' show supportsSideloadUpdate;
+import 'core/native_voice.dart';
+import 'core/voice_engine.dart';
 import 'core/providers.dart';
 import 'core/theme.dart';
 import 'features/account/account_screen.dart';
@@ -82,9 +84,8 @@ final _routerProvider = Provider<GoRouter>((ref) {
     routes: [
       GoRoute(
         path: '/splash',
-        builder: (_, _) => const Scaffold(
-          body: Center(child: CircularProgressIndicator()),
-        ),
+        builder: (_, _) =>
+            const Scaffold(body: Center(child: CircularProgressIndicator())),
       ),
       GoRoute(
         path: '/login',
@@ -97,40 +98,25 @@ final _routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state, child) => _HomeShell(child: child),
         routes: [
           GoRoute(path: '/', builder: (_, _) => const BotsScreen()),
-          GoRoute(
-            path: '/remote',
-            builder: (_, _) => const RemoteScreen(),
-          ),
-          GoRoute(
-            path: '/status',
-            builder: (_, _) => const StatusScreen(),
-          ),
-          GoRoute(
-            path: '/account',
-            builder: (_, _) => const AccountScreen(),
-          ),
+          GoRoute(path: '/remote', builder: (_, _) => const RemoteScreen()),
+          GoRoute(path: '/status', builder: (_, _) => const StatusScreen()),
+          GoRoute(path: '/account', builder: (_, _) => const AccountScreen()),
         ],
       ),
       GoRoute(
         path: '/bot/:id',
-        builder: (context, state) => _BotRoute(
-          botId: state.pathParameters['id']!,
-          tab: _BotTab.chat,
-        ),
+        builder: (context, state) =>
+            _BotRoute(botId: state.pathParameters['id']!, tab: _BotTab.chat),
       ),
       GoRoute(
         path: '/bot/:id/desktop',
-        builder: (context, state) => _BotRoute(
-          botId: state.pathParameters['id']!,
-          tab: _BotTab.desktop,
-        ),
+        builder: (context, state) =>
+            _BotRoute(botId: state.pathParameters['id']!, tab: _BotTab.desktop),
       ),
       GoRoute(
         path: '/bot/:id/status',
-        builder: (context, state) => _BotRoute(
-          botId: state.pathParameters['id']!,
-          tab: _BotTab.status,
-        ),
+        builder: (context, state) =>
+            _BotRoute(botId: state.pathParameters['id']!, tab: _BotTab.status),
       ),
       GoRoute(
         path: '/bot/:id/settings',
@@ -139,14 +125,8 @@ final _routerProvider = Provider<GoRouter>((ref) {
           tab: _BotTab.settings,
         ),
       ),
-      GoRoute(
-        path: '/llm-settings',
-        builder: (_, _) => const BotLLMScreen(),
-      ),
-      GoRoute(
-        path: '/rooms',
-        builder: (_, _) => const RoomsScreen(),
-      ),
+      GoRoute(path: '/llm-settings', builder: (_, _) => const BotLLMScreen()),
+      GoRoute(path: '/rooms', builder: (_, _) => const RoomsScreen()),
       GoRoute(
         path: '/rooms/:rid',
         builder: (context, state) {
@@ -176,8 +156,7 @@ final _routerProvider = Provider<GoRouter>((ref) {
         path: '/remote/task',
         builder: (context, state) {
           final extra = state.extra;
-          if (extra
-              is ({RcGrant grant, String taskPath, String taskName})) {
+          if (extra is ({RcGrant grant, String taskPath, String taskName})) {
             return RemoteTaskScreen(
               grant: extra.grant,
               taskPath: extra.taskPath,
@@ -204,17 +183,13 @@ final _routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/bot/:id/style',
-        builder: (context, state) => _BotRoute(
-          botId: state.pathParameters['id']!,
-          tab: _BotTab.style,
-        ),
+        builder: (context, state) =>
+            _BotRoute(botId: state.pathParameters['id']!, tab: _BotTab.style),
       ),
       GoRoute(
         path: '/bot/:id/demo',
-        builder: (context, state) => _BotRoute(
-          botId: state.pathParameters['id']!,
-          tab: _BotTab.demo,
-        ),
+        builder: (context, state) =>
+            _BotRoute(botId: state.pathParameters['id']!, tab: _BotTab.demo),
       ),
     ],
   );
@@ -300,6 +275,18 @@ class _HomeShellState extends ConsumerState<_HomeShell> {
   @override
   void initState() {
     super.initState();
+    // Voice models provision themselves in the background — the files live
+    // in external media storage, so upgrades/reinstalls skip the download.
+    if (NativeVoice.supported) {
+      unawaited(
+        Future<void>.delayed(const Duration(seconds: 2), () {
+          // Logout within the window disposes the shell — ref would throw.
+          if (!mounted) return Future<void>.value();
+          final hub = ref.read(sessionProvider).active?.hubUrl;
+          return ref.read(voiceEngineProvider).autoEnsure(hubBase: hub);
+        }),
+      );
+    }
     // One silent update check per launch where sideloading is allowed
     // (Android APK; iOS uses the App Store, HarmonyOS NEXT AppGallery).
     // Network failures stay invisible; only a real update surfaces the sheet.
@@ -318,7 +305,9 @@ class _HomeShellState extends ConsumerState<_HomeShell> {
       final info = await PackageInfo.fromPlatform();
       final result = await AppUpdater().check(info.version);
       await prefs.setInt(
-          'mobilebot.update.lastCheck', DateTime.now().millisecondsSinceEpoch);
+        'mobilebot.update.lastCheck',
+        DateTime.now().millisecondsSinceEpoch,
+      );
       if (!mounted || !result.hasUpdate) return;
       await showUpdateSheet(context, prechecked: result.update);
     } on Object {

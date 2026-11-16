@@ -13,6 +13,15 @@ import (
 type DesktopQuota struct {
 	Limit *int `json:"limit"`
 	Used  int  `json:"used"`
+	// CloudDesktop reports whether the owner has an assigned cloud computer.
+	// It is true when no check is wired so a hub without the pool never hides
+	// the option. LAN nodes are a separate path the client lists itself.
+	CloudDesktop bool `json:"cloud_desktop"`
+	// LanDesktop reports whether the owner's pinned bot node currently has
+	// MaClawSrv — the LAN computer a desktop:true create without node_id
+	// would land on. Clients that cannot pick a node read
+	// cloud_desktop || lan_desktop as "a computer bot is possible".
+	LanDesktop bool `json:"lan_desktop"`
 }
 
 // desktopBotLimit resolves the user's effective cap as a cascade: the user
@@ -137,10 +146,18 @@ func (s *Service) DesktopQuotaForUser(ctx context.Context, tenantID, userID stri
 	}
 	userID = strings.TrimSpace(userID)
 	departments := s.departmentChain(security.WithTenant(ctx, tenantID), userID)
-	return DesktopQuota{
-		Limit: desktopBotLimit(rec.Grants, rec.DefaultDesktopBotLimit, userID, departments),
-		Used:  countDesktopBots(rec.Bots, userID),
-	}, nil
+	quota := DesktopQuota{
+		Limit:        desktopBotLimit(rec.Grants, rec.DefaultDesktopBotLimit, userID, departments),
+		Used:         countDesktopBots(rec.Bots, userID),
+		CloudDesktop: true,
+	}
+	if s.CloudDesktopAssigned != nil {
+		quota.CloudDesktop = s.CloudDesktopAssigned(ctx, tenantID, userID, departments) == nil
+	}
+	if pin := ownerNodeID(rec, userID); pin != "" && s.LanDesktopAvailable != nil {
+		quota.LanDesktop = s.LanDesktopAvailable(ctx, tenantID, pin)
+	}
+	return quota, nil
 }
 
 // UpdateGrant replaces one grant's desktop-bot limit. Other fields stay.

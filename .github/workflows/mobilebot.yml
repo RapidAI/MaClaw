@@ -60,6 +60,8 @@ jobs:
         run: dart analyze lib test
       - working-directory: mobilebot
         run: flutter test --concurrency=1
+      - name: Build voice native library
+        run: bash mobilebot/tool/build_voice.sh
       - working-directory: mobilebot
         run: flutter build apk --debug
       - uses: actions/upload-artifact@v7

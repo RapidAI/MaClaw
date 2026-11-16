@@ -16,8 +16,11 @@ class LoginScreen extends ConsumerStatefulWidget {
   /// account row stays stored so a successful verify upserts the same key.
   final bool relogin;
 
-  const LoginScreen(
-      {super.key, this.addingAccount = false, this.relogin = false});
+  const LoginScreen({
+    super.key,
+    this.addingAccount = false,
+    this.relogin = false,
+  });
 
   @override
   ConsumerState<LoginScreen> createState() => _LoginScreenState();
@@ -68,11 +71,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     super.dispose();
   }
 
-  String get _identityHint =>
-      _method == AuthMethod.email ? '邮箱地址' : '手机号';
+  String get _identityHint => _method == AuthMethod.email ? '邮箱地址' : '手机号';
 
-  String get _identityLabel =>
-      _method == AuthMethod.email ? '邮箱' : '手机号';
+  String get _identityLabel => _method == AuthMethod.email ? '邮箱' : '手机号';
 
   Future<void> _sendCode() async {
     final identity = _identityCtrl.text.trim();
@@ -86,10 +87,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       _info = '';
     });
     try {
-      final request = await ref.read(authApiProvider).requestCode(
-            method: _method,
-            identity: identity,
-          );
+      final request = await ref
+          .read(authApiProvider)
+          .requestCode(method: _method, identity: identity);
       if (!mounted) return;
       setState(() {
         _request = request;
@@ -137,7 +137,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       final clientId = await ref.read(clientIdProvider.future);
       if (!mounted) return;
       final language = Localizations.localeOf(context).languageCode;
-      final result = await ref.read(authApiProvider).verifyCode(
+      final result = await ref
+          .read(authApiProvider)
+          .verifyCode(
             request: request,
             code: code,
             machineName: 'MaClawBot',
@@ -146,9 +148,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
           );
       if (!mounted) return;
       if (result.confirmed) {
-        await ref
-            .read(sessionProvider.notifier)
-            .addAccount(result.account!);
+        await ref.read(sessionProvider.notifier).addAccount(result.account!);
         if (!mounted) return;
         if (widget.addingAccount && context.canPop()) {
           context.pop();
@@ -197,8 +197,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       appBar: widget.addingAccount
           ? AppBar(title: const Text('添加账号'))
           : widget.relogin
-              ? AppBar(title: const Text('重新登录'))
-              : null,
+          ? AppBar(title: const Text('重新登录'))
+          : null,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -216,18 +216,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                         color: theme.colorScheme.primaryContainer,
                         borderRadius: BorderRadius.circular(22),
                       ),
-                      child: Icon(Icons.smart_toy,
-                          size: 40, color: theme.colorScheme.primary),
+                      child: Icon(
+                        Icons.smart_toy,
+                        size: 40,
+                        color: theme.colorScheme.primary,
+                      ),
                     ),
                     const SizedBox(height: 14),
-                    Text('MaClawBot',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.headlineMedium),
+                    Text(
+                      'MaClawBot',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.headlineMedium,
+                    ),
                     const SizedBox(height: 6),
-                    Text('随时随地管理和指挥你的桌面 Bot',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant)),
+                    Text(
+                      '随时随地管理和指挥你的桌面 Bot',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                     const SizedBox(height: 28),
                   ],
                   if (widget.relogin)
@@ -242,7 +250,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                         '登录已过期，请重新验证身份',
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                            color: theme.colorScheme.onErrorContainer),
+                          color: theme.colorScheme.onErrorContainer,
+                        ),
                       ),
                     ),
                   TabBar(
@@ -261,9 +270,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                     decoration: InputDecoration(
                       labelText: _identityLabel,
                       hintText: _identityHint,
-                      prefixIcon: Icon(_method == AuthMethod.email
-                          ? Icons.mail_outline
-                          : Icons.phone_iphone),
+                      prefixIcon: Icon(
+                        _method == AuthMethod.email
+                            ? Icons.mail_outline
+                            : Icons.phone_iphone,
+                      ),
                       border: const OutlineInputBorder(),
                     ),
                     enabled: !_verifying,
@@ -290,20 +301,24 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                       SizedBox(
                         height: 48,
                         child: FilledButton.tonal(
-                          onPressed:
-                              _sending || _resendIn > 0 ? null : _sendCode,
+                          onPressed: _sending || _resendIn > 0
+                              ? null
+                              : _sendCode,
                           child: _sending
                               ? const SizedBox(
                                   width: 16,
                                   height: 16,
-                                  child:
-                                      CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
                                 )
-                              : Text(_resendIn > 0
-                                  ? '${_resendIn}s'
-                                  : _request == null
+                              : Text(
+                                  _resendIn > 0
+                                      ? '${_resendIn}s'
+                                      : _request == null
                                       ? '获取验证码'
-                                      : '重新发送'),
+                                      : '重新发送',
+                                ),
                         ),
                       ),
                     ],
@@ -312,22 +327,28 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                   if (_info.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 10),
-                      child: Text(_info,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.primary)),
+                      child: Text(
+                        _info,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
                     ),
                   if (_error.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 10),
-                      child: Text(_error,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.error)),
+                      child: Text(
+                        _error,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
                     ),
                   FilledButton(
-                    onPressed:
-                        _request == null || _verifying ? null : _verify,
+                    onPressed: _request == null || _verifying ? null : _verify,
                     style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
                     child: _verifying
                         ? const SizedBox(
                             width: 20,
@@ -341,10 +362,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                     onPressed: _verifying
                         ? null
                         : () => Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) => const QrLoginScreen(),
-                              ),
+                            MaterialPageRoute<void>(
+                              builder: (_) => const QrLoginScreen(),
                             ),
+                          ),
                     icon: const Icon(Icons.qr_code_scanner),
                     label: const Text('扫码登录'),
                   ),
@@ -353,7 +374,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                     '登录即表示同意使用该账号下的桌面 Bot 服务。\n未注册的联系方式会自动创建账号。',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant),
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),

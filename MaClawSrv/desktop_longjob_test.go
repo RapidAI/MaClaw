@@ -188,6 +188,57 @@ func TestD100WatchTaskRouting(t *testing.T) {
 	}
 }
 
+func TestLongJobWatchStopsWhenTheBotHasNoComputer(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveInstance(agentservice.Instance{
+		ID: "inst_none", TenantID: "tenant-a", UserID: "alice",
+		Metadata: map[string]string{"hub_bot": "1", "hub_bot_desktop": "none"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveInstance(agentservice.Instance{
+		ID: "inst_desk", TenantID: "tenant-a", UserID: "alice",
+		Metadata: map[string]string{"hub_bot": "1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prev := desktopLongJobService
+	t.Cleanup(func() { desktopLongJobService = prev })
+	bindDesktopLongJobService(svc)
+	calls := 0
+	prevExec := desktopLongJobExec
+	desktopLongJobExec = func(context.Context, agentruntime.Scope, string) (string, error) {
+		calls++
+		return "LONGJOB_ALIVE pid=1\n", nil
+	}
+	t.Cleanup(func() { desktopLongJobExec = prevExec })
+	noneJob := &desktopLongJob{
+		ID: "job_none", Status: "running", Alive: true, InstanceID: "inst_none",
+		PrincipalTenant: "tenant-a", PrincipalUser: "alice",
+		NextPoll: time.Now().Add(-time.Second),
+	}
+	if err := desktopLongJobSave(noneJob); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktopLongJobWatchTick(context.Background(), noneJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := desktopLongJobGet(noneJob.ID)
+	if got.Status != "unwatched" || got.EndReason != "bot has no computer" || calls != 0 {
+		t.Fatalf("none job status=%s reason=%s calls=%d", got.Status, got.EndReason, calls)
+	}
+	if desktopLongJobInstanceHasNoDesktop(&desktopLongJob{InstanceID: "inst_desk", PrincipalTenant: "tenant-a", PrincipalUser: "alice"}) {
+		t.Fatal("a desktop instance stopped the watch")
+	}
+	if desktopLongJobInstanceHasNoDesktop(&desktopLongJob{InstanceID: "missing", PrincipalTenant: "tenant-a", PrincipalUser: "alice"}) {
+		t.Fatal("a missing instance stopped the watch")
+	}
+}
+
 func TestD100FailedExitIsFailed(t *testing.T) {
 	p := desktopLongJobParsePoll("LONGJOB_DEAD pid=1\nLONGJOB_EXIT=7\nLONGJOB_LOG_BYTES=1\nLONGJOB_LOG_TAIL\nboom\n")
 	if p.Alive || p.ExitCode == nil || *p.ExitCode != 7 {

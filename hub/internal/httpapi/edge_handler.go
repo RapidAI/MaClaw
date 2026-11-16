@@ -127,7 +127,17 @@ func PostEdgeCodeAdminHandler(reg *edgenode.Registry) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
 			return
 		}
-		code, err := reg.IssueCode(r.Context(), botTenantID(r), in.Name)
+		issuer := ""
+		if admin := AdminFromContext(r.Context()); admin != nil {
+			issuer = strings.TrimSpace(admin.Username)
+			if issuer == "" {
+				issuer = strings.TrimSpace(admin.DisplayName)
+			}
+			if issuer == "" {
+				issuer = strings.TrimSpace(admin.ID)
+			}
+		}
+		code, err := reg.IssueCodeBy(r.Context(), botTenantID(r), in.Name, issuer)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", err.Error())
 			return
@@ -137,6 +147,66 @@ func PostEdgeCodeAdminHandler(reg *edgenode.Registry) http.HandlerFunc {
 			"node_id": code.NodeID,
 			"until":   code.Until,
 		})
+	}
+}
+
+// PostEdgeNodeSettingsAdminHandler POST /api/admin/bots/nodes/{id}/settings
+// patches a registered node's options: name renames it and owner_user_id is
+// the account that has the desktops to itself ("" turns the node shared).
+// Both are applied to the node and to its desktop services so resolution
+// and the admin lists stay consistent. On an exclusive change the srv pins
+// follow too: the previous owner's pin to this node is dropped and the new
+// owner is pinned, so their next bots land on this node's srv.
+func PostEdgeNodeSettingsAdminHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if reg == nil || !edgenode.Enabled() {
+			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "edge nodes are disabled")
+			return
+		}
+		var in struct {
+			Name        string `json:"name"`
+			OwnerUserID string `json:"owner_user_id"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		nodeID := strings.TrimSpace(r.PathValue("id"))
+		node, err := reg.Lookup(r.Context(), nodeID)
+		if err != nil || node.TenantID != botTenantID(r) {
+			writeError(w, http.StatusNotFound, "EDGE_NOT_FOUND", "edge node was not found")
+			return
+		}
+		in.Name = strings.TrimSpace(in.Name)
+		in.OwnerUserID = strings.TrimSpace(in.OwnerUserID)
+		if in.Name == "" || len([]rune(in.Name)) > 80 {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "node name is required and must stay under 80 characters")
+			return
+		}
+		if in.OwnerUserID != "" && !desktop.ValidUserID(in.OwnerUserID) {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "owner_user_id is invalid")
+			return
+		}
+		prevOwner := strings.TrimSpace(node.OwnerUserID)
+		if err := reg.UpdateNode(r.Context(), node.ID, in.Name, &in.OwnerUserID); err != nil {
+			writeError(w, http.StatusBadGateway, "EDGE_NODES", err.Error())
+			return
+		}
+		if pool != nil {
+			if err := pool.SetNodeServersOwner(r.Context(), node.TenantID, node.ID, in.OwnerUserID); err != nil {
+				writeDesktopError(w, err)
+				return
+			}
+		}
+		if bots != nil && node.HasSrv && in.OwnerUserID != "" && in.OwnerUserID != prevOwner {
+			// Best effort: the desktop is already usable; the pins route
+			// each side's next bots to the srv they can actually wake. An
+			// exclusive desktop strands every other user's pin, not only
+			// the previous owner's (a shared node may have pinned several).
+			_ = bots.UnpinNodeExcept(r.Context(), node.TenantID, node.ID, in.OwnerUserID)
+			_ = bots.PinOwnerNode(r.Context(), node.TenantID, in.OwnerUserID, node.ID)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"updated": node.ID})
 	}
 }
 

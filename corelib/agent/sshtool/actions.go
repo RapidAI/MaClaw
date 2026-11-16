@@ -95,7 +95,7 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 				if !reconnected {
 					summary := existing.GetSummary()
 					result = fmt.Sprintf("复用已有 SSH 会话（无需重连）\n会话 ID: %s\n主机: %s\n状态: %s\n\n"+
-						"请直接 exec，session_id=%s。不要 force_new / 再次 connect。",
+						"请直接 exec，session_id=%s。不要重复 connect。若该会话 exec 持续无响应，再 close 后 connect 或 connect 传 force_new=true。",
 						existing.ID, summary.HostID, summary.Status, existing.ID)
 					if summary.LastOutput != "" {
 						result += "\n\n最近输出: " + summary.LastOutput
@@ -196,6 +196,7 @@ func SSHExec(deps SSHToolDeps, args map[string]interface{}) string {
 		time.Sleep(2 * time.Second)
 	}
 
+	handleBefore := session.PTY()
 	linesBefore := session.LineCount()
 
 	if sessionDead {
@@ -210,8 +211,12 @@ func SSHExec(deps SSHToolDeps, args map[string]interface{}) string {
 		if reconnected {
 			reconnectNote = "连接已断开并自动重连\n"
 			time.Sleep(2 * time.Second)
-			linesBefore = session.LineCount()
 		}
+	}
+	// A swapped PTY restarted the preview buffer at zero; a stale absolute
+	// baseline would silently hide the reply.
+	if session.PTY() != handleBefore {
+		linesBefore = session.LineCount()
 	}
 
 	if waitSec <= 0 {

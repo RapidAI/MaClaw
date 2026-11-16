@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
@@ -569,6 +571,95 @@ func TestDesktopStopNamesTheInstanceThatFinished(t *testing.T) {
 	}
 	if !strings.Contains(body, `"instance_id":"inst_b"`) || !strings.Contains(body, `"user_id":"alice"`) {
 		t.Fatalf("stop body %s", body)
+	}
+}
+
+func TestDesktopStopIdleLeavesTheDisplayUp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"idle"}`))
+	}))
+	defer srv.Close()
+	client := &desktopHubClient{baseURL: srv.URL, token: "t", http: srv.Client()}
+	if err := client.Stop(context.Background(), "tenant-a", "alice::desk::bot_a"); !errors.Is(err, errDesktopIdle) {
+		t.Fatalf("idle stop err=%v", err)
+	}
+}
+
+func TestIsolatedIdleStopKeepsThePageAndClearsTheFinishedLogin(t *testing.T) {
+	user := desktop.BotDesktopUser("alice", "bot_a")
+	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
+		return desktopEndpoint{CDP: "http://docker.example:1", Display: ":21"}, nil
+	}
+	desktopRemoteStop = func(context.Context, string, string) error { return errDesktopIdle }
+	prev := desktopKeepLoggedInDocument
+	var unlocked []bool
+	desktopKeepLoggedInDocument = func(_ *browser.BrowserAgentSession, keep bool) {
+		unlocked = append(unlocked, keep)
+	}
+	runKey := desktopRunKey("tenant", user)
+	bindKey := mustDesktopUserKey(t, "tenant", user)
+	desktopPersonInstance.Store(runKey, "bot_a")
+	t.Cleanup(func() {
+		desktopKeepLoggedInDocument = prev
+		desktopRemoteSession = nil
+		desktopRemoteStop = nil
+		desktopPersonInstance.Delete(runKey)
+		desktopRunsMu.Lock()
+		delete(desktopRuns, runKey)
+		delete(desktopHolds, runKey)
+		desktopRunsMu.Unlock()
+		binding := desktopBindingFor(bindKey)
+		binding.mu.Lock()
+		binding.session = nil
+		binding.mu.Unlock()
+	})
+	release := occupyUserDesktopWoken(context.Background(), "tenant", user, "bot_a")
+	binding := desktopBindingFor(bindKey)
+	binding.mu.Lock()
+	binding.session = &browser.BrowserAgentSession{}
+	binding.mu.Unlock()
+	release()
+	if _, held := desktopPersonInstance.Load(runKey); held {
+		t.Fatal("finished login stayed after the display was left up")
+	}
+	if len(unlocked) != 0 {
+		t.Fatalf("idle stop unlocked the logged-in page: %v", unlocked)
+	}
+}
+
+func TestIsolatedIdleStopLeavesALoginThatStartedWhileItStopped(t *testing.T) {
+	user := desktop.BotDesktopUser("alice", "bot_a")
+	runKey := desktopRunKey("tenant", user)
+	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
+		return desktopEndpoint{CDP: "http://docker.example:1", Display: ":21"}, nil
+	}
+	desktopRemoteStop = func(context.Context, string, string) error {
+		desktopRunsMu.Lock()
+		desktopHolds[runKey] = 1
+		desktopRunsMu.Unlock()
+		desktopPersonInstance.Store(runKey, "bot_a")
+		return errDesktopIdle
+	}
+	t.Cleanup(func() {
+		desktopRemoteSession = nil
+		desktopRemoteStop = nil
+		desktopPersonInstance.Delete(runKey)
+		desktopRunsMu.Lock()
+		delete(desktopRuns, runKey)
+		delete(desktopHolds, runKey)
+		desktopRunsMu.Unlock()
+	})
+	occupyUserDesktopWoken(context.Background(), "tenant", user, "bot_a")()
+	person, held := desktopPersonInstance.Load(runKey)
+	if !held || person != "bot_a" {
+		t.Fatalf("login that started during the stop was cleared: held=%v person=%v", held, person)
+	}
+	desktopRunsMu.Lock()
+	holds := desktopHolds[runKey]
+	desktopRunsMu.Unlock()
+	if holds != 1 {
+		t.Fatalf("holds=%d", holds)
 	}
 }
 

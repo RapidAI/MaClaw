@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoginWallURL(t *testing.T) {
-	for _, u := range []string{"https://www.zhihu.com/signin?next=%2Fwrite", "https://passport.example.com/x", "https://a.com/account/unhuman?type=captcha"} {
+	for _, u := range []string{"https://www.zhihu.com/signin?next=%2Fwrite", "https://www.amazon.com/ap/signin", "https://passport.example.com/x", "https://a.com/account/unhuman?type=captcha"} {
 		if loginWallURL(u) == "" {
 			t.Fatalf("%s should be a wall", u)
 		}

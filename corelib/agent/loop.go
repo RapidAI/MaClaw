@@ -483,7 +483,34 @@ func toolSurfaceInvocationPolicyForRequest(cb LoopCallbacks, cfg corelib.MaclawL
 			policy.ParallelToolCalls = ToolSurfaceOptionalBool{Present: true, Value: false}
 		}
 	}
-	return policy, nil
+	// DeepSeek Flash's chat builder rewrites required and named tool_choice to
+	// auto after this policy would otherwise be sealed. The receipt compares
+	// the sealed policy with that body and fails the desktop finish step with
+	// "invocation policy differs from manifest" before any byte is sent.
+	// Project the same rewrite here so the manifest records the choice the
+	// builder will actually emit. The finish-only tool list is unchanged.
+	return projectDeepSeekFlashInvocationPolicy(cfg, policy), nil
+}
+
+// projectDeepSeekFlashInvocationPolicy keeps the sealed invocation policy
+// identical to sanitizeOpenAIToolChoiceForProvider. Flash accepts none and
+// auto, and rejects required plus a named function. Other envelopes keep the
+// host policy: their builders do not apply this rewrite.
+func projectDeepSeekFlashInvocationPolicy(cfg corelib.MaclawLLMConfig, policy ToolSurfaceInvocationPolicy) ToolSurfaceInvocationPolicy {
+	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() || strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
+		return policy
+	}
+	if policy.Envelope != ToolSurfaceEnvelopeOpenAIChat && policy.Envelope != ToolSurfaceEnvelopeUnspecified {
+		return policy
+	}
+	if !corelib.IsDeepSeekFlashOpenAICompat(cfg) {
+		return policy
+	}
+	switch policy.ToolChoice.Mode {
+	case ToolSurfaceToolChoiceRequired, ToolSurfaceToolChoiceSpecific:
+		policy.ToolChoice = ToolSurfaceToolChoice{Mode: ToolSurfaceToolChoiceAuto}
+	}
+	return policy
 }
 
 func toolSurfacePolicyRequestOptions(policy ToolSurfaceInvocationPolicy) (interface{}, *bool) {

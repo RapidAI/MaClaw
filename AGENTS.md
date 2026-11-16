@@ -199,6 +199,74 @@
   for the new-task wizard's remote directory browser
   (`RemoteDirPickerPopover` → `draft.machine.workDir`; operate-grants only).
 
+## SSH session recovery (guiapp)
+
+- The three SSH exec surfaces have DIFFERENT recovery contracts by design:
+  - Semantic trusted SSH (`executeTrustedBoundSSH`, chat agent): self-heals.
+    A dead bound session is re-dialed BEFORE the command is written
+    (`trustedSSHRecoverableBoundSession` finds the single session the
+    principal opened even after it died; `ReconnectByID` + a
+    `trustedSSHReconnectSettle` banner wait), and writes go through
+    `WriteInputChecked` (idle probe + write-failure reconnect). A mid-wait
+    `outcome_unobserved` calls `recoverTrustedSSHSession`: dead PTY →
+    `ReconnectByID`; live shell that ignored Ctrl+C → `Kill` + handle
+    `Close` first (a plain reconnect keeps a live PTY) so a fresh shell
+    replaces it, then annotates the error with the pre-disconnect output
+    tail and "先核对远端状态再重试". The error keeps the
+    `outcome_unobserved`/`disconnected` tokens so upstream
+    `[system unknown]` classification is unchanged.
+  - Legacy/skill sshExec (`h.sshExec`, `sshtool.SSHExec`,
+    `SkillExecutor.sshExec`): already self-heals the same way
+    (ReconnectByID on terminal status + WriteInputChecked + 3-strike
+    CheckShellResponsive).
+  - Remote coding (`sshExecRuntimeBoundContext`, `sshExecChannelResult`,
+    `newGUIRemoteWorkspaceProber`): deliberately NEVER reconnects — the
+    session is bound to a frozen verified target identity, and a lost
+    session must interrupt the attempt and go through
+    `PrepareCodingRuntimeRecovery`/`ConfirmCodingRuntimeRecovery` review.
+    Do not "fix" it to auto-reconnect.
+- Liveness verdicts come in two strengths; pick by caller intent:
+  - Optimistic: `IsAlive`/`TransportFailed`/`sshSituationSessionAlive` —
+    an in-flight probe still counts as bound. For catalog/binding reads.
+  - Strict: `TransportLive`/`ClientTransportLive`/`sshClientTransportLive`
+    require a positive keepalive answer inside `sshProbeWait` (5s). Used at
+    every commit point: `AttachOpenSession` reuse, `trustedSSHSessionWritable`
+    (pre-write gate), `WriteInputChecked` idle probe and post-write check,
+    the SFTP borrow in `callWithSessionClient`, `Kill`/`Interrupt`/`Close`
+    gates, and recovery verification.
+- Stall bounds (half-open transports): `crypto/ssh` holds globalSentMu for
+  the whole global request, so one unanswered keepalive serializes every
+  later request on that client — `NewSession`, `Signal`, channel `Close`
+  all queue behind it until the pool keepalive kills the conn (up to
+  ~30-60s). The bounds:
+  - `reconnectSession` POSITIVELY probes the old client before reuse;
+    anything else closes the client first — which unblocks all queued
+    writes — and dials via `pool.Reconnect`. `ObservedTransportFailure`
+    alone is not enough: it only records FINISHED probe failures.
+  - `WaitForOutputContext` bails early to `SessionError` once
+    `ObservedTransportFailure` latches, and `finishDeadline` only sends
+    `Interrupt` when `TransportLive` answered (the write would otherwise
+    park behind the stuck request).
+  - `recoverTrustedSSHSession` only sends `Kill` when `TransportLive()`
+    answered; otherwise it closes the client before the channel so the
+    close itself does not park. A failed recovery `RemoveSession`s the
+    binding so the next call plans a fresh connect.
+  - `callWithSessionClient` (SFTP) probes the borrowed client; a dead
+    session-bound conn goes through `reconnectSession`, a detached dead
+    pool entry through `pool.Reconnect`.
+- `SSHSessionManager.reconnectSession` covers every death mode:
+  transport-dead → `pool.Reconnect`, exited shell on a live connection →
+  `AcquireResolved` reuses the pooled client, undetected half-open → the
+  `ptySession.Start` failure redials once. It clears `PreviewLines`/
+  `droppedLines`, so callers detect the reset by PTY HANDLE IDENTITY
+  (`session.PTY() != handleBefore` → resample the baseline), not by
+  line-count comparison: a reset buffer can regrow to the same count.
+- The `ssh` tool reuses one session per host:user:port. `force_new` is in
+  the tool schema for an unresponsive reused session; the "复用已有 SSH
+  会话" result also names the close/force_new escape.
+- SFTP copies have their own one-shot link-loss retry
+  (`callWithSessionClient`); SFTP status errors are never link loss.
+
 ## Model memory lifecycle
 
 - Heavy models live behind `corelib/modelmanager`: first `Acquire` loads,
@@ -464,3 +532,24 @@
   `MarkDesktopOver` / `DesktopQuotaForUser` all read the same resolved
   limit, so the default shows up in the clients' `desktop_quota` payload
   unchanged.
+
+## Hub admin web (hub/web/admin)
+
+- `node hub/web/admin/validate-admin-modules.js` enforces that runtime JS
+  files stay ASCII: write CJK in `copy`/dicts as literal `\uXXXX` escapes
+  inside the JS strings (see `desktop-tab.js`). Watch quoting — emitting a
+  literal backslash-u through tool calls may need `\u` escaping or a node
+  one-liner instead of the edit tool.
+- Per-module unit tests are plain node scripts:
+  `node hub/web/admin/desktop-tab.test.js`, `node hub/web/admin/bot-tab.test.js`.
+  `check-admin.ps1` runs the validator plus
+  `go test ./hub/internal/httpapi ./hub/internal/im ./hub/internal/llmservice`.
+- Known pre-existing validator failures (not to be "fixed" blindly):
+  `bot-tab.js` has a `→` char and `index.html` has `tenantEdge*` i18n
+  complaints on HEAD.
+- `desktop-tab.js` Bot-node list (`GET /api/admin/bots/nodes`): each node
+  carries `owner_user_id` (self-registered personal node; resolve to the
+  account via `botOrgChoices().users`) and `issued_by` (admin username from
+  `IssueCodeBy`, or the user id for `IssueOwnedCode`; kept across secret
+  rotation). `Broker.ApplyLive` also fills `LastSeen` from the live map —
+  `last_seen` is in-memory only, not persisted to the tenant file.

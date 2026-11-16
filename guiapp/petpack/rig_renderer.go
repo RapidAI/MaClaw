@@ -843,6 +843,17 @@ func (r *CharacterRenderer) TriggerClip(clip string, nowMS int64) bool {
 	return true
 }
 
+// PlayingBody is the body clip on screen. The drag hold uses it so a long
+// pick-up is not restarted on every frame.
+func (r *CharacterRenderer) PlayingBody() string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.step.Body
+}
+
 // TriggerEvent starts one validated short reaction. It is intentionally a
 // separate method so host windows can map only allowlisted local events.
 func (r *CharacterRenderer) TriggerEvent(event string, nowMS int64) bool {

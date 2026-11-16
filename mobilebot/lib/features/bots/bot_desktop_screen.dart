@@ -214,15 +214,15 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
         setState(() => _controlling = true);
         _scheduleClaim();
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('另一台设备正在操作这台电脑')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('另一台设备正在操作这台电脑')));
       }
     } on Object catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(failureMessage(error))),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     } finally {
       if (mounted) setState(() => _claiming = false);
@@ -241,9 +241,9 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     final granted = await _grabControl();
     if (!mounted || granted != false) return;
     setState(() => _controlling = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('控制权已交给另一台设备')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('控制权已交给另一台设备')));
   }
 
   /// One claim round-trip — shared by the switch, the renewal tick and the
@@ -274,17 +274,15 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     }
     final wasPaused = _pausedWithControl;
     _pausedWithControl = false;
-    unawaited(_grabControl().then((granted) {
-      if (!mounted || granted != false) return;
-      setState(() => _controlling = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(wasPaused
-              ? '另一台设备正在操作这台电脑'
-              : '控制权已交给另一台设备'),
-        ),
-      );
-    }));
+    unawaited(
+      _grabControl().then((granted) {
+        if (!mounted || granted != false) return;
+        setState(() => _controlling = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(wasPaused ? '另一台设备正在操作这台电脑' : '控制权已交给另一台设备')),
+        );
+      }),
+    );
   }
 
   String _wakeFailureText(Object error) {
@@ -314,7 +312,8 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     final query = queryAt >= 0 ? base.substring(queryAt + 1) : '';
     final slash = path.lastIndexOf('/');
     if (path.substring(slash + 1) != 'vnc.html') return vncSrc;
-    final viewOnly = query
+    final viewOnly =
+        query
             .split('&')
             .where((part) => part.startsWith('view_only='))
             .firstOrNull ??
@@ -340,8 +339,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     if (!src.contains('view_only=')) {
       src = '$src${separator}view_only=$viewOnly';
     } else {
-      src = src.replaceAll(
-          RegExp(r'view_only=\d'), 'view_only=$viewOnly');
+      src = src.replaceAll(RegExp(r'view_only=\d'), 'view_only=$viewOnly');
     }
     return _viewerSrc(src);
   }
@@ -368,11 +366,11 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) {
           String proxyLabel(String mode) => switch (mode) {
-                'proxy' => '始终代理',
-                'direct' => '直连',
-                'smart' || '' => '智能（自动选择）',
-                _ => mode,
-              };
+            'proxy' => '始终代理',
+            'direct' => '直连',
+            'smart' || '' => '智能（自动选择）',
+            _ => mode,
+          };
 
           Future<void> pickProxy(String? mode) async {
             if (mode == null || proxy.locked) return;
@@ -382,14 +380,18 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                 proxy = next;
               });
               if (context.mounted && !next.applied) {
-                messenger.showSnackBar(SnackBar(
-                    content: Text(next.warning.isNotEmpty
-                        ? next.warning
-                        : '已保存，下次打开画面时生效')));
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      next.warning.isNotEmpty ? next.warning : '已保存，下次打开画面时生效',
+                    ),
+                  ),
+                );
               }
             } on Object catch (error) {
               messenger.showSnackBar(
-                  SnackBar(content: Text(failureMessage(error))));
+                SnackBar(content: Text(failureMessage(error))),
+              );
             }
           }
 
@@ -404,13 +406,14 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(action == 'reset'
-                          ? '重置会把电脑恢复到初始镜像，未保存的数据将丢失。'
-                          : '重启会中断电脑上正在进行的工作。'),
+                      Text(
+                        action == 'reset'
+                            ? '重置会把电脑恢复到初始镜像，未保存的数据将丢失。'
+                            : '重启会中断电脑上正在进行的工作。',
+                      ),
                       CheckboxListTile(
                         value: force,
-                        onChanged: (v) =>
-                            setDialog(() => force = v ?? false),
+                        onChanged: (v) => setDialog(() => force = v ?? false),
                         title: const Text('强制（跳过优雅停止）'),
                         controlAffinity: ListTileControlAffinity.leading,
                         contentPadding: EdgeInsets.zero,
@@ -432,16 +435,24 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
             );
             if (ok != true || !context.mounted) return;
             try {
-              final result =
-                  await api.desktopComputerAction(action, force: force);
-              messenger.showSnackBar(SnackBar(
-                  content: Text(result.status.isNotEmpty
-                      ? '$title：${result.status}'
-                      : '$title完成')));
+              final result = await api.desktopComputerAction(
+                action,
+                force: force,
+              );
+              messenger.showSnackBar(
+                SnackBar(
+                  content: Text(
+                    result.status.isNotEmpty
+                        ? '$title：${result.status}'
+                        : '$title完成',
+                  ),
+                ),
+              );
               if (context.mounted) Navigator.pop(context);
             } on Object catch (error) {
               messenger.showSnackBar(
-                  SnackBar(content: Text(failureMessage(error))));
+                SnackBar(content: Text(failureMessage(error))),
+              );
             }
           }
 
@@ -450,13 +461,14 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
               shrinkWrap: true,
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
               children: [
-                Text('代理模式',
-                    style: Theme.of(context).textTheme.titleSmall),
+                Text('代理模式', style: Theme.of(context).textTheme.titleSmall),
                 if (proxy.locked)
                   const Padding(
                     padding: EdgeInsets.only(top: 4, bottom: 4),
-                    child: Text('管理员已锁定代理模式，当前为租户默认。',
-                        style: TextStyle(fontSize: 12)),
+                    child: Text(
+                      '管理员已锁定代理模式，当前为租户默认。',
+                      style: TextStyle(fontSize: 12),
+                    ),
                   ),
                 RadioGroup<String>(
                   groupValue: proxy.userMode,
@@ -464,14 +476,15 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      for (final mode
-                          in const ['', 'smart', 'direct', 'proxy'])
+                      for (final mode in const ['', 'smart', 'direct', 'proxy'])
                         RadioListTile<String>(
                           value: mode,
                           enabled: !proxy.locked,
-                          title: Text(mode.isEmpty
-                              ? '跟随租户默认（${proxyLabel(proxy.tenantDefault.isEmpty ? 'smart' : proxy.tenantDefault)}）'
-                              : proxyLabel(mode)),
+                          title: Text(
+                            mode.isEmpty
+                                ? '跟随租户默认（${proxyLabel(proxy.tenantDefault.isEmpty ? 'smart' : proxy.tenantDefault)}）'
+                                : proxyLabel(mode),
+                          ),
                           dense: true,
                           contentPadding: EdgeInsets.zero,
                         ),
@@ -504,8 +517,10 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                 if (!caps.restartAllowed && !caps.resetAllowed)
                   const Padding(
                     padding: EdgeInsets.only(top: 4),
-                    child: Text('当前租户未开放电脑维护操作。',
-                        style: TextStyle(fontSize: 12)),
+                    child: Text(
+                      '当前租户未开放电脑维护操作。',
+                      style: TextStyle(fontSize: 12),
+                    ),
                   ),
               ],
             ),
@@ -547,10 +562,12 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                   try {
                     await _api?.handBackDesktop(widget.bot.id);
                     messenger.showSnackBar(
-                        const SnackBar(content: Text('已把电脑交还给 Bot')));
+                      const SnackBar(content: Text('已把电脑交还给 Bot')),
+                    );
                   } on Object catch (error) {
                     messenger.showSnackBar(
-                        SnackBar(content: Text(failureMessage(error))));
+                      SnackBar(content: Text(failureMessage(error))),
+                    );
                   }
                 case 'computer':
                   _computerSheet();
@@ -560,8 +577,9 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
               const PopupMenuItem(value: 'refresh', child: Text('刷新')),
               PopupMenuItem(
                 value: 'viewer',
-                child:
-                    Text(_viewer == 'h264' ? '切换到 noVNC 画面' : '切换到 H.264 画面'),
+                child: Text(
+                  _viewer == 'h264' ? '切换到 noVNC 画面' : '切换到 H.264 画面',
+                ),
               ),
               const PopupMenuItem(value: 'handback', child: Text('交还电脑')),
               const PopupMenuItem(value: 'computer', child: Text('电脑维护…')),
@@ -579,15 +597,18 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
               child: Text(
                 _desktop.attentionReason,
                 style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onTertiaryContainer),
+                  color: theme.colorScheme.onTertiaryContainer,
+                ),
               ),
             ),
           if (_desktop.isRunning && _desktop.userControl)
             Material(
               color: theme.colorScheme.surfaceContainerHighest,
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 4,
+                ),
                 child: Row(
                   children: [
                     const Icon(Icons.touch_app_outlined, size: 16),
@@ -600,8 +621,9 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                     ),
                     Switch(
                       value: _controlling,
-                      onChanged:
-                          _claiming ? null : (value) => _setControlling(value),
+                      onChanged: _claiming
+                          ? null
+                          : (value) => _setControlling(value),
                     ),
                   ],
                 ),
@@ -627,15 +649,18 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.desktop_access_disabled_outlined,
-                size: 64, color: Colors.grey.shade400),
+            Icon(
+              Icons.desktop_access_disabled_outlined,
+              size: 64,
+              color: Colors.grey.shade400,
+            ),
             const SizedBox(height: 16),
             Text(
               _waking
                   ? '正在唤醒电脑…'
                   : _error.isNotEmpty
-                      ? _error
-                      : '电脑还没有画面',
+                  ? _error
+                  : '电脑还没有画面',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyLarge,
             ),
@@ -701,16 +726,16 @@ class _DesktopWebViewState extends State<DesktopWebView> {
   Widget _buildWebView() {
     PlatformWebViewWidgetCreationParams params =
         PlatformWebViewWidgetCreationParams(
-      controller: _controller.platform,
-      layoutDirection: TextDirection.ltr,
-      gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-    );
+          controller: _controller.platform,
+          layoutDirection: TextDirection.ltr,
+          gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+        );
     if (WebViewPlatform.instance is AndroidWebViewPlatform) {
-      params = AndroidWebViewWidgetCreationParams
-          .fromPlatformWebViewWidgetCreationParams(
-        params,
-        displayWithHybridComposition: true,
-      );
+      params =
+          AndroidWebViewWidgetCreationParams.fromPlatformWebViewWidgetCreationParams(
+            params,
+            displayWithHybridComposition: true,
+          );
     }
     return WebViewWidget.fromPlatformCreationParams(params: params);
   }

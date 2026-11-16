@@ -38,49 +38,54 @@ class SendResult {
     this.session = '',
   });
 
-  factory SendResult.admitted(BotRun run,
-          {String ack = '',
-          String routedVia = '',
-          String routedTitle = '',
-          String kind = '',
-          String session = ''}) =>
-      SendResult._(
-          run: run,
-          ack: ack,
-          routedVia: routedVia,
-          routedTitle: routedTitle,
-          kind: kind,
-          session: session);
+  factory SendResult.admitted(
+    BotRun run, {
+    String ack = '',
+    String routedVia = '',
+    String routedTitle = '',
+    String kind = '',
+    String session = '',
+  }) => SendResult._(
+    run: run,
+    ack: ack,
+    routedVia: routedVia,
+    routedTitle: routedTitle,
+    kind: kind,
+    session: session,
+  );
 
-  factory SendResult.queued(
-          {int position = 0,
-          String ack = '',
-          String routedVia = '',
-          String routedTitle = '',
-          String kind = '',
-          String session = ''}) =>
-      SendResult._(
-          queued: true,
-          position: position,
-          ack: ack,
-          routedVia: routedVia,
-          routedTitle: routedTitle,
-          kind: kind,
-          session: session);
+  factory SendResult.queued({
+    int position = 0,
+    String ack = '',
+    String routedVia = '',
+    String routedTitle = '',
+    String kind = '',
+    String session = '',
+  }) => SendResult._(
+    queued: true,
+    position: position,
+    ack: ack,
+    routedVia: routedVia,
+    routedTitle: routedTitle,
+    kind: kind,
+    session: session,
+  );
 
-  factory SendResult.settled(BotReply reply,
-          {String ack = '',
-          String routedVia = '',
-          String routedTitle = '',
-          String kind = '',
-          String session = ''}) =>
-      SendResult._(
-          reply: reply,
-          ack: ack,
-          routedVia: routedVia,
-          routedTitle: routedTitle,
-          kind: kind,
-          session: session);
+  factory SendResult.settled(
+    BotReply reply, {
+    String ack = '',
+    String routedVia = '',
+    String routedTitle = '',
+    String kind = '',
+    String session = '',
+  }) => SendResult._(
+    reply: reply,
+    ack: ack,
+    routedVia: routedVia,
+    routedTitle: routedTitle,
+    kind: kind,
+    session: session,
+  );
 
   bool get isAdmitted => run != null;
 }
@@ -271,18 +276,22 @@ class BotApi {
     }
     final run = BotRun.fromJson(data);
     return run.accepted
-        ? SendResult.admitted(run,
+        ? SendResult.admitted(
+            run,
             ack: ack,
             routedVia: routedVia,
             routedTitle: routedTitle,
             kind: kind,
-            session: session)
-        : SendResult.settled(BotReply.fromJson(data),
+            session: session,
+          )
+        : SendResult.settled(
+            BotReply.fromJson(data),
             ack: ack,
             routedVia: routedVia,
             routedTitle: routedTitle,
             kind: kind,
-            session: session);
+            session: session,
+          );
   }
 
   /// One run poll. Returns null while the run is in flight (a 202 answer).
@@ -382,7 +391,8 @@ class BotApi {
     );
     return [
       for (final item in syncList(data['items']))
-        if (item is Map) PendingDelivery.fromJson(Map<String, dynamic>.from(item)),
+        if (item is Map)
+          PendingDelivery.fromJson(Map<String, dynamic>.from(item)),
     ];
   }
 
@@ -448,10 +458,10 @@ class BotApi {
   /// and a non-empty id would hide the account-level grants the 远控 tab
   /// depends on.
   Map<String, dynamic> get _machineHeaders => {
-        'X-Machine-ID': _client.account.machineId.isNotEmpty
-            ? _client.account.machineId
-            : 'mobile-${_client.account.clientId.isNotEmpty ? _client.account.clientId : _client.account.userId}',
-      };
+    'X-Machine-ID': _client.account.machineId.isNotEmpty
+        ? _client.account.machineId
+        : 'mobile-${_client.account.clientId.isNotEmpty ? _client.account.clientId : _client.account.userId}',
+  };
 
   /// Attach, wake, or release the bot's desktop view.
   ///
@@ -583,8 +593,7 @@ class BotApi {
 
   /// `POST /api/v1/bots/{id}/style/rollback {"version":N}` — restore a
   /// style version, returns the full style view.
-  Future<Map<String, dynamic>> rollbackStyle(
-      String botId, int version) async {
+  Future<Map<String, dynamic>> rollbackStyle(String botId, int version) async {
     return _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
         _botPath(botId, '/style/rollback'),
@@ -672,8 +681,9 @@ class BotApi {
     var offset = 0;
     var path = '';
     while (offset < bytes.length || (bytes.isEmpty && offset == 0)) {
-      final end =
-          (offset + chunkSize) > bytes.length ? bytes.length : offset + chunkSize;
+      final end = (offset + chunkSize) > bytes.length
+          ? bytes.length
+          : offset + chunkSize;
       final result = await uploadMaterialChunk(
         botId,
         uploadId: uploadId,
@@ -709,10 +719,16 @@ class BotApi {
   /// `GET /api/v1/bots/{id}/inbox/{noteID}/files/{name}` — fetch a file a
   /// bot attached to a feed/mail note, as base64 bytes.
   Future<BotReplyFile> inboxFile(
-      String botId, String noteId, String name) async {
+    String botId,
+    String noteId,
+    String name,
+  ) async {
     final data = await _client.guard(
       () => _client.dio.get<Map<String, dynamic>>(
-        _botPath(botId, '/inbox/${Uri.encodeComponent(noteId)}/files/${Uri.encodeComponent(name)}'),
+        _botPath(
+          botId,
+          '/inbox/${Uri.encodeComponent(noteId)}/files/${Uri.encodeComponent(name)}',
+        ),
         options: _client.opts(),
       ),
     );
@@ -794,10 +810,7 @@ class BotApi {
         options: _client.opts(),
       ),
     );
-    return [
-      for (final item in syncList(data['woken']))
-        item.toString(),
-    ];
+    return [for (final item in syncList(data['woken'])) item.toString()];
   }
 
   /// `GET /api/v1/bots/said[?room=<id>]` — what bots told the person
@@ -850,11 +863,7 @@ class BotApi {
     return _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
         _botPath(botId, '/demo/narrate'),
-        data: {
-          'text': text,
-          'audio_base64': audioBase64,
-          'mime': mime,
-        },
+        data: {'text': text, 'audio_base64': audioBase64, 'mime': mime},
         options: _client.opts(),
       ),
     );
@@ -890,24 +899,29 @@ class BotApi {
   /// `GET /api/v1/bots/{id}/demo/shots/{demoID}/{ref}` — one timeline
   /// screenshot as `{mime, data(base64)}`.
   Future<({String mime, String data})> demoShot(
-      String botId, String demoId, String ref) async {
+    String botId,
+    String demoId,
+    String ref,
+  ) async {
     final out = await _client.guard(
       () => _client.dio.get<Map<String, dynamic>>(
-        _botPath(botId,
-            '/demo/shots/${Uri.encodeComponent(demoId)}/${Uri.encodeComponent(ref)}'),
+        _botPath(
+          botId,
+          '/demo/shots/${Uri.encodeComponent(demoId)}/${Uri.encodeComponent(ref)}',
+        ),
         options: _client.opts(),
       ),
     );
-    return (
-      mime: syncText(out['mime']),
-      data: syncText(out['data']),
-    );
+    return (mime: syncText(out['mime']), data: syncText(out['data']));
   }
 
   /// `POST /api/v1/bots/{id}/runs/{runID}/supplement` — extra instruction
   /// routed into a still-running task.
   Future<SupplementResult> supplementRun(
-      String botId, String runId, String content) async {
+    String botId,
+    String runId,
+    String content,
+  ) async {
     final out = await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
         _botPath(botId, '/runs/${Uri.encodeComponent(runId)}/supplement'),
@@ -1006,8 +1020,10 @@ class BotApi {
 
   /// `POST /api/v1/bots/desktop-computer/{restart|reset}` — reboot or
   /// re-image the caller's pooled desktop. `force` skips the graceful stop.
-  Future<ComputerResult> desktopComputerAction(String action,
-      {bool force = false}) async {
+  Future<ComputerResult> desktopComputerAction(
+    String action, {
+    bool force = false,
+  }) async {
     final out = await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
         '/api/v1/bots/desktop-computer/$action',

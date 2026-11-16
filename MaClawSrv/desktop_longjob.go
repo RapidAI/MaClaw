@@ -1086,6 +1086,12 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 		desktopLongJobStopWatch(j)
 		return desktopLongJobView(j), nil
 	}
+	// A bot that no longer has a computer must not keep polling the
+	// container. The process is left as it was; the next tick does not run.
+	if desktopLongJobInstanceHasNoDesktop(j) {
+		desktopLongJobUnwatch(j, "bot has no computer")
+		return desktopLongJobView(desktopLongJobGet(j.ID)), nil
+	}
 	now := desktopLongJobNow()
 	if j.HubMisses > 0 && !j.NextPoll.IsZero() && now.Before(j.NextPoll) {
 		return "", nil
@@ -1386,6 +1392,28 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 		go desktopLongJobFollowRunFiles(context.WithoutCancel(ctx), principal, j, run.ID, dec, files)
 	}
 	return nil
+}
+
+// desktopLongJobInstanceHasNoDesktop is true when this job's instance was
+// switched to a bot with no computer. A missed lookup keeps the watch, so a
+// store blip does not abandon a job that still has a desktop.
+func desktopLongJobInstanceHasNoDesktop(j *desktopLongJob) bool {
+	if j == nil || desktopLongJobService == nil || strings.TrimSpace(j.InstanceID) == "" {
+		return false
+	}
+	tenant := strings.TrimSpace(j.PrincipalTenant)
+	user := strings.TrimSpace(j.PrincipalUser)
+	if tenant == "" {
+		tenant = strings.TrimSpace(j.TenantID)
+	}
+	if user == "" {
+		user = strings.TrimSpace(j.UserID)
+	}
+	inst, err := desktopLongJobService.GetInstance(context.Background(), agentservice.Principal{TenantID: tenant, UserID: user}, j.InstanceID)
+	if err != nil || inst == nil {
+		return false
+	}
+	return strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
 }
 
 func desktopOwnerUserID(userID string) string {

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -141,6 +142,41 @@ func TestRotateEnrollmentKeepsTheSameDesktopServer(t *testing.T) {
 	}
 }
 
+func TestEdgeCodeNamesTheIssuingAdmin(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	reg := edgenode.NewRegistry(&edgeMemSettings{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/codes", strings.NewReader(`{"name":"lab"}`))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Username: "ops-admin", Scope: "tenant", TenantID: store.DefaultTenantID}))
+	PostEdgeCodeAdminHandler(reg).ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code status %d body %s", rec.Code, rec.Body.String())
+	}
+	var issued struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+	enrolled, err := reg.Enroll(context.Background(), issued.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := reg.Lookup(context.Background(), enrolled.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.IssuedBy != "ops-admin" {
+		t.Fatalf("issued_by %q", node.IssuedBy)
+	}
+	rec = httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/bots/nodes", nil)
+	GetEdgeNodesAdminHandler(reg, nil).ServeHTTP(rec, listReq)
+	if !strings.Contains(rec.Body.String(), `"issued_by":"ops-admin"`) {
+		t.Fatalf("list body %s", rec.Body.String())
+	}
+}
+
 func TestEdgeNodeDeleteHidesAnotherTenant(t *testing.T) {
 	t.Setenv("HUB_EDGE_NODES", "on")
 	reg := edgenode.NewRegistry(&edgeMemSettings{})
@@ -161,5 +197,220 @@ func TestEdgeNodeDeleteHidesAnotherTenant(t *testing.T) {
 	}
 	if _, err := reg.Lookup(context.Background(), enrolled.NodeID); err != nil {
 		t.Fatal("another tenant's node was removed")
+	}
+}
+
+func TestShareNodeTurnsAPersonalNodeShared(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	enroll := httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(`{"code":"`+code.Code+`","desktopd_key":"key-1","version":"v1","has_desktopd":true}`))
+	PostEdgeEnrollHandler(reg, pool, nil).ServeHTTP(rec, enroll)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("enroll %d %s", rec.Code, rec.Body.String())
+	}
+	var first edgenode.EnrollResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil || len(view.Servers) != 1 || view.Servers[0].OwnerID != "alice" {
+		t.Fatalf("owned servers = %+v err=%v", view.Servers, err)
+	}
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+first.NodeID+"/settings", strings.NewReader(`{"name":"desk","owner_user_id":""}`))
+	req.SetPathValue("id", first.NodeID)
+	PostEdgeNodeSettingsAdminHandler(reg, pool, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share %d %s", rec.Code, rec.Body.String())
+	}
+	node, err := reg.Lookup(ctx, first.NodeID)
+	if err != nil || node.OwnerUserID != "" {
+		t.Fatalf("node owner %q err=%v", node.OwnerUserID, err)
+	}
+	view, err = pool.View(ctx, store.DefaultTenantID)
+	if err != nil || len(view.Servers) != 1 || view.Servers[0].OwnerID != "" {
+		t.Fatalf("shared servers = %+v err=%v", view.Servers, err)
+	}
+	rec = httptest.NewRecorder()
+	again := httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+first.NodeID+"/settings", strings.NewReader(`{"name":"desk","owner_user_id":""}`))
+	again.SetPathValue("id", first.NodeID)
+	PostEdgeNodeSettingsAdminHandler(reg, pool, nil).ServeHTTP(rec, again)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second share %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestShareNodeHidesAnotherTenant(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	reg := edgenode.NewRegistry(&edgeMemSettings{})
+	code, err := reg.IssueOwnedCode(context.Background(), "tenant-other", "alice", "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled, err := reg.Enroll(context.Background(), code.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+enrolled.NodeID+"/settings", strings.NewReader(`{"name":"desk","owner_user_id":""}`))
+	req.SetPathValue("id", enrolled.NodeID)
+	PostEdgeNodeSettingsAdminHandler(reg, nil, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	node, err := reg.Lookup(context.Background(), enrolled.NodeID)
+	if err != nil || node.OwnerUserID != "alice" {
+		t.Fatalf("another tenant's node was shared: owner=%q err=%v", node.OwnerUserID, err)
+	}
+}
+
+func TestNodeSettingsRenamesAndReassigns(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	enroll := httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(`{"code":"`+code.Code+`","desktopd_key":"key-1","version":"v1","has_desktopd":true}`))
+	PostEdgeEnrollHandler(reg, pool, nil).ServeHTTP(rec, enroll)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("enroll %d %s", rec.Code, rec.Body.String())
+	}
+	var first edgenode.EnrollResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string) *httptest.ResponseRecorder {
+		out := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+first.NodeID+"/settings", strings.NewReader(body))
+		req.SetPathValue("id", first.NodeID)
+		PostEdgeNodeSettingsAdminHandler(reg, pool, nil).ServeHTTP(out, req)
+		return out
+	}
+	if rec := post(`{"name":"lab-west","owner_user_id":"phone:bob"}`); rec.Code != http.StatusOK {
+		t.Fatalf("settings %d %s", rec.Code, rec.Body.String())
+	}
+	node, err := reg.Lookup(ctx, first.NodeID)
+	if err != nil || node.Name != "lab-west" || node.OwnerUserID != "phone:bob" {
+		t.Fatalf("node = %+v err=%v", node, err)
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil || len(view.Servers) != 1 || view.Servers[0].OwnerID != "phone:bob" {
+		t.Fatalf("exclusive servers = %+v err=%v", view.Servers, err)
+	}
+	if rec := post(`{"name":"lab-west","owner_user_id":""}`); rec.Code != http.StatusOK {
+		t.Fatalf("share %d %s", rec.Code, rec.Body.String())
+	}
+	node, err = reg.Lookup(ctx, first.NodeID)
+	if err != nil || node.OwnerUserID != "" {
+		t.Fatalf("node owner after share %q err=%v", node.OwnerUserID, err)
+	}
+	view, err = pool.View(ctx, store.DefaultTenantID)
+	if err != nil || len(view.Servers) != 1 || view.Servers[0].OwnerID != "" {
+		t.Fatalf("shared servers = %+v err=%v", view.Servers, err)
+	}
+	if rec := post(`{"name":"","owner_user_id":""}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty name status %d", rec.Code)
+	}
+	if rec := post(`{"name":"lab-west","owner_user_id":"not a user!!"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid owner status %d", rec.Code)
+	}
+	other := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+first.NodeID+"/settings", strings.NewReader(`{"name":"x"}`))
+	req.SetPathValue("id", first.NodeID)
+	ctx2 := context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Username: "op", Scope: "tenant", TenantID: "tenant-other"})
+	PostEdgeNodeSettingsAdminHandler(reg, pool, nil).ServeHTTP(other, req.WithContext(ctx2))
+	if other.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant status %d", other.Code)
+	}
+}
+
+func TestNodeSettingsMovesTheSrvPinToTheNewOwner(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	botSettings := &botSettingsMem{}
+	bots := botmgmt.NewService(botSettings)
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	enroll := httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(`{"code":"`+code.Code+`","desktopd_key":"key-1","srv_admin_secret":"srv-admin","version":"v1","has_desktopd":true,"has_srv":true}`))
+	PostEdgeEnrollHandler(reg, pool, bots).ServeHTTP(rec, enroll)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("enroll %d %s", rec.Code, rec.Body.String())
+	}
+	var first edgenode.EnrollResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	pins := func() map[string]string {
+		var rec struct {
+			OwnerNode map[string]string `json:"owner_node"`
+		}
+		_ = json.Unmarshal([]byte(botSettings.value), &rec)
+		return rec.OwnerNode
+	}
+	if pins()["alice"] != first.NodeID {
+		t.Fatalf("alice pin = %+v", pins())
+	}
+	out := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+first.NodeID+"/settings", strings.NewReader(`{"name":"desk","owner_user_id":"bob"}`))
+	req.SetPathValue("id", first.NodeID)
+	PostEdgeNodeSettingsAdminHandler(reg, pool, bots).ServeHTTP(out, req)
+	if out.Code != http.StatusOK {
+		t.Fatalf("settings %d %s", out.Code, out.Body.String())
+	}
+	if _, ok := pins()["alice"]; ok {
+		t.Fatalf("alice kept her pin to an exclusive node: %+v", pins())
+	}
+	if pins()["bob"] != first.NodeID {
+		t.Fatalf("bob was not pinned: %+v", pins())
+	}
+	// Shared again: pins stay because they still resolve for a shared
+	// desktop. Assigning a user to it pins them too.
+	out = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+first.NodeID+"/settings", strings.NewReader(`{"name":"desk","owner_user_id":""}`))
+	req.SetPathValue("id", first.NodeID)
+	PostEdgeNodeSettingsAdminHandler(reg, pool, bots).ServeHTTP(out, req)
+	if out.Code != http.StatusOK {
+		t.Fatalf("share %d %s", out.Code, out.Body.String())
+	}
+	if pins()["bob"] != first.NodeID {
+		t.Fatalf("a shared node dropped bob's pin: %+v", pins())
+	}
+	if err := bots.PinOwnerNode(ctx, store.DefaultTenantID, "alice", first.NodeID); err != nil {
+		t.Fatal(err)
+	}
+	// Exclusive to carol strands every other pin on this node.
+	out = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+first.NodeID+"/settings", strings.NewReader(`{"name":"desk","owner_user_id":"carol"}`))
+	req.SetPathValue("id", first.NodeID)
+	PostEdgeNodeSettingsAdminHandler(reg, pool, bots).ServeHTTP(out, req)
+	if out.Code != http.StatusOK {
+		t.Fatalf("settings %d %s", out.Code, out.Body.String())
+	}
+	for _, user := range []string{"alice", "bob"} {
+		if _, ok := pins()[user]; ok {
+			t.Fatalf("%s kept a pin to an exclusive node: %+v", user, pins())
+		}
+	}
+	if pins()["carol"] != first.NodeID {
+		t.Fatalf("carol was not pinned: %+v", pins())
 	}
 }

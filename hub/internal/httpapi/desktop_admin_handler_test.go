@@ -144,6 +144,55 @@ func TestDesktopStopAdminHandlerForgetsNovncView(t *testing.T) {
 	}
 }
 
+func TestDesktopStopAdminHandlerKeepsIsolatedBotView(t *testing.T) {
+	docker, stops := dockerDesktopFake(t, "http://dockerd.example:6080/vnc.html?autoconnect=1")
+	pool := desktopPoolFake(t, newDesktopSettingsMem(), docker.URL)
+	bots := botmgmt.NewService(&botSettingsMem{})
+	user := "alice::desk::bot_2"
+	bots.NoteDesktopView("tenant-a", user, "http://dockerd.example:6080/vnc.html?autoconnect=1")
+	pool.NoteBotGUIUse("tenant-a", user, "http://dockerd.example:6080/vnc.html?autoconnect=1")
+
+	rec := httptest.NewRecorder()
+	PostDesktopStopAdminHandler(pool, bots).ServeHTTP(rec, adminRequest(http.MethodPost, "/api/admin/desktop-services/desktops/stop", `{"user_id":"alice::desk::bot_2"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"idle"`) {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+	if bots.DesktopViewURL("tenant-a", user) == "" {
+		t.Fatal("admin stop hid an isolated bot display that stays up")
+	}
+	if at, _ := pool.BotGUIUse("tenant-a", user); at.IsZero() {
+		t.Fatal("admin stop cleared the bot screen record")
+	}
+	if got := atomic.LoadInt32(stops); got != 0 {
+		t.Fatalf("docker stops=%d, a bot display is not stopped here", got)
+	}
+}
+
+func TestPostDesktopStopReportsIsolatedDisplayIdle(t *testing.T) {
+	t.Setenv("MACLAW_DESKTOP_API_TOKEN", "desktop-api-token")
+	pool := desktoppool.New(newDesktopSettingsMem(), nil)
+	bots := botmgmt.NewService(&botSettingsMem{})
+	call := func(user string) string {
+		req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"tenant_id":"tenant-a","user_id":"`+user+`","instance_id":"inst"}`))
+		req.Header.Set("Authorization", "Bearer desktop-api-token")
+		rec := httptest.NewRecorder()
+		PostDesktopStopHandler(pool, bots).ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("user %s status=%d body=%s", user, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+	if body := call("alice::desk::bot_2"); !strings.Contains(body, `"status":"idle"`) {
+		t.Fatalf("isolated stop body=%s", body)
+	}
+	if body := call("alice"); !strings.Contains(body, `"status":"stopped"`) {
+		t.Fatalf("owner stop body=%s", body)
+	}
+}
+
 // adminCheckedDesktop runs the admin VNC check for one user and returns the
 // botmgmt service that now holds the desktop.
 func adminCheckedDesktop(t *testing.T, system *desktopSettingsMem, pool *desktoppool.Pool, base time.Time) *botmgmt.Service {
@@ -431,7 +480,11 @@ func TestDesktopServicesViewEmptyWhenBotScopeIsOff(t *testing.T) {
 	}
 	system := newDesktopSettingsMem()
 	pool := desktopUserPool(t, system, []desktoppool.Assignment{{Scope: desktoppool.ScopeGlobal}})
+	// A grant for someone else puts the scope into restricted mode.
 	bots := botmgmt.NewService(system)
+	if _, err := bots.CreateGrant(context.Background(), "tenant-a", botmgmt.Grant{Scope: botmgmt.ScopeUser, TargetID: "zoe"}); err != nil {
+		t.Fatal(err)
+	}
 	rec := httptest.NewRecorder()
 	GetDesktopServicesAdminHandler(pool, desktopTestUsers{items: tenantUsers}, bots).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
 	if rec.Code != http.StatusOK {

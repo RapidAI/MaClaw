@@ -2,9 +2,17 @@ package guiapp
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"fmt"
+	"io"
+	"net"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -117,5 +125,253 @@ func TestSSHLostSessionNamesAllStillReportUnknown(t *testing.T) {
 				t.Fatalf("%s = %q, want an unknown outcome", name, got)
 			}
 		})
+	}
+}
+
+// startTrustedSSHRecoveryServer is the same hermetic in-process SSH server
+// pattern as startRemoteExecConformanceServer. Its interactive shell answers
+// every input line with "OUT:<line>" and a root prompt so WaitForOutput sees
+// a completion signal. A line containing "__DIE__" writes a partial line and
+// closes the channel, simulating a remote shell that vanishes mid-command.
+func startTrustedSSHRecoveryServer(t *testing.T) (string, ssh.Signer) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate host key: %v", err)
+	}
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	serverConfig := &ssh.ServerConfig{
+		PasswordCallback: func(conn ssh.ConnMetadata, gotPassword []byte) (*ssh.Permissions, error) {
+			if conn.User() == "deploy" && string(gotPassword) == "correct-password" {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("invalid test credentials")
+		},
+	}
+	serverConfig.AddHostKey(signer)
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				serverConn, channels, requests, handshakeErr := ssh.NewServerConn(conn, serverConfig)
+				if handshakeErr != nil {
+					return
+				}
+				go ssh.DiscardRequests(requests)
+				for channel := range channels {
+					if channel.ChannelType() != "session" {
+						_ = channel.Reject(ssh.UnknownChannelType, "only session channels")
+						continue
+					}
+					ch, chRequests, chErr := channel.Accept()
+					if chErr != nil {
+						continue
+					}
+					go handleTrustedSSHRecoveryChannel(ch, chRequests, serverConn, listener)
+				}
+				_ = serverConn.Close()
+			}()
+		}
+	}()
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener.Addr().String(), signer
+}
+
+func handleTrustedSSHRecoveryChannel(ch ssh.Channel, requests <-chan *ssh.Request, serverConn *ssh.ServerConn, listener net.Listener) {
+	for req := range requests {
+		switch req.Type {
+		case "pty-req":
+			_ = req.Reply(true, nil)
+		case "shell":
+			_ = req.Reply(true, nil)
+			go serveTrustedSSHRecoveryShell(ch, serverConn, listener)
+			return
+		default:
+			_ = req.Reply(false, nil)
+		}
+	}
+	_ = ch.Close()
+}
+
+func serveTrustedSSHRecoveryShell(ch ssh.Channel, serverConn *ssh.ServerConn, listener net.Listener) {
+	defer func() { _ = ch.Close() }()
+	buf := make([]byte, 4096)
+	pending := ""
+	for {
+		n, err := ch.Read(buf)
+		if n > 0 {
+			pending += string(buf[:n])
+			for {
+				i := strings.IndexByte(pending, '\n')
+				if i < 0 {
+					break
+				}
+				line := strings.TrimRight(pending[:i], "\r")
+				pending = pending[i+1:]
+				if strings.Contains(line, "__DROPHOST__") {
+					// The whole host goes away: channel, connection, and the
+					// listener, so recovery's re-dial is refused outright.
+					_, _ = io.WriteString(ch, "PARTIAL-BEFORE-DROP\n")
+					_ = ch.Close()
+					_ = serverConn.Close()
+					_ = listener.Close()
+					return
+				}
+				if strings.Contains(line, "__DIE__") {
+					_, _ = io.WriteString(ch, "PARTIAL-BEFORE-DIE\n")
+					return
+				}
+				_, _ = io.WriteString(ch, "OUT:"+line+"\nroot@fake:~# ")
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// newTrustedSSHRecoverySession builds a session manager holding one managed
+// session on the fake server, owned by principal-a.
+func newTrustedSSHRecoverySession(t *testing.T) (*remote.SSHSessionManager, *remote.SSHManagedSession) {
+	t.Helper()
+	address, signer := startTrustedSSHRecoveryServer(t)
+	host, portStr, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+	cfg := remote.SSHHostConfig{
+		Host:               host,
+		User:               "deploy",
+		Port:               port,
+		Password:           "correct-password",
+		AuthMethod:         "password",
+		ConnectTimeout:     2 * time.Second,
+		HostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+	}
+	mgr := remote.NewSSHSessionManager(remote.NewSSHPool())
+	t.Cleanup(func() { mgr.Pool().CloseAll() })
+	session, err := mgr.Create(remote.SSHSessionSpec{HostConfig: cfg, OwnerID: "principal-a"})
+	if err != nil {
+		t.Fatalf("create managed session: %v", err)
+	}
+	return mgr, session
+}
+
+// A dropped transport is re-dialed before the command is written, so the
+// command still runs on the recovered session instead of failing the turn.
+func TestTrustedSSHExecReconnectsDeadSessionBeforeWrite(t *testing.T) {
+	mgr, session := newTrustedSSHRecoverySession(t)
+	client := session.PTY().SSHClient()
+	if client == nil {
+		t.Fatal("session has no pooled client")
+	}
+	_ = client.Close()
+
+	out, err := executeTrustedBoundSSH(mgr, session, "echo hi", 15*time.Second)
+	if err != nil {
+		t.Fatalf("exec on a recovered session = %v", err)
+	}
+	if !strings.Contains(out, "OUT:echo hi") {
+		t.Fatalf("recovered exec output = %q", out)
+	}
+}
+
+// A shell that vanishes mid-command reports an unobserved outcome, keeps the
+// partial output as evidence, and leaves a reconnected session behind so the
+// next command works without a connect round-trip.
+func TestTrustedSSHUnobservedOutcomeRecoversSession(t *testing.T) {
+	mgr, session := newTrustedSSHRecoverySession(t)
+
+	_, err := executeTrustedBoundSSH(mgr, session, "run __DIE__", 15*time.Second)
+	if err == nil {
+		t.Fatal("a vanishing shell must not look like a finished command")
+	}
+	if !strings.Contains(err.Error(), "trusted_ssh_outcome_unobserved") {
+		t.Fatalf("vanished shell = %v, want outcome_unobserved", err)
+	}
+	if !strings.Contains(err.Error(), "PARTIAL-BEFORE-DIE") {
+		t.Fatalf("pre-disconnect output tail missing: %v", err)
+	}
+	if !strings.Contains(err.Error(), "已自动重连") {
+		t.Fatalf("recovery note missing: %v", err)
+	}
+
+	out, err := executeTrustedBoundSSH(mgr, session, "echo after", 15*time.Second)
+	if err != nil {
+		t.Fatalf("follow-up exec on recovered session = %v", err)
+	}
+	if !strings.Contains(out, "OUT:echo after") {
+		t.Fatalf("follow-up output = %q", out)
+	}
+}
+
+// The exec path binds to the session this principal opened even after its
+// shell died: the single dead session is re-dialed rather than refused as
+// unavailable.
+func TestTrustedSSHExecFallsBackToDeadOwnedSession(t *testing.T) {
+	mgr, session := newTrustedSSHRecoverySession(t)
+	if err := mgr.WriteInput(session.ID, "run __DIE__"); err != nil {
+		t.Fatalf("write die command: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, _ := mgr.GetSessionStatus(session.ID)
+		if status == remote.SessionExited || status == remote.SessionError {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	status, _ := mgr.GetSessionStatus(session.ID)
+	if status != remote.SessionExited && status != remote.SessionError {
+		t.Fatalf("session did not die: %s", status)
+	}
+
+	h := &IMMessageHandler{registry: NewToolRegistry(), sshMgr: mgr}
+	out, err := h.executeTrustedSSH("principal-a", "echo hi", 15*time.Second)
+	if err != nil {
+		t.Fatalf("exec over a re-dialed dead session = %v", err)
+	}
+	if !strings.Contains(out, "OUT:echo hi") {
+		t.Fatalf("recovered output = %q", out)
+	}
+}
+
+// A host that disappears mid-command cannot be recovered. The dead binding
+// is released so the next call plans a fresh connect instead of blocking
+// on the same session again.
+func TestTrustedSSHUnobservedRecoveryFailureReleasesSession(t *testing.T) {
+	mgr, session := newTrustedSSHRecoverySession(t)
+
+	_, err := executeTrustedBoundSSH(mgr, session, "run __DROPHOST__", 15*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "trusted_ssh_outcome_unobserved") {
+		t.Fatalf("dropped host = %v, want outcome_unobserved", err)
+	}
+	if !strings.Contains(err.Error(), "PARTIAL-BEFORE-DROP") {
+		t.Fatalf("pre-disconnect output tail missing: %v", err)
+	}
+	if !strings.Contains(err.Error(), "已释放") {
+		t.Fatalf("failed-recovery release note missing: %v", err)
+	}
+	if got := mgr.List(); len(got) != 0 {
+		t.Fatalf("unrecoverable session still bound: %d sessions", len(got))
+	}
+
+	h := &IMMessageHandler{registry: NewToolRegistry(), sshMgr: mgr}
+	if _, err := h.executeTrustedSSH("principal-a", "echo hi", 5*time.Second); err == nil || !strings.Contains(err.Error(), "trusted_ssh_session_unavailable") {
+		t.Fatalf("exec after release = %v, want session_unavailable", err)
 	}
 }

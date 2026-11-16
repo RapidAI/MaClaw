@@ -50,7 +50,9 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
       final clientId = await ref.read(clientIdProvider.future);
       if (!mounted) return;
       final language = Localizations.localeOf(context).languageCode;
-      final result = await ref.read(authApiProvider).redeemDesktopQr(
+      final result = await ref
+          .read(authApiProvider)
+          .redeemDesktopQr(
             payload: parsed,
             machineName: 'MaClawBot',
             clientId: clientId,
@@ -115,8 +117,7 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
           children: [
-            Text('扫描桌面端的"移动认证二维码"',
-                style: theme.textTheme.titleLarge),
+            Text('扫描桌面端的"移动认证二维码"', style: theme.textTheme.titleLarge),
             const SizedBox(height: 8),
             Text(
               '在电脑端 MaClaw「关于 → Hub 身份 → 移动认证二维码」打开二维码，5 分钟内扫描即可登录同一账号。',
@@ -131,7 +132,8 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
                 borderRadius: BorderRadius.circular(16),
                 child: DecoratedBox(
                   decoration: BoxDecoration(color: scheme.surfaceContainer),
-                  child: widget.scannerBuilder?.call(_submit) ??
+                  child:
+                      widget.scannerBuilder?.call(_submit) ??
                       widget.scanner ??
                       MobileScanner(
                         onDetect: _submitting ? (_) {} : _handleDetect,

@@ -322,6 +322,8 @@ func TestCaptchaPausesTheDesktopTurn(t *testing.T) {
 	scope := agentruntime.Scope{TenantID: "tenant", UserID: "alice", InstanceID: "bot-a"}
 	t.Cleanup(func() {
 		desktopHandoff.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
+		desktopAttention.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
+		desktopPageNeed.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
 		desktopResumeFocus.Delete(desktopResumeKey(scope))
 		desktopResumeUser.Delete(desktopRunKey(scope.TenantID, scope.UserID))
 		desktopLoginDocument.Delete(desktopRunKey(scope.TenantID, scope.UserID))
@@ -347,8 +349,11 @@ func TestCaptchaPausesTheDesktopTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	asked, ok := agent.ParseAskUserResult(login)
-	if !ok || asked.InputType != "secret_fill" || asked.SecretName != "SITE_LOGIN_EX" || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
-		t.Fatal("login page did not ask in the chat")
+	if !ok || asked.Question != desktopLoginQuestion || asked.InputType == "secret_fill" || !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("login page did not hand the desktop to the person")
+	}
+	if reason := takeDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID); reason != "login_wall" {
+		t.Fatalf("login attention=%q", reason)
 	}
 	mentioned, err := finishDesktopAction(scope, "the article explains how to login", nil)
 	if err != nil || mentioned != "the article explains how to login" {
@@ -368,8 +373,8 @@ func TestCaptchaPausesTheDesktopTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if asked, ok = agent.ParseAskUserResult(longLogin); !ok || asked.SecretName != "SITE_LOGIN" || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
-		t.Fatal("long login page did not ask in the chat")
+	if asked, ok = agent.ParseAskUserResult(longLogin); !ok || asked.Question != desktopLoginQuestion || !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("long login page did not hand the desktop to the person")
 	}
 	navigated, err := desktopActionText(&browser.BrowserActionResult{
 		Display: "navigated to https://ex/login",
@@ -382,8 +387,8 @@ func TestCaptchaPausesTheDesktopTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if asked, ok = agent.ParseAskUserResult(navigatedHand); !ok || asked.SecretName != "SITE_LOGIN_EX" || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
-		t.Fatal("navigate onto a login page did not ask in the chat")
+	if asked, ok = agent.ParseAskUserResult(navigatedHand); !ok || asked.Question != desktopLoginQuestion || !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("navigate onto a login page did not hand the desktop to the person")
 	}
 	qr, err := finishDesktopAction(scope, "page flags: login_qr", nil)
 	if err != nil {
@@ -467,6 +472,7 @@ func TestScheduledTaskDoesNotHoldTheDesktopForLogin(t *testing.T) {
 	t.Cleanup(func() {
 		desktopUnattendedInstances.Delete(scope.InstanceID)
 		desktopHandoff.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
+		desktopPageNeed.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
 		desktopRunsMu.Lock()
 		delete(desktopHolds, desktopRunKey(scope.TenantID, scope.UserID))
 		desktopRunsMu.Unlock()

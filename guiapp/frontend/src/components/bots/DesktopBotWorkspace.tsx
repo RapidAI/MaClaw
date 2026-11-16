@@ -38,7 +38,7 @@ export {
 import { desktopPictureURL, directPictureGaveUp } from './directDesktop';
 import { HubConnectionBadge } from './HubConnectionBadge';
 import { normalizeSidebarHubCredits } from '../../utils/sidebarHubCredits';
-import { openSettingsTab } from '../../utils/settingsNavigation';
+import { openLLMProviderManagement, openSettingsTab } from '../../utils/settingsNavigation';
 import {
     ArmDesktopBotSchedule,
     ArmDesktopBotAdmitCancel,
@@ -354,6 +354,20 @@ function intranetDesktopWhere(node: { mode?: string; host?: string; port?: numbe
         return `${node.user || ''}@${node.host}${port}`.replace(/^@/, '');
     }
     return (node.name || '').trim();
+}
+
+function computerPlaceLabel(
+    bot: { desktopMode?: string; nodeId?: string } | null | undefined,
+    nodes: Array<{ node_id?: string; mode?: string; host?: string; port?: number; user?: string; name?: string }>,
+    text: { modeNone: string; computerCloud: string; computerLocal: (where: string) => string; computerLocalPlain: string },
+): string {
+    if (!bot) return '';
+    if ((bot.desktopMode || '') === 'none') return text.modeNone;
+    const nodeID = (bot.nodeId || '').trim();
+    if (!nodeID) return text.computerCloud;
+    const node = nodes.find(item => (item.node_id || '').trim() === nodeID);
+    const where = intranetDesktopWhere(node);
+    return where ? text.computerLocal(where) : text.computerLocalPlain;
 }
 
 function rolesFromBotLLM(choice: { roles?: unknown; Roles?: unknown } | null | undefined): BotLLMRolesSetting | null {
@@ -905,6 +919,11 @@ function copy(lang: string) {
             needsComputer: 'This bot needs a computer',
             cloudComputer: 'Cloud computer',
             localComputer: 'Local computer',
+            computerUnavailable: 'No computer available',
+            cloudUnavailableHint: 'No cloud computer assigned — pick a local one.',
+            computerCloud: 'Cloud',
+            computerLocal: (where: string) => `Local · ${where}`,
+            computerLocalPlain: 'Local',
             serverLegend: 'Which computer',
             serverMissing: 'Choose a local computer',
             quotaUsed: (used: number, limit: number) => `Using ${used} / ${limit}`,
@@ -1079,15 +1098,15 @@ function copy(lang: string) {
             settingsTabVoice: 'Voice',
             pcTitle: 'Cloud computer',
             pcIntranetTitle: 'Intranet desktop',
-            pcIntranetShared: 'This is the intranet desktopd you installed under Desktops. You and all of your bots share it; restarting or resetting it affects every bot.',
+            pcIntranetShared: 'This is the intranet desktopd you installed under Desktops. Bots created on this machine use it. Cloud bots stay on the cloud computer. Restarting or resetting affects only the bots on this machine.',
             pcIntranetRestartConfirm: 'Restart this intranet desktop?',
             pcIntranetResetConfirm: 'Reset this intranet desktop?',
-            pcShared: 'You and all of your bots share this one computer. Restarting or resetting it affects every bot at the same time.',
+            pcShared: 'Bots created on the cloud share this computer. A bot created on a machine you installed stays on that machine. Restarting or resetting affects only the bots on this computer.',
             pcRestart: 'Restart computer',
             pcRestartShort: 'Restart',
             pcRestartDesc: [
                 'Like turning a computer off and on again.',
-                'Open windows close and tasks bots are running are interrupted.',
+                'Open windows close, and tasks bots are running on this computer are interrupted.',
                 'Your files, installed software and website logins are all kept (logins are saved before shutting down).',
                 'Takes about 1 minute.',
                 'Try this first when the computer is slow or the browser misbehaves.',
@@ -1102,7 +1121,7 @@ function copy(lang: string) {
                 'Like installing a fresh computer with the latest system, then moving your data back.',
                 'Kept: website logins and browser data (yours and your bots\'), and the files in your home folder.',
                 'Not kept: all software you installed yourself and all system settings. The computer returns to its factory state. (The administrator keeps one backup of the old software.)',
-                'Open windows close and tasks bots are running are interrupted.',
+                'Open windows close, and tasks bots are running on this computer are interrupted.',
                 'Takes about 1–3 minutes (longer if a new system has to be downloaded).',
                 'Use this only when restarting does not fix the problem.',
             ],
@@ -1112,7 +1131,7 @@ function copy(lang: string) {
             pcResetWorking: 'Resetting… saving website logins, restoring factory state and moving your data back. Please keep this window open.',
             pcResetDone: 'Reset finished. Website logins and home-folder files are in place; the computer is back to factory state.',
             pcResetDisabled: 'Your administrator has turned off reset for this organization.',
-            pcActiveRuns: (count: number) => `${count} bot task(s) are running. Continuing will interrupt them.`,
+            pcActiveRuns: (count: number) => `${count} bot task(s) are running on this computer. Continuing will interrupt them.`,
             pcBusy: 'A bot is using the computer for a task right now. Continuing will interrupt that task.',
             llmTitle: 'Model for your bots',
             llmSharedHint: 'Every bot on this account shares these models. A change here applies to all of them.',
@@ -1157,6 +1176,11 @@ function copy(lang: string) {
             needsComputer: '這個 bot 需要電腦',
             cloudComputer: '雲端電腦',
             localComputer: '本地電腦',
+            computerUnavailable: '無可用電腦',
+            cloudUnavailableHint: '未分配雲端電腦——請選擇一台本地電腦。',
+            computerCloud: '雲端',
+            computerLocal: (where: string) => `本地 · ${where}`,
+            computerLocalPlain: '本地',
             serverLegend: '用哪台電腦',
             serverMissing: '請選擇一台本地電腦',
             quotaUsed: (used: number, limit: number) => `已用 ${used} / ${limit}`,
@@ -1331,15 +1355,15 @@ function copy(lang: string) {
             settingsTabVoice: '語音',
             pcTitle: '雲端電腦',
             pcIntranetTitle: '內網桌面',
-            pcIntranetShared: '這是你在「桌面」裡安裝的內網桌面，你和所有 Bot 共用它，重新啟動或重設會同時影響所有 Bot。',
+            pcIntranetShared: '這是你在「桌面」裡安裝的內網桌面。在這台機器上建立的 Bot 使用它，雲端 Bot 仍在雲端電腦。重新啟動或重設只影響這台機器上的 Bot。',
             pcIntranetRestartConfirm: '確定重新啟動這台內網桌面？',
             pcIntranetResetConfirm: '確定重設這台內網桌面？',
-            pcShared: '這台電腦由你和你所有的 Bot 共用，重新啟動或重設會同時影響所有 Bot。',
+            pcShared: '在雲端建立的 Bot 共用這台電腦。在你安裝的機器上建立的 Bot 留在那台機器。重新啟動或重設只影響這台電腦上的 Bot。',
             pcRestart: '重新啟動電腦',
             pcRestartShort: '重新啟動',
             pcRestartDesc: [
                 '像給電腦關機再開機。',
-                '打開的視窗會關閉，Bot 正在執行的任務會中斷。',
+                '打開的視窗會關閉，這台電腦上 Bot 正在執行的任務會中斷。',
                 '檔案、安裝的軟體、網站登入都會保留（關機前會先儲存登入狀態）。',
                 '約需 1 分鐘。',
                 '電腦卡頓或瀏覽器異常時，先試這個。',
@@ -1354,7 +1378,7 @@ function copy(lang: string) {
                 '像用最新的系統重新裝一台電腦，再把你的資料搬回去。',
                 '保留：網站登入和瀏覽器資料（含所有 Bot 的）、主資料夾檔案。',
                 '不保留：所有自己安裝的軟體和系統設定，恢復成出廠狀態（管理員會保留一份舊軟體的備份）。',
-                '打開的視窗會關閉，Bot 正在執行的任務會中斷。',
+                '打開的視窗會關閉，這台電腦上 Bot 正在執行的任務會中斷。',
                 '約需 1–3 分鐘（若需下載新系統會更久）。',
                 '重新啟動解決不了問題時再用。',
             ],
@@ -1364,7 +1388,7 @@ function copy(lang: string) {
             pcResetWorking: '正在重設…先儲存網站登入，再安裝新系統並搬回你的資料，請勿關閉視窗。',
             pcResetDone: '重設完成，網站登入和主資料夾檔案已保留，電腦已恢復出廠狀態。',
             pcResetDisabled: '管理員已關閉重設功能。',
-            pcActiveRuns: (count: number) => `目前有 ${count} 個 Bot 任務在執行，繼續會中斷它們。`,
+            pcActiveRuns: (count: number) => `目前有 ${count} 個 Bot 任務在這台電腦上執行，繼續會中斷它們。`,
             pcBusy: '有 Bot 正在用這台電腦執行任務，繼續會中斷該任務。',
             llmTitle: 'Bot 用的模型',
             llmSharedHint: '這個帳號底下的所有 Bot 共用這裡的模型，改了一起生效。',
@@ -1407,6 +1431,11 @@ function copy(lang: string) {
         needsComputer: '这个 bot 需要电脑',
         cloudComputer: '云端电脑',
         localComputer: '本地电脑',
+        computerUnavailable: '无可用电脑',
+        cloudUnavailableHint: '未分配云端电脑——请选择一台本地电脑。',
+        computerCloud: '云端',
+        computerLocal: (where: string) => `本地 · ${where}`,
+        computerLocalPlain: '本地',
         serverLegend: '用哪台电脑',
         serverMissing: '请选择一台本地电脑',
         quotaUsed: (used: number, limit: number) => `已用 ${used} / ${limit}`,
@@ -1581,15 +1610,15 @@ function copy(lang: string) {
         settingsTabVoice: '语音',
         pcTitle: '云电脑',
         pcIntranetTitle: '内网桌面',
-        pcIntranetShared: '这是你在「桌面」里安装的内网桌面，你和所有 Bot 共用它，重启或重置会同时影响所有 Bot。',
+        pcIntranetShared: '这是你在「桌面」里安装的内网桌面。在这台机器上创建的 Bot 使用它，云端 Bot 仍在云电脑。重启或重置只影响这台机器上的 Bot。',
         pcIntranetRestartConfirm: '确定重启这台内网桌面？',
         pcIntranetResetConfirm: '确定重置这台内网桌面？',
-        pcShared: '这台电脑由你和你所有的 Bot 共用，重启或重置会同时影响所有 Bot。',
+        pcShared: '在云端创建的 Bot 共用这台电脑。在你安装的机器上创建的 Bot 留在那台机器。重启或重置只影响这台电脑上的 Bot。',
         pcRestart: '重启电脑',
         pcRestartShort: '重启',
         pcRestartDesc: [
             '像给电脑关机再开机。',
-            '打开的窗口会关闭，Bot 正在跑的任务会中断。',
+            '打开的窗口会关闭，这台电脑上 Bot 正在跑的任务会中断。',
             '文件、安装的软件、网站登录都保留（关机前会先保存登录状态）。',
             '约需 1 分钟。',
             '电脑卡顿或浏览器异常时，先试这个。',
@@ -1604,7 +1633,7 @@ function copy(lang: string) {
             '像用最新的系统重新装一台电脑，再把你的数据搬回去。',
             '保留：网站登录和浏览器资料（包括所有 Bot 的）、主目录文件。',
             '不保留：所有自己安装的软件和系统设置，恢复成出厂状态（管理员会保留一份旧软件的备份）。',
-            '打开的窗口会关闭，Bot 正在跑的任务会中断。',
+            '打开的窗口会关闭，这台电脑上 Bot 正在跑的任务会中断。',
             '约需 1–3 分钟（如需下载新系统会更久）。',
             '重启解决不了问题时再用。',
         ],
@@ -1614,7 +1643,7 @@ function copy(lang: string) {
         pcResetWorking: '正在重置…先保存网站登录，再装好新系统并搬回你的数据，请不要关闭窗口。',
         pcResetDone: '重置完成，网站登录和主目录文件已保留，电脑已恢复出厂状态。',
         pcResetDisabled: '管理员已关闭重置功能。',
-        pcActiveRuns: (count: number) => `当前有 ${count} 个 Bot 任务在运行，继续会中断它们。`,
+        pcActiveRuns: (count: number) => `当前有 ${count} 个 Bot 任务在这台电脑上运行，继续会中断它们。`,
         pcBusy: '有 Bot 正在用这台电脑执行任务，继续会中断该任务。',
         llmTitle: 'Bot 用的模型',
         llmSharedHint: '这个账号下的所有 Bot 共用这里的模型，改了一起生效。',
@@ -2314,6 +2343,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const text = copy(lang);
     const { showConfirm, showAlert } = useDialog();
     const [bots, setBots] = useState<DesktopBot[]>([]);
+    const [desktopNodes, setDesktopNodes] = useState<Array<{ node_id?: string; name?: string; mode?: string; host?: string; port?: number; user?: string }>>([]);
     const botsRef = useRef(bots);
     botsRef.current = bots;
     const pendingCrossNotes = useRef<Array<Record<string, unknown>>>([]);
@@ -2352,7 +2382,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [createOpen, setCreateOpen] = useState(false);
     const [createSaving, setCreateSaving] = useState(false);
     const [createNotice, setCreateNotice] = useState('');
-    const [createQuota, setCreateQuota] = useState<{ limit: number | null; used: number } | null>(null);
+    const [createQuota, setCreateQuota] = useState<{ limit: number | null; used: number; cloud: boolean | null } | null>(null);
     const [createServers, setCreateServers] = useState<{ id: string; label: string }[]>([]);
     const [createServer, setCreateServer] = useState('');
     const createQuotaGen = useRef(0);
@@ -2646,6 +2676,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         });
     }, []);
     const attachMaterials = useCallback((botId: string, files: File[]) => {
+        if (desktopModeOf(botsRef.current.find(item => item.id === botId)?.desktopMode) === 'none') return;
         for (const file of files) {
             const id = materialUploadId();
             const item: MaterialItem = { id, name: file.name || 'file', size: file.size, sent: 0, status: 'uploading' };
@@ -3413,7 +3444,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return { ...prev, [botId]: state };
         });
     };
+    const botSkipsComputer = (botId: string) => desktopModeOf(botsRef.current.find(item => item.id === botId)?.desktopMode) === 'none';
     const showComputer = (botId: string) => {
+        if (botSkipsComputer(botId)) return;
         setSectionByBot(prev => prev[botId] === 'computer' ? prev : { ...prev, [botId]: 'computer' });
     };
     const closePanel = (botId: string) => {
@@ -3448,7 +3481,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // one handoff. While that handoff is latched, a collapsed panel ignores
     // the same keyboard report and does not write the live flags back.
     const applyScreen = (botId: string, screen: ScreenEvent, requestId = '') => {
-        if (!botId) return;
+        if (!botId || botSkipsComputer(botId)) return;
         const foreignQuiet = requestId !== '' && latchRequestRef.current[botId] !== undefined && latchRequestRef.current[botId] !== '' && requestId !== latchRequestRef.current[botId] && handoffHeldBesideSibling(botId);
         // This run's picture ended. Another job of this bot may still be on
         // the same desktop, so the stage stays until that job is done too.
@@ -3523,7 +3556,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // stage is already open does not: both bots share one desktop.
     // Nothing here resends the task.
     useEffect(() => {
-        if (!selectedId || !showDesktop) return;
+        if (!selectedId || !showDesktop || selectedNoComputer) return;
         const botId = selectedId;
         const epoch = takeDesktopWatchEpoch();
         watchEpochByBot.current[botId] = epoch;
@@ -3677,9 +3710,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 void ReleaseDesktopBotWatch(botId, released).catch(() => undefined);
             });
         };
-    }, [selectedId, showDesktop]);
+    }, [selectedId, showDesktop, selectedNoComputer]);
 
-    const botScreenKey = bots.map(bot => bot.id).join('\n');
+    const botScreenKey = bots.filter(bot => desktopModeOf(bot.desktopMode) !== 'none').map(bot => bot.id).join('\n');
     useEffect(() => {
         if (!showDesktop || !botScreenKey) return;
         let alive = true;
@@ -3922,6 +3955,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (!botId) return;
             const runId = String(data.run_id || data.RunID || '').trim();
             const raw = String(data.activity ?? data.Activity ?? '');
+            const activity = raw.trim() ? desktopBotActivityText(raw) : '';
+            // A real desktop step outranks the "still reading" mark left by
+            // a pending first reply: the working line should name the step.
+            if (activity) markUnderstanding(botId, false);
             setActivityByBot(prev => {
                 const current = prev[botId];
                 if (!raw.trim()) {
@@ -3931,7 +3968,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     delete next[botId];
                     return next;
                 }
-                const activity = desktopBotActivityText(raw);
                 if (!activity || (current?.text === activity && current.runId === runId)) return prev;
                 return { ...prev, [botId]: { text: activity, runId, at: Date.now() } };
             });
@@ -4035,6 +4071,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // The previous account's confirm must not keep this account's delete locked.
         removeLock.current = 0;
         setBots([]);
+        setDesktopNodes([]);
         setSelectedId('');
         setEditBot(null);
         setEditSaving(false);
@@ -4084,6 +4121,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 createdAt: createdMillis(item.created_at),
                 primary: item.primary === true,
                 desktopMode: item.desktop_mode,
+                nodeId: (item.node_id || '').trim(),
             }));
             applyHubLooks(items || [], lookRevAtList);
             const merged = mergeListed(list);
@@ -4117,6 +4155,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setBots(mergeListed([]));
             setListFailed(true);
             setListNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+        });
+        void ListDesktopNodes().then(view => {
+            if (gen !== loadGen.current) return;
+            setDesktopNodes(Array.isArray(view?.nodes) ? view.nodes : []);
+        }).catch(() => {
+            if (gen !== loadGen.current) return;
+            setDesktopNodes([]);
         });
         return () => { loadGen.current += 1; };
     }, [userId]);
@@ -4573,6 +4618,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const openHandoffScreen = (notice: { botId: string; reason: string; url: string }) => {
+        if (botSkipsComputer(notice.botId)) {
+            setHandoffNotice(prev => prev?.botId === notice.botId ? null : prev);
+            return;
+        }
         const bot = bots.find(item => item.id === notice.botId);
         if (bot) {
             setSelectedId(bot.id);
@@ -4731,6 +4780,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setCreateQuota({
                 limit: typeof limit === 'number' ? limit : null,
                 used: Number(quota?.used || 0),
+                // An older hub does not send cloud_desktop; treat it as available.
+                cloud: quota?.cloud_desktop == null ? null : !!quota.cloud_desktop,
             });
         }).catch(() => {
             if (quotaGen === createQuotaGen.current) setCreateQuota(null);
@@ -4779,6 +4830,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             description: created?.description || desc,
             createdAt: createdMillis(created?.created_at),
             desktopMode: created?.desktop_mode || (needsComputer ? 'shared' : 'none'),
+            nodeId: !needsComputer ? '' : ((created?.node_id || '').trim() || (nodeID || '').trim()),
         };
         // Hub already created the bot. A local badge copy must not paint that as a failed create.
         try {
@@ -5732,9 +5784,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // ackSaid: a first reply (the reading's sentence or a written line)
         // is already on its way, so a stock line is not needed.
         let ackSaid = false;
-        // upgradeReceipt asks for a model line when the turn decided it had
-        // nothing worth saying first.
-        let upgradeReceipt: (() => void) | null = null;
         // While the first sentence is still being written, the status row
         // says 正在理解你的话. The chat stays empty until that sentence
         // arrives. The neutral line is posted only when the wait ends with
@@ -5863,8 +5912,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             let foldKind: 'accept' | 'parallel' = 'accept';
             if (deferFirst) {
                 // The decision runs while the status row shows the wait.
-            } else if (!earlyAckPosted && !sentence && !verbatim && sendPhase === 'execute') {
-                upgradeReceipt = () => postLaterAck(botId, assistantMessage.id, { ...acceptAckCtx, files: ackFiles.map(item => item.split('/').pop() || item) }, options.length >= 2 ? options : undefined);
             }
             if (earlyAckPosted && !deferFirst) {
                 postLaterAck(botId, assistantMessage.id, {
@@ -5930,12 +5977,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 } else {
                     postLaterAck(botId, assistantMessage.id, { ...acceptAckCtx, kind: 'accept', running_task: running || undefined, files: ackFiles.map(item => item.split('/').pop() || item) }, options.length >= 2 ? options : undefined);
                 }
-            } else if (desktopAckOwedOnDispatch({ sentence, verbatim, phase: sendPhase, earlyAckPosted })) {
+            } else if (desktopAckOwedOnDispatch({ sentence, verbatim, phase: sendPhase || phase, earlyAckPosted })) {
                 // A new job that had no line yet: one sentence above the wait
                 // bubble (2026-11-03 21:05: a second task mid-run got only
                 // "正在一点点推进" and no reply). The stock line is that
                 // sentence only when the model writes nothing.
-                postLaterAck(botId, assistantMessage.id, acceptAckCtx);
+                postLaterAck(botId, assistantMessage.id, { ...acceptAckCtx, files: ackFiles.map(item => item.split('/').pop() || item) }, options.length >= 2 ? options : undefined);
             }
             {
                 // From here the order is MaClawSrv's. A restart before this
@@ -6665,6 +6712,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const enterTakeover = (botId: string) => {
+        const bot = bots.find(item => item.id === botId);
+        if (desktopModeOf(bot?.desktopMode) === 'none') return;
         if (botUsingDesktop(botId)) stopForTakeoverRef.current(botId);
         setScreenExpandedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
         setTakeoverHoldByBot(prev => ({ ...prev, [botId]: true }));
@@ -7428,7 +7477,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             )}
                                         </div>
                                     ) : null}
-                                    {takeoverMessage && takeoverMessage.id === message.id && !takeover && !botUsingDesktop(selected.id) ? (
+                                    {takeoverMessage && takeoverMessage.id === message.id && !takeover && !botUsingDesktop(selected.id) && !selectedNoComputer ? (
                                         <button
                                             type="button"
                                             className="desktop-bot-chat__action"
@@ -7457,7 +7506,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </Fragment>
                                 );
                             })}
-                            {handoffMessage && !agentOperating && !handoffSettled ? (
+                            {handoffMessage && !agentOperating && !handoffSettled && !selectedNoComputer ? (
                                 <p className="desktop-bot-chat__entry">
                                     <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-return-control" onClick={() => resumeFromScreenHandoff(selected.id)}>{handoffReturnLabel}</button>
                                 </p>
@@ -7527,6 +7576,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     items={materialsByBot[selected.id] || []}
                                     lang={lang}
                                     disabled={!!secretForSelected}
+                                    allowAttach={!selectedNoComputer}
                                     onAttach={files => attachMaterials(selected.id, files)}
                                     onRemove={id => {
                                         materialStop.current.add(id);
@@ -7534,7 +7584,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     }}
                                 />
                             )}
-                            onFiles={files => attachMaterials(selected.id, files)}
+                            onFiles={selectedNoComputer ? undefined : files => attachMaterials(selected.id, files)}
                             readyWithoutText={(materialsByBot[selected.id] || []).some(item => item.status === 'done')}
                             holdSend={(materialsByBot[selected.id] || []).some(item => item.status === 'uploading' || item.status === 'error')}
                             onVoiceText={spoken => { void send(spoken); }}
@@ -7574,6 +7624,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             {statusText}
                                         </span>
                                     </dd>
+                                </div>
+                                <div className="desktop-bot-panel__field">
+                                    <dt>{text.computer}</dt>
+                                    <dd data-testid="desktop-bot-computer-place">{computerPlaceLabel(selected, desktopNodes, text)}</dd>
                                 </div>
                                 <div className="desktop-bot-panel__field">
                                     <dt>{text.created}</dt>
@@ -7701,7 +7755,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     className={screenPickNow === 'mine' ? 'is-selected' : ''}
                                     onClick={() => chooseScreen('mine')}
                                 >{text.myDesktop}</button>
-                                {bots.map(bot => {
+                                {bots.filter(bot => desktopModeOf(bot.desktopMode) !== 'none').map(bot => {
                                     const shared = (screenByBot[bot.id]?.mode || 'shared') !== 'isolated';
                                     return (
                                         <button
@@ -7903,17 +7957,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     }}
                     notice={createNotice}
                     saving={createSaving}
-                    computer={{
-                        label: text.needsComputer,
-                        quota: createQuota == null ? '' : (createQuota.limit == null ? text.quotaOpen(createQuota.used) : text.quotaUsed(createQuota.used, createQuota.limit)),
-                        locked: createQuota != null && createQuota.limit != null && createQuota.used >= createQuota.limit,
-                        servers: createServers,
-                        server: createServer,
-                        cloudLabel: text.cloudComputer,
-                        localLabel: text.localComputer,
-                        serverLegend: text.serverLegend,
-                        serverMissing: text.serverMissing,
-                    }}
+                    computer={(() => {
+                        const cloudMissing = createQuota?.cloud === false;
+                        // No assigned cloud computer and no own LAN node means a
+                        // computer cannot be offered at all: the checkbox locks
+                        // off and only a no-computer bot can be created.
+                        const noComputerAnywhere = cloudMissing && createServers.length === 0;
+                        const quotaLocked = createQuota != null && createQuota.limit != null && createQuota.used >= createQuota.limit;
+                        return {
+                            label: text.needsComputer,
+                            quota: createQuota == null ? '' : (createQuota.limit == null ? text.quotaOpen(createQuota.used) : text.quotaUsed(createQuota.used, createQuota.limit)),
+                            locked: noComputerAnywhere || quotaLocked,
+                            unavailable: noComputerAnywhere,
+                            unavailableText: text.computerUnavailable,
+                            servers: createServers,
+                            server: createServer,
+                            cloudAvailable: !cloudMissing,
+                            cloudHint: text.cloudUnavailableHint,
+                            cloudLabel: text.cloudComputer,
+                            localLabel: text.localComputer,
+                            serverLegend: text.serverLegend,
+                            serverMissing: text.serverMissing,
+                        };
+                    })()}
                     onClose={() => setCreateOpen(false)}
                     onSubmit={(title, description, look, needsComputer, server) => { void submitCreate(title, description, look, needsComputer !== false, server); }}
                 />
@@ -7976,6 +8042,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     notice={llmNotice}
                     saving={llmSaving}
                     lang={lang}
+                    onAddProvider={openLLMProviderManagement}
                     onClose={() => setLlmOpen(false)}
                     onSubmit={payload => { void submitLLM(payload); }}
                 />

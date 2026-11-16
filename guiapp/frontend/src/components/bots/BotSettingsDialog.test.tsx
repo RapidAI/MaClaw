@@ -323,6 +323,15 @@ describe('Bot model settings dialog', () => {
         fireEvent.keyDown(screen.getByTestId('bot-role-foreground-provider'), { key: 'Enter' });
         expect(onSubmit).not.toHaveBeenCalled();
     });
+
+    it('reports the add-provider button on the section title row', () => {
+        const onAddProvider = vi.fn();
+        renderDialog({ onAddProvider });
+        const button = screen.getByTestId('bot-llm-add-provider');
+        expect(button.closest('.bot-llm-dialog__section')?.textContent).toContain(llmLabels.title);
+        fireEvent.click(button);
+        expect(onAddProvider).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe('Bot network settings dialog', () => {

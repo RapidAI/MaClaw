@@ -453,7 +453,7 @@ func (s *Service) fillPendingMedia(ctx context.Context, tenantID, userID string,
 // was filled. A run that is gone stops being asked; any other failure waits
 // two minutes so a down worker does not tax every read.
 func (s *Service) refillDesktopRunMedia(ctx context.Context, tenantID, userID string, state *desktopAdmitState, instanceID, runID string) bool {
-	view, err := s.readDesktopRunFromSrv(ctx, tenantID, userID, instanceID, runID)
+	view, err := s.readDesktopRunFromSrv(ctx, tenantID, userID, state.botID, instanceID, runID)
 	if err != nil || !desktopRunTerminal(view.Status) {
 		state.mu.Lock()
 		if err != nil && errors.Is(err, ErrSrvNotFound) {

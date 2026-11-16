@@ -79,8 +79,14 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
         title: const Text('删除定时任务'),
         content: Text('确定删除定时任务「$name」？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
         ],
       ),
     );
@@ -90,17 +96,21 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
       await _loadSchedules();
     } on Object catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     }
   }
 
-  /// A none bot cannot take a computer once the grant is already used up.
+  /// A none bot cannot take a computer once the grant is already used up,
+  /// nor when the account has no assigned cloud computer (a LAN pin would
+  /// only help at creation time, not for an existing node-less bot).
   bool _computerChoiceEnabled(String mode) {
     if (mode == 'none') return true;
-    if (widget.bot.desktopMode == 'none' &&
-        ref.read(botsProvider).quota.exhausted) {
-      return false;
+    if (widget.bot.desktopMode == 'none') {
+      final quota = ref.read(botsProvider).quota;
+      if (quota.exhausted || quota.cloudMissing) return false;
     }
     return true;
   }
@@ -115,11 +125,14 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
       ).showSnackBar(const SnackBar(content: Text('名称不能为空')));
       return;
     }
-    if (botNameTaken(name, ref.read(botsProvider).bots,
-        exceptId: widget.bot.id)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已经有一个叫这个名字的 Bot 了，换个名字吧')),
-      );
+    if (botNameTaken(
+      name,
+      ref.read(botsProvider).bots,
+      exceptId: widget.bot.id,
+    )) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已经有一个叫这个名字的 Bot 了，换个名字吧')));
       return;
     }
     setState(() => _saving = true);
@@ -132,8 +145,9 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
       // Mode and appearance are independent endpoints — send them together.
       // The server stores "shared" as empty (omitempty), so normalize before
       // comparing or every save re-PUTs the mode for shared bots.
-      final currentMode =
-          widget.bot.desktopMode.isEmpty ? 'shared' : widget.bot.desktopMode;
+      final currentMode = widget.bot.desktopMode.isEmpty
+          ? 'shared'
+          : widget.bot.desktopMode;
       await Future.wait([
         if (_desktopMode != currentMode)
           api.setDesktopMode(widget.bot.id, _desktopMode),
@@ -397,7 +411,9 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                     for (final item in _schedules)
                       ListTile(
                         contentPadding: EdgeInsets.zero,
-                        title: Text(item.name.isEmpty ? item.action : item.name),
+                        title: Text(
+                          item.name.isEmpty ? item.action : item.name,
+                        ),
                         subtitle: Text(item.when),
                         trailing: IconButton(
                           tooltip: '删除',
@@ -439,8 +455,11 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                                   : null,
                             ),
                             child: _color == hex
-                                ? const Icon(Icons.check,
-                                    color: Colors.white, size: 18)
+                                ? const Icon(
+                                    Icons.check,
+                                    color: Colors.white,
+                                    size: 18,
+                                  )
                                 : null,
                           ),
                         ),
@@ -552,11 +571,11 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                   ListTile(
                     leading: const Icon(Icons.smart_display_outlined),
                     title: const Text('演示录制'),
-                    subtitle:
-                        const Text('录一段操作过程，提炼成 Bot 的技能（需独立电脑）'),
+                    subtitle: const Text('录一段操作过程，提炼成 Bot 的技能（需独立电脑）'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => context.push(
-                        '/bot/${Uri.encodeComponent(widget.bot.id)}/demo'),
+                      '/bot/${Uri.encodeComponent(widget.bot.id)}/demo',
+                    ),
                   ),
                 ],
               ],

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 )
 
 // UserDesktopViewHold is how long an explicit human 唤醒 session refreshes
@@ -154,13 +156,14 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	}
 	owner := userID
 	userID = desktopUserForBot(userID, rec.Bots[index])
+	s.dropPictureFromAnotherComputer(tenantID, userID, botID)
 	if ctx != nil && ctx.Err() != nil {
 		return "", false, fmt.Errorf("%w: %s", ErrSrv, ctx.Err().Error())
 	}
 	_ = desktopWatchEpoch(ctx)
 	// A watch is how we notice the container has memory again. Parked runs
 	// start on that read; a still-high reading leaves them queued.
-	if !s.desktopMemoryPressured(ctx, tenantID, owner) {
+	if !s.desktopMemoryPressured(desktoppool.WithComputer(ctx, rec.Bots[index].NodeID), tenantID, owner) {
 		s.drainDesktopQueue(tenantID, owner, botID)
 	}
 	if !s.desktopViewLiveForWatch(tenantID, userID) {
@@ -180,7 +183,7 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 				// have recorded use without a session wake, so the in-memory
 				// page is empty. Derive this bot's own running-screen URL
 				// without starting or pinning anything.
-				raw = s.peekDesktopView(ctx, tenantID, userID)
+				raw = s.peekDesktopView(desktoppool.WithComputer(ctx, rec.Bots[index].NodeID), tenantID, userID)
 			}
 			if raw != "" {
 				s.rememberDesktopView(tenantID, userID, raw)
@@ -349,6 +352,7 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 	if ctx != nil && ctx.Err() != nil {
 		return "", false, fmt.Errorf("%w: %s", ErrSrv, ctx.Err().Error())
 	}
+	s.dropPictureFromAnotherComputer(tenantID, userID, botID)
 	epoch := desktopWatchEpoch(ctx)
 	if !s.noteDesktopUserView(tenantID, userID, epoch) {
 		return "", false, nil
@@ -365,9 +369,10 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 	openCtx, cancel := desktopViewOpenContext(ctx)
 	defer cancel()
 	openCtx = WithDesktopWakeReason(openCtx, DesktopWakeHuman)
+	openCtx = desktoppool.WithComputer(openCtx, rec.Bots[index].NodeID)
 	novnc, openErr := s.Desktop.Open(openCtx, tenantID, userID)
 	if openErr != nil {
-		return "", false, fmt.Errorf("%w: %s", ErrSrv, openErr.Error())
+		return "", false, explainDesktopErr(openErr)
 	}
 	if novnc = strings.TrimSpace(novnc); novnc != "" {
 		s.rememberDesktopView(tenantID, userID, novnc)

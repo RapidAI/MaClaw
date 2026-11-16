@@ -379,6 +379,10 @@ const nodeId = () => `node_${Date.now()}_${Math.random().toString(36).slice(2, 8
 const errorMessage = (error: unknown) => String((error as any)?.message || error);
 type BackgroundSyncPhase = 'idle' | 'queued' | 'running' | 'retry_wait' | 'failed' | 'conflict';
 const BACKGROUND_SYNC_PHASES: ReadonlySet<string> = new Set(['idle', 'queued', 'running', 'retry_wait', 'failed', 'conflict']);
+// The full "connection is usable" probe result. A repair persists credentials
+// only under this condition; it is also what gates saving a remote draft.
+const remoteConnectionStatusVerified = (status: any) =>
+	!!(status?.connected && status?.host_key_trusted && status?.root_exists && !status?.error_code);
 const localizeVRepoError = (value: unknown, isZh: boolean | string) => {
 	const message = errorMessage(value).trim();
 	const chinese = typeof isZh === "string" ? (normalizeLang(isZh) === "zh-Hans" || normalizeLang(isZh) === "zh-Hant") : !!isZh;
@@ -671,7 +675,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     localLocation: tailText(lang, 'This computer', '本机'),
     remoteLocation: tailText(lang, 'Remote SSH', '远程 SSH'),
     editConnection: tailText(lang, 'Edit connection', '编辑连接'),
-    repairConnectionHint: tailText(lang, 'This dialog only verifies and repairs the SSH connection. After it succeeds, close it and click Sync now.', '此处仅用于验证并修复 SSH 连接；连接恢复后请关闭窗口并点击「立即同步」。'),
+    repairConnectionHint: tailText(lang, 'Click "Test & repair" below: it verifies the SSH connection, saves a newly entered password on success, and resumes syncing automatically.', '点击下方「测试并修复」：验证 SSH 连接，成功时自动保存新填的密码并恢复同步。'),
+    repairSucceeded: tailText(lang, 'Repair succeeded — syncing has resumed in the background. You can close this dialog.', '修复成功，已自动恢复同步。可以关闭此窗口。'),
     moveRoot: tailText(lang, 'Move root', '迁移根目录'),
     moveRootTitle: tailText(lang, 'Move repository root', '迁移仓库根目录'),
     moveRootHint: tailText(lang, 'Files are copied and the manifest is verified before switching to the new location. The old root is kept for review.', '复制文件、验证仓库清单后才会切换到新位置；旧根目录会保留，方便你确认后自行清理。'),
@@ -710,6 +715,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     sshPassword: tailText(lang, 'SSH password', 'SSH 密码'),
     remoteRoot: tailText(lang, 'Remote root directory', '远程根目录'),
     testConnection: tailText(lang, 'Test connection', '测试连接'),
+    testAndRepair: tailText(lang, 'Test & repair', '测试并修复'),
     trustHostKey: tailText(lang, 'Trust and save host key', '首次创建时设置信任主机密钥'),
     hostKeyPrompt: tailText(lang, 'First connection: verify and trust this server fingerprint', '首次连接，请核对并信任服务器指纹'),
     hostKeyChangedPrompt: tailText(lang, 'The server host key differs from the saved fingerprint. Verify the fingerprint independently, then remove the old saved key, test again, and explicitly save the new key.', '服务器主机密钥与已保存指纹不一致。请先独立核对下方指纹；确认后移除旧记录，再重新测试并明确保存新密钥。'),
@@ -815,6 +821,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     chooseRoot: tailText(lang, 'Choose a local directory', '选择本机目录'),
     chooseDest: tailText(lang, 'Choose the destination directory', '选择目标目录'),
     testConn: tailText(lang, 'Test the remote SSH connection', '测试远程 SSH 连接'),
+    testAndRepair: tailText(lang, 'Test the SSH connection; a newly entered password is saved on success', '测试 SSH 连接；成功时自动保存新填的密码'),
     createRemoteRoot: tailText(lang, 'Create the root directory on the remote server', '在远程服务器创建根目录'),
     inspectMigration: tailText(lang, 'Check whether the migration can proceed', '检查迁移是否可行'),
     migrateNow: tailText(lang, 'Start migration to the new root', '开始迁移到新根目录'),
@@ -862,6 +869,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     const [directoryStats, setDirectoryStats] = useState<any>(null);
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 	    const [remoteConnection, setRemoteConnection] = useState<any>(null);
+	const remoteConnectionVerified = remoteConnectionStatusVerified(remoteConnection);
 		const [migrationDestination, setMigrationDestination] = useState('');
 		const [migrationPreview, setMigrationPreview] = useState<RootMigrationPreview | null>(null);
 		const [migrationComplete, setMigrationComplete] = useState(false);
@@ -1570,6 +1578,10 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			if (request !== remoteConnectionRequestRef.current) return;
 	            setRemoteConnection(status);
 	            if (status?.error_code && status.error_code !== 'host_key_untrusted' && status.error_code !== 'host_key_changed') setError(status.error || status.error_code);
+			// A fully verified repair means credentials and host key now work:
+			// resume the paused sync right away, so the failure banner turns into
+			// a real result instead of waiting for the user to find Sync now.
+			if (draft.repair_only && remoteConnectionStatusVerified(status)) void runRepositorySync();
 	        } catch (e: any) { if (request === remoteConnectionRequestRef.current) setError(String(e?.message || e)); } finally { busyRef.current = false; setBusy(false); }
 	    };
 
@@ -1863,10 +1875,9 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			|| (original.port || 22) !== Number(draft.ssh_port || 22)
 			|| (original.user || '') !== String(draft.ssh_user || '');
 	};
-	const mappingTargetConnectionVerified = !!(remoteConnection?.connected && remoteConnection?.host_key_trusted && remoteConnection?.root_exists && !remoteConnection?.error_code);
 	const mappingTargetTestRequired = draft.mapping_kind === 'remote'
 		&& (!draft.mapping_id || mappingDraftCoordinatesChanged())
-		&& !mappingTargetConnectionVerified;
+		&& !remoteConnectionVerified;
 
 	const saveMachineMapping = async () => {
 		if (!repo?.id || busyRef.current) return;
@@ -2854,7 +2865,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 
         {mode === 'repo' ? <VRepoDialog title={draft.repair_only ? text.repairRemoteConnection : draft.id ? text.editConnection : text.newRepo} titleId="vrepo-repo-dialog-title" className="vrepo-dialog--repo" closeLabel={text.close} closeDisabled={busy || selectingRoot} onClose={() => setMode('none')} footer={<>
 			<button type="button" className="secondary" title={tips.cancel} disabled={busy || selectingRoot} onClick={() => setMode('none')}>{text.cancel}</button>
-			{draft.repair_only ? null : <button type="button" title={tips.save} onClick={() => void saveRepo({ ...draft, version: draft.version || 1, name: draft.name || '', root_path: draft.root_path || '', remote: draft.location === 'remote' ? { host: draft.ssh_host || '', port: Number(draft.ssh_port || 22), user: draft.ssh_user || '' } : undefined, nodes: draft.nodes || [] })} disabled={busy || selectingRoot || (draft.location === 'remote' && !(remoteConnection?.connected && remoteConnection?.host_key_trusted && remoteConnection?.root_exists && !remoteConnection?.error_code))}>{text.save}</button>}
+			{draft.repair_only ? null : <button type="button" title={tips.save} onClick={() => void saveRepo({ ...draft, version: draft.version || 1, name: draft.name || '', root_path: draft.root_path || '', remote: draft.location === 'remote' ? { host: draft.ssh_host || '', port: Number(draft.ssh_port || 22), user: draft.ssh_user || '' } : undefined, nodes: draft.nodes || [] })} disabled={busy || selectingRoot || (draft.location === 'remote' && !remoteConnectionVerified)}>{text.save}</button>}
 		</>}>
 			{errorBanner}
 			<div className="vrepo-editor">
@@ -2869,7 +2880,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 				{remoteConnection?.error_code === 'host_key_changed' ? <div className="vrepo-host-key" role="alert"><strong>{text.hostKeyChangedPrompt}</strong><code>{remoteConnection.host_key_algorithm} {remoteConnection.host_key_fingerprint}</code><button type="button" className="danger" disabled={busy || !draft.id} onClick={() => void resetRemoteHostKey()}>{text.removeSavedHostKey}</button></div> : null}
 				{!draft.repair_only && remoteConnection?.connected && remoteConnection?.error_code === 'root_not_found' ? <div className="vrepo-root-missing" role="alert"><span>{text.rootMissingPrompt}</span><button type="button" disabled={busy} title={tips.createRemoteRoot} onClick={() => void createRemoteRoot()}>{text.createRemoteRoot}</button></div> : null}
                 {remoteConnection?.connected && remoteConnection?.root_exists ? <p className="vrepo-connection-ok">{text.connected} · Git {remoteConnection.git_version || '—'} · SVN {remoteConnection.svn_version || '—'}</p> : null}
-                <button type="button" className="secondary" disabled={busy} title={tips.testConn} onClick={() => void testRemoteConnection()}>{text.testConnection}</button>
+				{draft.repair_only && remoteConnectionVerified ? <p className="vrepo-repair-hint" role="status">{text.repairSucceeded}</p> : null}
+                <button type="button" className="secondary" disabled={busy || (draft.repair_only && syncStatus === 'syncing')} title={draft.repair_only ? tips.testAndRepair : tips.testConn} onClick={() => void testRemoteConnection()}>{draft.repair_only ? text.testAndRepair : text.testConnection}</button>
             </> : <label>{text.root}<div className="vrepo-inline"><input value={draft.root_path || ''} readOnly /><button type="button" className="secondary" disabled={busy || selectingRoot} title={tips.chooseRoot} onClick={() => void selectRoot()}>{selectingRoot ? text.loading : text.choose}</button></div></label>}
 			</div>
         </VRepoDialog> : null}

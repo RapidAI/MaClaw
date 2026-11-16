@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
@@ -204,8 +205,9 @@ func TestFilterGrantedIDsFollowsBotScope(t *testing.T) {
 	svc := NewService(&memSettings{})
 	ctx := context.Background()
 	ids := []string{"alice", " bob ", "carol", "sam", " ", "alice"}
-	if got := svc.FilterGrantedIDs(ctx, "tenant-a", ids); len(got) != 0 {
-		t.Fatalf("off by default: %#v", got)
+	// No grants stored: the feature is open to everyone by default.
+	if got := strings.Join(svc.FilterGrantedIDs(ctx, "tenant-a", ids), ","); got != "alice,bob,carol,sam" {
+		t.Fatalf("open by default: %#v", got)
 	}
 	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "bob"}); err != nil {
 		t.Fatal(err)
@@ -462,8 +464,15 @@ func TestBotFeatureIsOffUntilGranted(t *testing.T) {
 		t.Fatal(err)
 	}
 	on, err := svc.Enabled(ctx, "tenant-a", "alice")
-	if err != nil || on {
+	if err != nil || !on {
 		t.Fatalf("default enabled=%v err=%v", on, err)
+	}
+	if _, err := svc.CreateBotForUser(ctx, "tenant-a", "alice", "duty", "night"); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("create while open but without admin secret: %v", err)
+	}
+	// Once grants exist, a user they do not cover is disabled.
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "zoe"}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := svc.CreateBotForUser(ctx, "tenant-a", "alice", "duty", "night"); err != ErrDisabled {
 		t.Fatalf("create while off: %v", err)
@@ -1759,6 +1768,26 @@ func TestDesktopWatchClearsWhenTheDesktopStops(t *testing.T) {
 	}
 }
 
+func TestStopKeepsThePictureOfAnIsolatedBotDisplay(t *testing.T) {
+	svc := NewService(&memSettings{})
+	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+	svc.Desktop = desk
+	user := "alice::desk::bot_alice"
+	ctx := context.Background()
+	if _, opened, err := svc.openDesktop(ctx, "tenant-a", user, "", ""); err != nil || !opened {
+		t.Fatalf("open opened=%v err=%v", opened, err)
+	}
+	if err := svc.stopDesktop(ctx, "tenant-a", user); err != nil {
+		t.Fatal(err)
+	}
+	if svc.desktopViewURL("tenant-a", user) == "" {
+		t.Fatal("run end hid an isolated bot display that is still up")
+	}
+	if desk.stop != 1 {
+		t.Fatalf("stop=%d", desk.stop)
+	}
+}
+
 func TestDesktopStateSurvivesRestart(t *testing.T) {
 	settings := &memSettings{}
 	raw, err := json.Marshal(record{
@@ -2088,6 +2117,67 @@ func TestHoldDesktopViewDoesNotStartACanceledPoll(t *testing.T) {
 	}
 }
 
+func TestWakeDropsAPictureThatBelongsToAnotherComputer(t *testing.T) {
+	const localPage = "http://desktopd.dn_lab.node.invalid/vnc.html?autoconnect=1"
+	const cloudPage = "http://dockerd.example:6081/vnc.html?autoconnect=1"
+	if !desktopPictureMatchesComputer(cloudPage, "") || desktopPictureMatchesComputer(localPage, "") {
+		t.Fatal("cloud bot must keep a cloud page and drop a node page")
+	}
+	if !desktopPictureMatchesComputer(localPage, "dn_lab") || desktopPictureMatchesComputer(cloudPage, "dn_lab") || desktopPictureMatchesComputer(localPage, "dn_other") {
+		t.Fatal("local bot must keep only its own node page")
+	}
+
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		BaseURL:     "http://maclawsrv.example",
+		AccessToken: "secret-token",
+		Bots: []Bot{
+			{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice", DesktopMode: desktop.BotDesktopModeIsolated},
+		},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	desk := &desktopCounter{url: cloudPage}
+	svc.Desktop = desk
+	dUser := desktop.BotDesktopUser("alice", "bot_alice")
+	svc.rememberDesktopView("tenant-a", dUser, localPage)
+
+	watched, _, err := svc.DesktopWatch(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watched != "" || strings.Contains(svc.DesktopViewRaw("tenant-a", dUser), "node.invalid") {
+		t.Fatalf("watch=%q raw=%q, cloud bot still showed the local computer", watched, svc.DesktopViewRaw("tenant-a", dUser))
+	}
+	woken, _, err := svc.WakeDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desk.open != 1 || !strings.HasPrefix(woken, "/api/v1/desktop-handoff/") || strings.Contains(svc.DesktopViewRaw("tenant-a", dUser), "node.invalid") {
+		t.Fatalf("wake novnc=%q open=%d raw=%q", woken, desk.open, svc.DesktopViewRaw("tenant-a", dUser))
+	}
+
+	rec, err := svc.load(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Bots[0].NodeID = "dn_lab"
+	if err := svc.save(context.Background(), "tenant-a", rec); err != nil {
+		t.Fatal(err)
+	}
+	svc.rememberDesktopView("tenant-a", dUser, localPage)
+	kept, _, err := svc.DesktopWatch(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || kept == "" || !strings.Contains(svc.DesktopViewRaw("tenant-a", dUser), "dn_lab") || desk.open != 1 {
+		t.Fatalf("local picture watch=%q raw=%q open=%d err=%v", kept, svc.DesktopViewRaw("tenant-a", dUser), desk.open, err)
+	}
+}
+
 func TestWakeDesktopViewClosedEpochDoesNotPin(t *testing.T) {
 	settings := &memSettings{}
 	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
@@ -2132,6 +2222,8 @@ func TestHoldDesktopViewRefusesOtherPeopleAndDisabledUsers(t *testing.T) {
 	if desk, ok := svc.Desktop.(*desktopCounter); !ok || desk.open != 0 {
 		t.Fatal("foreign hold opened the desktop")
 	}
+	// tenant-b grants someone else: alice is outside every grant and disabled.
+	svc.CreateGrant(context.Background(), "tenant-b", Grant{Scope: ScopeUser, TargetID: "charlie"})
 	if _, _, err := svc.HoldDesktopView(context.Background(), "tenant-b", "alice", "bot_alice"); !errors.Is(err, ErrDisabled) {
 		t.Fatalf("disabled tenant err=%v", err)
 	}

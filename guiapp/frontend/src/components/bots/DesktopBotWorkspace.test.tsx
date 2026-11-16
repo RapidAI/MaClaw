@@ -30,7 +30,7 @@ const releaseWatch = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: num
 const saveSecret = vi.hoisted(() => vi.fn(async (_name?: string, _value?: string) => undefined));
 const recallSecret = vi.hoisted(() => vi.fn(async (_name?: string) => false));
 const fillSecret = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: string) => ({ filled: 'SITE_PASSWORD' })));
-type HubDesktopBot = { id: string; title: string; description: string; instance_id: string; created_at?: string; primary?: boolean; color?: string; shape?: string };
+type HubDesktopBot = { id: string; title: string; description: string; instance_id: string; created_at?: string; primary?: boolean; color?: string; shape?: string; desktop_mode?: string; node_id?: string };
 const listBots = vi.hoisted(() => vi.fn(async (): Promise<HubDesktopBot[]> => []));
 const listDesktopNodes = vi.hoisted(() => vi.fn(async () => ({ enabled: false, nodes: [] as Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; active?: boolean; node_id?: string; with_srv?: boolean }> })));
 const createBot = vi.hoisted(() => vi.fn(async (name: string, description: string, _nodeID?: string): Promise<HubDesktopBot> => ({ id: 'bot_1', title: name, description, instance_id: '' })));
@@ -3095,6 +3095,102 @@ describe('DesktopBotWorkspace', () => {
         const details = screen.getByTestId('desktop-bot-details');
         expect(details.textContent).toContain(formatCreated(Date.parse(createdAt)));
         expect(details.textContent).not.toContain(formatCreated(Date.parse(listedAt)));
+    });
+
+    it('names the computer in bot details, and the machine for a local one', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_cloud', title: '云端助手', description: '', instance_id: 'inst_c' },
+            { id: 'bot_local', title: '实验室', description: '', instance_id: 'inst_l', node_id: 'dn_lab' },
+            { id: 'bot_none', title: '无电脑', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        listDesktopNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [{ id: 'n1', name: 'lab', mode: 'ssh', host: '192.168.1.49', user: 'znsoft', status: 'ready', node_id: 'dn_lab', with_srv: true }],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        const openDetails = async (botId: string) => {
+            const row = await screen.findByTestId('desktop-bot-' + botId);
+            fireEvent.click(row.querySelector('button.desktop-bot-workspace__open') as HTMLButtonElement);
+            fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+            fireEvent.click(await screen.findByTestId('desktop-bot-tab-details'));
+            return screen.findByTestId('desktop-bot-computer-place');
+        };
+        expect((await openDetails('bot_cloud')).textContent).toBe('云端');
+        expect((await openDetails('bot_local')).textContent).toBe('本地 · znsoft@192.168.1.49');
+        expect((await openDetails('bot_none')).textContent).toBe('无电脑');
+    });
+
+    it('does not ask Hub for the screen of a bot with no computer', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_cloud', title: '云端助手', description: '', instance_id: 'inst_c' },
+            { id: 'bot_none', title: '无电脑', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('云端助手'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        await waitFor(() => expect(getScreen).toHaveBeenCalledWith('bot_cloud'));
+        expect(getScreen).not.toHaveBeenCalledWith('bot_none');
+        expect(watchBot).not.toHaveBeenCalledWith('bot_none', expect.anything());
+        expect(screen.queryByTestId('desktop-screen-bot-bot_none')).toBeNull();
+        fireEvent.click(screen.getByTestId('desktop-bot-bot_none').querySelector('button.desktop-bot-workspace__open') as HTMLButtonElement);
+        await act(async () => { await Promise.resolve(); });
+        expect(watchBot).not.toHaveBeenCalledWith('bot_none', expect.anything());
+        expect(screen.queryByTestId('desktop-bot-tab-computer')).toBeNull();
+    });
+
+    it('does not offer to take over the computer of a bot that has none', async () => {
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_none: [{
+                    id: 'm-qr',
+                    role: 'assistant',
+                    content: '缺少用户扫描二维码登录小红书，笔记尚未发布。',
+                    userControl: true,
+                    attentionReason: 'login',
+                }],
+            },
+        }));
+        listBots.mockResolvedValue([
+            { id: 'bot_none', title: '值班', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        expect(await screen.findByText('缺少用户扫描二维码登录小红书，笔记尚未发布。')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-take-computer')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-tab-computer')).toBeNull();
+    });
+
+    it('does not open the desktop when a no-computer bot reports a handoff', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_none', title: '值班', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-report']?.({
+                session_key: 'alice:bot_none',
+                novnc_url: 'http://hub.example/vnc.html',
+                user_control: true,
+                attention_reason: 'login',
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-handoff-notice')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-panel')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-tab-computer')).toBeNull();
+    });
+
+    it('does not offer a file attach for a bot that has no computer', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '有电脑', description: '', instance_id: 'inst_1', desktop_mode: 'shared' },
+            { id: 'bot_none', title: '值班', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('有电脑'));
+        expect(await screen.findByTestId('desktop-bot-attach')).toBeTruthy();
+        fireEvent.click(screen.getByText('值班'));
+        expect(screen.queryByTestId('desktop-bot-attach')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-attach-input')).toBeNull();
     });
 
 

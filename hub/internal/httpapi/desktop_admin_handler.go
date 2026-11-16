@@ -139,7 +139,9 @@ func (c botDesktopControl) Stop(ctx context.Context, tenantID, userID string) er
 	if c.pool == nil {
 		return nil
 	}
-	c.pool.ForgetBotGUIUse(tenantID, userID)
+	// StopDesktop forgets the screen-use record only after an owner desktop
+	// actually stops. Forgetting here first paints sleep while the stop is
+	// still in flight, and on a bot display that desktopd does not stop.
 	_, err := c.pool.StopDesktop(ctx, tenantID, userID)
 	return err
 }
@@ -161,6 +163,8 @@ func writeDesktopError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "DOCKER_SERVICE_NOT_ASSIGNED", "no docker service is assigned to this user")
 	case errors.Is(err, desktoppool.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", err.Error())
+	case errors.Is(err, desktoppool.ErrService) && strings.Contains(err.Error(), "node is offline"):
+		writeError(w, http.StatusBadGateway, "NODE_OFFLINE", botmgmt.ErrNodeOffline.Error())
 	case errors.Is(err, desktoppool.ErrService):
 		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", desktoppool.ServiceFailureMessage(err))
 	case desktoppool.IsDesktopWake(err):
@@ -426,7 +430,8 @@ func desktopUserAction(pool *desktoppool.Pool, bots *botmgmt.Service, create boo
 		}
 		// The desktop is gone, so the noVNC picture an admin may have opened
 		// is gone too. Leaving it behind would hand the chat a dead page.
-		if bots != nil && !create {
+		// "idle" is an isolated bot display that was left running.
+		if bots != nil && !create && desktop.Status != "idle" {
 			bots.ForgetDesktopView(tenantID, in.UserID)
 		}
 		writeJSON(w, http.StatusOK, desktop)
@@ -680,6 +685,23 @@ func jsonStringFields(raw []byte, key string) []string {
 	return out
 }
 
+// botComputerContext pins the call to that bot's computer. An empty node is
+// the cloud computer. A bot that is not this user's leaves the context alone.
+func botComputerContext(ctx context.Context, bots *botmgmt.Service, tenantID, userID, botID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if bots == nil || strings.TrimSpace(botID) == "" {
+		return ctx
+	}
+	owner, _ := desktop.SplitDesktopUser(userID)
+	nodeID, ok := bots.DesktopComputerNode(ctx, tenantID, owner, botID)
+	if !ok {
+		return ctx
+	}
+	return desktoppool.WithComputer(ctx, nodeID)
+}
+
 // PostDesktopSessionHandler is called by MaClawSrv. It resolves the user's
 // Docker service and returns a CDP URL on that machine.
 func PostDesktopSessionHandler(pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
@@ -708,6 +730,7 @@ func PostDesktopSessionHandler(pool *desktoppool.Pool, bots *botmgmt.Service) ht
 				return
 			}
 			in.UserID = bots.IsolatedDesktopUser(r.Context(), in.TenantID, in.UserID, in.BotID)
+			r = r.WithContext(botComputerContext(r.Context(), bots, in.TenantID, in.UserID, in.BotID))
 		}
 		session, err := pool.OpenDesktop(r.Context(), in.TenantID, in.UserID)
 		if err != nil {
@@ -757,6 +780,7 @@ func PostDesktopMemoryHandler(pool *desktoppool.Pool, bots *botmgmt.Service) htt
 				return
 			}
 			in.UserID = bots.IsolatedDesktopUser(r.Context(), in.TenantID, in.UserID, in.BotID)
+			r = r.WithContext(botComputerContext(r.Context(), bots, in.TenantID, in.UserID, in.BotID))
 		}
 		used, limit, err := pool.ContainerMemory(r.Context(), in.TenantID, in.UserID)
 		if err != nil {
@@ -796,7 +820,14 @@ func PostDesktopStopHandler(pool *desktoppool.Pool, bots *botmgmt.Service) http.
 				writeJSON(w, http.StatusOK, map[string]string{"status": "kept"})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+			// An isolated bot display stays up. "idle" is that screen;
+			// "stopped" is an owner desktop that actually exited.
+			// "kept" is a login still in progress.
+			status := "stopped"
+			if _, bot := desktop.SplitDesktopUser(in.UserID); bot != "" {
+				status = "idle"
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": status})
 			return
 		}
 		desktop, err := pool.StopDesktop(r.Context(), in.TenantID, in.UserID)
@@ -1104,12 +1135,17 @@ func PostDesktopFileHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
 			return
 		}
-		if direct, directErr := issueLocalDataURL(ctx, pool, in.TenantID, in.UserID, "file"); directErr != nil || direct != "" {
-			if directErr != nil {
-				writeDesktopError(w, directErr)
-				return
-			}
+		direct, directErr := issueLocalDataURL(ctx, pool, in.TenantID, in.UserID, "file")
+		if directErr != nil {
+			writeDesktopError(w, directErr)
+			return
+		}
+		if direct != "" {
 			writeJSON(w, http.StatusOK, map[string]string{"direct_url": direct})
+			return
+		}
+		if localProbe(r) {
+			writeError(w, http.StatusConflict, "LOCAL_UNAVAILABLE", "local desktop path is not available")
 			return
 		}
 		output, err := pool.RunFile(r.Context(), in.TenantID, in.UserID, in.Action, in.Path, in.Content, in.OldString, in.NewString)

@@ -9,12 +9,8 @@
       navDesc: '\u5bf9\u63a5 MaClawSrv\u3001Docker \u670d\u52a1\u4e0e LLM',
       connection: '\u5bf9\u63a5 MaClawSrv',
       url: 'MaClawSrv \u5730\u5740',
-      token: '\u8bbf\u95ee\u4ee4\u724c',
-      tokenHint: '\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u4ee4\u724c',
-      tokenSet: '\u4ee4\u724c\u5df2\u4fdd\u5b58',
-      tokenMissing: '\u5c1a\u672a\u4fdd\u5b58\u4ee4\u724c',
       adminSecret: '\u7ba1\u7406\u5bc6\u94a5',
-      adminHint: '\u7528\u4e8e\u6309\u7528\u6237\u521b\u5efa MaClawSrv \u8d26\u53f7\u3002\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u3002',
+      adminHint: '粘贴 MaClawSrv 的 Root Admin API Secret，保存后自动创建连接账号。留空则不修改。',
       adminSet: '\u7ba1\u7406\u5bc6\u94a5\u5df2\u4fdd\u5b58',
       adminMissing: '\u5c1a\u672a\u4fdd\u5b58\u7ba1\u7406\u5bc6\u94a5',
       save: '\u4fdd\u5b58\u5bf9\u63a5\u8bbe\u7f6e',
@@ -22,11 +18,11 @@
       saved: '\u5df2\u4fdd\u5b58',
       connected: '\u8fde\u63a5\u6210\u529f\uff0c\u5f53\u524d\u5b9e\u4f8b {count} \u4e2a',
       testing: '\u6b63\u5728\u6d4b\u8bd5...',
-      needConfig: '\u8bf7\u5148\u4fdd\u5b58 MaClawSrv \u5730\u5740\u548c\u8bbf\u95ee\u4ee4\u724c',
-      saveBeforeTest: '\u5730\u5740\u6216\u4ee4\u724c\u8fd8\u6ca1\u4fdd\u5b58\uff0c\u8bf7\u5148\u4fdd\u5b58\u518d\u6d4b\u8bd5',
+      needConfig: '请先保存 MaClawSrv 地址和管理密钥',
+      saveBeforeTest: '地址或管理密钥还没保存，请先保存再测试',
       srvRejected: 'MaClawSrv \u62d2\u7edd\u4e86\u672c\u6b21\u8bf7\u6c42',
-      srvTokenRejected: '\u8bbf\u95ee\u4ee4\u724c\u88ab MaClawSrv \u62d2\u7edd\uff08HTTP 401\uff09\u3002\u4ee4\u724c\u6709\u65f6\u6548\uff1a\u4fdd\u5b58\u65b0\u4ee4\u724c\u6216\u4fdd\u5b58\u7ba1\u7406\u5bc6\u94a5\u540e\u6d4b\u8bd5\u8fde\u63a5\u53ef\u81ea\u52a8\u7eed\u671f',
-      srvTokenForbidden: '\u8bbf\u95ee\u4ee4\u724c\u65e0\u6743\u6267\u884c\u8be5\u64cd\u4f5c\uff08HTTP 403\uff09',
+      srvTokenRejected: '凭证被 MaClawSrv 拒绝（HTTP 401）。保存管理密钥后测试连接可自动续期',
+      srvTokenForbidden: '凭证无权执行该操作（HTTP 403），请检查管理密钥是否正确',
       srvNotFound: '\u627e\u4e0d\u5230\u5b9e\u4f8b\u6216\u63a5\u53e3\uff08HTTP 404\uff09\uff0c\u8bf7\u68c0\u67e5\u5730\u5740\u662f\u5426\u6b63\u786e\u8f6c\u53d1 /api',
       bots: '\u7528\u6237\u521b\u5efa\u7684 Bot',
       botsHint: '\u5728 MaClaw \u5ba2\u6237\u7aef\u7684 Bot \u7ba1\u7406\u91cc\u521b\u5efa\uff0c\u8fd9\u91cc\u53ea\u67e5\u770b\u3002',
@@ -35,7 +31,17 @@
       badUrl: 'MaClawSrv \u5730\u5740\u9700\u8981\u4ee5 http:// \u6216 https:// \u5f00\u5934',
       owner: '\u7528\u6237',
       access: '\u5f00\u901a\u8303\u56f4',
-      accessHint: '\u9ed8\u8ba4\u5173\u95ed\u3002\u53ea\u6709\u8fd9\u91cc\u5f00\u901a\u7684\u7528\u6237\uff0c\u684c\u9762\u5de6\u4e0b\u89d2\u624d\u4f1a\u51fa\u73b0 Bot\u3002',
+      accessHint: '\u9ed8\u8ba4\u5bf9\u5168\u4f53\u6210\u5458\u5f00\u901a\u3002\u5173\u95ed\u5168\u5c40\u5f00\u5173\u5e76\u6dfb\u52a0\u90e8\u95e8\u6216\u7528\u6237\u540e\uff0c\u53ea\u6709\u6388\u6743\u8303\u56f4\u5185\u7684\u4eba\u53ef\u4ee5\u4f7f\u7528\u3002',
+      groupRuntime: '\u670d\u52a1\u63a5\u5165',
+      groupAccess: '\u6388\u6743\u4e0e\u914d\u989d',
+      groupDesktop: '\u684c\u9762\u8d44\u6e90',
+      groupBots: '\u5b9e\u4f8b',
+      statConn: 'MaClawSrv',
+      statLLM: 'LLM \u670d\u52a1\u5546',
+      statAccess: '\u5f00\u901a\u8303\u56f4',
+      statBots: 'Bot \u5b9e\u4f8b',
+      statLLMEmpty: '\u672a\u8bbe\u7f6e',
+      statWithDesktop: '{n} \u53f0\u6709\u7535\u8111',
       global: '\u5168\u5c40\u5f00\u901a',
       department: '\u90e8\u95e8',
       user: '\u7528\u6237',
@@ -59,12 +65,12 @@
       orgSearching: '\u6b63\u5728\u641c\u7d22...',
       orgMatchUsers: '\u5339\u914d\u7684\u8d26\u53f7',
       orgMatchLimited: '\u53ea\u663e\u793a\u4e86\u524d 50 \u4e2a\u8d26\u53f7\u3002\u518d\u591a\u8f93\u5165\u51e0\u4e2a\u5b57\u3002',
-      grantEmpty: '\u5f53\u524d\u6ca1\u6709\u5f00\u901a\u3002',
+      grantEmpty: '\u5f53\u524d\u6ca1\u6709\u4efb\u4f55\u9650\u5236\uff1a\u5168\u5458\u9ed8\u8ba4\u53ef\u7528\u3002',
       instance: '\u5b9e\u4f8b',
       configured: '\u5df2\u914d\u7f6e',
       unconfigured: '\u672a\u914d\u7f6e',
       online: '\u5df2\u8fde\u901a',
-      connectionHint: '\u586b\u5199 MaClawSrv \u7684\u5730\u5740\u4e0e\u8bbf\u95ee\u4ee4\u724c\uff0c\u4fdd\u5b58\u540e\u53ef\u6d4b\u8bd5\u8fde\u63a5\u3002',
+      connectionHint: '填写 MaClawSrv 的地址与管理密钥，保存后可测试连接。',
       globalHint: '\u5168\u4f53\u6210\u5458\u90fd\u80fd\u4f7f\u7528 Bot',
       enableList: '\u5f00\u901a\u6e05\u5355',
       everyoneNote: '\u5df2\u5bf9\u5168\u4f53\u6210\u5458\u5f00\u653e\u3002\u5173\u95ed\u4e0a\u65b9\u5f00\u5173\uff0c\u5373\u53ef\u6309\u90e8\u95e8\u6216\u7528\u6237\u5f00\u901a\u3002',
@@ -157,12 +163,8 @@
       navDesc: 'MaClawSrv connection, Docker service, and LLM',
       connection: 'MaClawSrv connection',
       url: 'MaClawSrv URL',
-      token: 'Access token',
-      tokenHint: 'Leave blank to keep the saved token',
-      tokenSet: 'Token saved',
-      tokenMissing: 'No token saved',
       adminSecret: 'Admin secret',
-      adminHint: 'Creates one MaClawSrv user per Hub user. Leave blank to keep the saved secret.',
+      adminHint: 'Paste the MaClawSrv Root Admin API Secret. Saving it provisions the connection account automatically. Leave blank to keep the saved secret.',
       adminSet: 'Admin secret saved',
       adminMissing: 'No admin secret saved',
       save: 'Save connection',
@@ -170,11 +172,11 @@
       saved: 'Saved',
       connected: 'Connected, {count} instances',
       testing: 'Testing...',
-      needConfig: 'Save the MaClawSrv URL and access token first',
-      saveBeforeTest: 'Save the URL and token before testing',
+      needConfig: 'Save the MaClawSrv URL and admin secret first',
+      saveBeforeTest: 'Save the URL and admin secret before testing',
       srvRejected: 'MaClawSrv rejected the request',
-      srvTokenRejected: 'MaClawSrv rejected the access token (HTTP 401). Tokens expire: save a fresh one, or keep the admin secret saved and test again to renew automatically',
-      srvTokenForbidden: 'The access token lacks permission (HTTP 403)',
+      srvTokenRejected: 'MaClawSrv rejected the credential (HTTP 401). Keep the admin secret saved and test again to renew automatically',
+      srvTokenForbidden: 'The credential lacks permission (HTTP 403); check the admin secret',
       srvNotFound: 'Instance or endpoint not found (HTTP 404); check that the URL forwards /api',
       bots: 'Bots created by users',
       botsHint: 'Created in the MaClaw app. This page only lists them.',
@@ -183,7 +185,17 @@
       badUrl: 'The MaClawSrv URL must start with http:// or https://',
       owner: 'User',
       access: 'Who can use bots',
-      accessHint: 'Off by default. The desktop Bot entry appears only for users switched on here.',
+      accessHint: 'On for everyone by default. Turn the switch off and add departments or users to restrict access.',
+      groupRuntime: 'Service',
+      groupAccess: 'Access & quotas',
+      groupDesktop: 'Desktop resources',
+      groupBots: 'Instances',
+      statConn: 'MaClawSrv',
+      statLLM: 'LLM providers',
+      statAccess: 'Access',
+      statBots: 'Bot instances',
+      statLLMEmpty: 'Not set',
+      statWithDesktop: '{n} with a computer',
       global: 'Everyone',
       department: 'Department',
       user: 'User',
@@ -207,12 +219,12 @@
       orgSearching: 'Searching...',
       orgMatchUsers: 'Matching accounts',
       orgMatchLimited: 'Showing the first 50 accounts. Type a few more letters.',
-      grantEmpty: 'Nobody is enabled.',
+      grantEmpty: 'No restrictions: everyone can use bots by default.',
       instance: 'Instance',
       configured: 'Configured',
       unconfigured: 'Not configured',
       online: 'Connected',
-      connectionHint: 'Enter the MaClawSrv URL and access token, then save and test.',
+      connectionHint: 'Enter the MaClawSrv URL and admin secret, then save and test.',
       globalHint: 'Everyone in this tenant can use bots',
       enableList: 'Enabled',
       everyoneNote: 'Everyone already has access. Turn the switch off to enable specific departments or users.',
@@ -358,6 +370,22 @@
     return raw || t.failed;
   }
 
+  /* Small stroke icons lead each card head; desktop-tab reuses them via global.botSecIcon. */
+  var secIcons = {
+    conn: '<path d="M9 7V3.5M15 7V3.5M7 7h10v3.5a5 5 0 01-10 0V7zm5 9.5v4.5"/>',
+    llm: '<path d="M12 3l1.7 4.6L18.5 9l-4.8 1.4L12 15l-1.7-4.6L5.5 9l4.8-1.4z"/><path d="M18 15l.9 2.1L21 18l-2.1.9L18 21l-.9-2.1L15 18l2.1-.9z"/>',
+    access: '<path d="M12 3l7 2.6v5.1c0 4.6-3 8.6-7 10.3-4-1.7-7-5.7-7-10.3V5.6z"/><path d="M9.5 11.5l1.8 1.8 3.4-3.4"/>',
+    bots: '<rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 8V4.5"/><circle cx="9" cy="12.5" r=".9" fill="currentColor" stroke="none"/><circle cx="15" cy="12.5" r=".9" fill="currentColor" stroke="none"/><path d="M9.5 16h5"/>',
+    nodes: '<circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="18" r="2.4"/><circle cx="19" cy="18" r="2.4"/><path d="M12 7.4L5.6 15.9M12 7.4l6.4 8.5M7.4 18h9.2"/>',
+    services: '<rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7h.01M8 17h.01"/>',
+    assign: '<circle cx="9" cy="8" r="3"/><path d="M4 19c0-3 2.2-5 5-5s5 2 5 5"/><path d="M16 8.5a3 3 0 010 5.5M17.5 14.5c2 .7 3.2 2.4 3.2 4.5"/>',
+    run: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M10 8.5l4.5 3.5-4.5 3.5z"/><path d="M9 20h6"/>'
+  };
+  function secIcon(name) {
+    return '<span class="bot-sec-icon"><svg viewBox="0 0 24 24" aria-hidden="true">' + (secIcons[name] || '') + '</svg></span>';
+  }
+  global.botSecIcon = secIcon;
+
   function applyBotI18n() {
     var t = text();
     var nav = byID('navBots');
@@ -369,8 +397,6 @@
     setLabel('botConnectionTitle', t.connection);
     setLabel('botConnectionHint', t.connectionHint);
     setLabel('botUrlLabel', t.url);
-    setLabel('botTokenLabel', t.token);
-    setLabel('botTokenHint', t.tokenHint);
     setLabel('botAdminLabel', t.adminSecret);
     setLabel('botAdminHint', t.adminHint);
     setLabel('botSave', t.save);
@@ -381,6 +407,14 @@
     setLabel('botLLMSave', t.llmSave);
     llmDialogLabels();
     if (panel._botView) renderLLM(panel._botView);
+    setLabel('botGroupRuntime', t.groupRuntime);
+    setLabel('botGroupAccess', t.groupAccess);
+    setLabel('botGroupDesktop', t.groupDesktop);
+    setLabel('botGroupBots', t.groupBots);
+    setLabel('botStatConnLabel', t.statConn);
+    setLabel('botStatLLMLabel', t.statLLM);
+    setLabel('botStatAccessLabel', t.statAccess);
+    setLabel('botStatBotsLabel', t.statBots);
     setLabel('botAccessTitle', t.access);
     setLabel('botAccessHint', t.accessHint);
     setLabel('botGlobalLabel', t.global);
@@ -552,6 +586,30 @@
       + '#tab-bots .bot-row small{display:block;color:#64748b;font-size:11px}'
       + '#tab-bots .bot-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 12px}'
       + '#tab-bots .bot-fields input{width:100%;margin:0}'
+      /* Intranet Bot nodes: one card row per node. */
+      + '#tab-bots .bot-node-list{display:grid;gap:8px}'
+      + '#tab-bots .bot-node-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px 12px;align-items:center;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fff;transition:border-color .15s ease,box-shadow .15s ease}'
+      + '#tab-bots .bot-node-row:hover{border-color:#c9d5e8;box-shadow:0 3px 10px rgba(23,34,54,.06)}'
+      + '#tab-bots .bot-node-row[data-online="1"]{border-color:#d8ecdf;background:linear-gradient(180deg,#fdfffe,#f6fbf9)}'
+      + '#tab-bots .bot-node-avatar{position:relative;display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;flex:0 0 34px;border-radius:10px;background:#f1f5f9;border:1px solid #e2e8f0;color:#64748b;font-size:13px;font-weight:800;letter-spacing:.02em;text-transform:uppercase}'
+      + '#tab-bots .bot-node-avatar::after{content:"";position:absolute;right:-2px;bottom:-2px;width:9px;height:9px;border-radius:999px;background:#94a3b8;border:2px solid #fff}'
+      + '#tab-bots .bot-node-row[data-online="1"] .bot-node-avatar{background:#e8f7ef;border-color:#c9eadb;color:#15803d}'
+      + '#tab-bots .bot-node-row[data-online="1"] .bot-node-avatar::after{background:#22b573}'
+      + '#tab-bots .bot-node-main{display:grid;gap:3px;min-width:0}'
+      + '#tab-bots .bot-node-title{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap}'
+      + '#tab-bots .bot-node-name{min-width:0;font-size:13px;font-weight:650;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-node-state{display:inline-flex;align-items:center;gap:5px;padding:1px 9px;border-radius:999px;background:#f1f5f9;color:#64748b;font-size:10px;font-weight:800;letter-spacing:.03em;white-space:nowrap}'
+      + '#tab-bots .bot-node-state::before{content:"";width:6px;height:6px;border-radius:999px;background:currentColor}'
+      + '#tab-bots .bot-node-state-on{background:#e8f7ef;color:#15803d}'
+      + '#tab-bots .bot-node-tag{padding:1px 8px;border-radius:6px;background:#eef5ff;color:#1d4ed8;font-size:10px;font-weight:700;letter-spacing:.02em;white-space:nowrap}'
+      + '#tab-bots .bot-node-tag-own{background:#fff2e4;color:#9a5b00}'
+      + '#tab-bots .bot-node-tag-dim{background:#f1f5f9;color:#475569}'
+      + '#tab-bots .bot-node-sub{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;font-size:11px;line-height:1.5;color:#64748b}'
+      + '#tab-bots .bot-node-sub strong{font-weight:650;color:#243244}'
+      + '#tab-bots .bot-node-sep{color:#cbd5e1}'
+      + '#tab-bots .bot-node-enroll{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}'
+      + '#tab-bots .bot-node-enroll button{height:36px;min-height:36px;padding:0 14px;font-size:12px;white-space:nowrap}'
+      + '#tab-bots #desktopNodeCodeOut code{padding:2px 8px;border-radius:6px;background:#eef5ff;color:#1d4ed8;font:700 13px/1.4 Consolas,monospace;letter-spacing:.08em;user-select:all}'
       /* Docker service sections mount here as cards that match the rest of the page. */
       + '#tab-bots #botDesktopHost{display:grid;gap:14px}'
       + '#tab-bots #botDesktopHost > section{display:grid;gap:12px;align-content:start;padding:15px 17px;border:1px solid #e4e9f2;border-radius:10px;background:#fff;box-shadow:0 6px 18px rgba(23,34,54,.035)}'
@@ -559,21 +617,40 @@
       + '#tab-bots #botDesktopHost > section > h3::before{content:"";display:inline-block;width:6px;height:6px;margin-right:7px;border-radius:999px;background:#2563eb;vertical-align:middle}'
       + '#tab-bots #botDesktopHost > section > h3 + p{padding-bottom:11px;border-bottom:1px solid #eef2f7}'
       + '#tab-bots #desktopHint,#tab-bots #desktopAssignHint,#tab-bots #desktopRunHint{margin:0;font-size:11px;line-height:1.5;color:#64748b}'
+      /* Status strip: the four numbers an admin checks first. */
+      + '#tab-bots .bot-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}'
+      + '#tab-bots .bot-stat{display:grid;gap:2px;align-content:start;min-width:0;padding:11px 13px;border:1px solid #e4e9f2;border-radius:10px;background:linear-gradient(180deg,#fff,#fbfcfe)}'
+      + '#tab-bots .bot-stat-label{font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b}'
+      + '#tab-bots .bot-stat-value{min-height:1.3em;font-size:15px;font-weight:700;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-stat-value.bot-stat-ok{color:#15803d}'
+      + '#tab-bots .bot-stat-value.bot-stat-warn{color:#9a6700}'
+      + '#tab-bots .bot-stat-value.bot-stat-info{color:#1d4ed8}'
+      + '#tab-bots .bot-stat-sub{font-size:10px;color:#94a3b8;min-height:1.2em}'
+      /* Section groups and the icon that leads each card head. */
+      + '#tab-bots .bot-group{margin:4px 2px -4px;font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#94a3b8}'
+      + '#tab-bots .bot-sec-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:9px;background:#eef5ff;border:1px solid #dbe7ff;color:#1d4ed8}'
+      + '#tab-bots .bot-sec-icon svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}'
+      + '#tab-bots .bot-section > .item-head{align-items:center}'
+      + '#tab-bots .bot-section > .item-head > div{min-width:0;flex:1}'
+      + '#tab-bots .bot-form-3{grid-template-columns:repeat(3,minmax(0,1fr))}'
       + '@media (max-width:1080px){#tab-bots .bot-llm-roles-head,#tab-bots .bot-llm-role{grid-template-columns:minmax(6em,.7fr) minmax(0,1fr) minmax(0,1.3fr)}#tab-bots .bot-llm-roles-head span:last-child{display:none}#tab-bots .bot-llm-role .bot-llm-role-blank{display:none}#tab-bots .bot-llm-role .bot-llm-role-vision{grid-column:1/-1;grid-row:2;justify-content:flex-start}}'
-      + '@media (max-width:860px){#tab-bots .bot-form,#tab-bots .bot-split,#tab-bots .bot-llm-grid,#tab-bots .bot-llm-role{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}#tab-bots .bot-llm-roles-head{display:none}#tab-bots .bot-llm-role .bot-llm-role-name{grid-column:1/-1}#tab-bots .bot-llm-role .bot-llm-role-vision{grid-column:1/-1;grid-row:auto;justify-content:flex-start}#tab-bots .bot-llm-row{grid-template-columns:auto minmax(0,1fr) auto}#tab-bots .bot-llm-tags{grid-column:2;grid-row:2;margin-left:0;flex-wrap:wrap}}'
-      + '@media (max-width:760px){#tab-bots .bot-tr{grid-template-columns:1fr;gap:6px}#tab-bots .bot-th{display:none}#tab-bots .bot-td{white-space:normal;overflow:visible}#tab-bots .bot-td-main{padding-bottom:6px;border-bottom:1px solid #eef2f7}#tab-bots .bot-td-labelled{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;align-items:baseline}#tab-bots .bot-td-labelled::before{content:attr(data-label);font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b;overflow:visible;text-overflow:clip}#tab-bots .bot-fields{grid-template-columns:1fr}}'
+      + '@media (max-width:860px){#tab-bots .bot-stats{grid-template-columns:repeat(2,minmax(0,1fr))}#tab-bots .bot-form-3{grid-template-columns:1fr}#tab-bots .bot-form,#tab-bots .bot-split,#tab-bots .bot-llm-grid,#tab-bots .bot-llm-role{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}#tab-bots .bot-llm-roles-head{display:none}#tab-bots .bot-llm-role .bot-llm-role-name{grid-column:1/-1}#tab-bots .bot-llm-role .bot-llm-role-vision{grid-column:1/-1;grid-row:auto;justify-content:flex-start}#tab-bots .bot-llm-row{grid-template-columns:auto minmax(0,1fr) auto}#tab-bots .bot-llm-tags{grid-column:2;grid-row:2;margin-left:0;flex-wrap:wrap}}'
+      + '@media (max-width:760px){#tab-bots .bot-tr{grid-template-columns:1fr;gap:6px}#tab-bots .bot-th{display:none}#tab-bots .bot-td{white-space:normal;overflow:visible}#tab-bots .bot-td-main{padding-bottom:6px;border-bottom:1px solid #eef2f7}#tab-bots .bot-td-labelled{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;align-items:baseline}#tab-bots .bot-td-labelled::before{content:attr(data-label);font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b;overflow:visible;text-overflow:clip}#tab-bots .bot-fields{grid-template-columns:1fr}#tab-bots .bot-node-row{grid-template-columns:auto minmax(0,1fr)}#tab-bots .bot-node-row>.bot-actions{grid-column:2;justify-content:flex-start}#tab-bots .bot-node-enroll{grid-template-columns:1fr}#tab-bots .bot-node-enroll button{justify-self:start}}'
       + '</style>'
       + '<div class="bot-page">'
+      + '<div class="bot-stats">'
+      + '<div class="bot-stat"><span class="bot-stat-label" id="botStatConnLabel"></span><span class="bot-stat-value" id="botStatConn"></span></div>'
+      + '<div class="bot-stat"><span class="bot-stat-label" id="botStatLLMLabel"></span><span class="bot-stat-value" id="botStatLLM"></span></div>'
+      + '<div class="bot-stat"><span class="bot-stat-label" id="botStatAccessLabel"></span><span class="bot-stat-value" id="botStatAccess"></span></div>'
+      + '<div class="bot-stat"><span class="bot-stat-label" id="botStatBotsLabel"></span><span class="bot-stat-value" id="botStatBots"></span><span class="bot-stat-sub" id="botStatBotsSub"></span></div>'
+      + '</div>'
+      + '<p class="bot-group" id="botGroupRuntime"></p>'
       + '<section class="item bot-section">'
-      + '<div class="item-head"><div><h3 class="item-title" id="botConnectionTitle"></h3>'
+      + '<div class="item-head">' + secIcon('conn') + '<div><h3 class="item-title" id="botConnectionTitle"></h3>'
       + '<p class="item-meta" id="botConnectionHint"></p></div><span class="badge" id="botConnBadge"></span></div>'
       + '<div class="bot-form">'
       + '<div class="bot-field bot-field-wide"><label id="botUrlLabel" for="botBaseUrl"></label>'
       + '<input id="botBaseUrl" autocomplete="off" spellcheck="false"></div>'
-      + '<div class="bot-field"><div class="bot-field-head"><label id="botTokenLabel" for="botAccessToken"></label>'
-      + '<span class="badge" id="botTokenState"></span></div>'
-      + '<input id="botAccessToken" type="password" autocomplete="new-password">'
-      + '<p class="bot-field-note" id="botTokenHint"></p></div>'
       + '<div class="bot-field"><div class="bot-field-head"><label id="botAdminLabel" for="botAdminSecret"></label>'
       + '<span class="badge" id="botAdminState"></span></div>'
       + '<input id="botAdminSecret" type="password" autocomplete="new-password">'
@@ -585,7 +662,7 @@
       + '<p class="bot-status" id="botConnStatus"></p></div>'
       + '</section>'
       + '<section class="item bot-section">'
-      + '<div class="item-head"><div><h3 class="item-title" id="botLLMTitle"></h3>'
+      + '<div class="item-head">' + secIcon('llm') + '<div><h3 class="item-title" id="botLLMTitle"></h3>'
       + '<p class="item-meta" id="botLLMHint"></p></div><span class="badge" id="botLLMBadge"></span></div>'
       + '<div id="botLLMList" class="bot-llm-list"></div>'
       + '<div id="botLLMRoles" class="bot-llm-roles"></div>'
@@ -615,8 +692,9 @@
       + '<button type="button" class="btn-primary" id="botLLMSave"></button></div>'
       + '<p class="bot-status" id="botLLMStatus"></p></div>'
       + '</section>'
+      + '<p class="bot-group" id="botGroupAccess"></p>'
       + '<section class="item bot-section">'
-      + '<div class="item-head"><div><h3 class="item-title" id="botAccessTitle"></h3>'
+      + '<div class="item-head">' + secIcon('access') + '<div><h3 class="item-title" id="botAccessTitle"></h3>'
       + '<p class="item-meta" id="botAccessHint"></p></div><span class="badge" id="botAccessBadge"></span></div>'
       + '<label class="bot-toggle" for="botGlobal"><span class="bot-toggle-copy">'
       + '<span class="bot-toggle-title" id="botGlobalLabel"></span>'
@@ -639,9 +717,11 @@
       + '<p class="bot-pane-desc" id="botGrantsHint"></p>'
       + '<div id="botGrants" class="bot-grant-list"></div></div>'
       + '</div></section>'
+      + '<p class="bot-group" id="botGroupDesktop"></p>'
       + '<div id="botDesktopHost"></div>'
+      + '<p class="bot-group" id="botGroupBots"></p>'
       + '<section class="item bot-section">'
-      + '<div class="item-head"><div><h3 class="item-title" id="botListTitle"></h3>'
+      + '<div class="item-head">' + secIcon('bots') + '<div><h3 class="item-title" id="botListTitle"></h3>'
       + '<p class="item-meta" id="botListHint"></p></div><span class="badge" id="botListBadge"></span></div>'
       + '<div id="botList" class="bot-table"></div></section>'
       + '</div>';
@@ -715,14 +795,14 @@
     var panel = byID('tab-bots');
     if (panel) panel._botView = view;
     showServerUrl(byID('botBaseUrl'), view.base_url || '');
-    setCredState(byID('botTokenState'), !!view.token_set, text().tokenSet, text().tokenMissing);
     setCredState(byID('botAdminState'), !!view.admin_secret_set, text().adminSet, text().adminMissing);
     var access = grantSummary(view);
     renderConnBadge(view);
     renderLLM(view);
-    renderAccess(access);
+    renderAccess(view);
     renderBots(view);
     renderGrants(view, access);
+    renderSummary(view);
     renderOrgTree();
   }
 
@@ -739,10 +819,21 @@
     return { grants: grants, specific: specific, everyone: specific.length !== grants.length };
   }
 
+  /* Effective "everyone": a stored global grant, or the default-open state
+     when nothing is granted. _botEveryoneOff keeps the admin's local intent
+     to restrict while the store still holds no grant. */
+  function effectiveEveryone(view) {
+    var summary = grantSummary(view || {});
+    if (summary.everyone) return true;
+    var panel = byID('tab-bots');
+    if (panel && panel._botEveryoneOff) return false;
+    return summary.grants.length === 0;
+  }
+
   function connState(view) {
     var v = view || {};
     var base = String(v.base_url || '').trim();
-    if (!base || !v.token_set) return { level: 'warn', label: text().unconfigured };
+    if (!base || !(v.token_set || v.admin_secret_set)) return { level: 'warn', label: text().unconfigured };
     var panel = byID('tab-bots');
     if (panel && panel._botConnOk) return { level: 'ok', label: text().online };
     return { level: 'info', label: text().configured };
@@ -762,16 +853,34 @@
   }
 
   /* Everyone switch wins: hide the picker rather than offering redundant choices. */
-  function renderAccess(access) {
+  function renderAccess(view) {
+    var everyone = effectiveEveryone(view);
+    var specific = grantSummary(view).specific;
     var body = byID('botAccessBody');
     var note = byID('botGlobalOn');
     var orgPane = byID('botOrgPane');
-    if (orgPane) orgPane.hidden = access.everyone;
-    else if (body) body.hidden = access.everyone;
-    if (note) note.hidden = !access.everyone;
+    if (orgPane) orgPane.hidden = everyone;
+    else if (body) body.hidden = everyone;
+    if (note) note.hidden = !everyone;
     var t = text();
-    setBadge('botAccessBadge', access.everyone ? t.global : access.specific.length + ' ' + t.countUnit,
-      access.everyone ? 'ok' : 'info');
+    setBadge('botAccessBadge', everyone ? t.global : specific.length + ' ' + t.countUnit,
+      everyone ? 'ok' : 'info');
+  }
+
+  /* The strip up top: connection, providers, access scope, bot count. */
+  function renderSummary(view) {
+    var conn = connState(view);
+    var connEl = byID('botStatConn');
+    if (connEl) { connEl.textContent = conn.label; connEl.className = 'bot-stat-value bot-stat-' + conn.level; }
+    var providers = view && view.llm && Array.isArray(view.llm.providers) ? view.llm.providers.length : 0;
+    setLabel('botStatLLM', providers ? String(providers) : text().statLLMEmpty);
+    var specific = grantSummary(view).specific;
+    setLabel('botStatAccess', effectiveEveryone(view) ? text().global : specific.length + ' ' + text().countUnit);
+    var bots = view && Array.isArray(view.bots) ? view.bots : [];
+    setLabel('botStatBots', String(bots.length));
+    var withDesktop = 0;
+    bots.forEach(function (bot) { if (String(bot.desktop_mode || '') !== 'none') withDesktop += 1; });
+    setLabel('botStatBotsSub', text().statWithDesktop.replace('{n}', String(withDesktop)));
   }
 
   function isWholeLimit(n) {
@@ -898,7 +1007,7 @@
     renderDefaultLimit(view);
     /* While a grant request is in flight the switch shows the admin's intent,
        not the server's last known state, so leave it alone until the response lands. */
-    if (globalBox && !grantLocked()) globalBox.checked = summary.everyone;
+    if (globalBox && !grantLocked()) globalBox.checked = effectiveEveryone(view);
     if (!list) return;
     if (!summary.specific.length) {
       list.innerHTML = summary.grants.length ? '' : '<p class="bot-empty">' + escapeHtml(text().grantEmpty) + '</p>';
@@ -947,20 +1056,32 @@
     var grants = view && Array.isArray(view.grants) ? view.grants : [];
     var current = null;
     grants.forEach(function (item) { if (item.scope === 'global') current = item; });
-    if (box.checked && !current) {
+    if (box.checked) {
+      if (panel) panel._botEveryoneOff = false;
+      if (current || !grants.length) {
+        /* Already stored, or the default-open state needs no grant at all. */
+        if (view) render(view);
+        return;
+      }
       setGrantBusy(true);
       return api('/api/admin/bots/grants', { method: 'POST', body: JSON.stringify({ scope: 'global' }) }).then(load).catch(function (err) {
         box.checked = false;
         showToast(messageOf(err), 'error');
       }).then(function () { setGrantBusy(false); });
     }
-    if (!box.checked && current) {
-      setGrantBusy(true);
-      return api('/api/admin/bots/grants/' + encodeURIComponent(current.id), { method: 'DELETE' }).then(load).catch(function (err) {
-        box.checked = true;
-        showToast(messageOf(err), 'error');
-      }).then(function () { setGrantBusy(false); });
+    /* Restricting: the picker opens over the default-open state even when
+       nothing is stored yet, so a first grant can be added. */
+    if (panel) panel._botEveryoneOff = true;
+    if (!current) {
+      if (view) render(view);
+      return;
     }
+    setGrantBusy(true);
+    return api('/api/admin/bots/grants/' + encodeURIComponent(current.id), { method: 'DELETE' }).then(load).catch(function (err) {
+      if (panel) panel._botEveryoneOff = false;
+      box.checked = true;
+      showToast(messageOf(err), 'error');
+    }).then(function () { setGrantBusy(false); });
   }
 
   function orgState() {
@@ -2748,15 +2869,12 @@
       return;
     }
     var body = { base_url: base };
-    var token = byID('botAccessToken').value || '';
-    if (token !== '') body.access_token = token;
     var adminSecret = byID('botAdminSecret').value || '';
     if (adminSecret !== '') body.admin_secret = adminSecret;
     if (panel) panel._connSaving = true;
     var button = byID('botSave');
     if (button) button.disabled = true;
     return api('/api/admin/bots/settings', { method: 'PUT', body: JSON.stringify(body) }).then(function (view) {
-      byID('botAccessToken').value = '';
       byID('botAdminSecret').value = '';
       var urlInput = byID('botBaseUrl');
       if (urlInput) urlInput._serverValue = urlInput.value;
@@ -2779,7 +2897,7 @@
     var view = panel && panel._botView || {};
     var typedUrl = (byID('botBaseUrl').value || '').trim().replace(/\/+$/, '');
     var savedUrl = String(view.base_url || '').trim().replace(/\/+$/, '');
-    if (typedUrl !== savedUrl || (byID('botAccessToken').value || '') !== '') {
+    if (typedUrl !== savedUrl || (byID('botAdminSecret').value || '') !== '') {
       showToast(text().saveBeforeTest, 'error');
       return;
     }

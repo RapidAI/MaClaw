@@ -2476,21 +2476,22 @@
       "cue": "notice"
     },
     "react_drag_brace": {
-      "duration_ms": 520,
+      "duration_ms": 60000,
       "tracks": {
         "arm_l": [
           {
             "at_ms": 0
           },
           {
-            "at_ms": 240,
-            "rotate": 28,
+            "at_ms": 320,
+            "y": -6,
+            "rotate": 80,
             "ease": "ease-out"
           },
           {
-            "at_ms": 520,
-            "rotate": 16,
-            "ease": "ease-in-out"
+            "at_ms": 60000,
+            "y": -6,
+            "rotate": 80
           }
         ],
         "arm_r": [
@@ -2498,14 +2499,119 @@
             "at_ms": 0
           },
           {
-            "at_ms": 240,
-            "rotate": -28,
+            "at_ms": 320,
+            "y": -6,
+            "rotate": -80,
             "ease": "ease-out"
           },
           {
-            "at_ms": 520,
-            "rotate": -16,
-            "ease": "ease-in-out"
+            "at_ms": 60000,
+            "y": -6,
+            "rotate": -80
+          }
+        ],
+        "braid_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 320,
+            "rotate": -8.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 60000,
+            "rotate": -8.8
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 320,
+            "rotate": -4.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 60000,
+            "rotate": -4.8
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 320,
+            "rotate": -8.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 60000,
+            "rotate": -8.8
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 320,
+            "rotate": -4.8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 60000,
+            "rotate": -4.8
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 320,
+            "y": -2,
+            "rotate": 16,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 60000,
+            "y": -2,
+            "rotate": 16
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 320,
+            "y": -8,
+            "rotate": 26,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 60000,
+            "y": -8,
+            "rotate": 26
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 320,
+            "y": -8,
+            "rotate": -26,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 60000,
+            "y": -8,
+            "rotate": -26
           }
         ],
         "root": [
@@ -2513,54 +2619,133 @@
             "at_ms": 0
           },
           {
-            "at_ms": 160,
-            "y": 8,
+            "at_ms": 320,
+            "y": -36,
             "ease": "ease-out"
           },
           {
-            "at_ms": 520,
-            "y": 4,
-            "ease": "ease-in-out"
+            "at_ms": 60000,
+            "y": -36
           }
         ]
       },
       "cue": "brace"
     },
     "react_drag_release": {
-      "duration_ms": 640,
+      "duration_ms": 760,
       "tracks": {
         "arm_l": [
           {
             "at_ms": 0,
-            "rotate": 16
+            "y": -6,
+            "rotate": 80
           },
           {
-            "at_ms": 640,
+            "at_ms": 760,
             "ease": "ease-in-out"
           }
         ],
         "arm_r": [
           {
             "at_ms": 0,
-            "rotate": -16
+            "y": -6,
+            "rotate": -80
           },
           {
-            "at_ms": 640,
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l": [
+          {
+            "at_ms": 0,
+            "rotate": -8.8
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_l_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -4.8
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r": [
+          {
+            "at_ms": 0,
+            "rotate": -8.8
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "braid_r_tip": [
+          {
+            "at_ms": 0,
+            "rotate": -4.8
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "head": [
+          {
+            "at_ms": 0,
+            "y": -2,
+            "rotate": 16
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_l": [
+          {
+            "at_ms": 0,
+            "y": -8,
+            "rotate": 26
+          },
+          {
+            "at_ms": 760,
+            "ease": "ease-in-out"
+          }
+        ],
+        "leg_r": [
+          {
+            "at_ms": 0,
+            "y": -8,
+            "rotate": -26
+          },
+          {
+            "at_ms": 760,
             "ease": "ease-in-out"
           }
         ],
         "root": [
           {
             "at_ms": 0,
-            "y": 4
+            "y": -36
           },
           {
-            "at_ms": 180,
-            "y": -10,
+            "at_ms": 160,
+            "y": -50,
             "ease": "ease-out"
           },
           {
-            "at_ms": 640,
+            "at_ms": 420,
+            "y": 8,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 760,
             "ease": "ease-in-out"
           }
         ]
@@ -2594,24 +2779,39 @@
       "cue": "blink"
     },
     "react_hover_peek": {
-      "duration_ms": 720,
+      "duration_ms": 900,
       "tracks": {
+        "arm_r": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 300,
+            "y": -4,
+            "rotate": -46,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          }
+        ],
         "braid_l": [
           {
             "at_ms": 0
           },
           {
-            "at_ms": 180,
-            "rotate": -8.8,
+            "at_ms": 240,
+            "rotate": -12.1,
             "ease": "ease-out"
           },
           {
-            "at_ms": 480,
-            "rotate": 4.4,
+            "at_ms": 620,
+            "rotate": 6.6,
             "ease": "ease-in-out"
           },
           {
-            "at_ms": 720,
+            "at_ms": 900,
             "ease": "ease-in-out"
           }
         ],
@@ -2620,17 +2820,17 @@
             "at_ms": 0
           },
           {
-            "at_ms": 180,
-            "rotate": -4.8,
+            "at_ms": 240,
+            "rotate": -6.6,
             "ease": "ease-out"
           },
           {
-            "at_ms": 480,
-            "rotate": 2.4,
+            "at_ms": 620,
+            "rotate": 3.6,
             "ease": "ease-in-out"
           },
           {
-            "at_ms": 720,
+            "at_ms": 900,
             "ease": "ease-in-out"
           }
         ],
@@ -2639,17 +2839,17 @@
             "at_ms": 0
           },
           {
-            "at_ms": 180,
-            "rotate": -8.8,
+            "at_ms": 240,
+            "rotate": -12.1,
             "ease": "ease-out"
           },
           {
-            "at_ms": 480,
-            "rotate": 4.4,
+            "at_ms": 620,
+            "rotate": 6.6,
             "ease": "ease-in-out"
           },
           {
-            "at_ms": 720,
+            "at_ms": 900,
             "ease": "ease-in-out"
           }
         ],
@@ -2658,17 +2858,17 @@
             "at_ms": 0
           },
           {
-            "at_ms": 180,
-            "rotate": -4.8,
+            "at_ms": 240,
+            "rotate": -6.6,
             "ease": "ease-out"
           },
           {
-            "at_ms": 480,
-            "rotate": 2.4,
+            "at_ms": 620,
+            "rotate": 3.6,
             "ease": "ease-in-out"
           },
           {
-            "at_ms": 720,
+            "at_ms": 900,
             "ease": "ease-in-out"
           }
         ],
@@ -2677,19 +2877,40 @@
             "at_ms": 0
           },
           {
-            "at_ms": 180,
-            "x": 3,
-            "rotate": 16,
+            "at_ms": 240,
+            "x": 2,
+            "rotate": 22,
             "ease": "ease-out"
           },
           {
-            "at_ms": 480,
+            "at_ms": 620,
             "x": -2,
-            "rotate": -8,
+            "rotate": -12,
             "ease": "ease-in-out"
           },
           {
-            "at_ms": 720,
+            "at_ms": 900,
+            "ease": "ease-in-out"
+          }
+        ],
+        "root": [
+          {
+            "at_ms": 0
+          },
+          {
+            "at_ms": 240,
+            "x": 8,
+            "y": -8,
+            "ease": "ease-out"
+          },
+          {
+            "at_ms": 620,
+            "x": -4,
+            "y": -3,
+            "ease": "ease-in-out"
+          },
+          {
+            "at_ms": 900,
             "ease": "ease-in-out"
           }
         ]

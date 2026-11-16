@@ -166,6 +166,41 @@ describe('intranet desktop update', () => {
         expect(screen.getByTestId('bot-desktop-result-dn_1').textContent).toMatch(/20\d{2}-\d{2}-\d{2} \d{2}:\d{2}/);
     });
 
+    it('shows the desktopd port beside each desktop and flags a loopback bind', async () => {
+        listNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [
+                { ...sshNode, desktopd_port: 18081, desktopd_addr: ':18081' },
+                { ...sshNode, id: 'dn_2', name: 'old', desktopd_addr: '127.0.0.1:18081', active: false },
+                { ...sshNode, id: 'dn_v6', name: 'v6', desktopd_addr: '[::1]:18081', active: false },
+                { ...sshNode, id: 'dn_4', name: 'custom', desktopd_addr: '10.0.0.5:18082', active: false },
+            ],
+        });
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        expect(await screen.findByTestId('bot-desktop-port-dn_1')).toBeTruthy();
+        expect(screen.getByTestId('bot-desktop-port-dn_1').textContent).toBe('desktopd :18081');
+        expect(screen.getByTestId('bot-desktop-port-dn_2').textContent).toBe('desktopd 127.0.0.1:18081');
+        expect(screen.getByTestId('bot-desktop-port-dn_2').getAttribute('title')).toBe('只监听本机——要直连需改为内网绑定');
+        expect(screen.getByTestId('bot-desktop-port-dn_1').getAttribute('title')).toBeNull();
+        // A bracketed IPv6 loopback keeps its brackets in the label and is flagged too.
+        expect(screen.getByTestId('bot-desktop-port-dn_v6').textContent).toBe('desktopd [::1]:18081');
+        expect(screen.getByTestId('bot-desktop-port-dn_v6').getAttribute('title')).toBe('只监听本机——要直连需改为内网绑定');
+        // No desktopd_port field: the port still comes out of the stored bind.
+        expect(screen.getByTestId('bot-desktop-port-dn_4').textContent).toBe('desktopd 10.0.0.5:18082');
+        expect(screen.getByText(/放行.*18081/)).toBeTruthy();
+    });
+
+    it('reads the desktopd port out of a direct-mode URL instead of duplicating it', async () => {
+        listNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [{ id: 'dn_3', name: 'near', mode: 'direct', desktopd_url: 'http://10.0.0.9:18082', status: 'ready', registered: true, online: true }],
+        });
+        render(<BotDesktopNodesDialog heading="设置" lang="zh" onClose={() => {}} />);
+        expect(await screen.findByText('near')).toBeTruthy();
+        expect(screen.queryByTestId('bot-desktop-port-dn_3')).toBeNull();
+        expect(screen.getByText('http://10.0.0.9:18082')).toBeTruthy();
+    });
+
     it('switches the computer in use between this desktop and the cloud one', async () => {
         const idle = { ...sshNode, id: 'dn_2', name: 'spare', active: false, registered: true };
         listNodes.mockResolvedValue({ enabled: true, nodes: [sshNode, idle] });

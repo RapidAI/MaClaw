@@ -4,10 +4,12 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/account_store.dart';
 import '../../core/providers.dart';
+import '../../core/native_voice.dart';
 import '../../core/platform.dart';
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
 import 'update_dialog.dart';
+import 'voice_settings_sheet.dart';
 
 /// 我的 — account card, multi-account switcher, logout.
 class AccountScreen extends ConsumerWidget {
@@ -35,6 +37,23 @@ class AccountScreen extends ConsumerWidget {
               onTap: () => context.push('/llm-settings'),
             ),
           ),
+          if (NativeVoice.supported) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.record_voice_over_outlined),
+                title: const Text('语音引擎'),
+                subtitle: const Text('朗读音色与识别方式 · 本地下载模型'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => showModalBottomSheet<void>(
+                  context: context,
+                  isScrollControlled: true,
+                  showDragHandle: true,
+                  builder: (_) => const VoiceSettingsSheet(),
+                ),
+              ),
+            ),
+          ],
           if (supportsSideloadUpdate) ...[
             const SizedBox(height: 12),
             Card(
@@ -50,8 +69,10 @@ class AccountScreen extends ConsumerWidget {
           const SizedBox(height: 24),
           Row(
             children: [
-              Text('账号（${session.accounts.length}）',
-                  style: Theme.of(context).textTheme.titleSmall),
+              Text(
+                '账号（${session.accounts.length}）',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
               const Spacer(),
               TextButton.icon(
                 onPressed: () => context.push('/login?mode=add'),
@@ -61,7 +82,10 @@ class AccountScreen extends ConsumerWidget {
             ],
           ),
           for (final account in session.accounts)
-            _AccountTile(account: account, isActive: account.key == active?.key),
+            _AccountTile(
+              account: account,
+              isActive: account.key == active?.key,
+            ),
           const SizedBox(height: 24),
           if (active != null)
             FilledButton.tonalIcon(
@@ -76,10 +100,9 @@ class AccountScreen extends ConsumerWidget {
           Center(
             child: Text(
               'MaClawBot · 桌面 Bot 的移动工作台',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
         ],
@@ -88,7 +111,10 @@ class AccountScreen extends ConsumerWidget {
   }
 
   Future<void> _confirmLogout(
-      BuildContext context, WidgetRef ref, Account account) async {
+    BuildContext context,
+    WidgetRef ref,
+    Account account,
+  ) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -156,13 +182,15 @@ class _CreditsCard extends ConsumerWidget {
               Text(
                 '已用 ${used.toStringAsFixed(1)} / ${total.toStringAsFixed(0)}，剩余 ${credits.remaining.toStringAsFixed(1)}',
                 style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant),
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
             ] else
               Text(
                 credits.unlimited ? '不限量' : '已用 ${used.toStringAsFixed(1)}',
                 style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant),
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
           ],
         ),
@@ -193,9 +221,10 @@ class _AccountCard extends StatelessWidget {
                     ? account.label.characters.first.toUpperCase()
                     : '?',
                 style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w600),
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             const SizedBox(width: 14),
@@ -208,12 +237,14 @@ class _AccountCard extends StatelessWidget {
                   Text(
                     account.subtitle,
                     style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant),
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   Text(
                     account.hubUrl,
                     style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant),
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -256,15 +287,24 @@ class _AccountTile extends ConsumerWidget {
             ),
           ),
         ),
-        title: Text(account.label,
-            maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(account.subtitle,
-            maxLines: 1, overflow: TextOverflow.ellipsis),
+        title: Text(
+          account.label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          account.subtitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         trailing: isActive
-            ? Text('当前',
+            ? Text(
+                '当前',
                 style: TextStyle(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w600))
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              )
             : IconButton(
                 icon: const Icon(Icons.delete_outline, size: 20),
                 tooltip: '移除账号',
@@ -272,9 +312,8 @@ class _AccountTile extends ConsumerWidget {
               ),
         onTap: isActive
             ? null
-            : () => ref
-                .read(sessionProvider.notifier)
-                .switchAccount(account.key),
+            : () =>
+                  ref.read(sessionProvider.notifier).switchAccount(account.key),
       ),
     );
   }

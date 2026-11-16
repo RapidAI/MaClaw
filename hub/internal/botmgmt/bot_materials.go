@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 )
 
 // DesktopUploader is the optional upload channel of DesktopControl (Hub's
@@ -101,6 +102,11 @@ func (s *Service) UploadMaterialChunk(ctx context.Context, tenantID, userID, bot
 		return nil, ErrNotFound
 	}
 	bot := rec.Bots[index]
+	// A bot with no computer has no desktop folder. Staging the bytes and
+	// then calling UploadFile would wake the owner's desktop.
+	if botNone(bot) {
+		return nil, ErrNoDesktop
+	}
 	var peers []desktop.MaterialPeer
 	for i, other := range rec.Bots {
 		if i != index && other.OwnerUserID == userID {
@@ -191,10 +197,10 @@ func (s *Service) UploadMaterialChunk(ctx context.Context, tenantID, userID, bot
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrSrv, err.Error())
 	}
-	_, putErr := up.UploadFile(ctx, tenantID, owner, target, src, have)
+	_, putErr := up.UploadFile(desktoppool.WithComputer(ctx, bot.NodeID), tenantID, owner, target, src, have)
 	_ = src.Close()
 	if putErr != nil {
-		return nil, fmt.Errorf("%w: %s", ErrSrv, putErr.Error())
+		return nil, explainDesktopErr(putErr)
 	}
 	out.Done = true
 	out.Path = desktop.MaterialDisplayPath(target)

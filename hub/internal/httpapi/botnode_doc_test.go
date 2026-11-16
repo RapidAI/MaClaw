@@ -38,6 +38,8 @@ func TestBotnodeDocIsTheRunbook(t *testing.T) {
 		"Bot 节点",
 		"systemctl stop maclaw-botnode",
 		"systemctl restart maclaw-srv",
+		"宿主机不用安装 Python",
+		"maclaw-gui:2",
 	} {
 		if !strings.Contains(body, phrase) {
 			t.Fatalf("runbook missing %q", phrase)
@@ -76,6 +78,8 @@ func TestSelfDesktopdDocIsTheInstallRunbook(t *testing.T) {
 		"remote_deploy.sh",
 		"DESKTOPD_IMAGE_FROM=build",
 		"git -C /opt/maclaw-src reset --hard FETCH_HEAD",
+		"宿主机不用安装 Python",
+		"maclaw-gui:2",
 	} {
 		if !strings.Contains(body, phrase) {
 			t.Fatalf("runbook missing %q", phrase)

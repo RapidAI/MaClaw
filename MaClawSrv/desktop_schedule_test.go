@@ -256,6 +256,48 @@ func TestDesktopBotScheduleMessageIsOneOccurrence(t *testing.T) {
 	}
 }
 
+func TestNoneDesktopScheduleIsNotAComputerHelper(t *testing.T) {
+	due := time.Date(2026, 11, 13, 8, 0, 0, 0, time.Local)
+	task := &scheduler.ScheduledTask{
+		ID: "sched-none", DesktopBotID: "bot_none", Action: "看看有没有新消息", NextRunAt: &due,
+	}
+	msg := desktopBotScheduleMessageMode(task, true)
+	if msg.Metadata["computer_helper"] != "" || msg.Metadata["bot_desktop"] != "none" || msg.Metadata["bot_id"] != "bot_none" || msg.Metadata["bot_origin"] != "schedule" {
+		t.Fatalf("meta = %#v", msg.Metadata)
+	}
+	if msg.ClientMessageID == "" || !strings.Contains(msg.Content, "看看有没有新消息") {
+		t.Fatalf("message = %+v", msg)
+	}
+
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := agentservice.Principal{TenantID: "tenant-a", UserID: "alice"}
+	if err := store.SaveInstance(agentservice.Instance{
+		ID: "inst_none", TenantID: "tenant-a", UserID: "alice",
+		Metadata: map[string]string{"hub_bot": "1", "hub_bot_desktop": "none"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveInstance(agentservice.Instance{
+		ID: "inst_desk", TenantID: "tenant-a", UserID: "alice",
+		Metadata: map[string]string{"hub_bot": "1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !scheduleTurnHasNoDesktop(context.Background(), svc, principal, "inst_none") {
+		t.Fatal("none instance was treated as a computer")
+	}
+	if scheduleTurnHasNoDesktop(context.Background(), svc, principal, "inst_desk") {
+		t.Fatal("desktop instance was treated as having no computer")
+	}
+	if scheduleTurnHasNoDesktop(context.Background(), svc, principal, "missing") {
+		t.Fatal("a missing instance dropped the computer helper")
+	}
+}
+
 func TestDesktopBotClockFiresOneRunWithoutTheGUI(t *testing.T) {
 	t.Setenv("MACLAW_ENABLE_SCHEDULER", "")
 	sessionCalls := 0

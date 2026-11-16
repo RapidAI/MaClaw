@@ -4,7 +4,7 @@
 
 `HUB_URL` 不要带路径，不要带末尾斜杠。例如 `https://hub.example.com`。不要用文档里的示例域名。
 
-注册码由 Hub 管理员在管理台发给调用方，再交给你。不要自己向 Hub 申请注册码。码属于发码的那个租户，10 分钟内有效，用过即废。Hub 重启后，还没用掉的码也会失效。
+注册码由 Hub 管理员在管理台发给调用方，再交给你。不要自己向 Hub 申请注册码。码属于发码的那个租户，3 小时内有效，用过即废。Hub 重启后，还没用掉的码也会失效。
 
 这台机器给多个用户共用。不要把它登记成某一个人的内网桌面。
 
@@ -27,14 +27,18 @@
 
 没走这两个脚本、进程环境里也没有 `HUB_EDGE_NODES=on`（或 `1` / `true` / `yes`）时，注册接口不存在。botnode 看到的是普通 404，不是 JSON。注册码还没用掉。改完环境要重启 Hub 进程。重启会丢掉当时还在进行的对话。
 
-先不要点「生成内网注册码」。编译经常超过 10 分钟，码会在 desktopd 起来之前过期。
+注册码 3 小时内有效。安装开始前就可以向管理员要。健康检查通过之前不要把码写进环境，也不要启动 botnode。超过 3 小时还没用掉，就停下来要一张新码，不要用旧码重试。
 
 ## 2. 这台机器要有的东西
 
 - Linux x86_64 或 aarch64，systemd
 - Docker，并且当前用户是 root 或可以 sudo
-- Git、curl、Go 1.26 或更新、openssl、python3
+- Git、curl、Go 1.26 或更新、openssl。写配置时用 `base64`（coreutils）或 `openssl`，二选一即可
 - 出站能访问 `HUB_URL`
+
+宿主机不用安装 Python。desktopd、MaClawSrv、botnode 都是 Go 程序，编译、安装、注册、平时运行都不调用宿主机上的 `python3`。旧系统装不上 Python 3 也照样装，不要为了这份安装去装 Python。
+
+桌面里的 Python 在 Docker 镜像 `maclaw-gui:2` 里面，不在宿主机上。镜像里有 `python3` 和 `/desktop_supervisor.py`。用户打开桌面之后，容器里用它管画面、浏览器和文档。第 3 节构建或拉取镜像时，缺的是镜像里的 python3，不是宿主机的。宿主机上 `python3: command not found` 是正常的。
 
 `uname -m` 是 aarch64 或 arm64 时，编译用 `GOARCH=arm64`。x86_64 或 amd64 用 `GOARCH=amd64`。
 
@@ -204,7 +208,7 @@ done
 
 ## 6. 这时再要注册码
 
-desktopd 健康检查通过之后再发注册码。管理员登录 Hub 管理台，打开 Bot 管理，在「Bot 节点」那一节填写节点名称（不超过 80 个字符），点「生成内网注册码」。页面上会写：把注册码交给内网 agent，10 分钟内有效，只能用一次。码是 16 位十六进制，大小写都行。
+desktopd 健康检查通过之后再发注册码。管理员登录 Hub 管理台，打开 Bot 管理，在「Bot 节点」那一节填写节点名称（不超过 80 个字符），点「生成内网注册码」。页面上会写：把注册码交给内网 agent，3 小时内有效，只能用一次。码是 16 位十六进制，大小写都行。安装一开始就可以向管理员要这张码；健康检查通过之前不要把它写进环境，也不要启动 botnode。
 
 按钮若提示「这个租户还不能自建节点」或「这个租户的节点数已到上限」，先让管理员改限额。不要反复点。换密钥不受这个上限限制。
 
@@ -365,31 +369,20 @@ done
 
 ```sh
 umask 077
-command -v python3 >/dev/null || { echo "python3 is required"; exit 1; }
-python3 - <<'PY'
-import json, os
-p = "/etc/maclaw/maclawsrv.env"
-tok = json.load(open("/var/lib/maclaw/botnode.json")).get("hub_token") or ""
-if not tok:
-    raise SystemExit(1)
-with open(p) as src:
-    lines = src.read().splitlines()
-out = []
-found = False
-for line in lines:
-    if line.startswith("MACLAW_DESKTOP_API_TOKEN="):
-        out.append("MACLAW_DESKTOP_API_TOKEN=" + tok)
-        found = True
-    else:
-        out.append(line)
-if not found:
-    out.append("MACLAW_DESKTOP_API_TOKEN=" + tok)
-tmp = p + ".tmp"
-with open(tmp, "w") as dst:
-    dst.write("\n".join(out) + "\n")
-os.chmod(tmp, 0o600)
-os.replace(tmp, p)
-PY
+tok=$(sed -n 's/.*"hub_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /var/lib/maclaw/botnode.json | head -n 1)
+if [ -z "$tok" ]; then echo "hub_token missing"; exit 1; fi
+p=/etc/maclaw/maclawsrv.env
+tmp=$(mktemp) || exit 1
+seen=0
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    MACLAW_DESKTOP_API_TOKEN=*) printf 'MACLAW_DESKTOP_API_TOKEN=%s\n' "$tok"; seen=1 ;;
+    *) printf '%s\n' "$line" ;;
+  esac
+done < "$p" > "$tmp"
+[ "$seen" -eq 1 ] || printf 'MACLAW_DESKTOP_API_TOKEN=%s\n' "$tok" >> "$tmp"
+chmod 600 "$tmp" || exit 1
+mv "$tmp" "$p"
 ```
 
 `MACLAW_DESKTOP_API_TOKEN` 必须是状态文件里的 `hub_token`，不要填 Hub 的全局桌面 API 令牌。这把 `hub_token` 只能访问发码的那个租户。上面的写入完成之前不要启动 maclaw-srv。
@@ -461,7 +454,7 @@ systemctl restart maclaw-botnode || exit 1
 同时安装了 MaClawSrv 时，再确认令牌已经写入、且不打印它：
 
 ```sh
-python3 -c 'import pathlib,sys; ok=any(l.startswith("MACLAW_DESKTOP_API_TOKEN=") and l.split("=",1)[1].strip() for l in pathlib.Path("/etc/maclaw/maclawsrv.env").read_text().splitlines()); sys.exit(0 if ok else 1)'
+grep -Eq '^MACLAW_DESKTOP_API_TOKEN=.+' /etc/maclaw/maclawsrv.env
 ```
 
 `botnode` 的日志里不应出现注册码或令牌。隧道断开后进程会自己重连。已经写入 `botnode.json` 的节点不受 Hub 重启影响，等 Hub 起来后隧道会重连。

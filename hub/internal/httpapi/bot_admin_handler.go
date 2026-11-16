@@ -43,7 +43,7 @@ func writeBotError(w http.ResponseWriter, err error) {
 	case errors.Is(err, botmgmt.ErrAdminSecretMissing):
 		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", "请先在 Bot 管理里保存 MaClawSrv 管理密钥")
 	case errors.Is(err, botmgmt.ErrNotConfigured):
-		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", "save the MaClawSrv URL and access token first")
+		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", "save the MaClawSrv URL and admin secret first")
 	case errors.Is(err, botmgmt.ErrNameTaken):
 		writeError(w, http.StatusConflict, "BOT_NAME_TAKEN", err.Error())
 	case errors.Is(err, botmgmt.ErrNotFound):
@@ -56,6 +56,8 @@ func writeBotError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "NO_DESKTOP", botmgmt.ErrNoDesktop.Error())
 	case errors.Is(err, botmgmt.ErrDesktopQuota):
 		writeError(w, http.StatusConflict, "DESKTOP_QUOTA_EXCEEDED", botmgmt.ErrDesktopQuota.Error())
+	case errors.Is(err, botmgmt.ErrCloudDesktopUnassigned):
+		writeError(w, http.StatusForbidden, "CLOUD_DESKTOP_NOT_ASSIGNED", botmgmt.ErrCloudDesktopUnassigned.Error())
 	case errors.Is(err, botmgmt.ErrSrv), errors.Is(err, botmgmt.ErrSrvNotFound):
 		writeError(w, http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", botmgmt.SrvRejectionMessage(err))
 	default:
@@ -87,8 +89,15 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 	}
 	status, code, message := http.StatusBadGateway, "MACLAWSRV_REQUEST_FAILED", "bot service is unavailable, contact the administrator"
 	switch {
+	case errors.Is(err, botmgmt.ErrNotConfigured):
+		// Also covers ErrAdminSecretMissing, which wraps ErrNotConfigured. No
+		// turn could have reached MaClawSrv because the tenant never saved a
+		// connection; say what the admin must do instead of a bare
+		// "unavailable" that reads like a crash.
+		message = "bot 服务还没有对接 MaClawSrv，请联系管理员在 Bot 管理里完成配置"
+	case errors.Is(err, botmgmt.ErrNodeOffline):
+		status, code, message = http.StatusBadGateway, "NODE_OFFLINE", botmgmt.ErrNodeOffline.Error()
 	case errors.Is(err, botmgmt.ErrSettingsUnavailable),
-		errors.Is(err, botmgmt.ErrNotConfigured),
 		errors.Is(err, botmgmt.ErrSrv),
 		errors.Is(err, botmgmt.ErrSrvNotFound):
 		// 502: the turn may or may not have reached MaClawSrv.
@@ -110,8 +119,12 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 		status, code, message = http.StatusConflict, "DESKTOP_NOT_RUNNING", botmgmt.ErrDesktopNotRunning.Error()
 	case errors.Is(err, botmgmt.ErrNoDesktop):
 		status, code, message = http.StatusConflict, "NO_DESKTOP", botmgmt.ErrNoDesktop.Error()
+	case errors.Is(err, botmgmt.ErrNoDesktopTurn):
+		status, code, message = http.StatusConflict, "BOT_TURN_BUSY", botmgmt.ErrNoDesktopTurn.Error()
 	case errors.Is(err, botmgmt.ErrDesktopQuota):
 		status, code, message = http.StatusConflict, "DESKTOP_QUOTA_EXCEEDED", botmgmt.ErrDesktopQuota.Error()
+	case errors.Is(err, botmgmt.ErrCloudDesktopUnassigned):
+		status, code, message = http.StatusForbidden, "CLOUD_DESKTOP_NOT_ASSIGNED", botmgmt.ErrCloudDesktopUnassigned.Error()
 	case errors.Is(err, botmgmt.ErrNotPrimary):
 		status, code, message = http.StatusForbidden, "NOT_PRIMARY", botmgmt.ErrNotPrimary.Error()
 	case errors.Is(err, botmgmt.ErrNoSuchBot):

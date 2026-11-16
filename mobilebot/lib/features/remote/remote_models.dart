@@ -16,10 +16,10 @@ class RcMachine {
   String get title => name.isNotEmpty ? name : id;
 
   factory RcMachine.fromJson(Map json) => RcMachine(
-        id: syncText(json['id']),
-        name: syncText(json['name']),
-        online: json['online'] == true,
-      );
+    id: syncText(json['id']),
+    name: syncText(json['name']),
+    online: json['online'] == true,
+  );
 }
 
 /// One remote-control grant row (`GrantView` in the Hub service). Bucket
@@ -62,16 +62,16 @@ class RcGrant {
   }
 
   factory RcGrant.fromJson(Map json) => RcGrant(
-        id: syncText(json['id']),
-        machineId: syncText(json['machine_id']),
-        machineName: syncText(json['machine_name']),
-        account: syncText(json['account']),
-        permission: syncTextOr(json['permission'], 'view'),
-        status: syncTextOr(json['status'], 'pending'),
-        sameAccount: json['same_account'] == true,
-        online: json['online'] == true,
-        fromMachine: syncText(json['from_machine']),
-      );
+    id: syncText(json['id']),
+    machineId: syncText(json['machine_id']),
+    machineName: syncText(json['machine_name']),
+    account: syncText(json['account']),
+    permission: syncTextOr(json['permission'], 'view'),
+    status: syncTextOr(json['status'], 'pending'),
+    sameAccount: json['same_account'] == true,
+    online: json['online'] == true,
+    fromMachine: syncText(json['from_machine']),
+  );
 }
 
 /// `GET /api/remote-control/state` snapshot.
@@ -102,9 +102,9 @@ class RemoteControlState {
 
   factory RemoteControlState.fromJson(Map<String, dynamic> json) {
     List<RcGrant> grantsOf(Object? key) => [
-          for (final item in syncList(json[key]))
-            if (item is Map) RcGrant.fromJson(item),
-        ];
+      for (final item in syncList(json[key]))
+        if (item is Map) RcGrant.fromJson(item),
+    ];
     return RemoteControlState(
       machineId: syncText(json['machine_id']),
       machines: [
@@ -214,14 +214,14 @@ class RemoteMessage {
   });
 
   factory RemoteMessage.fromJson(Map json) => RemoteMessage(
-        role: syncText(json['role']),
-        content: syncText(json['content']),
-        reasoning: syncText(json['reasoning_content']),
-        resultStatus: syncText(json['result_status']),
-        filePaths: [
-          for (final p in syncList(json['local_file_paths'])) syncText(p),
-        ],
-      );
+    role: syncText(json['role']),
+    content: syncText(json['content']),
+    reasoning: syncText(json['reasoning_content']),
+    resultStatus: syncText(json['result_status']),
+    filePaths: [
+      for (final p in syncList(json['local_file_paths'])) syncText(p),
+    ],
+  );
 }
 
 /// One produced artifact summary (`ProjectSearchArtifact`).
@@ -241,12 +241,12 @@ class RemoteArtifact {
   });
 
   factory RemoteArtifact.fromJson(Map json) => RemoteArtifact(
-        title: syncText(json['title']),
-        sourceType: syncText(json['source_type']),
-        sourceHint: syncText(json['source_hint']),
-        preview: syncText(json['preview']),
-        updatedAt: syncText(json['updated_at']),
-      );
+    title: syncText(json['title']),
+    sourceType: syncText(json['source_type']),
+    sourceHint: syncText(json['source_hint']),
+    preview: syncText(json['preview']),
+    updatedAt: syncText(json['updated_at']),
+  );
 }
 
 /// `get_task` result.
@@ -287,9 +287,9 @@ class RemoteDirEntry {
   const RemoteDirEntry({required this.name, required this.path});
 
   factory RemoteDirEntry.fromJson(Map json) => RemoteDirEntry(
-        name: syncText(json['name']),
-        path: syncText(json['path']),
-      );
+    name: syncText(json['name']),
+    path: syncText(json['path']),
+  );
 }
 
 /// One `list_dirs` browse page for the new-task working-directory picker.
@@ -313,17 +313,17 @@ class RemoteDirList {
   });
 
   factory RemoteDirList.fromJson(Map json) => RemoteDirList(
-        path: syncText(json['path']),
-        parent: syncText(json['parent']),
-        home: syncText(json['home']),
-        defaultDir: syncText(json['default_dir']),
-        roots: [for (final r in syncList(json['roots'])) syncText(r)],
-        dirs: [
-          for (final item in syncList(json['dirs']))
-            if (item is Map) RemoteDirEntry.fromJson(item),
-        ],
-        truncated: json['truncated'] == true,
-      );
+    path: syncText(json['path']),
+    parent: syncText(json['parent']),
+    home: syncText(json['home']),
+    defaultDir: syncText(json['default_dir']),
+    roots: [for (final r in syncList(json['roots'])) syncText(r)],
+    dirs: [
+      for (final item in syncList(json['dirs']))
+        if (item is Map) RemoteDirEntry.fromJson(item),
+    ],
+    truncated: json['truncated'] == true,
+  );
 }
 
 /// `fetch_file` result — bytes travel base64 inside the op result.
@@ -332,15 +332,11 @@ class RemoteFile {
   final int size;
   final String dataBase64;
 
-  const RemoteFile({
-    this.name = '',
-    this.size = 0,
-    this.dataBase64 = '',
-  });
+  const RemoteFile({this.name = '', this.size = 0, this.dataBase64 = ''});
 
   factory RemoteFile.fromJson(Map json) => RemoteFile(
-        name: syncText(json['name']),
-        size: syncInt(json['size']),
-        dataBase64: syncText(json['data_base64']),
-      );
+    name: syncText(json['name']),
+    size: syncInt(json['size']),
+    dataBase64: syncText(json['data_base64']),
+  );
 }

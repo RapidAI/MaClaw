@@ -175,6 +175,10 @@ type petStorePublicPack struct {
 	PurchaseCount int64  `json:"purchase_count"`
 	SalesAmount   int64  `json:"sales_amount"`
 	CreatedAt     string `json:"created_at"`
+	// UpdatedAt advances on every republish — including uploads that keep the
+	// same declared version — so installed clients can detect a newer package
+	// even when version comparison alone would miss it.
+	UpdatedAt string `json:"updated_at"`
 	// PreviewDataURL is a small, sanitized JPEG thumbnail made from the pack's
 	// own raster assets. It lets buyers recognize the pet without exposing the
 	// installable archive or an asset download URL.
@@ -229,7 +233,7 @@ func publicPetStorePack(p *petStorePack) petStorePublicPack {
 	if p == nil {
 		return petStorePublicPack{}
 	}
-	return petStorePublicPack{ID: p.ID, SourcePackID: p.SourcePackID, Name: p.Name, Description: p.Description, Version: p.Version, Price: p.Price, PackageSize: p.PackageSize, DownloadCount: p.DownloadCount, PurchaseCount: p.PurchaseCount, SalesAmount: p.SalesAmount, CreatedAt: p.CreatedAt, PreviewDataURL: petStorePackPreviewDataURL(p.ZipPath)}
+	return petStorePublicPack{ID: p.ID, SourcePackID: p.SourcePackID, Name: p.Name, Description: p.Description, Version: p.Version, Price: p.Price, PackageSize: p.PackageSize, DownloadCount: p.DownloadCount, PurchaseCount: p.PurchaseCount, SalesAmount: p.SalesAmount, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, PreviewDataURL: petStorePackPreviewDataURL(p.ZipPath)}
 }
 
 // petStorePackPreviewDataURL selects the first valid raster asset from a

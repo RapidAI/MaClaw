@@ -35,12 +35,13 @@ func TestNoneDesktopBotDropsDesktopToolsAndKeepsServerWeb(t *testing.T) {
 		functionToolDefinition("web_fetch", "fetch a public page", nil),
 		functionToolDefinition("memory_search", "search memory", nil),
 		functionToolDefinition("ask_user", "ask", nil),
+		functionToolDefinition("delegate_task", "run a sub-agent on this machine", nil),
 	}) {
 		fn, _ := tool["function"].(map[string]interface{})
 		desc, _ := fn["description"].(string)
 		kept[tooldef.Name(tool)] = desc
 	}
-	for _, name := range []string{"desktop", "local_computer", "browser", "computer_use", "computer_observe", "bash", "read_file"} {
+	for _, name := range []string{"desktop", "local_computer", "browser", "computer_use", "computer_observe", "bash", "read_file", "delegate_task"} {
 		if _, ok := kept[name]; ok {
 			t.Fatalf("none bot kept %s", name)
 		}
@@ -61,6 +62,9 @@ func TestNoneDesktopBotDropsDesktopToolsAndKeepsServerWeb(t *testing.T) {
 	}
 	if allowed, _ := none.IsToolCallAllowed("computer_observe", `{}`); allowed {
 		t.Fatal("computer call was allowed")
+	}
+	if allowed, reason := none.IsToolCallAllowed("delegate_task", `{"request":"run"}`); allowed || reason == "" {
+		t.Fatalf("delegate call allowed=%v reason=%q", allowed, reason)
 	}
 
 	normal := &coreAgentCallbacks{

@@ -87,6 +87,21 @@ func (s *Service) ownerToken(ctx context.Context, tenantID, owner string) (recor
 	if nodeID := ownerNodeID(rec, owner); nodeID != "" {
 		return s.finishNodeOwnerToken(ctx, tenantID, owner, nodeID)
 	}
+	return s.ownerTokenPublic(ctx, tenantID, owner)
+}
+
+// ownerTokenPublic is the bearer for the tenant's public MaClawSrv. It does
+// not follow an owner pin. A bot created on the cloud computer keeps that
+// srv even after the owner is later pinned to a local node.
+func (s *Service) ownerTokenPublic(ctx context.Context, tenantID, owner string) (record, string, error) {
+	owner = strings.TrimSpace(owner)
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return record{}, "", err
+	}
+	if owner == "" {
+		return rec, s.sharedBearer(ctx, rec), nil
+	}
 	if strings.TrimSpace(rec.AdminSecret) == "" {
 		return record{}, "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
 	}

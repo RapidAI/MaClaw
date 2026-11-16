@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -58,4 +60,31 @@ func httptestNew(t *testing.T, method, path string) *http.Request {
 		t.Fatal(err)
 	}
 	return req
+}
+
+func TestEdgeRoutesStayUnregisteredWhenTheSwitchIsOff(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "")
+	handler, _ := newAdminRouterTestServices(t)
+	for _, path := range []string{
+		"/api/v1/edge/link",
+		"/api/v1/edge/enroll",
+		"/api/v1/desktop-cdp/ticket/json",
+		"/api/v1/bots/desktop-node",
+	} {
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, httptestNew(t, http.MethodGet, path))
+		if resp.Code != http.StatusNotFound || !strings.Contains(resp.Body.String(), "404 page not found") {
+			t.Fatalf("%s = %d %q", path, resp.Code, resp.Body.String())
+		}
+	}
+}
+
+func TestEdgeRoutesExistWhenTheSwitchIsOn(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	handler, _ := newAdminRouterTestServices(t)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, httptestNew(t, http.MethodGet, "/api/v1/bots/desktop-node"))
+	if resp.Code == http.StatusNotFound || strings.Contains(resp.Body.String(), "404 page not found") {
+		t.Fatalf("desktop-node = %d %q", resp.Code, resp.Body.String())
+	}
 }

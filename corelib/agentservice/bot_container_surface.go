@@ -74,6 +74,12 @@ func (c *coreAgentCallbacks) botHasNoDesktop() bool {
 	return strings.TrimSpace(c.runtimeRequest.Instance.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
 }
 
+// hubBotDropsInProcessDelegate is the in-process sub-agent. A Hub bot,
+// including one with no computer, does not get it.
+func (c *coreAgentCallbacks) hubBotDropsInProcessDelegate(name string) bool {
+	return c != nil && c.hubBotInstance() && strings.TrimSpace(name) == "delegate_task"
+}
+
 func (c *coreAgentCallbacks) botUsesContainer() bool {
 	if c == nil || c.botHasNoDesktop() {
 		return false
@@ -192,7 +198,8 @@ func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) [
 	if c.botHasNoDesktop() {
 		kept := make([]map[string]interface{}, 0, len(tools))
 		for _, tool := range tools {
-			if noneDesktopDropsTool(tooldef.Name(tool)) {
+			name := tooldef.Name(tool)
+			if noneDesktopDropsTool(name) || c.hubBotDropsInProcessDelegate(name) {
 				continue
 			}
 			kept = append(kept, tool)
@@ -212,12 +219,14 @@ func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) [
 		if c.botMissesContainer(name) {
 			continue
 		}
-		if name == "delegate_task" && c.hubBotInstance() {
+		if c.hubBotDropsInProcessDelegate(name) {
 			// A Hub bot hands work to a teammate with desktop
 			// action=delegate. The in-process sub-agent is not a teammate:
 			// asked to "let collab-b write it", the bot ran delegate_task
 			// and reported the sub-agent's code as collab-b's, with no
-			// note in Hub (papers 2026-10-30 run_928f4029).
+			// note in Hub (papers 2026-10-30 run_928f4029). A bot with no
+			// computer has the same hole: the sub-agent would run on the
+			// server.
 			continue
 		}
 		if name == "web_search" || name == "web_fetch" {

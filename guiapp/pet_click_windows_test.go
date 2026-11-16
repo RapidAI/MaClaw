@@ -42,9 +42,30 @@ func testPetClickWindowMotion(t *testing.T) {
 
 	dragged := &windowsFloatingWindow{petSkin: "ragdoll", petMotionEnabled: true}
 	dragged.armPetPointerHover(time.Now().Add(-petHoverCooldown - time.Second))
+	dragged.petRoam.EdgeOn = true
 	dragged.finishPetDrag()
 	if dragged.petHoverDue(time.Now().Add(time.Second)) {
 		t.Fatal("drag end left hover free to replace it")
+	}
+	dragged.mu.Lock()
+	edgeOn := dragged.petRoam.EdgeOn
+	dragged.mu.Unlock()
+	if edgeOn {
+		t.Fatal("drag end kept the old border position")
+	}
+	testPetDragBraceHolds(t)
+}
+
+func testPetDragBraceHolds(t *testing.T) {
+	w := &windowsFloatingWindow{petSkin: "ragdoll", petMotionEnabled: true}
+	w.holdPetDragBrace("ragdoll", "")
+	renderer := w.characterRenderer("ragdoll", "")
+	if renderer == nil || renderer.PlayingBody() != petDragBraceClip {
+		t.Fatal("drag did not hold the picked-up pose")
+	}
+	w.holdPetDragBrace("ragdoll", "")
+	if renderer.PlayingBody() != petDragBraceClip {
+		t.Fatal("second hold dropped the picked-up pose")
 	}
 }
 

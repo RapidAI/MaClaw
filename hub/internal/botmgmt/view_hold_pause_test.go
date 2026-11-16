@@ -3,6 +3,7 @@ package botmgmt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -84,5 +85,14 @@ func TestHoldDesktopViewNoViewHoldWhenDemoSkillOff(t *testing.T) {
 	_ = svc.ReleaseUserDesktopView(context.Background(), "tenant-v", "alice", "bot_iso")
 	if len(desk.ops) != 0 {
 		t.Fatalf("flag off sent %v", desk.ops)
+	}
+}
+
+func TestHandBackSaysTheNodeIsOffline(t *testing.T) {
+	svc, desk := newViewHoldService(t)
+	desk.err = errors.New("desktop service: node is offline")
+	err := svc.HandBackDesktop(context.Background(), "tenant-v", "alice", "bot_iso")
+	if !errors.Is(err, ErrNodeOffline) {
+		t.Fatalf("hand back %v", err)
 	}
 }

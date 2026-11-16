@@ -11,6 +11,8 @@ export interface DesktopBot {
     primary?: boolean;
     // shared, isolated, or none. Missing means the shared computer.
     desktopMode?: string;
+    // Local computer this bot uses. Empty is the cloud computer.
+    nodeId?: string;
 }
 
 export type BotPhase = 'plan' | 'execute';

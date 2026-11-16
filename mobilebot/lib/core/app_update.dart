@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -12,8 +13,7 @@ const githubLatestManifestUrl =
     'https://github.com/RapidAI/MaClaw/releases/latest/download/latest.json';
 const r2LatestManifestUrl =
     'https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest.json';
-const r2PublicBaseUrl =
-    'https://pub-c837069cbe31469590a5fea6235b436b.r2.dev';
+const r2PublicBaseUrl = 'https://pub-c837069cbe31469590a5fea6235b436b.r2.dev';
 const githubReleaseDownloadBase =
     'https://github.com/RapidAI/MaClaw/releases/download';
 const releasePageUrl = 'https://github.com/RapidAI/MaClaw/releases/latest';
@@ -68,8 +68,9 @@ int compareVersions(String a, String b) {
   final numA = pa.first.split('.');
   final numB = pb.first.split('.');
   for (var i = 0; i < numA.length || i < numB.length; i++) {
-    int at(List<String> p) =>
-        i < p.length ? int.tryParse(RegExp(r'^\d+').firstMatch(p[i])?.group(0) ?? '0') ?? 0 : 0;
+    int at(List<String> p) => i < p.length
+        ? int.tryParse(RegExp(r'^\d+').firstMatch(p[i])?.group(0) ?? '0') ?? 0
+        : 0;
     final d = at(numA) - at(numB);
     if (d != 0) return d > 0 ? 1 : -1;
   }
@@ -87,8 +88,9 @@ int compareVersions(String a, String b) {
   int preNum(List<String> parts) => parts.length < 2
       ? 0
       : int.tryParse(
-              RegExp(r'(\d+)$').firstMatch(parts.last)?.group(1) ?? '0') ??
-          0;
+              RegExp(r'(\d+)$').firstMatch(parts.last)?.group(1) ?? '0',
+            ) ??
+            0;
   final n = preNum(pa) - preNum(pb);
   return n == 0 ? 0 : (n > 0 ? 1 : -1);
 }
@@ -130,14 +132,18 @@ class AppUpdater {
     final completer = Completer<AppUpdate?>();
     var pending = sources.length;
     for (final s in sources) {
-      unawaited(_fetchManifest(s.url).then((update) {
-        if (!completer.isCompleted) completer.complete(update);
-      }).catchError((Object e) {
-        errors.add('${s.name}: $e');
-        if (--pending == 0 && !completer.isCompleted) {
-          completer.complete(null);
-        }
-      }));
+      unawaited(
+        _fetchManifest(s.url)
+            .then((update) {
+              if (!completer.isCompleted) completer.complete(update);
+            })
+            .catchError((Object e) {
+              errors.add('${s.name}: $e');
+              if (--pending == 0 && !completer.isCompleted) {
+                completer.complete(null);
+              }
+            }),
+      );
     }
     final update = await completer.future.timeout(
       const Duration(seconds: 15),
@@ -154,23 +160,31 @@ class AppUpdater {
       cleanCurrent = cleanCurrent.substring(1);
     }
     if (compareVersions(update.tag, cleanCurrent) > 0) {
-      return UpdateCheckResult(
-          update: update, latestVersion: update.version);
+      return UpdateCheckResult(update: update, latestVersion: update.version);
     }
     return UpdateCheckResult(latestVersion: update.version);
   }
 
   Future<AppUpdate> _fetchManifest(String url) async {
-    final resp = await _dio.get<Map<String, dynamic>>(
+    // ResponseType.plain on purpose: GitHub's /latest/download redirect
+    // serves octet-stream, so the json typed getter would hand back a
+    // String and the Map cast would throw before we could decode it.
+    final resp = await _dio.get<String>(
       url,
       options: Options(
         sendTimeout: const Duration(seconds: 5),
         receiveTimeout: const Duration(seconds: 5),
-        responseType: ResponseType.json,
+        responseType: ResponseType.plain,
         headers: const {'User-Agent': 'MaClawGo'},
       ),
     );
-    final manifest = _asMap(resp.data);
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(resp.data ?? '');
+    } on FormatException {
+      throw FormatException('manifest is not JSON: $url');
+    }
+    final manifest = _asMap(decoded);
     var tag = (manifest['tag'] ?? manifest['version'] ?? '').toString().trim();
     if (tag.isEmpty) {
       throw FormatException('manifest has no tag/version: $url');
@@ -184,7 +198,10 @@ class AppUpdater {
       '$r2PublicBaseUrl/releases/${Uri.encodeComponent(tag)}/${Uri.encodeComponent(updateAssetName)}',
       '$r2PublicBaseUrl/latest/$updateAssetName',
       '$githubReleaseDownloadBase/${Uri.encodeComponent(tag)}/${Uri.encodeComponent(updateAssetName)}',
-      for (final u in [...(asset['urls'] is List ? asset['urls'] as List : const []), asset['url']])
+      for (final u in [
+        ...(asset['urls'] is List ? asset['urls'] as List : const []),
+        asset['url'],
+      ])
         if (isReleaseMirrorUrl(u.toString())) u.toString().trim(),
     ];
     return AppUpdate(
@@ -207,7 +224,8 @@ class AppUpdater {
     Object? lastError;
     for (final url in update.downloadUrls) {
       final tmp = File(
-          '${Directory.systemTemp.path}${Platform.pathSeparator}maclawgo-update.apk');
+        '${Directory.systemTemp.path}${Platform.pathSeparator}maclawgo-update.apk',
+      );
       try {
         await _dio.download(
           url,
@@ -222,8 +240,7 @@ class AppUpdater {
         );
         if (update.sha256.isNotEmpty) {
           final digest = await sha256.bind(tmp.openRead()).first;
-          if (digest.toString().toLowerCase() !=
-              update.sha256.toLowerCase()) {
+          if (digest.toString().toLowerCase() != update.sha256.toLowerCase()) {
             lastError = 'sha256 mismatch';
             await tmp.delete().onError((_, _) => tmp);
             continue;

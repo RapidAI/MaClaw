@@ -2269,6 +2269,10 @@ export function GetPetStoreCreatorReport(arg1, arg2) {
   return window['go']['main']['App']['GetPetStoreCreatorReport'](arg1, arg2);
 }
 
+export function GetPetStoreInstalledPackDetails(arg1) {
+  return window['go']['main']['App']['GetPetStoreInstalledPackDetails'](arg1);
+}
+
 export function GetPetStoreRankings() {
   return window['go']['main']['App']['GetPetStoreRankings']();
 }
@@ -5332,6 +5336,22 @@ export function DeployDesktopNode(arg1) {
 
 export function DeployHub(arg1) {
   return window['go']['main']['App']['DeployHub'](arg1);
+}
+
+export function DeployBotNode(arg1) {
+  return window['go']['main']['App']['DeployBotNode'](arg1);
+}
+
+export function RegisterBotNode(arg1) {
+  return window['go']['main']['App']['RegisterBotNode'](arg1);
+}
+
+export function ListBotNodes() {
+  return window['go']['main']['App']['ListBotNodes']();
+}
+
+export function ClearBotNodeResult(arg1) {
+  return window['go']['main']['App']['ClearBotNodeResult'](arg1);
 }
 
 export function ListHubDeploys() {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './UtilitiesPage.css';
 import { EventsOn, BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime';
-import { ClearHubDeployResult, DeployHub, ListHubDeploys } from '../../../wailsjs/go/main/App';
+import { ClearBotNodeResult, ClearHubDeployResult, DeployBotNode, DeployHub, ListBotNodes, ListHubDeploys, RegisterBotNode } from '../../../wailsjs/go/main/App';
 import { EVENT_EXPERTS_CHANGED, EVENT_SURVEY_UPDATED } from '../../constants/events';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { useDialog } from '../CustomDialog';
@@ -55,7 +55,7 @@ import { tailText } from '../../i18n/mnTail'
 
 export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
 
-type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'virtual-repository' | 'browser-extension' | 'hub-deploy';
+type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'virtual-repository' | 'browser-extension' | 'hub-deploy' | 'bot-node';
 
 type HubDeployRow = {
     id: string;
@@ -78,6 +78,30 @@ function hubDeployStatusText(row: HubDeployRow): string {
         case 'deploying': return '正在安装';
         case 'registering': return '正在注册';
         case 'ready': return '已完成';
+        case 'failed': return '失败';
+        default: return row.status;
+    }
+}
+
+type BotNodeRow = {
+    id: string;
+    name?: string;
+    host: string;
+    port?: number;
+    user?: string;
+    can_sudo?: boolean;
+    with_srv?: boolean;
+    hub_url?: string;
+    node_id?: string;
+    status: string;
+    message?: string;
+};
+
+function botNodeStatusText(row: BotNodeRow): string {
+    switch (row.status) {
+        case 'deploying': return '正在安装';
+        case 'registering': return '正在向 Hub 注册';
+        case 'ready': return '已注册';
         case 'failed': return '失败';
         default: return row.status;
     }
@@ -206,7 +230,7 @@ function getApp(): Promise<any | null> {
 }
 
 /** Stroke icons for home tool cards — same conventions as the AppsPage icon set. */
-const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' }) => {
+const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' | 'node' }) => {
     const common = {
         viewBox: '0 0 24 24',
         fill: 'none',
@@ -259,6 +283,15 @@ const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repos
                     <rect x="3" y="4" width="18" height="6" rx="1.5" />
                     <rect x="3" y="14" width="18" height="6" rx="1.5" />
                     <path d="M7 7h.01M7 17h.01" />
+                </svg>
+            );
+        case 'node':
+            return (
+                <svg {...common}>
+                    <circle cx="6" cy="12" r="2.2" />
+                    <circle cx="18" cy="7" r="2.2" />
+                    <circle cx="18" cy="17" r="2.2" />
+                    <path d="M8.2 11.2 15.8 8M8.2 12.8 15.8 16" />
                 </svg>
             );
     }
@@ -490,6 +523,18 @@ export const UtilitiesPage = ({
     const [hubBusy, setHubBusy] = useState(false);
     const [hubError, setHubError] = useState('');
     const [hubRows, setHubRows] = useState<HubDeployRow[]>([]);
+    const [botName, setBotName] = useState('');
+    const [botHost, setBotHost] = useState('');
+    const [botPort, setBotPort] = useState('22');
+    const [botUser, setBotUser] = useState('');
+    const [botPassword, setBotPassword] = useState('');
+    const [botSudo, setBotSudo] = useState(false);
+    const [botWithSrv, setBotWithSrv] = useState(false);
+    const [botCode, setBotCode] = useState('');
+    const [botBusy, setBotBusy] = useState(false);
+    const [botError, setBotError] = useState('');
+    const [botRows, setBotRows] = useState<BotNodeRow[]>([]);
+    const [botRetry, setBotRetry] = useState<Record<string, { password: string; code: string }>>({});
     // The tools and AI expert entries share the same lazy page instance. A
     // sub-page (for example, the survey editor) must never leak into the
     // other entry when the user switches the left rail button.
@@ -1315,6 +1360,18 @@ export const UtilitiesPage = ({
         hubDeployConfirm: tailText(lang ?? "", 'Install', '确认安装'),
         hubDeployWorking: tailText(lang ?? "", 'Installing…', '正在安装…'),
         hubDeployEmpty: tailText(lang ?? "", 'No Hub installs yet', '还没有部署记录'),
+        botNodeCard: tailText(lang ?? "", 'Private bot node', '私有Bot节点'),
+        botNodeDesc: tailText(lang ?? "", 'Install desktopd and a bot node, then register it to this Hub with an enroll code', '安装 desktopd 与 bot 节点，并用注册码注册到当前 Hub'),
+        botNodeName: tailText(lang ?? "", 'Name (optional)', '名称（可选）'),
+        botNodeSudo: tailText(lang ?? "", 'This account can sudo', '这个账号可以 sudo'),
+        botNodeWithSrv: tailText(lang ?? "", 'Also install MaClawSrv', '同时安装 MaClawSrv'),
+        botNodeCode: tailText(lang ?? "", 'Enroll code', '注册码'),
+        botNodeCodeHint: tailText(lang ?? "", 'Ask the Hub admin: Bot management, Bot nodes, Generate intranet enroll code. 16 hex digits, valid for 3 hours, one use. The install waits until desktopd is healthy, then botnode exchanges this code with this Hub.', '向已连接 Hub 的管理员要：Bot 管理 → Bot 节点 → 生成内网注册码。16 位，3 小时内有效，只能用一次。安装会等 desktopd 健康后，再用这个码向这台 Hub 注册。'),
+        botNodeConfirm: tailText(lang ?? "", 'Install and register', '确认安装并注册'),
+        botNodeWorking: tailText(lang ?? "", 'Installing…', '正在安装…'),
+        botNodeEmpty: tailText(lang ?? "", 'No private nodes yet', '还没有私有节点'),
+        botNodeRegister: tailText(lang ?? "", 'Register with a new code', '用新码注册'),
+        botNodeRegisterHint: tailText(lang ?? "", 'The previous code was not reused. Ask the admin for a new one after desktopd is healthy.', '不会重试旧码。desktopd 已经健康时，向管理员要一张新码再注册。'),
         browserExtensionCard: tailText(lang ?? "", 'Browser extension', '浏览器插件', '瀏覽器外掛'),
         browserExtensionDesc: tailText(lang ?? "", 'Download a paper from Chrome, Edge, or Safari into Companion.', '从 Chrome、Edge 或 Safari 把论文下载到伴读。', '從 Chrome、Edge 或 Safari 把論文下載到伴讀。'),
         browserExtensionRemove: tailText(lang ?? "", 'Remove registration', '移除登记', '移除登記'),
@@ -2372,6 +2429,136 @@ export const UtilitiesPage = ({
             if (mountedRef.current) setHubBusy(false);
         }
     };
+    const refreshBotNodes = useCallback(async () => {
+        try {
+            const rows = await ListBotNodes();
+            if (!mountedRef.current) return;
+            setBotRows(Array.isArray(rows) ? rows as BotNodeRow[] : []);
+        } catch (err) {
+            if (!mountedRef.current) return;
+            setBotError(err instanceof Error ? err.message : String(err));
+        }
+    }, []);
+    useEffect(() => {
+        if (!active || view !== 'bot-node') return;
+        void refreshBotNodes();
+        const off = EventsOn('bot-nodes-changed', () => { void refreshBotNodes(); });
+        return () => { if (typeof off === 'function') off(); };
+    }, [active, view, refreshBotNodes]);
+    const submitBotNode = async () => {
+        setBotError('');
+        setBotBusy(true);
+        try {
+            await DeployBotNode({
+                name: botName.trim(),
+                host: botHost.trim(),
+                port: Number(botPort) || 22,
+                user: botUser.trim(),
+                password: botPassword,
+                can_sudo: botSudo,
+                with_srv: botWithSrv,
+                enroll_code: botCode.trim(),
+            });
+            setBotPassword('');
+            setBotCode('');
+            await refreshBotNodes();
+        } catch (err) {
+            if (mountedRef.current) setBotError(err instanceof Error ? err.message : String(err));
+        } finally {
+            if (mountedRef.current) setBotBusy(false);
+        }
+    };
+    const submitBotNodeEnroll = async (id: string) => {
+        const draft = botRetry[id] ?? { password: '', code: '' };
+        setBotError('');
+        setBotBusy(true);
+        try {
+            await RegisterBotNode({ id, password: draft.password, enroll_code: draft.code.trim() });
+            setBotRetry((prev) => ({ ...prev, [id]: { password: '', code: '' } }));
+            await refreshBotNodes();
+        } catch (err) {
+            if (mountedRef.current) setBotError(err instanceof Error ? err.message : String(err));
+        } finally {
+            if (mountedRef.current) setBotBusy(false);
+        }
+    };
+    if (view === 'bot-node') {
+        return (
+            <div className="utilities-page" data-testid="bot-node-panel" data-mode={mode}>
+                <div className="utilities-page__header">
+                    <button type="button" className="utilities-link" onClick={() => setView('home')} disabled={botBusy}>{t.back}</button>
+                    <h2 className="utilities-page__title">{t.botNodeCard}</h2>
+                    <p className="utilities-page__subtitle">{t.botNodeDesc}</p>
+                </div>
+                {botError ? <p className="utilities-error" role="alert">{botError}</p> : null}
+                <form className="utilities-field" onSubmit={(event) => { event.preventDefault(); void submitBotNode(); }}>
+                    <label className="utilities-field">{t.botNodeName}
+                        <input className="utilities-input" value={botName} onChange={(event) => setBotName(event.target.value)} autoComplete="off" />
+                    </label>
+                    <label className="utilities-field">IP
+                        <input className="utilities-input" value={botHost} onChange={(event) => setBotHost(event.target.value)} autoComplete="off" required />
+                    </label>
+                    <label className="utilities-field">{tailText(lang ?? '', 'SSH port', 'SSH 端口')}
+                        <input className="utilities-input" value={botPort} onChange={(event) => setBotPort(event.target.value)} inputMode="numeric" />
+                    </label>
+                    <label className="utilities-field">{tailText(lang ?? '', 'SSH user', 'SSH 用户')}
+                        <input className="utilities-input" value={botUser} onChange={(event) => setBotUser(event.target.value)} autoComplete="off" required />
+                    </label>
+                    <label className="utilities-field">{tailText(lang ?? '', 'SSH password', 'SSH 密码')}
+                        <input className="utilities-input" type="password" value={botPassword} onChange={(event) => setBotPassword(event.target.value)} autoComplete="off" required />
+                    </label>
+                    <label className="utilities-field">
+                        <input type="checkbox" checked={botSudo} onChange={(event) => setBotSudo(event.target.checked)} /> {t.botNodeSudo}
+                    </label>
+                    <label className="utilities-field">
+                        <input type="checkbox" checked={botWithSrv} onChange={(event) => setBotWithSrv(event.target.checked)} /> {t.botNodeWithSrv}
+                    </label>
+                    <label className="utilities-field">{t.botNodeCode}
+                        <input className="utilities-input" value={botCode} onChange={(event) => setBotCode(event.target.value)} autoComplete="off" spellCheck={false} required />
+                    </label>
+                    <p className="utilities-page__subtitle">{t.botNodeCodeHint}</p>
+                    <button type="submit" className="utilities-btn" disabled={botBusy}>{botBusy ? t.botNodeWorking : t.botNodeConfirm}</button>
+                </form>
+                {botRows.length === 0 ? <p className="utilities-page__subtitle">{t.botNodeEmpty}</p> : (
+                    <ul data-testid="bot-node-list">
+                        {botRows.map((row) => {
+                            const retry = botRetry[row.id] ?? { password: '', code: '' };
+                            const canRetry = row.status === 'failed' && !row.node_id;
+                            return (
+                                <li key={row.id}>
+                                    <div>{row.name || `${row.user}@${row.host}`} · {row.user}@{row.host}:{row.port || 22} · {botNodeStatusText(row)}{row.with_srv ? ' · MaClawSrv' : ''}</div>
+                                    {row.hub_url ? <div>{row.hub_url}</div> : null}
+                                    {row.node_id ? <div>{row.node_id}</div> : null}
+                                    {row.message ? <div>{row.message}</div> : null}
+                                    {canRetry ? (
+                                        <form className="utilities-field" onSubmit={(event) => { event.preventDefault(); void submitBotNodeEnroll(row.id); }}>
+                                            <p className="utilities-page__subtitle">{t.botNodeRegisterHint}</p>
+                                            <label className="utilities-field">{tailText(lang ?? '', 'SSH password', 'SSH 密码')}
+                                                <input className="utilities-input" type="password" value={retry.password} autoComplete="off" onChange={(event) => {
+                                                    const value = event.target.value;
+                                                    setBotRetry((prev) => ({ ...prev, [row.id]: { password: value, code: prev[row.id]?.code ?? '' } }));
+                                                }} required />
+                                            </label>
+                                            <label className="utilities-field">{t.botNodeCode}
+                                                <input className="utilities-input" value={retry.code} autoComplete="off" spellCheck={false} onChange={(event) => {
+                                                    const value = event.target.value;
+                                                    setBotRetry((prev) => ({ ...prev, [row.id]: { password: prev[row.id]?.password ?? '', code: value } }));
+                                                }} required />
+                                            </label>
+                                            <button type="submit" className="utilities-btn" disabled={botBusy}>{t.botNodeRegister}</button>
+                                        </form>
+                                    ) : null}
+                                    {row.status !== 'deploying' && row.status !== 'registering' ? (
+                                        <button type="button" className="utilities-link" onClick={() => { void ClearBotNodeResult(row.id).then(() => refreshBotNodes()); }}>{t.delete}</button>
+                                    ) : null}
+                                </li>
+                            );
+                        })}
+                    </ul>
+                )}
+            </div>
+        );
+    }
     if (view === 'hub-deploy') {
         return (
             <div className="utilities-page" data-testid="hub-deploy-panel" data-mode={mode}>
@@ -2507,7 +2694,7 @@ export const UtilitiesPage = ({
     if (view === 'home') {
         const toolCards: Array<{
             key: string;
-            icon: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub';
+            icon: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' | 'node';
             title: string;
             desc: string;
             cta: string;
@@ -2577,6 +2764,14 @@ export const UtilitiesPage = ({
                 starting: vscodeExtStarting,
                 disabled: vscodeStarting || vscodeExtStarting,
                 onClick: () => { void handleLaunchVSCodeExt(); },
+            },
+            {
+                key: 'bot-node',
+                icon: 'node',
+                title: t.botNodeCard,
+                desc: t.botNodeDesc,
+                cta: t.open,
+                onClick: () => setView('bot-node'),
             },
         ];
         // Shared search + market toolbar for both expert surfaces: the

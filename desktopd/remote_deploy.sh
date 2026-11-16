@@ -5,17 +5,30 @@ set -eu
 
 : "${REMOTE_TMP_DIR:=/tmp/maclaw_desktopd_deploy}"
 : "${DESKTOPD_DEPLOY_DIR:=/data/soft/maclaw_desktopd}"
+BIND_ADDR_GIVEN="${DESKTOPD_BIND_ADDR+x}"
 : "${DESKTOPD_BIND_ADDR:=127.0.0.1:18081}"
 : "${DESKTOPD_PORT:=18081}"
 : "${DESKTOPD_ADVERTISE_HOST:=}"
 # 1 marks a desktop installed from the MaClaw GUI. It lives on the user's
 # network and has no public name; Hub reaches it through the node's link.
+INTRANET_GIVEN="${DESKTOPD_INTRANET+x}"
 : "${DESKTOPD_INTRANET:=0}"
 # Accept the same truthy values as desktopd.IntranetEnv, then stick to 1/0.
 case "$(printf '%s' "$DESKTOPD_INTRANET" | tr '[:upper:]' '[:lower:]')" in
   1|true|yes|on) DESKTOPD_INTRANET=1 ;;
   *) DESKTOPD_INTRANET=0 ;;
 esac
+# An existing install keeps its flag when the caller didn't pass one this
+# run: otherwise a rerun could demote an intranet desktop to public, which
+# also forces its LAN bind back to loopback below.
+if [ -z "$INTRANET_GIVEN" ] && grep -qiE '^DESKTOPD_INTRANET=(1|true|yes|on)[[:space:]]*$' "$DESKTOPD_DEPLOY_DIR/.env" 2>/dev/null; then
+  DESKTOPD_INTRANET=1
+fi
+# The intranet default listens on every interface so the GUI can dial the
+# port directly; a public install keeps its loopback default.
+if [ "$DESKTOPD_INTRANET" = "1" ] && [ -z "$BIND_ADDR_GIVEN" ]; then
+  DESKTOPD_BIND_ADDR=":18081"
+fi
 : "${DESKTOPD_IMAGE:=maclaw-gui:2}"
 # Build inputs for maclaw-gui:2 (desktopd/image/Dockerfile.v2). Empty means
 # auto: Tencent Cloud mirrors when the Tencent metadata service answers (no
@@ -111,15 +124,22 @@ fi
 SRC="$REMOTE_TMP_DIR/src"
 ARCHIVE_PATH="$REMOTE_TMP_DIR/desktopd-deploy.tar.gz"
 rm -rf "$SRC"
-mkdir -p "$SRC" "$DESKTOPD_DEPLOY_DIR/bin" "$DESKTOPD_DEPLOY_DIR/image" "$DESKTOPD_DEPLOY_DIR/logs"
+mkdir -p "$SRC" "$DESKTOPD_DEPLOY_DIR/bin" "$DESKTOPD_DEPLOY_DIR/logs"
 tar -xzf "$ARCHIVE_PATH" -C "$SRC"
 cp -f "$SRC/bin/desktopd" "$DESKTOPD_DEPLOY_DIR/bin/desktopd"
 # The whole image directory is kept so the image can be rebuilt by hand:
 #   docker build -f $DESKTOPD_DEPLOY_DIR/image/Dockerfile.v2 ... $DESKTOPD_DEPLOY_DIR/image
-for file in "$SRC"/image/*; do
-  cp -f "$file" "$DESKTOPD_DEPLOY_DIR/image/"
-done
+# Replace it wholesale: subdirectories (theme/) and renames must land, and
+# files dropped upstream must not linger as stale build-context entries.
+# Stage-then-swap so a bad archive never deletes the working copy.
+rm -rf "$DESKTOPD_DEPLOY_DIR/image.new"
+cp -a "$SRC/image" "$DESKTOPD_DEPLOY_DIR/image.new"
+rm -rf "$DESKTOPD_DEPLOY_DIR/image"
+mv "$DESKTOPD_DEPLOY_DIR/image.new" "$DESKTOPD_DEPLOY_DIR/image"
 chmod 755 "$DESKTOPD_DEPLOY_DIR/bin/desktopd" "$DESKTOPD_DEPLOY_DIR/image/desktop_supervisor.py"
+# Shell scripts COPY'd into /usr/bin must keep their exec bit even when the
+# tarball was packed on Windows, which stores no unix modes.
+find "$DESKTOPD_DEPLOY_DIR/image" -name '*.sh' -exec chmod 755 {} +
 
 if [ ! -f "$DESKTOPD_DEPLOY_DIR/.env" ]; then
   TOKEN="$(rand_secret)"
@@ -137,15 +157,20 @@ ENVEOF
   echo "[remote] Created $DESKTOPD_DEPLOY_DIR/.env with a generated token."
 else
   grep -q '^DESKTOPD_ADDR=' "$DESKTOPD_DEPLOY_DIR/.env" || echo "DESKTOPD_ADDR=$DESKTOPD_BIND_ADDR" >> "$DESKTOPD_DEPLOY_DIR/.env"
-  # The public name only proxies this API. Do not leave the process on every interface.
-  if grep -q '^DESKTOPD_ADDR=:' "$DESKTOPD_DEPLOY_DIR/.env" || grep -q '^DESKTOPD_ADDR=0.0.0.0:' "$DESKTOPD_DEPLOY_DIR/.env"; then
-    sed -i "s/^DESKTOPD_ADDR=.*/DESKTOPD_ADDR=127.0.0.1:${DESKTOPD_PORT}/" "$DESKTOPD_DEPLOY_DIR/.env"
-  fi
   grep -q '^DESKTOPD_TOKEN=' "$DESKTOPD_DEPLOY_DIR/.env" || echo "DESKTOPD_TOKEN=$(rand_secret)" >> "$DESKTOPD_DEPLOY_DIR/.env"
   if [ "$DESKTOPD_INTRANET" != "1" ]; then
     grep -q '^DESKTOPD_ADVERTISE_HOST=' "$DESKTOPD_DEPLOY_DIR/.env" || echo "DESKTOPD_ADVERTISE_HOST=$DESKTOPD_ADVERTISE_HOST" >> "$DESKTOPD_DEPLOY_DIR/.env"
   fi
   grep -q '^DESKTOPD_STATE_DIR=' "$DESKTOPD_DEPLOY_DIR/.env" || echo "DESKTOPD_STATE_DIR=$DESKTOPD_DEPLOY_DIR/state" >> "$DESKTOPD_DEPLOY_DIR/.env"
+fi
+# The public name only proxies this API, so a public desktopd must not sit
+# on every interface — force its bind back to loopback, fresh or upgraded.
+# An intranet desktop is the opposite: the GUI dials this port directly,
+# so its LAN bind is kept.
+if [ "$DESKTOPD_INTRANET" != "1" ]; then
+  if grep -q '^DESKTOPD_ADDR=:' "$DESKTOPD_DEPLOY_DIR/.env" || grep -q '^DESKTOPD_ADDR=0\.0\.0\.0:' "$DESKTOPD_DEPLOY_DIR/.env" || grep -qi '^DESKTOPD_ADDR=\[::\]:' "$DESKTOPD_DEPLOY_DIR/.env"; then
+    sed -i "s/^DESKTOPD_ADDR=.*/DESKTOPD_ADDR=127.0.0.1:${DESKTOPD_PORT}/" "$DESKTOPD_DEPLOY_DIR/.env"
+  fi
 fi
 mkdir -p "$DESKTOPD_DEPLOY_DIR/state"
 
@@ -322,6 +347,44 @@ provide_desktop_image() {
   esac
 }
 
+# image_context_missing CONTEXT DOCKERFILE...: print the COPY sources the
+# Dockerfiles expect under CONTEXT that are absent (--from=<stage> sources
+# live in another build stage, not the context). Checking here fails in
+# seconds when a staged image dir is short files, instead of inside a
+# minutes-long docker build at the first COPY.
+# Keep this function byte-identical to the one in
+# desktopd/scripts/check_image_context.sh — this file is uploaded standalone
+# so it cannot source the script, and a Go test diffs the two copies.
+image_context_missing() {
+  ctx="$1"; shift
+  for df; do
+    [ -f "$df" ] || continue
+    # Comment-only and blank lines are removed before joining backslash
+    # continuations: docker drops them inside a continuation too.
+    grep -vE '^[[:space:]]*(#|$)' "$df" | sed -e :a -e '/\\$/{N;s/\\\n/ /;ba}' | sed -nE 's/^[[:space:]]*([Cc][Oo][Pp][Yy]|[Aa][Dd][Dd])[[:space:]]+//p' | while read -r args || [ -n "$args" ]; do
+      set -f; set -- $args; set +f
+      from=0
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --from=*) from=1; shift ;;
+          --*) shift ;;
+          *) break ;;
+        esac
+      done
+      if [ "$from" = 1 ]; then continue; fi
+      # The last word is the destination; every word before it is a context
+      # source (URLs fetched by ADD are not).
+      while [ $# -gt 1 ]; do
+        case "$1" in
+          http://*|https://*) ;;
+          *) [ -e "$ctx/$1" ] || echo "$1" ;;
+        esac
+        shift
+      done
+    done
+  done
+}
+
 # build_desktop_image builds DESKTOPD_IMAGE from Dockerfile.v2. It builds
 # under a temporary tag and checks the result first, so a failed or broken
 # build never replaces the image running desktops use. Only Dockerfile.v2 is
@@ -331,6 +394,13 @@ build_desktop_image() {
   dockerfile="$context/Dockerfile.v2"
   if [ ! -f "$dockerfile" ]; then
     echo "[remote] $dockerfile is missing; refusing to tag another build as $DESKTOPD_IMAGE" >&2
+    exit 1
+  fi
+  missing="$(image_context_missing "$context" "$context"/Dockerfile "$dockerfile" | sort -u)"
+  if [ -n "$missing" ]; then
+    echo "[remote] image build context $context is missing files the Dockerfiles COPY:" >&2
+    printf '%s\n' "$missing" | sed 's/^/[remote]   /' >&2
+    echo "[remote] The deploy did not ship the whole desktopd/image directory. Re-stage and upload it (rollout_desktop_gui2.sh build upload); do not tag a build from a partial context." >&2
     exit 1
   fi
   base="$DESKTOPD_BASE_IMAGE"
@@ -384,6 +454,11 @@ update_legacy_image() {
   script="$DESKTOPD_DEPLOY_DIR/image/desktop_supervisor.py"
   dockerfile="$DESKTOPD_DEPLOY_DIR/image/Dockerfile"
   if [ -f "$dockerfile" ] && docker image inspect "$DESKTOPD_IMAGE" >/dev/null 2>&1; then
+    missing="$(image_context_missing "$DESKTOPD_DEPLOY_DIR/image" "$dockerfile" | sort -u)"
+    if [ -n "$missing" ]; then
+      echo "[remote] image build context is missing files Dockerfile COPYs: $missing; re-stage the whole desktopd/image directory" >&2
+      exit 1
+    fi
     docker build -f "$dockerfile" -t "$DESKTOPD_IMAGE" "$DESKTOPD_DEPLOY_DIR/image"
     echo "[remote] Built $DESKTOPD_IMAGE with the desktop supervisor, noVNC, and /desktops"
   elif docker image inspect "$DESKTOPD_IMAGE" >/dev/null 2>&1; then

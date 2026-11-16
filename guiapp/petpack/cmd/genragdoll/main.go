@@ -514,18 +514,29 @@ func buildRig() *petpack.Rig {
 	add("react_click_notice", clip(760, false, 0, "notice", false, tr().
 		k("root", kf(0, 0, 0, 0, ""), kf(200, 0, -8, 0, "ease-out"), kf(760, 0, 0, 0, "ease-in-out")).
 		k("head", kf(0, 0, 0, 0, ""), kf(220, 0, 0, -12, "ease-out"), kf(760, 0, 0, 0, "ease-in-out"))))
-	add("react_hover_peek", clip(720, false, 0, "notice", false, tr().
-		k("head", kf(0, 0, 0, 0, ""), kf(180, 3, 0, 16, "ease-out"), kf(480, -2, 0, -8, "ease-in-out"), kf(720, 0, 0, 0, "ease-in-out"))))
+	add("react_hover_peek", clip(900, false, 0, "notice", false, tr().
+		k("root", kf(0, 0, 0, 0, ""), kf(240, 8, -8, 0, "ease-out"), kf(620, -4, -3, 0, "ease-in-out"), kf(900, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, 0, 0, 0, ""), kf(240, 2, 0, 22, "ease-out"), kf(620, -2, 0, -12, "ease-in-out"), kf(900, 0, 0, 0, "ease-in-out")).
+		k("arm_r", kf(0, 0, 0, 0, ""), kf(300, 0, -4, -46, "ease-out"), kf(900, 0, 0, 0, "ease-in-out"))))
 	add("react_hover_blink", clip(520, false, 0, "blink", false, tr().
 		k("eyes", kfs(0, 1, ""), kfs(90, 0.16, "ease-out"), kfs(220, 1, "ease-out"), kfs(520, 1, ""))))
-	add("react_drag_brace", clip(520, false, 0, "brace", false, tr().
-		k("root", kf(0, 0, 0, 0, ""), kf(160, 0, 8, 0, "ease-out"), kf(520, 0, 4, 0, "ease-in-out")).
-		k("arm_l", kf(0, 0, 0, 0, ""), kf(240, 0, 0, 28, "ease-out"), kf(520, 0, 0, 16, "ease-in-out")).
-		k("arm_r", kf(0, 0, 0, 0, ""), kf(240, 0, 0, -28, "ease-out"), kf(520, 0, 0, -16, "ease-in-out"))))
-	add("react_drag_release", clip(640, false, 0, "release", false, tr().
-		k("root", kf(0, 0, 4, 0, ""), kf(180, 0, -10, 0, "ease-out"), kf(640, 0, 0, 0, "ease-in-out")).
-		k("arm_l", kf(0, 0, 0, 16, ""), kf(640, 0, 0, 0, "ease-in-out")).
-		k("arm_r", kf(0, 0, 0, -16, ""), kf(640, 0, 0, 0, "ease-in-out"))))
+	// The brace reaches a picked-up pose and holds it. A one-shot that ends
+	// while the button is still down would drop her back into a walk. The
+	// release starts on that same pose so the drop reads as one motion.
+	add("react_drag_brace", clip(60000, false, 0, "brace", false, tr().
+		k("root", kf(0, 0, 0, 0, ""), kf(320, 0, -36, 0, "ease-out"), kf(60000, 0, -36, 0, "")).
+		k("head", kf(0, 0, 0, 0, ""), kf(320, 0, -2, 16, "ease-out"), kf(60000, 0, -2, 16, "")).
+		k("arm_l", kf(0, 0, 0, 0, ""), kf(320, 0, -6, 80, "ease-out"), kf(60000, 0, -6, 80, "")).
+		k("arm_r", kf(0, 0, 0, 0, ""), kf(320, 0, -6, -80, "ease-out"), kf(60000, 0, -6, -80, "")).
+		k("leg_l", kf(0, 0, 0, 0, ""), kf(320, 0, -8, 26, "ease-out"), kf(60000, 0, -8, 26, "")).
+		k("leg_r", kf(0, 0, 0, 0, ""), kf(320, 0, -8, -26, "ease-out"), kf(60000, 0, -8, -26, ""))))
+	add("react_drag_release", clip(760, false, 0, "release", false, tr().
+		k("root", kf(0, 0, -36, 0, ""), kf(160, 0, -50, 0, "ease-out"), kf(420, 0, 8, 0, "ease-in-out"), kf(760, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, 0, -2, 16, ""), kf(760, 0, 0, 0, "ease-in-out")).
+		k("arm_l", kf(0, 0, -6, 80, ""), kf(760, 0, 0, 0, "ease-in-out")).
+		k("arm_r", kf(0, 0, -6, -80, ""), kf(760, 0, 0, 0, "ease-in-out")).
+		k("leg_l", kf(0, 0, -8, 26, ""), kf(760, 0, 0, 0, "ease-in-out")).
+		k("leg_r", kf(0, 0, -8, -26, ""), kf(760, 0, 0, 0, "ease-in-out"))))
 	add("react_task_focus", clip(860, false, 0, "focus", false, tr().
 		k("head", kf(0, 0, 0, 0, ""), kf(300, 2, -4, 6, "ease-out"), kf(860, 0, 0, 0, "ease-in-out")).
 		k("arm_l", kf(0, 0, 0, 0, ""), kf(400, 4, -8, 40, "ease-out"), kf(860, 0, 0, 0, "ease-in-out"))))

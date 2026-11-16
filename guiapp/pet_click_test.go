@@ -12,6 +12,7 @@ func TestPetClickGesture(t *testing.T) {
 	t.Run("drag", testPetClickDrag)
 	t.Run("clips", testPetClickClips)
 	t.Run("credit", testPetClickCredit)
+	t.Run("hover", testPetHoverCredit)
 	t.Run("sideEffect", testPetClickSideEffect)
 	t.Run("hostWait", testPetClickHostWaits)
 	t.Run("session", testPetClickSession)
@@ -334,6 +335,46 @@ func testPetClickCredit(t *testing.T) {
 	added, _ = bare.applyPetClickGesture("mini-claw", petClickDouble, bare.petClickEpoch.Load())
 	if added != double || bare.petRearing.loaded != double {
 		t.Fatalf("pack without the clip rejected the gesture: added %d loaded %d", added, bare.petRearing.loaded)
+	}
+}
+
+func testPetHoverCredit(t *testing.T) {
+	if petHoverCreditMS <= 0 || petHoverCreditMS >= petClickSingleCreditMS || petHoverCreditMS >= petClickCreditCapMS {
+		t.Fatalf("hover credit = %d", petHoverCreditMS)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.stopPetClickTimer()
+		app.closePetRearingDBLocked()
+	})
+	app.petRearing.pack = "ragdoll"
+	app.petRearing.userSize = 224
+	app.petRearing.running = false
+	if added := app.applyPetHoverCredit("ragdoll"); added != 0 || app.petRearing.loaded != 0 {
+		t.Fatalf("hidden hover added %d loaded %d", added, app.petRearing.loaded)
+	}
+	app.petRearing.running = true
+	added := app.applyPetHoverCredit("ragdoll")
+	if added != petHoverCreditMS || app.petRearing.loaded != petHoverCreditMS {
+		t.Fatalf("hover added %d loaded %d", added, app.petRearing.loaded)
+	}
+	if app.applyPetHoverCredit("other") != 0 || app.petRearing.loaded != petHoverCreditMS {
+		t.Fatalf("other pack changed loaded to %d", app.petRearing.loaded)
+	}
+	app.petClickMu.Lock()
+	open := app.petClickBurst.open
+	app.petClickMu.Unlock()
+	if open {
+		t.Fatal("hover opened a click burst")
+	}
+	app.creditDesktopPetHover()
+	if app.petRearing.loaded != 2*petHoverCreditMS {
+		t.Fatalf("live hover loaded = %d", app.petRearing.loaded)
+	}
+	app.petRearing.running = false
+	app.creditDesktopPetHover()
+	if app.petRearing.loaded != 2*petHoverCreditMS {
+		t.Fatalf("hidden live hover loaded = %d", app.petRearing.loaded)
 	}
 }
 

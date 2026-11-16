@@ -106,7 +106,7 @@ func (s *Service) ActiveDesktopRuns(ctx context.Context, tenantID, userID, botID
 	s.mu.Unlock()
 
 	if instanceID != "" {
-		if rows, err := s.srvRunningRuns(ctx, tenantID, userID, instanceID); err == nil {
+		if rows, err := s.srvRunningRuns(ctx, tenantID, userID, instanceID, rec.Bots[index].NodeID); err == nil {
 			for _, run := range rows {
 				id := strings.TrimSpace(run.ID)
 				if id == "" {
@@ -167,10 +167,10 @@ func (s *Service) ActiveDesktopRuns(ctx context.Context, tenantID, userID, botID
 	return items, nil
 }
 
-func (s *Service) srvRunningRuns(ctx context.Context, tenantID, userID, instanceID string) ([]srvRunRow, error) {
+func (s *Service) srvRunningRuns(ctx context.Context, tenantID, userID, instanceID, nodeID string) ([]srvRunRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, nodeID)
 	if err != nil {
 		return nil, err
 	}

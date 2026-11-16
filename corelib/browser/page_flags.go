@@ -71,7 +71,13 @@ const browserPageFlagsCollectJS = `
   const qrLogin = /扫码登录|扫描二维码|扫一扫登录|请用.{0,8}扫码|scan (the )?qr code|qr code to (log in|sign in)/i.test(fullText);
   const signedInChrome = /退出登录|已登录/.test(fullText);
   const phoneEntry = anySelector('input[type=tel], input[autocomplete="tel"], input[name*="phone" i], input[name*="mobile" i], input[id*="phone" i], input[id*="mobile" i]');
-  const typeableLogin = (anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower)) || (phoneEntry && /登录|login|sign in|手机/.test(lower));
+  // The first screen of a sign-in is often only an email or mobile field
+  // (Amazon "Sign in or create account"). A password field is not required.
+  // A homepage that merely links to sign-in is not this page.
+  const accountEntry = anySelector('input[type="email"], input[autocomplete="username"], input[autocomplete="email"], input[name*="email" i], input[id*="email" i]');
+  const signInPage = /sign in or create|sign in to|log in to|enter mobile number or email|手机号或邮箱|请登录|登录或注册|密码登录|账号登录/.test(lower);
+  const loginURL = /\/signin\b|\/signup\b|\/login\b|passport\./i.test(String(location.href || ''));
+  const typeableLogin = (anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower)) || (phoneEntry && /登录|login|sign in|手机/.test(lower)) || (accountEntry && signInPage) || (loginURL && /sign in|log in|登录|create account|邮箱|email|手机号/.test(lower));
   let blockingNotice = '';
   try { blockingNotice = ` + blockingNoticeFnJS + `().join(' | '); } catch (e) {}
   const pageFlags = {

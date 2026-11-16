@@ -15,12 +15,12 @@ enum BotWorkState { idle, running, waitingForUser, awaitingAnswer, failed }
 
 extension BotWorkStateLabel on BotWorkState {
   String label() => switch (this) {
-        BotWorkState.idle => '空闲',
-        BotWorkState.running => '运行中',
-        BotWorkState.waitingForUser => '待接管',
-        BotWorkState.awaitingAnswer => '待回答',
-        BotWorkState.failed => '失败',
-      };
+    BotWorkState.idle => '空闲',
+    BotWorkState.running => '运行中',
+    BotWorkState.waitingForUser => '待接管',
+    BotWorkState.awaitingAnswer => '待回答',
+    BotWorkState.failed => '失败',
+  };
 
   bool get needsUser =>
       this == BotWorkState.waitingForUser ||
@@ -70,29 +70,47 @@ class Bot {
   }
 
   factory Bot.fromJson(Map<String, dynamic> json) => Bot(
-        id: syncText(json['id']).trim(),
-        name: syncTextAny(json['name'], json['title'])
-            .trim(),
-        description: syncText(json['description']).trim(),
-        instanceId: syncText(json['instance_id']).trim(),
-        desktopMode: syncText(json['desktop_mode']).trim(),
-        color: syncText(json['color']).trim(),
-        shape: syncText(json['shape']).trim(),
-        primary: json['primary'] == true,
-        createdAt: DateTime.tryParse(syncText(json['created_at'])),
-      );
+    id: syncText(json['id']).trim(),
+    name: syncTextAny(json['name'], json['title']).trim(),
+    description: syncText(json['description']).trim(),
+    instanceId: syncText(json['instance_id']).trim(),
+    desktopMode: syncText(json['desktop_mode']).trim(),
+    color: syncText(json['color']).trim(),
+    shape: syncText(json['shape']).trim(),
+    primary: json['primary'] == true,
+    createdAt: DateTime.tryParse(syncText(json['created_at'])),
+  );
 }
 
 /// Owner grant for bots that use a computer. A null [limit] is unlimited.
 /// [known] is false when the list response has no `desktop_quota` (an older Hub).
+/// [cloudDesktop] is the assigned-cloud flag; [lanDesktop] is the owner's
+/// pinned node having MaClawSrv. Both are null on older hubs (= available).
 class DesktopBotQuota {
   final int? limit;
   final int used;
   final bool known;
+  final bool? cloudDesktop;
+  final bool? lanDesktop;
 
-  const DesktopBotQuota({this.limit, this.used = 0, this.known = false});
+  const DesktopBotQuota({
+    this.limit,
+    this.used = 0,
+    this.known = false,
+    this.cloudDesktop,
+    this.lanDesktop,
+  });
 
   bool get exhausted => known && limit != null && used >= limit!;
+
+  /// A fresh create has no computer path at all: no assigned cloud desktop
+  /// and no pinned LAN node with srv.
+  bool get computerMissing =>
+      known && cloudDesktop == false && lanDesktop != true;
+
+  /// A node-less none bot flipping to a computer mode needs the cloud
+  /// specifically — a LAN pin does not apply to an already-created bot.
+  bool get cloudMissing => known && cloudDesktop == false;
 
   String get label {
     if (!known) return '';
@@ -100,30 +118,44 @@ class DesktopBotQuota {
     return '已用 $used / $limit';
   }
 
-  DesktopBotQuota bump() =>
-      DesktopBotQuota(limit: limit, used: used + 1, known: known);
+  DesktopBotQuota bump() => DesktopBotQuota(
+    limit: limit,
+    used: used + 1,
+    known: known,
+    cloudDesktop: cloudDesktop,
+    lanDesktop: lanDesktop,
+  );
 
-  DesktopBotQuota drop() =>
-      DesktopBotQuota(limit: limit, used: used > 0 ? used - 1 : 0, known: known);
+  DesktopBotQuota drop() => DesktopBotQuota(
+    limit: limit,
+    used: used > 0 ? used - 1 : 0,
+    known: known,
+    cloudDesktop: cloudDesktop,
+    lanDesktop: lanDesktop,
+  );
 
   factory DesktopBotQuota.fromJson(Object? raw) {
     if (raw is! Map) return const DesktopBotQuota();
     final limitRaw = raw['limit'];
     final usedRaw = raw['used'];
+    final cloudRaw = raw['cloud_desktop'];
+    final lanRaw = raw['lan_desktop'];
     return DesktopBotQuota(
       limit: limitRaw is num ? limitRaw.toInt() : null,
       used: usedRaw is num ? usedRaw.toInt() : 0,
       known: true,
+      cloudDesktop: cloudRaw is bool ? cloudRaw : null,
+      lanDesktop: lanRaw is bool ? lanRaw : null,
     );
   }
 }
 
 /// List mark. An empty mode is the shared computer, matching the desktop client.
 String desktopModeMark(String mode) => switch (mode) {
-      'none' => '无电脑',
-      'isolated' => '电脑·独立',
-      _ => '电脑·共用',
-    };
+  'none' => '无电脑',
+  'isolated' => '电脑·独立',
+  _ => '电脑·共用',
+};
 
 bool botHasComputer(String mode) => mode != 'none';
 
@@ -131,7 +163,8 @@ bool botHasComputer(String mode) => mode != 'none';
 /// desktop dialog runs (trim + collapse whitespace + fold case). The Hub is
 /// still authoritative for full-width and numbered-name forms.
 bool botNameTaken(String name, List<Bot> bots, {String exceptId = ''}) {
-  String norm(String s) => s.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+  String norm(String s) =>
+      s.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
   final want = norm(name);
   if (want.isEmpty) return false;
   return bots.any((b) => b.id != exceptId && norm(b.name) == want);
@@ -146,9 +179,9 @@ class BotAccess {
   static const disabled = BotAccess(enabled: false);
 
   factory BotAccess.fromJson(Map<String, dynamic> json) => BotAccess(
-        enabled: json['enabled'] == true,
-        message: syncText(json['message']).trim(),
-      );
+    enabled: json['enabled'] == true,
+    message: syncText(json['message']).trim(),
+  );
 }
 
 enum BotPhase { plan, execute }
@@ -157,10 +190,10 @@ extension BotPhaseWire on BotPhase {
   String get wireValue => this == BotPhase.plan ? 'plan' : 'execute';
 
   static BotPhase? fromWire(String raw) => switch (raw.trim().toLowerCase()) {
-        'plan' => BotPhase.plan,
-        'execute' => BotPhase.execute,
-        _ => null,
-      };
+    'plan' => BotPhase.plan,
+    'execute' => BotPhase.execute,
+    _ => null,
+  };
 }
 
 /// A question or secret the bot cannot finish without the person.
@@ -179,15 +212,14 @@ class BotQuestion {
 
   bool get isSecret => secretName.trim().isNotEmpty;
   bool get isChoice => options.isNotEmpty;
-  bool get isAnswerable =>
-      question.trim().isNotEmpty || isChoice || isSecret;
+  bool get isAnswerable => question.trim().isNotEmpty || isChoice || isSecret;
 
   factory BotQuestion.fromJson(Map<String, dynamic> json) => BotQuestion(
-        inputType: syncText(json['ask_user_input_type']).trim(),
-        secretName: syncText(json['ask_user_secret_name']).trim(),
-        question: syncText(json['ask_user_question']).trim(),
-        options: parseBotAskOptions(json['ask_user_options_json']),
-      );
+    inputType: syncText(json['ask_user_input_type']).trim(),
+    secretName: syncText(json['ask_user_secret_name']).trim(),
+    question: syncText(json['ask_user_question']).trim(),
+    options: parseBotAskOptions(json['ask_user_options_json']),
+  );
 }
 
 List<String> parseBotAskOptions(Object? raw) {
@@ -211,15 +243,16 @@ List<String> parseBotAskOptions(Object? raw) {
 }
 
 List<String> _optionLabels(List<dynamic> items) => [
-      for (final item in items)
-        switch (item) {
-          String s => s.trim(),
-          Map m => (m['label'] ?? m['text'] ?? m['value'] ?? m['name'] ?? '')
-              .toString()
-              .trim(),
-          _ => '',
-        },
-    ].where((label) => label.isNotEmpty).toList(growable: false);
+  for (final item in items)
+    switch (item) {
+      String s => s.trim(),
+      Map m =>
+        (m['label'] ?? m['text'] ?? m['value'] ?? m['name'] ?? '')
+            .toString()
+            .trim(),
+      _ => '',
+    },
+].where((label) => label.isNotEmpty).toList(growable: false);
 
 class BotReplyImage {
   final String mime;
@@ -229,16 +262,19 @@ class BotReplyImage {
   /// client that staged them; the id alone travels in the shared journal.
   final String attachmentId;
 
-  const BotReplyImage(
-      {required this.mime, required this.data, this.attachmentId = ''});
+  const BotReplyImage({
+    required this.mime,
+    required this.data,
+    this.attachmentId = '',
+  });
 
   factory BotReplyImage.fromJson(Map<String, dynamic> json) => BotReplyImage(
-        mime: syncText(json['mime']),
-        data: syncText(json['data']),
-        attachmentId: syncText(json['attachment_id']).isNotEmpty
-            ? syncText(json['attachment_id'])
-            : syncText(json['attachmentId']),
-      );
+    mime: syncText(json['mime']),
+    data: syncText(json['data']),
+    attachmentId: syncText(json['attachment_id']).isNotEmpty
+        ? syncText(json['attachment_id'])
+        : syncText(json['attachmentId']),
+  );
 }
 
 class BotReplyFile {
@@ -247,26 +283,31 @@ class BotReplyFile {
   final String data;
   final String attachmentId;
 
-  const BotReplyFile(
-      {this.name = '', this.mime = '', this.data = '', this.attachmentId = ''});
+  const BotReplyFile({
+    this.name = '',
+    this.mime = '',
+    this.data = '',
+    this.attachmentId = '',
+  });
 
   String get displayName => name.trim().isEmpty ? '文件' : name.trim();
 
   factory BotReplyFile.fromJson(Map<String, dynamic> json) => BotReplyFile(
-        name: syncText(json['name']),
-        mime: syncText(json['mime']),
-        data: syncText(json['data']),
-        attachmentId: syncText(json['attachment_id']).isNotEmpty
-            ? syncText(json['attachment_id'])
-            : syncText(json['attachmentId']),
-      );
+    name: syncText(json['name']),
+    mime: syncText(json['mime']),
+    data: syncText(json['data']),
+    attachmentId: syncText(json['attachment_id']).isNotEmpty
+        ? syncText(json['attachment_id'])
+        : syncText(json['attachmentId']),
+  );
 }
 
 /// Portable media ids — `desktop_attachment_ids` on a run result,
 /// `attachmentIds` in a shared journal projection (mirrors
 /// `attachmentIdsFrom` in desktopBotResultStore.ts).
 List<String> attachmentIdsFrom(Map<String, dynamic> data) {
-  final raw = data['attachmentIds'] ??
+  final raw =
+      data['attachmentIds'] ??
       data['desktop_attachment_ids'] ??
       data['DesktopAttachmentIDs'];
   if (raw is! List) return const [];
@@ -313,24 +354,23 @@ class BotReply {
   }
 
   factory BotReply.fromJson(Map<String, dynamic> json) => BotReply(
-        text: syncText(json['text']).toString(),
-        novncUrl: syncText(json['novnc_url']).trim(),
-        handoff: json['handoff'] == true,
-        userControl: json['user_control'] == true,
-        attentionReason: syncText(json['attention_reason']).trim(),
-        question: BotQuestion.fromJson(json),
-        images: [
-          for (final item in syncList(json['images']))
-            if (item is Map)
-              BotReplyImage.fromJson(Map<String, dynamic>.from(item)),
-        ],
-        files: [
-          for (final item in syncList(json['files']))
-            if (item is Map)
-              BotReplyFile.fromJson(Map<String, dynamic>.from(item)),
-        ],
-        phase: BotPhaseWire.fromWire(syncText(json['phase'])),
-      );
+    text: syncText(json['text']).toString(),
+    novncUrl: syncText(json['novnc_url']).trim(),
+    handoff: json['handoff'] == true,
+    userControl: json['user_control'] == true,
+    attentionReason: syncText(json['attention_reason']).trim(),
+    question: BotQuestion.fromJson(json),
+    images: [
+      for (final item in syncList(json['images']))
+        if (item is Map)
+          BotReplyImage.fromJson(Map<String, dynamic>.from(item)),
+    ],
+    files: [
+      for (final item in syncList(json['files']))
+        if (item is Map) BotReplyFile.fromJson(Map<String, dynamic>.from(item)),
+    ],
+    phase: BotPhaseWire.fromWire(syncText(json['phase'])),
+  );
 }
 
 class BotRun {
@@ -342,9 +382,9 @@ class BotRun {
   bool get accepted => runId.trim().isNotEmpty;
 
   factory BotRun.fromJson(Map<String, dynamic> json) => BotRun(
-        runId: syncText(json['run_id']).trim(),
-        status: syncTextOr(syncText(json['status']), 'running').trim(),
-      );
+    runId: syncText(json['run_id']).trim(),
+    status: syncTextOr(syncText(json['status']), 'running').trim(),
+  );
 }
 
 /// `POST .../desktop` answer: the watch URL plus who may touch the screen.
@@ -372,13 +412,13 @@ class BotDesktop {
   bool get isRunning => novncUrl.trim().isNotEmpty;
 
   factory BotDesktop.fromJson(Map<String, dynamic> json) => BotDesktop(
-        novncUrl: syncText(json['novnc_url']).trim(),
-        userControl: json['user_control'] == true,
-        inputGranted: json['input_granted'] == true,
-        attentionReason: syncText(json['attention_reason']).trim(),
-        desktopMode: syncText(json['desktop_mode']).trim(),
-        released: json['released'] == true,
-      );
+    novncUrl: syncText(json['novnc_url']).trim(),
+    userControl: json['user_control'] == true,
+    inputGranted: json['input_granted'] == true,
+    attentionReason: syncText(json['attention_reason']).trim(),
+    desktopMode: syncText(json['desktop_mode']).trim(),
+    released: json['released'] == true,
+  );
 }
 
 /// One live run from `GET .../runs/active`.
@@ -412,19 +452,19 @@ class ActiveRun {
   });
 
   factory ActiveRun.fromJson(Map<String, dynamic> json) => ActiveRun(
-        runId: syncText(json['run_id']).trim(),
-        botId: syncText(json['bot_id']).trim(),
-        source: syncText(json['source']).trim(),
-        status: syncText(json['status']).trim(),
-        task: syncText(json['task']).trim(),
-        step: syncText(json['step']).trim(),
-        nextStep: syncText(json['next_step']).trim(),
-        phase: syncText(json['phase']).trim(),
-        waitingForUser: json['waiting_for_user'] == true,
-        paused: json['paused'] == true,
-        stale: json['stale'] == true,
-        startedAt: DateTime.tryParse(syncText(json['started_at'])),
-      );
+    runId: syncText(json['run_id']).trim(),
+    botId: syncText(json['bot_id']).trim(),
+    source: syncText(json['source']).trim(),
+    status: syncText(json['status']).trim(),
+    task: syncText(json['task']).trim(),
+    step: syncText(json['step']).trim(),
+    nextStep: syncText(json['next_step']).trim(),
+    phase: syncText(json['phase']).trim(),
+    waitingForUser: json['waiting_for_user'] == true,
+    paused: json['paused'] == true,
+    stale: json['stale'] == true,
+    startedAt: DateTime.tryParse(syncText(json['started_at'])),
+  );
 }
 
 /// One finished-but-unshown run from `GET /api/v1/bots/pending`.
@@ -583,12 +623,12 @@ class BotCredits {
   });
 
   factory BotCredits.fromJson(Map<String, dynamic> json) => BotCredits(
-        applies: json['applies'] == true,
-        unlimited: json['unlimited'] == true,
-        limit: syncDouble(json['limit']),
-        used: syncDouble(json['used']),
-        remaining: syncDouble(json['remaining']),
-      );
+    applies: json['applies'] == true,
+    unlimited: json['unlimited'] == true,
+    limit: syncDouble(json['limit']),
+    used: syncDouble(json['used']),
+    remaining: syncDouble(json['remaining']),
+  );
 }
 
 /// One feed note (`BotCrossNote`): a message between the person's bots, a
@@ -621,20 +661,19 @@ class FeedNote {
   DateTime? get at => DateTime.tryParse(createdAt);
 
   factory FeedNote.fromJson(Map<String, dynamic> json) => FeedNote(
-        id: syncText(json['id']).trim(),
-        from: syncText(json['from']).trim(),
-        target: syncText(json['target']).trim(),
-        kind: syncText(json['kind']).trim(),
-        text: syncText(json['text']).trim(),
-        order: syncText(json['order']).trim(),
-        topic: syncText(json['topic']).trim(),
-        runId: syncText(json['run_id']).trim(),
-        createdAt: syncText(json['created_at']).trim(),
-        artifacts: [
-          for (final item in syncList(json['artifacts']))
-            item.toString(),
-        ],
-      );
+    id: syncText(json['id']).trim(),
+    from: syncText(json['from']).trim(),
+    target: syncText(json['target']).trim(),
+    kind: syncText(json['kind']).trim(),
+    text: syncText(json['text']).trim(),
+    order: syncText(json['order']).trim(),
+    topic: syncText(json['topic']).trim(),
+    runId: syncText(json['run_id']).trim(),
+    createdAt: syncText(json['created_at']).trim(),
+    artifacts: [
+      for (final item in syncList(json['artifacts'])) item.toString(),
+    ],
+  );
 }
 
 /// State of one chunked material upload (`MaterialUpload`): the file lands
@@ -656,15 +695,14 @@ class MaterialUpload {
     this.path = '',
   });
 
-  factory MaterialUpload.fromJson(Map<String, dynamic> json) =>
-      MaterialUpload(
-        uploadId: syncText(json['upload_id']).trim(),
-        name: syncText(json['name']).trim(),
-        received: syncInt(json['received']),
-        total: syncInt(json['total']),
-        done: json['done'] == true,
-        path: syncText(json['path']).trim(),
-      );
+  factory MaterialUpload.fromJson(Map<String, dynamic> json) => MaterialUpload(
+    uploadId: syncText(json['upload_id']).trim(),
+    name: syncText(json['name']).trim(),
+    received: syncInt(json['received']),
+    total: syncInt(json['total']),
+    done: json['done'] == true,
+    path: syncText(json['path']).trim(),
+  );
 }
 
 /// One delegation on the collab board (`GET /api/v1/bots/assignments`):
@@ -697,21 +735,20 @@ class BotAssignment {
   });
 
   factory BotAssignment.fromJson(Map<String, dynamic> json) => BotAssignment(
-        id: syncText(json['id']).trim(),
-        ownerBot: syncText(json['owner_bot']).trim(),
-        targetBot: syncText(json['target_bot']).trim(),
-        task: syncText(json['task']).trim(),
-        state: syncText(json['state']).trim(),
-        lastReport: syncText(json['last_report']).trim(),
-        openQuestion: syncText(json['open_question']).trim(),
-        review: syncText(json['review']).trim(),
-        artifacts: [
-          for (final item in syncList(json['artifacts']))
-            item.toString(),
-        ],
-        resultNoteId: syncText(json['result_note_id']).trim(),
-        createdAt: DateTime.tryParse(syncText(json['created_at'])),
-      );
+    id: syncText(json['id']).trim(),
+    ownerBot: syncText(json['owner_bot']).trim(),
+    targetBot: syncText(json['target_bot']).trim(),
+    task: syncText(json['task']).trim(),
+    state: syncText(json['state']).trim(),
+    lastReport: syncText(json['last_report']).trim(),
+    openQuestion: syncText(json['open_question']).trim(),
+    review: syncText(json['review']).trim(),
+    artifacts: [
+      for (final item in syncList(json['artifacts'])) item.toString(),
+    ],
+    resultNoteId: syncText(json['result_note_id']).trim(),
+    createdAt: DateTime.tryParse(syncText(json['created_at'])),
+  );
 }
 
 /// A group room between the person and their bots (`GET /api/v1/bot-rooms`).
@@ -731,20 +768,17 @@ class BotRoom {
   });
 
   factory BotRoom.fromJson(Map<String, dynamic> json) => BotRoom(
-        id: syncText(json['id']).trim(),
-        name: syncText(json['name']).trim(),
-        members: [
-          for (final item in syncList(json['members']))
-            item.toString(),
-        ],
-        attention: json['attention'] is Map
-            ? {
-                for (final e in (json['attention'] as Map).entries)
-                  e.key.toString(): e.value.toString(),
-              }
-            : const {},
-        createdAt: DateTime.tryParse(syncText(json['created_at'])),
-      );
+    id: syncText(json['id']).trim(),
+    name: syncText(json['name']).trim(),
+    members: [for (final item in syncList(json['members'])) item.toString()],
+    attention: json['attention'] is Map
+        ? {
+            for (final e in (json['attention'] as Map).entries)
+              e.key.toString(): e.value.toString(),
+          }
+        : const {},
+    createdAt: DateTime.tryParse(syncText(json['created_at'])),
+  );
 }
 
 /// One note in a room conversation or a direct "bot 对你说" say
@@ -773,8 +807,7 @@ class SaidNote {
 
   factory SaidNote.fromJson(Map<String, dynamic> json) {
     final files = <String>[
-      for (final item in syncList(json['artifacts']))
-        item.toString(),
+      for (final item in syncList(json['artifacts'])) item.toString(),
     ];
     for (final item in syncList(json['files'])) {
       if (item is Map) {
@@ -789,8 +822,7 @@ class SaidNote {
       text: syncText(json['text']).trim(),
       files: files,
       answeredBy: [
-        for (final item in syncList(json['answered_by']))
-          item.toString(),
+        for (final item in syncList(json['answered_by'])) item.toString(),
       ],
       createdAt: DateTime.tryParse(syncText(json['created_at'])),
     );
@@ -806,7 +838,6 @@ DateTime? parseMessageAt(Object? value) {
   }
   return DateTime.tryParse(value is String ? value : '');
 }
-
 
 /// a projection compatible with the desktop journal entry data.
 class ChatMessage {
@@ -897,36 +928,35 @@ class ChatMessage {
     String? runId,
     List<String>? attachmentIds,
     int? syncSeq,
-  }) =>
-      ChatMessage(
-        id: id,
-        role: role,
-        content: content ?? this.content,
-        pending: pending ?? this.pending,
-        failed: failed ?? this.failed,
-        queued: queued ?? this.queued,
-        queuePosition: queuePosition ?? this.queuePosition,
-        queueHeld: queueHeld ?? this.queueHeld,
-        ack: ack,
-        chat: chat,
-        phase: phase,
-        requestId: requestId,
-        workOrder: workOrder,
-        handoffUrl: handoffUrl,
-        userControl: userControl,
-        attentionReason: attentionReason,
-        conversation: conversation,
-        question: question,
-        askResolved: askResolved ?? this.askResolved,
-        options: options,
-        optionsUsed: optionsUsed ?? this.optionsUsed,
-        images: images ?? this.images,
-        files: files ?? this.files,
-        runId: runId ?? this.runId,
-        attachmentIds: attachmentIds ?? this.attachmentIds,
-        syncSeq: syncSeq ?? this.syncSeq,
-        at: at,
-      );
+  }) => ChatMessage(
+    id: id,
+    role: role,
+    content: content ?? this.content,
+    pending: pending ?? this.pending,
+    failed: failed ?? this.failed,
+    queued: queued ?? this.queued,
+    queuePosition: queuePosition ?? this.queuePosition,
+    queueHeld: queueHeld ?? this.queueHeld,
+    ack: ack,
+    chat: chat,
+    phase: phase,
+    requestId: requestId,
+    workOrder: workOrder,
+    handoffUrl: handoffUrl,
+    userControl: userControl,
+    attentionReason: attentionReason,
+    conversation: conversation,
+    question: question,
+    askResolved: askResolved ?? this.askResolved,
+    options: options,
+    optionsUsed: optionsUsed ?? this.optionsUsed,
+    images: images ?? this.images,
+    files: files ?? this.files,
+    runId: runId ?? this.runId,
+    attachmentIds: attachmentIds ?? this.attachmentIds,
+    syncSeq: syncSeq ?? this.syncSeq,
+    at: at,
+  );
 
   /// Projection written back to the shared journal — matches
   /// `syncProjection` in desktopBotSync.ts (local-only fields dropped).
@@ -984,7 +1014,9 @@ class ChatMessage {
     final runId = syncText(data['runId']);
     return ChatMessage(
       id: id,
-      role: data['role'] is String ? (data['role'] as String).trim() : 'assistant',
+      role: data['role'] is String
+          ? (data['role'] as String).trim()
+          : 'assistant',
       content: syncText(data['content']),
       failed: data['failed'] == true,
       queued: data['queued'] == true,
@@ -1010,8 +1042,7 @@ class ChatMessage {
       ),
       askResolved: data['askResolved'] == true,
       options: [
-        for (final item in syncList(data['options']))
-          item.toString().trim(),
+        for (final item in syncList(data['options'])) item.toString().trim(),
       ].where((s) => s.isNotEmpty).toList(),
       optionsUsed: data['optionsUsed'] == true,
       images: [
@@ -1077,12 +1108,12 @@ class FollowUpRoute {
   });
 
   factory FollowUpRoute.fromJson(Map<String, dynamic> json) => FollowUpRoute(
-        routed: json['routed'] == true,
-        reason: syncText(json['reason']).trim(),
-        botId: syncText(json['bot_id']).trim(),
-        runId: syncText(json['run_id']).trim(),
-        supplementId: syncText(json['supplement_id']).trim(),
-      );
+    routed: json['routed'] == true,
+    reason: syncText(json['reason']).trim(),
+    botId: syncText(json['bot_id']).trim(),
+    runId: syncText(json['run_id']).trim(),
+    supplementId: syncText(json['supplement_id']).trim(),
+  );
 }
 
 /// `GET /api/v1/bots/desktop-proxy-mode` — the caller's desktop route.
@@ -1124,8 +1155,10 @@ class DesktopComputerCaps {
   final bool restartAllowed;
   final bool resetAllowed;
 
-  const DesktopComputerCaps(
-      {this.restartAllowed = false, this.resetAllowed = false});
+  const DesktopComputerCaps({
+    this.restartAllowed = false,
+    this.resetAllowed = false,
+  });
 
   factory DesktopComputerCaps.fromJson(Map<String, dynamic> json) =>
       DesktopComputerCaps(
@@ -1151,16 +1184,16 @@ class ComputerResult {
   });
 
   factory ComputerResult.fromJson(Map<String, dynamic> json) => ComputerResult(
-        action: syncText(json['action']).trim(),
-        container: syncText(json['container']).trim(),
-        image: syncText(json['image']).trim(),
-        status: syncText(json['status']).trim(),
-        backup: syncText(json['backup']).trim(),
-      );
+    action: syncText(json['action']).trim(),
+    container: syncText(json['container']).trim(),
+    image: syncText(json['image']).trim(),
+    status: syncText(json['status']).trim(),
+    backup: syncText(json['backup']).trim(),
+  );
 }
 
 /// `GET /bots/{id}/queue/{cmid}` — live view of a parked user message.
-/// state: queued | held | running | done | missing.
+/// state: queued | held | running | done | missing | gave_up.
 class QueueView {
   final String state;
   final String runId;
@@ -1177,13 +1210,12 @@ class QueueView {
   });
 
   factory QueueView.fromJson(Map<String, dynamic> json) => QueueView(
-        state: syncText(json['state']).trim(),
-        runId: syncTextAny(json['run_id'], json['runId'])
-            .trim(),
-        held: json['held'] == true,
-        position: syncInt(json['position']),
-        outcome: syncText(json['outcome']).trim(),
-      );
+    state: syncText(json['state']).trim(),
+    runId: syncTextAny(json['run_id'], json['runId']).trim(),
+    held: json['held'] == true,
+    position: syncInt(json['position']),
+    outcome: syncText(json['outcome']).trim(),
+  );
 }
 
 /// One timer from `GET .../schedules`. The clock lives on the server.
@@ -1211,23 +1243,25 @@ class BotSchedule {
   });
 
   factory BotSchedule.fromJson(Map<String, dynamic> json) => BotSchedule(
-        id: syncText(json['id']).trim(),
-        name: syncText(json['name']).trim(),
-        action: syncText(json['action']).trim(),
-        intervalMinutes: syncInt(json['interval_minutes']),
-        hour: syncInt(json['hour']),
-        minute: syncInt(json['minute']),
-        dayOfWeek: syncIntOr(json['day_of_week'], -1),
-        nextRunAt: syncText(json['next_run_at']).trim(),
-        status: syncText(json['status']).trim(),
-      );
+    id: syncText(json['id']).trim(),
+    name: syncText(json['name']).trim(),
+    action: syncText(json['action']).trim(),
+    intervalMinutes: syncInt(json['interval_minutes']),
+    hour: syncInt(json['hour']),
+    minute: syncInt(json['minute']),
+    dayOfWeek: syncIntOr(json['day_of_week'], -1),
+    nextRunAt: syncText(json['next_run_at']).trim(),
+    status: syncText(json['status']).trim(),
+  );
 
   String get when {
     if (intervalMinutes > 0) return '每 $intervalMinutes 分钟';
     final hh = hour.toString().padLeft(2, '0');
     final mm = minute.toString().padLeft(2, '0');
     const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-    final day = dayOfWeek >= 0 && dayOfWeek < days.length ? days[dayOfWeek] : '每天';
+    final day = dayOfWeek >= 0 && dayOfWeek < days.length
+        ? days[dayOfWeek]
+        : '每天';
     return '$day $hh:$mm';
   }
 }
@@ -1235,5 +1269,4 @@ class BotSchedule {
 /// Fixed confirmation sentence the person sends to approve a plan —
 /// matches `BOT_CONFIRM_TASK` in desktopBots.ts. The Hub recognises it
 /// (typed-confirm sentence) and folds the plan reading.
-const String botConfirmTaskText =
-    '安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。';
+const String botConfirmTaskText = '安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。';

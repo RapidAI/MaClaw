@@ -9586,6 +9586,11 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 	if remotePath != "" || localPath != "" {
 		session := trustedSSHSingleBoundSession(c.handler, c.semanticPrincipalID())
 		if session == nil {
+			// The copy rides the pooled connection keyed by the session's
+			// HostConfig, not the PTY; a dead session's record is enough.
+			session = trustedSSHRecoverableBoundSession(c.handler, c.semanticPrincipalID())
+		}
+		if session == nil {
 			return semanticUnexecutedRejection(fmt.Errorf("trusted_ssh_session_unavailable"))
 		}
 		return c.trustedSSHDownload(session.ID, remotePath, localPath)

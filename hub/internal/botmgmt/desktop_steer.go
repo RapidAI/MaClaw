@@ -58,6 +58,7 @@ type desktopSteerRequest struct {
 	ContinueSession string
 	Action          string
 	Admit           bool
+	NodeID          string
 	Rec             *record
 	TokenRec        *record
 	Token           *string
@@ -66,18 +67,29 @@ type desktopSteerRequest struct {
 
 // steerDesktopMessage applies the server decision. handled means the caller
 // returns admission and does not start a run. Otherwise content is what the
-// run should be given (the model's order, or the person's words).
-func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerRequest) (string, BotAdmission, bool) {
+// run should be given (the model's order, or the person's words). A tunnel
+// drop while asking for that decision is returned so the message can queue.
+func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerRequest) (string, BotAdmission, bool, error) {
 	content := strings.TrimSpace(in.Content)
 	if s == nil || content == "" || desktopReplay(ctx) || hubStartedTurn(in.ClientMessageID) {
-		return content, BotAdmission{}, false
+		return content, BotAdmission{}, false, nil
 	}
 	explicitNew := desktopCanonicalContinue(in.BotID, in.ContinueSession) == strings.TrimSpace(in.BotID)
 	actionReturn := strings.EqualFold(strings.TrimSpace(in.Action), "return")
 	running := s.desktopLiveRunBriefs(in.TenantID, in.UserID, in.BotID)
 	decision := desktopIntake{Kind: "new", Instruction: content, Pace: "direct", Reason: "explicit"}
 	if !explicitNew && !actionReturn {
-		decision = s.fetchDesktopIntake(ctx, in, running)
+		var intakeErr error
+		decision, intakeErr = s.fetchDesktopIntake(ctx, in, running)
+		if nodeLinkOffline(intakeErr) {
+			admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, in.Admit, in.TenantID, in.UserID, in.BotID, in.NodeID, in.ClientMessageID, content, in.Phase, in.ContinueSession, intakeErr)
+			if parked {
+				return content, admission, true, nil
+			}
+			if offlineErr != nil {
+				return content, BotAdmission{}, false, offlineErr
+			}
+		}
 	}
 	if supplementOff() && (decision.Kind == "supplement" || decision.Kind == "change") {
 		decision.Kind = "new"
@@ -128,7 +140,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 			base.Held = true
 			base.Position = pos
 			base.Kind = "new"
-			return content, base, true
+			return content, base, true, nil
 		}
 	}
 	switch decision.Kind {
@@ -137,27 +149,27 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 		if _, err := s.SupplementDesktopRun(ctx, in.TenantID, in.UserID, in.BotID, decision.RunID, text); err == nil {
 			base.Settled = true
 			base.Reply.Text = firstNonEmptyString(decision.Ack, decision.Told)
-			return content, base, true
+			return content, base, true, nil
 		}
 	case "stop":
 		if s.CancelDesktopRun(ctx, in.TenantID, in.UserID, in.BotID, decision.RunID) == nil {
 			base.Settled = true
 			base.Reply.Text = decision.Ack
-			return content, base, true
+			return content, base, true, nil
 		}
 	case "pause":
 		_, err := s.PauseDesktopRun(ctx, in.TenantID, in.UserID, in.BotID, decision.RunID, "", 0)
 		if err == nil || err == ErrPauseUnsupported {
 			base.Settled = true
 			base.Reply.Text = decision.Ack
-			return content, base, true
+			return content, base, true, nil
 		}
 	case "continue":
 		if decision.RunID != "" {
 			_, _ = s.ResumeDesktopRun(ctx, in.TenantID, in.UserID, in.BotID, decision.RunID)
 			base.Settled = true
 			base.Reply.Text = decision.Ack
-			return content, base, true
+			return content, base, true, nil
 		}
 	case "reply", "ask":
 		text := firstNonEmptyString(decision.Told, decision.Ack)
@@ -165,7 +177,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 			base.Settled = true
 			base.Reply.Text = text
 			base.RunID = ""
-			return content, base, true
+			return content, base, true, nil
 		}
 	case "status":
 		text, _, err := s.DesktopTaskQuery(ctx, in.TenantID, in.UserID, in.BotID, firstNonEmptyString(decision.Instruction, content), "")
@@ -173,14 +185,14 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 			base.Settled = true
 			base.Reply.Text = text
 			base.RunID = ""
-			return content, base, true
+			return content, base, true, nil
 		}
 	case "schedule":
 		if decision.Schedule != nil {
 			base.Settled = true
 			base.Reply.Text = firstNonEmptyString(decision.Ack, decision.Told)
 			base.RunID = ""
-			return content, base, true
+			return content, base, true, nil
 		}
 	}
 	next := strings.TrimSpace(decision.Instruction)
@@ -189,7 +201,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 	}
 	base.Kind = "new"
 	base.RunID = ""
-	return next, base, false
+	return next, base, false, nil
 }
 
 func supplementOff() bool {
@@ -234,18 +246,21 @@ func (s *Service) desktopLiveRunBriefs(tenantID, userID, botID string) []desktop
 	return out
 }
 
-func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest, running []desktopRunBrief) desktopIntake {
+func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest, running []desktopRunBrief) (desktopIntake, error) {
 	fallback := desktopIntake{Kind: "new", Instruction: strings.TrimSpace(in.Content), Pace: "direct", Phase: "execute", Reason: "fallback"}
 	if s == nil || strings.TrimSpace(in.InstanceID) == "" {
-		return fallback
+		return fallback, nil
 	}
 	rec := in.TokenRec
 	token := in.Token
 	if !in.HaveToken || rec == nil || token == nil || strings.TrimSpace(*token) == "" {
-		fresh, tk, err := s.ownerToken(ctx, in.TenantID, in.UserID)
+		fresh, tk, err := s.tokenForBot(ctx, in.TenantID, in.UserID, in.BotID)
 		if err != nil {
+			if nodeLinkOffline(err) {
+				return fallback, err
+			}
 			fallback.Reason = "no token"
-			return fallback
+			return fallback, nil
 		}
 		rec = &fresh
 		token = &tk
@@ -275,17 +290,20 @@ func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest
 	path := "/api/v1/instances/" + url.PathEscape(in.InstanceID) + "/bot-intake"
 	err := s.authAsOwner(rctx, in.TenantID, in.UserID, rec, token, http.MethodPost, path, body, &out)
 	if err != nil || strings.TrimSpace(out.Kind) == "" {
+		if nodeLinkOffline(err) {
+			return fallback, err
+		}
 		if rctx.Err() != nil {
 			fallback.Reason = "timeout"
 		}
-		return fallback
+		return fallback, nil
 	}
 	out.Kind = strings.ToLower(strings.TrimSpace(out.Kind))
 	out.RunID = strings.TrimSpace(out.RunID)
 	if strings.TrimSpace(out.Phase) != "plan" {
 		out.Phase = "execute"
 	}
-	return out
+	return out, nil
 }
 
 // earlierDesktopLines is the recent chat Intake should see with the new

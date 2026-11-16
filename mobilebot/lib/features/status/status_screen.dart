@@ -210,7 +210,9 @@ class _ActiveRunCard extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('停止这个任务？'),
-        content: Text('「${run.task.isNotEmpty ? run.task : run.runId}」将被终止，进行中的工作会中断。'),
+        content: Text(
+          '「${run.task.isNotEmpty ? run.task : run.runId}」将被终止，进行中的工作会中断。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -351,12 +353,12 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
             child: SizedBox(
               width: double.infinity,
               child: SegmentedButton<int>(
-              segments: const [
-                ButtonSegment(value: 0, label: Text('任务')),
-                ButtonSegment(value: 1, label: Text('动态')),
-              ],
-              selected: {_segment},
-              onSelectionChanged: (v) => setState(() => _segment = v.first),
+                segments: const [
+                  ButtonSegment(value: 0, label: Text('任务')),
+                  ButtonSegment(value: 1, label: Text('动态')),
+                ],
+                selected: {_segment},
+                onSelectionChanged: (v) => setState(() => _segment = v.first),
               ),
             ),
           ),
@@ -516,10 +518,7 @@ class _FeedBody extends ConsumerWidget {
           return ListView(
             children: const [
               SizedBox(height: 140),
-              EmptyState(
-                icon: Icons.forum_outlined,
-                title: '还没有 Bot 之间的动态',
-              ),
+              EmptyState(icon: Icons.forum_outlined, title: '还没有 Bot 之间的动态'),
             ],
           );
         }
@@ -834,9 +833,9 @@ final _globalStatusProvider =
         for (final bot in bots)
           api.activeRuns(bot.id).onError((_, _) => const <ActiveRun>[]),
       ]);
-      final deliveriesFuture = api
-          .pendingDeliveries()
-          .onError((_, _) => const <PendingDelivery>[]);
+      final deliveriesFuture = api.pendingDeliveries().onError(
+        (_, _) => const <PendingDelivery>[],
+      );
       final runLists = await runListsFuture;
       final deliveries = await deliveriesFuture;
       return (

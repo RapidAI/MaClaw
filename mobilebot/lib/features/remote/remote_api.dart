@@ -64,10 +64,7 @@ class RemoteControlApi {
     await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
         '/api/remote-control/same-account',
-        data: {
-          'target_machine_id': targetMachineId,
-          'permission': permission,
-        },
+        data: {'target_machine_id': targetMachineId, 'permission': permission},
         options: _client.opts(),
       ),
     );
@@ -94,9 +91,8 @@ class RemoteControlApi {
   Future<List<RemoteTask>> listTasks(String grantId) async {
     final result = await _op(grantId, 'list_tasks');
     return [
-      for (final item in result['tasks'] is List
-          ? result['tasks'] as List
-          : const [])
+      for (final item
+          in result['tasks'] is List ? result['tasks'] as List : const [])
         if (item is Map) RemoteTask.fromJson(item),
     ];
   }
@@ -168,11 +164,7 @@ class RemoteControlApi {
     return result['name'] is String ? result['name'] as String : name;
   }
 
-  Future<void> pinTask(
-    String grantId,
-    String projectPath,
-    bool pinned,
-  ) async {
+  Future<void> pinTask(String grantId, String projectPath, bool pinned) async {
     await _op(grantId, 'pin_task', {
       'project_path': projectPath,
       'pinned': pinned,

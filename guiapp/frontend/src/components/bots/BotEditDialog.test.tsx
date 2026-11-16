@@ -194,6 +194,27 @@ describe('create bot computer choice', () => {
         expect(onSubmit).toHaveBeenCalledWith('Bot 1', '', expect.objectContaining({ color: expect.any(String) }), true, 'dn_c');
     });
 
+    it('shows the unavailable line instead of the switch when no computer is bound', () => {
+        const onSubmit = vi.fn();
+        render(
+            <BotEditDialog
+                initialTitle="Bot 1"
+                initialDescription=""
+                labels={labels}
+                notice=""
+                saving={false}
+                onClose={() => {}}
+                onSubmit={onSubmit}
+                computer={{ label: '这个 bot 需要电脑', quota: '已用 0', locked: true, unavailable: true, unavailableText: '无可用电脑' }}
+            />,
+        );
+        expect(screen.getByTestId('bot-create-no-computer').textContent).toBe('无可用电脑');
+        expect(screen.queryByTestId('bot-create-needs-computer')).toBeNull();
+        expect(screen.queryByTestId('bot-create-quota')).toBeNull();
+        fireEvent.click(screen.getByTestId('bot-edit-save'));
+        expect(onSubmit).toHaveBeenCalledWith('Bot 1', '', expect.objectContaining({ color: expect.any(String) }), false);
+    });
+
     it('does not ask about a computer while editing', () => {
         render(
             <BotEditDialog

@@ -252,7 +252,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
     final quota = ref.watch(botsProvider).quota;
-    final locked = quota.exhausted;
+    final locked = quota.exhausted || quota.computerMissing;
     final needsComputer = locked ? false : _needsComputer;
     final taken = botNameTaken(_nameCtrl.text, ref.watch(botsProvider).bots);
     return SingleChildScrollView(
@@ -321,7 +321,9 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('这个 bot 需要电脑'),
-            subtitle: quota.label.isEmpty ? null : Text(quota.label),
+            subtitle: quota.computerMissing
+                ? const Text('这个账号还没有分配电脑：只能创建无电脑的 Bot')
+                : (quota.label.isEmpty ? null : Text(quota.label)),
             value: needsComputer,
             onChanged: locked || _saving
                 ? null
@@ -387,8 +389,16 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
     try {
       final bot = await ref
           .read(botsProvider.notifier)
-          .create(name, _descCtrl.text.trim(),
-              color: _color, shape: _shape, needsComputer: _needsComputer && !ref.read(botsProvider).quota.exhausted);
+          .create(
+            name,
+            _descCtrl.text.trim(),
+            color: _color,
+            shape: _shape,
+            needsComputer:
+                _needsComputer &&
+                !ref.read(botsProvider).quota.exhausted &&
+                !ref.read(botsProvider).quota.computerMissing,
+          );
       if (mounted) Navigator.of(context).pop(bot);
     } on Object catch (error) {
       if (mounted) {

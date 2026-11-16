@@ -30,6 +30,10 @@ import (
 
 const settingsKey = "edge_nodes"
 
+// codeTTL is how long a one-time intranet enroll code stays valid. Installs
+// often compile for longer than a few minutes, so the code covers that wait.
+const codeTTL = 3 * time.Hour
+
 // indexKey maps a node id to its tenant. Tenant files are not listable, so
 // without this a Hub restart cannot find a node or its hub-token hash.
 const indexKey = "edge_node_index"
@@ -72,10 +76,13 @@ type Node struct {
 	DirectBase string `json:"direct_base,omitempty"`
 	// OwnerUserID is set on a node one user registered from the GUI for
 	// their own desktop. Such a node serves only that user.
-	OwnerUserID string    `json:"owner_user_id,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	LastSeen    time.Time `json:"last_seen,omitempty"`
-	Online      bool      `json:"online,omitempty"`
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+	// IssuedBy is the account that generated the enrollment code: an admin
+	// for a shared node, the user themself for a personal desktop node.
+	IssuedBy  string    `json:"issued_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	LastSeen  time.Time `json:"last_seen,omitempty"`
+	Online    bool      `json:"online,omitempty"`
 }
 
 // Code is a one-time enrollment code.
@@ -85,7 +92,10 @@ type Code struct {
 	NodeID      string
 	Name        string
 	OwnerUserID string
-	Until       time.Time
+	// IssuedBy is the account that asked for the code. It lands on the
+	// enrolled node so the admin list can name the registrant.
+	IssuedBy string
+	Until    time.Time
 	// Rotate replaces the secret of NodeID. It does not create a node.
 	Rotate bool
 }
@@ -198,9 +208,14 @@ func (r *Registry) writeIndex(ctx context.Context, nodes map[string]string) erro
 	return r.System.Set(ctx, indexKey, string(raw))
 }
 
-// IssueCode starts an enrollment. The code is valid for 10 minutes.
+// IssueCode starts an enrollment. The code is valid for codeTTL.
 func (r *Registry) IssueCode(ctx context.Context, tenantID, name string) (Code, error) {
-	return r.issue(ctx, tenantID, name, "")
+	return r.issue(ctx, tenantID, name, "", "")
+}
+
+// IssueCodeBy starts an enrollment and records which account asked for it.
+func (r *Registry) IssueCodeBy(ctx context.Context, tenantID, name, issuedBy string) (Code, error) {
+	return r.issue(ctx, tenantID, name, "", issuedBy)
 }
 
 // IssueOwnedCode starts an enrollment for one user's own desktop-only node.
@@ -209,10 +224,10 @@ func (r *Registry) IssueOwnedCode(ctx context.Context, tenantID, userID, name st
 	if userID == "" {
 		return Code{}, errors.New("user is required")
 	}
-	return r.issue(ctx, tenantID, name, userID)
+	return r.issue(ctx, tenantID, name, userID, userID)
 }
 
-func (r *Registry) issue(ctx context.Context, tenantID, name, owner string) (Code, error) {
+func (r *Registry) issue(ctx context.Context, tenantID, name, owner, issuer string) (Code, error) {
 	if !Enabled() {
 		return Code{}, ErrDisabled
 	}
@@ -239,9 +254,10 @@ func (r *Registry) issue(ctx context.Context, tenantID, name, owner string) (Cod
 		TenantID: store.NormalizeTenantID(tenantID),
 		NodeID:   hex.EncodeToString(id[:]),
 		Name:     name,
-		Until:    r.now().Add(10 * time.Minute),
+		Until:    r.now().Add(codeTTL),
 	}
 	code.OwnerUserID = owner
+	code.IssuedBy = strings.TrimSpace(issuer)
 	r.mu.Lock()
 	now := r.now()
 	for key, item := range r.codes {
@@ -278,7 +294,8 @@ func (r *Registry) IssueRotateCode(ctx context.Context, tenantID, nodeID string)
 		NodeID:      node.ID,
 		Name:        node.Name,
 		OwnerUserID: node.OwnerUserID,
-		Until:       r.now().Add(10 * time.Minute),
+		IssuedBy:    node.IssuedBy,
+		Until:       r.now().Add(codeTTL),
 		Rotate:      true,
 	}
 	r.mu.Lock()
@@ -348,6 +365,7 @@ func (r *Registry) Enroll(ctx context.Context, code, desktopdKey, srvAdmin, vers
 		SrvAdmin:     strings.TrimSpace(srvAdmin),
 		AdvertiseURL: strings.TrimSpace(advertise),
 		OwnerUserID:  item.OwnerUserID,
+		IssuedBy:     item.IssuedBy,
 		CreatedAt:    r.now(),
 	}
 	if node.OwnerUserID != "" && !hasDesktopd {
@@ -379,6 +397,7 @@ func (r *Registry) Enroll(ctx context.Context, code, desktopdKey, srvAdmin, vers
 		node.TenantID = previous.TenantID
 		node.Name = previous.Name
 		node.OwnerUserID = previous.OwnerUserID
+		node.IssuedBy = previous.IssuedBy
 		node.CreatedAt = previous.CreatedAt
 		node.DirectBase = previous.DirectBase
 	} else if err := r.admitNewNode(ctx, node.TenantID); err != nil {
@@ -437,6 +456,35 @@ func (r *Registry) SetDirectBase(ctx context.Context, nodeID, base string) error
 		return err
 	}
 	node.DirectBase = parsed
+	return r.commit(ctx, node)
+}
+
+// UpdateNode applies an admin edit to a node: name renames it when non-empty,
+// a nil owner keeps the personal owner as-is, and an owner string replaces it
+// (empty turns the node shared). Identity, secret, tunnel and srv link are
+// unchanged.
+func (r *Registry) UpdateNode(ctx context.Context, nodeID, name string, owner *string) error {
+	node, err := r.find(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	changed := false
+	if name = strings.TrimSpace(name); name != "" && name != node.Name {
+		if len([]rune(name)) > 80 {
+			return errors.New("node name is too long")
+		}
+		node.Name = name
+		changed = true
+	}
+	if owner != nil {
+		if next := strings.TrimSpace(*owner); next != node.OwnerUserID {
+			node.OwnerUserID = next
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
 	return r.commit(ctx, node)
 }
 
@@ -732,6 +780,9 @@ type Broker struct {
 	nodes    map[string]Node
 	clients  map[string]*http.Client
 	streams  map[string]int
+	// OnAttach runs after the tunnel is ready to dial. It must not block
+	// the session: the broker starts it in its own goroutine.
+	OnAttach func(tenantID, nodeID string)
 }
 
 func NewBroker(reg *Registry) *Broker {
@@ -779,6 +830,10 @@ func (b *Broker) Attach(ctx context.Context, node Node, conn net.Conn) error {
 		b.Registry.remember(node)
 	}
 	go b.probe(node)
+	if b.OnAttach != nil {
+		tenantID, nodeID := node.TenantID, node.ID
+		go b.OnAttach(tenantID, nodeID)
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -857,7 +912,13 @@ func (b *Broker) Dial(ctx context.Context, tenantID, nodeID, target string) (net
 	if err := edgelink.WriteTarget(stream, target); err != nil {
 		_ = stream.Close()
 		release()
-		return nil, err
+		// A refused name is not a dead tunnel. A write that does not land
+		// means the session is gone, so callers can queue like any other
+		// offline dial.
+		if errors.Is(err, edgelink.ErrTarget) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %s", ErrOffline, err.Error())
 	}
 	if maxStreams > 0 {
 		stream = &streamLease{Conn: stream, release: release}
@@ -1082,9 +1143,13 @@ func (b *Broker) ApplyLive(node *Node) {
 	b.mu.Lock()
 	live, ok := b.nodes[node.ID]
 	b.mu.Unlock()
-	if ok && strings.TrimSpace(live.Version) != "" {
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(live.Version) != "" {
 		node.Version = live.Version
 	}
+	node.LastSeen = live.LastSeen
 }
 
 // Online reports whether the node has a live link now.

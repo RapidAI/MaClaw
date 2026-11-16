@@ -59,6 +59,9 @@ type DesktopNodeRecord struct {
 	HostKey      string `json:"host_key,omitempty"`
 	DeployDir    string `json:"deploy_dir,omitempty"`
 	DesktopdPort int    `json:"desktopd_port,omitempty"`
+	// DesktopdAddr is the DESKTOPD_ADDR bind this install listens on, so the
+	// settings row can tell a LAN-reachable :18081 from a loopback-only one.
+	DesktopdAddr string `json:"desktopd_addr,omitempty"`
 	DesktopdURL  string `json:"desktopd_url,omitempty"`
 	Token        string `json:"token,omitempty"`
 	HubURL       string `json:"hub_url,omitempty"`
@@ -124,6 +127,10 @@ type hubSelfDesktopNode struct {
 	AccessToken string `json:"access_token"`
 	Memory      string `json:"memory"`
 	CPUs        string `json:"cpus"`
+	// WithSrv is the registry's word on MaClawSrv being installed — true even
+	// for nodes this machine did not install. A nil pointer means an older
+	// Hub that does not send the field; the install-time flag then stands.
+	WithSrv *bool `json:"with_srv"`
 }
 
 type hubSelfDesktopView struct {
@@ -332,6 +339,7 @@ func (a *App) ListLocalDesktopJobs() ([]LocalDesktopJob, error) {
 		})
 	}
 	out = append(out, a.listLocalHubDeployJobs()...)
+	out = append(out, a.listLocalBotNodeJobs()...)
 	return out, nil
 }
 
@@ -499,6 +507,9 @@ func (a *App) ListDesktopNodes() (*DesktopNodesView, error) {
 			entry.ServerID = node.ServerID
 			entry.Memory = node.Memory
 			entry.CPUs = node.CPUs
+			if node.WithSrv != nil {
+				entry.WithSrv = *node.WithSrv
+			}
 			if entry.Token == "" {
 				entry.Token = node.AccessToken
 			}
@@ -515,7 +526,7 @@ func (a *App) ListDesktopNodes() (*DesktopNodesView, error) {
 		view.Nodes = append(view.Nodes, DesktopNodeEntry{
 			DesktopNodeRecord: DesktopNodeRecord{
 				ID: "hub:" + node.ServerID, Name: node.Name, NodeID: node.NodeID, ServerID: node.ServerID,
-				Token: node.AccessToken, Status: desktopNodeStatusReady,
+				Token: node.AccessToken, Status: desktopNodeStatusReady, WithSrv: node.WithSrv != nil && *node.WithSrv,
 			},
 			Registered: true, Online: node.Online, Active: node.Active,
 			Memory: node.Memory, CPUs: node.CPUs,
@@ -791,6 +802,7 @@ func (a *App) RegisterDesktopNodeDirect(req DesktopNodeDirectRequest) (*DesktopN
 	}
 	rec, err := a.insertDesktopNode(DesktopNodeRecord{
 		ID: id, Name: name, Mode: "direct", DesktopdURL: base, Token: token,
+		DesktopdAddr: desktopdURLHostPort(base), DesktopdPort: desktopdURLPort(base),
 		HubURL: strings.TrimRight(strings.TrimSpace(hubURL), "/"),
 		Status: desktopNodeStatusRegistering,
 	})
@@ -1395,6 +1407,7 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 		return err
 	}
 	env := parseDotEnv(envText)
+	desktopdAddr := strings.TrimSpace(env["DESKTOPD_ADDR"])
 	if !desktopNodeIntranetReady(env) {
 		// The install script or an older copy of the runbook may have stored a
 		// public name. Fix that file here so the command never contains the token.
@@ -1408,7 +1421,7 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 		return fmt.Errorf(".env 里没有 DESKTOPD_TOKEN")
 	}
 	port := rec.DesktopdPort
-	if _, p, err := net.SplitHostPort(env["DESKTOPD_ADDR"]); err == nil {
+	if _, p, err := net.SplitHostPort(desktopdAddr); err == nil {
 		if n, err := strconv.Atoi(p); err == nil && n > 0 {
 			port = n
 		}
@@ -1418,6 +1431,7 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 	}
 	client := conn.httpClient()
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
+	directBase := desktopNodeDirectBase(desktopdAddr, rec.Host, port)
 	if err := desktopdHealth(ctx, client, base, token); err != nil {
 		return err
 	}
@@ -1443,18 +1457,20 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 	_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
 		r.Token = token
 		r.DesktopdPort = port
+		r.DesktopdAddr = desktopdAddr
 		if r.Status != desktopNodeStatusUpgrading {
 			r.Status = desktopNodeStatusRegistering
 		}
 		r.Message = registerMessage
 	})
-	nodeID, err := a.enrollDesktopd(ctx, client, base, token, rec, srvAdmin)
+	nodeID, err := a.enrollDesktopd(ctx, client, base, directBase, token, rec, srvAdmin)
 	if nodeID != "" {
 		rec.NodeID = nodeID
 		_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
 			r.NodeID = nodeID
 			r.Token = token
 			r.DesktopdPort = port
+			r.DesktopdAddr = desktopdAddr
 		})
 	}
 	if err != nil {
@@ -1464,6 +1480,7 @@ func (a *App) finishDesktopNodeConn(conn *desktopNodeSSH, rec DesktopNodeRecord,
 		rec.NodeID = nodeID
 		rec.Token = token
 		rec.DesktopdPort = port
+		rec.DesktopdAddr = desktopdAddr
 		_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) {
 			r.NodeID = nodeID
 			if r.Status != desktopNodeStatusUpgrading {
@@ -1495,7 +1512,7 @@ func (a *App) registerDirectDesktopNode(rec DesktopNodeRecord) error {
 		a.setDesktopNodeStatus(rec.ID, desktopNodeStatusFailed, err.Error())
 		return err
 	}
-	nodeID, err := a.enrollDesktopd(ctx, client, rec.DesktopdURL, rec.Token, rec, "")
+	nodeID, err := a.enrollDesktopd(ctx, client, rec.DesktopdURL, rec.DesktopdURL, rec.Token, rec, "")
 	if nodeID != "" {
 		_, _ = a.updateDesktopNode(rec.ID, func(r *DesktopNodeRecord) { r.NodeID = nodeID })
 	}
@@ -1514,8 +1531,10 @@ func (a *App) registerDirectDesktopNode(rec DesktopNodeRecord) error {
 
 // enrollDesktopd asks Hub for a personal code and hands it to desktopd, which
 // enrolls itself and opens its tunnel. The old node of this record, if any,
-// is unregistered once the new one is up.
-func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, token string, rec DesktopNodeRecord, srvAdmin string) (string, error) {
+// is unregistered once the new one is up. base is how this call reaches the
+// desktopd API (loopback over the SSH tunnel, or the typed URL); directBase
+// is the intranet address advertised to Hub that other machines probe.
+func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, directBase, token string, rec DesktopNodeRecord, srvAdmin string) (string, error) {
 	hubURL, _, err := a.getHubCredentials()
 	if err != nil || strings.TrimSpace(hubURL) == "" {
 		return "", fmt.Errorf("还没有连接 Hub")
@@ -1570,7 +1589,7 @@ func (a *App) enrollDesktopd(ctx context.Context, client *http.Client, base, tok
 	body := map[string]any{
 		"hub_url":     strings.TrimRight(strings.TrimSpace(hubURL), "/"),
 		"code":        code.Code,
-		"direct_base": strings.TrimSpace(base),
+		"direct_base": strings.TrimSpace(directBase),
 	}
 	if strings.TrimSpace(srvAdmin) != "" {
 		body["has_srv"] = true
@@ -1740,6 +1759,71 @@ func normalizeDesktopdURL(raw string) (string, error) {
 	u.RawQuery, u.Fragment = "", ""
 	u.Path = strings.TrimRight(u.Path, "/")
 	return u.String(), nil
+}
+
+// desktopdURLHostPort and desktopdURLPort expose the host:port a normalized
+// desktopd URL dials, for display alongside a direct-mode record.
+func desktopdURLHostPort(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
+func desktopdURLPort(raw string) int {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(u.Port()); err == nil && n > 0 {
+		return n
+	}
+	switch u.Scheme {
+	case "http":
+		return desktopNodeDesktopdPort
+	case "https":
+		return 443
+	}
+	return 0
+}
+
+// desktopNodeDirectBase is the intranet address this GUI advertises for a
+// freshly checked desktopd: the URL other machines on that network probe.
+// A loopback bind stays loopback (only a same-host caller can use it), a
+// wildcard bind is reached through the SSH target's address, and a specific
+// bind IP is advertised as itself.
+func desktopNodeDirectBase(addr, host string, port int) string {
+	dial := strings.TrimSpace(host)
+	// The SSH target may arrive bracketed ([fd00::8]) or carrying a port;
+	// JoinHostPort below adds its own brackets and the desktopd port.
+	if h, _, err := net.SplitHostPort(dial); err == nil {
+		dial = h
+	}
+	dial = strings.TrimPrefix(strings.TrimSuffix(dial, "]"), "[")
+	if bind, _, err := net.SplitHostPort(strings.TrimSpace(addr)); err == nil {
+		bind = strings.Trim(bind, "[]")
+		switch {
+		case bind == "", bind == "0.0.0.0", bind == "::":
+			// Every interface answers; the SSH target reaches it.
+		case desktopNodeLoopbackHost(bind):
+			dial = "127.0.0.1"
+		default:
+			dial = bind
+		}
+	}
+	if dial == "" {
+		dial = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(dial, strconv.Itoa(port))
+}
+
+func desktopNodeLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // desktopNodeIntranetReady reports an env file that already describes an
@@ -1960,6 +2044,9 @@ func (a *App) writeDesktopNodeSrvToken(conn *desktopNodeSSH, rec DesktopNodeReco
 		if rec.DesktopdPort > 0 {
 			r.DesktopdPort = rec.DesktopdPort
 		}
+		if rec.DesktopdAddr != "" {
+			r.DesktopdAddr = rec.DesktopdAddr
+		}
 		if rec.NodeID != "" {
 			r.NodeID = rec.NodeID
 		}
@@ -1984,65 +2071,93 @@ func desktopNodeRandomHex(n int) (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+// srvEnvWriteCommand writes the srv env file with base64 or openssl.
+// The desktop host does not need Python; python3 lives in the desktop image.
 func srvEnvWriteCommand(dir, admin, tokenSecret, hubURL string) string {
 	payload := base64.StdEncoding.EncodeToString([]byte(admin + "\n" + tokenSecret + "\n" + hubURL))
-	return fmt.Sprintf(`python3 -c 'import base64,pathlib,os
-p=pathlib.Path(%q)/".env"
-admin,token_secret,hub=base64.b64decode(%q).decode().split("\n",2)
-p.parent.mkdir(parents=True, exist_ok=True)
-(p.parent/"data").mkdir(exist_ok=True)
-(p.parent/"logs").mkdir(exist_ok=True)
-keys={"MACLAW_ADMIN_SECRET":admin,"MACLAW_TOKEN_SECRET":token_secret,"MACLAW_HTTP_ADDR":"127.0.0.1:18080","MACLAW_DATA_ROOT":str(p.parent/"data"),"MACLAW_HUB_URL":hub,"MACLAW_ALLOW_INSECURE_HTTP":"true"}
-lines=p.read_text().splitlines() if p.exists() else []
-seen=set(); out=[]
-for line in lines:
-    key=line.split("=",1)[0]
-    if key in keys:
-        out.append(key+"="+keys[key]); seen.add(key)
-    else:
-        out.append(line)
-for key,value in keys.items():
-    if key not in seen:
-        out.append(key+"="+value)
-p.write_text("\n".join(out)+"\n")
-os.chmod(p, 0o600)
-'`, dir, payload)
+	return fmt.Sprintf(`umask 077
+d=%s
+b64=%s
+mkdir -p "$d/data" "$d/logs" || exit 1
+if ! decoded=$(printf '%%s' "$b64" | base64 -d 2>/dev/null); then
+  decoded=$(printf '%%s' "$b64" | openssl base64 -d -A) || exit 1
+fi
+admin=$(printf '%%s\n' "$decoded" | sed -n '1p')
+token_secret=$(printf '%%s\n' "$decoded" | sed -n '2p')
+hub=$(printf '%%s\n' "$decoded" | sed -n '3p')
+envf="$d/.env"
+tmp=$(mktemp "$d/.env.XXXXXX") || exit 1
+seen_admin=0; seen_token=0; seen_http=0; seen_root=0; seen_hub=0; seen_insecure=0
+if [ -f "$envf" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      MACLAW_ADMIN_SECRET=*) printf 'MACLAW_ADMIN_SECRET=%%s\n' "$admin"; seen_admin=1 ;;
+      MACLAW_TOKEN_SECRET=*) printf 'MACLAW_TOKEN_SECRET=%%s\n' "$token_secret"; seen_token=1 ;;
+      MACLAW_HTTP_ADDR=*) printf 'MACLAW_HTTP_ADDR=127.0.0.1:18080\n'; seen_http=1 ;;
+      MACLAW_DATA_ROOT=*) printf 'MACLAW_DATA_ROOT=%%s\n' "$d/data"; seen_root=1 ;;
+      MACLAW_HUB_URL=*) printf 'MACLAW_HUB_URL=%%s\n' "$hub"; seen_hub=1 ;;
+      MACLAW_ALLOW_INSECURE_HTTP=*) printf 'MACLAW_ALLOW_INSECURE_HTTP=true\n'; seen_insecure=1 ;;
+      *) printf '%%s\n' "$line" ;;
+    esac
+  done < "$envf" > "$tmp"
+else
+  : > "$tmp"
+fi
+[ "$seen_admin" -eq 1 ] || printf 'MACLAW_ADMIN_SECRET=%%s\n' "$admin" >> "$tmp"
+[ "$seen_token" -eq 1 ] || printf 'MACLAW_TOKEN_SECRET=%%s\n' "$token_secret" >> "$tmp"
+[ "$seen_http" -eq 1 ] || printf 'MACLAW_HTTP_ADDR=127.0.0.1:18080\n' >> "$tmp"
+[ "$seen_root" -eq 1 ] || printf 'MACLAW_DATA_ROOT=%%s\n' "$d/data" >> "$tmp"
+[ "$seen_hub" -eq 1 ] || printf 'MACLAW_HUB_URL=%%s\n' "$hub" >> "$tmp"
+[ "$seen_insecure" -eq 1 ] || printf 'MACLAW_ALLOW_INSECURE_HTTP=true\n' >> "$tmp"
+chmod 600 "$tmp" || exit 1
+mv "$tmp" "$envf"
+`, shellQuote(dir), shellQuote(payload))
 }
 
 func srvHubTokenWriteCommand(dir, token string) string {
 	encoded := base64.StdEncoding.EncodeToString([]byte(token))
-	return fmt.Sprintf(`python3 -c 'import base64,pathlib,os
-p=pathlib.Path(%q)/".env"
-t=base64.b64decode(%q).decode()
-lines=p.read_text().splitlines() if p.exists() else []
-out=[]; seen=False
-for line in lines:
-    if line.startswith("MACLAW_DESKTOP_API_TOKEN="):
-        out.append("MACLAW_DESKTOP_API_TOKEN="+t); seen=True
-    else:
-        out.append(line)
-if not seen:
-    out.append("MACLAW_DESKTOP_API_TOKEN="+t)
-text="\n".join(out)+"\n"
-p.write_text(text)
-os.chmod(p, 0o600)
-unit=pathlib.Path("/etc/systemd/system/maclawsrv.service")
-unit.write_text("""[Unit]
+	return fmt.Sprintf(`umask 077
+d=%s
+b64=%s
+if ! tok=$(printf '%%s' "$b64" | base64 -d 2>/dev/null); then
+  tok=$(printf '%%s' "$b64" | openssl base64 -d -A) || exit 1
+fi
+envf="$d/.env"
+tmp=$(mktemp "$d/.env.XXXXXX") || exit 1
+seen=0
+if [ -f "$envf" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      MACLAW_DESKTOP_API_TOKEN=*) printf 'MACLAW_DESKTOP_API_TOKEN=%%s\n' "$tok"; seen=1 ;;
+      *) printf '%%s\n' "$line" ;;
+    esac
+  done < "$envf" > "$tmp"
+else
+  : > "$tmp"
+fi
+[ "$seen" -eq 1 ] || printf 'MACLAW_DESKTOP_API_TOKEN=%%s\n' "$tok" >> "$tmp"
+chmod 600 "$tmp" || exit 1
+mv "$tmp" "$envf"
+cat > /etc/systemd/system/maclawsrv.service <<EOF
+[Unit]
 Description=MaClawSrv
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=%s
-EnvironmentFile=%s/.env
-ExecStart=%s/bin/maclawsrv
+WorkingDirectory=$d
+EnvironmentFile=$d/.env
+ExecStart=$d/bin/maclawsrv
 Restart=always
 RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
-""")
-' && { systemctl daemon-reload; systemctl enable maclawsrv.service; systemctl restart maclawsrv; }`, dir, encoded, dir, dir, dir)
+EOF
+systemctl daemon-reload
+systemctl enable maclawsrv.service
+systemctl restart maclawsrv
+`, shellQuote(dir), shellQuote(encoded))
 }
 
 func newDesktopNodeStamp() string {

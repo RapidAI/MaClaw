@@ -7,7 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+
 import '../bots/bots_controller.dart' show failureMessage;
+import '../bots/widgets.dart' show linkifyMarkdownUrls, openExternalUrl;
 import 'remote_models.dart';
 import 'remote_screen.dart' show remoteApiProvider, remoteTasksProvider;
 
@@ -120,9 +123,9 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       // Mirrors the controlled side's remoteControlMessageError — slash
       // commands would run locally on that machine, so reject before the
       // round-trip instead of surfacing the server error.
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('远控只能发送任务消息，不能运行本机命令')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('远控只能发送任务消息，不能运行本机命令')));
       return;
     }
     final api = ref.read(remoteApiProvider);
@@ -136,11 +139,13 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       ref.invalidate(remoteTasksProvider(widget.grant.id));
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_scrollCtrl.hasClients) return;
-        unawaited(_scrollCtrl.animateTo(
-          _scrollCtrl.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        ));
+        unawaited(
+          _scrollCtrl.animateTo(
+            _scrollCtrl.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          ),
+        );
       });
     } on Object catch (error) {
       if (mounted) {
@@ -256,11 +261,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     if (api == null || _downloading) return;
     setState(() => _downloading = true);
     try {
-      final file = await api.fetchFile(
-        widget.grant.id,
-        widget.taskPath,
-        path,
-      );
+      final file = await api.fetchFile(widget.grant.id, widget.taskPath, path);
       if (file.dataBase64.isEmpty) {
         throw StateError('远端没有返回文件内容');
       }
@@ -277,13 +278,10 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       final unique = dot > 0
           ? '${safe.substring(0, dot)}-$stamp${safe.substring(dot)}'
           : '$safe-$stamp';
-      final target =
-          '${dir.path}${Platform.pathSeparator}remote-$unique';
+      final target = '${dir.path}${Platform.pathSeparator}remote-$unique';
       await File(target).writeAsBytes(bytes, flush: true);
       if (!mounted) return;
-      await SharePlus.instance.share(
-        ShareParams(files: [XFile(target)]),
-      );
+      await SharePlus.instance.share(ShareParams(files: [XFile(target)]));
     } on Object catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -308,10 +306,12 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(title,
-                style: theme.textTheme.titleMedium,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis),
+            Text(
+              title,
+              style: theme.textTheme.titleMedium,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             Text(
               '${widget.grant.title} · ${widget.grant.permissionLabel}',
               style: theme.textTheme.labelSmall,
@@ -341,14 +341,9 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                 const PopupMenuItem(value: 'rename', child: Text('重命名')),
                 PopupMenuItem(
                   value: 'pin',
-                  child: Text(
-                    detail?.task.pinned == true ? '取消置顶' : '置顶',
-                  ),
+                  child: Text(detail?.task.pinned == true ? '取消置顶' : '置顶'),
                 ),
-                const PopupMenuItem(
-                  value: 'stop',
-                  child: Text('停止任务'),
-                ),
+                const PopupMenuItem(value: 'stop', child: Text('停止任务')),
               ],
             ),
         ],
@@ -356,130 +351,141 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error.isNotEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(_error),
+                  const SizedBox(height: 12),
+                  FilledButton.tonal(onPressed: _load, child: const Text('重试')),
+                ],
+              ),
+            )
+          : Column(
+              children: [
+                if (detail != null && detail.task.running)
+                  Container(
+                    width: double.infinity,
+                    color: theme.colorScheme.primaryContainer.withValues(
+                      alpha: .5,
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 8,
+                    ),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            detail.task.activePhase.isNotEmpty
+                                ? '运行中 · ${detail.task.activePhase}'
+                                : '运行中',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                Expanded(
+                  child: ListView(
+                    controller: _scrollCtrl,
+                    padding: const EdgeInsets.all(12),
                     children: [
-                      Text(_error),
-                      const SizedBox(height: 12),
-                      FilledButton.tonal(
-                        onPressed: _load,
-                        child: const Text('重试'),
-                      ),
+                      if (detail == null || detail.messages.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 24),
+                          child: Center(
+                            child: Text(
+                              '还没有对话记录',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        for (final message in detail.messages)
+                          _MessageRow(
+                            message: message,
+                            onFetch: _fetchAndShare,
+                            downloading: _downloading,
+                          ),
+                      if (detail != null && detail.artifacts.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        Text('产出物', style: theme.textTheme.titleSmall),
+                        const SizedBox(height: 8),
+                        for (final artifact in detail.artifacts)
+                          Card(
+                            child: ListTile(
+                              dense: true,
+                              leading: const Icon(Icons.description_outlined),
+                              title: Text(
+                                artifact.title.isNotEmpty
+                                    ? artifact.title
+                                    : '产出物',
+                              ),
+                              subtitle: artifact.preview.isNotEmpty
+                                  ? Text(
+                                      artifact.preview,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    )
+                                  : null,
+                            ),
+                          ),
+                      ],
                     ],
                   ),
-                )
-              : Column(
-                  children: [
-                    if (detail != null && detail.task.running)
-                      Container(
-                        width: double.infinity,
-                        color: theme.colorScheme.surfaceContainerHighest,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 6,
-                        ),
-                        child: Text(
-                          '运行中 · ${detail.task.activePhase}',
-                          style: theme.textTheme.bodySmall,
-                        ),
-                      ),
-                    Expanded(
-                      child: ListView(
-                        controller: _scrollCtrl,
-                        padding: const EdgeInsets.all(12),
+                ),
+                if (canOperate)
+                  SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                      child: Row(
                         children: [
-                          if (detail == null || detail.messages.isEmpty)
-                            Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 24),
-                              child: Center(
-                                child: Text(
-                                  '还没有对话记录',
-                                  style:
-                                      theme.textTheme.bodyMedium?.copyWith(
-                                    color:
-                                        theme.colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
+                          Expanded(
+                            child: TextField(
+                              controller: _inputCtrl,
+                              minLines: 1,
+                              maxLines: 4,
+                              decoration: const InputDecoration(
+                                hintText: '给这台机器的任务发消息…',
+                                border: OutlineInputBorder(),
+                                isDense: true,
                               ),
-                            )
-                          else
-                            for (final message in detail.messages)
-                              _MessageRow(
-                                message: message,
-                                onFetch: _fetchAndShare,
-                                downloading: _downloading,
-                              ),
-                          if (detail != null &&
-                              detail.artifacts.isNotEmpty) ...[
-                            const SizedBox(height: 16),
-                            Text('产出物', style: theme.textTheme.titleSmall),
-                            const SizedBox(height: 8),
-                            for (final artifact in detail.artifacts)
-                              Card(
-                                child: ListTile(
-                                  dense: true,
-                                  leading: const Icon(
-                                    Icons.description_outlined,
-                                  ),
-                                  title: Text(
-                                    artifact.title.isNotEmpty
-                                        ? artifact.title
-                                        : '产出物',
-                                  ),
-                                  subtitle: artifact.preview.isNotEmpty
-                                      ? Text(
-                                          artifact.preview,
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                        )
-                                      : null,
-                                ),
-                              ),
-                          ],
+                              onSubmitted: (_) => _send(),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton.filled(
+                            onPressed: _sending ? null : _send,
+                            icon: _sending
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.send, size: 18),
+                          ),
                         ],
                       ),
                     ),
-                    if (canOperate)
-                      SafeArea(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: _inputCtrl,
-                                  minLines: 1,
-                                  maxLines: 4,
-                                  decoration: const InputDecoration(
-                                    hintText: '给这台机器的任务发消息…',
-                                    border: OutlineInputBorder(),
-                                    isDense: true,
-                                  ),
-                                  onSubmitted: (_) => _send(),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              IconButton.filled(
-                                onPressed: _sending ? null : _send,
-                                icon: _sending
-                                    ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child:
-                                            CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Icon(Icons.send, size: 18),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
+                  ),
+              ],
+            ),
     );
   }
 }
@@ -497,76 +503,315 @@ class _MessageRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return message.role == 'user'
+        ? _UserBubble(text: message.content)
+        : _AssistantTurn(
+            message: message,
+            onFetch: onFetch,
+            downloading: downloading,
+          );
+  }
+}
+
+/// 我的消息 — 右侧气泡。
+class _UserBubble extends StatelessWidget {
+  final String text;
+
+  const _UserBubble({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isUser = message.role == 'user';
     return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      alignment: Alignment.centerRight,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.85,
+          maxWidth: MediaQuery.of(context).size.width * 0.8,
         ),
         decoration: BoxDecoration(
-          color: isUser
-              ? theme.colorScheme.primaryContainer
-              : theme.colorScheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(12),
+          color: theme.colorScheme.primary,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(18),
+            topRight: Radius.circular(18),
+            bottomLeft: Radius.circular(18),
+            bottomRight: Radius.circular(4),
+          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (message.reasoning.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  message.reasoning,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                    fontStyle: FontStyle.italic,
-                  ),
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            Text(message.content, style: theme.textTheme.bodyMedium),
-            if (message.resultStatus.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  message.resultStatus,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            if (message.filePaths.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final path in message.filePaths)
-                    ActionChip(
-                      avatar: downloading
-                          ? const SizedBox(
-                              width: 12,
-                              height: 12,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 1.5,
-                              ),
-                            )
-                          : const Icon(Icons.download, size: 14),
-                      label: Text(
-                        path.split(RegExp(r'[\\/]')).last,
-                        style: const TextStyle(fontSize: 12),
+        child: SelectableText(
+          text,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onPrimary,
+            height: 1.45,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 助手回复 — 豆包式：左侧头像 + 无气泡排版，思考过程可折叠，
+/// 正文按 Markdown 渲染，产出文件以卡片列出可点击下载。
+class _AssistantTurn extends StatelessWidget {
+  final RemoteMessage message;
+  final Future<void> Function(String path) onFetch;
+  final bool downloading;
+
+  const _AssistantTurn({
+    required this.message,
+    required this.onFetch,
+    required this.downloading,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 15,
+            backgroundColor: theme.colorScheme.primaryContainer,
+            child: Icon(
+              Icons.smart_toy_outlined,
+              size: 17,
+              color: theme.colorScheme.onPrimaryContainer,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (message.reasoning.isNotEmpty) ...[
+                  _ReasoningBlock(text: message.reasoning),
+                  const SizedBox(height: 8),
+                ],
+                if (message.content.isNotEmpty)
+                  MarkdownBody(
+                    data: linkifyMarkdownUrls(message.content),
+                    selectable: true,
+                    onTapLink: (text, href, title) {
+                      if (href != null) openExternalUrl(href);
+                    },
+                    styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                      p: theme.textTheme.bodyMedium?.copyWith(height: 1.5),
+                      a: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.primary,
+                        fontWeight: FontWeight.w600,
+                        decoration: TextDecoration.underline,
                       ),
-                      onPressed: () => onFetch(path),
+                      code: theme.textTheme.bodySmall?.copyWith(
+                        fontFamily: 'monospace',
+                        backgroundColor:
+                            theme.colorScheme.surfaceContainerHighest,
+                      ),
+                      codeblockDecoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                if (message.resultStatus.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: _StatusChip(status: message.resultStatus),
+                  ),
+                if (message.filePaths.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  for (final path in message.filePaths)
+                    _FileCard(
+                      path: path,
+                      downloading: downloading,
+                      onTap: () => onFetch(path),
                     ),
                 ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 思考过程 — 默认收起，展开看推理细节。
+class _ReasoningBlock extends StatelessWidget {
+  final String text;
+
+  const _ReasoningBlock({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: .55),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: ExpansionTile(
+        dense: true,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+        childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+        leading: Icon(
+          Icons.psychology_outlined,
+          size: 16,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        title: Text(
+          '思考过程',
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        iconColor: theme.colorScheme.onSurfaceVariant,
+        collapsedIconColor: theme.colorScheme.onSurfaceVariant,
+        children: [
+          SelectableText(
+            text,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontStyle: FontStyle.italic,
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusChip extends StatelessWidget {
+  final String status;
+
+  const _StatusChip({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final failed = status.contains('失败') || status.contains('error');
+    final color = failed
+        ? theme.colorScheme.error
+        : theme.colorScheme.onSurfaceVariant;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            failed ? Icons.error_outline : Icons.check_circle_outline,
+            size: 12,
+            color: color,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            status,
+            style: theme.textTheme.labelSmall?.copyWith(color: color),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 产出文件卡片 — 图标 + 文件名 + 下载指示。
+class _FileCard extends StatelessWidget {
+  final String path;
+  final bool downloading;
+  final VoidCallback onTap;
+
+  const _FileCard({
+    required this.path,
+    required this.downloading,
+    required this.onTap,
+  });
+
+  IconData _iconFor(String name) {
+    final dot = name.lastIndexOf('.');
+    if (dot < 0) return Icons.insert_drive_file_outlined;
+    return switch (name.substring(dot + 1).toLowerCase()) {
+      'png' ||
+      'jpg' ||
+      'jpeg' ||
+      'gif' ||
+      'webp' ||
+      'bmp' => Icons.image_outlined,
+      'mp4' || 'mov' || 'avi' || 'mkv' || 'webm' => Icons.videocam_outlined,
+      'mp3' || 'wav' || 'm4a' || 'flac' => Icons.audio_file_outlined,
+      'zip' || 'tar' || 'gz' || '7z' || 'rar' => Icons.folder_zip_outlined,
+      'pdf' => Icons.picture_as_pdf_outlined,
+      'md' || 'txt' || 'log' => Icons.description_outlined,
+      'dart' ||
+      'go' ||
+      'js' ||
+      'ts' ||
+      'py' ||
+      'java' ||
+      'c' ||
+      'cpp' ||
+      'h' ||
+      'rs' ||
+      'json' ||
+      'yaml' ||
+      'yml' ||
+      'xml' ||
+      'html' ||
+      'css' => Icons.code,
+      _ => Icons.insert_drive_file_outlined,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final name = path.split(RegExp(r'[\\/]')).last;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: downloading ? null : onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            border: Border.all(color: theme.colorScheme.outlineVariant),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(_iconFor(name), size: 18, color: theme.colorScheme.primary),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
+              const SizedBox(width: 10),
+              downloading
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 1.5),
+                    )
+                  : Icon(
+                      Icons.download_outlined,
+                      size: 16,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
             ],
-          ],
+          ),
         ),
       ),
     );

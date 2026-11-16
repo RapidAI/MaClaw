@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -418,6 +420,133 @@ func TestV2ImageBuildKeepsTheDesktopContract(t *testing.T) {
 		if _, err := os.Stat(file); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Every COPY source must exist under image/ so any packaging that ships
+	// the directory stays a complete build context. A staged context missing
+	// theme/ once failed the host build at COPY time.
+	for _, dockerfile := range []string{"image/Dockerfile", "image/Dockerfile.v2"} {
+		raw, err := os.ReadFile(dockerfile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Drop comment lines, then join backslash continuations so a
+		// multi-line COPY is checked whole — docker drops comment lines
+		// inside continuations too.
+		var logical []string
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if n := len(logical); n > 0 && strings.HasSuffix(logical[n-1], "\\") {
+				logical[n-1] = strings.TrimSuffix(logical[n-1], "\\") + " " + line
+			} else {
+				logical = append(logical, line)
+			}
+		}
+		for _, line := range logical {
+			fields := strings.Fields(line)
+			if len(fields) == 0 || (!strings.EqualFold(fields[0], "COPY") && !strings.EqualFold(fields[0], "ADD")) {
+				continue
+			}
+			fields = fields[1:]
+			isFromStage := false
+			for len(fields) > 0 && strings.HasPrefix(fields[0], "--") {
+				if strings.HasPrefix(fields[0], "--from=") {
+					isFromStage = true
+				}
+				fields = fields[1:]
+			}
+			if isFromStage || len(fields) < 2 {
+				continue
+			}
+			for _, src := range fields[:len(fields)-1] {
+				// ADD can fetch URLs; those are not context files.
+				if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+					continue
+				}
+				if _, err := os.Stat("image/" + src); err != nil {
+					t.Fatalf("%s COPYs %s which is missing under image/", dockerfile, src)
+				}
+			}
+		}
+	}
+}
+
+// shellFuncBody returns the text of `name() { ... }` from a shell file, from
+// the signature line through the first closing-brace-only line.
+func shellFuncBody(t *testing.T, path, name string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(raw), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, name+"() {") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("%s: function %s not found", path, name)
+	}
+	var b strings.Builder
+	for i := start; i < len(lines); i++ {
+		line := strings.TrimRight(lines[i], "\r")
+		b.WriteString(line)
+		b.WriteByte('\n')
+		if line == "}" && i > start {
+			return b.String()
+		}
+	}
+	t.Fatalf("%s: function %s is not closed", path, name)
+	return ""
+}
+
+// remote_deploy.sh is uploaded standalone, so it inlines the context check
+// from scripts/check_image_context.sh. The copies must stay identical.
+func TestImageContextCheckMatchesDeployInlineCopy(t *testing.T) {
+	deploy := shellFuncBody(t, "remote_deploy.sh", "image_context_missing")
+	script := shellFuncBody(t, "scripts/check_image_context.sh", "image_context_missing")
+	if deploy != script {
+		t.Fatalf("image_context_missing differs between remote_deploy.sh and scripts/check_image_context.sh:\n--- deploy ---\n%s\n--- script ---\n%s", deploy, script)
+	}
+}
+
+func TestCheckImageContextScript(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh on PATH")
+	}
+	out, err := exec.Command(sh, "scripts/check_image_context.sh", "image").CombinedOutput()
+	if err != nil {
+		t.Fatalf("script reported the repo image dir incomplete (exit %v): %s", err, out)
+	}
+	// A context staged the old way — file list without theme/ — must fail
+	// naming the missing sources.
+	dir := t.TempDir()
+	for _, f := range []string{"Dockerfile", "Dockerfile.v2", "desktop_supervisor.py", "close_range_shim.c", "fcitx5-profile"} {
+		data, err := os.ReadFile("image/" + f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err = exec.Command(sh, "scripts/check_image_context.sh", dir).CombinedOutput()
+	if err == nil {
+		t.Fatalf("script accepted a context missing theme/: %s", out)
+	}
+	if !strings.Contains(string(out), "theme/wallpapers/") {
+		t.Fatalf("missing output should name theme/ sources, got: %s", out)
+	}
+	// A directory with no Dockerfile at all must not silently pass.
+	out, err = exec.Command(sh, "scripts/check_image_context.sh", t.TempDir()).CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "Dockerfile") {
+		t.Fatalf("dockerfile-less dir should fail loudly, err=%v out=%s", err, out)
 	}
 }
 

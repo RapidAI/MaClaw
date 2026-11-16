@@ -66,11 +66,11 @@ func TestDesktopNodeUpgradePromptRebuildsLatestAndKeepsToken(t *testing.T) {
 		t.Fatal("an upgrade that includes MaClawSrv must name both components")
 	}
 	cmd := srvHubTokenWriteCommand("/data/soft/maclaw_srv", "hub-token-secret-value")
-	if strings.Contains(cmd, "hub-token-secret-value") || !strings.Contains(cmd, "MACLAW_DESKTOP_API_TOKEN") {
-		t.Fatal("the token write must not carry the raw hub token")
+	if strings.Contains(cmd, "hub-token-secret-value") || !strings.Contains(cmd, "MACLAW_DESKTOP_API_TOKEN") || strings.Contains(cmd, "python3") {
+		t.Fatal("the token write must not carry the raw hub token or call host python")
 	}
 	envCmd := srvEnvWriteCommand("/data/soft/maclaw_srv", "admin-secret-value", "token-secret-value", "https://hub.example")
-	if strings.Contains(envCmd, "admin-secret-value") || strings.Contains(envCmd, "token-secret-value") {
+	if strings.Contains(envCmd, "admin-secret-value") || strings.Contains(envCmd, "token-secret-value") || strings.Contains(envCmd, "python3") {
 		t.Fatal("the admin secret must not appear in the remote command")
 	}
 }

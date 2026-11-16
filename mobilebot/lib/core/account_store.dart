@@ -51,42 +51,42 @@ class Account {
   }
 
   factory Account.fromJson(Map<String, dynamic> json) => Account(
-        key: (json['key'] ?? '').toString(),
-        label: (json['label'] ?? '').toString(),
-        hubUrl: (json['hub_url'] ?? '').toString(),
-        hubId: (json['hub_id'] ?? '').toString(),
-        hubCenterUrl: (json['hubcenter_url'] ?? '').toString(),
-        tenantId: (json['tenant_id'] ?? '').toString(),
-        tenantName: (json['tenant_name'] ?? '').toString(),
-        userId: (json['user_id'] ?? '').toString(),
-        email: (json['email'] ?? '').toString(),
-        phoneNumber: (json['phone_number'] ?? '').toString(),
-        token: (json['token'] ?? '').toString(),
-        machineId: (json['machine_id'] ?? '').toString(),
-        machineToken: (json['machine_token'] ?? '').toString(),
-        clientId: (json['client_id'] ?? '').toString(),
-        addedAt:
-            DateTime.tryParse((json['added_at'] ?? '').toString()) ??
-                DateTime.fromMillisecondsSinceEpoch(0),
-      );
+    key: (json['key'] ?? '').toString(),
+    label: (json['label'] ?? '').toString(),
+    hubUrl: (json['hub_url'] ?? '').toString(),
+    hubId: (json['hub_id'] ?? '').toString(),
+    hubCenterUrl: (json['hubcenter_url'] ?? '').toString(),
+    tenantId: (json['tenant_id'] ?? '').toString(),
+    tenantName: (json['tenant_name'] ?? '').toString(),
+    userId: (json['user_id'] ?? '').toString(),
+    email: (json['email'] ?? '').toString(),
+    phoneNumber: (json['phone_number'] ?? '').toString(),
+    token: (json['token'] ?? '').toString(),
+    machineId: (json['machine_id'] ?? '').toString(),
+    machineToken: (json['machine_token'] ?? '').toString(),
+    clientId: (json['client_id'] ?? '').toString(),
+    addedAt:
+        DateTime.tryParse((json['added_at'] ?? '').toString()) ??
+        DateTime.fromMillisecondsSinceEpoch(0),
+  );
 
   Map<String, dynamic> toJson() => {
-        'key': key,
-        'label': label,
-        'hub_url': hubUrl,
-        'hub_id': hubId,
-        'hubcenter_url': hubCenterUrl,
-        'tenant_id': tenantId,
-        'tenant_name': tenantName,
-        'user_id': userId,
-        'email': email,
-        'phone_number': phoneNumber,
-        'token': token,
-        'machine_id': machineId,
-        'machine_token': machineToken,
-        'client_id': clientId,
-        'added_at': addedAt.toIso8601String(),
-      };
+    'key': key,
+    'label': label,
+    'hub_url': hubUrl,
+    'hub_id': hubId,
+    'hubcenter_url': hubCenterUrl,
+    'tenant_id': tenantId,
+    'tenant_name': tenantName,
+    'user_id': userId,
+    'email': email,
+    'phone_number': phoneNumber,
+    'token': token,
+    'machine_id': machineId,
+    'machine_token': machineToken,
+    'client_id': clientId,
+    'added_at': addedAt.toIso8601String(),
+  };
 }
 
 /// Multi-account store. Tokens live in secure storage; only the active key is
@@ -119,8 +119,7 @@ class AccountStore {
           final parsed = <Account>[];
           for (final e in list.whereType<Map>()) {
             try {
-              final account =
-                  Account.fromJson(Map<String, dynamic>.from(e));
+              final account = Account.fromJson(Map<String, dynamic>.from(e));
               if (account.key.isNotEmpty && account.token.isNotEmpty) {
                 parsed.add(account);
               }
@@ -157,10 +156,7 @@ class AccountStore {
 
   /// Adds or replaces the account with the same key, then activates it.
   Future<Account> upsert(Account account) async {
-    final next = [
-      account,
-      ..._accounts.where((a) => a.key != account.key),
-    ];
+    final next = [account, ..._accounts.where((a) => a.key != account.key)];
     _accounts = next;
     _activeKey = account.key;
     await _persist();

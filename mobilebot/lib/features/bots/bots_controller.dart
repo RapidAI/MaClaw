@@ -33,14 +33,13 @@ class BotsState {
     DesktopBotQuota? quota,
     String? error,
     bool? loading,
-  }) =>
-      BotsState(
-        access: access ?? this.access,
-        bots: bots ?? this.bots,
-        quota: quota ?? this.quota,
-        error: error ?? this.error,
-        loading: loading ?? this.loading,
-      );
+  }) => BotsState(
+    access: access ?? this.access,
+    bots: bots ?? this.bots,
+    quota: quota ?? this.quota,
+    error: error ?? this.error,
+    loading: loading ?? this.loading,
+  );
 }
 
 class BotsController extends Notifier<BotsState> {
@@ -96,8 +95,13 @@ class BotsController extends Notifier<BotsState> {
     }
   }
 
-  Future<Bot> create(String name, String description,
-      {String? color, String? shape, bool needsComputer = true}) async {
+  Future<Bot> create(
+    String name,
+    String description, {
+    String? color,
+    String? shape,
+    bool needsComputer = true,
+  }) async {
     final api = _api;
     if (api == null) throw StateError('not signed in');
     final Bot created;
@@ -149,14 +153,17 @@ class BotsController extends Notifier<BotsState> {
     if (identical(ref.read(botApiProvider), api)) {
       state = state.copyWith(
         bots: state.bots.where((b) => b.id != bot.id).toList(),
-        quota: botHasComputer(bot.desktopMode) ? state.quota.drop() : state.quota,
+        quota: botHasComputer(bot.desktopMode)
+            ? state.quota.drop()
+            : state.quota,
       );
     }
   }
 }
 
-final botsProvider =
-    NotifierProvider<BotsController, BotsState>(BotsController.new);
+final botsProvider = NotifierProvider<BotsController, BotsState>(
+  BotsController.new,
+);
 
 String failureMessage(Object error) {
   if (error is HubApiException) {

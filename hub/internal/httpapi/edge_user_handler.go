@@ -34,6 +34,10 @@ type selfDesktopNode struct {
 	AccessToken string `json:"access_token,omitempty"`
 	Memory      string `json:"memory,omitempty"`
 	CPUs        string `json:"cpus,omitempty"`
+	// WithSrv lets clients offer this node as a bot computer without a
+	// second lookup; the registry knows it even for nodes installed from
+	// another machine.
+	WithSrv bool `json:"with_srv,omitempty"`
 }
 
 type selfDesktopView struct {
@@ -41,14 +45,14 @@ type selfDesktopView struct {
 	Nodes   []selfDesktopNode `json:"nodes"`
 }
 
-func selfDesktopList(ctx context.Context, pool *desktoppool.Pool, broker *edgenode.Broker, tenantID, userID string) (selfDesktopView, error) {
+func selfDesktopList(ctx context.Context, pool *desktoppool.Pool, reg *edgenode.Registry, broker *edgenode.Broker, tenantID, userID string) (selfDesktopView, error) {
 	servers, active, err := pool.OwnedServers(ctx, tenantID, userID)
 	if err != nil {
 		return selfDesktopView{}, err
 	}
 	view := selfDesktopView{Enabled: true, Nodes: []selfDesktopNode{}}
 	for _, server := range servers {
-		view.Nodes = append(view.Nodes, selfDesktopNode{
+		entry := selfDesktopNode{
 			ServerID:    server.ID,
 			NodeID:      server.NodeID,
 			Name:        server.Name,
@@ -57,7 +61,11 @@ func selfDesktopList(ctx context.Context, pool *desktoppool.Pool, broker *edgeno
 			AccessToken: server.AccessToken,
 			Memory:      server.Memory,
 			CPUs:        server.CPUs,
-		})
+		}
+		if node, err := reg.Lookup(ctx, server.NodeID); err == nil {
+			entry.WithSrv = node.HasSrv
+		}
+		view.Nodes = append(view.Nodes, entry)
 	}
 	return view, nil
 }
@@ -74,7 +82,7 @@ func GetSelfDesktopNodesHandler(pool *desktoppool.Pool, reg *edgenode.Registry, 
 			writeJSON(w, http.StatusOK, selfDesktopView{Nodes: []selfDesktopNode{}})
 			return
 		}
-		view, err := selfDesktopList(r.Context(), pool, broker, principal.TenantID, principal.UserID)
+		view, err := selfDesktopList(r.Context(), pool, reg, broker, principal.TenantID, principal.UserID)
 		if err != nil {
 			writeDesktopError(w, err)
 			return
@@ -136,7 +144,7 @@ func PutSelfDesktopActiveHandler(pool *desktoppool.Pool, reg *edgenode.Registry,
 			pool.StopUserOnLater(principal.TenantID, before, principal.UserID)
 		}
 		pinDesktopChoice(r.Context(), bots, reg, principal.TenantID, principal.UserID, ownedNodeID(r.Context(), pool, principal.TenantID, principal.UserID, serverID))
-		view, err := selfDesktopList(r.Context(), pool, broker, principal.TenantID, principal.UserID)
+		view, err := selfDesktopList(r.Context(), pool, reg, broker, principal.TenantID, principal.UserID)
 		if err != nil {
 			writeDesktopError(w, err)
 			return
@@ -167,7 +175,7 @@ func PutCloudDesktopHandler(pool *desktoppool.Pool, reg *edgenode.Registry, brok
 			pool.StopUserOnLater(principal.TenantID, left, principal.UserID)
 		}
 		pinDesktopChoice(r.Context(), bots, reg, principal.TenantID, principal.UserID, "")
-		view, err := selfDesktopList(r.Context(), pool, broker, principal.TenantID, principal.UserID)
+		view, err := selfDesktopList(r.Context(), pool, reg, broker, principal.TenantID, principal.UserID)
 		if err != nil {
 			writeDesktopError(w, err)
 			return
@@ -232,7 +240,7 @@ func DeleteSelfDesktopNodeHandler(pool *desktoppool.Pool, reg *edgenode.Registry
 		if nodeID != "" {
 			retireEdgeNodes(r.Context(), reg, broker, principal.TenantID, []string{nodeID})
 		}
-		view, err := selfDesktopList(r.Context(), pool, broker, principal.TenantID, principal.UserID)
+		view, err := selfDesktopList(r.Context(), pool, reg, broker, principal.TenantID, principal.UserID)
 		if err != nil {
 			writeDesktopError(w, err)
 			return

@@ -19,6 +19,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/botcapability"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
@@ -50,8 +51,16 @@ var (
 	// ErrNoDesktop is a wake or watch of a bot that was created without a
 	// cloud desktop. Callers must not start a container for it.
 	ErrNoDesktop = errors.New("这个 bot 没有电脑")
+	// ErrNoDesktopTurn is a second message to a bot with no computer while
+	// its previous answer is still running. It is not parked on the desktop
+	// queue and it does not say the cloud desktop is busy.
+	ErrNoDesktopTurn = errors.New("这个 bot 还在回答上一条。")
 	// ErrDesktopQuota is a desktop bot past the grant's desktop-bot limit.
 	ErrDesktopQuota = errors.New("电脑额度已用完，请在新版客户端里创建无电脑 bot")
+	// ErrCloudDesktopUnassigned is a computer request from an account with
+	// no assigned cloud desktop and no usable LAN node. Clients surface it so
+	// the person picks a no-desktop bot or installs a LAN node.
+	ErrCloudDesktopUnassigned = errors.New("你的账号还没有分配云端电脑，只能创建无电脑的 bot")
 	// ErrNotPrimary is a bot other than this account's primary trying to
 	// notify or hand work to another bot.
 	ErrNotPrimary = errors.New("我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。")
@@ -214,6 +223,16 @@ type Service struct {
 	// ProbeVision asks whether one provider model accepts an image.
 	// Nil skips detection; MaClawSrv then probes on the first turn that needs it.
 	ProbeVision func(ctx context.Context, cfg corelib.MaclawLLMConfig) (supported, known bool)
+	// CloudDesktopAssigned resolves the cloud computer a user's desktop bots
+	// would land on: nil when a user, department, or global assignment names
+	// a cloud server, the resolution error otherwise. A nil hook leaves
+	// creation ungated. The departments slice is the caller-prefetched chain
+	// so the check does not repeat a directory round trip under s.mu.
+	CloudDesktopAssigned func(ctx context.Context, tenantID, userID string, departments []string) error
+	// LanDesktopAvailable reports whether a node id is a registered edge node
+	// of this tenant carrying MaClawSrv — i.e. a usable LAN computer. A nil
+	// hook reports no LAN desktop.
+	LanDesktopAvailable func(ctx context.Context, tenantID, nodeID string) bool
 
 	mu       sync.RWMutex
 	bearerMu sync.Mutex
@@ -263,9 +282,13 @@ type Service struct {
 	// desktopQueues is the per-bot FIFO of messages waiting for a free slot
 	// or for the person to return the keyboard. desktop queue keys are
 	// tenant, user, bot.
-	desktopQueues  map[string][]*desktopQueueItem
-	queueDraining  map[string]bool
-	queueDrainOnce sync.Once
+	desktopQueues map[string][]*desktopQueueItem
+	// desktopStarting is the item a drain popped and is admitting now. Until
+	// finishQueued records it again, a status poll for its turn key would
+	// read "missing" even though the message is starting — not gone.
+	desktopStarting map[string]*desktopQueueItem
+	queueDraining   map[string]bool
+	queueDrainOnce  sync.Once
 	// queueDrainOff skips the background drain timer. Tests that park a
 	// message and assert it was not posted set this.
 	queueDrainOff bool
@@ -450,7 +473,20 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 	if err := configured(rec); err != nil {
 		return 0, err
 	}
-	count, err := s.countInstances(ctx, rec, s.sharedBearer(ctx, rec))
+	bearer := s.sharedBearer(ctx, rec)
+	if strings.TrimSpace(bearer) == "" {
+		// Admin-secret-only setup: there is no bearer to probe with, so skip
+		// the pointless unauthenticated request and provision the credential
+		// right away.
+		cred, err := s.provisionConnectionCredential(ctx, tenantID)
+		if err != nil {
+			return 0, err
+		}
+		if bearer, _, err = s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID); err != nil {
+			return 0, err
+		}
+	}
+	count, err := s.countInstances(ctx, rec, bearer)
 	if err == nil {
 		s.probeStoredProviders(ctx, tenantID)
 		return count, nil
@@ -473,7 +509,7 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 		}
 		return 0, err
 	}
-	bearer, _, err := s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID)
+	bearer, _, err = s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID)
 	if err != nil {
 		return 0, err
 	}
@@ -530,7 +566,9 @@ func (s *Service) UpdateBot(ctx context.Context, tenantID, botID, name, descript
 	if strings.TrimSpace(bot.NodeID) != "" {
 		token, err = s.ensureNodeOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID, bot.NodeID)
 	} else {
-		token, err = s.ensureOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
+		// Empty NodeID is the cloud computer, even when this owner is pinned
+		// to a local node. ensureOwnerToken would follow that pin.
+		token, err = s.ensurePublicOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
 	}
 	if err != nil {
 		return Bot{}, err
@@ -579,7 +617,10 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 	if strings.TrimSpace(bot.NodeID) != "" {
 		token, err = s.ensureNodeOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID, bot.NodeID)
 	} else {
-		token, err = s.ensureOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
+		// Empty NodeID is the cloud computer, even when this owner is pinned
+		// to a local node. ensureOwnerToken would follow that pin and send
+		// the node's bearer to the public srv.
+		token, err = s.ensurePublicOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
 	}
 	if err != nil {
 		return err
@@ -623,20 +664,20 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 		stopHeld = true
 	}
 	s.persistDesktopState(tenantID)
-	// The desktop belongs to the user, not this bot. Another bot of the same
-	// user may still be logged in there. MaClawSrv stops it when no run is left.
-	shared := false
+	// The container belongs to the user on that computer. Another bot of the
+	// same user on the same computer may still be logged in there.
+	sameComputer := false
 	for _, item := range rec.Bots {
-		if item.OwnerUserID != "" && item.OwnerUserID == bot.OwnerUserID {
-			shared = true
+		if item.OwnerUserID == bot.OwnerUserID && strings.TrimSpace(item.NodeID) == strings.TrimSpace(bot.NodeID) {
+			sameComputer = true
 			break
 		}
 	}
 	if err := s.save(ctx, tenantID, rec); err != nil {
 		return err
 	}
-	if stopHeld && !shared && s.Desktop != nil {
-		_ = s.Desktop.Stop(ctx, tenantID, bot.OwnerUserID)
+	if stopHeld && !sameComputer && s.Desktop != nil {
+		_ = s.Desktop.Stop(desktoppool.WithComputer(ctx, bot.NodeID), tenantID, bot.OwnerUserID)
 	}
 	var keep []string
 	for _, item := range rec.Bots {
@@ -644,7 +685,7 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 			keep = append(keep, item.ID)
 		}
 	}
-	s.releaseBotDesktopLater(tenantID, bot.OwnerUserID, bot.ID, keep)
+	s.releaseBotDesktopLater(tenantID, bot.OwnerUserID, bot.ID, bot.NodeID, keep)
 	return nil
 }
 
@@ -660,7 +701,7 @@ type DesktopBotReleaser interface {
 // re-created under a new id). Before this, the numbers stayed taken until
 // the 30-number pool ran out (papers 2026-11-11). It runs off the request;
 // a failure only leaves the supervisor's reclaim-on-exhaustion fallback.
-func (s *Service) releaseBotDesktopLater(tenantID, ownerUserID, botID string, keep []string) {
+func (s *Service) releaseBotDesktopLater(tenantID, ownerUserID, botID, nodeID string, keep []string) {
 	rel, ok := s.Desktop.(DesktopBotReleaser)
 	if !ok || rel == nil || strings.TrimSpace(ownerUserID) == "" {
 		return
@@ -668,7 +709,9 @@ func (s *Service) releaseBotDesktopLater(tenantID, ownerUserID, botID string, ke
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		err := rel.ReleaseBotDesktop(ctx, tenantID, ownerUserID, botID)
+		// The bot is already gone, so the release names its computer directly.
+		// An empty node is the cloud computer.
+		err := rel.ReleaseBotDesktop(desktoppool.WithComputer(ctx, nodeID), tenantID, ownerUserID, botID)
 		traceBot(botID, "desktop_release", err)
 		err = rel.PruneBotDesktops(ctx, tenantID, ownerUserID, keep)
 		traceBot(botID, "desktop_prune", err, "keep", strconv.Itoa(len(keep)))
@@ -830,7 +873,16 @@ func (s *Service) authAsOwner(ctx context.Context, tenantID, owner string, rec *
 	if !upstreamUnauthorized(err) {
 		return err
 	}
-	fresh, next, tokenErr := s.ownerToken(ctx, tenantID, owner)
+	// Renew on the srv this call already chose. ownerToken follows the
+	// owner's pin, which would move a cloud bot onto a local node.
+	var fresh record
+	var next string
+	var tokenErr error
+	if nodeID := strings.TrimSpace(rec.DialNode); nodeID != "" {
+		fresh, next, tokenErr = s.finishNodeOwnerToken(ctx, tenantID, owner, nodeID)
+	} else {
+		fresh, next, tokenErr = s.ownerTokenPublic(ctx, tenantID, owner)
+	}
 	if tokenErr != nil {
 		return err
 	}
@@ -871,9 +923,11 @@ const botmgmtIdempotentRetryWait = 200 * time.Millisecond
 // botmgmtCallWorthRetry reports whether one MaClawSrv call failed without
 // MaClawSrv deciding anything: a transport error, or a 5xx from a proxy in
 // front of it. Both leave the requested state unchanged, which is what makes
-// another try safe for a read.
+// another try safe for a read. A tunnel that is already offline, or a node
+// that has no link at all, will not answer a second time, so that failure
+// is returned at once. A missing link stays out of the offline queue.
 func botmgmtCallWorthRetry(err error) bool {
-	if err == nil {
+	if err == nil || nodeLinkOffline(err) || nodeLinkMissingError(err) {
 		return false
 	}
 	var statusErr *upstream.StatusError
@@ -1038,7 +1092,15 @@ func configured(rec record) error {
 		}
 		return nil
 	}
-	if strings.TrimSpace(rec.BaseURL) == "" || strings.TrimSpace(rec.AccessToken) == "" {
+	if strings.TrimSpace(rec.BaseURL) == "" {
+		return ErrNotConfigured
+	}
+	// The admin secret alone completes the setup: it provisions the shared
+	// connection credential itself, so pasting an access token is no longer
+	// required.
+	if strings.TrimSpace(rec.AccessToken) == "" &&
+		strings.TrimSpace(rec.AdminSecret) == "" &&
+		!connectionReady(rec.Connection) {
 		return ErrNotConfigured
 	}
 	return nil

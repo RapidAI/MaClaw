@@ -35,8 +35,9 @@ type Env struct {
 	// StructureFirst refuses a pixel batch on a browser and a coordinate
 	// batch that has no app_probe id. app_run leaves it false.
 	StructureFirst bool
-	// PageNeedsPerson is captcha_widget, login_qr, or payment_confirm when
-	// the last page observation already handed that step to the person.
+	// PageNeedsPerson is captcha_widget, login_wall, mfa, login_qr, or
+	// payment_confirm when the last page observation already handed that
+	// step to the person.
 	PageNeedsPerson string
 }
 

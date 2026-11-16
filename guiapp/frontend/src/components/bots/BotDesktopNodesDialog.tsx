@@ -16,6 +16,8 @@ export type DesktopNodeEntry = {
     message?: string;
     node_id?: string;
     desktopd_url?: string;
+    desktopd_port?: number;
+    desktopd_addr?: string;
     with_srv?: boolean;
     srv_token_set?: boolean;
     last_kind?: string;
@@ -63,6 +65,16 @@ function words(lang: string) {
         add: L('Deploy another', '部署一台', '部署一台'),
         host: L('IP', 'IP', 'IP'),
         port: L('Port', '端口', '連接埠'),
+        portNote: L(
+            'Open each row\'s desktopd port (default 18081) on the intranet and this app reaches that desktop directly instead of relaying through Hub. An install bound to 127.0.0.1 must first change DESKTOPD_ADDR to :18081 and restart. Do not expose this port to the internet.',
+            '在内网放行每行的 desktopd 端口（默认 18081）后，本机可以直连那台桌面，不经 Hub 中转。绑在 127.0.0.1 的旧安装要先把 DESKTOPD_ADDR 改为 :18081 再重启。不要把这个端口映射到公网。',
+            '在內網放行每行的 desktopd 連接埠（預設 18081）後，本機可以直連那台桌面，不經 Hub 中轉。綁在 127.0.0.1 的舊安裝要先把 DESKTOPD_ADDR 改為 :18081 再重啟。不要把這個連接埠映射到公網。',
+        ),
+        portLoopback: L(
+            'localhost only — direct connection needs a LAN bind',
+            '只监听本机——要直连需改为内网绑定',
+            '只監聽本機——要直連需改為內網綁定',
+        ),
         user: L('User', '用户名', '使用者'),
         deploy: L('Deploy', '部署', '部署'),
         deploying: L('Deploying…', '部署中…', '部署中…'),
@@ -110,6 +122,56 @@ function desktopSizeLabel(memory: string | undefined, cpus: string | undefined):
 
 function installed(node: DesktopNodeEntry): boolean {
     return !!(node.node_id || node.registered || node.status === 'ready' || node.status === 'imported');
+}
+
+// desktopdPortOf is the port desktopd listens on for this row. The record
+// carries it after a deploy; a direct-mode URL carries it in the host part;
+// anything else falls back to the 18081 default.
+function desktopdPortOf(node: DesktopNodeEntry): number {
+    if (node.desktopd_port && node.desktopd_port > 0) return node.desktopd_port;
+    const raw = (node.desktopd_url || '').trim();
+    if (raw) {
+        try {
+            const parsed = new URL(raw.includes('://') ? raw : `http://${raw}`);
+            const port = Number(parsed.port);
+            if (port > 0) return port;
+        } catch { /* fall back to the default */ }
+    }
+    // A stored bind like ":18082" or "10.0.0.5:18082" also carries the port.
+    const bind = /:(\d+)$/.exec((node.desktopd_addr || '').trim());
+    if (bind) {
+        const port = Number(bind[1]);
+        if (port > 0) return port;
+    }
+    return 18081;
+}
+
+// desktopdBindHost is the address part of the DESKTOPD_ADDR bind. Empty
+// means all interfaces; loopback means nothing off the machine can dial it.
+function desktopdBindHost(node: DesktopNodeEntry): string {
+    const raw = (node.desktopd_addr || '').trim();
+    if (raw.startsWith('[')) {
+        const end = raw.indexOf(']');
+        return end > 0 ? raw.slice(1, end) : raw;
+    }
+    // A bare IPv6 literal holds several colons and no port to strip.
+    return raw.indexOf(':') === raw.lastIndexOf(':') ? raw.replace(/:\d+$/, '') : raw;
+}
+
+function desktopdLoopback(node: DesktopNodeEntry): boolean {
+    // ::ffff:127.x is the IPv4-mapped spelling; 0:0:0:0:0:0:0:1 is ::1 spelled
+    // out — both read as loopback the same way Go's net.IP.IsLoopback does.
+    const host = desktopdBindHost(node).toLowerCase().replace(/^::ffff:/, '');
+    return host === 'localhost' || host === '::1' || host === '0:0:0:0:0:0:0:1' || host.startsWith('127.');
+}
+
+// desktopdBindLabel renders the bind like it is configured: ":18081" for
+// every interface, "127.0.0.1:18081" for loopback-only.
+function desktopdBindLabel(node: DesktopNodeEntry): string {
+    const port = desktopdPortOf(node);
+    const host = desktopdBindHost(node);
+    if (host === '') return `desktopd :${port}`;
+    return `desktopd ${host.includes(':') ? `[${host}]` : host}:${port}`;
 }
 
 /** Backend stores LastAt as RFC3339 UTC; render it as a short local "YYYY-MM-DD HH:mm". */
@@ -292,6 +354,7 @@ export function BotDesktopNodesDialog({ heading, tabs, lang, onClose }: Props) {
                 <div className="modal-body custom-dialog__body">
                     <h4 className="bot-llm-dialog__section">{w.title}</h4>
                     <p className="bot-llm-dialog__hint">{w.hint}</p>
+                    <p className="bot-llm-dialog__hint">{w.portNote}</p>
                     {hubError ? <p className="bot-llm-dialog__notice" role="status" data-testid="bot-desktop-nodes-hub">{hubError}</p> : null}
                     {nodes === null ? <p className="bot-desktop-nodes__note">{w.loading}</p> : null}
                     {nodes && nodes.length === 0 ? <p className="bot-desktop-nodes__note" data-testid="bot-desktop-nodes-empty">{w.empty}</p> : null}
@@ -329,6 +392,15 @@ export function BotDesktopNodesDialog({ heading, tabs, lang, onClose }: Props) {
                                                 <span className="bot-desktop-nodes__name">{node.name || target}</span>
                                                 {/* 无名称时目标已充当名称，不再重复渲染一遍。 */}
                                                 {target && node.name ? <span className="bot-desktop-nodes__target">{target}</span> : null}
+                                                {node.mode !== 'direct' ? (
+                                                    <span
+                                                        className="bot-desktop-nodes__target"
+                                                        data-testid={`bot-desktop-port-${node.id}`}
+                                                        title={desktopdLoopback(node) ? w.portLoopback : undefined}
+                                                    >
+                                                        {desktopdBindLabel(node)}
+                                                    </span>
+                                                ) : null}
                                                 {statusLabel ? <span className={`bot-desktop-nodes__badge ${badgeCls}`}>{statusLabel}</span> : null}
                                             </div>
                                             {node.registered || node.active || node.with_srv || sizeLabel ? (

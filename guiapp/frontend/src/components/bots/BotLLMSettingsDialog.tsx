@@ -119,6 +119,8 @@ type BotLLMSettingsDialogProps = {
     onSubmit: (payload: BotLLMSettingsSubmit) => void;
     /** Header title when the dialog is the Model tab of the Settings dialog; labels.title then heads the body. */
     heading?: string;
+    /** "添加服务商" jump into the app's provider management; sits on the section-title row. */
+    onAddProvider?: () => void;
     /** Tab strip rendered under the header (Settings dialog). */
     tabs?: ReactNode;
     lang?: string;
@@ -172,6 +174,7 @@ export function BotLLMSettingsDialog({
     onClose,
     onSubmit,
     heading,
+    onAddProvider,
     tabs,
     lang,
     localDesktop = false,
@@ -317,7 +320,16 @@ export function BotLLMSettingsDialog({
                     {tabs}
                 </div>
                 <div className="modal-body custom-dialog__body">
-                    {heading ? <h4 className="bot-llm-dialog__section">{labels.title}</h4> : null}
+                    {heading || onAddProvider ? (
+                        <h4 className="bot-llm-dialog__section">
+                            {heading ? <span>{labels.title}</span> : null}
+                            {onAddProvider ? (
+                                <button type="button" disabled={saving} data-testid="bot-llm-add-provider" onClick={onAddProvider}>
+                                    {t('Add provider', '添加服务商', '添加服務商')}
+                                </button>
+                            ) : null}
+                        </h4>
+                    ) : null}
                     <p className="bot-llm-dialog__hint">{labels.sharedHint}</p>
                     {needsRoleSave ? <p className="bot-llm-dialog__notice" role="status">{labels.roleSaveHint}</p> : null}
 

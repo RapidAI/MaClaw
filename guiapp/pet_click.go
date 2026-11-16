@@ -20,6 +20,9 @@ const (
 	petClickDoubleCreditMS int64 = 10_000
 	petClickMultiCreditMS  int64 = 20_000
 	petClickCreditCapMS    int64 = 60_000
+	// A hover visit is one tick on the same rearing counter. It stays under a
+	// single click, and it is not a click class: it does not open the window.
+	petHoverCreditMS int64 = 2_000
 )
 
 type petClickClass int
@@ -491,4 +494,44 @@ func (a *App) applyPetClickGesture(packID string, class petClickClass, epoch uin
 	a.petRearing.mu.Unlock()
 	a.deliverPetRearing(stage)
 	return credit, stage
+}
+
+// creditDesktopPetHover adds one hover tick for the live visible pack. The
+// message thread calls it on a goroutine because the rearing save writes
+// sqlite. A hidden pet and a pack that is not the one on screen add nothing.
+func (a *App) creditDesktopPetHover() {
+	if a == nil {
+		return
+	}
+	a.petRearing.mu.Lock()
+	running := a.petRearing.running
+	pack := strings.TrimSpace(a.petRearing.pack)
+	a.petRearing.mu.Unlock()
+	if !running || pack == "" {
+		return
+	}
+	a.applyPetHoverCredit(pack)
+}
+
+// applyPetHoverCredit adds the hover tick. It is not a click, so it does not
+// classify a gesture and does not open the main window.
+func (a *App) applyPetHoverCredit(packID string) int64 {
+	credit := petHoverCreditMS
+	if a == nil || credit <= 0 || credit >= petClickSingleCreditMS || credit >= petClickCreditCapMS {
+		return 0
+	}
+	packID = strings.TrimSpace(packID)
+	if packID == "" {
+		return 0
+	}
+	a.petRearing.mu.Lock()
+	if !a.petRearing.running || a.petRearing.pack != packID {
+		a.petRearing.mu.Unlock()
+		return 0
+	}
+	a.petRearing.loaded += credit
+	stage := a.planPetRearingLocked()
+	a.petRearing.mu.Unlock()
+	a.deliverPetRearing(stage)
+	return credit
 }

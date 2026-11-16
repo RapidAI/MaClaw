@@ -55,10 +55,7 @@ class _FakeRemoteApi extends RemoteControlApi {
   }
 
   @override
-  Future<RemoteTaskDetail> getTask(
-    String grantId,
-    String projectPath,
-  ) async {
+  Future<RemoteTaskDetail> getTask(String grantId, String projectPath) async {
     if (opError != null) throw opError!;
     return detail ??
         RemoteTaskDetail(
@@ -102,17 +99,12 @@ class _FakeRemoteApi extends RemoteControlApi {
   }
 
   @override
-  Future<void> pinTask(
-    String grantId,
-    String projectPath,
-    bool pinned,
-  ) async {
+  Future<void> pinTask(String grantId, String projectPath, bool pinned) async {
     calls.add('pin:$grantId:$pinned');
   }
 
   @override
-  Future<void> acceptGrant(String grantId,
-      {String bindMachineId = ''}) async {
+  Future<void> acceptGrant(String grantId, {String bindMachineId = ''}) async {
     calls.add('accept:$grantId:$bindMachineId');
   }
 
@@ -150,9 +142,7 @@ class _FakeRemoteApi extends RemoteControlApi {
       home: '/home/u',
       defaultDir: '/home/u',
       roots: const ['C:\\', 'D:\\'],
-      dirs: const [
-        RemoteDirEntry(name: 'proj', path: '/home/u/proj'),
-      ],
+      dirs: const [RemoteDirEntry(name: 'proj', path: '/home/u/proj')],
     );
   }
 
@@ -167,9 +157,9 @@ class _FakeRemoteApi extends RemoteControlApi {
 }
 
 Widget _app(_FakeRemoteApi api, {Widget? home}) => ProviderScope(
-      overrides: [remoteApiProvider.overrideWithValue(api)],
-      child: MaterialApp(home: home ?? const RemoteScreen()),
-    );
+  overrides: [remoteApiProvider.overrideWithValue(api)],
+  child: MaterialApp(home: home ?? const RemoteScreen()),
+);
 
 void main() {
   group('remote models', () {
@@ -206,11 +196,7 @@ void main() {
     test('canOperate requires active status and operate permission', () {
       expect(_grantView.canOperate, isFalse);
       expect(_grantOps.canOperate, isTrue);
-      const stale = RcGrant(
-        id: 'x',
-        permission: 'operate',
-        status: 'expired',
-      );
+      const stale = RcGrant(id: 'x', permission: 'operate', status: 'expired');
       expect(stale.canOperate, isFalse);
     });
 
@@ -231,8 +217,11 @@ void main() {
     });
 
     test('file and dir payloads parse defensively', () {
-      final file = RemoteFile.fromJson(
-          {'name': 42, 'size': '7', 'data_base64': null});
+      final file = RemoteFile.fromJson({
+        'name': 42,
+        'size': '7',
+        'data_base64': null,
+      });
       expect(file.name, '');
       expect(file.size, 7);
       expect(file.dataBase64, '');
@@ -249,13 +238,20 @@ void main() {
     });
   });
 
+  /// pumpAndSettle never settles while the "running" banner's progress
+  /// indicator animates — step a few frames instead.
+  Future<void> _pumpFew(WidgetTester tester) async {
+    for (var i = 0; i < 6; i++) {
+      await tester.pump(const Duration(milliseconds: 80));
+    }
+  }
+
   group('remote screen', () {
-    testWidgets('dropdown lists machines and tasks load for the selection',
-        (tester) async {
+    testWidgets('dropdown lists machines and tasks load for the selection', (
+      tester,
+    ) async {
       final api = _FakeRemoteApi()
-        ..snapshot = const RemoteControlState(
-          grants: [_grantView, _grantOps],
-        )
+        ..snapshot = const RemoteControlState(grants: [_grantView, _grantOps])
         ..tasksByGrant = {
           'g-view': const [
             RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
@@ -284,8 +280,9 @@ void main() {
       expect(api.calls, contains('list:g-ops'));
     });
 
-    testWidgets('view grant hides create button; operate grant shows it',
-        (tester) async {
+    testWidgets('view grant hides create button; operate grant shows it', (
+      tester,
+    ) async {
       final api = _FakeRemoteApi()
         ..snapshot = const RemoteControlState(grants: [_grantView]);
       await tester.pumpWidget(_app(api));
@@ -322,14 +319,14 @@ void main() {
       await tester.tap(find.text('接受'));
       await tester.pumpAndSettle();
       // Accepting binds one of my machines — pick it in the dialog.
-      await tester.tap(
-          find.widgetWithText(SimpleDialogOption, '我的机'));
+      await tester.tap(find.widgetWithText(SimpleDialogOption, '我的机'));
       await tester.pumpAndSettle();
       expect(api.calls, contains('accept:p1:m1'));
     });
 
-    testWidgets('create sheet sends name/mode/workDir to createTask',
-        (tester) async {
+    testWidgets('create sheet sends name/mode/workDir to createTask', (
+      tester,
+    ) async {
       final api = _FakeRemoteApi()
         ..snapshot = const RemoteControlState(grants: [_grantOps]);
       await tester.pumpWidget(_app(api));
@@ -337,8 +334,7 @@ void main() {
 
       await tester.tap(find.text('新建任务'));
       await tester.pumpAndSettle();
-      await tester.enterText(
-          find.widgetWithText(TextField, '任务名称'), '报表整理');
+      await tester.enterText(find.widgetWithText(TextField, '任务名称'), '报表整理');
       await tester.tap(find.text('编程'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('创建'));
@@ -349,13 +345,16 @@ void main() {
   });
 
   group('remote screen management', () {
-    testWidgets('pairing a machine calls sameAccount with permission',
-        (tester) async {
+    testWidgets('pairing a machine calls sameAccount with permission', (
+      tester,
+    ) async {
       final api = _FakeRemoteApi()
         ..snapshot = const RemoteControlState(
           machines: [RcMachine(id: 'm1', name: '办公机', online: true)],
         );
       await tester.pumpWidget(_app(api));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.devices_outlined));
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('配对'));
@@ -368,8 +367,7 @@ void main() {
       expect(api.calls, contains('same:m1:operate'));
     });
 
-    testWidgets('controlled row ends the session via revoke',
-        (tester) async {
+    testWidgets('controlled row ends the session via revoke', (tester) async {
       final api = _FakeRemoteApi()
         ..snapshot = const RemoteControlState(
           controlled: [
@@ -385,6 +383,8 @@ void main() {
         );
       await tester.pumpWidget(_app(api));
       await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.devices_outlined));
+      await tester.pumpAndSettle();
 
       expect(find.text('正在远控我的电脑'), findsOneWidget);
       await tester.tap(find.text('结束'));
@@ -393,16 +393,16 @@ void main() {
     });
 
     testWidgets('invite sheet sends account and permission', (tester) async {
-      final api = _FakeRemoteApi()
-        ..snapshot = const RemoteControlState();
+      final api = _FakeRemoteApi()..snapshot = const RemoteControlState();
       await tester.pumpWidget(_app(api));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byIcon(Icons.person_add_alt_1));
       await tester.pumpAndSettle();
       await tester.enterText(
-          find.widgetWithText(TextField, '对方帐号（邮箱或手机号）'),
-          'friend@x.com');
+        find.widgetWithText(TextField, '对方帐号（邮箱或手机号）'),
+        'friend@x.com',
+      );
       await tester.tap(find.text('可操作'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('发送邀请'));
@@ -414,38 +414,41 @@ void main() {
 
   group('remote task detail', () {
     RemoteTaskDetail sampleDetail() => RemoteTaskDetail(
-          task: const RemoteTask(
-            id: '/p/a',
-            name: '任务甲',
-            projectPath: '/p/a',
-            activePhase: '执行中',
-          ),
-          messages: const [
-            RemoteMessage(role: 'user', content: '帮我查一下'),
-            RemoteMessage(
-              role: 'assistant',
-              content: '已经生成好了',
-              filePaths: ['/tmp/报告.pdf'],
-            ),
-          ],
-          artifacts: const [RemoteArtifact(title: '报告.pdf')],
-        );
-
-    testWidgets('shows messages and artifacts; view grant hides composer',
-        (tester) async {
-      final api = _FakeRemoteApi()..detail = sampleDetail();
-      await tester.pumpWidget(_app(
-        api,
-        home: const RemoteTaskScreen(
-          grant: _grantView,
-          taskPath: '/p/a',
-          taskName: '任务甲',
+      task: const RemoteTask(
+        id: '/p/a',
+        name: '任务甲',
+        projectPath: '/p/a',
+        activePhase: '执行中',
+      ),
+      messages: const [
+        RemoteMessage(role: 'user', content: '帮我查一下'),
+        RemoteMessage(
+          role: 'assistant',
+          content: '已经生成好了',
+          filePaths: ['/tmp/报告.pdf'],
         ),
-      ));
-      await tester.pumpAndSettle();
+      ],
+      artifacts: const [RemoteArtifact(title: '报告.pdf')],
+    );
+
+    testWidgets('shows messages and artifacts; view grant hides composer', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()..detail = sampleDetail();
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
 
       expect(find.text('帮我查一下'), findsOneWidget);
-      expect(find.text('已经生成好了'), findsOneWidget);
+      expect(find.text('已经生成好了', findRichText: true), findsOneWidget);
       expect(find.text('产出物'), findsOneWidget);
       expect(find.text('报告.pdf'), findsNWidgets(2)); // chip + artifact row
       expect(find.byIcon(Icons.send), findsNothing);
@@ -454,36 +457,39 @@ void main() {
 
     testWidgets('operate grant can send a message', (tester) async {
       final api = _FakeRemoteApi()..detail = sampleDetail();
-      await tester.pumpWidget(_app(
-        api,
-        home: const RemoteTaskScreen(
-          grant: _grantOps,
-          taskPath: '/p/a',
-          taskName: '任务甲',
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantOps,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
         ),
-      ));
-      await tester.pumpAndSettle();
+      );
+      await _pumpFew(tester);
 
       expect(find.byIcon(Icons.more_vert), findsOneWidget);
-      await tester.enterText(
-          find.byType(TextField).last, '继续处理第二批');
+      await tester.enterText(find.byType(TextField).last, '继续处理第二批');
       await tester.tap(find.byIcon(Icons.send));
-      await tester.pumpAndSettle();
+      await _pumpFew(tester);
 
       expect(api.calls, contains('send:g-ops:/p/a:继续处理第二批'));
     });
 
     testWidgets('file chip triggers fetch_file and share path', (tester) async {
       final api = _FakeRemoteApi()..detail = sampleDetail();
-      await tester.pumpWidget(_app(
-        api,
-        home: const RemoteTaskScreen(
-          grant: _grantView,
-          taskPath: '/p/a',
-          taskName: '任务甲',
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
         ),
-      ));
-      await tester.pumpAndSettle();
+      );
+      await _pumpFew(tester);
 
       // The fetch path runs through fetchFile; share_plus itself can't run
       // on a widget-test host, so assert the op call fires (the share call
@@ -494,22 +500,25 @@ void main() {
       expect(api.detail, isNotNull);
     });
 
-    testWidgets('slash command is rejected locally without an op call',
-        (tester) async {
+    testWidgets('slash command is rejected locally without an op call', (
+      tester,
+    ) async {
       final api = _FakeRemoteApi()..detail = sampleDetail();
-      await tester.pumpWidget(_app(
-        api,
-        home: const RemoteTaskScreen(
-          grant: _grantOps,
-          taskPath: '/p/a',
-          taskName: '任务甲',
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantOps,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
         ),
-      ));
-      await tester.pumpAndSettle();
+      );
+      await _pumpFew(tester);
 
       await tester.enterText(find.byType(TextField).last, '/plan approve');
       await tester.tap(find.byIcon(Icons.send));
-      await tester.pumpAndSettle();
+      await _pumpFew(tester);
 
       expect(api.calls.where((c) => c.startsWith('send:')), isEmpty);
       expect(find.text('远控只能发送任务消息，不能运行本机命令'), findsOneWidget);
@@ -519,19 +528,19 @@ void main() {
       final api = _FakeRemoteApi()
         ..snapshot = const RemoteControlState(grants: [_grantOps]);
       await tester.pumpWidget(_app(api));
-      await tester.pumpAndSettle();
+      await _pumpFew(tester);
 
       await tester.tap(find.text('新建任务'));
-      await tester.pumpAndSettle();
+      await _pumpFew(tester);
       await tester.tap(find.byIcon(Icons.folder_open));
-      await tester.pumpAndSettle();
+      await _pumpFew(tester);
 
       expect(api.calls, contains('dirs:'));
       expect(find.text('主目录'), findsOneWidget);
       expect(find.text('D:\\'), findsOneWidget);
 
       await tester.tap(find.text('D:\\'));
-      await tester.pumpAndSettle();
+      await _pumpFew(tester);
       expect(api.calls, contains('dirs:D:\\'));
     });
   });

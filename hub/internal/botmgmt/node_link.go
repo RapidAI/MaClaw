@@ -45,6 +45,10 @@ func (nodeLinkMissing) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("edge node link is unavailable")
 }
 
+func nodeLinkMissingError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "edge node link is unavailable")
+}
+
 func nodeLinkOffline(err error) bool {
 	if err == nil {
 		return false
@@ -52,7 +56,30 @@ func nodeLinkOffline(err error) bool {
 	if errors.Is(err, ErrNodeOffline) || errors.Is(err, edgenode.ErrOffline) {
 		return true
 	}
-	return strings.Contains(err.Error(), edgenode.ErrOffline.Error())
+	// desktoppool says "node is offline"; the tunnel says "edge node is offline".
+	return strings.Contains(err.Error(), "node is offline")
+}
+
+// nodeSessionMissing reports a desktop read that never found a tunnel.
+// A stream that fails after the session is up wraps edgenode.ErrOffline.
+// That failure is this one call, and a message for srv still goes out.
+func nodeSessionMissing(err error) bool {
+	if err == nil || errors.Is(err, edgenode.ErrOffline) || errors.Is(err, ErrNodeOffline) {
+		return false
+	}
+	return strings.Contains(err.Error(), "node is offline")
+}
+
+// explainDesktopErr turns a dead tunnel into the sentence the person sees.
+// Any other desktop failure stays a service error.
+func explainDesktopErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if nodeLinkOffline(err) {
+		return ErrNodeOffline
+	}
+	return fmt.Errorf("%w: %s", ErrSrv, err.Error())
 }
 
 func ownerNodeID(rec record, owner string) string {
@@ -223,6 +250,34 @@ func (s *Service) PinOwnerNode(ctx context.Context, tenantID, userID, nodeID str
 	return s.save(ctx, tenantID, rec)
 }
 
+// UnpinNodeExcept drops every pin that names this node except keepUserID's.
+// A node turning exclusive strands every other user's pin: their next bots
+// would land on the srv but could never wake the desktop.
+func (s *Service) UnpinNodeExcept(ctx context.Context, tenantID, nodeID, keepUserID string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	keepUserID = strings.TrimSpace(keepUserID)
+	if s == nil || nodeID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for user, id := range rec.OwnerNode {
+		if id == nodeID && user != keepUserID {
+			delete(rec.OwnerNode, user)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.save(ctx, tenantID, rec)
+}
+
 // ForgetNodeSrv drops the node connection and any user pin that named it.
 // Bots keep the NodeID they were created with.
 func (s *Service) ForgetNodeSrv(ctx context.Context, tenantID, nodeID string) error {
@@ -253,7 +308,7 @@ func (s *Service) ForgetNodeSrv(ctx context.Context, tenantID, nodeID string) er
 
 const nodeConnectionEmail = "hub-connection@bots.maclaw.local"
 
-func nodeConnectionReady(conn *connectionCredential) bool {
+func connectionReady(conn *connectionCredential) bool {
 	return conn != nil && strings.TrimSpace(conn.APIKey) != "" && strings.TrimSpace(conn.APISecret) != ""
 }
 
@@ -284,7 +339,7 @@ func (s *Service) provisionNodeConnection(ctx context.Context, tenantID, nodeID 
 	if !ok {
 		return fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
 	}
-	if nodeConnectionReady(view.Connection) {
+	if connectionReady(view.Connection) {
 		return nil
 	}
 	if strings.TrimSpace(view.AdminSecret) == "" {
@@ -361,7 +416,7 @@ func (s *Service) provisionNodeConnection(ctx context.Context, tenantID, nodeID 
 	if !ok {
 		return fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
 	}
-	if nodeConnectionReady(current.Connection) {
+	if connectionReady(current.Connection) {
 		return nil
 	}
 	current.MaClawTenantID = view.MaClawTenantID
@@ -369,14 +424,54 @@ func (s *Service) provisionNodeConnection(ctx context.Context, tenantID, nodeID 
 	return s.save(ctx, tenantID, current)
 }
 
-// ownerTokenOn is ownerToken for one bot's node. An empty nodeID uses the
-// user's pin, then the public connection.
+// ownerTokenOn is the bearer for one existing bot's srv. An empty nodeID is
+// the public connection. A set nodeID is that node's srv. The owner's pin is
+// not consulted: it only chooses where a new bot is created when the caller
+// does not name a server.
 func (s *Service) ownerTokenOn(ctx context.Context, tenantID, owner, nodeID string) (record, string, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
-		return s.ownerToken(ctx, tenantID, owner)
+		return s.ownerTokenPublic(ctx, tenantID, owner)
 	}
 	return s.finishNodeOwnerToken(ctx, tenantID, owner, nodeID)
+}
+
+// tokenForBot resolves the srv recorded on the bot, then ownerTokenOn.
+// A missing bot uses the public connection. Callers that already checked
+// ownership still get the srv that instance was created on.
+func (s *Service) tokenForBot(ctx context.Context, tenantID, owner, botID string) (record, string, error) {
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return record{}, "", err
+	}
+	nodeID := ""
+	if bot, ok := ownedBot(rec, owner, botID); ok {
+		nodeID = bot.NodeID
+	}
+	return s.ownerTokenOn(ctx, tenantID, owner, nodeID)
+}
+
+// ownedBot is this owner's bot, named by bot id or by the MaClawSrv instance
+// id. ok is false when the id is missing or belongs to someone else.
+func ownedBot(rec record, owner, botID string) (Bot, bool) {
+	owner = strings.TrimSpace(owner)
+	botID = strings.TrimSpace(botID)
+	if botID == "" || owner == "" {
+		return Bot{}, false
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 {
+		for i, bot := range rec.Bots {
+			if bot.InstanceID == botID {
+				index = i
+				break
+			}
+		}
+	}
+	if index < 0 || rec.Bots[index].OwnerUserID != owner {
+		return Bot{}, false
+	}
+	return rec.Bots[index], true
 }
 
 func (s *Service) ensureNodeOwnerToken(ctx context.Context, tenantID string, rec *record, owner, nodeID string) (string, error) {
@@ -392,7 +487,7 @@ func (s *Service) ensureNodeOwnerToken(ctx context.Context, tenantID string, rec
 	if principal := findPrincipal(view.Principals, owner); principal != nil {
 		return s.exchangeOwnerToken(ctx, view, *principal)
 	}
-	if !nodeConnectionReady(view.Connection) {
+	if !connectionReady(view.Connection) {
 		if err := s.provisionNodeConnection(ctx, tenantID, nodeID, false); err != nil {
 			return "", err
 		}
@@ -437,7 +532,7 @@ func (s *Service) finishNodeOwnerToken(ctx context.Context, tenantID, owner, nod
 		token, err := s.exchangeOwnerToken(ctx, view, *principal)
 		return view, token, err
 	}
-	if !nodeConnectionReady(view.Connection) {
+	if !connectionReady(view.Connection) {
 		if err := s.ProvisionNodeConnection(ctx, tenantID, nodeID); err != nil {
 			return record{}, "", err
 		}

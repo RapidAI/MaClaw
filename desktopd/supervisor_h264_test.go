@@ -518,11 +518,11 @@ print(a[a.index("-framerate") + 1], "mpdecimate" in a[a.index("-vf") + 1], sup.T
 // stops when the last viewer leaves.
 func TestSupervisorH264SharedEncoder(t *testing.T) {
 	out := runSupervisorPython(t, `
-import socket, subprocess, time
+import socket, subprocess, sys, time
 spawned = []
 def spawn(self, argv, env):
     spawned.append(argv)
-    return subprocess.Popen(["sleep", "30"], stdout=subprocess.PIPE)
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdout=subprocess.PIPE)
 sup.H264SharedEncoder.spawn = spawn
 sup.desktop_geometry = lambda: "1280x800x24"
 a = sup.H264Viewer(socket.socketpair()[0], 31, "", True)

@@ -182,6 +182,9 @@ function createHarness(options) {
       if (!opts.nodes) return Promise.reject(new Error('edge disabled'));
       return Promise.resolve({ nodes: opts.nodes });
     }
+    if (url.indexOf('/api/admin/bots/nodes/') === 0 && (url.slice(-6) === '/share' || url.slice(-9) === '/settings') && request && request.method === 'POST') {
+      return Promise.resolve({ updated: 'n1' });
+    }
     if (url.indexOf('/api/admin/bots/nodes/') === 0 && request && request.method === 'DELETE') {
       return Promise.resolve({ deleted: true });
     }
@@ -346,6 +349,27 @@ async function testIntranetNodeListShowsStatusCapabilityAndVersion() {
   assertIncludes(html, 'v9', 'version is listed');
   assertIncludes(html, 'data-node-delete="n1"', 'delete is offered');
   assertIncludes(html, 'data-node-rotate="n1"', 'a new secret can be issued');
+}
+
+async function testIntranetNodeNamesTheRegistrant() {
+  console.log('  Test: a node names the account that registered it');
+  const harness = createHarness({
+    nodes: [
+      { id: 'n1', name: 'lab', online: true, has_desktopd: true, owner_user_id: 'u_alice' },
+      { id: 'n2', name: 'ops', online: false, has_srv: true, issued_by: 'root-admin' },
+      { id: 'n3', name: 'legacy', online: false, has_srv: true }
+    ]
+  });
+  harness.mount();
+  await harness.load();
+  const html = harness.elements.desktopNodeList.innerHTML;
+  assertIncludes(html, 'Alice', 'an owned node resolves the owner to the org account label');
+  assertIncludes(html, 'root-admin', 'an admin-issued node names the issuing admin');
+  assertIncludes(html, '注册账号', 'the registrant is labelled');
+  assertIncludes(html, '发码管理员', 'the issuer is labelled');
+  assertIncludes(html, '个人', 'an owned node carries the personal tag');
+  const legacyRow = html.slice(html.indexOf('legacy'));
+  assert(legacyRow.indexOf('注册账号') === -1, 'a node without a registrant shows no account line');
 }
 
 async function testUserListCarriesOnlyAuthorizedUsers() {
@@ -524,11 +548,49 @@ async function testSwitchingUserOpensThatDesktop() {
   assertEqual(harness.elements.desktopVncTitle.textContent, 'VNC \u67e5\u770b \u00b7 Bob', 'the viewer names the new user');
 }
 
+async function testNodeSettingsEditsNameAndOwnership() {
+  console.log('  Test: node settings edits the name and shared vs personal owner');
+  const harness = createHarness({
+    servers: [
+      { id: 's1', name: 'lab', base_url: 'http://desktopd.n1.node.invalid', node_id: 'n1', owner_user_id: 'u_alice', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' },
+      { id: 's2', name: 'cloud', base_url: 'http://cloud.example', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' }
+    ],
+    nodes: [{ id: 'n1', name: 'lab', online: true, has_desktopd: true, owner_user_id: 'u_alice' }]
+  });
+  harness.mount();
+  await harness.load();
+  const html = harness.elements.desktopNodeList.innerHTML;
+  assertIncludes(html, 'data-node-settings="n1"', 'a node offers the settings button');
+  const serverHtml = harness.elements.desktopServerList.innerHTML;
+  assertIncludes(serverHtml, '独享', 'a personal service is marked');
+  assertIncludes(serverHtml, 'Alice', 'the owner resolves to the org label');
+  assertIncludes(serverHtml, '共用', 'a shared service is marked');
+  const settings = harness.elements.desktopNodeList.querySelectorAll('[data-node-settings]')[0];
+  harness.fire(harness.elements.desktopNodeList, 'click', { target: settings });
+  assertEqual(harness.elements.desktopNodeSettings.hidden, false, 'the settings form opens');
+  assertEqual(harness.elements.desktopNodeEditName.value, 'lab', 'the name is prefilled');
+  const ownerHtml = harness.elements.desktopNodeEditOwner.innerHTML;
+  assertIncludes(ownerHtml, 'u_alice', 'the owner select offers the org user');
+  assertIncludes(ownerHtml, 'value=""', 'the owner select offers shared');
+  assertEqual(harness.elements.desktopNodeEditOwner.value, 'u_alice', 'the current owner is selected');
+  harness.elements.desktopNodeEditName.value = 'lab-west';
+  harness.elements.desktopNodeEditOwner.value = '';
+  harness.fire(harness.elements.desktopNodeEditSave, 'click');
+  await flush();
+  const call = harness.calls.filter(function (c) { return c.path === '/api/admin/bots/nodes/n1/settings'; })[0];
+  assert(!!call, 'the settings request is sent');
+  assertEqual(call && call.method, 'POST', 'the settings save is a POST');
+  assertEqual(call && call.body, JSON.stringify({ name: 'lab-west', owner_user_id: '' }), 'name and shared owner are posted');
+  assertEqual(harness.elements.desktopNodeSettings.hidden, true, 'the form closes after saving');
+}
+
 Promise.resolve()
   .then(testRelayHintShowsWhenTheDesktopIsOnAnotherNode)
   .then(testEditingANodeKeepsItsVirtualAddress)
   .then(testIntranetNodesStayHiddenUntilTheFeatureIsOn)
   .then(testIntranetNodeListShowsStatusCapabilityAndVersion)
+  .then(testIntranetNodeNamesTheRegistrant)
+  .then(testNodeSettingsEditsNameAndOwnership)
   .then(testUserListCarriesOnlyAuthorizedUsers)
   .then(testUserListEmptyShowsTheAssignmentHint)
   .then(testViewButtonFollowsStopButton)

@@ -931,7 +931,7 @@ func (s *Service) DesktopRunActivity(tenantID, userID, botID, runID string) stri
 func (s *Service) readAdmittedDesktopRun(job admittedDesktopFollow, path string) (desktopRunView, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, job.TenantID, job.UserID)
+	fresh, token, err := s.tokenForBot(ctx, job.TenantID, job.UserID, job.BotID)
 	if err != nil {
 		return desktopRunView{}, err
 	}
@@ -984,7 +984,7 @@ func (s *Service) SupplementDesktopRun(ctx context.Context, tenantID, userID, bo
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return SupplementResult{}, err
 	}
@@ -1039,7 +1039,7 @@ func (s *Service) DesktopRunSupplements(ctx context.Context, tenantID, userID, b
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -1086,7 +1086,7 @@ func (s *Service) CancelDesktopRun(ctx context.Context, tenantID, userID, botID,
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return err
 	}
@@ -1133,7 +1133,7 @@ func (s *Service) SaveBotPreference(ctx context.Context, tenantID, userID, botID
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return err
 	}
@@ -1172,7 +1172,7 @@ func (s *Service) WithdrawBotPreference(ctx context.Context, tenantID, userID, b
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return err
 	}
@@ -1276,7 +1276,7 @@ func (s *Service) DesktopRunResult(ctx context.Context, tenantID, userID, botID,
 // it. An unreachable MaClawSrv is reported as the error it is — the run may
 // still be going, and the caller's poll already treats that as "ask again".
 func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID, instanceID, runID string) (Reply, bool, error) {
-	view, err := s.readDesktopRunFromSrv(ctx, tenantID, userID, instanceID, runID)
+	view, err := s.readDesktopRunFromSrv(ctx, tenantID, userID, botID, instanceID, runID)
 	if err != nil {
 		if errors.Is(err, ErrSrvNotFound) {
 			return Reply{}, false, ErrNotFound
@@ -1351,10 +1351,10 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 
 // readDesktopRunFromSrv reads one run straight from MaClawSrv, the way the
 // watcher does, for a run this Hub never admitted.
-func (s *Service) readDesktopRunFromSrv(ctx context.Context, tenantID, userID, instanceID, runID string) (desktopRunView, error) {
+func (s *Service) readDesktopRunFromSrv(ctx context.Context, tenantID, userID, botID, instanceID, runID string) (desktopRunView, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.tokenForBot(ctx, tenantID, userID, botID)
 	if err != nil {
 		return desktopRunView{}, err
 	}

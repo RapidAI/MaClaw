@@ -89,9 +89,13 @@ class _FakeApi extends BotApi {
   @override
   Future<List<PendingDelivery>> pendingDeliveries() async => const [];
 
+  final written = <Map<String, dynamic>>[];
+
   @override
   Future<void> writeConversation(
-      String clientId, List<Map<String, dynamic>> entries) async {}
+      String clientId, List<Map<String, dynamic>> entries) async {
+    written.addAll(entries);
+  }
 
   @override
   Future<void> ackRun(String botId, String runId) async {}
@@ -486,6 +490,34 @@ void main() {
         .messages
         .firstWhere((m) => m.id == msgId)
         .queued);
+  });
+
+  test('a message that waited out an offline node shows why it stopped',
+      () async {
+    final api = _FakeApi()
+      ..sendResult = SendResult.queued(
+          position: 1, ack: '这台内网电脑暂时连不上，这条消息先排着。')
+      ..queueView = const QueueView(
+          state: 'gave_up',
+          outcome: '这台内网电脑还没连回来，这条消息先停在这里。');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    await container.read(botChatProvider.notifier).send('打开报表');
+    await _until(() => container
+        .read(botChatProvider)
+        .messages
+        .any((m) => m.content == '这台内网电脑还没连回来，这条消息先停在这里。'));
+    final messages = container.read(botChatProvider).messages;
+    expect(messages.firstWhere((m) => m.isUser).queued, isFalse);
+    expect(
+        messages.where((m) => m.content == '这台内网电脑还没连回来，这条消息先停在这里。'),
+        hasLength(1));
+    await _until(() => api.written.any((entry) =>
+        entry['data'] is Map &&
+        (entry['data'] as Map)['content'] ==
+            '这台内网电脑还没连回来，这条消息先停在这里。'));
   });
 
   test('a still-running turn is adopted after reopening the chat', () async {

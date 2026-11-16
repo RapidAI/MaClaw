@@ -13,3 +13,8 @@ final bool supportsSideloadUpdate = Platform.isAndroid && !isOhos;
 /// has an OpenHarmony port today, so the mic affordance is hidden on ohos.
 final bool supportsVoiceInput =
     (Platform.isAndroid || Platform.isIOS) && !isOhos;
+
+/// Text-to-speech readback — `flutter_tts` covers Android/iOS; it has no
+/// OpenHarmony port today, so voice-assistant readback is hidden on ohos.
+final bool supportsVoiceOutput =
+    (Platform.isAndroid || Platform.isIOS) && !isOhos;

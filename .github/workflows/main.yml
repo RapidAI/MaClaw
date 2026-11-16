@@ -2662,6 +2662,8 @@ jobs:
             echo "keyAlias=$MOBILEBOT_KEY_ALIAS"
             echo "keyPassword=$MOBILEBOT_KEY_PASSWORD"
           } > key.properties
+      - name: Build voice native library
+        run: bash mobilebot/tool/build_voice.sh
       - name: Build release APK
         working-directory: mobilebot
         env:

@@ -127,3 +127,14 @@ func sshProbeCountsAsFailure(finished, ok bool, running time.Duration) bool {
 	}
 	return running >= sshProbeStuckAfter
 }
+
+// sshClientTransportLive reports a keepalive positively answered within
+// sshProbeWait. An error, a timed-out wait, or a request still in flight
+// all count as not live. A caller about to commit work to this client —
+// open a shell, send a signal — needs a yes, not the absence of a recorded
+// no: a still-running probe holds globalSentMu, so every later request on
+// that connection queues behind it.
+func sshClientTransportLive(client *ssh.Client) bool {
+	ok, finished, _, _ := awaitSSHProbe(client, sshProbeWait)
+	return finished && ok
+}

@@ -226,6 +226,66 @@ func TestResumeKeepsTheScheduleOrigin(t *testing.T) {
 	t.Fatal("continuation message missing")
 }
 
+func TestResumeOfANoneBotDropsTheComputerHelper(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	updated, err := svc.UpdateInstance(context.Background(), principal, inst.ID, UpdateInstanceInput{Metadata: map[string]string{
+		"hub_bot": "1", "hub_bot_desktop": "none",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = *updated
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "notes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	svc.ResumeExecutionHooks = func(Principal, Instance, string) (func(context.Context) context.Context, func(context.Context, *Run, *Message, error)) {
+		return func(ctx context.Context) context.Context { return ctx }, func(context.Context, *Run, *Message, error) {
+			close(done)
+		}
+	}
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		Status: RunStatusInterrupted, Error: runInterruptedError, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{
+			metaRestartCheckpoint: `{"session_id":"` + sess.ID + `","instance_id":"` + inst.ID + `"}`,
+			metaRestartTrajectory: `{"entries":[{"role":"user","content":"keep going"}]}`,
+			"bot_id":              "bot_none",
+			"bot_phase":           "execute",
+			"bot_origin":          "schedule",
+			"computer_helper":     "1",
+			"bot_task":            "看看有没有新消息",
+		},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if n := svc.ResumeInterruptedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d", n)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume did not finish")
+	}
+	msgs, err := svc.store.ListMessages(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range msgs {
+		if msg.Metadata == nil || msg.Metadata["restart_from"] == "" {
+			continue
+		}
+		if msg.Metadata["bot_desktop"] != "none" || msg.Metadata["computer_helper"] != "" || msg.Metadata["bot_origin"] != "schedule" {
+			t.Fatalf("metadata=%v", msg.Metadata)
+		}
+		return
+	}
+	t.Fatal("continuation message missing")
+}
+
 func TestResumeHoldLastsUntilTheContinuationFinishes(t *testing.T) {
 	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
 	defer svc.Close()

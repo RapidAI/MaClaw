@@ -466,6 +466,38 @@ func (a *App) IsPetStorePackInstalled(sourcePackID string) bool {
 	return reg != nil && reg.IsPackMarketInstalled(sourcePackID)
 }
 
+// PetStoreInstalledPack describes a market-installed copy on this machine.
+type PetStoreInstalledPack struct {
+	Version string `json:"version"`
+	// InstalledAt is the local install time in unix seconds. Comparing it with
+	// the listing's updated_at detects a republish that kept the same declared
+	// version, which a version comparison alone would miss.
+	InstalledAt int64 `json:"installed_at"`
+}
+
+// GetPetStoreInstalledPackDetails returns the installed manifest versions and
+// local install times of the given source pack IDs, keyed by source pack ID.
+// Only market-installed copies count — the same rule as
+// IsPetStorePackInstalled — so a locally authored pack that happens to share
+// the manifest ID never poses as an updatable market install.
+func (a *App) GetPetStoreInstalledPackDetails(sourcePackIDs []string) map[string]PetStoreInstalledPack {
+	details := make(map[string]PetStoreInstalledPack)
+	reg := petpack.EnsureGlobal()
+	if reg == nil {
+		return details
+	}
+	for _, sourcePackID := range sourcePackIDs {
+		sourcePackID = strings.TrimSpace(sourcePackID)
+		if !petpack.IsValidPackID(sourcePackID) {
+			continue
+		}
+		if version, installedAt, ok := reg.MarketInstalledPackInfo(sourcePackID); ok {
+			details[sourcePackID] = PetStoreInstalledPack{Version: version, InstalledAt: installedAt.Unix()}
+		}
+	}
+	return details
+}
+
 func (a *App) PurchasePetStorePack(id string) (map[string]interface{}, error) {
 	data, err := a.petStoreRequest(http.MethodPost, "/api/v1/pet-store/packs/"+url.PathEscape(strings.TrimSpace(id))+"/purchase", nil, "")
 	if err != nil {

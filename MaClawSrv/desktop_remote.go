@@ -98,9 +98,13 @@ func (c *desktopHubClient) Memory(ctx context.Context, tenantID, userID string) 
 	return out.Used, out.Limit, nil
 }
 
-// errDesktopKept means Hub left the desktop running. The person may be
-// logging in, so the logged-in page must stay locked to this browser.
+// errDesktopKept means Hub left the desktop running for a login that is
+// still in progress. The handoff markers stay.
+// errDesktopIdle means an isolated bot display was left running after the
+// run finished. A finished login is cleared, and the logged-in page stays
+// locked so the next command does not open a second browser.
 var errDesktopKept = errors.New("desktop kept")
+var errDesktopIdle = errors.New("desktop idle")
 
 type desktopStopInstanceKey struct{}
 
@@ -118,8 +122,11 @@ func (c *desktopHubClient) Stop(ctx context.Context, tenantID, userID string) er
 	if err := c.post(ctx, "/api/v1/desktop-services/stop", body, &out); err != nil {
 		return err
 	}
-	if out.Status == "kept" {
+	switch out.Status {
+	case "kept":
 		return errDesktopKept
+	case "idle":
+		return errDesktopIdle
 	}
 	return nil
 }
@@ -207,6 +214,11 @@ func (c *desktopHubClient) Install(ctx context.Context, tenantID, userID string,
 	return out.Output, nil
 }
 
+// localFileProbeBytes is how big a file write has to be before MaClawSrv
+// asks Hub for a same-machine path without uploading the bytes. Smaller
+// writes stay one request, which is what a public desktop already does.
+const localFileProbeBytes = 32 << 10
+
 func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, filePath, content, oldString, newString string) (string, error) {
 	var out struct {
 		Output    string `json:"output"`
@@ -221,6 +233,33 @@ func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, f
 		"old_string": oldString,
 		"new_string": newString,
 	}
+	if len(content)+len(oldString)+len(newString) >= localFileProbeBytes {
+		probe := map[string]any{
+			"tenant_id": tenantID,
+			"user_id":   userID,
+			"action":    "read",
+			"path":      filePath,
+		}
+		err := c.postLimitHeaders(ctx, "/api/v1/desktop-services/file", probe, &out, 1<<20, map[string]string{"X-Maclaw-Local-Probe": "1"})
+		if err == nil && strings.TrimSpace(out.DirectURL) != "" {
+			out.Output = ""
+			if err := c.recoverDirect(ctx, "/api/v1/desktop-services/file", body, body, &out, 1<<20, out.DirectURL); err != nil {
+				return "", err
+			}
+			return out.Output, nil
+		}
+		if err != nil && !localProbeContinue(err) {
+			return "", err
+		}
+		out = struct {
+			Output    string `json:"output"`
+			DirectURL string `json:"direct_url"`
+		}{}
+		if err := c.postLimitHeaders(ctx, "/api/v1/desktop-services/file", body, &out, 1<<20, map[string]string{"X-Maclaw-Skip-Local": "1"}); err != nil {
+			return "", err
+		}
+		return out.Output, nil
+	}
 	if err := c.postLimit(ctx, "/api/v1/desktop-services/file", body, &out, 1<<20); err != nil {
 		return "", err
 	}
@@ -232,6 +271,19 @@ func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, f
 		}
 	}
 	return out.Output, nil
+}
+
+// localProbeContinue is a probe that learned the bytes cannot stay local.
+// A missing file on an older Hub is the same: the write itself still goes.
+func localProbeContinue(err error) bool {
+	var api *desktopAPIError
+	if !errors.As(err, &api) {
+		return false
+	}
+	if api.Code == "LOCAL_UNAVAILABLE" {
+		return true
+	}
+	return api.Status == http.StatusNotFound
 }
 
 func (c *desktopHubClient) Bash(ctx context.Context, tenantID, userID, command string) (string, error) {
@@ -406,6 +458,35 @@ func (c *desktopHubClient) postDesktopTool(ctx context.Context, call desktopTool
 		Replaced     bool   `json:"replaced"`
 		DirectURL    string `json:"direct_url"`
 	}
+	if fileArgsNeedProbe(payload) {
+		err := c.postLimitHeaders(ctx, "/api/v1/desktop-services/tool", fileProbePayload(payload), &out, 1<<20, map[string]string{"X-Maclaw-Local-Probe": "1"})
+		if err == nil && strings.TrimSpace(out.DirectURL) != "" {
+			var local struct {
+				Output string `json:"output"`
+			}
+			if err := c.recoverDirect(ctx, "/api/v1/desktop-services/tool", payload, desktopToolLocalFileBody(payload), &local, 1<<20, out.DirectURL); err != nil {
+				return desktopToolOutcome{}, err
+			}
+			out.Output = local.Output
+			return toolOutcome(out.Output, out.AttachmentID, out.Error, out.ExecutorID, out.Volumes, out.Replaced), nil
+		}
+		if err != nil && !localProbeContinue(err) {
+			return desktopToolOutcome{}, err
+		}
+		out = struct {
+			Output       string `json:"output"`
+			AttachmentID string `json:"attachment_id"`
+			Error        string `json:"error"`
+			ExecutorID   string `json:"executor_id"`
+			Volumes      string `json:"volumes"`
+			Replaced     bool   `json:"replaced"`
+			DirectURL    string `json:"direct_url"`
+		}{}
+		if err := c.postLimitHeaders(ctx, "/api/v1/desktop-services/tool", payload, &out, 1<<20, map[string]string{"X-Maclaw-Skip-Local": "1"}); err != nil {
+			return desktopToolOutcome{}, err
+		}
+		return toolOutcome(out.Output, out.AttachmentID, out.Error, out.ExecutorID, out.Volumes, out.Replaced), nil
+	}
 	if err := c.post(ctx, "/api/v1/desktop-services/tool", payload, &out); err != nil {
 		return desktopToolOutcome{}, err
 	}
@@ -419,14 +500,49 @@ func (c *desktopHubClient) postDesktopTool(ctx context.Context, call desktopTool
 		}
 		out.Output = local.Output
 	}
+	return toolOutcome(out.Output, out.AttachmentID, out.Error, out.ExecutorID, out.Volumes, out.Replaced), nil
+}
+
+func toolOutcome(output, attachment, errText, executor, volumes string, replaced bool) desktopToolOutcome {
 	return desktopToolOutcome{
-		Text:         out.Output,
-		AttachmentID: out.AttachmentID,
-		Err:          strings.TrimSpace(out.Error),
-		ExecutorID:   strings.TrimSpace(out.ExecutorID),
-		Volumes:      strings.TrimSpace(out.Volumes),
-		Replaced:     out.Replaced,
-	}, nil
+		Text:         output,
+		AttachmentID: attachment,
+		Err:          strings.TrimSpace(errText),
+		ExecutorID:   strings.TrimSpace(executor),
+		Volumes:      strings.TrimSpace(volumes),
+		Replaced:     replaced,
+	}
+}
+
+func fileArgsNeedProbe(payload map[string]any) bool {
+	action, _ := payload["action"].(string)
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(action)), "file_") {
+		return false
+	}
+	args, _ := payload["args"].(map[string]any)
+	n := 0
+	for _, key := range []string{"content", "old_string", "new_string"} {
+		text, _ := args[key].(string)
+		n += len(text)
+	}
+	return n >= localFileProbeBytes
+}
+
+// fileProbePayload asks whether the write can stay on the machine. It is a
+// read, so an older Hub that ignores the probe header does not write an
+// empty file.
+func fileProbePayload(payload map[string]any) map[string]any {
+	probe := map[string]any{}
+	for key, value := range payload {
+		if key != "args" {
+			probe[key] = value
+		}
+	}
+	probe["action"] = "file_read"
+	args, _ := payload["args"].(map[string]any)
+	path, _ := args["path"].(string)
+	probe["args"] = map[string]any{"path": path}
+	return probe
 }
 
 // desktopToolLocalFileBody is the file call desktopd accepts on the
@@ -966,10 +1082,11 @@ func occupyUserDesktopRun(ctx context.Context, tenantID, userID, instanceID stri
 		if busy {
 			return
 		}
-		if err := releaseUserDesktop(context.Background(), stopTenant, stopUser, stopInstance); err != nil {
-			// Hub kept the desktop, or the stop did not land. A login
-			// set aside for this open is still the one a later release
-			// must not shut down.
+		err := releaseUserDesktop(context.Background(), stopTenant, stopUser, stopInstance)
+		if err != nil && !errors.Is(err, errDesktopIdle) {
+			// Hub kept the desktop for a login still in progress, or the
+			// stop did not land. A login set aside for this open is still
+			// the one a later release must not shut down.
 			desktopRunsMu.Lock()
 			restoreRetiredDesktopLogin(key)
 			desktopRunsMu.Unlock()
@@ -979,13 +1096,27 @@ func occupyUserDesktopRun(ctx context.Context, tenantID, userID, instanceID stri
 		// the desktop, and a disconnect skips the stop. Those paths
 		// put a set-aside login back, so the count and the person stay.
 		// Clearing earlier lets the next repeated admission shut a
-		// desktop that is still up.
+		// desktop that is still up. An isolated display stays up (idle):
+		// the finished login is cleared, and the page lock is not. A login
+		// that started while that stop was in flight changed the count or
+		// the person, and stays.
 		desktopRunsMu.Lock()
+		if errors.Is(err, errDesktopIdle) {
+			current, held := desktopPersonInstance.Load(key)
+			currentID, _ := current.(string)
+			if desktopHolds[key] != stopHolds || held != stopPersonHeld || currentID != stopPerson {
+				desktopRunsMu.Unlock()
+				return
+			}
+		}
 		desktopHolds[key] = 0
 		delete(desktopSpentHolds, key)
 		delete(desktopRetiredLogins, key)
 		desktopPersonInstance.Delete(key)
 		desktopRunsMu.Unlock()
+		if errors.Is(err, errDesktopIdle) {
+			return
+		}
 		releaseLoggedInDocument(stopTenant, stopUser)
 	}, &owned
 }

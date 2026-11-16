@@ -85,6 +85,39 @@ func WithWakeReason(ctx context.Context, reason string) context.Context {
 	return context.WithValue(ctx, wakeReasonKey{}, reason)
 }
 
+type computerNodeKey struct{}
+
+type computerNode struct {
+	id string
+	ok bool
+}
+
+// WithComputer pins one call to a computer. An empty nodeID is the cloud
+// computer, including when the user is currently assigned to a local node.
+func WithComputer(ctx context.Context, nodeID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, computerNodeKey{}, computerNode{id: strings.TrimSpace(nodeID), ok: true})
+}
+
+func computerNodeOf(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	choice, ok := ctx.Value(computerNodeKey{}).(computerNode)
+	if !ok || !choice.ok {
+		return "", false
+	}
+	return choice.id, true
+}
+
+// PinnedComputer is the computer WithComputer selected for this call.
+// ok is false when the call follows the user's current assignment.
+func PinnedComputer(ctx context.Context) (nodeID string, ok bool) {
+	return computerNodeOf(ctx)
+}
+
 func wakeReasonOf(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -256,6 +289,10 @@ type Pool struct {
 	// Nodes dials a Bot node. Nil, or a server with an empty NodeID, keeps
 	// the client() path.
 	Nodes func(ctx context.Context, tenantID, nodeID, target string) *http.Client
+	// Home is the computer one bot uses. An empty nodeID with ok true is the
+	// cloud computer. ok false leaves the user's current assignment. Desktop
+	// users that do not name a bot never call Home.
+	Home func(ctx context.Context, tenantID, ownerID, botID string) (nodeID string, ok bool)
 
 	mu sync.Mutex
 
@@ -562,14 +599,28 @@ func (p *Pool) CreateDesktop(ctx context.Context, tenantID, userID string) (Desk
 }
 
 // StopDesktop asks the assigned Docker service to stop that user's desktop.
+// An isolated bot display is left running: desktopd returns idle and the
+// supervisor stops that display later. Forgetting its screen-use record
+// here draws the sleep picture on a display that is still up. A stop that
+// does not land leaves the record too.
 func (p *Pool) StopDesktop(ctx context.Context, tenantID, userID string) (Desktop, error) {
-	// Whatever asked for the stop, no bot is on this screen any more.
-	p.ForgetBotGUIUse(tenantID, userID)
+	if _, bot := desktop.SplitDesktopUser(userID); bot != "" {
+		// desktopd answers this with "idle" and does not touch the display.
+		// Calling it hairpins Hub out to the node and back for that answer,
+		// and the screen-use record has to stay so the 电脑 tab does not
+		// draw sleep on a display that is still up.
+		return Desktop{UserID: userID, Status: "idle"}, nil
+	}
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
 		return Desktop{}, err
 	}
-	return p.stopOnServer(ctx, server, tenantID, userID)
+	out, err := p.stopOnServer(ctx, server, tenantID, userID)
+	if err != nil {
+		return Desktop{}, err
+	}
+	p.ForgetBotGUIUse(tenantID, userID)
+	return out, nil
 }
 
 // ReleaseBotDesktop gives a deleted bot's display number back on the owner's
@@ -592,7 +643,8 @@ func (p *Pool) ReleaseBotDesktop(ctx context.Context, tenantID, ownerUserID, bot
 // longer exist (desktopd /v1/desktops/bot-prune). keep is every bot the
 // owner still has; running or busy screens are never touched there.
 func (p *Pool) PruneBotDesktops(ctx context.Context, tenantID, ownerUserID string, keep []string) error {
-	server, err := p.resolve(ctx, tenantID, ownerUserID)
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	servers, err := p.computersOf(ctx, tenantID, ownerUserID)
 	if err != nil {
 		return err
 	}
@@ -601,10 +653,28 @@ func (p *Pool) PruneBotDesktops(ctx context.Context, tenantID, ownerUserID strin
 	}
 	body := map[string]any{
 		"tenant_id": store.NormalizeTenantID(tenantID),
-		"user_id":   strings.TrimSpace(ownerUserID),
+		"user_id":   ownerUserID,
 		"keep_bots": keep,
 	}
-	return p.call(ctx, server, http.MethodPost, "/v1/desktops/bot-prune", body, nil)
+	assigned, _ := p.resolveAssigned(ctx, tenantID, ownerUserID)
+	var assignedErr error
+	seenAssigned := false
+	var otherErr error
+	for _, server := range servers {
+		callErr := p.call(ctx, server, http.MethodPost, "/v1/desktops/bot-prune", body, nil)
+		if assigned.ID != "" && server.ID == assigned.ID {
+			assignedErr = callErr
+			seenAssigned = true
+			continue
+		}
+		if callErr != nil && otherErr == nil {
+			otherErr = callErr
+		}
+	}
+	if seenAssigned {
+		return assignedErr
+	}
+	return otherErr
 }
 
 // stopOnServer stops the desktop on one specific Docker service, independent
@@ -1219,10 +1289,22 @@ func wakeTimedOut(err error) bool {
 }
 
 func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, error) {
+	owner, botID := desktop.SplitDesktopUser(userID)
+	if nodeID, ok := computerNodeOf(ctx); ok {
+		return p.resolveComputer(ctx, tenantID, owner, nodeID)
+	}
+	if botID != "" && p != nil && p.Home != nil {
+		if nodeID, ok := p.Home(ctx, tenantID, owner, botID); ok {
+			return p.resolveComputer(ctx, tenantID, owner, nodeID)
+		}
+	}
+	return p.resolveAssigned(ctx, tenantID, owner)
+}
+
+// resolveAssigned is the user's current computer: their assignment, then
+// their department, then the tenant default.
+func (p *Pool) resolveAssigned(ctx context.Context, tenantID, userID string) (Server, error) {
 	ctx = directoryContext(ctx, tenantID)
-	// An isolated bot's desktop user lives on its owner's Docker service:
-	// the bot's display is inside the owner's container.
-	userID, _ = desktop.SplitDesktopUser(userID)
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return Server{}, fmt.Errorf("%w: user is required", ErrInvalidInput)
@@ -1248,6 +1330,183 @@ func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, er
 		return p.stamp(tenantID, server, err)
 	}
 	return Server{}, ErrNotAssigned
+}
+
+// resolveComputer is one bot's computer. An empty nodeID is the cloud
+// computer: a user assignment that points at a local node is not used
+// (its previous cloud server is, when that is what the user had), then
+// department and global, skipping node servers. A set nodeID is that
+// node's desktop and does not fall back to the cloud.
+func (p *Pool) resolveComputer(ctx context.Context, tenantID, userID, nodeID string) (Server, error) {
+	ctx = directoryContext(ctx, tenantID)
+	userID = strings.TrimSpace(userID)
+	nodeID = strings.TrimSpace(nodeID)
+	if userID == "" {
+		return Server{}, fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	p.mu.Unlock()
+	if err != nil {
+		return Server{}, err
+	}
+	if nodeID != "" {
+		var owned Server
+		ownedOK := false
+		var current Server
+		currentOK := false
+		assignedID := matchAssignment(rec.Assignments, ScopeUser, userID)
+		var shared Server
+		sharedOK := false
+		for _, server := range rec.Servers {
+			if strings.TrimSpace(server.NodeID) != nodeID {
+				continue
+			}
+			owner := strings.TrimSpace(server.OwnerUserID)
+			if owner == userID {
+				if !ownedOK {
+					owned = server
+					ownedOK = true
+				}
+				// Reinstalling the same machine appends another server.
+				// The one the user is on now is the computer, not the oldest.
+				if server.ID == assignedID {
+					current = server
+					currentOK = true
+				}
+				continue
+			}
+			// A node desktop with no owner is the shared one for that node.
+			// Another user's own desktop is not this bot's computer.
+			if owner == "" && !sharedOK {
+				shared = server
+				sharedOK = true
+			}
+		}
+		if currentOK {
+			return p.stamp(tenantID, current, nil)
+		}
+		if ownedOK {
+			return p.stamp(tenantID, owned, nil)
+		}
+		if sharedOK {
+			return p.stamp(tenantID, shared, nil)
+		}
+		return Server{}, ErrNotAssigned
+	}
+	if server, ok := cloudServerForAssigned(rec, userID, p.departmentChain(ctx, userID)); ok {
+		return p.stamp(tenantID, server, nil)
+	}
+	return Server{}, ErrNotAssigned
+}
+
+// CloudServerFor is the cloud computer this user's bots would land on: a
+// user, department, or global assignment naming a non-node server. A nil
+// departments slice resolves the chain through the directory; callers that
+// already walked it pass it in so the lookup does not repeat a directory
+// round trip under another service's lock.
+func (p *Pool) CloudServerFor(ctx context.Context, tenantID, userID string, departments []string) (Server, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return Server{}, fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	ctx = directoryContext(ctx, tenantID)
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	p.mu.Unlock()
+	if err != nil {
+		return Server{}, err
+	}
+	if departments == nil {
+		departments = p.departmentChain(ctx, userID)
+	}
+	if server, ok := cloudServerForAssigned(rec, userID, departments); ok {
+		return p.stamp(tenantID, server, nil)
+	}
+	return Server{}, ErrNotAssigned
+}
+
+// cloudServerForAssigned walks user -> departments -> global assignments and
+// returns the first that resolves to a cloud desktop.
+func cloudServerForAssigned(rec record, userID string, departments []string) (Server, bool) {
+	if server, ok := cloudServer(rec, matchAssignment(rec.Assignments, ScopeUser, userID)); ok {
+		return server, true
+	}
+	for _, groupID := range departments {
+		if server, ok := cloudServer(rec, matchAssignment(rec.Assignments, ScopeDepartment, groupID)); ok {
+			return server, true
+		}
+	}
+	if server, ok := cloudServer(rec, matchAssignment(rec.Assignments, ScopeGlobal, "")); ok {
+		return server, true
+	}
+	return Server{}, false
+}
+
+// cloudServer is the assignment's server when that server is a cloud desktop.
+// A local-node assignment yields the cloud server the user had before the
+// node was attached.
+func cloudServer(rec record, serverID string) (Server, bool) {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return Server{}, false
+	}
+	server, err := serverByID(rec.Servers, serverID)
+	if err != nil {
+		return Server{}, false
+	}
+	if strings.TrimSpace(server.NodeID) == "" {
+		return server, true
+	}
+	prev := strings.TrimSpace(server.PrevServerID)
+	if prev == "" {
+		return Server{}, false
+	}
+	prevServer, err := serverByID(rec.Servers, prev)
+	if err != nil || strings.TrimSpace(prevServer.NodeID) != "" {
+		return Server{}, false
+	}
+	return prevServer, true
+}
+
+// computersOf is every desktop service this user may have a display on:
+// the current assignment, the cloud computer, and each node they own.
+func (p *Pool) computersOf(ctx context.Context, tenantID, userID string) ([]Server, error) {
+	userID = strings.TrimSpace(userID)
+	seen := map[string]struct{}{}
+	var out []Server
+	add := func(server Server, err error) {
+		if err != nil || strings.TrimSpace(server.ID) == "" {
+			return
+		}
+		if _, ok := seen[server.ID]; ok {
+			return
+		}
+		seen[server.ID] = struct{}{}
+		out = append(out, server)
+	}
+	assigned, assignedErr := p.resolveAssigned(ctx, tenantID, userID)
+	add(assigned, assignedErr)
+	add(p.resolveComputer(ctx, tenantID, userID, ""))
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	p.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	for _, server := range rec.Servers {
+		if strings.TrimSpace(server.OwnerUserID) == userID && strings.TrimSpace(server.NodeID) != "" {
+			stamped, stampErr := p.stamp(tenantID, server, nil)
+			add(stamped, stampErr)
+		}
+	}
+	if len(out) == 0 {
+		if assignedErr != nil {
+			return nil, assignedErr
+		}
+		return nil, ErrNotAssigned
+	}
+	return out, nil
 }
 
 func (p *Pool) stamp(tenantID string, server Server, err error) (Server, error) {
@@ -1372,7 +1631,7 @@ func (p *Pool) callIdempotent(ctx context.Context, server Server, method, path s
 // proxy in front of it. Both leave the requested state unchanged, which is
 // what makes another try safe for the create-or-read calls.
 func desktopPoolCallWorthRetry(err error) bool {
-	if err == nil {
+	if err == nil || strings.Contains(err.Error(), "node is offline") {
 		return false
 	}
 	var statusErr *upstream.StatusError
@@ -1481,7 +1740,8 @@ func normalizeAssignment(in Assignment, rec record) (Assignment, error) {
 	in.Scope = strings.TrimSpace(in.Scope)
 	in.TargetID = strings.TrimSpace(in.TargetID)
 	in.ServerID = strings.TrimSpace(in.ServerID)
-	if serverIndex(rec.Servers, in.ServerID) < 0 {
+	server, err := serverByID(rec.Servers, in.ServerID)
+	if err != nil {
 		return Assignment{}, ErrNotFound
 	}
 	switch in.Scope {
@@ -1499,6 +1759,11 @@ func normalizeAssignment(in Assignment, rec record) (Assignment, error) {
 		}
 	default:
 		return Assignment{}, fmt.Errorf("%w: scope must be global, department, or user", ErrInvalidInput)
+	}
+	// An exclusive desktop resolves only for its owner. Anything broader
+	// stores a binding that can never wake the computer.
+	if owner := strings.TrimSpace(server.OwnerUserID); owner != "" && (in.Scope != ScopeUser || in.TargetID != owner) {
+		return Assignment{}, fmt.Errorf("%w: this computer is exclusive to %s", ErrInvalidInput, owner)
 	}
 	return in, nil
 }

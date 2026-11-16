@@ -185,7 +185,9 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('删除房间？'),
-        content: Text('「${widget.room!.name.isEmpty ? '未命名房间' : widget.room!.name}」及其成员注意力设置将被移除。'),
+        content: Text(
+          '「${widget.room!.name.isEmpty ? '未命名房间' : widget.room!.name}」及其成员注意力设置将被移除。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),

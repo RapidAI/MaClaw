@@ -3737,6 +3737,10 @@ button.desktop-bot-feed__file {
 }
 
 .bot-llm-dialog__section {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     margin: 0;
     font-size: 0.9375rem;
     font-weight: 600;
@@ -4703,6 +4707,11 @@ button.desktop-bot-feed__file {
 .bot-llm-dialog__section > button:hover:not(:disabled) {
     border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 38%, var(--theme-border, #d5e0ef));
     color: var(--theme-primary, #2e75cb);
+}
+
+.bot-llm-dialog__section > button {
+    flex-shrink: 0;
+    margin-left: auto;
 }
 
 .bot-cap__list {

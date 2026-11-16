@@ -465,10 +465,14 @@ func (s *Service) resumeOne(ctx context.Context, p Principal, inst Instance, run
 	// A timer firing is its own recovery task. Dropping bot_origin here made
 	// the continuation look like the long-lived chat, so the 90-minute span
 	// of the first weather PDF refused the resumed one.
-	for _, key := range []string{"bot_id", "bot_phase", "bot_origin", "computer_helper", "bot_task", "schedule_task"} {
+	for _, key := range []string{"bot_id", "bot_phase", "bot_origin", "bot_desktop", "computer_helper", "bot_task", "schedule_task"} {
 		if v := strings.TrimSpace(run.Metadata[key]); v != "" {
 			meta[key] = v
 		}
+	}
+	if strings.TrimSpace(instLive.Metadata["hub_bot_desktop"]) == "none" {
+		meta["bot_desktop"] = "none"
+		delete(meta, "computer_helper")
 	}
 	if text := clipTaskRequest(restartPersonAsk(s, run)); text != "" {
 		meta["task_request"] = text

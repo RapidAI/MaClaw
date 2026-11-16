@@ -14,6 +14,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -127,7 +128,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"navigate to another site keeps the current tab and opens the target in its own tab (or switches to a tab already on that site); do not retry a navigate that was refused, and do not detour through redirect links. " +
 			desktopAXFirstPrompt() +
 			"Rich-text editors (Zhihu, WeChat, Xiaohongshu, Draft.js/ProseMirror boxes): script- or DOM-set text and synthetic paste are often ignored. Click inside the editor first, put the text on the clipboard with clipboard_set, then paste with a real key event (app_run steps [click{x,y}, key{key:\"ctrl+v\"}] or paste{text}), then check that the text shows and that the publish (发布) button is enabled. If the same method fails twice, switch to another method instead of retrying it. " +
-			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back. Ask for a takeover only when the current page itself shows a login form, QR code, captcha or verification; a control you cannot find is usually under a site popup or overlay, so press Escape or click its close/我知道了 and probe again. Typing # or @ (hashtags, topics, mentions) opens a dropdown that covers buttons: choose the entry from it or press Escape / click a blank area before locating the next button. After a hand back or a slow step, never navigate to or reload the page you were filling: probe the current page and continue from what is already there. " +
+			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not type it and do not try to get past it. Stop and tell the person what to do on this desktop; the keyboard is handed to them, and you resume when they are done. Do not tell them to press 交还. A control you cannot find is usually under a site popup or overlay, so press Escape or click its close/我知道了 and probe again. Typing # or @ (hashtags, topics, mentions) opens a dropdown that covers buttons: choose the entry from it or press Escape / click a blank area before locating the next button. After a hand back or a slow step, never navigate to or reload the page you were filling: probe the current page and continue from what is already there. " +
 			"action=notify_main with kind and message tells the account's main bot (or target, another bot) something mid-task: a milestone (progress), a question, being blocked, a file ready (artifact, with paths), or done. It does not end your turn and does not wait for an answer; keep working. Use it sparingly: at most a few per task, never to acknowledge. action=check_inbox reads new messages other bots left for you on Hub (answers to your question, new instructions); messages that arrived before this turn are already in the instructions. action=delegate with target (a teammate bot's name) and message hands a task to that bot (main bot only); Hub starts it and its result comes back to your mailbox. A delegate or notify_main message is an internal brief between bots, never shown raw to the person: make it detailed and self-contained (goal, context, the specifics it needs, what counts as done, what to report back). To have a teammate talk to the person, brief it on what to get across; it speaks to them in its own voice." + desktopAssignmentToolHint(),
 		Parameters: map[string]any{
 			"type": "object",
@@ -1160,19 +1161,25 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			log.Printf("[desktop-guard] refused publish_needs_confirmation (coordinate click on %q)", label)
 			return "", fmt.Errorf("%s (That point is the %q button.)", desktopPublishRefusal, label)
 		}
+		// The page already needs the person. Do not click or type it.
+		if held, heldText, heldErr := desktopHoldForPage(ctx, scope, attached); held {
+			return heldText, heldErr
+		}
 		if action == "computer" || !desktopAppStepsLegacy(scope, args["steps"]) {
 			text, stepErr := operateDesktopSteps(ctx, scope, endpoint.Display, action, args, stepsArg, beforeInsert, browserRaises)
 			text, stepErr = desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, stepErr)
-			return desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, stepErr)
+			text, stepErr = desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, stepErr)
+			return desktopFinishObserved(ctx, scope, verifySession(), text, stepErr)
 		}
 		text, appErr := desktopAppRun(ctx, scope, endpoint.Display, action, args, beforeInsert, browserRaises)
 		if appErr != nil || !appStepsIncludeInput(args["steps"]) {
-			return text, appErr
+			return desktopFinishObserved(ctx, scope, verifySession(), text, appErr)
 		}
 		setDesktopActivity(scope.RunID, "正在看屏幕")
 		text, appErr = desktopAppRunWithShot(ctx, scope, endpoint.Display, text)
 		text, appErr = desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, appErr)
-		return desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, appErr)
+		text, appErr = desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, appErr)
+		return desktopFinishObserved(ctx, scope, verifySession(), text, appErr)
 	}
 	if action == "screenshot" {
 		// The shot is the display as it is. Raising the browser here used to
@@ -1223,7 +1230,8 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			return "", shotErr
 		}
 		shot = axBlock + shot
-		return withDesktopPages(shot, nil, pageAddr, attached)
+		shot, shotErr = withDesktopPages(shot, nil, pageAddr, attached)
+		return desktopFinishObserved(ctx, scope, session, shot, shotErr)
 	}
 
 	session, err := desktopBrowserSession(binding, scope, userKey, endpoint.CDP)
@@ -1264,6 +1272,20 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		desktopNoteActivityPage(scope.RunID, desktopArg(args, "url"))
 	} else {
 		desktopNoteActivityPage(scope.RunID, session.CurrentURL())
+	}
+	// A page that already needs the person is not clicked or typed. Opening
+	// another site is allowed. Opening another page of this same site is
+	// not: that is how a sign-in page gets abandoned without the person.
+	if action == "navigate" {
+		if desktopSameSite(session.CurrentURL(), desktopArg(args, "url")) {
+			if held, heldText, heldErr := desktopHoldForPage(ctx, scope, session); held {
+				return heldText, heldErr
+			}
+		}
+	} else if desktopNeedsClearPage(action) {
+		if held, heldText, heldErr := desktopHoldForPage(ctx, scope, session); held {
+			return heldText, heldErr
+		}
 	}
 	var text string
 	switch action {
@@ -1318,15 +1340,17 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		if err != nil && desktopScriptErrIsNavigation(err) {
 			// The page navigated (e.g. after a submit) while the script ran.
 			// That is a page change, not a failure: report where it went so
-			// the model does not retry or wait (RUN33).
+			// the model does not retry or wait (RUN33). A sign-in page
+			// still hands the desktop over instead of telling the model to
+			// read it and continue.
 			pages, _ := withDesktopPages("", nil, endpoint.CDP, session.TargetID)
-			return "script ended because the page navigated (a submit or link took effect). Do not rerun it; read the new page.\n" + strings.TrimSpace(pages), nil
+			return desktopFinishObserved(ctx, scope, session, "script ended because the page navigated (a submit or link took effect). Do not rerun it; read the new page.\n"+strings.TrimSpace(pages), nil)
 		}
 		if scriptErr := err; scriptErr != nil {
 			// A script that threw did not do its job; withDesktopPages would
 			// turn it into an ok result with a page list.
 			pages, _ := withDesktopPages("", nil, endpoint.CDP, session.TargetID)
-			return "", fmt.Errorf("page script failed: %s\n%s", desktopStepClip(scriptErr.Error(), 300), strings.TrimSpace(pages))
+			return desktopFinishObserved(ctx, scope, session, "", fmt.Errorf("page script failed: %s\n%s", desktopStepClip(scriptErr.Error(), 300), strings.TrimSpace(pages)))
 		}
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
 	case "upload":
@@ -1388,22 +1412,12 @@ func finishDesktopActionPhase(scope agentruntime.Scope, text string, err error, 
 	if phase != "execute" {
 		return text, err
 	}
-	if reason == "login_wall" || reason == "mfa" {
-		if desktopUnattended(scope.InstanceID) {
-			return strings.TrimSpace(text + "\n这次是自动任务，没有人在对话里填写密码、手机号或验证码。"), fmt.Errorf("desktop needs a person")
-		}
-		question := "请输入这个网站要求的密码或手机号。提交后会填进当前输入框，并继续这次操作。"
-		name := desktopFillSecretName(reason, text)
-		if reason == "mfa" {
-			question = "请输入验证码。提交后会填进当前输入框，并继续这次操作。"
-		}
-		desktopFocusCredential(scope, reason)
-		return agent.AskUserResultMarker(&agent.AskUserRequest{
-			Question:   question,
-			InputType:  "secret_fill",
-			SecretName: name,
-		}), nil
-	}
+	// Remember the page even when nobody is here to take the keyboard, so a
+	// later computer batch does not type the password or the code.
+	noteDesktopPageNeed(scope, "page flags: "+reason)
+	// A login wall, a verification code, a QR code, a captcha, or a payment
+	// is the person's step on this desktop. The bot does not collect the
+	// password or the code and type it.
 	if desktopUnattended(scope.InstanceID) {
 		return strings.TrimSpace(text + "\n这次是自动任务，没有人在桌面旁完成登录或验证。"), fmt.Errorf("desktop needs a person")
 	}
@@ -1420,82 +1434,154 @@ func finishDesktopActionPhase(scope agentruntime.Scope, text string, err error, 
 	}), nil
 }
 
-var desktopPageURLPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
-
-func desktopFillSecretName(reason, text string) string {
-	base := "SITE_LOGIN"
-	if reason == "mfa" {
-		base = "SITE_CODE"
+// desktopReadPageFlags reads the attached page. Tests replace it.
+var desktopReadPageFlags = func(session *browser.BrowserAgentSession) (browser.BrowserPageFlags, error) {
+	if session == nil {
+		return browser.BrowserPageFlags{}, fmt.Errorf("no page")
 	}
-	host := desktopTextHost(text)
+	return session.PeekPageFlags()
+}
+
+// desktopNeedsClearPage is an action that changes the current page. Probe
+// and shop_readback only look. Navigate is decided separately: another
+// site may be opened, this site may not.
+func desktopNeedsClearPage(action string) bool {
+	switch action {
+	case "click", "type", "press", "script", "skill_run", "task_run", "upload", "publish":
+		return true
+	default:
+		return false
+	}
+}
+
+// desktopSameSite reports whether target stays on the page's site. An empty
+// address stays: it is not a request to leave. accounts.google.com and
+// google.com are one site; a sign-in host is not a way off the login page.
+func desktopSameSite(currentURL, targetURL string) bool {
+	current := desktopSiteRoot(desktopURLHost(currentURL))
+	target := desktopSiteRoot(desktopURLHost(targetURL))
+	if current == "" || target == "" {
+		return true
+	}
+	return current == target
+}
+
+// desktopMultiPartSuffix is a public suffix that needs one more label
+// (amazon.co.uk, not co.uk).
+var desktopMultiPartSuffix = map[string]bool{
+	"co.uk": true, "org.uk": true, "ac.uk": true,
+	"com.cn": true, "net.cn": true, "org.cn": true,
+	"com.au": true, "co.jp": true, "com.hk": true, "com.tw": true,
+	"com.sg": true, "co.kr": true, "com.br": true, "co.nz": true,
+	"co.in": true, "com.mx": true,
+}
+
+func desktopSiteRoot(host string) string {
+	host = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(host)), "www.")
 	if host == "" {
-		return base
-	}
-	var b strings.Builder
-	b.WriteString(base)
-	b.WriteByte('_')
-	prevUnderscore := false
-	for _, r := range strings.ToUpper(host) {
-		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			prevUnderscore = false
-			continue
-		}
-		if prevUnderscore {
-			continue
-		}
-		b.WriteByte('_')
-		prevUnderscore = true
-	}
-	name := strings.Trim(b.String(), "_")
-	if len(name) > 64 {
-		name = strings.Trim(name[:64], "_")
-	}
-	if !agent.ValidSecretName(name) {
-		return base
-	}
-	return name
-}
-
-func desktopTextHost(text string) string {
-	// The open-tab list is appended after the action. Its last address is
-	// some other tab, and the saved login must stay with this page.
-	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "- attached ") {
-			if host := desktopHostFromURLs(line); host != "" {
-				return host
-			}
-		}
-	}
-	if index := strings.Index(text, "\nOpen browser pages"); index >= 0 {
-		text = text[:index]
-	}
-	return desktopHostFromURLs(text)
-}
-
-func desktopHostFromURLs(text string) string {
-	matches := desktopPageURLPattern.FindAllString(text, -1)
-	if len(matches) == 0 {
 		return ""
 	}
-	raw := strings.TrimRight(matches[len(matches)-1], ".,);]")
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) < 2 {
+		return host
+	}
+	suffix := parts[len(parts)-2] + "." + parts[len(parts)-1]
+	if desktopMultiPartSuffix[suffix] && len(parts) >= 3 {
+		return parts[len(parts)-3] + "." + suffix
+	}
+	return suffix
+}
+
+func desktopURLHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return ""
 	}
-	return normalizeDesktopSiteHost(parsed.Hostname())
+	return parsed.Hostname()
 }
 
-func desktopFocusCredential(scope agentruntime.Scope, reason string) {
-	session := desktopLiveSession(scope)
+// desktopHoldForPage stops a computer or app step before it clicks or types
+// a page that already needs the person. A page that no longer does clears
+// the earlier stop, so the next step can run.
+func desktopHoldForPage(ctx context.Context, scope agentruntime.Scope, session *browser.BrowserAgentSession) (bool, string, error) {
+	if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
+		return false, "", nil
+	}
 	if session == nil {
-		return
+		return false, "", nil
 	}
-	kind := "password"
-	if reason == "mfa" {
-		kind = "code"
+	flags, err := desktopReadPageFlags(session)
+	if err != nil {
+		return false, "", nil
 	}
-	_ = session.FocusCredential(kind)
+	text := appendDesktopPageFlags("page", map[string]interface{}{"page_flags": flags})
+	if desktopAttentionReason(text) == "" {
+		noteDesktopPageNeed(scope, "page flags: none")
+		return false, "", nil
+	}
+	out, outErr := finishDesktopActionPhase(scope, text, nil, "execute")
+	return true, out, outErr
+}
+
+// desktopFinishObserved applies the same person-gate to a screenshot or a
+// computer batch, whose own result does not carry page flags.
+func desktopFinishObserved(ctx context.Context, scope agentruntime.Scope, session *browser.BrowserAgentSession, text string, err error) (string, error) {
+	phase := "execute"
+	if value, keyed := desktopPhase(ctx); keyed {
+		phase = value
+	}
+	if session != nil && !strings.Contains(desktopAttentionText(text), "page flags:") && !strings.Contains(desktopAttentionText(text), browser.LoginWallMarker) {
+		if flags, peekErr := desktopReadPageFlags(session); peekErr == nil {
+			// The screenshot is appended after the observation. A flag line
+			// after it is invisible: the person-gate ignores screen text.
+			text = desktopInsertBeforeVision(text, desktopFlagLine(flags))
+		}
+	}
+	return finishDesktopActionPhase(scope, text, err, phase)
+}
+
+func desktopFlagLine(flags browser.BrowserPageFlags) string {
+	noted := appendDesktopPageFlags("observed", map[string]interface{}{"page_flags": flags})
+	index := strings.Index(noted, "page flags:")
+	if index < 0 {
+		return ""
+	}
+	return noted[index:]
+}
+
+// desktopInsertBeforeVision puts a page-flag line where the person-gate
+// reads it: before screen_vision and before the screenshot image.
+func desktopInsertBeforeVision(text, line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return text
+	}
+	cut := len(text)
+	for _, mark := range []string{"\nscreen_vision:", "\x00[maclaw-model-image "} {
+		if index := strings.Index(text, mark); index >= 0 && index < cut {
+			cut = index
+		}
+	}
+	if cut == 0 || strings.HasPrefix(text, "screen_vision:") || strings.HasPrefix(text, "\x00[maclaw-model-image ") {
+		if text == "" {
+			return line
+		}
+		return line + "\n" + text
+	}
+	if cut == len(text) {
+		return text + "\n" + line
+	}
+	return text[:cut] + "\n" + line + text[cut:]
 }
 
 func desktopNeedsPerson(text string) bool {
@@ -1560,13 +1646,21 @@ func desktopAttentionReason(text string) string {
 		return "captcha_widget"
 	}
 	flags := desktopPageFlagsLine(text)
-	if flags == "" {
-		return ""
-	}
-	for _, name := range []string{"captcha_widget", "login_qr", "payment_confirm", "login_wall", "mfa"} {
-		if strings.Contains(flags, name) {
-			return name
+	if flags != "" {
+		for _, name := range []string{"captcha_widget", "login_qr", "payment_confirm", "login_wall", "mfa"} {
+			if strings.Contains(flags, name) {
+				return name
+			}
 		}
+	}
+	// Navigate names a sign-in URL even when the first screen has no
+	// password field yet (Amazon "Sign in or create account"). A blank
+	// page uses the same marker and is not a login.
+	if strings.Contains(text, browser.LoginWallMarker+" captcha") {
+		return "captcha_widget"
+	}
+	if strings.Contains(text, browser.LoginWallMarker+" login_url") || strings.Contains(text, browser.LoginWallMarker+" login_form") {
+		return "login_wall"
 	}
 	return ""
 }
@@ -2672,6 +2766,13 @@ func desktopKeepTail(text string) string {
 	}
 	if strings.Contains(text, "handoff=captcha") {
 		kept = append(kept, "handoff=captcha")
+	}
+	if index := strings.LastIndex(text, browser.LoginWallMarker); index >= 0 {
+		line := text[index:]
+		if end := strings.IndexByte(line, '\n'); end >= 0 {
+			line = line[:end]
+		}
+		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
 }

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import {
     GetPetStoreAccount,
     GetPetStoreCreatorReport,
+    GetPetStoreInstalledPackDetails,
     GetPetStoreRankings,
     InstallPetStorePack,
-    IsPetStorePackInstalled,
     ListPetStorePacks,
     PurchasePetStorePack,
     WithdrawPetStorePack,
@@ -79,6 +79,22 @@ const reportDateLabel = (value: unknown, period: ReportPeriod, lang: Lang) => {
     if (period === 'month') return new Intl.DateTimeFormat(localeFor(lang), { year: 'numeric', month: 'long', timeZone: 'UTC' }).format(parsed);
     return new Intl.DateTimeFormat(localeFor(lang), { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' }).format(parsed);
 };
+// Loose semver compare for manifest versions ("1.2.3"): positive when the
+// first argument is newer. Non-numeric versions fall back to inequality so a
+// changed string still offers the update path.
+const comparePackVersions = (a: string, b: string) => {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    if (pa.some((n) => !Number.isFinite(n)) || pb.some((n) => !Number.isFinite(n))) {
+        return a === b ? 0 : 1;
+    }
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+        const diff = (pa[i] || 0) - (pb[i] || 0);
+        if (diff !== 0) return diff;
+    }
+    return 0;
+};
 const isActiveAccountPack = (entry: StorePack) => String(entry.status || 'active').toLowerCase() === 'active';
 // Buyers and the author can always download active/withdrawn/paused packs;
 // only deleted/purged listings return 410 (HubCenter download semantics).
@@ -152,6 +168,13 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     // keeps a just-completed install on 已安装 instead of inviting another
     // redundant download.
     const [installedListingIDs, setInstalledListingIDs] = useState<Set<string>>(() => new Set());
+    // Installed manifest versions and local install times keyed by source
+    // pack ID (and by the manifest ID the bridge returned). A listing whose
+    // declared version is newer than the installed copy — or whose
+    // updated_at is newer than the install time, catching a republish that
+    // kept the same version — offers an Update action instead of a dead
+    // 已安装 state.
+    const [installedDetails, setInstalledDetails] = useState<Map<string, { version: string; installedAt: number }>>(() => new Map());
     const searchRef = useRef<HTMLInputElement>(null);
     const shellRef = useRef<HTMLElement>(null);
     const tablistRef = useRef<HTMLDivElement>(null);
@@ -162,6 +185,10 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     const reportRequestRef = useRef(0);
     const installedRequestRef = useRef(0);
     const installedProbeCacheRef = useRef<Map<string, boolean>>(new Map());
+    // Same caching rule as installedProbeCacheRef: account refreshes and
+    // paging must not repeat bridge calls for a pack whose installed version
+    // was already read this session.
+    const installedDetailCacheRef = useRef<Map<string, { version: string; installedAt: number }>>(new Map());
     // Source and listing IDs the server confirmed as owned during this dialog
     // session — either by a successful purchase or by an "already own"
     // response. Merged into every account refresh so a lagging read cannot
@@ -173,6 +200,31 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     const isPackInstalled = (pack: StorePack) => {
         const sourcePackID = String(pack.source_pack_id || '');
         return (!!sourcePackID && installedPackIDs.has(sourcePackID)) || installedListingIDs.has(String(pack.id || ''));
+    };
+    // An installed market pack is only "up to date" when the listing's
+    // declared version is not newer than the installed manifest version AND
+    // the listing was not republished after the local install (a creator can
+    // re-upload new content without bumping the version — updated_at still
+    // moves). A missing probe result stays on 已安装 rather than offering a
+    // download that may be identical.
+    const packHasUpdate = (pack: StorePack) => {
+        const sourcePackID = String(pack.source_pack_id || '').trim();
+        if (!sourcePackID) return false;
+        const detail = installedDetails.get(sourcePackID);
+        if (!detail) return false;
+        const serverVersion = String(pack.version || '').trim();
+        if (serverVersion && detail.version && comparePackVersions(serverVersion, detail.version) > 0) return true;
+        const updatedAt = Date.parse(String(pack.updated_at || ''));
+        return Number.isFinite(updatedAt) && detail.installedAt > 0 && updatedAt > detail.installedAt * 1000;
+    };
+    const packUpdateTitle = (pack: StorePack) => {
+        if (!packHasUpdate(pack)) return undefined;
+        const serverVersion = String(pack.version || '').trim();
+        const installedVersion = String(installedDetails.get(String(pack.source_pack_id || '').trim())?.version || '').trim();
+        if (serverVersion && installedVersion && comparePackVersions(serverVersion, installedVersion) > 0) {
+            return t(lang, '有新版本 v{server}（当前 v{installed}），点击更新。', 'Update to v{server} (installed v{installed}).').replace('{server}', serverVersion).replace('{installed}', installedVersion);
+        }
+        return t(lang, '服务端包内容已更新，点击重新安装。', 'The server package changed — reinstall to update.');
     };
     // Probe native installation state only when the set of source pack IDs
     // changes. Account refreshes otherwise recreate the same data and used to
@@ -281,7 +333,9 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     }, [accountOpen]);
     // The same market pack can appear in browse results, uploads, purchases,
     // and later pages. Cache each native registry result for this dialog so
-    // paging does not repeat bridge calls for an already-checked pack.
+    // paging does not repeat bridge calls for an already-checked pack. One
+    // batch call returns both facts at once: a key's presence means the pack
+    // is market-installed, its value is the on-disk manifest version.
     useEffect(() => {
         const requestID = ++installedRequestRef.current;
         const sourcePackIDs = sourcePackIDsKey ? sourcePackIDsKey.split('\u0000') : [];
@@ -293,25 +347,40 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
         const applyInstalledState = () => setInstalledPackIDs(new Set(
             sourcePackIDs.filter((sourcePackID) => installedProbeCacheRef.current.get(sourcePackID)),
         ));
+        const applyInstalledVersions = () => setInstalledDetails((current) => {
+            const next = new Map(current);
+            for (const [id, detail] of installedDetailCacheRef.current) next.set(id, detail);
+            return next;
+        });
         if (missingSourcePackIDs.length === 0) {
             applyInstalledState();
             return;
         }
-        void Promise.all(missingSourcePackIDs.map(async (sourcePackID) => {
-            try { return (await IsPetStorePackInstalled(sourcePackID)) ? sourcePackID : ''; }
-            catch { return ''; }
-        })).then((results) => {
+        void GetPetStoreInstalledPackDetails(missingSourcePackIDs).then((result) => {
+            const details = (result && typeof result === 'object') ? result : {};
             // Cache every per-id result even when this run was superseded —
             // discarding the whole batch would leave those packs unprobed
             // until the key set changes again. A confirmed install/probe true
             // must not be overwritten by an older in-flight false.
-            missingSourcePackIDs.forEach((sourcePackID, index) => {
+            missingSourcePackIDs.forEach((sourcePackID) => {
+                const installed = Object.prototype.hasOwnProperty.call(details, sourcePackID);
                 if (installedProbeCacheRef.current.get(sourcePackID) !== true) {
-                    installedProbeCacheRef.current.set(sourcePackID, results[index] === sourcePackID);
+                    installedProbeCacheRef.current.set(sourcePackID, installed);
+                }
+                // First writer wins for the detail too: a batch that started
+                // before a just-finished install must not clobber the newer
+                // version recordPackInstalled recorded.
+                if (installed && !installedDetailCacheRef.current.has(sourcePackID)) {
+                    const detail = details[sourcePackID] || {};
+                    installedDetailCacheRef.current.set(sourcePackID, {
+                        version: String(detail.version ?? ''),
+                        installedAt: Number(detail.installed_at) || 0,
+                    });
                 }
             });
             if (requestID === installedRequestRef.current) {
                 applyInstalledState();
+                applyInstalledVersions();
                 return;
             }
             // Stale run: the list rebuild belongs to a newer effect, but the
@@ -324,6 +393,10 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
                 }
                 return next;
             });
+            applyInstalledVersions();
+        }).catch(() => {
+            // Bridge failure leaves the IDs uncached so a later key change
+            // retries; cards stay on Get/Install rather than a wrong 已安装.
         });
     }, [sourcePackIDsKey]);
     // Focus management mirrors CustomDialog: move focus into the dialog on
@@ -421,71 +494,110 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
         });
         const listingID = String(pack.id || '');
         if (listingID) setInstalledListingIDs((current) => new Set(current).add(listingID));
+        // A completed install carries the listing's declared version and the
+        // install just happened, so the card drops straight back to 已安装
+        // instead of offering an update to the version that was just
+        // downloaded.
+        const detail = { version: String(pack.version || '').trim(), installedAt: Date.now() / 1000 };
+        for (const key of [sourcePackID, installedID]) {
+            if (key) installedDetailCacheRef.current.set(key, detail);
+        }
+        setInstalledDetails((current) => {
+            const next = new Map(current);
+            for (const key of [sourcePackID, installedID]) {
+                if (key) next.set(key, detail);
+            }
+            return next;
+        });
         // A market install implies the entitlement; record it so an account
         // refresh cannot flip the card back to Get.
         recordPackOwned(pack);
     };
     // Re-probe one pack's native install state so a card whose local copy is
     // already on disk (installed before this dialog opened, or on another tab)
-    // can jump straight to 已安装 without a redundant download.
+    // can jump straight to 已安装 without a redundant download. The version
+    // probe returns both facts at once; an on-disk copy at an older version
+    // lands on 更新 instead.
     const refreshPackInstalled = async (pack: StorePack) => {
         const sourcePackID = String(pack.source_pack_id || '').trim();
         if (!sourcePackID) return;
         try {
-            if (await IsPetStorePackInstalled(sourcePackID)) {
+            const details = await GetPetStoreInstalledPackDetails([sourcePackID]);
+            if (details && Object.prototype.hasOwnProperty.call(details, sourcePackID)) {
                 recordPackInstalled(pack, sourcePackID);
+                // recordPackInstalled seeds the listing version and "now" as
+                // the install time; overwrite both with the probed on-disk
+                // values so an older local copy still offers the update.
+                const probed = details[sourcePackID] || {};
+                const detail = { version: String(probed.version ?? '').trim(), installedAt: Number(probed.installed_at) || 0 };
+                installedDetailCacheRef.current.set(sourcePackID, detail);
+                setInstalledDetails((current) => new Map(current).set(sourcePackID, detail));
             }
         } catch {
             // Presentation state only; the Install action stays authoritative.
         }
     };
+    // One-step flow: Get purchases the entitlement and installs the pack in
+    // the same click, so the user never has to press a second button.
     const purchase = async (pack: StorePack) => {
         const price = Number(pack.price || 0);
         const ok = await showConfirm(
             price > 0
-                ? t(lang, '确认使用 {price} Credits 买断「{name}」？购买后永久可下载。', 'Buy “{name}” permanently for {price} Credits?').replace('{price}', String(price)).replace('{name}', String(pack.name))
-                : t(lang, '确认免费获取「{name}」？', 'Get “{name}” for free?').replace('{name}', String(pack.name)),
+                ? t(lang, '确认使用 {price} Credits 买断并安装「{name}」？购买后永久可下载。', 'Buy and install “{name}” permanently for {price} Credits?').replace('{price}', String(price)).replace('{name}', String(pack.name))
+                : t(lang, '确认免费获取并安装「{name}」？', 'Get and install “{name}” for free?').replace('{name}', String(pack.name)),
             t(lang, '确认购买', 'Confirm purchase'),
-            { confirmText: t(lang, '获取', 'Get'), cancelText: t(lang, '取消', 'Cancel') },
+            { confirmText: t(lang, '获取并安装', 'Get & Install'), cancelText: t(lang, '取消', 'Cancel') },
         );
         if (!ok) return;
         setBusyID(packBusyKey(pack));
         try {
-            await PurchasePetStorePack(String(pack.id));
+            try {
+                await PurchasePetStorePack(String(pack.id));
+            } catch (err) {
+                // An already-owned response still confirms the entitlement;
+                // continue into the install instead of surfacing a purchase
+                // error that forces a second click.
+                if (!isAlreadyOwnedError(err)) throw err;
+            }
             // An account refresh is the authoritative source for every other
             // entitlement; keep the clicked card responsive while it is in flight.
             recordPackOwned(pack);
-            // The pack may already be installed locally — installed on another
-            // surface after this dialog's probe ran, or behind a probe result
-            // cached as false. Re-probe in the background so the card can jump
-            // straight to 已安装 without a redundant download.
-            void refreshPackInstalled(pack);
-            setAccountOpen(true);
-            await loadAccount();
-            await loadPacks();
-            await loadRankings();
-        }
-        catch (err) {
-            if (isAlreadyOwnedError(err)) {
-                // The server already granted the entitlement; update the card
-                // immediately instead of leaving it on Get behind an error
-                // loop. Reconcile ownership and native install state in the
-                // background — neither needs to hold up the alert.
-                recordPackOwned(pack);
-                void loadAccount();
+            try {
+                const id = await installPack(pack);
+                await showAlert(t(lang, '已安装宠物包：{id}', 'Installed pet pack: {id}').replace('{id}', id), t(lang, '安装完成', 'Installed'));
+            } catch (err) {
+                await showAlert(petStoreErrorText(lang, err), t(lang, '安装失败', 'Install failed'));
+                // The entitlement was still granted, so rankings moved even
+                // though installPack never got to refresh them.
+                void loadRankings();
+                // The pack may already be installed locally — installed on
+                // another surface after this dialog's probe ran, or behind a
+                // probe result cached as false. Re-probe in the background so
+                // the card can jump straight to 已安装 without a redundant
+                // download; otherwise it stays on 安装 for a manual retry.
                 void refreshPackInstalled(pack);
             }
+            await loadAccount();
+            await loadPacks();
+        }
+        catch (err) {
             await showAlert(petStoreErrorText(lang, err), t(lang, '购买失败', 'Purchase failed'));
         }
         finally { setBusyID(''); }
     };
+    // Shared install body used by the Install action and by the one-step
+    // Get & Install flow. Throws on failure so the caller picks the alert.
+    const installPack = async (pack: StorePack) => {
+        const id = String(await InstallPetStorePack(String(pack.id)) || '');
+        recordPackInstalled(pack, id);
+        await loadRankings();
+        return id;
+    };
     const install = async (pack: StorePack) => {
         setBusyID(packBusyKey(pack));
         try {
-            const id = await InstallPetStorePack(String(pack.id));
-            recordPackInstalled(pack, String(id || ''));
-            await loadRankings();
-            await showAlert(t(lang, '已安装宠物包：{id}', 'Installed pet pack: {id}').replace('{id}', String(id)), t(lang, '安装完成', 'Installed'));
+            const id = await installPack(pack);
+            await showAlert(t(lang, '已安装宠物包：{id}', 'Installed pet pack: {id}').replace('{id}', id), t(lang, '安装完成', 'Installed'));
         }
         catch (err) { await showAlert(petStoreErrorText(lang, err), t(lang, '安装失败', 'Install failed')); }
         finally { setBusyID(''); }
@@ -571,11 +683,12 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
                                 {packs.map((pack, index) => {
                                     const owned = ownedSourcePackIDs.has(String(pack.source_pack_id || '')) || ownedListingIDs.has(String(pack.id || ''));
                                     const installed = isPackInstalled(pack);
+                                    const hasUpdate = packHasUpdate(pack);
                                     return <article className="pet-store-pack" key={String(pack.id)}>
                                     <div className="pet-store-pack-art">{pack.preview_data_url ? <img src={String(pack.preview_data_url)} alt={t(lang, '{name} 预览', '{name} preview').replace('{name}', String(pack.name))} loading={index < 4 ? 'eager' : 'lazy'} decoding="async" /> : <span aria-hidden="true">{[...String(pack.name || '?')][0]}</span>}</div>
                                     <div className="pet-store-pack-copy"><h3 title={String(pack.name || '')}>{pack.name}</h3><p>{pack.description || t(lang, '创作者未填写简介。', 'No description from the creator.')}</p></div>
                                     <dl><div><dt>{t(lang, '下载', 'Downloads')}</dt><dd>{number(pack.download_count)}</dd></div><div><dt>{t(lang, '销售额', 'Sales')}</dt><dd>{number(pack.sales_amount)}</dd></div><div><dt>{t(lang, '发布', 'Published')}</dt><dd>{date(pack.created_at, lang)}</dd></div></dl>
-                                    <footer><span className={Number(pack.price) > 0 ? 'pet-store-price' : 'pet-store-free'}>{Number(pack.price) > 0 ? `${number(pack.price)} Credits` : t(lang, '免费', 'Free')}</span><button type="button" className="btn-primary" disabled={busyID !== '' || installed} onClick={() => void (owned ? install(pack) : purchase(pack))}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : installed ? t(lang, '已安装', 'Installed') : owned ? t(lang, '安装', 'Install') : t(lang, '获取', 'Get')}</button></footer>
+                                    <footer><span className={Number(pack.price) > 0 ? 'pet-store-price' : 'pet-store-free'}>{Number(pack.price) > 0 ? `${number(pack.price)} Credits` : t(lang, '免费', 'Free')}</span><button type="button" className="btn-primary" disabled={busyID !== '' || (installed && !hasUpdate)} title={packUpdateTitle(pack)} onClick={() => void (installed || owned ? install(pack) : purchase(pack))}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : installed ? (hasUpdate ? t(lang, '更新', 'Update') : t(lang, '已安装', 'Installed')) : owned ? t(lang, '安装', 'Install') : t(lang, '获取', 'Get')}</button></footer>
                                 </article>;
                                 })}
                             </div>
@@ -609,9 +722,10 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
                         ) : accountError ? <div className="pet-store-message" role="alert"><span>{accountError}</span><button type="button" onClick={() => void loadAccount()}>{t(lang, '重试', 'Retry')}</button></div> : null}
                         {accountTab === 'uploads' && <div className="pet-store-account-list" role="tabpanel" id="pet-store-panel-uploads" aria-labelledby="pet-store-tab-uploads">{uploads.map((pack: StorePack) => {
                             const unavailable = accountPackUnavailable(pack);
-                            return <div className="pet-store-account-item" key={String(pack.id)}><div><strong>{pack.name}</strong><span>{unavailable ? accountPackStatusLabel(pack) : t(lang, '已上架', 'Listed')} · {number(pack.download_count)} {t(lang, '下载', 'downloads')}</span></div><div className="pet-store-account-actions"><button type="button" className="btn-primary" onClick={() => void install(pack)} disabled={busyID !== '' || unavailable || isPackInstalled(pack)} title={unavailable ? accountPackUnavailableTitle(pack) : undefined}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : isPackInstalled(pack) ? t(lang, '已安装', 'Installed') : unavailable ? accountPackStatusLabel(pack) : t(lang, '安装', 'Install')}</button>{pack.status === 'active' ? <button type="button" onClick={() => void withdraw(pack)} disabled={busyID !== ''}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : t(lang, '下架', 'Unlist')}</button> : null}</div></div>;
+                            const hasUpdate = !unavailable && packHasUpdate(pack);
+                            return <div className="pet-store-account-item" key={String(pack.id)}><div><strong>{pack.name}</strong><span>{unavailable ? accountPackStatusLabel(pack) : t(lang, '已上架', 'Listed')} · {number(pack.download_count)} {t(lang, '下载', 'downloads')}</span></div><div className="pet-store-account-actions"><button type="button" className="btn-primary" onClick={() => void install(pack)} disabled={busyID !== '' || unavailable || (isPackInstalled(pack) && !hasUpdate)} title={unavailable ? accountPackUnavailableTitle(pack) : packUpdateTitle(pack)}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : isPackInstalled(pack) ? (hasUpdate ? t(lang, '更新', 'Update') : t(lang, '已安装', 'Installed')) : unavailable ? accountPackStatusLabel(pack) : t(lang, '安装', 'Install')}</button>{pack.status === 'active' ? <button type="button" onClick={() => void withdraw(pack)} disabled={busyID !== ''}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : t(lang, '下架', 'Unlist')}</button> : null}</div></div>;
                         })}{uploads.length === 0 && <div className="pet-store-empty"><strong>{t(lang, '还没有上传的宠物包', 'No uploaded pet packs')}</strong><span>{t(lang, '在自定义宠物包上选择“分享”即可发布。', 'Use “Share” on a custom pet pack to publish it.')}</span></div>}</div>}
-                        {accountTab === 'purchases' && <div className="pet-store-account-list" role="tabpanel" id="pet-store-panel-purchases" aria-labelledby="pet-store-tab-purchases">{purchases.map((entry: StorePack) => { const pack = entry.pack || entry; const unavailable = accountPackUnavailable(pack); return <div className="pet-store-account-item" key={String(pack.id)}><div><strong>{pack.name}</strong><span>{!isActiveAccountPack(pack) ? `${accountPackStatusLabel(pack)} · ` : t(lang, '永久拥有 · ', 'Lifetime owned · ')}{date(entry.purchased_at, lang)}</span></div><button type="button" className="btn-primary" disabled={busyID !== '' || unavailable || isPackInstalled(pack)} title={unavailable ? accountPackUnavailableTitle(pack) : undefined} onClick={() => void install(pack)}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : isPackInstalled(pack) ? t(lang, '已安装', 'Installed') : unavailable ? accountPackStatusLabel(pack) : t(lang, '安装', 'Install')}</button></div>; })}{purchases.length === 0 && <div className="pet-store-empty"><strong>{t(lang, '还没有购买的宠物包', 'No purchased pet packs')}</strong><span>{t(lang, '获取的宠物包会永久保存在这里。', 'Packs you get stay here permanently.')}</span></div>}</div>}
+                        {accountTab === 'purchases' && <div className="pet-store-account-list" role="tabpanel" id="pet-store-panel-purchases" aria-labelledby="pet-store-tab-purchases">{purchases.map((entry: StorePack) => { const pack = entry.pack || entry; const unavailable = accountPackUnavailable(pack); const hasUpdate = !unavailable && packHasUpdate(pack); return <div className="pet-store-account-item" key={String(pack.id)}><div><strong>{pack.name}</strong><span>{!isActiveAccountPack(pack) ? `${accountPackStatusLabel(pack)} · ` : t(lang, '永久拥有 · ', 'Lifetime owned · ')}{date(entry.purchased_at, lang)}</span></div><button type="button" className="btn-primary" disabled={busyID !== '' || unavailable || (isPackInstalled(pack) && !hasUpdate)} title={unavailable ? accountPackUnavailableTitle(pack) : packUpdateTitle(pack)} onClick={() => void install(pack)}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : isPackInstalled(pack) ? (hasUpdate ? t(lang, '更新', 'Update') : t(lang, '已安装', 'Installed')) : unavailable ? accountPackStatusLabel(pack) : t(lang, '安装', 'Install')}</button></div>; })}{purchases.length === 0 && <div className="pet-store-empty"><strong>{t(lang, '还没有购买的宠物包', 'No purchased pet packs')}</strong><span>{t(lang, '获取的宠物包会永久保存在这里。', 'Packs you get stay here permanently.')}</span></div>}</div>}
                         </> : null}
                     </aside>
                 </div>

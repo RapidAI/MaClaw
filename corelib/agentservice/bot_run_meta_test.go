@@ -13,6 +13,11 @@ func TestStampBotRunIdentityKeepsAGivenLine(t *testing.T) {
 	if run.Metadata["bot_task"] != "北京天气" || run.Metadata["bot_id"] != "bot_4" || run.Metadata["bot_phase"] != "execute" || run.Metadata["request_id"] != "r" {
 		t.Fatalf("metadata = %#v", run.Metadata)
 	}
+	marked := Run{}
+	stampBotRunIdentity(&marked, map[string]string{"bot_id": "bot_none", "bot_desktop": "none"}, "看看新消息")
+	if marked.Metadata["bot_desktop"] != "none" || marked.Metadata["bot_id"] != "bot_none" {
+		t.Fatalf("desktop mark = %#v", marked.Metadata)
+	}
 	again := run
 	stampBotRunIdentity(&again, map[string]string{"bot_id": "bot_other", "bot_task": "别的任务"}, "别的正文")
 	if again.Metadata["bot_id"] != "bot_4" || again.Metadata["bot_task"] != "北京天气" {

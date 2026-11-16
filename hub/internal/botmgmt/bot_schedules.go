@@ -45,7 +45,7 @@ func (s *Service) ListBotSchedules(ctx context.Context, tenantID, userID, botID 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, bot.NodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +179,7 @@ func (s *Service) DeleteBotSchedule(ctx context.Context, tenantID, userID, botID
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, bot.NodeID)
 	if err != nil {
 		return err
 	}

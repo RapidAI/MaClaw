@@ -37,7 +37,7 @@ func (s *Service) FillBotSecret(ctx context.Context, tenantID, userID, botID, na
 	if err := configured(gate); err != nil {
 		return "", err
 	}
-	fresh, token, tokenErr := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, tokenErr := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if tokenErr != nil {
 		return "", tokenErr
 	}

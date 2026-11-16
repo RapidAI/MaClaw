@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
@@ -9,6 +10,15 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 )
+
+// localProbeHeader asks Hub only whether this file can stay on the machine.
+// The body then carries no file bytes. When it cannot, Hub answers
+// LOCAL_UNAVAILABLE and does not run the file call.
+const localProbeHeader = "X-Maclaw-Local-Probe"
+
+func localProbe(r *http.Request) bool {
+	return r != nil && strings.TrimSpace(r.Header.Get(localProbeHeader)) == "1"
+}
 
 // issueLocalDataURL is the same-machine address for a screenshot or a file.
 // Hub has already been asked, so it wakes the desktop and signs a short

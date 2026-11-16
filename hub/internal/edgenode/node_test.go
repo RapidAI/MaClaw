@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/edgelink"
+	"github.com/hashicorp/yamux"
 )
 
 type memSettings struct {
@@ -73,12 +74,24 @@ func TestTunnelReachesOnlyTheNamedTarget(t *testing.T) {
 		_ = edgelink.Serve(left, map[string]string{edgelink.TargetDesktopd: desktopd.Listener.Addr().String()})
 	}()
 	broker := NewBroker(reg)
+	ready := make(chan string, 1)
+	broker.OnAttach = func(tenantID, nodeID string) {
+		ready <- tenantID + "\x00" + nodeID
+	}
 	if broker.Client("tenant-a", node.ID, edgelink.TargetDesktopd) != broker.Client("tenant-a", node.ID, edgelink.TargetDesktopd) {
 		t.Fatal("tunnel client was rebuilt on every call")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = broker.Attach(ctx, node, right) }()
+	select {
+	case got := <-ready:
+		if got != "tenant-a\x00"+node.ID {
+			t.Fatalf("attach notice %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("attach did not report the tunnel")
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	var resp *http.Response
@@ -101,8 +114,59 @@ func TestTunnelReachesOnlyTheNamedTarget(t *testing.T) {
 	if _, err := broker.Dial(context.Background(), "tenant-b", node.ID, edgelink.TargetDesktopd); err == nil {
 		t.Fatal("cross-tenant dial succeeded")
 	}
-	if _, err := broker.Dial(context.Background(), "tenant-a", node.ID, "metadata"); err == nil {
-		t.Fatal("unknown target dial succeeded")
+	if _, err := broker.Dial(context.Background(), "tenant-a", node.ID, "metadata"); !errors.Is(err, edgelink.ErrTarget) {
+		t.Fatalf("unknown target %v", err)
+	}
+}
+
+func TestDialWriteFailureIsOffline(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	reg := NewRegistry(&memSettings{})
+	code, err := reg.IssueCode(context.Background(), "tenant-a", "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled, err := reg.Enroll(context.Background(), code.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := reg.Authenticate(context.Background(), enrolled.NodeID, enrolled.NodeSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, right := net.Pipe()
+	defer left.Close()
+	go func() {
+		sess, serveErr := yamux.Server(left, edgelink.YamuxConfig())
+		if serveErr != nil {
+			return
+		}
+		for {
+			stream, acceptErr := sess.AcceptStream()
+			if acceptErr != nil {
+				return
+			}
+			_ = stream.Close()
+		}
+	}()
+	broker := NewBroker(reg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = broker.Attach(ctx, node, right) }()
+	deadline := time.Now().Add(2 * time.Second)
+	var dialErr error
+	for {
+		_, dialErr = broker.Dial(context.Background(), "tenant-a", node.ID, edgelink.TargetDesktopd)
+		if dialErr != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dial succeeded on a stream the node closed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !errors.Is(dialErr, ErrOffline) || errors.Is(dialErr, edgelink.ErrTarget) {
+		t.Fatalf("write failure %v", dialErr)
 	}
 }
 
@@ -203,7 +267,7 @@ func TestExpiredEnrollmentCodeIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg.Now = func() time.Time { return start.Add(11 * time.Minute) }
+	reg.Now = func() time.Time { return start.Add(codeTTL) }
 	if _, err := reg.Enroll(context.Background(), code.Code, "", "", "v1", false, true, ""); err != ErrCode {
 		t.Fatalf("expired code: %v", err)
 	}
@@ -225,6 +289,56 @@ func TestPutNodeDropsDuplicateIDs(t *testing.T) {
 	back := undoPutNode(out, "a", prev, true)
 	if len(back) != 2 || back[1].SecretHash != "old" {
 		t.Fatalf("undo = %+v", back)
+	}
+}
+
+func TestIssuedByFollowsTheCodeThroughEnrollAndRotate(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	reg := NewRegistry(&memSettings{})
+	ctx := context.Background()
+	code, err := reg.IssueCodeBy(ctx, "tenant-a", "lab", "ops-admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled, err := reg.Enroll(ctx, code.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := reg.Lookup(ctx, enrolled.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.IssuedBy != "ops-admin" {
+		t.Fatalf("issued_by %q", node.IssuedBy)
+	}
+	rotate, err := reg.IssueRotateCode(ctx, "tenant-a", node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Enroll(ctx, rotate.Code, "desk-key-2", "", "v2", true, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	node, err = reg.Lookup(ctx, enrolled.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.IssuedBy != "ops-admin" {
+		t.Fatalf("issued_by after rotate %q", node.IssuedBy)
+	}
+	owned, err := reg.IssueOwnedCode(ctx, "tenant-a", "alice", "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := reg.Enroll(ctx, owned.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err = reg.Lookup(ctx, out.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.IssuedBy != "alice" || node.OwnerUserID != "alice" {
+		t.Fatalf("personal node owner=%q issued_by=%q", node.OwnerUserID, node.IssuedBy)
 	}
 }
 
@@ -437,4 +551,114 @@ func TestStreamCapStopsTheNextDial(t *testing.T) {
 	}
 	_ = held.Close()
 	_ = extra.Close()
+}
+
+func TestEnrollmentCodeLastsThreeHours(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	start := time.Date(2026, 11, 16, 8, 0, 0, 0, time.UTC)
+	now := start
+	reg := NewRegistry(&memSettings{})
+	reg.Now = func() time.Time { return now }
+	fresh, err := reg.IssueCode(context.Background(), "tenant-a", "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh.Until.Equal(start.Add(codeTTL)) || codeTTL != 3*time.Hour {
+		t.Fatalf("until %s ttl %s", fresh.Until, codeTTL)
+	}
+	late, err := reg.IssueCode(context.Background(), "tenant-a", "late")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = start.Add(codeTTL - time.Second)
+	enrolled, err := reg.Enroll(context.Background(), fresh.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := reg.IssueRotateCode(context.Background(), "tenant-a", enrolled.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rotated.Until.Equal(now.Add(codeTTL)) {
+		t.Fatalf("rotate until %s", rotated.Until)
+	}
+	now = late.Until
+	if _, err := reg.Enroll(context.Background(), late.Code, "desk-key", "", "v1", true, false, ""); !errors.Is(err, ErrCode) {
+		t.Fatalf("expired code: %v", err)
+	}
+}
+
+func TestShareNodeDropsThePersonalOwner(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	ctx := context.Background()
+	reg := NewRegistry(&memSettings{})
+	owned, err := reg.IssueOwnedCode(ctx, "tenant-a", "alice", "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := reg.Enroll(ctx, owned.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := reg.Lookup(ctx, out.NodeID)
+	if err != nil || node.OwnerUserID != "alice" {
+		t.Fatalf("owner = %q err=%v", node.OwnerUserID, err)
+	}
+	shared := ""
+	if err := reg.UpdateNode(ctx, out.NodeID, "", &shared); err != nil {
+		t.Fatal(err)
+	}
+	node, err = reg.Lookup(ctx, out.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.OwnerUserID != "" {
+		t.Fatalf("owner after share %q", node.OwnerUserID)
+	}
+	if node.Name != "desk" || node.DesktopdKey != "desk-key" {
+		t.Fatal("the share rewrote the node identity")
+	}
+	if err := reg.UpdateNode(ctx, out.NodeID, "", &shared); err != nil {
+		t.Fatal("a second share is not idempotent")
+	}
+}
+
+func TestUpdateNodeRenamesAndReassignsThePersonalOwner(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	ctx := context.Background()
+	reg := NewRegistry(&memSettings{})
+	owned, err := reg.IssueOwnedCode(ctx, "tenant-a", "alice", "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := reg.Enroll(ctx, owned.Code, "desk-key", "", "v1", true, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob := "bob"
+	if err := reg.UpdateNode(ctx, out.NodeID, "  lab-west  ", &bob); err != nil {
+		t.Fatal(err)
+	}
+	node, err := reg.Lookup(ctx, out.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Name != "lab-west" || node.OwnerUserID != "bob" {
+		t.Fatalf("name=%q owner=%q", node.Name, node.OwnerUserID)
+	}
+	if err := reg.UpdateNode(ctx, out.NodeID, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	node, err = reg.Lookup(ctx, out.NodeID)
+	if err != nil || node.OwnerUserID != "bob" {
+		t.Fatalf("a nil owner rewrote the owner to %q", node.OwnerUserID)
+	}
+	if err := reg.UpdateNode(ctx, out.NodeID, strings.Repeat("n", 81), nil); err == nil {
+		t.Fatal("an oversized name was accepted")
+	}
+	// The cap counts characters, not bytes: a 27-char Chinese name is 81
+	// bytes but a legal name.
+	if err := reg.UpdateNode(ctx, out.NodeID, strings.Repeat("桌", 27), nil); err != nil {
+		t.Fatalf("a 27-character name was rejected: %v", err)
+	}
 }

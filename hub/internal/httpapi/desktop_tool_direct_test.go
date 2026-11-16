@@ -113,6 +113,48 @@ func TestToolFileOnTheSameNodeDoesNotCrossTheTunnel(t *testing.T) {
 	if !crossed {
 		t.Fatalf("skipped shortcut did not use the tunnel: %v", hits)
 	}
+
+	before := len(hits)
+	probeBody := `{"run_id":"r2","tool_call_id":"c2","tenant":"tenant-a","user":"alice","action":"file_write","args":{"path":"/home/desktop/a.txt","content":"not-sent-through-the-tunnel"}}`
+	probe := httptest.NewRequest(http.MethodPost, "/api/v1/desktop-services/tool", strings.NewReader(probeBody))
+	probe.Header.Set("Authorization", "Bearer "+enrolled.HubToken)
+	probe.Header.Set("Content-Type", "application/json")
+	probe.Header.Set("X-Maclaw-Local-Probe", "1")
+	probe.ContentLength = int64(len(probeBody))
+	probeRec := httptest.NewRecorder()
+	PostDesktopToolHandler(pool).ServeHTTP(probeRec, probe)
+	if probeRec.Code != http.StatusOK || !strings.Contains(probeRec.Body.String(), "/v1/desktops/local/") {
+		t.Fatalf("probe %d %s", probeRec.Code, probeRec.Body.String())
+	}
+	for _, hit := range hits[before:] {
+		if hit == "/v1/desktops/file" {
+			t.Fatalf("probe wrote through the tunnel: %v", hits[before:])
+		}
+	}
+}
+
+func TestLocalProbeStopsWhenTheFileCannotStayLocal(t *testing.T) {
+	t.Setenv("MACLAW_DESKTOP_API_TOKEN", "desktop-api-token")
+	t.Setenv("HUB_EDGE_NODES", "off")
+	pool := desktoppool.New(newDesktopSettingsMem(), nil)
+	body := `{"tenant_id":"tenant-a","user_id":"alice","action":"write","path":"/home/desktop/a.txt","content":"keep-me"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/desktop-services/file", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer desktop-api-token")
+	req.Header.Set("X-Maclaw-Local-Probe", "1")
+	rec := httptest.NewRecorder()
+	PostDesktopFileHandler(pool).ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "LOCAL_UNAVAILABLE") {
+		t.Fatalf("file probe %d %s", rec.Code, rec.Body.String())
+	}
+	tool := `{"run_id":"r","tool_call_id":"c","tenant":"tenant-a","user":"alice","action":"file_write","args":{"path":"/home/desktop/a.txt","content":"keep-me"}}`
+	toolReq := httptest.NewRequest(http.MethodPost, "/api/v1/desktop-services/tool", strings.NewReader(tool))
+	toolReq.Header.Set("Authorization", "Bearer desktop-api-token")
+	toolReq.Header.Set("X-Maclaw-Local-Probe", "1")
+	toolRec := httptest.NewRecorder()
+	PostDesktopToolHandler(pool).ServeHTTP(toolRec, toolReq)
+	if toolRec.Code != http.StatusConflict || !strings.Contains(toolRec.Body.String(), "LOCAL_UNAVAILABLE") {
+		t.Fatalf("tool probe %d %s", toolRec.Code, toolRec.Body.String())
+	}
 }
 
 type rewriteHost struct{ base string }

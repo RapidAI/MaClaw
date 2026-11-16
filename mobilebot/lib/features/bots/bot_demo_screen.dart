@@ -89,9 +89,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     final out = await api.demoNarrate(widget.bot.id, text: text);
     if (!mounted) return;
     _narrateCtrl.clear();
-    setState(
-      () => _narrations.add(syncTextOr(out['text'], text)),
-    );
+    setState(() => _narrations.add(syncTextOr(out['text'], text)));
   });
 
   Future<void> _toggleMic() async {
@@ -117,9 +115,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
           mime: 'audio/wav',
         );
         if (!mounted) return;
-        setState(
-          () => _narrations.add('🎙 ${syncText(out['text'])}'),
-        );
+        setState(() => _narrations.add('🎙 ${syncText(out['text'])}'));
       });
       return;
     }

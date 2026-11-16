@@ -770,11 +770,11 @@ async function testConnectionUsesSavedSettings() {
   harness.elements.botBaseUrl.value = 'http://other.example';
   harness.elements.botTest.listeners.click[0]();
   harness.elements.botBaseUrl.value = 'http://maclaw.example';
-  harness.elements.botAccessToken.value = 'new-token';
+  harness.elements.botAdminSecret.value = 'new-secret';
   harness.elements.botTest.listeners.click[0]();
-  assert(tests().length === 0, 'does not test an address or token that is not saved');
+  assert(tests().length === 0, 'does not test an address or secret that is not saved');
   assert(harness.toasts.filter(function (toast) { return toast.msg.indexOf('\u8fd8\u6ca1\u4fdd\u5b58') !== -1; }).length === 2, 'asks to save before testing');
-  harness.elements.botAccessToken.value = '';
+  harness.elements.botAdminSecret.value = '';
   harness.elements.botTest.listeners.click[0]();
   await flush();
   assert(tests().length === 1, 'tests the saved connection');
@@ -792,7 +792,7 @@ async function testConnectionFailureIsExplainedInChinese() {
   await flush();
   const shown = harness.elements.botConnStatus.textContent;
   assertIncludes(shown, 'HTTP 401', 'names the status code');
-  assertIncludes(shown, '\u8bbf\u95ee\u4ee4\u724c', 'explains it in Chinese');
+  assertIncludes(shown, '\u51ed\u8bc1', 'explains it in Chinese');
   assertIncludes(shown, 'unauthorized', 'keeps what MaClawSrv said');
   assertNotIncludes(shown, 'the access token was rejected', 'drops the English hint');
 

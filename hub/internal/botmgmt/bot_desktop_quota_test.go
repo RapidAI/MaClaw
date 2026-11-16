@@ -212,6 +212,75 @@ func TestCreateBotDesktopQuota(t *testing.T) {
 	}
 }
 
+// A lower cap stops new desktop bots. Bots that already have a computer
+// keep it; the grant change does not rewrite their mode.
+func TestLoweringTheDesktopQuotaLeavesExistingBots(t *testing.T) {
+	svc := newDesktopQuotaService(t, nil)
+	ctx := context.Background()
+	limit := 2
+	grant, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "alice", DesktopBotLimit: &limit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	first, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "desk-1", "", &yes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "desk-2", "", &yes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := 0
+	if _, err := svc.UpdateGrant(ctx, "tenant-a", grant.ID, &zero); err != nil {
+		t.Fatal(err)
+	}
+	bots, err := svc.BotsForUser(ctx, "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bots) != 2 {
+		t.Fatalf("bots = %d", len(bots))
+	}
+	kept := map[string]string{}
+	for _, bot := range bots {
+		kept[bot.ID] = bot.DesktopMode
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		mode, ok := kept[id]
+		if !ok {
+			t.Fatalf("bot %s disappeared", id)
+		}
+		if mode == desktop.BotDesktopModeNone {
+			t.Fatalf("bot %s lost its desktop", id)
+		}
+	}
+	if _, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "desk-3", "", &yes); !errors.Is(err, ErrDesktopQuota) {
+		t.Fatalf("new desktop bot after the lower cap: %v", err)
+	}
+}
+
+func TestZeroDesktopQuotaAllowsOnlyNoneBots(t *testing.T) {
+	svc := newDesktopQuotaService(t, nil)
+	ctx := context.Background()
+	zero := 0
+	if _, err := svc.CreateGrant(ctx, "tenant-a", Grant{Scope: ScopeUser, TargetID: "alice", DesktopBotLimit: &zero}); err != nil {
+		t.Fatal(err)
+	}
+	no := false
+	yes := true
+	none, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "no-desk", "", &no)
+	if err != nil || none.DesktopMode != desktop.BotDesktopModeNone {
+		t.Fatalf("none bot %+v %v", none, err)
+	}
+	if _, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "desk", "", &yes); !errors.Is(err, ErrDesktopQuota) {
+		t.Fatalf("desktop bot with a zero cap: %v", err)
+	}
+	if _, err := svc.SetBotDesktopModeForUser(ctx, "tenant-a", "alice", none.ID, "shared"); !errors.Is(err, ErrDesktopQuota) {
+		t.Fatalf("upgrade with a zero cap: %v", err)
+	}
+}
+
 func TestDesktopQuotaFallsToTheTenantDefault(t *testing.T) {
 	svc := newDesktopQuotaService(t, nil)
 	ctx := context.Background()

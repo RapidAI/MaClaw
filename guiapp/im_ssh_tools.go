@@ -370,6 +370,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 					if summary.LastOutput != "" {
 						result += "\n\n最近输出: " + summary.LastOutput
 					}
+					result += "\n\n如该会话 exec 持续无响应：ssh(action=close, session_id=该会话) 后重新 connect，或 connect 传 force_new=true 强制新建"
 					return
 				}
 				time.Sleep(2 * time.Second)
@@ -507,7 +508,7 @@ func sshSessionStatusOpen(status remote.SessionStatus) bool {
 // sshSessionLocallyOpen reports that the process still has a non-terminal PTY
 // for this session. It does not send a keepalive.
 func sshSessionLocallyOpen(session *remote.SSHManagedSession) bool {
-	if session == nil || session.Handle == nil {
+	if session == nil || session.PTY() == nil {
 		return false
 	}
 	return sshSessionStatusOpen(remote.SessionStatus(session.GetSummary().Status))
@@ -555,11 +556,15 @@ func sshSituationSessionAlive(session *remote.SSHManagedSession) bool {
 	if !sshSessionLocallyOpen(session) {
 		return false
 	}
-	if session.Handle.ObservedTransportFailure() {
-		rememberSSHSessionAlive(session.Handle, false)
+	handle := session.PTY()
+	if handle == nil {
 		return false
 	}
-	if alive, ok := cachedSSHSessionAlive(session.Handle); ok {
+	if handle.ObservedTransportFailure() {
+		rememberSSHSessionAlive(handle, false)
+		return false
+	}
+	if alive, ok := cachedSSHSessionAlive(handle); ok {
 		return alive
 	}
 	return true
@@ -649,6 +654,7 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 	}
 
 	h.registerSSHBackgroundLoop(session, session.Spec.HostConfig)
+	handleBefore := session.PTY()
 	linesBefore := session.LineCount()
 
 	if sessionDead {
@@ -663,8 +669,12 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 		if reconnected {
 			reconnectNote = "连接已断开并自动重连\n"
 			time.Sleep(2 * time.Second)
-			linesBefore = session.LineCount()
 		}
+	}
+	// A swapped PTY restarted the preview buffer at zero; a stale absolute
+	// baseline would silently hide the reply.
+	if session.PTY() != handleBefore {
+		linesBefore = session.LineCount()
 	}
 
 	if waitSec > 600 {

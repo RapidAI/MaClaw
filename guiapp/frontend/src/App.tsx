@@ -183,7 +183,7 @@ import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, localizeModelNote, type ProviderEndpoint } from './config/providerCatalog';
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, resolveSettingsTabId, type SettingsTabId, type SettingsTabVisibility } from './config/settingsTabs';
-import { OPEN_SETTINGS_EVENT } from './utils/settingsNavigation';
+import { OPEN_SETTINGS_EVENT, openLLMProviderManagement, type OpenSettingsDetail } from './utils/settingsNavigation';
 import { grantSolo, settingsNavIsSolo, type SoloSettingsTab } from './utils/settingsSolo';
 import { OPEN_FILE_LIBRARY_EVENT } from './utils/fileLibraryNavigation';
 import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNavigation';
@@ -980,8 +980,9 @@ function App() {
     }, [requestOnboarding]);
 
     const [creditGiftLaunch, setCreditGiftLaunch] = useState<{ code: string; seq: number }>({ code: '', seq: 0 });
-    // Increments on every agent model-menu "add custom model" click so the LLM
-    // settings panel auto-opens provider management (0 = no pending request).
+    // Increments on every provider-management deep link (agent model menu "add
+    // custom model", bot model settings "添加服务商") so the LLM settings panel
+    // auto-opens provider management (0 = no pending request).
     const [llmProviderDialogAutoOpenSeq, setLLMProviderDialogAutoOpenSeq] = useState(0);
     useEffect(() => {
         const applyGift = (payload: any) => {
@@ -1254,11 +1255,14 @@ function App() {
     }, []);
     useEffect(() => {
         const openSettings = (e: Event) => {
-            const detail = (e as CustomEvent<{ tab?: string; hideSettingsNav?: boolean }>).detail;
+            const detail = (e as CustomEvent<Partial<OpenSettingsDetail>>).detail;
             const tab = resolveSettingsTabId(detail?.tab, settingsTabVisibility);
             setNavTabNow('settings');
             selectSettingsTab(tab);
             setSettingsNavSoloTab(grantSolo(tab, detail?.hideSettingsNav === true));
+            if (detail?.autoOpenProviderDialog === true) {
+                setLLMProviderDialogAutoOpenSeq(seq => seq + 1);
+            }
         };
         window.addEventListener(OPEN_SETTINGS_EVENT, openSettings);
         return () => window.removeEventListener(OPEN_SETTINGS_EVENT, openSettings);
@@ -4456,16 +4460,6 @@ function App() {
         selectSettingsTab('llm');
     }, [selectSettingsTab]);
 
-    // Deep link from the agent model menu's "add custom model" entry: opens the
-    // LLM settings tab with the provider-management dialog already up. The seq
-    // (same pattern as tokenBankClaimSeq) survives the settings panel's lazy
-    // mount; the panel consumes it once its provider list is ready.
-    const openLLMProviderManagementPage = useCallback(() => {
-        setNavTabNow('settings');
-        selectSettingsTab('llm');
-        setLLMProviderDialogAutoOpenSeq(seq => seq + 1);
-    }, [selectSettingsTab]);
-
     const openIMSettingsPage = useCallback(() => {
         setNavTabNow('settings');
         selectSettingsTab('im');
@@ -6291,7 +6285,7 @@ ${instruction}`;
                             activeExecutionProfile={quickWriteProfile}
                             codingInheritsAssistant={activeProfileSummary?.inherit_assistant === true}
                             onOpenLLMSettings={openLLMSettingsPage}
-                            onAddCustomModel={openLLMProviderManagementPage}
+                            onAddCustomModel={openLLMProviderManagement}
                             onActiveExecutionProfileChange={setActiveExecutionProfile}
                             onLanguageChange={applyLanguage}
                             tasks={taskItems}

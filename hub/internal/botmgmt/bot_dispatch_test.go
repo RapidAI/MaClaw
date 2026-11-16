@@ -201,3 +201,17 @@ func TestHubBootScanResumesPendingDelegate(t *testing.T) {
 		t.Fatalf("admit = %q", got)
 	}
 }
+
+func TestRefundWakeKeepsANewerSlot(t *testing.T) {
+	svc := NewService(nil)
+	svc.dispatch.init()
+	first := time.Unix(10, 0)
+	second := time.Unix(20, 0)
+	third := time.Unix(30, 0)
+	svc.dispatch.wakes["tenant-a|alice|bot_a"] = []time.Time{first, second, third}
+	svc.refundWake("tenant-a", "alice", "bot_a", second)
+	slots := svc.dispatch.wakes["tenant-a|alice|bot_a"]
+	if len(slots) != 2 || !slots[0].Equal(first) || !slots[1].Equal(third) {
+		t.Fatalf("slots = %v", slots)
+	}
+}

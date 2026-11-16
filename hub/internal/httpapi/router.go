@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -433,7 +434,31 @@ func NewRouter(
 		botSvc.Directory = directory
 	}
 	desktopPool := desktoppool.New(system, desktopDirectory)
+	desktopPool.Home = func(ctx context.Context, tenantID, ownerID, botID string) (string, bool) {
+		if botSvc == nil {
+			return "", false
+		}
+		return botSvc.DesktopComputerNode(ctx, tenantID, ownerID, botID)
+	}
 	botSvc.Desktop = botDesktopControl{pool: desktopPool}
+	// A computer request needs a real desktop behind it: an assigned cloud
+	// server, or a LAN node picked by the caller (validated in the handler).
+	// With neither the create is refused so the client offers a
+	// no-desktop bot instead of silently landing on nothing.
+	botSvc.CloudDesktopAssigned = func(ctx context.Context, tenantID, userID string, departments []string) error {
+		_, err := desktopPool.CloudServerFor(ctx, tenantID, userID, departments)
+		if errors.Is(err, desktoppool.ErrNotAssigned) {
+			return botmgmt.ErrCloudDesktopUnassigned
+		}
+		return err
+	}
+	botSvc.LanDesktopAvailable = func(ctx context.Context, tenantID, nodeID string) bool {
+		if edgeRegistry == nil {
+			return false
+		}
+		node, err := edgeRegistry.Lookup(ctx, nodeID)
+		return err == nil && node.HasSrv && !edgeTenantMismatch(node.TenantID, tenantID)
+	}
 	if edgenode.Enabled() {
 		edgeRegistry = edgenode.NewRegistry(system)
 		edgeBroker = edgenode.NewBroker(edgeRegistry)
@@ -450,6 +475,7 @@ func NewRouter(
 		mux.HandleFunc("DELETE /api/admin/bots/nodes/{id}", requireTenantAdmin(DeleteEdgeNodeAdminHandler(edgeRegistry, edgeBroker, desktopPool, botSvc)))
 		mux.HandleFunc("POST /api/admin/bots/nodes/codes", requireTenantAdmin(PostEdgeCodeAdminHandler(edgeRegistry)))
 		mux.HandleFunc("POST /api/admin/bots/nodes/{id}/code", requireTenantAdmin(PostEdgeRotateCodeAdminHandler(edgeRegistry)))
+		mux.HandleFunc("POST /api/admin/bots/nodes/{id}/settings", requireTenantAdmin(PostEdgeNodeSettingsAdminHandler(edgeRegistry, desktopPool, botSvc)))
 		mux.HandleFunc("POST /api/v1/edge/enroll", PostEdgeEnrollHandler(edgeRegistry, desktopPool, botSvc))
 		mux.HandleFunc("POST /api/v1/edge/capacity", PostEdgeCapacityHandler(desktopPool, edgeRegistry))
 		mux.HandleFunc("POST /api/v1/edge/resources", PostEdgeResourcesHandler(desktopPool, edgeRegistry))
@@ -463,6 +489,9 @@ func NewRouter(
 				return nil
 			}
 			return edgeBroker.Client(node.TenantID, node.ID, edgelink.TargetSrv)
+		}
+		edgeBroker.OnAttach = func(tenantID, nodeID string) {
+			botSvc.ReleaseNodeQueue(tenantID, nodeID)
 		}
 		mux.HandleFunc("GET /api/v1/edge/link", GetEdgeLinkHandler(edgeRegistry, edgeBroker, botSvc))
 		mux.HandleFunc(edgeDesktopRelayPrefix+"{node}/{rest...}", EdgeDesktopRelayHandler(edgeRegistry, edgeBroker))

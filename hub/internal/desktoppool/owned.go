@@ -291,6 +291,84 @@ func pointUserAt(items []Assignment, userID, serverID string) []Assignment {
 	return append(kept, Assignment{ID: newID("dasg"), Scope: ScopeUser, TargetID: userID, ServerID: serverID})
 }
 
+// SetNodeServersOwner makes this node's desktop services exclusive to owner,
+// or shared when owner is empty. The services keep their tunnel and tokens.
+// An exclusive change also drops assignments anyone else could no longer
+// resolve (a dead binding would fail at wake time), points the new owner at
+// the services matching what a GUI self-registration sets up, and stops the
+// desktops displaced users may still hold open on the node.
+func (p *Pool) SetNodeServersOwner(ctx context.Context, tenantID, nodeID, owner string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil
+	}
+	owner = strings.TrimSpace(owner)
+	if owner != "" && !desktop.ValidUserID(owner) {
+		return fmt.Errorf("%w: owner is invalid", ErrInvalidInput)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rec, err := p.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	changed := false
+	serverIDs := map[string]bool{}
+	var ordered []string
+	displaced := map[string]bool{}
+	for i := range rec.Servers {
+		if rec.Servers[i].NodeID != nodeID {
+			continue
+		}
+		serverIDs[rec.Servers[i].ID] = true
+		ordered = append(ordered, rec.Servers[i].ID)
+		if prev := strings.TrimSpace(rec.Servers[i].OwnerUserID); prev != owner {
+			if owner != "" && prev != "" {
+				displaced[prev] = true
+			}
+			rec.Servers[i].OwnerUserID = owner
+			changed = true
+		}
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+	if owner != "" {
+		var kept []Assignment
+		for _, item := range rec.Assignments {
+			if serverIDs[item.ServerID] && (item.Scope != ScopeUser || item.TargetID != owner) {
+				if item.Scope == ScopeUser && strings.TrimSpace(item.TargetID) != "" {
+					displaced[item.TargetID] = true
+				}
+				changed = true
+				continue
+			}
+			kept = append(kept, item)
+		}
+		rec.Assignments = kept
+		// The first service record is the computer: refreshRotatedDesktop
+		// writes each rotated desktopd key onto it, so it is the record
+		// that stays live; a later admin-added record goes stale.
+		first := ordered[0]
+		if matchAssignment(rec.Assignments, ScopeUser, owner) != first {
+			rec.Assignments = pointUserAt(rec.Assignments, owner, first)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := p.save(ctx, tenantID, rec); err != nil {
+		return err
+	}
+	for _, serverID := range ordered {
+		for user := range displaced {
+			p.StopUserOnLater(tenantID, serverID, user)
+		}
+	}
+	return nil
+}
+
 // ownedStopTimeout bounds the background stop of a desktop left behind on
 // the service a user just moved away from.
 const ownedStopTimeout = 30 * time.Second

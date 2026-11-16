@@ -1134,6 +1134,8 @@ export function GetCreditsAssetTransactions(arg1:number):Promise<Record<string, 
 
 export function GetPetStoreCreatorReport(arg1:string,arg2:string):Promise<Record<string, any>>;
 
+export function GetPetStoreInstalledPackDetails(arg1:Array<string>):Promise<Record<string, Record<string, any>>>;
+
 export function GetPetStoreRankings():Promise<Record<string, any>>;
 
 export function GetPolicyEngine():Promise<main.PolicyEngine>;
@@ -2606,9 +2608,9 @@ export function DeleteDesktopBotSchedule(arg1:string,arg2:string):Promise<void>;
 
 export function DesktopBotAccess():Promise<{enabled:boolean,message?:string}>;
 
-export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string}>>;
+export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string,node_id?:string}>>;
 
-export function GetDesktopBotQuota():Promise<{limit?:number | null,used:number}>;
+export function GetDesktopBotQuota():Promise<{limit?:number | null,used:number,cloud_desktop?:boolean | null}>;
 
 export function SetDesktopBotPrimary(arg1:string):Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>>;
 
@@ -2626,9 +2628,9 @@ export function ClaimDesktopBotCrossStart(arg1:string,arg2:string):Promise<{clai
 
 export function ArmDesktopBotCrossRun(arg1:string,arg2:string):Promise<void>;
 
-export function CreateDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string}>;
+export function CreateDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string,node_id?:string}>;
 
-export function CreateDesktopBotWithComputer(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string}>;
+export function CreateDesktopBotWithComputer(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string,node_id?:string}>;
 
 export function RenameDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
 
@@ -2650,7 +2652,7 @@ export function GetDesktopBotCredits():Promise<{ applies: boolean; unlimited: bo
 
 export function GetDesktopComputer():Promise<{ restart_allowed: boolean; reset_allowed: boolean; active_runs: number; intranet?: boolean }>;
 
-export function ListDesktopNodes():Promise<{ enabled: boolean; hub_error?: string; nodes: Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; message?: string; node_id?: string; desktopd_url?: string; with_srv?: boolean; srv_token_set?: boolean; last_kind?: string; last_result?: string; last_at?: string; registered: boolean; online: boolean; active: boolean; memory?: string; cpus?: string }> }>;
+export function ListDesktopNodes():Promise<{ enabled: boolean; hub_error?: string; nodes: Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; message?: string; node_id?: string; desktopd_url?: string; desktopd_port?: number; desktopd_addr?: string; with_srv?: boolean; srv_token_set?: boolean; last_kind?: string; last_result?: string; last_at?: string; registered: boolean; online: boolean; active: boolean; memory?: string; cpus?: string }> }>;
 
 export function ListLocalDesktopJobs():Promise<Array<{ id: string; title: string; status: string; started_at: string }>>;
 
@@ -2659,6 +2661,14 @@ export function UpgradeDesktopNode(arg1:string, arg2:string):Promise<{ id: strin
 export function DeployDesktopNode(arg1:{ name?: string; host: string; port?: number; user: string; password: string; with_srv?: boolean }):Promise<{ id: string; status: string; message?: string }>;
 
 export function DeployHub(arg1:{ host: string; port?: number; user: string; password: string; email: string }):Promise<{ id: string; host: string; port: number; user: string; email: string; public_url: string; admin_user: string; admin_password?: string; hub_id?: string; pending?: boolean; status: string; message?: string }>;
+
+export function DeployBotNode(arg1:{ name?: string; host: string; port?: number; user: string; password: string; can_sudo?: boolean; with_srv?: boolean; enroll_code: string }):Promise<{ id: string; name: string; host: string; port: number; user: string; can_sudo?: boolean; with_srv?: boolean; hub_url?: string; node_id?: string; status: string; message?: string }>;
+
+export function RegisterBotNode(arg1:{ id: string; password: string; enroll_code: string }):Promise<{ id: string; name: string; host: string; port: number; user: string; can_sudo?: boolean; with_srv?: boolean; hub_url?: string; node_id?: string; status: string; message?: string }>;
+
+export function ListBotNodes():Promise<Array<{ id: string; name: string; host: string; port: number; user: string; can_sudo?: boolean; with_srv?: boolean; hub_url?: string; node_id?: string; status: string; message?: string }>>;
+
+export function ClearBotNodeResult(arg1:string):Promise<void>;
 
 export function ListHubDeploys():Promise<Array<{ id: string; host: string; port: number; user: string; email: string; public_url: string; admin_user: string; admin_password?: string; hub_id?: string; pending?: boolean; status: string; message?: string }>>;
 

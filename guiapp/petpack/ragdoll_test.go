@@ -371,6 +371,92 @@ func TestRagdollLargeActionsAndCues(t *testing.T) {
 	}
 }
 
+// TestRagdollDragBraceStaysLifted checks the picked-up pose is visible and
+// that letting go starts from that same height. Hover leans and lifts a hand
+// without becoming the full click wave.
+func TestRagdollDragBraceStaysLifted(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), BundledFS())
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := reg.Resolve(DefaultPackID, VariantDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig, err := LoadRig(resolved)
+	if err != nil || rig == nil {
+		t.Fatal(err)
+	}
+	brace := rig.Clips["react_drag_brace"]
+	release := rig.Clips["react_drag_release"]
+	if brace.DurationMS < 5000 || brace.Cue != "brace" || release.Cue != "release" {
+		t.Fatalf("brace=%+v release cue %q", brace.DurationMS, release.Cue)
+	}
+	root := brace.Tracks["root"]
+	if len(root) < 3 || root[1].Y > -24 || root[len(root)-1].Y != root[1].Y {
+		t.Fatalf("brace root = %+v", root)
+	}
+	if release.Tracks["root"][0].Y != root[len(root)-1].Y {
+		t.Fatalf("release starts at %v, hold is %v", release.Tracks["root"][0].Y, root[len(root)-1].Y)
+	}
+	if maxAbsRigRotate(brace.Tracks["arm_l"]) < 60 || maxAbsRigRotate(brace.Tracks["arm_r"]) < 60 {
+		t.Fatal("brace arms stay close to the body")
+	}
+	if len(brace.Tracks["leg_l"]) == 0 || len(brace.Tracks["leg_r"]) == 0 {
+		t.Fatal("brace does not tuck the legs")
+	}
+	head := brace.Tracks["head"]
+	braid := brace.Tracks["braid_l"]
+	if maxAbsRigRotate(head) < 6 || len(braid) == 0 {
+		t.Fatal("brace head tilt did not move the braids")
+	}
+	for _, key := range head {
+		if math.Abs(key.Rotate) < 6 {
+			continue
+		}
+		local, ok := rigRotateAt(braid, key.AtMS)
+		if !ok || key.Rotate*local >= 0 {
+			t.Fatalf("brace braid %v does not oppose head %v", local, key.Rotate)
+		}
+	}
+
+	renderer, err := NewRigRenderer(resolved)
+	if err != nil || renderer == nil {
+		t.Fatal(err)
+	}
+	idle := renderer.RenderClips([]string{"idle_breathe_loop"}, 0, 256)
+	lifted := renderer.RenderClips([]string{"react_drag_brace"}, 400, 256)
+	held := renderer.RenderClips([]string{"react_drag_brace"}, 4000, 256)
+	letGo := renderer.RenderClips([]string{"react_drag_release"}, 0, 256)
+	if idle == nil || lifted == nil || held == nil || letGo == nil {
+		t.Fatal("missing drag pose")
+	}
+	if top, idleTop := opaqueTop(lifted), opaqueTop(idle); top > idleTop-16 {
+		t.Fatalf("brace top %d is not clearly above idle %d", top, idleTop)
+	}
+	if d := opaqueTop(held) - opaqueTop(lifted); d < -2 || d > 2 {
+		t.Fatalf("held top %d drifted from lifted %d", opaqueTop(held), opaqueTop(lifted))
+	}
+	if opaqueTop(letGo) > opaqueTop(idle)-16 {
+		t.Fatalf("release starts at top %d, idle %d", opaqueTop(letGo), opaqueTop(idle))
+	}
+
+	peek := rig.Clips["react_hover_peek"]
+	hoverRoot := 0.0
+	for _, key := range peek.Tracks["root"] {
+		if key.Y < hoverRoot {
+			hoverRoot = key.Y
+		}
+	}
+	arm := maxAbsRigRotate(peek.Tracks["arm_r"])
+	if maxAbsRigRotate(peek.Tracks["head"]) < 18 || hoverRoot >= -4 || hoverRoot <= -14 || arm < 36 || arm >= 100 {
+		t.Fatalf("hover peek head=%v root=%v arm=%v", maxAbsRigRotate(peek.Tracks["head"]), hoverRoot, arm)
+	}
+	if len(peek.Tracks["braid_l"]) == 0 {
+		t.Fatal("hover tilt did not move the braids")
+	}
+}
+
 // TestRagdollBraidsSwingSofterThanTheHead checks the authored follow-through.
 // The tip of each plait swings farther and later than the upper bone, the two
 // sides do not copy each other, and a deep head tilt does not take the braid

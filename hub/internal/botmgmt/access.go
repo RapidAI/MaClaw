@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 )
 
@@ -171,6 +172,11 @@ func (s *Service) loadForUser(ctx context.Context, tenantID, userID string) (rec
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {
 		return record{}, err
+	}
+	// No configured grants means the feature is open to every member; the
+	// first grant an admin adds narrows access to that scope.
+	if len(rec.Grants) == 0 {
+		return rec, nil
 	}
 	// A user or global grant does not need the department walk. That walk is
 	// a directory round trip on every bot message.
@@ -654,10 +660,21 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if !hubStartedTurn(clientMessageID) && desktopCanonicalContinue(botID, continueSession) == "" {
 		if sticky, replay := s.peekDesktopRouteState(tenantID, userID, botID, clientMessageID); !replay {
 			step := time.Now()
+			var routeErr error
 			if f, tk, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID); err == nil {
 				fresh, token, haveToken = f, tk, true
-				route = s.routeDesktopMessage(ctx, tenantID, userID, &fresh, &token, instanceID, botID, content, sticky)
-			} else if sticky != "" {
+				route, routeErr = s.routeDesktopMessage(ctx, tenantID, userID, &fresh, &token, instanceID, botID, content, sticky)
+			} else {
+				routeErr = err
+			}
+			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, routeErr); parked || offlineErr != nil {
+				traceBot(botID, "route_done", offlineErr, "via", route.Via, "dur_ms", traceMS(time.Since(step)))
+				if parked {
+					return admission, nil
+				}
+				return BotAdmission{}, offlineErr
+			}
+			if !haveToken && sticky != "" {
 				route = desktopRoute{Session: sticky, Via: "sticky"}
 			}
 			traceBot(botID, "route_done", nil, "via", route.Via, "dur_ms", traceMS(time.Since(step)))
@@ -674,12 +691,16 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	var intakeAck, intakeKind, intakePhase string
 	button := strings.TrimSpace(phase) == "execute"
 	if !desktopReplay(ctx) {
-		next, steered, handled := s.steerDesktopMessage(ctx, desktopSteerRequest{
+		next, steered, handled, steerErr := s.steerDesktopMessage(ctx, desktopSteerRequest{
 			TenantID: tenantID, UserID: userID, DesktopUser: desktopUser, BotID: botID,
 			InstanceID: instanceID, Content: content, Phase: phase,
 			ClientMessageID: clientMessageID, ContinueSession: continueSession,
-			Action: action, Admit: admit, TokenRec: &fresh, Token: &token, HaveToken: haveToken,
+			Action: action, Admit: admit, NodeID: rec.Bots[index].NodeID,
+			TokenRec: &fresh, Token: &token, HaveToken: haveToken,
 		})
+		if steerErr != nil {
+			return BotAdmission{}, steerErr
+		}
 		if handled {
 			if steered.ClientMessageID == "" {
 				steered.ClientMessageID = clientMessageID
@@ -701,26 +722,37 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// waits in the same queue as a busy desktop and starts when a later
 	// read is under the line.
 	noDesktop := botNone(rec.Bots[index])
-	if admit && !noDesktop && !hubStartedTurn(clientMessageID) && s.desktopMemoryPressured(ctx, tenantID, userID) {
-		// A replay is the queue itself. Returning the error puts the item
-		// back instead of starting it or queueing a second copy.
-		if desktopReplay(ctx) || desktopQueueSuppressed(ctx) {
-			return BotAdmission{}, ErrDesktopMemory
+	if admit && !noDesktop && !hubStartedTurn(clientMessageID) {
+		pressed, memErr := s.desktopMemoryState(desktoppool.WithComputer(ctx, rec.Bots[index].NodeID), tenantID, userID)
+		if nodeSessionMissing(memErr) {
+			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, memErr); parked || offlineErr != nil {
+				if parked {
+					return admission, nil
+				}
+				return BotAdmission{}, offlineErr
+			}
 		}
-		pos, qerr := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
-			ClientMessageID: clientMessageID,
-			Content:         content,
-			Phase:           phase,
-			ContinueSession: continueSession,
-			Kind:            "new",
-			Instruction:     content,
-			Ack:             desktopMemoryLine,
-			WaitKind:        desktopQueueWaitMemory,
-			Surface:         queueSurfaceFrom(ctx),
-			Secrets:         desktopSecretBag(ctx),
-		})
-		if qerr == nil {
-			return BotAdmission{Accepted: true, Queued: true, Position: pos, Ack: desktopMemoryLine, Kind: "new", ClientMessageID: clientMessageID}, nil
+		if pressed {
+			// A replay is the queue itself. Returning the error puts the item
+			// back instead of starting it or queueing a second copy.
+			if desktopReplay(ctx) || desktopQueueSuppressed(ctx) {
+				return BotAdmission{}, ErrDesktopMemory
+			}
+			pos, qerr := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
+				ClientMessageID: clientMessageID,
+				Content:         content,
+				Phase:           phase,
+				ContinueSession: continueSession,
+				Kind:            "new",
+				Instruction:     content,
+				Ack:             desktopMemoryLine,
+				WaitKind:        desktopQueueWaitMemory,
+				Surface:         queueSurfaceFrom(ctx),
+				Secrets:         desktopSecretBag(ctx),
+			})
+			if qerr == nil {
+				return BotAdmission{Accepted: true, Queued: true, Position: pos, Ack: desktopMemoryLine, Kind: "new", ClientMessageID: clientMessageID}, nil
+			}
 		}
 	}
 	// One non-terminal admit per user. The reserve is visible to the next
@@ -728,6 +760,9 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	releaseTurn, claim, busyErr := s.claimDesktopTurnPref(tenantID, userID, botID, clientMessageID, content, phase, continueSession)
 	if busyErr != nil {
 		traceBot(botID, "desktop_busy", busyErr, "dur_ms", traceMS(time.Since(pipelineStarted)))
+		if noDesktop && errors.Is(busyErr, ErrDesktopBusy) {
+			return BotAdmission{}, ErrNoDesktopTurn
+		}
 		if admit && errors.Is(busyErr, ErrDesktopBusy) && !desktopQueueSuppressed(ctx) && !hubStartedTurn(clientMessageID) {
 			pos, qerr := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
 				ClientMessageID: clientMessageID,
@@ -790,18 +825,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		fresh, token, tokenErr = s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	}
 	traceBot(botID, "owner_token", tokenErr, "dur_ms", traceMS(time.Since(step)))
-	if tokenErr != nil {
-		if nodeLinkOffline(tokenErr) && rec.Bots[index].NodeID != "" {
-			if desktopReplay(ctx) {
-				return BotAdmission{}, ErrNodeOffline
-			}
-			if parked, ok := s.parkOfflineNodeMessage(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession); ok {
-				return parked, nil
-			}
-		}
-		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
-		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
-		return BotAdmission{}, tokenErr
+	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, tokenErr); stop {
+		return admission, stopErr
 	}
 	instancePath := "/api/v1/instances/" + url.PathEscape(rec.Bots[index].InstanceID)
 	// Keep the rest of this instance and rewrite only the desktop owner.
@@ -812,10 +837,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	step = time.Now()
 	metadata, writeMetadata, metaErr := s.desktopIdentityMetadata(ctx, &fresh, &token, instancePath, userID, tenantID, rec.Bots[index])
 	traceBot(botID, "read_instance", metaErr, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
-	if metaErr != nil {
-		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
-		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
-		return BotAdmission{}, metaErr
+	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, metaErr); stop {
+		return admission, stopErr
 	}
 	step = time.Now()
 	// MaClawSrv treats any metadata body as a change: it rewrites the instance
@@ -826,9 +849,9 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"metadata": metadata,
 	}, nil); err != nil {
 		traceBot(botID, "patch_instance", err, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
-		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
-		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
-		return BotAdmission{}, err
+		if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, err); stop {
+			return admission, stopErr
+		}
 	} else {
 		traceBot(botID, "patch_instance", nil, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
 	}
@@ -838,10 +861,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"group", botLLMServiceGroupID,
 		"dur_ms", traceMS(time.Since(step)),
 	)
-	if llmErr != nil {
-		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
-		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
-		return BotAdmission{}, llmErr
+	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, llmErr); stop {
+		return admission, stopErr
 	}
 	// MCP and skills are not required for the turn. A missed push is retried
 	// on the next open; the tools read whatever MaClawSrv already has.
@@ -925,12 +946,16 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"timeout", traceYes(desktopCallTimedOut(callErr)),
 		"dur_ms", traceMS(time.Since(step)),
 	)
-	if nodeLinkOffline(callErr) && rec.Bots[index].NodeID != "" {
-		if desktopReplay(ctx) {
-			return BotAdmission{}, ErrNodeOffline
+	if callErr != nil {
+		admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, callErr)
+		if parked {
+			return admission, offlineErr
 		}
-		if parked, ok := s.parkOfflineNodeMessage(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession); ok {
-			return parked, nil
+		if offlineErr != nil {
+			if desktopReplay(ctx) {
+				return BotAdmission{}, offlineErr
+			}
+			callErr = offlineErr
 		}
 	}
 	// A 202 is the run id, not a finished command and not a timeout.
@@ -1013,6 +1038,12 @@ type desktopCommandBody struct {
 }
 
 func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novnc string, opened bool, body desktopCommandBody) (Reply, error) {
+	// A bot with no computer never owns a keyboard, a picture, or a hold.
+	// The sentence and any question still go back to the person.
+	if s.botSkipsDesktop(tenantID, botID) {
+		s.dropDesktopHoldOwnedBy(tenantID, s.desktopUserOf(tenantID, userID, botID), botID)
+		return noneDesktopSettle(body)
+	}
 	// Holds, keyboard and picture are the bot's own display's when it is
 	// isolated. The attention reason is keyed per bot and owner either way.
 	userID = s.desktopUserOf(tenantID, userID, botID)
@@ -1054,10 +1085,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		if body.Handoff {
 			reply.Handoff = true
 			reply.AttentionReason = reason
-			reply.NovncURL = s.desktopViewURL(tenantID, userID)
-			if reply.NovncURL == "" && novnc != "" {
-				reply.NovncURL = s.gateDesktopHandoff(novnc)
-			}
+			reply.NovncURL = s.novncOnThisComputer(tenantID, userID, botID, novnc)
 		} else if reason != "" {
 			s.noteDesktopAttention(tenantID, userID, botID, reason)
 			reply.AttentionReason = reason
@@ -1128,10 +1156,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		}
 		reply.Handoff = true
 		reply.AttentionReason = reason
-		reply.NovncURL = s.desktopViewURL(tenantID, userID)
-		if reply.NovncURL == "" && novnc != "" {
-			reply.NovncURL = s.gateDesktopHandoff(novnc)
-		}
+		reply.NovncURL = s.novncOnThisComputer(tenantID, userID, botID, novnc)
 	} else {
 		s.clearDesktopHeld(tenantID, userID, botID, body.Turn)
 		if reason != "" {
@@ -1144,6 +1169,53 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		}
 	}
 	s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
+	return reply, nil
+}
+
+// noneDesktopSettle is the reply for a bot that has no computer. It keeps
+// the sentence and any question, and leaves every desktop pin alone.
+func noneDesktopSettle(body desktopCommandBody) (Reply, error) {
+	if body.CallErr != nil {
+		return desktopSentenceReply(body), body.CallErr
+	}
+	text := strings.TrimSpace(body.Text)
+	sendToUser := ""
+	if body.Metadata != nil {
+		sendToUser = strings.TrimSpace(body.Metadata["send_to_user"])
+	}
+	ask := false
+	if body.Metadata != nil {
+		ask = strings.TrimSpace(body.Metadata["ask_user_question"]) != "" ||
+			strings.TrimSpace(body.Metadata["ask_user_secret_name"]) != "" ||
+			strings.TrimSpace(body.Metadata["send_to_user_kind"]) == "ask" ||
+			desktopTaskChoiceLine(body.Metadata["ask_user_options_json"]) != ""
+	}
+	quiet := desktopbot.SettleQuiet(desktopbot.SettleQuietInput{
+		Waiting:    body.Waiting,
+		Ask:        ask,
+		Failed:     strings.TrimSpace(body.Error) != "",
+		Text:       text,
+		SendToUser: sendToUser,
+	})
+	if quiet.Missed {
+		return Reply{}, fmt.Errorf("run ended without a result")
+	}
+	if quiet.Quiet {
+		return Reply{}, nil
+	}
+	if text == "" && strings.TrimSpace(body.Error) != "" {
+		text = strings.TrimSpace(body.Error)
+	}
+	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: sendToUser, Waiting: body.Waiting})
+	reply := Reply{Text: text, SendToUser: visible.Sentence, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
+	reply.TaskOutcome = desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey])
+	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser)
+	if meta := body.Metadata; meta != nil {
+		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
+		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
+		reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
+		reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
+	}
 	return reply, nil
 }
 
@@ -1421,7 +1493,7 @@ func (s *Service) HoldDesktop(ctx context.Context, tenantID, userID, instanceID 
 // user's browser. The person does not get the keyboard; that only happens
 // for a login handoff.
 func (s *Service) keepDesktopWithoutKeyboard(tenantID, userID, botID string, turn ...string) {
-	if s == nil {
+	if s == nil || s.botSkipsDesktop(tenantID, botID) {
 		return
 	}
 	botID = strings.TrimSpace(botID)
@@ -1560,7 +1632,7 @@ func (s *Service) StopDesktopIfIdle(ctx context.Context, tenantID, userID, insta
 }
 
 func (s *Service) noteDesktopHeld(tenantID, userID, botID string, turn ...string) {
-	if s == nil {
+	if s == nil || s.botSkipsDesktop(tenantID, botID) {
 		return
 	}
 	botID = strings.TrimSpace(botID)
@@ -1592,6 +1664,10 @@ func (s *Service) releaseDesktopKeyboard(tenantID, userID, botID string, turn ..
 	if s == nil {
 		return
 	}
+	if s.botSkipsDesktop(tenantID, botID) {
+		s.dropDesktopHoldOwnedBy(tenantID, userID, botID)
+		return
+	}
 	s.mu.Lock()
 	s.ensureDesktopHydrated(tenantID)
 	key := desktopViewKey(tenantID, userID)
@@ -1616,7 +1692,7 @@ func (s *Service) releaseDesktopKeyboard(tenantID, userID, botID string, turn ..
 }
 
 func (s *Service) restoreDesktopKeyboard(tenantID, userID, botID string, turn ...string) {
-	if s == nil {
+	if s == nil || s.botSkipsDesktop(tenantID, botID) {
 		return
 	}
 	s.mu.Lock()
@@ -1654,8 +1730,34 @@ func (s *Service) restoreDesktopKeyboard(tenantID, userID, botID string, turn ..
 	s.mu.Unlock()
 }
 
-func (s *Service) clearDesktopHeld(tenantID, userID, botID string, turn ...string) {
+// dropDesktopHoldOwnedBy removes a keyboard pin this bot still holds.
+// Another bot's pin on the same desktop is left in place. A bot with no
+// computer uses this to clear a leftover pin without taking a new one.
+func (s *Service) dropDesktopHoldOwnedBy(tenantID, userID, botID string) {
 	if s == nil {
+		return
+	}
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	if s.desktopHeld[key] != botID {
+		return
+	}
+	delete(s.desktopHeld, key)
+	delete(s.desktopAwaiting, key)
+	delete(s.desktopKeyboardTaken, key)
+	delete(s.desktopHoldTurn, key)
+	delete(s.desktopKeyboardTurn, key)
+	s.persistDesktopState(tenantID)
+}
+
+func (s *Service) clearDesktopHeld(tenantID, userID, botID string, turn ...string) {
+	if s == nil || s.botSkipsDesktop(tenantID, botID) {
 		return
 	}
 	s.mu.Lock()
@@ -1753,6 +1855,13 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 		if err := desktopQuotaAllows(rec, ownerUserID, departments); err != nil {
 			return Bot{}, err
 		}
+		// A cloud bot needs an assigned computer; a bot pinned to a LAN node
+		// carries its own desktop service.
+		if nodeID == "" && s.CloudDesktopAssigned != nil {
+			if err := s.CloudDesktopAssigned(ctx, tenantID, ownerUserID, departments); err != nil {
+				return Bot{}, err
+			}
+		}
 	}
 	meta := map[string]string{
 		"hub_bot":              "1",
@@ -1798,7 +1907,7 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 }
 
 func (s *Service) openDesktop(ctx context.Context, tenantID, userID, instanceID, botID string) (string, bool, error) {
-	if s == nil || s.Desktop == nil {
+	if s == nil || s.Desktop == nil || s.botSkipsDesktop(tenantID, botID) {
 		return "", false, nil
 	}
 	// Count this open before Open returns, and hold the user gate across the
@@ -1811,12 +1920,17 @@ func (s *Service) openDesktop(ctx context.Context, tenantID, userID, instanceID,
 	s.beginDesktopUse(tenantID, userID, instanceID)
 	s.releaseDesktopKeyboard(tenantID, userID, botID)
 	ctx = WithDesktopWakeReason(ctx, DesktopWakeBot)
+	if owner, _ := desktop.SplitDesktopUser(userID); strings.TrimSpace(botID) != "" {
+		if bot, ok := s.findOwnedBot(ctx, tenantID, owner, botID); ok {
+			ctx = desktoppool.WithComputer(ctx, bot.NodeID)
+		}
+	}
 	novnc, err := s.Desktop.Open(ctx, tenantID, userID)
 	if err != nil {
 		s.endDesktopUse(tenantID, userID, instanceID)
 		s.restoreDesktopKeyboard(tenantID, userID, botID)
 		gate.Unlock()
-		return "", false, fmt.Errorf("%w: %s", ErrSrv, err.Error())
+		return "", false, explainDesktopErr(err)
 	}
 	novnc = strings.TrimSpace(novnc)
 	if novnc != "" {
@@ -1830,11 +1944,24 @@ func (s *Service) stopDesktop(ctx context.Context, tenantID, userID string) erro
 	if s == nil {
 		return nil
 	}
-	s.ForgetDesktopView(tenantID, userID)
+	// An isolated bot display is not stopped at the end of a run. desktopd
+	// leaves it up and idle-stops it itself. Dropping the picture here is
+	// what makes the 电脑 tab draw sleep on a screen that is still on.
+	if _, bot := desktop.SplitDesktopUser(userID); bot != "" {
+		if s.Desktop == nil {
+			return nil
+		}
+		return s.Desktop.Stop(ctx, tenantID, userID)
+	}
 	if s.Desktop == nil {
+		s.ForgetDesktopView(tenantID, userID)
 		return nil
 	}
-	return s.Desktop.Stop(ctx, tenantID, userID)
+	if err := s.Desktop.Stop(ctx, tenantID, userID); err != nil {
+		return err
+	}
+	s.ForgetDesktopView(tenantID, userID)
+	return nil
 }
 
 // NoteDesktopView points the chat at the desktop MaClawSrv just opened.
@@ -1895,6 +2022,7 @@ func (s *Service) DesktopWatch(ctx context.Context, tenantID, userID, botID stri
 		return "", false, ErrNoDesktop
 	}
 	userID = desktopUserForBot(userID, rec.Bots[index])
+	s.dropPictureFromAnotherComputer(tenantID, userID, botID)
 	novnc := s.desktopViewURL(tenantID, userID)
 	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 }
@@ -1949,6 +2077,72 @@ func (s *Service) DesktopViewRaw(tenantID, userID string) string {
 	s.ensureDesktopHydrated(tenantID)
 	defer s.mu.Unlock()
 	return s.desktopView[desktopViewKey(tenantID, userID)].raw
+}
+
+// dropPictureFromAnotherComputer forgets a noVNC page that was opened on a
+// different computer than this bot uses. A cloud bot that was viewed after
+// a local computer was attached kept that local page, and a later look
+// showed it again instead of the cloud desktop.
+func (s *Service) dropPictureFromAnotherComputer(tenantID, desktopUser, botID string) {
+	if s == nil || strings.TrimSpace(s.DesktopViewRaw(tenantID, desktopUser)) == "" {
+		return
+	}
+	if s.desktopPictureForBot(tenantID, desktopUser, botID) {
+		return
+	}
+	s.dropDesktopPicture(tenantID, desktopUser)
+}
+
+func (s *Service) desktopPictureForBot(tenantID, desktopUser, botID string) bool {
+	raw := s.DesktopViewRaw(tenantID, desktopUser)
+	if strings.TrimSpace(raw) == "" {
+		return true
+	}
+	rec, err := s.load(context.Background(), tenantID)
+	if err != nil {
+		return true
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 {
+		return true
+	}
+	return desktopPictureMatchesComputer(raw, rec.Bots[index].NodeID)
+}
+
+func (s *Service) dropDesktopPicture(tenantID, userID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	if s.desktopView == nil {
+		return
+	}
+	if _, ok := s.desktopView[key]; !ok {
+		return
+	}
+	delete(s.desktopView, key)
+	s.persistDesktopState(tenantID)
+}
+
+func (s *Service) novncOnThisComputer(tenantID, desktopUser, botID, openedRaw string) string {
+	s.dropPictureFromAnotherComputer(tenantID, desktopUser, botID)
+	if url := s.desktopViewURL(tenantID, desktopUser); url != "" {
+		return url
+	}
+	openedRaw = strings.TrimSpace(openedRaw)
+	if openedRaw == "" {
+		return ""
+	}
+	rec, err := s.load(context.Background(), tenantID)
+	if err == nil {
+		if index := indexOf(rec.Bots, botID); index >= 0 && !desktopPictureMatchesComputer(openedRaw, rec.Bots[index].NodeID) {
+			return ""
+		}
+	}
+	return s.gateDesktopHandoff(openedRaw)
 }
 
 func (s *Service) desktopViewURL(tenantID, userID string) string {
@@ -2040,10 +2234,10 @@ type GrantSubject struct {
 }
 
 // FilterGranted keeps the subjects 开通范围 covers, in the same order.
-// A global grant keeps every id. With no grants the feature is off, so the
-// result is empty. A nil service or a failed settings read also returns nil:
-// the check-desktop list must not offer a user the Bot entry would hide.
-// Blank ids are dropped, and a repeated id is kept once.
+// A global grant keeps every id. With no grants the feature is open to
+// everyone, so every subject id is kept. A nil service or a failed settings
+// read also returns nil: the check-desktop list must not offer a user the
+// Bot entry would hide. Blank ids are dropped, and a repeated id is kept once.
 func (s *Service) FilterGranted(ctx context.Context, tenantID string, subjects []GrantSubject) []string {
 	if s == nil || len(subjects) == 0 {
 		return nil
@@ -2054,9 +2248,7 @@ func (s *Service) FilterGranted(ctx context.Context, tenantID string, subjects [
 		return nil
 	}
 	global, users, depts := indexGrants(rec.Grants)
-	if !global && len(users) == 0 && len(depts) == 0 {
-		return nil
-	}
+	open := !global && len(users) == 0 && len(depts) == 0
 	out := make([]string, 0, len(subjects))
 	seen := map[string]bool{}
 	var memo *parentMemo
@@ -2072,7 +2264,7 @@ func (s *Service) FilterGranted(ctx context.Context, tenantID string, subjects [
 			continue
 		}
 		seen[id] = true
-		if global || users[id] {
+		if open || global || users[id] {
 			out = append(out, id)
 			continue
 		}

@@ -8,8 +8,16 @@ import 'bot_models.dart';
 
 /// 与桌面 GUI botAppearance.ts 相同的调色板与形状集。
 const botColors = [
-  '#16a34a', '#2563eb', '#7c3aed', '#db2777', '#ea580c',
-  '#ca8a04', '#0891b2', '#dc2626', '#4f46e5', '#475569',
+  '#16a34a',
+  '#2563eb',
+  '#7c3aed',
+  '#db2777',
+  '#ea580c',
+  '#ca8a04',
+  '#0891b2',
+  '#dc2626',
+  '#4f46e5',
+  '#475569',
 ];
 const botShapes = ['blob', 'cloud', 'leaf', 'square', 'pill', 'circle'];
 
@@ -19,13 +27,13 @@ Color hexColor(String hex) {
 }
 
 String botShapeLabel(String shape) => switch (shape) {
-      'blob' => '团子',
-      'cloud' => '云朵',
-      'leaf' => '叶子',
-      'square' => '方块',
-      'pill' => '胶囊',
-      _ => '圆形',
-    };
+  'blob' => '团子',
+  'cloud' => '云朵',
+  'leaf' => '叶子',
+  'square' => '方块',
+  'pill' => '胶囊',
+  _ => '圆形',
+};
 
 /// Avatar honouring the bot's configured color/shape, falling back to a
 /// deterministic palette color by id.
@@ -48,10 +56,7 @@ class BotAvatar extends StatelessWidget {
 
   Color _color() {
     if (bot.color.isNotEmpty) {
-      final parsed = int.tryParse(
-        bot.color.replaceFirst('#', ''),
-        radix: 16,
-      );
+      final parsed = int.tryParse(bot.color.replaceFirst('#', ''), radix: 16);
       if (parsed != null) return Color(0xFF000000 | parsed);
     }
     return _palette[bot.id.hashCode.abs() % _palette.length];
@@ -150,10 +155,7 @@ class EmptyState extends StatelessWidget {
                 ),
               ),
             ],
-            if (action != null) ...[
-              const SizedBox(height: 16),
-              action!,
-            ],
+            if (action != null) ...[const SizedBox(height: 16), action!],
           ],
         ),
       ),
@@ -191,9 +193,7 @@ class StateChip extends StatelessWidget {
 /// Bare http(s) URLs in free text. The char class excludes whitespace,
 /// brackets and CJK/ASCII punctuation that almost always belongs to the
 /// surrounding prose rather than the link itself.
-final _bareUrlPattern = RegExp(
-  "https?://[^\\s<>\"'“”‘’（）【】《》\\[\\]`^|]+",
-);
+final _bareUrlPattern = RegExp("https?://[^\\s<>\"'“”‘’（）【】《》\\[\\]`^|]+");
 
 /// Sentence punctuation stripped from the END of a matched URL — it is prose,
 /// not part of the link (`,` `;` `:` etc. remain legal mid-URL).
@@ -206,8 +206,10 @@ void openExternalUrl(String url) {
   if (uri == null) return;
   if (uri.scheme != 'http' && uri.scheme != 'https') return;
   unawaited(
-    launchUrl(uri, mode: LaunchMode.externalApplication)
-        .catchError((_) => false),
+    launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    ).catchError((_) => false),
   );
 }
 
@@ -215,8 +217,7 @@ void openExternalUrl(String url) {
 /// prose tail outside the anchor.
 (String, String) _splitUrlTail(String url) {
   var tail = '';
-  while (url.isNotEmpty &&
-      _trailingUrlPunct.contains(url[url.length - 1])) {
+  while (url.isNotEmpty && _trailingUrlPunct.contains(url[url.length - 1])) {
     tail = url[url.length - 1] + tail;
     url = url.substring(0, url.length - 1);
   }
@@ -305,7 +306,8 @@ class _LinkifiedTextState extends State<LinkifiedText> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final linkStyle = widget.linkStyle ??
+    final linkStyle =
+        widget.linkStyle ??
         (widget.style ?? const TextStyle()).copyWith(
           color: theme.colorScheme.primary,
           decoration: TextDecoration.underline,
@@ -325,9 +327,7 @@ class _LinkifiedTextState extends State<LinkifiedText> {
           ..onTap = () => openExternalUrl(url);
         _recognizers.add(recognizer);
         spans
-          ..add(
-            TextSpan(text: url, style: linkStyle, recognizer: recognizer),
-          )
+          ..add(TextSpan(text: url, style: linkStyle, recognizer: recognizer))
           ..add(TextSpan(text: tail));
       }
       cursor = m.end;
@@ -344,10 +344,10 @@ class _LinkifiedTextState extends State<LinkifiedText> {
 }
 
 Color runStatusColor(String status) => switch (status.toLowerCase()) {
-      'running' || 'accepted' || 'pending' => const Color(0xFF3FA7A0),
-      'paused' => const Color(0xFFD97B42),
-      'waiting_for_user' || 'waiting' => const Color(0xFFC15B8F),
-      'failed' || 'error' => const Color(0xFFD64545),
-      'done' || 'finished' || 'completed' => const Color(0xFF6AA84F),
-      _ => Colors.grey,
-    };
+  'running' || 'accepted' || 'pending' => const Color(0xFF3FA7A0),
+  'paused' => const Color(0xFFD97B42),
+  'waiting_for_user' || 'waiting' => const Color(0xFFC15B8F),
+  'failed' || 'error' => const Color(0xFFD64545),
+  'done' || 'finished' || 'completed' => const Color(0xFF6AA84F),
+  _ => Colors.grey,
+};

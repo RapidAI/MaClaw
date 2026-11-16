@@ -596,7 +596,7 @@ func (w *windowsFloatingWindow) MoveTo(x, y int) {
 		return
 	}
 	sz := w.currentSize()
-	procMoveWindowProc.Call(hwnd, uintptr(x), uintptr(y), uintptr(sz), uintptr(sz), 1)
+	movePetWindow(hwnd, x, y, sz)
 	w.mu.Lock()
 	w.windowStartX = x
 	w.windowStartY = y
@@ -843,7 +843,7 @@ func (w *windowsFloatingWindow) ApplyPetRearing(variant string, windowSize int, 
 	w.mu.Unlock()
 	allowed := dutyCueAllowed(app, sound, quiet, reduced)
 	if resized && hwnd != 0 {
-		procMoveWindowProc.Call(hwnd, uintptr(x), uintptr(y), uintptr(windowSize), uintptr(windowSize), 1)
+		movePetWindow(hwnd, x, y, windowSize)
 	}
 	if cue != "" {
 		w.rememberDutyCue(cue)
@@ -914,8 +914,13 @@ func (w *windowsFloatingWindow) finishPetDrag() {
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	finalX := w.windowStartX + int(pt.X-w.dragStartX)
 	finalY := w.windowStartY + int(pt.Y-w.dragStartY)
+	w.mu.Lock()
 	w.windowStartX = finalX
 	w.windowStartY = finalY
+	// The drop is a new place. The next patrol starts at the nearest point
+	// of that place instead of the spot she was walking before the grab.
+	w.petRoam.EdgeOn = false
+	w.mu.Unlock()
 	app := w.app
 	go func() {
 		if app == nil {
@@ -991,6 +996,25 @@ func (w *windowsFloatingWindow) triggerCharacterEvent(event string) {
 		w.mu.Unlock()
 	}
 	if renderer != nil && renderer.TriggerEvent(event, time.Now().UnixMilli()) {
+		w.mu.Lock()
+		w.renderDirty = true
+		w.mu.Unlock()
+	}
+}
+
+// petDragBraceClip is the picked-up pose. The paint loop holds it for the
+// whole drag and does not restart it while it is already playing.
+const petDragBraceClip = "react_drag_brace"
+
+func (w *windowsFloatingWindow) holdPetDragBrace(skin, variant string) {
+	if w == nil {
+		return
+	}
+	renderer := w.ensureCharacterRenderer(skin, variant)
+	if renderer == nil || renderer.PlayingBody() == petDragBraceClip {
+		return
+	}
+	if renderer.TriggerClip(petDragBraceClip, time.Now().UnixMilli()) {
 		w.mu.Lock()
 		w.renderDirty = true
 		w.mu.Unlock()
@@ -1995,12 +2019,29 @@ func (w *windowsFloatingWindow) petFacesLeft() bool {
 	return w.petFaceLeft
 }
 
+// petMainWindowEdge reports the visible main window that is not covering its
+// monitor, and the work area she must stay inside while walking that edge.
+// A nil hook, a hidden window, and fullscreen leave the pet roaming.
+var petMainWindowEdge = mainWindowPatrolRect
+
+// movePetWindow moves the pet. Coordinates go through screenPositionParams
+// so a display left of the primary keeps its negative origin.
+func movePetWindow(hwnd uintptr, x, y, sz int) {
+	if hwnd == 0 || sz <= 0 {
+		return
+	}
+	px, py := screenPositionParams(x, y)
+	procMoveWindowProc.Call(hwnd, px, py, uintptr(sz), uintptr(sz), 1)
+}
+
 // stepPetLocomotion applies one clip's travel vector to the floating window.
-// vx and vy are design-canvas pixels per millisecond. The host keeps the
-// speed and changes heading, so the same walk can go across, up, down, or
-// on a diagonal. A pinned pet keeps the clock and drops the speed, so the
-// pose can keep walking in place and unlocking does not jump. The window
-// mutex is not held across MoveWindow.
+// vx and vy are design-canvas pixels per millisecond. While the main window
+// is showing and is not fullscreen, the same speed walks back and forth on
+// that window's outer edge. Otherwise the host keeps the speed and changes
+// heading, so the same walk can go across, up, down, or on a diagonal. A
+// pinned pet keeps the clock and drops the speed, so the pose can keep
+// walking in place and unlocking does not jump. The window mutex is not
+// held across MoveWindow.
 func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
 	if w == nil || sz <= 0 {
 		return
@@ -2013,6 +2054,16 @@ func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
 	}
 	w.petTravelAt = now
 	vx, vy = petScreenTravelVelocity(vx, vy, w.petPositionLocked)
+	// A still pose, a pin, and a non-idle duty have nothing to ask the window.
+	// Looking it up here enumerated every top-level window on each paint
+	// while the main window was hidden, and a zero speed must not clear the
+	// patrol memory either.
+	speed := math.Hypot(vx, vy)
+	if speed == 0 || math.IsNaN(speed) {
+		w.petRoam.RemX, w.petRoam.RemY = 0, 0
+		w.mu.Unlock()
+		return
+	}
 	state := w.petRoam
 	state.FaceLeft = w.petFaceLeft
 	x := w.windowStartX
@@ -2022,15 +2073,13 @@ func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
 	if hwnd == 0 {
 		return
 	}
-	maxX := getScreenWidth() - sz
-	if maxX < 0 {
-		maxX = 0
+	var edge, work petpack.WindowRect
+	edgeOK := false
+	if petMainWindowEdge != nil {
+		edge, work, edgeOK = petMainWindowEdge(hwnd)
 	}
-	maxY := getScreenHeight() - sz
-	if maxY < 0 {
-		maxY = 0
-	}
-	next, nx, ny := petpack.StepDesktopRoam(state, vx, vy, float64(sz)/256, dt, x, y, 0, maxX, 0, maxY, now)
+	minX, maxX, minY, maxY := petTravelBox(getScreenWidth(), getScreenHeight(), sz, work, edgeOK)
+	next, nx, ny := petpack.StepPetTravel(state, vx, vy, float64(sz)/256, dt, x, y, sz, minX, maxX, minY, maxY, now, edge, edgeOK)
 	w.mu.Lock()
 	w.petRoam = next
 	w.petFaceLeft = next.FaceLeft
@@ -2038,7 +2087,7 @@ func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
 	if nx == x && ny == y {
 		return
 	}
-	procMoveWindowProc.Call(hwnd, uintptr(nx), uintptr(ny), uintptr(sz), uintptr(sz), 1)
+	movePetWindow(hwnd, nx, ny, sz)
 	w.mu.Lock()
 	w.windowStartX = nx
 	w.windowStartY = ny
@@ -2167,6 +2216,7 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petMotionEnabled := w.petMotionEnabled
 	petMotionSound := w.petMotionSound
 	petDragging := w.dragging
+	petDragMoved := w.dragMoved
 	playPetSound := false
 	if hwnd != 0 && base != nil && distMap != nil && w.petEnabled && w.petMotionEnabled && petMotionSoundHeard(petMotionSound, w.petQuietMode, w.petReducedMotion, w.petRuntimeState) {
 		bucket := int(math.Floor(w.haloPhase/(2*math.Pi)*4)) % 4
@@ -2243,6 +2293,12 @@ func (w *windowsFloatingWindow) renderFrame() {
 
 	frame := image.NewNRGBA(image.Rect(0, 0, sz, sz))
 	if petEnabled {
+		// The brace clip is long, and a task cue can still replace it. Put the
+		// picked-up pose back only when it is no longer the body, so a frame
+		// does not restart the lift from the ground.
+		if petDragging && petDragMoved && !staticOnly {
+			w.holdPetDragBrace(petSkin, petVariant)
+		}
 		petScale := 1.0
 		petXOffset := 0.0
 		petYOffset := 0.0
@@ -2573,6 +2629,12 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			if w.petHoverDue(time.Now()) {
 				w.notePetInteraction()
 				w.triggerCharacterEvent("hover")
+				// The rearing save writes sqlite. Keep that off this thread.
+				// The same clock that blocks a second hover also blocks a
+				// second tick, and the tick is not a click.
+				if app := w.app; app != nil {
+					go app.creditDesktopPetHover()
+				}
 			}
 			return 0
 		}
@@ -2591,7 +2653,7 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		newX := w.windowStartX + int(dx)
 		newY := w.windowStartY + int(dy)
 		sz := w.currentSize()
-		procMoveWindowProc.Call(hwnd, uintptr(newX), uintptr(newY), uintptr(sz), uintptr(sz), 1)
+		movePetWindow(hwnd, newX, newY, sz)
 		return 0
 
 	case wmCapturechanged:

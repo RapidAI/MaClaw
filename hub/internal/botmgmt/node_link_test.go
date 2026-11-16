@@ -244,6 +244,7 @@ func TestNodeSrvGetsItsOwnConnectionCredential(t *testing.T) {
 	}))
 	defer nodeSrv.Close()
 	svc, settings := newStubService(nodeSrv)
+	useDirectNodeDial(svc)
 	seedRecord(t, settings, "tenant-a", record{
 		BaseURL: "http://public.example", AccessToken: "public-access", AdminSecret: "public-admin",
 		NodeLinks: []nodeLink{{NodeID: "node-1", BaseURL: nodeSrv.URL, AdminSecret: "node-admin"}},
@@ -268,6 +269,100 @@ func TestNodeSrvGetsItsOwnConnectionCredential(t *testing.T) {
 	}
 	if len(hits) != before {
 		t.Fatalf("second provision called the node again: %v", hits[before:])
+	}
+}
+
+func TestPinnedOwnerCloudBotUsesPublicSrv(t *testing.T) {
+	var publicHits, nodeHits []string
+	serve := func(hits *[]string, token string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			*hits = append(*hits, r.Method+" "+r.URL.Path)
+			if r.URL.Path == "/api/v1/auth/token" {
+				_, _ = io.WriteString(w, `{"access_token":"`+token+`","principal":{"user_id":"u-alice"}}`)
+				return
+			}
+			if strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") != token {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		}
+	}
+	publicSrv := httptest.NewServer(serve(&publicHits, "public-token"))
+	defer publicSrv.Close()
+	nodeSrv := httptest.NewServer(serve(&nodeHits, "node-token"))
+	defer nodeSrv.Close()
+
+	svc, settings := newStubService(publicSrv)
+	useDirectNodeDial(svc)
+	alice := ownerPrincipal{HubUserID: "alice", TenantID: "t1", UserID: "u-alice", APIKey: "ak-alice", APISecret: "sk-alice"}
+	seedRecord(t, settings, "tenant-a", record{
+		BaseURL: publicSrv.URL, AccessToken: "public-access", AdminSecret: "public-admin",
+		Grants:     []Grant{{ID: "g-a", Scope: ScopeUser, TargetID: "alice"}},
+		Principals: []ownerPrincipal{alice},
+		NodeLinks: []nodeLink{{
+			NodeID: "node-1", BaseURL: nodeSrv.URL, AdminSecret: "node-admin",
+			Principals: []ownerPrincipal{alice},
+		}},
+		OwnerNode: map[string]string{"alice": "node-1"},
+		Bots: []Bot{
+			{ID: "bot-cloud", Name: "cloud", InstanceID: "inst-cloud", OwnerUserID: "alice"},
+			{ID: "bot-local", Name: "local", InstanceID: "inst-local", OwnerUserID: "alice", NodeID: "node-1"},
+		},
+	})
+	ctx := context.Background()
+	pinned, _, err := svc.ownerToken(ctx, "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned.DialNode != "node-1" {
+		t.Fatalf("pin dial = %q", pinned.DialNode)
+	}
+	byInstance, instToken, err := svc.tokenForBot(ctx, "tenant-a", "alice", "inst-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byInstance.DialNode != "node-1" || instToken != "node-token" {
+		t.Fatalf("instance lookup dial=%q token=%q", byInstance.DialNode, instToken)
+	}
+	if _, ok := ownedBot(record{Bots: []Bot{{ID: "bot-local", InstanceID: "inst-local", OwnerUserID: "alice", NodeID: "node-1"}}}, "bob", "inst-local"); ok {
+		t.Fatal("another owner's instance was accepted")
+	}
+	cloud, token, err := svc.tokenForBot(ctx, "tenant-a", "alice", "bot-cloud")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloud.DialNode != "" || token != "public-token" {
+		t.Fatalf("cloud token dial=%q token=%q", cloud.DialNode, token)
+	}
+	var view map[string]any
+	if err := svc.authAsOwner(ctx, "tenant-a", "alice", &cloud, &token, http.MethodGet, "/api/v1/instances/inst-cloud", nil, &view); err != nil {
+		t.Fatal(err)
+	}
+	if !containsHit(publicHits, "GET /api/v1/instances/inst-cloud") {
+		t.Fatalf("public srv did not serve the cloud bot: %v", publicHits)
+	}
+	if containsHit(nodeHits, "GET /api/v1/instances/inst-cloud") {
+		t.Fatalf("node srv was asked for the cloud bot: %v", nodeHits)
+	}
+	if err := svc.DeleteBot(ctx, "tenant-a", "bot-cloud"); err != nil {
+		t.Fatal(err)
+	}
+	if !containsHit(publicHits, "DELETE /api/v1/instances/inst-cloud") {
+		t.Fatalf("public srv did not delete the cloud bot: %v", publicHits)
+	}
+	if containsHit(nodeHits, "DELETE /api/v1/instances/inst-cloud") {
+		t.Fatalf("node srv was asked to delete the cloud bot: %v", nodeHits)
+	}
+	if err := svc.DeleteBot(ctx, "tenant-a", "bot-local"); err != nil {
+		t.Fatal(err)
+	}
+	if !containsHit(nodeHits, "DELETE /api/v1/instances/inst-local") {
+		t.Fatalf("node srv did not delete the local bot: %v", nodeHits)
+	}
+	if containsHit(publicHits, "DELETE /api/v1/instances/inst-local") {
+		t.Fatalf("public srv was asked to delete the local bot: %v", publicHits)
 	}
 }
 
@@ -307,4 +402,37 @@ func hitCount(hits []string, want string) int {
 		}
 	}
 	return n
+}
+
+func TestUnpinNodeExceptKeepsTheNewOwnerOnly(t *testing.T) {
+	publicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeNodeStub(w, r, "public-token")
+	}))
+	defer publicSrv.Close()
+
+	svc, settings := newStubService(publicSrv)
+	seedRecord(t, settings, "tenant-a", record{
+		BaseURL:     publicSrv.URL,
+		AccessToken: "public-access",
+		AdminSecret: "public-admin",
+		OwnerNode: map[string]string{
+			"alice": "node-1",
+			"carol": "node-1",
+			"bob":   "node-2",
+		},
+	})
+	ctx := context.Background()
+	if err := svc.UnpinNodeExcept(ctx, "tenant-a", "node-1", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	stored := storedRecord(t, settings, "tenant-a")
+	if _, ok := stored.OwnerNode["alice"]; ok {
+		t.Fatalf("alice still pinned to the exclusive node: %+v", stored.OwnerNode)
+	}
+	if stored.OwnerNode["carol"] != "node-1" {
+		t.Fatalf("the new owner's pin was dropped: %+v", stored.OwnerNode)
+	}
+	if stored.OwnerNode["bob"] != "node-2" {
+		t.Fatalf("a foreign node pin was touched: %+v", stored.OwnerNode)
+	}
 }

@@ -15,8 +15,9 @@ import (
 // is the owner's user id, BotUserSep, and the bot id. MaClawSrv and Hub key
 // their per-desktop state (runs, holds, views, handoffs) by that string, so
 // two bots of one person never share a lock or a picture. Hub resolves the
-// Docker service by the owner part, and desktopd splits it again: the
-// container is the owner's, the display is the bot's.
+// Docker service from the bot: a cloud bot stays on the cloud computer, a
+// local bot stays on that node's computer. desktopd splits the user again:
+// the container is the owner's, the display is the bot's.
 const BotUserSep = "::desk::"
 
 // BotDesktopModeIsolated is the per-bot setting that gives a bot its own display.

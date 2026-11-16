@@ -109,7 +109,10 @@ class AuthApi {
         ? '/api/mobile/auth/phone/verify-and-start'
         : '/api/enroll/email/verify-and-start';
     final body = <String, dynamic>{
-      if (isPhone) 'phone_number': request.identity else 'email': request.identity,
+      if (isPhone)
+        'phone_number': request.identity
+      else
+        'email': request.identity,
       'verify_code': code.trim(),
       'machine_name': machineName,
       'platform': 'mobile',
@@ -151,8 +154,7 @@ class AuthApi {
       hubId: hub.hubId,
       hubCenterUrl: request.hubCenterUrl,
       tenantId: (data['tenant_id'] ?? hub.tenantId).toString().trim(),
-      tenantName:
-          (data['tenant_name'] ?? hub.tenantName).toString().trim(),
+      tenantName: (data['tenant_name'] ?? hub.tenantName).toString().trim(),
       userId: (data['user_id'] ?? '').toString().trim(),
       email: (data['email'] ?? (isPhone ? '' : request.identity))
           .toString()
@@ -253,12 +255,11 @@ class AuthApi {
             else
               'email': identity,
           },
-          options: Options(
-            headers: {'X-MaClaw-HubCenter-URL': hubCenter},
-          ),
+          options: Options(headers: {'X-MaClaw-HubCenter-URL': hubCenter}),
         );
-        final result =
-            EntryResolveResult.fromJson(response.data ?? const <String, dynamic>{});
+        final result = EntryResolveResult.fromJson(
+          response.data ?? const <String, dynamic>{},
+        );
         final hub = result.selectedHub;
         if (hub == null || hub.baseUrl.isEmpty) {
           throw HubApiException(
@@ -274,7 +275,9 @@ class AuthApi {
         lastError = error;
       }
     }
-    throw hubExceptionFrom(lastError ?? const HubApiException('NO_HUB', '无法连接 HubCenter'));
+    throw hubExceptionFrom(
+      lastError ?? const HubApiException('NO_HUB', '无法连接 HubCenter'),
+    );
   }
 
   String _normalizeEmail(String raw) {

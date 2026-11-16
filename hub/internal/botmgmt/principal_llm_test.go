@@ -106,6 +106,7 @@ func newPrincipalLLMFixture(t *testing.T, issuer OwnerLLMIssuer, rec record) (*S
 	}
 	svc := NewService(settings)
 	svc.HTTP = srv.Client()
+	useDirectNodeDial(svc)
 	svc.Now = func() time.Time { return time.Date(2026, 10, 9, 3, 0, 0, 0, time.UTC) }
 	svc.OwnerLLM = issuer
 	return svc, recorder

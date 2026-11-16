@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -545,6 +546,58 @@ func TestHubToolFileReadStaysOnTheNode(t *testing.T) {
 	})
 	if err != nil || out.Text != "notes" || localAction != "read" || localAuth != "" || hubBodies != 1 {
 		t.Fatalf("out=%+v action=%q auth=%q hub=%d err=%v", out, localAction, localAuth, hubBodies, err)
+	}
+}
+
+func TestLargeFileWriteStaysOffTheHubBody(t *testing.T) {
+	marker := "FILEBODY-" + strings.Repeat("x", localFileProbeBytes)
+	var sawMarker bool
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		text, _ := in["content"].(string)
+		sawMarker = strings.Contains(text, "FILEBODY-")
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "wrote"})
+	}))
+	defer local.Close()
+	var hubBodies []string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		hubBodies = append(hubBodies, string(raw))
+		if r.Header.Get("X-Maclaw-Local-Probe") != "1" {
+			t.Errorf("hub saw the write before a probe")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket"})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	got, err := client.File(context.Background(), "tenant-a", "alice", "write", "/home/desktop/a.txt", marker, "", "")
+	if err != nil || got != "wrote" || !sawMarker || len(hubBodies) != 1 || strings.Contains(hubBodies[0], "FILEBODY-") {
+		t.Fatalf("got=%q marker=%v hub=%d err=%v", got, sawMarker, len(hubBodies), err)
+	}
+
+	publicBodies := 0
+	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicBodies++
+		raw, _ := io.ReadAll(r.Body)
+		if publicBodies == 1 {
+			if r.Header.Get("X-Maclaw-Local-Probe") != "1" || strings.Contains(string(raw), "FILEBODY-") {
+				t.Errorf("first request carried the file: %s", raw)
+			}
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"LOCAL_UNAVAILABLE","message":"local desktop path is not available"}`))
+			return
+		}
+		if r.Header.Get("X-Maclaw-Skip-Local") != "1" || !strings.Contains(string(raw), "FILEBODY-") {
+			t.Errorf("second request did not carry the file")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "stored"})
+	}))
+	defer public.Close()
+	publicClient := &desktopHubClient{baseURL: public.URL, token: "hub-token", http: public.Client()}
+	got, err = publicClient.File(context.Background(), "tenant-a", "alice", "write", "/home/desktop/a.txt", marker, "", "")
+	if err != nil || got != "stored" || publicBodies != 2 {
+		t.Fatalf("public got=%q bodies=%d err=%v", got, publicBodies, err)
 	}
 }
 

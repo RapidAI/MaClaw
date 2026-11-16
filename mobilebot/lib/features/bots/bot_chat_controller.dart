@@ -9,8 +9,6 @@ import 'bot_api.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
 
-
-
 class ChatState {
   final String botId;
   final List<ChatMessage> messages;
@@ -40,17 +38,15 @@ class ChatState {
     String? Function()? activeRunId,
     String? error,
     String? continueThread,
-  }) =>
-      ChatState(
-        botId: botId,
-        messages: messages ?? this.messages,
-        loadingHistory: loadingHistory ?? this.loadingHistory,
-        sending: sending ?? this.sending,
-        activeRunId:
-            activeRunId != null ? activeRunId() : this.activeRunId,
-        error: error ?? this.error,
-        continueThread: continueThread ?? this.continueThread,
-      );
+  }) => ChatState(
+    botId: botId,
+    messages: messages ?? this.messages,
+    loadingHistory: loadingHistory ?? this.loadingHistory,
+    sending: sending ?? this.sending,
+    activeRunId: activeRunId != null ? activeRunId() : this.activeRunId,
+    error: error ?? this.error,
+    continueThread: continueThread ?? this.continueThread,
+  );
 }
 
 /// One bot's chat: history from the shared journal, sends via the messages
@@ -193,8 +189,10 @@ class BotChatController extends Notifier<ChatState> {
   /// live position and clears once the message leaves the queue
   /// (running/done/missing all mean it is no longer waiting).
   Future<void> _refreshQueued() async {
-    final parked =
-        state.messages.where((m) => m.queued && m.isUser).take(3).toList();
+    final parked = state.messages
+        .where((m) => m.queued && m.isUser)
+        .take(3)
+        .toList();
     for (final msg in parked) {
       try {
         final view = await _api.queueStatus(state.botId, msg.id);
@@ -209,6 +207,27 @@ class BotChatController extends Notifier<ChatState> {
               queuePosition: view.position,
               queueHeld: view.held || view.state == 'held',
             );
+          case 'gave_up':
+            // The message never started a run, so the journal will not
+            // deliver a reply. Show the reason Hub stored on the queue.
+            final outcome = view.outcome.trim();
+            messages[index] = messages[index].copyWith(
+              queued: false,
+              queuePosition: 0,
+              queueHeld: false,
+            );
+            final replyId = '${msg.id}:gave-up';
+            if (outcome.isNotEmpty &&
+                !messages.any((m) => m.id == replyId)) {
+              final reply = ChatMessage(
+                id: replyId,
+                role: 'assistant',
+                content: outcome,
+                at: DateTime.now(),
+              );
+              messages.add(reply);
+              _writeProjection(reply);
+            }
           default:
             messages[index] = messages[index].copyWith(
               queued: false,
@@ -239,13 +258,14 @@ class BotChatController extends Notifier<ChatState> {
   /// A still-pending bubble older than the reply wait was orphaned — the
   /// run that would settle it died (app killed, reply lost to another
   /// channel) and no answer is coming. Mirrors the desktop side.
-  bool _isOrphanedPending(ChatMessage m, int nowMs) => pendingReplyIsStale(
-      pending: m.pending, id: m.id, at: m.at, nowMs: nowMs);
+  bool _isOrphanedPending(ChatMessage m, int nowMs) =>
+      pendingReplyIsStale(pending: m.pending, id: m.id, at: m.at, nowMs: nowMs);
 
   /// Merge journal entries into the transcript (mirrors desktopBotSync):
   /// upsert by id in created order, patch merges flags, deleted drops it.
   void _mergeEntries(List<ConversationEntry> entries, {bool replace = false}) {
-    final ordered = [...entries]..sort((a, b) {
+    final ordered = [...entries]
+      ..sort((a, b) {
         final byCreated = _entryDisplaySeq(a).compareTo(_entryDisplaySeq(b));
         return byCreated != 0 ? byCreated : a.seq.compareTo(b.seq);
       });
@@ -276,7 +296,8 @@ class BotChatController extends Notifier<ChatState> {
         }
         continue;
       }
-      final isPatch = data['patch'] == true ||
+      final isPatch =
+          data['patch'] == true ||
           (data.keys.length <= 3 &&
               (data.containsKey('askResolved') ||
                   data.containsKey('optionsUsed')));
@@ -331,12 +352,14 @@ class BotChatController extends Notifier<ChatState> {
             : '';
         final twin = (requestId.isEmpty && runId.isEmpty)
             ? -1
-            : messages.indexWhere((m) =>
-                (runId.isNotEmpty &&
-                    m.role == 'assistant' &&
-                    (m.runId == runId ||
-                        m.requestId == 'desktop-bot-deliver-$runId')) ||
-                (requestId.isNotEmpty && m.requestId == requestId));
+            : messages.indexWhere(
+                (m) =>
+                    (runId.isNotEmpty &&
+                        m.role == 'assistant' &&
+                        (m.runId == runId ||
+                            m.requestId == 'desktop-bot-deliver-$runId')) ||
+                    (requestId.isNotEmpty && m.requestId == requestId),
+              );
         if (twin >= 0) {
           final current = messages[twin];
           var next = current;
@@ -346,8 +369,7 @@ class BotChatController extends Notifier<ChatState> {
           }
           // Adopt the fetch keys the local copy lacks — a synced line can
           // carry attachment ids for media the local reply never staged.
-          if (next.attachmentIds.isEmpty &&
-              incoming.attachmentIds.isNotEmpty) {
+          if (next.attachmentIds.isEmpty && incoming.attachmentIds.isNotEmpty) {
             next = next.copyWith(attachmentIds: incoming.attachmentIds);
           }
           if (next.runId.isEmpty && incoming.runId.isNotEmpty) {
@@ -414,14 +436,15 @@ class BotChatController extends Notifier<ChatState> {
       final reply = await _api.pollRun(state.botId, runId);
       if (_disposed || reply == null) return;
       if (reply.images.isEmpty && reply.files.isEmpty) return;
-      final index =
-          state.messages.indexWhere((m) => m.id == messageId);
+      final index = state.messages.indexWhere((m) => m.id == messageId);
       if (index < 0) return;
       final current = state.messages[index];
       if (current.images.isNotEmpty || current.files.isNotEmpty) return;
       final messages = [...state.messages];
-      messages[index] =
-          current.copyWith(images: reply.images, files: reply.files);
+      messages[index] = current.copyWith(
+        images: reply.images,
+        files: reply.files,
+      );
       state = state.copyWith(messages: messages);
     } on Object catch (error) {
       // Text stays. A 4xx means the run is reaped — no point asking again;
@@ -484,16 +507,19 @@ class BotChatController extends Notifier<ChatState> {
   /// Returns false when the message never reached the wire (empty, a send
   /// already in flight, or the request failed) — callers that gate follow-up
   /// state on the send (ask cards, options) must not mark it resolved then.
-  Future<bool> send(String content,
-      {BotPhase? phase, String? askRun, String? continueSession}) async {
+  Future<bool> send(
+    String content, {
+    BotPhase? phase,
+    String? askRun,
+    String? continueSession,
+  }) async {
     final text = content.trim();
     if (text.isEmpty || state.sending) return false;
     if (text.toLowerCase() == '/clear') {
       // Local transcript clear (isDesktopBotClearCommand): keep only
       // in-flight bubbles; synced history rebuilds on the next load.
       state = state.copyWith(
-        messages:
-            state.messages.where((m) => m.pending || m.queued).toList(),
+        messages: state.messages.where((m) => m.pending || m.queued).toList(),
         error: '',
       );
       return false;
@@ -518,7 +544,8 @@ class BotChatController extends Notifier<ChatState> {
         content: text,
         phase: phase,
         clientMessageId: userMessage.id,
-        continueSession: continueSession ??
+        continueSession:
+            continueSession ??
             (state.continueThread.isEmpty ? null : state.continueThread),
         askRun: askRun,
       );
@@ -531,11 +558,13 @@ class BotChatController extends Notifier<ChatState> {
         // The reply arrives through the shared-journal long-poll, so mark
         // the bubble queued and free the composer for the next message.
         final messages = [...state.messages];
-        final index =
-            messages.indexWhere((m) => m.id == userMessage.id);
+        final index = messages.indexWhere((m) => m.id == userMessage.id);
         if (index >= 0) {
           messages[index] = messages[index].copyWith(
-              pending: false, queued: true, queuePosition: result.position);
+            pending: false,
+            queued: true,
+            queuePosition: result.position,
+          );
         }
         state = state.copyWith(messages: messages, sending: false);
         _appendAck(result);
@@ -568,7 +597,8 @@ class BotChatController extends Notifier<ChatState> {
   void continueTask(String conversation) {
     final thread = conversation.trim();
     state = state.copyWith(
-        continueThread: thread.startsWith('${state.botId}#') ? thread : '');
+      continueThread: thread.startsWith('${state.botId}#') ? thread : '',
+    );
   }
 
   /// Re-send a failed user message — drops the failed bubble and posts the
@@ -577,7 +607,10 @@ class BotChatController extends Notifier<ChatState> {
     if (state.sending || !message.failed) return;
     final content = message.content;
     state = state.copyWith(
-      messages: [for (final m in state.messages) if (m.id != message.id) m],
+      messages: [
+        for (final m in state.messages)
+          if (m.id != message.id) m,
+      ],
     );
     await send(content);
   }
@@ -591,16 +624,18 @@ class BotChatController extends Notifier<ChatState> {
     final content = routed.isEmpty
         ? text
         : (text.isEmpty ? '已转给「$routed」处理' : '$text（已转给「$routed」）');
-    state = state.copyWith(messages: [
-      ...state.messages,
-      ChatMessage(
-        id: newDesktopMessageId(),
-        role: 'assistant',
-        content: content,
-        ack: true,
-        at: DateTime.now(),
-      ),
-    ]);
+    state = state.copyWith(
+      messages: [
+        ...state.messages,
+        ChatMessage(
+          id: newDesktopMessageId(),
+          role: 'assistant',
+          content: content,
+          ack: true,
+          at: DateTime.now(),
+        ),
+      ],
+    );
   }
 
   /// A turn started elsewhere (or before an app restart) still shows in
@@ -669,15 +704,18 @@ class BotChatController extends Notifier<ChatState> {
     // writing its projection would double it for every other client too.
     // Windowed: an identical reply from older history is a new turn's
     // genuine answer (bots repeat "收到" all the time), not a duplicate.
-    final alreadyShown = !reply.isEmpty &&
-        messages.any((m) =>
-            m.role == 'assistant' &&
-            !m.ack &&
-            !m.failed &&
-            m.content == reply.text &&
-            (m.at == null ||
-                DateTime.now().difference(m.at!) <
-                    const Duration(minutes: 5)));
+    final alreadyShown =
+        !reply.isEmpty &&
+        messages.any(
+          (m) =>
+              m.role == 'assistant' &&
+              !m.ack &&
+              !m.failed &&
+              m.content == reply.text &&
+              (m.at == null ||
+                  DateTime.now().difference(m.at!) <
+                      const Duration(minutes: 5)),
+        );
     if (!alreadyShown) {
       final assistantMessage = ChatMessage(
         id: newDesktopMessageId(),
@@ -720,11 +758,7 @@ class BotChatController extends Notifier<ChatState> {
     ];
     // A failed send does not touch an active run: the failed bubble gets
     // its retry button, the running turn keeps its watch and controls.
-    state = state.copyWith(
-      messages: messages,
-      sending: false,
-      error: error,
-    );
+    state = state.copyWith(messages: messages, sending: false, error: error);
   }
 
   void _settleError(String error) {
@@ -810,27 +844,36 @@ class BotChatController extends Notifier<ChatState> {
     // runId, with requestId covering bubbles written before it existed.
     // Only mark the card resolved once the answer actually left — a failed
     // or blocked send would otherwise lock it with the answer lost.
-    final sent = await send(answer,
-        askRun: message.runId.isEmpty
-            ? (message.requestId.isEmpty ? null : message.requestId)
-            : message.runId,
-        continueSession:
-            message.conversation.isEmpty ? null : message.conversation);
+    final sent = await send(
+      answer,
+      askRun: message.runId.isEmpty
+          ? (message.requestId.isEmpty ? null : message.requestId)
+          : message.runId,
+      continueSession: message.conversation.isEmpty
+          ? null
+          : message.conversation,
+    );
     if (sent) _patchFlags(message.id, askResolved: true);
   }
 
   Future<void> pickOption(ChatMessage message, String option) async {
-    final sent = await send(option,
-        askRun: message.runId.isEmpty
-            ? (message.requestId.isEmpty ? null : message.requestId)
-            : message.runId,
-        continueSession:
-            message.conversation.isEmpty ? null : message.conversation);
+    final sent = await send(
+      option,
+      askRun: message.runId.isEmpty
+          ? (message.requestId.isEmpty ? null : message.requestId)
+          : message.runId,
+      continueSession: message.conversation.isEmpty
+          ? null
+          : message.conversation,
+    );
     if (sent) _patchFlags(message.id, optionsUsed: true);
   }
 
-  void _patchFlags(String messageId,
-      {bool askResolved = false, bool optionsUsed = false}) {
+  void _patchFlags(
+    String messageId, {
+    bool askResolved = false,
+    bool optionsUsed = false,
+  }) {
     final messages = [
       for (final m in state.messages)
         m.id == messageId
@@ -850,15 +893,17 @@ class BotChatController extends Notifier<ChatState> {
     final api = ref.read(botApiProvider);
     if (api == null) return;
     unawaited(
-      api.writeConversation(_clientId, [
-        {
-          'bot_id': state.botId,
-          'id': messageId,
-          'kind': 'message',
-          'patch': true,
-          'data': flags,
-        }
-      ]).catchError((_) {}),
+      api
+          .writeConversation(_clientId, [
+            {
+              'bot_id': state.botId,
+              'id': messageId,
+              'kind': 'message',
+              'patch': true,
+              'data': flags,
+            },
+          ])
+          .catchError((_) {}),
     );
   }
 
@@ -874,14 +919,16 @@ class BotChatController extends Notifier<ChatState> {
     final api = ref.read(botApiProvider);
     if (api == null) return;
     unawaited(
-      api.writeConversation(_clientId, [
-        {
-          'bot_id': state.botId,
-          'id': message.id,
-          'kind': 'message',
-          'data': projection,
-        }
-      ]).catchError((_) {}),
+      api
+          .writeConversation(_clientId, [
+            {
+              'bot_id': state.botId,
+              'id': message.id,
+              'kind': 'message',
+              'data': projection,
+            },
+          ])
+          .catchError((_) {}),
     );
   }
 }

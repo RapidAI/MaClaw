@@ -1885,11 +1885,19 @@ func (c *coreAgentCallbacks) promptPrefixActive() bool {
 }
 
 func (c *coreAgentCallbacks) promptPrefixMeta() agent.PromptPrefixMeta {
+	mode := ""
+	if c.hubBotInstance() || c.botHasNoDesktop() {
+		mode = "desktop"
+		if c.botHasNoDesktop() {
+			mode = "none"
+		}
+	}
 	return agent.PromptPrefixMeta{
 		ConversationID: c.session.ID,
 		BotID:          c.botID,
 		Provider:       c.llmCfg.ProviderName,
 		Model:          c.llmCfg.Model,
+		DesktopMode:    mode,
 	}
 }
 
@@ -1921,7 +1929,10 @@ func (c *coreAgentCallbacks) desktopMemoryCall(name string, args map[string]inte
 		if owner == "" {
 			owner = strings.TrimSpace(c.user.ID)
 		}
-		if strings.TrimSpace(c.messageMetadata["computer_helper"]) == "1" {
+		// A bot with no computer keeps the person's own book. A leftover
+		// computer_helper mark would file the note on the desktop helper
+		// book, which refuses a profile write.
+		if !c.botHasNoDesktop() && strings.TrimSpace(c.messageMetadata["computer_helper"]) == "1" {
 			helper = true
 			helperID = strings.TrimSpace(c.messageMetadata["helper_id"])
 			if helperID == "" {
@@ -3043,6 +3054,9 @@ func (c *coreAgentCallbacks) hardwareExpertAdapterToolAllowed(name string, allow
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c != nil && c.hubBotDropsInProcessDelegate(name) {
+		return false, "这个 bot 不在本机另开一个子任务"
+	}
 	if c != nil && c.botHasNoDesktop() && noneDesktopDropsTool(name) {
 		return false, "这个 bot 没有电脑"
 	}

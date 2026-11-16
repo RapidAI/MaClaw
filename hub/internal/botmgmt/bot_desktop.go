@@ -37,6 +37,58 @@ func desktopUserForBot(userID string, bot Bot) string {
 	return owner
 }
 
+// desktopPictureNode reads a noVNC address Hub rewrote onto a node tunnel.
+// virtual is false for a cloud desktopd address, which keeps its own host.
+func desktopPictureNode(raw string) (nodeID string, virtual bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" {
+		return "", false
+	}
+	host := strings.Trim(strings.ToLower(parsed.Hostname()), ".")
+	const suffix = ".node.invalid"
+	if host == "node.invalid" || !strings.HasSuffix(host, suffix) {
+		return "", false
+	}
+	name := strings.TrimSuffix(host, suffix)
+	const prefix = "desktopd."
+	if !strings.HasPrefix(name, prefix) {
+		return "", true
+	}
+	return strings.TrimPrefix(name, prefix), true
+}
+
+// desktopPictureMatchesComputer reports whether a remembered noVNC address
+// belongs to this bot's computer. A node tunnel names that node. Any other
+// address is a cloud desktop and matches only a cloud bot.
+func desktopPictureMatchesComputer(raw, nodeID string) bool {
+	pictured, virtual := desktopPictureNode(raw)
+	if !virtual {
+		return strings.TrimSpace(nodeID) == ""
+	}
+	return pictured != "" && pictured == strings.TrimSpace(nodeID)
+}
+
+// botSkipsDesktop is a bot that has no computer. Its replies must not pin,
+// clear, or restore the owner's keyboard, picture, or desktop hold.
+func (s *Service) botSkipsDesktop(tenantID, botID string) bool {
+	if s == nil {
+		return false
+	}
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return false
+	}
+	rec, err := s.load(context.Background(), tenantID)
+	if err != nil {
+		return false
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 {
+		return false
+	}
+	return botNone(rec.Bots[index])
+}
+
 // desktopUserOf is desktopUserForBot when only the bot id is at hand.
 func (s *Service) desktopUserOf(tenantID, userID, botID string) string {
 	if s == nil || strings.TrimSpace(botID) == "" {
@@ -113,6 +165,14 @@ func (s *Service) setBotDesktopMode(ctx context.Context, tenantID, botID, mode s
 				s.mu.Unlock()
 				return Bot{}, err
 			}
+			// Giving a no-desktop bot a cloud computer needs an assigned
+			// desktop; a LAN-node bot carries its own service.
+			if strings.TrimSpace(rec.Bots[index].NodeID) == "" && s.CloudDesktopAssigned != nil {
+				if err := s.CloudDesktopAssigned(ctx, tenantID, rec.Bots[index].OwnerUserID, departments); err != nil {
+					s.mu.Unlock()
+					return Bot{}, err
+				}
+			}
 		}
 	}
 	rec.Bots[index].DesktopMode = mode
@@ -151,7 +211,7 @@ func (s *Service) syncBotDesktopMetadata(ctx context.Context, tenantID, botID st
 		return nil
 	}
 	bot := rec.Bots[index]
-	fresh, token, err := s.ownerToken(ctx, tenantID, bot.OwnerUserID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, bot.OwnerUserID, bot.NodeID)
 	if err != nil {
 		return err
 	}
@@ -209,27 +269,25 @@ func (s *Service) BotHasNoDesktop(ctx context.Context, tenantID, userID, botID s
 }
 
 func (s *Service) findOwnedBot(ctx context.Context, tenantID, owner, botID string) (Bot, bool) {
-	if s == nil || strings.TrimSpace(botID) == "" || strings.TrimSpace(owner) == "" {
+	if s == nil {
 		return Bot{}, false
 	}
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {
 		return Bot{}, false
 	}
-	index := indexOf(rec.Bots, botID)
-	if index < 0 {
-		// MaClawSrv may name the bot by its instance id.
-		for i, bot := range rec.Bots {
-			if bot.InstanceID == strings.TrimSpace(botID) {
-				index = i
-				break
-			}
-		}
+	return ownedBot(rec, owner, botID)
+}
+
+// DesktopComputerNode is the computer this bot drives.
+// ok is false when the bot is not this owner's.
+// An empty nodeID with ok true is the cloud computer.
+func (s *Service) DesktopComputerNode(ctx context.Context, tenantID, ownerID, botID string) (string, bool) {
+	bot, ok := s.findOwnedBot(ctx, tenantID, ownerID, botID)
+	if !ok {
+		return "", false
 	}
-	if index < 0 || rec.Bots[index].OwnerUserID != owner {
-		return Bot{}, false
-	}
-	return rec.Bots[index], true
+	return strings.TrimSpace(bot.NodeID), true
 }
 
 // DesktopCtl is the optional control channel of DesktopControl (Hub's
@@ -256,7 +314,7 @@ func (s *Service) HandBackDesktop(ctx context.Context, tenantID, userID, botID s
 	if botIsolated(bot) {
 		if ctl, ok := s.Desktop.(DesktopCtl); ok && ctl != nil {
 			if _, err := ctl.Ctl(ctx, tenantID, dUser, map[string]any{"op": desktop.CtlTakeoverEnd}); err != nil {
-				return fmt.Errorf("%w: %s", ErrSrv, err.Error())
+				return explainDesktopErr(err)
 			}
 		}
 	}

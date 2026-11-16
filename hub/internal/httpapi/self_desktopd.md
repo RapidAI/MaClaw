@@ -2,7 +2,7 @@
 
 这份说明给桌面客户端发起的一键安装。调用方会给你当前登录的 Hub 地址（下面写成 `HUB_URL`）以及这次的安装选择。`HUB_URL` 不要带路径，不要带末尾斜杠。不要用文档里的示例域名，也不要用别的 Hub。
 
-不要把 `DESKTOPD_TOKEN`、`MACLAW_ADMIN_SECRET`、`MACLAW_TOKEN_SECRET`、`hub_token` 写进 git，也不要发到对话里。不要把 18080 或 18081 暴露到公网。不要安装 botnode，也不要自己向 Hub 注册。客户端在 desktopd 健康之后自己注册。
+不要把 `DESKTOPD_TOKEN`、`MACLAW_ADMIN_SECRET`、`MACLAW_TOKEN_SECRET`、`hub_token` 写进 git，也不要发到对话里。不要把 18080 或 18081 暴露到公网；18081 只在内网放行，桌面客户端会直连它。不要安装 botnode，也不要自己向 Hub 注册。客户端在 desktopd 健康之后自己注册。
 
 调用方指定下面两种选择之一。
 
@@ -10,10 +10,14 @@
 
 - Linux x86_64 或 aarch64，systemd
 - 能访问 Docker 的 root，或可以 sudo
-- git、curl、tar、python3
+- git、curl、tar。写配置时用 `base64`（coreutils）或 `openssl`，二选一即可
 - Go 1.26 或更新版本。没有就装到 `/usr/local/go`（https://go.dev/dl/ 或 https://golang.google.cn/dl/）
 - 出站能访问 `HUB_URL`
 - 能得到镜像 `maclaw-gui:2`。拉不到时，下面的安装脚本会在这台机器上构建
+
+宿主机不用安装 Python。desktopd 和 MaClawSrv 都是 Go 程序，安装、注册、平时运行都不调用宿主机上的 `python3`。旧系统装不上 Python 3 也照样装这台桌面服务，不要为了安装去装 Python。
+
+桌面里的 Python 在 Docker 镜像 `maclaw-gui:2` 里面，不在宿主机上。镜像里有 `python3` 和 `/desktop_supervisor.py`。打开一个桌面后，容器里用它管画面、浏览器和文档。安装脚本检查「镜像里有没有 python3」时，是 `docker run` 进容器看的。宿主机上 `python3: command not found` 是正常的，不要据此判断安装失败。
 
 `uname -m` 是 aarch64 时，编译用 `GOARCH=arm64`。x86_64 用 `GOARCH=amd64`。
 
@@ -34,7 +38,7 @@ git -C /opt/maclaw-src reset --hard FETCH_HEAD
 
 ## 2. 只安装 desktopd
 
-安装目录是 `/data/soft/maclaw_desktopd`，监听 `127.0.0.1:18081`，systemd 服务名 `maclaw-desktopd`。
+安装目录是 `/data/soft/maclaw_desktopd`，监听 `:18081`（所有网卡；内网可达，桌面客户端直连画面和截图就走这个端口），systemd 服务名 `maclaw-desktopd`。
 
 在仓库根目录打包（`GOPROXY=https://goproxy.cn,direct`）：
 
@@ -56,7 +60,7 @@ cp desktopd/remote_deploy.sh /tmp/maclaw_desktopd_deploy/
 ```sh
 REMOTE_TMP_DIR=/tmp/maclaw_desktopd_deploy \
 DESKTOPD_DEPLOY_DIR=/data/soft/maclaw_desktopd \
-DESKTOPD_BIND_ADDR=127.0.0.1:18081 \
+DESKTOPD_BIND_ADDR=:18081 \
 DESKTOPD_PORT=18081 \
 DESKTOPD_INTRANET=1 \
 DESKTOPD_IMAGE_FROM=auto \
@@ -70,13 +74,15 @@ sh /tmp/maclaw_desktopd_deploy/remote_deploy.sh
 脚本会生成 `/data/soft/maclaw_desktopd/.env`，权限 600。装完后这个文件里要有：
 
 ```
-DESKTOPD_ADDR=127.0.0.1:18081
+DESKTOPD_ADDR=:18081
 DESKTOPD_TOKEN=<脚本生成，不要回显>
 DESKTOPD_STATE_DIR=/data/soft/maclaw_desktopd/state
 DESKTOPD_INTRANET=1
 ```
 
 不要留下 `DESKTOPD_ADVERTISE_HOST` 或 `DESKTOPD_PUBLIC_URL`。`DESKTOPD_PUBLISH_BIND` 如果要写，只能是 `127.0.0.1`。
+
+防火墙放行至内网：18081 是桌面客户端直连 desktopd 的端口（屏幕画面、截图和文件直连都走它），不要把这个端口映射到公网。
 
 确认：
 
@@ -127,6 +133,8 @@ MACLAW_DESKTOP_API_TOKEN=<desktopd 注册后得到的 hub_token>
 按第 1 节取最新源码，再按第 2 节重新打包。安装脚本改用 `DESKTOPD_IMAGE_FROM=build`，并仍然带 `DESKTOPD_INTRANET=1`。不要设置对外地址。脚本会保留已有 `.env`。
 
 健康检查通过之后，才写入调用方给的完成标记。调用方没给标记就不要写。
+
+要让桌面客户端直连这台桌面，`.env` 里的 `DESKTOPD_ADDR` 不能是回环地址：旧安装写的 `127.0.0.1:18081` 要改成 `:18081`，再 `systemctl restart maclaw-desktopd`，并在防火墙对内网放行 18081。
 
 这台机器已经有 MaClawSrv 时，只重新编译替换 `/data/soft/maclaw_srv/bin/maclawsrv`，保留已有 `.env` 和密钥，不要重新生成，不要重启到一个空配置上。没有 MaClawSrv 时不要顺便装上。
 

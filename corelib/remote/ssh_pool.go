@@ -151,8 +151,7 @@ func (p *SSHPool) acquireUncached(cfg SSHHostConfig, hostID string) (*ssh.Client
 	// 池里没有仍被引用的连接时，才在锁外探测。
 	// 半开 TCP 上 SendRequest 可能阻塞 30-120 秒，必须限制等待时间。
 	if candidate != nil {
-		ok, finished, _, _ := awaitSSHProbe(candidate, sshProbeWait)
-		if finished && ok {
+		if sshClientTransportLive(candidate) {
 			p.mu.Lock()
 			current := p.conns[hostID]
 			p.mu.Unlock()

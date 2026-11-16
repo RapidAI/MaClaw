@@ -325,7 +325,7 @@ func guiRuntimeSSHSessionAlive(session *remote.SSHManagedSession) bool {
 	if !sshSessionLocallyOpen(session) {
 		return false
 	}
-	handle := session.Handle
+	handle := session.PTY()
 	if alive, ok := cachedSSHSessionAlive(handle); ok {
 		return alive
 	}

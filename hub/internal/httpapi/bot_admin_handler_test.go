@@ -34,7 +34,7 @@ func TestBotSettingsHandlerHidesToken(t *testing.T) {
 	}
 }
 
-func TestBotAccessIsClosedByDefault(t *testing.T) {
+func TestBotAccessIsOpenByDefault(t *testing.T) {
 	svc := botmgmt.NewService(&botSettingsMem{})
 	authn := fakeVEMachineAuth{token: "machine-token", principals: map[string]*auth.MachinePrincipal{
 		"machine-1": {TenantID: "tenant-a", UserID: "alice", MachineID: "machine-1"},
@@ -44,7 +44,24 @@ func TestBotAccessIsClosedByDefault(t *testing.T) {
 	req.Header.Set("X-Machine-ID", "machine-1")
 	rec := httptest.NewRecorder()
 	GetBotAccessHandler(svc, authn).ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) || !strings.Contains(rec.Body.String(), "服务器没有开通bot功能") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":true`) || strings.Contains(rec.Body.String(), "服务器没有开通bot功能") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBotAccessStaysClosedForUngrantedUser(t *testing.T) {
+	mem := &botSettingsMem{}
+	mem.value = `{"grants":[{"id":"g","scope":"user","target_id":"zoe"}]}`
+	svc := botmgmt.NewService(mem)
+	authn := fakeVEMachineAuth{token: "machine-token", principals: map[string]*auth.MachinePrincipal{
+		"machine-1": {TenantID: "tenant-a", UserID: "alice", MachineID: "machine-1"},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/bots/access", nil)
+	req.Header.Set("Authorization", "Bearer machine-token")
+	req.Header.Set("X-Machine-ID", "machine-1")
+	rec := httptest.NewRecorder()
+	GetBotAccessHandler(svc, authn).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -306,6 +323,25 @@ func TestAdminBotErrorShowsUpstreamStatusButUserErrorDoesNot(t *testing.T) {
 		!strings.Contains(busy.Body.String(), "这台云桌面还有一件在做。") ||
 		!strings.Contains(busy.Body.String(), "turn-1") {
 		t.Fatalf("busy status=%d body=%s", busy.Code, busy.Body.String())
+	}
+
+	turn := httptest.NewRecorder()
+	writeBotUserError(turn, req, &auth.MachinePrincipal{TenantID: "t_demo", UserID: "u_demo"}, botmgmt.ErrNoDesktopTurn, "turn-2")
+	if turn.Code != http.StatusConflict ||
+		!strings.Contains(turn.Body.String(), "BOT_TURN_BUSY") ||
+		!strings.Contains(turn.Body.String(), "这个 bot 还在回答上一条。") ||
+		strings.Contains(turn.Body.String(), "DESKTOP_BUSY") ||
+		strings.Contains(turn.Body.String(), "这台云桌面还有一件在做。") {
+		t.Fatalf("no-desktop turn status=%d body=%s", turn.Code, turn.Body.String())
+	}
+
+	offline := httptest.NewRecorder()
+	writeBotUserError(offline, req, &auth.MachinePrincipal{TenantID: "t_demo", UserID: "u_demo"}, botmgmt.ErrNodeOffline, "")
+	if offline.Code != http.StatusBadGateway ||
+		!strings.Contains(offline.Body.String(), "NODE_OFFLINE") ||
+		!strings.Contains(offline.Body.String(), "这台内网电脑暂时连不上") ||
+		strings.Contains(offline.Body.String(), "MACLAWSRV_REQUEST_FAILED") {
+		t.Fatalf("offline status=%d body=%s", offline.Code, offline.Body.String())
 	}
 
 	task := httptest.NewRecorder()

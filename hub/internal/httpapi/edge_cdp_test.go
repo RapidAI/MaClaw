@@ -166,3 +166,50 @@ func TestCDPTicketRelaysAnotherNodeAndRewritesTheDebuggerURL(t *testing.T) {
 		t.Fatalf("expired status %d", expired.Code)
 	}
 }
+
+func TestAnotherNodeGetsACDPTicketNotTheLocalAddress(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	const gate = "gate-secret"
+	key, err := desktop.UserKey("tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := edgenode.NewRegistry(&edgeMemSettings{})
+	enroll := func(name string) edgenode.EnrollResult {
+		t.Helper()
+		code, err := reg.IssueCode(context.Background(), "tenant-a", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		enrolled, err := reg.Enroll(context.Background(), code.Code, "desk-"+name, "", "v1", true, false, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return enrolled
+	}
+	home := enroll("home")
+	other := enroll("other")
+	prev := edgeRegistry
+	edgeRegistry = reg
+	t.Cleanup(func() { edgeRegistry = prev })
+
+	local := "http://desktop:" + gate + "@10.1.0.8/v1/desktops/tunnel/" + key + "/cdp"
+	session := desktoppool.DesktopSession{
+		CDP:      "http://desktop:" + gate + "@desktopd." + home.NodeID + ".node.invalid/v1/desktops/tunnel/" + key + "/cdp",
+		LocalCDP: local,
+		Display:  ":1",
+		NodeID:   home.NodeID,
+	}
+	req := httptest.NewRequest(http.MethodPost, "https://hub.example/api/v1/desktop-services/session", nil)
+	req.Host = "hub.example"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Authorization", "Bearer "+other.HubToken)
+	ctx := withEdgeCaller(withEdgeOrigin(req.Context(), req), req)
+	got, err := cdpURLForSession(ctx, "tenant-a", "alice", session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == local || strings.Contains(got, gate) || strings.Contains(got, "10.1.0.8") || !strings.Contains(got, edgeCDPPrefix) {
+		t.Fatalf("cross-node cdp %s", got)
+	}
+}

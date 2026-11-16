@@ -187,14 +187,14 @@ describe('Virtual repository utility', () => {
 		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH handshake www.driverdevelop.com:22: ssh: handshake failed: SSH host key is not trusted' }));
 		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
 		expect(await screen.findByRole('dialog', { name: 'Repair remote connection' })).toBeTruthy();
-		expect(screen.getByText('This dialog only verifies and repairs the SSH connection. After it succeeds, close it and click Sync now.')).toBeTruthy();
+		expect(screen.getByText('Click "Test & repair" below: it verifies the SSH connection, saves a newly entered password on success, and resumes syncing automatically.')).toBeTruthy();
 		expect(screen.getByLabelText('Server')).toHaveProperty('readOnly', true);
 		expect(screen.getByLabelText('SSH password')).toHaveProperty('readOnly', false);
 		expect((screen.getByLabelText('Server') as HTMLInputElement).value).toBe('www.driverdevelop.com');
 		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
 		backend.RepairRemoteVirtualRepositoryConnection.mockResolvedValue(JSON.stringify({ connected: true, host_key_trusted: true, root_exists: true }));
 		fireEvent.change(screen.getByLabelText('SSH password'), { target: { value: 'repaired-secret' } });
-		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Test & repair' }));
 		await screen.findByText(/Connected/);
 		expect(backend.RepairRemoteVirtualRepositoryConnection).toHaveBeenCalledWith(expect.stringContaining('"password":"repaired-secret"'));
 		expect(backend.TestRemoteVirtualRepositoryConnection).not.toHaveBeenCalled();
@@ -210,13 +210,13 @@ describe('Virtual repository utility', () => {
 		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
 		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH handshake failed' }));
 		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
-		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Test & repair' }));
 		await waitFor(() => expect(backend.RepairRemoteVirtualRepositoryConnection).toHaveBeenCalled());
 		expect(screen.queryByRole('button', { name: 'Create remote root' })).toBeNull();
 		expect(backend.CreateRemoteVirtualRepositoryRoot).not.toHaveBeenCalled();
 	});
 
-	it('keeps the repair banner until the next sync confirms recovery', async () => {
+	it('resumes syncing automatically after a successful connection repair', async () => {
 		const backend = (window as any).go.main.App;
 		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/srv/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
 		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
@@ -226,11 +226,12 @@ describe('Virtual repository utility', () => {
 		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
 		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH host key is not trusted' }));
 		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
-		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
-		await screen.findByText(/Connected/);
-		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
-		expect(backend.SaveRemoteVirtualRepository).not.toHaveBeenCalled();
-		expect(screen.getByRole('button', { name: 'Repair remote connection' })).toBeTruthy();
+		fireEvent.click(screen.getByRole('button', { name: 'Test & repair' }));
+		expect(await screen.findByText(/Repair succeeded/)).toBeTruthy();
+		await waitFor(() => expect(backend.SyncVirtualRepositories).toHaveBeenCalled());
+		expect(await screen.findByText(/Synced/)).toBeTruthy();
+		expect(screen.queryByRole('button', { name: 'Repair remote connection' })).toBeNull();
+		expect(screen.getByRole('dialog', { name: 'Repair remote connection' })).toBeTruthy();
 	});
 
 	it('repairs a remote connection without saving an index-only draft that lacks the remote revision', async () => {
@@ -243,7 +244,7 @@ describe('Virtual repository utility', () => {
 		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
 		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH handshake failed' }));
 		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
-		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Test & repair' }));
 		await screen.findByText(/Connected/);
 		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
 		expect(backend.SaveRemoteVirtualRepository).not.toHaveBeenCalled();

@@ -77,7 +77,7 @@ func noteDesktopPageNeed(scope agentruntime.Scope, text string) {
 	}
 	key := desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID)
 	switch desktopAttentionReason(text) {
-	case "captcha_widget", "login_qr", "payment_confirm":
+	case "captcha_widget", "login_qr", "login_wall", "mfa", "payment_confirm":
 		desktopPageNeed.Store(key, desktopAttentionReason(text))
 	default:
 		desktopPageNeed.Delete(key)

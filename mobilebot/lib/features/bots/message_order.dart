@@ -34,11 +34,12 @@ const botPendingReplyWaitMs = 31 * 60 * 1000;
 
 /// Mirrors `pendingBotReplyIsStale` on the desktop side. Undated bubbles
 /// (unknown id scheme and no `at`) cannot prove their age and are kept.
-bool pendingReplyIsStale(
-    {required bool pending,
-    required String id,
-    DateTime? at,
-    required int nowMs}) {
+bool pendingReplyIsStale({
+  required bool pending,
+  required String id,
+  DateTime? at,
+  required int nowMs,
+}) {
   if (!pending) return false;
   final started = messageOrderMs(id: id, at: at);
   return started > 0 && nowMs - started > botPendingReplyWaitMs;

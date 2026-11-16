@@ -182,17 +182,13 @@ cd /d "%ROOT_DIR%"
 if exist "%BUILD_ROOT%" rmdir /s /q "%BUILD_ROOT%"
 mkdir "%STAGE_ROOT%\bin" >nul 2>nul
 mkdir "%STAGE_ROOT%\image" >nul 2>nul
-copy /y "%ROOT_DIR%desktopd\image\desktop_supervisor.py" "%STAGE_ROOT%\image\desktop_supervisor.py" >nul
-if errorlevel 1 (
-  echo [ERROR] Failed to stage desktop_supervisor.py
+REM The build context is the whole desktopd\image dir (see Dockerfile.v2's
+REM header). A hand-kept file list drifts when the image gains files -
+REM theme/ was once left out this way and the host build failed at COPY.
+robocopy "%ROOT_DIR%desktopd\image" "%STAGE_ROOT%\image" /E /XD __pycache__ >nul
+if errorlevel 8 (
+  echo [ERROR] Failed to stage desktopd\image
   goto :fail
-)
-for %%F in (Dockerfile Dockerfile.v2 close_range_shim.c fcitx5-profile) do (
-  copy /y "%ROOT_DIR%desktopd\image\%%F" "%STAGE_ROOT%\image\%%F" >nul
-  if errorlevel 1 (
-    echo [ERROR] Failed to stage desktopd\image\%%F
-    goto :fail
-  )
 )
 
 set "OLD_GOOS=%GOOS%"

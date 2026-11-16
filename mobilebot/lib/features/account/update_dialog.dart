@@ -10,8 +10,7 @@ import '../../core/app_update.dart';
 /// 检查更新 bottom sheet — Android only (iOS has no sideload channel; the
 /// caller hides the entry there). Mirrors the desktop update dialog: check →
 /// offer → download with progress → sha256 verify → hand to the installer.
-Future<void> showUpdateSheet(BuildContext context,
-    {AppUpdate? prechecked}) {
+Future<void> showUpdateSheet(BuildContext context, {AppUpdate? prechecked}) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -126,7 +125,10 @@ class _UpdateSheetState extends State<_UpdateSheet> {
   Future<void> _install() async {
     final apk = _apk;
     if (apk == null) return;
-    final result = await OpenFilex.open(apk.path, type: 'application/vnd.android.package-archive');
+    final result = await OpenFilex.open(
+      apk.path,
+      type: 'application/vnd.android.package-archive',
+    );
     if (!mounted) return;
     // INSTALL_FAILED / user denied the unknown-sources prompt — surface it.
     if (result.type != ResultType.done) {
@@ -150,93 +152,112 @@ class _UpdateSheetState extends State<_UpdateSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('检查更新',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.titleLarge),
+          Text(
+            '检查更新',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.titleLarge,
+          ),
           const SizedBox(height: 4),
           Text(
             _currentVersion.isEmpty ? 'MaClawGo' : '当前版本 $_currentVersion',
             textAlign: TextAlign.center,
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: 20),
           switch (_phase) {
             _Phase.checking => const Padding(
-                padding: EdgeInsets.symmetric(vertical: 24),
-                child: Center(child: CircularProgressIndicator()),
-              ),
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: CircularProgressIndicator()),
+            ),
             _Phase.upToDate => Column(
-                children: [
-                  Icon(Icons.check_circle_outline,
-                      size: 40, color: theme.colorScheme.primary),
-                  const SizedBox(height: 8),
-                  Text(_detail, style: theme.textTheme.bodyMedium),
-                ],
-              ),
+              children: [
+                Icon(
+                  Icons.check_circle_outline,
+                  size: 40,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(height: 8),
+                Text(_detail, style: theme.textTheme.bodyMedium),
+              ],
+            ),
             _Phase.available => Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text('发现新版本 ${_update!.version}',
-                      style: theme.textTheme.titleMedium),
-                  const SizedBox(height: 6),
-                  Text(
-                    '将从 GitHub / Cloudflare R2 下载 $updateAssetName，'
-                    '校验后由系统安装器完成安装。',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '发现新版本 ${_update!.version}',
+                  style: theme.textTheme.titleMedium,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '将从 GitHub / Cloudflare R2 下载 $updateAssetName，'
+                  '校验后由系统安装器完成安装。',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
                   ),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    onPressed: _download,
-                    icon: const Icon(Icons.download),
-                    label: const Text('下载并安装'),
-                  ),
-                  TextButton(
-                    onPressed: () =>
-                        launchUrl(Uri.parse(_update!.releaseUrl)),
-                    child: const Text('在浏览器中查看'),
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: _download,
+                  icon: const Icon(Icons.download),
+                  label: const Text('下载并安装'),
+                ),
+                TextButton(
+                  onPressed: () => launchUrl(Uri.parse(_update!.releaseUrl)),
+                  child: const Text('在浏览器中查看'),
+                ),
+              ],
+            ),
             _Phase.downloading => Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  LinearProgressIndicator(value: _progress),
-                  const SizedBox(height: 8),
-                  Text('下载中 ${(100 * _progress).toStringAsFixed(0)}%',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall),
-                ],
-              ),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                LinearProgressIndicator(value: _progress),
+                const SizedBox(height: 8),
+                Text(
+                  '下载中 ${(100 * _progress).toStringAsFixed(0)}%',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
             _Phase.ready => Column(
-                children: [
-                  Icon(Icons.system_update_alt,
-                      size: 40, color: theme.colorScheme.primary),
+              children: [
+                Icon(
+                  Icons.system_update_alt,
+                  size: 40,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(height: 8),
+                const Text('已下载，正在打开安装器…'),
+                if (_detail.isNotEmpty) ...[
                   const SizedBox(height: 8),
-                  const Text('已下载，正在打开安装器…'),
-                  if (_detail.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Text(_detail,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: theme.colorScheme.error)),
-                  ],
+                  Text(
+                    _detail,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
                 ],
-              ),
+              ],
+            ),
             _Phase.idle => const SizedBox.shrink(),
             _Phase.error => Column(
-                children: [
-                  Icon(Icons.error_outline,
-                      size: 40, color: theme.colorScheme.error),
-                  const SizedBox(height: 8),
-                  Text(_detail.isEmpty ? '检查更新失败' : _detail,
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodyMedium),
-                  const SizedBox(height: 12),
-                  FilledButton.tonal(
-                      onPressed: _check, child: const Text('重试')),
-                ],
-              ),
+              children: [
+                Icon(
+                  Icons.error_outline,
+                  size: 40,
+                  color: theme.colorScheme.error,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _detail.isEmpty ? '检查更新失败' : _detail,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 12),
+                FilledButton.tonal(onPressed: _check, child: const Text('重试')),
+              ],
+            ),
           },
           const SizedBox(height: 8),
         ],

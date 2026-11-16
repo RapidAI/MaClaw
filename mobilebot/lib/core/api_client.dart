@@ -16,29 +16,28 @@ class ApiClient {
   final void Function()? onAuthRejected;
 
   ApiClient(this.account, {this.onAuthRejected})
-      : dio = hubDio(account.hubUrl)
-          ..interceptors.add(
-            InterceptorsWrapper(
-              onRequest: (options, handler) {
-                if (account.token.isNotEmpty) {
-                  options.headers['Authorization'] = 'Bearer ${account.token}';
-                }
-                handler.next(options);
-              },
-            ),
-          );
+    : dio = hubDio(account.hubUrl)
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              if (account.token.isNotEmpty) {
+                options.headers['Authorization'] = 'Bearer ${account.token}';
+              }
+              handler.next(options);
+            },
+          ),
+        );
 
   Options opts({
     Duration? receiveTimeout,
     Duration? sendTimeout,
     Map<String, dynamic>? headers,
-  }) =>
-      Options(
-        headers: headers,
-        receiveTimeout: receiveTimeout,
-        sendTimeout: sendTimeout,
-        validateStatus: (code) => code != null && code < 500,
-      );
+  }) => Options(
+    headers: headers,
+    receiveTimeout: receiveTimeout,
+    sendTimeout: sendTimeout,
+    validateStatus: (code) => code != null && code < 500,
+  );
 
   Future<Map<String, dynamic>> guard(
     Future<Response<Map<String, dynamic>>> Function() call,
@@ -85,8 +84,12 @@ class ApiClient {
           } else if (rawError is Map) {
             // A gateway/proxy answer nests the failure — same shape
             // hubExceptionFrom tolerates.
-            code = (rawError['code'] ?? rawError['name'] ?? rawError['error'] ?? '')
-                .toString();
+            code =
+                (rawError['code'] ??
+                        rawError['name'] ??
+                        rawError['error'] ??
+                        '')
+                    .toString();
           }
           if (code.isEmpty) {
             code = (data['code'] ?? '').toString().trim();

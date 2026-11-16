@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
@@ -639,7 +640,7 @@ func runDesktopBotScheduledTask(ctx context.Context, svc *agentservice.Service, 
 	if principal.TenantID == "" {
 		principal.TenantID = "system"
 	}
-	in := desktopBotScheduleMessage(task)
+	in := desktopBotScheduleMessageMode(task, scheduleTurnHasNoDesktop(ctx, svc, principal, instanceID))
 	_, _, msg, err := svc.SendMessage(ctx, principal, instanceID, in)
 	if err != nil {
 		return "", scheduler.AnnotateRunErrWithContext(ctx, fmt.Errorf("post scheduled bot message: %w", err))
@@ -668,6 +669,24 @@ func desktopBotScheduleTurnText(task *scheduler.ScheduledTask) string {
 // ClientMessageID is stable for that due time, so a crash that fires the
 // same slot again replays the run instead of starting a second one.
 func desktopBotScheduleMessage(task *scheduler.ScheduledTask) agentservice.SendMessageInput {
+	return desktopBotScheduleMessageMode(task, false)
+}
+
+// scheduleTurnHasNoDesktop reads the instance Hub already marked. A missed
+// lookup keeps the desktop-helper turn, so a store blip does not change a
+// bot that does have a computer.
+func scheduleTurnHasNoDesktop(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, instanceID string) bool {
+	if svc == nil {
+		return false
+	}
+	inst, err := svc.GetInstance(ctx, principal, instanceID)
+	if err != nil || inst == nil {
+		return false
+	}
+	return strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
+}
+
+func desktopBotScheduleMessageMode(task *scheduler.ScheduledTask, noDesktop bool) agentservice.SendMessageInput {
 	in := scheduledTaskMessageInput(task, desktopBotScheduleTurnText(task))
 	due := int64(0)
 	if task != nil && task.NextRunAt != nil {
@@ -675,19 +694,28 @@ func desktopBotScheduleMessage(task *scheduler.ScheduledTask) agentservice.SendM
 	}
 	id := ""
 	bot := ""
+	action := ""
 	if task != nil {
 		id = strings.TrimSpace(task.ID)
 		bot = strings.TrimSpace(task.DesktopBotID)
+		action = strings.TrimSpace(task.Action)
 	}
 	in.ClientMessageID = fmt.Sprintf("sched-%s-%d", id, due)
-	in.Metadata = map[string]string{
-		"bot_id":          bot,
-		"bot_phase":       "execute",
-		"computer_helper": "1",
-		"bot_origin":      "schedule",
-		"bot_task":        strings.TrimSpace(task.Action),
-		"schedule_task":   id,
+	meta := map[string]string{
+		"bot_id":        bot,
+		"bot_phase":     "execute",
+		"bot_origin":    "schedule",
+		"bot_task":      action,
+		"schedule_task": id,
 	}
+	if noDesktop {
+		// This bot has no computer. Marking the turn as a computer helper
+		// would file its notes under a helper the person never talks to.
+		meta["bot_desktop"] = desktop.BotDesktopModeNone
+	} else {
+		meta["computer_helper"] = "1"
+	}
+	in.Metadata = meta
 	return in
 }
 
