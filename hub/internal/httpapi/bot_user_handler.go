@@ -736,7 +736,11 @@ func desktopWatchBody(r *http.Request, svc *botmgmt.Service, tenantID, userID, b
 		"attention_reason": svc.DesktopAttention(tenantID, userID, botID),
 		"desktop_mode":     botDesktopModeOf(r, svc, tenantID, userID, botID),
 	}
-	if direct := edgeDirectURL(tenantID, userID, svc.DesktopViewRaw(tenantID, userID), userControl); direct != "" {
+	pictureUser := userID
+	if desktopUser := svc.DesktopUserForBot(tenantID, userID, botID); desktopUser != "" {
+		pictureUser = desktopUser
+	}
+	if direct := edgeDirectURL(tenantID, pictureUser, svc.DesktopViewRaw(tenantID, pictureUser), userControl); direct != "" {
 		body["direct_url"] = direct
 	}
 	return body

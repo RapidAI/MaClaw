@@ -53,7 +53,7 @@ func (s *Service) serveViewer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	token, ok := desktopGates.tokenFor(claims.TenantID, claims.UserID)
+	token, ok := desktopGates.tokenForDesktopUser(claims.TenantID, claims.UserID)
 	if !ok {
 		http.Error(w, "desktop tunnel unavailable", http.StatusBadGateway)
 		return

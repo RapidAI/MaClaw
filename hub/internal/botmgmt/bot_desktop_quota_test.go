@@ -163,7 +163,7 @@ func TestCreateBotDesktopQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.DesktopMode != desktop.BotDesktopModeShared && first.DesktopMode != "" {
+	if first.DesktopMode != desktop.BotDesktopModeIsolated {
 		t.Fatalf("desktop bot mode %q", first.DesktopMode)
 	}
 	if _, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "second-desk", "", &yes); !errors.Is(err, ErrDesktopQuota) {

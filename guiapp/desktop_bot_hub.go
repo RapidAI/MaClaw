@@ -399,7 +399,7 @@ func (a *App) HandBackDesktopBot(botID string) (*DesktopBotHandBack, error) {
 }
 
 // SetDesktopBotDesktopMode switches one bot between the owner's desktop and
-// its own display. Hub only accepts this from a tenant admin.
+// its own display. The owner calls this; another account's bot is not found.
 func (a *App) SetDesktopBotDesktopMode(botID, mode string) (string, error) {
 	botID = strings.TrimSpace(botID)
 	mode = strings.ToLower(strings.TrimSpace(mode))
@@ -413,7 +413,7 @@ func (a *App) SetDesktopBotDesktopMode(botID, mode string) (string, error) {
 		ID   string `json:"id"`
 		Mode string `json:"desktop_mode"`
 	}
-	err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/admin/bots/"+url.PathEscape(botID)+"/desktop-mode", map[string]string{
+	err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop-mode", map[string]string{
 		"desktop_mode": mode,
 	}, &out, 20*time.Second)
 	if err != nil {
@@ -443,10 +443,14 @@ func (a *App) DesktopBotDesktopAdmin() (bool, error) {
 }
 
 func desktopModeLabel(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), "isolated") {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "isolated":
 		return "isolated"
+	case "none":
+		return "none"
+	default:
+		return "shared"
 	}
-	return "shared"
 }
 
 // ReleaseDesktopBotWatch drops the watch hold for the Bot page that just hid.

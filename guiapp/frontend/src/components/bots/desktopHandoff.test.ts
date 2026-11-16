@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RETURNED_HANDOFF_GRACE_MS, isMachineAttention, returnedHandoffLive, returnedHandoffVerdict, visibleDesktopText, watchMayRevokeGrant } from './desktopHandoff';
+import { RETURNED_HANDOFF_GRACE_MS, handoffAsksAgain, handoffResultAsksAgain, isMachineAttention, returnedHandoffLive, returnedHandoffVerdict, visibleDesktopText, watchMayRevokeGrant } from './desktopHandoff';
 
 describe('desktop handoff', () => {
     it('turns a captcha reason code into a sentence the person can act on', () => {
@@ -25,8 +25,30 @@ describe('desktop handoff', () => {
         expect(returnedHandoffVerdict(closed, { reason: 'captcha_widget', userControl: true, reported: true })).toBe('hold');
         // An older job's report of the same reason: same episode.
         expect(returnedHandoffVerdict(closed, { reason: 'captcha_widget', userControl: true, reported: true, turnStartedAt: 1_500 })).toBe('hold');
-        // The continuation itself hit the captcha again: a new handoff.
-        expect(returnedHandoffVerdict(closed, { reason: 'captcha_widget', userControl: true, reported: true, turnStartedAt: 2_500 })).toBe('end');
+        // The continuation just started. Its bubble is stamped at the return,
+        // and the page still shows the captcha the person finished.
+        expect(returnedHandoffVerdict(closed, { reason: 'captcha_widget', userControl: true, reported: true, turnStartedAt: 2_000 })).toBe('hold');
+        expect(returnedHandoffVerdict(closed, { reason: 'captcha_widget', userControl: true, reported: true, turnStartedAt: 2_500 })).toBe('hold');
+        // The continuation's picture changed code, and the click had stored
+        // none. Still the page it just left, until the turn itself asks.
+        expect(returnedHandoffVerdict(closed, { reason: 'login_wall', userControl: true, reported: true, turnStartedAt: 2_500 })).toBe('hold');
+        expect(returnedHandoffVerdict({ at: 2_000, reason: '' }, { reason: 'captcha_widget', userControl: true, reported: true, turnStartedAt: 2_500 })).toBe('hold');
+        // The continuation's first picture can already have the keyboard back
+        // and no reason yet. That is not the desktop saying the handoff is over.
+        expect(returnedHandoffVerdict(closed, { reason: '', userControl: false, reported: true, turnStartedAt: 2_500 })).toBe('hold');
+        expect(returnedHandoffVerdict(closed, { reason: '', userControl: false, reported: true, turnStartedAt: 2_500, settled: true })).toBe('end');
+        expect(handoffAsksAgain('captcha_widget', 'captcha_widget')).toBe(false);
+        expect(handoffAsksAgain('又出了验证码，麻烦再拖一下。', 'captcha_widget')).toBe(true);
+        // A picture of the old code does not ask. The turn ending on that
+        // code does: the first captcha arrives in exactly this shape.
+        expect(handoffResultAsksAgain('captcha_widget', 'captcha_widget', false)).toBe(false);
+        expect(handoffResultAsksAgain('captcha_widget', 'captcha_widget', true)).toBe(true);
+        expect(handoffResultAsksAgain('登录好了', 'captcha_widget', false)).toBe(false);
+        expect(handoffResultAsksAgain('登录好了', 'captcha_widget', true)).toBe(true);
+        expect(handoffResultAsksAgain('', 'captcha_widget', true)).toBe(false);
+        // That same turn asks again: a new handoff, sentence or reason code.
+        expect(returnedHandoffVerdict(closed, { reason: 'captcha_widget', userControl: true, reported: true, turnStartedAt: 2_500, asksAgain: true })).toBe('end');
+        expect(returnedHandoffVerdict(closed, { reason: 'captcha_widget', userControl: true, reported: true, asksAgain: true })).toBe('end');
         // An older job asks for something else: a new handoff.
         expect(returnedHandoffVerdict(closed, { reason: 'payment_confirm', userControl: true, reported: true, turnStartedAt: 1_500 })).toBe('end');
         // An explicit quiet desktop ends it; a payload without screen fields says nothing.

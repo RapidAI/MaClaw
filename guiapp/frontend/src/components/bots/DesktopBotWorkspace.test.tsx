@@ -1542,6 +1542,37 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-handback')).toBeNull();
         expect(sendTask).toHaveBeenCalledTimes(2);
 
+        // The continuation just started, and the picture still shows the
+        // captcha the person finished. The button stays away; another click
+        // would only be told the handoff is already continuing.
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-captcha2')).toBe(true));
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-captcha2',
+                session_key: 'alice:bot_1',
+                novnc_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        expect(sendTask).toHaveBeenCalledTimes(2);
+
+        // The continuation's first picture already has the keyboard back and
+        // no reason. The button stays away so the next captcha frame cannot
+        // open a second task.
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-captcha2',
+                session_key: 'alice:bot_1',
+                novnc_url: liveDesktop,
+                desktop_user_control: false,
+                attention_reason: '',
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        expect(sendTask).toHaveBeenCalledTimes(2);
+
         // The continuation itself meets the captcha again. Same reason code,
         // but a turn started after the return: a new handoff, not the old one.
         await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-captcha2')).toBe(true));
@@ -1559,6 +1590,65 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
         fireEvent.click(screen.getByTestId('desktop-bot-return-control'));
         await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
+    });
+
+    it('opens the button when the continuation ends on the captcha code, and keeps it shut for the leftover picture', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({
+            novnc_url: liveDesktop,
+            user_control: true,
+            attention_reason: 'captcha_widget',
+            input_granted: true,
+        });
+        let sends = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            sends += 1;
+            return { request_id: sends === 1 ? 'desktop-bot-code' : 'desktop-bot-code2', deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开小红书' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        await act(async () => {
+            responseListeners.byEvent['ai-assistant-response']?.({
+                request_id: 'desktop-bot-code',
+                session_key: 'alice:bot_1',
+                text: 'captcha_widget',
+                send_to_user: 'captcha_widget',
+                desktop_handoff_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        fireEvent.click(await screen.findByTestId('desktop-bot-return-control'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-code2')).toBe(true));
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-code2',
+                session_key: 'alice:bot_1',
+                novnc_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        await act(async () => {
+            responseListeners.byEvent['ai-assistant-response']?.({
+                request_id: 'desktop-bot-code2',
+                session_key: 'alice:bot_1',
+                text: 'captcha_widget',
+                send_to_user: 'captcha_widget',
+                desktop_handoff_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
+        expect(screen.queryByText('captcha_widget')).toBeNull();
     });
 
     it('does not take the keyboard back when a watch that started before the claim says it is free', async () => {

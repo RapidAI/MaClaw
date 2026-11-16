@@ -360,20 +360,33 @@ func (s *Service) SetBotDesktopModeForUser(ctx context.Context, tenantID, userID
 }
 
 // ownerDefaultDesktopMode is the mode a new bot of ownerUserID starts with.
+// No stored choice is isolated, so each bot opens its own screen. A stored
+// shared (empty after normalize) or none is that owner's explicit choice.
 func ownerDefaultDesktopMode(rec record, ownerUserID string) string {
 	ownerUserID = strings.TrimSpace(ownerUserID)
 	if ownerUserID == "" {
-		return ""
+		return desktop.BotDesktopModeIsolated
 	}
-	mode, err := NormalizeDesktopMode(rec.OwnerDesktopModeDefaults[ownerUserID])
+	raw, ok := rec.OwnerDesktopModeDefaults[ownerUserID]
+	if !ok {
+		return desktop.BotDesktopModeIsolated
+	}
+	mode, err := NormalizeDesktopMode(raw)
 	if err != nil {
-		return ""
+		return desktop.BotDesktopModeIsolated
 	}
 	return mode
 }
 
+// DesktopUserForBot is the desktop this bot's picture belongs to: the owner,
+// or the owner plus the bot when that bot has its own screen.
+func (s *Service) DesktopUserForBot(tenantID, userID, botID string) string {
+	return s.desktopUserOf(tenantID, userID, botID)
+}
+
 // SetOwnerDesktopModeDefault sets the desktop_mode new bots of one owner
-// start with. "shared" or "" removes the default. Existing bots keep theirs.
+// start with. "shared" is stored so it stays distinct from a missing key.
+// Existing bots keep theirs.
 func (s *Service) SetOwnerDesktopModeDefault(ctx context.Context, tenantID, ownerUserID, mode string) error {
 	mode, err := NormalizeDesktopMode(mode)
 	if err != nil {
@@ -389,13 +402,14 @@ func (s *Service) SetOwnerDesktopModeDefault(ctx context.Context, tenantID, owne
 	if err != nil {
 		return err
 	}
-	if mode == "" {
-		delete(rec.OwnerDesktopModeDefaults, ownerUserID)
-	} else {
-		if rec.OwnerDesktopModeDefaults == nil {
-			rec.OwnerDesktopModeDefaults = map[string]string{}
-		}
-		rec.OwnerDesktopModeDefaults[ownerUserID] = mode
+	if rec.OwnerDesktopModeDefaults == nil {
+		rec.OwnerDesktopModeDefaults = map[string]string{}
 	}
+	// Keep the word "shared". An empty value is what a stored bot uses for
+	// that mode, and a missing key means isolated.
+	if mode == "" {
+		mode = desktop.BotDesktopModeShared
+	}
+	rec.OwnerDesktopModeDefaults[ownerUserID] = mode
 	return s.save(ctx, tenantID, rec)
 }

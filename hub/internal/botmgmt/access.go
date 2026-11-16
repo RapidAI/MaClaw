@@ -1874,7 +1874,7 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 	if wantDesktop != nil {
 		if *wantDesktop {
 			if mode == desktop.BotDesktopModeNone {
-				mode = ""
+				mode = desktop.BotDesktopModeIsolated
 			}
 		} else {
 			mode = desktop.BotDesktopModeNone
@@ -1900,6 +1900,23 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 		meta["hub_user_id"] = ownerUserID
 		meta["hub_tenant_id"] = tenantID
 	}
+	// The id is chosen before the instance exists so an isolated bot's first
+	// run already names its own screen. The materials folder is the same
+	// choice a later sync would write, so a timer that fires first still
+	// files next to this bot's uploads.
+	botID := newBotID()
+	if mode == desktop.BotDesktopModeIsolated {
+		meta[desktopBotMetadataKey] = botID
+	}
+	var peers []desktop.MaterialPeer
+	for _, other := range rec.Bots {
+		if ownerUserID != "" && other.OwnerUserID == ownerUserID {
+			peers = append(peers, desktop.MaterialPeer{ID: other.ID, Name: other.Name})
+		}
+	}
+	if folder := desktop.MaterialsFolder(botID, name, peers); folder != "" {
+		meta[desktopMaterialsMetadataKey] = folder
+	}
 	if mode == desktop.BotDesktopModeNone {
 		meta["hub_bot_desktop"] = desktop.BotDesktopModeNone
 	}
@@ -1919,7 +1936,7 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 		return Bot{}, fmt.Errorf("%w: instance id missing", ErrSrv)
 	}
 	bot := Bot{
-		ID:          newBotID(),
+		ID:          botID,
 		Name:        name,
 		Description: description,
 		InstanceID:  strings.TrimSpace(created.ID),

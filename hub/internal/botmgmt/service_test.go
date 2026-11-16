@@ -487,6 +487,9 @@ func TestBotFeatureIsOffUntilGranted(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, userID := range []string{"alice", "carol"} {
+		if err := svc.SetOwnerDesktopModeDefault(ctx, "tenant-a", userID, "shared"); err != nil {
+			t.Fatal(err)
+		}
 		bot, err := svc.CreateBotForUser(ctx, "tenant-a", userID, userID+" bot", "desk")
 		if err != nil {
 			t.Fatal(err)
@@ -1589,6 +1592,7 @@ func TestBotsOfOneUserAreThatUsersInstances(t *testing.T) {
 	var mu sync.Mutex
 	createdUsers := map[string]int{}
 	instanceAuth := map[string]string{}
+	instanceDesktopBot := map[string]string{}
 	var next int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -1631,9 +1635,14 @@ func TestBotsOfOneUserAreThatUsersInstances(t *testing.T) {
 			userID := strings.TrimPrefix(body.APIKey, "key-")
 			_, _ = w.Write([]byte(`{"access_token":"bearer-` + userID + `","principal":{"user_id":"` + userID + `"}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/instances":
+			var body struct {
+				Metadata map[string]string `json:"metadata"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			next++
 			id := fmt.Sprintf("inst_%d", next)
 			instanceAuth[id] = r.Header.Get("Authorization")
+			instanceDesktopBot[id] = body.Metadata["hub_desktop_bot"]
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id":"` + id + `"}`))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
@@ -1693,8 +1702,11 @@ func TestBotsOfOneUserAreThatUsersInstances(t *testing.T) {
 	}
 
 	// A per-owner default applies only to that owner's new bots.
-	if first.DesktopMode != "shared" || other.DesktopMode != "shared" {
+	if first.DesktopMode != "isolated" || other.DesktopMode != "isolated" {
 		t.Fatalf("default modes first=%q other=%q", first.DesktopMode, other.DesktopMode)
+	}
+	if instanceDesktopBot[first.InstanceID] != first.ID {
+		t.Fatalf("isolated instance screen = %q, bot %s", instanceDesktopBot[first.InstanceID], first.ID)
 	}
 	if err := svc.SetOwnerDesktopModeDefault(ctx, "tenant-a", "alice", "isolated"); err != nil {
 		t.Fatal(err)
@@ -1707,10 +1719,10 @@ func TestBotsOfOneUserAreThatUsersInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if third.DesktopMode != "isolated" || bobs.DesktopMode != "shared" {
+	if third.DesktopMode != "isolated" || bobs.DesktopMode != "isolated" {
 		t.Fatalf("owner default: alice=%q bob=%q", third.DesktopMode, bobs.DesktopMode)
 	}
-	if mode, _ := svc.BotDesktopMode(ctx, "tenant-a", "alice", first.ID); mode != "shared" {
+	if mode, _ := svc.BotDesktopMode(ctx, "tenant-a", "alice", first.ID); mode != "isolated" {
 		t.Fatalf("existing bot changed to %q", mode)
 	}
 	if err := svc.SetOwnerDesktopModeDefault(ctx, "tenant-a", "alice", "shared"); err != nil {
@@ -1719,6 +1731,9 @@ func TestBotsOfOneUserAreThatUsersInstances(t *testing.T) {
 	fourth, err := svc.CreateBotForUser(ctx, "tenant-a", "alice", "four", "")
 	if err != nil || fourth.DesktopMode != "shared" {
 		t.Fatalf("cleared default: mode=%q err=%v", fourth.DesktopMode, err)
+	}
+	if instanceDesktopBot[fourth.InstanceID] != "" {
+		t.Fatalf("shared instance named a screen %q", instanceDesktopBot[fourth.InstanceID])
 	}
 }
 

@@ -11,6 +11,31 @@ export function desktopModeOf(mode: string | undefined): DesktopMode {
     return 'shared';
 }
 
+// The bot list arrives before any screen watch. Until a watch names the
+// display, the saved mode is that bot's screen. A watch that has already
+// named one stays: it is the newer read.
+export function withSavedScreenMode<T extends { url?: string; mode?: DesktopMode }>(
+    bots: Array<{ id: string; desktopMode?: string }>,
+    screens: Record<string, T | undefined>,
+): Record<string, T> {
+    const out: Record<string, T> = {};
+    for (const id of Object.keys(screens)) {
+        const screen = screens[id];
+        if (screen) out[id] = screen;
+    }
+    for (const bot of bots) {
+        if (!bot.desktopMode) continue;
+        const saved = desktopModeOf(bot.desktopMode);
+        const known = out[bot.id];
+        if (known?.mode === saved) continue;
+        // A named watch is the newer read. A bot with no computer is not
+        // that shared display, even if an older watch said it was.
+        if (known?.mode && saved !== 'none') continue;
+        out[bot.id] = { ...(known || { url: '' }), mode: saved } as T;
+    }
+    return out;
+}
+
 // Shared bots use the owner's one display. Switching between them must keep
 // the keyboard. An isolated bot, or a bot with no desktop, is a different screen.
 export function sameDesktopScreen(a: string, b: string, screens: Record<string, { mode?: DesktopMode } | undefined>): boolean {
@@ -29,6 +54,13 @@ export function mineScreenURL(bots: Array<{ id: string }>, screens: Record<strin
         if (screen && screen.mode === 'shared' && screen.url) return screen.url;
     }
     return '';
+}
+
+// The open picture of another shared bot keeps the iframe mounted. An
+// isolated bot has its own display, so that picture is the wrong screen.
+export function screenPictureFallback(mode: DesktopMode | undefined, ownLive: string, borrowed: string): string {
+    if (mode === 'isolated') return ownLive || '';
+    return ownLive || borrowed || '';
 }
 
 // mine and the chat bot fall back to the picture the watch hold already

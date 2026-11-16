@@ -50,19 +50,49 @@ export function returnedHandoffLive(closed: ReturnedHandoff | undefined, now: nu
     return continuationAlive || now - closed.at < RETURNED_HANDOFF_GRACE_MS;
 }
 
+// A sentence of the turn's own, rather than the reason code the page is
+// still showing.
+export function handoffAsksAgain(sentence: string, reason: string): boolean {
+    const said = (sentence || '').trim();
+    if (!said || isMachineAttention(said)) return false;
+    return said !== (reason || '').trim();
+}
+
+// A settled result asks again when that turn handed the desktop back and
+// said something: a sentence, or the reason code the first captcha arrives
+// as. An empty result is the page the person just left, and a live picture
+// is not a result. Neither asks.
+export function handoffResultAsksAgain(sentence: string, _reason: string, handedOff: boolean): boolean {
+    if (!handedOff) return false;
+    // No sentence means the screen fields are the page the person just left.
+    return (sentence || '').trim() !== '';
+}
+
 // What one desktop report means while a return is live.
 // pass: says nothing about the handoff. hold: the returned episode, drop it.
-// end: the return is over (an explicit quiet desktop, or a turn started at or
-// after the return asking for the person again — the continuation itself
-// counts: its bubble is created at the return, so a new ask on it is a new
-// episode, not the old one); the report applies as it is.
-export type HandoffReport = { reason: string; userControl: boolean; reported: boolean; turnStartedAt?: number };
+// end: the return is over. A live picture never ends it, even when the code
+// on that picture changes or we had not stored a code: the continuation has
+// not asked. A settled result that hands the desktop back does, and so does
+// an older turn that asks for something else, or an explicit quiet desktop.
+export type HandoffReport = { reason: string; userControl: boolean; reported: boolean; turnStartedAt?: number; asksAgain?: boolean; settled?: boolean };
 export function returnedHandoffVerdict(closed: ReturnedHandoff | undefined, report: HandoffReport): 'pass' | 'hold' | 'end' {
     if (!closed) return 'pass';
     const reason = (report.reason || '').trim();
-    if (!report.userControl && reason === '') return report.reported ? 'end' : 'pass';
+    if (!report.userControl && reason === '') {
+        if (!report.reported) return 'pass';
+        // The turn's own result says the desktop is quiet. A picture of the
+        // continuation going quiet is the keyboard just given back, not the
+        // handoff finishing: the page can still be the captcha.
+        if (report.settled) return 'end';
+        const quietAt = report.turnStartedAt || 0;
+        if (quietAt >= closed.at) return 'hold';
+        return 'end';
+    }
+    if (report.asksAgain) return 'end';
     const started = report.turnStartedAt || 0;
-    if (started >= closed.at) return 'end';
+    // This turn began with the return. Its picture is the page the person
+    // just left, whatever code it still carries.
+    if (started >= closed.at) return 'hold';
     if (started > 0 && reason !== '' && reason !== closed.reason) return 'end';
     return 'hold';
 }

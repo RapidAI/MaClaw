@@ -29,7 +29,7 @@ func TestOwnerSwitchesOwnBotDesktopMode(t *testing.T) {
 		t.Fatalf("bots %v %v", bots, err)
 	}
 	botID := bots[0].ID
-	if bots[0].DesktopMode != "shared" {
+	if bots[0].DesktopMode != "isolated" {
 		t.Fatalf("default mode %q", bots[0].DesktopMode)
 	}
 	alice := fakeVEMachineAuth{token: "viewer-token", viewer: &auth.ViewerPrincipal{TenantID: "tenant-a", UserID: "alice"}}

@@ -16,8 +16,9 @@ const sourceExtensions = new Set([
 ]);
 
 const ignoredDirectories = new Set([
-  '.claude', '.git', '.gocache', '.gomodcache', '.testhome', 'build', 'dist', 'node_modules',
-  'vendor', '.vite', '.npm_cache', '__pycache__', 'tmp',
+  '.claude', '.diag', '.git', '.gocache', '.gomodcache', '.testhome', '.workbuddy',
+  'build', 'dist', 'node_modules', 'official-sensevoice', 'vendor', '.vite', '.npm_cache',
+  '__pycache__', 'tmp',
 ]);
 
 const ignoredPathFragments = [

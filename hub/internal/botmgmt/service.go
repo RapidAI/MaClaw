@@ -169,8 +169,10 @@ type record struct {
 	// means the next bot open pushes again.
 	OwnerCapabilityStamps map[string]string `json:"owner_capability_stamps,omitempty"`
 	// OwnerDesktopModeDefaults is the desktop_mode a new bot of that owner
-	// starts with, keyed by hub user id. Absent means shared, as before; it
-	// does not change existing bots or other owners.
+	// starts with, keyed by hub user id. Absent means isolated: each new bot
+	// gets its own screen in the owner's container. An explicit "shared"
+	// keeps new bots on the owner's one screen. It does not change existing
+	// bots or other owners.
 	OwnerDesktopModeDefaults map[string]string `json:"owner_desktop_mode_defaults,omitempty"`
 	// PrimaryBot maps a hub user id to that account's one primary bot id.
 	// Empty means the client-visible primary is the earliest CreatedAt.

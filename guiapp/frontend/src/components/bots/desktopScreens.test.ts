@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { desktopModeOf, effectiveScreenPick, mineScreenURL, sameDesktopScreen, screenNeedsOwnHold, shownScreenURL } from './desktopScreens';
+import { desktopModeOf, effectiveScreenPick, mineScreenURL, sameDesktopScreen, screenNeedsOwnHold, screenPictureFallback, shownScreenURL, withSavedScreenMode } from './desktopScreens';
 
 const bots = [{ id: 'a' }, { id: 'b' }];
 
@@ -22,6 +22,31 @@ describe('desktop screens', () => {
         expect(shownScreenURL('b', 'a', bots, screens, 'http://hub/fallback')).toBe('http://hub/bot-b');
         expect(shownScreenURL('a', 'a', bots, { a: { url: '', mode: 'shared' } }, 'http://hub/fallback')).toBe('http://hub/fallback');
         expect(shownScreenURL('b', 'a', bots, { b: { url: '', mode: 'isolated' } }, 'http://hub/fallback')).toBe('');
+    });
+
+    it('keeps an isolated bot off the shared desktop before its watch returns', () => {
+        const known = withSavedScreenMode(
+            [{ id: 'a', desktopMode: 'shared' }, { id: 'b', desktopMode: 'isolated' }],
+            {},
+        );
+        expect(known.b.mode).toBe('isolated');
+        expect(effectiveScreenPick(false, 'mine', 'b', known.b.mode)).toBe('b');
+        expect(sameDesktopScreen('a', 'b', known)).toBe(false);
+        const watched = withSavedScreenMode(
+            [{ id: 'b', desktopMode: 'isolated' }],
+            { b: { url: 'http://hub/bot-b', mode: 'shared' as const } },
+        );
+        expect(watched.b.mode).toBe('shared');
+        expect(watched.b.url).toBe('http://hub/bot-b');
+        const cleared = withSavedScreenMode(
+            [{ id: 'a', desktopMode: 'none' }],
+            { a: { url: 'http://hub/old', mode: 'shared' as const } },
+        );
+        expect(cleared.a.mode).toBe('none');
+        expect(cleared.a.url).toBe('http://hub/old');
+        expect(screenPictureFallback('isolated', '', 'http://hub/shared')).toBe('');
+        expect(screenPictureFallback('isolated', 'http://hub/own', 'http://hub/shared')).toBe('http://hub/own');
+        expect(screenPictureFallback('shared', '', 'http://hub/shared')).toBe('http://hub/shared');
     });
 
     it('opens an isolated bot on its own screen until the person picks', () => {

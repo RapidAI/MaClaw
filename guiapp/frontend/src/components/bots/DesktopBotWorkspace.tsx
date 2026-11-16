@@ -51,7 +51,6 @@ import {
     UploadDesktopBotMaterialChunk,
     DeleteDesktopBot,
     DeleteDesktopBotSchedule,
-    DesktopBotDesktopAdmin,
     GetDesktopBotScreen,
     HandBackDesktopBot,
     SetDesktopBotDesktopMode,
@@ -103,8 +102,8 @@ import {
 import { DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, firstAckCommandKeys, landFirstAck, releaseSettledAckCommands, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
-import { desktopModeOf, effectiveScreenPick, mineScreenURL, sameDesktopScreen, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
-import { RETURNED_HANDOFF_GRACE_MS, isMachineAttention, returnedHandoffLive, returnedHandoffVerdict, visibleDesktopText, watchMayRevokeGrant, type ReturnedHandoff } from './desktopHandoff';
+import { desktopModeOf, effectiveScreenPick, mineScreenURL, sameDesktopScreen, screenNeedsOwnHold, screenPictureFallback, shownScreenURL, withSavedScreenMode, type BotScreen } from './desktopScreens';
+import { RETURNED_HANDOFF_GRACE_MS, handoffResultAsksAgain, isMachineAttention, returnedHandoffLive, returnedHandoffVerdict, visibleDesktopText, watchMayRevokeGrant, type HandoffReport, type ReturnedHandoff } from './desktopHandoff';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
 import { wakeFailureReason } from './desktopWake';
 import {
@@ -2612,7 +2611,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [screenPick, setScreenPick] = useState('mine');
     const [screenPickTouched, setScreenPickTouched] = useState(false);
     const [handoffNotice, setHandoffNotice] = useState<{ botId: string; reason: string; url: string } | null>(null);
-    const [desktopAdmin, setDesktopAdmin] = useState(false);
     const [modeSaving, setModeSaving] = useState(false);
     // Which bot a hand-back is in flight for; the label follows that bot only.
     const [handingBack, setHandingBack] = useState('');
@@ -2648,7 +2646,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const handoffClosedRef = useRef<Record<string, ReturnedHandoff>>({});
     const controlClaimedAtRef = useRef<Record<string, number>>({});
     const screenByBotRef = useRef(screenByBot);
-    screenByBotRef.current = screenByBot;
+    const screensForMode = withSavedScreenMode(bots, screenByBot);
+    screenByBotRef.current = screensForMode;
     // A schedule uses that bot's own desktop and has no chat bubble. A positive
     // count means that bot's occurrence is still inside relay.
     const [desktopBusyByBot, setDesktopBusyByBot] = useState<Record<string, number>>({});
@@ -3078,15 +3077,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const url = liveDesktop[id]?.url || '';
             // An isolated bot's picture is not the shared desktop. Borrowing it
             // paints the wrong screen while this bot's own poll is still starting.
-            if (url && screenByBot[id]?.mode !== 'isolated') {
+            if (url && screensForMode[id]?.mode !== 'isolated') {
                 sharedOpenUrl = url;
                 break;
             }
         }
     }
-    const desktopUrl = showDesktop ? (live?.url || sharedOpenUrl) : '';
-    const screenPickNow = effectiveScreenPick(screenPickTouched, screenPick, selected?.id || '', screenByBot[selected?.id || '']?.mode);
-    const shownDesktopUrl = showDesktop ? shownScreenURL(screenPickNow, selected?.id || '', bots, screenByBot, desktopUrl) : '';
+    const desktopUrl = showDesktop ? screenPictureFallback(screensForMode[selected?.id || '']?.mode, live?.url || '', sharedOpenUrl) : '';
+    const screenPickNow = effectiveScreenPick(screenPickTouched, screenPick, selected?.id || '', screensForMode[selected?.id || '']?.mode);
+    const shownDesktopUrl = showDesktop ? shownScreenURL(screenPickNow, selected?.id || '', bots, screensForMode, desktopUrl) : '';
     const shownDesktopUrlRef = useRef('');
     shownDesktopUrlRef.current = shownDesktopUrl;
     useEffect(() => {
@@ -3123,12 +3122,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         window.addEventListener('message', onMessage);
         return () => window.removeEventListener('message', onMessage);
     }, []);
-    const holdBotId = screenNeedsOwnHold(screenPickNow, selectedId, screenByBot, bots);
+    const holdBotId = screenNeedsOwnHold(screenPickNow, selectedId, screensForMode, bots);
     // "My desktop" is missing only for an isolated bot: a shared bot's "mine"
     // is its own display and already has retry/loading through its own poll.
     // While a shared-display hold is being fetched, it is still connecting,
     // not missing.
-    const ownerDesktopMissing = screenPickNow === 'mine' && !!selected && screenByBot[selected.id]?.mode === 'isolated' && !holdBotId && bots.length > 0 && bots.every(bot => !!screenByBot[bot.id]) && mineScreenURL(bots, screenByBot) === '';
+    const ownerDesktopMissing = screenPickNow === 'mine' && !!selected && screensForMode[selected.id]?.mode === 'isolated' && !holdBotId && bots.length > 0 && bots.every(bot => !!screenByBot[bot.id]) && mineScreenURL(bots, screensForMode) === '';
     const storedSection = selected ? sectionByBot[selected.id] : undefined;
     const selectedNoComputer = desktopModeOf(selected?.desktopMode) === 'none';
     let panelSection: PanelSection = storedSection === 'details' || storedSection === 'schedules' || storedSection === 'tasks' || storedSection === 'artifacts' ? storedSection : 'computer';
@@ -3136,7 +3135,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const retryForSelected = !!selected && retryByBot[selected.id] === true;
     // Asleep: hide the whole screen (no video, no viewer chrome). The wake
     // control is a line drawing of a sleeping computer.
-    const selectedAsleep = !!selected && asleepByBot[selected.id] === true && !retryForSelected && (!screenPickNow || screenPickNow === selected.id || (screenPickNow === 'mine' && screenByBot[selected.id]?.mode !== 'isolated'));
+    const selectedAsleep = !!selected && asleepByBot[selected.id] === true && !retryForSelected && (!screenPickNow || screenPickNow === selected.id || (screenPickNow === 'mine' && screensForMode[selected.id]?.mode !== 'isolated'));
     // Voluntary viewing stays view-only while this bot is using its desktop.
     // A handoff keeps the keyboard when this bot is not using it.
     const botAskedForDesktop = (botId: string) => {
@@ -3154,15 +3153,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // screen list can still be holding the last address, and that address
     // would keep the iframe up instead of the retry card. "My desktop" on an
     // isolated bot is a different display, so a failure here leaves it up.
-    const viewingThisDisplay = !!selected && (screenPickNow === selected.id || (screenPickNow === 'mine' && screenByBot[selected.id]?.mode !== 'isolated'));
+    const viewingThisDisplay = !!selected && (screenPickNow === selected.id || (screenPickNow === 'mine' && screensForMode[selected.id]?.mode !== 'isolated'));
     const ownPictureDown = retryForSelected && viewingThisDisplay;
-    const otherIsolated = !!otherScreen && screenByBot[otherScreen]?.mode === 'isolated';
+    const otherIsolated = !!otherScreen && screensForMode[otherScreen]?.mode === 'isolated';
     const otherHandoff = otherIsolated && botAskedForDesktop(otherScreen);
-    const shownSharedScreen = screenPickNow === 'mine' || screenByBot[screenPickNow]?.mode === 'shared';
+    const shownSharedScreen = screenPickNow === 'mine' || screensForMode[screenPickNow]?.mode === 'shared';
     // The handoff live flags belong to the display the selected bot holds —
     // the shared desktop for a shared bot, its own display for an isolated
     // one. They must not unlock a different display that happens to be up.
-    const liveOnShownScreen = !!selected && (screenByBot[selected.id]?.mode === 'isolated' ? screenPickNow === selected.id : shownSharedScreen);
+    const liveOnShownScreen = !!selected && (screensForMode[selected.id]?.mode === 'isolated' ? screenPickNow === selected.id : shownSharedScreen);
     // The continuation a return started: a pending bubble of this bot that
     // began at or after the return, or a run still marked on its desktop.
     const returnedHandoffFor = (botId: string): ReturnedHandoff | undefined => {
@@ -3507,7 +3506,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const item = messagesForBot(userId, botId).find(message => message.requestId === requestId);
         return item ? botMessageStartedAt(item.id) : 0;
     };
-    const suppressReturnedHandoff = (botId: string, report: { reason: string; userControl: boolean; reported: boolean; turnStartedAt?: number }) => {
+    const suppressReturnedHandoff = (botId: string, report: HandoffReport) => {
         const closed = returnedHandoffFor(botId);
         if (!closed) {
             if (handoffClosedRef.current[botId]) delete handoffClosedRef.current[botId];
@@ -3810,7 +3809,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const loaded = await Promise.all(ids.map(async id => {
                 try {
                     const view = await GetDesktopBotScreen(id) as { novnc_url?: string; desktop_mode?: string } | undefined;
-                    return [id, { url: await desktopPictureURL(view), mode: desktopModeOf(view?.desktop_mode) }] as const;
+                    const saved = desktopModeOf(botsRef.current.find(item => item.id === id)?.desktopMode);
+                    return [id, { url: await desktopPictureURL(view), mode: view?.desktop_mode ? desktopModeOf(view.desktop_mode) : saved }] as const;
                 } catch {
                     return null;
                 }
@@ -3835,17 +3835,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         return () => { alive = false; };
     }, [showDesktop, botScreenKey]);
 
-    useEffect(() => {
-        if (!showDesktop) return;
-        let alive = true;
-        void DesktopBotDesktopAdmin().then(ok => {
-            if (alive) setDesktopAdmin(ok === true);
-        }).catch(() => {
-            if (alive) setDesktopAdmin(false);
-        });
-        return () => { alive = false; };
-    }, [showDesktop]);
-
     // GET does not start noVNC. Hold a display the chat bot's poll is not
     // already holding. A second epoch on the shared owner display would
     // replace that poll and drop the picture.
@@ -3868,7 +3857,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     const existing = prev[botId];
                     const next = {
                         url: url || existing?.url || '',
-                        mode: view?.desktop_mode ? desktopModeOf(view.desktop_mode) : (existing?.mode || 'shared'),
+                        mode: view?.desktop_mode ? desktopModeOf(view.desktop_mode) : (existing?.mode || desktopModeOf(botsRef.current.find(item => item.id === botId)?.desktopMode)),
                     };
                     if (existing && existing.url === next.url && existing.mode === next.mode) return prev;
                     return { ...prev, [botId]: next };
@@ -4331,7 +4320,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const attachmentIds = result.failed ? undefined : attachmentIdsFrom(data);
                 const images = result.failed || shots || attachmentIds ? undefined : imagesFrom(data);
                 const stored = messagesForBot(userId, botId);
-                heldScreen = suppressReturnedHandoff(botId, { reason: screen.reason || '', userControl: screen.userControl, reported: screen.reported, turnStartedAt: botMessageStartedAt(pending.messageId) });
+                // The result's own sentence is a new ask. A screen that still
+                // carries the captcha the person just finished is not.
+                const said = sentenceForTurn(result, ask);
+                heldScreen = suppressReturnedHandoff(botId, { reason: screen.reason || '', userControl: screen.userControl, reported: screen.reported, turnStartedAt: botMessageStartedAt(pending.messageId), settled: true, asksAgain: handoffResultAsksAgain(said, screen.reason || '', screen.userControl || screen.reason !== '') });
                 if (!turnHasVisibleResult(result, ask, images, shots, attached, attachmentIds)) {
                     clearLiveBotTurn(userId, botId, pending.messageId);
                     commit(botId, stored.filter(item => item.id !== pending.messageId));
@@ -4704,7 +4696,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const url = await desktopPictureURL(view);
             setScreenByBot(prev => ({
                 ...prev,
-                [pick]: { url: prev[pick]?.url || url, mode: desktopModeOf(view?.desktop_mode) },
+                [pick]: { url: prev[pick]?.url || url, mode: view?.desktop_mode ? desktopModeOf(view.desktop_mode) : (prev[pick]?.mode || desktopModeOf(botsRef.current.find(item => item.id === pick)?.desktopMode)) },
             }));
         }).catch(() => undefined);
     };
@@ -4813,6 +4805,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         try {
             const saved = await SetDesktopBotDesktopMode(botId, mode);
             const next = desktopModeOf(saved || mode);
+            setBots(prev => prev.map(bot => bot.id === botId ? { ...bot, desktopMode: next } : bot));
             // A mode flip changes which display this entry names. The old URL
             // still points at the previous display — drop it before it paints
             // as the new mode's screen; the GET below refills the right one.
@@ -4927,7 +4920,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             title: created?.title || title,
             description: created?.description || desc,
             createdAt: createdMillis(created?.created_at),
-            desktopMode: created?.desktop_mode || (needsComputer ? 'shared' : 'none'),
+            desktopMode: created?.desktop_mode || (needsComputer ? 'isolated' : 'none'),
             nodeId: !needsComputer ? '' : ((created?.node_id || '').trim() || (nodeID || '').trim()),
         };
         // Hub already created the bot. A local badge copy must not paint that as a failed create.
@@ -6137,15 +6130,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         return;
                     }
                     const screen = screenOf(inline);
-                    const attention = screen.userControl || screen.reason !== '';
+                    const said = sentenceForTurn(result, ask);
+                    const heldScreen = suppressReturnedHandoff(botId, { reason: screen.reason || '', userControl: screen.userControl, reported: screen.reported, turnStartedAt: botMessageStartedAt(assistantMessage.id), settled: true, asksAgain: handoffResultAsksAgain(said, screen.reason || '', screen.userControl || screen.reason !== '') });
+                    const attention = !heldScreen && (screen.userControl || screen.reason !== '');
                     const settled = stored.map(item => item.id === assistantMessage.id ? {
                         ...item,
-                        content: sentenceForTurn(result, ask),
+                        content: said,
                         pending: false,
                         failed: result.failed,
                         handoffUrl: attention ? screen.url : '',
-                        userControl: screen.userControl,
-                        attentionReason: screen.reason,
+                        userControl: attention ? screen.userControl : false,
+                        attentionReason: attention ? screen.reason : '',
                         askUser: ask || item.askUser,
                     } : item);
                     commit(botId, foldPlanConfirmation(settled, settled.findIndex(item => item.id === assistantMessage.id)));
@@ -7756,11 +7751,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <dd data-testid="desktop-bot-persona">{personaByBot[selected.id] || text.personaEmpty}</dd>
                                 </div>
                             </dl>
-                            {desktopAdmin ? (
+                            {desktopModeOf(selected.desktopMode) !== 'none' ? (
                                 <label className="desktop-bot-panel__mode" data-testid="desktop-bot-isolated-toggle">
                                     <input
                                         type="checkbox"
-                                        checked={screenByBot[selected.id]?.mode === 'isolated'}
+                                        checked={desktopModeOf(selected.desktopMode) === 'isolated'}
                                         disabled={modeSaving}
                                         onChange={event => { void saveDesktopMode(selected.id, event.target.checked ? 'isolated' : 'shared'); }}
                                     />
@@ -7858,7 +7853,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     onClick={() => chooseScreen('mine')}
                                 >{text.myDesktop}</button>
                                 {bots.filter(bot => desktopModeOf(bot.desktopMode) !== 'none').map(bot => {
-                                    const shared = (screenByBot[bot.id]?.mode || 'shared') !== 'isolated';
+                                    const shared = screensForMode[bot.id]?.mode !== 'isolated';
                                     return (
                                         <button
                                             type="button"

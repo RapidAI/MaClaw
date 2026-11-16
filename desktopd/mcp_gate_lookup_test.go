@@ -3,6 +3,8 @@ package desktopd
 import (
 	"fmt"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 func populatedGateScreens(count int) (*gateScreens, string) {
@@ -24,6 +26,25 @@ func TestGateScreensLookupFindsExactScreenAmongMany(t *testing.T) {
 	}
 	if _, ok := gates.lookup("ffffffffffffffffffffffffffffffff"); ok {
 		t.Fatal("unknown gate token was accepted")
+	}
+}
+
+func TestTokenForDesktopUserKeepsEachScreen(t *testing.T) {
+	gates := &gateScreens{}
+	gates.remember("aaaaaaaaaaaaaaaa", gateScreen{TenantID: "tenant-a", UserID: "alice", Display: ":20"})
+	gates.remember("bbbbbbbbbbbbbbbb", gateScreen{TenantID: "tenant-a", UserID: "alice", BotID: "bot_1", Display: ":21"})
+	gates.remember("cccccccccccccccc", gateScreen{TenantID: "tenant-a", UserID: "bob", Display: ":20"})
+	owner, ok := gates.tokenForDesktopUser("tenant-a", "alice")
+	if !ok || owner != "aaaaaaaaaaaaaaaa" {
+		t.Fatalf("alice screen = %q ok=%t", owner, ok)
+	}
+	bot, ok := gates.tokenForDesktopUser("tenant-a", desktop.BotDesktopUser("alice", "bot_1"))
+	if !ok || bot != "bbbbbbbbbbbbbbbb" {
+		t.Fatalf("bot screen = %q ok=%t", bot, ok)
+	}
+	other, ok := gates.tokenForDesktopUser("tenant-a", "bob")
+	if !ok || other != "cccccccccccccccc" {
+		t.Fatalf("bob screen = %q ok=%t", other, ok)
 	}
 }
 
