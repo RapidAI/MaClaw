@@ -78,6 +78,9 @@ func TestSelfDesktopdDocIsTheInstallRunbook(t *testing.T) {
 		"remote_deploy.sh",
 		"DESKTOPD_IMAGE_FROM=build",
 		"git -C /opt/maclaw-src reset --hard FETCH_HEAD",
+		"https://api.github.com/repos/RapidAI/MaClaw/releases/latest",
+		"tag_name",
+		"refs/tags/",
 		"宿主机不用安装 Python",
 		"maclaw-gui:2",
 	} {
@@ -87,5 +90,8 @@ func TestSelfDesktopdDocIsTheInstallRunbook(t *testing.T) {
 	}
 	if strings.Contains(body, "DESKTOPD_ADVERTISE_HOST=") || strings.Contains(body, "DESKTOPD_PUBLIC_URL=") {
 		t.Fatal("the self-install runbook must not assign a public address")
+	}
+	if strings.Contains(body, "--branch main") || strings.Contains(body, "origin main") {
+		t.Fatal("intranet desktop install must use the latest release tag")
 	}
 }

@@ -23,18 +23,31 @@
 
 ## 1. 源码
 
-```sh
-git clone --depth 1 --branch main https://github.com/RapidAI/MaClaw.git /opt/maclaw-src
-```
-
-已经有这份源码时，在仓库根目录执行：
+用 GitHub 上最新一个 Release 的 tag，不要用 `main`。先问 Release，接口没有 `tag_name` 时再从 tag 列表里取最后一个版本号。
 
 ```sh
-git -C /opt/maclaw-src fetch --depth 1 origin
-git -C /opt/maclaw-src reset --hard FETCH_HEAD
+tag=$(curl -fsSL --max-time 20 https://api.github.com/repos/RapidAI/MaClaw/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/p' | head -n 1)
+if [ -z "$tag" ]; then
+  tag=$(git ls-remote --tags --refs https://github.com/RapidAI/MaClaw.git | sed 's#.*refs/tags/##' | grep -E '^v?[0-9]+(\.[0-9]+){1,3}$' | sort -V | tail -n 1)
+fi
+if [ -z "$tag" ]; then
+  echo "no release tag"
+  exit 1
+fi
+case "$tag" in
+  *[!A-Za-z0-9._-]*) echo "bad release tag"; exit 1 ;;
+esac
+printf 'source tag: %s\n' "$tag"
+if [ -d /opt/maclaw-src/.git ]; then
+  git -C /opt/maclaw-src fetch --depth 1 origin "refs/tags/${tag}:refs/tags/${tag}" || exit 1
+  git -C /opt/maclaw-src reset --hard FETCH_HEAD || exit 1
+else
+  rm -rf /opt/maclaw-src || exit 1
+  git clone --depth 1 --branch "$tag" https://github.com/RapidAI/MaClaw.git /opt/maclaw-src || exit 1
+fi
 ```
 
-不要换远程地址。服务器上的代码来自 GitHub 的 main，不包含尚未推送的本地改动。
+不要换远程地址。服务器上的代码就是这个 Release，不包含尚未发布的提交。没有 tag 时停下来，不要改去拉 `main`。
 
 ## 2. 只安装 desktopd
 
