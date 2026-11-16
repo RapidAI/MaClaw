@@ -38,6 +38,23 @@ var pendingReplyDiskStores = struct {
 	byPath map[string]*pendingReplyDiskStore
 }{byPath: map[string]*pendingReplyDiskStore{}}
 
+// Close releases the sqlite handle. A test that isolates its profile must
+// call it: the pool's connectionOpener is a durable goroutine that synctest
+// reports as a leak, and TempDir cleanup cannot remove files a live pool
+// still holds. Writes after Close degrade to the in-memory snapshot, same as
+// a failed open.
+func (s *pendingReplyDiskStore) Close() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		_ = s.db.Close()
+		s.db = nil
+	}
+}
+
 func sharedPendingReplyDiskStore(path string) *pendingReplyDiskStore {
 	pendingReplyDiskStores.Lock()
 	defer pendingReplyDiskStores.Unlock()

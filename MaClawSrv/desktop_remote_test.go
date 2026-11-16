@@ -1515,3 +1515,59 @@ func TestDeletedBotLeavesTheNewerHandoff(t *testing.T) {
 		t.Fatalf("stops=%d retired=%v person=%v id=%q holds=%d spent=%d", *stops, retired, personOK, personID, holds, spent)
 	}
 }
+
+// A bot created without a computer never joins the owner's desktop
+// lifecycle: its run holds no slot and its release can neither stop a
+// desktop another bot keeps warm nor drop a login still in progress.
+func TestNoDesktopBotRunSkipsTheDesktopLifecycle(t *testing.T) {
+	var stopped int
+	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
+		return desktopEndpoint{CDP: "http://docker.example:1", Display: ":22"}, nil
+	}
+	desktopRemoteStop = func(context.Context, string, string) error {
+		stopped++
+		return nil
+	}
+	key := desktopRunKey("tenant", "alice-nodesk")
+	t.Cleanup(func() {
+		desktopRemoteSession = nil
+		desktopRemoteStop = nil
+		desktopNoDesktopByInstance.Delete("inst_none")
+		desktopNoDesktopByInstance.Delete("inst_desk")
+		desktopUserByInstance.Delete("inst_none")
+		desktopUserByInstance.Delete("inst_desk")
+		desktopRunsMu.Lock()
+		delete(desktopRuns, key)
+		delete(desktopHolds, key)
+		delete(desktopSpentHolds, key)
+		delete(desktopReleasePlans, key)
+		delete(desktopRetiredLogins, key)
+		desktopPersonInstance.Delete(key)
+		desktopRunsMu.Unlock()
+	})
+	meta := map[string]string{"hub_user_id": "alice-nodesk", "hub_tenant_id": "tenant", "hub_bot_desktop": "none"}
+	rememberDesktopOwner("inst_none", meta, "srv", "maclaw")
+	// The same owner also has a desktop bot whose run holds the desktop.
+	rememberDesktopOwner("inst_desk", map[string]string{"hub_user_id": "alice-nodesk", "hub_tenant_id": "tenant"}, "srv", "maclaw")
+	releaseDesk, _ := occupyUserDesktopRun(context.Background(), "tenant", "alice-nodesk", "inst_desk")
+	// The computerless bot's run takes no slot and gets no ownership flag.
+	releaseNone, owned := occupyUserDesktopRun(context.Background(), "tenant", "alice-nodesk", "inst_none")
+	if owned != nil {
+		t.Fatalf("no-desktop run got an ownership flag")
+	}
+	releaseNone()
+	desktopRunsMu.Lock()
+	runs := desktopRuns[key]
+	desktopRunsMu.Unlock()
+	if runs != 1 {
+		t.Fatalf("no-desktop run changed the hold count: %d", runs)
+	}
+	// Its release must not have stopped the desktop the other bot holds.
+	if stopped != 0 {
+		t.Fatalf("no-desktop release stopped the desktop: %d", stopped)
+	}
+	releaseDesk()
+	if stopped != 1 {
+		t.Fatalf("desktop release after the real run: %d", stopped)
+	}
+}

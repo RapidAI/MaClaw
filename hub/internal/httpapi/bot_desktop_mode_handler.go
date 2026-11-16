@@ -136,9 +136,20 @@ func PostBotDesktopHandBackHandler(svc *botmgmt.Service, identity botAuthenticat
 		if phase == "" {
 			phase = "execute"
 		}
-		admission, err := svc.AdmitDesktopMessage(r.Context(), principal.TenantID, principal.UserID, botID, message, phase, "")
+		admission, err := svc.AdmitDesktopMessage(botmgmt.WithDesktopContinuation(r.Context()), principal.TenantID, principal.UserID, botID, message, phase, "")
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		if admission.Joined {
+			// Another post already continues this handoff and owns its
+			// bubble; this press only hands back.
+			reply := admission.Reply
+			if strings.TrimSpace(reply.Text) == "" {
+				reply.Text = botmgmt.DesktopContinueJoinedLine
+				reply.SendToUser = reply.Text
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"handed_back": true, "joined": true, "reply": reply})
 			return
 		}
 		if admission.Accepted && !admission.Settled {

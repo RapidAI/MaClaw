@@ -809,6 +809,12 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		runStatus := state.status
 		session := state.session
 		state.mu.Unlock()
+		if settleErr != nil {
+			// The client acks this result and the admit record is deleted.
+			// The continuation mark has to remember the failure itself, or
+			// the next 继续 is told the handoff already finished.
+			s.noteDesktopContinueFailed(job.TenantID, job.UserID, job.BotID, job.ClientMessageID)
+		}
 		s.noteDesktopAskOwner(job.TenantID, job.UserID, job.BotID, session, reply)
 		s.persistDesktopTasks(job.TenantID)
 		s.reportDelegateRunEnd(job.TenantID, job.UserID, job.BotID, job.RunID, runStatus, reply, settleErr)

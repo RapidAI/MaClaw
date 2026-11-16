@@ -11,6 +11,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'bot_api.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
+import 'desktop_wake_text.dart';
 
 /// 电脑画面 — the mobile counterpart of the desktop stage in the GUI's
 /// DesktopBotWorkspace. The watch hold pins the bot's desktop while the page
@@ -286,18 +287,8 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   }
 
   String _wakeFailureText(Object error) {
-    final raw = error.toString().toLowerCase();
-    if (raw.contains('no free desktop display')) return '没有空闲的屏幕，请稍后再试';
-    if (raw.contains('deadline') || raw.contains('timeout')) {
-      return '等了一分钟电脑仍没有起来';
-    }
-    if (raw.contains('not open yet')) return '电脑还没有打开';
-    if (raw.contains('connection refused') ||
-        raw.contains('unreachable') ||
-        raw.contains('502') ||
-        raw.contains('503')) {
-      return '电脑服务暂时连不上';
-    }
+    final named = desktopWakeFailureText(error);
+    if (named != error.toString()) return named;
     return failureMessage(error);
   }
 

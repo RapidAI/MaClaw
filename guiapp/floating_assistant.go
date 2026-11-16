@@ -102,7 +102,7 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 	if m.posX == 0 && m.posY == 0 {
 		m.posX, m.posY = m.loadOrDefaultPosition(config)
 	} else {
-		m.posX, m.posY = clampFloatingPosition(m.posX, m.posY, rearedWindowSize(m.app, config.PetSkin, config.PetSize), getScreenWidth(), getScreenHeight())
+		m.posX, m.posY = clampPetScreenPosition(m.posX, m.posY, rearedWindowSize(m.app, config.PetSkin, config.PetSize))
 	}
 
 	log.Printf("[floating-assistant] ShowFloatingButton: pos=(%d,%d) window=%v", m.posX, m.posY, m.window != nil)
@@ -128,9 +128,14 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 
 // HideFloatingButton hides and destroys the desktop pet window.
 func (m *FloatingAssistantManager) HideFloatingButton() {
+	var saveX, saveY int
+	var save bool
 	m.mu.Lock()
 	defer func() {
 		m.mu.Unlock()
+		if save {
+			go m.persistPosition(saveX, saveY)
+		}
 		m.syncCompanion()
 		m.syncPetRearing()
 	}()
@@ -141,6 +146,9 @@ func (m *FloatingAssistantManager) HideFloatingButton() {
 	// main window and added growth after the pet was gone.
 	if m.app != nil {
 		m.app.retirePetClickBurst()
+	}
+	if x, y, _, changed := m.adoptLivePetOriginLocked(floatingWindowSizeForCurrentConfig(m.app)); changed {
+		saveX, saveY, save = x, y, true
 	}
 	if m.window != nil {
 		m.window.Destroy()
@@ -155,12 +163,53 @@ type petAppearanceReloader interface {
 	ReloadAppearance(x, y, size int) error
 }
 
+// petOriginWindow is the live screen origin. Walking and border patrol move
+// the native window without updating the manager's saved point. Hide, refresh,
+// the pet-menu quit, and any other process exit read it back so the next
+// create does not jump to the last drag.
+type petOriginWindow interface {
+	PetOrigin() (x, y int, ok bool)
+}
+
+func livePetOrigin(w floatingWindow) (int, int, bool) {
+	if w == nil {
+		return 0, 0, false
+	}
+	src, ok := w.(petOriginWindow)
+	if !ok {
+		return 0, 0, false
+	}
+	return src.PetOrigin()
+}
+
+// adoptLivePetOriginLocked stores the window's current origin. The caller
+// holds m.mu. live is false when this window cannot report one. changed is
+// true when the stored point moved and still needs to be written out.
+func (m *FloatingAssistantManager) adoptLivePetOriginLocked(sz int) (x, y int, live, changed bool) {
+	if m == nil {
+		return 0, 0, false, false
+	}
+	x, y, live = livePetOrigin(m.window)
+	if !live {
+		return 0, 0, false, false
+	}
+	x, y = clampPetScreenPosition(x, y, sz)
+	changed = x != m.posX || y != m.posY
+	m.posX, m.posY = x, y
+	return x, y, true, changed
+}
+
 // RefreshAppearance applies pet skin, size, and interaction changes. A live
 // window that can reload does so without being destroyed.
 func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
+	var saveX, saveY int
+	var save bool
 	m.mu.Lock()
 	defer func() {
 		m.mu.Unlock()
+		if save {
+			go m.persistPosition(saveX, saveY)
+		}
 		m.syncCompanion()
 		m.syncPetRearing()
 	}()
@@ -168,6 +217,9 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	if !config.PetEnabled {
 		if m.app != nil {
 			m.app.retirePetClickBurst()
+		}
+		if x, y, _, changed := m.adoptLivePetOriginLocked(floatingWindowSizeForCurrentConfig(m.app)); changed {
+			saveX, saveY, save = x, y, true
 		}
 		if m.window != nil {
 			m.window.Destroy()
@@ -192,10 +244,14 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	}
 
 	winSize := rearedWindowSize(m.app, config.PetSkin, config.PetSize)
-	if m.posX == 0 && m.posY == 0 {
+	if x, y, live, changed := m.adoptLivePetOriginLocked(winSize); live {
+		if changed {
+			saveX, saveY, save = x, y, true
+		}
+	} else if m.posX == 0 && m.posY == 0 {
 		m.posX, m.posY = m.loadOrDefaultPosition(config)
 	} else {
-		m.posX, m.posY = clampFloatingPosition(m.posX, m.posY, winSize, getScreenWidth(), getScreenHeight())
+		m.posX, m.posY = clampPetScreenPosition(m.posX, m.posY, winSize)
 	}
 	if m.visible && m.window != nil && m.window.IsCreated() {
 		if reloader, ok := m.window.(petAppearanceReloader); ok {
@@ -240,10 +296,8 @@ func (m *FloatingAssistantManager) UpdatePosition(x, y int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	screenW := getScreenWidth()
-	screenH := getScreenHeight()
 	buttonSize := floatingWindowSizeForCurrentConfig(m.app)
-	x, y = clampFloatingPosition(x, y, buttonSize, screenW, screenH)
+	x, y = clampPetScreenPosition(x, y, buttonSize)
 
 	m.posX = x
 	m.posY = y
@@ -264,6 +318,29 @@ func (m *FloatingAssistantManager) persistPosition(x, y int) {
 	})
 }
 
+// persistLivePetOrigin writes the origin the window is actually using.
+// Patrol updates that origin without updating the saved point. Tray quit,
+// command-line quit, restart, and Wails shutdown never pass through the
+// pet menu, so this is what keeps the next launch on the same screen.
+// The pet-menu quit already stored it and destroyed the window; a later
+// call then sees no live origin and does not write again. A point already
+// stored does not write again either.
+func (m *FloatingAssistantManager) persistLivePetOrigin() {
+	if m == nil {
+		return
+	}
+	// Size is only the clamp inset. Read it before m.mu so config load does
+	// not sit under the same lock Hide and the window origin use.
+	sz := floatingWindowSizeForCurrentConfig(m.app)
+	m.mu.Lock()
+	x, y, _, changed := m.adoptLivePetOriginLocked(sz)
+	m.mu.Unlock()
+	if !changed {
+		return
+	}
+	m.persistPosition(x, y)
+}
+
 // loadOrDefaultPosition returns the persisted position from config,
 // or the default top-right corner position if not set.
 func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfig) (int, int) {
@@ -271,7 +348,7 @@ func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfi
 	screenH := getScreenHeight()
 	winSize := rearedWindowSize(m.app, config.PetSkin, config.PetSize)
 	if config.FloatingBtnPositionSet || config.FloatingBtnX > 0 || config.FloatingBtnY > 0 {
-		x, y := clampFloatingPosition(config.FloatingBtnX, config.FloatingBtnY, winSize, screenW, screenH)
+		x, y := clampPetScreenPosition(config.FloatingBtnX, config.FloatingBtnY, winSize)
 		log.Printf("[floating-assistant] loadOrDefaultPosition: restored from config (%d, %d) clamped=(%d,%d) screen=%dx%d", config.FloatingBtnX, config.FloatingBtnY, x, y, screenW, screenH)
 		return x, y
 	}
@@ -282,7 +359,7 @@ func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfi
 	if x < 0 {
 		x = 100
 	}
-	x, y = clampFloatingPosition(x, y, winSize, screenW, screenH)
+	x, y = clampPetScreenPosition(x, y, winSize)
 	log.Printf("[floating-assistant] loadOrDefaultPosition: default (%d, %d) screen=%dx%d", x, y, screenW, screenH)
 	return x, y
 }
@@ -346,10 +423,8 @@ func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
 // Requirements: 3.3, 3.4
 func (m *FloatingAssistantManager) OnFloatingButtonDragged(x, y int) {
 	// Clamp position to screen bounds (Requirement 3.4)
-	screenW := getScreenWidth()
-	screenH := getScreenHeight()
 	buttonSize := floatingWindowSizeForCurrentConfig(m.app)
-	x, y = clampFloatingPosition(x, y, buttonSize, screenW, screenH)
+	x, y = clampPetScreenPosition(x, y, buttonSize)
 
 	// Move the platform window under lock (window operations are not
 	// covered by UpdatePosition's lock).
@@ -611,16 +686,28 @@ func (m *FloatingAssistantManager) SetPetRuntimeState(state string, ttlMs int) {
 }
 
 func (m *FloatingAssistantManager) applyDuty(decision petDutyDecision) {
-	if m == nil || decision.Unchanged {
+	if m == nil || (decision.Unchanged && !decision.LineChanged) {
 		return
 	}
-	decision.since = time.Now()
 	m.mu.Lock()
-	m.lastDuty = decision
+	if decision.Unchanged {
+		m.lastDuty.Line = decision.Line
+	} else {
+		decision.since = time.Now()
+		m.lastDuty = decision
+	}
 	hold := m.companionPose
 	win := m.window
+	line := m.lastDuty.Line
+	full := !decision.Unchanged
 	m.mu.Unlock()
-	if hold || win == nil {
+	if win == nil {
+		return
+	}
+	// A sentence-only note, and any note while voice owns the pose, updates
+	// the hover line without replaying the reminder.
+	if !full || hold {
+		setPetPresenceLine(win, line)
 		return
 	}
 	m.pushDutyWindow(win, decision)
@@ -631,9 +718,21 @@ func (m *FloatingAssistantManager) pushDutyWindow(win floatingWindow, decision p
 		ApplyPetDuty(state string, ttlMs int, event, cue string)
 	}); ok {
 		applier.ApplyPetDuty(decision.Pose, decision.TTLMS, decision.Event, decision.Cue)
+	} else {
+		win.SetPetRuntimeState(decision.Pose, decision.TTLMS)
+	}
+	setPetPresenceLine(win, decision.Line)
+}
+
+func setPetPresenceLine(win floatingWindow, line string) {
+	if win == nil {
 		return
 	}
-	win.SetPetRuntimeState(decision.Pose, decision.TTLMS)
+	setter, ok := win.(interface{ SetPetPresenceLine(string) })
+	if !ok {
+		return
+	}
+	setter.SetPetPresenceLine(line)
 }
 
 func (m *FloatingAssistantManager) applyRearing(cmd rearingWindow) {
@@ -763,11 +862,17 @@ func (m *FloatingAssistantManager) QuitApp() {
 	if m.app != nil {
 		m.app.sealDesktopPetClick()
 	}
+	saveX, saveY, _, save := m.adoptLivePetOriginLocked(floatingWindowSizeForCurrentConfig(m.app))
 	if m.window != nil {
 		m.window.Destroy()
 	}
 	m.visible = false
 	m.mu.Unlock()
+	// The process is about to exit. A background persist can be killed before
+	// the patrol position reaches disk.
+	if save {
+		m.persistPosition(saveX, saveY)
+	}
 	m.syncCompanion()
 
 	// Quit on a separate goroutine - runtime.Quit triggers the Wails

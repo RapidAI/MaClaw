@@ -15,6 +15,19 @@
     "secondary"
   ],
   "behaviors": {
+    "idle_attend": {
+      "enter": "idle_attend_in",
+      "loop": "idle_attend_loop",
+      "exit": "idle_attend_out",
+      "weight": 2,
+      "min_ms": 2500,
+      "max_ms": 4600,
+      "cooldown_ms": 10000,
+      "moods": [
+        "calm",
+        "focused"
+      ]
+    },
     "idle_bend": {
       "enter": "bend_in",
       "loop": "bend_loop",
@@ -49,6 +62,31 @@
       "min_ms": 3200,
       "max_ms": 6200,
       "cooldown_ms": 4000,
+      "moods": [
+        "calm"
+      ]
+    },
+    "idle_drift": {
+      "enter": "idle_drift_in",
+      "loop": "idle_drift_loop",
+      "exit": "idle_drift_out",
+      "weight": 2,
+      "min_ms": 3200,
+      "max_ms": 5600,
+      "cooldown_ms": 14000,
+      "moods": [
+        "calm",
+        "tired"
+      ]
+    },
+    "idle_groom": {
+      "enter": "idle_groom_in",
+      "loop": "idle_groom_loop",
+      "exit": "idle_groom_out",
+      "weight": 2,
+      "min_ms": 2800,
+      "max_ms": 4800,
+      "cooldown_ms": 16000,
       "moods": [
         "calm"
       ]
@@ -92,6 +130,19 @@
         "curious"
       ]
     },
+    "idle_notice": {
+      "enter": "idle_notice_in",
+      "loop": "idle_notice_loop",
+      "exit": "idle_notice_out",
+      "weight": 2,
+      "min_ms": 2600,
+      "max_ms": 4800,
+      "cooldown_ms": 11000,
+      "moods": [
+        "calm",
+        "curious"
+      ]
+    },
     "idle_rest": {
       "enter": "rest_in",
       "loop": "rest_loop",
@@ -115,6 +166,18 @@
       "cooldown_ms": 22000,
       "moods": [
         "pleased",
+        "calm"
+      ]
+    },
+    "idle_shift": {
+      "enter": "idle_shift_in",
+      "loop": "idle_shift_loop",
+      "exit": "idle_shift_out",
+      "weight": 2,
+      "min_ms": 2800,
+      "max_ms": 5200,
+      "cooldown_ms": 12000,
+      "moods": [
         "calm"
       ]
     },
@@ -192,7 +255,12 @@
         "idle_bend",
         "idle_stretch",
         "idle_sing",
-        "idle_rest"
+        "idle_rest",
+        "idle_shift",
+        "idle_drift",
+        "idle_groom",
+        "idle_attend",
+        "idle_notice"
       ],
       "mood": "calm",
       "expression": "expr_calm",

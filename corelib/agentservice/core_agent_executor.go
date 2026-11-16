@@ -1851,7 +1851,7 @@ Specified IM file delivery:
 		prompt = agentruntime.EnsureSemanticGrantPromptFence(prompt)
 	}
 	if c.promptPrefixActive() {
-		prompt = desktopbot.PinWorthSaying(prompt)
+		prompt = desktopbot.PinWorthSayingFor(prompt, c.botHasNoDesktop())
 		prompt = desktopbot.PinRecurringWork(prompt)
 	}
 	return c.pinDesktopSystemPrompt(prompt)
@@ -2995,6 +2995,11 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 	// when a semantic grant uses the same name. ssh stays for the same reason
 	// when this account can open a remote host.
 	if c != nil && strings.TrimSpace(name) == "desktop" && c.runtimeToolExposed(name) && !c.botHasNoDesktop() {
+		return true
+	}
+	// PDF delivery is a bot runtime capability, not a host filesystem tool.
+	// Short "make a PDF" requests still need its executable module in view.
+	if c != nil && strings.TrimSpace(name) == "bot_generate_pdf" && c.hubBotInstance() && c.runtimeToolExposed(name) {
 		return true
 	}
 	if c != nil && strings.TrimSpace(name) == "ssh" && c.botUsesContainer() && c.canUseSSH() {

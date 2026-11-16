@@ -657,12 +657,12 @@ func runDesktopBotScheduledTask(ctx context.Context, svc *agentservice.Service, 
 // file, or no file. A look with nothing to hand over can still stay quiet.
 const desktopScheduleDeliverEachTurn = "这一轮要把上面这件事做完。这件事要求查询、生成或把文件发给这个人时，要在这一轮里重新查询并重新生成，再交付。上一轮留下的文件不能再发一次。没有变化就结束，只适用于上面没有要求交付的查看。"
 
-func desktopBotScheduleTurnText(task *scheduler.ScheduledTask) string {
+func desktopBotScheduleTurnText(task *scheduler.ScheduledTask, noDesktop bool) string {
 	action := ""
 	if task != nil {
 		action = task.Action
 	}
-	return scheduledTaskPrompt(action) + "\n" + desktopScheduleDeliverEachTurn
+	return scheduledTaskPrompt(action, noDesktop) + "\n" + desktopScheduleDeliverEachTurn
 }
 
 // desktopBotScheduleMessage is one occurrence of a desktop-bot timer.
@@ -687,7 +687,7 @@ func scheduleTurnHasNoDesktop(ctx context.Context, svc *agentservice.Service, pr
 }
 
 func desktopBotScheduleMessageMode(task *scheduler.ScheduledTask, noDesktop bool) agentservice.SendMessageInput {
-	in := scheduledTaskMessageInput(task, desktopBotScheduleTurnText(task))
+	in := scheduledTaskMessageInput(task, desktopBotScheduleTurnText(task, noDesktop))
 	due := int64(0)
 	if task != nil && task.NextRunAt != nil {
 		due = task.NextRunAt.Unix()

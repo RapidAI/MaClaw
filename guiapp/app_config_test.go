@@ -246,6 +246,17 @@ func TestPreserveBackendOwnedFieldsKeepsPetPositionLock(t *testing.T) {
 	}
 }
 
+func TestPreserveBackendOwnedFieldsKeepsPetScreenOrigin(t *testing.T) {
+	ondisk := corelib.AppConfig{FloatingBtnX: -500, FloatingBtnY: 80, FloatingBtnPositionSet: true}
+	incoming := corelib.AppConfig{FloatingBtnX: 100, FloatingBtnY: 100}
+
+	preserveBackendOwnedFields(&incoming, &ondisk)
+
+	if incoming.FloatingBtnX != -500 || incoming.FloatingBtnY != 80 || !incoming.FloatingBtnPositionSet {
+		t.Fatalf("settings save moved the pet origin: (%d,%d) set=%v", incoming.FloatingBtnX, incoming.FloatingBtnY, incoming.FloatingBtnPositionSet)
+	}
+}
+
 func TestPreserveBackendOwnedFieldsKeepsPersistedHubCenterCandidates(t *testing.T) {
 	// Once the backend has a persisted list, stale frontend snapshots must not
 	// overwrite failover state maintained by discovery/selection workers.

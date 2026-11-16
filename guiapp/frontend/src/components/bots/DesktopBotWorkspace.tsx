@@ -104,6 +104,7 @@ import { DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopB
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, sameDesktopScreen, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
+import { RETURNED_HANDOFF_GRACE_MS, isMachineAttention, returnedHandoffLive, returnedHandoffVerdict, visibleDesktopText, watchMayRevokeGrant, type ReturnedHandoff } from './desktopHandoff';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
 import { wakeFailureReason } from './desktopWake';
 import {
@@ -1032,6 +1033,7 @@ function copy(lang: string) {
             botControl: 'The bot is using the desktop.',
             stillThere: 'The website login is still in this browser. Send another message and this bot continues there.',
             userControl: 'Finish the login or verification in this browser. The login stays here for the bot.',
+            userControlCaptcha: 'Finish the check on this screen — drag the slider or complete the puzzle. Then press Verified, continue.',
             returnControl: 'Login done, continue',
             returnControlPublish: 'Published, continue',
             returnControlCaptcha: 'Verified, continue',
@@ -1289,6 +1291,7 @@ function copy(lang: string) {
             botControl: 'Bot 正在操作桌面。',
             stillThere: '網站登入還在這個瀏覽器裡。再發一條訊息，這個 bot 會接著操作。',
             userControl: '請在這個桌面的瀏覽器裡完成登入或驗證。登入會留在這個瀏覽器裡，完成後交還。',
+            userControlCaptcha: '請直接在這個畫面裡完成驗證（拖動滑塊或拼圖）。完成後點「驗證完成，繼續」。',
             returnControl: '登入完成，繼續',
             returnControlPublish: '已發布，繼續',
             returnControlCaptcha: '驗證完成，繼續',
@@ -1544,6 +1547,7 @@ function copy(lang: string) {
         botControl: 'Bot 正在操作桌面。',
         stillThere: '网站登录还在这个浏览器里。再发一条消息，这个 bot 会接着操作。',
         userControl: '请在这个桌面的浏览器里完成登录或验证。登录会留在这个浏览器里，完成后交还。',
+        userControlCaptcha: '请直接在这个画面里完成验证（拖动滑块或拼图）。完成后点「验证完成，继续」。',
         returnControl: '登录完成，继续',
         returnControlPublish: '已发布，继续',
         returnControlCaptcha: '验证完成，继续',
@@ -1693,7 +1697,7 @@ function friendlyFailure(raw: string, lang: string): string {
 // A failed bubble rewrites an operator error. The question this run asked is
 // shown as written, even when it mentions a timeout or an unreachable host.
 export function desktopBotBubbleBody(content: string, failed: boolean, question: string, lang: string): string {
-    const body = content || '';
+    const body = visibleDesktopText(content || '', lang);
     if (failed && (question || '').trim() !== body.trim()) {
         return friendlyFailure(body, lang) || body;
     }
@@ -2637,6 +2641,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // the other shared bot is ignored, and the screen stays locked until the
     // claim expires.
     const controlLeaseBotRef = useRef('');
+    // A login or captcha the person gave back. It lives as long as the
+    // continuation that return started (desktopHandoff.ts); a second click
+    // inside it must not start another task.
+    const [handoffEpoch, setHandoffEpoch] = useState(0);
+    const handoffClosedRef = useRef<Record<string, ReturnedHandoff>>({});
+    const controlClaimedAtRef = useRef<Record<string, number>>({});
     const screenByBotRef = useRef(screenByBot);
     screenByBotRef.current = screenByBot;
     // A schedule uses that bot's own desktop and has no chat bubble. A positive
@@ -2980,7 +2990,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const liveReason = live?.attentionReason || '';
     const handoff = handoffKind(liveReason || handoffMessage?.attentionReason || '');
     const handoffReturnLabel = handoff === 'publish' ? text.returnControlPublish : handoff === 'captcha' ? text.returnControlCaptcha : handoff === 'other' ? text.returnControlOther : text.returnControl;
-    const handoffUserText = handoff === 'publish' ? text.userControlPublish : handoff === 'other' ? text.userControlOther : text.userControl;
+    const handoffUserText = handoff === 'publish' ? text.userControlPublish : handoff === 'captcha' ? text.userControlCaptcha : handoff === 'other' ? text.userControlOther : text.userControl;
     // Hub's desktop read is the truth for an older handoff: once it reports
     // nobody is asked to log in or take over and no turn of this bot is
     // pending, a 登录完成，继续 left in the transcript is stale.
@@ -3153,9 +3163,28 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // the shared desktop for a shared bot, its own display for an isolated
     // one. They must not unlock a different display that happens to be up.
     const liveOnShownScreen = !!selected && (screenByBot[selected.id]?.mode === 'isolated' ? screenPickNow === selected.id : shownSharedScreen);
+    // The continuation a return started: a pending bubble of this bot that
+    // began at or after the return, or a run still marked on its desktop.
+    const returnedHandoffFor = (botId: string): ReturnedHandoff | undefined => {
+        const closed = botId ? handoffClosedRef.current[botId] : undefined;
+        if (!closed) return undefined;
+        const alive = (desktopRunByBotRef.current[botId] || 0) > 0 || messagesForBot(userId, botId).some(item => (
+            item.role === 'assistant' && item.pending === true && !pendingReplyIsStale(item) && botMessageStartedAt(item.id) >= closed.at
+        ));
+        return returnedHandoffLive(closed, Date.now(), alive) ? closed : undefined;
+    };
+    // The epoch only forces this read to run again after the ref changes or
+    // the grace runs out.
+    const handoffReturned = (botId: string) => {
+        void handoffEpoch;
+        return !!returnedHandoffFor(botId);
+    };
+    // The current ask is on this screen. An older login left in the transcript
+    // does not count: the live flags are the keyboard this poll reported.
+    const personOperates = !!selected && !handoffReturned(selected.id) && liveOnShownScreen && (liveControl || liveReason !== '');
     const wantsInput = showDesktop && (otherIsolated
-        ? otherHandoff
-        : takeoverHeld || (!agentOperating && (((liveControl || liveReason !== '') && liveOnShownScreen) || takeover)));
+        ? otherHandoff && !handoffReturned(otherScreen)
+        : takeoverHeld || personOperates || (!agentOperating && takeover));
     const controlBlocked = !!selected && !!controlBlockedByBot[selected.id];
     const stageInteractive = wantsInput && !!selected && controlGrantedByBot[selected.id] === true;
     // Watch and control are different noVNC documents. Reusing the iframe leaves
@@ -3169,6 +3198,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const carry = wantsInput && !!previous && !!botId && previous !== botId && !!controlHeldRef.current[previous] && sameDesktopScreen(previous, botId, screenByBotRef.current);
         if (carry) {
             controlHeldRef.current[botId] = true;
+            controlClaimedAtRef.current[botId] = controlClaimedAtRef.current[previous] || Date.now();
             controlHeldRef.current[previous] = false;
             setControlGrantedByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
         } else if (previous && previous !== botId && controlHeldRef.current[previous]) {
@@ -3217,8 +3247,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 granted = false;
             }
             controlHeldRef.current[botId] = granted;
-            if (granted) controlLeaseBotRef.current = botId;
-            else if (controlLeaseBotRef.current === botId || controlLeaseBotRef.current === previous) controlLeaseBotRef.current = '';
+            if (granted) {
+                controlLeaseBotRef.current = botId;
+                controlClaimedAtRef.current[botId] = Date.now();
+            } else if (controlLeaseBotRef.current === botId || controlLeaseBotRef.current === previous) controlLeaseBotRef.current = '';
             setControlGrantedByBot(prev => prev[botId] === granted ? prev : { ...prev, [botId]: granted });
             setControlBlockedByBot(prev => {
                 const blocked = answered && !granted;
@@ -3465,6 +3497,52 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return { ...prev, [botId]: { ...existing, userControl: false, attentionReason: '' } };
         });
     };
+    // turnStartedAt is the start of the turn this report belongs to; 0 for a
+    // desktop-wide watch. Returns true when the report is the episode the
+    // person already gave back and must not be applied. Callers that zero a
+    // held report must not feed the zeros back here.
+    const turnStartOf = (botId: string, requestId: string, messageId = '') => {
+        if (messageId) return botMessageStartedAt(messageId);
+        if (!requestId) return 0;
+        const item = messagesForBot(userId, botId).find(message => message.requestId === requestId);
+        return item ? botMessageStartedAt(item.id) : 0;
+    };
+    const suppressReturnedHandoff = (botId: string, report: { reason: string; userControl: boolean; reported: boolean; turnStartedAt?: number }) => {
+        const closed = returnedHandoffFor(botId);
+        if (!closed) {
+            if (handoffClosedRef.current[botId]) delete handoffClosedRef.current[botId];
+            return false;
+        }
+        const verdict = returnedHandoffVerdict(closed, report);
+        if (verdict === 'hold') return true;
+        if (verdict === 'end') forgetReturnedHandoff(botId);
+        return false;
+    };
+    // One return per episode. False when this bot's return is already live:
+    // the caller must not start a second continuation.
+    const rememberReturnedHandoff = (botId: string) => {
+        if (!botId || returnedHandoffFor(botId)) return false;
+        let reason = String(liveRef.current[botId]?.attentionReason || '').trim();
+        if (!reason) {
+            const items = messagesForBot(userId, botId);
+            for (let i = items.length - 1; i >= 0; i--) {
+                const itemReason = String(items[i]?.attentionReason || '').trim();
+                if (itemReason || items[i]?.userControl) {
+                    reason = itemReason;
+                    break;
+                }
+            }
+        }
+        handoffClosedRef.current[botId] = { at: Date.now(), reason };
+        setHandoffEpoch(value => value + 1);
+        window.setTimeout(() => setHandoffEpoch(value => value + 1), RETURNED_HANDOFF_GRACE_MS + 100);
+        return true;
+    };
+    const forgetReturnedHandoff = (botId: string) => {
+        if (!handoffClosedRef.current[botId]) return;
+        delete handoffClosedRef.current[botId];
+        setHandoffEpoch(value => value + 1);
+    };
     const syncLive = (botId: string, view: { url?: string; userControl?: boolean; attentionReason?: string } | null | undefined) => {
         if (view === null || view === undefined) return;
         const url = String(view.url || '');
@@ -3480,8 +3558,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A URL by itself never opens the stage. Force-open is the rising edge of
     // one handoff. While that handoff is latched, a collapsed panel ignores
     // the same keyboard report and does not write the live flags back.
-    const applyScreen = (botId: string, screen: ScreenEvent, requestId = '') => {
+    const applyScreen = (botId: string, screen: ScreenEvent, requestId = '', messageId = '') => {
         if (!botId || botSkipsComputer(botId)) return;
+        if (suppressReturnedHandoff(botId, { reason: screen.reason || '', userControl: screen.userControl, reported: screen.reported, turnStartedAt: turnStartOf(botId, requestId, messageId) })) return;
         const foreignQuiet = requestId !== '' && latchRequestRef.current[botId] !== undefined && latchRequestRef.current[botId] !== '' && requestId !== latchRequestRef.current[botId] && handoffHeldBesideSibling(botId);
         // This run's picture ended. Another job of this bot may still be on
         // the same desktop, so the stage stays until that job is done too.
@@ -3519,11 +3598,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             latchRef.current[botId] = true;
             if (requestId) latchRequestRef.current[botId] = requestId;
             syncLive(botId, { url: screen.url || liveRef.current[botId]?.url || '', userControl: screen.userControl, attentionReason: screen.reason });
-            setHandoffNotice({ botId, reason: screen.reason, url: screen.url });
+            const rawReason = screen.reason;
+            const shownReason = isMachineAttention(rawReason) ? visibleDesktopText(rawReason, langRef.current) : rawReason;
+            setHandoffNotice({ botId, reason: shownReason, url: screen.url });
             // The runtime's own reason is a fact, not the line to show.
-            if (screen.reason) {
+            // A machine code already has a sentence; do not leave the code on screen.
+            if (screen.reason && !isMachineAttention(rawReason)) {
                 const owner = userIdRef.current;
-                const raw = screen.reason;
+                const raw = shownReason;
                 void desktopBotLine('status_notice', {
                     lang: langRef.current,
                     persona: personaForBot(owner, botId),
@@ -3622,6 +3704,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 if (panel !== 'auto' && panel !== 'user') return;
                 let userControl = view?.user_control === true;
                 let reason = String(view?.attention_reason || '');
+                // A reason this person already handed back must not be stamped
+                // onto the new turn. Zeroing here is local: it is not the quiet
+                // report that ends the handoff.
+                if (suppressReturnedHandoff(botId, { reason, userControl, reported: true })) {
+                    userControl = false;
+                    reason = '';
+                }
                 // A poll that left before a turn started still describes the previous
                 // keyboard. Skip bubbles that started after it left. Only when
                 // every live bubble is newer is the report the previous keyboard.
@@ -3669,7 +3758,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     showComputer(botId);
                 }
                 syncLive(botId, { url, userControl, attentionReason: reason });
-                if (typeof view?.input_granted === 'boolean' && controlHeldRef.current[botId] && view.input_granted === false) {
+                if (typeof view?.input_granted === 'boolean' && controlHeldRef.current[botId] && view.input_granted === false && watchMayRevokeGrant(requestedAt, controlClaimedAtRef.current[botId] || 0)) {
                     controlHeldRef.current[botId] = false;
                     if (controlLeaseBotRef.current === botId) controlLeaseBotRef.current = '';
                     setControlGrantedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -4225,6 +4314,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (unsent) return;
             const screen = screenOf(data);
             const staleScreen = screenIsStale(sessionKey, requestId, pending);
+            let heldScreen = false;
             if (!pending || pending.settled) {
                 if (!requestId.startsWith('desktop-bot-')) return;
                 handleDesktopBotResult(data);
@@ -4241,11 +4331,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const attachmentIds = result.failed ? undefined : attachmentIdsFrom(data);
                 const images = result.failed || shots || attachmentIds ? undefined : imagesFrom(data);
                 const stored = messagesForBot(userId, botId);
+                heldScreen = suppressReturnedHandoff(botId, { reason: screen.reason || '', userControl: screen.userControl, reported: screen.reported, turnStartedAt: botMessageStartedAt(pending.messageId) });
                 if (!turnHasVisibleResult(result, ask, images, shots, attached, attachmentIds)) {
                     clearLiveBotTurn(userId, botId, pending.messageId);
                     commit(botId, stored.filter(item => item.id !== pending.messageId));
                 } else {
-                const attention = screen.userControl || screen.reason !== '';
+                const attention = !heldScreen && (screen.userControl || screen.reason !== '');
                 const personaLine = result.failed && !ask;
                 const next = stored.map(item => item.id === pending.messageId ? {
                     ...item,
@@ -4254,8 +4345,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         failed: result.failed,
                         requestId: requestId || item.requestId,
                         handoffUrl: attention ? (screen.url || item.handoffUrl || '') : '',
-                        userControl: screen.userControl,
-                        attentionReason: screen.reason,
+                        userControl: attention ? screen.userControl : false,
+                        attentionReason: attention ? screen.reason : '',
                         askUser: ask || item.askUser,
                         images,
                         shotPaths: shots,
@@ -4281,8 +4372,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
             const botId = sessionBotId(sessionKey, userId);
             if (!botId) return;
-            if (!staleScreen) {
-                if (screen.userControl || screen.reason || screen.cleared || (screen.reported && latchRef.current[botId])) applyScreen(botId, screen, requestId);
+            if (!staleScreen && !heldScreen) {
+                if (screen.userControl || screen.reason || screen.cleared || (screen.reported && latchRef.current[botId])) applyScreen(botId, screen, requestId, pending?.messageId || '');
             }
             setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
             drainIfIdle(botId);
@@ -4300,8 +4391,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (unsent) return;
             const screen = screenOf(data);
             const botId = sessionBotId(sessionKey, userId);
-            if (botId && !screenIsStale(sessionKey, requestId, pending)) applyScreen(botId, screen, requestId);
-            const attention = screen.userControl || screen.reason !== '';
+            const heldScreen = !!botId && suppressReturnedHandoff(botId, { reason: screen.reason || '', userControl: screen.userControl, reported: screen.reported, turnStartedAt: turnStartOf(botId, requestId, pending?.messageId || '') });
+            if (botId && !heldScreen && !screenIsStale(sessionKey, requestId, pending)) applyScreen(botId, screen, requestId, pending?.messageId || '');
+            const attention = !heldScreen && (screen.userControl || screen.reason !== '');
             if (!pending || pending.settled) {
                 if (!requestId.startsWith('desktop-bot-')) return;
                 if (attention) handleDesktopBotView(data);
@@ -4641,20 +4733,25 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const handBackTarget = screenPickNow !== 'mine' ? screenPickNow : (selected?.id || '');
     // Hand-back admits a continuation, so it belongs to a bot that asked for
     // the person. Looking at another screen must not start that task.
-    const showHandBack = botAskedForDesktop(handBackTarget);
+    const showHandBack = botAskedForDesktop(handBackTarget) && !handoffReturned(handBackTarget);
     const handBackToBot = async (botId: string) => {
-        if (!botId || handingBack === botId) return;
+        if (!botId || handingBack === botId || !rememberReturnedHandoff(botId)) return;
         setHandingBack(botId);
         setHandBackError('');
         try {
             const handed = await HandBackDesktopBot(botId);
             const requestId = String(handed?.client_message_id || '').trim();
-            const messageId = handed?.accepted && requestId ? messageID() : '';
+            // A joined press has no turn of its own: the continuation already
+            // running owns the reply, so no pending bubble waits on this key.
+            const joined = !!handed?.joined;
+            const messageId = !joined && handed?.accepted && requestId ? messageID() : '';
             if (messageId) pendingRef.current.set(requestId, { botId, messageId, settled: false, admitted: true });
             const stored = messagesForBot(userId, botId).map(item => (
                 item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
             ));
             if (messageId) stored.push({ id: messageId, role: 'assistant', content: '', pending: true, phase: 'execute', requestId });
+            const joinedLine = joined ? String(handed?.reply?.send_to_user || handed?.reply?.text || '').trim() : '';
+            if (joinedLine) stored.push({ id: messageID(), role: 'assistant', content: joinedLine, phase: 'execute' });
             commit(botId, stored);
             setHandoffNotice(prev => prev?.botId === botId ? null : prev);
             clearLiveFlags(botId);
@@ -4690,6 +4787,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const fallback = desktopBotVariedFallback('status_notice', langRef.current, desktopBotContinuingSentence(langRef.current), recentChat(userId, botId));
                 upgradeLine(userId, botId, noteId, 'status_notice', fallback, '', { takeover: 'handed back to the bot; the task continues' });
             } else {
+                forgetReturnedHandoff(botId);
                 // Truly not handed back: say so in the persona, in the chat.
                 const noteId = messageID();
                 const fallback = text.handBackFailed;
@@ -6051,7 +6149,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         askUser: ask || item.askUser,
                     } : item);
                     commit(botId, foldPlanConfirmation(settled, settled.findIndex(item => item.id === assistantMessage.id)));
-                    if (attention) applyScreen(botId, screen);
+                    if (attention) applyScreen(botId, screen, requestId, assistantMessage.id);
                     else if (result.failed) dropAutoPanel(botId);
                     drainIfIdle(botId);
                     return;
@@ -6660,6 +6758,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const resumeFromScreenHandoff = (botId: string) => {
+        if (!rememberReturnedHandoff(botId)) return;
         closePanel(botId);
         clearLiveFlags(botId);
         latchRef.current[botId] = true;
@@ -6667,6 +6766,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
         ));
         commit(botId, stored);
+        setHandoffNotice(prev => prev?.botId === botId ? null : prev);
         void send(text.returnCommand, 'execute');
     };
 
@@ -6899,7 +6999,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     }, [confirmMessage?.id, confirmMessage?.disabled, selected?.id]);
 
     const personAtKeyboard = liveControl || liveReason !== '' || userHasControl;
-    const stageStatusText = agentOperating && personAtKeyboard
+    const stageStatusText = personOperates
+        ? handoffUserText
+        : agentOperating && personAtKeyboard
         ? text.takeoverBusyHint
         : takeover && !liveControl && liveReason === ''
             ? text.takeoverActive
@@ -7185,7 +7287,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     onClick={() => openHandoffScreen(handoffNotice)}
                 >
                     <strong>{bots.find(bot => bot.id === handoffNotice.botId)?.title || text.myDesktop}</strong>
-                    <span>{handoffNotice.reason || text.handoffFallback}</span>
+                    <span>{isMachineAttention(handoffNotice.reason) ? visibleDesktopText(handoffNotice.reason, lang) : (handoffNotice.reason || text.handoffFallback)}</span>
                 </button>
             ) : null}
             <aside className="desktop-bot-workspace__list-pane" aria-label={text.listTitle}>
@@ -7506,7 +7608,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </Fragment>
                                 );
                             })}
-                            {handoffMessage && !agentOperating && !handoffSettled && !selectedNoComputer ? (
+                            {!!selected && !handoffReturned(selected.id) && !selectedNoComputer && !handoffSettled && (personOperates || (!!handoffMessage && !agentOperating)) ? (
                                 <p className="desktop-bot-chat__entry">
                                     <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-return-control" onClick={() => resumeFromScreenHandoff(selected.id)}>{handoffReturnLabel}</button>
                                 </p>

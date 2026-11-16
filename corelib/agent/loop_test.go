@@ -9879,6 +9879,10 @@ func TestStreamedVisibleAnswerKeepsForecastOutsideDetails(t *testing.T) {
 	if streamedDenialAfterSearch(denial, nil) {
 		t.Fatal("denial without a search was discarded")
 	}
+	emptySearch := []ConversationEntry{{Role: "tool", ToolName: "web_search", ToolOutcome: string(ToolExecutionOutcomeOK), Content: ""}}
+	if streamedDenialAfterSearch(denial, emptySearch) {
+		t.Fatal("denial after an empty search result was discarded: an honest '没查到' is not a false claim")
+	}
 	if streamedVisibleAnswer("根据公开检索，相关信息如下：\n\n1. 北京-天气预报\n今天小雨 18/23°C。") != "" {
 		t.Fatal("search digest must not be treated as the streamed answer")
 	}

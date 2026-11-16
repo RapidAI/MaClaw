@@ -663,6 +663,28 @@ func monitorInfoForRect(r workAreaRect) (workAreaMonitorInfo, bool) {
 	return mi, true
 }
 
+// petMonitorWorkArea is the work area of the monitor under the pet. Roaming
+// uses it so a pet on a display left of the primary is not pulled to the origin.
+func petMonitorWorkArea(x, y, sz int) (petpack.WindowRect, bool) {
+	if sz < 1 {
+		sz = 1
+	}
+	info, ok := monitorInfoForRect(rectFromOrigin(x, y, sz, sz))
+	if !ok {
+		return petpack.WindowRect{}, false
+	}
+	area := info.RcWork
+	if area.Right <= area.Left || area.Bottom <= area.Top {
+		return petpack.WindowRect{}, false
+	}
+	return petpack.WindowRect{
+		Left:   int(area.Left),
+		Top:    int(area.Top),
+		Right:  int(area.Right),
+		Bottom: int(area.Bottom),
+	}, true
+}
+
 func rectFromOrigin(x, y, width, height int) workAreaRect {
 	return workAreaRect{
 		Left: int32(x), Top: int32(y),
@@ -733,13 +755,18 @@ func invalidateMainHWNDCache(hwnd uintptr) {
 const petPatrolMissHold = 500 * time.Millisecond
 
 // petPatrolLookup remembers the main window between paints. A miss is not
-// retried until petPatrolMissHold elapses. A visible window is not cached as
-// a miss, so leaving fullscreen is seen on the next frame.
+// retried until petPatrolMissHold elapses. The hwnd is kept across that miss:
+// showing the same window passes hwndStillUsable on the next frame, instead
+// of waiting out the hold and then jumping onto the border. A visible window
+// is not cached as a miss, so leaving fullscreen is seen on the next frame.
 var petPatrolLookup struct {
 	mu        sync.Mutex
 	hwnd      uintptr
 	missUntil time.Time
 }
+
+// findPetMainWindow is the search a patrol miss runs. Tests replace it.
+var findPetMainWindow = findMainWindowHWND
 
 func petPatrolHWND(petHWND uintptr, now time.Time) uintptr {
 	petPatrolLookup.mu.Lock()
@@ -752,11 +779,13 @@ func petPatrolHWND(petHWND uintptr, now time.Time) uintptr {
 	if !missUntil.IsZero() && now.Before(missUntil) {
 		return 0
 	}
-	found := findMainWindowHWND()
+	found := findPetMainWindow()
 	petPatrolLookup.mu.Lock()
 	defer petPatrolLookup.mu.Unlock()
 	if found == 0 || found == petHWND {
-		petPatrolLookup.hwnd = 0
+		if petPatrolLookup.hwnd == petHWND {
+			petPatrolLookup.hwnd = 0
+		}
 		petPatrolLookup.missUntil = now.Add(petPatrolMissHold)
 		return 0
 	}

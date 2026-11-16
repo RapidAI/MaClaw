@@ -79,9 +79,12 @@ func (s *turnKeySrv) handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newTurnKeyService(t *testing.T, srv *httptest.Server) *Service {
+func newTurnKeyService(t *testing.T, srv *httptest.Server, bots ...Bot) *Service {
 	t.Helper()
 	settings := &memSettings{}
+	if len(bots) == 0 {
+		bots = []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"}}
+	}
 	raw, err := json.Marshal(record{
 		BaseURL:     srv.URL,
 		AccessToken: "secret-token",
@@ -89,7 +92,7 @@ func newTurnKeyService(t *testing.T, srv *httptest.Server) *Service {
 		Principals: []ownerPrincipal{{
 			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice", APIKey: "key-alice", APISecret: "sec-alice",
 		}},
-		Bots:   []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"}},
+		Bots:   bots,
 		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
 	})
 	if err != nil {

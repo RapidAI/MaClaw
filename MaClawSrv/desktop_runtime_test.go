@@ -23,8 +23,8 @@ func TestDesktopModuleHiddenWithoutEndpoint(t *testing.T) {
 	if len(tools) != 0 {
 		t.Fatalf("tools=%v, want none", tools)
 	}
-	if got := srvDesktopRuntimeModules(); got != nil {
-		t.Fatalf("modules=%v, want nil", got)
+	if got := srvDesktopRuntimeModules(); len(got) != 1 || got[0].Descriptor().ModuleID != "maclawsrv.botpdf" {
+		t.Fatalf("modules=%v, want only PDF without a desktop", got)
 	}
 }
 
@@ -47,12 +47,15 @@ func TestDesktopModuleAdvertisesToolWhenConfigured(t *testing.T) {
 		t.Fatalf("tools=%v", tools)
 	}
 	modules := srvDesktopRuntimeModules()
-	// The desktop module first, then the local relay (local_computer).
-	if len(modules) != 2 || modules[0].Descriptor().ModuleID != desktopRuntimeModuleID || !modules[0].Descriptor().HeadlessSupport {
+	// The PDF module works independently of the desktop and its relay.
+	if len(modules) != 3 || modules[0].Descriptor().ModuleID != desktopRuntimeModuleID || !modules[0].Descriptor().HeadlessSupport {
 		t.Fatalf("modules=%v", modules)
 	}
 	if _, ok := modules[1].(localRelayModule); !ok {
 		t.Fatalf("modules[1]=%T", modules[1])
+	}
+	if _, ok := modules[2].(botPDFModule); !ok {
+		t.Fatalf("modules[2]=%T", modules[2])
 	}
 }
 

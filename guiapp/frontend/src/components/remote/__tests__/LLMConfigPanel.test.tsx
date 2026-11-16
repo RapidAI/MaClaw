@@ -25,6 +25,9 @@ const StartKimiCodeOAuthMock = vi.fn();
 const WaitKimiCodeOAuthMock = vi.fn();
 const CancelXAIOAuthMock = vi.fn();
 const FetchCodeGenModelsMock = vi.fn();
+const StartCodeGenProviderSSOEmbeddedMock = vi.fn();
+const WaitCodeGenSSOResultMock = vi.fn();
+const CancelCodeGenSSOPollingMock = vi.fn();
 const ImportExternalAgentsMock = vi.fn();
 const GetMoAConfigMock = vi.fn();
     const SaveMoAConfigMock = vi.fn();
@@ -64,6 +67,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ImportCodexAuth: vi.fn(),
     ImportExternalAgents: (...args: unknown[]) => ImportExternalAgentsMock(...args),
     FetchCodeGenModels: (...args: unknown[]) => FetchCodeGenModelsMock(...args),
+    StartCodeGenProviderSSOEmbedded: (...args: unknown[]) => StartCodeGenProviderSSOEmbeddedMock(...args),
+    WaitCodeGenSSOResult: (...args: unknown[]) => WaitCodeGenSSOResultMock(...args),
+    CancelCodeGenSSOPolling: (...args: unknown[]) => CancelCodeGenSSOPollingMock(...args),
     FetchProviderModels: (...args: unknown[]) => FetchProviderModelsMock(...args),
     CreateMobileLLMDesktopQRSession: (...args: unknown[]) => CreateMobileLLMDesktopQRSessionMock(...args),
     SaveCodeGenModelChoice: vi.fn(),
@@ -144,6 +150,8 @@ describe('LLMConfigPanel test-and-save flow', () => {
         SaveMaclawLLMProfilesMock.mockResolvedValue(undefined);
         FetchProviderModelsMock.mockResolvedValue([{ id: 'gpt-test', name: 'GPT Test' }]);
         FetchCodeGenModelsMock.mockResolvedValue([]);
+        StartCodeGenProviderSSOEmbeddedMock.mockResolvedValue({});
+        WaitCodeGenSSOResultMock.mockResolvedValue({ message: 'SSO authenticated', model_id: 'auto' });
         ImportExternalAgentsMock.mockResolvedValue({ imported: [], skipped: [], current: 'Custom1' });
         CreateMobileLLMDesktopQRSessionMock.mockResolvedValue({
             status: 'created',
@@ -659,6 +667,48 @@ describe('LLMConfigPanel test-and-save flow', () => {
                 'CodeGen',
             );
         });
+    });
+
+    it('logs into CodeGen from the provider dialog without an API key or onboarding flow', async () => {
+        const before = [
+            { name: 'OpenAI', url: 'https://example.com/v1', key: 'other', model: 'gpt-test', auth_type: 'oauth' },
+            { name: 'CodeGen', url: 'https://codegen.qianxin-inc.cn/api/v1', key: '', model: 'qax-codegen/Auto', auth_type: 'sso' },
+        ];
+        GetMaclawLLMProvidersMock.mockResolvedValueOnce({ providers: before, current: 'OpenAI' });
+        GetMaclawLLMProvidersMock.mockResolvedValue({ providers: [
+            before[0], { ...before[1], key: 'fresh-sso-token' },
+        ], current: 'OpenAI' });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(screen.getByRole('button', { name: 'CodeGen' }));
+        expect(screen.getByTestId('codegen-sso-login')).toBeTruthy();
+        expect(screen.queryByPlaceholderText('sk-...')).toBeNull();
+        expect((screen.getByRole('button', { name: 'Test & Save' }) as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(screen.getByTestId('codegen-sso-login'));
+        await waitFor(() => expect(WaitCodeGenSSOResultMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(screen.getByText(/SSO authenticated, but the model connection is not verified/)).toBeTruthy());
+        expect(StartCodeGenProviderSSOEmbeddedMock).toHaveBeenCalledTimes(1);
+        expect(screen.getByText('Re-run Enterprise SSO Login')).toBeTruthy();
+        expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
+    });
+
+    it('cancels a pending CodeGen SSO login without accepting a late result', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [{ name: 'CodeGen', url: 'https://codegen.qianxin-inc.cn/api/v1', key: '', model: 'qax-codegen/Auto', auth_type: 'sso' }],
+            current: 'CodeGen',
+        });
+        let resolveLogin!: (value: { message: string }) => void;
+        WaitCodeGenSSOResultMock.mockReturnValue(new Promise(resolve => { resolveLogin = resolve; }));
+
+        render(<LLMConfigPanel lang="en" />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(screen.getByRole('button', { name: 'CodeGen' }));
+        fireEvent.click(screen.getByTestId('codegen-sso-login'));
+        fireEvent.click(await screen.findByTestId('codegen-sso-cancel'));
+        expect(CancelCodeGenSSOPollingMock).toHaveBeenCalledTimes(1);
+        await act(async () => resolveLogin({ message: 'late success' }));
+        expect(screen.queryByText('late success')).toBeNull();
     });
 
     it('shows the Volcengine Agent Plan provider chip without protocol variants', async () => {

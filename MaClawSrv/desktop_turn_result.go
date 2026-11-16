@@ -187,6 +187,13 @@ func desktopTerminalRun(status agentservice.RunStatus) bool {
 	}
 }
 
+// desktopStoredTerminalDelay is how long after a run ends its finish hook
+// still gets to publish the turn result. A just-finished run answers the
+// stored reply without the screenshot, files or handoff the hook is still
+// attaching, so this path waits out that window and only serves runs whose
+// finish had its chance (a replayed read after a restart is an old run).
+const desktopStoredTerminalDelay = 2 * time.Second
+
 // desktopStoredTerminalMessage is the assistant reply already stored for a
 // finished run. The in-memory turn result does not survive a process
 // restart, and Hub delivers a sentence only when the run read carries one.
@@ -198,6 +205,9 @@ func desktopStoredTerminalMessage(ctx context.Context, svc *agentservice.Service
 		return nil
 	}
 	if !desktopTerminalRun(run.Status) {
+		return nil
+	}
+	if run.CompletedAt != nil && time.Since(*run.CompletedAt) < desktopStoredTerminalDelay {
 		return nil
 	}
 	msg, err := svc.GetMessage(ctx, p, run.InstanceID, run.SessionID, run.AssistantMessageID)

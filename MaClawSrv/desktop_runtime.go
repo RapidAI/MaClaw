@@ -716,9 +716,9 @@ const desktopDocumentPrompt = "Office documents (Word, report, illustrated docum
 
 func srvDesktopRuntimeModules() []agentruntime.Module {
 	if !desktopAvailable() {
-		return nil
+		return []agentruntime.Module{botPDFModule{}}
 	}
-	return []agentruntime.Module{desktopRuntimeModule{}, localRelayModule{}}
+	return []agentruntime.Module{desktopRuntimeModule{}, localRelayModule{}, botPDFModule{}}
 }
 
 func desktopCDPAddr() string {
@@ -1819,6 +1819,15 @@ func desktopTurnHasNoDesktop(request agentruntime.TurnRequest) bool {
 	}
 	inst, ok := turnInstance(request)
 	return ok && strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
+}
+
+// desktopPostHasNoDesktop is the same check at the HTTP layer, where the
+// message metadata and the instance record are the two markers Hub wrote.
+func desktopPostHasNoDesktop(msgMeta, instMeta map[string]string) bool {
+	if strings.TrimSpace(msgMeta["bot_desktop"]) == desktop.BotDesktopModeNone {
+		return true
+	}
+	return strings.TrimSpace(instMeta["hub_bot_desktop"]) == desktop.BotDesktopModeNone
 }
 
 func desktopMessageMeta(request agentruntime.TurnRequest) map[string]string {

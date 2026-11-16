@@ -979,9 +979,25 @@ func normalizeLobsterAIProvider(provider, defaults corelib.MaclawLLMProvider) co
 	return provider
 }
 
+// defaultCodeGenSSOProvider returns the TigerClaw enterprise CodeGen provider.
+// It is listed as a managed-auth (sso) provider so the settings dialog offers
+// the enterprise SSO login instead of an API Key field.
+func defaultCodeGenSSOProvider() corelib.MaclawLLMProvider {
+	return corelib.MaclawLLMProvider{
+		Name:          codegenProviderName,
+		URL:           oauth.CodeGenBaseURL,
+		Model:         corelib.CodeGenDefaultModelID,
+		Protocol:      "openai",
+		AgentType:     corelib.CodeGenClientName,
+		AuthType:      "sso",
+		ContextLength: 128000,
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+	}
+}
+
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
-	return []corelib.MaclawLLMProvider{
+	providers := []corelib.MaclawLLMProvider{
 		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api/codex", Model: oauth.CodexSubscriptionDefaultModel, AuthType: "oauth", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
 		{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5-20250514", AuthType: "oauth", Protocol: "anthropic", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", Model: "claude-sonnet-4", AuthType: "oauth", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -1019,6 +1035,15 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Custom2", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 	}
+	// Offer CodeGen in TigerClaw settings without making an unauthenticated
+	// provider the default assistant before the user has signed in.
+	if !shouldSkipCodeGenSSO(brand.Current().ID) {
+		insertAt := len(providers) - 2 // before the custom slots
+		providers = append(providers, corelib.MaclawLLMProvider{})
+		copy(providers[insertAt+1:], providers[insertAt:])
+		providers[insertAt] = defaultCodeGenSSOProvider()
+	}
+	return providers
 }
 
 // GetMaclawLLMProviders returns the provider list and current selection.
@@ -3914,6 +3939,9 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 	if normalizeMaclawLLMAuthTypeKind(llm.AuthType).IsOAuth() && key == "" {
 		return corelib.MaclawLLMTestResult{}, fmt.Errorf("OAuth token is missing; please complete OAuth login")
 	}
+	if strings.EqualFold(strings.TrimSpace(llm.AuthType), "sso") && key == "" {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("SSO token is missing; please complete enterprise SSO login")
+	}
 	model := strings.TrimSpace(llm.Model)
 	if model == "" {
 		return corelib.MaclawLLMTestResult{}, fmt.Errorf("model name is not configured")
@@ -4732,7 +4760,7 @@ var maclawLLMPingClient = &http.Client{
 
 // PingMaclawLLM performs a lightweight connectivity check against the
 // configured LLM endpoint.  It first tries GET /models (free, no tokens
-// consumed).  If that returns 404 it falls back to a HEAD request on the
+// consumed).  If that fails it falls back to a HEAD request on the
 // chat completions path.
 //
 // All requests carry the configured User-Agent so LLM providers can recognise
@@ -4741,7 +4769,8 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	if err := a.ensureOAuthToken(); err != nil {
 		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
 	}
-	if err := a.ensureCodeGenToken(); err != nil {
+	cfg := a.GetMaclawLLMConfig()
+	if err := a.ensureCodeGenTokenForProvider(cfg.ProviderID); err != nil {
 		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
 	}
 
@@ -4810,7 +4839,7 @@ func (a *App) pingResolvedMaclawLLMConfigWithAuthStatus(llmCfg corelib.MaclawLLM
 	probeCfg.Protocol = protocol
 	var err2 error
 	for _, endpoint := range openAIModelsEndpointCandidates(probeBaseURL, protocol) {
-		statusCode, probeErr := maclawLLMProbeStatus(endpoint, probeCfg)
+		statusCode, probeErr := maclawLLMProbeStatus(http.MethodGet, endpoint, probeCfg)
 		if probeErr == nil {
 			if authenticationFailuresAreOffline && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) {
 				return MaclawLLMStatus{Online: false, Configured: true, Error: fmt.Sprintf("HTTP %d", statusCode)}
@@ -4820,7 +4849,7 @@ func (a *App) pingResolvedMaclawLLMConfigWithAuthStatus(llmCfg corelib.MaclawLLM
 		err2 = probeErr
 	}
 
-	statusCode, err2 := maclawLLMProbeStatus(llm.BuildOpenAIChatCompletionsEndpoint(probeBaseURL), probeCfg)
+	statusCode, err2 := maclawLLMProbeStatus(http.MethodHead, llm.BuildOpenAIChatCompletionsEndpoint(probeBaseURL), probeCfg)
 	if err2 == nil {
 		if authenticationFailuresAreOffline && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) {
 			return MaclawLLMStatus{Online: false, Configured: true, Error: fmt.Sprintf("HTTP %d", statusCode)}
@@ -5022,7 +5051,7 @@ func (a *App) RefreshMaclawLLMProfileHealth() (MaclawLLMProfilePanelState, error
 		}
 	}
 	// Health is returned directly to the probing caller. Do not broadcast an
-	// event here: App owns the 60-second refresh, and an event fan-out on every
+	// event here: App owns the periodic refresh, and an event fan-out on every
 	// probe creates needless runtime traffic without changing any assignment.
 	return a.GetMaclawLLMProfilePanelState()
 }
@@ -5181,7 +5210,7 @@ func dedupeStrings(values []string) []string {
 // credentials are accepted or at least the server is alive).  Only network
 // errors and 5xx are treated as "offline".
 func maclawLLMProbe(endpoint string, cfg corelib.MaclawLLMConfig) (bool, error) {
-	statusCode, err := maclawLLMProbeStatus(endpoint, cfg)
+	statusCode, err := maclawLLMProbeStatus(http.MethodGet, endpoint, cfg)
 	if err != nil {
 		return false, err
 	}
@@ -5190,8 +5219,8 @@ func maclawLLMProbe(endpoint string, cfg corelib.MaclawLLMConfig) (bool, error) 
 
 // maclawLLMProbeStatus retains the response classification needed by profile
 // health without exposing raw responses or headers to callers.
-func maclawLLMProbeStatus(endpoint string, cfg corelib.MaclawLLMConfig) (int, error) {
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+func maclawLLMProbeStatus(method, endpoint string, cfg corelib.MaclawLLMConfig) (int, error) {
+	req, err := http.NewRequest(method, endpoint, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -5218,9 +5247,38 @@ func maclawLLMProbeStatus(endpoint string, cfg corelib.MaclawLLMConfig) (int, er
 	return resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
 }
 
-// maclawAnthropicProbe sends a tiny Messages API request via anthropic-sdk-go
-// to verify the configured Anthropic-compatible endpoint.
+// maclawAnthropicProbe verifies the configured Anthropic-compatible endpoint.
+// It first tries GET {base}/v1/models — free, no tokens consumed — and only
+// falls back to a tiny billable Messages request when the catalog route is
+// absent or unusable, so a healthy endpoint costs the probe nothing.
 func maclawAnthropicProbe(cfg corelib.MaclawLLMConfig) (bool, error) {
+	// Strip any message-route suffix first: configs keep full endpoints like
+	// ".../v1/messages", and appending /v1/models to that hits nothing.
+	base := corelib.AnthropicBaseURL(cfg.URL)
+	if base != "" {
+		// AnthropicBaseURL already strips a trailing /v1, so the catalog
+		// route is always {base}/v1/models.
+		modelsEndpoint := base + "/v1/models"
+		if req, reqErr := http.NewRequest(http.MethodGet, modelsEndpoint, nil); reqErr == nil {
+			req.Header.Set("User-Agent", cfg.UserAgent())
+			req.Header.Set("anthropic-version", "2023-06-01")
+			corelib.SetAnthropicAuthHeaders(req, strings.TrimSpace(cfg.Key))
+			llm.ApplyProviderAuthHeaders(req, cfg)
+			corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+			if resp, doErr := maclawLLMPingClient.Do(req); doErr == nil {
+				code := resp.StatusCode
+				_, _ = io.ReadAll(io.LimitReader(resp.Body, 1024)) // drain for conn reuse
+				_ = resp.Body.Close()
+				// Any non-auth <500 answer proves reachability (4xx = auth or
+				// routing issue but the server is alive). 401/403 and 5xx fall
+				// through to the Messages probe so the result keeps the same
+				// authentication/server-failure signal it had before.
+				if code != http.StatusUnauthorized && code != http.StatusForbidden && code < 500 {
+					return true, nil
+				}
+			}
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	resp, err := llm.DoAnthropicRequestWithOptions(ctx, cfg, []interface{}{
@@ -6126,6 +6184,9 @@ func (a *App) ensureCodeGenToken() error {
 			log.Printf("[CodeGen] save refreshed token failed: %v", err)
 			return fmt.Errorf("CodeGen 认证刷新成功但保存失败: %w", err)
 		}
+		if err := a.saveCodeGenSSOCredential(updated); err != nil {
+			return fmt.Errorf("CodeGen 认证刷新成功但保存凭据失败: %w", err)
+		}
 		return nil
 	}
 
@@ -6267,6 +6328,13 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 	if err := a.SaveMaclawLLMProviders(updatedProviders, codegenProviderName); err != nil {
 		return CodeGenSSOInfo{}, fmt.Errorf("保存 MaClaw 配置失败: %w", err)
 	}
+	savedProvider, err := a.persistedCodeGenSSOProvider()
+	if err != nil {
+		return CodeGenSSOInfo{}, fmt.Errorf("读取 CodeGen 配置失败: %w", err)
+	}
+	if err := a.saveCodeGenSSOCredential(savedProvider); err != nil {
+		return CodeGenSSOInfo{}, fmt.Errorf("保存 CodeGen 凭据失败: %w", err)
+	}
 
 	// 4. 如果拿到了 email，顺手存入配置，供后续自动注册 Hub 使用
 	if result.Email != "" {
@@ -6334,6 +6402,50 @@ func appendUniqueCodeGenModel(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
+}
+
+func (a *App) persistedCodeGenSSOProvider() (corelib.MaclawLLMProvider, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.MaclawLLMProvider{}, err
+	}
+	for _, provider := range cfg.MaclawLLMProviders {
+		if strings.EqualFold(strings.TrimSpace(provider.Name), codegenProviderName) && strings.EqualFold(strings.TrimSpace(provider.AuthType), "sso") {
+			return corelib.NormalizeCodeGenSSOProvider(provider), nil
+		}
+	}
+	return corelib.MaclawLLMProvider{}, fmt.Errorf("CodeGen SSO provider not found")
+}
+
+func (a *App) saveCodeGenSSOCredential(provider corelib.MaclawLLMProvider) error {
+	if a.credentialStore == nil {
+		return nil
+	}
+	provider = corelib.NormalizeCodeGenSSOProvider(provider)
+	accessToken := strings.TrimSpace(provider.Key)
+	if accessToken == "" {
+		return fmt.Errorf("CodeGen SSO credential is empty")
+	}
+	return a.credentialStore.Modify("codegen", func(old *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		cred := &oauth.StoredCredential{
+			Type:         "sso",
+			AccessToken:  accessToken,
+			RefreshToken: strings.TrimSpace(provider.RefreshToken),
+			ExpiresAt:    provider.TokenExpiresAt,
+			BaseURL:      strings.TrimSpace(provider.URL),
+			ModelID:      strings.TrimSpace(provider.Model),
+		}
+		if old != nil {
+			cred.Email = old.Email
+			if cred.BaseURL == "" {
+				cred.BaseURL = old.BaseURL
+			}
+			if cred.ModelID == "" {
+				cred.ModelID = old.ModelID
+			}
+		}
+		return cred, nil
+	})
 }
 
 // codegenClaudeRemoteBaseURL is the remote Anthropic-compatible base URL used
@@ -6808,6 +6920,16 @@ type CodeGenSSOEmbeddedResult struct {
 //
 // 无需轮询，token 通过 HTTP 回调直接获取。
 func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
+	return a.startCodeGenSSOEmbedded(false)
+}
+
+// StartCodeGenProviderSSOEmbedded signs in from provider settings without
+// changing the current assistant provider or the Hub registration email.
+func (a *App) StartCodeGenProviderSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
+	return a.startCodeGenSSOEmbedded(true)
+}
+
+func (a *App) startCodeGenSSOEmbedded(providerOnly bool) (CodeGenSSOEmbeddedResult, error) {
 	if brand.Current().ID != "qianxin" {
 		return CodeGenSSOEmbeddedResult{}, fmt.Errorf("内嵌扫码仅支持奇安信品牌")
 	}
@@ -6839,29 +6961,40 @@ func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
 			return
 		}
 
-		// 后处理：与 StartCodeGenSSO 完全一致
-		data := a.GetMaclawLLMProviders()
-		updatedProviders := upsertCodeGenProvider(data.Providers, result)
-
-		if err := a.SaveMaclawLLMProviders(updatedProviders, codegenProviderName); err != nil {
-			resultCh <- ssoPollingResult{err: fmt.Errorf("保存 MaClaw 配置失败: %w", err)}
+		if ctx.Err() != nil {
+			resultCh <- ssoPollingResult{err: context.Canceled}
 			return
 		}
-
-		if result.Email != "" {
-			if appCfg, err := a.LoadConfig(); err == nil {
-				if shouldPatchRemoteEmailFromLogin(appCfg.RemoteEmail, result.Email) {
-					_, _ = a.PatchConfigFields(map[string]interface{}{"remote_email": result.Email})
-				}
-			}
-		}
-
-		resultCh <- ssoPollingResult{
-			info: CodeGenSSOInfo{Message: "SSO 认证成功", Email: result.Email, ModelID: result.ModelID},
-		}
+		info, err := a.finishCodeGenEmbeddedSSO(result, providerOnly)
+		resultCh <- ssoPollingResult{info: info, err: err}
 	}()
 
 	return CodeGenSSOEmbeddedResult{}, nil
+}
+
+func (a *App) finishCodeGenEmbeddedSSO(result oauth.CodeGenSSOResult, providerOnly bool) (CodeGenSSOInfo, error) {
+	data := a.GetMaclawLLMProviders()
+	updatedProviders := upsertCodeGenProvider(data.Providers, result)
+	current := codegenProviderName
+	if providerOnly {
+		current = data.Current
+	}
+	if err := a.SaveMaclawLLMProviders(updatedProviders, current); err != nil {
+		return CodeGenSSOInfo{}, fmt.Errorf("保存 MaClaw 配置失败: %w", err)
+	}
+	savedProvider, err := a.persistedCodeGenSSOProvider()
+	if err != nil {
+		return CodeGenSSOInfo{}, fmt.Errorf("读取 CodeGen 配置失败: %w", err)
+	}
+	if err := a.saveCodeGenSSOCredential(savedProvider); err != nil {
+		return CodeGenSSOInfo{}, fmt.Errorf("保存 CodeGen 凭据失败: %w", err)
+	}
+	if !providerOnly && result.Email != "" {
+		if appCfg, err := a.LoadConfig(); err == nil && shouldPatchRemoteEmailFromLogin(appCfg.RemoteEmail, result.Email) {
+			_, _ = a.PatchConfigFields(map[string]interface{}{"remote_email": result.Email})
+		}
+	}
+	return CodeGenSSOInfo{Message: "SSO 认证成功", Email: result.Email, ModelID: result.ModelID}, nil
 }
 
 // WaitCodeGenSSOResult 阻塞等待内嵌 SSO 轮询结果。
@@ -7001,7 +7134,7 @@ func preserveManagedAuthSecrets(incoming, existing []corelib.MaclawLLMProvider) 
 		if strings.TrimSpace(p.OAuthAccessToken) == "" && strings.TrimSpace(old.OAuthAccessToken) != "" {
 			incoming[i].OAuthAccessToken = old.OAuthAccessToken
 		}
-		if p.TokenExpiresAt == 0 && old.TokenExpiresAt != 0 {
+		if !newGrant && p.TokenExpiresAt == 0 && old.TokenExpiresAt != 0 {
 			incoming[i].TokenExpiresAt = old.TokenExpiresAt
 		}
 	}

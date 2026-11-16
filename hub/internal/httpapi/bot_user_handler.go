@@ -333,6 +333,21 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 				writeBotUserError(w, r, principal, err, clientMessageID)
 				return
 			}
+			if admission.Joined {
+				// This press did not start a turn. A run id here is the one
+				// already running, and answering 202 with it makes the client
+				// wait on that run as if this press had started it.
+				reply := admission.Reply
+				if strings.TrimSpace(reply.Text) == "" {
+					reply.Text = botmgmt.DesktopContinueJoinedLine
+					reply.SendToUser = reply.Text
+				}
+				writeJSON(w, http.StatusOK, struct {
+					botmgmt.Reply
+					Joined bool `json:"joined"`
+				}{Reply: reply, Joined: true})
+				return
+			}
 			if admission.Queued || (admission.Accepted && !admission.Settled) || (admission.Kind != "" && admission.Kind != "new") {
 				status := http.StatusOK
 				if admission.Queued || (admission.Accepted && !admission.Settled && strings.TrimSpace(admission.Reply.Text) == "") {

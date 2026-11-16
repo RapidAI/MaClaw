@@ -2,6 +2,7 @@ import { BotAvatar } from '../BotAvatar';
 import type { BotAppearance } from '../botAppearance';
 import { useCallback, useEffect, useState } from 'react';
 import { BotFileArtifactCard } from '../BotFileArtifactCard';
+import { visibleDesktopText } from '../desktopHandoff';
 import { BotMessageBody, botMessageIsStructured } from '../botMessageBody';
 import { botName, type BotRef, type SaidItem } from './botCollab';
 
@@ -153,7 +154,8 @@ function SaidEntry({ item, bots, lookOf, lang, onOpenFile, ensureFile, loadFile,
     // The "文件：" line stays until the picture is actually on screen, so a
     // slow fetch does not leave an empty gap under the name.
     const pictureShown = pictures.length > 0 && pictures.every(file => ready[file.name] && !failed[file.name]);
-    const hideLabel = pictureShown && files.every(saidFileIsImage) && saidTextIsOnlyFileLabel(item.text || '', pictures);
+    const saidText = visibleDesktopText(item.text || '', lang);
+    const hideLabel = pictureShown && files.every(saidFileIsImage) && saidTextIsOnlyFileLabel(saidText, pictures);
     const bot = bots.find(b => b.id === item.from) || { id: item.from, title: item.from };
     const chips = files.filter(file => !pictures.some(picture => picture.name === file.name) || failed[file.name]);
     const documents = chips.filter(file => !saidFileIsImage(file));
@@ -165,10 +167,10 @@ function SaidEntry({ item, bots, lookOf, lang, onOpenFile, ensureFile, loadFile,
                 {botName(bots, item.from, lang)}
                 {item.created_at ? <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time> : null}
             </span>
-            {!hideLabel && item.text ? (
-                botMessageIsStructured(item.text)
-                    ? <div className="desktop-bot-chat__bubble desktop-bot-chat__bubble--assistant"><BotMessageBody text={item.text} /></div>
-                    : <div className="desktop-bot-chat__bubble desktop-bot-chat__bubble--assistant is-plain">{item.text}</div>
+            {!hideLabel && saidText ? (
+                botMessageIsStructured(saidText)
+                    ? <div className="desktop-bot-chat__bubble desktop-bot-chat__bubble--assistant"><BotMessageBody text={saidText} /></div>
+                    : <div className="desktop-bot-chat__bubble desktop-bot-chat__bubble--assistant is-plain">{saidText}</div>
             ) : null}
             {pictures.filter(file => !failed[file.name]).map(file => (
                 <SaidPicture key={file.sha256 || file.name} noteId={item.id} name={file.name} loadFile={loadFile as NonNullable<typeof loadFile>} onOpenShot={onOpenShot} openLabel={openLabel} onReady={onReady} onFail={onFail} />

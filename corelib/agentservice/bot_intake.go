@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -29,6 +30,10 @@ type BotIntakeInput struct {
 	Earlier []string         `json:"earlier,omitempty"`
 	Running []BotIntakeRun   `json:"running,omitempty"`
 	Timers  []BotIntakeTimer `json:"timers,omitempty"`
+	// NoDesktop marks a bot created with desktop_mode=none. The decision
+	// prompt then names the bot's real surface, so a rewritten instruction
+	// cannot order desktop work the bot has no way to do.
+	NoDesktop bool `json:"no_desktop,omitempty"`
 }
 
 // BotIntakeTimer is a timer this bot already has. A later message that only
@@ -126,6 +131,22 @@ When the person has confirmed that spec, or the spec is complete and they told y
 
 phase is execute or plan. execute is the default. Use plan when spec is true and not yet settled, and when this message itself orders something destructive or irreversible: deleting the person's own data, paying, wiping a machine, or sending a message to many other people. Destructive work stays spec false and kind new. Fetching, writing, publishing, and continuing work already arranged are execute when spec is false. A follow-up that continues a running task, or answers a question that is not about an armed timer, is kind continue or reply and phase execute. A follow-up that only fills in an armed timer stays kind schedule. If you are unsure and spec is false, phase is execute.`
 
+// botIntakeNoDesktopClause tells the decision what a computerless bot can
+// run. In the shared prompt "the desktop helper" and "desktop work" name
+// this bot and the work its own tools can do — a rewritten instruction or
+// spec that mentions a desktop, a screen, or a screenshot orders a surface
+// that does not exist, which is how a no-desktop bot ended up promising
+// screenshot proof.
+const botIntakeNoDesktopClause = "\n\nThis bot has no computer and no desktop. Wherever this prompt says \"the desktop assistant\", \"the desktop helper\", or \"desktop work\", it means this bot and the work its own tools do — answering, searching the web, fetching pages, ssh, knowledge, mailbox, timers, and making files such as PDFs that arrive attached to the chat. kind, instruction, spec, and ack must not mention a desktop, a screen, a window, a screenshot, or files on a computer, and must not order work that needs one. ack may promise a chat file such as a PDF, and must only promise what those tools can do; it cannot promise messaging other bots, operating computers, or anything else outside that list. When the person asks for desktop work, still answer honestly about the limit in ack rather than writing an instruction the bot cannot do."
+
+// botIntakeSystemFor returns the decision prompt for this bot's surface.
+func botIntakeSystemFor(noDesktop bool) string {
+	if !noDesktop {
+		return botIntakeSystem
+	}
+	return botIntakeSystem + botIntakeNoDesktopClause
+}
+
 // IntakeBotMessage decides what a message does. A classifier that fails,
 // times out, or answers something unusable yields a new task whose
 // instruction is the person's own words.
@@ -133,9 +154,16 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 	bot := strings.TrimSpace(in.BotID)
 	content := strings.TrimSpace(in.Content)
 	fallback := BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Reason: "fallback"}
-	if _, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID); err != nil {
+	inst, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID)
+	if err != nil {
 		return BotIntake{}, err
 	}
+	// The instance record is authoritative: a caller that forgot (or
+	// downgraded) the no_desktop flag cannot give this bot a surface it
+	// does not have, and a marked bot keeps the restriction even when the
+	// request body drops it.
+	noDesktop := in.NoDesktop ||
+		strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
 	if bot == "" || botOfClientSessionKey(bot) != bot {
 		return BotIntake{}, ErrBotThreadsBadBot
 	}
@@ -164,7 +192,7 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 	}
 	done := make(chan answer, 1)
 	go func() {
-		raw, err := classify(cctx, botIntakeSystem, user)
+		raw, err := classify(cctx, botIntakeSystemFor(noDesktop), user)
 		done <- answer{raw, err}
 	}()
 	var got answer
@@ -727,10 +755,22 @@ const specRefineSystem = `You write the hidden task spec for one desktop bot. Th
 
 instruction is the whole spec in the language of the latest message. Use these labels, each on its own line: 目标, 约束, 完成标准, 还缺. 目标 is the outcome. 约束 is what must not be done, from what was already said. 完成标准 is how the finished job is checked. 还缺 is the one fact only this person knows, or empty when nothing is missing. Keep every fact already written under 目标, 约束, and 完成标准. While 还缺 is open, put the latest message on the 这次补充 line only. Leave 目标, 约束, 完成标准, and the open 还缺 as they are. Keep a 这次补充 line that is already written. A line under 这次补充 does not by itself close 还缺. Do not drop 目标 or 完成标准 that are already written. Do not clear an open 还缺. Do not invent sites, files, or steps they did not ask for. Do not say 规划模式, 規劃模式, or plan mode.`
 
+// specRefineNoDesktopClause keeps a computerless bot's card off the surface
+// the intake prompt must not name either.
+const specRefineNoDesktopClause = "\n\nThis bot has no computer and no desktop. 目标, 约束, 完成标准, 还缺, and 这次补充 must not mention a desktop, a screen, a window, or a screenshot, and must not order work that needs one."
+
+// specRefineSystemFor returns the spec rewrite prompt for this bot's surface.
+func specRefineSystemFor(noDesktop bool) string {
+	if !noDesktop {
+		return specRefineSystem
+	}
+	return specRefineSystem + specRefineNoDesktopClause
+}
+
 // RefineOpenSpec rewrites the open spec in the background. gen is the
 // generation NoteSpec returned for this turn. A newer message or a settled
 // job makes the write drop.
-func RefineOpenSpec(ctx context.Context, tenant, user, bot string, gen uint64, draft, latest string, earlier []string, classify BotIntakeClassifier) {
+func RefineOpenSpec(ctx context.Context, tenant, user, bot string, gen uint64, draft, latest string, earlier []string, noDesktop bool, classify BotIntakeClassifier) {
 	draft = strings.TrimSpace(draft)
 	if classify == nil || gen == 0 || draft == "" || desktopbot.SpecGen(tenant, user, bot) != gen {
 		return
@@ -761,7 +801,7 @@ func RefineOpenSpec(ctx context.Context, tenant, user, bot string, gen uint64, d
 	}
 	b.WriteString("\nlatest message:\n")
 	b.WriteString(oneLineRunes(latest, 800))
-	raw, err := classify(cctx, specRefineSystem, b.String())
+	raw, err := classify(cctx, specRefineSystemFor(noDesktop), b.String())
 	if err != nil || desktopbot.SpecGen(tenant, user, bot) != gen {
 		return
 	}

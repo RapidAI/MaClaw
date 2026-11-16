@@ -139,18 +139,27 @@ func TestSetPetRuntimeStateOnManager(t *testing.T) {
 // dutyRestoreWindow records the duty push, including a cue the noop window drops.
 type dutyRestoreWindow struct {
 	mockFloatingWindow
-	ttl   int
-	event string
-	cue   string
+	ttl     int
+	event   string
+	cue     string
+	applies int
+	lines   []string
 }
 
 func (w *dutyRestoreWindow) ApplyPetDuty(state string, ttlMs int, event, cue string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.applies++
 	w.runtimeState = state
 	w.ttl = ttlMs
 	w.event = event
 	w.cue = cue
+}
+
+func (w *dutyRestoreWindow) SetPetPresenceLine(line string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.lines = append(w.lines, line)
 }
 
 func (w *dutyRestoreWindow) SetPetRuntimeState(state string, ttlMs int) {
@@ -198,6 +207,40 @@ func TestDutyRestoreKeepsOnlyTheLivePose(t *testing.T) {
 	pose, ttl, event, cue = win.snapshot()
 	if pose != string(petpack.StateThinking) || ttl != 0 || event != "" || cue != "" {
 		t.Fatalf("thinking restore = %s ttl=%d event=%q cue=%q", pose, ttl, event, cue)
+	}
+}
+
+func TestPresenceLineDoesNotReplayThePose(t *testing.T) {
+	m := NewFloatingAssistantManager(nil)
+	win := &dutyRestoreWindow{}
+	m.window = win
+	m.applyDuty(petDutyDecision{
+		Pose: string(petpack.StateThinking), Event: "task_started", Cue: "focus", Line: "正在做",
+	})
+	m.applyDuty(petDutyDecision{Unchanged: true, LineChanged: true, Line: "在改定价页"})
+	win.mu.Lock()
+	applies := win.applies
+	lines := append([]string(nil), win.lines...)
+	win.mu.Unlock()
+	if applies != 1 || len(lines) != 2 || lines[0] != "正在做" || lines[1] != "在改定价页" {
+		t.Fatalf("applies=%d lines=%q", applies, lines)
+	}
+
+	m.mu.Lock()
+	m.companionPose = true
+	m.mu.Unlock()
+	m.applyDuty(petDutyDecision{
+		Pose: string(petpack.StateListening), Event: "task_needs_you", Cue: "notice", Line: "要你看一下",
+	})
+	win.mu.Lock()
+	applies = win.applies
+	last := ""
+	if len(win.lines) > 0 {
+		last = win.lines[len(win.lines)-1]
+	}
+	win.mu.Unlock()
+	if applies != 1 || last != "要你看一下" {
+		t.Fatalf("voice hold applies=%d last=%q", applies, last)
 	}
 }
 

@@ -1007,29 +1007,36 @@ func (r *chatTaskRegistry) notePetDuty(snap AIAssistantChatTask) {
 	if !chatTaskSessionAllowed(snap.SessionKey, r.codingWorkbench(snap.SessionKey)) {
 		return
 	}
-	r.handler.app.notePetDuty("task:"+snap.ID, snap.Status, false)
+	fact, action := petPresenceFactFor(snap.Status, snap.Title, snap.Progress)
+	r.handler.app.notePetDutyWithLine("task:"+snap.ID, snap.Status, fact, action, false)
 }
 
-func (r *chatTaskRegistry) dutyOpen() [][2]string {
+type petDutyOpenItem struct {
+	ID, Status, Title, Progress, Session string
+}
+
+func (r *chatTaskRegistry) dutyOpen() []petDutyOpenItem {
 	if r == nil {
 		return nil
 	}
 	r.mu.Lock()
-	type item struct{ id, status, session string }
-	items := make([]item, 0, len(r.tasks))
+	items := make([]petDutyOpenItem, 0, len(r.tasks))
 	for _, task := range r.tasks {
 		if task == nil || task.Status.terminal() {
 			continue
 		}
-		items = append(items, item{task.ID, string(task.Status), task.SessionKey})
+		items = append(items, petDutyOpenItem{
+			ID: task.ID, Status: string(task.Status), Title: task.Title,
+			Progress: task.Progress, Session: task.SessionKey,
+		})
 	}
 	r.mu.Unlock()
-	out := make([][2]string, 0, len(items))
+	out := make([]petDutyOpenItem, 0, len(items))
 	for _, item := range items {
-		if !chatTaskSessionAllowed(item.session, r.codingWorkbench(item.session)) {
+		if !chatTaskSessionAllowed(item.Session, r.codingWorkbench(item.Session)) {
 			continue
 		}
-		out = append(out, [2]string{item.id, item.status})
+		out = append(out, item)
 	}
 	return out
 }

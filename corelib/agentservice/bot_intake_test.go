@@ -313,7 +313,7 @@ func TestRefineOpenSpecWritesTheCardAndDropsWhenTheTurnMoves(t *testing.T) {
 	desktopbot.ResetSpecMemory()
 	t.Cleanup(desktopbot.ResetSpecMemory)
 	gen := desktopbot.NoteSpec("t", "u", "bot", "周报，收件人未定")
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, "周报，收件人未定", "做一份周报", nil, func(_ context.Context, system, user string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, "周报，收件人未定", "做一份周报", nil, false, func(_ context.Context, system, user string) (string, error) {
 		if !strings.Contains(system, "完成标准") || !strings.Contains(user, "周报，收件人未定") {
 			t.Fatalf("refine prompt missing the draft:\n%s\n%s", system, user)
 		}
@@ -324,12 +324,79 @@ func TestRefineOpenSpecWritesTheCardAndDropsWhenTheTurnMoves(t *testing.T) {
 		t.Fatalf("card = %q", card)
 	}
 	desktopbot.NoteSpec("t", "u", "bot", "周报发给老王")
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, "周报，收件人未定", "做一份周报", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, "周报，收件人未定", "做一份周报", nil, false, func(context.Context, string, string) (string, error) {
 		t.Fatal("a moved turn was refined again")
 		return "", nil
 	})
 	if desktopbot.SpecOf("t", "u", "bot") != "周报发给老王" {
 		t.Fatalf("newer spec = %q", desktopbot.SpecOf("t", "u", "bot"))
+	}
+}
+
+// A bot created without a computer gets the capability clause, so a
+// rewritten instruction or spec cannot order a desktop it cannot reach.
+func TestIntakeNoDesktopBotGetsTheSurfaceClause(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	var system string
+	classify := func(_ context.Context, s, _ string) (string, error) {
+		system = s
+		return `{"kind":"new","instruction":"查北京天气","ack":"我去查。","pace":"direct"}`, nil
+	}
+	in := BotIntakeInput{BotID: "bot_p", Content: "北京天气", NoDesktop: true}
+	if _, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, in, classify); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(system, "has no computer and no desktop") {
+		t.Fatalf("no-desktop prompt lacks the clause: %s", system)
+	}
+	system = ""
+	in.NoDesktop = false
+	if _, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, in, classify); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(system, "has no computer and no desktop") {
+		t.Fatalf("desktop prompt picked up the clause: %s", system)
+	}
+}
+
+// The instance record is authoritative: even when the request body forgets
+// no_desktop, a bot marked hub_bot_desktop=none still gets the clause.
+func TestIntakeNoDesktopInstanceMarkBeatsTheRequest(t *testing.T) {
+	svc, p, _ := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	inst, err := svc.CreateInstance(context.Background(), p, CreateInstanceInput{
+		Name:     "NoDesktop",
+		Metadata: map[string]string{"hub_bot_desktop": "none"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var system string
+	if _, err := svc.IntakeBotMessage(context.Background(), p, inst.ID,
+		BotIntakeInput{BotID: "bot_p", Content: "北京天气"},
+		func(_ context.Context, s, _ string) (string, error) {
+			system = s
+			return `{"kind":"new","instruction":"查北京天气","ack":"我去查。","pace":"direct"}`, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(system, "has no computer and no desktop") {
+		t.Fatalf("marked bot lost the clause: %s", system)
+	}
+}
+
+func TestRefineOpenSpecNoDesktopCarriesTheSameClause(t *testing.T) {
+	desktopbot.ResetSpecMemory()
+	t.Cleanup(desktopbot.ResetSpecMemory)
+	gen := desktopbot.NoteSpec("t", "u", "bot", "周报，收件人未定")
+	var system string
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, "周报，收件人未定", "做一份周报", nil, true, func(_ context.Context, s, _ string) (string, error) {
+		system = s
+		return `{"instruction":"目标：一份周报\n完成标准：指定的人收到文件\n还缺：发给谁"}`, nil
+	})
+	if !strings.Contains(system, "has no computer and no desktop") {
+		t.Fatalf("no-desktop refine lacks the clause: %s", system)
 	}
 }
 
@@ -657,7 +724,7 @@ func TestRefineKeepsTheDoneCheck(t *testing.T) {
 	t.Cleanup(desktopbot.ResetSpecMemory)
 	const card = "目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁"
 	gen := desktopbot.NoteSpec("t", "u", "bot", card)
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "随便", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "随便", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"周报"}`, nil
 	})
 	if desktopbot.SpecOf("t", "u", "bot") != card {
@@ -806,13 +873,13 @@ func TestRefineLeavesTheAnswerOnTheSupplement(t *testing.T) {
 	t.Cleanup(desktopbot.ResetSpecMemory)
 	const card = "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给谁"
 	gen := desktopbot.NoteSpec("t", "u", "bot", card)
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"目标：把周报发给老王\n完成标准：文件送到指定的人\n还缺：发给谁"}`, nil
 	})
 	if desktopbot.SpecOf("t", "u", "bot") != card {
 		t.Fatalf("rewrite moved the answer into the goal: %q", desktopbot.SpecOf("t", "u", "bot"))
 	}
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给谁\n这次补充：发给老王"}`, nil
 	})
 	if !strings.Contains(desktopbot.SpecOf("t", "u", "bot"), "这次补充：发给老王") || !strings.Contains(desktopbot.SpecOf("t", "u", "bot"), "还缺：发给谁") {
@@ -825,13 +892,13 @@ func TestRefineKeepsTheChoiceInsideTheOpenPoint(t *testing.T) {
 	t.Cleanup(desktopbot.ResetSpecMemory)
 	const card = "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给老王还是老李"
 	gen := desktopbot.NoteSpec("t", "u", "bot", card)
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"目标：把周报发给老王\n完成标准：文件送到指定的人\n还缺：发给老王还是老李"}`, nil
 	})
 	if desktopbot.SpecOf("t", "u", "bot") != card {
 		t.Fatalf("rewrite lifted the choice into the goal: %q", desktopbot.SpecOf("t", "u", "bot"))
 	}
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给老王还是老李\n这次补充：发给老王"}`, nil
 	})
 	if !strings.Contains(desktopbot.SpecOf("t", "u", "bot"), "这次补充：发给老王") || !strings.Contains(desktopbot.SpecOf("t", "u", "bot"), "还缺：发给老王还是老李") {
@@ -844,7 +911,7 @@ func TestRefineKeepsTheChoiceWithPunctuation(t *testing.T) {
 	t.Cleanup(desktopbot.ResetSpecMemory)
 	const card = "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给老王还是老李"
 	gen := desktopbot.NoteSpec("t", "u", "bot", card)
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王。", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王。", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"目标：把周报发给老王\n完成标准：文件送到指定的人\n还缺：发给老王还是老李"}`, nil
 	})
 	if desktopbot.SpecOf("t", "u", "bot") != card {
@@ -863,7 +930,7 @@ func TestRefineKeepsTheWrittenFacts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "随便", nil, func(context.Context, string, string) (string, error) {
+		RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "随便", nil, false, func(context.Context, string, string) (string, error) {
 			return string(body), nil
 		})
 		if desktopbot.SpecOf("t", "u", "bot") != card {
@@ -873,7 +940,7 @@ func TestRefineKeepsTheWrittenFacts(t *testing.T) {
 	keep("目标：一份月报\n约束：不另发平台\n完成标准：老王收到文件\n还缺：发给谁")
 	keep("目标：一份周报\n约束：不另发平台\n完成标准：老王收到文件\n还缺：用什么格式")
 	keep("目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁")
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "随便", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "随便", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"目标：一份周报，限一页\n约束：不另发平台\n完成标准：老王收到文件\n还缺：发给谁"}`, nil
 	})
 	got := desktopbot.SpecOf("t", "u", "bot")
@@ -882,7 +949,7 @@ func TestRefineKeepsTheWrittenFacts(t *testing.T) {
 	}
 	const ascii = "目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁\n这次补充:发给老王"
 	gen = desktopbot.NoteSpec("t", "u", "bot", ascii)
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, ascii, "发给老王", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, ascii, "发给老王", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁"}`, nil
 	})
 	if desktopbot.SpecOf("t", "u", "bot") != ascii {
@@ -895,7 +962,7 @@ func TestRefineKeepsTheOpenPoint(t *testing.T) {
 	t.Cleanup(desktopbot.ResetSpecMemory)
 	const card = "目标：一份周报\n完成标准：老王收到文件\n还缺：发给谁"
 	gen := desktopbot.NoteSpec("t", "u", "bot", card)
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "一份周报", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "一份周报", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"目标：一份周报\n完成标准：老王收到文件"}`, nil
 	})
 	if desktopbot.SpecOf("t", "u", "bot") != card {
@@ -908,7 +975,7 @@ func TestRefineKeepsTheSupplementLine(t *testing.T) {
 	t.Cleanup(desktopbot.ResetSpecMemory)
 	const card = "目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给谁\n这次补充：发给老王"
 	gen := desktopbot.NoteSpec("t", "u", "bot", card)
-	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, func(context.Context, string, string) (string, error) {
+	RefineOpenSpec(context.Background(), "t", "u", "bot", gen, card, "发给老王", nil, false, func(context.Context, string, string) (string, error) {
 		return `{"instruction":"目标：一份周报\n完成标准：文件送到指定的人\n还缺：发给谁"}`, nil
 	})
 	if desktopbot.SpecOf("t", "u", "bot") != card {

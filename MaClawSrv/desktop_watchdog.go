@@ -563,8 +563,9 @@ func desktopWatchdogGrant(runID string, used, toolCalls int) int {
 // result message to the person, on success and on failure: a run that ended
 // without text gets one from its publish record, the task ledger or its
 // error. A cancelled run (the person said stop) is answered by the stop
-// itself, and a hand-off has its own message.
-func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *agentservice.Message, runErr error, handoff bool) *agentservice.Message {
+// itself, and a hand-off has its own message. noDesktop marks a bot with no
+// computer: its fallback sentence must not point at a screen it never had.
+func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *agentservice.Message, runErr error, handoff, noDesktop bool) *agentservice.Message {
 	if run == nil {
 		return msg
 	}
@@ -640,8 +641,14 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 	if text == "" {
 		if runErr != nil || run.Status == agentservice.RunStatusFailed {
 			text = "这件我没做成，中途出了问题，我停在当前页面，没有重复提交任何东西。你说一声我再试一次。"
+			if noDesktop {
+				text = "这件我没做成，中途出了问题。你说一声我再试一次。"
+			}
 		} else {
 			text = "这件做完了，桌面上就是结果，你看一眼。"
+			if noDesktop {
+				text = "这件做完了。"
+			}
 		}
 	}
 	if msg == nil {
@@ -809,6 +816,24 @@ func desktopRunWorked(runID string) bool {
 		return !failed
 	}
 	return true
+}
+
+// noDesktopTaskOutcomeMetadata measures a computerless bot's turn the way
+// desktopTaskOutcomeMetadata measures a desktop one. There is no goal
+// ledger and no finish action without the desktop tool, so the reply
+// itself is the outcome: done when the run answered, awaiting_user when it
+// stopped to ask. The stamp is what lets the service promote the reply
+// into send_to_user, the sentence the feed shows (hub bot_69ee2c14,
+// run_03efc35d 2026-11-16: a complete answer stored on the run never
+// became a bubble, only the intake ack did).
+func noDesktopTaskOutcomeMetadata(msg agentservice.Message) map[string]string {
+	if strings.TrimSpace(msg.Metadata["response_source"]) == "ask_user" {
+		return map[string]string{agentservice.TaskOutcomeKey: agentservice.TaskOutcomeAwaitingUser}
+	}
+	if strings.TrimSpace(msg.Content) != "" {
+		return map[string]string{agentservice.TaskOutcomeKey: agentservice.TaskOutcomeDone}
+	}
+	return nil
 }
 
 // desktopTaskOutcomeMetadata is the assistant metadata the service turns

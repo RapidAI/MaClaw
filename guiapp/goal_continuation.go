@@ -2258,9 +2258,39 @@ func goalTerminalNotice(g *goal.Goal) (text string, asError bool) {
 			reason = "目标失败"
 		}
 		return reason, true
+	case goal.StatusComplete:
+		return goalCompletionReport(g, g.Summary), false
 	default:
 		return "", false
 	}
+}
+
+// goalCompletionReport is the closeout shared by the goal_complete tool
+// result and the transcript notice: what the goal did plus what the run cost.
+func goalCompletionReport(g *goal.Goal, summary string) string {
+	report := goal.FormatCompletionReport(g, summary)
+	if g == nil {
+		return report
+	}
+	if g.TokenBudget > 0 {
+		report += fmt.Sprintf("\nToken 使用: %d / %d", g.TokensUsed, g.TokenBudget)
+	}
+	report += fmt.Sprintf("\n总轮次: %d | 耗时: %ds", g.TurnsUsed, g.TimeUsedSeconds)
+	return report
+}
+
+// goalFailureReport is the closeout the goal_fail tool result and the
+// transcript notice share.
+func goalFailureReport(g *goal.Goal, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "目标失败"
+	}
+	if g == nil {
+		return "目标失败\n原因: " + reason
+	}
+	return fmt.Sprintf("目标失败\n目标: %s\n原因: %s\nToken 使用: %d | 总轮次: %d",
+		g.Objective, reason, g.TokensUsed, g.TurnsUsed)
 }
 
 func newGoalNoticeEvent(userID, text string, asError bool) AIContinuationEvent {

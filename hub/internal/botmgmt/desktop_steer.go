@@ -58,6 +58,7 @@ type desktopSteerRequest struct {
 	ContinueSession string
 	Action          string
 	Admit           bool
+	NoDesktop       bool
 	NodeID          string
 	Rec             *record
 	TokenRec        *record
@@ -275,6 +276,9 @@ func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest
 		"bot_id":  in.BotID,
 		"content": in.Content,
 		"phase":   in.Phase,
+	}
+	if in.NoDesktop {
+		body["no_desktop"] = true
 	}
 	if len(running) > 0 {
 		rows := make([]map[string]string, 0, len(running))

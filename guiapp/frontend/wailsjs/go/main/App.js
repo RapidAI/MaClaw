@@ -5794,6 +5794,10 @@ export function StartCodeGenSSOEmbedded() {
   return window['go']['main']['App']['StartCodeGenSSOEmbedded']();
 }
 
+export function StartCodeGenProviderSSOEmbedded() {
+  return window['go']['main']['App']['StartCodeGenProviderSSOEmbedded']();
+}
+
 export function StartKimiCodeOAuth() {
   return window['go']['main']['App']['StartKimiCodeOAuth']();
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"io"
 	"net/http"
 	"os"
@@ -256,6 +257,7 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
+	noDesktop := desktopPostHasNoDesktop(in.Metadata, metadata)
 	if botID != "" {
 		desktopNoteBotInstance(instanceID, botID)
 		desktopNoteRepoTenant(botID, desktopTenantID)
@@ -267,7 +269,7 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		// Returning 202 from this request must not release the desktop.
 		ownsRun := false
 		in.ExecutionOwner = &ownsRun
-		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, in.Content)
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
 		sess, run, err := s.svc.SendMessageAsync(r.Context(), p, r.PathValue("instanceId"), in)
 		if err != nil {
 			callErr = err
@@ -307,17 +309,23 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 	sess, run, msg, err := s.svc.SendMessage(shotCtx, p, shotID, in)
 	imageCount := 0
 	fileCount := 0
-	if err == nil && msg != nil && run != nil {
+	if err == nil && msg != nil && run != nil && !noDesktop {
 		// Hub bot messages arrive here: a turn that delegated replies with
 		// one sentence naming who has the task (desktop_delegate_reply.go).
 		msg.Content = desktopReplyAfterDelegation(shotID, run.ID, run.SessionID, msg.Content)
 	}
-	if err == nil {
+	if err == nil && !noDesktop {
 		imageCount = attachDesktopShot(msg, shot)
 		fileCount = attachDesktopFile(msg, shot)
 		if msg != nil {
 			msg.Content = correctDesktopAttachClaim(msg.Content, len(msg.Attachments))
 		}
+	} else if err == nil && msg != nil {
+		// PDF creation is independent of the desktop, but its file still
+		// travels through this turn's reply attachment slot.
+		fileCount = attachDesktopFile(msg, shot)
+		msg.Content = replaceLeakedMonologue(msg.Content)
+		msg.Content = correctNoDesktopAttachClaim(msg.Content, len(msg.Attachments))
 	}
 	handoff, attention := takeDesktopTurn(desktopTenantID, desktopUserID, shotID)
 	if err != nil {
@@ -503,6 +511,7 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	desktopUserID, desktopTenantID := rememberDesktopOwner(instanceID, metadata, p.UserID, p.TenantID)
+	noDesktop := desktopPostHasNoDesktop(in.Metadata, metadata)
 	shotID := strings.TrimSpace(r.PathValue("instanceId"))
 	botID := ""
 	if in.Metadata != nil {
@@ -516,7 +525,7 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	if wantsAsync {
 		ownsRun := false
 		in.ExecutionOwner = &ownsRun
-		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, in.Content)
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
 		run, err := s.svc.PostMessageAsync(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
 		if err != nil {
 			writeRedactedError(w, err, s.svc.DataRoot())
@@ -538,14 +547,18 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	shotCtx, shot := withDesktopShotSlot(r.Context())
 	noteDesktopRequest(shot, in.Content)
 	run, msg, err := s.svc.PostMessage(shotCtx, p, shotID, r.PathValue("sessionId"), in)
-	if err == nil {
+	if err == nil && !noDesktop {
 		dropUnaskedDesktopShot(shot, in.Content, msg)
 		if msg != nil && run != nil {
 			msg.Content = desktopReplyAfterDelegation(shotID, run.ID, run.SessionID, msg.Content)
 		}
 		images, files := publishDesktopReply(msg, shot)
 		desktopPictureNote(shot, msg, images, files)
-	} else if msg != nil {
+	} else if err == nil && msg != nil {
+		attachDesktopFile(msg, shot)
+		msg.Content = replaceLeakedMonologue(msg.Content)
+		msg.Content = correctNoDesktopAttachClaim(msg.Content, len(msg.Attachments))
+	} else if msg != nil && !noDesktop {
 		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 	}
 	handoff, attention := takeDesktopTurn(desktopTenantID, desktopUserID, shotID)
@@ -572,7 +585,7 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agen
 // desktopAsyncHooks hold the desktop for the detached run. The HTTP handler
 // returns as soon as the run exists. Finish stores the screenshot and the
 // handoff so a later read of the run can deliver them.
-func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, request ...string) (
+func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, noDesktop bool, request ...string) (
 	func(context.Context) context.Context,
 	func(context.Context, *agentservice.Run, *agentservice.Message, error),
 ) {
@@ -580,7 +593,11 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 	var occupyOwned *bool
 	var shot *desktopShotSlot
 	prepare := func(ctx context.Context) context.Context {
-		release, occupyOwned = occupyUserDesktopRun(ctx, tenantID, userID, instanceID)
+		if noDesktop {
+			release, occupyOwned = func() {}, nil
+		} else {
+			release, occupyOwned = occupyUserDesktopRun(ctx, tenantID, userID, instanceID)
+		}
 		next, slot := withDesktopShotSlot(ctx)
 		shot = slot
 		if len(request) > 0 {
@@ -619,16 +636,20 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 		}
 		images := 0
 		files := 0
-		if err == nil {
+		if err == nil && !noDesktop {
 			if len(request) > 0 {
 				dropUnaskedDesktopShot(shot, request[0], msg)
 			}
 			images, files = publishDesktopReply(msg, shot)
 			desktopPictureNote(shot, msg, images, files)
-		} else if msg != nil {
+		} else if err == nil && msg != nil {
+			files = attachDesktopFile(msg, shot)
+			msg.Content = replaceLeakedMonologue(msg.Content)
+			msg.Content = correctNoDesktopAttachClaim(msg.Content, len(msg.Attachments))
+		} else if msg != nil && !noDesktop {
 			msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 		}
-		if err == nil && msg != nil && run != nil {
+		if err == nil && msg != nil && run != nil && !noDesktop {
 			msg.Content = desktopReplyAfterDelegation(instanceID, run.ID, run.SessionID, msg.Content)
 			msg.Content = desktopReplyWithLink(run.ID, msg.Content)
 			if msg.Metadata == nil && strings.Contains(msg.Content, desktopUnconfirmedReply) {
@@ -636,12 +657,12 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 			}
 			desktopDropAskAfterPost(msg.Content, msg.Metadata)
 		}
-		if err == nil && msg != nil {
+		if err == nil && msg != nil && !noDesktop {
 			noteDesktopReplyHandoff(tenantID, userID, instanceID, msg.Content)
 		}
 		handoff, attention := takeDesktopTurn(tenantID, userID, instanceID)
 		// Exactly one result per task, on success and on failure.
-		msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID}, run, msg, err, handoff)
+		msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID}, run, msg, err, handoff, noDesktop)
 		storeDesktopTurnResult(run, msg, handoff, attention)
 		runID := ""
 		runStatus := ""
@@ -680,7 +701,7 @@ func desktopResumeExecutionHooks(p agentservice.Principal, inst agentservice.Ins
 	if inst.Metadata != nil {
 		botID = strings.TrimSpace(inst.Metadata[desktopBotMetadataKey])
 	}
-	return desktopAsyncHooks(tenant, user, inst.ID, botID, nil, ask)
+	return desktopAsyncHooks(tenant, user, inst.ID, botID, nil, strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone, ask)
 }
 
 func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

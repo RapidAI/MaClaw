@@ -2,7 +2,6 @@ package botmgmt
 
 import (
 	"context"
-	"errors"
 	"os"
 	"regexp"
 	"strings"
@@ -297,7 +296,7 @@ func (s *Service) runDispatchJob(tenantID, userID string, job dispatchJob) (bool
 	ctx = withDispatchNotes(ctx, job.noteIDs)
 	adm, err := admit(ctx, tenantID, userID, job.botID, job.content, "execute", job.key)
 	cancel()
-	if errors.Is(err, ErrDesktopBusy) {
+	if turnBusy(err) {
 		// A busy target waits in Hub's queue. The dispatch retry still
 		// runs; the same turn key makes a second admit a replay.
 		_, _ = s.enqueueDesktopMessage(tenantID, userID, job.botID, desktopQueueItem{

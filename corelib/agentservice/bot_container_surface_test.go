@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
@@ -31,6 +32,8 @@ func TestNoneDesktopBotDropsDesktopToolsAndKeepsServerWeb(t *testing.T) {
 		functionToolDefinition("computer_observe", "look at the screen", nil),
 		functionToolDefinition("bash", "host shell", nil),
 		functionToolDefinition("read_file", "read the host", nil),
+		functionToolDefinition("generate_pdf", "write to host workspace", nil),
+		functionToolDefinition("bot_generate_pdf", "deliver PDF in chat", nil),
 		functionToolDefinition("web_search", "search the public web", nil),
 		functionToolDefinition("web_fetch", "fetch a public page", nil),
 		functionToolDefinition("memory_search", "search memory", nil),
@@ -41,12 +44,12 @@ func TestNoneDesktopBotDropsDesktopToolsAndKeepsServerWeb(t *testing.T) {
 		desc, _ := fn["description"].(string)
 		kept[tooldef.Name(tool)] = desc
 	}
-	for _, name := range []string{"desktop", "local_computer", "browser", "computer_use", "computer_observe", "bash", "read_file", "delegate_task"} {
+	for _, name := range []string{"desktop", "local_computer", "browser", "computer_use", "computer_observe", "bash", "read_file", "generate_pdf", "delegate_task"} {
 		if _, ok := kept[name]; ok {
 			t.Fatalf("none bot kept %s", name)
 		}
 	}
-	for _, name := range []string{"web_search", "web_fetch", "memory_search", "ask_user"} {
+	for _, name := range []string{"web_search", "web_fetch", "memory_search", "ask_user", "bot_generate_pdf"} {
 		if _, ok := kept[name]; !ok {
 			t.Fatalf("none bot lost %s: %#v", name, kept)
 		}
@@ -73,6 +76,7 @@ func TestNoneDesktopBotDropsDesktopToolsAndKeepsServerWeb(t *testing.T) {
 	normalKept := map[string]bool{}
 	for _, tool := range normal.finishToolSurface([]map[string]interface{}{
 		functionToolDefinition("desktop", "cloud desktop", nil),
+		functionToolDefinition("bot_generate_pdf", "deliver PDF in chat", nil),
 		functionToolDefinition("browser", "host browser", nil),
 		functionToolDefinition("computer_use", "drive the desktop", nil),
 		functionToolDefinition("web_search", "host search", nil),
@@ -80,8 +84,33 @@ func TestNoneDesktopBotDropsDesktopToolsAndKeepsServerWeb(t *testing.T) {
 	}) {
 		normalKept[tooldef.Name(tool)] = true
 	}
-	if !normalKept["desktop"] || normalKept["browser"] || normalKept["computer_use"] || !normalKept["web_search"] || !normalKept["ask_user"] {
+	if !normalKept["desktop"] || !normalKept["bot_generate_pdf"] || normalKept["browser"] || normalKept["computer_use"] || !normalKept["web_search"] || !normalKept["ask_user"] {
 		t.Fatalf("ordinary bot surface changed: %#v", normalKept)
+	}
+}
+
+func TestBotPDFStaysVisibleOnLightTurnsOnlyWhenModuleIsBound(t *testing.T) {
+	bot := &coreAgentCallbacks{
+		instance:           Instance{Metadata: map[string]string{"hub_bot": "1", "hub_bot_desktop": "none"}},
+		runtimeToolInvoker: stubRuntimeInvoker{},
+		runtimeTools:       []agentruntime.ToolDefinition{{Name: "bot_generate_pdf"}},
+	}
+	seen := map[string]bool{}
+	for _, def := range bot.BuildTools("再来一次，生成PDF") {
+		seen[tooldef.Name(def)] = true
+	}
+	if !seen["bot_generate_pdf"] || seen["generate_pdf"] || seen["desktop"] {
+		t.Fatalf("no-desktop PDF tool surface: %#v", seen)
+	}
+	if !bot.IsToolAllowedForPromptProfile("bot_generate_pdf", agent.PromptProfileLight) {
+		t.Fatal("light bot turn lost the PDF runtime tool")
+	}
+	if allowed, reason := bot.IsToolCallAllowed("bot_generate_pdf", `{"content":"report"}`); !allowed {
+		t.Fatalf("no-desktop PDF call denied: %s", reason)
+	}
+	bot.runtimeTools = nil
+	if bot.IsToolAllowedForPromptProfile("bot_generate_pdf", agent.PromptProfileLight) {
+		t.Fatal("advertised PDF without a runtime handler")
 	}
 }
 

@@ -738,6 +738,13 @@ var desktopUserByInstance sync.Map
 // 32 of 32 jobs had no principal, "resume not started").
 var desktopPrincipalByInstance sync.Map
 
+// desktopNoDesktopByInstance maps an instance to the hub_bot_desktop mark
+// seen on its record. A bot created without a computer never joins the
+// desktop lifecycle: its run holds no slot, records no handoff baseline,
+// and its release can neither stop the owner's desktop nor drop a login
+// in progress on it.
+var desktopNoDesktopByInstance sync.Map
+
 func desktopInstancePrincipal(instanceID string) (desktopAccount, bool) {
 	value, ok := desktopPrincipalByInstance.Load(strings.TrimSpace(instanceID))
 	if !ok {
@@ -758,6 +765,9 @@ func rememberDesktopOwner(instanceID string, metadata map[string]string, fallbac
 	}
 	bound := false
 	if metadata != nil {
+		if instanceID != "" {
+			desktopNoDesktopByInstance.Store(instanceID, strings.TrimSpace(metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone)
+		}
 		if user := strings.TrimSpace(metadata["hub_user_id"]); desktop.ValidUserID(user) {
 			account.UserID = desktopBotUser(user, metadata)
 			bound = true
@@ -968,6 +978,13 @@ func occupyUserDesktopRun(ctx context.Context, tenantID, userID, instanceID stri
 	userID = strings.TrimSpace(userID)
 	instanceID = strings.TrimSpace(instanceID)
 	if userID == "" {
+		return func() {}, nil
+	}
+	if none, _ := desktopNoDesktopByInstance.Load(instanceID); none == true {
+		// A computerless bot's run can never use this desktop, so it must
+		// not count toward the owner's desktop holds: releasing it could
+		// stop a desktop kept up for a real login, or clear the
+		// still-logging-in marker another bot's continuation needs.
 		return func() {}, nil
 	}
 	if desktopRemoteSession == nil && desktopRemoteStop == nil && !desktopHubConfigured() {

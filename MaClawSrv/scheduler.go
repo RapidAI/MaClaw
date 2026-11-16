@@ -14,8 +14,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
-func scheduledTaskPrompt(action string) string {
-	return desktopbot.RoutineQuietPrompt + "\n" + strings.TrimSpace(action)
+func scheduledTaskPrompt(action string, noDesktop bool) string {
+	return desktopbot.RoutineQuietPromptFor(noDesktop) + "\n" + strings.TrimSpace(action)
 }
 
 // initScheduler starts the host clock. Desktop-bot rows always run: a chat
@@ -158,12 +158,11 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 			return runDesktopBotSchedule(ctx, svc, task)
 		}
 
-		actionText := scheduledTaskPrompt(task.Action)
-
 		principal, instanceID, err := srvScheduledTaskRunTarget(ctx, svc, executor, agentservice.Principal{}, task, &mu, &cachedInstanceID)
 		if err != nil {
 			return "", err
 		}
+		actionText := scheduledTaskPrompt(task.Action, scheduleTurnHasNoDesktop(ctx, svc, principal, instanceID))
 
 		// SendMessage owns the session. PostMessage with an empty session id
 		// fails before the agent starts.
@@ -326,7 +325,7 @@ func runSrvScheduledTaskAction(ctx context.Context, svc *agentservice.Service, e
 	if err != nil {
 		return "", err
 	}
-	actionText := scheduledTaskPrompt(task.Action)
+	actionText := scheduledTaskPrompt(task.Action, scheduleTurnHasNoDesktop(ctx, svc, principal, instanceID))
 	instanceID, metadata, targetErr := instanceMessageTarget(ctx, svc, principal, instanceID)
 	if targetErr != nil {
 		return "", scheduler.AnnotateRunErrWithContext(ctx, fmt.Errorf("post scheduled task message: %w", targetErr))

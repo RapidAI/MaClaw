@@ -536,6 +536,257 @@ func TestRagdollBraidsSwingSofterThanTheHead(t *testing.T) {
 	}
 }
 
+// TestRagdollIdlePoolCoversTheNamedFloor checks the official idle pool
+// includes the named kinds from the pack spec, and that the five added
+// poses stay in place, lead with the body, and do not use the notice cue.
+func TestRagdollIdlePoolCoversTheNamedFloor(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), BundledFS())
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := reg.Resolve(DefaultPackID, VariantDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := readAsset(resolved, resolved.Character.Definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	performer, err := ParsePerformer(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig, err := LoadRig(resolved)
+	if err != nil || rig == nil {
+		t.Fatal(err)
+	}
+	pool := map[string]bool{}
+	for _, name := range performer.States["idle"].BehaviorPool {
+		pool[name] = true
+	}
+	for _, name := range []string{
+		"idle_breathe", "idle_blink", "idle_look_left", "idle_look_right",
+		"idle_shift", "idle_drift", "idle_stretch", "idle_groom",
+		"idle_rest", "idle_attend", "idle_notice",
+	} {
+		if !pool[name] {
+			t.Fatalf("idle pool missing %s", name)
+		}
+		behavior := performer.Behaviors[name]
+		if len(behavior.Moods) > 0 && !containsString(behavior.Moods, "calm") {
+			t.Fatalf("%s has no calm mood: %v", name, behavior.Moods)
+		}
+	}
+	for _, name := range []string{"idle_shift", "idle_drift", "idle_groom", "idle_attend", "idle_notice"} {
+		behavior := performer.Behaviors[name]
+		for _, clipName := range []string{behavior.Enter, behavior.Loop, behavior.Exit} {
+			clip := rig.Clips[clipName]
+			if clip.DurationMS < 1 || clip.TravelX != 0 || clip.Cue != "" {
+				t.Fatalf("%s = %+v", clipName, clip)
+			}
+			for bone, frames := range clip.Tracks {
+				if len(frames) == 0 || frames[len(frames)-1].AtMS != clip.DurationMS {
+					t.Fatalf("%s %s does not end on the duration", clipName, bone)
+				}
+			}
+		}
+		loop := rig.Clips[behavior.Loop]
+		for _, bone := range []string{"torso", "head", "root"} {
+			frames := loop.Tracks[bone]
+			if len(frames) < 2 {
+				continue
+			}
+			first, last := frames[0], frames[len(frames)-1]
+			if first.Rotate != last.Rotate || first.X != last.X || first.Y != last.Y {
+				t.Fatalf("%s loop seam on %s", behavior.Loop, bone)
+			}
+		}
+	}
+	groom := rig.Clips["idle_groom_loop"]
+	if maxAbsRigRotate(groom.Tracks["head"]) < 6 || len(groom.Tracks["braid_l"]) == 0 {
+		t.Fatal("groom does not swing the braids")
+	}
+	for _, key := range groom.Tracks["head"] {
+		if math.Abs(key.Rotate) < 6 {
+			continue
+		}
+		local, ok := rigRotateAt(groom.Tracks["braid_l"], key.AtMS)
+		if !ok || key.Rotate*local >= 0 {
+			t.Fatalf("groom braid does not oppose head %+v local=%v ok=%v", key, local, ok)
+		}
+	}
+	if !bodyLeads(rig.Clips["idle_notice_in"].Tracks["torso"], rig.Clips["idle_notice_in"].Tracks["head"], 4) {
+		t.Fatal("environment response turns the head before the torso")
+	}
+	if !bodyLeads(rig.Clips["idle_shift_in"].Tracks["torso"], rig.Clips["idle_shift_in"].Tracks["head"], 4) {
+		t.Fatal("weight shift moves the head before the torso")
+	}
+	if !bodyLeads(rig.Clips["idle_groom_in"].Tracks["arm_l"], rig.Clips["idle_groom_in"].Tracks["head"], 6) {
+		t.Fatal("groom tilts the head before the arm rises")
+	}
+	if !oppositePrepRotate(rig.Clips["idle_shift_in"].Tracks["torso"]) || !oppositePrepRotate(rig.Clips["idle_notice_in"].Tracks["torso"]) || !oppositePrepRotate(rig.Clips["idle_groom_in"].Tracks["arm_l"]) {
+		t.Fatal("shift, notice, or groom is missing the opposite preparation")
+	}
+	drift := rig.Clips["idle_drift_in"]
+	settledAt := firstRootYAt(drift.Tracks["root"], 4)
+	headAt := firstAbsRotateAt(drift.Tracks["head"], 6)
+	prepAt := firstRootYBelow(drift.Tracks["root"], 0)
+	if prepAt < 100 || prepAt > 300 || settledAt < 0 || headAt <= settledAt {
+		t.Fatalf("drift prep=%d settled=%d head=%d", prepAt, settledAt, headAt)
+	}
+	attendIn := rig.Clips["idle_attend_in"]
+	attendRoot := attendIn.Tracks["root"]
+	if len(attendRoot) < 2 || attendRoot[0].Y <= attendRoot[len(attendRoot)-1].Y {
+		t.Fatal("attend does not rise out of the slump")
+	}
+	attendHead := rig.Clips["idle_attend_out"].Tracks["head"]
+	if len(attendHead) == 0 || attendHead[len(attendHead)-1].Rotate != 0 || attendHead[len(attendHead)-1].Y != 0 {
+		t.Fatal("attend does not return forward")
+	}
+	for _, name := range []string{"idle_shift", "idle_drift", "idle_groom", "idle_attend", "idle_notice"} {
+		behavior := performer.Behaviors[name]
+		enter, loop, exit := rig.Clips[behavior.Enter], rig.Clips[behavior.Loop], rig.Clips[behavior.Exit]
+		if !clipMeets(enter, loop) || !clipMeets(loop, exit) {
+			t.Fatalf("%s enter/loop/exit poses do not meet", name)
+		}
+	}
+	renderer, err := NewRigRenderer(resolved)
+	if err != nil || renderer == nil {
+		t.Fatal(err)
+	}
+	for _, sample := range []struct {
+		name string
+		at   int
+	}{
+		{"idle_shift_in", 160},
+		{"idle_shift_loop", 1400},
+		{"idle_drift_in", 140},
+		{"idle_drift_loop", 1200},
+		{"idle_groom_in", 640},
+		{"idle_groom_loop", 800},
+		{"idle_attend_loop", 1000},
+		{"idle_notice_loop", 1100},
+	} {
+		frame := renderer.RenderClips([]string{sample.name, "expr_calm", "gaze_wander", "secondary_idle"}, sample.at, 256)
+		minX, minY, maxX, maxY, n := opaqueBounds(frame)
+		if n == 0 || minX < 0 || minY < 0 || maxX >= 256 || maxY >= 256 {
+			t.Fatalf("%s@%d left the canvas: %d,%d-%d,%d pixels=%d", sample.name, sample.at, minX, minY, maxX, maxY, n)
+		}
+	}
+}
+
+// clipMeets reports that the pose at the end of left is the pose at the start
+// of right. Enter joins the loop with a hard cut, so those frames have to match.
+func clipMeets(left, right RigClip) bool {
+	if len(left.Tracks) == 0 || len(right.Tracks) == 0 {
+		return false
+	}
+	for bone, frames := range left.Tracks {
+		next := right.Tracks[bone]
+		if len(frames) == 0 || len(next) == 0 || !sameRigPose(frames[len(frames)-1], next[0]) {
+			return false
+		}
+	}
+	for bone, frames := range right.Tracks {
+		prev := left.Tracks[bone]
+		if len(frames) == 0 || len(prev) == 0 || !sameRigPose(prev[len(prev)-1], frames[0]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameRigPose(a, b RigKeyframe) bool {
+	const tol = 0.05
+	return math.Abs(a.X-b.X) < tol && math.Abs(a.Y-b.Y) < tol && math.Abs(a.Rotate-b.Rotate) < tol && math.Abs(a.ScaleX-b.ScaleX) < tol && math.Abs(a.ScaleY-b.ScaleY) < tol
+}
+
+// oppositePrepRotate reports a 100–300ms move whose sign is opposite the final pose.
+func oppositePrepRotate(frames []RigKeyframe) bool {
+	if len(frames) < 3 {
+		return false
+	}
+	final := frames[len(frames)-1].Rotate
+	if final == 0 {
+		return false
+	}
+	for _, frame := range frames[1 : len(frames)-1] {
+		if frame.AtMS < 100 || frame.AtMS > 300 {
+			continue
+		}
+		if frame.Rotate*final < 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func firstRootYAt(frames []RigKeyframe, min float64) int {
+	for _, frame := range frames {
+		if frame.Y >= min {
+			return frame.AtMS
+		}
+	}
+	return -1
+}
+
+func firstRootYBelow(frames []RigKeyframe, max float64) int {
+	for _, frame := range frames {
+		if frame.Y < max {
+			return frame.AtMS
+		}
+	}
+	return -1
+}
+
+func opaqueBounds(img *image.NRGBA) (minX, minY, maxX, maxY, n int) {
+	if img == nil {
+		return 0, 0, 0, 0, 0
+	}
+	b := img.Bounds()
+	minX, minY = b.Max.X, b.Max.Y
+	maxX, maxY = b.Min.X, b.Min.Y
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if img.Pix[img.PixOffset(x, y)+3] <= 24 {
+				continue
+			}
+			n++
+			if x < minX {
+				minX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y > maxY {
+				maxY = y
+			}
+		}
+	}
+	if n == 0 {
+		return 0, 0, 0, 0, 0
+	}
+	return minX, minY, maxX, maxY, n
+}
+
+func bodyLeads(body, head []RigKeyframe, min float64) bool {
+	bodyAt := firstAbsRotateAt(body, min)
+	headAt := firstAbsRotateAt(head, min)
+	return bodyAt >= 0 && headAt > bodyAt
+}
+
+func firstAbsRotateAt(frames []RigKeyframe, min float64) int {
+	for _, frame := range frames {
+		if math.Abs(frame.Rotate) >= min {
+			return frame.AtMS
+		}
+	}
+	return -1
+}
+
 func maxAbsRigRotate(frames []RigKeyframe) float64 {
 	max := 0.0
 	for _, frame := range frames {

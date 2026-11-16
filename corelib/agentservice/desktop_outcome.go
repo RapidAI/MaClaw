@@ -25,7 +25,13 @@ const desktopOutcomeEvidenceRunes = desktop.BashOutputMax + 64
 const desktopOutcomeContinueMax = 2
 
 func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, history []agent.ConversationEntry, image *agent.ToolModelImage) agent.DesktopOutcomeDecision {
-	if c == nil || strings.TrimSpace(c.messageMetadata["bot_phase"]) != "execute" {
+	if c == nil || strings.TrimSpace(c.messageMetadata["bot_phase"]) != "execute" ||
+		!c.botUsesContainer() {
+		// The check verifies work on this bot's desktop. A bot with no
+		// computer can never produce a desktop result, so its every finish
+		// read "还没有桌面工具结果" and the run was told to keep editing on a
+		// desktop that does not exist (hub bot_d18beb28 2026-11-16: greetings
+		// answered with desktop-claim denials the [系统] nudge asked for).
 		return agent.DesktopOutcomeDecision{}
 	}
 	userText = desktopOutcomeAsk(c, userText)

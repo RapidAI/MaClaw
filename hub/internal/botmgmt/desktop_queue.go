@@ -346,7 +346,7 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 			}
 			// A message waiting on a node stays queued when the srv record is
 			// gone. Dropping it would leave the person with no answer.
-			if err == ErrDesktopBusy || err == ErrDesktopMemory || nodeLinkOffline(err) || nodeWaitKept(item, err) {
+			if turnBusy(err) || err == ErrDesktopMemory || nodeLinkOffline(err) || nodeWaitKept(item, err) {
 				s.pushFrontDesktopQueue(tenantID, userID, botID, item)
 			}
 			return
@@ -574,6 +574,12 @@ func (s *Service) popDesktopQueue(tenantID, userID, botID string) *desktopQueueI
 	}
 	s.desktopQueues[key] = items
 	if item != nil {
+		// Visible before this lock drops. Otherwise a continuation join can
+		// observe the item gone and the run not started, and post a second one.
+		if s.desktopStarting == nil {
+			s.desktopStarting = map[string]*desktopQueueItem{}
+		}
+		s.desktopStarting[desktopStartingKey(tenantID, userID, botID, item.ClientMessageID)] = item
 		s.persistDesktopState(tenantID)
 	}
 	return item
@@ -726,6 +732,9 @@ func (s *Service) dispatchQueuedItem(tenantID, userID, botID string, item *deskt
 	admission, err := s.AdmitDesktopMessageAct(ctx, tenantID, userID, botID, text, item.Phase, item.ClientMessageID, item.ContinueSession, "")
 	if err != nil {
 		return err
+	}
+	if !admission.Queued {
+		s.noteDesktopContinueRunning(tenantID, userID, botID, item.ClientMessageID)
 	}
 	s.finishQueued(tenantID, userID, botID, item, "running", admission.RunID)
 	if strings.HasPrefix(item.ClientMessageID, "xdel-") {

@@ -6381,11 +6381,30 @@ func streamedDenialAfterSearch(answer string, history []ConversationEntry) bool 
 	if snippetLooksLikeForecast(answer) {
 		return false
 	}
-	if !historyHasSuccessfulTool(history, "web_search") && !strings.HasPrefix(lastSuccessfulToolBody(history), "Public web results for ") {
+	// A denial only hides results the search actually returned. An OK
+	// outcome with an empty body has nothing it could be hiding — "没有
+	// 实时数据" is then the honest report, and blanking it leaves only the
+	// generic stop line in place of a real answer (bot_69ee2c14
+	// run_a5797d27 2026-11-16).
+	if !webSearchResultsUsable(history) && !strings.HasPrefix(lastSuccessfulToolBody(history), "Public web results for ") {
 		return false
 	}
 	for _, cue := range []string{"没有可用", "没有实时", "拿不到准确", "不能凭空", "没有查询工具"} {
 		if strings.Contains(answer, cue) {
+			return true
+		}
+	}
+	return false
+}
+
+// webSearchResultsUsable reports a web_search call that came back OK with a
+// body to show. An OK outcome alone does not mean usable results arrived.
+func webSearchResultsUsable(history []ConversationEntry) bool {
+	for _, entry := range history {
+		if entry.Role != "tool" || entry.ToolName != "web_search" || entry.ToolOutcome != string(ToolExecutionOutcomeOK) {
+			continue
+		}
+		if text, ok := entry.Content.(string); ok && strings.TrimSpace(text) != "" {
 			return true
 		}
 	}

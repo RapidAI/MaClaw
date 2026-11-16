@@ -376,6 +376,111 @@ func TestCharacterRendererCompletesStateExitBeforeEnteringTarget(t *testing.T) {
 	}
 }
 
+func TestCharacterRendererLayersKeepTheirClock(t *testing.T) {
+	renderer := clockPhaseRenderer(t, 500, 1000, 30000, true)
+	if renderer.RenderState(StateIdle, 0, 256) == nil {
+		t.Fatal("idle frame is nil")
+	}
+	mid := renderer.RenderState(StateIdle, 400, 256)
+	afterEnter := renderer.RenderState(StateIdle, 600, 256)
+	midX, _, _, _, midN := opaqueBounds(mid)
+	enterX, _, _, _, enterN := opaqueBounds(afterEnter)
+	if midN == 0 || enterN == 0 || enterX <= midX {
+		t.Fatalf("gaze snapped when the body entered its loop: mid=%d loop=%d", midX, enterX)
+	}
+	if !renderer.TriggerClip("react", 600) {
+		t.Fatal("reaction clip was rejected")
+	}
+	resumed := renderer.RenderState(StateIdle, 900, 256)
+	resumedX, _, _, _, resumedN := opaqueBounds(resumed)
+	if resumedN == 0 || resumedX <= enterX {
+		t.Fatalf("gaze restarted after a body-only reaction: loop=%d resumed=%d", enterX, resumedX)
+	}
+}
+
+func TestCharacterRendererIdleDwellExitsOnLoopSeam(t *testing.T) {
+	renderer := clockPhaseRenderer(t, 1000, 1000, 1500, false)
+	if renderer.RenderState(StateIdle, 0, 32) == nil || renderer.RenderState(StateIdle, 1000, 32) == nil {
+		t.Fatal("could not enter the idle loop")
+	}
+	if renderer.step.Body != "idle_loop" || !renderer.looping {
+		t.Fatalf("expected the idle loop, got %+v looping=%v", renderer.step, renderer.looping)
+	}
+	if renderer.RenderState(StateIdle, 2500, 32) == nil || renderer.step.Body != "idle_loop" || !renderer.looping {
+		t.Fatalf("dwell cut the loop before its seam: %+v", renderer.step)
+	}
+	if renderer.RenderState(StateIdle, 3000, 32) == nil || renderer.step.Body != "idle_out" || !renderer.exiting {
+		t.Fatalf("dwell did not exit on the loop seam: %+v exiting=%v", renderer.step, renderer.exiting)
+	}
+
+	missed := clockPhaseRenderer(t, 1000, 1000, 1500, false)
+	if missed.RenderState(StateIdle, 0, 32) == nil || missed.RenderState(StateIdle, 1000, 32) == nil {
+		t.Fatal("could not enter the second idle loop")
+	}
+	if missed.RenderState(StateIdle, 3600, 32) == nil || missed.step.Body != "idle_out" || !missed.exiting {
+		t.Fatalf("a missed seam held the loop for another cycle: %+v", missed.step)
+	}
+}
+
+func clockPhaseRenderer(t *testing.T, enterMS, loopMS, dwell int, gaze bool) *CharacterRenderer {
+	t.Helper()
+	texture := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	for i := range texture.Pix {
+		texture.Pix[i] = 255
+	}
+	clips := map[string]RigClip{
+		"idle_in":   {DurationMS: enterMS},
+		"idle_loop": {DurationMS: loopMS, Loop: true},
+		"idle_out":  {DurationMS: 400},
+		"react":     {DurationMS: 300},
+	}
+	gazeName := ""
+	if gaze {
+		gazeName = "gaze_wander"
+		clips[gazeName] = RigClip{
+			DurationMS: 4000,
+			Loop:       true,
+			Tracks: map[string][]RigKeyframe{
+				"root": {{AtMS: 0}, {AtMS: 4000, X: 80}},
+			},
+		}
+	}
+	behaviors := map[string]PerformerBehavior{}
+	pool := make([]string, 0, 4)
+	for i := 0; i < 4; i++ {
+		name := fmt.Sprintf("idle_%d", i)
+		pool = append(pool, name)
+		behaviors[name] = PerformerBehavior{Enter: "idle_in", Loop: "idle_loop", Exit: "idle_out", Weight: 1, MinMS: dwell, MaxMS: dwell}
+	}
+	performer := &Performer{
+		Version:   1,
+		Behaviors: behaviors,
+		States: map[string]PerformerState{
+			"idle": {BehaviorPool: pool, Gaze: gazeName},
+		},
+		Rules: PerformerRules{NoRepeatLast: 3},
+	}
+	rig := &Rig{
+		Version: 1,
+		Bones:   []RigBone{{Name: "root", X: 64, Y: 128}},
+		Slots:   []RigSlot{{Name: "body", Bone: "root", Texture: "rig/body.png"}},
+		Clips:   clips,
+	}
+	loaded, fallback := rigClips(rig)
+	return &CharacterRenderer{
+		rig: &RigRenderer{
+			rig:          rig,
+			textures:     map[string]*image.NRGBA{"rig/body.png": texture},
+			parentOrder:  []int{0},
+			slots:        rig.SortedSlots(),
+			boneIndex:    map[string]int{"root": 0},
+			clips:        loaded,
+			fallbackClip: fallback,
+		},
+		director: NewPerformanceDirector(performer, rig, 11),
+	}
+}
+
 func TestValidatePerformerRequiresExpressionAndGazeVariety(t *testing.T) {
 	p := performanceTestPerformer()
 	for name, state := range p.States {

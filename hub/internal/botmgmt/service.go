@@ -76,6 +76,14 @@ var (
 	ErrAdminSecretMissing = fmt.Errorf("%w: maclawsrv admin secret missing", ErrNotConfigured)
 )
 
+// turnBusy reports the retry-later kind of busy: one run holding a shared
+// cloud desktop, or a computerless bot still answering its previous message.
+// Dispatch and queue code treat the two the same; only the person-facing
+// wording differs.
+func turnBusy(err error) bool {
+	return errors.Is(err, ErrDesktopBusy) || errors.Is(err, ErrNoDesktopTurn)
+}
+
 // SrvRejectionMessage turns a MaClawSrv failure into a message an admin can
 // act on, instead of the generic "rejected the instance request".
 func SrvRejectionMessage(err error) string {
@@ -335,6 +343,12 @@ type Service struct {
 	// desktopAdmits is the reply of a run that was accepted and is still
 	// executing, or has finished, after the admitting call returned.
 	desktopAdmits map[string]*desktopAdmitState
+	// desktopContinues is the turn key of the last login/captcha continuation
+	// per tenant, user, bot. Guarded by mu (desktop_handoff_continue.go).
+	desktopContinues map[string]desktopContinueMark
+	// desktopHandoffSeq numbers the handoffs of one bot's display: bumped
+	// when its pin opens or a takeover begins. Guarded by mu.
+	desktopHandoffSeq map[string]uint64
 	// BotDispatch lets Hub itself start delegated work and wake idle
 	// server-side bots when mail arrives (bot_dispatch.go). Off in tests.
 	BotDispatch bool

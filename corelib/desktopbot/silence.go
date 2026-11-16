@@ -9,9 +9,32 @@ const WorthSayingPrompt = "只在两种情况下主动调用 send_to_user：需�
 	"其它进度只写入 PROGRESS.md。不要为单个工具步骤发消息。\n" +
 	"每一轮结束前先问：这值得告诉这个人吗？值得，就 send_to_user 到该去的那个表面。不值得，就什么都不发。"
 
+// WorthSayingPromptNoDesktop is the same rule for a bot with no computer.
+// Its surface has no send_to_user tool and no PROGRESS.md file system —
+// the reply it writes is the text the person sees — so the pinned text
+// must not name a tool or a file that does not exist (bot_69ee2c14:
+// a finish call it cannot make burns an iteration every turn).
+const WorthSayingPromptNoDesktop = "只在两种情况下主动回复：需要这个人做决定，或者整件事做完。\n" +
+	"不要为单个工具步骤写进度汇报。\n" +
+	"每一轮结束前先问：这值得告诉这个人吗？值得，就把它写进回复。不值得，就什么都不写。"
+
 // RoutineQuietPrompt is the last message of a schedule, background, or event
 // turn. It is not part of the pinned system segment.
 const RoutineQuietPrompt = "这一轮是例行检查，没有人在等回复。有变化、失败、或需要这个人做决定，就调用 send_to_user，channel 指明该去的那个表面。没有变化就结束，不要调用 send_to_user，也不要写「无变化」「no change」或「(无输出)」。"
+
+// RoutineQuietPromptNoDesktop is the same rule for a turn whose surface has
+// no send_to_user tool — a computerless bot, or a plain scheduled task. The
+// reply the run writes is what reaches the person, so the text asks for a
+// reply, not a call to a tool that does not exist.
+const RoutineQuietPromptNoDesktop = "这一轮是例行检查，没有人在等回复。有变化、失败、或需要这个人做决定，就把它写进回复，回复会发到该去的表面。没有变化就结束，不要写「无变化」「no change」或「(无输出)」。"
+
+// RoutineQuietPromptFor returns the quiet-turn text matching the surface.
+func RoutineQuietPromptFor(noDesktop bool) string {
+	if noDesktop {
+		return RoutineQuietPromptNoDesktop
+	}
+	return RoutineQuietPrompt
+}
 
 // SteerOnIt is the short acknowledgement when a person changes work that is
 // already going. English is SteerOnItEN. The sentence does not restate the plan.
@@ -50,14 +73,25 @@ const RecurringWorkPrompt = "一件事若要反复做，调用 bot_schedule 登�
 
 // PinWorthSaying appends the stable interruption rule once.
 func PinWorthSaying(prompt string) string {
-	if strings.Contains(prompt, WorthSayingPrompt) {
+	return PinWorthSayingFor(prompt, false)
+}
+
+// PinWorthSayingFor pins the worth-saying rule whose surface matches the
+// bot: a computerless bot gets the reply-only text, not the send_to_user
+// tool it does not have.
+func PinWorthSayingFor(prompt string, noDesktop bool) string {
+	text := WorthSayingPrompt
+	if noDesktop {
+		text = WorthSayingPromptNoDesktop
+	}
+	if strings.Contains(prompt, text) {
 		return prompt
 	}
 	prompt = strings.TrimRight(prompt, "\n")
 	if prompt == "" {
-		return WorthSayingPrompt
+		return text
 	}
-	return prompt + "\n\n" + WorthSayingPrompt
+	return prompt + "\n\n" + text
 }
 
 // PinRecurringWork appends the timer rule once.

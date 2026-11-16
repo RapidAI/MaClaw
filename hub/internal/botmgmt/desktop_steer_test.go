@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 // intakeSrv is a MaClawSrv stand-in that answers bot-intake and records
@@ -18,6 +20,7 @@ type intakeSrv struct {
 	turnKeySrv
 	mu      sync.Mutex
 	intake  string
+	intakes []string
 	posts   []string
 	supps   []string
 	cancels int
@@ -28,8 +31,10 @@ type intakeSrv struct {
 func (s *intakeSrv) handle(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/bot-intake"):
+		raw, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
 		body := s.intake
+		s.intakes = append(s.intakes, string(raw))
 		s.mu.Unlock()
 		if body == "" {
 			http.NotFound(w, r)
@@ -288,6 +293,34 @@ func TestHubQueueDrainsWhenASlotFrees(t *testing.T) {
 	raw, _ := json.Marshal(view)
 	if !strings.Contains(string(raw), `"state":"running"`) {
 		t.Fatalf("json=%s", raw)
+	}
+}
+
+// A bot created with desktop_mode=none tells the intake its real surface
+// (no_desktop), and the posted turn keeps the same marker. Without the
+// first, a rewritten instruction can order a desktop the bot does not
+// have; without the second, MaClawSrv still gates and prompts for one.
+func TestHubNoDesktopBotMarksTheIntakeAndTheMessage(t *testing.T) {
+	fake := &intakeSrv{intake: `{"kind":"new","instruction":"查北京天气","ack":"我去查。","pace":"direct"}`}
+	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv,
+		Bot{ID: "bot_none", Name: "no-pc", InstanceID: "inst_alice", OwnerUserID: "alice", DesktopMode: desktop.BotDesktopModeNone})
+	adm, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_none", "北京天气", "execute", "turn-none")
+	if err != nil || adm.RunID == "" {
+		t.Fatalf("adm=%+v %v", adm, err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.intakes) != 1 || !strings.Contains(fake.intakes[0], `"no_desktop":true`) {
+		t.Fatalf("intake bodies=%v", fake.intakes)
+	}
+	if len(fake.posts) != 1 {
+		t.Fatalf("posts=%v", fake.posts)
+	}
+	post := fake.posts[0]
+	if !strings.Contains(post, `"bot_desktop":"none"`) || strings.Contains(post, "computer_helper") {
+		t.Fatalf("post body=%s", post)
 	}
 }
 

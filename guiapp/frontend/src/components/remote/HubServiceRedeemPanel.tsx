@@ -652,7 +652,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     const redeemResultRef = useRef<HTMLDivElement | null>(null);
 
     // Stabilize onStatusChange with a ref to break the re-render cascade.
-    // Without this, every App re-render (e.g. PingMaclawLLM every 60s) creates
+    // Without this, every App re-render (e.g. the periodic health poll) creates
     // a new inline arrow function → loadStatus is recreated → useEffect fires →
     // setLoading(true) destroys the DOM → input loses focus + page flickers.
     const onStatusChangeRef = useRef(onStatusChange);

@@ -428,6 +428,82 @@ func buildRig() *petpack.Rig {
 		k("head", kf(0, 0, 4, 10, ""), kf(460, 0, 0, 0, "ease-in-out")).
 		k("eyes", kfs(0, 0.55, ""), kfs(460, 1, "ease-out"))))
 
+	// Named idle floor that the large actions do not cover. Travel stays 0
+	// so these poses do not walk her. None of them use the notice cue.
+	add("idle_shift_in", clip(480, false, 0, "", false, tr().
+		k("root", kf(0, 0, 0, 0, ""), kf(160, -3, 1, 0, "ease-out"), kf(480, 7, 3, 0, "ease-in-out")).
+		k("hip", kf(0, 0, 0, 0, ""), kf(160, 0, 2, -3, "ease-out"), kf(480, 2, 0, 6, "ease-in-out")).
+		k("torso", kf(0, 0, 0, 0, ""), kf(150, 0, 0, -7, "ease-out"), kf(480, 0, 0, 12, "ease-in-out")).
+		k("head", kf(0, 0, 0, 0, ""), kf(150, 0, 0, -2, ""), kf(320, 0, 0, 1, "ease-out"), kf(480, 0, 0, 8, "ease-in-out"))))
+	add("idle_shift_loop", clip(2800, true, 0, "", false, tr().
+		k("root", kf(0, 7, 3, 0, ""), kf(1400, 8, 4, 0, "ease-in-out"), kf(2800, 7, 3, 0, "ease-in-out")).
+		k("hip", kf(0, 2, 0, 6, ""), kf(1400, 3, 1, 7, "ease-in-out"), kf(2800, 2, 0, 6, "ease-in-out")).
+		k("torso", kf(0, 0, 0, 12, ""), kf(1000, 0, 0, 14, "ease-in-out"), kf(2000, 0, 0, 10, "ease-in-out"), kf(2800, 0, 0, 12, "ease-in-out")).
+		k("head", kf(0, 0, 0, 8, ""), kf(1400, 0, 0, 11, "ease-in-out"), kf(2800, 0, 0, 8, "ease-in-out"))))
+	add("idle_shift_out", clip(420, false, 0, "", false, tr().
+		k("root", kf(0, 7, 3, 0, ""), kf(200, 2, 1, 0, "ease-in-out"), kf(420, 0, 0, 0, "ease-in-out")).
+		k("hip", kf(0, 2, 0, 6, ""), kf(420, 0, 0, 0, "ease-in-out")).
+		k("torso", kf(0, 0, 0, 12, ""), kf(180, 0, 0, 3, "ease-in-out"), kf(420, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, 0, 0, 8, ""), kf(180, 0, 0, 6, "ease-out"), kf(420, 0, 0, 0, "ease-in-out"))))
+
+	add("idle_drift_in", clip(720, false, 0, "", false, tr().
+		k("root", kf(0, 0, 0, 0, ""), kf(140, 0, -3, 0, "ease-out"), kf(400, 0, 6, 0, "ease-in-out"), kf(720, 1, 8, 0, "ease-in-out")).
+		k("torso", kf(0, 0, 0, 0, ""), kf(150, 0, 0, -2, "ease-out"), kf(420, 0, 0, 3, "ease-in-out"), kf(720, 0, 0, 4, "ease-in-out")).
+		k("head", kf(0, 0, 0, 0, ""), kf(420, 0, 1, 0, "ease-out"), kf(720, -2, 3, -14, "ease-in-out")).
+		k("eyes", kf(0, 0, 0, 0, ""), kf(480, 0, 0, 0, ""), kf(720, -3, 1, 0, "ease-in-out"))))
+	add("idle_drift_loop", clip(3200, true, 0, "", false, tr().
+		k("root", kf(0, 1, 8, 0, ""), kf(1600, 2, 10, 0, "ease-in-out"), kf(3200, 1, 8, 0, "ease-in-out")).
+		k("torso", kf(0, 0, 0, 4, ""), kf(1600, 0, 0, 5, "ease-in-out"), kf(3200, 0, 0, 4, "ease-in-out")).
+		k("head", kf(0, -2, 3, -14, ""), kf(1200, -4, 4, -18, "ease-in-out"), kf(2400, -1, 2, -12, "ease-in-out"), kf(3200, -2, 3, -14, "ease-in-out")).
+		k("eyes", kf(0, -3, 1, 0, ""), kf(1400, -4, 1, 0, "ease-in-out"), kf(3200, -3, 1, 0, "ease-in-out"))))
+	add("idle_drift_out", clip(480, false, 0, "", false, tr().
+		k("root", kf(0, 1, 8, 0, ""), kf(200, 0, 2, 0, "ease-in-out"), kf(480, 0, 0, 0, "ease-in-out")).
+		k("torso", kf(0, 0, 0, 4, ""), kf(200, 0, 0, 1, "ease-in-out"), kf(480, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, -2, 3, -14, ""), kf(200, -2, 2, -10, "ease-out"), kf(480, 0, 0, 0, "ease-in-out")).
+		k("eyes", kf(0, -3, 1, 0, ""), kf(280, -2, 0, 0, "ease-in-out"), kf(480, 0, 0, 0, "ease-in-out"))))
+
+	add("idle_groom_in", clip(640, false, 0, "", false, tr().
+		k("torso", kf(0, 0, 0, 0, ""), kf(180, 0, 0, -3, "ease-out"), kf(640, 0, 0, -6, "ease-in-out")).
+		k("arm_l", kf(0, 0, 0, 0, ""), kf(140, 0, 2, -8, "ease-out"), kf(640, 4, -16, 72, "ease-out")).
+		k("head", kf(0, 0, 0, 0, ""), kf(220, 0, 0, 1, ""), kf(640, -2, -2, -16, "ease-in-out"))))
+	add("idle_groom_loop", clip(2400, true, 0, "", false, tr().
+		k("torso", kf(0, 0, 0, -6, ""), kf(900, 0, 0, -8, "ease-in-out"), kf(2400, 0, 0, -6, "ease-in-out")).
+		k("arm_l", kf(0, 4, -16, 72, ""), kf(800, 6, -20, 84, "ease-in-out"), kf(1600, 2, -12, 64, "ease-in-out"), kf(2400, 4, -16, 72, "ease-in-out")).
+		k("head", kf(0, -2, -2, -16, ""), kf(1100, -3, -3, -20, "ease-in-out"), kf(2400, -2, -2, -16, "ease-in-out"))))
+	add("idle_groom_out", clip(520, false, 0, "", false, tr().
+		k("torso", kf(0, 0, 0, -6, ""), kf(240, 0, 0, -2, "ease-in-out"), kf(520, 0, 0, 0, "ease-in-out")).
+		k("arm_l", kf(0, 4, -16, 72, ""), kf(220, 2, -6, 30, "ease-in-out"), kf(520, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, -2, -2, -16, ""), kf(220, -2, -1, -12, "ease-out"), kf(520, 0, 0, 0, "ease-in-out"))))
+
+	add("idle_attend_in", clip(500, false, 0, "", false, tr().
+		k("root", kf(0, 0, 5, 0, ""), kf(160, 0, 6, 0, "ease-out"), kf(500, 0, -2, 0, "ease-out")).
+		k("torso", kf(0, 0, 0, 5, ""), kf(140, 0, 0, 7, "ease-out"), kf(500, 0, 0, -2, "ease-in-out")).
+		k("head", kf(0, 0, 2, 4, ""), kf(200, 0, 3, 5, "ease-out"), kf(500, 0, -2, -3, "ease-in-out")).
+		k("eyes", sc(0, 1, 0.72, ""), sc(180, 1.02, 0.62, "ease-out"), sc(500, 1.08, 1.06, "ease-out"))))
+	add("idle_attend_loop", clip(2200, true, 0, "", false, tr().
+		k("root", kf(0, 0, -2, 0, ""), kf(1100, 0, -3, 0, "ease-in-out"), kf(2200, 0, -2, 0, "ease-in-out")).
+		k("torso", kf(0, 0, 0, -2, ""), kf(800, 0, 0, -3, "ease-in-out"), kf(2200, 0, 0, -2, "ease-in-out")).
+		k("head", kf(0, 0, -2, -3, ""), kf(1200, 1, -3, -4, "ease-in-out"), kf(2200, 0, -2, -3, "ease-in-out")).
+		k("eyes", sc(0, 1.08, 1.06, ""), sc(1000, 1.12, 1.08, "ease-in-out"), sc(2200, 1.08, 1.06, "ease-in-out"))))
+	add("idle_attend_out", clip(400, false, 0, "", false, tr().
+		k("root", kf(0, 0, -2, 0, ""), kf(180, 0, 0, 0, "ease-in-out"), kf(400, 0, 0, 0, "")).
+		k("torso", kf(0, 0, 0, -2, ""), kf(160, 0, 0, 0, "ease-in-out"), kf(400, 0, 0, 0, "")).
+		k("head", kf(0, 0, -2, -3, ""), kf(160, 0, -1, -3, ""), kf(400, 0, 0, 0, "ease-in-out")).
+		k("eyes", sc(0, 1.08, 1.06, ""), sc(220, 1.02, 1.02, "ease-in-out"), sc(400, 1, 1, "ease-in-out"))))
+
+	add("idle_notice_in", clip(520, false, 0, "", false, tr().
+		k("torso", kf(0, 0, 0, 0, ""), kf(140, 0, 0, -4, "ease-out"), kf(520, 0, 0, 11, "ease-in-out")).
+		k("head", kf(0, 0, 0, 0, ""), kf(280, 0, 0, 2, "ease-out"), kf(520, 0, 0, 16, "ease-in-out")).
+		k("eyes", kf(0, 0, 0, 0, ""), kf(360, 1, 0, 0, "ease-out"), kf(520, 3, 0, 0, "ease-in-out"))))
+	add("idle_notice_loop", clip(2600, true, 0, "", false, tr().
+		k("torso", kf(0, 0, 0, 11, ""), kf(900, 0, 0, 13, "ease-in-out"), kf(1800, 0, 0, 9, "ease-in-out"), kf(2600, 0, 0, 11, "ease-in-out")).
+		k("head", kf(0, 0, 0, 16, ""), kf(1100, 0, 0, 18, "ease-in-out"), kf(2000, 0, 0, 14, "ease-in-out"), kf(2600, 0, 0, 16, "ease-in-out")).
+		k("eyes", kf(0, 3, 0, 0, ""), kf(1200, 4, -1, 0, "ease-in-out"), kf(2600, 3, 0, 0, "ease-in-out"))))
+	add("idle_notice_out", clip(440, false, 0, "", false, tr().
+		k("torso", kf(0, 0, 0, 11, ""), kf(180, 0, 0, 2, "ease-in-out"), kf(440, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, 0, 0, 16, ""), kf(180, 0, 0, 12, "ease-out"), kf(440, 0, 0, 0, "ease-in-out")).
+		k("eyes", kf(0, 3, 0, 0, ""), kf(240, 2, 0, 0, "ease-in-out"), kf(440, 0, 0, 0, "ease-in-out"))))
+
 	add("listen_in", clip(400, false, 0, "", false, tr().
 		k("head", kf(0, 0, 0, 2, ""), kf(400, -2, 0, -14, "ease-in-out")).
 		k("torso", kf(0, 0, 0, 0, ""), kf(400, 0, 0, -6, "ease-in-out"))))
@@ -763,10 +839,15 @@ func buildPerformer() *petpack.Performer {
 			"idle_stretch":    b("stretch_in", "stretch_loop", "stretch_out", 2, 2000, 3600, 14000, "tired", "calm"),
 			"idle_sing":       b("sing_in", "sing_loop", "sing_out", 2, 2200, 4600, 12000, "pleased", "calm"),
 			"idle_rest":       b("rest_in", "rest_loop", "rest_out", 1, 3000, 5600, 20000, "tired", "calm"),
+			"idle_shift":      b("idle_shift_in", "idle_shift_loop", "idle_shift_out", 2, 2800, 5200, 12000, "calm"),
+			"idle_drift":      b("idle_drift_in", "idle_drift_loop", "idle_drift_out", 2, 3200, 5600, 14000, "calm", "tired"),
+			"idle_groom":      b("idle_groom_in", "idle_groom_loop", "idle_groom_out", 2, 2800, 4800, 16000, "calm"),
+			"idle_attend":     b("idle_attend_in", "idle_attend_loop", "idle_attend_out", 2, 2500, 4600, 10000, "calm", "focused"),
+			"idle_notice":     b("idle_notice_in", "idle_notice_loop", "idle_notice_out", 2, 2600, 4800, 11000, "calm", "curious"),
 		},
 		States: map[string]petpack.PerformerState{
 			"idle": {
-				BehaviorPool: []string{"idle_breathe", "idle_look_left", "idle_look_right", "idle_blink", "idle_walk", "idle_run", "idle_jump", "idle_bend", "idle_stretch", "idle_sing", "idle_rest"},
+				BehaviorPool: []string{"idle_breathe", "idle_look_left", "idle_look_right", "idle_blink", "idle_walk", "idle_run", "idle_jump", "idle_bend", "idle_stretch", "idle_sing", "idle_rest", "idle_shift", "idle_drift", "idle_groom", "idle_attend", "idle_notice"},
 				Mood:         "calm", Expression: "expr_calm", Gaze: "gaze_wander", Secondary: "secondary_idle",
 			},
 			"listening": {Enter: "listen_in", Loop: "listen_loop", Exit: "listen_out", Mood: "curious", Expression: "expr_curious", Gaze: "gaze_left", Secondary: "secondary_listen"},
@@ -863,44 +944,60 @@ func drawMouseCharm() *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	cx := float64(w) / 2
 	cy := float64(h)/2 + 1
-	fillEllipse(img, cx-9, cy-8, 5, 6, hair)
-	fillEllipse(img, cx+9, cy-8, 5, 6, hair)
-	fillEllipse(img, cx-9, cy-8, 2.2, 3, earPink)
-	fillEllipse(img, cx+9, cy-8, 2.2, 3, earPink)
-	fillEllipse(img, cx, cy+1, 11, 10, hair)
-	fillEllipse(img, cx, cy+3, 6, 5, skin)
-	fillEllipse(img, cx-3.2, cy+1, 1.3, 1.5, pupil)
-	fillEllipse(img, cx+3.2, cy+1, 1.3, 1.5, pupil)
-	fillEllipse(img, cx, cy+3.2, 1.5, 1.1, nose)
-	fillEllipse(img, cx, cy-14, 3.4, 2.4, bow)
-	fillEllipse(img, cx-4, cy-12, 2.2, 1.6, bowDeep)
-	fillEllipse(img, cx+4, cy-12, 2.2, 1.6, bowDeep)
+	fillEllipse(img, cx, cy+1, 12, 11, creamDeep)
+	fillEllipse(img, cx, cy+2, 11, 9.5, cream)
+	fillEllipse(img, cx-9, cy-8, 5, 6, point)
+	fillEllipse(img, cx+9, cy-8, 5, 6, point)
+	fillEllipse(img, cx-9, cy-7, 2.4, 3.2, earPink)
+	fillEllipse(img, cx+9, cy-7, 2.4, 3.2, earPink)
+	fillEllipse(img, cx, cy+4, 6, 4.5, muzzle)
+	fillEllipse(img, cx-3.2, cy+0.5, 1.5, 1.7, iris)
+	fillEllipse(img, cx+3.2, cy+0.5, 1.5, 1.7, iris)
+	fillEllipse(img, cx-3.2, cy+0.6, 0.7, 0.8, pupil)
+	fillEllipse(img, cx+3.2, cy+0.6, 0.7, 0.8, pupil)
+	fillEllipse(img, cx, cy+3.4, 1.6, 1.15, nose)
+	drawBow(img, cx, cy-13, 2.2)
 	return img
 }
 
 func drawSlipper() *image.NRGBA {
 	const w, h = 36, 18
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
-	fillEllipse(img, 20, 11, 14, 5.5, dress)
-	fillEllipse(img, 24, 9, 7, 2.6, dressLite)
-	fillEllipse(img, 11, 8, 2.6, 1.8, bow)
-	fillEllipse(img, 8, 10, 1.6, 1.2, bowDeep)
+	fillEllipse(img, 20, 12, 14, 5.2, dressDeep)
+	fillEllipse(img, 20, 10.5, 13, 4.4, dress)
+	fillEllipse(img, 24, 9, 6.5, 2.2, dressLite)
+	fillEllipse(img, 12, 8, 4, 2.2, cream)
+	drawBow(img, 10, 7.5, 1.5)
 	return img
 }
 
 func drawMousePet() *image.NRGBA {
 	const w, h = 48, 44
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
-	fillCapsule(img, 6, 30, 16, 24, 2.2, hairLite)
-	fillEllipse(img, 24, 26, 12, 8, hair)
-	fillEllipse(img, 32, 18, 8, 7, hair)
-	fillEllipse(img, 28, 10, 4.2, 5, hair)
-	fillEllipse(img, 36, 10, 4.2, 5, hair)
-	fillEllipse(img, 28, 10, 1.8, 2.2, earPink)
-	fillEllipse(img, 36, 10, 1.8, 2.2, earPink)
-	fillEllipse(img, 34, 17, 1.2, 1.4, pupil)
-	fillEllipse(img, 35, 19.5, 1.3, 0.9, nose)
+	fillCapsule(img, 8, 30, 18, 24, 3.2, point)
+	fillCapsule(img, 10, 29, 16, 24, 2.2, pointLite)
+	fillEllipse(img, 24, 26, 13, 9, creamDeep)
+	fillEllipse(img, 24, 26, 12, 8, cream)
+	fillEllipse(img, 33, 18, 8.5, 7.2, cream)
+	fillEllipse(img, 28, 10, 4.4, 5.2, point)
+	fillEllipse(img, 37, 10, 4.4, 5.2, point)
+	fillEllipse(img, 28, 11, 2, 2.4, earPink)
+	fillEllipse(img, 37, 11, 2, 2.4, earPink)
+	fillEllipse(img, 35, 17, 1.6, 1.8, iris)
+	fillEllipse(img, 35.2, 17.2, 0.7, 0.8, pupil)
+	fillEllipse(img, 36, 19.6, 1.4, 1, nose)
+	fillCapsule(img, 30, 20, 22, 18, 0.55, pointLite)
 	return img
+}
+
+func drawBow(img *image.NRGBA, cx, cy, scale float64) {
+	fillEllipse(img, cx-scale*1.35, cy, scale*1.45, scale*0.95, bow)
+	fillEllipse(img, cx+scale*1.35, cy, scale*1.45, scale*0.95, bow)
+	fillEllipse(img, cx-scale*1.55, cy+scale*0.15, scale*0.7, scale*0.42, bowDeep)
+	fillEllipse(img, cx+scale*1.55, cy+scale*0.15, scale*0.7, scale*0.42, bowDeep)
+	fillEllipse(img, cx, cy, scale*0.55, scale*0.55, bowDeep)
+	fillCapsule(img, cx-0.3, cy+scale*0.35, cx-scale*0.9, cy+scale*1.7, scale*0.28, bow)
+	fillCapsule(img, cx+0.3, cy+scale*0.35, cx+scale*0.9, cy+scale*1.7, scale*0.28, bow)
 }
 
 func drawTextures(dir string) []string {
@@ -934,37 +1031,66 @@ func drawTextures(dir string) []string {
 
 func drawHead() *image.NRGBA {
 	// Face center is the bitmap center, so the head turns around the face.
-	// Hair and ears extend above. The side locks are their own bones.
+	// The seal-point cap, ears, and mask sit on the head. The plaits are
+	// their own bones and are not painted into this texture.
 	const w, h = 96, 112
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	cx := float64(w) / 2
 	cy := float64(h) / 2
-	fillEllipse(img, cx, cy+6, 34, 42, hair)
-	fillEllipse(img, cx-26, cy-30, 11, 18, hair)
-	fillEllipse(img, cx+26, cy-30, 11, 18, hair)
-	fillEllipse(img, cx-26, cy-26, 5, 10, earPink)
-	fillEllipse(img, cx+26, cy-26, 5, 10, earPink)
-	fillEllipse(img, cx, cy-8, 30, 24, hair)
-	fillEllipse(img, cx, cy+2, 20, 24, skin)
-	fillEllipse(img, cx-16, cy-10, 10, 8, hair)
-	fillEllipse(img, cx+14, cy-12, 11, 8, hair)
-	fillEllipse(img, cx, cy-16, 16, 6, hair)
-	fillEllipse(img, cx-8, cy-22, 7, 3, hairLite)
-	fillEllipse(img, cx-10, cy-6, 6, 1.3, brow)
-	fillEllipse(img, cx+10, cy-6, 6, 1.3, brow)
-	fillEllipse(img, cx, cy+10, 2.2, 2.6, nose)
-	fillEllipse(img, cx-12, cy+12, 5, 2.4, blush)
-	fillEllipse(img, cx+12, cy+12, 5, 2.4, blush)
-	fillEllipse(img, cx+30, cy-24, 7, 4, bow)
-	fillEllipse(img, cx+36, cy-20, 5, 3, bow)
-	fillEllipse(img, cx+32, cy-22, 2.2, 2.2, bowDeep)
+	// Cheek fluff and the point-colored cap. The muzzle stays cream.
+	fillEllipse(img, cx-16, cy+14, 16, 14, creamDeep)
+	fillEllipse(img, cx+16, cy+14, 16, 14, creamDeep)
+	fillEllipse(img, cx-16, cy+13, 14, 12, cream)
+	fillEllipse(img, cx+16, cy+13, 14, 12, cream)
+	fillEllipse(img, cx, cy-10, 30, 26, pointDeep)
+	fillEllipse(img, cx, cy-12, 28, 22, point)
+	fillEllipse(img, cx-6, cy-24, 8, 4, pointLite)
+	// Ears: wide base, rounded tip, pink inside, a small tuft.
+	for _, side := range []float64{-1, 1} {
+		ex := cx + side*24
+		fillEllipse(img, ex, cy-32, 11, 16, pointDeep)
+		fillEllipse(img, ex, cy-30, 8.5, 13, point)
+		fillEllipse(img, ex, cy-28, 4.6, 8, earPink)
+		fillEllipse(img, ex+side*1.2, cy-28, 2.2, 4, earDeep)
+		fillEllipse(img, ex, cy-46, 3.2, 4.2, pointLite)
+	}
+	fillEllipse(img, cx, cy+4, 23, 25, creamDeep)
+	fillEllipse(img, cx, cy+3, 21.5, 23.5, cream)
+	fillEllipse(img, cx-1, cy-2, 10, 8, creamLite)
+	// Hairline and the soft mask the eyes sit in.
+	fillEllipse(img, cx, cy-16, 20, 8, point)
+	fillEllipse(img, cx, cy-18, 12, 4, pointLite)
+	fillEllipse(img, cx-14, cy-8, 8, 6, point)
+	fillEllipse(img, cx+14, cy-8, 8, 6, point)
+	mask := maskBrown
+	mask.A = 70
+	fillEllipse(img, cx-12, cy-2, 6, 3.2, mask)
+	fillEllipse(img, cx+12, cy-2, 6, 3.2, mask)
+	fillEllipse(img, cx, cy+12, 13, 9, muzzle)
+	fillEllipse(img, cx, cy+8, 2.8, 2, nose)
+	fillEllipse(img, cx-1.1, cy+8.7, 0.75, 0.5, noseDeep)
+	fillEllipse(img, cx+1.1, cy+8.7, 0.75, 0.5, noseDeep)
+	fillEllipse(img, cx-10, cy-8, 5.5, 1.15, brow)
+	fillEllipse(img, cx+10, cy-8, 5.5, 1.15, brow)
+	fillEllipse(img, cx-12, cy+10, 5.2, 2.6, blush)
+	fillEllipse(img, cx+12, cy+10, 5.2, 2.6, blush)
+	for i, dy := range []float64{-2.2, 0.6, 3.2} {
+		yy := cy + 11 + dy
+		fillEllipse(img, cx-8.5, yy, 0.7, 0.7, point)
+		fillEllipse(img, cx+8.5, yy, 0.7, 0.7, point)
+		spread := 0.6 * float64(i-1)
+		fillCapsule(img, cx-9.2, yy, cx-30, yy-4+spread*3, 0.55, pointLite)
+		fillCapsule(img, cx+9.2, yy, cx+30, yy-4+spread*3, 0.55, pointLite)
+	}
+	drawBow(img, cx+28, cy-30, 3.2)
 	return img
 }
 
 func drawBraid(tip bool) *image.NRGBA {
 	// The joint is the bitmap center. One tapered lock hangs through the
 	// lower half and overlaps its parent, so the two bones read as one plait
-	// instead of a stack of separate tufts.
+	// instead of a stack of separate tufts. Strands cross but stay inside
+	// the lock, so the swing still reads as a single plait.
 	w, h := 36, 84
 	if tip {
 		w, h = 32, 72
@@ -974,49 +1100,60 @@ func drawBraid(tip bool) *image.NRGBA {
 	joint := float64(h) / 2
 	top := joint - 12
 	bot := joint + 32
-	r0, r1 := 9.0, 7.2
+	r0, r1 := 8.4, 6.6
 	if tip {
 		bot = joint + 26
-		r0, r1 = 7.4, 5.2
+		r0, r1 = 6.8, 4.4
 	}
 	mid := (top + bot) / 2
-	fillCapsule(img, cx, top, cx, mid, r0, hair)
-	fillCapsule(img, cx, mid, cx+0.4, bot, r1, hair)
-	// Highlight on local -x. The right slot mirrors it onto the outer edge.
-	fillCapsule(img, cx-2.6, top+3, cx-2.1, bot-3, r1*0.38, hairLite)
-	// Creases stay inside the strand so the plait does not break into blobs.
+	fillCapsule(img, cx, top, cx, bot, r0+1.2, pointDeep)
+	fillCapsule(img, cx, top, cx, mid, r0, point)
+	fillCapsule(img, cx, mid, cx+0.4, bot, r1, point)
 	span := bot - top
-	steps := 3
+	steps := 4
 	if tip {
-		steps = 2
+		steps = 3
 	}
 	for i := 0; i < steps; i++ {
-		y := top + span*(float64(i)+0.45)/float64(steps)
-		side := 1.3
+		y := top + span*(float64(i)+0.35)/float64(steps)
+		side := 2.4
 		if i%2 == 1 {
-			side = -1.3
+			side = -2.4
 		}
-		fillEllipse(img, cx+side, y, 3.1, 2.2, hairLite)
+		fillEllipse(img, cx+side, y, r1*0.72, 3.4, point)
+		fillEllipse(img, cx-side*0.4, y+2.2, r1*0.42, 2.2, pointLite)
+	}
+	// Highlight on local -x. The right slot mirrors it onto the outer edge.
+	fillCapsule(img, cx-2.8, top+2, cx-2.2, bot-4, r1*0.32, pointLite)
+	if tip {
+		drawBow(img, cx, joint-6, 2.4)
+		fillEllipse(img, cx, bot-1, 3.2, 3.6, pointLite)
 	}
 	return img
 }
 
 func drawEyes() *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, 56, 20))
-	for _, x := range []float64{15, 41} {
-		fillEllipse(img, x, 11, 9, 5.5, white)
-		fillEllipse(img, x, 8.5, 9, 2.2, lash)
-		fillEllipse(img, x, 11.5, 4.2, 4.6, iris)
-		fillEllipse(img, x, 12, 2, 2.4, pupil)
-		fillEllipse(img, x-1.6, 9.6, 1.4, 1.4, white)
+	for _, x := range []float64{14, 42} {
+		fillEllipse(img, x, 10.5, 9.2, 7.2, white)
+		fillEllipse(img, x, 7.6, 9.2, 2.6, lash)
+		fillEllipse(img, x, 11.2, 5.6, 5.8, irisDeep)
+		fillEllipse(img, x, 11.2, 4.8, 5, iris)
+		fillEllipse(img, x, 12.4, 3.2, 2.2, irisLite)
+		fillEllipse(img, x, 11.3, 2.2, 2.6, pupil)
+		fillEllipse(img, x-2.1, 8.8, 1.6, 1.7, white)
+		fillEllipse(img, x+1.6, 12.2, 0.7, 0.7, white)
 	}
 	return img
 }
 
 func drawMouth() *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, 28, 16))
-	fillEllipse(img, 14, 7, 6.5, 2.1, lip)
-	fillEllipse(img, 14, 9.2, 5.2, 2.2, lipDeep)
+	fillCapsule(img, 7, 6, 14, 10, 1.7, lip)
+	fillCapsule(img, 21, 6, 14, 10, 1.7, lip)
+	fillCapsule(img, 8.2, 6.6, 14, 9.2, 0.9, lipDeep)
+	fillCapsule(img, 19.8, 6.6, 14, 9.2, 0.9, lipDeep)
+	fillEllipse(img, 14, 10.4, 1.6, 1.1, lipDeep)
 	return img
 }
 
@@ -1026,35 +1163,50 @@ func drawTorso() *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	cx := float64(w) / 2
 	waist := float64(h) / 2
-	fillCapsule(img, cx, waist-42, cx, waist-26, 6.5, skin)
-	fillEllipse(img, cx, waist-22, 26, 8, skin)
-	fillEllipse(img, cx, waist-10, 16, 14, dress)
-	fillEllipse(img, cx, waist-14, 10, 6, skinShade)
-	fillEllipse(img, cx, waist+2, 12, 6, dressDeep)
-	fillCapsule(img, cx-10, waist+6, cx-24, waist+44, 7, dress)
-	fillCapsule(img, cx+10, waist+6, cx+24, waist+44, 7, dress)
-	fillEllipse(img, cx, waist+26, 22, 16, dress)
-	fillEllipse(img, cx, waist+40, 26, 7, dressLite)
-	fillEllipse(img, cx, waist+44, 24, 4, dressDeep)
-	fillEllipse(img, cx, waist-20, 8, 2.4, white)
-	fillEllipse(img, cx, waist+4, 12, 2.2, ribbon)
-	fillEllipse(img, cx-5, waist+4, 3.2, 2.4, ribbon)
-	fillEllipse(img, cx+5, waist+4, 3.2, 2.4, ribbon)
+	fillCapsule(img, cx, waist-40, cx, waist-24, 8, creamDeep)
+	fillCapsule(img, cx, waist-40, cx, waist-24, 6.6, cream)
+	// The ruff is the long fur around a ragdoll's neck.
+	fillEllipse(img, cx, waist-22, 24, 11, creamDeep)
+	fillEllipse(img, cx-16, waist-20, 10, 7, cream)
+	fillEllipse(img, cx+16, waist-20, 10, 7, cream)
+	fillEllipse(img, cx, waist-20, 18, 8, cream)
+	fillEllipse(img, cx, waist-16, 9, 5, muzzle)
+	fillEllipse(img, cx, waist-8, 17, 13, dressDeep)
+	fillEllipse(img, cx, waist-8, 15, 11.5, dress)
+	fillEllipse(img, cx, waist-8, 6.5, 8, dressLite)
+	fillEllipse(img, cx, waist-16, 9, 2.6, white)
+	drawBow(img, cx, waist-6, 2.6)
+	fillCapsule(img, cx-12, waist+4, cx-26, waist+46, 9, dressDeep)
+	fillCapsule(img, cx+12, waist+4, cx+26, waist+46, 9, dressDeep)
+	fillEllipse(img, cx, waist+24, 26, 20, dressDeep)
+	fillEllipse(img, cx, waist+22, 23, 17, dress)
+	fillEllipse(img, cx, waist+18, 8, 12, dressLite)
+	fillEllipse(img, cx, waist+42, 28, 6, dressLite)
+	fillEllipse(img, cx, waist+46, 26, 3.2, dressDeep)
 	return img
 }
 
 func drawArm(right bool) *image.NRGBA {
 	// Shoulder joint is the bitmap center. The limb hangs in the lower half.
+	// Fur is cream; the paw is the dark point, with toes and a pad.
 	const w, h = 28, 168
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	cx := float64(w) / 2
 	joint := float64(h) / 2
-	fillEllipse(img, cx, joint, 7, 6, skin)
-	fillCapsule(img, cx, joint+2, cx, joint+34, 4.6, skin)
-	fillEllipse(img, cx, joint+34, 4, 3.6, skinShade)
-	fillCapsule(img, cx, joint+34, cx+1, joint+64, 3.8, skin)
-	fillEllipse(img, cx+1, joint+70, 5, 6, skin)
-	fillEllipse(img, cx-4, joint+66, 2.2, 3, skinShade)
+	fillEllipse(img, cx, joint, 8, 7, creamDeep)
+	fillEllipse(img, cx, joint, 6.6, 5.6, cream)
+	fillCapsule(img, cx, joint+2, cx, joint+32, 6.4, creamDeep)
+	fillCapsule(img, cx, joint+2, cx-0.6, joint+32, 5.2, cream)
+	fillCapsule(img, cx-1.6, joint+6, cx-1.2, joint+28, 1.4, creamLite)
+	fillEllipse(img, cx, joint+32, 5, 4, creamDeep)
+	fillCapsule(img, cx, joint+32, cx+0.6, joint+58, 5.4, creamDeep)
+	fillCapsule(img, cx, joint+32, cx+0.4, joint+56, 4.3, cream)
+	fillEllipse(img, cx+0.6, joint+64, 7.2, 8, pointDeep)
+	fillEllipse(img, cx+0.6, joint+63, 6.2, 7, point)
+	fillEllipse(img, cx-2.2, joint+60, 2.1, 2.4, pointLite)
+	fillEllipse(img, cx+0.4, joint+59, 2.1, 2.4, pointLite)
+	fillEllipse(img, cx+3, joint+60.5, 2.1, 2.4, pointLite)
+	fillEllipse(img, cx+0.8, joint+68, 2.4, 1.8, pad)
 	if right {
 		return mirrorNRGBA(img)
 	}
@@ -1066,11 +1218,15 @@ func drawLeg(right bool) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	cx := float64(w) / 2
 	joint := float64(h) / 2
-	fillCapsule(img, cx, joint+4, cx, joint+28, 6, skin)
-	fillEllipse(img, cx, joint+28, 5, 4.5, skinShade)
-	fillCapsule(img, cx, joint+28, cx, joint+50, 4.4, skin)
-	fillEllipse(img, cx+1, joint+54, 8, 3.6, shoe)
-	fillEllipse(img, cx+3, joint+52, 3, 2.2, shoeLite)
+	fillCapsule(img, cx, joint+2, cx, joint+26, 7.2, creamDeep)
+	fillCapsule(img, cx, joint+2, cx-0.5, joint+26, 6, cream)
+	fillEllipse(img, cx, joint+26, 5.4, 4.2, creamDeep)
+	fillCapsule(img, cx, joint+26, cx, joint+46, 5.2, creamDeep)
+	fillCapsule(img, cx, joint+26, cx-0.4, joint+44, 4.2, cream)
+	fillEllipse(img, cx, joint+46, 6.2, 5, point)
+	fillEllipse(img, cx+1, joint+54, 8.4, 4, shoe)
+	fillEllipse(img, cx+2, joint+52, 6, 2.4, shoeLite)
+	fillCapsule(img, cx-2, joint+50, cx+4, joint+50, 0.7, shoeLite)
 	if right {
 		return mirrorNRGBA(img)
 	}
@@ -1078,39 +1234,53 @@ func drawLeg(right bool) *image.NRGBA {
 }
 
 func drawTail() *image.NRGBA {
+	// The joint is the bitmap center. The plume grows to the right:
+	// cream at the base, seal brown along the length, darker at the tip.
 	const w, h = 128, 48
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	cx, cy := float64(w)/2, float64(h)/2
-	fillCapsule(img, cx, cy, cx+18, cy+4, 5, hair)
-	fillEllipse(img, cx+28, cy+2, 10, 8, hair)
-	fillEllipse(img, cx+42, cy-2, 11, 9, hair)
-	fillEllipse(img, cx+52, cy-6, 8, 8, hairLite)
+	fillCapsule(img, cx-4, cy+2, cx+22, cy+2, 7.5, creamDeep)
+	fillCapsule(img, cx-2, cy+1, cx+20, cy+1, 6, cream)
+	fillCapsule(img, cx+16, cy+1, cx+40, cy-4, 9, pointDeep)
+	fillCapsule(img, cx+18, cy, cx+38, cy-5, 7.2, point)
+	fillEllipse(img, cx+48, cy-8, 12, 11, pointDeep)
+	fillEllipse(img, cx+48, cy-9, 9.5, 8.5, point)
+	fillEllipse(img, cx+46, cy-12, 4, 3, pointLite)
+	fillCapsule(img, cx+8, cy-1, cx+24, cy-2, 1.6, creamLite)
 	return img
 }
 
 var (
-	skin      = color.NRGBA{255, 224, 206, 255}
-	skinShade = color.NRGBA{236, 196, 176, 255}
-	hair      = color.NRGBA{92, 58, 46, 255}
-	hairLite  = color.NRGBA{148, 104, 78, 255}
-	earPink   = color.NRGBA{236, 170, 176, 255}
-	nose      = color.NRGBA{214, 140, 140, 255}
-	brow      = color.NRGBA{72, 48, 40, 255}
-	blush     = color.NRGBA{240, 150, 150, 90}
+	cream     = color.NRGBA{255, 236, 214, 255}
+	creamDeep = color.NRGBA{228, 196, 168, 255}
+	creamLite = color.NRGBA{255, 248, 240, 255}
+	point     = color.NRGBA{122, 84, 68, 255}
+	pointDeep = color.NRGBA{78, 52, 44, 255}
+	pointLite = color.NRGBA{176, 132, 108, 255}
+	maskBrown = color.NRGBA{146, 104, 86, 255}
+	muzzle    = color.NRGBA{255, 250, 246, 255}
+	earDeep   = color.NRGBA{214, 140, 150, 255}
+	earPink   = color.NRGBA{244, 186, 186, 255}
+	nose      = color.NRGBA{232, 140, 150, 255}
+	noseDeep  = color.NRGBA{176, 84, 102, 255}
+	brow      = color.NRGBA{78, 52, 44, 255}
+	blush     = color.NRGBA{240, 150, 150, 110}
 	bow       = color.NRGBA{214, 84, 122, 255}
 	bowDeep   = color.NRGBA{168, 52, 88, 255}
 	dress     = color.NRGBA{214, 96, 132, 255}
-	dressLite = color.NRGBA{236, 150, 176, 255}
+	dressLite = color.NRGBA{244, 168, 190, 255}
 	dressDeep = color.NRGBA{168, 64, 102, 255}
-	ribbon    = color.NRGBA{120, 48, 72, 255}
 	white     = color.NRGBA{255, 250, 246, 255}
-	iris      = color.NRGBA{62, 128, 196, 255}
-	pupil     = color.NRGBA{24, 36, 58, 255}
+	iris      = color.NRGBA{46, 118, 214, 255}
+	irisDeep  = color.NRGBA{24, 72, 156, 255}
+	irisLite  = color.NRGBA{150, 196, 236, 255}
+	pupil     = color.NRGBA{16, 28, 48, 255}
 	lash      = color.NRGBA{48, 32, 28, 255}
 	lip       = color.NRGBA{196, 96, 112, 255}
 	lipDeep   = color.NRGBA{160, 64, 84, 255}
+	pad       = color.NRGBA{232, 150, 160, 255}
 	shoe      = color.NRGBA{62, 44, 40, 255}
-	shoeLite  = color.NRGBA{92, 68, 60, 255}
+	shoeLite  = color.NRGBA{120, 86, 74, 255}
 )
 
 func fillCapsule(img *image.NRGBA, x1, y1, x2, y2, r float64, c color.NRGBA) {

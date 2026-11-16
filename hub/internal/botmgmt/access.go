@@ -536,6 +536,9 @@ type BotAdmission struct {
 	// timer it shows, so a follow-up is not saved as the raw sentence alone.
 	Instruction string
 	Schedule    *DesktopSchedule
+	// Joined: a continuation of a handoff another post already continued.
+	// It has no turn of its own; RunID, when set, is that other post's run.
+	Joined bool
 }
 
 // PostMessagePhase is PostMessage with the bot turn phase. An empty phase
@@ -579,7 +582,7 @@ func (s *Service) AdmitDesktopMessageAct(ctx context.Context, tenantID, userID, 
 	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, true, action)
 }
 
-func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool, action string) (BotAdmission, error) {
+func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool, action string) (outAdmission BotAdmission, outErr error) {
 	// A password typed into the message is taken out here, before routing,
 	// intake (an LLM call that may write a schedule row), the turn queue, or
 	// any log sees the text. The value rides only in the MaClawSrv metadata.
@@ -632,6 +635,26 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// own display when it is isolated.
 	desktopUser := desktopUserForBot(userID, rec.Bots[index])
 	isolated := botIsolated(rec.Bots[index])
+	if continues, explicit := desktopContinuation(ctx, action, content); admit && !desktopReplay(ctx) && continues {
+		joined, ok, release := s.joinDesktopContinue(tenantID, userID, desktopUser, botID, clientMessageID, explicit)
+		if ok {
+			if strings.EqualFold(strings.TrimSpace(action), "return") {
+				// Joining returns before the post, so the deferred drain
+				// below never runs. The continuation this press joins may
+				// be parked only because the person still had the keyboard;
+				// releasing it without draining leaves that task waiting for
+				// the 30s sweep. The pin stays owned by that continuation:
+				// this press has no settle of its own, and writing its key
+				// here would stop the real turn from clearing the pin or
+				// giving the keyboard back if it fails.
+				s.releaseDesktopKeyboard(tenantID, desktopUser, botID, s.desktopContinueOwnerTurn(tenantID, userID, botID))
+				s.drainDesktopQueue(tenantID, userID, botID)
+			}
+			traceBot(botID, "continue_joined", nil, "run", joined.RunID, "settled", traceYes(joined.Settled))
+			return joined, nil
+		}
+		defer func() { release(outAdmission, outErr) }()
+	}
 	traceBot(botID, "post_begin", nil,
 		"tenant", tenantID,
 		"user", userID,
@@ -657,13 +680,17 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	var fresh record
 	var token string
 	haveToken := false
+	// A bot with no computer never joins the busy-desktop queue below, and
+	// the routing and intake decisions are told the same so a rewritten
+	// instruction cannot order a desktop the bot does not have.
+	noDesktop := botNone(rec.Bots[index])
 	if !hubStartedTurn(clientMessageID) && desktopCanonicalContinue(botID, continueSession) == "" {
 		if sticky, replay := s.peekDesktopRouteState(tenantID, userID, botID, clientMessageID); !replay {
 			step := time.Now()
 			var routeErr error
 			if f, tk, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID); err == nil {
 				fresh, token, haveToken = f, tk, true
-				route, routeErr = s.routeDesktopMessage(ctx, tenantID, userID, &fresh, &token, instanceID, botID, content, sticky)
+				route, routeErr = s.routeDesktopMessage(ctx, tenantID, userID, &fresh, &token, instanceID, botID, content, sticky, noDesktop)
 			} else {
 				routeErr = err
 			}
@@ -695,7 +722,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			TenantID: tenantID, UserID: userID, DesktopUser: desktopUser, BotID: botID,
 			InstanceID: instanceID, Content: content, Phase: phase,
 			ClientMessageID: clientMessageID, ContinueSession: continueSession,
-			Action: action, Admit: admit, NodeID: rec.Bots[index].NodeID,
+			Action: action, Admit: admit, NoDesktop: noDesktop, NodeID: rec.Bots[index].NodeID,
 			TokenRec: &fresh, Token: &token, HaveToken: haveToken,
 		})
 		if steerErr != nil {
@@ -721,7 +748,6 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// The container's memory is read from desktopd. Over the line, this run
 	// waits in the same queue as a busy desktop and starts when a later
 	// read is under the line.
-	noDesktop := botNone(rec.Bots[index])
 	if admit && !noDesktop && !hubStartedTurn(clientMessageID) {
 		pressed, memErr := s.desktopMemoryState(desktoppool.WithComputer(ctx, rec.Bots[index].NodeID), tenantID, userID)
 		if nodeSessionMissing(memErr) {
@@ -1652,6 +1678,9 @@ func (s *Service) noteDesktopHeld(tenantID, userID, botID string, turn ...string
 	s.setDesktopTurnLocked(&s.desktopHoldTurn, key, turn)
 	if s.desktopHeld[key] == botID && s.desktopAwaiting[key] && s.desktopKeyboardTaken[key] == "" {
 		return // already pinned exactly like this — skip the disk write
+	}
+	if !(s.desktopHeld[key] == botID && s.desktopAwaiting[key]) {
+		s.openDesktopHandoffLocked(tenantID, userID, botID)
 	}
 	s.desktopHeld[key] = botID
 	s.desktopAwaiting[key] = true

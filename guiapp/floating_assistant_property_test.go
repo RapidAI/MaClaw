@@ -205,12 +205,16 @@ func TestProperty4_DragPositionRoundTrip(t *testing.T) {
 	const testScreenHeight = 1080
 	const buttonSize = defaultPetSize + 16
 
-	// Override screen dimension getters for this test
+	// Override screen dimension getters for this test. The monitor hook would
+	// keep a negative origin, and this property is the primary-size fallback.
+	prevArea := petWorkAreaAt
 	platformGetScreenWidth = func() int { return testScreenWidth }
 	platformGetScreenHeight = func() int { return testScreenHeight }
+	petWorkAreaAt = nil
 	defer func() {
 		platformGetScreenWidth = nil
 		platformGetScreenHeight = nil
+		petWorkAreaAt = prevArea
 	}()
 
 	f := func(x int16, y int16) bool {
@@ -275,14 +279,18 @@ func TestProperty5_PositionClamping(t *testing.T) {
 			visible: false,
 		}
 
-		// Override screen dimension getters for this test
+		// Override screen dimension getters for this test. The monitor hook
+		// would keep a coordinate that this primary-size property rejects.
 		oldWidth := platformGetScreenWidth
 		oldHeight := platformGetScreenHeight
+		oldArea := petWorkAreaAt
 		platformGetScreenWidth = func() int { return sw }
 		platformGetScreenHeight = func() int { return sh }
+		petWorkAreaAt = nil
 		defer func() {
 			platformGetScreenWidth = oldWidth
 			platformGetScreenHeight = oldHeight
+			petWorkAreaAt = oldArea
 		}()
 
 		manager.UpdatePosition(inputX, inputY)

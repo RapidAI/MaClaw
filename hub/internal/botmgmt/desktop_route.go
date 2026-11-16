@@ -72,7 +72,7 @@ func (s *Service) peekDesktopRouteState(tenantID, userID, botID, clientMessageID
 // goes. An empty route means "no decision": the claim falls back as before.
 // A tunnel that is already offline is returned so the message can queue
 // before any later read.
-func (s *Service) routeDesktopMessage(ctx context.Context, tenantID, userID string, rec *record, token *string, instanceID, botID, content, sticky string) (desktopRoute, error) {
+func (s *Service) routeDesktopMessage(ctx context.Context, tenantID, userID string, rec *record, token *string, instanceID, botID, content, sticky string, noDesktop bool) (desktopRoute, error) {
 	if s == nil || rec == nil || token == nil || strings.TrimSpace(instanceID) == "" {
 		return desktopRoute{}, nil
 	}
@@ -89,6 +89,7 @@ func (s *Service) routeDesktopMessage(ctx context.Context, tenantID, userID stri
 		"bot_id":         botID,
 		"content":        content,
 		"sticky_session": sticky,
+		"no_desktop":     noDesktop,
 	}, &out)
 	if err != nil {
 		traceBot(botID, "route", err, "timeout", traceYes(rctx.Err() != nil))

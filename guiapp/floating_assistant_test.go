@@ -415,6 +415,9 @@ func TestFloatingAssistantManager_DefaultPosition(t *testing.T) {
 }
 
 func TestFloatingAssistantManager_LoadsExplicitZeroPosition(t *testing.T) {
+	prev := petWorkAreaAt
+	petWorkAreaAt = nil
+	t.Cleanup(func() { petWorkAreaAt = prev })
 	manager := &FloatingAssistantManager{}
 	cfg := corelib.AppConfig{FloatingBtnPositionSet: true, FloatingBtnX: 0, FloatingBtnY: 0}
 

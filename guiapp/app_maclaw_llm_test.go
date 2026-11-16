@@ -81,6 +81,125 @@ func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToQAgent(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
+func TestTigerClawCodeGenProviderIsAvailableWithoutBecomingDefault(t *testing.T) {
+	providers := defaultMaclawLLMProviders()
+	if providers[0].Name != "OpenAI" {
+		t.Fatalf("unauthenticated default provider = %q, want OpenAI", providers[0].Name)
+	}
+	var found int
+	for _, provider := range providers {
+		if provider.Name != codegenProviderName {
+			continue
+		}
+		found++
+		if provider.AuthType != "sso" || provider.URL != oauth.CodeGenBaseURL || provider.Model != corelib.CodeGenDefaultModelID || provider.Key != "" {
+			t.Fatalf("CodeGen preset is not an unsigned SSO provider: %+v", provider)
+		}
+	}
+	if want := 0; brand.Current().ID == "qianxin" {
+		want = 1
+		if found != want {
+			t.Fatalf("CodeGen provider count = %d, want %d", found, want)
+		}
+	} else if found != want {
+		t.Fatalf("non-TigerClaw build includes CodeGen provider")
+	}
+}
+
+func TestCodeGenNewGrantDoesNotInheritOldExpiry(t *testing.T) {
+	old := []corelib.MaclawLLMProvider{{Name: codegenProviderName, AuthType: "sso", Key: "old-token", RefreshToken: "old-refresh", TokenExpiresAt: 1}}
+	next := upsertCodeGenProvider(old, oauth.CodeGenSSOResult{AccessToken: "new-token", BaseURL: oauth.CodeGenBaseURL})
+	next = preserveManagedAuthSecrets(next, old)
+	if next[0].Key != "new-token" || next[0].RefreshToken != "" || next[0].TokenExpiresAt != 0 {
+		t.Fatalf("re-login retained old grant metadata: %+v", next[0])
+	}
+}
+
+func TestCodeGenConnectionTestRequiresSSOLogin(t *testing.T) {
+	_, err := (&App{}).TestMaclawLLM(corelib.MaclawLLMConfig{
+		URL: oauth.CodeGenBaseURL, Model: corelib.CodeGenDefaultModelID, AuthType: "sso",
+	})
+	if err == nil || !strings.Contains(err.Error(), "SSO token is missing") {
+		t.Fatalf("unauthenticated CodeGen test error = %v", err)
+	}
+}
+
+func TestCodeGenProviderSSOOnlyUpdatesProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	store := oauth.NewFileCredentialStore(filepath.Join(tmpHome, "credentials.json"))
+	if err := store.Modify("codegen", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{Type: "sso", AccessToken: "old-token", ExpiresAt: 1}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: tmpHome, credentialStore: store}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "OpenAI", URL: "https://example.com/v1", Model: "model-a", Key: "openai-key"},
+			{Name: codegenProviderName, URL: oauth.CodeGenBaseURL, AuthType: "sso", Model: "old-model", Key: "old-token", TokenExpiresAt: 1},
+		},
+		MaclawLLMCurrentProvider: "OpenAI",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := app.finishCodeGenEmbeddedSSO(oauth.CodeGenSSOResult{
+		AccessToken: "new-token",
+		BaseURL:     oauth.CodeGenBaseURL,
+		ModelID:     "new-model",
+		Email:       "someone@example.com",
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaclawLLMCurrentProvider != "OpenAI" || cfg.RemoteEmail != "" {
+		t.Fatalf("provider login changed assistant or Hub identity: current=%q email=%q", cfg.MaclawLLMCurrentProvider, cfg.RemoteEmail)
+	}
+	codegen, ok := findProviderByName(cfg.MaclawLLMProviders, codegenProviderName)
+	if !ok || codegen.Key != "new-token" || codegen.Model != "new-model" || codegen.TokenExpiresAt != 0 || codegen.ConnectionTestPassed {
+		t.Fatalf("CodeGen grant was not replaced safely: %+v", codegen)
+	}
+	stored, err := store.Read("codegen")
+	if err != nil || stored == nil || stored.AccessToken != "new-token" || stored.ExpiresAt != 0 {
+		t.Fatalf("stored grant = %+v, err=%v", stored, err)
+	}
+}
+
+func TestPingMaclawLLMSkipsUnselectedCodeGenSSO(t *testing.T) {
+	if brand.Current().ID != "qianxin" {
+		t.Skip("CodeGen SSO validation is enabled only in TigerClaw")
+	}
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	oldClient := maclawLLMPingClient
+	t.Cleanup(func() { maclawLLMPingClient = oldClient })
+	maclawLLMPingClient = &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "assistant.health.test" {
+			t.Fatalf("unselected provider was probed: %s", req.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: req}, nil
+	})}
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "Assistant", URL: "https://assistant.health.test/v1", Model: "assistant-model", Key: "key"},
+			{Name: codegenProviderName, URL: oauth.CodeGenBaseURL, Model: "auto", AuthType: "sso", Key: "expired-token", TokenExpiresAt: 1},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if status := app.PingMaclawLLM(); !status.Online {
+		t.Fatalf("unselected expired CodeGen blocked assistant ping: %+v", status)
+	}
+}
+
 func TestDoFetchModelsRequestNormalizesLegacyTigerclawUserAgent(t *testing.T) {
 	app := &App{}
 	client := &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -4384,10 +4503,10 @@ func TestGetMaclawLLMProviders_NormalizesCodeGenAutoPlaceholder(t *testing.T) {
 	if data.Current != codegenProviderName {
 		t.Fatalf("Current = %q, want %q", data.Current, codegenProviderName)
 	}
-	if len(data.Providers) == 0 {
-		t.Fatal("expected providers")
+	got, ok := findProviderByName(data.Providers, codegenProviderName)
+	if !ok {
+		t.Fatal("expected CodeGen provider")
 	}
-	got := data.Providers[0]
 	if got.Model != corelib.CodeGenDefaultModelID {
 		t.Fatalf("CodeGen model = %q, want %q", got.Model, corelib.CodeGenDefaultModelID)
 	}
@@ -4424,7 +4543,11 @@ func TestSaveMaclawLLMProviders_NormalizesCodeGenAutoPlaceholder(t *testing.T) {
 	if got := saved.MaclawLLMModel; got != corelib.CodeGenDefaultModelID {
 		t.Fatalf("legacy model = %q, want %q", got, corelib.CodeGenDefaultModelID)
 	}
-	if got := saved.MaclawLLMProviders[0].Model; got != corelib.CodeGenDefaultModelID {
+	codegenProvider, ok := findProviderByName(saved.MaclawLLMProviders, codegenProviderName)
+	if !ok {
+		t.Fatal("expected CodeGen provider")
+	}
+	if got := codegenProvider.Model; got != corelib.CodeGenDefaultModelID {
 		t.Fatalf("provider model = %q, want %q", got, corelib.CodeGenDefaultModelID)
 	}
 	if got := saved.MaclawLLMProtocol; got != "openai" {
@@ -4479,7 +4602,11 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 
-	if got := saved.MaclawLLMProviders[0].Model; got != "maclaw-model" {
+	codegenProvider, ok := findProviderByName(saved.MaclawLLMProviders, codegenProviderName)
+	if !ok {
+		t.Fatal("expected CodeGen provider")
+	}
+	if got := codegenProvider.Model; got != "maclaw-model" {
 		t.Fatalf("MaClaw provider model = %q, want %q", got, "maclaw-model")
 	}
 	if got := saved.Claude.CurrentModel; got != codegenProviderName {
@@ -4706,7 +4833,11 @@ func TestFetchCodeGenModelsUsesSavedProviderEndpointAndCachesModels(t *testing.T
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if got := saved.MaclawLLMProviders[0].Models; !reflect.DeepEqual(got, []string{"qax-codegen/Auto", "qax-codegen/Claude"}) {
+	codegenProvider, ok := findProviderByName(saved.MaclawLLMProviders, codegenProviderName)
+	if !ok {
+		t.Fatal("expected CodeGen provider")
+	}
+	if got := codegenProvider.Models; !reflect.DeepEqual(got, []string{"qax-codegen/Auto", "qax-codegen/Claude"}) {
 		t.Fatalf("saved provider models = %#v", got)
 	}
 }

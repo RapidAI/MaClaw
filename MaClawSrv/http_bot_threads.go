@@ -92,7 +92,8 @@ func (s *HTTPServer) handleBotIntake(w http.ResponseWriter, r *http.Request, p a
 	persistDesktopBotSchedule(p, r.PathValue("instanceId"), in, out)
 	if out.Spec && out.Phase == "plan" {
 		gen, draft := agentservice.SpecDraftForRefine(p.TenantID, p.UserID, in.BotID, out.Instruction)
-		go agentservice.RefineOpenSpec(context.Background(), p.TenantID, p.UserID, in.BotID, gen, draft, in.Content, in.Earlier, s.specRefineClassifier(p))
+		noDesktop := in.NoDesktop || scheduleTurnHasNoDesktop(r.Context(), s.svc, p, r.PathValue("instanceId"))
+		go agentservice.RefineOpenSpec(context.Background(), p.TenantID, p.UserID, in.BotID, gen, draft, in.Content, in.Earlier, noDesktop, s.specRefineClassifier(p))
 	}
 	writeJSON(w, http.StatusOK, out)
 }

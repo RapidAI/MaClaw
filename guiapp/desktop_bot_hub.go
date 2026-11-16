@@ -262,6 +262,13 @@ type DesktopBotHandBack struct {
 	RunID           string `json:"run_id,omitempty"`
 	Status          string `json:"status,omitempty"`
 	ClientMessageID string `json:"client_message_id,omitempty"`
+	// Joined: another post already continues this handoff and owns its
+	// reply; Reply is Hub's one line for this press.
+	Joined bool `json:"joined,omitempty"`
+	Reply  *struct {
+		Text       string `json:"text"`
+		SendToUser string `json:"send_to_user,omitempty"`
+	} `json:"reply,omitempty"`
 }
 
 // WatchDesktopBot polls the live desktop for the Bot page. The GUI calls it

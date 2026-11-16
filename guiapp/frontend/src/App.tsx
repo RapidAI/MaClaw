@@ -2908,31 +2908,24 @@ function App() {
         };
     }, [brandInfoLoaded]);
 
-    // Poll MaClaw LLM status every 60 seconds.
-    // Also re-ping immediately when the user navigates to/from the LLM settings
-    // tab (settingsTab changes), which covers the "just saved config" scenario.
+    // One startup ping for the onboarding gate and the initial status dot.
+    // The recurring probe lives in the profile-health poll below so the same
+    // assistant endpoint is not probed twice per cycle.
     useEffect(() => {
-        const pingLLM = () => {
-            callBackend(() => PingMaclawLLM()).then((s: any) => {
-                setMaclawLLMOnline(!!s.online);
-                setMaclawLLMConfigured(!!s.configured);
-                if (!maclawLLMFirstPingDone.current) {
-                    maclawLLMFirstPingDone.current = true;
-                    setMaclawLLMStartupPing({ online: !!s.online });
-                }
-            }).catch(() => {
-                setMaclawLLMOnline(false);
-                if (!maclawLLMFirstPingDone.current) {
-                    maclawLLMFirstPingDone.current = true;
-                    setMaclawLLMStartupPing({ online: false });
-                }
-            });
-        };
-        pingLLM();
-        // Status poll only: pause while the window is hidden (a fresh ping
-        // still fires the moment the app becomes visible again).
-        const stopPing = startVisibleInterval(pingLLM, 60000);
-        return () => stopPing();
+        callBackend(() => PingMaclawLLM()).then((s: any) => {
+            setMaclawLLMOnline(!!s.online);
+            setMaclawLLMConfigured(!!s.configured);
+            if (!maclawLLMFirstPingDone.current) {
+                maclawLLMFirstPingDone.current = true;
+                setMaclawLLMStartupPing({ online: !!s.online });
+            }
+        }).catch(() => {
+            setMaclawLLMOnline(false);
+            if (!maclawLLMFirstPingDone.current) {
+                maclawLLMFirstPingDone.current = true;
+                setMaclawLLMStartupPing({ online: false });
+            }
+        });
     }, []);
 
     // Open the LLM step only after config and the first ping both exist.
@@ -4214,6 +4207,15 @@ function App() {
                 && healthSeq === llmProfileHealthRefreshSeqRef.current
                 && panelSeq === llmProfilePanelSeqRef.current) {
                 setLLMProfilePanelState(next);
+                // This is the only periodic upstream probe, so the status
+                // dot and the provider quick-switch gate derive their
+                // online/configured flags from the assistant result instead
+                // of a second ping.
+                const assistant = next.assistant;
+                if (assistant) {
+                    setMaclawLLMOnline(String(assistant.health || '') === 'configured');
+                    setMaclawLLMConfigured(!!assistant.configured);
+                }
             }
             return next;
         }).catch(() => null);
@@ -4226,7 +4228,7 @@ function App() {
         const off = safeEventsOn('llm-profiles-changed', () => {
             // Save/provider events invalidate backend probe records. Refresh
             // both the selection and health now instead of showing the safe
-            // interim "unverified" state until the next 60-second poll.
+            // interim "unverified" state until the next periodic poll.
             // The server snapshot does not include the live model catalog, so
             // reload that after the snapshot is applied.
             void refreshLLMProfilePanelState().then((next) => {
@@ -4253,9 +4255,11 @@ function App() {
     }, [refreshLLMProfileHealth, refreshLLMProfilePanelState]);
 
     // Profile health is intentionally refreshed through its own dual-profile
-    // API. The legacy assistant-only ping below remains for onboarding only.
+    // API. The legacy assistant-only ping above remains for onboarding only.
+    // 10 minutes, not 60 seconds: a fixed metronome probe is exactly the
+    // traffic pattern upstream providers flag as abnormal.
     useEffect(() => {
-        const stopHealth = startVisibleInterval(() => { void refreshLLMProfileHealth(); }, 60000);
+        const stopHealth = startVisibleInterval(() => { void refreshLLMProfileHealth(); }, 10 * 60 * 1000);
         return () => {
             llmProfileHealthRefreshSeqRef.current += 1;
             stopHealth();

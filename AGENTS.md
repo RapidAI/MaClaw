@@ -166,6 +166,28 @@
   loop still owns the session; an orphan-lock denial leaves it false so the
   parked goal turn is restored.
 
+## Semantic route authority (guiapp)
+
+- Route revisions fence per lineage (root+session+principal): a newer
+  `PublishSurface` on the same lineage supersedes every earlier revision,
+  and a superseded revision never becomes current again. Per-call
+  `coordinator.Admit`/`executor.Execute` check `routeRevisionIsCurrent` —
+  `route_revision_superseded`/`route_revision_cancelled` at that point
+  means THIS surface is dead forever, most often because a concurrent turn
+  on the same lineage took over.
+- `sharedAgentLoopCallbacks.semanticRouteAuthorityLossResult` is the
+  single funnel for those errors: a dead managed surface calls
+  `loopCtx.Cancel()` (the loop exits via `ShouldStop`) and returns a
+  terminal "[system] 授权已被取代…本轮执行终止" text — NOT a
+  `[system rejected]` tool failure. Do NOT return fencing errors as
+  retryable tool results: the 2026-11 ssh deployment turn retried a dead
+  route ~10 times, tripped the consecutive-same-tool "改用其他方式"
+  guidance, and detoured around governed ssh with a local paramiko script.
+- A discovered-MCP sidecar is exempt: it lives on a `…:mcp-sidecar`
+  session (own lineage), so its death only drops the sidecar
+  (`semanticSurfaceIsMCPSidecar` matches pointer identity AND the session
+  suffix — the suffix catches a sidecar dropped concurrently mid-call).
+
 ## Assistant chat event protocol (guiapp)
 
 - The panel renders assistant output only into an `ActiveRound` keyed by

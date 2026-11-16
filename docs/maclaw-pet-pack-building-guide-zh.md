@@ -23,7 +23,7 @@ Hub 在线规范（与本文应对齐）：`/pet-pack-help`（如 `https://hub.m
 | 基础连续动作 | `native-skeleton` + schema 2 | rig JSON + 贴图 + idle 回退 |
 | **桌面可动角色（推荐）** | **`native-character` + schema 3** | performer + multi-part rig + 全身静态回退 |
 
-**强烈建议**：可动角色使用 **分件（body + 表情头）**，并画/生成 **全身**，不要半身头像。
+**强烈建议**：可动角色使用分件全身，不要半身头像。换头包用布局 A 或 B。官方默认布偶娘用布局 C（多肢纸娃娃），见第 4.6 节。
 
 ---
 
@@ -124,6 +124,8 @@ fallback:
 
 ## 4. 分件形象规范（实战）
 
+第 4.1–4.5 节是布局 A（`body` + `head_*`）。长发换头用布局 B（`body` + 固定 `hair` + `face_*`），规则见 Hub `/pet-pack-help`。官方默认包不走这两套换头，见第 4.6 节。
+
 ### 4.1 必须
 
 1. **全身**：站立或坐姿完整，四周透明边距；禁止半身证件照当唯一资源。  
@@ -179,17 +181,29 @@ Clip：身体先动，头延迟 80–280ms；表情只改 head 的 alpha。设�
 - [ ] default 变体 native 表列齐七态  
 - [ ] 56 / 88 / 120 px 仍可辨认  
 
+### 4.6 布局 C：多肢纸娃娃（官方布偶娘）
+
+官方默认包 `ragdoll` 用这一布局。不要把它改成七张头图，也不要为它打开 Join v1。ClawMate 式多肢包同样不自动启用 Join v1。
+
+- 贴图分开：躯干、头、眼、嘴、左右臂、左右腿、尾巴。辫子是头下的次级骨骼（辫身 + 辫尖），单独贴图，不画进 `head.png`。
+- 每张贴图的关节在位图几何中心。slot 名等于骨骼名。右臂、右腿、右辫是左件镜像。头画在辫子前面。
+- 表情是眼、嘴 clip，不是七张 `head_*.png`。注视 clip 的名字由包自定，至少 4 个互不相同。宿主不另发视线目标，也不读取屏幕。
+- 头转过至少 6° 时，辫子反向跟随，辫尖再多让一点。次级摆动仍走 `secondary` 层，和这条跟随相加。
+- 身体先动，头和视线晚 100–300ms 再跟上。收势时头比身体晚回到中立。循环的首尾姿态相同，`at_ms` 严格递增，最后一帧落在 `duration_ms`。
+- 闲置候选至少包含：呼吸、自然眨眼、观察、重心调整、短暂走神、伸展、整理姿态、休息、恢复注意、环境回应。走、跑、跳、弯腰、唱可以另加。这五类原地完成，`travel_x` 为 0。呼吸、走、跑仍然可以带 `travel_x`。环境回应不要写 `notice` 音效，那个名字会和点击、悬停的提示音撞车。
+- 进入循环是硬切，没有交叉淡化。`enter` 的最后一帧必须等于 `loop` 的第一帧，`exit` 的第一帧必须等于这个循环姿态。停留到期后在这一圈的接缝进入 `exit`；接缝被跳过时最多再等一个循环。表情、注视和次级层各自计时，不因身体换段回到第一帧。动作开始前 100–300ms 要有反向预备。
+
 ---
 
 ## 5. performer.json（摘要）
 
 `version: 1`，包含：`moods`、`layers`、`behaviors`、`states`、`events`、`reactions`、`rules`。
 
-- 状态：`idle` / `listening` / `thinking` / `speaking` / `done` / `alert` / `quiet`  
-- 事件：`click` / `hover` / `drag_start` / `drag_end` / `task_started` / `task_done` / `task_failed` / `long_idle`  
-- 至少 10 idle 行为、12 反应、6 表情 clip、4 注视 clip  
-- `no_repeat_last ≥ 3`，idle 池条目数 > `no_repeat_last`  
-- 完整字段与枚举见 Hub `/pet-pack-help`
+- 状态闭集：`idle` / `listening` / `thinking` / `speaking` / `done` / `alert` / `quiet`。每个包都要写全。不要另加 working、blocked、waiting。`speaking` 是说话，不是“正在做事”的姿势。
+- 事件闭集：`click` / `hover` / `drag_start` / `drag_end` / `task_started` / `task_needs_you` / `task_done` / `task_failed` / `long_idle`。运行时只发这些。包不得再加事件。未知事件忽略。
+- 至少 10 个 idle 行为、12 个反应、6 个表情 clip、4 个注视 clip。闲置候选至少覆盖第 4.6 节的十类。
+- `no_repeat_last` 为 3–10。idle 池条目数必须大于它，并且至少有一个 `calm` 或不限情绪的行为。
+- 完整字段与枚举见 Hub `/pet-pack-help`。本文与该页对齐。仓库里没有单独的 `PRODUCTION-STANDARDS.md`。
 
 ---
 
@@ -219,7 +233,7 @@ Clip：身体先动，头延迟 80–280ms；表情只改 head 的 alpha。设�
 | `sound` | 1–4 个 `{hz, ms}`，写出后覆盖 cue，总长 ≤ 420ms。 |
 | `sound_loop` | 循环 clip 每一圈重播，用于脚步。 |
 
-listening 不要出声。speaking 期间宿主只播放 `sing`。安静模式和减少动效无声且静止。不要在包里放 wav/mp3。DeepSeek Harness、Live2D 和视频宠物不能直接安装。Hub `/pet-pack-help` 与本节一致。官方默认包是 `ragdoll`，不再提供螃蟹皮肤。Codex 兼容的精灵图集（目录内的 pet.json 加 spritesheet.webp 或 png）可用 dshconvert 转成用户宠物包后再安装。Live2D、视频、GIF 播放和 JS 宠物仍然不能直接安装。
+listening 不要出声。speaking 期间宿主只播放 `sing`。安静模式和减少动效无声且静止。不要在包里放 wav/mp3。DeepSeek Harness、Live2D 和视频宠物不能直接安装。Hub `/pet-pack-help` 与本节一致。官方默认包是 `ragdoll`（布局 C），不再提供螃蟹皮肤。Codex 兼容的精灵图集（目录内的 pet.json 加 spritesheet.webp 或 png）可用 dshconvert 转成用户宠物包后再安装。Live2D、视频、GIF 播放和 JS 宠物仍然不能直接安装。
 
 ---
 

@@ -105,16 +105,16 @@ func TestEnsureReceipt(t *testing.T) {
 	defer func() { desktopLedgerDir = old }()
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u1"}
 	run := &agentservice.Run{ID: "run_rc", Status: agentservice.RunStatusFailed}
-	m := desktopEnsureReceipt(scope, run, nil, nil, false)
+	m := desktopEnsureReceipt(scope, run, nil, nil, false, false)
 	if m == nil || m.Content == "" {
 		t.Fatal("failed run got no receipt")
 	}
 	run2 := &agentservice.Run{ID: "run_rc2", Status: agentservice.RunStatusCancelled}
-	if m := desktopEnsureReceipt(scope, run2, nil, nil, false); m != nil {
+	if m := desktopEnsureReceipt(scope, run2, nil, nil, false, false); m != nil {
 		t.Fatal("cancelled run got a second reply")
 	}
 	keep := &agentservice.Message{Content: "done"}
-	if m := desktopEnsureReceipt(scope, run, keep, nil, false); m.Content != "done" {
+	if m := desktopEnsureReceipt(scope, run, keep, nil, false, false); m.Content != "done" {
 		t.Fatal("reply overwritten")
 	}
 }

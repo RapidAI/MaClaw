@@ -10,6 +10,7 @@ export function LLMConfigDialogFooter({
     hubAlreadySynced,
     hubModelDirty = false,
     needsOAuthLogin,
+    needsSSOLogin = false,
     oauthBusy,
     saving,
     t,
@@ -25,6 +26,7 @@ export function LLMConfigDialogFooter({
     hubAlreadySynced: boolean;
     hubModelDirty?: boolean;
     needsOAuthLogin: boolean;
+    needsSSOLogin?: boolean;
     oauthBusy: boolean;
     saving: boolean;
     t: Translate;
@@ -56,7 +58,7 @@ export function LLMConfigDialogFooter({
                             : t("Use This Service", "\u4f7f\u7528\u6b64\u670d\u52a1")}
                     </button>
                 ) : (
-                    <button className="llm-config-btn llm-config-btn--primary" onClick={onSave} disabled={saving || oauthBusy || !canSave}>
+                    <button className="llm-config-btn llm-config-btn--primary" onClick={onSave} disabled={saving || oauthBusy || needsSSOLogin || !canSave}>
                         {saving ? t("Testing & Saving...", "\u68c0\u6d4b\u5e76\u4fdd\u5b58\u4e2d...") : tested ? t("Save Changes", "\u4fdd\u5b58\u4fee\u6539") : t("Test & Save", "\u68c0\u6d4b\u5e76\u4fdd\u5b58")}
                     </button>
                 )}

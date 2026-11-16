@@ -19,11 +19,11 @@ const armSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: strin
 const listSchedules = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Array<{ id: string; name: string; action: string; interval_minutes: number; hour: number; minute: number; day_of_week: number; next_run_at?: string; status?: string }>));
 const deleteSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _taskId?: string) => undefined));
 const wakeBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean } | undefined> => ({ novnc_url: '', user_control: false })));
-const watchBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string } | undefined> => ({ novnc_url: '', user_control: false })));
+const watchBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string; input_granted?: boolean } | undefined> => ({ novnc_url: '', user_control: false })));
 const setDesktopControl = vi.hoisted(() => vi.fn(async (_botId?: string, _hold?: boolean) => ({ input_granted: true })));
 const getScreen = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode: string }> => ({ novnc_url: '', user_control: false, desktop_mode: 'shared' })));
 const hubLink = vi.hoisted(() => vi.fn(async () => ({ state: 'connected' }) as Record<string, unknown> | null));
-const handBack = vi.hoisted(() => vi.fn(async (_botId?: string) => ({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' })));
+const handBack = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<{ handed_back: boolean; accepted?: boolean; run_id?: string; status?: string; client_message_id?: string; joined?: boolean; reply?: { text: string; send_to_user?: string } }> => ({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' })));
 const setDesktopMode = vi.hoisted(() => vi.fn(async (_botId?: string, mode?: string) => mode || 'shared'));
 const desktopAdmin = vi.hoisted(() => vi.fn(async () => false));
 const releaseWatch = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number) => undefined));
@@ -1462,6 +1462,128 @@ describe('DesktopBotWorkspace', () => {
         });
         expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+    });
+
+    it('lets the person drag a captcha while this bot is still marked operating', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        getDesktopBusy.mockResolvedValue({ seq: 4, marks: [{ owner_id: 'alice', bot_id: 'bot_1', count: 1 }] });
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({
+            novnc_url: liveDesktop,
+            user_control: true,
+            attention_reason: 'captcha_widget',
+            input_granted: true,
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        await waitFor(() => {
+            const frame = screen.getByTestId('desktop-bot-handoff');
+            expect(frame.getAttribute('src') || '').toContain('view_only=0');
+            expect(frame.getAttribute('data-input')).toBe('live');
+        });
+        expect(screen.queryByTestId('desktop-bot-screen-shield')).toBeNull();
+        expect(screen.getByTestId('desktop-bot-return-control').textContent).toBe('验证完成，继续');
+        expect(screen.getByTestId('desktop-bot-stage').textContent).toContain('拖动滑块');
+        expect(screen.queryByText('captcha_widget')).toBeNull();
+    });
+
+    it('returns a captcha once, and the same reason does not open another task', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({
+            novnc_url: liveDesktop,
+            user_control: true,
+            attention_reason: 'captcha_widget',
+            input_granted: true,
+        });
+        let sends = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            sends += 1;
+            return { request_id: sends === 1 ? 'desktop-bot-captcha' : `desktop-bot-captcha${sends}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开小红书' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        await act(async () => {
+            responseListeners.byEvent['ai-assistant-response']?.({
+                request_id: 'desktop-bot-captcha',
+                session_key: 'alice:bot_1',
+                text: 'captcha_widget',
+                send_to_user: 'captcha_widget',
+                desktop_handoff_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect((await screen.findAllByText(/拖动滑块/)).length).toBeGreaterThan(0);
+        expect(screen.queryByText('captcha_widget')).toBeNull();
+        const button = await screen.findByTestId('desktop-bot-return-control');
+        fireEvent.click(button);
+        fireEvent.click(button);
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(sendTask.mock.calls.filter(call => String(call[1]).includes('沿用这个登录状态'))).toHaveLength(1);
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-captcha',
+                session_key: 'alice:bot_1',
+                novnc_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        await screen.findByTestId('desktop-bot-handoff');
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-handback')).toBeNull();
+        expect(sendTask).toHaveBeenCalledTimes(2);
+
+        // The continuation itself meets the captcha again. Same reason code,
+        // but a turn started after the return: a new handoff, not the old one.
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-captcha2')).toBe(true));
+        await act(async () => {
+            responseListeners.byEvent['ai-assistant-response']?.({
+                request_id: 'desktop-bot-captcha2',
+                session_key: 'alice:bot_1',
+                text: '又出了验证码，麻烦再拖一下。',
+                send_to_user: '又出了验证码，麻烦再拖一下。',
+                desktop_handoff_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-return-control'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
+    });
+
+    it('does not take the keyboard back when a watch that started before the claim says it is free', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        const pendingWatches: Array<(view: { novnc_url: string; user_control: boolean; input_granted: boolean }) => void> = [];
+        watchBot.mockImplementation(() => new Promise(resolve => { pendingWatches.push(resolve); }));
+        const grants: Array<(view: { input_granted: boolean }) => void> = [];
+        setDesktopControl.mockImplementation((_botId?: string, hold?: boolean) => {
+            if (!hold) return Promise.resolve({ input_granted: false });
+            return new Promise(resolve => { grants.push(resolve); });
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-takeover'));
+        await waitFor(() => expect(grants.length).toBeGreaterThan(0));
+        await act(async () => { grants.forEach(release => release({ input_granted: true })); });
+        await act(async () => {
+            pendingWatches.forEach(release => release({ novnc_url: liveDesktop, user_control: false, input_granted: false }));
+        });
+        const frame = await screen.findByTestId('desktop-bot-handoff');
+        expect(frame.getAttribute('src') || '').toContain('view_only=0');
+        expect(frame.getAttribute('data-input')).toBe('live');
+        expect(screen.queryByTestId('desktop-bot-screen-shield')).toBeNull();
     });
 
     it('keeps the login picture when a later job fails to send', async () => {
@@ -4631,6 +4753,51 @@ describe('DesktopBotWorkspace', () => {
         await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
         expect(screen.queryByTestId('desktop-bot-handback-error')).toBeNull();
         expect(screen.queryByText('桌面没有交还给 bot。')).toBeNull();
+    });
+
+    it('shows a joined hand-back as one line, with no bubble waiting on a run it does not own', async () => {
+        const joinedLine = '好，刚才的交还已经在接着做了，这次不再另开一件。';
+        handBack.mockResolvedValue({
+            handed_back: true, accepted: true, joined: true, client_message_id: 'bot-turn-9',
+            reply: { text: joinedLine, send_to_user: joinedLine },
+        });
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: 'Bot B', description: '自己的桌面', instance_id: 'inst_2' },
+        ]);
+        const mine = 'http://hub.example/api/v1/desktop-handoff/mine/vnc.html?autoconnect=1';
+        const isolated = 'http://hub.example/api/v1/desktop-handoff/bot-b/vnc.html?autoconnect=1';
+        watchBot.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_2' ? isolated : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_2' ? 'isolated' : 'shared',
+        }));
+        getScreen.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_2' ? isolated : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_2' ? 'isolated' : 'shared',
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        await waitFor(() => expect(getScreen).toHaveBeenCalledWith('bot_2'));
+        fireEvent.click(screen.getByTestId('desktop-screen-bot-bot_2'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-login',
+                session_key: 'alice:bot_2',
+                novnc_url: isolated,
+                desktop_handoff: true,
+                attention_reason: '请登录 Google',
+            });
+        });
+        fireEvent.click(await screen.findByTestId('desktop-bot-handoff-notice'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-handback'));
+        await waitFor(() => expect(handBack).toHaveBeenCalledWith('bot_2'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_2').some(item => item.content === joinedLine)).toBe(true));
+        const stored = messagesForBot('alice', 'bot_2');
+        expect(stored.some(item => item.requestId === 'bot-turn-9')).toBe(false);
+        expect(stored.some(item => item.role === 'assistant' && item.pending)).toBe(false);
     });
 
     it('keeps the chat and composer on the left and opens the profile from the identity chip', async () => {

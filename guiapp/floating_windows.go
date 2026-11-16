@@ -48,7 +48,9 @@ const (
 	wmLbuttondown    = 0x0201
 	wmLbuttonup      = 0x0202
 	wmMousemove      = 0x0200
+	wmMouseleave     = 0x02A3
 	wmCapturechanged = 0x0215
+	wmPetPresence    = 0x8000 + 31
 	wmRbuttonup      = 0x0205
 	wmNchittest      = 0x0084
 	wmTimer          = 0x0113
@@ -114,6 +116,9 @@ var (
 	procSetTimer              = floatUser32.NewProc("SetTimer")
 	procKillTimer             = floatUser32.NewProc("KillTimer")
 	procPostMessageW          = floatUser32.NewProc("PostMessageW")
+	procSendMessageW          = floatUser32.NewProc("SendMessageW")
+	procGetWindowRect         = floatUser32.NewProc("GetWindowRect")
+	procTrackMouseEvent       = floatUser32.NewProc("TrackMouseEvent")
 	procSystemParametersInfoW = floatUser32.NewProc("SystemParametersInfoW")
 
 	procBeep             = floatKernel32.NewProc("Beep")
@@ -263,7 +268,23 @@ type windowsFloatingWindow struct {
 	// petPositionLocked stops autonomous screen travel. Clips still play,
 	// and the user can still drag the window.
 	petPositionLocked bool
-	actionSoundGen    uint64
+	// presenceLine is the one sentence shown while the pointer is over her.
+	// It is empty when there is nothing to say.
+	presenceLine    string
+	petPointerOver  bool
+	petLeaveArmed   bool
+	presenceTip     uintptr
+	presenceAdded   bool
+	presenceActive  bool
+	presenceShown   string
+	presenceUTF16   []uint16
+	presenceBroken  bool
+	presenceTracked bool
+	presenceTrackX  int
+	presenceTrackY  int
+	presenceBubbleW int
+	presenceBubbleH int
+	actionSoundGen  uint64
 	// Increments for every motion update so an older, slower registry lookup
 	// cannot overwrite a newer setting snapshot.
 	motionConfigRevision uint64
@@ -362,6 +383,7 @@ func init() {
 		}
 		return h
 	}
+	petWorkAreaAt = petMonitorWorkArea
 }
 
 // floatingWindow interface
@@ -536,10 +558,14 @@ func (w *windowsFloatingWindow) Show() {
 func (w *windowsFloatingWindow) Hide() {
 	w.mu.Lock()
 	hwnd := w.hwnd
+	w.petPointerOver = false
+	w.petLeaveArmed = false
 	w.mu.Unlock()
 	if hwnd == 0 {
 		return
 	}
+	// Hide runs off the window thread. The tooltip is updated there.
+	procPostMessageW.Call(hwnd, wmPetPresence, 0, 0)
 	procShowWindowFloat.Call(hwnd, uintptr(swHide))
 }
 
@@ -586,6 +612,20 @@ func (w *windowsFloatingWindow) Destroy() {
 			w.mu.Unlock()
 		}
 	}
+}
+
+// PetOrigin is the origin the window is actually using. Patrol and roaming
+// update it without going through the manager's saved position.
+func (w *windowsFloatingWindow) PetOrigin() (int, int, bool) {
+	if w == nil {
+		return 0, 0, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.created || w.hwnd == 0 {
+		return 0, 0, false
+	}
+	return w.windowStartX, w.windowStartY, true
 }
 
 func (w *windowsFloatingWindow) MoveTo(x, y int) {
@@ -1102,6 +1142,12 @@ func (w *windowsFloatingWindow) CurrentPetRuntimeState() string {
 	defer w.mu.Unlock()
 	if !w.petStateDeadline.IsZero() && time.Now().After(w.petStateDeadline) {
 		w.setPetRuntimeStateLocked(string(petpack.StateIdle), 0)
+		if w.presenceLine != "" {
+			w.presenceLine = ""
+			if w.hwnd != 0 {
+				procPostMessageW.Call(w.hwnd, wmPetPresence, 0, 0)
+			}
+		}
 	}
 	if w.petRuntimeState == "" {
 		return string(petpack.StateIdle)
@@ -1176,6 +1222,7 @@ func (w *windowsFloatingWindow) messageLoop() {
 	}
 
 	// Clean up: destroy the window on this thread.
+	w.destroyPetPresence()
 	w.mu.Lock()
 	hwnd := w.hwnd
 	w.mu.Unlock()
@@ -2073,12 +2120,20 @@ func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
 	if hwnd == 0 {
 		return
 	}
-	var edge, work petpack.WindowRect
+	var edge, windowWork petpack.WindowRect
 	edgeOK := false
 	if petMainWindowEdge != nil {
-		edge, work, edgeOK = petMainWindowEdge(hwnd)
+		edge, windowWork, edgeOK = petMainWindowEdge(hwnd)
 	}
-	minX, maxX, minY, maxY := petTravelBox(getScreenWidth(), getScreenHeight(), sz, work, edgeOK)
+	// A hidden or fullscreen window leaves her where she is. The box is the
+	// monitor under her, not the primary size measured from the origin.
+	petWork := petpack.WindowRect{}
+	if !edgeOK || windowWork.Right <= windowWork.Left || windowWork.Bottom <= windowWork.Top {
+		if area, ok := petMonitorWorkArea(x, y, sz); ok {
+			petWork = area
+		}
+	}
+	minX, maxX, minY, maxY := petTravelBounds(getScreenWidth(), getScreenHeight(), sz, windowWork, petWork, edgeOK)
 	next, nx, ny := petpack.StepPetTravel(state, vx, vy, float64(sz)/256, dt, x, y, sz, minX, maxX, minY, maxY, now, edge, edgeOK)
 	w.mu.Lock()
 	w.petRoam = next
@@ -2091,7 +2146,11 @@ func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
 	w.mu.Lock()
 	w.windowStartX = nx
 	w.windowStartY = ny
+	follow := w.petPointerOver && w.presenceLine != ""
 	w.mu.Unlock()
+	if follow {
+		w.syncPetPresence()
+	}
 }
 
 func (w *windowsFloatingWindow) playActionSound(cue string, tones []petpack.RigTone, packPitch float64) {
@@ -2205,8 +2264,14 @@ func (w *windowsFloatingWindow) renderFrame() {
 	w.mu.Lock()
 	// Expire runtime state TTL back to idle through the same transition path as
 	// an explicit state update, so the old image is available for crossfade.
+	// The settle sentence belongs to that pose, so it leaves with it.
+	clearPresence := false
 	if !w.petStateDeadline.IsZero() && time.Now().After(w.petStateDeadline) {
 		w.setPetRuntimeStateLocked(string(petpack.StateIdle), 0)
+		if w.presenceLine != "" {
+			w.presenceLine = ""
+			clearPresence = true
+		}
 	}
 	hwnd := w.hwnd
 	base := w.baseImg
@@ -2269,6 +2334,9 @@ func (w *windowsFloatingWindow) renderFrame() {
 	// (longIdleDue implies petEnabled && !staticOnly, so it cannot be set here.)
 	if (staticOnly || !petEnabled) && !w.renderDirty {
 		w.mu.Unlock()
+		if clearPresence {
+			w.syncPetPresence()
+		}
 		return
 	}
 	sz := w.size
@@ -2283,6 +2351,9 @@ func (w *windowsFloatingWindow) renderFrame() {
 	w.renderDirty = false
 	w.petLastRenderedState = petState
 	w.mu.Unlock()
+	if clearPresence {
+		w.syncPetPresence()
+	}
 	if longIdleDue {
 		w.triggerCharacterEvent("long_idle")
 	}
@@ -2615,7 +2686,13 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		w.dragMoved = false
 		w.dragStartX = pt.X
 		w.dragStartY = pt.Y
+		// SetCapture cancels leave tracking and can post WM_MOUSELEAVE for
+		// that cancellation before it returns. dragging is already set, so
+		// that notice does not end the visit. The request itself is dead.
 		procSetCapture.Call(hwnd)
+		w.mu.Lock()
+		w.petLeaveArmed = false
+		w.mu.Unlock()
 		w.notePetInteraction()
 		return 0
 
@@ -2636,6 +2713,10 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 					go app.creditDesktopPetHover()
 				}
 			}
+			// The sentence is not the peek. It stays up for the whole visit
+			// and does not reset the hover clock or add rearing credit.
+			w.armPetPointerLeave(hwnd)
+			w.syncPetPresence()
 			return 0
 		}
 		var pt point
@@ -2646,6 +2727,7 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			if petPointerPastDrag(int(dx), int(dy)) {
 				w.dragMoved = true
 				w.triggerCharacterEvent("drag_start")
+				w.dismissPetPresence()
 			} else {
 				return 0
 			}
@@ -2654,6 +2736,29 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		newY := w.windowStartY + int(dy)
 		sz := w.currentSize()
 		movePetWindow(hwnd, newX, newY, sz)
+		return 0
+
+	case wmMouseleave:
+		if w != nil {
+			// A leave during the grab is the capture cancelling tracking,
+			// not the cursor leaving. The visit is hit-tested on release.
+			endVisit := petPresenceOnLeave(w.dragging)
+			w.mu.Lock()
+			w.petLeaveArmed = false
+			if endVisit {
+				w.petPointerOver = false
+			}
+			w.mu.Unlock()
+			if endVisit {
+				w.syncPetPresence()
+			}
+		}
+		return 0
+
+	case wmPetPresence:
+		if w != nil {
+			w.syncPetPresence()
+		}
 		return 0
 
 	case wmCapturechanged:
@@ -2667,6 +2772,12 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		w.dragMoved = keepMoved
 		if endDrag {
 			w.finishPetDrag()
+		}
+		// This window's own ReleaseCapture is reentrant and still owns the
+		// press. Button-up hit-tests after the click is recorded. A grab
+		// taken by someone else never gets that button-up.
+		if !keepDragging {
+			w.settlePetPointer(hwnd)
 		}
 		return 0
 
@@ -2701,6 +2812,9 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		} else {
 			w.finishPetDrag()
 		}
+		// Capture cancelled leave tracking for this press. Ask again when
+		// the cursor is still on her; hide the sentence when it is not.
+		w.settlePetPointer(hwnd)
 		return 0
 
 	case wmRbuttonup:
@@ -2807,6 +2921,9 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		return 0
 
 	case wmClose:
+		if w != nil {
+			w.destroyPetPresence()
+		}
 		procKillTimer.Call(hwnd, timerIdHalo)
 		procDestroyWindowProc.Call(hwnd)
 		return 0
@@ -2880,11 +2997,12 @@ func createFloatingWin32Window(x, y, w, h int) (uintptr, error) {
 	exStyle := wsExTopmost | wsExLayered | wsExToolwindow
 	style := wsPopup | wsVisible
 
+	px, py := screenPositionParams(x, y)
 	hwnd, _, err := procCreateWindowExW.Call(
 		uintptr(exStyle),
 		uintptr(unsafe.Pointer(className)),
 		0, uintptr(style),
-		uintptr(x), uintptr(y),
+		px, py,
 		uintptr(w), uintptr(h),
 		0, 0, hInstance, 0,
 	)

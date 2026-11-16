@@ -225,6 +225,20 @@ func (a *App) persistPetPositionLockFromMenu(next bool) {
 	}()
 }
 
+// persistLivePetOriginForExit stores the patrol origin before the process
+// goes away. Safe to call more than once: a missing window, or a point
+// already stored, does not write.
+func (a *App) persistLivePetOriginForExit() {
+	if a == nil {
+		return
+	}
+	fa := a.existingFloatingAssistant()
+	if fa == nil {
+		return
+	}
+	fa.persistLivePetOrigin()
+}
+
 func (a *App) QuitApp() {
 	if fa := a.ensureFloatingAssistant(); fa != nil {
 		fa.QuitApp()

@@ -477,6 +477,15 @@ type App struct {
 	buddyCfg            buddyConfig
 	buddyLastSnapshot   string
 	buddyLastPushAt     time.Time
+	// Last resolved ambient weather snapshot. Hardware re-attaches and the
+	// periodic loop reuse it while it sits inside the device expiry window
+	// instead of re-running the weather pipeline. ambientResolveMu
+	// serializes the resolve itself so a loop tick colliding with a device
+	// attach cannot double-spend a search + LLM request.
+	ambientWeatherMu sync.Mutex
+	ambientWeather   deviceAmbientWeather
+	ambientWeatherAt time.Time
+	ambientResolveMu sync.Mutex
 	qqBotGateway        *qqBotGatewayManager
 	telegramGateway     *telegramGatewayManager
 	slackGateway        *slackGatewayManager
@@ -3410,6 +3419,11 @@ func (a *App) SetCodingFontFamily(id string) error {
 // owns no tray icon — without the relay a tray quit left a window-less
 // companion process behind.
 func (a *App) prepareProcessExit() {
+	// Before the flush budget. Tray, --quit, and restart never call the pet
+	// menu, and the patrol origin lives only on the native window until
+	// something copies it. The pet-menu quit already did that and destroyed
+	// the window, so this second call does not write again.
+	a.persistLivePetOriginForExit()
 	a.sealDesktopPetClick()
 	a.flushPetRearingForExit()
 	a.signalFileCompanionQuit()
@@ -3454,6 +3468,11 @@ func (a *App) persistSessionsForShutdown() {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	// Wails can reach OnShutdown without requestAppQuit (the main window's
+	// own close). The pet window is still alive here. requestAppQuit already
+	// wrote this in prepareProcessExit; a second call writes only if she
+	// moved again while shutdown was starting.
+	a.persistLivePetOriginForExit()
 	a.stopLocalRelay()
 	// Retire the companion on every shutdown path, including Wails-initiated
 	// quits that bypass requestAppQuit. The relay fires once per process.
@@ -7092,6 +7111,19 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 		restored = append(restored, "pet_position_locked")
 	}
 	incoming.PetPositionLocked = ondisk.PetPositionLocked
+
+	// Drag, border patrol, hide, and exit write the origin from the live
+	// window. The settings form still has the coordinates from when it was
+	// opened, and a missing JSON field decodes as zero, so a full save would
+	// put her back on the old screen. A backup restore skips this function.
+	if incoming.FloatingBtnX != ondisk.FloatingBtnX ||
+		incoming.FloatingBtnY != ondisk.FloatingBtnY ||
+		incoming.FloatingBtnPositionSet != ondisk.FloatingBtnPositionSet {
+		restored = append(restored, "floating_btn_position")
+	}
+	incoming.FloatingBtnX = ondisk.FloatingBtnX
+	incoming.FloatingBtnY = ondisk.FloatingBtnY
+	incoming.FloatingBtnPositionSet = ondisk.FloatingBtnPositionSet
 
 	if len(restored) > 0 {
 		log.Printf("[config] SaveConfig:preserved_backend_fields=%v", restored)

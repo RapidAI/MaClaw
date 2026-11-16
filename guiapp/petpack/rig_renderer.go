@@ -488,6 +488,10 @@ type CharacterRenderer struct {
 	previousAt      int64
 	previousElapsed int64
 	idleSinceMS     int64
+	// layerSince is the first time each expression, gaze, and secondary clip
+	// was shown. Body enter, loop, and exit restart startedMS; these layers
+	// must keep their own phase or the eyes and braids snap back to frame 0.
+	layerSince map[string]int64
 	// soundClip / soundLoops remember which body clip already played its cue,
 	// including how many loop wraps have sounded. Expression layers do not.
 	soundClip  string
@@ -612,9 +616,9 @@ func (r *CharacterRenderer) RenderState(state PetRuntimeState, nowMS int64, size
 		// One-shot event reactions settle back into the current semantic state
 		// instead of leaving their final pose on screen indefinitely.
 		r.transitionToLocked(r.director.SelectState(state, nowMS), nowMS)
-	} else if r.looping && state == StateIdle && r.step.DwellMS > 0 && nowMS-r.startedMS >= int64(r.step.DwellMS) {
-		// Idle behavior dwell time is intentionally non-uniform. Once the loop has
-		// settled, request a new weighted behavior; cooldown/repeat rules decide it.
+	} else if r.looping && state == StateIdle && r.step.DwellMS > 0 && nowMS-r.startedMS >= int64(r.step.DwellMS) && r.idleLoopReadyToExit(nowMS) {
+		// Dwell is a minimum. Exit clips are authored from the loop's rest pose,
+		// so leave on the next seam instead of starting that exit from mid-cycle.
 		r.transitionToLocked(r.director.SelectState(state, nowMS), nowMS)
 	}
 	if state == StateIdle && r.idleSinceMS > 0 && nowMS-r.idleSinceMS >= 20000 && r.pending == nil && !r.exiting && r.canFinishCurrentStep(nowMS) {
@@ -698,18 +702,60 @@ func (r *CharacterRenderer) TakeActionSound(nowMS int64) (cue string, tones []Ri
 }
 
 func (r *CharacterRenderer) renderPerformanceStep(step PerformanceStep, started int64, previous PerformanceStep, previousAt, previousElapsed, nowMS int64, size int) *image.NRGBA {
-	elapsed := int(nowMS - started)
-	clips := performanceStepClips(r.rig, step)
-	current := r.rig.RenderClips(clips, elapsed, size)
+	current := r.renderStepFrame(step, int(nowMS-started), nowMS, size)
 	if current == nil || previous.Body == "" || step.CrossfadeMS < 1 || nowMS-previousAt >= int64(step.CrossfadeMS) {
 		return current
 	}
-	previousClips := performanceStepClips(r.rig, previous)
-	old := r.rig.RenderClips(previousClips, int(previousElapsed+nowMS-previousAt), size)
+	old := r.renderStepFrame(previous, int(previousElapsed+nowMS-previousAt), nowMS, size)
 	if old == nil {
 		return current
 	}
 	return blendRigFrames(old, current, float64(nowMS-previousAt)/float64(step.CrossfadeMS))
+}
+
+// renderStepFrame samples the body on the phase clock and the expression,
+// gaze, and secondary clips on the clocks started the first time each clip
+// was shown. A body-only reaction leaves those clocks untouched.
+func (r *CharacterRenderer) renderStepFrame(step PerformanceStep, bodyElapsed int, nowMS int64, size int) *image.NRGBA {
+	if r == nil || r.rig == nil {
+		return nil
+	}
+	names := performanceStepClips(r.rig, step)
+	clips := make([]*RigClip, 0, len(names))
+	times := make([]int, 0, len(names))
+	for _, name := range names {
+		clip := r.rig.clips[name]
+		if clip == nil {
+			continue
+		}
+		elapsed := bodyElapsed
+		if name != step.Body {
+			elapsed = r.layerElapsed(name, nowMS)
+		}
+		clips = append(clips, clip)
+		times = append(times, rigClipTime(clip, elapsed))
+	}
+	return r.rig.renderClipsTimed(clips, times, size)
+}
+
+// layerElapsed is the time since this layer clip was first shown. Later body
+// phases and reactions that omit the clip do not move the mark.
+func (r *CharacterRenderer) layerElapsed(name string, nowMS int64) int {
+	if name == "" {
+		return 0
+	}
+	if r.layerSince == nil {
+		r.layerSince = make(map[string]int64)
+	}
+	since, ok := r.layerSince[name]
+	if !ok {
+		r.layerSince[name] = nowMS
+		return 0
+	}
+	if nowMS <= since {
+		return 0
+	}
+	return int(nowMS - since)
 }
 
 // performanceStepClips lists body + layer clips that actually carry tracks.
@@ -962,6 +1008,20 @@ func (r *CharacterRenderer) setPrevious(step PerformanceStep, elapsedMS, nowMS i
 	r.previous, r.previousAt, r.previousElapsed = step, nowMS, elapsedMS
 }
 
+// idleLoopReadyToExit reports that the looping idle body is on the pose its
+// exit was authored from. A missed seam does not wait through a second cycle.
+func (r *CharacterRenderer) idleLoopReadyToExit(nowMS int64) bool {
+	if r == nil || r.canFinishCurrentStep(nowMS) {
+		return true
+	}
+	clip := r.rig.clips[r.step.Body]
+	if clip == nil || clip.DurationMS < 1 {
+		return true
+	}
+	sinceDwell := nowMS - r.startedMS - int64(r.step.DwellMS)
+	return sinceDwell >= int64(clip.DurationMS)
+}
+
 func (r *CharacterRenderer) canFinishCurrentStep(nowMS int64) bool {
 	if r == nil || r.step.Body == "" {
 		return true
@@ -1042,10 +1102,7 @@ func (r *RigRenderer) renderClip(clip *RigClip, elapsedMS, size int) *image.NRGB
 }
 
 func (r *RigRenderer) renderClips(clips []*RigClip, elapsedMS, size int) *image.NRGBA {
-	if r == nil || r.rig == nil || size <= 0 {
-		return nil
-	}
-	if len(clips) == 0 {
+	if r == nil || r.rig == nil || size <= 0 || len(clips) == 0 {
 		return nil
 	}
 	times := make([]int, len(clips))
@@ -1054,6 +1111,18 @@ func (r *RigRenderer) renderClips(clips []*RigClip, elapsedMS, size int) *image.
 			return nil
 		}
 		times[i] = rigClipTime(clip, elapsedMS)
+	}
+	return r.renderClipsTimed(clips, times, size)
+}
+
+func (r *RigRenderer) renderClipsTimed(clips []*RigClip, times []int, size int) *image.NRGBA {
+	if r == nil || r.rig == nil || size <= 0 || len(clips) == 0 || len(times) != len(clips) {
+		return nil
+	}
+	for _, clip := range clips {
+		if clip == nil {
+			return nil
+		}
 	}
 
 	// Optional per-state head bone offset (from join.state_head_offset).

@@ -2888,6 +2888,8 @@ export function StartCodeGenSSO():Promise<main.CodeGenSSOInfo>;
 
 export function StartCodeGenSSOEmbedded():Promise<main.CodeGenSSOEmbeddedResult>;
 
+export function StartCodeGenProviderSSOEmbedded():Promise<main.CodeGenSSOEmbeddedResult>;
+
 export function StartKimiCodeOAuth():Promise<{user_code:string; verification_uri:string; verification_uri_complete:string; browser_opened:boolean}>;
 
 export function StartQoderOAuth(arg1:string):Promise<{auth_url:string; browser_opened:boolean}>;
@@ -3197,7 +3199,7 @@ export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:strin
 
 export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
 
-export function HandBackDesktopBot(arg1:string):Promise<{handed_back:boolean,accepted?:boolean,run_id?:string,status?:string,client_message_id?:string}>;
+export function HandBackDesktopBot(arg1:string):Promise<{handed_back:boolean,accepted?:boolean,run_id?:string,status?:string,client_message_id?:string,joined?:boolean,reply?:{text:string,send_to_user?:string}}>;
 
 export function SetDesktopBotDesktopMode(arg1:string,arg2:string):Promise<string>;
 

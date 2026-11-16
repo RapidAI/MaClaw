@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
-import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProfiles, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartOpenCodeZenLogin, TestAndSaveMaclawLLMProviders } from '../../../wailsjs/go/main/App';
+import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveMaclawLLMProfiles, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartOpenCodeZenLogin, TestAndSaveMaclawLLMProviders } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isLocalImportProvider, isProviderTestCancelMessage, labelStyle, listProviderModelsForShare, nextProviderModelChoices, probeProviderModelForShare, providerModelChoices, quickFillModelCatalog, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
-import { cancelNamedProviderOAuth, completeDevinPastedToken, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
+import { cancelNamedProviderOAuth, completeDevinPastedToken, promptKimiCodeDeviceLogin, runCodeGenSSOLogin, runProviderOAuthLogin } from "./providerOAuth";
 import { isKimiCodeProvider, isLobsterAIProvider, isQoderProvider, isTraeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
 import { presetProviderDisplayName } from "./presetProviderLabel";
 import { localizeModelNote } from "../../config/providerCatalog";
@@ -25,6 +25,7 @@ import { LLMConfigProviderLimitsFields } from "./LLMConfigProviderLimitsFields";
 import { LLMConfigDialogFooter } from "./LLMConfigDialogFooter";
 import { LLMMaxIterationsCard, LLMSubAgentConcurrencyCard, LLMThinkingModeCard, type ThinkingLevel } from "./LLMPanelTuningCards";
 import { LLMConfigApiKeyFields } from "./LLMConfigApiKeyFields";
+import { LLMConfigCodeGenSSOFields } from "./LLMConfigCodeGenSSOFields";
 import { LLMConfigOAuthFields } from "./LLMConfigOAuthFields";
 import { LLMConfigHubOfficialCard } from "./LLMConfigHubOfficialCard";
 import { hubCapabilityModelOptions } from "../../utils/capabilityModelLabel";
@@ -257,6 +258,37 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             }
         }
     }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, refreshProviderList, showPrompt]);
+
+    // CodeGen enterprise SSO uses the cancellable local callback flow.
+    const handleCodeGenSSOLogin = useCallback(async () => {
+        const ssoAttempt = ++oauthAttemptRef.current;
+        setOauthBusy(true);
+        setDlgTestResult(null);
+        try {
+            const info = await runCodeGenSSOLogin();
+            if (ssoAttempt !== oauthAttemptRef.current) return;
+            const fresh = await refreshProviderList();
+            if (ssoAttempt !== oauthAttemptRef.current) return;
+            const cgIdx = fresh ? fresh.findIndex((p: LLMProvider) => p.name === "CodeGen") : -1;
+            const cgProvider = cgIdx >= 0 ? fresh?.[cgIdx] : undefined;
+            const verified = !!cgProvider?.connection_test_passed;
+            if (cgIdx >= 0) setDlgSelectedIdx(cgIdx);
+            setDlgDirty(!verified);
+            setDlgTested(verified);
+            onStatusChange?.(true, true);
+            onProviderChanged?.();
+            const savedModels = (cgProvider?.models || []).map(id => ({ id, name: id }));
+            setCodegenModels(savedModels);
+            setDlgTestResult(verified
+                ? { ok: true, msg: info?.message || t("SSO login successful", "SSO 认证成功") }
+                : { ok: true, retryable: true, msg: t("SSO authenticated, but the model connection is not verified. Click Test & Save to retry.", "SSO 已认证，但模型连接尚未验证。请点击“检测并保存”重试。") });
+        } catch (e) {
+            if (ssoAttempt !== oauthAttemptRef.current) return;
+            setDlgTestResult({ ok: false, msg: String(e) });
+        } finally {
+            if (ssoAttempt === oauthAttemptRef.current) setOauthBusy(false);
+        }
+    }, [t, onStatusChange, onProviderChanged, refreshProviderList]);
 
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
@@ -624,8 +656,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
     // pretending the assistant is unconfigured.
     const currentIsLocalImport = !!providers.find(p => p.name === currentName && isLocalImportProvider(p));
     const dlgNeedsOAuthLogin = !!dlgProvider &&
-        (dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso") &&
-        !dlgProvider.key;
+        dlgProvider.auth_type === "oauth" && !dlgProvider.key;
 
     // --- Token Bank share helpers (§7.1) ---------------------------------
     // Implementations live in LLMConfigPanelShared so this file stays under its
@@ -1016,10 +1047,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
 				saveName,
 			);
 			const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
-			if (sp.auth_type === "sso" && sp.model) {
-				await SaveCodeGenModelChoice(sp.model, sp.model).catch(() => {});
-			}
-
             // Refresh the provider snapshot from the backend so all persisted
             // fields (including connection_test_passed and capability data)
             // are reflected before model assignments refresh.
@@ -1516,7 +1543,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                     )}
                                 </div>
 
-                                {/* Auth: OAuth login button / no-key hint / API Key input */}
+                                {/* Auth: OAuth login button / SSO login button / API Key input */}
                                 {!dlgProvider.import_source && (dlgProvider.auth_type === "oauth" ? (
                                     <LLMConfigOAuthFields
                                         provider={dlgProvider}
@@ -1545,6 +1572,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                             onProviderChanged?.();
                                             setDlgTestResult({ ok: true, msg: msg || t("Devin login successful", "Devin 登录成功") });
                                         }}
+                                    />
+                                ) : dlgProvider.auth_type === "sso" ? (
+                                    <LLMConfigCodeGenSSOFields
+                                        provider={dlgProvider}
+                                        busy={oauthBusy}
+                                        t={t}
+                                        onLogin={() => { void handleCodeGenSSOLogin(); }}
+                                        onCancel={() => cancelActiveOAuth(dlgProvider.name)}
                                     />
                                 ) : (
                                     <LLMConfigApiKeyFields
@@ -1591,6 +1626,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                 hubAlreadySynced={hubSelectionAlreadySynced}
                                 hubModelDirty={hubModelDirty}
                                 needsOAuthLogin={dlgNeedsOAuthLogin}
+                                needsSSOLogin={dlgProvider?.auth_type === "sso" && !dlgProvider.key}
                                 oauthBusy={oauthBusy}
                                 saving={dlgSaving}
                                 t={t}
