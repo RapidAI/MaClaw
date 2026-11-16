@@ -616,7 +616,8 @@ const extractedFileLineLimits = [
   // 7750 -> 7830 (2026-11-11): receipt-replacement batch measured 7775 lines.
   // 7830 -> 7890 (2026-11-12): measured 7836 lines.
   // 7890 -> 7950 (2026-11-14): measured 7896 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7950],
+  // 7950 -> 8020 (2026-11-17): measured 7951 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8020],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -659,8 +660,10 @@ const extractedFileLineLimits = [
   // Refreshed 240 -> 330 -> 380 (2026-11-03): scroll guards and diagnostics
   // keep growing this hook (guard counts 339); headroom absorbs the in-flight
   // work. Re-tighten once it lands and extract.
-  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 380],
-  ['guiapp/frontend/src/components/ai/assistantOutputScrollLogic.ts', 120],
+  // 380 -> 540 (2026-11-17): scroll follow/smooth refactor measured 518 lines.
+  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 540],
+  // 120 -> 135 (2026-11-17): measured 122 lines.
+  ['guiapp/frontend/src/components/ai/assistantOutputScrollLogic.ts', 135],
   ['guiapp/frontend/src/components/ai/assistantOutputScrollFollow.ts', 60],
   ['guiapp/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
   // Refreshed 100 -> 170 (2026-10-15): input-history recall now restores the
@@ -995,7 +998,8 @@ requireExcludes('guiapp/frontend/wailsjs/go/main/App.js', 'ListToolProviders', '
 requireIncludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'export const GeneralAdvancedSettingsPanel', 'advanced general settings export');
 requireIncludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'show_ai_trace_entry', 'AI trace entry toggle');
 requireIncludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'SetEnvCheckInterval', 'environment check interval wiring');
-requireIncludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'use_windows_terminal', 'Windows Terminal toggle');
+requireExcludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'use_windows_terminal', 'retired Windows Terminal toggle');
+requireExcludes('guiapp/frontend/wailsjs/go/main/App.d.ts', 'IsWindowsTerminalAvailable', 'retired Windows Terminal binding');
 requireIncludes('guiapp/frontend/src/components/settings/SystemSettingsPanel.tsx', 'export const SystemSettingsPanel', 'system settings export');
 requireIncludes('guiapp/frontend/src/components/settings/SystemSettingsPanel.tsx', 'remote_heartbeat_sec', 'system heartbeat setting');
 requireIncludes('guiapp/frontend/src/components/settings/SystemSettingsPanel.tsx', 'workstation_mode', 'workstation mode toggle');

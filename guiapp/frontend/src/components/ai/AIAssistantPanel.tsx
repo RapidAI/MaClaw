@@ -104,7 +104,7 @@ import { GoalChecklistOverlay } from "./GoalChecklistOverlay";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, goalChecklistMessageId, goalChecklistOverlayBodyFromText, goalTerminalSessionKeysNext, latestHostGoalChecklistText, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, isHostGoalChecklistText, logAIPanelDiagnostic, rewriteHostGoalChecklistBody, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, goalChecklistMessageId, goalChecklistOverlayBodyFromText, goalTerminalSessionKeysNext, latestHostGoalChecklistText, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, isVisibleHostGoalChecklist, logAIPanelDiagnostic, rewriteHostGoalChecklistBody, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
 import { expertTabId } from "./expertTypes";
 import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
@@ -5718,7 +5718,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const lastRenderedProgressMessage = compactProgressMessages.at(-1);
     const progressActivityKey = lastRenderedProgressMessage?.id || "";
     const wizardScrollSuspendRef = useRef(false);
-    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: remoteChat ? `remote:${remoteChat.grantId}:${remoteChat.projectPath}` : activeTab.id, hasConversation: remoteChat ? remoteTranscript.length > 0 : hasConversation, messages: remoteChat ? remoteTranscript : displayMessages, ready: remoteChat ? true : ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
+    const { clearScrolledUp, handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrolledUp, scrollToBottom, unreadTail, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: remoteChat ? `remote:${remoteChat.grantId}:${remoteChat.projectPath}` : activeTab.id, hasConversation: remoteChat ? remoteTranscript.length > 0 : hasConversation, messages: remoteChat ? remoteTranscript : displayMessages, ready: remoteChat ? true : ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
     useEffect(() => {
         if (activeTab.type !== "project") return;
         const previous = latestProjectCloseSnapshotRef.current;
@@ -5901,7 +5901,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setComposeAction(null);
         // Immediate slash commands (/help, /memory, …) are handled before the agent
         // loop on the backend — always send now, never park them behind the busy queue.
-        userScrolledUpRef.current = false;
+        clearScrolledUp();
         try {
             const sent = await sendMessageForTab(command);
             if (sent !== false) recordPrompt(command);
@@ -5909,7 +5909,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             fireSlashInFlightRef.current = false;
             requestAnimationFrame(() => inputRef.current?.focus());
         }
-    }, [activeSessionKey, addEntry, codingTaskReadyForIntents, ready, recordPrompt, sendMessageForTab]);
+    }, [activeSessionKey, addEntry, clearScrolledUp, codingTaskReadyForIntents, ready, recordPrompt, sendMessageForTab]);
     const handleClearInput = useCallback(() => {
         if (remoteAssistantActive()) {
             setRemoteDraft("");
@@ -5966,7 +5966,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         sendInFlightRef.current = true;
         clearComposerDraft({ clearAttachments: true });
-        userScrolledUpRef.current = false;
+        clearScrolledUp();
         try {
             const sent = await sendMessageForTab(trimmed);
             if (sent !== false) {
@@ -5990,6 +5990,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         submitLocked,
         addEntry,
         clearComposerDraft,
+        clearScrolledUp,
         sendMessageForTab,
         recordPrompt,
         handleWelcomePromptSelect,
@@ -6129,7 +6130,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             sendInFlightRef.current = true;
             setComposeAction(null);
             clearDraft({ clearAttachments: true });
-            userScrolledUpRef.current = false;
+            clearScrolledUp();
             try {
                 const sent = await sendMessageForTab(installText);
                 if (sent !== false) recordPrompt(installText);
@@ -6208,7 +6209,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         ];
         sendInFlightRef.current = true;
         clearDraft({ clearAttachments: true });
-        userScrolledUpRef.current = false;
+        clearScrolledUp();
         try {
             const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(asPPTModelText(text), allFilePaths) : asPPTModelText(text);
             const sent = await sendMessageForTab(outgoing, {
@@ -6223,7 +6224,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.expertId, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, clearScrolledUp, activeTab.expertId, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
 
     // --- New-task wizard (TaskConfigBar) wiring ---
     // Draft state, expert/workflow loading and the send orchestration live in
@@ -6751,6 +6752,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
         reasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
     }
+    // The floating checklist overlay owns the 目标清单 card while mounted;
+    // keep the mount condition in one place so the transcript card and the
+    // float never paint at the same time.
+    const goalChecklistFloatActive = !showWelcomeView && !wizardScreen && !projectSearch.open && ready && !!goalChecklistOverlayText && !goalTerminalSessions.has(normalizeAssistantSessionKey(activeSessionKey));
     const renderedOtherMessages = useMemo(() => {
         const cache = msgRenderCacheRef.current;
         // Cap cache size to prevent unbounded growth across long sessions.
@@ -6765,9 +6770,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const coveredOther = coveredOtherNodesRef.current;
         if (taskConfigWiring.wizardOverlay && coveredOther && coveredOther.length > 0) return coveredOther;
         const coveredNodes = transcriptMessages.map((msg: ChatMessage, idx: number) => {
-            // The floating GoalChecklistOverlay owns the 目标清单 card; the
-            // transcript row stays in history but out of the scroll feed.
-            if (msg.kind === "goalChecklist" || (msg.role === "user" && isHostGoalChecklistText(msg.content || ""))) return null;
+            // The floating GoalChecklistOverlay owns the 目标清单 card while
+            // it is mounted. Once it retires (goal finished/cleared or the
+            // view is covered), the normal path renders it inline —
+            // renderMessage turns both the system row and legacy host user
+            // rows into the same checklist card — so the goal's final state
+            // stays in the scroll feed instead of vanishing with the float.
+            // isVisibleHostGoalChecklist is the same predicate the collapse
+            // uses to own these rows.
+            if (goalChecklistFloatActive && isVisibleHostGoalChecklist(msg)) {
+                return null;
+            }
             const isLast = idx === lastAssistantIdx;
             // Settled rows keep their object across token flushes. The live assistant follows the round.
             const settled = cache.get(msg.id);
@@ -6921,7 +6934,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         if (coveredNodes.length > 0) coveredOtherNodesRef.current = coveredNodes;
         return coveredNodes;
-    }, [transcriptMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, liveWorkStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
+    }, [transcriptMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, liveWorkStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, goalChecklistFloatActive, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
     // Only rows already on the live assistant's timeline leave the feed.
     // A previous answer's timeline must not hide the next continuation.
     const renderedProgressMessages = useMemo(() => {
@@ -7673,6 +7686,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ) : null}
                     </div>
                 </div>
+                <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
                 <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar mc-task-execution" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment && !remoteChat ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, ...assistantMessageFontStyle(isPureCodingEnvironment && !remoteChat ? "coding" : "conversation", isPureCodingEnvironment && !remoteChat ? codingFontFamily : chatFontFamily), whiteSpace: "normal", overflowWrap: "break-word", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
                     {remoteChat ? null : conversationArchive.banner}
                     {remoteChat ? null : conversationArchive.dialog}
@@ -7684,6 +7698,41 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? null : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat ? <RemoteAssistantActivity session={remoteChat} lang={lang} theme={t} /> : (hideWorkingTrail ? null : codingWorkingTrail)} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
+                </div>
+                {scrolledUp ? (
+                    <button
+                        type="button"
+                        data-testid="ai-scroll-latest"
+                        onClick={() => scrollToBottom("auto", true, 2)}
+                        style={{
+                            position: "absolute",
+                            bottom: 14,
+                            left: "50%",
+                            transform: "translateX(-50%)",
+                            zIndex: 30,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                            padding: "5px 14px",
+                            borderRadius: 999,
+                            border: `1px solid ${t.fieldBorder}`,
+                            background: t.fieldBg,
+                            color: t.text,
+                            boxShadow: t.isDark
+                                ? "0 4px 14px rgba(0,0,0,0.4)"
+                                : "0 4px 14px rgba(15,23,42,0.14)",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: 600,
+                            lineHeight: 1.4,
+                            whiteSpace: "nowrap",
+                        }}
+                    >
+                        {unreadTail
+                            ? localizeText(lang, "↓ New messages", "↓ 有新消息", "↓ 有新消息")
+                            : localizeText(lang, "↓ Back to latest", "↓ 回到最新", "↓ 回到最新")}
+                    </button>
+                ) : null}
                 </div></div>)}
                 {wizardScreen ? newTaskWelcome : null}
                 {activeProjectPreparing && !remoteChat && <ProjectPreparingBanner prepareMode={activeProjectPrepareMode} isRemoteCodingDev={isRemoteCodingDevEnvironment} isRemoteMaintenance={isRemoteMaintenanceEnvironment} isCodingDev={isCodingDevEnvironment} lang={lang} theme={t} />}
@@ -7745,7 +7794,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {!showWelcomeView && !remoteChat && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
                 {!showWelcomeView && !remoteChat && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => chatTaskInSession(task.sessionKey, activeSessionKey))} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
                 {!showWelcomeView && !remoteChat && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} fileChanges={isPureCodingEnvironment ? codingTurnFiles.files : undefined} fileChangesChrome={codingBannerChrome} onOpenFile={codingPreviewAllowed ? focusCodeFile : undefined} onVisibilityChange={setGoalQuickBarVisible} />}
-                {!showWelcomeView && !wizardScreen && !projectSearch.open && ready && goalChecklistOverlayText && !goalTerminalSessions.has(normalizeAssistantSessionKey(activeSessionKey)) ? (
+                {goalChecklistFloatActive ? (
                     <GoalChecklistOverlay
                         lang={lang}
                         theme={t}

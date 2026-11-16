@@ -8,7 +8,6 @@ type GeneralAdvancedSettingsPanelProps = {
     setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     t: (key: string) => string;
-    hasWindowsTerminal: boolean;
     envCheckInterval: number;
     setEnvCheckInterval: Dispatch<SetStateAction<number>>;
 };
@@ -36,7 +35,6 @@ export const GeneralAdvancedSettingsPanel = ({
     setConfig,
     lang,
     t,
-    hasWindowsTerminal,
     envCheckInterval,
     setEnvCheckInterval,
 }: GeneralAdvancedSettingsPanelProps) => (
@@ -51,17 +49,6 @@ export const GeneralAdvancedSettingsPanel = ({
                     />
                     <span>{t("pauseEnvCheck")}</span>
                 </label>
-
-                {hasWindowsTerminal && (
-                    <label className="general-settings-option general-settings-option--inline">
-                        <input
-                            type="checkbox"
-                            checked={config?.use_windows_terminal}
-                            onChange={(e) => saveConfigPatch(config, setConfig, { use_windows_terminal: e.target.checked })}
-                        />
-                        <span>{t("useWindowsTerminal")}</span>
-                    </label>
-                )}
 
                 <label
                     className="general-settings-option general-settings-option--inline"

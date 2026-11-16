@@ -4719,6 +4719,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     }, [activeTab?.messages, discussionReplies]);
     const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom } = useAssistantOutputScroll({
         activityKey: active,
+        conversationKey: active,
         hasConversation: companionMessages.length > 0,
         messages: companionMessages,
         ready: true,

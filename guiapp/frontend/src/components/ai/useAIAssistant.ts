@@ -620,6 +620,14 @@ export interface ChatMessage {
      * with the same id was steered into that round and is not a new turn.
      */
     requestId?: string;
+    /**
+     * The row was written by a backend-initiated turn (event-driven round
+     * started by goal/session continuation, remote control, ACP, horizon),
+     * not typed in the composer. The scroll follow uses it to skip the
+     * fresh-user-message force re-pin: a new host round must not yank a
+     * scrolled-up reader back to the tail.
+     */
+    hostInitiated?: boolean;
     /** Runtime owner. Project-tab messages must never be treated as local chat context. */
     sessionKey?: string;
     /** UI tab that initiated the round, used only for tab-local recovery/display. */
@@ -1109,6 +1117,7 @@ function settleOffscreenTerminalMessages(
             role: 'user' as const,
             content: entry.displayText,
             sessionKey,
+            hostInitiated: true,
             timestamp: Date.now(),
         }, assistant];
     return resolveSendResult(withRows, assistantMessageId, requestId, response, preferences);
@@ -5942,6 +5951,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     role: 'user' as const,
                     content: displayText,
                     sessionKey,
+                    hostInitiated: true,
                     timestamp: Date.now(),
                 }];
             return [...base, assistantSeed];

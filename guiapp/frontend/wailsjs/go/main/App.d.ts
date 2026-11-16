@@ -1574,8 +1574,6 @@ export function IsToolBeingInstalled(arg1:string):Promise<boolean>;
 
 export function IsVirtualRepositoryBackgroundSyncPending():Promise<boolean>;
 
-export function IsWindowsTerminalAvailable():Promise<boolean>;
-
 export function KeepMainCodingWorkbenchConflict(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function KillRemoteSession(arg1:string):Promise<void>;

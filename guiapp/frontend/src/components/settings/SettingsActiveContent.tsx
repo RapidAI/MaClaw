@@ -77,7 +77,6 @@ export type SettingsActiveContentProps = {
     config: corelib.AppConfig | null;
     setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     onLanguageChange: (event: ChangeEvent<HTMLSelectElement>) => void;
-    hasWindowsTerminal: boolean;
     envCheckInterval: number;
     setEnvCheckInterval: Dispatch<SetStateAction<number>>;
     isWindows: boolean;
@@ -191,7 +190,6 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         config,
         setConfig,
         onLanguageChange,
-        hasWindowsTerminal,
         envCheckInterval,
         setEnvCheckInterval,
         isWindows,
@@ -376,7 +374,6 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                 setConfig={setConfig}
                 lang={lang}
                 t={t}
-                hasWindowsTerminal={hasWindowsTerminal}
                 envCheckInterval={envCheckInterval}
                 setEnvCheckInterval={setEnvCheckInterval}
             />

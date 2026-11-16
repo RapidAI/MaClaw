@@ -3145,10 +3145,6 @@ export function IsVirtualRepositoryBackgroundSyncPending() {
   return window['go']['main']['App']['IsVirtualRepositoryBackgroundSyncPending']();
 }
 
-export function IsWindowsTerminalAvailable() {
-  return window['go']['main']['App']['IsWindowsTerminalAvailable']();
-}
-
 export function KeepMainCodingWorkbenchConflict(arg1, arg2, arg3) {
   return window['go']['main']['App']['KeepMainCodingWorkbenchConflict'](arg1, arg2, arg3);
 }

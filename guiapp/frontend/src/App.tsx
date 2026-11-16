@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess, GetCurrentLanguage, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
@@ -1818,7 +1818,6 @@ function App() {
     // happening instead of leaving the user on a "download complete" screen.
     const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
     const isWindows = /window/i.test(navigator.userAgent);
-    const [hasWindowsTerminal, setHasWindowsTerminal] = useState(false);
     const [lang, setLang] = useState("en");
     useEffect(() => {
         document.documentElement.lang = htmlLang(lang);
@@ -2315,17 +2314,6 @@ function App() {
         }).finally(() => {
             setBrandInfoLoaded(true);
         });
-
-        // Detect OS from backend for Windows Terminal check
-        callBackend(() => GetSystemInfo()).then(info => {
-            if (info.os === "windows") {
-                callBackend(() => IsWindowsTerminalAvailable()).then(available => {
-                    setHasWindowsTerminal(available);
-                }).catch(() => {
-                    setHasWindowsTerminal(false);
-                });
-            }
-        }).catch(() => {});
 
         // Environment Check Logic
         const logHandler = (msg: string) => {
@@ -6357,7 +6345,6 @@ ${instruction}`;
                             config={config}
                             setConfig={setConfig}
                             onLanguageChange={handleLangChange}
-                            hasWindowsTerminal={hasWindowsTerminal}
                             envCheckInterval={envCheckInterval}
                             setEnvCheckInterval={setEnvCheckInterval}
                             isWindows={isWindows}

@@ -2534,8 +2534,3 @@ func (a *App) getWindowsTerminalPath() string {
 	a.log("Windows Terminal not found")
 	return ""
 }
-
-// IsWindowsTerminalAvailable is exported for frontend to check availability
-func (a *App) IsWindowsTerminalAvailable() bool {
-	return a.isWindowsTerminalAvailable()
-}

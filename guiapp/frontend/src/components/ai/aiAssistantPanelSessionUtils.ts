@@ -28,7 +28,12 @@ export function isHostGoalChecklistText(content: string): boolean {
     return HOST_GOAL_SLASH_PROMPT.test(text);
 }
 
-function isVisibleHostGoalChecklist(message: ChatMessage): boolean {
+/**
+ * Rows the goal-checklist surface owns: the system card and the legacy
+ * host-authored user bubbles it replaced. The transcript filter must use
+ * this same predicate so the collapse and the render path never disagree.
+ */
+export function isVisibleHostGoalChecklist(message: ChatMessage): boolean {
     if (message.kind === "goalChecklist") return true;
     return message.role === "user" && isHostGoalChecklistText(message.content || "");
 }
@@ -291,13 +296,11 @@ export function latestHostGoalChecklistText(messages: readonly ChatMessage[] | n
     const rows = Array.isArray(messages) ? messages : [];
     for (let index = rows.length - 1; index >= 0; index -= 1) {
         const message = rows[index];
-        if (!message) continue;
+        if (!message || !isVisibleHostGoalChecklist(message)) continue;
         if (message.kind === "goalChecklist") return String(message.content || "");
         // Same conversion renderMessage applied inline: a host continuation
         // stored as a user row still feeds the float.
-        if (message.role === "user" && isHostGoalChecklistText(message.content || "")) {
-            return rewriteHostGoalChecklistBody(message.content || "");
-        }
+        return rewriteHostGoalChecklistBody(message.content || "");
     }
     return "";
 }

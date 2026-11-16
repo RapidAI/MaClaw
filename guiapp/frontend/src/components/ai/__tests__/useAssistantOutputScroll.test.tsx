@@ -484,4 +484,336 @@ describe('useAssistantOutputScroll', () => {
         act(() => { callbacks.forEach((cb) => cb()); });
         expect(scrollIntoViewMock).not.toHaveBeenCalled();
     });
+
+    it('latches an upward wheel that chains through an exhausted nested pane', () => {
+        const user = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const { getByTestId, rerender } = render(<ScrollHarness messages={[user, assistant]} />);
+        const box = getByTestId('scroll-box');
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        // The nested thought pane is at its top: the wheel-up cannot move it,
+        // so the gesture chains to the transcript and must count as intent.
+        // Previously it was swallowed, the scroll stayed intentless, and the
+        // next streaming pin yanked the view back to the bottom.
+        fireEvent.wheel(getByTestId('nested-scroll'), { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        scrollIntoViewMock.mockClear();
+        rerender(<ScrollHarness messages={[user, { ...assistant, content: 'Earlier answer plus more' }]} />);
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    });
+
+    it('does not re-pin when a host-initiated round appends a user row while scrolled up', () => {
+        const user1 = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const { getByTestId, rerender } = render(<ScrollHarness messages={[user1, assistant]} />);
+        const box = getByTestId('scroll-box');
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        scrollIntoViewMock.mockClear();
+        // A backend-initiated round (goal continuation, remote control, ACP)
+        // appends a user row the reader did not type. It must not yank the
+        // scrolled-up view back to the tail.
+        const hostRow = makeMsg({ id: 'u2', role: 'user', content: '〔远控〕 continue', hostInitiated: true });
+        const placeholder = makeMsg({ id: 'a2', role: 'assistant', content: '' });
+        rerender(<ScrollHarness messages={[user1, assistant, hostRow, placeholder]} />);
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    });
+
+    it('exposes scrolledUp and unreadTail for a jump-to-latest affordance', () => {
+        const user = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const apiBox: { current: ReturnType<typeof useAssistantOutputScroll> | null } = { current: null };
+        function Harness({ messages }: { messages: ChatMessage[] }) {
+            const api = useAssistantOutputScroll({ hasConversation: true, messages, ready: true });
+            apiBox.current = api;
+            return (
+                <div
+                    ref={api.outputContainerRef}
+                    data-testid="scroll-box"
+                    onScroll={api.handleScroll}
+                    onWheel={api.handleUserScrollIntent}
+                    onTouchMove={api.handleUserScrollIntent}
+                    onPointerDown={api.handleUserScrollIntent}
+                    style={{ height: 100, overflow: 'auto' }}
+                >
+                    <div>{messages.map((message) => message.content)}</div>
+                    <div
+                        ref={(node) => {
+                            api.outputEndRef.current = node;
+                            if (node) node.scrollIntoView = scrollIntoViewMock;
+                        }}
+                    />
+                </div>
+            );
+        }
+        const { getByTestId, rerender } = render(<Harness messages={[user, assistant]} />);
+        const box = getByTestId('scroll-box');
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+        expect(apiBox.current?.scrolledUp).toBe(true);
+        expect(apiBox.current?.unreadTail).toBe(false);
+
+        // Content growing below the fold while latched flags the unread tail.
+        rerender(<Harness messages={[user, { ...assistant, content: 'Earlier answer plus more' }]} />);
+        expect(apiBox.current?.unreadTail).toBe(true);
+
+        act(() => { apiBox.current?.scrollToBottom('auto', true); });
+        expect(apiBox.current?.scrolledUp).toBe(false);
+        expect(apiBox.current?.unreadTail).toBe(false);
+    });
+
+    function makeRect(top: number, bottom: number): DOMRect {
+        return { top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+    }
+    function stubRect(el: Element, top: number, bottom: number) {
+        (el as HTMLElement).getBoundingClientRect = () => makeRect(top, bottom);
+    }
+
+    it('re-anchors a latched viewport when the transcript reflows above it', () => {
+        const user = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const { getByTestId, rerender } = render(<ScrollHarness messages={[user, assistant]} />);
+        const box = getByTestId('scroll-box');
+        const content = getByTestId('scroll-content');
+        stubRect(box, 0, 100);
+        // The reader's anchor row: top edge 40px above the scrollport.
+        stubRect(content, -40, 60);
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        // The transcript re-projects and 500px lands above the anchor row.
+        // Without anchoring the browser drops the reader at scrollTop ~0 —
+        // the jump behind "scrolled up and lost the goal closeout".
+        stubRect(content, 460, 560);
+        rerender(<ScrollHarness messages={[user, assistant]} />);
+        expect(box.scrollTop).toBe(500);
+    });
+
+    it('re-anchors by row index when the anchored node was remounted with a new identity', () => {
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'answer' });
+        function RemountHarness({ tag, messages }: { tag: 'div' | 'section'; messages: ChatMessage[] }) {
+            const api = useAssistantOutputScroll({ hasConversation: true, messages, ready: true });
+            const Tag = tag;
+            return (
+                <div
+                    ref={api.outputContainerRef}
+                    data-testid="scroll-box"
+                    onScroll={api.handleScroll}
+                    onWheel={api.handleUserScrollIntent}
+                    onTouchMove={api.handleUserScrollIntent}
+                    onPointerDown={api.handleUserScrollIntent}
+                >
+                    {/* A remount that also loses the testid can only be
+                        recovered by the stored child index. */}
+                    <Tag data-testid={`anchor-row-${tag}`}>row</Tag>
+                    <div
+                        ref={(node) => {
+                            api.outputEndRef.current = node;
+                            if (node) node.scrollIntoView = scrollIntoViewMock;
+                        }}
+                    />
+                </div>
+            );
+        }
+        const { getByTestId, rerender } = render(<RemountHarness tag="div" messages={[assistant]} />);
+        const box = getByTestId('scroll-box');
+        stubRect(box, 0, 100);
+        stubRect(getByTestId('anchor-row-div'), -40, 60);
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        // A different element type remounts the row: the old node detaches,
+        // the index fallback finds the replacement and restores toward its
+        // (unstubbed, zero-rect) position — drift of 40px to reach relTop -40.
+        rerender(<RemountHarness tag="section" messages={[assistant]} />);
+        expect(box.scrollTop).toBe(40);
+    });
+
+    it('re-anchors by testid before falling back to the stored index', () => {
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'answer' });
+        function ReorderHarness({ flipped, messages }: { flipped: boolean; messages: ChatMessage[] }) {
+            const api = useAssistantOutputScroll({ hasConversation: true, messages, ready: true });
+            const anchorTag: 'div' | 'section' = flipped ? 'section' : 'div';
+            const AnchorTag = anchorTag;
+            return (
+                <div
+                    ref={api.outputContainerRef}
+                    data-testid="scroll-box"
+                    onScroll={api.handleScroll}
+                    onWheel={api.handleUserScrollIntent}
+                    onTouchMove={api.handleUserScrollIntent}
+                    onPointerDown={api.handleUserScrollIntent}
+                >
+                    {flipped ? <div key="x" data-testid="row-x" /> : null}
+                    <div key="a" data-testid="row-a" />
+                    {/* The type change remounts the anchored row while its
+                        testid (message id) survives — the stored index now
+                        points at a different row and must not win. */}
+                    <AnchorTag key="t" data-testid="anchor-me" />
+                    <div
+                        ref={(node) => {
+                            api.outputEndRef.current = node;
+                            if (node) node.scrollIntoView = scrollIntoViewMock;
+                        }}
+                    />
+                </div>
+            );
+        }
+        const { getByTestId, rerender } = render(<ReorderHarness flipped={false} messages={[assistant]} />);
+        const box = getByTestId('scroll-box');
+        stubRect(box, 0, 100);
+        stubRect(getByTestId('row-a'), -200, -100);
+        stubRect(getByTestId('anchor-me'), -40, 60);
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 200, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        // The remount pushes the anchored row to index 2 while the stored
+        // index 1 now holds row-a. Its stubbed top would give drift -160;
+        // the testid match on the new (zero-rect) node gives +40.
+        rerender(<ReorderHarness flipped messages={[assistant]} />);
+        expect(box.scrollTop).toBe(240);
+    });
+
+    function NestedHarness({ messages }: { messages: ChatMessage[] }) {
+        const api = useAssistantOutputScroll({ hasConversation: true, messages, ready: true });
+        apiBoxRef.current = api;
+        return (
+            <div
+                ref={api.outputContainerRef}
+                data-testid="scroll-box"
+                onScroll={api.handleScroll}
+                onWheel={api.handleUserScrollIntent}
+                onTouchMove={api.handleUserScrollIntent}
+                onPointerDown={api.handleUserScrollIntent}
+            >
+                <div>row</div>
+                <div data-nested-scroll="" data-testid="nested-pane">pane</div>
+                <div
+                    ref={(node) => {
+                        api.outputEndRef.current = node;
+                        if (node) node.scrollIntoView = scrollIntoViewMock;
+                    }}
+                />
+            </div>
+        );
+    }
+    const apiBoxRef: { current: ReturnType<typeof useAssistantOutputScroll> | null } = { current: null };
+
+    function latchableBox(box: HTMLElement) {
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 200, writable: true },
+        });
+    }
+
+    it('latches when a downward finger pull tops out a nested pane', () => {
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'answer' });
+        const { getByTestId } = render(<NestedHarness messages={[assistant]} />);
+        const box = getByTestId('scroll-box');
+        const pane = getByTestId('nested-pane');
+        Object.defineProperty(pane, 'scrollTop', { configurable: true, value: 0 });
+        latchableBox(box);
+
+        // Finger moves down (clientY grows): the topped pane cannot consume
+        // the drag, it chains to the transcript — leave-the-tail intent.
+        fireEvent.touchMove(pane, { touches: [{ clientY: 300 }] });
+        fireEvent.touchMove(pane, { touches: [{ clientY: 360 }] });
+        fireEvent.scroll(box);
+        expect(apiBoxRef.current?.scrolledUp).toBe(true);
+    });
+
+    it('ignores a finger-up drag inside a topped nested pane', () => {
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'answer' });
+        const { getByTestId } = render(<NestedHarness messages={[assistant]} />);
+        const box = getByTestId('scroll-box');
+        const pane = getByTestId('nested-pane');
+        Object.defineProperty(pane, 'scrollTop', { configurable: true, value: 0 });
+        latchableBox(box);
+
+        // Finger moves up (clientY shrinks): the pane has room to scroll.
+        fireEvent.touchMove(pane, { touches: [{ clientY: 300 }] });
+        fireEvent.touchMove(pane, { touches: [{ clientY: 240 }] });
+        fireEvent.scroll(box);
+        expect(apiBoxRef.current?.scrolledUp).toBe(false);
+    });
+
+    it('does not measure transcript rows while the view follows the tail', () => {
+        const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect');
+        try {
+            const user = makeMsg({ role: 'user', content: 'q' });
+            const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'a' });
+            const { rerender } = render(<ScrollHarness messages={[user, assistant]} />);
+            rectSpy.mockClear();
+            rerender(<ScrollHarness messages={[user, { ...assistant, content: 'a2' }]} />);
+            rerender(<ScrollHarness messages={[user, { ...assistant, content: 'a3' }]} />);
+            expect(rectSpy).not.toHaveBeenCalled();
+        } finally {
+            rectSpy.mockRestore();
+        }
+    });
+
+    it('flags the tail as unread when the latch predates the transcript', () => {
+        const apiBox: { current: ReturnType<typeof useAssistantOutputScroll> | null } = { current: null };
+        function Harness({ messages, hasConversation, seq }: { messages: ChatMessage[]; hasConversation: boolean; seq: number }) {
+            const api = useAssistantOutputScroll({ hasConversation, messages, ready: true, scrollToTopSeq: seq });
+            apiBox.current = api;
+            return (
+                <div
+                    ref={api.outputContainerRef}
+                    data-testid="scroll-box"
+                    onScroll={api.handleScroll}
+                    style={{ height: 100, overflow: 'auto' }}
+                >
+                    <div>{messages.map((message) => message.content)}</div>
+                    <div
+                        ref={(node) => {
+                            api.outputEndRef.current = node;
+                            if (node) node.scrollIntoView = scrollIntoViewMock;
+                        }}
+                    />
+                </div>
+            );
+        }
+        const { getByTestId, rerender } = render(<Harness messages={[]} hasConversation={false} seq={0} />);
+        const box = getByTestId('scroll-box');
+        (box as HTMLElement).scrollTo = vi.fn();
+        // The wizard's scroll-to-top latches an empty view. Its unread baseline
+        // is the empty tail stamp, which must not suppress the flag.
+        rerender(<Harness messages={[]} hasConversation={false} seq={1} />);
+        expect(apiBox.current?.scrolledUp).toBe(true);
+        rerender(<Harness messages={[makeMsg({ id: 'a1', role: 'assistant', content: 'started' })]} hasConversation={true} seq={1} />);
+        expect(apiBox.current?.unreadTail).toBe(true);
+    });
 });
