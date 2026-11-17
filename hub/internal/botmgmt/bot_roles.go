@@ -109,10 +109,9 @@ func routerWordFinding(f watchFinding, noDesktop bool) string {
 		// does not stop the run, so it must not say it stopped.
 		return "这件还在进行，但已经有一阵没看到新的进展。我没有停下它；如果确实卡住，会停下并告诉你卡在哪、还剩什么。"
 	case "no_receipt":
-		if noDesktop {
-			return "这件做完了。"
-		}
-		return "这件做完了，桌面上就是结果，你看一眼。"
+		// The run ended with nothing delivered. That is not a success,
+		// whether or not this bot has a computer.
+		return "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。"
 	case "attention":
 		if noDesktop {
 			return firstNonEmptyString(strings.TrimSpace(f.Detail), "这件需要你看一眼。")

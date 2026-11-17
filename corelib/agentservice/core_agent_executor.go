@@ -3641,18 +3641,37 @@ func readDocumentToolResult(result string) agent.ToolExecutionResult {
 	return agent.ToolExecutionResult{Result: result, Outcome: outcome}
 }
 func (c *coreAgentCallbacks) OnToken(delta string) {
+	if c != nil {
+		// A token means the model answered. The retry notice is over.
+		ClearRunRuntimeStatus(c.runID)
+	}
 	if c.onToken != nil {
 		c.onToken(delta)
 	}
 }
 func (c *coreAgentCallbacks) OnProgress(text string) {
+	if c == nil {
+		return
+	}
 	text = strings.TrimSpace(text)
-	if text == "" || c == nil || c.botID == "" {
+	if text == "" {
+		return
+	}
+	// Only the live-status row is a status-area notice. An ordinary
+	// progress sentence is not promoted into the status line, and a
+	// sentence that merely says "switched" is not one of those rows.
+	if visible, ok := agent.LLMRetryLiveStatusText(text); ok {
+		SetRunRuntimeStatus(c.runID, visible)
+	}
+	if c.botID == "" {
 		return
 	}
 	botlog.Write(c.botID, "srv.progress", nil, "text", text)
 }
 func (c *coreAgentCallbacks) OnToolCall(name string) {
+	if c != nil {
+		ClearRunRuntimeStatus(c.runID)
+	}
 	log.Printf("[tool-call] start name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
 	if c != nil && c.botID != "" {
 		botlog.Write(c.botID, "srv.tool_start", nil, "tool", name, "loop", c.loopID)

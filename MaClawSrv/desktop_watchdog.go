@@ -570,6 +570,7 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 		return msg
 	}
 	defer desktopWatchdogEnd(run.ID)
+	defer agentservice.ClearRunRuntimeStatus(run.ID)
 	key := desktopLedgerKey(scope)
 	status := string(run.Status)
 	// The run's event stream ends with its end, so an observer of the
@@ -639,15 +640,24 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 		}
 	}
 	if text == "" {
-		if runErr != nil || run.Status == agentservice.RunStatusFailed {
+		if names := deliveredAttachmentNames(msg); len(names) > 0 && runErr == nil && run.Status != agentservice.RunStatusFailed {
+			text = "结果文件已经附在这条回复上：" + strings.Join(names, "、") + "。"
+			if outcome == "" {
+				outcome = agentservice.TaskOutcomeDone
+				why = "attachment delivered"
+			}
+		} else if runErr != nil || run.Status == agentservice.RunStatusFailed {
 			text = "这件我没做成，中途出了问题，我停在当前页面，没有重复提交任何东西。你说一声我再试一次。"
 			if noDesktop {
 				text = "这件我没做成，中途出了问题。你说一声我再试一次。"
 			}
 		} else {
-			text = "这件做完了，桌面上就是结果，你看一眼。"
-			if noDesktop {
-				text = "这件做完了。"
+			// No reply, no confirmed post, and no file on the message.
+			// Ending the run is not the same as delivering the result.
+			text = "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。"
+			if outcome == "" || outcome == agentservice.TaskOutcomeDone {
+				outcome = agentservice.TaskOutcomeBlocked
+				why = "no delivered result"
 			}
 		}
 	}
@@ -663,6 +673,27 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 	desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status + " receipt_by_srv"})
 	log.Printf("[watchdog] run=%s ended without a reply; srv receipt sent (status=%s)", run.ID, status)
 	return msg
+}
+
+func deliveredAttachmentNames(msg *agentservice.Message) []string {
+	if msg == nil {
+		return nil
+	}
+	var names []string
+	for _, item := range msg.Attachments {
+		name := strings.TrimSpace(item.FileName)
+		if name == "" && strings.TrimSpace(item.Data) == "" && strings.TrimSpace(item.SourceMediaID) == "" {
+			continue
+		}
+		if name == "" {
+			name = "文件"
+		}
+		names = append(names, name)
+		if len(names) == 3 {
+			break
+		}
+	}
+	return names
 }
 
 func desktopLedgerRunPost(entries []desktopLedgerEntry, runID string) (desktopLedgerEntry, bool) {

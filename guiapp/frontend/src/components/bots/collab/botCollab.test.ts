@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { answeredSinceLast, applyBotStatusLine, shownDesktopBotActivity, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, placeChatSays, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
+import { answeredSinceLast, applyBotStatusLine, applyRunScopedText, shownDesktopBotActivity, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, placeChatSays, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
 
 const bots = [{ id: 'm', title: '主管', primary: true }, { id: 'a', title: '小A' }, { id: 'b', title: '小B' }, { id: 'c', title: '小C' }, { id: 'd', title: '小D' }];
 const asg = (id: string, target: string, state: string, extra: Partial<Assignment> = {}): Assignment =>
@@ -102,9 +102,29 @@ describe('applyBotStatusLine', () => {
         let st = applyBotStatusLine({}, 'a', 'run_1', '单号 run_1 · 第 3 步');
         st = applyBotStatusLine(st, 'b', 'run_2', '单号 run_2 · 后台任务运行中，下次查看 21:40');
         expect(st.a.text).toBe('单号 run_1 · 第 3 步');
-        expect(applyBotStatusLine(st, 'a', 'run_old', '')).toBe(st);
-        expect(applyBotStatusLine(st, 'a', 'run_1', '').a).toBeUndefined();
+        const ignored = applyBotStatusLine(st, 'a', 'run_old', '');
+        expect(ignored.a.text).toBe(st.a.text);
+        expect(ignored.a.runId).toBe('run_1');
+        expect(applyBotStatusLine(ignored, 'a', 'run_old', '单号 run_old').a.runId).toBe('run_1');
+        const cleared = applyBotStatusLine(st, 'a', 'run_1', '');
+        expect(cleared.a.text).toBe('');
+        expect(applyBotStatusLine(cleared, 'a', 'run_1', 'late').a.text).toBe('');
+        const next = applyBotStatusLine(cleared, 'a', 'run_2', '单号 run_2 · 第 1 步');
+        expect(next.a.runId).toBe('run_2');
+        expect(applyBotStatusLine(next, 'a', 'run_1', 'late again').a.runId).toBe('run_2');
         expect(applyBotStatusLine(st, 'a', 'run_1', '').b.text).toContain('下次查看');
+    });
+
+    it('does not let an out-of-order activity replace the run that holds the row', () => {
+        let st = applyRunScopedText({} as Record<string, { text: string; runId: string; at?: number; closed?: Record<string, true> }>, 'a', 'run_live', '正在发布', (text, runId, closed) => ({ text, runId, closed, at: 2 }));
+        st = applyRunScopedText(st, 'a', 'run_old', '正在点击', (text, runId, closed, current) => ({ text, runId, closed, at: current?.at }));
+        expect(st.a.text).toBe('正在发布');
+        st = applyRunScopedText(st, 'a', 'run_live', '', (text, runId, closed, current) => ({ text, runId, closed, at: current?.at }));
+        st = applyRunScopedText(st, 'a', 'run_live', '正在点击', (text, runId, closed, current) => ({ text, runId, closed, at: current?.at }));
+        expect(st.a.text).toBe('');
+        st = applyRunScopedText(st, 'a', 'run_next', '正在读取', (text, runId, closed) => ({ text, runId, closed, at: 3 }));
+        expect(st.a.runId).toBe('run_next');
+        expect(st.a.text).toBe('正在读取');
     });
 });
 

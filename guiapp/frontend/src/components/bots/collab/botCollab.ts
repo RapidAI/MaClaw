@@ -286,22 +286,57 @@ export function attentionOf(room: Room, bot: BotRef): Attention {
 
 export const ATTENTION_LABEL: Record<Attention, string> = { all: '每条都听', mentions: '被@才听', off: '不听' };
 
+export type RunScopedLine = { text: string; runId: string; closed?: Record<string, true> };
+
+function rememberClosed(closed: Record<string, true> | undefined, runId: string): Record<string, true> {
+    const next: Record<string, true> = { ...(closed || {}) };
+    if (runId) next[runId] = true;
+    const keys = Object.keys(next);
+    while (keys.length > 8) {
+        const oldest = keys.shift();
+        if (oldest) delete next[oldest];
+    }
+    return next;
+}
+
+/**
+ * applyRunScopedText keeps one visible line per bot and remembers runs that
+ * already closed. A late or out-of-order line from a closed run cannot take
+ * the slot back, and a second live run cannot replace the run that holds it.
+ */
+export function applyRunScopedText<T extends RunScopedLine>(
+    prev: Record<string, T>,
+    botId: string,
+    runId: string,
+    line: string,
+    build: (text: string, runId: string, closed: Record<string, true> | undefined, current: T | undefined) => T,
+): Record<string, T> {
+    if (!botId) return prev;
+    const current = prev[botId];
+    const closed = current?.closed;
+    if (!line) {
+        if (!current) return prev;
+        if (runId && current.runId && current.runId !== runId) {
+            if (closed?.[runId]) return prev;
+            return { ...prev, [botId]: { ...current, closed: rememberClosed(closed, runId) } };
+        }
+        if (!current.text && !current.runId) return prev;
+        return { ...prev, [botId]: build('', '', rememberClosed(closed, current.runId || runId), current) };
+    }
+    if (runId && closed?.[runId]) return prev;
+    if (current?.text && current.runId && runId && current.runId !== runId) return prev;
+    if (current?.text === line && current.runId === runId) return prev;
+    return { ...prev, [botId]: build(line, runId, closed, current) };
+}
+
 /**
  * applyBotStatusLine keeps one live status line per bot. An empty line from
  * a run clears only that run's line, so a finished run cannot wipe a newer
- * run's status.
+ * run's status. A line that arrives after that clear, or from a different
+ * live run, does not take the slot.
  */
-export function applyBotStatusLine(prev: Record<string, { text: string; runId: string }>, botId: string, runId: string, line: string): Record<string, { text: string; runId: string }> {
-    const current = prev[botId];
-    if (!line) {
-        if (!current) return prev;
-        if (runId && current.runId && current.runId !== runId) return prev;
-        const next = { ...prev };
-        delete next[botId];
-        return next;
-    }
-    if (current && current.text === line && current.runId === runId) return prev;
-    return { ...prev, [botId]: { text: line, runId } };
+export function applyBotStatusLine(prev: Record<string, RunScopedLine>, botId: string, runId: string, line: string): Record<string, RunScopedLine> {
+    return applyRunScopedText(prev, botId, runId, line, (text, id, closed) => ({ text, runId: id, closed }));
 }
 
 /** A wake label older than this is stale: the row falls back. */

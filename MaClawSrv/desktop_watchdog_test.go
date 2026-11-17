@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
@@ -116,6 +117,58 @@ func TestEnsureReceipt(t *testing.T) {
 	keep := &agentservice.Message{Content: "done"}
 	if m := desktopEnsureReceipt(scope, run, keep, nil, false, false); m.Content != "done" {
 		t.Fatal("reply overwritten")
+	}
+}
+
+func TestEnsureReceiptDoesNotClaimSuccessWithoutDelivery(t *testing.T) {
+	dir := t.TempDir()
+	old := desktopLedgerDir
+	desktopLedgerDir = func() string { return dir }
+	t.Cleanup(func() { desktopLedgerDir = old })
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u1"}
+	empty := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_empty", Status: agentservice.RunStatusSucceeded}, nil, nil, false, false)
+	if empty == nil || strings.Contains(empty.Content, "做完了") || empty.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
+		t.Fatalf("empty success claimed done: %+v", empty)
+	}
+	if !strings.Contains(empty.Content, "没做完") {
+		t.Fatalf("content=%q", empty.Content)
+	}
+	blank := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file"}}}
+	blankRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_blank", Status: agentservice.RunStatusSucceeded}, blank, nil, false, true)
+	if blankRun == nil || strings.Contains(blankRun.Content, "做完了") || blankRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
+		t.Fatalf("empty attachment claimed done: %+v", blankRun)
+	}
+	file := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file", FileName: "report.pdf", Size: 12}}}
+	got := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_file", Status: agentservice.RunStatusSucceeded}, file, nil, false, true)
+	if got == nil || !strings.Contains(got.Content, "report.pdf") || got.Metadata["task_outcome"] != agentservice.TaskOutcomeDone {
+		t.Fatalf("delivered file was not acknowledged: %+v", got)
+	}
+	if strings.Contains(got.Content, "桌面") {
+		t.Fatalf("a delivered file was described as a desktop glance: %q", got.Content)
+	}
+}
+
+func TestStatusLineKeepsRuntimeNoticeOnItsRun(t *testing.T) {
+	t.Cleanup(func() {
+		agentservice.ClearRunRuntimeStatus("run_notice_a")
+		agentservice.ClearRunRuntimeStatus("run_notice_b")
+	})
+	agentservice.SetRunRuntimeStatus("run_notice_a", "已从「Primary/old」改用「Backup/new」，正在重新请求（第 1 次）。")
+	agentservice.SetRunRuntimeStatus("run_notice_b", "重试 1/5：API 暂时不可用，2 秒后重试")
+	lineA := desktopRunStatusLine("run_notice_a")
+	lineB := desktopRunStatusLine("run_notice_b")
+	if !strings.Contains(lineA, "Backup/new") || strings.Contains(lineA, "重试 1/5") {
+		t.Fatalf("A=%q", lineA)
+	}
+	if !strings.Contains(lineB, "重试 1/5") || strings.Contains(lineB, "改用") {
+		t.Fatalf("B=%q", lineB)
+	}
+	agentservice.ClearRunRuntimeStatus("run_notice_a")
+	if strings.Contains(desktopRunStatusLine("run_notice_a"), "改用") {
+		t.Fatal("cleared notice stayed on A")
+	}
+	if !strings.Contains(desktopRunStatusLine("run_notice_b"), "重试 1/5") {
+		t.Fatal("clearing A dropped B")
 	}
 }
 

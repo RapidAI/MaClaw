@@ -199,7 +199,7 @@ import { useBotCollab } from './collab/useBotCollab';
 import { BotCollabStatus } from './collab/BotCollabStatus';
 import { BotSaidInline, saidFileIsImage } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
-import { applyBotStatusLine, placeChatSays, shownDesktopBotActivity } from './collab/botCollab';
+import { applyBotStatusLine, applyRunScopedText, placeChatSays, shownDesktopBotActivity } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
 import { DemoSkillPanel } from './DemoSkillPanel';
 import { isChineseLang, isTraditionalLang, localizeText, normalizeLang } from '../../i18n';
@@ -2575,11 +2575,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         else delete next[botId];
         return next;
     });
-    const [activityByBot, setActivityByBot] = useState<Record<string, { text: string; runId: string; at?: number }>>({});
+    const [activityByBot, setActivityByBot] = useState<Record<string, { text: string; runId: string; at?: number; closed?: Record<string, true> }>>({});
     // Live run status from MaClawSrv (run id, step, latest progress,
     // background job, next watcher check). Shown in the status row, never
     // as a chat message (Daniel 11-11 21:10).
-    const [statusByBot, setStatusByBot] = useState<Record<string, { text: string; runId: string }>>({});
+    const [statusByBot, setStatusByBot] = useState<Record<string, { text: string; runId: string; closed?: Record<string, true> }>>({});
     // A thread the person is following up in, or {main:true} for a clearly
     // new message. Empty means the last recent thread (or main) decides.
     const [continueForceByBot, setContinueForceByBot] = useState<Record<string, { session?: string; main?: boolean }>>({});
@@ -4038,16 +4038,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // a pending first reply: the working line should name the step.
             if (activity) markUnderstanding(botId, false);
             setActivityByBot(prev => {
-                const current = prev[botId];
-                if (!raw.trim()) {
-                    if (!current) return prev;
-                    if (runId && current.runId && current.runId !== runId) return prev;
-                    const next = { ...prev };
-                    delete next[botId];
-                    return next;
-                }
-                if (!activity || (current?.text === activity && current.runId === runId)) return prev;
-                return { ...prev, [botId]: { text: activity, runId, at: Date.now() } };
+                if (raw.trim() && !activity) return prev;
+                return applyRunScopedText(prev, botId, runId, activity, (text, id, closed, current) => ({
+                    text,
+                    runId: id,
+                    closed,
+                    at: text ? Date.now() : current?.at,
+                }));
             });
         };
         const off = EventsOn('desktop-bot-activity', handler);
