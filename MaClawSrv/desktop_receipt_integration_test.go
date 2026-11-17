@@ -13,26 +13,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 type receiptTurn struct {
-	content  string
-	result   string
-	userMeta map[string]string
-	meta     map[string]string
-	shot     bool
-	file     bool
-	fileName string
-	contract []string
-	slots    []string
-	files    []string
-	posts    []browser.PublishState
-	partial  bool
+	content   string
+	result    string
+	userMeta  map[string]string
+	meta      map[string]string
+	shot      bool
+	file      bool
+	fileName  string
+	contract  []string
+	slots     []string
+	files     []string
+	posts     []browser.PublishState
+	modelJSON string
+	fileIDs   []string
+	postIDs   []string
+	sameBytes bool
+	samePost  bool
+	partial   bool
 }
 
 type receiptExecutor struct {
@@ -40,7 +47,15 @@ type receiptExecutor struct {
 }
 
 func (e *receiptExecutor) Execute(ctx context.Context, req agentservice.ExecuteRequest) (*agentservice.ExecuteResult, error) {
-	if e.turn.slots != nil {
+	if e.turn.modelJSON != "" {
+		prev := agent.CompleteDesktopOutcome
+		agent.CompleteDesktopOutcome = func(context.Context, corelib.MaclawLLMConfig, *http.Client, []interface{}) (*llm.Response, error) {
+			return &llm.Response{Choices: []llm.Choice{{Message: llm.Message{Content: e.turn.modelJSON}}}}, nil
+		}
+		items, err := agent.ExtractDesktopDeliverableContract(ctx, corelib.MaclawLLMConfig{}, nil, e.turn.content)
+		agent.CompleteDesktopOutcome = prev
+		agentservice.RecordDesktopDeliverableExtraction(req.RunID, items, err)
+	} else if e.turn.slots != nil {
 		noteDesktopOutputSlots(req.RunID, e.turn.slots)
 	} else if e.turn.contract != nil {
 		noteDesktopOutputContract(req.RunID, e.turn.contract)
@@ -49,13 +64,26 @@ func (e *receiptExecutor) Execute(ctx context.Context, req agentservice.ExecuteR
 		return nil, context.Canceled
 	}
 	for i, state := range e.turn.posts {
+		itemID := ""
+		if i < len(e.turn.postIDs) {
+			itemID = e.turn.postIDs[i]
+		}
+		n := i + 1
+		if e.turn.samePost {
+			n = 1
+		}
+		url := "https://zhuanlan.zhihu.com/p/" + strconv.Itoa(n)
+		if itemID != "" {
+			_ = desktopRecordPublish(agentruntime.Scope{RunID: req.RunID}, browser.PublishSpec{ItemID: itemID, Title: "t", EditorURL: "https://zhuanlan.zhihu.com/write"}, &browser.PublishReport{State: state, ResultURL: url, PostID: strconv.Itoa(n)})
+			continue
+		}
 		if i > 0 {
 			desktopPublishParkCurrent(req.RunID)
 		}
 		posted := state
 		desktopPublishRecordUpdate(agentruntime.Scope{RunID: req.RunID}, func(r *desktopPublishRecord) {
 			r.State = posted
-			r.URL = "https://zhuanlan.zhihu.com/p/" + strconv.Itoa(i+1)
+			r.URL = url
 			r.PostID = strconv.Itoa(i + 1)
 		})
 	}
@@ -63,14 +91,21 @@ func (e *receiptExecutor) Execute(ctx context.Context, req agentservice.ExecuteR
 	if e.turn.file {
 		names = append(names, e.turn.fileName)
 	}
-	for _, name := range names {
-		body := []byte("%PDF-1.4")
+	for i, name := range names {
+		body := []byte("%PDF-1.4-" + name)
 		mime := "application/pdf"
 		if strings.HasSuffix(name, ".png") {
-			body = []byte("aGVsbG8=")
+			body = []byte("aGVsbG8=" + name)
 			mime = "image/png"
 		}
-		if err := noteDesktopFile(ctx, name, mime, body); err != nil {
+		if e.turn.sameBytes {
+			body = []byte("%PDF-1.4-same")
+		}
+		itemID := ""
+		if i < len(e.turn.fileIDs) {
+			itemID = e.turn.fileIDs[i]
+		}
+		if err := noteDesktopFileItem(ctx, name, mime, body, itemID); err != nil {
 			return nil, err
 		}
 	}
@@ -171,10 +206,11 @@ func TestDesktopReceiptPersistsVisibleOutcome(t *testing.T) {
 			forbidDone:  true,
 		},
 		{
-			name:        "file and post, both complete",
+			name:        "file and post counts are not identity",
 			turn:        receiptTurn{content: "交报告并发布", file: true, fileName: "report.pdf", posts: []browser.PublishState{browser.PublishLive}, slots: []string{desktopContractFile, desktopContractPost}},
-			wantOutcome: agentservice.TaskOutcomeDone,
+			wantOutcome: agentservice.TaskOutcomePartial,
 			wantPart:    "zhuanlan.zhihu.com/p/1",
+			forbidDone:  true,
 		},
 		{
 			name:        "two files, one delivered",
@@ -184,10 +220,11 @@ func TestDesktopReceiptPersistsVisibleOutcome(t *testing.T) {
 			forbidDone:  true,
 		},
 		{
-			name:        "two files, both delivered",
+			name:        "two files without item ids",
 			turn:        receiptTurn{content: "交两份文件", files: []string{"a.pdf", "b.pdf"}, slots: []string{desktopContractFile, desktopContractFile}},
-			wantOutcome: agentservice.TaskOutcomeDone,
+			wantOutcome: agentservice.TaskOutcomePartial,
 			wantPart:    "a.pdf",
+			forbidDone:  true,
 		},
 		{
 			name:        "two posts, one live",
@@ -197,10 +234,11 @@ func TestDesktopReceiptPersistsVisibleOutcome(t *testing.T) {
 			forbidDone:  true,
 		},
 		{
-			name:        "two posts, both live",
+			name:        "two posts without item ids",
 			turn:        receiptTurn{content: "发两篇", result: "两篇都发出去了", posts: []browser.PublishState{browser.PublishLive, browser.PublishLive}, slots: []string{desktopContractPost, desktopContractPost}},
-			wantOutcome: agentservice.TaskOutcomeDone,
+			wantOutcome: agentservice.TaskOutcomePartial,
 			wantPart:    "zhuanlan.zhihu.com/p/2",
+			forbidDone:  true,
 		},
 	}
 	for _, tc := range cases {
@@ -293,6 +331,93 @@ func TestFilenameOnlyReferenceIsNotADelivery(t *testing.T) {
 }
 
 var desktopReceiptWatch func(ready bool, status agentservice.RunStatus, meta map[string]string, msg *agentservice.Message)
+
+func TestDesktopDeliverableExtractionChain(t *testing.T) {
+	answer := "巴黎是法国的首都，塞纳河从城中穿过。"
+	cases := []struct {
+		name, model, want, part string
+		turn                    receiptTurn
+		forbid                  bool
+		contractID              string
+	}{
+		{
+			name: "mixed file and post",
+			turn: receiptTurn{
+				content: "交报告并发布", modelJSON: `{"items":[{"id":"file-1","kind":"file","text":"报告"},{"id":"post-1","kind":"post","text":"帖子"}]}`,
+				file: true, fileName: "report.pdf", fileIDs: []string{"file-1"},
+				posts: []browser.PublishState{browser.PublishLive}, postIDs: []string{"post-1"},
+			},
+			want: agentservice.TaskOutcomeDone, part: "zhuanlan.zhihu.com/p/1", contractID: "file-1",
+		},
+		{
+			name: "two distinct files",
+			turn: receiptTurn{
+				content: "交两份文件", modelJSON: `{"items":[{"id":"a","kind":"file","text":"甲"},{"id":"b","kind":"file","text":"乙"}]}`,
+				files: []string{"a.pdf", "b.pdf"}, fileIDs: []string{"a", "b"},
+			},
+			want: agentservice.TaskOutcomeDone, part: "a.pdf", contractID: `"a"`,
+		},
+		{
+			name: "missing second file",
+			turn: receiptTurn{
+				content: "交两份文件", modelJSON: `{"items":[{"id":"a","kind":"file","text":"甲"},{"id":"b","kind":"file","text":"乙"}]}`,
+				files: []string{"a.pdf"}, fileIDs: []string{"a"},
+			},
+			want: agentservice.TaskOutcomePartial, part: "a.pdf", forbid: true,
+		},
+		{
+			name: "duplicate file bytes",
+			turn: receiptTurn{
+				content: "交两份文件", modelJSON: `{"items":[{"id":"a","kind":"file","text":"甲"},{"id":"b","kind":"file","text":"乙"}]}`,
+				files: []string{"a.pdf", "b.pdf"}, fileIDs: []string{"a", "b"}, sameBytes: true,
+			},
+			want: agentservice.TaskOutcomePartial, part: "a.pdf", forbid: true,
+		},
+		{
+			name: "duplicate post",
+			turn: receiptTurn{
+				content: "发两篇", modelJSON: `{"items":[{"id":"p1","kind":"post","text":"第一篇"},{"id":"p2","kind":"post","text":"第二篇"}]}`,
+				posts: []browser.PublishState{browser.PublishLive, browser.PublishLive}, postIDs: []string{"p1", "p2"}, samePost: true,
+			},
+			want: agentservice.TaskOutcomePartial, part: "zhuanlan.zhihu.com/p/1", forbid: true,
+		},
+		{
+			name: "unknown kind",
+			turn: receiptTurn{content: "这是什么", result: answer, modelJSON: `{"items":[{"id":"d1","kind":"widget","text":"东西"}]}`},
+			want: agentservice.TaskOutcomeUnverified, part: answer, forbid: true,
+		},
+		{
+			name: "invalid model response",
+			turn: receiptTurn{content: "这是什么", result: answer, modelJSON: "not json"},
+			want: agentservice.TaskOutcomeUnverified, part: answer, forbid: true,
+		},
+		{
+			name: "text only answer",
+			turn: receiptTurn{content: "法国的首都是哪里", result: answer, modelJSON: `{"items":[]}`},
+			want: agentservice.TaskOutcomeDone, part: answer,
+		},
+		{
+			name: "legacy string checklist",
+			turn: receiptTurn{content: "交报告并发布", modelJSON: `{"items":["报告","帖子"]}`, file: true, fileName: "report.pdf"},
+			want: agentservice.TaskOutcomePartial, part: "report.pdf", forbid: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			view := runReceiptTurn(t, root, tc.turn)
+			assertReceipt(t, view.message, view.run, tc.want, tc.part, "", tc.forbid)
+			if tc.contractID != "" && !strings.Contains(view.run.Metadata["output_contract"], tc.contractID) {
+				t.Fatalf("stored contract = %s", view.run.Metadata["output_contract"])
+			}
+			_ = view.svc.Close()
+			view.server.Close()
+			reopened := reopenReceipt(t, root, view)
+			assertReceipt(t, reopened.message, reopened.run, tc.want, tc.part, "", tc.forbid)
+			_ = reopened.svc.Close()
+		})
+	}
+}
 
 func TestDesktopReceiptStaysUnreadyPastTwoSeconds(t *testing.T) {
 	started := time.Now()

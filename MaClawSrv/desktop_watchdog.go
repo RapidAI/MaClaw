@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"log"
@@ -751,9 +752,18 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	}
 	files := deliveredFileCount(msg)
 	complete, incomplete, other := desktopPostEvidence(run.ID)
-	items, slots, resolved := desktopOutputContractOf(run.ID)
+	contract, resolved := desktopOutputContractOf(run.ID)
+	if resolved && contract.failed {
+		return agentservice.TaskOutcomeUnverified, "deliverable extraction failed"
+	}
+	if resolved && contract.typed {
+		verdict, why := desktopAttributedVerdict(run.ID, msg, contract.parsed)
+		noteDeliveredFiles(msg, files)
+		rememberContractOutcome(run, msg, contract.parsed, verdict)
+		return verdict, why
+	}
 	if resolved {
-		if verdict, why := desktopContractVerdict(items, slots, files, complete, incomplete, other); verdict != "" {
+		if verdict, why := desktopContractVerdict(contract.items, contract.slots, files, complete, incomplete, other); verdict != "" {
 			noteDeliveredFiles(msg, files)
 			return verdict, why
 		}
@@ -793,11 +803,16 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 const (
 	desktopContractFile = "file"
 	desktopContractPost = "post"
+	desktopContractText = "text"
 )
 
 type desktopOutputContract struct {
-	items []string
-	slots []string
+	items    []string
+	slots    []string
+	parsed   []agent.DesktopDeliverable
+	failed   bool
+	typed    bool
+	resolved bool
 }
 
 var desktopOutputContracts sync.Map
@@ -821,18 +836,46 @@ func noteDesktopOutputPlan(runID string, items, slots []string) {
 		return
 	}
 	desktopOutputContracts.Store(runID, desktopOutputContract{
-		items: append([]string(nil), items...),
-		slots: append([]string(nil), slots...),
+		items:    append([]string(nil), items...),
+		slots:    append([]string(nil), slots...),
+		resolved: true,
 	})
 }
 
-func desktopOutputContractOf(runID string) (items, slots []string, resolved bool) {
+func noteParsedDeliverableContract(runID string, items []agent.DesktopDeliverable, failed bool) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	typed := false
+	texts := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.ID != "" || item.Kind != "" {
+			typed = true
+		}
+		if text := strings.TrimSpace(item.Text); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	desktopOutputContracts.Store(runID, desktopOutputContract{
+		items:    texts,
+		parsed:   append([]agent.DesktopDeliverable(nil), items...),
+		failed:   failed,
+		typed:    typed && !failed,
+		resolved: true,
+	})
+}
+
+func desktopOutputContractOf(runID string) (desktopOutputContract, bool) {
 	value, ok := desktopOutputContracts.Load(strings.TrimSpace(runID))
 	if !ok {
-		return nil, nil, false
+		return desktopOutputContract{}, false
 	}
 	contract, _ := value.(desktopOutputContract)
-	return contract.items, contract.slots, true
+	if !contract.resolved && !contract.failed {
+		contract.resolved = true
+	}
+	return contract, true
 }
 
 func deliveredFileCount(msg *agentservice.Message) int {
@@ -913,34 +956,13 @@ func desktopPostEvidenceLive(runID string) (complete, incomplete, other int) {
 // evidence cannot be attributed. An empty checklist is not a verdict.
 func desktopContractVerdict(items, slots []string, files, complete, incomplete, other int) (string, string) {
 	if len(slots) > 0 {
-		needFile, needPost := 0, 0
-		for _, slot := range slots {
-			switch slot {
-			case desktopContractFile:
-				needFile++
-			case desktopContractPost:
-				needPost++
-			default:
-				if files+complete+incomplete+other == 0 {
-					return agentservice.TaskOutcomeUnverified, "output contract open"
-				}
-				return agentservice.TaskOutcomePartial, "output contract incomplete"
-			}
-		}
-		if files >= needFile && complete >= needPost && incomplete == 0 && other == 0 {
-			switch {
-			case needPost > 0 && needFile == 0:
-				return agentservice.TaskOutcomeDone, "published"
-			case needFile > 0 && needPost == 0:
-				return agentservice.TaskOutcomeDone, "file delivered"
-			default:
-				return agentservice.TaskOutcomeDone, "outputs delivered"
-			}
-		}
+		// A count of files or posts is not proof that each required item
+		// was delivered. Without an item id on the evidence, the contract
+		// stays incomplete.
 		if files+complete+incomplete+other == 0 {
 			return agentservice.TaskOutcomeUnverified, "output contract open"
 		}
-		return agentservice.TaskOutcomePartial, "output contract incomplete"
+		return agentservice.TaskOutcomePartial, "output contract unattributed"
 	}
 	switch len(items) {
 	case 0:
@@ -962,6 +984,129 @@ func desktopContractVerdict(items, slots []string, files, complete, incomplete, 
 		}
 		return agentservice.TaskOutcomePartial, "output contract incomplete"
 	}
+}
+
+type desktopPostClaim struct {
+	ItemID   string
+	Identity string
+	Complete bool
+}
+
+var (
+	desktopPostClaimMu     sync.Mutex
+	desktopPostClaimsByRun = map[string][]desktopPostClaim{}
+)
+
+func desktopNotePostClaim(runID string, claim desktopPostClaim) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	desktopPostClaimMu.Lock()
+	desktopPostClaimsByRun[runID] = append(desktopPostClaimsByRun[runID], claim)
+	desktopPostClaimMu.Unlock()
+}
+
+func desktopPostClaims(runID string) []desktopPostClaim {
+	desktopPostClaimMu.Lock()
+	defer desktopPostClaimMu.Unlock()
+	return append([]desktopPostClaim(nil), desktopPostClaimsByRun[runID]...)
+}
+
+func fileFingerprint(data string) string {
+	sum := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(sum[:])
+}
+
+// desktopAttributedVerdict marks a typed item done only when one piece of
+// evidence names its id and that evidence has not already satisfied a
+// different item. The same file bytes or the same post cannot close two items.
+// One text item is the reply itself. Several text items are not, because one
+// reply has no per-item identity.
+func desktopAttributedVerdict(runID string, msg *agentservice.Message, items []agent.DesktopDeliverable) (string, string) {
+	if len(items) == 0 {
+		return "", ""
+	}
+	byID := map[string]agent.DesktopDeliverable{}
+	textItems := 0
+	onlyText := ""
+	for _, item := range items {
+		if item.ID == "" {
+			return agentservice.TaskOutcomeUnverified, "output contract open"
+		}
+		byID[item.ID] = item
+		if item.Kind == desktopContractText {
+			textItems++
+			onlyText = item.ID
+		}
+	}
+	satisfied := map[string]bool{}
+	usedFile := map[string]string{}
+	usedPost := map[string]string{}
+	if msg != nil {
+		for _, att := range msg.Attachments {
+			if att.Delivery != agent.AttachmentDeliveryFile || strings.TrimSpace(att.Data) == "" {
+				continue
+			}
+			id := strings.TrimSpace(att.ItemID)
+			item, ok := byID[id]
+			if !ok || item.Kind != desktopContractFile || satisfied[id] {
+				continue
+			}
+			fp := fileFingerprint(att.Data)
+			if prev, taken := usedFile[fp]; taken && prev != id {
+				continue
+			}
+			usedFile[fp] = id
+			satisfied[id] = true
+		}
+	}
+	for _, claim := range desktopPostClaims(runID) {
+		if !claim.Complete {
+			continue
+		}
+		id := strings.TrimSpace(claim.ItemID)
+		item, ok := byID[id]
+		if !ok || item.Kind != desktopContractPost || satisfied[id] {
+			continue
+		}
+		ident := strings.TrimSpace(claim.Identity)
+		if ident == "" {
+			continue
+		}
+		if prev, taken := usedPost[ident]; taken && prev != id {
+			continue
+		}
+		usedPost[ident] = id
+		satisfied[id] = true
+	}
+	if textItems == 1 && desktopVisibleAnswer(msg) != "" {
+		satisfied[onlyText] = true
+	}
+	if len(satisfied) == len(items) {
+		return agentservice.TaskOutcomeDone, "outputs delivered"
+	}
+	if len(satisfied) == 0 {
+		return agentservice.TaskOutcomeUnverified, "output contract open"
+	}
+	return agentservice.TaskOutcomePartial, "output contract incomplete"
+}
+
+func rememberContractOutcome(run *agentservice.Run, msg *agentservice.Message, items []agent.DesktopDeliverable, outcome string) {
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return
+	}
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	msg.Metadata["output_contract"] = string(payload)
+	msg.Metadata["output_contract_outcome"] = outcome
+	if run.Metadata == nil {
+		run.Metadata = map[string]string{}
+	}
+	run.Metadata["output_contract"] = string(payload)
+	run.Metadata["output_contract_outcome"] = outcome
 }
 
 func desktopRunTookSteps(runID string) bool {

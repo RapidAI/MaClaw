@@ -28,12 +28,19 @@ type desktopDeliverablesState struct {
 // checklist still being read.
 var desktopDeliverablesWait = 20 * time.Second
 
-var desktopDeliverablesExtract = agent.ExtractDesktopDeliverables
+// RememberDesktopOutputContract records the parsed checklist. failed means
+// the model response could not be read; that is not an empty checklist.
+// MaClawSrv installs it.
+var RememberDesktopOutputContract func(runID string, items []agent.DesktopDeliverable, failed bool)
 
-// RememberDesktopOutputContract records a resolved output contract for the
-// run. MaClawSrv installs it. An empty list means the turn asked for no
-// artifact, so a text answer can complete it.
-var RememberDesktopOutputContract func(runID string, items []string)
+// RecordDesktopDeliverableExtraction stores one extraction result. A parse
+// or model error is recorded as failed so the receipt stays unverified.
+func RecordDesktopDeliverableExtraction(runID string, items []agent.DesktopDeliverable, extractErr error) {
+	if RememberDesktopOutputContract == nil {
+		return
+	}
+	RememberDesktopOutputContract(runID, items, extractErr != nil)
+}
 
 // MACLAW_DESKTOP_DELIVERABLES=0 turns the checklist off.
 func desktopDeliverablesEnabled() bool {
@@ -100,18 +107,26 @@ func (c *coreAgentCallbacks) startDesktopDeliverables() {
 	cfg, client, text := c.llmCfg, c.httpClient, desktopDeliverableRequestText(c)
 	go func() {
 		defer close(st.done)
-		items, err := desktopDeliverablesExtract(context.Background(), cfg, client, text)
+		items, err := agent.ExtractDesktopDeliverableContract(context.Background(), cfg, client, text)
+		RecordDesktopDeliverableExtraction(c.runID, items, err)
 		if err != nil {
 			log.Printf("[desktop-deliverables] extract_err=%v", err)
 			return
 		}
-		st.mu.Lock()
-		st.items = items
-		st.mu.Unlock()
-		if RememberDesktopOutputContract != nil {
-			RememberDesktopOutputContract(c.runID, items)
+		lines := make([]string, 0, len(items))
+		for _, item := range items {
+			line := strings.TrimSpace(item.Text)
+			if item.ID != "" {
+				line = item.ID + " " + item.Kind + " " + line
+			}
+			if strings.TrimSpace(line) != "" {
+				lines = append(lines, strings.TrimSpace(line))
+			}
 		}
-		log.Printf("[desktop-deliverables] items=%d %q", len(items), strings.Join(items, " | "))
+		st.mu.Lock()
+		st.items = lines
+		st.mu.Unlock()
+		log.Printf("[desktop-deliverables] items=%d", len(items))
 	}()
 }
 

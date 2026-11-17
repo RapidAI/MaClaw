@@ -194,6 +194,9 @@ type MessageAttachment struct {
 	// AttachmentDeliveryFile is a deliver() payload. AttachmentDeliveryShot
 	// is a screenshot the person asked to receive. Empty is not a delivery.
 	Delivery string `json:"delivery,omitempty"`
+	// ItemID is the contract item this delivery claims. Empty evidence is
+	// not attributed to a required output.
+	ItemID string `json:"item_id,omitempty"`
 }
 
 // Response is the output from the agent handler.

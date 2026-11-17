@@ -65,7 +65,7 @@ func TestNotifyMainFileFromDirectRunGoesToThePerson(t *testing.T) {
 		return "黄仁勋_简历.docx", "application/octet-stream", []byte("x"), nil
 	}
 	var delivered []string
-	desktopNotifyDeliverPath = func(_ context.Context, _ agentruntime.Scope, p, _ string) (string, error) {
+	desktopNotifyDeliverPath = func(_ context.Context, _ agentruntime.Scope, p, _, _ string) (string, error) {
 		delivered = append(delivered, p)
 		return desktopDelivered("黄仁勋_简历.docx", 1), nil
 	}
@@ -114,7 +114,7 @@ func TestNotifyMainFileFromDelegatedRunStillGoesToMainBot(t *testing.T) {
 	desktopNotifyReadFile = func(_ context.Context, _ agentruntime.Scope, p string) (string, string, []byte, error) {
 		return "a.docx", "application/octet-stream", []byte("x"), nil
 	}
-	desktopNotifyDeliverPath = func(context.Context, agentruntime.Scope, string, string) (string, error) {
+	desktopNotifyDeliverPath = func(context.Context, agentruntime.Scope, string, string, string) (string, error) {
 		t.Fatal("delegated run must not deliver here")
 		return "", nil
 	}
@@ -156,7 +156,7 @@ func TestScheduleDeliverRefusesAFileFromThePreviousSlot(t *testing.T) {
 	}
 	t.Cleanup(func() { desktopRemoteBash, desktopRemoteFile = prevBash, prevFile })
 	ctx := context.WithValue(context.Background(), desktopScheduleTurnKey{}, true)
-	_, err := deliverDesktopPath(ctx, agentruntime.Scope{RunID: runID, TenantID: "t", UserID: "u"}, "/home/desktop/work/bot_4/北京天气报告.pdf", "北京天气报告.pdf")
+	_, err := deliverDesktopPath(ctx, agentruntime.Scope{RunID: runID, TenantID: "t", UserID: "u"}, "/home/desktop/work/bot_4/北京天气报告.pdf", "北京天气报告.pdf", "")
 	if err == nil || !strings.Contains(err.Error(), "重新生成") {
 		t.Fatalf("err=%v", err)
 	}
@@ -250,7 +250,7 @@ func TestResumedScheduleReplyRefusesTheBytesAlreadyDelivered(t *testing.T) {
 	desktopScheduleDeliverFile = ""
 	desktopScheduleDeliverMu.Unlock()
 	ctx, _ = withDesktopShotSlot(ctx)
-	if _, err := deliverHeldBytes(ctx, scope, "北京天气报告.pdf", "application/pdf", same); err == nil || !strings.Contains(err.Error(), "重新生成") {
+	if _, err := deliverHeldBytes(ctx, scope, "北京天气报告.pdf", "application/pdf", same, ""); err == nil || !strings.Contains(err.Error(), "重新生成") {
 		t.Fatalf("reply err=%v", err)
 	}
 }

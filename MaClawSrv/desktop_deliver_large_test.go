@@ -66,7 +66,7 @@ func TestDeliverWithoutReplySlotSendsTheFileOnItsOwn(t *testing.T) {
 		uploaded = append([]byte(nil), raw...)
 		return "bf_weather", nil
 	}
-	out, err := deliverDesktopPath(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u", InstanceID: "inst"}, "/home/desktop/work/main/run/weather-report.pdf", "")
+	out, err := deliverDesktopPath(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u", InstanceID: "inst"}, "/home/desktop/work/main/run/weather-report.pdf", "", "")
 	files, _ := said["files"].([]map[string]string)
 	if err != nil || len(files) != 1 || files[0]["ref"] != "bf_weather" || files[0]["data"] != "" || string(uploaded) != "%PDF-1.4 weather" {
 		t.Fatalf("out %q said %v uploaded %q err %v", out, said, uploaded, err)
@@ -79,7 +79,7 @@ func TestDeliverWithoutReplySlotSendsTheFileOnItsOwn(t *testing.T) {
 		return "", fmt.Errorf("no bot file store yet")
 	}
 	said = nil
-	out, err = deliverDesktopPath(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst", RunID: "run"}, "/home/desktop/work/main/run/weather-report.pdf", "")
+	out, err = deliverDesktopPath(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst", RunID: "run"}, "/home/desktop/work/main/run/weather-report.pdf", "", "")
 	files, _ = said["files"].([]map[string]string)
 	if err != nil || len(files) != 1 || said["instance_id"] != "inst" || files[0]["ref"] != "" {
 		t.Fatalf("fallback out %q said %v err %v", out, said, err)
@@ -102,7 +102,7 @@ func TestDeliverWithoutReplySlotDoesNotOfferTheCloudPath(t *testing.T) {
 	desktopDeliverLargeBash = func(context.Context, agentruntime.Scope, string) (string, error) {
 		return "MCLDL_BIG 9999999\n", nil
 	}
-	_, err := deliverDesktopPath(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u", InstanceID: "inst"}, "/home/desktop/work/main/run/weather-report.pdf", "")
+	_, err := deliverDesktopPath(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u", InstanceID: "inst"}, "/home/desktop/work/main/run/weather-report.pdf", "", "")
 	if err == nil || strings.Contains(err.Error(), "path on the computer") || strings.Contains(err.Error(), "give the file's path") || !strings.Contains(err.Error(), "cloud path") {
 		t.Fatalf("%v", err)
 	}
