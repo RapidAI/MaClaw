@@ -51,20 +51,27 @@ test("official base URL keeps the paas path", () => {
   );
 });
 
-test("Bot1 anthropic endpoint and member name are accepted", () => {
+test("Bot1 anthropic endpoint accepts the API id and rejects the member label", () => {
   const gate = agentPrerequisite({
     ...ready,
     MACLAW_BENCH_MODEL_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
-    MACLAW_BENCH_MODEL_NAME: "智谱编程/glm-5.3-flash",
+    MACLAW_BENCH_MODEL_NAME: "glm-5.3-flash",
     MACLAW_BENCH_PROTOCOL: "anthropic",
   });
-  delete gate.problems;
   assert.equal(gate.ok, true);
   assert.equal(gate.protocol, "anthropic");
   assert.equal(gate.vision_assumed, false);
   assert.equal(gate.image_route, "unconfirmed");
   assert.equal(gate.same_model_vision_arm, false);
   assert.equal(gate.admin_test_is_harness, false);
+  const label = agentPrerequisite({
+    ...ready,
+    MACLAW_BENCH_MODEL_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
+    MACLAW_BENCH_MODEL_NAME: "智谱编程/glm-5.3-flash",
+    MACLAW_BENCH_PROTOCOL: "anthropic",
+  });
+  assert.equal(label.ok, false);
+  assert.match(label.problems.join(" "), /成员显示名/);
 });
 
 test("admin fixed-prompt test is not a harness route", () => {

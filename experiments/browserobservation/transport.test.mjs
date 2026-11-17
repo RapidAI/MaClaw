@@ -192,7 +192,7 @@ test("anthropic wire carries a png and a tool_use click", async () => {
     env: {
       ...env,
       MACLAW_BENCH_PROTOCOL: "anthropic",
-      MACLAW_BENCH_MODEL_NAME: "智谱编程/glm-5.3-flash",
+      MACLAW_BENCH_MODEL_NAME: "glm-5.3-flash",
       MACLAW_BENCH_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/anthropic`,
     },
     maxCalls: 3,
@@ -346,5 +346,65 @@ test("confounded helper receives the png and the text model does not", async () 
   } finally {
     await new Promise((resolve) => textServer.close(resolve));
     await new Promise((resolve) => helperServer.close(resolve));
+  }
+});
+
+test("a missing response model aborts before any click", async () => {
+  const clicks = [];
+  const server = await serve(async (_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      choices: [{ message: { tool_calls: [{ id: "c", type: "function", function: { name: "click", arguments: JSON.stringify({ x: 1, y: 2 }) } }] } }],
+    }));
+  });
+  try {
+    const trial = await runProvisionedTrial({
+      page: {
+        async evaluate() { return null; },
+        mouse: { async click(x, y) { clicks.push({ x, y }); } },
+      },
+      arm: "screenshot",
+      goal: "点",
+      env: { ...env, MACLAW_BENCH_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, MACLAW_BENCH_IMAGE_ROUTE: "confirmed" },
+      maxCalls: 2,
+      contractTest: true,
+    });
+    assert.equal(trial.aborted, "model_mismatch");
+    assert.equal(trial.incomparable, true);
+    assert.equal(trial.vision_scored, false);
+    assert.deepEqual(clicks, []);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("a screenshot protocol error without a vision keyword is incomparable", async () => {
+  const server = await serve(async (_req, res) => {
+    res.writeHead(418, { "content-type": "text/plain" });
+    res.end("teapot");
+  });
+  try {
+    const summary = await runBoundedArms({
+      env: {
+        ...env,
+        MACLAW_BENCH_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+        MACLAW_BENCH_IMAGE_ROUTE: "confirmed",
+      },
+      tasks: [{ id: "form_fill", path: "/form" }],
+      contractTest: true,
+      pageFactory: async () => ({
+        async evaluate() { return null; },
+        async screenshot() { return png(); },
+        mouse: { async click() { throw new Error("protocol failure must not click"); } },
+      }),
+    });
+    const shot = summary.results.find((trial) => trial.arm === "screenshot");
+    assert.equal(shot.aborted, "protocol_failure");
+    assert.equal(shot.incomparable, true);
+    assert.equal(summary.comparable, false);
+    assert.equal(summary.winner, null);
+    assert.equal(summary.vision_scored, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 });

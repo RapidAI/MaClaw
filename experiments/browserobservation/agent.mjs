@@ -1,4 +1,4 @@
-import { agentPrerequisite, helperPrerequisite, helperTrialEnv, providerURL, redactSecrets, resolveProtocol, sameOfficialModel, officialModelTail } from "./agent-gate.mjs";
+import { agentPrerequisite, helperPrerequisite, helperTrialEnv, providerURL, redactSecrets, resolveProtocol, sameOfficialModel } from "./agent-gate.mjs";
 import { clickRef, semanticSnapshot, typeRef } from "./observe.mjs";
 import { ARM_A_RULES, ARM_B_RULES, TASK_GOALS } from "./prompts.mjs";
 
@@ -223,8 +223,10 @@ export async function completeChat({ env, transcript, tools, trace, fetchImpl = 
     error.status = response.status;
     throw error;
   }
-  const namedMatch = !parsed.model || officialModelTail(parsed.model) === officialModelTail(env.MACLAW_BENCH_MODEL_NAME);
-  const matches = member === "named" ? namedMatch : sameOfficialModel(env.MACLAW_BENCH_MODEL_NAME, parsed.model);
+  const want = String(env.MACLAW_BENCH_MODEL_NAME || "").trim();
+  const got = String(parsed.model || "").trim();
+  const namedMatch = want !== "" && got === want;
+  const matches = member === "named" ? namedMatch : sameOfficialModel(want, got);
   if (!matches) {
     const error = new Error("model_mismatch");
     error.code = "model_mismatch";
@@ -327,6 +329,7 @@ export async function runProvisionedTrial({ page, arm, goal, env = process.env, 
     const text = redactSecrets(error.redacted || error.message || "", [env.MACLAW_BENCH_MODEL_API_KEY]);
     if (error.code === "model_mismatch" || /model_mismatch/.test(text)) aborted = "model_mismatch";
     else if (arm === "screenshot" && /image|vision|multimodal/i.test(text)) aborted = "vision_rejected";
+    else if (arm === "screenshot") aborted = "protocol_failure";
     else aborted = "model_error";
     trace.push({ kind: "abort", arm, reason: aborted, error: text, model_call: false });
   }
@@ -349,6 +352,7 @@ async function finish({ page, trace, modelCalls, arm, aborted, simulatedHandoff,
     model_calls: modelCalls,
     stopped,
     aborted,
+    incomparable: arm === "screenshot" && Boolean(aborted),
     vision_scored: false,
     simulated_handoff: simulatedHandoff,
     human_verified: simulatedHandoff ? humanVerified : false,
@@ -359,13 +363,13 @@ async function finish({ page, trace, modelCalls, arm, aborted, simulatedHandoff,
 }
 
 function comparisonFields(results, imageConfirmed) {
-  const visionRejected = results.some((trial) => trial.aborted === "vision_rejected");
+  const imageFailed = results.some((trial) => trial.arm === "screenshot" && (trial.aborted || trial.incomparable));
   const bothArms = results.some((trial) => trial.arm === "screenshot") && results.some((trial) => trial.arm === "semantic");
   return {
     comparison: "same_model",
     same_model_vision_arm: imageConfirmed,
     vision_arm_ran: imageConfirmed,
-    comparable: Boolean(imageConfirmed && bothArms && !visionRejected),
+    comparable: Boolean(imageConfirmed && bothArms && !imageFailed),
     winner: null,
     vision_scored: false,
     admin_test_is_harness: false,

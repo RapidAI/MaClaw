@@ -8,7 +8,7 @@
 
 标准推理路由仍要父流程提供。管理端 provider/test 只接受 `model`、`node`、`tools`、`tool_choice` 和固定测试提示，不能发任意消息或图片。历史上的文本探测成功也不能拿它做 A/B。不要设置 `MACLAW_BENCH_ROUTE=admin-test`。
 
-Bot1 已核对的直连是 `https://open.bigmodel.cn/api/anthropic`，协议 Anthropic，成员 `智谱编程/glm-5.3-flash`。天气 PDF 那次 13 轮、339 秒不是这次对照。`coding/paas` 和 OpenCode 免费 id 不是这一路。
+Bot1 已核对的直连是 `https://open.bigmodel.cn/api/anthropic`，协议 Anthropic。发给端点的 model 是 API id `glm-5.3-flash`。`智谱编程/glm-5.3-flash` 只是成员显示名，不能当作 `MACLAW_BENCH_MODEL_NAME`。天气 PDF 那次 13 轮、339 秒不是这次对照。`coding/paas` 和 OpenCode 免费 id 不是这一路。
 
 2026-11-17 读到的官方页把 GLM-5.3-Flash 写成 GLM-5 系列第一个原生多模态模型，输入模态含图像，图片走 `messages[].content[]` 的 `image_url`：
 
@@ -18,7 +18,7 @@ Bot1 已核对的直连是 `https://open.bigmodel.cn/api/anthropic`，协议 Ant
 
 页面正文没有修订日期。成员能力标签只列 chat、streaming、document、tools、reasoning、json、code，没有 vision。这不是「不支持图像」的证明，也不是这条路由已经接受过图片的证明。NVIDIA NIM 页写了文本和图像，更新于 2026-10-30，并且写明该 NIM 没有验证视频：https://docs.nvidia.com/nim/large-language-models/latest/get-started/advanced/get-started-glm-5.3-flash.html 。Coding Plan 另有视觉 MCP，那是客户端侧工具，不是模型页本身。
 
-因此默认 `--mode agent` 只跑语义文本臂，不发送图片，也不把缺席的截图臂记成更差。父流程在标准推理路由上看到成功的图片响应之后，才加 `MACLAW_BENCH_IMAGE_ROUTE=confirmed`。那时截图臂才把 PNG 交给同一个模型，并且只执行返回的坐标。响应若拒绝图片，该臂是 `vision_rejected`，`comparable` 为 false，不改成纯文本，也不计成视觉更差。
+因此默认 `--mode agent` 只跑语义文本臂，不发送图片，也不把缺席的截图臂记成更差。父流程在标准推理路由上看到成功的图片响应之后，才加 `MACLAW_BENCH_IMAGE_ROUTE=confirmed`。那时截图臂才把 PNG 交给同一个模型，并且只执行返回的坐标。响应若拒绝图片，该臂是 `vision_rejected`。截图臂上的其他协议失败，包括空的 `model`、HTTP 错误和模型 id 不一致，记为 `protocol_failure` 或 `model_mismatch`。这些都使 `comparable` 为 false，不改成纯文本，也不计成视觉更差。返回体没有 `model` 时直接中止，不把缺字段当成匹配。
 
 在获准调用的主机上，密钥只留在该进程环境里：
 
@@ -26,7 +26,7 @@ Bot1 已核对的直连是 `https://open.bigmodel.cn/api/anthropic`，协议 Ant
 cd experiments/browserobservation
 export MACLAW_BENCH_MODEL_BASE_URL=https://open.bigmodel.cn/api/anthropic
 export MACLAW_BENCH_PROTOCOL=anthropic
-export MACLAW_BENCH_MODEL_NAME='智谱编程/glm-5.3-flash'
+export MACLAW_BENCH_MODEL_NAME=glm-5.3-flash
 export MACLAW_BENCH_CONFIRM=1
 export MACLAW_BENCH_PER_ARM_CALLS=5
 export MACLAW_BENCH_MAX_CALLS=60

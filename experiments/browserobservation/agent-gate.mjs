@@ -12,9 +12,10 @@ export function isOfficialFlashMember(name) {
 }
 
 export function sameOfficialModel(requested, response) {
+  const want = String(requested || "").trim();
   const got = String(response || "").trim();
-  if (!got) return true;
-  return isOfficialFlashMember(requested) && officialModelTail(requested) === officialModelTail(got) && officialModelTail(got) === OFFICIAL_TAIL;
+  if (!want || !got) return false;
+  return want === OFFICIAL_TAIL && got === OFFICIAL_TAIL;
 }
 
 export function resolveProtocol(env) {
@@ -80,7 +81,9 @@ export function agentPrerequisite(env = process.env, options = {}) {
   }
   const model = String(env.MACLAW_BENCH_MODEL_NAME || "").trim();
   const member = options.member || "official-flash";
-  if (model && member === "official-flash" && !isOfficialFlashMember(model)) problems.push(`文本模型必须是 ${OFFICIAL_MEMBER} 或 ${OFFICIAL_TAIL}`);
+  if (model && member === "official-flash" && model !== OFFICIAL_TAIL) {
+    problems.push(`MACLAW_BENCH_MODEL_NAME 必须是 API id ${OFFICIAL_TAIL}。${OFFICIAL_MEMBER} 是成员显示名，不是发给端点的 model`);
+  }
   if (model && member === "named" && isOfficialFlashMember(model)) problems.push("视觉助手必须是另一个模型，不能再用 glm-5.3-flash 成员");
   const protocol = resolveProtocol(env);
   if (String(env.MACLAW_BENCH_PROTOCOL || "").trim() && !["anthropic", "openai"].includes(String(env.MACLAW_BENCH_PROTOCOL).trim().toLowerCase())) {
