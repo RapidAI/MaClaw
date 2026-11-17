@@ -1,0 +1,176 @@
+# Pull-request gate. Release publication stays in main.yml (tags and
+# workflow_dispatch, contents: write). Flutter stays in mobilebot.yml.
+# This file does not deploy, does not read secrets, and does not use
+# pull_request_target.
+
+name: PR check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-check-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      result: ${{ steps.plan.outputs.result }}
+      lifecycle: ${{ steps.plan.outputs.lifecycle }}
+      hub: ${{ steps.plan.outputs.hub }}
+      frontend: ${{ steps.plan.outputs.frontend }}
+      packages: ${{ steps.plan.outputs.packages }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Fetch the pull request base
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+      - name: Path-selection tests
+        run: |
+          set -o pipefail
+          node --test scripts/pr-gate/*.test.mjs | tee "$RUNNER_TEMP/pr-gate-node-test.txt"
+          grep -E '^# tests [1-9][0-9]*$' "$RUNNER_TEMP/pr-gate-node-test.txt"
+          grep -E '^# fail 0$' "$RUNNER_TEMP/pr-gate-node-test.txt"
+      - name: Select suites
+        id: plan
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/pr-gate/select.mjs --git "$PR_BASE_SHA"
+
+  lifecycle:
+    needs: select
+    if: needs.select.result == 'success' && needs.select.outputs.lifecycle == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MACLAW_TEST_MODELS: "off"
+      GOMEMLIMIT: 5GiB
+      GOMAXPROCS: "2"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Race the receipt and outcome tests
+        run: node scripts/pr-gate/run-go.mjs --suite lifecycle
+
+  hub-outcome:
+    needs: select
+    if: needs.select.result == 'success' && needs.select.outputs.hub == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MACLAW_TEST_MODELS: "off"
+      GOMEMLIMIT: 5GiB
+      GOMAXPROCS: "2"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Task-outcome readers without credentials
+        run: node scripts/pr-gate/run-go.mjs --suite hub-outcome
+
+  go-packages:
+    needs: select
+    if: needs.select.result == 'success' && needs.select.outputs.packages != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      MACLAW_TEST_MODELS: "off"
+      GOMEMLIMIT: 5GiB
+      GOMAXPROCS: "2"
+      PR_GATE_PACKAGES: ${{ needs.select.outputs.packages }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test changed Go packages
+        run: node scripts/pr-gate/run-go.mjs --from-env PR_GATE_PACKAGES
+
+  frontend:
+    needs: select
+    if: needs.select.result == 'success' && needs.select.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: guiapp/frontend/package-lock.json
+      - name: Install from the lockfile
+        working-directory: guiapp/frontend
+        run: npm ci
+      - name: Vitest
+        id: vitest
+        continue-on-error: true
+        run: node scripts/pr-gate/run-vitest.mjs
+      - name: Typecheck
+        id: tsc
+        continue-on-error: true
+        working-directory: guiapp/frontend
+        run: npx tsc --noEmit
+      - name: Vite build
+        id: vite
+        continue-on-error: true
+        working-directory: guiapp/frontend
+        run: npx vite build --config vite.config.ts
+      - name: Build wrote an index
+        id: index
+        continue-on-error: true
+        run: test -s guiapp/frontend/dist/index.html
+      - name: Require vitest, tsc, and vite
+        run: |
+          test "${{ steps.vitest.outcome }}" = "success"
+          test "${{ steps.tsc.outcome }}" = "success"
+          test "${{ steps.vite.outcome }}" = "success"
+          test "${{ steps.index.outcome }}" = "success"
+
+  aggregate:
+    needs: [select, lifecycle, hub-outcome, go-packages, frontend]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Publish one result
+        env:
+          SELECT_RESULT: ${{ needs.select.result }}
+          LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}
+          HUB_RESULT: ${{ needs.hub-outcome.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          PACKAGES_RESULT: ${{ needs.go-packages.result }}
+          PLAN_JSON: ${{ needs.select.outputs.plan }}
+        run: node scripts/pr-gate/aggregate.mjs
