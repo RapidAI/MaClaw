@@ -546,6 +546,7 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	desktopNoteWorkStep(desktopOwner(scope), actionName, err)
 	desktopRunProgressSay(desktopOwner(scope), actionName, out, err)
 	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
+	desktopNoteEffectOutcome(scope.RunID, actionName, args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	desktopNotePublishAttempt(desktopOwner(scope), actionName, args)
 	desktopNoteMedia(scope, actionName, args, out, err)
@@ -831,6 +832,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	if !desktopActionAllowed(action) {
 		return "", desktopUnknownActionError(action)
+	}
+	if err := desktopRejectAmbiguousReplay(scope, action, args); err != nil {
+		return "", err
 	}
 	if action == "cap_list" || action == "cap_skill" || action == "cap_mcp" {
 		return desktopCapability(ctx, scope, action, args)
@@ -1326,7 +1330,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		defer beginDesktopActivity(scope.RunID, desktopWebStepPhrase(scope.RunID, "正在输入"))()
 		result, callErr := session.Type(desktopArg(args, "snapshot_id"), desktopArg(args, "ref"), "", desktopArg(args, "text"))
 		text, err = desktopActionText(result, callErr)
-		text, err = desktopVerifyBrowserType(session, desktopArg(args, "text"), text, err)
+		text, err = desktopVerifyBrowserType(ctx, scope, session, desktopArg(args, "text"), text, err)
 		desktopNoteAppliedProgress(scope, session, desktopArg(args, "text"), text, err)
 	case "press":
 		defer beginDesktopActivity(scope.RunID, desktopWebStepPhrase(scope.RunID, desktopKeyPhrase(desktopArg(args, "key"))))()

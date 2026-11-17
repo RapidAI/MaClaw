@@ -45,8 +45,16 @@ func desktopWithReadback(kind, text string, err error, verdict string) (string, 
 }
 
 // desktopVerifyBrowserType reads back the field a browser type wrote into.
-func desktopVerifyBrowserType(session *browser.BrowserAgentSession, typed, text string, err error) (string, error) {
-	if err != nil || !desktopVerifyEnabled() || session == nil {
+// Exact correction uses the same page session. A 24-character probe remains
+// only when that read cannot observe the field.
+func desktopVerifyBrowserType(ctx context.Context, scope agentruntime.Scope, session *browser.BrowserAgentSession, typed, text string, err error) (string, error) {
+	if !desktopVerifyEnabled() || session == nil {
+		return text, err
+	}
+	if out, oerr, handled := desktopCorrectBrowserType(ctx, scope, session, typed, text, err); handled {
+		return out, oerr
+	}
+	if err != nil {
 		return text, err
 	}
 	return desktopWithReadback("type", text, err, session.ReadBack(typed, false))
@@ -150,11 +158,18 @@ func desktopReadbackVerdict(inserted string, fields []string, page func(string) 
 	return desktopA11yFieldsVerdict(inserted, fields)
 }
 
-// desktopVerifySteps reads back desktop-level typing. The focused page
-// decides when it holds the keyboard focus. Accessibility fields are used
-// when that page cannot be read.
+// desktopVerifySteps reads back desktop-level typing. An exact correction
+// runs first when the desktop relay can see the field. The focused page
+// decides when that correction cannot observe. Accessibility fields are
+// used when that page cannot be read.
 func desktopVerifySteps(ctx context.Context, scope agentruntime.Scope, display string, raw any, session func() *browser.BrowserAgentSession, text string, err error) (string, error) {
-	if err != nil || !desktopVerifyEnabled() {
+	if !desktopVerifyEnabled() {
+		return text, err
+	}
+	if out, oerr, handled := desktopCorrectDesktopSteps(ctx, scope, display, raw, text, err); handled {
+		return out, oerr
+	}
+	if err != nil {
 		return text, err
 	}
 	inserted := desktopStepsInsertedText(raw)
