@@ -329,12 +329,12 @@ var userWebHiddenConfigKeys = map[string]struct{}{
 	// Hub writes this onto the MaClawSrv user. It is not a form field.
 	"maclaw_bot_llm_mode": {},
 	// Hub owns desktop_bot_capabilities and writes it through the admin
-	// user-config API. The ordinary user schema and GET omit it, and a user
-	// PUT copies the stored document back over an omitted, null, or forged
-	// value. It is not a shared-client field, so the default-client overlay
-	// does not replace it. Admin GET/PUT still carry the document: Hub reads
-	// the current user config and writes this key back, including a delete
-	// when the account document is empty.
+	// user-config API. The ordinary user schema and GET omit it. A user PUT
+	// may still copy the field into its request snapshot with the other
+	// hidden fields; the commit lock reads the stored row again and keeps
+	// that byte slice, so a Hub/admin replacement or clear is not overwritten
+	// by the snapshot. It is not a shared-client field, so the default-client
+	// overlay does not replace it. Admin GET/PUT still carry the document.
 	"desktop_bot_capabilities": {},
 	"llm_token_usage":          {}, "mcp_servers": {}, "local_mcp_servers": {}, "ssh_hosts": {},
 	"skill_hub_urls": {}, "external_skill_dirs": {}, "skill_sources_allowed": {},

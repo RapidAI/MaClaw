@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -100,14 +101,48 @@ func (s *Service) ListStartupUserConfigs(ctx context.Context) ([]StartupUserConf
 	return out, nil
 }
 
+// userVisibleConfigBeforeCommit runs only for a user-visible save, before
+// that save takes userConfigMu. Tests use it to land a Hub/admin write in
+// the window after the caller's earlier snapshot and before the commit read.
+var userVisibleConfigBeforeCommit atomic.Pointer[func()]
+
+// SetUserVisibleConfigBeforeCommitForTest installs that barrier. Production
+// leaves it unset. The hook must not call UpdateUserVisibleConfig.
+func SetUserVisibleConfigBeforeCommitForTest(fn func()) {
+	if fn == nil {
+		userVisibleConfigBeforeCommit.Store(nil)
+		return
+	}
+	userVisibleConfigBeforeCommit.Store(&fn)
+}
+
 func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next corelib.AppConfig) (*UserConfig, error) {
+	return s.commitUserConfig(ctx, p, next, true)
+}
+
+// UpdateUserVisibleConfig saves ordinary user settings. desktop_bot_capabilities
+// is copied from the row read under userConfigMu, not from next. A Hub/admin
+// replacement or clear that commits before this lock is the value that stays.
+func (s *Service) UpdateUserVisibleConfig(ctx context.Context, p Principal, next corelib.AppConfig) (*UserConfig, error) {
+	if hook := userVisibleConfigBeforeCommit.Load(); hook != nil && *hook != nil {
+		(*hook)()
+	}
+	return s.commitUserConfig(ctx, p, next, false)
+}
+
+func (s *Service) commitUserConfig(ctx context.Context, p Principal, next corelib.AppConfig, ownManaged bool) (*UserConfig, error) {
 	_ = ctx
+	s.userConfigMu.Lock()
+	defer s.userConfigMu.Unlock()
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
 	current, err := s.getOrLoadRawUserConfig(p.TenantID, p.UserID)
 	if err != nil && err != ErrUserConfigNotFound {
 		return nil, err
+	}
+	if !ownManaged {
+		next.DesktopBotCapabilities = append([]byte(nil), current.AppConfig.DesktopBotCapabilities...)
 	}
 	merged := normalizeLLMConfigForSave(current.AppConfig, mergeSecretPreserving(current.AppConfig, next))
 	cfg := UserConfig{TenantID: p.TenantID, UserID: p.UserID, AppConfig: merged, UpdatedAt: s.now()}

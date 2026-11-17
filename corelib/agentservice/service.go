@@ -141,6 +141,13 @@ type Service struct {
 	closed           bool
 	idempotencyMu    sync.Mutex
 	idempotencyLocks map[string]*idempotencyLock
+	// userConfigMu is the commit lock for a user's app config. A user-visible
+	// save and a Hub/admin save both take it around the read, merge, store
+	// write, and config file write. The user-visible path copies
+	// desktop_bot_capabilities from the row read under this lock, so an admin
+	// replacement or clear that landed after the user's earlier snapshot is
+	// the value that remains.
+	userConfigMu sync.Mutex
 	// inflightMu guards the side-effect calls dispatched and not yet returned.
 	// They are their own rows, not fields of the run row.
 	inflightMu     sync.Mutex

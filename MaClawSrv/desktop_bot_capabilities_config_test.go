@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +35,8 @@ func forgedCapabilityDocument() string {
 }
 
 func TestDesktopBotCapabilitiesUserConfigPreservesManagedDocument(t *testing.T) {
-	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	root := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: root, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -160,6 +164,47 @@ func TestDesktopBotCapabilitiesUserConfigPreservesManagedDocument(t *testing.T) 
 		if got := rawMemoryBackups(t, svc, principalB); got != 2 {
 			t.Fatalf("admin clear lost the ordinary setting: memory_max_backups=%d", got)
 		}
+		assertDiskMatchesStoredDocument(t, root, tenantB.ID, userB.ID, rawCapabilityDocument(t, svc, principalB))
+	})
+
+	t.Run("user put keeps a newer admin document and a newer clear", func(t *testing.T) {
+		pathA := "/api/v1/admin/tenants/" + tenantA.ID + "/users/" + userA.ID + "/config"
+		seed := `{"skills":[{"name":"seed","body":"synthetic-managed-seed"}]}`
+		configHTTP(t, server, http.MethodPut, pathA, "", `{"app_config":{"memory_max_backups":4,"maclaw_llm_url":"https://llm.example/v1","maclaw_llm_key":"synthetic-llm-key","maclaw_llm_model":"synthetic-model","desktop_bot_capabilities":`+seed+`}}`, http.StatusOK)
+
+		newer := `{"skills":[{"name":"newer","body":"synthetic-managed-v2"}]}`
+		agentservice.SetUserVisibleConfigBeforeCommitForTest(func() {
+			agentservice.SetUserVisibleConfigBeforeCommitForTest(nil)
+			configHTTP(t, server, http.MethodPut, pathA, "", `{"app_config":{"memory_max_backups":5,"maclaw_llm_url":"https://llm.example/v1","maclaw_llm_key":"synthetic-llm-key","maclaw_llm_model":"synthetic-model","desktop_bot_capabilities":`+newer+`}}`, http.StatusOK)
+		})
+		t.Cleanup(func() { agentservice.SetUserVisibleConfigBeforeCommitForTest(nil) })
+		response := configHTTP(t, server, http.MethodPut, "/api/v1/config", tokenA, `{"app_config":{"memory_max_backups":21,"desktop_bot_capabilities":`+forgedCapabilityDocument()+`}}`, http.StatusOK)
+		assertNoManagedCapabilityLeak(t, response)
+		stored := rawCapabilityDocument(t, svc, principalA)
+		if !bytes.Contains(stored, []byte("synthetic-managed-v2")) || bytes.Contains(stored, []byte("synthetic-managed-seed")) || bytes.Contains(stored, []byte(forgedCapabilityBody)) {
+			t.Fatal("user save committed a stale or forged managed document")
+		}
+		if got := rawMemoryBackups(t, svc, principalA); got != 21 {
+			t.Fatalf("user ordinary setting lost during the admin race: memory_max_backups=%d", got)
+		}
+		assertDiskMatchesStoredDocument(t, root, tenantA.ID, userA.ID, stored)
+
+		agentservice.SetUserVisibleConfigBeforeCommitForTest(func() {
+			agentservice.SetUserVisibleConfigBeforeCommitForTest(nil)
+			configHTTP(t, server, http.MethodPut, pathA, "", `{"app_config":{"memory_max_backups":6,"maclaw_llm_url":"https://llm.example/v1","maclaw_llm_key":"synthetic-llm-key","maclaw_llm_model":"synthetic-model"}}`, http.StatusOK)
+		})
+		response = configHTTP(t, server, http.MethodPut, "/api/v1/config", tokenA, `{"app_config":{"memory_max_backups":22,"desktop_bot_capabilities":`+forgedCapabilityDocument()+`}}`, http.StatusOK)
+		assertNoManagedCapabilityLeak(t, response)
+		if raw := rawCapabilityDocument(t, svc, principalA); len(bytes.TrimSpace(raw)) != 0 {
+			t.Fatalf("user save restored a managed document after admin clear (%d bytes)", len(raw))
+		}
+		if got := rawMemoryBackups(t, svc, principalA); got != 22 {
+			t.Fatalf("user ordinary setting lost during the admin clear: memory_max_backups=%d", got)
+		}
+		assertDiskMatchesStoredDocument(t, root, tenantA.ID, userA.ID, nil)
+		if len(bytes.TrimSpace(rawCapabilityDocument(t, svc, principalB))) != 0 || rawMemoryBackups(t, svc, principalB) != 2 {
+			t.Fatal("interleaved admin update changed the other tenant")
+		}
 	})
 }
 
@@ -252,6 +297,38 @@ func rawMemoryBackups(t *testing.T, svc *agentservice.Service, p agentservice.Pr
 	}
 	return raw.AppConfig.MemoryMaxBackups
 }
+
+func assertDiskMatchesStoredDocument(t *testing.T, root, tenantID, userID string, want json.RawMessage) {
+	t.Helper()
+	path := filepath.Join(root, "tenants", configSlug(tenantID), "users", configSlug(userID), "config", "app_config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read stored config file: %v", err)
+	}
+	var cfg agentservice.UserConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("decode stored config file: %v", err)
+	}
+	if !bytes.Equal(compactRaw(t, cfg.AppConfig.DesktopBotCapabilities), compactRaw(t, want)) {
+		t.Fatal("reloaded config file does not match the stored managed document")
+	}
+}
+
+func compactRaw(t *testing.T, raw json.RawMessage) []byte {
+	t.Helper()
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatalf("compact managed document: %v", err)
+	}
+	return buf.Bytes()
+}
+
+var configSlugPattern = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
+
+func configSlug(v string) string { return configSlugPattern.ReplaceAllString(v, "_") }
 
 func rawLLMKey(t *testing.T, svc *agentservice.Service, p agentservice.Principal) string {
 	t.Helper()
