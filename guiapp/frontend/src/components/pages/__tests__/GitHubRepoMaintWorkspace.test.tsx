@@ -96,7 +96,7 @@ describe('GitHub repository maintenance', () => {
         const app = install({ WaitGitHubOAuth: vi.fn().mockReturnValue(pending) });
         openWorkspace('en');
         fireEvent.click(screen.getByTestId('github-repo-maint-connect'));
-        expect(await screen.findByTestId('github-repo-maint-user-code')).toHaveTextContent('ABCD-1234');
+        expect((await screen.findByTestId('github-repo-maint-user-code')).textContent).toContain('ABCD-1234');
         expect(app.StartGitHubOAuth).toHaveBeenCalled();
         expect(app.WaitGitHubOAuth).toHaveBeenCalled();
         expect(document.querySelector('input[type="password"]')).toBeNull();
@@ -112,7 +112,7 @@ describe('GitHub repository maintenance', () => {
         fireEvent.change(screen.getByTestId('github-repo-maint-ghost-dir'), { target: { value: 'D:/ghost' } });
         fireEvent.click(screen.getByTestId('github-repo-maint-kind-issues.opened'));
         fireEvent.click(screen.getByTestId('github-repo-maint-save'));
-        expect(await screen.findByTestId('github-repo-maint-error')).toHaveTextContent('命令');
+        expect((await screen.findByTestId('github-repo-maint-error')).textContent).toContain('命令');
         expect(app.SaveGitHubRepoMaintRule).not.toHaveBeenCalled();
     });
 
@@ -123,11 +123,11 @@ describe('GitHub repository maintenance', () => {
         });
         openWorkspace('zh-Hans');
         fireEvent.click(await screen.findByTestId('github-repo-maint-enable-rule-1'));
-        expect(await screen.findByTestId('github-repo-maint-public-dialog')).toHaveTextContent('公开仓库');
+        expect((await screen.findByTestId('github-repo-maint-public-dialog')).textContent).toContain('公开仓库');
         expect(app.SetGitHubRepoMaintEnabled).not.toHaveBeenCalled();
         fireEvent.click(screen.getByTestId('github-repo-maint-public-confirm'));
-        expect(screen.getByTestId('github-repo-maint-choice-dialog')).toHaveTextContent('只处理之后的新事件');
-        expect(screen.getByTestId('github-repo-maint-choice-dialog')).toHaveTextContent('回放未处理的');
+        expect(screen.getByTestId('github-repo-maint-choice-dialog').textContent).toContain('只处理之后的新事件');
+        expect(screen.getByTestId('github-repo-maint-choice-dialog').textContent).toContain('回放未处理的');
         fireEvent.click(screen.getByTestId('github-repo-maint-choice-new'));
         await waitFor(() => expect(app.SetGitHubRepoMaintEnabled).toHaveBeenCalledWith('rule-1', true, 'new_only'));
         expect(document.body.textContent || '').not.toContain('hook_secret');
@@ -142,6 +142,6 @@ describe('GitHub repository maintenance', () => {
         expect(await screen.findByTestId('github-repo-maint-rule-rule-1')).toBeTruthy();
         expect(screen.queryByTestId('github-repo-maint-enable-rule-1')).toBeNull();
         expect(screen.queryByTestId('github-repo-maint-replay-rule-1')).toBeNull();
-        expect(screen.getByTestId('github-repo-maint-intake-off')).toHaveTextContent('接收尚未就緒');
+        expect(screen.getByTestId('github-repo-maint-intake-off').textContent).toContain('接收尚未就緒');
     });
 });

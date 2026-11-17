@@ -296,11 +296,41 @@ func TestGitHubRepoMaintRuleLifecycle(t *testing.T) {
 		t.Fatalf("rolled back rule enabled=%v err=%v", secondView.Enabled, err)
 	}
 
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct{ id, object, status string }{
+		{"job-queued", "issue:9001", "queued"},
+		{"job-blocked", "issue:9002", "blocked_workspace"},
+		{"job-running", "issue:9003", "running"},
+	} {
+		if _, err := db.Exec(`INSERT INTO jobs (
+			id, rule_id, delivery_id, event_kind, object_id, ghost_dir, status,
+			task_project_path, session_user_id, last_error, created_at, updated_at
+		) VALUES (?,?,?,?,?,?,?,'','','','2026-11-18T00:00:00Z','2026-11-18T00:00:00Z')`,
+			row.id, saved.ID, "d-"+row.id, "issues.opened", row.object, ghost, row.status); err != nil {
+			t.Fatal(err)
+		}
+	}
 	mu.Lock()
 	calls = nil
 	mu.Unlock()
 	if err := app.SetGitHubRepoMaintEnabled(saved.ID, false, ""); err != nil {
 		t.Fatal(err)
+	}
+	for _, row := range []struct{ object, want string }{
+		{"issue:9001", "skipped_disabled"},
+		{"issue:9002", "skipped_disabled"},
+		{"issue:9003", "running"},
+	} {
+		var status string
+		if err := db.QueryRow(`SELECT status FROM jobs WHERE object_id=?`, row.object).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status != row.want {
+			t.Fatalf("%s status = %s", row.object, status)
+		}
 	}
 	mu.Lock()
 	disabled := append([]recordedHubCall(nil), calls...)
@@ -454,4 +484,3 @@ func repoMaintDraft(dir string) GitHubRepoMaintRule {
 		EnabledKinds: map[string]bool{"push": true, "issues.opened": true},
 	}
 }
-

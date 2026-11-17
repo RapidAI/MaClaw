@@ -2800,6 +2800,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	case "Glob":
 		searchArgs := c.withDefaultProjectPath(args)
 		if p, _ := searchArgs["path"].(string); p != "" {
+			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
+				return codingToolExecutionResult{Text: c.rejectToolCall("Glob", searchArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireProjectReadScope(p, "Glob"); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("Glob", searchArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -2812,6 +2815,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	case "ripgrep":
 		searchArgs := c.withDefaultProjectPath(args)
 		if p, _ := searchArgs["path"].(string); p != "" {
+			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
+				return codingToolExecutionResult{Text: c.rejectToolCall("ripgrep", searchArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireProjectReadScope(p, "ripgrep"); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("ripgrep", searchArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -2835,6 +2841,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
+			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
+				return codingToolExecutionResult{Text: c.rejectToolCall("read_file", fileArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireProjectReadScope(p, "read_file"); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("read_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -2877,6 +2886,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
+			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
+				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireLocalizationBeforeExistingBugEdit(p, !codingFileExists(p)); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -2911,6 +2923,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
+			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
+				return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", fileArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireLocalizationBeforeExistingBugEdit(p, false); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -2936,6 +2951,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
+			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
+				return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", fileArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireLocalizationBeforeExistingBugEdit(p, false); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -2963,6 +2981,12 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			// compile→run semantics fail-closed instead of relying on a later
 			// transport-only rewrite that the quality audit cannot see.
 			bashArgs["command"] = normalizeSubAgentVerificationCommandForExecution(command)
+		}
+		// Maint jobs reject a cwd or absolute argument outside the ghost
+		// before any shell starts. Project-scope checks do not see those arguments.
+		if err := repoMaintRejectShell(h, c.subagent.taskPermissionOwnerID(), stringVal(bashArgs, "working_dir"), stringVal(bashArgs, "command")); err != nil {
+			c.trackCommandResult(bashArgs, err.Error(), false)
+			return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
 		}
 		if command, _ := bashArgs["command"].(string); command != "" {
 			workingDir, _ := bashArgs["working_dir"].(string)
@@ -2996,6 +3020,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	case "list_directory":
 		listArgs := c.withProjectRelativePath(args, true)
 		if p, _ := listArgs["path"].(string); p != "" {
+			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
+				return codingToolExecutionResult{Text: c.rejectToolCall("list_directory", listArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireProjectReadScope(p, "list_directory"); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("list_directory", listArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -3013,6 +3040,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	case "git_diff":
 		diffArgs := c.withProjectRelativePath(args, true)
 		if p, _ := diffArgs["path"].(string); p != "" {
+			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
+				return codingToolExecutionResult{Text: c.rejectToolCall("git_diff", diffArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireProjectDiffScope(p); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("git_diff", diffArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -3802,6 +3832,13 @@ func logCodingSubAgentOperationFailure(c *codingSubAgentCallbacks, name, argsJSO
 	if codingSubAgentFailedToolLogIsDiagnostic(name, argsJSON, result) {
 		return
 	}
+	argsText := compactCodingSubAgentArgsLogText(argsJSON, 500)
+	resultText := compactCodingSubAgentLogText(result.Text, 500)
+	// A ghost-directory rejection must not record the refused absolute path.
+	if strings.Contains(result.Text, "path outside the ghost directory") {
+		argsText = "目录外"
+		resultText = "path outside the ghost directory"
+	}
 	log.Printf("[coding-subagent] %s: tool=%s outcome=%s duration=%s task=%d title=%q project=%q args=%s result=%s",
 		"operation failed",
 		name,
@@ -3810,8 +3847,8 @@ func logCodingSubAgentOperationFailure(c *codingSubAgentCallbacks, name, argsJSO
 		taskIndex,
 		taskTitle,
 		projectPath,
-		compactCodingSubAgentArgsLogText(argsJSON, 500),
-		compactCodingSubAgentLogText(result.Text, 500),
+		argsText,
+		resultText,
 	)
 }
 

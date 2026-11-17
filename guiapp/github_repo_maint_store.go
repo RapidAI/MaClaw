@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -22,6 +23,9 @@ import (
 // githubRepoMaintIntakeReady stays false until the intake service is
 // initialized. Enabling a rule before that must not register a webhook.
 var githubRepoMaintIntakeReady bool
+
+// errRepoMaintRuleMissing is a deleted rule, not a transient database error.
+var errRepoMaintRuleMissing = errors.New("规则不存在")
 
 const (
 	githubRepoMaintMaxRules = 20
@@ -137,7 +141,38 @@ func openRepoMaintDB(path string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	if err := ensureRepoMaintEventJSON(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+// ensureRepoMaintEventJSON adds the event payload column to a database
+// created before jobs stored the event. CREATE TABLE IF NOT EXISTS does not
+// add columns, and a restarted process needs the payload to finish the job.
+func ensureRepoMaintEventJSON(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "event_json" {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE jobs ADD COLUMN event_json TEXT NOT NULL DEFAULT ''`)
+	return err
 }
 
 func mkdirAllParent(path string) error {
@@ -178,7 +213,8 @@ var repoMaintSchemaStmts = []string{
     session_user_id TEXT NOT NULL DEFAULT '',
     last_error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    event_json TEXT NOT NULL DEFAULT ''
 )`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS jobs_delivery ON jobs(delivery_id) WHERE delivery_id <> ''`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS jobs_logical_open ON jobs(rule_id, event_kind, object_id) WHERE status IN ('queued', 'running', 'awaiting_user', 'comment_pending', 'succeeded', 'blocked_workspace')`,
@@ -301,7 +337,7 @@ func (a *App) loadRepoMaintRule(id string) (repoMaintRuleRow, error) {
 	}
 	row, err := scanRepoMaintRule(db.QueryRow(`SELECT id, owner, repo, repo_url, ghost_dir, enabled, push_branch, commands_json, kinds_json, hook_id, hook_token, auth_blocked, delete_pending, replay_mode, replay_next_url, last_error, updated_at FROM rules WHERE id=?`, id))
 	if err == sql.ErrNoRows {
-		return repoMaintRuleRow{}, fmt.Errorf("规则不存在")
+		return repoMaintRuleRow{}, errRepoMaintRuleMissing
 	}
 	return row, err
 }

@@ -298,6 +298,9 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 	if skillDir != "" {
 		command = bindHostProcedureShellCommand(command, skillDir, hostShellForBashTool())
 	}
+	if err := repoMaintRejectShell(h, ownerID, stringVal(args, "working_dir"), command); err != nil {
+		return err.Error()
+	}
 	background, _ := args["background"].(bool)
 
 	if rejection, rejected := coretool.RejectRawSSHCommand(command); rejected {

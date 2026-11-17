@@ -239,11 +239,15 @@ func normalizePush(rule ruleRow, payload map[string]any) (RepoMaintEvent, bool) 
 	if !strings.HasPrefix(ref, heads) || len(ref) == len(heads) {
 		return RepoMaintEvent{}, false
 	}
-	branch := ref[len(heads):]
 	sha := str(payload, "after")
+	// A branch delete (and any tag, already excluded above) is not a new commit.
+	if pushDeleted(payload["deleted"]) || zeroGitSHA(sha) {
+		return RepoMaintEvent{}, false
+	}
 	if sha == "" {
 		return RepoMaintEvent{}, false
 	}
+	branch := ref[len(heads):]
 	repoObj := obj(payload, "repository")
 	owner, repo, defaultBranch := repoIdentity(repoObj)
 	if owner == "" {
@@ -273,6 +277,24 @@ func normalizePush(rule ruleRow, payload map[string]any) (RepoMaintEvent, bool) 
 		ev.Author = str(payload, "pusher")
 	}
 	return ev, true
+}
+
+func pushDeleted(v any) bool {
+	deleted, ok := v.(bool)
+	return ok && deleted
+}
+
+func zeroGitSHA(sha string) bool {
+	sha = strings.TrimSpace(strings.ToLower(sha))
+	if len(sha) != 40 {
+		return false
+	}
+	for _, r := range sha {
+		if r != '0' {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeCheck(rule ruleRow, payload map[string]any) (RepoMaintEvent, bool) {

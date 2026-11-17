@@ -30,7 +30,7 @@ const (
 )
 
 var (
-	githubRepoMaintQueueCap = 100
+	githubRepoMaintQueueCap  = 100
 	errRepoMaintHoldDelivery = errors.New("repo maint delivery held")
 	repoMaintMarkerRE        = regexp.MustCompile(`(?m)^<!-- maclaw-repo-maint: rule=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}) event=([a-z0-9_.]+) object=([A-Za-z0-9._:%-]+) -->$`)
 	repoMaintWorkers         sync.Map
@@ -102,11 +102,34 @@ func (a *App) ensureRepoMaintWorker() {
 		return
 	}
 	go func() {
+		// Rows left running by a previous process have no OnDone. Put them
+		// back on the queue before the first claim, or the ghost directory
+		// stays locked. awaiting_user is a question the user can still answer.
+		a.requeueOrphanedRepoMaintRuns()
 		for {
 			a.pumpRepoMaintOnce()
 			time.Sleep(2 * time.Second)
 		}
 	}()
+}
+
+func (a *App) requeueOrphanedRepoMaintRuns() {
+	if a == nil {
+		return
+	}
+	db, err := a.repoMaintDB()
+	if err != nil {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := db.Exec(`UPDATE jobs SET status='queued', task_project_path='', session_user_id='', last_error='进程已重启', updated_at=? WHERE status='running'`, now)
+	if err != nil {
+		log.Printf("[github-repo-maint] requeue running failed err=%v", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[github-repo-maint] requeued running jobs after restart count=%d", n)
+	}
 }
 
 func (a *App) noteRepoMaintRuleError(id, msg string) error {
@@ -133,9 +156,93 @@ func (a *App) requeueRepoMaintIfReady(ruleID, ghost string) {
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := db.Exec(`UPDATE jobs SET status='queued', updated_at=? WHERE rule_id=? AND status='blocked_workspace'`, now, ruleID); err != nil {
+	res, err := db.Exec(`UPDATE jobs SET status='queued', last_error='', updated_at=? WHERE rule_id=? AND status='blocked_workspace'`, now, ruleID)
+	if err != nil {
 		log.Printf("[github-repo-maint] requeue blocked failed rule_id=%s err=%v", ruleID, err)
+		return
 	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[github-repo-maint] blocked_workspace requeued rule_id=%s", ruleID)
+	}
+}
+
+// blockRepoMaintQueued pauses every not-yet-started job of one rule.
+// One failing checkout must not clone once per queued row.
+func (a *App) blockRepoMaintQueued(ruleID string) error {
+	db, err := a.repoMaintDB()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := db.Exec(`UPDATE jobs SET status='blocked_workspace', last_error='目录还不能用', updated_at=? WHERE rule_id=? AND status='queued'`, now, ruleID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[github-repo-maint] blocked_workspace rule_id=%s", ruleID)
+	}
+	return nil
+}
+
+// retryBlockedRepoMaint rechecks paused checkouts on the 1m / 5m / 15m
+// backoff. The worker only starts queued rows, so without this a failed
+// clone stays paused until the user saves the rule again.
+func (a *App) retryBlockedRepoMaint(db *sql.DB) {
+	rows, err := db.Query(`SELECT id, rule_id, delivery_id, event_kind, object_id, ghost_dir, status, task_project_path, session_user_id, last_error, created_at, updated_at FROM jobs WHERE status='blocked_workspace'`)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	byRule := map[string][]repoMaintJobRow{}
+	for rows.Next() {
+		job, err := scanRepoMaintJob(rows)
+		if err != nil {
+			rows.Close()
+			return
+		}
+		byRule[job.RuleID] = append(byRule[job.RuleID], job)
+	}
+	iterErr := rows.Err()
+	rows.Close()
+	if iterErr != nil {
+		return
+	}
+	for ruleID, jobs := range byRule {
+		if !repoMaintBlockedDue(jobs, now) {
+			continue
+		}
+		rule, err := a.loadRepoMaintRule(ruleID)
+		if err != nil || !rule.Enabled {
+			continue
+		}
+		if _, ready := a.repoMaintDirReady(&rule); ready {
+			a.requeueRepoMaintIfReady(rule.ID, rule.GhostDir)
+			continue
+		}
+		a.noteBlockedRepoMaintStillWaiting(db, ruleID, jobs)
+	}
+}
+
+func repoMaintBlockedDue(jobs []repoMaintJobRow, now time.Time) bool {
+	for _, job := range jobs {
+		updated, err := time.Parse(time.RFC3339Nano, job.UpdatedAt)
+		if err != nil || now.Sub(updated) >= repoMaintRetryDelay(blockedRetryCount(job.LastError)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) noteBlockedRepoMaintStillWaiting(db *sql.DB, ruleID string, jobs []repoMaintJobRow) {
+	next := 0
+	for _, job := range jobs {
+		if n := blockedRetryCount(job.LastError) + 1; n > next {
+			next = n
+		}
+	}
+	// Status stays blocked_workspace. Logging here would repeat every backoff.
+	_, _ = db.Exec(`UPDATE jobs SET last_error=?, updated_at=? WHERE rule_id=? AND status='blocked_workspace'`,
+		"目录还不能用 blocked_retry="+itoa(next), time.Now().UTC().Format(time.RFC3339Nano), ruleID)
 }
 
 func (a *App) repoMaintGitHub(method, rawURL string, payload any) (int, []byte, http.Header, error) {
@@ -354,7 +461,7 @@ func (a *App) acceptRepoMaintDelivery(ev repoMaintEvent) error {
 		}
 	}
 	if !rule.Enabled {
-		if err := a.insertRepoMaintJob(rule, ev, ev.DeliveryID, "skipped_disabled", ""); err != nil && !repoMaintUnique(err) {
+		if _, err := a.insertRepoMaintJob(rule, ev, ev.DeliveryID, "skipped_disabled", ""); err != nil && !repoMaintUnique(err) {
 			return err
 		}
 		a.ackRepoMaintDelivery(ev.DeliveryID)
@@ -364,7 +471,7 @@ func (a *App) acceptRepoMaintDelivery(ev repoMaintEvent) error {
 		a.ackRepoMaintDelivery(ev.DeliveryID)
 		return nil
 	}
-	if err := a.insertRepoMaintJob(rule, ev, ev.DeliveryID, "", ""); err != nil && !repoMaintUnique(err) {
+	if _, err := a.insertRepoMaintJob(rule, ev, ev.DeliveryID, "", ""); err != nil && !repoMaintUnique(err) {
 		return err
 	}
 	a.ackRepoMaintDelivery(ev.DeliveryID)
@@ -431,14 +538,17 @@ func repoMaintUnique(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "unique")
 }
 
-func (a *App) insertRepoMaintJob(rule repoMaintRuleRow, ev repoMaintEvent, deliveryID, forcedStatus, forcedError string) error {
+// insertRepoMaintJob reports whether a new row was stored. A unique conflict
+// or an already recorded queue_full object returns inserted=false so a replay
+// click does not spend its budget on work that is already in the ledger.
+func (a *App) insertRepoMaintJob(rule repoMaintRuleRow, ev repoMaintEvent, deliveryID, forcedStatus, forcedError string) (bool, error) {
 	db, err := a.repoMaintDB()
 	if err != nil {
-		return err
+		return false, err
 	}
 	tx, err := db.Begin()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	status := forcedStatus
@@ -446,7 +556,7 @@ func (a *App) insertRepoMaintJob(rule repoMaintRuleRow, ev repoMaintEvent, deliv
 	if status == "" {
 		var depth int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM jobs WHERE rule_id=? AND status IN ('queued','running','awaiting_user')`, rule.ID).Scan(&depth); err != nil {
-			return err
+			return false, err
 		}
 		cap := githubRepoMaintQueueCap
 		if cap < 1 {
@@ -455,10 +565,10 @@ func (a *App) insertRepoMaintJob(rule repoMaintRuleRow, ev repoMaintEvent, deliv
 		if depth >= cap {
 			var existing int
 			if err := tx.QueryRow(`SELECT COUNT(*) FROM jobs WHERE rule_id=? AND event_kind=? AND object_id=? AND status='failed' AND last_error='queue_full'`, rule.ID, ev.EventKind, ev.ObjectID).Scan(&existing); err != nil {
-				return err
+				return false, err
 			}
 			if existing > 0 {
-				return nil
+				return false, nil
 			}
 			status = "failed"
 			last = "queue_full"
@@ -468,19 +578,23 @@ func (a *App) insertRepoMaintJob(rule repoMaintRuleRow, ev repoMaintEvent, deliv
 	}
 	id, err := newRepoMaintID()
 	if err != nil {
-		return err
+		return false, err
+	}
+	rawEvent, err := json.Marshal(ev)
+	if err != nil {
+		return false, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err = tx.Exec(`INSERT INTO jobs (
 		id, rule_id, delivery_id, event_kind, object_id, ghost_dir, status,
-		task_project_path, session_user_id, last_error, created_at, updated_at
-	) VALUES (?,?,?,?,?,?,?,'','',?,?,?)`,
-		id, rule.ID, deliveryID, ev.EventKind, ev.ObjectID, rule.GhostDir, status, last, now, now)
+		task_project_path, session_user_id, last_error, event_json, created_at, updated_at
+	) VALUES (?,?,?,?,?,?,?,'','',?,?,?,?)`,
+		id, rule.ID, deliveryID, ev.EventKind, ev.ObjectID, rule.GhostDir, status, last, string(rawEvent), now, now)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return false, err
 	}
 	repoMaintPendingWork.Store(id, repoMaintPending{Event: ev})
 	if status == "failed" && last == "queue_full" {
@@ -488,7 +602,7 @@ func (a *App) insertRepoMaintJob(rule repoMaintRuleRow, ev repoMaintEvent, deliv
 		log.Printf("[github-repo-maint] queue_full rule_id=%s object=%s", rule.ID, ev.ObjectID)
 	}
 	log.Printf("[github-repo-maint] job %s rule_id=%s kind=%s object=%s", status, rule.ID, ev.EventKind, ev.ObjectID)
-	return nil
+	return true, nil
 }
 
 func (a *App) replayGitHubRepoMaint(id string) error {
@@ -555,9 +669,6 @@ func (a *App) setRepoMaintReplayNext(id, next string) error {
 }
 
 func (a *App) replayIssuePages(rule repoMaintRuleRow, next string, budget int) (string, int, error) {
-	if !rule.Kinds["issues.opened"] && repoMaintReplayPhase(next) != "issues" {
-		return "", budget, nil
-	}
 	if !rule.Kinds["issues.opened"] {
 		return "", budget, nil
 	}
@@ -569,7 +680,12 @@ func (a *App) replayIssuePages(rule repoMaintRuleRow, next string, budget int) (
 			return "", budget, err
 		}
 	}
+	seen := map[string]bool{}
 	for budget > 0 && page != "" {
+		if seen[page] {
+			return "", budget, nil
+		}
+		seen[page] = true
 		body, link, err := a.repoMaintGetPage(page)
 		if err != nil {
 			return page, budget, err
@@ -580,21 +696,27 @@ func (a *App) replayIssuePages(rule repoMaintRuleRow, next string, budget int) (
 		}
 		finished := true
 		for _, issue := range issues {
+			if issue.PullRequest != nil {
+				continue
+			}
 			if budget <= 0 {
 				finished = false
 				break
-			}
-			budget--
-			if issue.PullRequest != nil {
-				continue
 			}
 			ev := repoMaintEvent{
 				RuleID: rule.ID, EventKind: "issues.opened", ObjectID: "issue:" + itoa(issue.Number),
 				Owner: rule.Owner, Repo: rule.Repo, Number: issue.Number, Title: issue.Title,
 				Author: issue.User.Login, HTMLURL: issue.HTMLURL, Body: issue.Body,
 			}
-			if err := a.insertRepoMaintJob(rule, ev, "", "", ""); err != nil && !repoMaintUnique(err) {
+			inserted, err := a.insertRepoMaintJob(rule, ev, "", "", "")
+			if err != nil {
+				if repoMaintUnique(err) {
+					continue
+				}
 				return page, budget, err
+			}
+			if inserted {
+				budget--
 			}
 		}
 		if !finished {
@@ -611,19 +733,34 @@ func (a *App) replayIssuePages(rule repoMaintRuleRow, next string, budget int) (
 func (a *App) replayPullPages(rule repoMaintRuleRow, next string, budget int) (string, int, error) {
 	wantPR := rule.Kinds["pull_request.opened"]
 	wantCheck := rule.Kinds["check_run.failure"]
-	if !wantPR && !wantCheck && repoMaintReplayPhase(next) != "pulls" && repoMaintReplayPhase(next) != "checks" {
-		return "", budget, nil
-	}
 	if !wantPR && !wantCheck {
 		return "", budget, nil
 	}
 	page := next
 	if repoMaintReplayPhase(page) == "checks" {
-		body, _, err := a.repoMaintGetPage(page)
-		if err != nil {
-			return page, budget, err
+		seen := map[string]bool{}
+		for budget > 0 && page != "" {
+			if seen[page] {
+				return "", budget, nil
+			}
+			seen[page] = true
+			body, nextPage, err := a.repoMaintGetPage(page)
+			if err != nil {
+				return page, budget, err
+			}
+			before := budget
+			budget, err = a.enqueueFailingChecks(rule, body, 0, budget)
+			if err != nil {
+				return page, budget, err
+			}
+			if budget <= 0 && before > 0 {
+				if nextPage != "" {
+					return nextPage, 0, nil
+				}
+				return "", 0, nil
+			}
+			page = nextPage
 		}
-		budget = a.enqueueFailingChecks(rule, body, 0, budget)
 		return "", budget, nil
 	}
 	if repoMaintReplayPhase(page) != "pulls" {
@@ -633,7 +770,12 @@ func (a *App) replayPullPages(rule repoMaintRuleRow, next string, budget int) (s
 			return "", budget, err
 		}
 	}
+	seen := map[string]bool{}
 	for budget > 0 && page != "" {
+		if seen[page] {
+			return "", budget, nil
+		}
+		seen[page] = true
 		body, link, err := a.repoMaintGetPage(page)
 		if err != nil {
 			return page, budget, err
@@ -649,31 +791,44 @@ func (a *App) replayPullPages(rule repoMaintRuleRow, next string, budget int) (s
 					finished = false
 					break
 				}
-				budget--
 				ev := repoMaintEvent{
 					RuleID: rule.ID, EventKind: "pull_request.opened", ObjectID: "pr:" + itoa(pr.Number),
 					Owner: rule.Owner, Repo: rule.Repo, Number: pr.Number, Title: pr.Title,
 					Author: pr.User.Login, HTMLURL: pr.HTMLURL, HeadRef: pr.Head.Ref, BaseRef: pr.Base.Ref,
 					SHA: pr.Head.SHA, Draft: pr.Draft,
 				}
-				if err := a.insertRepoMaintJob(rule, ev, "", "", ""); err != nil && !repoMaintUnique(err) {
+				inserted, err := a.insertRepoMaintJob(rule, ev, "", "", "")
+				if err != nil && !repoMaintUnique(err) {
 					return page, budget, err
+				}
+				if err == nil && inserted {
+					budget--
 				}
 			}
+			if budget <= 0 {
+				finished = false
+				break
+			}
 			if wantCheck && pr.Head.SHA != "" {
-				checkURL, err := gitHubReposURL(rule.Owner, rule.Repo, "commits", pr.Head.SHA, "check-runs")
+				checkURL, err := repoMaintListURL(rule.Owner, rule.Repo, []string{"commits", pr.Head.SHA, "check-runs"}, url.Values{"per_page": {"100"}})
 				if err != nil {
 					return page, budget, err
 				}
-				checkBody, _, err := a.repoMaintGetPage(checkURL)
-				if err != nil {
-					return page, budget, err
-				}
-				before := budget
-				budget = a.enqueueFailingChecks(rule, checkBody, pr.Number, budget)
-				if budget <= 0 && before > 0 {
-					finished = false
-					break
+				for checkURL != "" && budget > 0 {
+					checkBody, checkNext, err := a.repoMaintGetPage(checkURL)
+					if err != nil {
+						return page, budget, err
+					}
+					before := budget
+					budget, err = a.enqueueFailingChecks(rule, checkBody, pr.Number, budget)
+					if err != nil {
+						return page, budget, err
+					}
+					if budget <= 0 && before > 0 {
+						finished = false
+						break
+					}
+					checkURL = checkNext
 				}
 			}
 		}
@@ -688,7 +843,7 @@ func (a *App) replayPullPages(rule repoMaintRuleRow, next string, budget int) (s
 	return "", budget, nil
 }
 
-func (a *App) enqueueFailingChecks(rule repoMaintRuleRow, body []byte, prNumber, budget int) int {
+func (a *App) enqueueFailingChecks(rule repoMaintRuleRow, body []byte, prNumber, budget int) (int, error) {
 	var doc struct {
 		CheckRuns []struct {
 			ID         int64  `json:"id"`
@@ -698,16 +853,15 @@ func (a *App) enqueueFailingChecks(rule repoMaintRuleRow, body []byte, prNumber,
 		} `json:"check_runs"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return budget
+		return budget, err
 	}
 	for _, check := range doc.CheckRuns {
-		if budget <= 0 {
-			return 0
-		}
 		if check.Conclusion != "failure" {
 			continue
 		}
-		budget--
+		if budget <= 0 {
+			return 0, nil
+		}
 		ev := repoMaintEvent{
 			RuleID: rule.ID, EventKind: "check_run.failure", ObjectID: "check_run:" + strconv.FormatInt(check.ID, 10),
 			Owner: rule.Owner, Repo: rule.Repo, SHA: check.HeadSHA, CheckName: check.Name, Conclusion: "failure",
@@ -716,11 +870,19 @@ func (a *App) enqueueFailingChecks(rule repoMaintRuleRow, body []byte, prNumber,
 			ev.PRNumbers = []int{prNumber}
 			ev.Number = prNumber
 		}
-		if err := a.insertRepoMaintJob(rule, ev, "", "", ""); err != nil && !repoMaintUnique(err) {
+		inserted, err := a.insertRepoMaintJob(rule, ev, "", "", "")
+		if err != nil {
+			if repoMaintUnique(err) {
+				continue
+			}
 			log.Printf("[github-repo-maint] check enqueue failed rule_id=%s err=%v", rule.ID, err)
+			return budget, err
+		}
+		if inserted {
+			budget--
 		}
 	}
-	return budget
+	return budget, nil
 }
 
 type repoMaintGHIssue struct {
@@ -821,6 +983,7 @@ func (a *App) pumpRepoMaintOnce() {
 	}
 	a.refreshRepoMaintActiveUsers(db)
 	a.retryRepoMaintComments(db)
+	a.retryBlockedRepoMaint(db)
 	var running int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status='running'`).Scan(&running); err != nil {
 		return
@@ -842,7 +1005,33 @@ func (a *App) pumpRepoMaintOnce() {
 		}
 		queued = append(queued, job)
 	}
-	busy := map[string]bool{}
+	if err := rows.Err(); err != nil {
+		return
+	}
+	// MaxOpenConns is 1. Release this read before the held-directory query.
+	rows.Close()
+	held := map[string]bool{}
+	heldRows, err := db.Query(`SELECT ghost_dir FROM jobs WHERE status IN ('running','awaiting_user')`)
+	if err != nil {
+		return
+	}
+	for heldRows.Next() {
+		var dir string
+		if err := heldRows.Scan(&dir); err != nil {
+			heldRows.Close()
+			return
+		}
+		held[dir] = true
+		if norm, normErr := normalizeGhostDir(dir); normErr == nil {
+			held[norm] = true
+		}
+	}
+	heldErr := heldRows.Err()
+	heldRows.Close()
+	if heldErr != nil {
+		return
+	}
+	blockedRules := map[string]bool{}
 	for _, job := range queued {
 		if running >= cap {
 			return
@@ -851,21 +1040,18 @@ func (a *App) pumpRepoMaintOnce() {
 		if normErr != nil {
 			dir = job.GhostDir
 		}
-		if busy[dir] {
+		if held[job.GhostDir] || held[dir] {
 			continue
 		}
-		var held int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE ghost_dir=? AND status IN ('running','awaiting_user')`, job.GhostDir).Scan(&held); err != nil {
-			return
-		}
-		if held > 0 {
-			busy[dir] = true
+		// A start that returns false did not take the directory (disabled,
+		// already marked, or requeued). The next queued job on this checkout
+		// still runs in this pass.
+		if !a.startRepoMaintJob(job, blockedRules) {
 			continue
 		}
-		busy[dir] = true
-		if a.startRepoMaintJob(job) {
-			running++
-		}
+		running++
+		held[job.GhostDir] = true
+		held[dir] = true
 	}
 }
 
@@ -1049,20 +1235,30 @@ func (a *App) retryRepoMaintComments(db *sql.DB) {
 	if err != nil {
 		return
 	}
-	defer rows.Close()
 	now := time.Now()
+	var due []repoMaintJobRow
 	for rows.Next() {
 		job, err := scanRepoMaintJob(rows)
 		if err != nil {
+			rows.Close()
 			return
 		}
 		updated, err := time.Parse(time.RFC3339Nano, job.UpdatedAt)
 		if err != nil {
 			continue
 		}
-		if now.Sub(updated) < repoMaintCommentDelay(commentRetryCount(job.LastError)) {
+		if now.Sub(updated) < repoMaintRetryDelay(commentRetryCount(job.LastError)) {
 			continue
 		}
+		due = append(due, job)
+	}
+	iterErr := rows.Err()
+	rows.Close()
+	if iterErr != nil {
+		return
+	}
+	// postRepoMaintComment reads and writes the same single-connection database.
+	for _, job := range due {
 		a.postRepoMaintComment(job)
 	}
 }
@@ -1080,7 +1276,20 @@ func commentRetryCount(last string) int {
 	return n
 }
 
-func repoMaintCommentDelay(n int) time.Duration {
+func blockedRetryCount(last string) int {
+	const key = "blocked_retry="
+	idx := strings.Index(last, key)
+	if idx < 0 {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(last[idx+len(key):]))
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+func repoMaintRetryDelay(n int) time.Duration {
 	switch {
 	case n <= 0:
 		return time.Minute
@@ -1094,13 +1303,16 @@ func repoMaintCommentDelay(n int) time.Duration {
 func (a *App) postRepoMaintComment(job repoMaintJobRow) {
 	rule, err := a.loadRepoMaintRule(job.RuleID)
 	if err != nil {
+		if errors.Is(err, errRepoMaintRuleMissing) {
+			_ = a.setRepoMaintJobStatus(job, "failed", job.TaskProjectPath, "", "规则不存在")
+			repoMaintPendingWork.Delete(job.ID)
+			log.Printf("[github-repo-maint] comment dropped, rule missing object=%s", job.ObjectID)
+			return
+		}
+		a.noteRepoMaintCommentRetry(job)
 		return
 	}
-	pending, _ := repoMaintPendingWork.Load(job.ID)
-	ev := repoMaintEvent{EventKind: job.EventKind, ObjectID: job.ObjectID, RuleID: job.RuleID}
-	if work, ok := pending.(repoMaintPending); ok {
-		ev = work.Event
-	}
+	ev := a.repoMaintEventForJob(job)
 	if job.EventKind == "push" {
 		_ = a.setRepoMaintJobStatus(job, "succeeded", job.TaskProjectPath, "", "")
 		repoMaintPendingWork.Delete(job.ID)
@@ -1108,7 +1320,12 @@ func (a *App) postRepoMaintComment(job repoMaintJobRow) {
 	}
 	number := repoMaintThreadNumber(ev)
 	if job.EventKind == "check_run.failure" && number <= 0 {
-		number = a.smallestUnmergedPR(rule.Owner, rule.Repo, ev.SHA)
+		found, err := a.smallestUnmergedPR(rule.Owner, rule.Repo, ev.SHA)
+		if err != nil {
+			a.noteRepoMaintCommentRetry(job)
+			return
+		}
+		number = found
 	}
 	if number <= 0 {
 		note := ""
@@ -1124,13 +1341,12 @@ func (a *App) postRepoMaintComment(job repoMaintJobRow) {
 	body := repoMaintCommentBody(a.repoMaintLang(), ev, title, rule.ID)
 	rawURL, err := gitHubReposURL(rule.Owner, rule.Repo, "issues", itoa(number), "comments")
 	if err != nil {
+		a.noteRepoMaintCommentRetry(job)
 		return
 	}
 	_, _, _, err = a.repoMaintGitHub(http.MethodPost, rawURL, map[string]string{"body": body})
 	if err != nil {
-		next := commentRetryCount(job.LastError) + 1
-		_ = a.setRepoMaintJobStatus(job, "comment_pending", job.TaskProjectPath, "", "comment_retry="+itoa(next))
-		log.Printf("[github-repo-maint] comment_pending rule_id=%s object=%s", rule.ID, job.ObjectID)
+		a.noteRepoMaintCommentRetry(job)
 		return
 	}
 	_ = a.setRepoMaintJobStatus(job, "succeeded", job.TaskProjectPath, "", "")
@@ -1138,18 +1354,61 @@ func (a *App) postRepoMaintComment(job repoMaintJobRow) {
 	log.Printf("[github-repo-maint] comment posted rule_id=%s object=%s", rule.ID, job.ObjectID)
 }
 
-func (a *App) smallestUnmergedPR(owner, repo, sha string) int {
+// noteRepoMaintCommentRetry leaves the comment due and releases the ghost
+// directory. A job that stays running would hold that directory forever,
+// because the retry pump only selects comment_pending.
+// repoMaintEventForJob prefers the in-memory copy and falls back to the
+// row written at insert. The memory copy is gone after a process restart.
+func (a *App) repoMaintEventForJob(job repoMaintJobRow) repoMaintEvent {
+	if pending, ok := repoMaintPendingWork.Load(job.ID); ok {
+		if work, ok := pending.(repoMaintPending); ok && work.Event.ObjectID != "" {
+			return work.Event
+		}
+	}
+	ev := repoMaintEvent{EventKind: job.EventKind, ObjectID: job.ObjectID, RuleID: job.RuleID}
+	db, err := a.repoMaintDB()
+	if err != nil {
+		return ev
+	}
+	var raw string
+	if err := db.QueryRow(`SELECT event_json FROM jobs WHERE id=?`, job.ID).Scan(&raw); err != nil {
+		return ev
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ev
+	}
+	var stored repoMaintEvent
+	if json.Unmarshal([]byte(raw), &stored) != nil || stored.ObjectID == "" {
+		return ev
+	}
+	if stored.EventKind == "" {
+		stored.EventKind = job.EventKind
+	}
+	if stored.RuleID == "" {
+		stored.RuleID = job.RuleID
+	}
+	return stored
+}
+
+func (a *App) noteRepoMaintCommentRetry(job repoMaintJobRow) {
+	next := commentRetryCount(job.LastError) + 1
+	_ = a.setRepoMaintJobStatus(job, "comment_pending", job.TaskProjectPath, "", "comment_retry="+itoa(next))
+	log.Printf("[github-repo-maint] comment_pending rule_id=%s object=%s", job.RuleID, job.ObjectID)
+}
+
+func (a *App) smallestUnmergedPR(owner, repo, sha string) (int, error) {
 	sha = strings.TrimSpace(sha)
 	if sha == "" {
-		return 0
+		return 0, nil
 	}
 	rawURL, err := gitHubReposURL(owner, repo, "commits", sha, "pulls")
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	_, body, _, err := a.repoMaintGitHub(http.MethodGet, rawURL, nil)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	var pulls []struct {
 		Number int    `json:"number"`
@@ -1157,7 +1416,7 @@ func (a *App) smallestUnmergedPR(owner, repo, sha string) int {
 		Merged bool   `json:"merged"`
 	}
 	if err := json.Unmarshal(body, &pulls); err != nil {
-		return 0
+		return 0, err
 	}
 	best := 0
 	for _, pr := range pulls {
@@ -1168,7 +1427,7 @@ func (a *App) smallestUnmergedPR(owner, repo, sha string) int {
 			best = pr.Number
 		}
 	}
-	return best
+	return best, nil
 }
 
 func (a *App) repoMaintLang() string {

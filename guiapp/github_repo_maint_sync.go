@@ -458,7 +458,9 @@ func (a *App) markRepoMaintDisabled(id, lastError string) error {
 	if _, err := tx.Exec(`UPDATE rules SET enabled=0, last_error=?, updated_at=? WHERE id=?`, lastError, now, id); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE jobs SET status='skipped_disabled', updated_at=? WHERE rule_id=? AND status='queued'`, now, id); err != nil {
+	// queued and blocked_workspace have not started. Re-enable must not run them.
+	// running, awaiting_user, and comment_pending stay so the current task and its comment can finish.
+	if _, err := tx.Exec(`UPDATE jobs SET status='skipped_disabled', updated_at=? WHERE rule_id=? AND status IN ('queued','blocked_workspace')`, now, id); err != nil {
 		return err
 	}
 	return tx.Commit()

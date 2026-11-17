@@ -3,6 +3,9 @@ package guiapp
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
@@ -23,6 +27,8 @@ func TestGitHubRepoMaintIntake(t *testing.T) {
 	var mu sync.Mutex
 	var comments []string
 	var acks []string
+	var markedIssue string
+	var markedComment string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		path := r.URL.Path
@@ -41,6 +47,13 @@ func TestGitHubRepoMaintIntake(t *testing.T) {
 			mu.Unlock()
 			_, _ = w.Write([]byte(`{"id":1}`))
 		case r.Method == http.MethodGet && strings.HasSuffix(path, "/comments"):
+			mu.Lock()
+			issue, comment := markedIssue, markedComment
+			mu.Unlock()
+			if issue != "" && comment != "" && strings.Contains(path, "/issues/"+issue+"/comments") {
+				_, _ = w.Write([]byte(`[{"body":"` + comment + `"}]`))
+				return
+			}
 			_, _ = w.Write([]byte(`[]`))
 		case strings.HasSuffix(path, "/check-runs"):
 			_, _ = w.Write([]byte(`{"check_runs":[{"id":11,"name":"ci","conclusion":"failure","head_sha":"abc123def456"},{"id":12,"name":"lint","conclusion":"success"},{"id":13,"name":"flake","conclusion":"timed_out"}]}`))
@@ -366,6 +379,653 @@ func TestGitHubRepoMaintIntake(t *testing.T) {
 	if got := handler.getStickyCodingWorkbenchMemory(planUser).PlanMode; got != codingPlanModeApprove {
 		t.Fatalf("plan mode = %s", got)
 	}
+
+	githubRepoMaintQueueCap = 100
+	if _, err := db.Exec(`UPDATE jobs SET status='failed', last_error='test-reset' WHERE status IN ('queued','running','awaiting_user')`); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	markedIssue = "77"
+	markedComment = "<!-- maclaw-repo-maint: rule=" + saved.ID + " event=issues.opened object=issue:77 -->"
+	mu.Unlock()
+	beforeTurns := turns
+	marked := repoMaintEvent{DeliveryID: "d-marked", RuleID: saved.ID, EventKind: "issues.opened", ObjectID: "issue:77", Owner: "yucejade", Repo: "jjquant-v2", Number: 77, Title: "already handled"}
+	if err := app.acceptRepoMaintDelivery(marked); err != nil {
+		t.Fatal(err)
+	}
+	following := repoMaintEvent{DeliveryID: "d-next", RuleID: saved.ID, EventKind: "issues.opened", ObjectID: "issue:78", Owner: "yucejade", Repo: "jjquant-v2", Number: 78, Title: "still open"}
+	if err := app.acceptRepoMaintDelivery(following); err != nil {
+		t.Fatal(err)
+	}
+	app.pumpRepoMaintOnce()
+	if turns != beforeTurns+1 || !strings.Contains(lastText, "still open") {
+		t.Fatalf("marker skip blocked the next job: turns %d -> %d text=%s", beforeTurns, turns, lastText)
+	}
+	if got := repoMaintJobByObject(t, app, "issue:77"); got.Status != "succeeded" {
+		t.Fatalf("marked job status = %s", got.Status)
+	}
+	if got := repoMaintJobByObject(t, app, "issue:78"); got.Status != "succeeded" {
+		t.Fatalf("following job status = %s", got.Status)
+	}
+
+	retryEv := repoMaintEvent{DeliveryID: "d-retry", RuleID: saved.ID, EventKind: "issues.opened", ObjectID: "issue:90", Owner: "yucejade", Repo: "jjquant-v2", Number: 90, Title: "retry comment"}
+	if err := app.acceptRepoMaintDelivery(retryEv); err != nil {
+		t.Fatal(err)
+	}
+	retryJob := repoMaintJobByObject(t, app, "issue:90")
+	old := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`UPDATE jobs SET status='comment_pending', last_error='', updated_at=? WHERE id=?`, old, retryJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	commentsBefore := len(comments)
+	mu.Unlock()
+	app.pumpRepoMaintOnce()
+	retried := repoMaintJobByObject(t, app, "issue:90")
+	if retried.Status != "succeeded" {
+		t.Fatalf("comment retry status = %s err=%s", retried.Status, retried.LastError)
+	}
+	mu.Lock()
+	if len(comments) != commentsBefore+1 {
+		t.Fatalf("comment retry posted %d", len(comments)-commentsBefore)
+	}
+	mu.Unlock()
+
+	if _, err := db.Exec(`UPDATE jobs SET status='failed', last_error='test-reset' WHERE status IN ('queued','running','awaiting_user')`); err != nil {
+		t.Fatal(err)
+	}
+	paused := repoMaintEvent{DeliveryID: "d-paused", RuleID: saved.ID, EventKind: "issues.opened", ObjectID: "issue:91", Owner: "yucejade", Repo: "jjquant-v2", Number: 91, Title: "paused checkout"}
+	if err := app.acceptRepoMaintDelivery(paused); err != nil {
+		t.Fatal(err)
+	}
+	pausedJob := repoMaintJobByObject(t, app, "issue:91")
+	fresh := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`UPDATE jobs SET status='blocked_workspace', last_error='目录还不能用', updated_at=? WHERE id=?`, fresh, pausedJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	turnsBefore := turns
+	app.pumpRepoMaintOnce()
+	if turns != turnsBefore || repoMaintJobByObject(t, app, "issue:91").Status != "blocked_workspace" {
+		t.Fatalf("blocked job retried before the backoff, turns %d -> %d status=%s", turnsBefore, turns, repoMaintJobByObject(t, app, "issue:91").Status)
+	}
+	if _, err := db.Exec(`UPDATE jobs SET updated_at=? WHERE id=?`, time.Now().Add(-2*time.Hour).UTC().Format(time.RFC3339Nano), pausedJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	app.pumpRepoMaintOnce()
+	if turns != turnsBefore+1 || !strings.Contains(lastText, "paused checkout") {
+		t.Fatalf("due blocked job did not start: turns %d -> %d text=%s", turnsBefore, turns, lastText)
+	}
+	if got := repoMaintJobByObject(t, app, "issue:91"); got.Status != "succeeded" {
+		t.Fatalf("requeued job status = %s err=%s", got.Status, got.LastError)
+	}
+
+	occupied := filepath.Join(t.TempDir(), "occupied")
+	if err := os.WriteFile(occupied, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE rules SET ghost_dir=? WHERE id=?`, occupied, saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	held := repoMaintEvent{DeliveryID: "d-held", RuleID: saved.ID, EventKind: "issues.opened", ObjectID: "issue:92", Owner: "yucejade", Repo: "jjquant-v2", Number: 92, Title: "still blocked"}
+	if err := app.acceptRepoMaintDelivery(held); err != nil {
+		t.Fatal(err)
+	}
+	heldJob := repoMaintJobByObject(t, app, "issue:92")
+	if _, err := db.Exec(`UPDATE jobs SET status='blocked_workspace', last_error='目录还不能用', updated_at=? WHERE id=?`, time.Now().Add(-2*time.Hour).UTC().Format(time.RFC3339Nano), heldJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	turnsBefore = turns
+	app.pumpRepoMaintOnce()
+	heldAfter := repoMaintJobByObject(t, app, "issue:92")
+	if turns != turnsBefore || heldAfter.Status != "blocked_workspace" || !strings.Contains(heldAfter.LastError, "blocked_retry=1") {
+		t.Fatalf("occupied dir status=%s err=%s turns %d -> %d", heldAfter.Status, heldAfter.LastError, turnsBefore, turns)
+	}
+	app.pumpRepoMaintOnce()
+	heldAgain := repoMaintJobByObject(t, app, "issue:92")
+	if heldAgain.UpdatedAt != heldAfter.UpdatedAt || heldAgain.Status != "blocked_workspace" {
+		t.Fatalf("backoff spun: %s -> %s status=%s", heldAfter.UpdatedAt, heldAgain.UpdatedAt, heldAgain.Status)
+	}
+}
+
+func TestGitHubRepoMaintCommentFailure(t *testing.T) {
+	var postsMu sync.Mutex
+	posts := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/commits/boom/pulls"):
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"unavailable"}`))
+		case strings.Contains(path, "/commits/none/pulls"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(path, "/commits/badjson/pulls"):
+			_, _ = w.Write([]byte(`{`))
+		case strings.Contains(path, "/commits/stored/pulls"):
+			_, _ = w.Write([]byte(`[{"number":4,"state":"open","merged":false}]`))
+		case r.Method == http.MethodPost && strings.HasSuffix(path, "/comments"):
+			postsMu.Lock()
+			posts++
+			postsMu.Unlock()
+			_, _ = w.Write([]byte(`{"id":1}`))
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"unexpected"}`))
+		}
+	}))
+	defer srv.Close()
+	prevGit := newGitHubHTTPClient
+	newGitHubHTTPClient = func() *http.Client {
+		client := defaultGitHubHTTPClient()
+		client.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if addr != "api.github.com:443" {
+					return nil, context.Canceled
+				}
+				return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		return client
+	}
+	t.Cleanup(func() { newGitHubHTTPClient = prevGit })
+
+	app := newRepoMaintTestApp(t, "https://203.0.113.10", true)
+	t.Cleanup(func() {
+		closeRepoMaintDB(filepath.Join(app.GetDataDir(), githubRepoMaintDBName))
+	})
+	user := "desktop-user:repo-maint-comment"
+	t.Cleanup(func() { repoMaintActiveUsers.Delete(user) })
+	ghost := t.TempDir()
+
+	missing := repoMaintJobRow{
+		ID: "job-missing-rule", RuleID: "00000000-0000-0000-0000-000000000099",
+		EventKind: "issues.opened", ObjectID: "issue:1", GhostDir: ghost,
+		Status: "running", SessionUserID: user,
+	}
+	insertRepoMaintJobRaw(t, app, missing)
+	repoMaintPendingWork.Store(missing.ID, repoMaintPending{Event: repoMaintEvent{EventKind: missing.EventKind, ObjectID: missing.ObjectID}})
+	repoMaintActiveUsers.Store(user, ghost)
+	t.Cleanup(func() { repoMaintPendingWork.Delete(missing.ID) })
+	app.postRepoMaintComment(missing)
+	got := repoMaintJobByObject(t, app, "issue:1")
+	if got.Status != "failed" || got.LastError != "规则不存在" {
+		t.Fatalf("missing rule = %s %s", got.Status, got.LastError)
+	}
+	if _, ok := repoMaintPendingWork.Load(missing.ID); ok {
+		t.Fatal("pending work kept after the rule was deleted")
+	}
+	if _, held := repoMaintActiveUsers.Load(user); held {
+		t.Fatal("deleted rule left the ghost directory held")
+	}
+
+	blankGhost := t.TempDir()
+	insertRepoMaintRuleRaw(t, app, "rule-blank-owner", "", "jjquant-v2", blankGhost)
+	blank := repoMaintJobRow{
+		ID: "job-blank-owner", RuleID: "rule-blank-owner",
+		EventKind: "issues.opened", ObjectID: "issue:4", GhostDir: blankGhost,
+		Status: "running", SessionUserID: user,
+	}
+	insertRepoMaintJobRaw(t, app, blank)
+	repoMaintPendingWork.Store(blank.ID, repoMaintPending{Event: repoMaintEvent{EventKind: blank.EventKind, ObjectID: blank.ObjectID, Number: 4}})
+	repoMaintActiveUsers.Store(user, blankGhost)
+	t.Cleanup(func() { repoMaintPendingWork.Delete(blank.ID) })
+	app.postRepoMaintComment(blank)
+	got = repoMaintJobByObject(t, app, "issue:4")
+	if got.Status != "comment_pending" || got.LastError != "comment_retry=1" {
+		t.Fatalf("url failure = %s %s", got.Status, got.LastError)
+	}
+	if _, ok := repoMaintPendingWork.Load(blank.ID); !ok {
+		t.Fatal("url failure dropped the pending comment")
+	}
+	if _, held := repoMaintActiveUsers.Load(user); held {
+		t.Fatal("url failure left the ghost directory held")
+	}
+
+	liveGhost := t.TempDir()
+	insertRepoMaintRuleRaw(t, app, "rule-live", "yucejade", "jjquant-v2", liveGhost)
+	postCheck := func(id, objectID, sha string) repoMaintJobRow {
+		t.Helper()
+		job := repoMaintJobRow{
+			ID: id, RuleID: "rule-live", EventKind: "check_run.failure", ObjectID: objectID,
+			GhostDir: liveGhost, Status: "running", SessionUserID: user,
+		}
+		insertRepoMaintJobRaw(t, app, job)
+		repoMaintPendingWork.Store(id, repoMaintPending{Event: repoMaintEvent{
+			EventKind: job.EventKind, ObjectID: objectID, RuleID: job.RuleID, SHA: sha,
+		}})
+		t.Cleanup(func() { repoMaintPendingWork.Delete(id) })
+		repoMaintActiveUsers.Store(user, liveGhost)
+		app.postRepoMaintComment(job)
+		return repoMaintJobByObject(t, app, objectID)
+	}
+
+	boom := postCheck("job-boom", "check_run:boom", "boom")
+	if boom.Status != "comment_pending" || boom.LastError != "comment_retry=1" || strings.Contains(boom.LastError, "没有关联的 PR") {
+		t.Fatalf("lookup failure = %s %s", boom.Status, boom.LastError)
+	}
+	if _, ok := repoMaintPendingWork.Load(boom.ID); !ok {
+		t.Fatal("lookup failure dropped the pending comment")
+	}
+	if _, held := repoMaintActiveUsers.Load(user); held {
+		t.Fatal("lookup failure left the ghost directory held")
+	}
+	app.postRepoMaintComment(boom)
+	boom = repoMaintJobByObject(t, app, "check_run:boom")
+	if boom.Status != "comment_pending" || boom.LastError != "comment_retry=2" {
+		t.Fatalf("lookup retry = %s %s", boom.Status, boom.LastError)
+	}
+
+	none := postCheck("job-none", "check_run:none", "none")
+	if none.Status != "succeeded" || !strings.Contains(none.LastError, "没有关联的 PR") {
+		t.Fatalf("empty pulls = %s %s", none.Status, none.LastError)
+	}
+	if _, ok := repoMaintPendingWork.Load(none.ID); ok {
+		t.Fatal("empty pulls kept the pending comment")
+	}
+
+	bad := postCheck("job-badjson", "check_run:badjson", "badjson")
+	if bad.Status != "comment_pending" || bad.LastError != "comment_retry=1" {
+		t.Fatalf("json failure = %s %s", bad.Status, bad.LastError)
+	}
+
+	emptySHA := repoMaintJobRow{
+		ID: "job-empty-sha", RuleID: "rule-live", EventKind: "check_run.failure", ObjectID: "check_run:empty",
+		GhostDir: liveGhost, Status: "running", SessionUserID: user,
+	}
+	insertRepoMaintJobRaw(t, app, emptySHA)
+	app.postRepoMaintComment(emptySHA)
+	got = repoMaintJobByObject(t, app, "check_run:empty")
+	if got.Status != "succeeded" || !strings.Contains(got.LastError, "没有关联的 PR") {
+		t.Fatalf("empty sha = %s %s", got.Status, got.LastError)
+	}
+
+	stored := repoMaintJobRow{
+		ID: "job-stored", RuleID: "rule-live", EventKind: "check_run.failure", ObjectID: "check_run:stored",
+		GhostDir: liveGhost, Status: "running", SessionUserID: user,
+	}
+	insertRepoMaintJobRaw(t, app, stored)
+	rawEvent, err := json.Marshal(repoMaintEvent{
+		EventKind: stored.EventKind, ObjectID: stored.ObjectID, RuleID: stored.RuleID, SHA: "stored",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE jobs SET event_json=? WHERE id=?`, string(rawEvent), stored.ID); err != nil {
+		t.Fatal(err)
+	}
+	repoMaintPendingWork.Delete(stored.ID)
+	app.postRepoMaintComment(stored)
+	got = repoMaintJobByObject(t, app, "check_run:stored")
+	if got.Status != "succeeded" || strings.Contains(got.LastError, "没有关联的 PR") {
+		t.Fatalf("stored event = %s %s", got.Status, got.LastError)
+	}
+	postsMu.Lock()
+	posted := posts
+	postsMu.Unlock()
+	if posted != 1 {
+		t.Fatalf("stored event posts = %d", posted)
+	}
+}
+
+func TestGitHubRepoMaintReplayBudget(t *testing.T) {
+	var modeMu sync.Mutex
+	checkMode := "good"
+	issuesBody := repoMaintOpenIssuesJSON(repoMaintReplayCap + 1)
+	checksBody := repoMaintFailingChecksJSON(repoMaintReplayCap + 1)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/issues"):
+			_, _ = w.Write(issuesBody)
+		case strings.HasSuffix(path, "/pulls") && !strings.Contains(path, "/commits/"):
+			_, _ = w.Write([]byte(`[{"number":3,"title":"add feature","html_url":"https://github.com/yucejade/jjquant-v2/pull/3","draft":false,"user":{"login":"ada"},"head":{"ref":"feat","sha":"abc123def456"},"base":{"ref":"main"}}]`))
+		case strings.HasSuffix(path, "/check-runs"):
+			modeMu.Lock()
+			mode := checkMode
+			modeMu.Unlock()
+			if mode == "bad" {
+				_, _ = w.Write([]byte(`{`))
+				return
+			}
+			_, _ = w.Write(checksBody)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	prevGit := newGitHubHTTPClient
+	newGitHubHTTPClient = func() *http.Client {
+		client := defaultGitHubHTTPClient()
+		client.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if addr != "api.github.com:443" {
+					t.Errorf("dialed %s", addr)
+					return nil, context.Canceled
+				}
+				return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		return client
+	}
+	t.Cleanup(func() { newGitHubHTTPClient = prevGit })
+
+	app := newRepoMaintTestApp(t, "https://203.0.113.10", true)
+	t.Cleanup(func() {
+		closeRepoMaintDB(filepath.Join(app.GetDataDir(), githubRepoMaintDBName))
+	})
+	ghost := filepath.Join(t.TempDir(), "ghost")
+	if err := os.MkdirAll(ghost, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGit(ghost, "init"); err != nil || runGit(ghost, "remote", "add", "origin", "https://github.com/yucejade/jjquant-v2.git") != nil {
+		t.Fatal("checkout")
+	}
+	saved, err := app.SaveGitHubRepoMaintRule(GitHubRepoMaintRule{
+		RepoURL:      "https://github.com/yucejade/jjquant-v2",
+		GhostDir:     ghost,
+		Commands:     map[string]string{"issues.opened": "看一下议题", "check_run.failure": "修一下失败的检查"},
+		EnabledKinds: map[string]bool{"issues.opened": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE rules SET enabled=1 WHERE id=?`, saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	seedRepoMaintSucceeded(t, app, saved.ID, ghost, "issues.opened", "issue:", repoMaintReplayCap)
+	if err := app.ReplayGitHubRepoMaint(saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRepoMaintKind(t, app, "issues.opened"); got != repoMaintReplayCap+1 {
+		t.Fatalf("issue rows = %d", got)
+	}
+	if job := repoMaintJobByObject(t, app, "issue:"+itoa(repoMaintReplayCap+1)); job.Status != "queued" {
+		t.Fatalf("new issue status = %s", job.Status)
+	}
+	if next := repoMaintReplayNext(t, app, saved.ID); next != "" {
+		t.Fatalf("issue replay next = %s", next)
+	}
+	if err := app.ReplayGitHubRepoMaint(saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRepoMaintKind(t, app, "issues.opened"); got != repoMaintReplayCap+1 {
+		t.Fatalf("second issue replay rows = %d", got)
+	}
+
+	if _, err := db.Exec(`UPDATE rules SET kinds_json=?, commands_json=? WHERE id=?`,
+		`{"check_run.failure":true}`, `{"check_run.failure":"修一下失败的检查"}`, saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	modeMu.Lock()
+	checkMode = "bad"
+	modeMu.Unlock()
+	if err := app.ReplayGitHubRepoMaint(saved.ID); err == nil {
+		t.Fatal("broken check page was accepted")
+	}
+	if next := repoMaintReplayNext(t, app, saved.ID); next != "" {
+		t.Fatalf("broken check page advanced next = %s", next)
+	}
+	if got := countRepoMaintKind(t, app, "check_run.failure"); got != 0 {
+		t.Fatalf("broken check page inserted %d", got)
+	}
+	modeMu.Lock()
+	checkMode = "good"
+	modeMu.Unlock()
+	seedRepoMaintSucceeded(t, app, saved.ID, ghost, "check_run.failure", "check_run:", repoMaintReplayCap)
+	if err := app.ReplayGitHubRepoMaint(saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRepoMaintKind(t, app, "check_run.failure"); got != repoMaintReplayCap+1 {
+		t.Fatalf("check rows = %d", got)
+	}
+	if job := repoMaintJobByObject(t, app, "check_run:"+itoa(repoMaintReplayCap+1)); job.Status != "queued" {
+		t.Fatalf("new check status = %s", job.Status)
+	}
+	if next := repoMaintReplayNext(t, app, saved.ID); next != "" {
+		t.Fatalf("check replay next = %s", next)
+	}
+	if err := app.ReplayGitHubRepoMaint(saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRepoMaintKind(t, app, "check_run.failure"); got != repoMaintReplayCap+1 {
+		t.Fatalf("second check replay rows = %d", got)
+	}
+}
+
+func TestGitHubRepoMaintRestart(t *testing.T) {
+	app := newRepoMaintTestApp(t, "https://203.0.113.10", false)
+	t.Cleanup(func() {
+		closeRepoMaintDB(filepath.Join(app.GetDataDir(), githubRepoMaintDBName))
+	})
+	path := filepath.Join(app.GetDataDir(), githubRepoMaintDBName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.Exec(`CREATE TABLE jobs (
+		id TEXT PRIMARY KEY,
+		rule_id TEXT NOT NULL,
+		delivery_id TEXT NOT NULL DEFAULT '',
+		event_kind TEXT NOT NULL,
+		object_id TEXT NOT NULL,
+		ghost_dir TEXT NOT NULL,
+		status TEXT NOT NULL,
+		task_project_path TEXT NOT NULL DEFAULT '',
+		session_user_id TEXT NOT NULL DEFAULT '',
+		last_error TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ghost := t.TempDir()
+	inserted, err := app.insertRepoMaintJob(repoMaintRuleRow{ID: "rule-old", GhostDir: ghost}, repoMaintEvent{
+		EventKind: "check_run.failure", ObjectID: "check_run:7", RuleID: "rule-old", SHA: "abc123",
+	}, "", "running", "")
+	if err != nil || !inserted {
+		t.Fatalf("insert = %v err=%v", inserted, err)
+	}
+	running := repoMaintJobByObject(t, app, "check_run:7")
+	repoMaintPendingWork.Delete(running.ID)
+	t.Cleanup(func() { repoMaintPendingWork.Delete(running.ID) })
+	if got := app.repoMaintEventForJob(running); got.SHA != "abc123" {
+		t.Fatalf("stored sha = %q", got.SHA)
+	}
+	insertRepoMaintJobRaw(t, app, repoMaintJobRow{
+		ID: "job-wait", RuleID: "rule-old", EventKind: "issues.opened", ObjectID: "issue:8",
+		GhostDir: ghost, Status: "awaiting_user", SessionUserID: "desktop-user:wait",
+	})
+
+	app.requeueOrphanedRepoMaintRuns()
+	got := repoMaintJobByObject(t, app, "check_run:7")
+	if got.Status != "queued" || got.LastError != "进程已重启" || got.SessionUserID != "" || got.TaskProjectPath != "" {
+		t.Fatalf("orphan = %s %s user=%s path=%s", got.Status, got.LastError, got.SessionUserID, got.TaskProjectPath)
+	}
+	if wait := repoMaintJobByObject(t, app, "issue:8"); wait.Status != "awaiting_user" || wait.SessionUserID != "desktop-user:wait" {
+		t.Fatalf("question = %s %s", wait.Status, wait.SessionUserID)
+	}
+	if ev := app.repoMaintEventForJob(got); ev.SHA != "abc123" {
+		t.Fatalf("sha after requeue = %q", ev.SHA)
+	}
+}
+
+func TestGitHubRepoMaintBlockedClone(t *testing.T) {
+	clones := 0
+	prev := cloneGitHubRepoForMaint
+	cloneGitHubRepoForMaint = func(a *App, repoURL, dest string) error {
+		clones++
+		return fmt.Errorf("clone failed")
+	}
+	t.Cleanup(func() { cloneGitHubRepoForMaint = prev })
+
+	app := newRepoMaintTestApp(t, "https://203.0.113.10", false)
+	t.Cleanup(func() {
+		closeRepoMaintDB(filepath.Join(app.GetDataDir(), githubRepoMaintDBName))
+	})
+	ghost := filepath.Join(t.TempDir(), "missing")
+	insertRepoMaintRuleRaw(t, app, "rule-block", "yucejade", "jjquant-v2", ghost)
+	for _, objectID := range []string{"issue:1", "issue:2"} {
+		insertRepoMaintJobRaw(t, app, repoMaintJobRow{
+			ID: "job-" + objectID, RuleID: "rule-block", EventKind: "issues.opened", ObjectID: objectID,
+			GhostDir: ghost, Status: "queued",
+		})
+	}
+	insertRepoMaintJobRaw(t, app, repoMaintJobRow{
+		ID: "job-missing-rule", RuleID: "00000000-0000-0000-0000-000000000077",
+		EventKind: "issues.opened", ObjectID: "issue:3", GhostDir: ghost, Status: "queued",
+	})
+
+	app.pumpRepoMaintOnce()
+	if clones != 1 {
+		t.Fatalf("clones = %d", clones)
+	}
+	for _, objectID := range []string{"issue:1", "issue:2"} {
+		job := repoMaintJobByObject(t, app, objectID)
+		if job.Status != "blocked_workspace" || job.LastError != "目录还不能用" {
+			t.Fatalf("%s = %s %s", objectID, job.Status, job.LastError)
+		}
+	}
+	missing := repoMaintJobByObject(t, app, "issue:3")
+	if missing.Status != "failed" || missing.LastError != "规则不存在" {
+		t.Fatalf("missing rule = %s %s", missing.Status, missing.LastError)
+	}
+	app.pumpRepoMaintOnce()
+	if clones != 1 {
+		t.Fatalf("second pump clones = %d", clones)
+	}
+}
+
+func insertRepoMaintRuleRaw(t *testing.T, app *App, id, owner, repo, ghost string) {
+	t.Helper()
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO rules (
+		id, owner, repo, repo_url, ghost_dir, enabled, push_branch, commands_json, kinds_json,
+		hook_id, hook_token, auth_blocked, delete_pending, replay_mode, replay_next_url, last_error, updated_at
+	) VALUES (?,?,?,?,?,1,'','{}','{}',0,'tok',0,0,'none','','',?)`,
+		id, owner, repo, "https://github.com/yucejade/jjquant-v2", ghost, "2026-11-18T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertRepoMaintJobRaw(t *testing.T, app *App, job repoMaintJobRow) {
+	t.Helper()
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO jobs (
+		id, rule_id, delivery_id, event_kind, object_id, ghost_dir, status,
+		task_project_path, session_user_id, last_error, created_at, updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		job.ID, job.RuleID, "", job.EventKind, job.ObjectID, job.GhostDir, job.Status,
+		"", job.SessionUserID, job.LastError, "2026-11-18T00:00:00Z", "2026-11-18T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedRepoMaintSucceeded(t *testing.T, app *App, ruleID, ghost, kind, objectPrefix string, n int) {
+	t.Helper()
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := "2026-11-18T00:00:00Z"
+	for i := 1; i <= n; i++ {
+		if _, err := tx.Exec(`INSERT INTO jobs (
+			id, rule_id, delivery_id, event_kind, object_id, ghost_dir, status,
+			task_project_path, session_user_id, last_error, created_at, updated_at
+		) VALUES (?,?,?,?,?,?,?,'','','',?,?)`,
+			"seed-"+kind+"-"+itoa(i), ruleID, "", kind, objectPrefix+itoa(i), ghost, "succeeded", now, now); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countRepoMaintKind(t *testing.T, app *App, kind string) int {
+	t.Helper()
+	n := 0
+	for _, job := range repoMaintJobs(t, app) {
+		if job.EventKind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+func repoMaintReplayNext(t *testing.T, app *App, id string) string {
+	t.Helper()
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var next string
+	if err := db.QueryRow(`SELECT replay_next_url FROM rules WHERE id=?`, id).Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+	return next
+}
+
+func repoMaintOpenIssuesJSON(n int) []byte {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i := 1; i <= n; i++ {
+		if i > 1 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"number":`)
+		b.WriteString(itoa(i))
+		b.WriteString(`,"title":"t","user":{"login":"ada"}}`)
+	}
+	b.WriteByte(']')
+	return []byte(b.String())
+}
+
+func repoMaintFailingChecksJSON(n int) []byte {
+	var b strings.Builder
+	b.WriteString(`{"check_runs":[`)
+	for i := 1; i <= n; i++ {
+		if i > 1 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"id":`)
+		b.WriteString(itoa(i))
+		b.WriteString(`,"name":"ci","conclusion":"failure","head_sha":"abc123def456"}`)
+	}
+	b.WriteString(`]}`)
+	return []byte(b.String())
 }
 
 func repoMaintJobs(t *testing.T, app *App) []repoMaintJobRow {

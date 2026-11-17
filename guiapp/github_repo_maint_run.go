@@ -1,10 +1,12 @@
 package guiapp
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -84,17 +86,37 @@ func (a *App) repoMaintSendWorkspace(userID, projectPath string, auto bool) (dir
 }
 
 // startRepoMaintJob moves one queued row to running and sends it.
-// It returns false when the row stays queued, so the parallel cap is unchanged.
-func (a *App) startRepoMaintJob(job repoMaintJobRow) bool {
+// It returns false when this row did not take the directory. blocked rules
+// were already paused for the whole queue, so the caller must not clone again.
+func (a *App) startRepoMaintJob(job repoMaintJobRow, blocked map[string]bool) bool {
+	if blocked[job.RuleID] {
+		return false
+	}
 	rule, err := a.loadRepoMaintRule(job.RuleID)
-	if err != nil || !rule.Enabled {
+	if err != nil {
+		if errors.Is(err, errRepoMaintRuleMissing) {
+			_ = a.setRepoMaintJobStatus(job, "failed", "", "", "规则不存在")
+			repoMaintPendingWork.Delete(job.ID)
+			log.Printf("[github-repo-maint] job dropped, rule missing object=%s", job.ObjectID)
+			return false
+		}
+		if job.LastError != err.Error() {
+			_ = a.setRepoMaintJobStatus(job, "queued", "", "", err.Error())
+			log.Printf("[github-repo-maint] rule load failed rule_id=%s err=%v", job.RuleID, err)
+		}
+		return false
+	}
+	if !rule.Enabled {
 		_ = a.setRepoMaintJobStatus(job, "skipped_disabled", "", "", "")
 		return false
 	}
 	dir, ready := a.repoMaintDirReady(&rule)
 	if !ready {
-		_ = a.setRepoMaintJobStatus(job, "blocked_workspace", "", "", "目录还不能用")
-		log.Printf("[github-repo-maint] blocked_workspace rule_id=%s", rule.ID)
+		if err := a.blockRepoMaintQueued(rule.ID); err != nil {
+			_ = a.setRepoMaintJobStatus(job, "blocked_workspace", "", "", "目录还不能用")
+			log.Printf("[github-repo-maint] blocked_workspace rule_id=%s", rule.ID)
+		}
+		blocked[rule.ID] = true
 		return false
 	}
 	a.requeueRepoMaintIfReady(rule.ID, dir)
@@ -104,12 +126,7 @@ func (a *App) startRepoMaintJob(job repoMaintJobRow) bool {
 		log.Printf("[github-repo-maint] 因活会话而继续排队")
 		return false
 	}
-	ev := repoMaintEvent{EventKind: job.EventKind, ObjectID: job.ObjectID, RuleID: job.RuleID}
-	if pending, ok := repoMaintPendingWork.Load(job.ID); ok {
-		if work, ok := pending.(repoMaintPending); ok {
-			ev = work.Event
-		}
-	}
+	ev := a.repoMaintEventForJob(job)
 	if ev.EventKind != "push" && a.repoMaintMarkerMatched(rule, ev) {
 		_ = a.setRepoMaintJobStatus(job, "succeeded", "", "", "")
 		repoMaintPendingWork.Delete(job.ID)
@@ -219,10 +236,16 @@ func (a *App) finishRepoMaintTurn(userID string, auto bool, resp *IMAgentRespons
 		repoMaintPendingWork.Delete(job.ID)
 		return
 	}
-	if auto && resp != nil && repoMaintResponseHasPlanGate(resp.Actions) {
-		log.Printf("[github-repo-maint] 计划门误触发")
-		_ = a.setRepoMaintJobStatus(job, "failed", job.TaskProjectPath, "", "plan gate")
-		repoMaintPendingWork.Delete(job.ID)
+	if resp != nil && repoMaintResponseHasPlanGate(resp.Actions) {
+		if auto {
+			log.Printf("[github-repo-maint] 计划门误触发")
+			_ = a.setRepoMaintJobStatus(job, "failed", job.TaskProjectPath, "", "plan gate")
+			repoMaintPendingWork.Delete(job.ID)
+			return
+		}
+		// A later user turn stops at the plan gate before an outcome is recorded.
+		// Keep the directory lock and do not post a completion comment.
+		_ = a.setRepoMaintJobStatus(job, "awaiting_user", job.TaskProjectPath, userID, "")
 		return
 	}
 	if !loaded || !fact.Set {
@@ -608,34 +631,213 @@ func repoMaintCredentialPathRefused(path string) bool {
 	return strings.EqualFold(filepath.Base(cleaned), "credentials.json") && strings.Contains(slash, "/.maclaw/")
 }
 
-func repoMaintPathInside(root, path string) bool {
+// repoMaintResolve joins a relative path onto root, cleans it, and evaluates
+// the longest existing prefix, including Windows directory junctions.
+// The bool is false when that result leaves root or a link cannot be resolved.
+func repoMaintResolve(root, path string) (string, bool) {
+	root = strings.TrimSpace(root)
 	path = strings.TrimSpace(path)
-	if path == "" || !filepath.IsAbs(path) {
-		return true
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return false
-	}
-	if _, statErr := os.Lstat(abs); statErr == nil {
-		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-			abs = resolved
-		}
-	}
 	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return false
+	if err != nil || rootAbs == "" {
+		return "", false
 	}
-	if _, statErr := os.Lstat(rootAbs); statErr == nil {
-		if resolved, err := filepath.EvalSymlinks(rootAbs); err == nil {
-			rootAbs = resolved
-		}
+	rootAbs, ok := repoMaintEvalExisting(rootAbs)
+	if !ok {
+		return "", false
+	}
+	if path == "" || path == "." {
+		return rootAbs, true
+	}
+	joined := path
+	if !filepath.IsAbs(path) {
+		joined = filepath.Join(rootAbs, path)
+	}
+	abs, err := filepath.Abs(joined)
+	if err != nil {
+		return "", false
+	}
+	abs, ok = repoMaintEvalExisting(abs)
+	if !ok {
+		return "", false
 	}
 	rel, err := filepath.Rel(rootAbs, abs)
 	if err != nil {
+		return abs, false
+	}
+	inside := rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	return abs, inside
+}
+
+// repoMaintEvalExisting resolves symlinks and directory junctions. A missing
+// final component keeps the unevaluated suffix after the nearest existing
+// ancestor is resolved. The bool is false when a link cannot be resolved.
+func repoMaintEvalExisting(path string) (string, bool) {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != "" {
+		path = filepath.Clean(resolved)
+	} else if joined, ok := repoMaintEvalAncestor(path); ok {
+		path = joined
+	} else {
+		return "", false
+	}
+	return repoMaintChaseReparse(path)
+}
+
+// repoMaintEvalAncestor rejoins a missing suffix onto the nearest existing
+// ancestor. EvalSymlinks fails when a Windows junction sits in the middle
+// (it is ModeIrregular, not ModeSymlink, and not a directory), so the
+// ancestor can still be the junction itself. The caller chases that link.
+func repoMaintEvalAncestor(path string) (string, bool) {
+	suffix := make([]string, 0, 4)
+	cur := filepath.Clean(path)
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", false
+		}
+		suffix = append([]string{filepath.Base(cur)}, suffix...)
+		info, err := os.Lstat(parent)
+		if err == nil && info != nil {
+			base := parent
+			if resolved, evErr := filepath.EvalSymlinks(parent); evErr == nil && resolved != "" {
+				base = filepath.Clean(resolved)
+			}
+			return filepath.Join(append([]string{base}, suffix...)...), true
+		}
+		cur = parent
+	}
+}
+
+// repoMaintChaseReparse follows directory symlinks and Windows junctions
+// that EvalSymlinks left in place. A junction's Lstat mode is ModeIrregular,
+// so EvalSymlinks returns ENOTDIR or the link path itself. Readlink returns
+// the junction target.
+func repoMaintChaseReparse(path string) (string, bool) {
+	const maxHops = 32
+	cur := filepath.Clean(path)
+	for hop := 0; hop < maxHops; hop++ {
+		link, rest, found, ok := repoMaintOutermostReparse(cur)
+		if !ok {
+			return "", false
+		}
+		if !found {
+			return cur, true
+		}
+		target, err := os.Readlink(link)
+		if err != nil || strings.TrimSpace(target) == "" {
+			return "", false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(link), target)
+		}
+		next := filepath.Clean(target)
+		if rest != "" {
+			next = filepath.Clean(filepath.Join(next, rest))
+		}
+		if repoMaintSamePath(next, cur) {
+			return cur, true
+		}
+		cur = next
+	}
+	return "", false
+}
+
+// repoMaintOutermostReparse reports the reparse point closest to the volume
+// root. found is false when the path has none. ok is false when a link on
+// the way cannot be read, which the jail treats as outside.
+func repoMaintOutermostReparse(path string) (link, rest string, found, ok bool) {
+	path = filepath.Clean(path)
+	vol := filepath.VolumeName(path)
+	i := len(vol)
+	if i < len(path) && os.IsPathSeparator(path[i]) {
+		i++
+	}
+	for i < len(path) {
+		j := i
+		for j < len(path) && !os.IsPathSeparator(path[j]) {
+			j++
+		}
+		if j == i {
+			break
+		}
+		next := path[:j]
+		fi, err := os.Lstat(next)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return "", "", false, true
+			}
+			return "", "", false, false
+		}
+		mode := fi.Mode()
+		reparse := mode&os.ModeSymlink != 0 || (mode&os.ModeIrregular != 0 && !mode.IsDir())
+		rest = strings.TrimLeft(path[j:], `/\`)
+		if reparse {
+			target, rerr := os.Readlink(next)
+			if rerr != nil || strings.TrimSpace(target) == "" {
+				if mode&os.ModeSymlink != 0 || rest != "" {
+					return "", "", false, false
+				}
+				return "", "", false, true
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(next), target)
+			}
+			if !repoMaintSamePath(filepath.Clean(target), next) {
+				return next, rest, true, true
+			}
+		} else if !fi.IsDir() && rest != "" {
+			return "", "", false, false
+		}
+		i = j + 1
+	}
+	return "", "", false, true
+}
+
+func repoMaintSamePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func repoMaintPathInside(root, path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return true
+	}
+	// A shell treats \Users\... as the volume root. Join would hide that under the ghost.
+	path = repoMaintAnchorVolumeRoot(root, path)
+	_, ok := repoMaintResolve(root, path)
+	return ok
+}
+
+// repoMaintAnchorVolumeRoot turns a Windows drive-root path (\Users\...) into
+// C:\Users\... using the ghost directory's volume. Go's filepath.IsAbs is false
+// for that form, and filepath.Join would place it inside the ghost, but cmd
+// and PowerShell open it from the drive root.
+func repoMaintAnchorVolumeRoot(root, path string) string {
+	if runtime.GOOS != "windows" || path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	rooted := strings.HasPrefix(path, `\`) || (strings.HasPrefix(path, `/`) && repoMaintSlashLooksLikePath(path))
+	if !rooted {
+		return path
+	}
+	vol := filepath.VolumeName(root)
+	if vol == "" {
+		return path
+	}
+	rest := strings.TrimLeft(path, `\/`)
+	return vol + `\` + rest
+}
+
+func repoMaintSlashLooksLikePath(path string) bool {
+	if len(path) < 2 || (path[0] != '/' && path[0] != '\\') {
 		return false
 	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	rest := path[1:]
+	return strings.ContainsAny(rest, `/\`) || strings.Contains(rest, ".")
 }
 
 func repoMaintToolDir(h *IMMessageHandler, ownerID, workingDir string) (string, bool) {
@@ -648,17 +850,169 @@ func repoMaintToolDir(h *IMMessageHandler, ownerID, workingDir string) (string, 
 	}
 	if blocked {
 		log.Printf("[github-repo-maint] 目录外")
+		return "", true
+	}
+	if strings.TrimSpace(workingDir) == "" {
 		return dir, true
 	}
-	if workingDir != "" && filepath.IsAbs(workingDir) && !repoMaintPathInside(dir, workingDir) {
+	resolved, ok := repoMaintResolve(dir, workingDir)
+	if !ok {
 		log.Printf("[github-repo-maint] 目录外")
-		return dir, true
+		return "", true
 	}
-	if workingDir == "" || !filepath.IsAbs(workingDir) {
-		if workingDir == "" {
-			return dir, true
+	return resolved, true
+}
+
+// repoMaintRejectShell refuses a maint-job shell whose cwd or absolute
+// arguments leave the ghost directory. It does not try to understand an
+// escaped cd.
+func repoMaintRejectShell(h *IMMessageHandler, ownerID, workingDir, command string) error {
+	if h == nil || h.app == nil {
+		return nil
+	}
+	dir, active, blocked := h.app.repoMaintGuardForOwner(ownerID)
+	if !active {
+		return nil
+	}
+	if blocked || (strings.TrimSpace(workingDir) != "" && !repoMaintPathInside(dir, workingDir)) {
+		log.Printf("[github-repo-maint] 目录外")
+		return fmt.Errorf("path outside the ghost directory")
+	}
+	for _, arg := range repoMaintCommandAbsPaths(command) {
+		if !repoMaintPathInside(dir, arg) {
+			log.Printf("[github-repo-maint] 目录外")
+			return fmt.Errorf("path outside the ghost directory")
 		}
-		return filepath.Join(dir, workingDir), true
 	}
-	return workingDir, true
+	return nil
+}
+
+func repoMaintCommandAbsPaths(command string) []string {
+	var out []string
+	var b strings.Builder
+	var quote rune
+	flush := func() {
+		tok := strings.TrimSpace(b.String())
+		b.Reset()
+		if tok == "" {
+			return
+		}
+		out = append(out, repoMaintAbsCandidates(tok)...)
+	}
+	for _, r := range command {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+				continue
+			}
+			b.WriteRune(r)
+		case r == '\'' || r == '"':
+			quote = r
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			flush()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	flush()
+	return out
+}
+
+// repoMaintAbsCandidates finds absolute paths in one shell token. A quoted
+// powershell -Command body is one token, so the drive path sits inside it.
+// A leading >, 1>, or 2> is not part of the path.
+func repoMaintAbsCandidates(tok string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		s = repoMaintTrimPathToken(s)
+		if s == "" || seen[s] || !repoMaintLooksAbsolute(s) {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	add(repoMaintStripRedirect(tok))
+	if i := strings.IndexByte(tok, '='); i >= 0 && i+1 < len(tok) {
+		add(repoMaintStripRedirect(tok[i+1:]))
+	}
+	for i := 0; i+2 < len(tok); i++ {
+		if repoMaintDriveAt(tok, i) {
+			add(tok[i:])
+			break
+		}
+	}
+	for i := 0; i < len(tok); i++ {
+		if tok[i] != '\\' && tok[i] != '/' {
+			continue
+		}
+		if i == 0 || repoMaintPathBoundary(tok[i-1]) {
+			add(tok[i:])
+		}
+	}
+	return out
+}
+
+func repoMaintLooksAbsolute(path string) bool {
+	if filepath.IsAbs(path) {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	if strings.HasPrefix(path, `\\`) {
+		return true
+	}
+	if strings.HasPrefix(path, `\`) && len(path) > 1 {
+		return true
+	}
+	return strings.HasPrefix(path, `/`) && repoMaintSlashLooksLikePath(path)
+}
+
+func repoMaintDriveAt(tok string, i int) bool {
+	if i+2 >= len(tok) {
+		return false
+	}
+	// A drive letter is one character. The "s://" inside "https://" is a URL.
+	if i > 0 && !repoMaintPathBoundary(tok[i-1]) && tok[i-1] != '/' && tok[i-1] != '\\' {
+		return false
+	}
+	c := tok[i]
+	if c < 'A' || (c > 'Z' && c < 'a') || c > 'z' {
+		return false
+	}
+	return tok[i+1] == ':' && (tok[i+2] == '\\' || tok[i+2] == '/')
+}
+
+func repoMaintPathBoundary(prev byte) bool {
+	switch prev {
+	case ' ', '\t', '\'', '"', '=', '>', '<', '(', ')', '[', '{':
+		return true
+	default:
+		return false
+	}
+}
+
+func repoMaintStripRedirect(tok string) string {
+	tok = strings.TrimSpace(tok)
+	for _, prefix := range []string{"&>>", "1>>", "2>>", ">>", "1>", "2>", "&>", ">", "<"} {
+		if strings.HasPrefix(tok, prefix) {
+			return strings.TrimSpace(tok[len(prefix):])
+		}
+	}
+	return tok
+}
+
+func repoMaintTrimPathToken(s string) string {
+	s = strings.TrimSpace(s)
+	for {
+		next := strings.TrimRight(s, "\"'),;")
+		next = strings.Trim(next, `"'`)
+		next = strings.TrimSpace(next)
+		if next == s {
+			return s
+		}
+		s = next
+	}
 }

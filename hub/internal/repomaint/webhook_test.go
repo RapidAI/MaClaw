@@ -346,6 +346,26 @@ func TestWebhookContract(t *testing.T) {
 		}
 	})
 
+	t.Run("branch delete and tag pushes are dropped", func(t *testing.T) {
+		h := newHarness(t, "rm-push-delete", allKinds, true)
+		zeros := strings.Repeat("0", 40)
+		deleted := []byte(`{"ref":"refs/heads/main","before":"abc123def","after":"` + zeros + `","deleted":true,"repository":{"name":"jjquant-v2","default_branch":"main","owner":{"login":"yucejade"}}}`)
+		if status := h.post("push", "deliv-delete", deleted, sign(deleted), nil); status != http.StatusOK {
+			t.Fatalf("delete status=%d", status)
+		}
+		zerosOnly := []byte(`{"ref":"refs/heads/main","after":"` + zeros + `","repository":{"name":"jjquant-v2","default_branch":"main","owner":{"login":"yucejade"}}}`)
+		if status := h.post("push", "deliv-zeros", zerosOnly, sign(zerosOnly), nil); status != http.StatusOK {
+			t.Fatalf("zero sha status=%d", status)
+		}
+		tag := []byte(`{"ref":"refs/tags/v1.2.3","after":"abc123def456","repository":{"name":"jjquant-v2","default_branch":"main","owner":{"login":"yucejade"}}}`)
+		if status := h.post("push", "deliv-tag", tag, sign(tag), nil); status != http.StatusOK {
+			t.Fatalf("tag status=%d", status)
+		}
+		if h.count() != 0 {
+			t.Fatalf("delete or tag stored %d rows", h.count())
+		}
+	})
+
 	t.Run("unmerged pull request close is dropped", func(t *testing.T) {
 		h := newHarness(t, "rm-pr-close", allKinds, true)
 		body := []byte(`{"action":"closed","pull_request":{"number":3,"merged":false,"title":"x"},"repository":{"name":"jjquant-v2","owner":{"login":"yucejade"}}}`)
