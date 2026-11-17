@@ -8252,7 +8252,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // A chat card on desktop-user never appears on the task tab, so the
             // only outcome used to be a timeout and a rejected install.
             const title = eventIsHant ? '安全風險' : eventIsHans ? '安全风险' : 'Security risk';
-            const confirmed = await showConfirm(summary || title, title, { confirmText: confirmLabel, cancelText: rejectLabel });
+            const confirmed = await showConfirm(summary || title, title, { confirmText: confirmLabel, cancelText: rejectLabel, dialogKey: confirmID });
             try {
                 await ResolveCriticalConfirm(confirmID, confirmed);
             } catch {

@@ -656,7 +656,9 @@ func (a *App) mcpResolveScopeCommand(projectPath string, reg mcpTaskView, inRegi
 	if !mcpScopeDecisionAllowed(pending.Kind, decision) {
 		return mcpTaskView{}, errors.New("这个确认没有这个决定")
 	}
-	ResolveScopeApproval(id, decision)
+	if !deliverScopeApproval(id, decision) {
+		return mcpTaskView{}, errors.New("确认已过期或已处理")
+	}
 	view.Text = strings.TrimSpace(view.Text + "\n\n已提交授权决定。")
 	if view.Status == mcpStatusRunning {
 		return a.mcpAnnotateRunningGates(view), nil

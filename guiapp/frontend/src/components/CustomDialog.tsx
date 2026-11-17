@@ -187,12 +187,15 @@ interface DialogState {
     cancelText?: string;
     confirmVariant?: 'primary' | 'danger';
     placeholder?: string;
+    dialogKey?: string;
 }
 
 interface ConfirmOptions {
     confirmText?: string;
     cancelText?: string;
     confirmVariant?: 'primary' | 'danger';
+    // dialogKey lets a backend event close this confirm without a click.
+    dialogKey?: string;
 }
 
 interface PromptOptions {
@@ -296,7 +299,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
             pendingDialogRef.current = { mode: 'confirm', resolve: (value) => resolve(Boolean(value)) };
             captureInvokingFocus();
             setPromptInput('');
-            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme(), lightScheme: getCurrentLightScheme(), confirmText: options?.confirmText, cancelText: options?.cancelText, confirmVariant: options?.confirmVariant });
+            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme(), lightScheme: getCurrentLightScheme(), confirmText: options?.confirmText, cancelText: options?.cancelText, confirmVariant: options?.confirmVariant, dialogKey: options?.dialogKey });
         });
     }, [captureInvokingFocus, setPromptInput]);
 
@@ -340,6 +343,22 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         previousFocusRef.current = null;
         if (previousFocus?.isConnected) previousFocus.focus();
     }, []);
+
+    const dialogKeyRef = useRef('');
+    dialogKeyRef.current = state.open ? (state.dialogKey || '') : '';
+
+    // A critical-risk confirm can be answered from MCP while this modal is
+    // still open. Close only the confirm that carries that id.
+    useEffect(() => {
+        const handler = (payload: unknown) => {
+            const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
+            const id = typeof data?.confirm_id === 'string' ? data.confirm_id.trim() : '';
+            if (!id || id !== dialogKeyRef.current) return;
+            close(false);
+        };
+        const unsubscribe = EventsOn('critical-risk-confirm-resolved', handler);
+        return unsubscribe;
+    }, [close]);
 
     // Listen for Go backend "show-message" events (fire-and-forget info dialogs)
     useEffect(() => {

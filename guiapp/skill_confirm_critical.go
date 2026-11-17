@@ -489,6 +489,13 @@ func (h *IMMessageHandler) ResolveCriticalConfirm(confirmID string, confirmed bo
 	// We won the race — safe to send on the channel (it's not closed).
 	h.pendingCriticalConfirm.Delete(confirmID)
 	entry.Ch <- criticalRiskConfirmResponse{Confirmed: confirmed}
+	if h.app != nil {
+		// The desktop modal is already open. Tell it to close; a later click
+		// must not send a second decision.
+		h.app.emitEvent("critical-risk-confirm-resolved", map[string]interface{}{
+			"confirm_id": confirmID,
+		})
+	}
 	log.Printf("[critical-confirm] resolve: confirmID=%s confirmed=%v", confirmID, confirmed)
 	return nil
 }

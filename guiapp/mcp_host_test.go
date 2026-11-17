@@ -373,6 +373,55 @@ func TestInboundMCPConfirmationCommandsAreOperable(t *testing.T) {
 	}
 }
 
+func TestInboundMCPScopeDecisionReachesTheToolAndClosesTheDialog(t *testing.T) {
+	var event string
+	app := &App{testEmit: func(name string, data ...interface{}) {
+		if name == "subagent-scope-approval-resolved" {
+			event = name
+		}
+	}}
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-live"})
+	handler := &IMMessageHandler{app: app}
+	ch := make(chan ScopeApprovalDecision, 1)
+	id := storePendingScopeApproval(handler, ScopeApprovalRequest{ProjectPath: "p", Message: "写外面"}, ch)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(id) })
+
+	full := make(chan ScopeApprovalDecision, 1)
+	full <- ScopeApprovalDeny
+	fullID := storePendingScopeApproval(handler, ScopeApprovalRequest{ProjectPath: "p", Message: "通道已满"}, full)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(fullID) })
+	if _, err := app.mcpSendCommand(context.Background(), "p", "__scope_approval__ "+fullID+" allow_dir", false); err == nil || !strings.Contains(err.Error(), "已过期") {
+		t.Fatalf("undelivered decision: %v", err)
+	}
+	select {
+	case decision := <-full:
+		if decision != ScopeApprovalDeny {
+			t.Fatalf("buffered decision changed to %q", decision)
+		}
+	default:
+		t.Fatal("buffered decision was removed")
+	}
+
+	view, err := app.mcpSendCommand(context.Background(), "p", "__scope_approval__ "+id+" allow_dir", false)
+	if err != nil || view.Status != mcpStatusRunning || !strings.Contains(view.Text, "已提交授权决定") {
+		t.Fatalf("scope resolve %+v err=%v", view, err)
+	}
+	if event != "subagent-scope-approval-resolved" {
+		t.Fatalf("dialog event %q", event)
+	}
+	select {
+	case decision := <-ch:
+		if decision != ScopeApprovalAllowDir {
+			t.Fatalf("scope decision %q", decision)
+		}
+	default:
+		t.Fatal("scope decision was not delivered")
+	}
+	if _, err := app.mcpSendCommand(context.Background(), "p", "__scope_approval__ "+id+" deny", false); err == nil || !strings.Contains(err.Error(), "已过期") {
+		t.Fatalf("second decision: %v", err)
+	}
+}
+
 func containsAll(commands []string, want ...string) bool {
 	have := map[string]struct{}{}
 	for _, command := range commands {
@@ -397,6 +446,44 @@ func commandsContainAny(commands []string, want ...string) bool {
 		}
 	}
 	return false
+}
+
+func TestInboundMCPCriticalResolveClosesTheDesktopDialog(t *testing.T) {
+	var event string
+	var confirmID string
+	app := &App{testEmit: func(name string, data ...interface{}) {
+		if name != "critical-risk-confirm-resolved" || len(data) == 0 {
+			return
+		}
+		payload, _ := data[0].(map[string]interface{})
+		if payload == nil {
+			return
+		}
+		event = name
+		confirmID, _ = payload["confirm_id"].(string)
+	}}
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-live"})
+	owner := projectSessionOwnerID("p")
+	app.imHandler = &IMMessageHandler{app: app}
+	ch := make(chan criticalRiskConfirmResponse, 1)
+	app.imHandler.pendingCriticalConfirm.Store("crit_mcp", &pendingCriticalConfirmEntry{Ch: ch, Prompt: "安装危险技能", Owner: owner})
+	t.Cleanup(func() { app.imHandler.pendingCriticalConfirm.Delete("crit_mcp") })
+
+	view, err := app.mcpSendCommand(context.Background(), "p", "__resolve_critical_confirm__ crit_mcp confirm", false)
+	if err != nil || view.Status != mcpStatusRunning || !strings.Contains(view.Text, "已提交安全确认") {
+		t.Fatalf("critical resolve %+v err=%v", view, err)
+	}
+	if event != "critical-risk-confirm-resolved" || confirmID != "crit_mcp" {
+		t.Fatalf("dialog event %q id %q", event, confirmID)
+	}
+	select {
+	case resp := <-ch:
+		if !resp.Confirmed {
+			t.Fatal("critical confirm was rejected")
+		}
+	default:
+		t.Fatal("critical confirm was not delivered")
+	}
 }
 
 func TestInboundMCPFinishDoesNotOverwriteCancel(t *testing.T) {
