@@ -10,6 +10,9 @@ import FileCompanionWindow, { COMPANION_UI_LANGUAGE_EVENT } from "./FileCompanio
 vi.mock("../../../wailsjs/go/main/App", () => ({
     GetCurrentLanguage: vi.fn(async () => "mn"),
     GetFileCompanionBoot: vi.fn(async () => ({ paths: [] })),
+    FileCompanionUIReady: vi.fn(async () => ({ paths: [] })),
+    FileCompanionTakePlaces: vi.fn(async () => []),
+    FileCompanionTakeLibraryView: vi.fn(async () => false),
     GetBrandInfo: vi.fn(async () => ({ displayName: "MaClaw" })),
     ListFileCompanionLibrary: vi.fn(async () => ({ items: [], notice: "登录后可以查看云端分享" })),
     ListFileCompanionCatalog: vi.fn(async () => ({ rev: 0, folders: [], placements: {} })),
