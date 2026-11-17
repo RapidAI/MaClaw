@@ -543,6 +543,32 @@ func (s *Service) admitReadyWait() time.Duration {
 	return 3 * time.Second
 }
 
+// admitReceiptWait is how long a terminal run may stay unreadied while
+// MaClawSrv still has receipt_pending set. The server waits up to
+// desktopContractWait (5s, MaClawSrv/desktop_watchdog.go) for an extraction
+// that already started, then writes the receipt. This bound is longer than
+// that wait, and it is still a bound: a receipt that never becomes ready
+// is settled as not done.
+const admitReceiptWait = 8 * time.Second
+
+// admitUnreadyWait is the grace for one terminal read that is not
+// desktop_ready yet. A receipt_pending mark means the finish hook is still
+// writing the outcome, so the short grace would settle a pre-receipt body.
+func (s *Service) admitUnreadyWait(view desktopRunView) time.Duration {
+	wait := s.admitReadyWait()
+	if strings.TrimSpace(view.Metadata["receipt_pending"]) != "1" {
+		return wait
+	}
+	long := admitReceiptWait
+	if s != nil && s.admitReceiptGrace > 0 {
+		long = s.admitReceiptGrace
+	}
+	if long > wait {
+		return long
+	}
+	return wait
+}
+
 func desktopRunTerminal(status string) bool {
 	switch strings.TrimSpace(status) {
 	case "succeeded", "failed", "cancelled":
@@ -745,7 +771,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			if firstTerminal.IsZero() {
 				firstTerminal = time.Now()
 			}
-			if time.Since(firstTerminal) < s.admitReadyWait() {
+			if time.Since(firstTerminal) < s.admitUnreadyWait(view) {
 				writePoll("waiting", nil,
 					"instance", job.InstanceID,
 					"run", job.RunID,
@@ -788,6 +814,21 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			Attachments: view.Message.Attachments,
 			Waiting:     strings.TrimSpace(job.ClientMessageID) != "",
 			Turn:        desktopTurnOf(job.ClientMessageID, job.RunID),
+		}
+		// The run is terminal and the receipt is still pending. The body Hub
+		// can see is the pre-receipt save: task_outcome may already say done,
+		// and the message may be absent. That is not a finished task and not
+		// a quiet success.
+		if !view.DesktopReady && strings.TrimSpace(view.Metadata["receipt_pending"]) == "1" {
+			if body.Metadata == nil {
+				body.Metadata = map[string]string{}
+			}
+			if o := desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey]); o == "" || o == "done" {
+				body.Metadata[desktopTaskOutcomeKey] = "unverified"
+			}
+			if strings.TrimSpace(body.Text) == "" && len(body.Attachments) == 0 {
+				body.Waiting = true
+			}
 		}
 		if view.DesktopHandoff && !job.Isolated && !job.Opened && strings.TrimSpace(job.Novnc) == "" {
 			if url, did, openErr := s.openDesktop(context.Background(), job.TenantID, job.UserID, job.InstanceID, job.BotID); openErr == nil {

@@ -340,11 +340,13 @@ type Service struct {
 	// BotParallelRuns caps how many runs one bot may have going at once
 	// (0: MACLAW_BOT_PARALLEL_RUNS or 3; see botParallelRuns).
 	BotParallelRuns int
-	// admitPollInterval and admitReadyGrace shorten the background run
-	// follow-up in tests. Production waits one second between reads and
-	// gives the result a few seconds to land after the run becomes terminal.
+	// admitPollInterval, admitReadyGrace, and admitReceiptGrace shorten the
+	// background run follow-up in tests. Production waits one second between
+	// reads, gives a finished run a few seconds to publish desktop_ready,
+	// and waits longer while receipt_pending is still set.
 	admitPollInterval time.Duration
 	admitReadyGrace   time.Duration
+	admitReceiptGrace time.Duration
 	// desktopAdmits is the reply of a run that was accepted and is still
 	// executing, or has finished, after the admitting call returned.
 	desktopAdmits map[string]*desktopAdmitState
