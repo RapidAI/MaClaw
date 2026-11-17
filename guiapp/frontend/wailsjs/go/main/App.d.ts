@@ -2569,6 +2569,12 @@ export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentRespon
 export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 export function SendDesktopBotTaskTo(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.IMAgentResponse>;
 
+export function SubmitDesktopBotInteraction(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
+
+export function OpenDesktopBotInteraction(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,input_granted?:boolean,attention_reason?:string,desktop_mode?:string}>;
+
+export function GetChatCardShot(arg1:string,arg2:string,arg3:string):Promise<{mime:string,data:string}>;
+
 
 export function UploadDesktopBotMaterialChunk(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number,arg6:string):Promise<{upload_id:string,name:string,received:number,total:number,done:boolean,path?:string}>;
 

@@ -1498,6 +1498,68 @@ func (a *App) markDesktopRunWaitingForUser(botID, requestID string) {
 	a.publishDesktopRunDriving(botID)
 }
 
+// SubmitDesktopBotInteraction forwards one card decision. The body is the
+// card the person saw. This process does not decide that the task is done.
+func (a *App) SubmitDesktopBotInteraction(botID, runID, requestID, body string) (string, error) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return "", err
+	}
+	for _, key := range []string{"user_id", "tenant_id", "authenticated", "actor", "done", "granted", "resume"} {
+		delete(payload, key)
+	}
+	var out map[string]any
+	path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/runs/" + url.PathEscape(strings.TrimSpace(runID)) + "/interactions/" + url.PathEscape(strings.TrimSpace(requestID)) + "/decision"
+	if err := a.desktopBotCall(context.Background(), http.MethodPost, path, payload, &out, 20*time.Second); err != nil {
+		return "", err
+	}
+	out["done"] = false
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// OpenDesktopBotInteraction attaches the existing remote desktop for this
+// card's bot. It watches that bot and does not wake a different computer.
+func (a *App) OpenDesktopBotInteraction(botID, runID, requestID, leaseID, capturedAt string) (*DesktopBotWatch, error) {
+	botID = strings.TrimSpace(botID)
+	var out struct {
+		BotID string `json:"bot_id"`
+		Wake  bool   `json:"wake"`
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/runs/" + url.PathEscape(strings.TrimSpace(runID)) + "/interactions/" + url.PathEscape(strings.TrimSpace(requestID)) + "/desktop"
+	body := map[string]string{"bot_id": botID, "lease_id": strings.TrimSpace(leaseID), "captured_at": strings.TrimSpace(capturedAt)}
+	if err := a.desktopBotCall(context.Background(), http.MethodPost, path, body, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	if out.Wake || strings.TrimSpace(out.BotID) != botID {
+		return nil, fmt.Errorf("this screenshot belongs to a different computer")
+	}
+	watch, err := a.WatchDesktopBot(botID, 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := a.SetDesktopBotControl(botID, true); err != nil {
+		return nil, err
+	}
+	return watch, nil
+}
+
+// GetChatCardShot reads the captured screenshot for one card.
+func (a *App) GetChatCardShot(botID, runID, requestID string) (*DesktopBotImage, error) {
+	var out DesktopBotImage
+	path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/runs/" + url.PathEscape(strings.TrimSpace(runID)) + "/interactions/" + url.PathEscape(strings.TrimSpace(requestID)) + "/shot"
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, path, nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Data) == "" {
+		return nil, fmt.Errorf("screenshot is not on this task")
+	}
+	return &out, nil
+}
+
 // postDesktopBotSupplement forwards one supplement to Hub for the named run.
 func (a *App) postDesktopBotSupplement(botID, runID, supplement string) (*desktopRunSupplementAck, error) {
 	var out desktopRunSupplementAck

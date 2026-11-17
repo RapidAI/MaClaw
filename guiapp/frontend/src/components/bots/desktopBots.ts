@@ -852,6 +852,7 @@ export interface DesktopBotMessage {
     attentionReason?: string;
     phase?: BotPhase;
     askUser?: DesktopBotAsk;
+    interaction?: import('./chatInteractionCard').ChatInteraction;
     askResolved?: boolean;
     requestId?: string;
     // Set just before the order goes to SendDesktopBotTask. A pending bubble
@@ -1390,7 +1391,7 @@ function withConversation<T extends { conversation?: string; conversationAt?: nu
     return { conversation: session, conversationAt: Number(patch.conversationAt || previous.conversationAt || 0) || now };
 }
 
-export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; runId?: string; conversation?: string; conversationAt?: number }): string {
+export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; interaction?: DesktopBotMessage['interaction']; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; runId?: string; conversation?: string; conversationAt?: number }): string {
     const current = messagesForBot(userId, botId);
     const index = pendingBotIndex(current, patch.requestId || '');
     if (index < 0) return '';
@@ -1410,6 +1411,7 @@ export function settlePendingBotReply(userId: string, botId: string, patch: { co
         userControl: patch.userControl === true,
         attentionReason: reason,
         askUser: patch.askUser || previous.askUser,
+        interaction: patch.interaction || previous.interaction,
         images: patch.failed || shotPaths || attachmentIds ? undefined : desktopBotImages(patch.images),
         shotPaths,
         attachmentIds,
@@ -1622,7 +1624,7 @@ export function takeDesktopBotCrossRun(userId: string, botId: string): DesktopBo
 // The same request id is written once, so the open page and the store can
 // both hear the event. A scheduled report passes no phase, so it does not
 // take the confirm control. A destructive delegate passes phase plan.
-export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; confirm?: DesktopBotConfirm; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string; conversation?: string; conversationAt?: number }) {
+export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; interaction?: DesktopBotMessage['interaction']; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; attachmentIds?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; confirm?: DesktopBotConfirm; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string; conversation?: string; conversationAt?: number }) {
     const requestId = (patch.requestId || '').trim();
     const runId = (patch.runId || '').trim();
     const current = messagesForBot(userId, botId);
@@ -1643,6 +1645,7 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
         userControl: patch.userControl === true,
         attentionReason: reason,
         askUser: patch.askUser,
+        interaction: patch.interaction,
         images: patch.failed || shotPaths || attachmentIds ? undefined : desktopBotImages(patch.images),
         shotPaths,
         attachmentIds,

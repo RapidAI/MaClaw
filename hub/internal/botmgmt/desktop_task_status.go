@@ -507,6 +507,10 @@ func (s *Service) refillDesktopRunMedia(ctx context.Context, tenantID, userID st
 			state.reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
 			persist = true
 		}
+		if strings.TrimSpace(state.reply.InteractionJSON) == "" && strings.TrimSpace(meta["interaction_json"]) != "" {
+			state.reply.InteractionJSON = strings.TrimSpace(meta["interaction_json"])
+			persist = true
+		}
 	}
 	return persist
 }

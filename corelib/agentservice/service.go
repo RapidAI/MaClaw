@@ -14,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/chatcard"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -103,6 +104,9 @@ type Service struct {
 	// Guarded by dynamicSemanticMu, like dynamicSemantic: hosts may construct
 	// the publisher from a request-goroutine while routing is being configured.
 	registry *coretool.CapabilityRegistry
+
+	// chatCards is the durable interaction record. Nil keeps the older ask path.
+	chatCards *chatcard.Store
 
 	// AssistantMessageMetadataHook lets the hosting server attach runtime
 	// capability metadata after an assistant response is produced.

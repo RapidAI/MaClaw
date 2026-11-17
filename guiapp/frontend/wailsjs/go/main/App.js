@@ -5154,6 +5154,18 @@ export function SendDesktopBotTaskTo(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['SendDesktopBotTaskTo'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function SubmitDesktopBotInteraction(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SubmitDesktopBotInteraction'](arg1, arg2, arg3, arg4);
+}
+
+export function OpenDesktopBotInteraction(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['OpenDesktopBotInteraction'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function GetChatCardShot(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetChatCardShot'](arg1, arg2, arg3);
+}
+
 export function UploadDesktopBotMaterialChunk(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['UploadDesktopBotMaterialChunk'](arg1, arg2, arg3, arg4, arg5, arg6);
 }

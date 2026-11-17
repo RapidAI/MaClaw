@@ -22,6 +22,7 @@ import (
 	transporthttp "github.com/RapidAI/CodeClaw/MaClawSrv/transport/http"
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/chatcard"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/database"
@@ -108,6 +109,7 @@ type HTTPServer struct {
 	// codingRuntimeStore is transport-neutral task/attempt history. HTTP and
 	// future service executors use adapters; the server never imports GUI code.
 	codingRuntimeStore *codingruntime.SQLiteStore
+	chatCards          *chatcard.Store
 	// codingRuntimeRecoveryProber is a test seam around the otherwise fixed
 	// local, read-only workspace probe. Production leaves it nil and uses the
 	// local Git prober below; it must never supply a mutating probe.
@@ -205,6 +207,13 @@ func NewHTTPServerWithError(svc *agentservice.Service, adminSecret string, knowl
 	s.startConfiguredAIModelDownloads(context.Background())
 	s.startConfiguredWeixinRuntimes(context.Background())
 	s.startConfiguredIMRuntimes(context.Background())
+	cards, cardErr := chatcard.Open(filepath.Join(svc.DataRoot(), "chat_cards.db"))
+	if cardErr != nil {
+		return nil, cardErr
+	}
+	s.chatCards = cards
+	svc.SetChatCards(cards)
+	desktopChatCards = cards
 	s.routes()
 	s.startSandboxStartupDiagnoseIfEnabled()
 	return s, nil
@@ -236,6 +245,9 @@ func (s *HTTPServer) Close() {
 		}
 		if s.codingRuntimeStore != nil {
 			_ = s.codingRuntimeStore.Close()
+		}
+		if s.chatCards != nil {
+			_ = s.chatCards.Close()
 		}
 	})
 }

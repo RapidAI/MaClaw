@@ -1,6 +1,7 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { DesktopBotOptionChips } from './DesktopBotOptionChips';
 import { DesktopBotInquiryCard, askUserAllowsMultiple } from './DesktopBotInquiryCard';
+import { ChatInteractionCard, type ChatInteractionDecision, type ChatDesktopOpen } from './chatInteractionCard';
 import { DesktopBotMaterialChips, DesktopBotMaterialStrip } from './DesktopBotMaterialStrip';
 import { materialTooLarge, materialUploadId, splitMaterials, uploadMaterial, withMaterials, type MaterialItem } from './desktopBotMaterials';
 import { createPortal } from 'react-dom';
@@ -94,6 +95,9 @@ import {
     SaveBotSecret,
     StageDesktopBotSecret,
     SendDesktopBotTaskTo,
+    SubmitDesktopBotInteraction,
+    OpenDesktopBotInteraction,
+    GetChatCardShot,
     ShowItemInFolder,
     SetDesktopBotControl,
     WatchDesktopBot,
@@ -6579,6 +6583,44 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A tapped option redirects the run already underway through the
     // supplement path. It never starts, holds, or stops a job. With no live
     // run left the chips are gone, so this only hides them.
+    const submitInteraction = async (messageId: string, runId: string, requestId: string, decision: ChatInteractionDecision) => {
+        if (!selected || !requestId) return;
+        const botId = selected.id;
+        if (decision.bot_id && decision.bot_id !== botId) return;
+        try {
+            const raw = await SubmitDesktopBotInteraction(botId, runId, requestId, JSON.stringify(decision));
+            const parsed = JSON.parse(String(raw || '{}')) as { resume?: boolean; mode?: string; done?: boolean };
+            if (parsed.done === true) return;
+            markAskResolved(botId, messageId);
+            const cancelled = decision.choice_ids?.includes('cancel') || decision.choice_ids?.includes('decline') || decision.decline;
+            if (cancelled) {
+                try { await SetDesktopBotControl(botId, false); } catch { /* the hold expires on its own */ }
+            }
+            const zh = lang.startsWith('zh');
+            const note = cancelled
+                ? (zh ? '已取消，这一步不会继续。' : 'Cancelled. This step will not continue.')
+                : parsed.mode === 'verify'
+                    ? (zh ? '已记下。接下来只核对这台电脑上的实际结果，点一下并不代表已经完成。' : 'Noted. The next step only checks the live result. The click is not completion.')
+                    : (zh ? '已记下，继续同一件事。' : 'Noted. Continuing the same task.');
+            appendNote(botId, note);
+        } catch {
+            appendNote(botId, lang.startsWith('zh') ? '没能提交这一选择。' : 'The choice was not submitted.');
+        }
+    };
+
+    const openInteractionDesktop = async (open: ChatDesktopOpen) => {
+        if (!selected || open.botId !== selected.id) return;
+        try {
+            const watch = await OpenDesktopBotInteraction(open.botId, open.runId, open.requestId, open.leaseId, open.capturedAt) as { novnc_url?: string; NovncURL?: string; user_control?: boolean };
+            const url = String(watch?.novnc_url || watch?.NovncURL || '');
+            if (!url) return;
+            syncLive(open.botId, { url, userControl: true, attentionReason: 'handoff' });
+            openPanel(open.botId, 'user');
+        } catch {
+            appendNote(selected.id, lang.startsWith('zh') ? '打不开这一任务的电脑。' : 'This task’s computer did not open.');
+        }
+    };
+
     const pickDesktopBotOption = async (messageId: string, option: string, shown: string, typed = false) => {
         if (!selected) return;
         const botId = selected.id;
@@ -6895,7 +6937,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
 
     useEffect(() => {
         if (!selected) return;
-        const msg = [...messages].reverse().find(item => item.askUser && !item.askResolved && item.askUser.secretName && (item.askUser.inputType === 'secret' || item.askUser.inputType === 'secret_fill'));
+        const msg = [...messages].reverse().find(item => item.interaction?.kind !== 'native_handoff' && item.askUser && !item.askResolved && item.askUser.secretName && (item.askUser.inputType === 'secret' || item.askUser.inputType === 'secret_fill'));
         if (!msg?.askUser?.secretName) return;
         if (secretHandled.current.has(msg.id)) return;
         secretHandled.current.add(msg.id);
@@ -7537,7 +7579,21 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         />
                                     ) : null}
                                     {/* No confirm button: an arranged plan continues on its own (runArrangedPlan). */}
-                                    {message.askUser?.options && message.askUser.options.length > 0 && !message.askResolved && !message.userControl ? (
+                                    {message.role === 'assistant' && message.interaction && !message.askResolved ? (
+                                        <ChatInteractionCard
+                                            card={message.interaction}
+                                            lang={lang}
+                                            loadShot={async card => {
+                                                const shot = await GetChatCardShot(card.bot_id, card.run_id, card.id) as { mime?: string; data?: string; MIME?: string; Data?: string };
+                                                const data = String(shot?.data || shot?.Data || '');
+                                                const mime = String(shot?.mime || shot?.MIME || 'image/png');
+                                                return data ? `data:${mime};base64,${data}` : undefined;
+                                            }}
+                                            onDecide={decision => { void submitInteraction(message.id, message.runId || message.interaction?.run_id || '', message.interaction?.id || '', decision); }}
+                                            onOpenDesktop={open => { void openInteractionDesktop(open); }}
+                                        />
+                                    ) : null}
+                                    {message.askUser?.options && message.askUser.options.length > 0 && !message.interaction && !message.askResolved && !message.userControl ? (
                                         <DesktopBotInquiryCard
                                             question={message.askUser.question}
                                             options={message.askUser.options}

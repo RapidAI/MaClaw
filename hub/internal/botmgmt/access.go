@@ -125,17 +125,19 @@ type ReplyImage struct {
 }
 
 type Reply struct {
-	Text               string       `json:"text"`
-	SendToUser         string       `json:"send_to_user,omitempty"`
-	NovncURL           string       `json:"novnc_url,omitempty"`
-	Handoff            bool         `json:"handoff,omitempty"`
-	AttentionReason    string       `json:"attention_reason,omitempty"`
-	AskUserInputType   string       `json:"ask_user_input_type,omitempty"`
-	AskUserSecretName  string       `json:"ask_user_secret_name,omitempty"`
-	AskUserQuestion    string       `json:"ask_user_question,omitempty"`
-	AskUserOptionsJSON string       `json:"ask_user_options_json,omitempty"`
-	Images             []ReplyImage `json:"images,omitempty"`
-	Files              []ReplyFile  `json:"files,omitempty"`
+	Text               string `json:"text"`
+	SendToUser         string `json:"send_to_user,omitempty"`
+	NovncURL           string `json:"novnc_url,omitempty"`
+	Handoff            bool   `json:"handoff,omitempty"`
+	AttentionReason    string `json:"attention_reason,omitempty"`
+	AskUserInputType   string `json:"ask_user_input_type,omitempty"`
+	AskUserSecretName  string `json:"ask_user_secret_name,omitempty"`
+	AskUserQuestion    string `json:"ask_user_question,omitempty"`
+	AskUserOptionsJSON string `json:"ask_user_options_json,omitempty"`
+	// InteractionJSON is the server-owned card. Older clients ignore it.
+	InteractionJSON string       `json:"interaction_json,omitempty"`
+	Images          []ReplyImage `json:"images,omitempty"`
+	Files           []ReplyFile  `json:"files,omitempty"`
 	// TaskOutcome is MaClawSrv's measured task outcome for the run (empty
 	// from an older MaClawSrv): anything but "done" means not finished,
 	// whatever the reply text or run status says.
@@ -1178,6 +1180,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
 		reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
 		reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
+		reply.InteractionJSON = strings.TrimSpace(meta["interaction_json"])
 	}
 	reason := strings.TrimSpace(body.Attention)
 	if body.Handoff {
@@ -1250,6 +1253,7 @@ func noneDesktopSettle(body desktopCommandBody) (Reply, error) {
 		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
 		reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
 		reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
+		reply.InteractionJSON = strings.TrimSpace(meta["interaction_json"])
 	}
 	return reply, nil
 }
@@ -1276,6 +1280,7 @@ func desktopSentenceReply(body desktopCommandBody) Reply {
 		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
 		reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
 		reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
+		reply.InteractionJSON = strings.TrimSpace(meta["interaction_json"])
 	}
 	return reply
 }

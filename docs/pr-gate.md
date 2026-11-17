@@ -34,7 +34,7 @@ A selected `go test` that prints `[no tests to run]` or `[no test files]`, or th
 
 `lifecycle` (`go test -race -count=1`, `MACLAW_TEST_MODELS=off`):
 
-- `./MaClawSrv`: `TestDesktopReceiptPersistsVisibleOutcome`, `TestDesktopDeliverableExtractionChain`, `TestPlanFileIsNotDelivery`, `TestTextItemsNeedExplicitIDs`, `TestHTTPReadDuringFinalize`, `TestDesktopReceiptStaysUnreadyPastTwoSeconds`, `TestDesktopAbandonedReceiptBecomesUnverified`, `TestDesktopReceiptPersistFailureIsNotReady`, `TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn`, `TestNoDesktopAsyncFinishKeepsGeneratedPDF`
+- `./MaClawSrv`: `TestDesktopReceiptPersistsVisibleOutcome`, `TestDesktopDeliverableExtractionChain`, `TestPlanFileIsNotDelivery`, `TestTextItemsNeedExplicitIDs`, `TestHTTPReadDuringFinalize`, `TestDesktopReceiptStaysUnreadyPastTwoSeconds`, `TestDesktopAbandonedReceiptBecomesUnverified`, `TestDesktopReceiptPersistFailureIsNotReady`, `TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn`, `TestNoDesktopAsyncFinishKeepsGeneratedPDF`, `TestChatCardDecisionResumesSameTask`
 - `./corelib/agentservice`: `TestDesktopDeliverablesOnlyForExecuteDesktopTurns`
 
 `hub-outcome` (no race, httptest, no credentials):
@@ -43,6 +43,7 @@ A selected `go test` that prints `[no tests to run]` or `[no test files]`, or th
 - `TestDelegatedRunEndHonoursTaskOutcome`
 - `TestSettleFinishedRunAgreesWithUndeliveredReceipt`
 - `TestDelegatedRunEndLeavesRunningJobOpen`
+- `TestChatCardDecisionReachesHub`
 
 Frontend install is `npm ci` against `guiapp/frontend/package-lock.json` (Node 22). `npm run build` is not used: its `prebuild` runs `go run scripts/check_wails_bindings.go` and the UI-guard scripts. Those stay with the native GUI build. Vitest must report `numTotalTests >= 1` and `numFailedTests === 0`. The vite step must leave a non-empty `guiapp/frontend/dist/index.html`. CSS partials are assembled into `src/App.css` by `prebuild`; this job does not re-assemble them. Vitest, `tsc`, and vite all run; the job fails if any of them fails. A vitest failure does not skip the typecheck or the build.
 
