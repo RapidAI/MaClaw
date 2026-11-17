@@ -36,6 +36,15 @@ var viewerGrants struct {
 // Nil means a confirmed ticket stays valid until it expires.
 var viewerStillOpen func(tenantID, userID string) bool
 
+// edgeStateMu keeps NewRouter from installing viewerStillOpen while a test
+// is reusing a ticket. The test holds it for the whole case.
+var edgeStateMu sync.Mutex
+
+func holdEdgeState() func() {
+	edgeStateMu.Lock()
+	return func() { edgeStateMu.Unlock() }
+}
+
 // edgeDirectURL is the intranet noVNC page for a node desktop, or "" when
 // this view stays on the Hub relay. The gate token is not in the URL.
 func edgeDirectURL(tenantID, userID, raw string, control bool) string {

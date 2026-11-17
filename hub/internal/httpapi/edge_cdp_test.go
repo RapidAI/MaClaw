@@ -38,6 +38,7 @@ func TestCDPRelayKeepsTheGateTokenOffTheCaller(t *testing.T) {
 }
 
 func TestCDPTicketRelaysAnotherNodeAndRewritesTheDebuggerURL(t *testing.T) {
+	t.Cleanup(holdEdgeState())
 	t.Setenv("HUB_EDGE_NODES", "on")
 	const gate = "gate-secret"
 	key, err := desktop.UserKey("tenant-a", "alice")
@@ -168,6 +169,7 @@ func TestCDPTicketRelaysAnotherNodeAndRewritesTheDebuggerURL(t *testing.T) {
 }
 
 func TestAnotherNodeGetsACDPTicketNotTheLocalAddress(t *testing.T) {
+	t.Cleanup(holdEdgeState())
 	t.Setenv("HUB_EDGE_NODES", "on")
 	const gate = "gate-secret"
 	key, err := desktop.UserKey("tenant-a", "alice")

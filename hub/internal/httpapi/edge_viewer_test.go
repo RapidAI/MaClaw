@@ -22,6 +22,8 @@ import (
 // stored.
 func isolateViewerSession(t *testing.T) {
 	t.Helper()
+	release := holdEdgeState()
+	t.Cleanup(release)
 	prevOpen := viewerStillOpen
 	viewerStillOpen = nil
 	viewerGrants.mu.Lock()

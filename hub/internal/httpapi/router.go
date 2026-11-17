@@ -460,47 +460,54 @@ func NewRouter(
 		return err == nil && node.HasSrv && !edgeTenantMismatch(node.TenantID, tenantID)
 	}
 	if edgenode.Enabled() {
-		edgeRegistry = edgenode.NewRegistry(system)
-		edgeBroker = edgenode.NewBroker(edgeRegistry)
-		desktopPool.Nodes = func(ctx context.Context, tenantID, nodeID, target string) *http.Client {
-			if edgeBroker == nil {
-				return nil
+		// A package test that is reusing a viewer ticket holds edgeStateMu
+		// for the whole case. Installing the hook in the middle of that
+		// case drops the ticket and the next look mints another one.
+		func() {
+			edgeStateMu.Lock()
+			defer edgeStateMu.Unlock()
+			edgeRegistry = edgenode.NewRegistry(system)
+			edgeBroker = edgenode.NewBroker(edgeRegistry)
+			desktopPool.Nodes = func(ctx context.Context, tenantID, nodeID, target string) *http.Client {
+				if edgeBroker == nil {
+					return nil
+				}
+				return edgeBroker.Client(tenantID, nodeID, target)
 			}
-			return edgeBroker.Client(tenantID, nodeID, target)
-		}
-		mux.HandleFunc("GET /api/admin/bots/nodes", requireTenantAdmin(GetEdgeNodesAdminHandler(edgeRegistry, edgeBroker)))
-		mux.HandleFunc("GET /api/admin/platform/edge-nodes", requireGlobalAdmin(GetEdgeNodesPlatformHandler(edgeRegistry, edgeBroker)))
-		mux.HandleFunc("GET /api/admin/platform/tenants/{tenantId}/edge-policy", requireGlobalAdmin(GetEdgePolicyPlatformHandler(edgeRegistry)))
-		mux.HandleFunc("PUT /api/admin/platform/tenants/{tenantId}/edge-policy", requireGlobalAdmin(PutEdgePolicyPlatformHandler(edgeRegistry)))
-		mux.HandleFunc("DELETE /api/admin/bots/nodes/{id}", requireTenantAdmin(DeleteEdgeNodeAdminHandler(edgeRegistry, edgeBroker, desktopPool, botSvc)))
-		mux.HandleFunc("POST /api/admin/bots/nodes/codes", requireTenantAdmin(PostEdgeCodeAdminHandler(edgeRegistry)))
-		mux.HandleFunc("POST /api/admin/bots/nodes/{id}/code", requireTenantAdmin(PostEdgeRotateCodeAdminHandler(edgeRegistry)))
-		mux.HandleFunc("POST /api/admin/bots/nodes/{id}/settings", requireTenantAdmin(PostEdgeNodeSettingsAdminHandler(edgeRegistry, desktopPool, botSvc)))
-		mux.HandleFunc("POST /api/v1/edge/enroll", PostEdgeEnrollHandler(edgeRegistry, desktopPool, botSvc))
-		mux.HandleFunc("POST /api/v1/edge/capacity", PostEdgeCapacityHandler(desktopPool, edgeRegistry))
-		mux.HandleFunc("POST /api/v1/edge/resources", PostEdgeResourcesHandler(desktopPool, edgeRegistry))
-		mux.HandleFunc("POST /api/v1/edge/direct-base", PostEdgeDirectBaseHandler(edgeRegistry))
-		botSvc.NodeHTTP = func(nodeID string) *http.Client {
-			if edgeBroker == nil || edgeRegistry == nil {
-				return nil
+			mux.HandleFunc("GET /api/admin/bots/nodes", requireTenantAdmin(GetEdgeNodesAdminHandler(edgeRegistry, edgeBroker)))
+			mux.HandleFunc("GET /api/admin/platform/edge-nodes", requireGlobalAdmin(GetEdgeNodesPlatformHandler(edgeRegistry, edgeBroker)))
+			mux.HandleFunc("GET /api/admin/platform/tenants/{tenantId}/edge-policy", requireGlobalAdmin(GetEdgePolicyPlatformHandler(edgeRegistry)))
+			mux.HandleFunc("PUT /api/admin/platform/tenants/{tenantId}/edge-policy", requireGlobalAdmin(PutEdgePolicyPlatformHandler(edgeRegistry)))
+			mux.HandleFunc("DELETE /api/admin/bots/nodes/{id}", requireTenantAdmin(DeleteEdgeNodeAdminHandler(edgeRegistry, edgeBroker, desktopPool, botSvc)))
+			mux.HandleFunc("POST /api/admin/bots/nodes/codes", requireTenantAdmin(PostEdgeCodeAdminHandler(edgeRegistry)))
+			mux.HandleFunc("POST /api/admin/bots/nodes/{id}/code", requireTenantAdmin(PostEdgeRotateCodeAdminHandler(edgeRegistry)))
+			mux.HandleFunc("POST /api/admin/bots/nodes/{id}/settings", requireTenantAdmin(PostEdgeNodeSettingsAdminHandler(edgeRegistry, desktopPool, botSvc)))
+			mux.HandleFunc("POST /api/v1/edge/enroll", PostEdgeEnrollHandler(edgeRegistry, desktopPool, botSvc))
+			mux.HandleFunc("POST /api/v1/edge/capacity", PostEdgeCapacityHandler(desktopPool, edgeRegistry))
+			mux.HandleFunc("POST /api/v1/edge/resources", PostEdgeResourcesHandler(desktopPool, edgeRegistry))
+			mux.HandleFunc("POST /api/v1/edge/direct-base", PostEdgeDirectBaseHandler(edgeRegistry))
+			botSvc.NodeHTTP = func(nodeID string) *http.Client {
+				if edgeBroker == nil || edgeRegistry == nil {
+					return nil
+				}
+				node, err := edgeRegistry.Lookup(context.Background(), nodeID)
+				if err != nil {
+					return nil
+				}
+				return edgeBroker.Client(node.TenantID, node.ID, edgelink.TargetSrv)
 			}
-			node, err := edgeRegistry.Lookup(context.Background(), nodeID)
-			if err != nil {
-				return nil
+			edgeBroker.OnAttach = func(tenantID, nodeID string) {
+				botSvc.ReleaseNodeQueue(tenantID, nodeID)
 			}
-			return edgeBroker.Client(node.TenantID, node.ID, edgelink.TargetSrv)
-		}
-		edgeBroker.OnAttach = func(tenantID, nodeID string) {
-			botSvc.ReleaseNodeQueue(tenantID, nodeID)
-		}
-		mux.HandleFunc("GET /api/v1/edge/link", GetEdgeLinkHandler(edgeRegistry, edgeBroker, botSvc))
-		mux.HandleFunc(edgeDesktopRelayPrefix+"{node}/{rest...}", EdgeDesktopRelayHandler(edgeRegistry, edgeBroker))
-		mux.HandleFunc(edgeCDPPrefix+"{ticket}/{rest...}", EdgeCDPRelayHandler(edgeRegistry, edgeBroker))
-		mux.HandleFunc("GET /api/v1/edge/viewer/{id}", EdgeViewerConfirmHandler(edgeRegistry))
-		viewerStillOpen = func(tenantID, userID string) bool {
-			return botSvc != nil && botSvc.DesktopViewURL(tenantID, userID) != ""
-		}
-		botSvc.NodeTransport = edgeBroker.TransportForHost
+			mux.HandleFunc("GET /api/v1/edge/link", GetEdgeLinkHandler(edgeRegistry, edgeBroker, botSvc))
+			mux.HandleFunc(edgeDesktopRelayPrefix+"{node}/{rest...}", EdgeDesktopRelayHandler(edgeRegistry, edgeBroker))
+			mux.HandleFunc(edgeCDPPrefix+"{ticket}/{rest...}", EdgeCDPRelayHandler(edgeRegistry, edgeBroker))
+			mux.HandleFunc("GET /api/v1/edge/viewer/{id}", EdgeViewerConfirmHandler(edgeRegistry))
+			viewerStillOpen = func(tenantID, userID string) bool {
+				return botSvc != nil && botSvc.DesktopViewURL(tenantID, userID) != ""
+			}
+			botSvc.NodeTransport = edgeBroker.TransportForHost
+		}()
 	}
 	mux.HandleFunc("GET /api/admin/desktop-services", requireTenantAdmin(GetDesktopServicesAdminHandler(desktopPool, platformUsers, botSvc)))
 	mux.HandleFunc("POST /api/admin/desktop-services", requireTenantAdmin(PostDesktopServiceAdminHandler(desktopPool)))
