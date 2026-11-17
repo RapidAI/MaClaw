@@ -16,7 +16,27 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
+// isolateViewerSession clears the package-level publisher hook and ticket
+// map for this test. NewRouter installs viewerStillOpen and leaves it set,
+// and a closed hook makes the next edgeDirectURL drop the ticket it just
+// stored.
+func isolateViewerSession(t *testing.T) {
+	t.Helper()
+	prevOpen := viewerStillOpen
+	viewerStillOpen = nil
+	viewerGrants.mu.Lock()
+	viewerGrants.items = nil
+	viewerGrants.mu.Unlock()
+	t.Cleanup(func() {
+		viewerStillOpen = prevOpen
+		viewerGrants.mu.Lock()
+		viewerGrants.items = nil
+		viewerGrants.mu.Unlock()
+	})
+}
+
 func TestDirectViewHidesTheGateTokenAndConfirmStopsWhenThePictureIsGone(t *testing.T) {
+	isolateViewerSession(t)
 	t.Setenv("HUB_EDGE_NODES", "on")
 	reg := edgenode.NewRegistry(&edgeMemSettings{})
 	code, err := reg.IssueCode(context.Background(), store.DefaultTenantID, "lab")
@@ -97,6 +117,7 @@ func TestDirectViewHidesTheGateTokenAndConfirmStopsWhenThePictureIsGone(t *testi
 }
 
 func TestViewCapLeavesTheNextPictureOnTheHubRelay(t *testing.T) {
+	isolateViewerSession(t)
 	t.Setenv("HUB_EDGE_NODES", "on")
 	reg := edgenode.NewRegistry(&edgeMemSettings{})
 	code, err := reg.IssueCode(context.Background(), "tenant-a", "lab")
@@ -142,6 +163,7 @@ func TestViewCapLeavesTheNextPictureOnTheHubRelay(t *testing.T) {
 }
 
 func TestViewCapFreesAPictureHubAlreadyClosed(t *testing.T) {
+	isolateViewerSession(t)
 	t.Setenv("HUB_EDGE_NODES", "on")
 	reg := edgenode.NewRegistry(&edgeMemSettings{})
 	code, err := reg.IssueCode(context.Background(), "tenant-a", "lab")
