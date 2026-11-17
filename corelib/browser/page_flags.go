@@ -2,6 +2,7 @@ package browser
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -328,13 +329,25 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 		s.mu.RUnlock()
 	}
 	ctx := strings.TrimSpace(strings.Join([]string{title, url}, " "))
-	notifyBrowserStage(BrowserStageNotice{
-		Kind:      "captcha",
-		SessionID: sessionID,
-		URL:       url,
-		Title:     title,
-		Reason:    "captcha_widget",
-	})
+	if err := s.handPageToUser("captcha_widget", url, title); err != nil && previewHandoffEnabled() {
+		display := "用户已在预览中处理验证。先 probe，再继续。不要在对话里索要验证码。"
+		if !errors.Is(err, errUserReleased) {
+			display = err.Error()
+		}
+		return &BrowserActionResult{
+			SessionID: sessionID,
+			Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
+			Status:    "blocked",
+			Display:   display,
+			Detail:    "captcha_widget",
+			Data: map[string]interface{}{
+				"reason":     "captcha_widget",
+				"page_flags": BrowserPageFlags{CaptchaWidget: true},
+				"url":        url,
+				"title":      title,
+			},
+		}
+	}
 	return &BrowserActionResult{
 		SessionID: sessionID,
 		Action:    "browser_" + strings.TrimPrefix(action, "browser_"),

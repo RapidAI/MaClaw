@@ -2,6 +2,7 @@ package computeruse
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -319,6 +320,43 @@ func (s *Session) AppendElements(els []MarkedElement) []string {
 	return refs
 }
 
+// ElementNameAtScreen returns the smallest observed control that contains
+// a virtual-desktop point. Vision clicks have no ref, so the pay guard uses
+// this name. An empty string means nothing labeled covers the point.
+func (s *Session) ElementNameAtScreen(x, y int) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return ""
+	}
+	cx, cy := MapScreenToCapture(s.last.Meta, x, y)
+	best := ""
+	bestArea := int(^uint(0) >> 1)
+	for i := range s.last.Elements {
+		el := s.last.Elements[i]
+		name := strings.TrimSpace(el.Name)
+		if name == "" {
+			continue
+		}
+		x0, y0, w, h := el.BBox[0], el.BBox[1], el.BBox[2], el.BBox[3]
+		if w <= 0 || h <= 0 {
+			continue
+		}
+		if cx < x0 || cy < y0 || cx >= x0+w || cy >= y0+h {
+			continue
+		}
+		area := w * h
+		if area < bestArea {
+			bestArea = area
+			best = name
+		}
+	}
+	return best
+}
+
 // AllowPixelClick checks policy for raw coordinates.
 func (s *Session) AllowPixelClick() bool {
 	s.mu.Lock()
@@ -429,7 +467,9 @@ func PlaybookFor(mode ObserveMode) string {
 - Use computer_focus with a window title substring before interacting with a specific app.
 - To reach a person/chat in an IM or any long list: use the app's own search box (click the search field, computer_type the name, re-observe).
 - Prefer computer_key for shortcuts (enter, ctrl+c, alt+tab). Use computer_select for list/tab items and computer_scroll_into_view before clicking off-screen chrome.
-- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.`
+- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.
+- Do not computer_click a pay or place-order control, and do not press Enter or Space to activate one. Web checkout uses browser confirm_order, then one browser click after the person confirms. The person clicks a desktop pay button.
+- Do not computer_type a password, payment password, or verification code, and do not ask for it in chat. The person types it on the screen. The tool waits. Then computer_observe.`
 	}
 	return `Computer Use (text-primary):
 - You may be a text-only model. Screenshots are NOT sent to you. Local OmniParser/OCR provide eN refs.
@@ -443,5 +483,7 @@ func PlaybookFor(mode ObserveMode) string {
 - After every click/type/key/scroll/focus, call computer_observe again (refs become stale).
 - Prefer computer_key / computer_scroll for navigation when labels are missing.
 - If elements are empty, report that local detection failed; do not guess clicks.
-- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.`
+- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.
+- Do not computer_click a pay or place-order control, and do not press Enter or Space to activate one. Web checkout uses browser confirm_order, then one browser click after the person confirms. The person clicks a desktop pay button.
+- Do not computer_type a password, payment password, or verification code, and do not ask for it in chat. The person types it on the screen. The tool waits. Then computer_observe.`
 }

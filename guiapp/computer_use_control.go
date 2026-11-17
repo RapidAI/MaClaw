@@ -28,6 +28,8 @@ func (a *App) ComputerUsePause() error {
 
 // ComputerUseResume clears soft pause (fails if session was hard-stopped).
 func (a *App) ComputerUseResume() error {
+	// Resume during a pay or secret handoff means the person finished.
+	_ = computeruse.ResolveDesktopHandoff(true)
 	var first error
 	var n int
 	forEachComputerUseSession(func(sess *computeruse.Session) {
@@ -57,6 +59,9 @@ func (a *App) ComputerUseStop() error {
 	// Always drop sticky injection first so the next chat cannot re-enter CU
 	// tools even if session teardown fails.
 	clearComputerUseSessionActive()
+	// A hard stop must not be undone by the handoff's resume-on-end.
+	computeruse.SetDesktopHandoffResume(false)
+	_ = computeruse.ResolveDesktopHandoff(false)
 	var n int
 	forEachComputerUseSession(func(sess *computeruse.Session) {
 		sess.Stop()

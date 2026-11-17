@@ -59,6 +59,11 @@ class _FakeRemoteApi extends RemoteControlApi {
   }
 
   Map<String, dynamic>? watchReplyLive;
+  int watchReplyCursor = 0;
+  Map<String, dynamic>? gapWatchReply;
+  List<Map<String, dynamic>> gapReplies = [];
+  int lastAfterCursor = 0;
+  StreamController<Map<String, dynamic>>? liveController;
   List<Map<String, dynamic>> followEvents = const [];
 
   @override
@@ -67,7 +72,11 @@ class _FakeRemoteApi extends RemoteControlApi {
     String projectPath,
   ) async {
     calls.add('watch:$grantId:$projectPath');
+    final watches = calls.where((call) => call.startsWith('watch:')).length;
+    if (watches > 1 && gapReplies.isNotEmpty) return gapReplies.removeAt(0);
+    if (watches > 1 && gapWatchReply != null) return gapWatchReply!;
     final reply = <String, dynamic>{'stream_proto': 2};
+    if (watchReplyCursor > 0) reply['cursor'] = watchReplyCursor;
     if (watchReplyLive != null) reply['live'] = watchReplyLive;
     return reply;
   }
@@ -78,6 +87,7 @@ class _FakeRemoteApi extends RemoteControlApi {
     String projectPath, {
     int afterCursor = 0,
   }) async {
+    lastAfterCursor = afterCursor;
     if (followEvents.isEmpty) throw StateError('sse-unavailable');
     final pending = List<Map<String, dynamic>>.of(followEvents);
     late final StreamController<Map<String, dynamic>> controller;
@@ -88,6 +98,7 @@ class _FakeRemoteApi extends RemoteControlApi {
         }
       },
     );
+    liveController = controller;
     return AccountEventStream(
       events: controller.stream,
       close: controller.close,
@@ -561,6 +572,163 @@ void main() {
       expect(find.text('想想'), findsOneWidget);
       expect(find.text('running · edit parser'), findsOneWidget);
       expect(find.text('helloworld'), findsNothing);
+    });
+
+    testWidgets(
+      'a cursor hole asks watch_task again from the reply watermark',
+      (tester) async {
+        final api = _FakeRemoteApi()
+          ..detail = sampleDetail()
+          ..watchReplyCursor = 40
+          ..followEvents = [
+            {'event': 'snapshot', 'resync': true, 'cursor': 80},
+          ]
+          ..gapWatchReply = {
+            'stream_proto': 2,
+            'cursor': 80,
+            'live': {
+              'request_id': 'r2',
+              'cursor': 80,
+              'display_text': '下一问',
+              'parts': [
+                {'kind': 'text', 'text': '补上'},
+              ],
+            },
+          };
+        await tester.pumpWidget(
+          _app(
+            api,
+            home: const RemoteTaskScreen(
+              grant: _grantView,
+              taskPath: '/p/a',
+              taskName: '任务甲',
+            ),
+          ),
+        );
+        await _pumpFew(tester);
+        expect(api.lastAfterCursor, 40);
+        expect(find.text('补上'), findsOneWidget);
+        expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
+      },
+    );
+
+    testWidgets('a snapshot behind cursors already seen asks once more', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..watchReplyCursor = 40
+        ..followEvents = [
+          {'event': 'snapshot', 'resync': true, 'cursor': 80},
+        ]
+        ..gapReplies = [
+          {'stream_proto': 2, 'cursor': 50},
+          {
+            'stream_proto': 2,
+            'cursor': 80,
+            'live': {
+              'request_id': 'r2',
+              'cursor': 80,
+              'parts': [
+                {'kind': 'text', 'text': '补上'},
+              ],
+            },
+          },
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
+      expect(find.text('补上'), findsOneWidget);
+      await _pumpFew(tester);
+      expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
+    });
+
+    testWidgets('a caught-up watermark asks again for the next hole', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..watchReplyCursor = 40
+        ..followEvents = [
+          {'event': 'snapshot', 'resync': true, 'cursor': 80},
+        ]
+        ..gapReplies = [
+          {'stream_proto': 2, 'cursor': 80},
+          {
+            'stream_proto': 2,
+            'cursor': 90,
+            'live': {
+              'request_id': 'r2',
+              'cursor': 90,
+              'parts': [
+                {'kind': 'text', 'text': '补上'},
+              ],
+            },
+          },
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
+      expect(find.text('补上'), findsNothing);
+      api.liveController?.add({
+        'event': 'snapshot',
+        'resync': true,
+        'cursor': 90,
+      });
+      await _pumpFew(tester);
+      expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
+      expect(find.text('补上'), findsOneWidget);
+    });
+
+    testWidgets('a watch that does not move the watermark does not ask again', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..watchReplyCursor = 40
+        ..followEvents = [
+          {'event': 'snapshot', 'resync': true, 'cursor': 80},
+        ]
+        ..gapReplies = [
+          {'stream_proto': 2, 'cursor': 40},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
+      api.liveController?.add({
+        'event': 'snapshot',
+        'resync': true,
+        'cursor': 81,
+      });
+      await _pumpFew(tester);
+      expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
     });
 
     testWidgets('shows messages and artifacts; view grant hides composer', (

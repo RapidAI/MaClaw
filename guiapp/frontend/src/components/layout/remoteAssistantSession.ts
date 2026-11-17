@@ -163,6 +163,13 @@ function markKey(session: RemoteAssistantSession | null) {
 
 const liveRounds = new Map<string, RemoteLiveRound>();
 const viewerStates = new Map<string, ViewerReduceState>();
+// Highest cursor reduced while this key's hole was open, and one follow-up
+// credit for the watch that rising edge started. A reply covers the hole
+// only when its watermark reaches that cursor. Clearing the gap latch when
+// the watermark merely moves (so the next hole can rise) would otherwise
+// treat frames already dropped during that watch as covered.
+const gapSeenCursor = new Map<string, number>();
+const gapFollowCredit = new Map<string, number>();
 // Progress parts kept per round — twice the backend snapshot cap so a watcher
 // that joined mid-turn keeps a margin of older lines.
 const REMOTE_PROGRESS_PARTS_KEPT = 80;
@@ -283,6 +290,18 @@ export function applyRemoteStreamPayload(payload: unknown) {
         const next = reduceViewerEvent(prev, record);
         if (next === prev) return;
         viewerStates.set(key, next);
+        // A rising hole means this controller missed a cursor. The account
+        // broker's resync frame has no live body, and a dropped WebSocket
+        // frame never arrives. The turn is only on the controlled desktop.
+        // Later frames of the same hole do not ask again; they only raise
+        // the cursor the reply still has to cover.
+        if (next.gap) {
+            if (cursor > (gapSeenCursor.get(key) || 0)) gapSeenCursor.set(key, cursor);
+            if (!prev.gap) {
+                gapFollowCredit.set(key, 1);
+                requestRemoteStreamRecovery(String(p.grant_id || '').trim(), String(p.project_path || '').trim());
+            }
+        }
         if (next.gap && next.last === prev.last && next.body === prev.body) return;
         const workbench = record.workbench && typeof record.workbench === 'object' ? record.workbench as RemoteWorkbenchState : null;
         projectReducedRound(key, next, eventName, workbench);
@@ -452,7 +471,12 @@ function seedViewerState(key: string, live: RemoteWatchSnapshot | null, cursor: 
     const at = liveCursor || (cursor > 0 ? cursor : 0);
     if (!live || !String(live.request_id || '')) {
         const prev = viewerStates.get(key) || emptyViewerState();
-        if (at > prev.last) viewerStates.set(key, { ...prev, last: at });
+        if (at > prev.last) {
+            // Drop the reducer latch when the watermark moves, so the next
+            // dropped frame is a new hole. Cursors already seen above this
+            // watermark are not covered; the watch reply asks once more.
+            viewerStates.set(key, { ...prev, last: at, gap: false });
+        }
         return null;
     }
     if (at <= 0) return null;
@@ -481,20 +505,29 @@ export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, l
         workbenchByKey.set(key, workbench as RemoteWorkbenchState);
     }
     if (!p || !String(p.request_id || '')) {
+        const before = viewerStates.get(key)?.last || 0;
         seedViewerState(key, null, typeof cursor === 'number' ? cursor : 0);
+        settleWatchedGap(key, grantId, projectPath, before);
         emit();
         return;
     }
     // The reply rides a different ws write than queued stream events, so an
-    // older snapshot can land after newer ones. When the live round already
-    // tracks a different request, folding this one would regress the mirror —
-    // the next stream event rebuilds it anyway.
+    // older snapshot can land after newer ones. A cursorless or already-passed
+    // snapshot of another request must not replace the round. A higher cursor
+    // is the turn this controller missed; the reducer still refuses to rewind.
     const current = liveRounds.get(key);
     if (current && current.requestId && current.requestId !== String(p.request_id)) {
-        emit();
-        return;
+        const liveCursor = typeof p.cursor === 'number' && p.cursor > 0 ? p.cursor : 0;
+        const at = liveCursor || (typeof cursor === 'number' && cursor > 0 ? cursor : 0);
+        const last = viewerStates.get(key)?.last || 0;
+        if (at <= last) {
+            emit();
+            return;
+        }
     }
+    const before = viewerStates.get(key)?.last || 0;
     const seeded = seedViewerState(key, p, typeof cursor === 'number' ? cursor : 0);
+    settleWatchedGap(key, grantId, projectPath, before);
     if (seeded && seeded.last > 0) {
         projectReducedRound(key, seeded, 'snapshot', null);
         const round = liveRounds.get(key);
@@ -527,6 +560,8 @@ function settleLiveRounds() {
         liveRounds.clear();
         viewerStates.clear();
         workbenchByKey.clear();
+        gapSeenCursor.clear();
+        gapFollowCredit.clear();
         return;
     }
     const key = markKey(raw);
@@ -534,6 +569,7 @@ function settleLiveRounds() {
         if (roundKey !== key) {
             liveRounds.delete(roundKey);
             viewerStates.delete(roundKey);
+            forgetGapTracking(roundKey);
         }
     }
     for (const wbKey of [...workbenchByKey.keys()]) {
@@ -546,6 +582,7 @@ function settleLiveRounds() {
     if (Date.now() - (round.lastEventAt || 0) > staleMs) {
         liveRounds.delete(key);
         viewerStates.delete(key);
+        forgetGapTracking(key);
         return;
     }
     if (!round.responded) return;
@@ -562,10 +599,45 @@ function settleLiveRounds() {
     if (covered) {
         liveRounds.delete(key);
         viewerStates.delete(key);
+        forgetGapTracking(key);
+    }
+}
+
+function forgetGapTracking(key: string) {
+    gapSeenCursor.delete(key);
+    gapFollowCredit.delete(key);
+}
+
+// A watch reply that moved the watermark but stopped short of a cursor this
+// controller already reduced is not coverage: those frames were dropped and
+// will not be replayed. Ask once. A reply that does not move the watermark
+// does not ask, or a hollow read would spin. The credit is spent by that
+// single follow-up; the next rising edge is the next ask.
+function settleWatchedGap(key: string, grantId: string, projectPath: string, before: number) {
+    const after = viewerStates.get(key)?.last || 0;
+    const seen = gapSeenCursor.get(key) || 0;
+    if (seen === 0 || after >= seen) {
+        forgetGapTracking(key);
+        return;
+    }
+    if ((gapFollowCredit.get(key) || 0) > 0 && after > before) {
+        gapFollowCredit.set(key, 0);
+        requestRemoteStreamRecovery(grantId, projectPath);
     }
 }
 
 let remoteStreamBound = false;
+let streamRecovery: ((grantId: string, projectPath: string) => void) | null = null;
+
+/** The open controller re-reads watch_task after one proto-2 cursor hole. A short reply asks once more. */
+export function bindRemoteStreamRecovery(fn: ((grantId: string, projectPath: string) => void) | null) {
+    streamRecovery = fn;
+}
+
+function requestRemoteStreamRecovery(grantId: string, projectPath: string) {
+    if (!grantId || !projectPath || !streamRecovery) return;
+    streamRecovery(grantId, projectPath);
+}
 
 /** Starts forwarding remote-control:stream Wails events into the live store. */
 export function bindRemoteStreamEvents() {

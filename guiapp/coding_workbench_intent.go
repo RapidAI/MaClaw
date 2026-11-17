@@ -704,11 +704,12 @@ func fallbackCodingRequestRestatement(userText string, mem stickyCodingWorkbench
 		}
 		return "对照现有实现，回答「" + q + "」。"
 	}
+	continueCue := codingWorkbenchContinueCue(userText)
 	if utf8.RuneCountInString(userText) <= 48 {
 		// A title stays a title. A stored requirement is restated as the
 		// work itself. A new short ask is that ask, not a continue template.
 		ask := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(userText), "。！？!?"))
-		if codingWorkbenchContinueCue(userText) {
+		if continueCue {
 			echo := codingClosedRequirementSnippet(mem.SessionPlan)
 			if echo != "" || codingRequirementGoalCut(mem.SessionPlan) >= 0 {
 				if sentence := codingDescribeStoredGoal(echo, mem.SessionPlan); sentence != "" {
@@ -720,26 +721,39 @@ func fallbackCodingRequestRestatement(userText string, mem stickyCodingWorkbench
 			}
 			// A bare continue with nothing stored has no ask to name.
 			return "先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
-		} else if ask != "" {
+		}
+		if ask != "" {
+			if codingRequirementGoalCut(ask) >= 0 {
+				// A list-style ask names its goal or items, not the markers.
+				if head, more := codingRequestHeadline(ask); head != "" {
+					return codingDescribeHeadline(prior, head, more)
+				}
+			}
 			// A new ask names itself even with no stored plan or work name.
 			return codingDescribeNewAsk(prior, ask)
 		}
 	}
-	if !codingWorkbenchContinueCue(userText) {
+	if !continueCue {
 		if head, more := codingRequestHeadline(userText); head != "" {
 			// A long ask still leads with its own first requirement instead of
 			// a process description.
-			line := "先处理「" + head + "」"
-			if more {
-				line += "，其余要求一并处理"
-			}
-			if prior != "" {
-				return "在" + codingQuoteWorkName(prior) + "里，" + line + "。"
-			}
-			return line + "。"
+			return codingDescribeHeadline(prior, head, more)
 		}
 	}
 	return "先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+}
+
+// codingDescribeHeadline renders a named lead requirement. more keeps the
+// parts past the head acknowledged instead of claiming them out of scope.
+func codingDescribeHeadline(prior, head string, more bool) string {
+	line := "先处理「" + head + "」"
+	if more {
+		line += "，其余要求一并处理"
+	}
+	if prior != "" {
+		return "在" + codingQuoteWorkName(prior) + "里，" + line + "。"
+	}
+	return line + "。"
 }
 
 // codingLeadingInterjection marks a discourse opener that is not itself a
@@ -747,7 +761,7 @@ func fallbackCodingRequestRestatement(userText string, mem stickyCodingWorkbench
 func codingLeadingInterjection(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "太好了", "好的", "好", "嗯", "嗯嗯", "谢谢", "多谢", "辛苦了",
-		"ok", "okay", "thanks", "great", "nice":
+		"帮我", "麻烦", "麻烦你", "ok", "okay", "thanks", "great", "nice":
 		return true
 	}
 	return false
@@ -783,12 +797,61 @@ func codingRequestHeadline(userText string) (head string, more bool) {
 		break
 	}
 	head = strings.TrimSpace(head)
+	if cut := codingRequirementGoalCut(head); cut >= 0 {
+		// A goal head before a numbered breakdown is the one-line
+		// requirement; the list that follows stays acknowledged via more.
+		goal := strings.TrimRight(strings.TrimSpace(head[:cut]), " ，,、—-：: \t")
+		list := head[cut:]
+		if utf8.RuneCountInString(goal) >= 2 && !codingLeadingInterjection(goal) {
+			head, rest = goal, list
+		} else {
+			head = ""
+			spans := codingNumberedMarkerSpans(list)
+			items := codingNumberedListItems(list)
+			if len(items) > 0 && len(items) == len(spans) {
+				// A bare list of short items names them all — but only
+				// when no item hid a longer clause behind a separator.
+				covered := true
+				for i, item := range items {
+					end := len(list)
+					if i+1 < len(spans) {
+						end = spans[i+1].marker
+					}
+					if raw := strings.Trim(strings.TrimSpace(list[spans[i].content:end]), "、，,；; "); raw != item {
+						covered = false
+						break
+					}
+				}
+				if covered {
+					head = strings.Join(items, "、")
+				}
+			}
+			if head == "" && len(spans) > 0 {
+				// Long items name the first one in full; the rest stays
+				// acknowledged.
+				end := len(list)
+				if len(spans) > 1 {
+					end = spans[1].marker
+				}
+				head = strings.Trim(strings.TrimSpace(list[spans[0].content:end]), "、，,；; ")
+				if tail := list[end:]; strings.TrimSpace(tail) != "" {
+					rest = tail
+				}
+			}
+		}
+	}
 	head = strings.NewReplacer("「", "", "」", "").Replace(head)
 	if utf8.RuneCountInString(head) < 2 {
 		return "", false
 	}
 	if utf8.RuneCountInString(head) > 40 {
-		return truncateRunesV2(head, 40) + "…", true
+		runes := trimCodingSnippetToBoundary([]rune(truncateRunesV2(head, 40)))
+		runes = trimUnbalancedCodingParens(runes)
+		head = strings.TrimRight(strings.TrimSpace(string(runes)), " ，,、：:；;—")
+		if utf8.RuneCountInString(head) < 2 {
+			return "", false
+		}
+		return head + "…", true
 	}
 	return head, strings.TrimSpace(rest) != ""
 }

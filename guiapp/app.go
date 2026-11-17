@@ -2903,6 +2903,7 @@ func (a *App) startup(ctx context.Context) {
 	// Managed browser pages stay in the assistant preview. This must run
 	// before any browser session so the first launch is already windowless.
 	a.installAgentBrowserStage()
+	a.installDesktopHandoff()
 	// `MaClaw.exe --quit` only reaches OnStartup when no running instance was
 	// there to receive the handoff. The user asked for an exit, so do not open
 	// a window just because there was nothing to quit.

@@ -16,9 +16,12 @@ import 'remote_models.dart';
 import 'remote_screen.dart' show remoteApiProvider, remoteTasksProvider;
 import 'viewer_reducer.dart';
 
-/// 远程任务详情。先 watch_task（stream_proto 2）再订阅账号 SSE；
-/// SSE 打不开时才退回 3 秒 get_task。消息时间线、产出物下载/分享，
-/// 按授权档位放开操作动作。编码运行时恢复只展示，不另发操作。
+/// 远程任务详情。先 watch_task（stream_proto 2）再订阅账号 SSE。
+/// 回复里的 cursor 是水位；SSE 出现新缺口时再问一次 watch_task，
+/// 因为账号流的补帧没有 live。这次回复若还没盖住洞里已经看到的光标，
+/// 再问一次；水位没往前走就停。SSE 打不开时才退回 3 秒 get_task。
+/// 消息时间线、产出物下载/分享，按授权档位放开操作动作。
+/// 编码运行时恢复只展示，不另发操作。
 class RemoteTaskScreen extends ConsumerStatefulWidget {
   final RcGrant grant;
   final String taskPath;
@@ -48,6 +51,9 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   bool _pollInFlight = false;
   bool _paused = false;
   bool _degraded = false;
+  bool _rewatching = false;
+  bool _gapFollow = false;
+  int _gapSeen = 0;
   int _streamGen = 0;
   ViewerReduceState _live = emptyViewerState();
   String _recovery = '';
@@ -82,6 +88,8 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
 
   Future<void> _openStream() async {
     final gen = ++_streamGen;
+    _gapSeen = 0;
+    _gapFollow = false;
     await _closeStream(keepGeneration: true);
     if (!mounted || _paused || gen != _streamGen) return;
     final api = ref.read(remoteApiProvider);
@@ -96,14 +104,15 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       if (proto == 1 || proto == '1') {
         setState(() => _degraded = true);
       }
-      final seeded = seedViewerFromWatchReply(reply);
+      final seeded = seedViewerFromWatchReply(reply, _live);
       if (!mounted || _paused || gen != _streamGen) return;
-      if (seeded.last > 0) {
+      if (!identical(seeded, _live)) {
         setState(() => _live = seeded);
       }
       final opened = await api.openAccountStream(
         widget.grant.id,
         widget.taskPath,
+        afterCursor: seeded.last,
       );
       if (!mounted || _paused || gen != _streamGen) {
         await opened.close();
@@ -113,12 +122,23 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       _account = opened;
       _liveSub = opened.events.listen(
         (event) {
-          if (!mounted) return;
+          if (!mounted || _paused || gen != _streamGen) return;
+          final prev = _live;
+          final next = reduceViewerEvent(prev, event);
           final recovery = _recoveryText(event);
-          setState(() {
-            _live = reduceViewerEvent(_live, event);
-            if (recovery.isNotEmpty) _recovery = recovery;
-          });
+          final openedGap = next.gap && !prev.gap;
+          if (next.gap) {
+            final cursor = _eventCursor(event);
+            if (cursor > _gapSeen) _gapSeen = cursor;
+          }
+          if (openedGap) _gapFollow = true;
+          if (!identical(next, prev) || recovery.isNotEmpty) {
+            setState(() {
+              _live = next;
+              if (recovery.isNotEmpty) _recovery = recovery;
+            });
+          }
+          if (openedGap) unawaited(_fillViewerGap(gen));
         },
         onError: (_) {
           if (mounted && !_paused) _startPoll();
@@ -130,6 +150,62 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     } catch (_) {
       if (mounted && !_paused && gen == _streamGen) _startPoll();
     }
+  }
+
+  /// A new gap means this SSE missed a cursor. The account broker's resync
+  /// frame has no live body, so the turn has to be read again from watch_task.
+  /// One ask per rising edge: later gapped frames of the same hole only raise
+  /// [_gapSeen]. If that read moves the watermark but stops short of a cursor
+  /// already dropped, ask once more. A reply that does not move it stops.
+  Future<void> _fillViewerGap(int gen) async {
+    if (_rewatching || _degraded || _paused || !mounted || gen != _streamGen) {
+      return;
+    }
+    _rewatching = true;
+    try {
+      final api = ref.read(remoteApiProvider);
+      if (api == null) return;
+      final advanced = await _readWatch(api, gen);
+      if (gen != _streamGen) return;
+      if (!advanced) {
+        _gapFollow = false;
+        return;
+      }
+      if (_gapSeen == 0 || _live.last >= _gapSeen) {
+        _gapSeen = 0;
+        _gapFollow = false;
+        return;
+      }
+      if (!_gapFollow) return;
+      _gapFollow = false;
+      final again = await _readWatch(api, gen);
+      if (!again || gen != _streamGen) return;
+      if (_gapSeen == 0 || _live.last >= _gapSeen) _gapSeen = 0;
+    } catch (_) {
+      // A failed read leaves the gap set. The next time it clears and
+      // opens again is the next ask, so a down hub cannot spin.
+    } finally {
+      _rewatching = false;
+    }
+  }
+
+  /// Applies one watch_task onto the open round. True when its watermark moved.
+  Future<bool> _readWatch(RemoteControlApi api, int gen) async {
+    final before = _live.last;
+    final reply = await api.watchTask(widget.grant.id, widget.taskPath);
+    if (!mounted || _paused || gen != _streamGen) return false;
+    final seeded = seedViewerFromWatchReply(reply, _live);
+    if (!mounted || _paused || gen != _streamGen) return false;
+    if (!identical(seeded, _live)) {
+      setState(() => _live = seeded);
+    }
+    return seeded.last > before;
+  }
+
+  int _eventCursor(Map<String, dynamic> event) {
+    final value = event['cursor'];
+    if (value is num && value > 0) return value.toInt();
+    return 0;
   }
 
   Future<void> _closeStream({bool keepGeneration = false}) async {

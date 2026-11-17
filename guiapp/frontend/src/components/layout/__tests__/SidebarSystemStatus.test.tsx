@@ -1755,6 +1755,24 @@ describe('SidebarSystemStatus devices popover', () => {
         });
     });
 
+    it('refreshes the mobile QR when the refresh button is clicked', async () => {
+        vi.mocked(CreateMobileAuthDesktopQRSession).mockClear();
+        renderStatus(baseCredits);
+        fireEvent.mouseEnter(screen.getByTestId('workbench-status-devices'));
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="workbench-status-devices-popover"]')?.getAttribute('data-open')).toBe('true');
+        });
+        await waitFor(() => {
+            expect(vi.mocked(CreateMobileAuthDesktopQRSession)).toHaveBeenCalledTimes(1);
+        });
+
+        fireEvent.click(screen.getByTestId('workbench-status-qr-refresh'));
+
+        await waitFor(() => {
+            expect(vi.mocked(CreateMobileAuthDesktopQRSession)).toHaveBeenCalledTimes(2);
+        });
+    });
+
     it('dismisses the devices popover with Escape and refocuses the icon', async () => {
         renderStatus(baseCredits);
         const icon = screen.getByTestId('workbench-status-devices');

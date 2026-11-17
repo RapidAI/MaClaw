@@ -162,7 +162,7 @@ func (r NavReadyReport) Note() string {
 	}
 	b.WriteString(")")
 	if r.Wall != "" {
-		fmt.Fprintf(&b, "\n%s %s: this page needs the person (sign-in, captcha/安全验证, or it stays blank). Do not wait or retry blindly: ask the person to take over the desktop and sign in / pass the check, then continue.", LoginWallMarker, r.Wall)
+		fmt.Fprintf(&b, "\n%s %s: this page needs the person (sign-in, captcha/安全验证, or it stays blank). The person should take over the MaClaw preview. Do not ask for a password or code in chat. After they finish, probe before the next click or type.", LoginWallMarker, r.Wall)
 	} else if !r.Ready {
 		b.WriteString("\npage not fully ready yet; probe once more before acting.")
 	}

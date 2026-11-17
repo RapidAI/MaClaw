@@ -52,12 +52,22 @@ func managedLaunchArgs(port int, userDataDir string) []string {
 }
 
 // BrowserStageNotice tells the GUI to open the in-app page view.
+// Kind is session, captcha, login, attention, or confirm.
+// Hold means the person must operate the page before the agent continues.
+// Item, shop, address, amount, and detail fill the payment confirmation card.
 type BrowserStageNotice struct {
-	Kind      string // session, captcha, login
+	Kind      string
 	SessionID string
 	URL       string
 	Title     string
 	Reason    string
+	Host      string
+	Hold      bool
+	Item      string
+	Shop      string
+	Address   string
+	Amount    string
+	Detail    string
 }
 
 var (
@@ -92,6 +102,7 @@ var (
 	errUserHoldStopped = errors.New("浏览器会话已结束，接管等待取消")
 	errUserHoldTimeout = errors.New("用户仍在接管浏览器预览，这一步已停下")
 	errUserReleased    = errors.New("用户刚在预览窗交还浏览器。页面可能已变化，先 probe 再重试这一步")
+	errUserCancelled   = errors.New("用户取消了预览里的这一步。不要重试刚才的点击，也不要索要密码或验证码。")
 )
 
 // userHoldWaitCap bounds how long a tool call waits while the person holds
@@ -100,10 +111,11 @@ var userHoldWaitCap = 15 * time.Minute
 
 // userHoldGate is process-wide: one managed browser, one person.
 type userHoldGate struct {
-	mu       sync.Mutex
-	held     bool
-	reason   string
-	released chan struct{}
+	mu        sync.Mutex
+	held      bool
+	reason    string
+	cancelled bool
+	released  chan struct{}
 }
 
 var browserUserHold = &userHoldGate{released: closedHoldChan()}
@@ -118,7 +130,13 @@ func closedHoldChan() chan struct{} {
 // browser actions wait until this is cleared, then return so the model probes
 // instead of clicking a page the person just changed.
 func SetUserHoldsBrowser(held bool, reason string) {
-	browserUserHold.set(held, reason)
+	browserUserHold.set(held, reason, false)
+}
+
+// CancelUserHold ends a hold because the person cancelled the step.
+// The waiting action is told not to retry it and not to ask for a secret.
+func CancelUserHold() {
+	browserUserHold.set(false, "", true)
 }
 
 // UserHoldsBrowser reports the current hold and why it was taken.
@@ -128,7 +146,7 @@ func UserHoldsBrowser() (bool, string) {
 	return browserUserHold.held, browserUserHold.reason
 }
 
-func (g *userHoldGate) set(held bool, reason string) {
+func (g *userHoldGate) set(held bool, reason string, cancel bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	reason = strings.TrimSpace(reason)
@@ -141,6 +159,7 @@ func (g *userHoldGate) set(held bool, reason string) {
 		}
 		g.held = true
 		g.reason = reason
+		g.cancelled = false
 		g.released = make(chan struct{})
 		return
 	}
@@ -149,6 +168,7 @@ func (g *userHoldGate) set(held bool, reason string) {
 	}
 	g.held = false
 	g.reason = ""
+	g.cancelled = cancel
 	close(g.released)
 }
 
@@ -190,10 +210,66 @@ func (s *BrowserAgentSession) yieldToUserHold(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if released {
-		return errUserReleased
+	if !released {
+		return nil
 	}
-	return nil
+	browserUserHold.mu.Lock()
+	cancelled := browserUserHold.cancelled
+	browserUserHold.mu.Unlock()
+	if cancelled {
+		return errUserCancelled
+	}
+	return errUserReleased
+}
+
+// handPageToUser opens the preview on the step the person has to finish
+// (login, captcha, payment password). While the GUI is embedded, mutating
+// work waits until they press 我已完成 or 取消. Secrets are not collected in chat.
+func (s *BrowserAgentSession) handPageToUser(reason, url, title string) error {
+	sessionID := ""
+	if s != nil {
+		sessionID = s.ID
+		if url == "" && s.session != nil {
+			if info, err := s.session.Info(); err == nil && info != nil {
+				url = info.URL
+				if title == "" {
+					title = info.Title
+				}
+			}
+		}
+	}
+	hold := previewHandoffEnabled()
+	if hold {
+		SetUserHoldsBrowser(true, reason)
+	}
+	kind := "attention"
+	if reason == "captcha" || reason == "captcha_widget" {
+		kind = "captcha"
+	} else if reason == "login" {
+		kind = "login"
+	}
+	notifyBrowserStage(BrowserStageNotice{
+		Kind:      kind,
+		SessionID: sessionID,
+		URL:       url,
+		Title:     title,
+		Reason:    reason,
+		Host:      stageHost(url),
+		Hold:      hold,
+	})
+	if !hold {
+		return nil
+	}
+	return s.blockIfUserHolds()
+}
+
+// refuseSecretTyping never types the secret. In the preview it hands the page
+// to the person and waits. The returned error does not contain the text.
+func (s *BrowserAgentSession) refuseSecretTyping() error {
+	if err := s.handPageToUser("secret", "", ""); err != nil {
+		return err
+	}
+	return errors.New("not_password_field")
 }
 
 func (s *BrowserAgentSession) blockIfUserHolds() error {

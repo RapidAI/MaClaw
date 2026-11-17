@@ -127,7 +127,7 @@ import { useProjectTaskActivateEvent } from "./useProjectTaskActivateEvent";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
-import { callAgentBrowserClose, callAgentBrowserInput, callAgentBrowserSetControl, mergeAgentBrowserStage, type AgentBrowserStageState } from "./AgentBrowserStage";
+import { callAgentBrowserClose, callAgentBrowserConfirm, callAgentBrowserFinish, callAgentBrowserInput, callAgentBrowserSetControl, mergeAgentBrowserStage, type AgentBrowserStageState } from "./AgentBrowserStage";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
 import { GoalQuickBar } from "./GoalQuickBar";
 import { ChatTaskTray } from "./ChatTaskTray";
@@ -7932,6 +7932,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         browserStage={browserStage}
                         onBrowserSetHold={callAgentBrowserSetControl}
                         onBrowserInput={callAgentBrowserInput}
+                        onBrowserConfirm={callAgentBrowserConfirm}
+                        onBrowserFinish={callAgentBrowserFinish}
                         onCloseBrowser={() => {
                             setBrowserStage((prev) => (prev ? { ...prev, open: false } : prev));
                             callAgentBrowserClose();

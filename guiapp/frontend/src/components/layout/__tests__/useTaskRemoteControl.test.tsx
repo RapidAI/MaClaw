@@ -2,7 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTaskRemoteControl } from '../useTaskRemoteControl';
-import { remoteMachineTargetSnapshot } from '../remoteAssistantSession';
+import { applyRemoteStreamPayload, applyRemoteWatchSnapshot, publishRemoteAssistantSession, remoteAssistantSessionSnapshot, remoteMachineTargetSnapshot } from '../remoteAssistantSession';
 
 vi.mock('../../../wailsjs/runtime', () => ({
     EventsOn: vi.fn(() => () => {}),
@@ -53,11 +53,107 @@ async function setup(state = remoteState()) {
 
 describe('useTaskRemoteControl', () => {
     afterEach(() => {
+        publishRemoteAssistantSession(null);
         delete (window as unknown as { go?: unknown }).go;
         cleanup();
     });
     beforeEach(() => {
         vi.clearAllMocks();
+    });
+
+    it('a proto-2 cursor hole watches the open task again', async () => {
+        const { result, op } = await setup();
+        act(() => result.current.selectGrant('ga'));
+        await act(async () => { await result.current.openTask('D:/x'); });
+        const watches = () => op.mock.calls.filter(call => call[1] === 'watch_task').length;
+        expect(watches()).toBe(1);
+        publishRemoteAssistantSession({
+            grantId: 'ga',
+            machineName: 'A机',
+            projectPath: 'D:/x',
+            taskName: 'x',
+            canSend: true,
+            offline: false,
+            error: '',
+            messages: [],
+        });
+        applyRemoteWatchSnapshot('ga', 'D:/x', {
+            request_id: 'r1',
+            project_path: 'D:/x',
+            cursor: 4,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 4);
+        applyRemoteStreamPayload({
+            grant_id: 'ga',
+            project_path: 'D:/x',
+            request_id: 'r1',
+            event: 'token',
+            cursor: 6,
+            cursor_from: 6,
+            text: '乙',
+        });
+        await act(async () => {});
+        expect(watches()).toBe(2);
+        expect(op).toHaveBeenCalledWith('ga', 'watch_task', JSON.stringify({ project_path: 'D:/x', stream_proto: 2 }));
+    });
+
+    it('asks once more when that watch is behind a cursor already seen', async () => {
+        let watchCount = 0;
+        const op = vi.fn(async (_grantId: string, name: string) => {
+            if (name !== 'watch_task') return '{}';
+            watchCount += 1;
+            if (watchCount === 1) return '{}';
+            if (watchCount === 2) return JSON.stringify({ stream_proto: 2, cursor: 5 });
+            return JSON.stringify({
+                stream_proto: 2,
+                cursor: 8,
+                live: {
+                    request_id: 'r1',
+                    project_path: 'D:/x',
+                    cursor: 8,
+                    parts: [{ kind: 'text', seq: 1, text: '补上' }],
+                },
+            });
+        });
+        setBindings({
+            ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))),
+            RemoteControlOp: op,
+            RevokeRemoteControl: vi.fn(async () => true),
+        });
+        const result = renderHook(() => useTaskRemoteControl()).result;
+        await act(async () => {});
+        act(() => result.current.selectGrant('ga'));
+        await act(async () => { await result.current.openTask('D:/x'); });
+        expect(watchCount).toBe(1);
+        publishRemoteAssistantSession({
+            grantId: 'ga',
+            machineName: 'A机',
+            projectPath: 'D:/x',
+            taskName: 'x',
+            canSend: true,
+            offline: false,
+            error: '',
+            messages: [],
+        });
+        applyRemoteWatchSnapshot('ga', 'D:/x', {
+            request_id: 'r1',
+            project_path: 'D:/x',
+            cursor: 4,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 4);
+        applyRemoteStreamPayload({
+            grant_id: 'ga',
+            project_path: 'D:/x',
+            request_id: 'r1',
+            event: 'token',
+            cursor: 8,
+            cursor_from: 8,
+            text: '乙',
+        });
+        await act(async () => {});
+        expect(watchCount).toBe(3);
+        const body = (remoteAssistantSessionSnapshot()?.live?.parts || []).filter(part => part.kind === 'text').map(part => part.text).join('');
+        expect(body).toBe('补上');
     });
 
     it('discards a stale task poll for a machine the person already left', async () => {

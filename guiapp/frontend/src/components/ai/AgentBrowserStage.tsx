@@ -1,4 +1,4 @@
-import React, { useRef } from "react";
+import React, { useRef, useState } from "react";
 import { chromeText } from "../../i18n/chromeText";
 import "./AgentBrowserStage.css";
 
@@ -12,6 +12,13 @@ export interface AgentBrowserStageState {
     height: number;
     userHold: boolean;
     askReason: string;
+    host?: string;
+    attention?: boolean;
+    confirmItem?: string;
+    confirmShop?: string;
+    confirmAddress?: string;
+    confirmAmount?: string;
+    confirmDetail?: string;
     seq: number;
 }
 
@@ -33,6 +40,13 @@ export function mergeAgentBrowserStage(
         height: Number(next.height || prev?.height || 0),
         userHold: !!next.userHold,
         askReason: String(next.askReason || ""),
+        host: "host" in next ? String(next.host || "") : (prev?.host || ""),
+        attention: typeof next.attention === "boolean" ? next.attention : !!prev?.attention,
+        confirmItem: "confirmItem" in next ? String(next.confirmItem || "") : (prev?.confirmItem || ""),
+        confirmShop: "confirmShop" in next ? String(next.confirmShop || "") : (prev?.confirmShop || ""),
+        confirmAddress: "confirmAddress" in next ? String(next.confirmAddress || "") : (prev?.confirmAddress || ""),
+        confirmAmount: "confirmAmount" in next ? String(next.confirmAmount || "") : (prev?.confirmAmount || ""),
+        confirmDetail: "confirmDetail" in next ? String(next.confirmDetail || "") : (prev?.confirmDetail || ""),
         seq: seq || prev?.seq || 0,
     };
 }
@@ -70,6 +84,8 @@ type StageCaller = {
     AgentBrowserSetControl?: (hold: boolean) => Promise<unknown>;
     AgentBrowserInput?: (payload: string) => Promise<unknown>;
     AgentBrowserClose?: () => Promise<unknown>;
+    AgentBrowserConfirm?: (approve: boolean) => Promise<unknown>;
+    AgentBrowserFinish?: (done: boolean) => Promise<unknown>;
 };
 
 function stageCaller(): StageCaller | null {
@@ -104,14 +120,86 @@ export function callAgentBrowserClose() {
     if (typeof fn === "function") void fn();
 }
 
+export function callAgentBrowserConfirm(approve: boolean) {
+    const fn = stageCaller()?.AgentBrowserConfirm;
+    if (typeof fn === "function") void fn(approve);
+}
+
+export function callAgentBrowserFinish(done: boolean) {
+    const fn = stageCaller()?.AgentBrowserFinish;
+    if (typeof fn === "function") void fn(done);
+}
+
 function askCopy(reason: string, lang: string): string {
     if (reason === "captcha_widget" || reason === "captcha") {
-        return chromeText(lang, "This page needs you to finish a check. Take control, then hand it back.", "这一页需要你完成验证。接管后做完，再交还。");
+        return chromeText(lang, "Finish the check on this page. The code stays here, not in the chat.", "请在这个页面上完成验证。验证码留在页面里，不要发到对话。");
     }
-    if (reason) {
-        return chromeText(lang, "This page needs you to sign in or confirm. Take control, then hand it back.", "这一页需要你登录或确认。接管后完成，再交还。");
+    if (reason === "secret") {
+        return chromeText(lang, "Enter the password on this page. It is not sent to the chat.", "请在这个页面上输入密码。密码不会发到对话。");
+    }
+    if (reason === "login") {
+        return chromeText(lang, "Sign in on this page, then mark it done.", "请在这个页面上登录，完成后点「我已完成」。");
+    }
+    if (reason && reason !== "confirm" && reason !== "preview") {
+        return chromeText(lang, "Finish this step on the page, then mark it done.", "请在这个页面上完成这一步，然后点「我已完成」。");
     }
     return "";
+}
+
+function CheckoutConfirmCard({
+    state,
+    lang,
+    onConfirm,
+}: {
+    state: AgentBrowserStageState;
+    lang: string;
+    onConfirm?: (approve: boolean) => void;
+}) {
+    const [checked, setChecked] = useState(false);
+    const rows = [
+        { label: chromeText(lang, "Item", "商品"), value: [state.confirmItem, state.confirmShop].filter(Boolean).join(" · ") },
+        { label: chromeText(lang, "Ship to", "收货地址"), value: state.confirmAddress || "" },
+        { label: chromeText(lang, "Total due", "应付总额"), value: state.confirmAmount ? `¥${state.confirmAmount}` : "" },
+        { label: chromeText(lang, "Note", "备注"), value: state.confirmDetail || "" },
+    ].filter((row) => row.value);
+    return (
+        <form
+            className="agent-browser-confirm"
+            data-testid="agent-browser-confirm-card"
+            onSubmit={(event) => {
+                event.preventDefault();
+                if (!checked) return;
+                onConfirm?.(true);
+            }}
+        >
+            <h3>{chromeText(lang, `Confirm payment ¥${state.confirmAmount}`, `确认支付 ¥${state.confirmAmount}`)}</h3>
+            <dl>
+                {rows.map((row) => (
+                    <div key={row.label}>
+                        <dt>{row.label}</dt>
+                        <dd>{row.value}</dd>
+                    </div>
+                ))}
+            </dl>
+            <label className="agent-browser-confirm__check">
+                <input
+                    type="checkbox"
+                    data-testid="agent-browser-confirm-check"
+                    checked={checked}
+                    onChange={(event) => setChecked(event.target.checked)}
+                />
+                {chromeText(lang, "Confirm payment", "确认支付")}
+            </label>
+            <div className="agent-browser-confirm__actions">
+                <button type="button" data-testid="agent-browser-confirm-cancel" onClick={() => onConfirm?.(false)}>
+                    {chromeText(lang, "Cancel", "取消")}
+                </button>
+                <button type="submit" data-testid="agent-browser-confirm-submit" disabled={!checked}>
+                    {chromeText(lang, "Confirm payment", "确认支付")}
+                </button>
+            </div>
+        </form>
+    );
 }
 
 export function AgentBrowserStage({
@@ -119,18 +207,29 @@ export function AgentBrowserStage({
     lang,
     onSetHold,
     onInput,
+    onConfirm,
+    onFinish,
 }: {
     state: AgentBrowserStageState;
     lang: string;
     onSetHold?: (hold: boolean) => void;
     onInput?: (payload: string) => void;
+    onConfirm?: (approve: boolean) => void;
+    onFinish?: (done: boolean) => void;
 }) {
     const imgRef = useRef<HTMLImageElement | null>(null);
     const moveAt = useRef(0);
     const src = frameDataURL(state.frame);
     const caption = state.title || state.url || chromeText(lang, "Browser", "浏览器");
-    const ask = askCopy(state.askReason, lang);
     const hold = !!state.userHold;
+    const confirming = !!state.confirmAmount;
+    const attention = !!state.attention && hold && !confirming;
+    const interactive = hold && !confirming;
+    const ask = confirming ? "" : askCopy(state.askReason, lang);
+    const host = state.host || "";
+    const hostLine = host
+        ? chromeText(lang, `Finish this step on ${host}`, `请在 ${host} 上完成该步骤`)
+        : chromeText(lang, "Finish this step on the page", "请在这个页面上完成该步骤");
 
     const send = (payload: Record<string, unknown>) => {
         onInput?.(JSON.stringify(payload));
@@ -150,14 +249,36 @@ export function AgentBrowserStage({
         );
     };
 
+    const stageClass = "agent-browser-stage"
+        + (interactive ? " is-user" : " is-bot")
+        + (attention ? " is-attention" : "")
+        + (confirming ? " is-confirm" : "");
+
     return (
-        <div className={"agent-browser-stage" + (hold ? " is-user" : " is-bot")} data-testid="agent-browser-stage">
+        <div className={stageClass} data-testid="agent-browser-stage">
             <div className="agent-browser-stage__bar">
-                <p title={caption}>{hold
-                    ? chromeText(lang, "You have the page", "你正在操作这个页面")
-                    : chromeText(lang, "Agent is browsing", "代理正在浏览")}</p>
+                {attention ? (
+                    <p className="agent-browser-stage__wait" data-testid="agent-browser-waiting">
+                        {chromeText(lang, "Waiting for you", "等待你操作")}
+                    </p>
+                ) : null}
+                <p title={caption}>{confirming
+                    ? chromeText(lang, "Confirm this payment", "请确认这笔支付")
+                    : attention
+                        ? hostLine
+                        : hold
+                            ? chromeText(lang, "You have the page", "你正在操作这个页面")
+                            : chromeText(lang, "Agent is browsing", "代理正在浏览")}</p>
             </div>
-            <div className="agent-browser-stage__frame">
+            {confirming ? (
+                <CheckoutConfirmCard
+                    key={state.confirmAmount + "|" + (state.confirmItem || "")}
+                    state={state}
+                    lang={lang}
+                    onConfirm={onConfirm}
+                />
+            ) : null}
+            <div className={"agent-browser-stage__frame" + (attention ? " is-focal" : "")}>
                 {src ? (
                     <img
                         ref={imgRef}
@@ -166,14 +287,14 @@ export function AgentBrowserStage({
                         draggable={false}
                         data-testid="agent-browser-frame"
                         onPointerDown={(event) => {
-                            if (!hold) return;
+                            if (!interactive) return;
                             const point = pointFromEvent(event);
                             if (!point) return;
                             event.currentTarget.setPointerCapture?.(event.pointerId);
                             send({ kind: "down", x: point.x, y: point.y, button: "left", click_count: 1 });
                         }}
                         onPointerMove={(event) => {
-                            if (!hold) return;
+                            if (!interactive) return;
                             const now = Date.now();
                             if (now - moveAt.current < 40) return;
                             moveAt.current = now;
@@ -182,13 +303,13 @@ export function AgentBrowserStage({
                             send({ kind: "move", x: point.x, y: point.y });
                         }}
                         onPointerUp={(event) => {
-                            if (!hold) return;
+                            if (!interactive) return;
                             const point = pointFromEvent(event);
                             if (!point) return;
                             send({ kind: "up", x: point.x, y: point.y, button: "left", click_count: 1 });
                         }}
                         onWheel={(event) => {
-                            if (!hold) return;
+                            if (!interactive) return;
                             event.preventDefault();
                             const point = containedImagePoint(
                                 imgRef.current?.clientWidth || 1,
@@ -212,38 +333,66 @@ export function AgentBrowserStage({
                         {chromeText(lang, "Opening the page…", "正在打开页面…")}
                     </div>
                 )}
-                {hold ? null : <div className="agent-browser-stage__shield" data-testid="agent-browser-shield" aria-hidden="true" />}
+                {interactive ? null : <div className="agent-browser-stage__shield" data-testid="agent-browser-shield" aria-hidden="true" />}
             </div>
             {ask ? <p className="agent-browser-stage__ask" role="status">{ask}</p> : null}
+            {attention ? (
+                <p className="agent-browser-stage__status" data-testid="agent-browser-attention-status">
+                    {chromeText(lang, "Waiting for you in the browser", "等待你在浏览器中操作")}
+                </p>
+            ) : null}
             <div className="agent-browser-stage__dock">
-                <div className="agent-browser-stage__mode" role="group" aria-label={chromeText(lang, "Page control", "页面控制")}>
-                    <button
-                        type="button"
-                        className="agent-browser-stage__mode-btn"
-                        data-testid="agent-browser-watch"
-                        aria-pressed={!hold}
-                        onClick={() => onSetHold?.(false)}
-                    >
-                        {chromeText(lang, "Watch", "只看")}
-                    </button>
-                    <button
-                        type="button"
-                        className="agent-browser-stage__mode-btn"
-                        data-testid="agent-browser-take-control"
-                        aria-pressed={hold}
-                        onClick={() => onSetHold?.(true)}
-                    >
-                        {chromeText(lang, "Take control", "接管")}
-                    </button>
-                </div>
+                {attention ? (
+                    <div className="agent-browser-stage__mode" role="group" aria-label={chromeText(lang, "Page control", "页面控制")}>
+                        <button
+                            type="button"
+                            className="agent-browser-stage__mode-btn"
+                            data-testid="agent-browser-attention-cancel"
+                            onClick={() => onFinish?.(false)}
+                        >
+                            {chromeText(lang, "Cancel", "取消")}
+                        </button>
+                        <button
+                            type="button"
+                            className="agent-browser-stage__mode-btn agent-browser-stage__mode-btn--done"
+                            data-testid="agent-browser-attention-done"
+                            onClick={() => onFinish?.(true)}
+                        >
+                            {chromeText(lang, "I'm done", "我已完成")}
+                        </button>
+                    </div>
+                ) : confirming ? null : (
+                    <div className="agent-browser-stage__mode" role="group" aria-label={chromeText(lang, "Page control", "页面控制")}>
+                        <button
+                            type="button"
+                            className="agent-browser-stage__mode-btn"
+                            data-testid="agent-browser-watch"
+                            aria-pressed={!hold}
+                            onClick={() => onSetHold?.(false)}
+                        >
+                            {chromeText(lang, "Watch", "只看")}
+                        </button>
+                        <button
+                            type="button"
+                            className="agent-browser-stage__mode-btn"
+                            data-testid="agent-browser-take-control"
+                            aria-pressed={hold}
+                            onClick={() => onSetHold?.(true)}
+                        >
+                            {chromeText(lang, "Take control", "接管")}
+                        </button>
+                    </div>
+                )}
             </div>
             <p className="agent-browser-stage__caption" title={state.url || caption}>{caption}</p>
-            {hold ? (
+            {interactive ? (
                 <input
                     className="agent-browser-stage__keys"
                     data-testid="agent-browser-keys"
                     aria-label={chromeText(lang, "Type on the page", "在页面上输入")}
-                    placeholder={chromeText(lang, "Type here, Enter sends", "在这里输入，回车发送")}
+                    placeholder={attention
+                        ? chromeText(lang, "Password stays on the page", "密码在这里输入，不会发到对话")
+                        : chromeText(lang, "Type here, Enter sends", "在这里输入，回车发送")}
                     onKeyDown={(event) => {
                         if (event.key === "Enter") {
                             event.preventDefault();

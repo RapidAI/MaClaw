@@ -1,6 +1,6 @@
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EVENT_COMPUTER_USE_OBSERVE } from '../../../constants/events';
+import { EVENT_COMPUTER_USE_CONTROL, EVENT_COMPUTER_USE_OBSERVE } from '../../../constants/events';
 
 const { getStatusMock, listeners } = vi.hoisted(() => ({
     getStatusMock: vi.fn(),
@@ -84,5 +84,33 @@ describe('ComputerUseQuickBar polling', () => {
         setDocumentHidden(false);
         await flushStatus();
         expect(getStatusMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a handoff and lets the person finish without sending a secret', async () => {
+        const finish = vi.fn();
+        (window as unknown as { go?: unknown }).go = { main: { App: { ComputerUseHandoffFinish: finish } } };
+        getStatusMock.mockResolvedValue({ enabled: true, session_active: false });
+        render(<ComputerUseQuickBar lang="zh" theme={theme} />);
+        await flushStatus();
+        expect(screen.queryByTestId('computer-use-quick-bar')).toBeNull();
+
+        act(() => {
+            listeners.get(EVENT_COMPUTER_USE_CONTROL)?.({
+                action: 'handoff',
+                reason: 'secret',
+                title: '请输入支付密码',
+            });
+        });
+        expect(screen.getByTestId('computer-use-handoff').textContent).toContain('请输入支付密码');
+        expect(screen.getByTestId('computer-use-handoff').textContent).not.toContain('123456');
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('computer-use-handoff-done'));
+        });
+        expect(finish).toHaveBeenCalledWith(true);
+        expect(screen.getByTestId('computer-use-handoff')).toBeTruthy();
+        await act(async () => {
+            listeners.get(EVENT_COMPUTER_USE_CONTROL)?.({ action: 'resume' });
+        });
+        expect(screen.queryByTestId('computer-use-handoff')).toBeNull();
     });
 });
