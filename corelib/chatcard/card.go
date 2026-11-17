@@ -123,33 +123,35 @@ type Shot struct {
 
 // Card is one pending question bound to a tenant, user, bot, task, and run.
 type Card struct {
-	ID          string     `json:"id"`
-	TenantID    string     `json:"tenant_id"`
-	UserID      string     `json:"user_id"`
-	BotID       string     `json:"bot_id"`
-	TaskID      string     `json:"task_id"`
-	RunID       string     `json:"run_id"`
-	Kind        string     `json:"kind"`
-	Question    string     `json:"question"`
-	Choices     []Choice   `json:"choices,omitempty"`
-	Fields      []Field    `json:"fields,omitempty"`
-	Operation   Operation  `json:"operation"`
-	Evidence    []Evidence `json:"evidence,omitempty"`
-	Lines       []Line     `json:"lines,omitempty"`
-	Target      *Target    `json:"target,omitempty"`
-	Handoff     string     `json:"handoff,omitempty"`
-	Spotlight   bool       `json:"spotlight"`
-	Shot        *Shot      `json:"shot,omitempty"`
-	LeaseID     string     `json:"lease_id,omitempty"`
-	DesktopMode string     `json:"desktop_mode,omitempty"`
-	Status      string     `json:"status"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	InputPaused bool       `json:"input_paused,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	Decision    *Decision  `json:"decision,omitempty"`
-	Result      *Result    `json:"result,omitempty"`
-	ResumeCount int        `json:"resume_count"`
+	ID             string     `json:"id"`
+	TenantID       string     `json:"tenant_id"`
+	UserID         string     `json:"user_id"`
+	BotID          string     `json:"bot_id"`
+	TaskID         string     `json:"task_id"`
+	RunID          string     `json:"run_id"`
+	Kind           string     `json:"kind"`
+	Question       string     `json:"question"`
+	Choices        []Choice   `json:"choices,omitempty"`
+	Fields         []Field    `json:"fields,omitempty"`
+	Operation      Operation  `json:"operation"`
+	Evidence       []Evidence `json:"evidence,omitempty"`
+	Lines          []Line     `json:"lines,omitempty"`
+	Target         *Target    `json:"target,omitempty"`
+	Handoff        string     `json:"handoff,omitempty"`
+	Spotlight      bool       `json:"spotlight"`
+	Shot           *Shot      `json:"shot,omitempty"`
+	LeaseID        string     `json:"lease_id,omitempty"`
+	DesktopMode    string     `json:"desktop_mode,omitempty"`
+	ConsentHash    string     `json:"consent_hash"`
+	ConsentVersion int        `json:"consent_version"`
+	Status         string     `json:"status"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	InputPaused    bool       `json:"input_paused,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	Decision       *Decision  `json:"decision,omitempty"`
+	Result         *Result    `json:"result,omitempty"`
+	ResumeCount    int        `json:"resume_count"`
 }
 
 // Decision is the person's recorded choice. It is not proof the action finished.
@@ -189,6 +191,7 @@ type Submission struct {
 	Fields           map[string]string
 	OperationVersion int
 	PayloadHash      string
+	ConsentHash      string
 	Decline          bool
 	// Target fields are what the card showed. A different frame is rejected.
 	TargetOrigin string
@@ -202,16 +205,16 @@ type Submission struct {
 // Outcome is the server's answer. Resume is true only on the transition that
 // continues the same task. Done is never set here.
 type Outcome struct {
-	Status    string   `json:"status"`
-	Resume    bool     `json:"resume"`
-	Already   bool     `json:"already,omitempty"`
-	Mode      string   `json:"mode,omitempty"`
-	TaskID    string   `json:"task_id"`
-	RunID     string   `json:"run_id"`
-	RequestID string   `json:"request_id"`
-	BotID     string   `json:"bot_id"`
-	Done      bool     `json:"done"`
-	Granted   []string `json:"granted,omitempty"`
+	Status    string `json:"status"`
+	Resume    bool   `json:"resume"`
+	Already   bool   `json:"already,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	TaskID    string `json:"task_id"`
+	RunID     string `json:"run_id"`
+	RequestID string `json:"request_id"`
+	BotID     string `json:"bot_id"`
+	ResumeID  string `json:"resume_id,omitempty"`
+	Done      bool   `json:"done"`
 }
 
 // DesktopBinding is where a screenshot click may attach.
@@ -329,26 +332,19 @@ func validEvidence(item Evidence) bool {
 	return (source == "tool" || source == "page") && strings.TrimSpace(item.Excerpt) != ""
 }
 
-// Grants reports whether an accepted decision authorizes action.
-// A confirm whose operation is anything else does not.
-func Grants(card Card, action string) bool {
-	action = strings.TrimSpace(action)
-	if card.Decision == nil || card.Decision.Decline || card.Decision.Mode == "verify" {
+// Grants is false for this slice. A chat card does not authorize purchase,
+// payment, send, or publish. Those stay on their existing checked paths.
+func Grants(Card, string) bool { return false }
+
+// SafeField reports an id this slice will store. It is an allowlist, not a
+// scanner that claims to recognize every secret.
+func SafeField(id string) bool {
+	switch strings.TrimSpace(id) {
+	case "info", "note", "detail":
+		return true
+	default:
 		return false
 	}
-	if card.Status != StatusProcessing && card.Status != StatusDone {
-		return false
-	}
-	if card.Operation.Kind != action {
-		return false
-	}
-	if card.Decision.PayloadHash == "" || card.Decision.PayloadHash != card.Operation.Hash {
-		return false
-	}
-	if card.Decision.OperationVersion != card.Operation.Version {
-		return false
-	}
-	return true
 }
 
 func fingerprint(sub Submission) string {

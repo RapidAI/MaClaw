@@ -89,15 +89,11 @@ func askOptions(raw string) []string {
 	return out
 }
 
-// ApplyChatCardDecision continues the same run when the store says so.
-// A repeated decision does not start another run.
-func (s *Service) ApplyChatCardDecision(ctx context.Context, p Principal, instanceID string, out chatcard.Outcome) (*Run, error) {
-	if s == nil {
+// DeliverChatCardResume stores the continuation checkpoint for a queued
+// resume. It does not reset the run and does not execute the task again.
+func (s *Service) DeliverChatCardResume(ctx context.Context, p Principal, instanceID string, out chatcard.Outcome) (*Run, error) {
+	if s == nil || s.chatCards == nil {
 		return nil, ErrRunNotFound
-	}
-	if !out.Resume {
-		run, err := s.GetRun(ctx, p, instanceID, out.RunID)
-		return run, err
 	}
 	run, err := s.GetRun(ctx, p, instanceID, out.RunID)
 	if err != nil {
@@ -106,40 +102,34 @@ func (s *Service) ApplyChatCardDecision(ctx context.Context, p Principal, instan
 	if run.InstanceID != instanceID || run.UserID != p.UserID || run.TenantID != p.TenantID || run.ID != out.RunID {
 		return nil, ErrRunNotFound
 	}
-	sess, err := s.GetSession(ctx, p, instanceID, run.SessionID)
-	if err != nil {
+	if strings.TrimSpace(out.ResumeID) == "" {
+		return run, nil
+	}
+	if run.Metadata == nil {
+		run.Metadata = map[string]string{}
+	}
+	if existing := strings.TrimSpace(run.Metadata["chat_card_resume_id"]); existing != "" && existing != out.ResumeID {
+		return nil, ErrForbidden
+	}
+	status := run.Status
+	completed := run.CompletedAt
+	sideEffect := run.Metadata["side_effect"]
+	if existing := strings.TrimSpace(run.Metadata["chat_card_resume_id"]); existing == out.ResumeID {
+		_ = s.chatCards.MarkDelivered(out.ResumeID)
+		return run, nil
+	}
+	run.Metadata["chat_card_resume_id"] = out.ResumeID
+	run.Metadata["chat_card_checkpoint"] = out.Mode + ":" + out.TaskID
+	run.Metadata["side_effect"] = sideEffect
+	run.Status = status
+	run.CompletedAt = completed
+	if err := s.store.SaveRun(*run); err != nil {
 		return nil, err
 	}
-	if sess.Metadata == nil {
-		sess.Metadata = map[string]string{}
-	}
-	sess.Metadata = clearPendingAskUserMetadata(sess.Metadata)
-	delete(sess.Metadata, sessionMetaPendingChatCard)
-	sess.UpdatedAt = s.now()
-	_ = s.store.SaveSession(*sess)
-	meta := map[string]string{
-		"chat_card_decision": "1",
-		"chat_card_request":  out.RequestID,
-		"chat_card_mode":     out.Mode,
-		"chat_card_task":     out.TaskID,
-		"bot_id":             out.BotID,
-	}
-	if id := strings.TrimSpace(run.Metadata["bot_id"]); id != "" {
-		meta["bot_id"] = id
-	}
-	continuing := *run
-	resumed, err := s.PostMessageAsync(ctx, p, instanceID, run.SessionID, PostMessageInput{
-		Content:   chatcard.ResumeText(out),
-		Metadata:  meta,
-		resumeRun: &continuing,
-	})
-	if err != nil {
+	if err := s.chatCards.MarkDelivered(out.ResumeID); err != nil {
 		return nil, err
 	}
-	if resumed.ID != run.ID {
-		return nil, ErrRunNotFound
-	}
-	return resumed, nil
+	return run, nil
 }
 
 // ParseAskUserOptions is unused by the model. Kept so a host test can build

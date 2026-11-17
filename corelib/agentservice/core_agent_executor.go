@@ -749,7 +749,9 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	if text, handled := e.consumeMailboxConfirmation(ctx, req); handled {
 		return &ExecuteResult{Content: text, OutputType: "text/plain"}, nil
 	}
-	recordUserCheckoutConfirmation(req)
+	// Chat text is not a payment authorization. A purchase uses the browser
+	// guard's one-operation confirmation, recorded by that host after the
+	// amount was read from the page.
 	llmCfg, err := ResolveTurnLLMRole(req.Config, req.Message.Metadata, req.Instance.Metadata)
 	if err != nil {
 		return nil, err

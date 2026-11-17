@@ -2,6 +2,7 @@ package chatcard
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -61,7 +62,7 @@ func TestNativeHandoffCompletedVerifiesOnce(t *testing.T) {
 	}
 	sub := Submission{
 		RequestID: card.ID, TaskID: card.TaskID, BotID: card.BotID, RunID: card.RunID,
-		ChoiceIDs: []string{ChoiceCompleted}, OperationVersion: card.Operation.Version, PayloadHash: card.Operation.Hash,
+		ChoiceIDs: []string{ChoiceCompleted}, OperationVersion: card.Operation.Version, PayloadHash: card.Operation.Hash, ConsentHash: card.ConsentHash,
 		ShotID: card.Shot.ID, CapturedAt: card.Shot.CapturedAt, LeaseID: card.LeaseID,
 		TargetOrigin: "shop.example", TargetURL: "https://shop.example/pay",
 	}
@@ -69,26 +70,29 @@ func TestNativeHandoffCompletedVerifiesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.Resume || first.Done || first.Mode != "verify" || first.RunID != card.RunID || first.TaskID != card.TaskID || len(first.Granted) != 0 {
+	if !first.Resume || first.Done || first.Mode != "verify" || first.ResumeID == "" || first.RunID != card.RunID || first.TaskID != card.TaskID {
 		t.Fatalf("first = %#v", first)
 	}
 	if Grants(mustGet(t, store, card.ID), "purchase") || Grants(mustGet(t, store, card.ID), "pay") {
 		t.Fatal("completion granted a payment")
 	}
+	queued, err := store.QueuedResumes()
+	if err != nil || len(queued) != 1 || queued[0].ID != first.ResumeID {
+		t.Fatalf("queued = %#v %v", queued, err)
+	}
 	second, err := store.Submit(user(), sub)
-	if err != nil {
+	if err != nil || !second.Resume || second.ResumeID != first.ResumeID {
+		t.Fatalf("retry before delivery = %#v %v", second, err)
+	}
+	if err := store.MarkDelivered(first.ResumeID); err != nil {
 		t.Fatal(err)
 	}
-	if second.Resume || !second.Already || mustGet(t, store, card.ID).ResumeCount != 1 {
-		t.Fatalf("second = %#v count %d", second, mustGet(t, store, card.ID).ResumeCount)
+	third, err := store.Submit(user(), sub)
+	if err != nil || third.Resume || !third.Already || third.ResumeID != first.ResumeID || mustGet(t, store, card.ID).ResumeCount != 1 {
+		t.Fatalf("after delivery = %#v count %d %v", third, mustGet(t, store, card.ID).ResumeCount, err)
 	}
-	got, err := store.RecordResult(card.ID, "", true)
-	if err == nil || got.Status == StatusDone {
-		t.Fatal("empty evidence marked the task done")
-	}
-	got, err = store.RecordResult(card.ID, "page shows the order is unpaid", true)
-	if err != nil || got.Status != StatusDone || got.Result.Evidence == "" {
-		t.Fatalf("result = %#v %v", got, err)
+	if mustGet(t, store, card.ID).Status == StatusDone {
+		t.Fatal("the click marked the card done")
 	}
 }
 
@@ -104,7 +108,7 @@ func TestHandoffRejectsTamperStaleWrongOwnerAndSibling(t *testing.T) {
 	}
 	base := Submission{
 		RequestID: card.ID, TaskID: card.TaskID, BotID: card.BotID, RunID: card.RunID,
-		ChoiceIDs: []string{ChoiceCompleted}, OperationVersion: card.Operation.Version, PayloadHash: card.Operation.Hash,
+		ChoiceIDs: []string{ChoiceCompleted}, OperationVersion: card.Operation.Version, PayloadHash: card.Operation.Hash, ConsentHash: card.ConsentHash,
 		ShotID: card.Shot.ID, CapturedAt: card.Shot.CapturedAt, LeaseID: card.LeaseID,
 	}
 	if _, err := store.Submit(Actor{Kind: ActorModel, TenantID: "t", UserID: "u", Authenticated: true}, base); !errors.Is(err, ErrUnauthorized) {
@@ -146,7 +150,7 @@ func TestHandoffRejectsTamperStaleWrongOwnerAndSibling(t *testing.T) {
 	cancel := base
 	cancel.ChoiceIDs = []string{ChoiceCancel}
 	out, err := store.Submit(user(), cancel)
-	if err != nil || out.Resume || out.Mode != "cancel" || len(out.Granted) != 0 {
+	if err != nil || out.Resume || out.Mode != "cancel" {
 		t.Fatalf("cancel = %#v %v", out, err)
 	}
 	if mustGet(t, store, other.ID).Status != StatusPending {
@@ -166,9 +170,9 @@ func TestConfirmIsNotPurchaseAndTextRejectsSecrets(t *testing.T) {
 	}
 	out, err := store.Submit(user(), Submission{
 		RequestID: card.ID, TaskID: card.TaskID, BotID: card.BotID, RunID: card.RunID,
-		ChoiceIDs: []string{ChoiceApprove}, OperationVersion: card.Operation.Version, PayloadHash: card.Operation.Hash,
+		ChoiceIDs: []string{ChoiceApprove}, OperationVersion: card.Operation.Version, PayloadHash: card.Operation.Hash, ConsentHash: card.ConsentHash,
 	})
-	if err != nil || !out.Resume || out.Done || len(out.Granted) != 0 || Grants(mustGet(t, store, card.ID), "purchase") {
+	if err != nil || !out.Resume || out.Done || Grants(mustGet(t, store, card.ID), "purchase") {
 		t.Fatalf("confirm = %#v %v", out, err)
 	}
 	_, err = store.Put(OpenInput{
@@ -205,7 +209,7 @@ func TestReopenKeepsTheDecision(t *testing.T) {
 	}
 	if _, err := store.Submit(user(), Submission{
 		RequestID: card.ID, TaskID: card.TaskID, BotID: card.BotID, RunID: card.RunID,
-		ChoiceIDs: []string{"opt_1"}, OperationVersion: card.Operation.Version, PayloadHash: card.Operation.Hash,
+		ChoiceIDs: []string{"opt_1"}, OperationVersion: card.Operation.Version, PayloadHash: card.Operation.Hash, ConsentHash: card.ConsentHash,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -218,6 +222,178 @@ func TestReopenKeepsTheDecision(t *testing.T) {
 	got, err := again.Get(card.ID)
 	if err != nil || got.Status != StatusProcessing || got.ResumeCount != 1 || got.Decision == nil || got.Decision.ChoiceIDs[0] != "opt_1" {
 		t.Fatalf("reopened = %#v %v", got, err)
+	}
+}
+
+func TestResumeOutboxSurvivesCrashAndRestart(t *testing.T) {
+	path := t.TempDir() + "/cards.db"
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card, err := store.Put(OpenInput{
+		TenantID: "t", UserID: "u", BotID: "bot-a", TaskID: "task-crash", RunID: "run-crash",
+		Kind: KindConfirm, Question: "继续这一步？",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := Submission{
+		RequestID: card.ID, TaskID: card.TaskID, BotID: card.BotID, RunID: card.RunID,
+		ChoiceIDs: []string{ChoiceApprove}, OperationVersion: card.Operation.Version,
+		PayloadHash: card.Operation.Hash, ConsentHash: card.ConsentHash,
+	}
+	store.BeforeCommit = func() error { return errors.New("crash before commit") }
+	if _, err := store.Submit(user(), sub); err == nil {
+		t.Fatal("commit succeeded during the crash")
+	}
+	if mustGet(t, store, card.ID).Status != StatusPending {
+		t.Fatal("failed commit changed the card")
+	}
+	queued, err := store.QueuedResumes()
+	if err != nil || len(queued) != 0 {
+		t.Fatalf("outbox after crash = %#v %v", queued, err)
+	}
+	store.BeforeCommit = nil
+	first, err := store.Submit(user(), sub)
+	if err != nil || !first.Resume || first.ResumeID == "" {
+		t.Fatalf("submit after crash = %#v %v", first, err)
+	}
+	_ = store.Close()
+	again, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	queued, err = again.QueuedResumes()
+	if err != nil || len(queued) != 1 || queued[0].ID != first.ResumeID || queued[0].RunID != card.RunID {
+		t.Fatalf("restart queue = %#v %v", queued, err)
+	}
+	if err := again.MarkDelivered(first.ResumeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := again.MarkDelivered(first.ResumeID); err != nil {
+		t.Fatal(err)
+	}
+	left, err := again.QueuedResumes()
+	if err != nil || len(left) != 0 {
+		t.Fatalf("delivered queue = %#v %v", left, err)
+	}
+	third, err := again.Submit(user(), sub)
+	if err != nil || third.Resume || !third.Already || third.ResumeID != first.ResumeID {
+		t.Fatalf("retry after restart delivery = %#v %v", third, err)
+	}
+}
+
+func TestParallelClientsShareOneResume(t *testing.T) {
+	store := newStore(t)
+	card, err := store.Put(OpenInput{
+		TenantID: "t", UserID: "u", BotID: "bot-a", TaskID: "task-par", RunID: "run-par",
+		Kind: KindConfirm, Question: "继续这一步？",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := Submission{
+		RequestID: card.ID, TaskID: card.TaskID, BotID: card.BotID, RunID: card.RunID,
+		ChoiceIDs: []string{ChoiceApprove}, OperationVersion: card.Operation.Version,
+		PayloadHash: card.Operation.Hash, ConsentHash: card.ConsentHash,
+	}
+	var wg sync.WaitGroup
+	ids := make([]string, 8)
+	errs := make([]error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			out, err := store.Submit(user(), sub)
+			errs[i] = err
+			ids[i] = out.ResumeID
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil || ids[i] == "" || ids[i] != ids[0] {
+			t.Fatalf("client %d id %q err %v", i, ids[i], err)
+		}
+	}
+	queued, err := store.QueuedResumes()
+	if err != nil || len(queued) != 1 {
+		t.Fatalf("queue = %#v %v", queued, err)
+	}
+}
+
+func TestDisplayedChangeInvalidatesConsent(t *testing.T) {
+	store := newStore(t)
+	card, err := store.Put(OpenInput{
+		TenantID: "t", UserID: "u", BotID: "bot-a", TaskID: "task-hash", RunID: "run-hash",
+		Kind: KindChoice, Question: "选一个",
+		Choices:   []Choice{{ID: "opt_0", Label: "甲"}, {ID: "opt_1", Label: "乙"}},
+		Lines:     []Line{{Text: "下一步"}},
+		Target:    &Target{URL: "https://shop.example/item", Origin: "shop.example", Frame: "frame-1"},
+		Operation: Operation{Kind: "continue", Payload: []byte(`{"step":"look"}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.ConsentHash == "" || card.ConsentHash != ConsentOf(card) {
+		t.Fatalf("hash = %s", card.ConsentHash)
+	}
+	base := Submission{
+		RequestID: card.ID, TaskID: card.TaskID, BotID: card.BotID, RunID: card.RunID,
+		ChoiceIDs: []string{"opt_0"}, OperationVersion: card.Operation.Version,
+		PayloadHash: card.Operation.Hash, ConsentHash: card.ConsentHash, TargetFrame: "frame-1",
+	}
+	changed := card
+	changed.Lines = []Line{{Text: "价格 ¥10"}}
+	base.ConsentHash = ConsentOf(changed)
+	if _, err := store.Submit(user(), base); !errors.Is(err, ErrStale) {
+		t.Fatalf("changed line err = %v", err)
+	}
+	changed = card
+	changed.Choices[1].Label = "丙"
+	base.ConsentHash = ConsentOf(changed)
+	if _, err := store.Submit(user(), base); !errors.Is(err, ErrStale) {
+		t.Fatalf("changed option err = %v", err)
+	}
+	changed = card
+	changed.Target = &Target{URL: "https://evil.example", Origin: "evil.example", Frame: "frame-1"}
+	base.ConsentHash = ConsentOf(changed)
+	if _, err := store.Submit(user(), base); !errors.Is(err, ErrStale) {
+		t.Fatalf("changed url err = %v", err)
+	}
+	changed = card
+	changed.Operation.Payload = []byte(`{"step":"pay"}`)
+	base.ConsentHash = ConsentOf(changed)
+	if _, err := store.Submit(user(), base); !errors.Is(err, ErrStale) {
+		t.Fatalf("changed payload err = %v", err)
+	}
+	base.ConsentHash = card.ConsentHash
+	base.TargetFrame = ""
+	if _, err := store.Submit(user(), base); !errors.Is(err, ErrStale) {
+		t.Fatalf("missing frame err = %v", err)
+	}
+	base.TargetFrame = "other-frame"
+	if _, err := store.Submit(user(), base); !errors.Is(err, ErrStale) {
+		t.Fatalf("wrong frame err = %v", err)
+	}
+	base.TargetFrame = "frame-1"
+	if _, err := store.Submit(user(), base); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Put(OpenInput{
+		TenantID: "t", UserID: "u", BotID: "bot-a", TaskID: "task-pay", RunID: "run-pay",
+		Kind: KindConfirm, Question: "确认支付 ¥99", Operation: Operation{Kind: "continue"},
+	})
+	if err == nil {
+		t.Fatal("a payment sentence was accepted as a card")
+	}
+	_, err = store.Put(OpenInput{
+		TenantID: "t", UserID: "u", BotID: "bot-a", TaskID: "task-grant", RunID: "run-grant",
+		Kind: KindConfirm, Question: "继续？", Operation: Operation{Kind: "purchase"},
+	})
+	if err == nil {
+		t.Fatal("a purchase operation was accepted")
 	}
 }
 

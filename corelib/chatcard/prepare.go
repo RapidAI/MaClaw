@@ -65,7 +65,10 @@ func Prepare(in OpenInput, now time.Time) (Card, []byte, error) {
 	if strings.TrimSpace(card.Operation.Kind) == "" {
 		card.Operation.Kind = "continue"
 	}
-	if err := validateFacts(card); err != nil {
+	if consequentialKind(card.Operation.Kind) || paymentWording(card.Question) {
+		return Card{}, nil, fmt.Errorf("%w: this card cannot grant purchase, payment, send, or publish", ErrInvalid)
+	}
+	if err := validateFacts(&card); err != nil {
 		return Card{}, nil, err
 	}
 	if err := validateShape(&card); err != nil {
@@ -117,7 +120,61 @@ func Prepare(in OpenInput, now time.Time) (Card, []byte, error) {
 	} else {
 		card.ExpiresAt = in.ExpiresAt.UTC()
 	}
+	card.ConsentVersion = 1
+	card.ConsentHash = ConsentOf(card)
 	return card, shot, nil
+}
+
+func consequentialKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "purchase", "pay", "payment", "checkout", "send", "publish":
+		return true
+	default:
+		return consequentialOps[strings.ToLower(strings.TrimSpace(kind))]
+	}
+}
+
+func paymentWording(text string) bool {
+	t := strings.ToLower(text)
+	for _, needle := range []string{"确认支付", "确认付款", "确认下单", "立即支付", "立即付款", "purchase", "pay now"} {
+		if strings.Contains(t, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// ConsentOf is the hash of everything the card shows. A changed line, option,
+// price, address, origin, frame, or payload is a different hash.
+func ConsentOf(card Card) string {
+	doc := struct {
+		Version     int             `json:"version"`
+		TaskID      string          `json:"task_id"`
+		RunID       string          `json:"run_id"`
+		BotID       string          `json:"bot_id"`
+		Kind        string          `json:"kind"`
+		Question    string          `json:"question"`
+		Choices     []Choice        `json:"choices,omitempty"`
+		Fields      []Field         `json:"fields,omitempty"`
+		Lines       []Line          `json:"lines,omitempty"`
+		Target      *Target         `json:"target,omitempty"`
+		OpKind      string          `json:"operation_kind"`
+		OpVersion   int             `json:"operation_version"`
+		OpPayload   json.RawMessage `json:"operation_payload,omitempty"`
+		LeaseID     string          `json:"lease_id,omitempty"`
+		DesktopMode string          `json:"desktop_mode,omitempty"`
+	}{
+		Version: card.ConsentVersion, TaskID: card.TaskID, RunID: card.RunID, BotID: card.BotID,
+		Kind: card.Kind, Question: card.Question, Choices: card.Choices, Fields: card.Fields,
+		Lines: card.Lines, Target: card.Target, OpKind: card.Operation.Kind, OpVersion: card.Operation.Version,
+		OpPayload: card.Operation.Payload, LeaseID: card.LeaseID, DesktopMode: card.DesktopMode,
+	}
+	if doc.Version == 0 {
+		doc.Version = 1
+	}
+	raw, _ := json.Marshal(doc)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func validateShape(card *Card) error {
@@ -156,11 +213,8 @@ func validateShape(card *Card) error {
 			card.Fields = []Field{{ID: "info", Label: card.Question}}
 		}
 		for _, field := range card.Fields {
-			if secretField(field.ID) || secretField(field.Label) {
-				return fmt.Errorf("%w: text fields cannot collect a secret", ErrInvalid)
-			}
-			if strings.TrimSpace(field.ID) == "" || strings.TrimSpace(field.Label) == "" {
-				return fmt.Errorf("%w: field id and label", ErrInvalid)
+			if !SafeField(field.ID) || strings.TrimSpace(field.Label) == "" {
+				return fmt.Errorf("%w: text fields are limited to info, note, and detail", ErrInvalid)
 			}
 		}
 	case KindNativeHandoff:
@@ -176,22 +230,14 @@ func validateShape(card *Card) error {
 	return nil
 }
 
-func validateFacts(card Card) error {
-	known := evidenceByID(card.Evidence)
-	for _, item := range card.Evidence {
-		if strings.TrimSpace(item.ID) == "" || !validEvidence(item) {
-			return fmt.Errorf("%w: evidence must come from a tool or a page", ErrInvalid)
-		}
-	}
+func validateFacts(card *Card) error {
 	for _, line := range card.Lines {
-		if !consequentialLine(line.Text) {
-			continue
-		}
-		item, ok := known[strings.TrimSpace(line.EvidenceID)]
-		if !ok || !excerptHolds(item.Excerpt, line.Text) {
-			return fmt.Errorf("%w: a price, address, or recipient needs page or tool evidence", ErrInvalid)
+		if consequentialLine(line.Text) || paymentWording(line.Text) {
+			return fmt.Errorf("%w: a price, address, or recipient is not evidence on this card", ErrInvalid)
 		}
 	}
+	// Client-supplied evidence text is not an authority. It is not stored.
+	card.Evidence = nil
 	return nil
 }
 

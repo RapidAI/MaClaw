@@ -147,23 +147,39 @@ func TestChatCardDecisionResumesSameTask(t *testing.T) {
 		t.Fatalf("desktop = %#v", desk)
 	}
 	op := opened["operation"].(map[string]any)
+	consent := opened["consent_hash"]
+	before, err := svc.ListMessages(ctx, principal, inst.ID, run.SessionID, agentservice.ListMessagesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	decided := postJSON(t, server, token, "/api/v1/instances/"+inst.ID+"/runs/"+run.ID+"/interactions/"+cardID+"/decision", map[string]any{
 		"task_id": taskID, "bot_id": "bot-a", "choice_ids": []string{"completed"},
-		"operation_version": op["version"], "payload_hash": op["hash"],
+		"operation_version": op["version"], "payload_hash": op["hash"], "consent_hash": consent,
 		"lease_id": "lease-a", "shot_id": shotView["id"], "captured_at": shotView["captured_at"],
 		"target_origin": "shop.example", "target_url": "https://shop.example/pay",
 	}, http.StatusOK)
-	if decided["resume"] != true || decided["done"] == true || decided["mode"] != "verify" || decided["run_id"] != run.ID || decided["task_id"] != taskID {
+	if decided["resume"] != true || decided["done"] == true || decided["mode"] != "verify" || decided["run_id"] != run.ID || decided["task_id"] != taskID || decided["resume_id"] == "" {
 		t.Fatalf("decision = %#v", decided)
 	}
-	if granted, _ := decided["granted"].([]any); len(granted) != 0 {
+	if decided["granted"] != nil {
 		t.Fatalf("granted = %#v", decided["granted"])
 	}
-	waitOutcome(t, svc, principal, inst.ID, run.ID)
+	after, err := svc.ListMessages(ctx, principal, inst.ID, run.SessionID, agentservice.ListMessagesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("resume replayed the task: messages %d -> %d", len(before), len(after))
+	}
+	kept, err := svc.GetRun(ctx, principal, inst.ID, run.ID)
+	if err != nil || kept.Status != agentservice.RunStatusSucceeded || kept.Metadata["chat_card_resume_id"] == "" {
+		t.Fatalf("run = %#v %v", kept, err)
+	}
 	again := postJSON(t, server, token, "/api/v1/instances/"+inst.ID+"/runs/"+run.ID+"/interactions/"+cardID+"/decision", map[string]any{
 		"task_id": taskID, "bot_id": "bot-a", "choice_ids": []string{"completed"},
-		"operation_version": op["version"], "payload_hash": op["hash"],
+		"operation_version": op["version"], "payload_hash": op["hash"], "consent_hash": consent,
 		"lease_id": "lease-a", "shot_id": shotView["id"], "captured_at": shotView["captured_at"],
+		"target_origin": "shop.example", "target_url": "https://shop.example/pay",
 	}, http.StatusOK)
 	if again["resume"] == true || again["already"] != true || again["run_id"] != run.ID {
 		t.Fatalf("repeat = %#v", again)
@@ -204,23 +220,6 @@ func openSibling(t *testing.T, svc *agentservice.Service, p agentservice.Princip
 		t.Fatal(err)
 	}
 	return run
-}
-
-func waitOutcome(t *testing.T, svc *agentservice.Service, p agentservice.Principal, instanceID, runID string) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		run, err := svc.GetRun(context.Background(), p, instanceID, runID)
-		if err == nil && run.Metadata["task_outcome"] == agentservice.TaskOutcomeUnverified {
-			if run.Metadata["task_outcome"] == "done" {
-				t.Fatal("card continuation was marked done")
-			}
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	run, _ := svc.GetRun(context.Background(), p, instanceID, runID)
-	t.Fatalf("run outcome = %#v", run)
 }
 
 func postJSON(t *testing.T, server *HTTPServer, token, path string, body any, want int) map[string]any {

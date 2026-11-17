@@ -22,6 +22,7 @@ export type ChatInteraction = {
     choices?: ChatInteractionChoice[];
     fields?: ChatInteractionField[];
     operation?: { kind?: string; version?: number; hash?: string };
+    consent_hash?: string;
     target?: { url?: string; origin?: string; title?: string };
     handoff?: string;
     spotlight?: boolean;
@@ -38,6 +39,7 @@ export type ChatInteractionDecision = {
     fields?: Record<string, string>;
     operation_version: number;
     payload_hash: string;
+    consent_hash: string;
     decline?: boolean;
     target_origin?: string;
     target_url?: string;
@@ -83,6 +85,7 @@ export function parseChatInteraction(raw: unknown): ChatInteraction | undefined 
             version: Number(operation.version) || 0,
             hash: text(operation.hash),
         } : undefined,
+        consent_hash: text(card.consent_hash),
         target: targetOf(card.target),
         handoff: text(card.handoff) || 'full_page',
         spotlight: false,
@@ -94,7 +97,7 @@ export function parseChatInteraction(raw: unknown): ChatInteraction | undefined 
 }
 
 export function interactionDecision(card: ChatInteraction, choiceIds: string[], fields?: Record<string, string>, decline = false): ChatInteractionDecision | undefined {
-    if (!card.operation?.hash || !card.operation.version) return undefined;
+    if (!card.operation?.hash || !card.operation.version || !card.consent_hash) return undefined;
     const cleanFields: Record<string, string> = {};
     for (const [key, value] of Object.entries(fields || {})) {
         if (SECRET_FIELD.test(key) || SECRET_FIELD.test(value)) return undefined;
@@ -107,6 +110,7 @@ export function interactionDecision(card: ChatInteraction, choiceIds: string[], 
         fields: Object.keys(cleanFields).length ? cleanFields : undefined,
         operation_version: card.operation.version,
         payload_hash: card.operation.hash,
+        consent_hash: card.consent_hash,
         decline,
         target_origin: card.target?.origin,
         target_url: card.target?.url,

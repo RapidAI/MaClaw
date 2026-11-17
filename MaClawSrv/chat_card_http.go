@@ -39,6 +39,7 @@ type interactionDecisionBody struct {
 	Fields           map[string]string `json:"fields"`
 	OperationVersion int               `json:"operation_version"`
 	PayloadHash      string            `json:"payload_hash"`
+	ConsentHash      string            `json:"consent_hash"`
 	Decline          bool              `json:"decline"`
 	TargetOrigin     string            `json:"target_origin"`
 	TargetURL        string            `json:"target_url"`
@@ -144,7 +145,7 @@ func (s *HTTPServer) handleInteractionDecision(w http.ResponseWriter, r *http.Re
 	out, err := s.chatCards.Submit(chatActor(p), chatcard.Submission{
 		RequestID: r.PathValue("requestId"), TaskID: body.TaskID, BotID: body.BotID, RunID: run.ID,
 		ChoiceIDs: body.ChoiceIDs, Fields: body.Fields, OperationVersion: body.OperationVersion,
-		PayloadHash: body.PayloadHash, Decline: body.Decline, TargetOrigin: body.TargetOrigin,
+		PayloadHash: body.PayloadHash, ConsentHash: body.ConsentHash, Decline: body.Decline, TargetOrigin: body.TargetOrigin,
 		TargetURL: body.TargetURL, TargetFrame: body.TargetFrame, ShotID: body.ShotID,
 		CapturedAt: body.CapturedAt, LeaseID: body.LeaseID,
 	})
@@ -152,15 +153,18 @@ func (s *HTTPServer) handleInteractionDecision(w http.ResponseWriter, r *http.Re
 		writeChatCardError(w, err)
 		return
 	}
-	resumed, err := s.svc.ApplyChatCardDecision(r.Context(), p, run.InstanceID, out)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
+	delivered := run
+	if out.Resume {
+		delivered, err = s.svc.DeliverChatCardResume(r.Context(), p, run.InstanceID, out)
+		if err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": out.Status, "resume": out.Resume, "already": out.Already, "mode": out.Mode,
-		"task_id": out.TaskID, "run_id": resumed.ID, "request_id": out.RequestID,
-		"bot_id": out.BotID, "done": false, "granted": out.Granted,
+		"task_id": out.TaskID, "run_id": delivered.ID, "request_id": out.RequestID,
+		"resume_id": out.ResumeID, "bot_id": out.BotID, "done": false,
 	})
 }
 

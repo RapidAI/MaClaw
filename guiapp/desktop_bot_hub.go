@@ -1523,6 +1523,7 @@ func (a *App) SubmitDesktopBotInteraction(botID, runID, requestID, body string) 
 
 // OpenDesktopBotInteraction attaches the existing remote desktop for this
 // card's bot. It watches that bot and does not wake a different computer.
+// The PR gate does not compile or click this native GUI path.
 func (a *App) OpenDesktopBotInteraction(botID, runID, requestID, leaseID, capturedAt string) (*DesktopBotWatch, error) {
 	botID = strings.TrimSpace(botID)
 	var out struct {

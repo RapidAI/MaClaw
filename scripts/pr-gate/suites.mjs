@@ -22,6 +22,8 @@ export const lifecycleSuite = {
     ],
     "./corelib/agentservice": [
       "TestDesktopDeliverablesOnlyForExecuteDesktopTurns",
+      "TestUserMessageDoesNotRecordCheckoutConfirmation",
+      "TestChatCardResumeDoesNotReplaySideEffect",
     ],
   },
 };

@@ -11,6 +11,7 @@ const handoff: ChatInteraction = {
     question: '请在这台电脑上完成登录',
     choices: [{ id: 'cancel', label: '取消' }, { id: 'completed', label: '我已完成' }],
     operation: { kind: 'verify_native', version: 1, hash: 'abc' },
+    consent_hash: 'consent-1',
     target: { origin: 'shop.example', url: 'https://shop.example/pay' },
     handoff: 'full_page',
     spotlight: false,
@@ -51,6 +52,7 @@ describe('chat interaction card', () => {
         expect(decision.choice_ids).toEqual(['completed']);
         expect(decision.task_id).toBe('task-a');
         expect(decision.payload_hash).toBe('abc');
+        expect(decision.consent_hash).toBe('consent-1');
         expect(decision.done).toBeUndefined();
         expect(decision.user_id).toBeUndefined();
         expect(decision.resume).toBeUndefined();
@@ -77,6 +79,7 @@ describe('chat interaction card', () => {
             kind: 'confirm', question: '继续这一步？',
             choices: [{ id: 'approve', label: '确认' }, { id: 'decline', label: '取消' }],
             operation: { kind: 'continue', version: 1, hash: 'def' },
+            consent_hash: 'consent-2',
             status: 'pending',
         });
         const decision = interactionDecision(card!, ['approve']);

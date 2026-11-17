@@ -14,11 +14,26 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Resume is one durable continuation queued with the decision.
+// Delivering it stores a checkpoint. It does not run the task again.
+type Resume struct {
+	ID     string `json:"id"`
+	CardID string `json:"card_id"`
+	TaskID string `json:"task_id"`
+	RunID  string `json:"run_id"`
+	BotID  string `json:"bot_id"`
+	Mode   string `json:"mode"`
+	Status string `json:"status"`
+}
+
 // Store is the durable record of chat cards. A process restart reopens it.
 type Store struct {
 	db  *sql.DB
 	mu  sync.Mutex
 	now func() time.Time
+	// BeforeCommit runs inside the decision transaction and before the
+	// card or the outbox row is written. A test uses it to fail that write.
+	BeforeCommit func() error
 }
 
 func Open(path string) (*Store, error) {
@@ -55,8 +70,24 @@ func (s *Store) migrate() error {
 		status TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	)`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS chat_card_outbox (
+		resume_id TEXT PRIMARY KEY,
+		card_id TEXT NOT NULL,
+		task_id TEXT NOT NULL,
+		run_id TEXT NOT NULL,
+		bot_id TEXT NOT NULL,
+		mode TEXT NOT NULL,
+		status TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		delivered_at TEXT
+	)`)
 	return err
 }
+
+func resumeKey(cardID string) string { return "resume_" + strings.TrimSpace(cardID) }
 
 func (s *Store) clock() time.Time {
 	if s != nil && s.now != nil {
@@ -230,6 +261,18 @@ func (s *Store) Submit(actor Actor, sub Submission) (Outcome, error) {
 	if err := json.Unmarshal([]byte(raw), &card); err != nil {
 		return Outcome{}, err
 	}
+	if card.Status != StatusPending {
+		if strings.TrimSpace(sub.ConsentHash) != card.ConsentHash {
+			return Outcome{}, ErrStale
+		}
+		if err := checkTarget(card, sub); err != nil {
+			return Outcome{}, err
+		}
+		if !sameDecision(card, sub) {
+			return Outcome{}, ErrConflict
+		}
+		return storedOutcome(tx, card)
+	}
 	out, err := decide(&card, actor, sub, s.clock())
 	if err != nil {
 		if errors.Is(err, ErrExpired) {
@@ -238,6 +281,11 @@ func (s *Store) Submit(actor Actor, sub Submission) (Outcome, error) {
 			_ = tx.Commit()
 		}
 		return Outcome{}, err
+	}
+	if s.BeforeCommit != nil {
+		if err := s.BeforeCommit(); err != nil {
+			return Outcome{}, err
+		}
 	}
 	encoded, err := json.Marshal(card)
 	if err != nil {
@@ -258,14 +306,38 @@ func (s *Store) Submit(actor Actor, sub Submission) (Outcome, error) {
 		if json.Unmarshal([]byte(again), &current) != nil {
 			return Outcome{}, ErrConflict
 		}
-		if sameDecision(current, sub) {
-			return outcomeOf(current, false, true), nil
+		if strings.TrimSpace(sub.ConsentHash) == current.ConsentHash && sameDecision(current, sub) {
+			return storedOutcome(tx, current)
 		}
 		return Outcome{}, ErrConflict
+	}
+	if out.Resume {
+		if _, err := tx.Exec(`INSERT INTO chat_card_outbox(resume_id, card_id, task_id, run_id, bot_id, mode, status, created_at) VALUES(?,?,?,?,?,?,?,?)`,
+			out.ResumeID, card.ID, card.TaskID, card.RunID, card.BotID, out.Mode, "queued", card.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+			return Outcome{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Outcome{}, err
 	}
+	return out, nil
+}
+
+func storedOutcome(tx *sql.Tx, card Card) (Outcome, error) {
+	if card.Decision != nil && (card.Decision.Mode == "cancel" || card.Status == StatusDeclined || card.Status == StatusCancelled) {
+		out := outcomeOf(card, false, true)
+		return out, nil
+	}
+	var status string
+	err := tx.QueryRow(`SELECT status FROM chat_card_outbox WHERE resume_id=?`, resumeKey(card.ID)).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Outcome{}, ErrConflict
+	}
+	if err != nil {
+		return Outcome{}, err
+	}
+	out := outcomeOf(card, status == "queued", true)
+	out.ResumeID = resumeKey(card.ID)
 	return out, nil
 }
 
@@ -276,16 +348,13 @@ func decide(card *Card, actor Actor, sub Submission, now time.Time) (Outcome, er
 	if strings.TrimSpace(sub.TaskID) != card.TaskID || strings.TrimSpace(sub.BotID) != card.BotID || strings.TrimSpace(sub.RunID) != card.RunID {
 		return Outcome{}, ErrForbidden
 	}
-	if card.Status != StatusPending {
-		if sameDecision(*card, sub) {
-			return outcomeOf(*card, false, true), nil
-		}
-		return Outcome{}, ErrConflict
-	}
 	if !card.ExpiresAt.IsZero() && !now.Before(card.ExpiresAt) {
 		card.Status = StatusExpired
 		card.UpdatedAt = now
 		return Outcome{}, ErrExpired
+	}
+	if strings.TrimSpace(sub.ConsentHash) == "" || sub.ConsentHash != card.ConsentHash {
+		return Outcome{}, ErrStale
 	}
 	if sub.OperationVersion != card.Operation.Version || sub.PayloadHash != card.Operation.Hash {
 		return Outcome{}, ErrStale
@@ -293,9 +362,9 @@ func decide(card *Card, actor Actor, sub Submission, now time.Time) (Outcome, er
 	if err := checkTarget(*card, sub); err != nil {
 		return Outcome{}, err
 	}
-	for _, value := range sub.Fields {
-		if secretField(value) {
-			return Outcome{}, fmt.Errorf("%w: a secret cannot be sent on this card", ErrInvalid)
+	for id := range sub.Fields {
+		if !SafeField(id) {
+			return Outcome{}, fmt.Errorf("%w: field is not on the safe list", ErrInvalid)
 		}
 	}
 	decline := sub.Decline
@@ -312,7 +381,7 @@ func decide(card *Card, actor Actor, sub Submission, now time.Time) (Outcome, er
 			allowed[field.ID] = true
 		}
 		for id, value := range sub.Fields {
-			if !allowed[id] || strings.TrimSpace(value) == "" || secretField(id) {
+			if !allowed[id] || !SafeField(id) || strings.TrimSpace(value) == "" {
 				return Outcome{}, fmt.Errorf("%w: field", ErrInvalid)
 			}
 		}
@@ -344,7 +413,11 @@ func decide(card *Card, actor Actor, sub Submission, now time.Time) (Outcome, er
 		At:               now,
 	}
 	resume := card.ResumeCount > 0 && (mode == "continue" || mode == "verify")
-	return outcomeOf(*card, resume, false), nil
+	out := outcomeOf(*card, resume, false)
+	if resume {
+		out.ResumeID = resumeKey(card.ID)
+	}
+	return out, nil
 }
 
 func outcomeOf(card Card, resume, already bool) Outcome {
@@ -352,27 +425,24 @@ func outcomeOf(card Card, resume, already bool) Outcome {
 	if card.Decision != nil {
 		mode = card.Decision.Mode
 	}
-	var granted []string
-	if mode == "continue" {
-		if consequentialOps[card.Operation.Kind] && Grants(card, card.Operation.Kind) {
-			granted = []string{card.Operation.Kind}
-		}
-	}
 	return Outcome{
 		Status:    card.Status,
-		Resume:    resume && !already,
+		Resume:    resume,
 		Already:   already,
 		Mode:      mode,
 		TaskID:    card.TaskID,
 		RunID:     card.RunID,
 		RequestID: card.ID,
 		BotID:     card.BotID,
+		ResumeID:  resumeKey(card.ID),
 		Done:      false,
-		Granted:   granted,
 	}
 }
 
 func checkTarget(card Card, sub Submission) error {
+	if card.Target != nil && strings.TrimSpace(card.Target.Frame) != "" && strings.TrimSpace(sub.TargetFrame) != card.Target.Frame {
+		return ErrStale
+	}
 	if card.Kind != KindNativeHandoff {
 		return nil
 	}
@@ -388,6 +458,9 @@ func checkTarget(card Card, sub Submission) error {
 		}
 	}
 	if card.Target == nil {
+		if strings.TrimSpace(sub.TargetFrame) != "" {
+			return ErrStale
+		}
 		return nil
 	}
 	if sub.TargetOrigin != "" && sub.TargetOrigin != card.Target.Origin {
@@ -396,15 +469,47 @@ func checkTarget(card Card, sub Submission) error {
 	if sub.TargetURL != "" && sub.TargetURL != card.Target.URL {
 		return ErrStale
 	}
-	if sub.TargetFrame != "" && card.Target.Frame != "" && sub.TargetFrame != card.Target.Frame {
+	if strings.TrimSpace(card.Target.Frame) != "" && strings.TrimSpace(sub.TargetFrame) != card.Target.Frame {
 		return ErrStale
 	}
-	if card.Target.Frame == "" && sub.TargetFrame != "" {
-		// The card never identified a frame. A frame id now would highlight
-		// a spot the server did not bind.
+	if strings.TrimSpace(card.Target.Frame) == "" && strings.TrimSpace(sub.TargetFrame) != "" {
 		return ErrStale
 	}
 	return nil
+}
+
+// QueuedResumes lists continuations that were committed and not delivered.
+func (s *Store) QueuedResumes() ([]Resume, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT resume_id, card_id, task_id, run_id, bot_id, mode, status FROM chat_card_outbox WHERE status=? ORDER BY created_at`, "queued")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Resume
+	for rows.Next() {
+		var item Resume
+		if err := rows.Scan(&item.ID, &item.CardID, &item.TaskID, &item.RunID, &item.BotID, &item.Mode, &item.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// MarkDelivered records that the continuation checkpoint was stored.
+// A second call is a no-op.
+func (s *Store) MarkDelivered(resumeID string) error {
+	if s == nil || s.db == nil {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE chat_card_outbox SET status=?, delivered_at=? WHERE resume_id=? AND status=?`,
+		"delivered", s.clock().UTC().Format(time.RFC3339Nano), strings.TrimSpace(resumeID), "queued")
+	return err
 }
 
 func checkChoices(card Card, ids []string, decline *bool) error {
@@ -489,43 +594,6 @@ func shotID(card Card) string {
 		return ""
 	}
 	return card.Shot.ID
-}
-
-// RecordResult stores a verified outcome. A click cannot call this.
-// Done requires a non-empty evidence note from the host.
-func (s *Store) RecordResult(id, evidence string, done bool) (Card, error) {
-	if s == nil {
-		return Card{}, ErrNotFound
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	card, _, err := s.get(id)
-	if err != nil {
-		return Card{}, err
-	}
-	if card.Status != StatusProcessing {
-		return Card{}, ErrConflict
-	}
-	evidence = strings.TrimSpace(evidence)
-	if done && evidence == "" {
-		return Card{}, fmt.Errorf("%w: completion needs verified evidence", ErrInvalid)
-	}
-	now := s.clock()
-	status := StatusProcessing
-	if done {
-		status = StatusDone
-	}
-	card.Status = status
-	card.UpdatedAt = now
-	card.Result = &Result{Status: status, Evidence: evidence, At: now}
-	raw, err := json.Marshal(card)
-	if err != nil {
-		return Card{}, err
-	}
-	if _, err := s.db.Exec(`UPDATE chat_cards SET body=?, status=?, updated_at=? WHERE id=?`, string(raw), status, now.Format(time.RFC3339Nano), card.ID); err != nil {
-		return Card{}, err
-	}
-	return card, nil
 }
 
 func compact(ids []string) []string {
