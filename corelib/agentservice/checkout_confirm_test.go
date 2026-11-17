@@ -38,4 +38,12 @@ func TestUserMessageDoesNotRecordCheckoutConfirmation(t *testing.T) {
 	if amount, ok := browser.PendingCheckoutConfirmation(owner); ok {
 		t.Fatalf("card continuation granted payment authorization %s", amount)
 	}
+	for _, text := range []string{"确认", "继续", "我已完成", "确认支付"} {
+		if _, ok := browser.RecordCheckoutConfirmation(owner, text); ok {
+			t.Fatalf("%q was stored as a payment authorization", text)
+		}
+	}
+	if _, ok := browser.PendingCheckoutConfirmation(owner); ok {
+		t.Fatal("a generic approval is waiting in the checkout guard")
+	}
 }
