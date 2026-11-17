@@ -35,6 +35,8 @@ export const hubOutcomeSuite = {
       "TestDelegatedRunEndHonoursTaskOutcome",
       "TestSettleFinishedRunAgreesWithUndeliveredReceipt",
       "TestDelegatedRunEndLeavesRunningJobOpen",
+      "TestPendingReceiptIsNotDone",
+      "TestPendingReceiptWaitsUntilReady",
     ],
   },
 };
