@@ -8,6 +8,8 @@ import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistantResult, type NewsCardData, type ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
+import { SidebarSystemStatus } from '../../layout/SidebarSystemStatus';
+import { publishSharedUnreadCount } from '../useNotifications';
 import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_TASK_ACTIVATE } from '../../../constants/events';
 import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
 import { ExportTaskResultFile, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
@@ -1741,7 +1743,6 @@ describe('AIAssistantPanel property tests', () => {
         const buttons = Array.from(toolsGroup.querySelectorAll('button'));
         const titledButtons = buttons.map(button => button.getAttribute('title')).filter((title): title is string => !!title);
         expect(titledButtons).toEqual([
-            'Notifications',
             'Cloud drive (shared with the phone)',
             'Buy service redemption cards',
             'Knowledge Base',
@@ -1749,6 +1750,37 @@ describe('AIAssistantPanel property tests', () => {
             'Refresh news',
             'New conversation',
         ]);
+        // The bell left this group. The visible control is the sidebar status
+        // row; the title bar keeps a hidden host for that bell's event.
+        expect(within(toolsGroup).queryByRole('button', { name: 'Notifications' })).toBeNull();
+        publishSharedUnreadCount(0);
+        render(
+            <SidebarSystemStatus
+                lang="en"
+                maclawLLMOnline
+                remoteActivationStatus={{}}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: true, input: 0, output: 0, total: 0 }}
+                sidebarHubCredits={null}
+                formatSidebarTokens={String}
+                formatSidebarHubExpiry={() => ''}
+                formatSidebarHubTotalCredits={() => ''}
+                formatSidebarHubUsedCredits={() => ''}
+                formatSidebarCredit={String}
+                unlimitedHubCreditText="Unlimited"
+                noHubAuthorizationText="None"
+                showHubCreditAction={false}
+                openHubCreditsPage={() => {}}
+            />,
+        );
+        const bell = screen.getByTestId('workbench-status-notifications');
+        expect(bell.getAttribute('title')).toBe('Notifications');
+        expect(bell.getAttribute('aria-label')).toBe('Notifications');
+        fireEvent.click(bell);
+        expect(screen.getByTestId('notification-panel')).toBeTruthy();
     });
 
     it('closes assistant-only overlays while the retained panel is hidden', async () => {
