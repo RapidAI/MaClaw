@@ -3,6 +3,7 @@ package agentservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/chatcard"
 )
+
+// ErrChatCardNoEvidence means the bound page, screen, or tool result was not
+// read. The click is not a substitute for it.
+var ErrChatCardNoEvidence = errors.New("chat card has no bound current evidence")
 
 // ChatCardEvidence is a fresh read of the task the person just handed back.
 // Text that was already printed on the card is not this value.
@@ -33,7 +38,9 @@ func (f ChatCardObserverFunc) ObserveTaskEvidence(ctx context.Context, p Princip
 }
 
 // ChatCardContinuation is the suspended task plus the person's decision.
-// PriorEffects already happened and must not be applied again.
+// PriorEffects already happened and must not be applied again. Claim and
+// Finish guard one external step: a missing receipt is not permission to
+// issue it again, and a model acknowledgement is not that receipt.
 type ChatCardContinuation struct {
 	ResumeID     string
 	Mode         string
@@ -41,17 +48,22 @@ type ChatCardContinuation struct {
 	RunID        string
 	SessionID    string
 	InstanceID   string
-	Decision     string
+	Question     string
+	Answer       string
 	PriorEffects []string
 	Evidence     ChatCardEvidence
+	Claim        func(effectID string) (string, error)
+	Finish       func(effectID string) error
 }
 
 // ChatCardContinuationResult is only the post-checkpoint step.
+// Unobserved means an external step has no receipt and was not issued again.
 type ChatCardContinuationResult struct {
-	Content  string
-	Evidence string
-	Source   string
-	Effects  []string
+	Content    string
+	Evidence   string
+	Source     string
+	Effects    []string
+	Unobserved bool
 }
 
 // SetChatCardObserver installs the host that re-reads a task for a handoff.
@@ -204,24 +216,33 @@ func (s *Service) deliverChatCardResume(ctx context.Context, p Principal, run *R
 		return run, nil
 	}
 	prior := priorEffects(run)
+	card, cardErr := s.chatCards.FindByRun(p.TenantID, p.UserID, run.ID)
+	question, answer := "", ""
+	if cardErr == nil {
+		question = card.Question
+		answer = decisionAnswer(card)
+	}
 	var evidence ChatCardEvidence
 	if mode == "verify" {
 		if s.chatCardObserver == nil {
-			return nil, fmt.Errorf("chat card verification has no evidence source")
+			return s.finishUnverified(run, resumeID, mode)
 		}
 		evidence, err = s.chatCardObserver.ObserveTaskEvidence(ctx, p, taskID, run.ID)
-		if err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(evidence.Text) == "" {
-			return nil, fmt.Errorf("chat card verification did not observe current task evidence")
+		if err != nil || strings.TrimSpace(evidence.Text) == "" || evidenceRepeatsCard(evidence.Text, card) {
+			return s.finishUnverified(run, resumeID, mode)
 		}
 		evidence.ObservedAt = s.now()
 	}
 	in := ChatCardContinuation{
 		ResumeID: resumeID, Mode: mode, TaskID: taskID, RunID: run.ID,
 		SessionID: run.SessionID, InstanceID: run.InstanceID,
-		PriorEffects: prior, Evidence: evidence,
+		Question: question, Answer: answer, PriorEffects: prior, Evidence: evidence,
+		Claim: func(effectID string) (string, error) {
+			return s.chatCards.ClaimEffect(resumeID, effectID)
+		},
+		Finish: func(effectID string) error {
+			return s.chatCards.FinishEffect(resumeID, effectID)
+		},
 	}
 	result, err := s.invokeChatCardContinuation(ctx, p, run, in)
 	if err != nil {
@@ -287,20 +308,97 @@ func (e *CoreAgentExecutor) ContinueChatCard(ctx context.Context, req ExecuteReq
 	return continueChatCard(in)
 }
 
-// continueChatCard is the production post-checkpoint step. It does not call
-// the model and it does not record a payment authorization. Purchase, send,
-// and publish are not granted by this slice.
+// continueChatCard delivers the recorded decision back to the same ask.
+// It does not start the original turn again, call the model, or record a
+// payment authorization. Purchase, send, and publish are not granted.
 func continueChatCard(in ChatCardContinuation) (ChatCardContinuationResult, error) {
 	if in.Mode == "verify" && strings.TrimSpace(in.Evidence.Text) == "" {
-		return ChatCardContinuationResult{}, fmt.Errorf("chat card verification did not observe current task evidence")
+		return ChatCardContinuationResult{}, ErrChatCardNoEvidence
 	}
-	content := "已从上次停下的地方继续。购买、发送和发布不在这张卡片的授权里。"
+	answer := strings.TrimSpace(in.Answer)
+	if answer == "" {
+		answer = chatcard.ResumeText(chatcard.Outcome{Mode: in.Mode})
+	}
+	content := agent.FormatPendingAskUserAnswerHint(strings.TrimSpace(in.Question), answer, "")
 	if in.Mode == "verify" {
-		content = "已核对当前任务证据：" + strings.TrimSpace(in.Evidence.Text)
+		content += "\nLive " + strings.TrimSpace(in.Evidence.Source) + " observation: " + strings.TrimSpace(in.Evidence.Text)
 	}
+	content += "\nPurchase, send, and publish are not granted by this card."
 	return ChatCardContinuationResult{
 		Content: content, Evidence: strings.TrimSpace(in.Evidence.Text), Source: strings.TrimSpace(in.Evidence.Source),
 	}, nil
+}
+
+func (s *Service) finishUnverified(run *Run, resumeID, mode string) (*Run, error) {
+	content := "没有读到与此任务、画面和租约一致的当前页面或工具结果。这一步未核实，请打开这台电脑上的原页面后再发起核对。购买、发送和发布仍未授权。"
+	result := ChatCardContinuationResult{Content: content, Unobserved: true}
+	continuationID := NewID("run")
+	committed, stored, err := s.chatCards.FinishExecution(chatcard.Execution{
+		ResumeID: resumeID, Mode: mode, Content: content, ContinuationRunID: continuationID,
+		InstanceID: run.InstanceID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !committed {
+		if err := s.ensureContinuationRun(context.Background(), Principal{TenantID: run.TenantID, UserID: run.UserID}, run, stored); err != nil {
+			return nil, err
+		}
+		_ = s.chatCards.MarkDelivered(resumeID)
+		return run, nil
+	}
+	result.Content = content
+	if err := s.saveContinuationRun(run, continuationID, mode, resumeID, result); err != nil {
+		return nil, err
+	}
+	if err := s.chatCards.MarkDelivered(resumeID); err != nil {
+		return nil, err
+	}
+	return run, nil
+}
+
+func decisionAnswer(card chatcard.Card) string {
+	if card.Decision == nil || card.Decision.Decline {
+		return ""
+	}
+	labels := map[string]string{}
+	for _, choice := range card.Choices {
+		labels[choice.ID] = choice.Label
+	}
+	var picked []string
+	for _, id := range card.Decision.ChoiceIDs {
+		if label := strings.TrimSpace(labels[id]); label != "" {
+			picked = append(picked, label)
+		}
+	}
+	if text := agent.FormatAskUserSelectedReply(picked); text != "" {
+		return text
+	}
+	var fields []string
+	for _, field := range card.Fields {
+		value := strings.TrimSpace(card.Decision.Fields[field.ID])
+		if value == "" {
+			continue
+		}
+		fields = append(fields, field.Label+": "+value)
+	}
+	return strings.Join(fields, "；")
+}
+
+func evidenceRepeatsCard(text string, card chatcard.Card) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	if text == strings.TrimSpace(card.Question) {
+		return true
+	}
+	for _, line := range card.Lines {
+		if text == strings.TrimSpace(line.Text) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) saveContinuationRun(parent *Run, continuationID, mode, resumeID string, result ChatCardContinuationResult) error {
@@ -311,12 +409,14 @@ func (s *Service) saveContinuationRun(parent *Run, continuationID, mode, resumeI
 		"chat_card_continuation": "1",
 		"chat_card_mode":         mode,
 	}
-	if strings.TrimSpace(result.Evidence) != "" {
-		meta["task_outcome_evidence"] = result.Evidence
+	if result.Unobserved || strings.TrimSpace(result.Evidence) != "" {
 		meta[TaskOutcomeKey] = TaskOutcomeUnverified
 		meta[TaskOutcomeNoticeKey] = "核对的是当前任务证据。点击本身不是操作已经成功。"
 	}
-	if len(result.Effects) > 0 {
+	if strings.TrimSpace(result.Evidence) != "" {
+		meta["task_outcome_evidence"] = result.Evidence
+	}
+	if len(result.Effects) > 0 && !result.Unobserved {
 		meta["applied_effects"] = strings.Join(result.Effects, ",")
 	}
 	cont := Run{

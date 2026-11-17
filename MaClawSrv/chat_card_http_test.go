@@ -27,9 +27,6 @@ func TestChatCardDecisionResumesSameTask(t *testing.T) {
 	}
 	defer server.Close()
 	const observed = "当前页面：登录框仍在，尚未登录"
-	svc.SetChatCardObserver(agentservice.ChatCardObserverFunc(func(context.Context, agentservice.Principal, string, string) (agentservice.ChatCardEvidence, error) {
-		return agentservice.ChatCardEvidence{Source: "page", Text: observed}, nil
-	}))
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
@@ -157,6 +154,11 @@ func TestChatCardDecisionResumesSameTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	noteChatCardBoundPage(boundChatCardPage{
+		TenantID: tenant.ID, UserID: user.ID, RunID: run.ID, SessionID: run.SessionID,
+		LeaseID: "lease-a", Frame: "pay-frame", Origin: "shop.example",
+		URL: "https://shop.example/pay", Source: "page", Text: observed,
+	})
 	if postStatus(t, server, token, "/api/v1/instances/"+inst.ID+"/runs/"+run.ID+"/interactions/"+cardID+"/decision", map[string]any{
 		"task_id": taskID, "bot_id": "bot-a", "choice_ids": []string{"completed"},
 		"operation_version": op["version"], "payload_hash": op["hash"], "consent_hash": consent,

@@ -215,6 +215,7 @@ func NewHTTPServerWithError(svc *agentservice.Service, adminSecret string, knowl
 	s.chatCards = cards
 	svc.SetChatCards(cards)
 	desktopChatCards = cards
+	installChatCardObserver(svc, cards)
 	reconcileCtx, stopReconcile := context.WithCancel(context.Background())
 	s.stopChatCards = stopReconcile
 	svc.StartChatCardReconciler(reconcileCtx)

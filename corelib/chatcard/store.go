@@ -107,6 +107,15 @@ func (s *Store) migrate() error {
 	if _, err = s.db.Exec(`ALTER TABLE chat_card_outbox ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 		return err
 	}
+	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS chat_card_effect (
+		resume_id TEXT NOT NULL,
+		effect_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		PRIMARY KEY (resume_id, effect_id)
+	)`)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS chat_card_execution (
 		resume_id TEXT PRIMARY KEY,
 		status TEXT NOT NULL,
@@ -703,6 +712,50 @@ func (s *Store) FinishExecution(ex Execution) (committed bool, stored Execution,
 		return false, Execution{}, err
 	}
 	return n == 1, stored, nil
+}
+
+// ClaimEffect records that this resume is about to perform an external step.
+// "new" means the caller may perform it once. "done" means it already finished.
+// "started" means a previous attempt did not record a receipt: the step must
+// not be issued again, and the missing receipt is not success.
+func (s *Store) ClaimEffect(resumeID, effectID string) (string, error) {
+	if s == nil || s.db == nil {
+		return "", ErrNotFound
+	}
+	resumeID = strings.TrimSpace(resumeID)
+	effectID = strings.TrimSpace(effectID)
+	if resumeID == "" || effectID == "" {
+		return "", ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`INSERT INTO chat_card_effect(resume_id, effect_id, status) VALUES(?,?,?) ON CONFLICT(resume_id, effect_id) DO NOTHING`, resumeID, effectID, "started")
+	if err != nil {
+		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		return "new", nil
+	}
+	var status string
+	if err := s.db.QueryRow(`SELECT status FROM chat_card_effect WHERE resume_id=? AND effect_id=?`, resumeID, effectID).Scan(&status); err != nil {
+		return "", err
+	}
+	if status == "done" {
+		return "done", nil
+	}
+	return "started", nil
+}
+
+// FinishEffect records the receipt for a step that ClaimEffect allowed.
+func (s *Store) FinishEffect(resumeID, effectID string) error {
+	if s == nil || s.db == nil {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE chat_card_effect SET status=? WHERE resume_id=? AND effect_id=? AND status=?`,
+		"done", strings.TrimSpace(resumeID), strings.TrimSpace(effectID), "started")
+	return err
 }
 
 func (s *Store) executionLocked(resumeID string) (Execution, error) {

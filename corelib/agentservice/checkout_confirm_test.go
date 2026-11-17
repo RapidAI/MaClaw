@@ -27,7 +27,7 @@ func TestUserMessageDoesNotRecordCheckoutConfirmation(t *testing.T) {
 	}
 	exec := &CoreAgentExecutor{}
 	result, err := exec.Execute(context.Background(), ExecuteRequest{
-		ChatCardContinuation: &ChatCardContinuation{Mode: "continue", Decision: "确认支付 ¥99", ResumeID: "resume-pay"},
+		ChatCardContinuation: &ChatCardContinuation{Mode: "continue", Answer: "确认支付 ¥99", ResumeID: "resume-pay"},
 	})
 	if err != nil {
 		t.Fatal(err)

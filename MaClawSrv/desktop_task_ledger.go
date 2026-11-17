@@ -343,6 +343,9 @@ func desktopLedgerRememberProgress(scope agentruntime.Scope, url, title, body, k
 		Run:    scope.RunID,
 		Detail: kind,
 	})
+	if kind == "page_state" || kind == "draft" {
+		noteChatCardPageFromScope(scope, url, title, body, "")
+	}
 }
 
 // desktopPublishLedgerGuard runs before any publish fills a form. A post of

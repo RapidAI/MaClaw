@@ -25,6 +25,8 @@ export const lifecycleSuite = {
       "TestUserMessageDoesNotRecordCheckoutConfirmation",
       "TestChatCardResumeDoesNotReplaySideEffect",
       "TestChatCardRestartDeliversContinuation",
+      "TestChatCardAskContinuesTheSameTask",
+      "TestChatCardNoEvidenceIsUnverifiedOnce",
     ],
   },
 };

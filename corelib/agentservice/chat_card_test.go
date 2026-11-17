@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,9 +15,11 @@ import (
 )
 
 type checkpointExec struct {
-	mu        sync.Mutex
-	executed  int
-	continued int
+	mu                       sync.Mutex
+	executed                 int
+	continued                int
+	external                 int
+	crashBeforeEffectReceipt bool
 }
 
 func (e *checkpointExec) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
@@ -27,7 +30,13 @@ func (e *checkpointExec) Execute(ctx context.Context, req ExecuteRequest) (*Exec
 	e.mu.Lock()
 	e.executed++
 	e.mu.Unlock()
-	return &ExecuteResult{Content: "issued invoice-1", OutputType: "text/plain", Metadata: map[string]string{"side_effect": "invoice-1"}}, nil
+	meta := map[string]string{"side_effect": "invoice-1", "bot_id": "bot-a"}
+	if strings.Contains(req.Message.Content, "开始原任务") {
+		meta[metaAskUserQuestion] = "请在这台电脑上完成登录"
+		meta[metaAskUserInputType] = "secret"
+		meta[metaAskUserSecretName] = "login"
+	}
+	return &ExecuteResult{Content: "issued invoice-1", OutputType: "text/plain", Metadata: meta}, nil
 }
 
 func (e *checkpointExec) ContinueChatCard(ctx context.Context, req ExecuteRequest, in ChatCardContinuation) (ChatCardContinuationResult, error) {
@@ -40,10 +49,31 @@ func (e *checkpointExec) ContinueChatCard(ctx context.Context, req ExecuteReques
 	if err != nil {
 		return ChatCardContinuationResult{}, err
 	}
-	if containsEffect(in.PriorEffects, "follow-up") {
+	if in.Claim == nil {
 		return result, nil
 	}
-	result.Effects = []string{"follow-up"}
+	state, claimErr := in.Claim("desk-notify")
+	if claimErr != nil {
+		return ChatCardContinuationResult{}, claimErr
+	}
+	switch state {
+	case "new":
+		e.mu.Lock()
+		e.external++
+		crash := e.crashBeforeEffectReceipt
+		e.mu.Unlock()
+		if crash {
+			return result, errors.New("crash before effect receipt")
+		}
+		if err := in.Finish("desk-notify"); err != nil {
+			return ChatCardContinuationResult{}, err
+		}
+		result.Effects = []string{"desk-notify"}
+	case "started":
+		result.Unobserved = true
+		result.Effects = nil
+		result.Content += "\n外部步骤没有回执，未再次执行。"
+	}
 	return result, nil
 }
 
@@ -97,8 +127,18 @@ func TestChatCardResumeDoesNotReplaySideEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cont.Metadata["applied_effects"] != "follow-up" || cont.Metadata["task_outcome_evidence"] != page || cont.Metadata["task_outcome"] == "done" {
+	if !strings.Contains(cont.Metadata["task_outcome_evidence"], page) || cont.Metadata["task_outcome"] == "done" {
 		t.Fatalf("continuation = %#v", cont.Metadata)
+	}
+	if strings.Contains(cont.Metadata["applied_effects"], "invoice-1") {
+		t.Fatalf("continuation replayed the prior effect: %#v", cont.Metadata)
+	}
+	msgs, err := svc.ListMessages(ctx, principal, inst.ID, run.SessionID, ListMessagesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(msgs[len(msgs)-1].Content, "我已完成") || !strings.Contains(msgs[len(msgs)-1].Content, page) {
+		t.Fatalf("task output = %q", msgs[len(msgs)-1].Content)
 	}
 	owner := memoryOwnerIDForPrincipal(principal)
 	browser.ClearCheckoutConfirmation(owner)
@@ -130,9 +170,12 @@ func TestChatCardRestartDeliversContinuation(t *testing.T) {
 	}
 	out := submitHandoff(t, cards, principal, card, inst.ID)
 	page = "当前页面：订单仍未支付"
-	svc.chatCardBeforeFinish = func() error { return errors.New("crash before commit") }
+	exec.crashBeforeEffectReceipt = true
 	if _, err := svc.DeliverChatCardResume(ctx, principal, inst.ID, out); err == nil {
 		t.Fatal("delivery committed through the crash")
+	}
+	if exec.external != 1 {
+		t.Fatalf("external steps before the crash = %d", exec.external)
 	}
 	queued, err := cards.QueuedResumes()
 	if err != nil || len(queued) != 1 {
@@ -164,8 +207,14 @@ func TestChatCardRestartDeliversContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cont.Metadata["task_outcome_evidence"] != "当前页面：登录框还在" || cont.Metadata["applied_effects"] != "follow-up" {
+	if cont.Metadata["task_outcome_evidence"] != "当前页面：登录框还在" || cont.Metadata["task_outcome"] != "unverified" {
 		t.Fatalf("restart continuation = %#v", cont.Metadata)
+	}
+	if strings.Contains(cont.Metadata["applied_effects"], "desk-notify") || strings.Contains(cont.Metadata["applied_effects"], "invoice-1") {
+		t.Fatalf("restart applied an effect without a receipt: %#v", cont.Metadata)
+	}
+	if exec2.external != 0 {
+		t.Fatalf("restart repeated the external step %d times", exec2.external)
 	}
 	if cont.Metadata["task_outcome_evidence"] == "旧页面" || cont.Metadata["task_outcome_evidence"] == "当前页面：订单仍未支付" {
 		t.Fatal("continuation kept a stale observation")
@@ -179,6 +228,105 @@ func TestChatCardRestartDeliversContinuation(t *testing.T) {
 	left, err := cards2.QueuedResumes()
 	if err != nil || len(left) != 0 {
 		t.Fatalf("queue = %#v %v", left, err)
+	}
+}
+
+func TestChatCardAskContinuesTheSameTask(t *testing.T) {
+	exec := &checkpointExec{}
+	svc, principal, inst := setupCaptureAgentService(t, exec)
+	defer svc.Close()
+	cards, err := chatcard.Open(filepath.Join(t.TempDir(), "cards.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cards.Close()
+	svc.SetChatCards(cards)
+	page := "当前页面：环境已经准备好"
+	svc.SetChatCardObserver(ChatCardObserverFunc(func(context.Context, Principal, string, string) (ChatCardEvidence, error) {
+		return ChatCardEvidence{Source: "tool", Text: page}, nil
+	}))
+	ctx := context.Background()
+	_, run, msg, err := svc.SendMessage(ctx, principal, inst.ID, SendMessageInput{Content: "开始原任务", Metadata: map[string]string{"bot_id": "bot-a"}})
+	if err != nil || run == nil || msg == nil || msg.Metadata[metaAskUserQuestion] == "" {
+		t.Fatalf("ask = %#v %v", msg, err)
+	}
+	card, err := cards.FindByRun(principal.TenantID, principal.UserID, run.ID)
+	if err != nil || card.Kind != chatcard.KindNativeHandoff {
+		t.Fatalf("card = %#v %v", card, err)
+	}
+	out, err := cards.Submit(chatcard.Actor{Kind: chatcard.ActorUser, TenantID: principal.TenantID, UserID: principal.UserID, Authenticated: true}, chatcard.Submission{
+		RequestID: card.ID, TaskID: card.TaskID, BotID: card.BotID, RunID: card.RunID, InstanceID: inst.ID,
+		ChoiceIDs: []string{chatcard.ChoiceCompleted}, OperationVersion: card.Operation.Version,
+		PayloadHash: card.Operation.Hash, ConsentHash: card.ConsentHash,
+	})
+	if err != nil || !out.Resume {
+		t.Fatalf("submit = %#v %v", out, err)
+	}
+	if _, err := svc.DeliverChatCardResume(ctx, principal, inst.ID, out); err != nil {
+		t.Fatal(err)
+	}
+	if exec.executed != 1 || exec.continued != 1 {
+		t.Fatalf("execute=%d continue=%d", exec.executed, exec.continued)
+	}
+	parent, err := svc.GetRun(ctx, principal, inst.ID, run.ID)
+	if err != nil || parent.Metadata["side_effect"] != "invoice-1" {
+		t.Fatalf("parent = %#v %v", parent, err)
+	}
+	msgs, err := svc.ListMessages(ctx, principal, inst.ID, run.SessionID, ListMessagesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := msgs[len(msgs)-1].Content
+	if !strings.Contains(got, "请在这台电脑上完成登录") || !strings.Contains(got, "我已完成") || !strings.Contains(got, page) {
+		t.Fatalf("task output = %q", got)
+	}
+	if strings.Contains(got, "follow-up") {
+		t.Fatalf("synthetic follow-up = %q", got)
+	}
+}
+
+func TestChatCardNoEvidenceIsUnverifiedOnce(t *testing.T) {
+	exec := &checkpointExec{}
+	svc, principal, inst := setupCaptureAgentService(t, exec)
+	defer svc.Close()
+	cards, err := chatcard.Open(filepath.Join(t.TempDir(), "cards.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cards.Close()
+	svc.SetChatCards(cards)
+	ctx := context.Background()
+	_, run, _, err := svc.SendMessage(ctx, principal, inst.ID, SendMessageInput{Content: "开票", Metadata: map[string]string{"bot_id": "bot-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := putHandoffCard(t, cards, principal, "bot-a", run.SessionID, run.ID)
+	out := submitHandoff(t, cards, principal, card, inst.ID)
+	if _, err := svc.DeliverChatCardResume(ctx, principal, inst.ID, out); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ReconcileChatCardOutbox(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if exec.continued != 0 {
+		t.Fatalf("unverified click continued the task %d times", exec.continued)
+	}
+	msgs, err := svc.ListMessages(ctx, principal, inst.ID, run.SessionID, ListMessagesInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "这一步未核实") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("unverified notices = %d", n)
+	}
+	queued, err := cards.QueuedResumes()
+	if err != nil || len(queued) != 0 {
+		t.Fatalf("queue = %#v %v", queued, err)
 	}
 }
 
