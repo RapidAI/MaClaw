@@ -77,12 +77,21 @@ func TestSelfDesktopdDocIsTheInstallRunbook(t *testing.T) {
 		"不要自己向 Hub 注册",
 		"remote_deploy.sh",
 		"DESKTOPD_IMAGE_FROM=build",
-		"git -C /opt/maclaw-src reset --hard FETCH_HEAD",
+		"safe.directory=/opt/maclaw-src",
+		"+refs/tags/${tag}:refs/tags/${tag}",
+		"refs/tags/${tag}^{}",
+		"checkout is not the release tag",
+		"-buildvcs=false",
 		"https://api.github.com/repos/RapidAI/MaClaw/releases/latest",
 		"tag_name",
-		"refs/tags/",
+		`\1/p`,
+		"url_effective",
 		"宿主机不用安装 Python",
 		"maclaw-gui:2",
+		"cp -R desktopd/image/.",
+		"theme/",
+		"GOTOOLCHAIN=local",
+		"GOSUMDB=sum.golang.google.cn",
 	} {
 		if !strings.Contains(body, phrase) {
 			t.Fatalf("runbook missing %q", phrase)
@@ -91,7 +100,10 @@ func TestSelfDesktopdDocIsTheInstallRunbook(t *testing.T) {
 	if strings.Contains(body, "DESKTOPD_ADVERTISE_HOST=") || strings.Contains(body, "DESKTOPD_PUBLIC_URL=") {
 		t.Fatal("the self-install runbook must not assign a public address")
 	}
-	if strings.Contains(body, "--branch main") || strings.Contains(body, "origin main") {
+	if strings.Contains(body, "--branch main") || strings.Contains(body, "origin main") || strings.Contains(body, "reset --hard FETCH_HEAD") || strings.Contains(body, "sort -V") {
 		t.Fatal("intranet desktop install must use the latest release tag")
+	}
+	if strings.Contains(body, "desktopd/image/desktop_supervisor.py desktopd/image/Dockerfile") {
+		t.Fatal("image context must be the whole desktopd/image tree")
 	}
 }

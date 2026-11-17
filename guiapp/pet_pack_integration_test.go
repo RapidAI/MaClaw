@@ -139,11 +139,14 @@ func TestSetPetRuntimeStateOnManager(t *testing.T) {
 // dutyRestoreWindow records the duty push, including a cue the noop window drops.
 type dutyRestoreWindow struct {
 	mockFloatingWindow
-	ttl     int
-	event   string
-	cue     string
-	applies int
-	lines   []string
+	ttl          int
+	event        string
+	cue          string
+	applies      int
+	lines        []string
+	coverBase    string
+	coverBaseTTL int
+	coverLine    string
 }
 
 func (w *dutyRestoreWindow) ApplyPetDuty(state string, ttlMs int, event, cue string) {
@@ -164,6 +167,16 @@ func (w *dutyRestoreWindow) SetPetPresenceLine(line string) {
 
 func (w *dutyRestoreWindow) SetPetRuntimeState(state string, ttlMs int) {
 	w.ApplyPetDuty(state, ttlMs, "", "")
+}
+
+func (w *dutyRestoreWindow) SetPetTimedCover(state string, ttlMs int, base string, baseTTLMs int, line string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.runtimeState = state
+	w.ttl = ttlMs
+	w.coverBase = base
+	w.coverBaseTTL = baseTTLMs
+	w.coverLine = line
 }
 
 func (w *dutyRestoreWindow) snapshot() (state string, ttl int, event, cue string) {
@@ -207,6 +220,70 @@ func TestDutyRestoreKeepsOnlyTheLivePose(t *testing.T) {
 	pose, ttl, event, cue = win.snapshot()
 	if pose != string(petpack.StateThinking) || ttl != 0 || event != "" || cue != "" {
 		t.Fatalf("thinking restore = %s ttl=%d event=%q cue=%q", pose, ttl, event, cue)
+	}
+}
+
+func TestTimedPetStateDoesNotHoldCompanion(t *testing.T) {
+	m := NewFloatingAssistantManager(nil)
+	win := &dutyRestoreWindow{}
+	m.window = win
+
+	m.applyDuty(petDutyDecision{Pose: string(petpack.StateThinking), Line: "正在做"})
+	m.SetPetRuntimeState("speaking", 3200)
+	pose, ttl, _, _ := win.snapshot()
+	if pose != string(petpack.StateSpeaking) || ttl != 3200 {
+		t.Fatalf("timed speaking = %s ttl=%d", pose, ttl)
+	}
+	m.applyDuty(petDutyDecision{Pose: string(petpack.StateDone), TTLMS: 1600, Line: "做好了"})
+	pose, ttl, _, _ = win.snapshot()
+	if pose != string(petpack.StateDone) || ttl != 1600 {
+		t.Fatalf("timed speaking swallowed the task pose=%s ttl=%d", pose, ttl)
+	}
+
+	m.SetPetRuntimeState("listening", 0)
+	m.SetPetRuntimeState("alert", 1500)
+	pose, ttl, _, _ = win.snapshot()
+	if pose != string(petpack.StateAlert) || ttl != 1500 {
+		t.Fatalf("companion hold dropped the timed alert pose=%s ttl=%d", pose, ttl)
+	}
+	m.SetPetRuntimeState("thinking", 0)
+	pose, ttl, _, _ = win.snapshot()
+	if pose != string(petpack.StateAlert) || ttl != 1500 {
+		t.Fatalf("timed alert released the companion pose=%s ttl=%d", pose, ttl)
+	}
+}
+
+func TestTimedThinkingReturnsToDuty(t *testing.T) {
+	m := NewFloatingAssistantManager(nil)
+	win := &dutyRestoreWindow{}
+	m.window = win
+	m.applyDuty(petDutyDecision{Pose: string(petpack.StateThinking), Line: "正在做"})
+	m.SetPetRuntimeState("listening", 0)
+	m.SetPetRuntimeState("thinking", 15000)
+	pose, ttl, _, _ := win.snapshot()
+	win.mu.Lock()
+	base, baseTTL, line := win.coverBase, win.coverBaseTTL, win.coverLine
+	win.mu.Unlock()
+	if pose != string(petpack.StateThinking) || ttl != 15000 || base != string(petpack.StateThinking) || baseTTL != 0 || line != "正在做" {
+		t.Fatalf("transcription cover pose=%s ttl=%d base=%s baseTTL=%d line=%q", pose, ttl, base, baseTTL, line)
+	}
+	m.applyDuty(petDutyDecision{Pose: string(petpack.StateDone), TTLMS: 1600, Line: "做好了"})
+	pose, ttl, _, _ = win.snapshot()
+	if pose != string(petpack.StateDone) || ttl != 1600 {
+		t.Fatalf("transcription kept the companion hold pose=%s ttl=%d", pose, ttl)
+	}
+
+	alone := NewFloatingAssistantManager(nil)
+	aloneWin := &dutyRestoreWindow{}
+	alone.window = aloneWin
+	alone.SetPetRuntimeState("listening", 0)
+	alone.SetPetRuntimeState("thinking", 15000)
+	aloneWin.mu.Lock()
+	base = aloneWin.coverBase
+	line = aloneWin.coverLine
+	aloneWin.mu.Unlock()
+	if base != "" || line != "" {
+		t.Fatalf("transcription with no task returns to %q %q", base, line)
 	}
 }
 

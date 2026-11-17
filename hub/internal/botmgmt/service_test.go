@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
@@ -2062,6 +2063,269 @@ func TestWakeDesktopViewStartsAndPinsThenHoldAttaches(t *testing.T) {
 	}
 	if !stopped || desk.stop != 1 {
 		t.Fatalf("stopped=%v stop=%d", stopped, desk.stop)
+	}
+}
+
+// downDesktop answers that the screen is not running, so a remembered
+// address is a dead picture.
+type downDesktop struct {
+	desktopCounter
+}
+
+func (d *downDesktop) PeekDesktopView(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+// A login the person has not finished must come back when its screen has
+// stopped. Returning the old address leaves a black picture, and 唤醒 used
+// to return that same address.
+func TestLoginHandoffWakesAStoppedScreen(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	desk := &downDesktop{desktopCounter: desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}}
+	svc.Desktop = desk
+	ctx := context.Background()
+	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
+	svc.rememberDesktopView("tenant-a", "alice", "http://dead.example/old/vnc.html")
+
+	novnc, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desk.open != 1 || novnc == "" || strings.Contains(novnc, "dead.example") {
+		t.Fatalf("hold novnc=%q open=%d", novnc, desk.open)
+	}
+
+	// The next polls still see a stopped screen while it is starting. They
+	// must not open it again.
+	again, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice")
+	if err != nil || again == "" || strings.Contains(again, "dead.example") || desk.open != 1 {
+		t.Fatalf("again=%q open=%d err=%v", again, desk.open, err)
+	}
+	svc.Now = func() time.Time { return time.Now().Add(desktopRecoverGap + time.Second) }
+	woken, _, err := svc.WakeDesktopView(ctx, "tenant-a", "alice", "bot_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desk.open != 2 || woken == "" || strings.Contains(woken, "dead.example") {
+		t.Fatalf("wake novnc=%q open=%d", woken, desk.open)
+	}
+}
+
+// blindDesktop is a look-up that failed, not a screen that is stopped.
+type blindDesktop struct{ desktopCounter }
+
+func (d *blindDesktop) PeekDesktopView(context.Context, string, string) (string, error) {
+	return "", fmt.Errorf("desktopd did not answer")
+}
+
+// The login pin can already be gone (the short idle hand-back let the bot
+// continue) while the page still has the old address. That address is a
+// stopped screen. Showing it paints black, and the wake button is only
+// offered when the picture is empty.
+func TestStoppedScreenWithoutLoginShowsAsleep(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	desk := &downDesktop{desktopCounter: desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}}
+	svc.Desktop = desk
+	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
+	svc.releaseDesktopKeyboard("tenant-a", "alice", "bot_alice")
+	svc.rememberDesktopView("tenant-a", "alice", "http://dead.example/old/vnc.html")
+
+	novnc, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || novnc != "" || desk.open != 0 {
+		t.Fatalf("hold novnc=%q open=%d err=%v", novnc, desk.open, err)
+	}
+	woken, _, err := svc.WakeDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || woken == "" || strings.Contains(woken, "dead.example") || desk.open != 1 {
+		t.Fatalf("wake novnc=%q open=%d err=%v", woken, desk.open, err)
+	}
+}
+
+// liveDesktop is a screen that is still running. Its picture can be blanked
+// without the address going away.
+type liveDesktop struct {
+	desktopCounter
+	nudges int
+}
+
+func (d *liveDesktop) PeekDesktopView(context.Context, string, string) (string, error) {
+	return "http://dockerd.example:6081/vnc.html?autoconnect=1", nil
+}
+
+func (d *liveDesktop) NudgeDesktopView(context.Context, string, string) error {
+	d.mu.Lock()
+	d.nudges++
+	d.mu.Unlock()
+	return nil
+}
+
+func TestLoginWatchUnblanksARunningScreen(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	desk := &liveDesktop{desktopCounter: desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}}
+	svc.Desktop = desk
+	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
+	svc.rememberDesktopView("tenant-a", "alice", "http://dockerd.example:6081/vnc.html?autoconnect=1")
+
+	novnc, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || novnc == "" || desk.open != 0 || desk.nudges != 1 {
+		t.Fatalf("hold novnc=%q open=%d nudges=%d err=%v", novnc, desk.open, desk.nudges, err)
+	}
+	_, _, err = svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || desk.nudges != 1 || desk.open != 0 {
+		t.Fatalf("second watch nudges=%d open=%d err=%v", desk.nudges, desk.open, err)
+	}
+	svc.Now = func() time.Time { return time.Now().Add(desktopRecoverGap + time.Second) }
+	if _, _, err = svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice"); err != nil || desk.nudges != 2 || desk.open != 0 {
+		t.Fatalf("later watch nudges=%d open=%d err=%v", desk.nudges, desk.open, err)
+	}
+}
+
+// backDesktop is stopped, then running again. A dropped address has to
+// find the screen that came back instead of staying asleep.
+type backDesktop struct {
+	desktopCounter
+	up bool
+}
+
+func (d *backDesktop) PeekDesktopView(context.Context, string, string) (string, error) {
+	if !d.up {
+		return "", nil
+	}
+	return "http://dockerd.example:6081/vnc.html?autoconnect=1", nil
+}
+
+func TestStoppedScreenComesBackWithoutAnotherStart(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	desk := &backDesktop{desktopCounter: desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}}
+	svc.Desktop = desk
+	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
+	svc.releaseDesktopKeyboard("tenant-a", "alice", "bot_alice")
+	svc.rememberDesktopView("tenant-a", "alice", "http://dead.example/old/vnc.html")
+
+	novnc, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || novnc != "" || desk.open != 0 {
+		t.Fatalf("down novnc=%q open=%d err=%v", novnc, desk.open, err)
+	}
+	desk.up = true
+	novnc, _, err = svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || novnc == "" || strings.Contains(novnc, "dead.example") || desk.open != 0 {
+		t.Fatalf("back novnc=%q open=%d err=%v", novnc, desk.open, err)
+	}
+}
+
+// computerDesktop records which computer a look or an unblank was aimed at.
+type computerDesktop struct {
+	desktopCounter
+	node   string
+	nudged string
+}
+
+func (d *computerDesktop) PeekDesktopView(ctx context.Context, _, _ string) (string, error) {
+	id, ok := desktoppool.PinnedComputer(ctx)
+	if !ok {
+		id = "unpinned"
+	}
+	d.node = id
+	return "http://dockerd.example:6081/vnc.html?autoconnect=1", nil
+}
+
+func (d *computerDesktop) NudgeDesktopView(ctx context.Context, _, _ string) error {
+	id, _ := desktoppool.PinnedComputer(ctx)
+	d.nudged = id
+	return nil
+}
+
+func TestHeldScreenUnblanksAfterTheLoginWaitEnds(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	desk := &liveDesktop{desktopCounter: desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}}
+	svc.Desktop = desk
+	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
+	svc.releaseDesktopKeyboard("tenant-a", "alice", "bot_alice")
+	svc.rememberDesktopView("tenant-a", "alice", "http://dockerd.example:6081/vnc.html?autoconnect=1")
+
+	novnc, keyboard, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || novnc == "" || keyboard || desk.open != 0 || desk.nudges != 1 {
+		t.Fatalf("hold novnc=%q keyboard=%v open=%d nudges=%d err=%v", novnc, keyboard, desk.open, desk.nudges, err)
+	}
+	if _, _, err = svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice"); err != nil || desk.nudges != 1 || desk.open != 0 {
+		t.Fatalf("second nudges=%d open=%d err=%v", desk.nudges, desk.open, err)
+	}
+}
+
+func TestLoginWatchAsksTheBotsOwnComputer(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	rec, err := svc.load(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Bots[0].NodeID = "dn_lab"
+	if err := svc.save(context.Background(), "tenant-a", rec); err != nil {
+		t.Fatal(err)
+	}
+	desk := &computerDesktop{desktopCounter: desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}}
+	svc.Desktop = desk
+	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
+	svc.rememberDesktopView("tenant-a", "alice", "http://dockerd.example:6081/vnc.html?autoconnect=1")
+
+	if _, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice"); err != nil {
+		t.Fatal(err)
+	}
+	if desk.node != "dn_lab" || desk.nudged != "dn_lab" || desk.open != 0 {
+		t.Fatalf("node=%q nudged=%q open=%d", desk.node, desk.nudged, desk.open)
+	}
+}
+
+func TestLoginWatchDoesNotStartWhenTheLookUpFails(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	desk := &blindDesktop{desktopCounter: desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}}
+	svc.Desktop = desk
+	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
+	novnc, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || novnc != "" || desk.open != 0 {
+		t.Fatalf("novnc=%q open=%d err=%v", novnc, desk.open, err)
+	}
+}
+
+func TestWatchDoesNotStartWhenTheLookUpFails(t *testing.T) {
+	settings := &memSettings{}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	desk := &blindDesktop{desktopCounter: desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}}
+	svc.Desktop = desk
+	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
+	svc.rememberDesktopView("tenant-a", "alice", "http://dockerd.example:6081/vnc.html?autoconnect=1")
+	novnc, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || novnc == "" || desk.open != 0 {
+		t.Fatalf("novnc=%q open=%d err=%v", novnc, desk.open, err)
 	}
 }
 

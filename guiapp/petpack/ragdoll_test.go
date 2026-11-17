@@ -539,6 +539,136 @@ func TestRagdollBraidsSwingSofterThanTheHead(t *testing.T) {
 // TestRagdollIdlePoolCoversTheNamedFloor checks the official idle pool
 // includes the named kinds from the pack spec, and that the five added
 // poses stay in place, lead with the body, and do not use the notice cue.
+func TestRagdollMissClipsReturnAndGrow(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), BundledFS())
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := reg.Resolve(DefaultPackID, VariantDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig, err := LoadRig(resolved)
+	if err != nil || rig == nil {
+		t.Fatal(err)
+	}
+	rest := rig.Clips["react_long_idle_rest"]
+	sulk := rig.Clips["react_long_idle_sulk"]
+	pout := rig.Clips["react_long_idle_pout"]
+	if rest.DurationMS < 1 || rest.TravelX != 0 || rest.Cue != "rest" {
+		t.Fatalf("rest = %+v", rest)
+	}
+	for _, clip := range []RigClip{sulk, pout} {
+		if clip.DurationMS < 1 || clip.TravelX != 0 || clip.Cue != "" {
+			t.Fatalf("miss clip = %+v", clip)
+		}
+		for _, bone := range []string{"root", "head", "torso"} {
+			frames := clip.Tracks[bone]
+			if len(frames) < 2 {
+				t.Fatalf("%s missing %s", clip.Cue, bone)
+			}
+			last := frames[len(frames)-1]
+			if last.AtMS != clip.DurationMS || last.X != 0 || last.Y != 0 || last.Rotate != 0 {
+				t.Fatalf("clip does not return to neutral on %s: %+v", bone, last)
+			}
+		}
+	}
+	if maxAbsRigRotate(sulk.Tracks["head"]) < 12 || maxAbsRigRotate(pout.Tracks["head"]) <= maxAbsRigRotate(sulk.Tracks["head"]) {
+		t.Fatalf("sulk head %v pout head %v", maxAbsRigRotate(sulk.Tracks["head"]), maxAbsRigRotate(pout.Tracks["head"]))
+	}
+	if len(sulk.Tracks["arm_l"]) < 2 || len(sulk.Tracks["arm_r"]) < 2 || len(sulk.Tracks["tail"]) < 2 || len(pout.Tracks["arm_r"]) < 2 || len(pout.Tracks["tail"]) < 2 {
+		t.Fatal("sulk and pout do not move both arms and the tail")
+	}
+	for _, clip := range []RigClip{sulk, pout, rest} {
+		for _, bone := range []string{"arm_l", "arm_r", "tail"} {
+			frames := clip.Tracks[bone]
+			if len(frames) == 0 {
+				continue
+			}
+			last := frames[len(frames)-1]
+			if last.AtMS != clip.DurationMS || last.X != 0 || last.Y != 0 || last.Rotate != 0 {
+				t.Fatalf("%s does not return %s: %+v", clip.Cue, bone, last)
+			}
+		}
+	}
+	for _, name := range []string{"expr_wait", "expr_sulk", "expr_pout"} {
+		face := rig.Clips[name]
+		mouth := face.Tracks["mouth"]
+		if !face.Loop || len(mouth) < 2 {
+			t.Fatalf("%s is not a held mouth: %+v", name, face)
+		}
+	}
+	if mouthScale(rig.Clips["expr_wait"]) <= 0 || mouthScale(rig.Clips["expr_wait"]) >= 1 {
+		t.Fatalf("wait mouth %v", mouthScale(rig.Clips["expr_wait"]))
+	}
+	if mouthScale(rig.Clips["expr_sulk"]) >= 0 || mouthScale(rig.Clips["expr_pout"]) >= mouthScale(rig.Clips["expr_sulk"]) {
+		t.Fatalf("sulk mouth %v pout mouth %v", mouthScale(rig.Clips["expr_sulk"]), mouthScale(rig.Clips["expr_pout"]))
+	}
+	if len(rig.Clips["secondary_idle"].Tracks["mouse"]) < 3 {
+		t.Fatal("settled mouse does not breathe on the idle secondary")
+	}
+	renderer, err := NewRigRenderer(resolved)
+	if err != nil || renderer == nil {
+		t.Fatal(err)
+	}
+	for _, sample := range []struct {
+		name string
+		at   int
+	}{
+		{"react_long_idle_sulk", 860},
+		{"react_long_idle_pout", 1040},
+	} {
+		img := renderer.RenderClips([]string{sample.name, "expr_calm", "gaze_wander"}, sample.at, 256)
+		minX, minY, maxX, maxY, n := opaqueBounds(img)
+		if n == 0 || minX < 0 || minY < 0 || maxX >= 256 || maxY >= 256 {
+			t.Fatalf("%s@%d bounds %d,%d-%d,%d n=%d", sample.name, sample.at, minX, minY, maxX, maxY, n)
+		}
+	}
+}
+
+func TestRagdollCompanionFeelHoldsTheFace(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), BundledFS())
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := reg.Resolve(DefaultPackID, VariantDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	character, err := NewCharacterRenderer(resolved)
+	if err != nil || character == nil {
+		t.Fatal(err)
+	}
+	calm := character.RenderState(StateIdle, 1000, 256)
+	if !character.SetCompanionFeel("expr_pout", "gaze_center", "tired") {
+		t.Fatal("pout face did not apply")
+	}
+	if character.SetCompanionFeel("expr_pout", "gaze_center", "tired") {
+		t.Fatal("the same face reported a change")
+	}
+	pout := character.RenderState(StateIdle, 1000, 256)
+	if n, _, _, _, _ := changedPixelBox(calm, pout); n < 20 {
+		t.Fatalf("pout face changed %d pixels", n)
+	}
+	if !character.TriggerClip("react_long_idle_pout", 5000) {
+		t.Fatal("pout clip did not play")
+	}
+	held := character.RenderState(StateIdle, 5000+1600, 256)
+	if !character.SetCompanionFeel("", "", "") {
+		t.Fatal("clearing the face did not apply")
+	}
+	cleared := character.RenderState(StateIdle, 5000+1600, 256)
+	if n, _, _, _, _ := changedPixelBox(held, cleared); n < 20 {
+		t.Fatalf("clearing the face changed %d pixels", n)
+	}
+	if character.SetCompanionFeel("expr_missing", "gaze_center", "tired") != true {
+		t.Fatal("a known gaze and mood should still hold when the expression clip is missing")
+	}
+	if character.heldExpression != "" || character.heldMood != "tired" {
+		t.Fatalf("missing expression stuck as %q mood %q", character.heldExpression, character.heldMood)
+	}
+}
+
 func TestRagdollIdlePoolCoversTheNamedFloor(t *testing.T) {
 	reg := NewRegistry(t.TempDir(), BundledFS())
 	if err := reg.Scan(); err != nil {
@@ -575,6 +705,38 @@ func TestRagdollIdlePoolCoversTheNamedFloor(t *testing.T) {
 		behavior := performer.Behaviors[name]
 		if len(behavior.Moods) > 0 && !containsString(behavior.Moods, "calm") {
 			t.Fatalf("%s has no calm mood: %v", name, behavior.Moods)
+		}
+	}
+	for _, name := range []string{"idle_walk", "idle_run", "idle_jump", "idle_sing", "idle_bend", "idle_attend", "idle_notice"} {
+		if containsString(performer.Behaviors[name].Moods, "tired") {
+			t.Fatalf("%s still plays while she is waiting", name)
+		}
+	}
+	tired := 0
+	for _, name := range performer.States["idle"].BehaviorPool {
+		if containsString(performer.Behaviors[name].Moods, "tired") {
+			tired++
+		}
+	}
+	if tired < 4 {
+		t.Fatalf("waiting idle has %d behaviors", tired)
+	}
+	for _, reaction := range performer.Reactions {
+		switch reaction.Play {
+		case "react_long_idle_sulk", "react_long_idle_pout", "expr_wait", "expr_sulk", "expr_pout":
+			t.Fatalf("complaint face is in the reaction pool: %+v", reaction)
+		}
+	}
+	director := NewPerformanceDirector(performer, rig, 11)
+	director.SetPinnedMood("tired")
+	for i := 0; i < 8; i++ {
+		step := director.SelectState(StateIdle, int64(1000+i*30000))
+		if step.isZero() {
+			t.Fatal("waiting idle stalled")
+		}
+		name := director.lastBehaviors[len(director.lastBehaviors)-1]
+		if !containsString(performer.Behaviors[name].Moods, "tired") {
+			t.Fatalf("waiting idle played %s", name)
 		}
 	}
 	for _, name := range []string{"idle_shift", "idle_drift", "idle_groom", "idle_attend", "idle_notice"} {
@@ -785,6 +947,16 @@ func firstAbsRotateAt(frames []RigKeyframe, min float64) int {
 		}
 	}
 	return -1
+}
+
+func mouthScale(clip RigClip) float64 {
+	min := 1.0
+	for _, key := range clip.Tracks["mouth"] {
+		if key.ScaleY < min {
+			min = key.ScaleY
+		}
+	}
+	return min
 }
 
 func maxAbsRigRotate(frames []RigKeyframe) float64 {

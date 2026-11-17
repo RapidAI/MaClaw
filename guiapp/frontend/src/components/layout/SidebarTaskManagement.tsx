@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Z } from "../ui/zIndex";
 import { createPortal } from 'react-dom';
-import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, MoveTaskConversation, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
+import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, LoadConfig, MoveTaskConversation, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
-import { EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
+import { EVENT_MACLAW_CONFIG_CHANGED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
 import { localizeText } from '../../i18n';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore } from '../../utils/cloudWorkspaceTaskRestore';
@@ -1474,10 +1474,55 @@ export function normalizeWorkdirScopeKey(key: string): string {
     return legacy ? `${legacy[1]}:${legacy[2]}` : key;
 }
 
-/** Identifies one directory folder inside 会话, 编程, or 归档. Pin uses the same key. */
-export function taskWorkdirCollapseKey(kind: TaskListFolderKind, directoryKey: string): string {
+/** Identifies one directory folder inside 会话, 编程, or 归档. Pin uses the same key.
+ * Display-only kinds (the 最近任务 band) share the same namespace so their
+ * expand state stays independent from the real folder's. */
+export function taskWorkdirCollapseKey(kind: TaskListFolderKind | 'recent', directoryKey: string): string {
     return `${kind}:${directoryKey}`;
 }
+
+export const SIDEBAR_RECENT_TASK_COUNT_DEFAULT = 5;
+export const SIDEBAR_RECENT_TASK_COUNT_MAX = 50;
+
+/** recent_task_count config: unset/invalid means the default, 0 hides the band. */
+export function normalizeRecentTaskCount(value: unknown): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return SIDEBAR_RECENT_TASK_COUNT_DEFAULT;
+    return Math.max(0, Math.min(SIDEBAR_RECENT_TASK_COUNT_MAX, Math.floor(value)));
+}
+
+/** One row of the recency band: a task or a whole directory folder, tagged
+ * with the real folder kind it came from so context-menu actions (new task,
+ * pin) still address the group under 会话/编程. */
+export type SidebarRecentEntry<T> = TaskWorkdirEntry<T> & { sourceKind?: TaskListFolderKind };
+
+/** Folder shape the list actually renders: the real kind folders plus the
+ * display-only 最近任务 band prepended on top. */
+export type SidebarTaskFolderView<T> = {
+    kind: TaskListFolderKind | 'recent';
+    tasks: T[];
+    entries: SidebarRecentEntry<T>[];
+    /** Head count override; the recency band shows entry count, not member count. */
+    count?: number;
+};
+
+const RECENT_TASK_FOLDER_COLLAPSED_KEY = 'maclaw.sidebar-recent-folder-collapsed.v1';
+
+const readRecentTaskFolderCollapsed = (): boolean => {
+    if (typeof localStorage === 'undefined') return false;
+    try {
+        return localStorage.getItem(RECENT_TASK_FOLDER_COLLAPSED_KEY) === '1';
+    } catch {
+        return false;
+    }
+};
+
+const writeRecentTaskFolderCollapsed = (collapsed: boolean) => {
+    try {
+        localStorage.setItem(RECENT_TASK_FOLDER_COLLAPSED_KEY, collapsed ? '1' : '0');
+    } catch {
+        // Private mode or a full quota should not block the toggle.
+    }
+};
 
 function orderTasksInsideWorkdir<T extends WorkdirLayoutTask>(tasks: T[], saved: ReadonlySet<string> | null): T[] {
     const fresh = (task: T) => !!saved && saved.size > 0 && !saved.has(taskOrderKey(task));
@@ -3360,6 +3405,71 @@ export const SidebarTaskManagement = ({
         }
         return map;
     }, [taskFolders]);
+    // 最近任务 band size comes from 设置 → 通用 (recent_task_count). Unset
+    // config shows the default; an explicit 0 hides the band entirely.
+    const [recentTaskCount, setRecentTaskCount] = useState(SIDEBAR_RECENT_TASK_COUNT_DEFAULT);
+    useEffect(() => {
+        const syncFromConfig = (cfg: unknown) => {
+            setRecentTaskCount(normalizeRecentTaskCount((cfg as { recent_task_count?: unknown } | null)?.recent_task_count));
+        };
+        // Partial wails mocks in tests may omit LoadConfig.
+        const loadRecentTaskCount = () => {
+            if (typeof LoadConfig !== 'function') return;
+            LoadConfig().then(syncFromConfig).catch(() => { /* keep the last value */ });
+        };
+        loadRecentTaskCount();
+        const onConfigChanged = (event: Event) => {
+            const detail = (event as CustomEvent).detail;
+            if (detail && typeof detail === 'object') {
+                syncFromConfig(detail);
+            } else {
+                loadRecentTaskCount();
+            }
+        };
+        window.addEventListener(EVENT_MACLAW_CONFIG_CHANGED, onConfigChanged);
+        return () => window.removeEventListener(EVENT_MACLAW_CONFIG_CHANGED, onConfigChanged);
+    }, []);
+    // The band is a second listing of the rows below, so it shares the real
+    // folders' grouping: a recent task inside a same-directory group brings
+    // the whole group, and its position is the newest member's last_activity.
+    const recentTaskEntries = useMemo((): SidebarRecentEntry<TaskManagementItem>[] => {
+        if (remote.selected || recentTaskCount <= 0) return [];
+        const scored: Array<{ entry: TaskWorkdirEntry<TaskManagementItem>; kind: TaskListFolderKind; recency: number }> = [];
+        for (const folder of taskFolders) {
+            if (folder.kind === 'archive') continue;
+            for (const entry of folder.entries) {
+                const members = entry.kind === 'folder' ? entry.folder.tasks : [entry.task];
+                // Only a real last_activity qualifies a row for the band: a
+                // task that was never opened (missing or zero stamp) is not a
+                // "recent" task no matter how new its creation time is.
+                const recency = members.reduce((latest, task) => {
+                    const stamp = Date.parse(task.last_activity || '');
+                    return Number.isFinite(stamp) && stamp > latest ? stamp : latest;
+                }, 0);
+                if (recency > 0) scored.push({ entry, kind: folder.kind, recency });
+            }
+        }
+        scored.sort((a, b) => b.recency - a.recency);
+        return scored.slice(0, recentTaskCount).map(({ entry, kind }) => ({ ...entry, sourceKind: kind }));
+    }, [taskFolders, recentTaskCount, remote.selected]);
+    const [recentFolderCollapsed, setRecentFolderCollapsed] = useState<boolean>(readRecentTaskFolderCollapsed);
+    const toggleRecentFolder = useCallback(() => {
+        setRecentFolderCollapsed(prev => {
+            const next = !prev;
+            writeRecentTaskFolderCollapsed(next);
+            return next;
+        });
+    }, []);
+    const displayTaskFolders = useMemo((): SidebarTaskFolderView<TaskManagementItem>[] => {
+        if (!recentTaskEntries.length || remote.selected || taskSearchQuery.trim()) return taskFolders;
+        const recentFolder: SidebarTaskFolderView<TaskManagementItem> = {
+            kind: 'recent',
+            tasks: recentTaskEntries.flatMap(entry => (entry.kind === 'folder' ? entry.folder.tasks : [entry.task])),
+            entries: recentTaskEntries,
+            count: recentTaskEntries.length,
+        };
+        return [recentFolder, ...taskFolders];
+    }, [taskFolders, recentTaskEntries, remote.selected, taskSearchQuery]);
     const taskDragKeyRef = useRef<string | null>(null);
     const taskDragFolderRef = useRef<TaskListFolderKind | null>(null);
     const taskDragPinnedRef = useRef<boolean | null>(null);
@@ -5880,19 +5990,23 @@ export const SidebarTaskManagement = ({
                     ? textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')
                     : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
             </div>
-        ) : taskFolders.map(folder => {
+        ) : displayTaskFolders.map(folder => {
             const folderCollapsed = remote.selected ? remoteCollapsedTaskFolders : collapsedTaskFolders;
             const folderExpanded = remoteTaskQuery || (folder.kind === 'archive' && showArchivedMatches)
                 ? true
-                : !folderCollapsed.has(folder.kind);
-            const folderLabel = taskListFolderLabel(folder.kind, lang);
+                : folder.kind === 'recent'
+                    ? !recentFolderCollapsed
+                    : !folderCollapsed.has(folder.kind);
+            const folderLabel = folder.kind === 'recent'
+                ? textForLang(lang, 'Recent tasks', '最近任务', '最近任務')
+                : taskListFolderLabel(folder.kind, lang);
             const folderToggleLabel = folderExpanded
                 ? textForLang(lang, `Collapse ${folderLabel}`, `折叠${folderLabel}`, `摺疊${folderLabel}`)
                 : textForLang(lang, `Expand ${folderLabel}`, `展开${folderLabel}`, `展開${folderLabel}`);
             // Archive is pinned under 会话 and 编程. It is not a drag source,
             // and a drop onto it must not pull another folder beneath it.
             const movableFolderCount = taskFolders.filter(item => item.kind !== 'archive').length;
-            const folderCanDrag = !remote.selected && folder.kind !== 'archive' && movableFolderCount > 1;
+            const folderCanDrag = !remote.selected && folder.kind !== 'archive' && folder.kind !== 'recent' && movableFolderCount > 1;
             const folderDragLabel = textForLang(lang, 'Drag to reorder folders', '拖动调整文件夹顺序', '拖動調整資料夾順序');
             const folderTitle = folderCanDrag ? `${folderDragLabel} · ${folderToggleLabel}` : folderToggleLabel;
             return (
@@ -5904,7 +6018,7 @@ export const SidebarTaskManagement = ({
                 aria-label={folderLabel}
                 onDragOver={e => {
                     const from = folderDragKindRef.current;
-                    if (!from || from === 'archive' || folder.kind === 'archive' || from === folder.kind) return;
+                    if (!from || from === 'archive' || folder.kind === 'archive' || folder.kind === 'recent' || from === folder.kind) return;
                     e.preventDefault();
                     e.stopPropagation();
                     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
@@ -5917,7 +6031,7 @@ export const SidebarTaskManagement = ({
                 }}
                 onDrop={e => {
                     const from = folderDragKindRef.current;
-                    if (!from || from === 'archive' || folder.kind === 'archive') return;
+                    if (!from || from === 'archive' || folder.kind === 'archive' || folder.kind === 'recent') return;
                     e.preventDefault();
                     e.stopPropagation();
                     folderDragKindRef.current = null;
@@ -5935,7 +6049,7 @@ export const SidebarTaskManagement = ({
                 aria-controls={`task-folder-items-${folder.kind}`}
                 title={folderTitle}
                 onDragStart={e => {
-                    if (!folderCanDrag || taskDragKeyRef.current) { e.preventDefault(); return; }
+                    if (!folderCanDrag || taskDragKeyRef.current || folder.kind === 'recent') { e.preventDefault(); return; }
                     e.stopPropagation();
                     folderDidDragRef.current = true;
                     folderDragKindRef.current = folder.kind;
@@ -5949,17 +6063,17 @@ export const SidebarTaskManagement = ({
                     clearFolderDropMarks();
                     window.setTimeout(() => { folderDidDragRef.current = false; }, 0);
                 }}
-                onClick={() => toggleVisibleTaskFolder(folder.kind)}
+                onClick={() => { if (folder.kind === 'recent') toggleRecentFolder(); else toggleVisibleTaskFolder(folder.kind); }}
                 onKeyDown={e => {
                     if (e.key !== 'Enter' && e.key !== ' ') return;
                     e.preventDefault();
-                    toggleVisibleTaskFolder(folder.kind);
+                    if (folder.kind === 'recent') toggleRecentFolder(); else toggleVisibleTaskFolder(folder.kind);
                 }}
             >
                 <TaskFolderChevron />
                 <TaskFolderIcon open={folderExpanded} />
                 <span className="stsm-task-folder__label">{folderLabel}</span>
-                <span className="stsm-task-folder__count">{folder.tasks.length}</span>
+                <span className="stsm-task-folder__count">{folder.count ?? folder.tasks.length}</span>
             </div>
             {folderExpanded ? (
             <div id={`task-folder-items-${folder.kind}`} className="stsm-task-folder__items">
@@ -6071,7 +6185,7 @@ export const SidebarTaskManagement = ({
                 gap: '6px',
                 padding: '4px 6px 4px 8px',
                 borderRadius: '8px',
-                cursor: isBusy ? 'progress' : remote.selected ? 'pointer' : 'grab',
+                cursor: isBusy ? 'progress' : (remote.selected || folder.kind === 'recent') ? 'pointer' : 'grab',
                 opacity: isBusy ? 0.78 : 1,
                 // Only the active row keeps a selection highlight; open-but-inactive
                 // and plain rows stay transparent (hover comes from CSS).
@@ -6082,9 +6196,9 @@ export const SidebarTaskManagement = ({
             };
             const orderKey = taskOrderKey(proj);
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (remote.selected) { void handleTaskDoubleClick(proj); return; } if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, archived: remote.selected ? !!proj.archived : archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, remote.selected ? textForLang(lang, 'Click to open.', '单击打开', '單擊開啟') : textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected && folder.kind !== 'recent'} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current || folder.kind === 'recent') { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (remote.selected) { void handleTaskDoubleClick(proj); return; } if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, archived: remote.selected ? !!proj.archived : archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, remote.selected ? textForLang(lang, 'Click to open.', '单击打开', '單擊開啟') : textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
-                    {remote.selected ? null : <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>}
+                    {remote.selected || folder.kind === 'recent' ? null : <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>}
                     <span className="stsm-row-body">
                         {(workflowStatus || codingBadge || proj.pinned || shareFromLabel || shareReadOnlyLabel) && (
                             <span className="stsm-badge-row">
@@ -6191,7 +6305,13 @@ export const SidebarTaskManagement = ({
             const workdirToggleLabel = workdirExpanded
                 ? textForLang(lang, `Collapse ${entry.folder.label}`, `折叠${entry.folder.label}`, `摺疊${entry.folder.label}`)
                 : textForLang(lang, `Expand ${entry.folder.label}`, `展开${entry.folder.label}`, `展開${entry.folder.label}`);
-            const folderPinned = !remote.selected && pinnedWorkdirFolders.has(workdirCollapseKey);
+            // Inside the recency band the pin badge and pin action must address
+            // the real folder's scope — a `recent:` key would pin nothing the
+            // list below reads.
+            const folderPinScope = folder.kind === 'recent'
+                ? taskWorkdirCollapseKey(entry.sourceKind || 'session', entry.folder.key)
+                : workdirCollapseKey;
+            const folderPinned = !remote.selected && pinnedWorkdirFolders.has(folderPinScope);
             const workdirPinLabel = folderPinned
                 ? textForLang(lang, 'Unpin', '取消置顶', '取消置頂')
                 : textForLang(lang, 'Pin', '置顶', '置頂');
@@ -6228,7 +6348,7 @@ export const SidebarTaskManagement = ({
                     setWorkdirContextMenu({
                         x: event.clientX,
                         y: event.clientY,
-                        kind: folder.kind,
+                        kind: folder.kind === 'recent' ? (entry.sourceKind || 'session') : folder.kind,
                         directoryKey: entry.folder.key,
                         directoryTitle: entry.folder.title,
                         label: workdirLabel,

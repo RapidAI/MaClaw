@@ -311,6 +311,9 @@ type Service struct {
 	// from the Bot page. The hold keeps that live picture up after a run
 	// finishes; without it the VNC frame goes black mid-watch.
 	desktopUserView map[string]time.Time
+	// desktopRecoverAttempt is the last time a stopped login screen was
+	// started again. It is not persisted: a restart may try once more.
+	desktopRecoverAttempt map[string]time.Time
 	// desktopWatchGen is the newest watch generation a poll has noted.
 	// desktopWatchClosed is the newest generation whose panel has released.
 	// A release only drops a view that is still that generation, so a page

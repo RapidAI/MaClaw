@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -14,6 +15,7 @@ import 'package:record/record.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../../core/platform.dart';
+import '../../core/providers.dart';
 import '../../core/speech_text.dart';
 import '../../core/voice_engine.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -90,6 +92,11 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   Future<void> _toggleListening() async {
     if (_listening) {
       await _speech.stop();
+      try {
+        await _recorder?.stop(); // 本地听写进行中：提前结束本轮并转写
+      } on Object {
+        // 未在录音时 stop() 可能抛错——忽略，本轮本来就结束了
+      }
       if (mounted) setState(() => _listening = false);
       return;
     }
@@ -103,7 +110,13 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         }
       },
     );
-    if (!ok || !mounted) return;
+    if (!mounted) return;
+    if (!ok) {
+      // 系统识别不可用（无 GMS/华为等）→ 本地 SenseVoice 听写兜底；
+      // 模型未下载时 _localDictate 会后台拉起下载并提示。
+      unawaited(_localDictate());
+      return;
+    }
     _speechPrefix = _inputCtrl.text;
     setState(() => _listening = true);
     await _speech.listen(
@@ -205,20 +218,19 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     );
   }
 
-  /// 本地 SenseVoice 聆听：record 流式 PCM16@16k + 简易能量 VAD，
-  /// 尾静默 1.2s 收句 → FFI 转写 → 自动发送。
-  Future<void> _recordListen() async {
-    final engine = ref.read(voiceEngineProvider);
-    if (!await engine.localAsrReady()) {
-      _stopVoiceMode();
-      _toast('语音识别不可用，可在「我的→语音引擎」下载本地模型');
-      return;
-    }
+  /// 本地模型缺失时后台拉起下载（GitHub → Hub 镜像），用户不用进设置页。
+  void _ensureLocalVoiceModels() {
+    final hub = ref.read(sessionProvider).active?.hubUrl;
+    unawaited(ref.read(voiceEngineProvider).autoEnsure(hubBase: hub));
+  }
+
+  /// 共享采集：record 流式 PCM16@16k + 简易能量 VAD，尾静默 1.2s 或
+  /// 20s 封顶收句。keepGoing 变 false 立即收句。失败已 toast，返回 null。
+  Future<Uint8List?> _capturePcm({required bool Function() keepGoing}) async {
     final recorder = _recorder ??= AudioRecorder();
     if (!await recorder.hasPermission()) {
-      _stopVoiceMode();
       _toast('没有麦克风权限');
-      return;
+      return null;
     }
     late final Stream<Uint8List> stream;
     try {
@@ -230,16 +242,15 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         ),
       );
     } on Object {
-      _stopVoiceMode();
       _toast('无法打开麦克风录音');
-      return;
+      return null;
     }
     if (mounted) setState(() => _listening = true);
     final buf = BytesBuilder(copy: false);
     var lastLoud = DateTime.now();
     try {
       await for (final chunk in stream) {
-        if (!_voiceMode) break;
+        if (!keepGoing()) break;
         buf.add(chunk);
         var sum = 0.0;
         final n = chunk.length ~/ 2;
@@ -261,8 +272,24 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     }
     await recorder.stop(); // cancel-subscription alone leaves the mic held
     if (mounted) setState(() => _listening = false);
+    return buf.takeBytes();
+  }
+
+  /// 本地 SenseVoice 聆听：采集 → FFI 转写 → 自动发送。
+  Future<void> _recordListen() async {
+    final engine = ref.read(voiceEngineProvider);
+    if (!await engine.localAsrReady()) {
+      _ensureLocalVoiceModels();
+      _stopVoiceMode();
+      _toast('语音识别不可用，正在后台下载本地模型，稍后再试');
+      return;
+    }
+    final pcm = await _capturePcm(keepGoing: () => _voiceMode);
+    if (pcm == null) {
+      _stopVoiceMode();
+      return;
+    }
     if (!_voiceMode) return;
-    final pcm = buf.takeBytes();
     if (pcm.length < 32000) {
       _scheduleVoiceRelisten();
       return;
@@ -282,6 +309,41 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     } else {
       _scheduleVoiceRelisten();
     }
+  }
+
+  /// 输入框麦克风的本地听写兜底：系统 ASR 不可用时用 SenseVoice 把话
+  /// 写进输入框（可编辑后再发），与系统路径同一前缀拼接语义。
+  Future<void> _localDictate() async {
+    if (_listening) return;
+    final engine = ref.read(voiceEngineProvider);
+    if (!await engine.localAsrReady()) {
+      _ensureLocalVoiceModels();
+      _toast('语音识别不可用，正在后台下载本地模型，稍后再试');
+      return;
+    }
+    final prefix = _inputCtrl.text;
+    final pcm = await _capturePcm(keepGoing: () => _listening);
+    if (pcm == null || !mounted) return;
+    if (pcm.length < 32000) {
+      _toast('没听清，请再试');
+      return;
+    }
+    final String text;
+    try {
+      text = (await engine.transcribe(pcm)).trim();
+    } on Object {
+      _toast('语音识别失败，请重试');
+      return;
+    }
+    if (!RegExp(r'[\w一-鿿]{2,}').hasMatch(text)) {
+      _toast('没听清，请再试');
+      return;
+    }
+    setState(() {
+      _inputCtrl.text = prefix.isEmpty ? text : '$prefix $text';
+      _inputCtrl.selection =
+          TextSelection.collapsed(offset: _inputCtrl.text.length);
+    });
   }
 
   /// 语音模式下输入栏的麦克风=插话键：播报中→打断立即说话；

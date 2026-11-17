@@ -287,7 +287,7 @@ sup.flush_browser = lambda key: None
 sup.heal_browser_window = lambda *a, **k: None
 os.environ["MACLAW_BOT_TAKEOVER_IDLE_SECONDS"] = "300"
 sup.login_page_state = lambda key: None
-sup.ctl_takeover_begin({"key": bot, "reason": "login"})
+sup.ctl_takeover_begin({"key": bot, "reason": "请看一下页面"})
 path = sup.ROOT / bot / "takeover.json"
 d = json.loads(path.read_text())
 print(d["idle_seconds"], d["expires_at"] - d["since"])
@@ -302,8 +302,11 @@ print(sup.ctl_bot_state({"key": bot})["auto_handback"])
 os.environ["MACLAW_BOT_TAKEOVER_IDLE_SECONDS"] = "0"
 sup.ctl_takeover_begin({"key": bot, "reason": "x"})
 print(sup.takeover_expire_if_idle(bot, now=time.time() + 99999))
+sup.ctl_takeover_begin({"key": bot, "reason": "出了验证码，请登录"})
+print(sup.takeover_expire_if_idle(bot, now=time.time() + 3600), sup.takeover_state(bot) is not None)
+print(sup.takeover_expire_if_idle(bot, now=time.time() + sup.LOGIN_TAKEOVER_IDLE_SECONDS + 5), sup.takeover_state(bot) is None)
 `, botOwner)
-	want := "300 300\nFalse True\nFalse True\nTrue True\nTrue 300 False\nFalse\nFalse"
+	want := "300 300\nFalse True\nFalse True\nTrue True\nTrue 300 False\nFalse\nFalse\nFalse True\nTrue True"
 	if out != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}

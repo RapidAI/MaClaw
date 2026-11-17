@@ -51,7 +51,8 @@
       "cooldown_ms": 5000,
       "moods": [
         "calm",
-        "focused"
+        "focused",
+        "tired"
       ]
     },
     "idle_breathe": {
@@ -63,7 +64,8 @@
       "max_ms": 6200,
       "cooldown_ms": 4000,
       "moods": [
-        "calm"
+        "calm",
+        "tired"
       ]
     },
     "idle_drift": {
@@ -88,7 +90,8 @@
       "max_ms": 4800,
       "cooldown_ms": 16000,
       "moods": [
-        "calm"
+        "calm",
+        "tired"
       ]
     },
     "idle_jump": {
@@ -114,7 +117,8 @@
       "cooldown_ms": 9000,
       "moods": [
         "calm",
-        "curious"
+        "curious",
+        "tired"
       ]
     },
     "idle_look_right": {
@@ -127,7 +131,8 @@
       "cooldown_ms": 9000,
       "moods": [
         "calm",
-        "curious"
+        "curious",
+        "tired"
       ]
     },
     "idle_notice": {
@@ -178,7 +183,8 @@
       "max_ms": 5200,
       "cooldown_ms": 12000,
       "moods": [
-        "calm"
+        "calm",
+        "tired"
       ]
     },
     "idle_sing": {

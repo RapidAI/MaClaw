@@ -1417,6 +1417,9 @@ def keep_screen_awake(display):
         ["xset", "s", "noblank"],
         ["xset", "s", "reset"],
         ["xset", "-dpms"],
+        # A screen that already blanked stays black until something turns the
+        # picture back on. reset alone does not, once DPMS has fired.
+        ["xset", "dpms", "force", "on"],
     ):
         try:
             subprocess.call(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
@@ -5613,7 +5616,10 @@ def touch_viewer_takeover(key):
 
 # The bot pauses only while the person operates: 90 s after the last input
 # (10-31 Daniel: 300 s left the bot waiting while he only watched).
+# A login or captcha is the exception: the person may not be at the machine
+# yet. Six hours still ends a handoff nobody comes back to.
 TAKEOVER_IDLE_SECONDS = 90
+LOGIN_TAKEOVER_IDLE_SECONDS = 6 * 60 * 60
 
 
 def takeover_state(key):
@@ -6747,10 +6753,19 @@ def takeover_expire_if_idle(key, now=None):
     if not isinstance(data, dict):
         return False
     now = time.time() if now is None else now
+    # A login or captcha uses the long ceiling, not the 90 s timer. The short
+    # one is for someone who opened the screen and walked off. Ending a login
+    # that soon stops the display before they arrive, and the next look
+    # attaches to that stopped screen.
+    login = login_takeover(str(data.get("reason") or ""))
+    if login and takeover_login_done(key, data, now):
+        return True
     try:
         limit = int(data.get("idle_seconds") if data.get("idle_seconds") is not None else takeover_idle_limit())
     except (TypeError, ValueError):
         limit = takeover_idle_limit()
+    if login:
+        limit = LOGIN_TAKEOVER_IDLE_SECONDS
     if limit <= 0:
         return False
     try:

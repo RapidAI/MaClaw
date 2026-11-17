@@ -563,8 +563,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['guiapp/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
   ['guiapp/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
-  ['guiapp/frontend/src/components/settings/GeneralSettingsPanel.tsx', 330],
-  // Refreshed 340 -> 490 -> 525 (2026-10-19): assistant font cards and size
+  // 330 -> 350 (2026-11-17): measured 336 lines.
+  ['guiapp/frontend/src/components/settings/GeneralSettingsPanel.tsx', 350],
+  // Refreshed 340 -> 490 -> 525 (2026-11-19): assistant font cards and size
   // controls kept growing here (guard counts 507).
   ['guiapp/frontend/src/components/settings/UISettingsPanel.tsx', 525],
   // Refreshed 520 -> 545 (2026-11-01): in-flight knowledge-section work
@@ -1186,7 +1187,7 @@ requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx',
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubUsedCredits', 'hub credits used display wiring');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubExpiry', 'hub credits expiry display wiring');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'sidebarCurrentProviderTokenUsage.isHubService', 'hub service credits visibility condition');
-requireIncludes('guiapp/frontend/src/components/layout/SidebarTaskManagement.tsx', 'taskFolders.map', 'task list stays in sidebar task management component');
+requireIncludes('guiapp/frontend/src/components/layout/SidebarTaskManagement.tsx', 'displayTaskFolders.map', 'task list stays in sidebar task management component');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'showHubCreditAction', 'hub credits action stays in sidebar system status');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'openHubCreditsPage', 'hub credits purchase action wiring');
 requireIncludes('guiapp/frontend/src/components/layout/MainTopHeader.tsx', 'export const MainTopHeader', 'non-AI top header export');

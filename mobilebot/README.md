@@ -1,4 +1,4 @@
-# MaClawBot
+# MaclawGo
 
 桌面 Bot（MaClaw / CodeClaw desktop bot）的手机客户端，Flutter 实现
 （Android / iOS）。功能对齐桌面 GUI 的 `DesktopBotWorkspace`：创建和配置
@@ -58,7 +58,7 @@ lib/
    `POST {hub}/api/mobile/auth/phone/send-code`；
 3. `POST {hub}/api/enroll/email/verify-and-start` 或
    `POST {hub}/api/mobile/auth/phone/verify-and-start`
-   （携带 `machine_name=MaClawBot`、`platform=mobile`、持久 `client_id`）→
+   （携带 `machine_name=MaclawGo`、`platform=mobile`、持久 `client_id`）→
    `access_token`/`viewer_token`、`machine_id`、`machine_token`。
    `status=pending` 表示待管理员审批。
 

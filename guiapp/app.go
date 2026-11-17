@@ -9210,6 +9210,18 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SurveyEnabled = &v
+		case "recent_task_count":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > 50 {
+				v = 50
+			}
+			cfg.RecentTaskCount = &v
 		case "show_coding_tool_entry":
 			v, err := boolField(key, value)
 			if err != nil {

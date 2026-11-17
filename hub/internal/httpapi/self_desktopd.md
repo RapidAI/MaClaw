@@ -23,12 +23,16 @@
 
 ## 1. 源码
 
-用 GitHub 上最新一个 Release 的 tag，不要用 `main`。先问 Release，接口没有 `tag_name` 时再从 tag 列表里取最后一个版本号。
+用 GitHub 上最新一个 Release 的 tag，不要用 `main`。先读 Release 接口里的 `tag_name`。接口没有这个字段时，再看 `https://github.com/RapidAI/MaClaw/releases/latest` 跳转后的地址，最后一段就是 tag。两个都没有就停。不要在全部 git tag 里按版本号取最后一个：仓库里有比最新 Release 更新、但还没有发布的 tag。tag 保持接口返回的大小写。
 
 ```sh
-tag=$(curl -fsSL --max-time 20 https://api.github.com/repos/RapidAI/MaClaw/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/p' | head -n 1)
+tag=$(curl -fsSL --max-time 20 -H "Accept: application/vnd.github+json" -H "User-Agent: maclaw-desktop-install" https://api.github.com/repos/RapidAI/MaClaw/releases/latest | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | sed -n 's/.*"\([^"]*\)"$/\1/p')
 if [ -z "$tag" ]; then
-  tag=$(git ls-remote --tags --refs https://github.com/RapidAI/MaClaw.git | sed 's#.*refs/tags/##' | grep -E '^v?[0-9]+(\.[0-9]+){1,3}$' | sort -V | tail -n 1)
+  rel=$(curl -fsSL --max-time 20 -o /dev/null -w '%{url_effective}' https://github.com/RapidAI/MaClaw/releases/latest || true)
+  tag=${rel##*/}
+  if [ "$tag" = "latest" ]; then
+    tag=""
+  fi
 fi
 if [ -z "$tag" ]; then
   echo "no release tag"
@@ -38,35 +42,69 @@ case "$tag" in
   *[!A-Za-z0-9._-]*) echo "bad release tag"; exit 1 ;;
 esac
 printf 'source tag: %s\n' "$tag"
+origin=$(git -c safe.directory=/opt/maclaw-src -C /opt/maclaw-src remote get-url origin 2>/dev/null || true)
+case "$origin" in
+  https://github.com/RapidAI/MaClaw|https://github.com/RapidAI/MaClaw.git) ;;
+  "") ;;
+  *) rm -rf /opt/maclaw-src || exit 1 ;;
+esac
 if [ -d /opt/maclaw-src/.git ]; then
-  git -C /opt/maclaw-src fetch --depth 1 origin "refs/tags/${tag}:refs/tags/${tag}" || exit 1
-  git -C /opt/maclaw-src reset --hard FETCH_HEAD || exit 1
+  git -c safe.directory=/opt/maclaw-src -C /opt/maclaw-src fetch --depth 1 origin "+refs/tags/${tag}:refs/tags/${tag}" || exit 1
 else
   rm -rf /opt/maclaw-src || exit 1
   git clone --depth 1 --branch "$tag" https://github.com/RapidAI/MaClaw.git /opt/maclaw-src || exit 1
+  git -c safe.directory=/opt/maclaw-src -C /opt/maclaw-src fetch --depth 1 origin "+refs/tags/${tag}:refs/tags/${tag}" || exit 1
+fi
+git -c safe.directory=/opt/maclaw-src -C /opt/maclaw-src reset --hard "refs/tags/${tag}^{}" || exit 1
+head=$(git -c safe.directory=/opt/maclaw-src -C /opt/maclaw-src rev-parse HEAD) || exit 1
+want=$(git -c safe.directory=/opt/maclaw-src -C /opt/maclaw-src rev-parse "refs/tags/${tag}^{}") || exit 1
+if [ "$head" != "$want" ]; then
+  echo "checkout is not the release tag"
+  exit 1
 fi
 ```
 
-不要换远程地址。服务器上的代码就是这个 Release，不包含尚未发布的提交。没有 tag 时停下来，不要改去拉 `main`。
+不要换远程地址。目录属主和当前用户不一致时，git 会拒绝更新，所以上面的命令带了 `safe.directory=/opt/maclaw-src`。已有的 tag 用 `+` 强制更新，避免第二次安装被「would clobber existing tag」拦住。`reset` 指向这个 tag 剥开后的提交，不要用 `FETCH_HEAD`：浅克隆里它可能仍是旧的 `main`。核对 `HEAD` 和这个提交一致后再编译。没有 tag 时停下来，不要改去拉 `main`。
+
+编译时加 `-buildvcs=false`。Go 自己会调用 git 读取版本信息，不会带上面的 `safe.directory`，目录属主不一致时编译会失败。
 
 ## 2. 只安装 desktopd
 
 安装目录是 `/data/soft/maclaw_desktopd`，监听 `:18081`（所有网卡；内网可达，桌面客户端直连画面和截图就走这个端口），systemd 服务名 `maclaw-desktopd`。
 
-在仓库根目录打包（`GOPROXY=https://goproxy.cn,direct`）：
+在仓库根目录打包。`GOTOOLCHAIN=local` 用本机的 Go，不要再从网上下载另一套工具链。模块先走 `https://goproxy.cn,direct` 和 `sum.golang.google.cn`，失败再改用 `https://proxy.golang.org,direct` 和 `sum.golang.org`。安装包里的镜像目录是整个 `desktopd/image`，包含 `theme/`。Dockerfile 会 COPY `theme/` 下的文件；只拷贝几个散文件时，主机构建会在 COPY 失败。
 
 ```sh
+rm -rf /tmp/maclaw_desktopd_deploy/stage || exit 1
 mkdir -p /tmp/maclaw_desktopd_deploy/stage/bin /tmp/maclaw_desktopd_deploy/stage/image
-cd /opt/maclaw-src
+cd /opt/maclaw-src || exit 1
+if [ -x /usr/local/go/bin/go ]; then
+  go_bin=/usr/local/go/bin/go
+else
+  go_bin=$(command -v go) || { echo "Go 1.26 or newer is required"; exit 1; }
+fi
 export CGO_ENABLED=0
 export GOOS=linux
-/usr/local/go/bin/go build -ldflags "-s -w" -o /tmp/maclaw_desktopd_deploy/stage/bin/desktopd ./desktopd/cmd/desktopd
-cp desktopd/image/desktop_supervisor.py desktopd/image/Dockerfile desktopd/image/Dockerfile.v2 desktopd/image/close_range_shim.c desktopd/image/fcitx5-profile /tmp/maclaw_desktopd_deploy/stage/image/
+export GOTOOLCHAIN=local
+export GOPROXY=https://goproxy.cn,direct
+export GOSUMDB=sum.golang.google.cn
+case "$(uname -m)" in
+  aarch64|arm64) export GOARCH=arm64 ;;
+  x86_64|amd64) export GOARCH=amd64 ;;
+  *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+esac
+if ! "$go_bin" build -buildvcs=false -ldflags "-s -w" -o /tmp/maclaw_desktopd_deploy/stage/bin/desktopd ./desktopd/cmd/desktopd; then
+  export GOPROXY=https://proxy.golang.org,direct
+  export GOSUMDB=sum.golang.org
+  "$go_bin" build -buildvcs=false -ldflags "-s -w" -o /tmp/maclaw_desktopd_deploy/stage/bin/desktopd ./desktopd/cmd/desktopd || exit 1
+fi
+cp -R desktopd/image/. /tmp/maclaw_desktopd_deploy/stage/image/
+find /tmp/maclaw_desktopd_deploy/stage/image -type d -name __pycache__ -exec rm -rf {} + || true
 tar -czf /tmp/maclaw_desktopd_deploy/desktopd-deploy.tar.gz -C /tmp/maclaw_desktopd_deploy/stage .
 cp desktopd/remote_deploy.sh /tmp/maclaw_desktopd_deploy/
 ```
 
-`/usr/local/go/bin/go` 不存在、但 `go version` 已是 1.26 或更新时，用 PATH 里的 `go`。
+`/usr/local/go/bin/go` 不存在、但 PATH 里的 `go version` 已是 1.26 或更新时，上面的脚本会改用 PATH 里的 `go`。
 
 以 root 运行安装脚本。耗时可能很长：
 
@@ -114,8 +152,27 @@ sh -c '. /data/soft/maclaw_desktopd/.env; curl -fsS -H "Authorization: Bearer $D
 
 ```sh
 mkdir -p /data/soft/maclaw_srv/bin /data/soft/maclaw_srv/data /data/soft/maclaw_srv/logs
-cd /opt/maclaw-src
-CGO_ENABLED=0 GOOS=linux /usr/local/go/bin/go build -ldflags "-s -w" -o /data/soft/maclaw_srv/bin/maclawsrv ./MaClawSrv
+cd /opt/maclaw-src || exit 1
+if [ -x /usr/local/go/bin/go ]; then
+  go_bin=/usr/local/go/bin/go
+else
+  go_bin=$(command -v go) || { echo "Go 1.26 or newer is required"; exit 1; }
+fi
+export CGO_ENABLED=0
+export GOOS=linux
+export GOTOOLCHAIN=local
+export GOPROXY=https://goproxy.cn,direct
+export GOSUMDB=sum.golang.google.cn
+case "$(uname -m)" in
+  aarch64|arm64) export GOARCH=arm64 ;;
+  x86_64|amd64) export GOARCH=amd64 ;;
+  *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+esac
+if ! "$go_bin" build -buildvcs=false -ldflags "-s -w" -o /data/soft/maclaw_srv/bin/maclawsrv ./MaClawSrv; then
+  export GOPROXY=https://proxy.golang.org,direct
+  export GOSUMDB=sum.golang.org
+  "$go_bin" build -buildvcs=false -ldflags "-s -w" -o /data/soft/maclaw_srv/bin/maclawsrv ./MaClawSrv || exit 1
+fi
 test -x /data/soft/maclaw_srv/bin/maclawsrv
 ```
 

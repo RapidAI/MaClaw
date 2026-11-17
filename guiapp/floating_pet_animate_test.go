@@ -40,7 +40,9 @@ func TestPetDesktopAnimatorPlaysRagdollAndWalks(t *testing.T) {
 	cursor := start
 	x, y := 20, 30
 	roamed := false
-	for i := 0; i < 40; i++ {
+	// The seeded idle sequence can spend a while on non-travel behaviors
+	// before a walking clip comes up; keep roaming until one does.
+	for i := 0; i < 300; i++ {
 		cursor = cursor.Add(200 * time.Millisecond)
 		if anim.Render(cursor) == nil {
 			t.Fatal("ragdoll frame dropped during roam")
@@ -232,8 +234,11 @@ func TestPetDesktopAnimatorStaysPutWhilePositionLocked(t *testing.T) {
 		MotionEnabled: true,
 	})
 	roamed := false
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 300; i++ {
 		cursor = cursor.Add(200 * time.Millisecond)
+		if anim.Render(cursor) == nil {
+			t.Fatal("unpinned ragdoll frame dropped")
+		}
 		if _, _, moved := anim.Advance(cursor, false, 2000, 2000); moved {
 			roamed = true
 			break

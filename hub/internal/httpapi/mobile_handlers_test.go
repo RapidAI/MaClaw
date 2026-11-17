@@ -533,7 +533,7 @@ func TestMobileDesktopAuthQRRedeemEnrollsScanner(t *testing.T) {
 	}
 	qrPayload, _ := created["qr_payload"].(string)
 
-	redeemBody := fmt.Sprintf(`{"qr_payload":%s,"machine_name":"MaClawBot","platform":"mobile","client_id":"scan-1"}`, strconv.Quote(qrPayload))
+	redeemBody := fmt.Sprintf(`{"qr_payload":%s,"machine_name":"MaclawGo","platform":"mobile","client_id":"scan-1"}`, strconv.Quote(qrPayload))
 	redeemReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions/redeem", strings.NewReader(redeemBody))
 	redeemReq.Host = "tenant-a.maclaw.top"
 	redeemRec := httptest.NewRecorder()

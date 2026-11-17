@@ -143,6 +143,9 @@ func main() {
 		{"walk", []string{"walk_loop", "expr_calm", "gaze_center", "secondary_idle"}, 160},
 		{"run", []string{"run_loop", "expr_pleased", "gaze_center", "secondary_idle"}, 120},
 		{"sing", []string{"sing_loop", "expr_speak", "gaze_center", "secondary_speak"}, 480},
+		{"wait", []string{"react_long_idle_rest", "expr_wait", "gaze_center"}, 500},
+		{"sulk", []string{"react_long_idle_sulk", "expr_sulk", "gaze_center"}, 860},
+		{"pout", []string{"react_long_idle_pout", "expr_pout", "gaze_center"}, 1040},
 	} {
 		frame := renderer.RenderClips(sample.clips, sample.at, 256)
 		path := filepath.Join(qa, sample.name+".png")
@@ -151,6 +154,12 @@ func main() {
 		}
 		fmt.Println("qa", path)
 	}
+	renderer.SetVisibleAdornmentSlots([]string{"mouse_charm", "slipper_l", "slipper_r", "mouse_pet"})
+	settled := renderer.RenderClips([]string{"idle_breathe_loop", "expr_calm", "gaze_center", "secondary_idle"}, 1200, 256)
+	if err := writePNG(filepath.Join(qa, "settled.png"), settled); err != nil {
+		panic(err)
+	}
+	renderer.SetVisibleAdornmentSlots(nil)
 	idleTop := opaqueTop(preview)
 	jumpTop := opaqueTop(renderer.RenderClips([]string{"jump_loop"}, 200, 256))
 	if jumpTop >= idleTop-12 {
@@ -575,13 +584,13 @@ func buildRig() *petpack.Rig {
 	add("gaze_up", clip(900, true, 0, "", false, tr().k("eyes", kf(0, 0, -3, 0, ""), kf(900, 1, -4, 0, "ease-in-out"))))
 	add("gaze_center", clip(800, true, 0, "", false, tr().k("eyes", kf(0, 0, 0, 0, ""), kf(800, 1, 0, 0, "ease-in-out"))))
 
-	add("secondary_idle", clip(2400, true, 0, "", false, secondaryMotion(2400, 10, 20)))
-	add("secondary_listen", clip(1500, true, 0, "", false, secondaryMotion(1500, 16, 26)))
-	add("secondary_think", clip(1800, true, 0, "", false, secondaryMotion(1800, 8, 14)))
-	add("secondary_speak", clip(1100, true, 0, "", false, secondaryMotion(1100, 22, 30)))
-	add("secondary_done", clip(900, true, 0, "", false, secondaryMotion(900, 26, 34)))
-	add("secondary_alert", clip(800, true, 0, "", false, secondaryMotion(800, 6, 10)))
-	add("secondary_quiet", clip(3200, true, 0, "", false, secondaryMotion(3200, 4, 8)))
+	add("secondary_idle", clip(2400, true, 0, "", false, liveMouse(secondaryMotion(2400, 10, 20), 2400)))
+	add("secondary_listen", clip(1500, true, 0, "", false, liveMouse(secondaryMotion(1500, 16, 26), 1500)))
+	add("secondary_think", clip(1800, true, 0, "", false, liveMouse(secondaryMotion(1800, 8, 14), 1800)))
+	add("secondary_speak", clip(1100, true, 0, "", false, liveMouse(secondaryMotion(1100, 22, 30), 1100)))
+	add("secondary_done", clip(900, true, 0, "", false, liveMouse(secondaryMotion(900, 26, 34), 900)))
+	add("secondary_alert", clip(800, true, 0, "", false, liveMouse(secondaryMotion(800, 6, 10), 800)))
+	add("secondary_quiet", clip(3200, true, 0, "", false, liveMouse(secondaryMotion(3200, 4, 8), 3200)))
 
 	add("react_click_greet", clip(980, false, 0, "greet", false, tr().
 		k("root", kf(0, 0, 2, 0, ""), kf(180, 0, 8, 0, "ease-out"), kf(460, 0, -18, 0, "ease-out"), kf(980, 0, 0, 0, "ease-in-out")).
@@ -631,7 +640,45 @@ func buildRig() *petpack.Rig {
 		k("head", kf(0, 0, 0, 0, ""), kf(360, 0, 2, 12, "ease-in-out"), kf(900, 0, 0, 0, "ease-in-out"))))
 	add("react_long_idle_rest", clip(1200, false, 0, "rest", false, tr().
 		k("root", kf(0, 0, 0, 0, ""), kf(400, 0, 12, 0, "ease-in-out"), kf(900, 0, 8, 0, "ease-in-out"), kf(1200, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, 0, 0, 0, ""), kf(500, 0, 2, 5, "ease-in-out"), kf(1200, 0, 0, 0, "ease-in-out")).
+		k("tail", kf(0, 0, 0, 0, ""), kf(500, 0, 2, 14, "ease-in-out"), kf(1200, 0, 0, 0, "ease-in-out")).
 		k("eyes", kfs(0, 1, ""), kfs(500, 0.4, "ease-in-out"), kfs(1000, 0.7, "ease-out"), kfs(1200, 1, "ease-in-out"))))
+	// Sulk and pout are host-chosen long_idle clips. They are not extra
+	// events, and they are not in the weighted reaction pool, so the
+	// renderer's own 20s rest does not randomly play the stronger pose.
+	// The mouth lives on expr_wait / expr_sulk / expr_pout, which the host
+	// holds for the whole complaint. These body clips announce it, then
+	// return every bone to the neutral pose. The smile texture turns into
+	// a frown only when its scale is negative, so the body does not also
+	// scale the mouth.
+	add("react_long_idle_sulk", clip(1400, false, 0, "", false, tr().
+		k("root", kf(0, 0, 0, 0, ""), kf(180, 0, -4, 0, "ease-out"), kf(700, 0, 18, 0, "ease-in-out"), kf(1400, 0, 0, 0, "ease-in-out")).
+		k("torso", kf(0, 0, 0, 0, ""), kf(200, 0, 0, -3, "ease-out"), kf(760, 0, 0, 10, "ease-in-out"), kf(1400, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, 0, 0, 0, ""), kf(420, 0, 1, 0, "ease-out"), kf(860, 0, 4, 16, "ease-in-out"), kf(1400, 0, 0, 0, "ease-in-out")).
+		k("arm_l", kf(0, 0, 0, 0, ""), kf(220, 0, 2, -10, "ease-out"), kf(860, 0, 6, 24, "ease-in-out"), kf(1400, 0, 0, 0, "ease-in-out")).
+		k("arm_r", kf(0, 0, 0, 0, ""), kf(220, 0, 2, 8, "ease-out"), kf(860, 0, 6, -20, "ease-in-out"), kf(1400, 0, 0, 0, "ease-in-out")).
+		k("tail", kf(0, 0, 0, 0, ""), kf(200, 0, -2, -6, "ease-out"), kf(860, 0, 4, 22, "ease-in-out"), kf(1400, 0, 0, 0, "ease-in-out")).
+		k("eyes", kfs(0, 1, ""), kfs(860, 0.45, "ease-in-out"), kfs(1400, 1, "ease-in-out"))))
+	add("react_long_idle_pout", clip(1600, false, 0, "", false, tr().
+		k("root", kf(0, 0, 0, 0, ""), kf(160, 0, -5, 0, "ease-out"), kf(900, -6, 16, 0, "ease-in-out"), kf(1600, 0, 0, 0, "ease-in-out")).
+		k("torso", kf(0, 0, 0, 0, ""), kf(180, 0, 0, -4, "ease-out"), kf(980, 0, 0, 14, "ease-in-out"), kf(1600, 0, 0, 0, "ease-in-out")).
+		k("head", kf(0, 0, 0, 0, ""), kf(400, 0, 0, -4, "ease-out"), kf(1040, -6, 2, -26, "ease-in-out"), kf(1600, 0, 0, 0, "ease-in-out")).
+		k("arm_l", kf(0, 0, 0, 0, ""), kf(220, 0, 0, -8, "ease-out"), kf(1040, 0, 4, 32, "ease-in-out"), kf(1600, 0, 0, 0, "ease-in-out")).
+		k("arm_r", kf(0, 0, 0, 0, ""), kf(220, 0, 0, 8, "ease-out"), kf(1040, 0, 4, -28, "ease-in-out"), kf(1600, 0, 0, 0, "ease-in-out")).
+		k("tail", kf(0, 0, 0, 0, ""), kf(200, 0, -2, -8, "ease-out"), kf(1040, 0, 6, 30, "ease-in-out"), kf(1600, 0, 0, 0, "ease-in-out")).
+		k("eyes", kfs(0, 1, ""), kfs(1040, 0.4, "ease-in-out"), kfs(1600, 1, "ease-in-out"))))
+	// Faces for the complaint. The host holds one until the sentence clears.
+	// They are not states and not long_idle reactions. Negative mouth scale
+	// turns the smile texture over.
+	add("expr_wait", clip(1600, true, 0, "", false, tr().
+		k("eyes", eye(0, 0, 1, 1, 0.7, ""), eye(800, 0, 1.4, 1.02, 0.6, "ease-in-out"), eye(1600, 0, 1, 1, 0.7, "ease-in-out")).
+		k("mouth", mouthKey(0, 0, 0.42, ""), mouthKey(800, 0.4, 0.32, "ease-in-out"), mouthKey(1600, 0, 0.42, "ease-in-out"))))
+	add("expr_sulk", clip(1400, true, 0, "", false, tr().
+		k("eyes", eye(0, -1.5, 0.6, 1.04, 0.4, ""), eye(700, -2, 1, 1.06, 0.34, "ease-in-out"), eye(1400, -1.5, 0.6, 1.04, 0.4, "ease-in-out")).
+		k("mouth", mouthKey(0, 0.4, -0.95, ""), mouthKey(700, 0.8, -1.05, "ease-in-out"), mouthKey(1400, 0.4, -0.95, "ease-in-out"))))
+	add("expr_pout", clip(1200, true, 0, "", false, tr().
+		k("eyes", eye(0, -1, 1.6, 1.08, 0.32, ""), eye(600, -1.4, 2, 1.1, 0.26, "ease-in-out"), eye(1200, -1, 1.6, 1.08, 0.32, "ease-in-out")).
+		k("mouth", mouthKey(0, 1, -1.15, ""), mouthKey(600, 1.4, -1.25, "ease-in-out"), mouthKey(1200, 1, -1.15, "ease-in-out"))))
 
 	// Head tilts are authored on the body clips. The braids counter-rotate
 	// here so a nod does not swing the whole plait as one rigid piece.
@@ -747,6 +794,19 @@ func secondaryMotion(ms int, tailAmp, hairAmp float64) tracks {
 		k("braid_r_tip", hairSwayKeys(ms, hairAmp, right-lag)...)
 }
 
+// liveMouse is the settled companion's breath. The slot stays hidden until
+// that rearing stage, so earlier stages do not show the motion.
+func liveMouse(base tracks, ms int) tracks {
+	if ms < 2 {
+		return base
+	}
+	half := ms / 2
+	return base.k("mouse",
+		kf(0, 0, 0, -8, ""),
+		kf(half, 2, -5, 10, "ease-in-out"),
+		kf(ms, 0, 0, -8, "ease-in-out"))
+}
+
 func hairSwayKeys(ms int, amp, phase float64) []petpack.RigKeyframe {
 	const samples = 8
 	frames := make([]petpack.RigKeyframe, 0, samples)
@@ -828,10 +888,10 @@ func buildPerformer() *petpack.Performer {
 		Moods:   []string{"calm", "curious", "focused", "pleased", "concerned", "tired"},
 		Layers:  []string{"body", "expression", "gaze", "secondary"},
 		Behaviors: map[string]petpack.PerformerBehavior{
-			"idle_breathe":    b("idle_breathe_in", "idle_breathe_loop", "idle_breathe_out", 5, 3200, 6200, 4000, "calm"),
-			"idle_look_left":  b("idle_look_left_in", "idle_look_left_loop", "idle_look_left_out", 3, 2400, 4200, 9000, "calm", "curious"),
-			"idle_look_right": b("idle_look_right_in", "idle_look_right_loop", "idle_look_right_out", 3, 2400, 4200, 9000, "calm", "curious"),
-			"idle_blink":      b("idle_blink_in", "idle_blink_loop", "idle_blink_out", 4, 900, 1800, 5000, "calm", "focused"),
+			"idle_breathe":    b("idle_breathe_in", "idle_breathe_loop", "idle_breathe_out", 5, 3200, 6200, 4000, "calm", "tired"),
+			"idle_look_left":  b("idle_look_left_in", "idle_look_left_loop", "idle_look_left_out", 3, 2400, 4200, 9000, "calm", "curious", "tired"),
+			"idle_look_right": b("idle_look_right_in", "idle_look_right_loop", "idle_look_right_out", 3, 2400, 4200, 9000, "calm", "curious", "tired"),
+			"idle_blink":      b("idle_blink_in", "idle_blink_loop", "idle_blink_out", 4, 900, 1800, 5000, "calm", "focused", "tired"),
 			"idle_walk":       b("walk_in", "walk_loop", "walk_out", 3, 2200, 4800, 8000, "calm", "curious"),
 			"idle_run":        b("run_in", "run_loop", "run_out", 1, 1600, 2800, 22000, "pleased", "calm"),
 			"idle_jump":       b("jump_in", "jump_loop", "jump_out", 1, 1400, 2400, 18000, "pleased", "calm"),
@@ -839,9 +899,9 @@ func buildPerformer() *petpack.Performer {
 			"idle_stretch":    b("stretch_in", "stretch_loop", "stretch_out", 2, 2000, 3600, 14000, "tired", "calm"),
 			"idle_sing":       b("sing_in", "sing_loop", "sing_out", 2, 2200, 4600, 12000, "pleased", "calm"),
 			"idle_rest":       b("rest_in", "rest_loop", "rest_out", 1, 3000, 5600, 20000, "tired", "calm"),
-			"idle_shift":      b("idle_shift_in", "idle_shift_loop", "idle_shift_out", 2, 2800, 5200, 12000, "calm"),
+			"idle_shift":      b("idle_shift_in", "idle_shift_loop", "idle_shift_out", 2, 2800, 5200, 12000, "calm", "tired"),
 			"idle_drift":      b("idle_drift_in", "idle_drift_loop", "idle_drift_out", 2, 3200, 5600, 14000, "calm", "tired"),
-			"idle_groom":      b("idle_groom_in", "idle_groom_loop", "idle_groom_out", 2, 2800, 4800, 16000, "calm"),
+			"idle_groom":      b("idle_groom_in", "idle_groom_loop", "idle_groom_out", 2, 2800, 4800, 16000, "calm", "tired"),
 			"idle_attend":     b("idle_attend_in", "idle_attend_loop", "idle_attend_out", 2, 2500, 4600, 10000, "calm", "focused"),
 			"idle_notice":     b("idle_notice_in", "idle_notice_loop", "idle_notice_out", 2, 2600, 4800, 11000, "calm", "curious"),
 		},
@@ -912,6 +972,14 @@ func sc(at int, sx, sy float64, ease string) petpack.RigKeyframe {
 	return petpack.RigKeyframe{AtMS: at, ScaleX: sx, ScaleY: sy, Ease: ease}
 }
 
+func eye(at int, x, y, sx, sy float64, ease string) petpack.RigKeyframe {
+	return petpack.RigKeyframe{AtMS: at, X: x, Y: y, ScaleX: sx, ScaleY: sy, Ease: ease}
+}
+
+func mouthKey(at int, y, scaleY float64, ease string) petpack.RigKeyframe {
+	return petpack.RigKeyframe{AtMS: at, Y: y, ScaleY: scaleY, Ease: ease}
+}
+
 func writeAdornmentTextures(dir string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		panic(err)
@@ -956,6 +1024,9 @@ func drawMouseCharm() *image.NRGBA {
 	fillEllipse(img, cx-3.2, cy+0.6, 0.7, 0.8, pupil)
 	fillEllipse(img, cx+3.2, cy+0.6, 0.7, 0.8, pupil)
 	fillEllipse(img, cx, cy+3.4, 1.6, 1.15, nose)
+	fillEllipse(img, cx, cy+10.5, 2.5, 2.3, bell)
+	fillEllipse(img, cx, cy+10.8, 1.4, 1.2, bellDeep)
+	fillEllipse(img, cx, cy+12.6, 0.55, 0.7, bellDeep)
 	drawBow(img, cx, cy-13, 2.2)
 	return img
 }
@@ -963,11 +1034,15 @@ func drawMouseCharm() *image.NRGBA {
 func drawSlipper() *image.NRGBA {
 	const w, h = 36, 18
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
-	fillEllipse(img, 20, 12, 14, 5.2, dressDeep)
-	fillEllipse(img, 20, 10.5, 13, 4.4, dress)
-	fillEllipse(img, 24, 9, 6.5, 2.2, dressLite)
-	fillEllipse(img, 12, 8, 4, 2.2, cream)
-	drawBow(img, 10, 7.5, 1.5)
+	// A dark sole sits on the painted shoe. The cuff and the toe bow are
+	// what make the grown stage read as slippers rather than another shoe.
+	fillEllipse(img, 20, 13.2, 14, 3.6, shoe)
+	fillEllipse(img, 20, 11.2, 13.2, 4.8, dressDeep)
+	fillEllipse(img, 21, 10.4, 12, 4, dress)
+	fillEllipse(img, 25, 9.4, 5.6, 2.2, dressLite)
+	fillEllipse(img, 9, 10, 5.2, 3.4, cream)
+	fillEllipse(img, 9, 9.6, 3.8, 2.3, creamLite)
+	drawBow(img, 24, 8.4, 1.7)
 	return img
 }
 
@@ -983,10 +1058,11 @@ func drawMousePet() *image.NRGBA {
 	fillEllipse(img, 37, 10, 4.4, 5.2, point)
 	fillEllipse(img, 28, 11, 2, 2.4, earPink)
 	fillEllipse(img, 37, 11, 2, 2.4, earPink)
-	fillEllipse(img, 35, 17, 1.6, 1.8, iris)
-	fillEllipse(img, 35.2, 17.2, 0.7, 0.8, pupil)
-	fillEllipse(img, 36, 19.6, 1.4, 1, nose)
+	fillEllipse(img, 34.2, 15.4, 1.8, 2, iris)
+	fillEllipse(img, 34.4, 15.6, 0.8, 0.9, pupil)
+	fillEllipse(img, 35.2, 18.4, 1.5, 1.05, nose)
 	fillCapsule(img, 30, 20, 22, 18, 0.55, pointLite)
+	drawBow(img, 30, 13.5, 1.35)
 	return img
 }
 
@@ -1267,6 +1343,8 @@ var (
 	blush     = color.NRGBA{240, 150, 150, 110}
 	bow       = color.NRGBA{214, 84, 122, 255}
 	bowDeep   = color.NRGBA{168, 52, 88, 255}
+	bell      = color.NRGBA{232, 184, 74, 255}
+	bellDeep  = color.NRGBA{168, 116, 32, 255}
 	dress     = color.NRGBA{214, 96, 132, 255}
 	dressLite = color.NRGBA{244, 168, 190, 255}
 	dressDeep = color.NRGBA{168, 64, 102, 255}

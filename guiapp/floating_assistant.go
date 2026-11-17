@@ -664,7 +664,21 @@ func (m *FloatingAssistantManager) SetPetRuntimeState(state string, ttlMs int) {
 	m.mu.Lock()
 	switch st {
 	case petpack.StateListening, petpack.StateSpeaking:
-		m.companionPose = true
+		// A timed prompt ends on its own and the duty pose returns.
+		// Taking the companion hold here would keep that pose from
+		// coming back after the prompt, and from being replaced while
+		// the prompt is still up.
+		if ttlMs <= 0 {
+			m.companionPose = true
+		}
+	case petpack.StateThinking:
+		// Timed thinking is the mic-closed transcription. The listening
+		// pose it replaces is over. The task underneath is what returns,
+		// or idle when there is no task, including when the follow-up
+		// signal never arrives.
+		if ttlMs > 0 {
+			m.companionPose = false
+		}
 	case petpack.StateIdle:
 		m.companionPose = false
 	}
@@ -679,8 +693,21 @@ func (m *FloatingAssistantManager) SetPetRuntimeState(state string, ttlMs int) {
 		m.pushDutyWindow(win, dutyDecisionStillLive(last, time.Now()))
 		return
 	}
-	if hold && st != petpack.StateListening && st != petpack.StateSpeaking {
+	// Listening and speaking outrank duty. A timed alert or short prompt
+	// does not: it shows on top of whatever is up and then gives that back.
+	if hold && ttlMs <= 0 && st != petpack.StateListening && st != petpack.StateSpeaking {
 		return
+	}
+	// Transcription must not return to the listening pose that was on
+	// screen. That pose already ended. The return is the live task.
+	if st == petpack.StateThinking && ttlMs > 0 {
+		if cover, ok := win.(interface {
+			SetPetTimedCover(state string, ttlMs int, base string, baseTTLMs int, line string)
+		}); ok {
+			live := dutyDecisionStillLive(last, time.Now())
+			cover.SetPetTimedCover(string(st), ttlMs, live.Pose, live.TTLMS, live.Line)
+			return
+		}
 	}
 	win.SetPetRuntimeState(string(st), ttlMs)
 }
