@@ -631,8 +631,7 @@ func (s *Service) skillMarketAuthToken(ctx context.Context, p Principal, cfg Use
 		cfg.UserID = p.UserID
 	}
 	cfg.AppConfig = effectiveLLMFlatConfig(cfg.AppConfig)
-	_ = s.store.SaveUserConfig(cfg)
-	_ = saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg)
+	_ = s.saveConfigKeepingManaged(p, cfg)
 	return cfg.AppConfig.SkillMarketSessionToken
 }
 
@@ -687,8 +686,7 @@ func (s *Service) rememberUserHubCenterSelection(p Principal, selected string, c
 	cfg.AppConfig.RemoteHubCenterURL = selected
 	cfg.AppConfig.RemoteHubCenterURLs = public
 	cfg.UpdatedAt = s.now()
-	_ = s.store.SaveUserConfig(cfg)
-	_ = saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg)
+	_ = s.saveConfigKeepingManaged(p, cfg)
 }
 
 func (s *Service) ExportSkill(ctx context.Context, p Principal, name string) (*SkillExportResult, error) {

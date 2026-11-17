@@ -206,6 +206,50 @@ func TestDesktopBotCapabilitiesUserConfigPreservesManagedDocument(t *testing.T) 
 			t.Fatal("interleaved admin update changed the other tenant")
 		}
 	})
+
+	t.Run("stale auxiliary snapshot keeps a newer admin document and a clear", func(t *testing.T) {
+		pathA := "/api/v1/admin/tenants/" + tenantA.ID + "/users/" + userA.ID + "/config"
+		seed := `{"skills":[{"name":"aux","body":"synthetic-managed-aux"}]}`
+		configHTTP(t, server, http.MethodPut, pathA, "", `{"app_config":{"memory_max_backups":3,"maclaw_llm_url":"https://llm.example/v1","maclaw_llm_key":"synthetic-llm-key","maclaw_llm_model":"synthetic-model","desktop_bot_capabilities":`+seed+`}}`, http.StatusOK)
+		stale, err := svc.GetRawUserConfig(context.Background(), principalA)
+		if err != nil {
+			t.Fatalf("read stale snapshot: %v", err)
+		}
+		snapshot := stale.AppConfig
+		snapshot.MaclawLLMModel = "synthetic-model-aux"
+
+		newer := `{"skills":[{"name":"newer","body":"synthetic-managed-aux-v2"}]}`
+		agentservice.SetUserVisibleConfigBeforeCommitForTest(func() {
+			agentservice.SetUserVisibleConfigBeforeCommitForTest(nil)
+			configHTTP(t, server, http.MethodPut, pathA, "", `{"app_config":{"memory_max_backups":3,"maclaw_llm_url":"https://llm.example/v1","maclaw_llm_key":"synthetic-llm-key","maclaw_llm_model":"synthetic-model","desktop_bot_capabilities":`+newer+`}}`, http.StatusOK)
+		})
+		t.Cleanup(func() { agentservice.SetUserVisibleConfigBeforeCommitForTest(nil) })
+		if _, err := svc.UpdateUserVisibleConfig(context.Background(), principalA, snapshot); err != nil {
+			t.Fatalf("auxiliary save: %v", err)
+		}
+		stored := rawCapabilityDocument(t, svc, principalA)
+		if !bytes.Contains(stored, []byte("synthetic-managed-aux-v2")) || bytes.Contains(stored, []byte("synthetic-managed-aux\"}")) {
+			t.Fatal("auxiliary save rolled back the newer managed document")
+		}
+		if got := rawLLMModel(t, svc, principalA); got != "synthetic-model-aux" {
+			t.Fatalf("auxiliary model = %q", got)
+		}
+
+		agentservice.SetUserVisibleConfigBeforeCommitForTest(func() {
+			agentservice.SetUserVisibleConfigBeforeCommitForTest(nil)
+			configHTTP(t, server, http.MethodPut, pathA, "", `{"app_config":{"memory_max_backups":3,"maclaw_llm_url":"https://llm.example/v1","maclaw_llm_key":"synthetic-llm-key","maclaw_llm_model":"synthetic-model-aux"}}`, http.StatusOK)
+		})
+		snapshot.MaclawLLMModel = "synthetic-model-aux-2"
+		if _, err := svc.UpdateUserVisibleConfig(context.Background(), principalA, snapshot); err != nil {
+			t.Fatalf("auxiliary save after clear: %v", err)
+		}
+		if raw := rawCapabilityDocument(t, svc, principalA); len(bytes.TrimSpace(raw)) != 0 {
+			t.Fatalf("auxiliary save restored a managed document after admin clear (%d bytes)", len(raw))
+		}
+		if got := rawLLMModel(t, svc, principalA); got != "synthetic-model-aux-2" {
+			t.Fatalf("auxiliary model after clear = %q", got)
+		}
+	})
 }
 
 func createConfigTenantUser(t *testing.T, svc *agentservice.Service, tenantName, userName string) (*agentservice.Tenant, *agentservice.User) {
@@ -329,6 +373,15 @@ func compactRaw(t *testing.T, raw json.RawMessage) []byte {
 var configSlugPattern = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 
 func configSlug(v string) string { return configSlugPattern.ReplaceAllString(v, "_") }
+
+func rawLLMModel(t *testing.T, svc *agentservice.Service, p agentservice.Principal) string {
+	t.Helper()
+	raw, err := svc.GetRawUserConfig(context.Background(), p)
+	if err != nil {
+		t.Fatalf("GetRawUserConfig: %v", err)
+	}
+	return raw.AppConfig.MaclawLLMModel
+}
 
 func rawLLMKey(t *testing.T, svc *agentservice.Service, p agentservice.Principal) string {
 	t.Helper()

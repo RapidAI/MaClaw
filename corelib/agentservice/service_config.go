@@ -167,6 +167,40 @@ func (s *Service) commitUserConfig(ctx context.Context, p Principal, next coreli
 	return &cfg, nil
 }
 
+// keepStoredManagedCapabilitiesLocked copies the managed document from the
+// row read under userConfigMu. Callers that saved an earlier full snapshot
+// use it so a Hub or admin replacement or clear is not rolled back.
+func (s *Service) keepStoredManagedCapabilitiesLocked(p Principal, next *corelib.AppConfig) error {
+	current, err := s.getOrLoadRawUserConfig(p.TenantID, p.UserID)
+	if err != nil && err != ErrUserConfigNotFound {
+		return err
+	}
+	var raw []byte
+	if err == nil {
+		raw = current.AppConfig.DesktopBotCapabilities
+	}
+	next.DesktopBotCapabilities = append([]byte(nil), raw...)
+	return nil
+}
+
+func (s *Service) saveConfigKeepingManaged(p Principal, cfg UserConfig) error {
+	s.userConfigMu.Lock()
+	defer s.userConfigMu.Unlock()
+	if err := s.keepStoredManagedCapabilitiesLocked(p, &cfg.AppConfig); err != nil {
+		return err
+	}
+	if cfg.TenantID == "" {
+		cfg.TenantID = p.TenantID
+	}
+	if cfg.UserID == "" {
+		cfg.UserID = p.UserID
+	}
+	if err := s.store.SaveUserConfig(cfg); err != nil {
+		return err
+	}
+	return saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg)
+}
+
 func (s *Service) defaultClientConfigPath() string {
 	return filepath.Join(s.dataRoot, "config", "default_client_config.json")
 }

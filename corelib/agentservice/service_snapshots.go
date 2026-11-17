@@ -492,10 +492,17 @@ func (s *Service) ImportServiceState(ctx context.Context, in ImportServiceStateR
 			cfg.TenantID = exportedUser.User.TenantID
 			cfg.UserID = exportedUser.User.ID
 			cfg.AppConfig = normalizeLLMConfigForSave(currentAppConfig, mergeSecretPreserving(currentAppConfig, cloneAppConfig(cfg.AppConfig)))
-			if err := s.store.SaveUserConfig(cfg); err != nil {
-				return nil, err
+			// Import restores the exported document, including a managed
+			// capability blob that was in the export. It does not keep a
+			// newer Hub document. The lock only stops the write tearing
+			// against an ordinary save.
+			s.userConfigMu.Lock()
+			err := s.store.SaveUserConfig(cfg)
+			if err == nil {
+				err = saveUserConfigToFile(s.userConfigPath(exportedUser.User.TenantID, exportedUser.User.ID), cfg)
 			}
-			if err := saveUserConfigToFile(s.userConfigPath(exportedUser.User.TenantID, exportedUser.User.ID), cfg); err != nil {
+			s.userConfigMu.Unlock()
+			if err != nil {
 				return nil, err
 			}
 		}
