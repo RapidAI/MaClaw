@@ -11,6 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"reflect"
@@ -585,6 +586,15 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agen
 // desktopAsyncHooks hold the desktop for the detached run. The HTTP handler
 // returns as soon as the run exists. Finish stores the screenshot and the
 // handoff so a later read of the run can deliver them.
+// persistDesktopReceipt writes the message and the run together. Tests
+// replace it to prove a failed write is not published as a final reply.
+var persistDesktopReceipt = func(svc *agentservice.Service, run *agentservice.Run, msg *agentservice.Message) error {
+	if svc == nil || run == nil || msg == nil {
+		return nil
+	}
+	return svc.PersistRunReceipt(run, msg)
+}
+
 func desktopAsyncHooks(svc *agentservice.Service, tenantID, userID, instanceID, botID string, owns *bool, noDesktop bool, request ...string) (
 	func(context.Context) context.Context,
 	func(context.Context, *agentservice.Run, *agentservice.Message, error),
@@ -663,10 +673,12 @@ func desktopAsyncHooks(svc *agentservice.Service, tenantID, userID, instanceID, 
 		handoff, attention := takeDesktopTurn(tenantID, userID, instanceID)
 		// Exactly one result per task, on success and on failure.
 		msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID}, run, msg, err, handoff, noDesktop)
-		storeDesktopTurnResult(run, msg, handoff, attention)
-		if svc != nil && run != nil && msg != nil {
-			_ = svc.PersistRunReceipt(run, msg)
+		if perr := persistDesktopReceipt(svc, run, msg); perr != nil {
+			log.Printf("[desktop-receipt] run persist failed: %v", perr)
+			storeDesktopTurnFailure(run, perr)
+			return
 		}
+		storeDesktopTurnResult(run, msg, handoff, attention)
 		runID := ""
 		runStatus := ""
 		if run != nil {

@@ -4301,19 +4301,15 @@ func attachDesktopShot(msg *agentservice.Message, slot *desktopShotSlot) int {
 	}
 	slot.mu.Lock()
 	shot, ok := slot.shot, slot.ready
-	asked := desktopPictureAsked(slot.request)
 	slot.shot = agent.MessageAttachment{}
 	slot.ready = false
 	slot.mu.Unlock()
 	if !ok || msg == nil || shot.Data == "" {
 		return 0
 	}
-	// A working screenshot is not a delivered result. The same pixels are
-	// a delivery only when this request asked for a picture and the bytes
-	// are on the reply.
-	if asked {
-		shot.Delivery = agent.AttachmentDeliveryShot
-	}
+	// A working screenshot is display only. It is not delivery-tool evidence
+	// and cannot settle the task, whatever the request text says.
+	shot.Delivery = ""
 	next := make([]agent.MessageAttachment, len(msg.Attachments)+1)
 	copy(next, msg.Attachments)
 	next[len(msg.Attachments)] = shot

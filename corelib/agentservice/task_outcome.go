@@ -93,16 +93,25 @@ func (s *Service) PersistRunReceipt(run *Run, msg *Message) error {
 	if s == nil || s.store == nil || run == nil || msg == nil {
 		return nil
 	}
+	if run.Metadata == nil {
+		run.Metadata = map[string]string{}
+	}
+	outcome := ""
 	if msg.Metadata != nil {
-		if outcome := strings.TrimSpace(msg.Metadata[TaskOutcomeKey]); ValidTaskOutcome(outcome) {
-			if run.Metadata == nil {
-				run.Metadata = map[string]string{}
-			}
-			run.Metadata[TaskOutcomeKey] = outcome
-			if TaskOutcomeNeedsUser(outcome) {
-				run.WaitingForUser = true
-			}
+		outcome = strings.TrimSpace(msg.Metadata[TaskOutcomeKey])
+	}
+	if ValidTaskOutcome(outcome) {
+		run.Metadata[TaskOutcomeKey] = outcome
+		if TaskOutcomeNeedsUser(outcome) {
+			run.WaitingForUser = true
 		}
+	} else {
+		delete(run.Metadata, TaskOutcomeKey)
+	}
+	if both, ok := s.store.(interface {
+		ReviseRunReceipt(Message, Run) error
+	}); ok {
+		return both.ReviseRunReceipt(*msg, *run)
 	}
 	if rev, ok := s.store.(interface{ ReviseMessage(Message) error }); ok {
 		if err := rev.ReviseMessage(*msg); err != nil {

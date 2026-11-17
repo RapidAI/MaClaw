@@ -678,20 +678,16 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 // a requested output. It replaces a success claim that the evidence does not support.
 const desktopUndeliveredSentence = "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。"
 
-// deliveredOutputNames is the requested outputs that actually reached the
-// reply. A process screenshot, a filename, or a media id without bytes is not one.
+// deliveredOutputNames is files the deliver tool placed on the reply, with
+// bytes. A process screenshot is not one, and neither is a name or a media
+// id without bytes. The request text is not consulted.
 func deliveredOutputNames(msg *agentservice.Message) []string {
 	if msg == nil {
 		return nil
 	}
 	var names []string
 	for _, item := range msg.Attachments {
-		if strings.TrimSpace(item.Data) == "" {
-			continue
-		}
-		switch item.Delivery {
-		case agent.AttachmentDeliveryFile, agent.AttachmentDeliveryShot:
-		default:
+		if item.Delivery != agent.AttachmentDeliveryFile || strings.TrimSpace(item.Data) == "" {
 			continue
 		}
 		name := strings.TrimSpace(item.FileName)
@@ -718,57 +714,62 @@ func desktopRunHasConfirmedPost(runID string) bool {
 	return false
 }
 
-func desktopClaimedDone(runID string, msg *agentservice.Message, outcome string) bool {
-	if outcome == agentservice.TaskOutcomeDone || desktopDeclaredOutcome(runID) == "done" {
-		return true
+// desktopVisibleAnswer is text the person can read. A file is not required
+// for an answer to count. send_to_user is that text when the body is empty.
+func desktopVisibleAnswer(msg *agentservice.Message) string {
+	if msg == nil {
+		return ""
 	}
-	return msg != nil && msg.Metadata != nil && msg.Metadata[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeDone
+	if text := strings.TrimSpace(msg.Content); text != "" {
+		return text
+	}
+	if msg.Metadata == nil {
+		return ""
+	}
+	return strings.TrimSpace(msg.Metadata["send_to_user"])
 }
 
-// desktopReconcileDelivery keeps a real delivery and replaces a done claim
-// that has none. emptyBody is the path that still has to write the sentence.
-// A second call sees the same sentence and does not stack it.
-func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, outcome, why string, runErr error, emptyBody bool) (string, string) {
+// desktopReconcileDelivery records verified tool evidence and leaves every
+// other answer alone. A missing file or post is not a failed answer. A
+// process screenshot is not evidence that an action finished. When nothing
+// was said and nothing was verified, the run is not reported done.
+func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, outcome, why string, runErr error, _ bool) (string, string) {
 	if msg == nil || run == nil || runErr != nil || run.Status == agentservice.RunStatusFailed || run.Status == agentservice.RunStatusCancelled {
-		return outcome, why
-	}
-	if names := deliveredOutputNames(msg); len(names) > 0 || desktopRunHasConfirmedPost(run.ID) {
-		if outcome == "" {
-			outcome = agentservice.TaskOutcomeDone
-			why = "delivered output"
-		}
-		if emptyBody && strings.TrimSpace(msg.Content) == "" && len(names) > 0 {
-			msg.Content = "结果文件已经附在这条回复上：" + strings.Join(names, "、") + "。"
-		}
-		desktopSyncVisible(msg)
-		return outcome, why
-	}
-	if !emptyBody && !desktopClaimedDone(run.ID, msg, outcome) {
 		return outcome, why
 	}
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
+	}
+	names := deliveredOutputNames(msg)
+	if len(names) > 0 {
+		// The file is verified. It does not replace a measured not-done
+		// outcome, and it does not speak for a different action.
+		if strings.TrimSpace(msg.Content) == "" {
+			msg.Content = "结果文件已经附在这条回复上：" + strings.Join(names, "、") + "。"
+		}
+		if outcome == "" && !desktopRunHasConfirmedPost(run.ID) {
+			outcome = agentservice.TaskOutcomeDone
+			why = "file delivered"
+		}
+		desktopSyncVisible(msg)
+		return outcome, why
+	}
+	if desktopRunHasConfirmedPost(run.ID) || desktopVisibleAnswer(msg) != "" {
+		return outcome, why
 	}
 	if msg.Metadata[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeBlocked &&
 		strings.TrimSpace(msg.Metadata["send_to_user"]) == desktopUndeliveredSentence &&
 		strings.Contains(msg.Content, desktopUndeliveredSentence) {
 		return agentservice.TaskOutcomeBlocked, why
 	}
-	if outcome == "" || outcome == agentservice.TaskOutcomeDone {
-		outcome = agentservice.TaskOutcomeBlocked
-		why = "no delivered result"
+	if outcome != "" && outcome != agentservice.TaskOutcomeDone {
+		return outcome, why
 	}
-	prevSend := strings.TrimSpace(msg.Metadata["send_to_user"])
-	finish, _ := desktopFinishSentence(run.ID)
-	content := strings.TrimSpace(msg.Content)
+	outcome = agentservice.TaskOutcomeBlocked
+	why = "nothing was said and nothing was delivered"
+	msg.Content = desktopUndeliveredSentence
 	msg.Metadata["send_to_user"] = desktopUndeliveredSentence
 	msg.Metadata["send_to_user_kind"] = "report"
-	switch {
-	case content == "" || content == prevSend || (finish != "" && content == finish):
-		msg.Content = desktopUndeliveredSentence
-	case !strings.Contains(content, desktopUndeliveredSentence):
-		msg.Content = desktopUndeliveredSentence + "\n" + msg.Content
-	}
 	return outcome, why
 }
 

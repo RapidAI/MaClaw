@@ -153,10 +153,20 @@ func TestEnsureReceiptDoesNotClaimSuccessWithoutDelivery(t *testing.T) {
 	if got == nil || !strings.Contains(got.Content, "report.pdf") || got.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || !strings.Contains(got.Metadata["send_to_user"], "report.pdf") {
 		t.Fatalf("delivered file was not acknowledged: %+v", got)
 	}
-	asked := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "image", FileName: "desktop.png", MimeType: "image/png", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryShot}}}
+	shotMarked := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "image", FileName: "desktop.png", MimeType: "image/png", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryShot}}}
+	shotMarkedRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_shot_mark", Status: agentservice.RunStatusSucceeded}, shotMarked, nil, false, false)
+	if shotMarkedRun == nil || shotMarkedRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
+		t.Fatalf("a shot mark completed the task: %+v", shotMarkedRun)
+	}
+	asked := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file", FileName: "screen.png", MimeType: "image/png", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryFile}}}
 	askedRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_asked", Status: agentservice.RunStatusSucceeded}, asked, nil, false, false)
-	if askedRun == nil || askedRun.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || !strings.Contains(askedRun.Metadata["send_to_user"], "desktop.png") {
-		t.Fatalf("requested screenshot was rejected: %+v", askedRun)
+	if askedRun == nil || askedRun.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || !strings.Contains(askedRun.Metadata["send_to_user"], "screen.png") {
+		t.Fatalf("a delivered screenshot file was rejected: %+v", askedRun)
+	}
+	answer := &agentservice.Message{Content: "巴黎是法国的首都。", Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone, "send_to_user": "巴黎是法国的首都。"}}
+	answerRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_answer", Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}}, answer, nil, false, false)
+	if answerRun.Content != "巴黎是法国的首都。" || answerRun.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || answerRun.Metadata["send_to_user"] != "巴黎是法国的首都。" {
+		t.Fatalf("text answer replaced: %+v", answerRun)
 	}
 	again := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_empty", Status: agentservice.RunStatusSucceeded}, empty, nil, false, false)
 	if again.Content != empty.Content || strings.Count(again.Content, "没做完") != 1 {
