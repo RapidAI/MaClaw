@@ -386,8 +386,13 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 		if workspace == "" {
 			workspace = projectPath
 		}
-		msg.Text = mcpTaskUserText(workspace, text)
-		agentText = msg.Text
+		if req.HostRawText || mcpCommandSkipsWorkspaceWrap(text) {
+			msg.Text = text
+			agentText = text
+		} else {
+			msg.Text = mcpTaskUserText(workspace, text)
+			agentText = msg.Text
+		}
 	}
 	workDir := ""
 	if projectPath != "" {
@@ -395,6 +400,7 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	}
 	if hostMCP && workspace != "" {
 		workDir = workspace
+		a.mcpSetRunWorkspace(projectPath, requestID, workspace)
 	}
 	log.Printf("%s programming prompt request_id=%s user=%q project=%q work_dir=%q text_len=%d agent_text_len=%d",
 		logTag, requestID, userID, projectPath, workDir, len(text), len(agentText))

@@ -21,12 +21,15 @@ import (
 
 const (
 	mcpHostDefaultBind   = "127.0.0.1"
+	mcpHostWildcardBind  = "0.0.0.0"
 	mcpHostPreferredPort = 18790
 	mcpAPIKeyPrefix      = "mck_"
 	mcpEndpointProtocol  = "mcp-streamable-http"
 )
 
-// mcpHost is the loopback streamable-HTTP MCP listener.
+// mcpHost is the streamable-HTTP MCP listener. It binds loopback only unless
+// the user opts in to LAN access (config mcp_host_lan_enabled), which widens
+// the bind to the wildcard address; the Bearer key stays mandatory either way.
 // ACP keeps its own NDJSON socket. This listener only adapts MCP onto the
 // same task records and the same assistant runner.
 type mcpHost struct {
@@ -37,6 +40,7 @@ type mcpHost struct {
 	server   *http.Server
 	token    string
 	port     int
+	lan      bool
 	lastErr  string
 }
 
@@ -75,7 +79,7 @@ func (a *App) syncMCPHostFromConfig() {
 	}
 	a.stopMCPHostLocked()
 	host := newMCPHost(a)
-	if err := host.Start(cfg.PreferredMcpHostPort()); err != nil {
+	if err := host.Start(cfg.PreferredMcpHostPort(), cfg.IsMcpHostLanEnabled()); err != nil {
 		log.Printf("[mcp-host] start: %v", err)
 	}
 	a.mcpHostMu.Lock()
@@ -103,7 +107,7 @@ func (a *App) stopMCPHostLocked() {
 	clearMCPHostEndpoint()
 }
 
-func (h *mcpHost) Start(preferredPort int) error {
+func (h *mcpHost) Start(preferredPort int, lan bool) error {
 	if h == nil {
 		return fmt.Errorf("mcp host is nil")
 	}
@@ -119,7 +123,7 @@ func (h *mcpHost) Start(preferredPort int) error {
 		h.setLastErr(err.Error())
 		return err
 	}
-	ln, port, err := listenMCP(preferredPort)
+	ln, port, err := listenMCP(preferredPort, lan)
 	if err != nil {
 		h.setLastErr(err.Error())
 		return err
@@ -133,9 +137,10 @@ func (h *mcpHost) Start(preferredPort int) error {
 	h.token = key
 	h.listener = ln
 	h.port = port
+	h.lan = lan
 	h.lastErr = ""
 	h.server = &http.Server{
-		Handler:           newMCPHTTP(h.tokenValue, h.app),
+		Handler:           newMCPHTTPLAN(h.tokenValue, h.app, h.lanValue),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	srv := h.server
@@ -152,7 +157,11 @@ func (h *mcpHost) Start(preferredPort int) error {
 		log.Printf("[mcp-host] discovery: %v", err)
 		return err
 	}
-	log.Printf("[mcp-host] listening on %s:%d", mcpHostDefaultBind, port)
+	if lan {
+		log.Printf("[mcp-host] listening on %s:%d (lan access on)", mcpHostWildcardBind, port)
+	} else {
+		log.Printf("[mcp-host] listening on %s:%d", mcpHostDefaultBind, port)
+	}
 	return nil
 }
 
@@ -201,37 +210,61 @@ func (h *mcpHost) setLastErr(message string) {
 	h.mu.Unlock()
 }
 
-func (h *mcpHost) snapshot() (addr string, port int, running bool, lastErr, token string) {
+func (h *mcpHost) lanValue() bool {
 	if h == nil {
-		return "", 0, false, "", ""
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lan
+}
+
+func (h *mcpHost) snapshot() (addr string, port int, running bool, lastErr, token string, lan bool) {
+	if h == nil {
+		return "", 0, false, "", "", false
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	port = h.port
 	lastErr = h.lastErr
 	token = h.token
+	lan = h.lan
 	running = h.listener != nil
 	if h.listener != nil {
 		addr = h.listener.Addr().String()
 	}
-	return addr, port, running, lastErr, token
+	return addr, port, running, lastErr, token, lan
 }
 
-func listenMCP(preferredPort int) (net.Listener, int, error) {
+func listenMCP(preferredPort int, lan bool) (net.Listener, int, error) {
+	bind := mcpHostDefaultBind
+	if lan {
+		bind = mcpHostWildcardBind
+	}
 	ports := []int{mcpHostPreferredPort, 0}
 	if preferredPort > 0 {
 		ports = []int{preferredPort}
 	}
 	var lastErr error
 	for _, port := range ports {
-		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", mcpHostDefaultBind, port))
+		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", bind, port))
 		if err != nil {
 			lastErr = err
-			log.Printf("[mcp-host] bind %s:%d failed: %v", mcpHostDefaultBind, port, err)
+			log.Printf("[mcp-host] bind %s:%d failed: %v", bind, port, err)
 			continue
 		}
 		tcpAddr, ok := ln.Addr().(*net.TCPAddr)
-		if !ok || tcpAddr.Port <= 0 || !isLoopbackAddr(ln.Addr()) {
+		if !ok || tcpAddr.Port <= 0 {
+			_ = ln.Close()
+			lastErr = fmt.Errorf("mcp listener address is invalid")
+			continue
+		}
+		if lan && !tcpAddr.IP.IsUnspecified() {
+			_ = ln.Close()
+			lastErr = fmt.Errorf("mcp lan listener is not wildcard")
+			continue
+		}
+		if !lan && !isLoopbackAddr(ln.Addr()) {
 			_ = ln.Close()
 			lastErr = fmt.Errorf("mcp listener is not loopback")
 			continue
@@ -244,35 +277,72 @@ func listenMCP(preferredPort int) (net.Listener, int, error) {
 	return nil, 0, lastErr
 }
 
+// mcpLANAddressFn indirection keeps the LAN URL in the status payload
+// testable without a real network.
+var mcpLANAddressFn = mcpLANAddress
+
+// mcpLANAddress returns the primary private LAN IPv4 for display URLs, or ""
+// when the machine has none (offline, loopback-only adapters).
+func mcpLANAddress() string {
+	// An unconnected UDP dial resolves the default-route interface locally
+	// without sending a packet, so it stays cheap and side-effect free.
+	if conn, err := net.DialTimeout("udp", "8.8.8.8:80", 300*time.Millisecond); err == nil {
+		addr, ok := conn.LocalAddr().(*net.UDPAddr)
+		_ = conn.Close()
+		if ok {
+			if ip := addr.IP.To4(); ip != nil && ip.IsPrivate() {
+				return ip.String()
+			}
+		}
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() {
+			continue
+		}
+		if ip := ipNet.IP.To4(); ip != nil && ip.IsPrivate() {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
 // GetMCPHostStatus reports the inbound MCP server for the tools page.
 // The URL, API key, and client configs are included only while it is listening.
 func (a *App) GetMCPHostStatus() map[string]any {
 	enabled := false
+	lanEnabled := false
 	if a != nil {
 		if cfg, err := a.LoadConfig(); err == nil {
 			enabled = cfg.IsMcpHostEnabled()
+			lanEnabled = cfg.IsMcpHostLanEnabled()
 		}
 	}
 	if a == nil || !enabled {
-		return map[string]any{"enabled": false, "running": false}
+		return map[string]any{"enabled": false, "running": false, "lanEnabled": lanEnabled}
 	}
 	a.mcpHostMu.Lock()
 	host := a.mcpHost
 	a.mcpHostMu.Unlock()
 	addr, port, running, lastErr, key := "", 0, false, "", ""
 	if host != nil {
-		addr, port, running, lastErr, key = host.snapshot()
+		addr, port, running, lastErr, key, _ = host.snapshot()
 	}
-	return mcpStatusPayload(true, running, addr, port, key, mcpExecutablePath(), lastErr)
+	return mcpStatusPayload(true, running, lanEnabled, addr, port, key, mcpExecutablePath(), lastErr)
 }
 
-func mcpStatusPayload(enabled, running bool, addr string, port int, key, command, lastErr string) map[string]any {
+func mcpStatusPayload(enabled, running, lanEnabled bool, addr string, port int, key, command, lastErr string) map[string]any {
 	out := map[string]any{
-		"enabled": enabled,
-		"running": false,
+		"enabled":    enabled,
+		"running":    false,
+		"lanEnabled": lanEnabled,
 	}
 	if !enabled {
-		return map[string]any{"enabled": false, "running": false}
+		return out
 	}
 	if strings.TrimSpace(lastErr) != "" {
 		out["error"] = lastErr
@@ -290,6 +360,13 @@ func mcpStatusPayload(enabled, running bool, addr string, port int, key, command
 	out["command"] = command
 	out["stdioConfig"] = stdioConfig
 	out["httpConfig"] = httpConfig
+	if lanEnabled {
+		if lanIP := mcpLANAddressFn(); lanIP != "" {
+			lanEndpoint := fmt.Sprintf("http://%s:%d/mcp", lanIP, port)
+			out["lanURL"] = lanEndpoint
+			out["lanHTTPConfig"] = mcpHTTPClientConfig(command, lanEndpoint, key)
+		}
+	}
 	return out
 }
 
@@ -302,6 +379,10 @@ func mcpClientConfigs(command, endpoint, key string) (string, string) {
 			},
 		},
 	})
+	return string(stdioRaw), mcpHTTPClientConfig(command, endpoint, key)
+}
+
+func mcpHTTPClientConfig(command, endpoint, key string) string {
 	httpRaw, _ := json.Marshal(map[string]any{
 		"mcpServers": map[string]any{
 			"maclaw": map[string]any{
@@ -312,7 +393,7 @@ func mcpClientConfigs(command, endpoint, key string) (string, string) {
 			},
 		},
 	})
-	return string(stdioRaw), string(httpRaw)
+	return string(httpRaw)
 }
 
 func mcpExecutablePath() string {
@@ -345,18 +426,20 @@ func (a *App) GenerateMCPHostAPIKey() (map[string]any, error) {
 	if host != nil {
 		host.setToken(key)
 	}
-	return a.mcpStatusWhileEnabled(host, key), nil
+	// LAN state comes from config, not the host snapshot: a nil host (listener
+	// never started) must not flip the panel's LAN switch back to Off.
+	return a.mcpStatusWhileEnabled(host, key, cfg.IsMcpHostLanEnabled()), nil
 }
 
-func (a *App) mcpStatusWhileEnabled(host *mcpHost, key string) map[string]any {
+func (a *App) mcpStatusWhileEnabled(host *mcpHost, key string, lanEnabled bool) map[string]any {
 	addr, port, running, lastErr, liveKey := "", 0, false, "", ""
 	if host != nil {
-		addr, port, running, lastErr, liveKey = host.snapshot()
+		addr, port, running, lastErr, liveKey, _ = host.snapshot()
 	}
 	if strings.TrimSpace(liveKey) != "" {
 		key = liveKey
 	}
-	return mcpStatusPayload(true, running, addr, port, key, mcpExecutablePath(), lastErr)
+	return mcpStatusPayload(true, running, lanEnabled, addr, port, key, mcpExecutablePath(), lastErr)
 }
 
 func mcpDiscoveryDir() string {

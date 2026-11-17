@@ -477,6 +477,30 @@
   flushes re-render the panel only — never add `messages` back to
   `panelState`/`useState` or App re-renders per flush again.
 
+## MCP host LAN access (guiapp)
+
+- The tools-page MCP server is loopback-only by default. `mcp_host_lan_enabled`
+  (corelib `McpHostLanEnabled`, nil = off) widens the bind to `0.0.0.0`
+  (`listenMCP(preferredPort, lan)` — the wildcard bind makes `127.0.0.1`
+  reachable too, so there is only ever ONE listener; do not add a second one
+  on another port). `PatchConfigFields` restarts the host through the
+  existing `mcpHostChanged` channel.
+- Two request gates flip together with `h.lanAllowed` (`newMCPHTTPLAN`):
+  `mcpRemoteIsLoopback` stops rejecting non-loopback clients, and
+  `mcpOriginAllowed(origin, lanAllowed)` additionally accepts private-IP
+  origins — public hostnames stay rejected in BOTH modes (DNS-rebinding
+  guard). The Bearer key is mandatory for loopback and LAN callers alike;
+  do not add a loopback auth bypass.
+- The status payload carries `lanEnabled` from CONFIG in both
+  `GetMCPHostStatus` and `mcpStatusWhileEnabled` — NOT from the host
+  snapshot: a nil host (listener never started) must not flip the panel's
+  LAN switch back to Off after a `GenerateMCPHostAPIKey` response.
+  `lanURL`/`lanHTTPConfig` are built per status fetch from
+  `mcpLANAddressFn()` (UDP-dial primary private IPv4, interface-enum
+  fallback, injectable for tests), so a DHCP address change needs no
+  listener restart. `~/.maclaw/mcp/endpoint.json` stays loopback-only for
+  local discovery; the LAN URL exists only in the UI payload.
+
 ## Goal plan arg encodings (corelib/goal)
 
 - `goal.ParseSteps` tolerates the encodings weak models emit for
