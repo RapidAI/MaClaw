@@ -406,6 +406,41 @@ func knowledgeSyncUserStorageKey(principal *auth.ViewerPrincipal) string {
 	return principal.UserID
 }
 
+// adoptKnowledgeSyncEmailCaseDir renames a mixed-case _email directory onto
+// the lowercased storage key. The principal email is already lowercased, so
+// the legacy path and the canonical path are the same string and a
+// case-sensitive disk still holds the older directory.
+func adoptKnowledgeSyncEmailCaseDir(baseDir, canonicalDir string) {
+	if strings.TrimSpace(baseDir) == "" || strings.TrimSpace(canonicalDir) == "" {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(canonicalDir, "meta.json")); err == nil {
+		return
+	}
+	parent := filepath.Join(baseDir, "_email")
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	want := filepath.Base(canonicalDir)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == want || !strings.EqualFold(name, want) {
+			continue
+		}
+		legacy := filepath.Join(parent, name)
+		if _, err := os.Stat(filepath.Join(legacy, "meta.json")); err != nil {
+			continue
+		}
+		if err := os.Rename(legacy, canonicalDir); err == nil {
+			return
+		}
+	}
+}
+
 func legacyKnowledgeSyncEmailDir(baseDir string, principal *auth.ViewerPrincipal) string {
 	user := sanitizeKnowledgeSyncPathPart(firstNonEmptyKnowledgeShare(principal.Email, principal.UserID))
 	return filepath.Join(baseDir, "_email", user)
@@ -436,6 +471,7 @@ func loadKnowledgeSyncMeta(baseDir string, principal *auth.ViewerPrincipal) (*kn
 		return nil, ""
 	}
 	dir := knowledgeSyncUserDir(baseDir, principal)
+	adoptKnowledgeSyncEmailCaseDir(baseDir, dir)
 	for _, legacy := range []string{legacyKnowledgeSyncEmailDir(baseDir, principal), legacyKnowledgeSyncTenantEmailDir(baseDir, principal), legacyKnowledgeSyncUserDir(baseDir, principal)} {
 		if legacy == dir {
 			continue
