@@ -45,6 +45,9 @@ func (m remoteControlMachines) Online(machineID string) bool {
 }
 
 func (m remoteControlMachines) Send(machineID string, msg any) error {
+	if remoteControlSendHook != nil {
+		return remoteControlSendHook(machineID, msg)
+	}
 	if m.devices == nil {
 		return remotecontrol.ErrOffline
 	}
@@ -112,7 +115,12 @@ type remoteControlHandler struct {
 	svc      *remotecontrol.Service
 	devices  *device.Service
 	identity *auth.IdentityService
+	streams  *accountStreamBroker
 }
+
+// remoteControlSendHook, when set by tests, observes machine WebSocket sends.
+// Production leaves it nil. A full buffer still closes the socket inside Send.
+var remoteControlSendHook func(machineID string, msg any) error
 
 func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.IdentityService, devices *device.Service, notifSvc *notification.Service) {
 	if db == nil || identity == nil {
@@ -124,7 +132,7 @@ func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.Identi
 		return
 	}
 	ws.OnRemoteControlResult = svc.Complete
-	h := remoteControlHandler{svc: svc, devices: devices, identity: identity}
+	h := remoteControlHandler{svc: svc, devices: devices, identity: identity, streams: newAccountStreamBroker()}
 	ws.OnRemoteControlStream = h.relayControlledStream
 	svc.RelayFederatedRevoke = func(ctx context.Context, grant remotecontrol.Grant) {
 		if err := h.relayTargetDecision(ctx, grant, "revoke"); err != nil {
@@ -140,6 +148,7 @@ func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.Identi
 	mux.HandleFunc("POST /api/remote-control/grants/{id}/ignore", h.ignore)
 	mux.HandleFunc("POST /api/remote-control/grants/{id}/revoke", h.revoke)
 	mux.HandleFunc("POST /api/remote-control/grants/{id}/op", h.op)
+	mux.HandleFunc("GET /api/remote-control/grants/{id}/stream", h.accountStream)
 	mux.HandleFunc("POST /api/remote-control/federation/invites", h.federationInvite)
 	mux.HandleFunc("POST /api/remote-control/federation/proof", h.federationProof)
 	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/decision", h.federationDecision)

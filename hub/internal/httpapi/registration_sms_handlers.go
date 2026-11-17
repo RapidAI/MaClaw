@@ -349,6 +349,10 @@ func registrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 		}
 		log.Printf("[onboarding-sms] verify_succeeded phone=%s tenant_id=%s kind=enroll status=%s account=%s stored_method=%s rebound=%t elapsed=%s", phoneLog, tenantID, status, accountLog, storedMethod, existingUser != nil, time.Since(startedAt))
 		writeJSON(w, http.StatusOK, respMap)
+
+		if resp != nil && resp.Status == "approved" && strings.TrimSpace(resp.MachineID) != "" {
+			updateEnrolledMachineMetadata(ctx, identity, resp.MachineID, req.MachineName, req.Platform, req.Hostname, req.Arch, req.AppVersion, req.HeartbeatIntervalSec)
+		}
 	}
 }
 

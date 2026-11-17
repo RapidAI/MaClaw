@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
-import { applyRemoteWatchSnapshot, bindRemoteStreamEvents, publishRemoteMachineTarget } from './remoteAssistantSession';
+import { applyRemoteWatchSnapshot, bindRemoteStreamEvents, bindRemoteStreamRecovery, publishRemoteMachineTarget } from './remoteAssistantSession';
 import { taskStatusBucketFor, type TaskManagementItem } from './SidebarTaskManagement';
 
 export type RemotePermission = 'view' | 'operate';
@@ -73,6 +73,16 @@ async function callBinding<T>(name: string, fallback: T, ...args: unknown[]): Pr
     if (!fn) return fallback;
     const value = await fn(...args);
     return (value ?? fallback) as T;
+}
+
+function applyWatchReply(grantId: string, projectPath: string, raw: string) {
+    let parsed: { live?: unknown; workbench?: unknown; cursor?: number } = {};
+    try {
+        parsed = JSON.parse(raw || '{}') as { live?: unknown; workbench?: unknown; cursor?: number };
+    } catch {
+        parsed = {};
+    }
+    applyRemoteWatchSnapshot(grantId, projectPath, parsed.live, parsed.workbench, parsed.cursor);
 }
 
 function errorText(err: unknown, fallback: string) {
@@ -315,6 +325,25 @@ export function useTaskRemoteControl() {
     }, [refreshRequest]);
 
     useEffect(() => {
+        let generation = 0;
+        bindRemoteStreamRecovery((grantId, projectPath) => {
+            if (selectedIdRef.current !== grantId || detailPathRef.current !== projectPath) return;
+            const watch = watchKey.current;
+            const gen = ++generation;
+            void callBinding<string>('RemoteControlOp', '', grantId, 'watch_task', JSON.stringify({ project_path: projectPath, stream_proto: 2 }))
+                .then(raw => {
+                    if (gen !== generation || watchKey.current !== watch) return;
+                    applyWatchReply(grantId, projectPath, raw);
+                })
+                .catch(() => undefined);
+        });
+        return () => {
+            generation += 1;
+            bindRemoteStreamRecovery(null);
+        };
+    }, []);
+
+    useEffect(() => {
         bindRemoteStreamEvents();
         void refresh();
         const timer = window.setInterval(() => {
@@ -368,16 +397,10 @@ export function useTaskRemoteControl() {
         if (next && selectedId && detailPath) {
             const grantId = selectedId;
             const path = detailPath;
-            void callBinding<string>('RemoteControlOp', '', grantId, 'watch_task', JSON.stringify({ project_path: path }))
+            void callBinding<string>('RemoteControlOp', '', grantId, 'watch_task', JSON.stringify({ project_path: path, stream_proto: 2 }))
                 .then(raw => {
                     if (watchKey.current !== next) return;
-                    let parsed: { live?: unknown; workbench?: unknown } = {};
-                    try {
-                        parsed = JSON.parse(raw || '{}') as { live?: unknown; workbench?: unknown };
-                    } catch {
-                        parsed = {};
-                    }
-                    applyRemoteWatchSnapshot(grantId, path, parsed.live, parsed.workbench);
+                    applyWatchReply(grantId, path, raw);
                 })
                 .catch(() => undefined);
         }

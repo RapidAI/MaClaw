@@ -372,7 +372,15 @@ func PostDesktopAssignmentAdminHandler(pool *desktoppool.Pool, bots *botmgmt.Ser
 		}
 		if bots != nil && item.Scope == desktoppool.ScopeUser {
 			if nodeID := assignedServerNode(r.Context(), pool, desktopTenantID(r), item.ServerID); nodeID != "" {
-				_ = bots.PinOwnerNode(r.Context(), desktopTenantID(r), item.TargetID, nodeID)
+				// A node with srv is where this user's new bots run. If that
+				// pin is not stored, drop the assignment instead of leaving
+				// the desktop and the bots on different machines. A desktop
+				// without srv stays assigned; bots keep their current srv.
+				if err := bots.PinOwnerNode(r.Context(), desktopTenantID(r), item.TargetID, nodeID); err != nil && !errors.Is(err, botmgmt.ErrSrv) {
+					_ = pool.DeleteAssignment(r.Context(), desktopTenantID(r), item.ID)
+					writeError(w, http.StatusBadGateway, "NODE_PIN", "the user was not pinned to this node's srv")
+					return
+				}
 			}
 		}
 		writeJSON(w, http.StatusCreated, item)

@@ -3,29 +3,71 @@ package guiapp
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type remoteStreamCapture struct {
+	mu       sync.Mutex
 	payloads []map[string]any
 }
 
 func (c *remoteStreamCapture) sink(payload map[string]any) {
+	c.mu.Lock()
 	c.payloads = append(c.payloads, payload)
+	c.mu.Unlock()
+}
+
+func (c *remoteStreamCapture) snapshot() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]map[string]any, len(c.payloads))
+	copy(out, c.payloads)
+	return out
 }
 
 func (c *remoteStreamCapture) events() []string {
-	out := make([]string, 0, len(c.payloads))
-	for _, p := range c.payloads {
+	got := c.snapshot()
+	out := make([]string, 0, len(got))
+	for _, p := range got {
 		name, _ := p["event"].(string)
 		out = append(out, name)
 	}
 	return out
 }
 
+func (c *remoteStreamCapture) waitN(n int, d time.Duration) []map[string]any {
+	deadline := time.Now().Add(d)
+	for {
+		got := c.snapshot()
+		if len(got) >= n || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitLiveSnapshot(t *testing.T, reg *remoteWatchRegistry, session string, ok func(*remoteLiveSnapshot) bool) *remoteLiveSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var snap *remoteLiveSnapshot
+	for {
+		snap = reg.liveSnapshot(session)
+		if ok(snap) || time.Now().After(deadline) {
+			return snap
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func streamSessionKey() string {
-	return projectSessionOwnerID("D:\\proj\\demo")
+	key := projectSessionOwnerID("D:\\proj\\demo")
+	// Thinking lane state is process-global per session. These tests share
+	// one key, so a previous case's open thought would seal the next token.
+	viewerThinkOpen.Delete(key)
+	viewerThinkText.Delete(key)
+	return key
 }
 
 func TestRemoteStreamRelayMirrorsLanesAndSettles(t *testing.T) {
@@ -49,6 +91,7 @@ func TestRemoteStreamRelayMirrorsLanesAndSettles(t *testing.T) {
 		SessionKey: session, RequestID: "r1", Sequence: 4,
 	})
 
+	payloads := cap.waitN(6, 2*time.Second)
 	got := cap.events()
 	want := []string{"round_started", "thinking", "thinking", "thinking", "token", "stream_done"}
 	if len(got) != len(want) {
@@ -62,18 +105,18 @@ func TestRemoteStreamRelayMirrorsLanesAndSettles(t *testing.T) {
 	// Reasoning streams while the block is open: the first token opens the
 	// box, the collected text rides a delta, and the close (triggered here by
 	// the first content delta) carries the same text as ground truth.
-	thinkDelta := cap.payloads[2]
+	thinkDelta := payloads[2]
 	if thinkDelta["state"] != "delta" || thinkDelta["text"] != "先想想" {
 		t.Fatalf("thinking delta payload = %v", thinkDelta)
 	}
-	thinkDone := cap.payloads[3]
+	thinkDone := payloads[3]
 	if thinkDone["state"] != "done" || thinkDone["text"] != "先想想" {
 		t.Fatalf("thinking done payload = %v", thinkDone)
 	}
-	if cap.payloads[4]["text"] != "答案" {
-		t.Fatalf("token payload = %v", cap.payloads[4])
+	if payloads[4]["text"] != "答案" {
+		t.Fatalf("token payload = %v", payloads[4])
 	}
-	for _, p := range cap.payloads {
+	for _, p := range payloads {
 		if p["grant_id"] != "g1" {
 			t.Fatalf("payload missing grant_id: %v", p)
 		}
@@ -106,6 +149,7 @@ func TestRemoteStreamHeartbeatKeepsThinkingOpen(t *testing.T) {
 		SessionKey: session, RequestID: "r1", Text: imHeartbeatMsg, Sequence: 2,
 	})
 
+	payloads := cap.waitN(3, 2*time.Second)
 	got := cap.events()
 	want := []string{"thinking", "thinking", "heartbeat"}
 	if len(got) != len(want) {
@@ -117,8 +161,8 @@ func TestRemoteStreamHeartbeatKeepsThinkingOpen(t *testing.T) {
 		}
 	}
 	// The keepalive is liveness only: no reasoning text, no state change.
-	if _, ok := cap.payloads[2]["text"]; ok {
-		t.Fatalf("heartbeat carried text: %v", cap.payloads[2])
+	if _, ok := payloads[2]["text"]; ok {
+		t.Fatalf("heartbeat carried text: %v", payloads[2])
 	}
 	snap := reg.liveSnapshot(session)
 	if snap == nil || len(snap.Parts) != 1 || snap.Parts[0].Kind != "thinking" || snap.Parts[0].Done {
@@ -126,7 +170,7 @@ func TestRemoteStreamHeartbeatKeepsThinkingOpen(t *testing.T) {
 	}
 }
 
-func TestRemoteWorkbenchStepsRelayMirrorsSnapshot(t *testing.T) {
+func TestRemoteStreamWorkbenchStepsRelayMirrorsSnapshot(t *testing.T) {
 	app := &App{}
 	reg := app.ensureRemoteWatchRegistry()
 	cap := &remoteStreamCapture{}
@@ -142,13 +186,15 @@ func TestRemoteWorkbenchStepsRelayMirrorsSnapshot(t *testing.T) {
 		},
 	})
 
+	payloads := cap.waitN(1, 2*time.Second)
 	got := cap.events()
 	if len(got) != 1 || got[0] != "workbench_steps" {
 		t.Fatalf("events = %v", got)
 	}
-	wb, ok := cap.payloads[0]["workbench"].(map[string]interface{})
-	if !ok || wb["steps_revision"] != 3 {
-		t.Fatalf("workbench payload = %v", cap.payloads[0])
+	raw, _ := json.Marshal(payloads[0]["workbench"])
+	var wb map[string]any
+	if err := json.Unmarshal(raw, &wb); err != nil || wb["steps_revision"] != float64(3) {
+		t.Fatalf("workbench payload = %v err=%v", payloads[0], err)
 	}
 }
 
@@ -172,7 +218,9 @@ func TestRemoteStreamReasoningStaysInThinkingLaneAfterReset(t *testing.T) {
 		SessionKey: session, RequestID: "r1", Text: "\x01再想", Sequence: 3,
 	})
 
-	snap := reg.liveSnapshot(session)
+	snap := waitLiveSnapshot(t, reg, session, func(snap *remoteLiveSnapshot) bool {
+		return snap != nil && len(snap.Parts) == 2 && snap.Parts[0].Text == "想想再想"
+	})
 	if snap == nil || len(snap.Parts) != 2 {
 		t.Fatalf("snapshot = %+v", snap)
 	}
@@ -194,8 +242,9 @@ func TestRemoteStreamRelayIgnoresUnwatchedSessions(t *testing.T) {
 	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
 		SessionKey: "desktop-user:elsewhere", RequestID: "rX", Text: "nope",
 	})
-	if len(cap.payloads) != 0 {
-		t.Fatalf("unwatched session leaked %d events", len(cap.payloads))
+	time.Sleep(100 * time.Millisecond)
+	if len(cap.snapshot()) != 0 {
+		t.Fatalf("unwatched session leaked %d events", len(cap.snapshot()))
 	}
 }
 
@@ -211,15 +260,12 @@ func TestRemoteStreamCoalesceFlushAndUnwatch(t *testing.T) {
 		SessionKey: session, RequestID: "r1", Text: "hello", Sequence: 1,
 	})
 	// Content deltas ride the coalesce window: nothing on the wire yet.
-	if len(cap.payloads) != 0 {
+	if len(cap.snapshot()) != 0 {
 		t.Fatalf("content delta escaped the coalesce window")
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for len(cap.payloads) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(cap.payloads) != 1 || cap.payloads[0]["event"] != "token" || cap.payloads[0]["text"] != "hello" {
-		t.Fatalf("flushed payloads = %v", cap.payloads)
+	payloads := cap.waitN(1, 2*time.Second)
+	if len(payloads) != 1 || payloads[0]["event"] != "token" || payloads[0]["text"] != "hello" {
+		t.Fatalf("flushed payloads = %v", payloads)
 	}
 
 	reg.unwatch("g1", session)
@@ -227,8 +273,8 @@ func TestRemoteStreamCoalesceFlushAndUnwatch(t *testing.T) {
 		SessionKey: session, RequestID: "r1", Text: "after", Sequence: 2,
 	})
 	time.Sleep(200 * time.Millisecond)
-	if len(cap.payloads) != 1 {
-		t.Fatalf("unwatched session still relays: %v", cap.payloads)
+	if len(cap.snapshot()) != 1 {
+		t.Fatalf("unwatched session still relays: %v", cap.snapshot())
 	}
 }
 
@@ -251,11 +297,12 @@ func TestRemoteStreamResponseStripsMediaAndSettles(t *testing.T) {
 		ResponseSource:  "test",
 	})
 
+	payloads := cap.waitN(1, 2*time.Second)
 	got := cap.events()
 	if len(got) != 1 || got[0] != "response" {
 		t.Fatalf("events = %v", got)
 	}
-	raw, _ := cap.payloads[0]["response"].(json.RawMessage)
+	raw, _ := payloads[0]["response"].(json.RawMessage)
 	var resp IMAgentResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatalf("response payload unmarshal: %v", err)
@@ -299,11 +346,21 @@ func TestRemoteStreamStaleResponseKeepsLiveTurn(t *testing.T) {
 		Text:       "上一轮完成",
 	})
 
-	got := cap.events()
-	if got[len(got)-1] != "response" {
+	deadline := time.Now().Add(2 * time.Second)
+	var payloads []map[string]any
+	var got []string
+	for time.Now().Before(deadline) {
+		payloads = cap.snapshot()
+		got = cap.events()
+		if len(got) > 0 && got[len(got)-1] == "response" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(got) == 0 || got[len(got)-1] != "response" {
 		t.Fatalf("last event = %v, want response", got)
 	}
-	last := cap.payloads[len(cap.payloads)-1]
+	last := payloads[len(payloads)-1]
 	if last["request_id"] != "r1" {
 		t.Fatalf("response request_id = %v, want r1", last["request_id"])
 	}
@@ -322,7 +379,7 @@ func TestRemoteStreamStaleResponseKeepsLiveTurn(t *testing.T) {
 	}
 }
 
-func TestRemoteControlWatchOps(t *testing.T) {
+func TestRemoteStreamWatchOps(t *testing.T) {
 	app := &App{}
 	// watch_task without a grant id is the version-skew path: the Hub that
 	// cannot name a grant cannot route its stream either.

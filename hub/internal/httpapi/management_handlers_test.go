@@ -425,6 +425,8 @@ func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
 		t.Fatalf("create user without client: %v", err)
 	}
 	older := now.Add(-2 * time.Hour)
+	mid := now.Add(-30 * time.Minute)
+	oldest := now.Add(-3 * time.Hour)
 	newer := now.Add(-2 * time.Minute)
 	// The old machine was renamed recently (fresh UpdatedAt) but its last real
 	// client connect is older; LastSeenAt must win over the rename timestamp.
@@ -441,6 +443,32 @@ func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
 			LastSeenAt:       &older,
 			CreatedAt:        older,
 			UpdatedAt:        oldUpdatedAt,
+		},
+		{
+			// Alias spelling must normalize into the "mac" slot.
+			ID:               "machine-mac-login-client",
+			TenantID:         store.DefaultTenantID,
+			UserID:           user.ID,
+			Platform:         "darwin",
+			AppVersion:       "8.1.0.12000",
+			MachineTokenHash: "hash-mac",
+			Status:           "offline",
+			LastSeenAt:       &mid,
+			CreatedAt:        mid,
+			UpdatedAt:        mid,
+		},
+		{
+			// A stale second windows client must not create a second slot.
+			ID:               "machine-stale-login-client",
+			TenantID:         store.DefaultTenantID,
+			UserID:           user.ID,
+			Platform:         "win32",
+			AppVersion:       "7.9.0.1",
+			MachineTokenHash: "hash-stale",
+			Status:           "offline",
+			LastSeenAt:       &oldest,
+			CreatedAt:        oldest,
+			UpdatedAt:        oldest,
 		},
 		{
 			ID:               "machine-new-login-client",
@@ -470,6 +498,11 @@ func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
 			LastLoginPlatform   string `json:"last_login_platform"`
 			LastLoginAppVersion string `json:"last_login_app_version"`
 			LastLoginAt         string `json:"last_login_at"`
+			LoginClients        []struct {
+				Platform    string `json:"platform"`
+				AppVersion  string `json:"app_version"`
+				LastLoginAt string `json:"last_login_at"`
+			} `json:"login_clients"`
 		} `json:"users"`
 	}
 	if err := json.Unmarshal(listResp.Body.Bytes(), &payload); err != nil {
@@ -480,7 +513,7 @@ func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
 	for _, item := range payload.Users {
 		if item.Email == "no-client@example.com" {
 			noClientFound = true
-			if item.LastLoginPlatform != "" || item.LastLoginAppVersion != "" || item.LastLoginAt != "" {
+			if item.LastLoginPlatform != "" || item.LastLoginAppVersion != "" || item.LastLoginAt != "" || len(item.LoginClients) != 0 {
 				t.Fatalf("user without a machine must not report a last login client: %#v", item)
 			}
 			continue
@@ -498,6 +531,18 @@ func TestListUsersHandlerReturnsLastLoginClient(t *testing.T) {
 		}
 		if !parsed.Equal(newer.Truncate(time.Second)) {
 			t.Fatalf("last_login_at = %s, want %s", parsed, newer.Truncate(time.Second))
+		}
+		if len(item.LoginClients) != 3 {
+			t.Fatalf("login_clients should keep one slot per normalized platform: %#v", item.LoginClients)
+		}
+		if item.LoginClients[0].Platform != "windows" || item.LoginClients[0].AppVersion != "8.1.0.12464" {
+			t.Fatalf("login_clients[0] should be the newest client: %#v", item.LoginClients)
+		}
+		if item.LoginClients[1].Platform != "mac" || item.LoginClients[1].AppVersion != "8.1.0.12000" {
+			t.Fatalf("login_clients[1] should normalize darwin into mac: %#v", item.LoginClients)
+		}
+		if item.LoginClients[2].Platform != "linux" || item.LoginClients[2].AppVersion != "8.0.0.100" {
+			t.Fatalf("login_clients[2] should be the older linux client: %#v", item.LoginClients)
 		}
 	}
 	if !noClientFound {
@@ -1954,5 +1999,34 @@ func TestAdminGenerateLLMProviderTestKeyUsesBoundEmailIdentity(t *testing.T) {
 	}
 	if duplicate, err := services.store.Users.GetByTenantEmail(ctx, "tenant_key", "znsoft@163.com"); err != nil || duplicate != nil {
 		t.Fatalf("duplicate email user = %+v, err=%v", duplicate, err)
+	}
+}
+
+func TestNormalizeLoginClientPlatform(t *testing.T) {
+	cases := map[string]string{
+		"windows":     "windows",
+		"win32":       "windows",
+		"win":         "windows",
+		"Windows":     "windows",
+		"darwin":      "mac",
+		"macos":       "mac",
+		"mac":         "mac",
+		"linux":       "linux",
+		"android":     "android",
+		"ios":         "ios",
+		"iOS":         "ios",
+		"harmonyos":   "harmonyos",
+		"harmony_os":  "harmonyos",
+		"harmony":     "harmonyos",
+		"ohos":        "harmonyos",
+		"mobile":      "mobile",
+		"":            "unknown",
+		"  ":          "unknown",
+		"linux-arm64": "linux",
+	}
+	for in, want := range cases {
+		if got := normalizeLoginClientPlatform(in); got != want {
+			t.Fatalf("normalizeLoginClientPlatform(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -69,8 +69,6 @@ type AppConfig struct {
 	DefaultProxyScopeMaclaw      bool   `json:"default_proxy_scope_maclaw,omitempty"`       // MacClaw LLM
 	DefaultProxyScopeCodingTools bool   `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
 	DefaultProxyScopeAgent       bool   `json:"default_proxy_scope_agent,omitempty"`        // web_search / web_fetch
-	// Terminal settings (Windows only)
-	UseWindowsTerminal  bool     `json:"use_windows_terminal"`
 	RemoteEnabled       bool     `json:"remote_enabled"`
 	RemoteHubID         string   `json:"remote_hub_id,omitempty"`
 	RemoteHubURL        string   `json:"remote_hub_url"`
@@ -98,6 +96,11 @@ type AppConfig struct {
 	RemoteHeartbeatSec        int    `json:"remote_heartbeat_sec"`
 	RemoteNickname            string `json:"remote_nickname,omitempty"`
 	RemoteClientID            string `json:"remote_client_id"`
+	// RemoteDeviceConnectEnabled gates inbound control from same-account
+	// devices (remote-control ops, remote sessions, mobile worker tasks).
+	// Nil means enabled — the switch predates the field, so an unset value
+	// must keep the previous behavior.
+	RemoteDeviceConnectEnabled *bool `json:"remote_device_connect_enabled,omitempty"`
 	// GitHubClientID overrides the built-in OAuth client_id for the GitHub
 	// connection (设置 → GitHub). Empty uses the bundled device-flow app.
 	GitHubClientID    string `json:"github_client_id,omitempty"`
@@ -1248,6 +1251,12 @@ func (c AppConfig) IsShowAppEntryEnabled() bool {
 	return c.ShowAppEntry == nil || *c.ShowAppEntry
 }
 
+// IsRemoteDeviceConnectEnabled reports whether this machine accepts remote
+// control from same-account devices. Defaults to true when never set (nil).
+func (c AppConfig) IsRemoteDeviceConnectEnabled() bool {
+	return c.RemoteDeviceConnectEnabled == nil || *c.RemoteDeviceConnectEnabled
+}
+
 // DatabaseToolIsEnabled is the master kill switch for the shared database
 // tool. Default true when the field has never been set (nil).
 func (c AppConfig) DatabaseToolIsEnabled() bool {
@@ -1736,7 +1745,6 @@ func AppConfigDefaults() AppConfig {
 		FileOutboundEnabled:      true,
 		ImageOutboundEnabled:     true,
 		CheckUpdateOnStartup:     true,
-		UseWindowsTerminal:       true,
 		VectorSearchEnabled:      true,
 		// OfficeRead is the default text extractor for every supported Office
 		// format. The legacy engine and the per-format allowlist remain available

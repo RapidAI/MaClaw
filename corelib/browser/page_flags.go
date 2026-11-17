@@ -2,13 +2,14 @@ package browser
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
-const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在浏览器中完成验证后继续。继续之后必须先 probe，再 click/type。"
+const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在右侧预览窗点「接管」完成验证后继续。继续之后必须先 probe，再 click/type。"
 
 // browserPageFlagsCollectJS assumes pageText/anyIframeSrc/anySelector exist.
 const browserPageFlagsCollectJS = `
@@ -328,11 +329,30 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 		s.mu.RUnlock()
 	}
 	ctx := strings.TrimSpace(strings.Join([]string{title, url}, " "))
+	if err := s.handPageToUser("captcha_widget", url, title); err != nil && previewHandoffEnabled() {
+		display := "用户已在预览中处理验证。先 probe，再继续。不要在对话里索要验证码。"
+		if !errors.Is(err, errUserReleased) {
+			display = err.Error()
+		}
+		return &BrowserActionResult{
+			SessionID: sessionID,
+			Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
+			Status:    "blocked",
+			Display:   display,
+			Detail:    "captcha_widget",
+			Data: map[string]interface{}{
+				"reason":     "captcha_widget",
+				"page_flags": BrowserPageFlags{CaptchaWidget: true},
+				"url":        url,
+				"title":      title,
+			},
+		}
+	}
 	return &BrowserActionResult{
 		SessionID: sessionID,
 		Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
 		Status:    "ask",
-		Display:   "page has a captcha challenge; solve it in the browser, then probe before clicking",
+		Display:   "page has a captcha challenge; the person solves it in the MaClaw preview (接管), then probe before clicking",
 		Detail:    "captcha_widget",
 		AskUser:   captchaAskUserRequest(ctx),
 		Data: map[string]interface{}{

@@ -261,6 +261,7 @@ export function AssistantTitleBarNotifications({
                     groupInviteListError={groupInviteListError}
                     groupInviteError={resolvedSelected?.groupInviteId && groupInviteError?.id === resolvedSelected.groupInviteId ? groupInviteError.message : ""}
                     onShareOpen={share.openSharedDocument}
+                    onDigestOpen={() => { void share.openCompanionLibrary(); }}
                     shareOpenBusy={share.shareOpenBusy}
                     shareOpenError={share.shareOpenError}
                     onHostTransfer={share.handleHostTransfer}

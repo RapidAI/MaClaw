@@ -497,6 +497,120 @@ func TestHubRepoNormalizesEndpointOnCreateAndUpdate(t *testing.T) {
 	}
 }
 
+func TestHubRepoUpdateRegistrationRespectsLockedVisibility(t *testing.T) {
+	st := newCenterTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := &store.HubInstance{ID: "hub_vislock", OwnerEmail: "owner@example.com", Name: "Vis Hub", BaseURL: "https://vis.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", CapabilitiesJSON: `{}`, HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	// A registration writer snapshots the row before the admin update lands.
+	stale, err := st.Hubs.GetByID(ctx, hub.ID)
+	if err != nil || stale == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if err := st.Hubs.UpdateVisibility(ctx, hub.ID, "shared", "admin", now); err != nil {
+		t.Fatalf("UpdateVisibility: %v", err)
+	}
+
+	// The stale full-row write must not downgrade the admin-locked value.
+	stale.UpdatedAt = now.Add(time.Minute)
+	if err := st.Hubs.UpdateRegistration(ctx, stale); err != nil {
+		t.Fatalf("UpdateRegistration stale: %v", err)
+	}
+	got, err := st.Hubs.GetByID(ctx, hub.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Visibility != "shared" || !got.VisibilityLocked || got.VisibilityLockedBy != "admin" {
+		t.Fatalf("locked visibility must survive a stale write, got visibility=%q locked=%v lockedBy=%q", got.Visibility, got.VisibilityLocked, got.VisibilityLockedBy)
+	}
+
+	// An incoming value equal to the locked value converges the lock away.
+	converged := *got
+	converged.VisibilityLocked = false
+	converged.VisibilityLockedBy = ""
+	converged.UpdatedAt = now.Add(2 * time.Minute)
+	if err := st.Hubs.UpdateRegistration(ctx, &converged); err != nil {
+		t.Fatalf("UpdateRegistration converged: %v", err)
+	}
+	got, err = st.Hubs.GetByID(ctx, hub.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Visibility != "shared" || got.VisibilityLocked || got.VisibilityLockedBy != "" {
+		t.Fatalf("matching report should clear the lock, got visibility=%q locked=%v lockedBy=%q", got.Visibility, got.VisibilityLocked, got.VisibilityLockedBy)
+	}
+
+	// Unlocked again: ordinary full-row writes apply normally.
+	got.Visibility = "private"
+	got.UpdatedAt = now.Add(3 * time.Minute)
+	if err := st.Hubs.UpdateRegistration(ctx, got); err != nil {
+		t.Fatalf("UpdateRegistration unlocked: %v", err)
+	}
+	got, err = st.Hubs.GetByID(ctx, hub.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Visibility != "private" || got.VisibilityLocked {
+		t.Fatalf("unlocked write should apply, got visibility=%q locked=%v", got.Visibility, got.VisibilityLocked)
+	}
+}
+
+func TestHubRepoReplaceConflictingRespectsLockedVisibility(t *testing.T) {
+	st := newCenterTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := &store.HubInstance{ID: "hub_repl_lock", OwnerEmail: "owner@example.com", Name: "Vis Hub", BaseURL: "https://repl.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", CapabilitiesJSON: `{}`, HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	replacer, ok := st.Hubs.(interface {
+		ReplaceConflictingHubInstance(context.Context, *store.HubInstance) error
+	})
+	if !ok {
+		t.Fatal("hub repo does not implement conflict replace")
+	}
+	if err := st.Hubs.UpdateVisibility(ctx, hub.ID, "shared", "admin", now); err != nil {
+		t.Fatalf("UpdateVisibility: %v", err)
+	}
+
+	// A replica whose snapshot predates the admin update must not downgrade
+	// the locked value.
+	stale := *hub
+	stale.Visibility = "private"
+	stale.UpdatedAt = now.Add(time.Minute)
+	if err := replacer.ReplaceConflictingHubInstance(ctx, &stale); err != nil {
+		t.Fatalf("ReplaceConflictingHubInstance stale: %v", err)
+	}
+	got, err := st.Hubs.GetByID(ctx, hub.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Visibility != "shared" || !got.VisibilityLocked || got.VisibilityLockedBy != "admin" {
+		t.Fatalf("replica must not clobber locked visibility, got visibility=%q locked=%v lockedBy=%q", got.Visibility, got.VisibilityLocked, got.VisibilityLockedBy)
+	}
+
+	// A replica carrying the converged state applies literally.
+	converged := stale
+	converged.Visibility = "shared"
+	converged.VisibilityLocked = false
+	converged.VisibilityLockedBy = ""
+	converged.UpdatedAt = now.Add(2 * time.Minute)
+	if err := replacer.ReplaceConflictingHubInstance(ctx, &converged); err != nil {
+		t.Fatalf("ReplaceConflictingHubInstance converged: %v", err)
+	}
+	got, err = st.Hubs.GetByID(ctx, hub.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Visibility != "shared" || got.VisibilityLocked || got.VisibilityLockedBy != "" {
+		t.Fatalf("converged replica should clear the lock, got visibility=%q locked=%v lockedBy=%q", got.Visibility, got.VisibilityLocked, got.VisibilityLockedBy)
+	}
+}
+
 func TestHubUserLinkDeleteByHubTenantEmailKeepsAdminAndOtherScopes(t *testing.T) {
 	st := newCenterTestStore(t)
 	ctx := context.Background()

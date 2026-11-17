@@ -382,7 +382,7 @@ const HIDDEN_CONFIG_KEYS = new Set([
   "claude", "codex", "opencode", "codebuddy", "iflow", "kilo",
   "projects", "current_project", "active_tool", "default_tool", "default_tool_provider",
   "show_codex", "show_opencode", "show_codebuddy", "show_iflow", "show_kilo",
-  "extra_tool_configs", "use_windows_terminal", "nl_skills", "llm_token_usage",
+  "extra_tool_configs", "nl_skills", "llm_token_usage",
   "mcp_servers", "local_mcp_servers", "ssh_hosts", "skill_hub_urls", "external_skill_dirs", "skill_sources_allowed", "web_search_providers", "web_search_current_provider",
   "default_proxy_enabled", "default_proxy_protocol", "default_proxy_host", "default_proxy_port", "default_proxy_username", "default_proxy_password", "default_proxy_bypass", "default_proxy_scope_maclaw", "default_proxy_scope_coding_tools", "default_proxy_scope_agent",
   "hub_security_centralized", "security_policy_mode", "network_level", "network_allowlist",

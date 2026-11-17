@@ -3868,9 +3868,9 @@
 .capc-hover.capc-open .capc-chevron,
 .capc-files.capc-open .capc-chevron { transform: rotate(180deg); }
 /* The list floats above the summary and overlaps the bar's top padding, so
-   the pointer can move onto the list without crossing a dead gap. The
-   checklist already spans the coding chat column, so 50% is half that area. */
-.capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 50%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
+   the pointer can move onto the list without crossing a dead gap. The bar
+   itself is the middle 40% of the column, so the list fills it. */
+.capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 100%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
 .capc-hover.capc-open .capc-popover { pointer-events: auto; visibility: visible; }
 /* border-box keeps the padding and border inside the height cap.
    content-box lets a full list stick about 18px into the task header. */

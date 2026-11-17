@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/services.dart';
 
 /// 在线更新 — 镜像桌面 GUI `app.go` 的更新协议：
 /// latest.json manifest 双源竞速（GitHub + Cloudflare R2），下载 URL 按
@@ -119,6 +120,24 @@ class AppUpdater {
   final Dio _dio;
 
   AppUpdater({Dio? dio}) : _dio = dio ?? Dio();
+
+  /// Whether the downloaded APK can install over the current app — Android
+  /// refuses a same-package update signed by a different key
+  /// (INSTALL_FAILED_UPDATE_INCOMPATIBLE), which surfaces as a bare
+  /// “签名冲突”. `null` means the check could not run (non-Android host or
+  /// channel missing) — the installer then reports its own error as before.
+  Future<bool?> apkSignatureCompatible(File apk) async {
+    if (!Platform.isAndroid) return null;
+    try {
+      const channel = MethodChannel('maclawgo/update');
+      return await channel.invokeMethod<bool>(
+        'apkSignatureMatches',
+        {'path': apk.path},
+      );
+    } on Object {
+      return null;
+    }
+  }
 
   /// Race the GitHub and R2 manifests; the first successful answer wins —
   /// same content from both, so latency decides (desktop

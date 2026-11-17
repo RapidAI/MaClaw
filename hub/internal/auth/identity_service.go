@@ -355,8 +355,8 @@ func (s *IdentityService) UpdateMachineMetadata(ctx context.Context, machineID s
 		return nil
 	}
 	return s.machines.UpdateMetadata(ctx, machineID, store.MachineMetadata{
-		Name:                 defaultIfEmpty(metadata.Name, "MaClaw Desktop"),
-		Platform:             defaultIfEmpty(metadata.Platform, "unknown"),
+		Name:                 strings.TrimSpace(metadata.Name),
+		Platform:             strings.TrimSpace(metadata.Platform),
 		Hostname:             strings.TrimSpace(metadata.Hostname),
 		Arch:                 strings.TrimSpace(metadata.Arch),
 		AppVersion:           strings.TrimSpace(metadata.AppVersion),

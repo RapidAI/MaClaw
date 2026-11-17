@@ -782,9 +782,10 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 	if payload == nil {
 		return
 	}
-	h.app.emitEvent("coding-workbench-steps", payload)
-	// The same snapshot mirrors to remote-control watchers of this session.
+	// Publish the viewer contract before the raw bus. Companion and desktop-bot
+	// listeners still receive the original payload object.
 	h.app.relayRemoteWorkbenchSteps(userID, payload)
+	h.app.emitEvent("coding-workbench-steps", payload)
 }
 
 // markRemainingCodingStepsSkipped marks later plan steps as skipped after a

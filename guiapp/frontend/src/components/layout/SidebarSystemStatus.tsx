@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
+import { CreateMobileAuthDesktopQRSession, LoadConfigForUI, PatchConfigFields } from '../../../wailsjs/go/main/App';
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenMeter } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { isChineseLang, localizeText, normalizeLang } from '../../i18n';
@@ -161,6 +163,8 @@ const STATUS_LINE_MIN_WIDTH = 280;
 const STATUS_LINE_EDGE_GAP = 8;
 const STATUS_LINE_MIN_ABOVE = 200;
 const STATUS_LINE_CLOSE_DELAY = 200;
+/** Width of the mobile-QR / remote-connect popover anchored to the devices icon. */
+const DEVICES_POP_WIDTH = 236;
 
 const textForLang = localizeText;
 
@@ -478,6 +482,9 @@ export const SidebarSystemStatus = ({
     // Popover width tracks the row width so both edges stay aligned with it.
     const [statusPopWidth, setStatusPopWidth] = useState<number | null>(null);
     const statusPopRafRef = useRef<number | null>(null);
+    // Declared up here: openStatusPop consults it so the status card never
+    // stacks on top of the devices popover while that one owns the hover.
+    const qrPopOpenRef = useRef(false);
 
     const cancelStatusPopClose = useCallback(() => {
         if (statusPopTimerRef.current != null) {
@@ -497,6 +504,8 @@ export const SidebarSystemStatus = ({
 
     const openStatusPop = useCallback(() => {
         if (statusLineSuppressOpenRef.current) return;
+        // The devices icon owns its own popover; never stack the status card.
+        if (qrPopOpenRef.current) return;
         cancelStatusPopClose();
         if (!statusPopOpenRef.current) {
             statusPopOpenRef.current = true;
@@ -605,6 +614,233 @@ export const SidebarSystemStatus = ({
             }
         };
     }, [statusPopOpen, updateStatusPopPosition, closeStatusPop]);
+
+    // ── Devices icon: mobile-auth QR + remote-device-connect switch ──
+    // Hover/focus opens a small fixed card showing the mobile-auth QR (the
+    // same session AboutPanel creates) plus the switch that gates inbound
+    // remote/mobile control on this machine. Positioning is fixed for the
+    // same reason as the status popover: sidebar wrappers clip overlays.
+    const [qrPopOpen, setQrPopOpen] = useState(false);
+    const qrPopPinnedRef = useRef(false);
+    const qrPopTimerRef = useRef<number | null>(null);
+    // Escape refocuses the icon; without this guard the icon's onFocus would
+    // immediately reopen the popover it just dismissed.
+    const qrSuppressOpenRef = useRef(false);
+    const qrButtonRef = useRef<HTMLButtonElement>(null);
+    const qrPopRef = useRef<HTMLDivElement>(null);
+    const [qrPopPos, setQrPopPos] = useState<{ left: number; bottom: number } | null>(null);
+    const [mobileQRValue, setMobileQRValue] = useState('');
+    const [mobileQRExpiresAt, setMobileQRExpiresAt] = useState('');
+    const [mobileQRError, setMobileQRError] = useState('');
+    const [mobileQRLoading, setMobileQRLoading] = useState(false);
+    const mobileQRRequestRef = useRef(0);
+    // Auto-fetch runs at most once per open: a persistently-expired payload
+    // must not turn the open effect into a fetch loop.
+    const mobileQRTriedRef = useRef(false);
+    // The switch defaults ON: the persisted nil means enabled.
+    const [remoteDeviceConnect, setRemoteDeviceConnect] = useState(true);
+    const [remoteDeviceConnectLoaded, setRemoteDeviceConnectLoaded] = useState(false);
+    const [remoteDeviceConnectSaving, setRemoteDeviceConnectSaving] = useState(false);
+    // Saving ref: a config refresh resolving mid-save must not overwrite the
+    // optimistic toggle with the pre-patch value.
+    const remoteDeviceConnectSavingRef = useRef(false);
+
+    const cancelQrPopClose = useCallback(() => {
+        if (qrPopTimerRef.current != null) {
+            window.clearTimeout(qrPopTimerRef.current);
+            qrPopTimerRef.current = null;
+        }
+    }, []);
+
+    const closeQrPop = useCallback(() => {
+        cancelQrPopClose();
+        qrPopOpenRef.current = false;
+        qrPopPinnedRef.current = false;
+        setQrPopOpen(false);
+        setQrPopPos(null);
+    }, [cancelQrPopClose]);
+
+    const scheduleQrPopClose = useCallback(() => {
+        cancelQrPopClose();
+        qrPopTimerRef.current = window.setTimeout(() => {
+            qrPopTimerRef.current = null;
+            if (qrPopPinnedRef.current) return;
+            closeQrPop();
+        }, STATUS_LINE_CLOSE_DELAY);
+    }, [cancelQrPopClose, closeQrPop]);
+
+    const openQrPop = useCallback(() => {
+        if (qrSuppressOpenRef.current) return;
+        cancelQrPopClose();
+        // The devices entry replaces the status card while it owns the hover.
+        closeStatusPop();
+        if (!qrPopOpenRef.current) {
+            qrPopOpenRef.current = true;
+            setQrPopOpen(true);
+        }
+    }, [cancelQrPopClose, closeStatusPop]);
+
+    const handleQrButtonClick = useCallback(() => {
+        // Click pins the popover (same contract as the status line).
+        if (qrPopPinnedRef.current) {
+            closeQrPop();
+            return;
+        }
+        qrPopPinnedRef.current = true;
+        openQrPop();
+    }, [closeQrPop, openQrPop]);
+
+    const refreshRemoteDeviceConnect = useCallback(() => {
+        // Promise.resolve().then(...) converts a synchronous throw (missing
+        // wails stub in a non-desktop host) into a handled rejection.
+        Promise.resolve()
+            .then(() => LoadConfigForUI())
+            .then((cfg) => {
+                if (remoteDeviceConnectSavingRef.current) return;
+                setRemoteDeviceConnect(cfg?.remote_device_connect_enabled !== false);
+                setRemoteDeviceConnectLoaded(true);
+            })
+            .catch(() => { /* keep the default/last-known switch state */ });
+    }, []);
+
+    const handleRemoteDeviceConnectToggle = useCallback((checked: boolean) => {
+        const prev = remoteDeviceConnect;
+        setRemoteDeviceConnect(checked);
+        remoteDeviceConnectSavingRef.current = true;
+        setRemoteDeviceConnectSaving(true);
+        Promise.resolve()
+            .then(() => PatchConfigFields({ remote_device_connect_enabled: checked }))
+            .then((cfg) => {
+                // Trust the committed config over the optimistic value.
+                const flag = cfg?.remote_device_connect_enabled;
+                if (typeof flag === 'boolean') setRemoteDeviceConnect(flag);
+            })
+            .catch((err: unknown) => {
+                console.error('remote_device_connect_enabled patch failed:', err);
+                setRemoteDeviceConnect(prev);
+            })
+            .finally(() => {
+                remoteDeviceConnectSavingRef.current = false;
+                setRemoteDeviceConnectSaving(false);
+            });
+    }, [remoteDeviceConnect]);
+
+    const loadMobileAuthQR = useCallback(() => {
+        const requestID = ++mobileQRRequestRef.current;
+        setMobileQRLoading(true);
+        setMobileQRError('');
+        // Promise.resolve().then(...) converts a synchronous throw (missing
+        // wails stub in a non-desktop host) into a handled rejection.
+        Promise.resolve()
+            .then(() => CreateMobileAuthDesktopQRSession())
+            .then((session) => {
+                if (mobileQRRequestRef.current !== requestID) return;
+                const payload = String(session?.qr_payload || '');
+                setMobileQRValue(payload);
+                setMobileQRExpiresAt(String(session?.expires_at || ''));
+                if (!payload) {
+                    setMobileQRError(textForLang(lang, 'Hub did not return a QR payload.', 'Hub 未返回二维码内容。', 'Hub 未返回二維碼內容。'));
+                }
+            })
+            .catch((err: unknown) => {
+                if (mobileQRRequestRef.current !== requestID) return;
+                setMobileQRValue('');
+                setMobileQRExpiresAt('');
+                setMobileQRError(String((err as { message?: string })?.message || err || textForLang(lang, 'Failed to create the QR code.', '二维码生成失败。', '二維碼生成失敗。')));
+            })
+            .finally(() => {
+                if (mobileQRRequestRef.current === requestID) setMobileQRLoading(false);
+            });
+    }, [lang]);
+
+    // Config read on mount so the icon can flag a disabled switch at rest.
+    useEffect(() => {
+        refreshRemoteDeviceConnect();
+    }, [refreshRemoteDeviceConnect]);
+
+    // On open: refresh the persisted switch and create/refresh the QR when
+    // there is none or it already expired.
+    useEffect(() => {
+        if (!qrPopOpen) {
+            mobileQRTriedRef.current = false;
+            return;
+        }
+        refreshRemoteDeviceConnect();
+        if (mobileQRTriedRef.current) return;
+        const expiry = Date.parse(mobileQRExpiresAt);
+        const expired = mobileQRExpiresAt ? !Number.isNaN(expiry) && expiry <= Date.now() : false;
+        if (!mobileQRValue || expired) {
+            mobileQRTriedRef.current = true;
+            loadMobileAuthQR();
+        }
+    }, [qrPopOpen, mobileQRValue, mobileQRExpiresAt, refreshRemoteDeviceConnect, loadMobileAuthQR]);
+
+    const updateQrPopPosition = useCallback(() => {
+        const anchor = qrButtonRef.current;
+        if (!anchor) return;
+        const rect = anchor.getBoundingClientRect();
+        const left = Math.min(
+            Math.max(rect.left + rect.width / 2 - DEVICES_POP_WIDTH / 2, 8),
+            Math.max(8, window.innerWidth - DEVICES_POP_WIDTH - 8),
+        );
+        setQrPopPos({ left, bottom: window.innerHeight - rect.top + 8 });
+    }, []);
+
+    useLayoutEffect(() => {
+        if (!qrPopOpen) return;
+        updateQrPopPosition();
+    }, [qrPopOpen, updateQrPopPosition]);
+
+    // While open: outside click / Escape dismiss; resize / scroll reposition.
+    useEffect(() => {
+        if (!qrPopOpen) return;
+        const handlePointerDownOutside = (e: MouseEvent) => {
+            const target = e.target as Node;
+            if (qrPopRef.current?.contains(target)) return;
+            if (qrButtonRef.current?.contains(target)) return;
+            closeQrPop();
+        };
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                closeQrPop();
+                // Refocus the icon, but suppress the focus-triggered reopen
+                // (focus fires synchronously inside focus()).
+                qrSuppressOpenRef.current = true;
+                qrButtonRef.current?.focus();
+                window.setTimeout(() => { qrSuppressOpenRef.current = false; }, 0);
+            }
+        };
+        const scheduleReposition = () => updateQrPopPosition();
+        document.addEventListener('mousedown', handlePointerDownOutside);
+        document.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('resize', scheduleReposition);
+        window.addEventListener('scroll', scheduleReposition, true);
+        return () => {
+            document.removeEventListener('mousedown', handlePointerDownOutside);
+            document.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('resize', scheduleReposition);
+            window.removeEventListener('scroll', scheduleReposition, true);
+        };
+    }, [qrPopOpen, closeQrPop, updateQrPopPosition]);
+
+    useEffect(() => () => cancelQrPopClose(), [cancelQrPopClose]);
+
+    const qrExpiryText = (() => {
+        const parsed = Date.parse(mobileQRExpiresAt);
+        if (Number.isNaN(parsed)) return mobileQRExpiresAt;
+        try {
+            return new Date(parsed).toLocaleString();
+        } catch {
+            return mobileQRExpiresAt;
+        }
+    })();
+    const devicesLabel = textForLang(lang, 'Mobile QR & remote connection', '移动二维码与远程连接', '移動二維碼與遠端連線');
+    const devicesAriaLabel = textForLang(lang,
+        'Mobile QR code and remote connection switch',
+        '移动二维码与远程连接开关',
+        '移動二維碼與遠端連線開關',
+    );
 
     const closeDropdown = useCallback(() => {
         dropdownOpenRef.current = false;
@@ -1088,7 +1324,9 @@ export const SidebarSystemStatus = ({
                 className="mc-workbench-status-row"
                 data-testid="workbench-status-row"
                 data-online={accountOnline ? 'true' : 'false'}
-                onMouseEnter={openStatusPop}
+                // Entering via the devices icon opens its own popover instead
+                // (React's synthesized mouseenter carries the deepest target).
+                onMouseEnter={(e) => { if (qrButtonRef.current?.contains(e.target as Node)) return; openStatusPop(); }}
                 // Pin check here too: a pinned popover must survive the pointer
                 // leaving the row without ever entering the popover.
                 onMouseLeave={() => { if (!statusPopPinnedRef.current) scheduleStatusPopClose(); }}
@@ -1137,12 +1375,130 @@ export const SidebarSystemStatus = ({
                         </span>
                     ) : null}
                 </button>
+                <button
+                    ref={qrButtonRef}
+                    type="button"
+                    className="mc-workbench-status-devices"
+                    data-testid="workbench-status-devices"
+                    data-remote-connect={remoteDeviceConnectLoaded && !remoteDeviceConnect ? 'blocked' : 'allowed'}
+                    aria-label={devicesAriaLabel}
+                    title={devicesLabel}
+                    aria-expanded={qrPopOpen}
+                    aria-controls="mc-workbench-status-devices-popover"
+                    onMouseEnter={openQrPop}
+                    onMouseLeave={() => { if (!qrPopPinnedRef.current) scheduleQrPopClose(); }}
+                    onFocus={openQrPop}
+                    onBlur={scheduleQrPopClose}
+                    onClick={handleQrButtonClick}
+                >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="2.5" y="4" width="14" height="10.5" rx="1.5" />
+                        <path d="M6.5 18.5h4.5" />
+                        <path d="M9 14.5v4" />
+                        <rect x="16.5" y="9.5" width="5" height="11" rx="1.2" />
+                        <path d="M18 18.2h2" />
+                    </svg>
+                    {remoteDeviceConnectLoaded && !remoteDeviceConnect ? (
+                        <span className="mc-workbench-status-devices__blocked" aria-hidden="true" />
+                    ) : null}
+                </button>
                 {accountIdentity ? (
                     <span className="mc-workbench-status-line__state" data-online={accountOnline ? 'true' : 'false'}>
                         <i aria-hidden="true" />
                         {accountStateText}
                     </span>
                 ) : null}
+            </div>
+            <div
+                ref={qrPopRef}
+                id="mc-workbench-status-devices-popover"
+                className="mc-workbench-devices-popover"
+                data-testid="workbench-status-devices-popover"
+                data-open={qrPopOpen ? 'true' : 'false'}
+                style={qrPopOpen && qrPopPos ? {
+                    position: 'fixed',
+                    left: qrPopPos.left,
+                    bottom: qrPopPos.bottom,
+                } : {
+                    position: 'fixed',
+                    left: 0,
+                    top: 0,
+                    visibility: 'hidden',
+                    pointerEvents: 'none',
+                }}
+                onMouseEnter={cancelQrPopClose}
+                onMouseLeave={() => { if (!qrPopPinnedRef.current) scheduleQrPopClose(); }}
+                onFocus={cancelQrPopClose}
+                // Keyboard: Tabbing from the icon lands on the switch inside
+                // the popover; cancel the icon's pending close there, and
+                // close only when focus leaves the popover entirely.
+                onBlur={(e) => {
+                    const next = e.relatedTarget as Node | null;
+                    if (next && qrPopRef.current?.contains(next)) return;
+                    if (next && qrButtonRef.current?.contains(next)) return;
+                    scheduleQrPopClose();
+                }}
+            >
+                {/* Children mount only while open: a closed popover must not
+                    leak its placeholder texts into a11y/text queries. */}
+                {qrPopOpen ? (<>
+                <div className="mc-workbench-devices-popover__qr">
+                    {mobileQRLoading ? (
+                        <div className="mc-workbench-devices-popover__status">{textForLang(lang, 'Creating…', '生成中…', '生成中…')}</div>
+                    ) : mobileQRValue ? (
+                        <div className="mc-workbench-devices-popover__code" role="img" aria-label={textForLang(lang, 'Mobile QR code', '移动二维码', '移動二維碼')}>
+                            <QRCodeSVG value={mobileQRValue} size={188} level="M" bgColor="#ffffff" fgColor="#111111" />
+                        </div>
+                    ) : (
+                        <div className="mc-workbench-devices-popover__error">
+                            {mobileQRError || textForLang(lang, 'QR code unavailable.', '二维码不可用。', '二維碼不可用。')}
+                        </div>
+                    )}
+                </div>
+                <div className="mc-workbench-devices-popover__expires">
+                    <span className="mc-workbench-devices-popover__expires-text">
+                        {mobileQRExpiresAt && mobileQRValue && !mobileQRLoading
+                            ? textForLang(lang, `Expires ${qrExpiryText}`, `${qrExpiryText} 过期`, `${qrExpiryText} 過期`)
+                            : ''}
+                    </span>
+                    <button
+                        type="button"
+                        className="mc-workbench-devices-popover__refresh"
+                        data-testid="workbench-status-qr-refresh"
+                        aria-label={textForLang(lang, 'Refresh QR code', '刷新二维码', '重新整理二維碼')}
+                        title={textForLang(lang, 'Refresh QR code', '刷新二维码', '重新整理二維碼')}
+                        disabled={mobileQRLoading}
+                        onClick={loadMobileAuthQR}
+                    >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+                            <path d="M21 3v5h-5" />
+                            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+                            <path d="M8 16H3v5" />
+                        </svg>
+                    </button>
+                </div>
+                <div className="mc-workbench-devices-popover__divider" aria-hidden="true" />
+                <div className="mc-workbench-devices-popover__toggle">
+                    <label className="mc-workbench-devices-popover__toggle-label" htmlFor="mc-remote-device-connect-switch">
+                        {textForLang(lang, 'Allow remote connection from devices on this account', '允许同账号设备远程连接', '允許同帳號裝置遠端連線')}
+                    </label>
+                    <label className="mc-devices-switch">
+                        <input
+                            id="mc-remote-device-connect-switch"
+                            type="checkbox"
+                            role="switch"
+                            data-testid="workbench-status-remote-connect-switch"
+                            checked={remoteDeviceConnect}
+                            aria-checked={remoteDeviceConnect}
+                            disabled={remoteDeviceConnectSaving}
+                            aria-label={textForLang(lang, 'Allow remote connection from devices on this account', '允许同账号设备远程连接', '允許同帳號裝置遠端連線')}
+                            onChange={(e) => handleRemoteDeviceConnectToggle(e.target.checked)}
+                        />
+                        <span className="mc-devices-switch__track" aria-hidden="true" />
+                    </label>
+                </div>
+                </>) : null}
             </div>
             <div
                 ref={statusPopRef}

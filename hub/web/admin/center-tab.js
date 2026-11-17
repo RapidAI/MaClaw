@@ -30,7 +30,9 @@
       syncPhoneRoutesBusy: 'Syncing...',
       syncPhoneRoutesRunning: 'Syncing verified phone routes...',
       syncPhoneRoutesDone: 'Synced {count} phone route(s)',
-      syncPhoneRoutesFailed: 'Sync phone routes failed: {error}'
+      syncPhoneRoutesFailed: 'Sync phone routes failed: {error}',
+      visibilityManagedBy: 'Managed by Hub Center admin {by}',
+      visibilityManagedHint: 'Effective value: {visibility}. This hub-side setting takes over again once it matches.'
     },
     zh: {
       corporateEmailDomain: '\u4e3b\u4f01\u4e1a\u90ae\u7bb1\u57df\u540d',
@@ -57,7 +59,9 @@
       syncPhoneRoutesBusy: '\u540c\u6b65\u4e2d...',
       syncPhoneRoutesRunning: '\u6b63\u5728\u540c\u6b65\u5df2\u9a8c\u8bc1\u624b\u673a\u8def\u7531...',
       syncPhoneRoutesDone: '\u5df2\u540c\u6b65 {count} \u6761\u624b\u673a\u8def\u7531',
-      syncPhoneRoutesFailed: '\u540c\u6b65\u624b\u673a\u8def\u7531\u5931\u8d25: {error}'
+      syncPhoneRoutesFailed: '\u540c\u6b65\u624b\u673a\u8def\u7531\u5931\u8d25: {error}',
+      visibilityManagedBy: '\u5df2\u88ab Hub Center \u7ba1\u7406\u5458 {by} \u63a5\u7ba1',
+      visibilityManagedHint: '\u5f53\u524d\u751f\u6548\u503c\uff1a{visibility}\u3002\u672c\u673a\u8bbe\u7f6e\u4e0e\u4e4b\u4e00\u81f4\u540e\u6062\u590d\u7531\u672c\u673a\u63a7\u5236\u3002'
     }
   };
 
@@ -83,6 +87,12 @@
     if (domains.length) return domains.join(', ');
     if (data.corporate_email_domain) return data.corporate_email_domain;
     return centerTabText('defaultCorporateHub');
+  }
+
+  function visibilityLabel(v) {
+    if (v === 'shared') return tr('visibilityShared');
+    if (v === 'public') return 'Public';
+    return tr('visibilityPrivate');
   }
 
   function publicSignupText(enabled) {
@@ -163,7 +173,21 @@
     document.getElementById('centerAdvertisedURL').textContent = data.advertised_base_url || tr('notConfigured');
     document.getElementById('centerAdvertisedHost').textContent = data.host || tr('na');
     document.getElementById('centerAdvertisedPort').textContent = data.port ? String(data.port) : tr('na');
-    document.getElementById('visibilityHero').textContent = data.visibility === 'shared' ? tr('visibilityShared') : tr('visibilityPrivate');
+    var visLock = data.visibility_lock;
+    var effVis = (visLock && visLock.locked && visLock.visibility) ? visLock.visibility : data.visibility;
+    document.getElementById('visibilityHero').textContent = visibilityLabel(effVis);
+    var visLockEl = document.getElementById('visibilityLockHero');
+    if (visLockEl) {
+      if (visLock && visLock.locked) {
+        var lockBy = visLock.locked_by || 'admin';
+        var effVisText = visibilityLabel(effVis);
+        visLockEl.textContent = centerTabText('visibilityManagedBy').replace('{by}', lockBy) + ' - ' + centerTabText('visibilityManagedHint').replace('{visibility}', effVisText);
+        visLockEl.classList.remove('hidden');
+      } else {
+        visLockEl.classList.add('hidden');
+        visLockEl.textContent = '';
+      }
+    }
     document.getElementById('modeHero').textContent = data.enrollment_mode === 'approval' ? tr('enrollmentApproval') : data.enrollment_mode === 'manual' ? tr('enrollmentManual') : tr('enrollmentOpen');
     document.getElementById('centerBaseURL').value = data.base_url || '';
     document.getElementById('centerPublicBaseURL').value = data.public_base_url || '';

@@ -35,6 +35,17 @@ type CUState = {
     label: string;
 };
 
+type Handoff = {
+    reason: string;
+    title: string;
+};
+
+function finishDesktopHandoff(done: boolean) {
+    const bridge = (globalThis as { go?: { main?: { App?: { ComputerUseHandoffFinish?: (done: boolean) => Promise<unknown> } } } }).go;
+    const fn = bridge?.main?.App?.ComputerUseHandoffFinish;
+    if (typeof fn === "function") void fn(done);
+}
+
 const empty: CUState = {
     visible: false,
     paused: false,
@@ -49,6 +60,7 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
         [lang]
     );
     const [st, setSt] = useState<CUState>(empty);
+    const [handoff, setHandoff] = useState<Handoff | null>(null);
     const [busy, setBusy] = useState(false);
     const visibleRef = useRef(false);
     visibleRef.current = st.visible;
@@ -95,9 +107,18 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
         const id = window.setInterval(() => {
             if (!document.hidden && visibleRef.current) void refresh();
         }, 4000);
+        const onControl = (data?: unknown) => {
+            const payload = data && typeof data === "object" ? data as { action?: string; reason?: string; title?: string } : {};
+            if (payload.action === "handoff") {
+                setHandoff({ reason: payload.reason || "attention", title: payload.title || "" });
+            } else if (payload.action === "resume" || payload.action === "stop" || payload.action === "reset" || payload.action === "done") {
+                setHandoff(null);
+            }
+            refreshWhenVisible();
+        };
         EventsOn(EVENT_COMPUTER_USE_OBSERVE, refreshWhenVisible);
         EventsOn(EVENT_COMPUTER_USE_ACTION, refreshWhenVisible);
-        EventsOn(EVENT_COMPUTER_USE_CONTROL, refreshWhenVisible);
+        EventsOn(EVENT_COMPUTER_USE_CONTROL, onControl);
         document.addEventListener("visibilitychange", refreshWhenVisible);
         return () => {
             window.clearInterval(id);
@@ -108,7 +129,13 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
         };
     }, [refresh]);
 
-    if (!st.visible) return null;
+    if (!st.visible && !handoff) return null;
+
+    const handoffLine = handoff
+        ? (handoff.reason === "checkout"
+            ? tr("Click pay on the screen yourself. Do not send the payment password to chat.", "请在屏幕上自己点击支付。不要把支付密码发到对话。", "請在螢幕上自己點擊支付。不要把支付密碼發到對話。")
+            : tr("Type the password or code on the screen. It stays out of chat.", "请在屏幕上自己填写密码或验证码。不会发到对话。", "請在螢幕上自己填寫密碼或驗證碼。不會發到對話。"))
+        : "";
 
     const btn = (danger = false): CSSProperties => ({
         border: danger ? "1px solid rgba(242,139,130,0.5)" : `1px solid ${t.divider}`,
@@ -149,29 +176,61 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
             }}
         >
             <span style={{ fontWeight: 600, color: t.headingColor || t.text }}>
-                {st.label}
-                {st.steps > 0 ? ` · ${st.steps}` : ""}
-                {st.elements > 0 ? ` · e${st.elements}` : ""}
+                {handoff ? tr("Waiting for you", "等待你操作", "等待你操作") : st.label}
+                {!handoff && st.steps > 0 ? ` · ${st.steps}` : ""}
+                {!handoff && st.elements > 0 ? ` · e${st.elements}` : ""}
             </span>
+            {handoff && (
+                <span data-testid="computer-use-handoff" style={{ flexBasis: "100%", color: "#b54708", fontWeight: 700 }}>
+                    {handoff.title ? `${handoff.title} · ` : ""}
+                    {handoffLine}
+                </span>
+            )}
             <span className="cuqb-spacer" />
-            <button
-                type="button"
-                disabled={busy || st.paused}
-                onClick={() => void run(() => ComputerUsePause())}
-                style={btn()}
-                title={tr("Pause desktop actions", "暂停桌面动作", "暫停桌面動作")}
-            >
-                {tr("Pause", "暂停", "暫停")}
-            </button>
-            <button
-                type="button"
-                disabled={busy || !st.paused}
-                onClick={() => void run(() => ComputerUseResume())}
-                style={btn()}
-                title={tr("Resume desktop actions", "继续桌面动作", "繼續桌面動作")}
-            >
-                {tr("Resume", "继续", "繼續")}
-            </button>
+            {handoff && (
+                <>
+                    <button
+                        type="button"
+                        data-testid="computer-use-handoff-cancel"
+                        disabled={busy}
+                        onClick={() => finishDesktopHandoff(false)}
+                        style={btn()}
+                    >
+                        {tr("Cancel", "取消", "取消")}
+                    </button>
+                    <button
+                        type="button"
+                        data-testid="computer-use-handoff-done"
+                        disabled={busy}
+                        onClick={() => finishDesktopHandoff(true)}
+                        style={{ ...btn(), background: "#b54708", color: "#fff", borderColor: "#b54708" }}
+                    >
+                        {tr("I'm done", "我已完成", "我已完成")}
+                    </button>
+                </>
+            )}
+            {!handoff && (
+                <>
+                    <button
+                        type="button"
+                        disabled={busy || st.paused}
+                        onClick={() => void run(() => ComputerUsePause())}
+                        style={btn()}
+                        title={tr("Pause desktop actions", "暂停桌面动作", "暫停桌面動作")}
+                    >
+                        {tr("Pause", "暂停", "暫停")}
+                    </button>
+                    <button
+                        type="button"
+                        disabled={busy || !st.paused}
+                        onClick={() => void run(() => ComputerUseResume())}
+                        style={btn()}
+                        title={tr("Resume desktop actions", "继续桌面动作", "繼續桌面動作")}
+                    >
+                        {tr("Resume", "继续", "繼續")}
+                    </button>
+                </>
+            )}
             <button
                 type="button"
                 disabled={busy}
@@ -181,7 +240,7 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
             >
                 {tr("Stop CU", "停止操控", "停止操控")}
             </button>
-            {st.paused && (
+            {!handoff && st.paused && (
                 <button
                     type="button"
                     disabled={busy}

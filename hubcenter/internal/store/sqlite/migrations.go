@@ -44,6 +44,8 @@ func RunMigrations(db *sql.DB) error {
 			host TEXT NOT NULL DEFAULT '',
 			port INTEGER NOT NULL DEFAULT 0,
 			visibility TEXT NOT NULL,
+			visibility_locked INTEGER NOT NULL DEFAULT 0,
+			visibility_locked_by TEXT NOT NULL DEFAULT '',
 			enrollment_mode TEXT NOT NULL,
 			corporate_email_domain TEXT NOT NULL DEFAULT '',
 			accept_public_signup INTEGER NOT NULL DEFAULT 0,
@@ -372,6 +374,8 @@ func ensureHubRegistrationPolicyColumns(db *sql.DB) error {
 		"hub_origin":               "ALTER TABLE hub_instances ADD COLUMN hub_origin TEXT NOT NULL DEFAULT 'self_hosted'",
 		"default_signup_scope":     "ALTER TABLE hub_instances ADD COLUMN default_signup_scope TEXT NOT NULL DEFAULT 'domain_restricted'",
 		"registration_policy_json": "ALTER TABLE hub_instances ADD COLUMN registration_policy_json TEXT NOT NULL DEFAULT '{}'",
+		"visibility_locked":        "ALTER TABLE hub_instances ADD COLUMN visibility_locked INTEGER NOT NULL DEFAULT 0",
+		"visibility_locked_by":     "ALTER TABLE hub_instances ADD COLUMN visibility_locked_by TEXT NOT NULL DEFAULT ''",
 	}
 	for name, stmt := range columns {
 		ok, err := hubInstanceColumnExists(db, name)

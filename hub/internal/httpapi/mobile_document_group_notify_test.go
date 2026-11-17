@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -580,5 +581,494 @@ func addCompanionGroupMemberAs(t *testing.T, identity *auth.IdentityService, tok
 	CompanionDocumentGroupMembersHandler(identity).ServeHTTP(rec, add)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("add member: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// companionDigestNotifications returns the live digest notices addressed to one
+// member of one group. The merged design means this must never exceed one row.
+func companionDigestNotifications(t *testing.T, svc *notification.Service, groupID, userID string) []*notification.Notification {
+	t.Helper()
+	items, err := svc.ListNotifications(context.Background(), notification.ListFilter{Status: notification.StatusPublished})
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	sourceID := companionGroupDigestSourceID(groupID, userID)
+	out := make([]*notification.Notification, 0, 1)
+	for _, item := range items {
+		if item.Source == companionGroupDigestNotificationSource && item.SourceID == sourceID {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// waitCompanionDigest polls until want digest rows are live or the deadline
+// passes. Digest creation runs off the accept goroutine, so a direct read can
+// legitimately observe zero for a few milliseconds.
+func waitCompanionDigest(t *testing.T, svc *notification.Service, groupID, userID string, want int) []*notification.Notification {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var got []*notification.Notification
+	for time.Now().Before(deadline) {
+		got = companionDigestNotifications(t, svc, groupID, userID)
+		if len(got) == want {
+			return got
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return got
+}
+
+// TestCompanionGroupDigestMergesHistoricalShares is the whole point of the
+// mechanism: several documents shared before someone joined raise ONE merged
+// notice that names the group and the count, never one notice per share.
+func TestCompanionGroupDigestMergesHistoricalShares(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+
+	ownerToken, _ := issueViewerToken(t, identity, "digest-owner@example.com")
+	readerToken, reader := issueViewerToken(t, identity, "digest-reader@example.com")
+	groupID := createCompanionGroupAs(t, identity, ownerToken, "历史文档组")
+
+	for _, name := range []string{"一.pdf", "二.pdf"} {
+		rec := postCompanionShareAs(t, identity, ownerToken, "group", "", "0", groupID, name, []byte("%PDF-"+name))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("share %s: %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	// A non-group share of the same owner must not inflate the count.
+	if rec := postCompanionShareAs(t, identity, ownerToken, "public", "", "0", "", "公开.pdf", []byte("%PDF-public")); rec.Code != http.StatusOK {
+		t.Fatalf("public share: %d %s", rec.Code, rec.Body.String())
+	}
+	addCompanionGroupMemberAs(t, identity, ownerToken, groupID, reader.Email)
+	postCompanionInviteDecision(t, identity, readerToken, groupID, "accept")
+
+	digests := waitCompanionDigest(t, svc, groupID, reader.UserID, 1)
+	if len(digests) != 1 {
+		t.Fatalf("digest count %d want 1", len(digests))
+	}
+	digest := digests[0]
+	if !strings.Contains(digest.Content, "历史文档组") || !strings.Contains(digest.Content, "2") {
+		t.Fatalf("digest content %q", digest.Content)
+	}
+	if len(digest.AudienceIDs) != 1 || digest.AudienceIDs[0] != reader.UserID {
+		t.Fatalf("audience %v want [%s]", digest.AudienceIDs, reader.UserID)
+	}
+	// The merged notice never produces per-share rows for the same member.
+	items, err := svc.ListNotifications(context.Background(), notification.ListFilter{Status: notification.StatusPublished})
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	for _, item := range items {
+		if item.Source == companionShareNotificationSource {
+			for _, id := range item.AudienceIDs {
+				if id == reader.UserID {
+					t.Fatalf("reader also got a per-share notice %s", item.SourceID)
+				}
+			}
+		}
+	}
+}
+
+// TestCompanionGroupDigestSkipsEmptyGroup: joining a group with no readable
+// documents has nothing to merge, so no notice is raised.
+func TestCompanionGroupDigestSkipsEmptyGroup(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+
+	ownerToken, _ := issueViewerToken(t, identity, "empty-digest-owner@example.com")
+	readerToken, reader := issueViewerToken(t, identity, "empty-digest-reader@example.com")
+	groupID := createCompanionGroupAs(t, identity, ownerToken, "空组")
+	addCompanionGroupMemberAs(t, identity, ownerToken, groupID, reader.Email)
+	postCompanionInviteDecision(t, identity, readerToken, groupID, "accept")
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := companionDigestNotifications(t, svc, groupID, reader.UserID); len(got) != 0 {
+			t.Fatalf("empty group raised %d digests", len(got))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// TestCompanionGroupDigestRevokedOnLeave: losing membership takes the merged
+// notice away, because the documents it points at are no longer readable.
+func TestCompanionGroupDigestRevokedOnLeave(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+
+	ownerToken, _ := issueViewerToken(t, identity, "leave-digest-owner@example.com")
+	readerToken, reader := issueViewerToken(t, identity, "leave-digest-reader@example.com")
+	groupID := createCompanionGroupAs(t, identity, ownerToken, "退群组")
+	if rec := postCompanionShareAs(t, identity, ownerToken, "group", "", "0", groupID, "文档.pdf", []byte("%PDF-doc")); rec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", rec.Code, rec.Body.String())
+	}
+	addCompanionGroupMemberAs(t, identity, ownerToken, groupID, reader.Email)
+	postCompanionInviteDecision(t, identity, readerToken, groupID, "accept")
+	if got := waitCompanionDigest(t, svc, groupID, reader.UserID, 1); len(got) != 1 {
+		t.Fatalf("no digest before leave")
+	}
+
+	leave := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups/"+groupID+"/leave", nil)
+	leave.SetPathValue("id", groupID)
+	leave.Header.Set("Authorization", "Bearer "+readerToken)
+	leaveRec := httptest.NewRecorder()
+	CompanionDocumentGroupLeaveHandler(identity).ServeHTTP(leaveRec, leave)
+	if leaveRec.Code != http.StatusOK {
+		t.Fatalf("leave: %d %s", leaveRec.Code, leaveRec.Body.String())
+	}
+	if got := waitCompanionDigest(t, svc, groupID, reader.UserID, 0); len(got) != 0 {
+		t.Fatalf("digest survived the leave")
+	}
+}
+
+// TestCompanionGroupDigestRevokedOnDissolve covers the admin killing the whole
+// group: every member's digest dies with it.
+func TestCompanionGroupDigestRevokedOnDissolve(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+
+	ownerToken, _ := issueViewerToken(t, identity, "dissolve-digest-owner@example.com")
+	readerToken, reader := issueViewerToken(t, identity, "dissolve-digest-reader@example.com")
+	groupID := createCompanionGroupAs(t, identity, ownerToken, "解散组")
+	if rec := postCompanionShareAs(t, identity, ownerToken, "group", "", "0", groupID, "文档.pdf", []byte("%PDF-doc")); rec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", rec.Code, rec.Body.String())
+	}
+	addCompanionGroupMemberAs(t, identity, ownerToken, groupID, reader.Email)
+	postCompanionInviteDecision(t, identity, readerToken, groupID, "accept")
+	if got := waitCompanionDigest(t, svc, groupID, reader.UserID, 1); len(got) != 1 {
+		t.Fatalf("no digest before dissolve")
+	}
+
+	del := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/groups/"+groupID, nil)
+	del.SetPathValue("id", groupID)
+	del.Header.Set("Authorization", "Bearer "+ownerToken)
+	delRec := httptest.NewRecorder()
+	CompanionDocumentGroupHandler(identity).ServeHTTP(delRec, del)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("dissolve: %d %s", delRec.Code, delRec.Body.String())
+	}
+	if got := waitCompanionDigest(t, svc, groupID, reader.UserID, 0); len(got) != 0 {
+		t.Fatalf("digest survived the dissolve")
+	}
+}
+
+// TestCompanionGroupDigestRefreshedOnRejoin: leaving and coming back must not
+// stack a second notice. The re-join digest replaces the old row and counts
+// everything shared up to the new join — including what arrived while the
+// member was away.
+func TestCompanionGroupDigestRefreshedOnRejoin(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+
+	ownerToken, _ := issueViewerToken(t, identity, "rejoin-digest-owner@example.com")
+	readerToken, reader := issueViewerToken(t, identity, "rejoin-digest-reader@example.com")
+	groupID := createCompanionGroupAs(t, identity, ownerToken, "回归组")
+	if rec := postCompanionShareAs(t, identity, ownerToken, "group", "", "0", groupID, "旧文档.pdf", []byte("%PDF-old")); rec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", rec.Code, rec.Body.String())
+	}
+	addCompanionGroupMemberAs(t, identity, ownerToken, groupID, reader.Email)
+	postCompanionInviteDecision(t, identity, readerToken, groupID, "accept")
+	first := waitCompanionDigest(t, svc, groupID, reader.UserID, 1)
+	if len(first) != 1 {
+		t.Fatalf("no digest after first join")
+	}
+
+	leave := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups/"+groupID+"/leave", nil)
+	leave.SetPathValue("id", groupID)
+	leave.Header.Set("Authorization", "Bearer "+readerToken)
+	leaveRec := httptest.NewRecorder()
+	CompanionDocumentGroupLeaveHandler(identity).ServeHTTP(leaveRec, leave)
+	if leaveRec.Code != http.StatusOK {
+		t.Fatalf("leave: %d %s", leaveRec.Code, leaveRec.Body.String())
+	}
+	if got := waitCompanionDigest(t, svc, groupID, reader.UserID, 0); len(got) != 0 {
+		t.Fatalf("digest survived the leave")
+	}
+
+	// One more document arrives while they are out; the new join counts it.
+	if rec := postCompanionShareAs(t, identity, ownerToken, "group", "", "0", groupID, "新文档.pdf", []byte("%PDF-new")); rec.Code != http.StatusOK {
+		t.Fatalf("second share: %d %s", rec.Code, rec.Body.String())
+	}
+	addCompanionGroupMemberAs(t, identity, ownerToken, groupID, reader.Email)
+	postCompanionInviteDecision(t, identity, readerToken, groupID, "accept")
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := companionDigestNotifications(t, svc, groupID, reader.UserID)
+		if len(got) == 1 && strings.Contains(got[0].Content, "2") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rejoin digests %d, want one naming 2 documents", len(got))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// TestCompanionRemoteGroupDigestCountsFetchedShares covers the member whose
+// group lives on another hub: the digest counts what the remote-shares fetch
+// returns for the just-accepted invite, not the local share table.
+func TestCompanionRemoteGroupDigestCountsFetchedShares(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+
+	mux := newCompanionFederationMux(identity)
+	origin := httptest.NewServer(mux)
+	defer origin.Close()
+	home := httptest.NewServer(mux)
+	defer home.Close()
+	companionLocalOriginFn = func() string { return origin.URL }
+	companionHomeHubLookup = func(context.Context, string) (companionHomeHub, bool) {
+		return companionHomeHub{HubID: "hub-b", BaseURL: home.URL}, true
+	}
+
+	ownerToken, _ := issueViewerToken(t, identity, "remote-digest-owner@example.com")
+	_, reader := issueViewerToken(t, identity, "remote-digest-reader@example.com")
+	groupID := createCompanionGroupAs(t, identity, ownerToken, "跨 Hub 组")
+	for _, name := range []string{"甲.pdf", "乙.pdf", "丙.pdf"} {
+		rec := postCompanionShareAs(t, identity, ownerToken, "group", "", "0", groupID, name, []byte("%PDF-"+name))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("share %s: %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	addCompanionGroupMemberAs(t, identity, ownerToken, groupID, reader.Email)
+
+	contact := normalizeCompanionContact(reader.Email)
+	invite := storedCompanionRemoteInvite(t, companionHubBaseURL(origin.URL), groupID, contact)
+	loadCompanionRemoteInvites()
+	companionRemoteInvites.Lock()
+	key := companionRemoteInviteKey(companionHubBaseURL(origin.URL), groupID, contact)
+	invite.Status = "accepted"
+	invite.UserID = reader.UserID
+	companionRemoteInvites.items[key] = invite
+	companionRemoteInvites.Unlock()
+	// The remote-shares endpoint proves the member through the origin's group
+	// row, which the accept flip would have set on the real member hub.
+	loadCompanionDocGroups()
+	companionDocGroups.Lock()
+	group := companionDocGroups.items[groupID]
+	for i, member := range group.Members {
+		if member.Contact == contact {
+			group.Members[i].Status = "accepted"
+		}
+	}
+	companionDocGroups.items[groupID] = group
+	companionDocGroups.Unlock()
+
+	companionRemoteGroupJoinedShareDigest(invite, reader.UserID)
+	digests := waitCompanionDigest(t, svc, groupID, reader.UserID, 1)
+	if len(digests) != 1 {
+		t.Fatalf("remote digest count %d want 1", len(digests))
+	}
+	if !strings.Contains(digests[0].Content, "3") || !strings.Contains(digests[0].Content, "跨 Hub 组") {
+		t.Fatalf("remote digest content %q", digests[0].Content)
+	}
+}
+
+// TestCompanionGroupDigestSkippedWhenMembershipEnded covers the async race:
+// creation runs off the accept goroutine, so a member who already left (or a
+// group already dissolved) must not get a notice written after its revoke.
+func TestCompanionGroupDigestSkippedWhenMembershipEnded(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+
+	ownerToken, _ := issueViewerToken(t, identity, "race-digest-owner@example.com")
+	_, reader := issueViewerToken(t, identity, "race-digest-reader@example.com")
+	groupID := createCompanionGroupAs(t, identity, ownerToken, "竞态组")
+	if rec := postCompanionShareAs(t, identity, ownerToken, "group", "", "0", groupID, "文档.pdf", []byte("%PDF-doc")); rec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", rec.Code, rec.Body.String())
+	}
+	addCompanionGroupMemberAs(t, identity, ownerToken, groupID, reader.Email)
+
+	// The membership is already gone when the digest writer runs.
+	companionGroupJoinedShareDigestLocal(companionDocGroup{ID: groupID, Name: "竞态组"}, reader.UserID, time.Now().UTC())
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := companionDigestNotifications(t, svc, groupID, reader.UserID); len(got) != 0 {
+			t.Fatalf("dead membership got %d digests", len(got))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// TestCompanionGroupDigestSkippedOnSecondContactAccept: an account that
+// already joined can hold another pending invitation on a different address.
+// Settling it must not rewrite the join digest — the documents it names were
+// already news, and a delete-recreate would resurface a read notice.
+func TestCompanionGroupDigestSkippedOnSecondContactAccept(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+
+	ownerToken, _ := issueViewerToken(t, identity, "alias-digest-owner@example.com")
+	readerToken, reader := issueViewerToken(t, identity, "alias-digest-reader@example.com")
+	groupID := createCompanionGroupAs(t, identity, ownerToken, "别名组")
+	if rec := postCompanionShareAs(t, identity, ownerToken, "group", "", "0", groupID, "文档.pdf", []byte("%PDF-doc")); rec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", rec.Code, rec.Body.String())
+	}
+	addCompanionGroupMemberAs(t, identity, ownerToken, groupID, reader.Email)
+	postCompanionInviteDecision(t, identity, readerToken, groupID, "accept")
+	first := waitCompanionDigest(t, svc, groupID, reader.UserID, 1)
+	if len(first) != 1 {
+		t.Fatalf("no digest after first accept")
+	}
+
+	// A second invitation on another of the account's addresses lands as a
+	// fresh pending row keyed on the same user id.
+	loadCompanionDocGroups()
+	companionDocGroups.Lock()
+	group := companionDocGroups.items[groupID]
+	group.Members = append(group.Members, companionDocGroupMember{
+		Contact:   "alias-reader@example.com",
+		Status:    "pending",
+		UserID:    reader.UserID,
+		InvitedAt: time.Now().UTC(),
+	})
+	companionDocGroups.items[groupID] = group
+	if err := persistCompanionDocGroupsLocked(); err != nil {
+		companionDocGroups.Unlock()
+		t.Fatalf("persist: %v", err)
+	}
+	companionDocGroups.Unlock()
+
+	postCompanionInviteDecision(t, identity, readerToken, groupID, "accept")
+
+	// A spurious refresh would delete and recreate the row under a new id;
+	// the surviving id proves no rewrite ran.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got := companionDigestNotifications(t, svc, groupID, reader.UserID)
+		if len(got) != 1 || got[0].ID != first[0].ID {
+			t.Fatalf("second-contact accept rewrote the digest: %d rows", len(got))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// TestCompanionRemoteGroupDigestSkippedOnSecondContactAccept mirrors the local
+// guard: remote invites live one row per invited address, so an account can
+// accept a second invitation while already inside. The pending row must
+// settle, but the digest delivered at the first join must not be rewritten.
+func TestCompanionRemoteGroupDigestSkippedOnSecondContactAccept(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+	readerToken, reader := issueViewerToken(t, identity, "remote-alias-reader@example.com")
+
+	secretA, err := newCompanionReaderGrant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretB, err := newCompanionReaderGrant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID, err := newCompanionGroupID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/invite-proof"):
+			_, _ = w.Write([]byte(`{"ok":true,"status":"pending"}`))
+		case strings.HasSuffix(r.URL.Path, "/remote-decision"):
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case strings.HasSuffix(r.URL.Path, "/remote-shares"):
+			_, _ = w.Write([]byte(`{"shares":[{"token":"cd_` + strings.Repeat("ab", 16) + `","name":"历史.pdf","revision":1}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer origin.Close()
+
+	postRemoteInvite := func(contact, secret string) {
+		t.Helper()
+		body := fmt.Sprintf(`{"group_id":%q,"name":"跨 Hub 组","owner":"群主","contact":%q,"origin_hub":%q,"secret":%q}`, groupID, contact, origin.URL, secret)
+		inbound := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups/remote-invites", strings.NewReader(body))
+		inboundRec := httptest.NewRecorder()
+		CompanionGroupRemoteInviteHandler(identity).ServeHTTP(inboundRec, inbound)
+		if inboundRec.Code != http.StatusOK {
+			t.Fatalf("inbound invite %s: %d %s", contact, inboundRec.Code, inboundRec.Body.String())
+		}
+	}
+	postRemoteInvite(reader.Email, secretA)
+	// The relayed invite must name a resolvable contact: register the alias
+	// account so the inbound handler accepts it, then point the row at the
+	// reader — the same user id two contacts land on.
+	_, _ = issueViewerToken(t, identity, "alias-remote@example.com")
+	postRemoteInvite("alias-remote@example.com", secretB)
+	// The alias row is the same account's second address; the relay resolves
+	// the user id on a real home hub.
+	loadCompanionRemoteInvites()
+	companionRemoteInvites.Lock()
+	aliasKey := companionRemoteInviteKey(companionHubBaseURL(origin.URL), groupID, normalizeCompanionContact("alias-remote@example.com"))
+	alias, ok := companionRemoteInvites.items[aliasKey]
+	if !ok {
+		companionRemoteInvites.Unlock()
+		t.Fatalf("alias invite row missing")
+	}
+	alias.UserID = reader.UserID
+	companionRemoteInvites.items[aliasKey] = alias
+	companionRemoteInvites.Unlock()
+
+	postAccept := func() *httptest.ResponseRecorder {
+		t.Helper()
+		accept := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups/"+groupID+"/accept", nil)
+		accept.SetPathValue("id", groupID)
+		accept.Header.Set("Authorization", "Bearer "+readerToken)
+		rec := httptest.NewRecorder()
+		CompanionDocumentGroupAcceptHandler(identity).ServeHTTP(rec, accept)
+		return rec
+	}
+	if rec := postAccept(); rec.Code != http.StatusOK {
+		t.Fatalf("first accept: %d %s", rec.Code, rec.Body.String())
+	}
+	first := waitCompanionDigest(t, svc, groupID, reader.UserID, 1)
+	if len(first) != 1 {
+		t.Fatalf("no digest after first remote accept")
+	}
+	if rec := postAccept(); rec.Code != http.StatusOK {
+		t.Fatalf("second accept: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// A rewrite would delete and recreate the row under a new id.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got := companionDigestNotifications(t, svc, groupID, reader.UserID)
+		if len(got) != 1 || got[0].ID != first[0].ID {
+			t.Fatalf("second-contact accept rewrote the remote digest: %d rows", len(got))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	// The second invitation is real: settling it must not be skipped just
+	// because the account already holds a seat.
+	companionRemoteInvites.Lock()
+	pending := 0
+	for _, item := range companionRemoteInvites.items {
+		if item.GroupID == groupID && item.Status == "pending" {
+			pending++
+		}
+	}
+	companionRemoteInvites.Unlock()
+	if pending != 0 {
+		t.Fatalf("second accept left %d pending invites", pending)
 	}
 }

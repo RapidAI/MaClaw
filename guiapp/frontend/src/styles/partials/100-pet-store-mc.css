@@ -864,6 +864,14 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   margin-right: var(--mc-composer-inset-x, 24px);
   align-self: stretch;
 }
+/* The steps bar is a hover target: keeping it to the middle 40% of the
+   column leaves clear space on both sides, so the pointer can pass along
+   the edges without opening the step list. */
+[data-testid='coding-agent-plan-checklist'] {
+  width: 40%;
+  margin-left: auto;
+  margin-right: auto;
+}
 .mc-goal-quick-bar {
   overflow: hidden;
 }

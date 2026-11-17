@@ -117,6 +117,18 @@ func TestTunnelReachesOnlyTheNamedTarget(t *testing.T) {
 	if _, err := broker.Dial(context.Background(), "tenant-a", node.ID, "metadata"); !errors.Is(err, edgelink.ErrTarget) {
 		t.Fatalf("unknown target %v", err)
 	}
+	// srv is a legal target name, but this node did not configure it.
+	// The stream must close instead of being forwarded anywhere.
+	srvCtx, srvCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer srvCancel()
+	srvReq, err := http.NewRequestWithContext(srvCtx, http.MethodGet, "http://srv.node.invalid/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srvResp, srvErr := broker.Client("tenant-a", node.ID, edgelink.TargetSrv).Do(srvReq); srvErr == nil {
+		srvResp.Body.Close()
+		t.Fatal("an unconfigured srv target answered")
+	}
 }
 
 func TestDialWriteFailureIsOffline(t *testing.T) {

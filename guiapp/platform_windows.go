@@ -107,12 +107,6 @@ func (a *App) compareVersions(v1, v2 string) int {
 var _isWin11 bool
 var _isWin11Once sync.Once
 
-var _windowsTerminalProbeCache struct {
-	sync.Once
-	available bool
-	path      string
-}
-
 func isWindows11() bool {
 	_isWin11Once.Do(func() {
 		ntdll := syscall.NewLazyDLL("ntdll.dll")
@@ -2011,35 +2005,17 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 
 	a.log(fmt.Sprintf("Created launch script: %s", tempBatchPath))
 
-	// Delay cleanup: Windows Terminal may take longer to start and read the batch file.
-	// Use 60s when WT is active (cold start can be slow), 10s for plain cmd.
-	config, _ := a.LoadConfig()
-	wtPath := ""
-	if config.UseWindowsTerminal {
-		wtPath = a.windowsTerminalPathIfAvailable()
-	}
-	useWT := wtPath != ""
-	a.log(fmt.Sprintf("UseWindowsTerminal config: %v, isAvailable: %v, useWT: %v", config.UseWindowsTerminal, wtPath != "", useWT))
-
+	// Delay cleanup: give the freshly-spawned terminal a moment to finish
+	// reading the batch file before it is deleted.
 	cleanupDelay := 10 * time.Second
-	if useWT {
-		cleanupDelay = 60 * time.Second
-	}
 	go func() {
 		time.Sleep(cleanupDelay)
 		os.Remove(tempBatchPath)
 	}()
 
 	if adminMode {
-		var file, params string
-		if useWT {
-			file = wtPath
-			// Use call to ensure .bat is executed as a script, not parsed as a command name.
-			params = fmt.Sprintf("-w new -d \"%s\" cmd /k call \"%s\"", projectDir, tempBatchPath)
-		} else {
-			file = "cmd.exe"
-			params = fmt.Sprintf("/c \"%s\"", tempBatchPath)
-		}
+		file := "cmd.exe"
+		params := fmt.Sprintf("/c \"%s\"", tempBatchPath)
 
 		if err := shellExecuteFile("runas", file, params, projectDir); err != nil {
 			a.log(fmt.Sprintf("ShellExecuteExW runas failed: %v", err))
@@ -2053,8 +2029,8 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		if binaryName == "claude" {
 			// ShellExecute does not return the child PID, but recording this
 			// success still distinguishes an elevated user launch from a retry.
-			log.Printf("[claude-launch] local-wrapper-started elevated=true pid=unknown project=%q batch=%q terminal=%v",
-				projectDir, tempBatchPath, useWT)
+			log.Printf("[claude-launch] local-wrapper-started elevated=true pid=unknown project=%q batch=%q",
+				projectDir, tempBatchPath)
 		}
 	} else {
 		if binaryName == "codex" || binaryName == "openai" {
@@ -2111,18 +2087,8 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				os.Remove(codexBatchPath)
 			}()
 
-			var cmdLine string
-			if useWT {
-				// "call" ensures CMD treats the .bat path as a script to execute,
-				// not as a command name — fixes paths with dots (e.g. .maclaw) being
-				// misinterpreted when Windows Terminal is the default terminal.
-				cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "MaClaw - %s" cmd /k call "%s"`,
-					wtPath, projectDir, binaryName, codexBatchPath)
-			} else {
-				cmdLine = fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`,
-					binaryName, projectDir, codexBatchPath)
-			}
-
+			cmdLine := fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`,
+				binaryName, projectDir, codexBatchPath)
 			cmd := exec.Command(resolveCmdExe())
 			cmd.SysProcAttr = &syscall.SysProcAttr{
 				CmdLine:    cmdLine,
@@ -2135,16 +2101,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				return fmt.Errorf("failed to start process: %w", err)
 			}
 		} else {
-			var cmdLine string
-			if useWT {
-				// "call" ensures CMD treats the .bat path as a script to execute,
-				// not as a command name — fixes paths with dots (e.g. .maclaw) being
-				// misinterpreted when Windows Terminal is the default terminal.
-				cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "MaClaw - %s" cmd /k call "%s"`,
-					wtPath, projectDir, binaryName, tempBatchPath)
-			} else {
-				cmdLine = fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
-			}
+			cmdLine := fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
 
 			cmd := exec.Command(resolveCmdExe())
 			cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -2158,8 +2115,8 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				return fmt.Errorf("failed to start process: %w", err)
 			}
 			if binaryName == "claude" {
-				log.Printf("[claude-launch] local-wrapper-started pid=%d cmd=%q project=%q batch=%q terminal=%v",
-					cmd.Process.Pid, resolveCmdExe(), projectDir, tempBatchPath, useWT)
+				log.Printf("[claude-launch] local-wrapper-started pid=%d cmd=%q project=%q batch=%q",
+					cmd.Process.Pid, resolveCmdExe(), projectDir, tempBatchPath)
 			}
 		}
 	}
@@ -2467,70 +2424,4 @@ func createHiddenCmd(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: _CREATE_NO_WINDOW}
 	return cmd
-}
-
-// isWindowsTerminalAvailable checks if Windows Terminal (wt.exe) is installed.
-// Do not execute wt.exe here: command-line probes such as --version can surface
-// Windows Terminal's GUI Help dialog when called from the packaged app during
-// startup. Launch failures are still handled by the actual launch path below.
-func (a *App) isWindowsTerminalAvailable() bool {
-	_windowsTerminalProbeCache.Do(func() {
-		wtPath := a.getWindowsTerminalPath()
-		if wtPath == "" {
-			_windowsTerminalProbeCache.available = false
-			return
-		}
-		info, err := os.Stat(wtPath)
-		if err != nil || info.IsDir() {
-			a.log(fmt.Sprintf("Windows Terminal path probe failed: path=%s err=%v", wtPath, err))
-			_windowsTerminalProbeCache.available = false
-			_windowsTerminalProbeCache.path = ""
-			return
-		}
-		a.log(fmt.Sprintf("Windows Terminal path probe ok: path=%s", wtPath))
-		_windowsTerminalProbeCache.available = true
-		_windowsTerminalProbeCache.path = wtPath
-	})
-	return _windowsTerminalProbeCache.available
-}
-
-func (a *App) windowsTerminalPathIfAvailable() string {
-	if !a.isWindowsTerminalAvailable() {
-		return ""
-	}
-	return _windowsTerminalProbeCache.path
-}
-
-// getWindowsTerminalPath returns the full path to wt.exe if available, empty string otherwise
-func (a *App) getWindowsTerminalPath() string {
-	// Check if wt.exe is in PATH
-	if wtPath, err := exec.LookPath("wt.exe"); err == nil {
-		a.log(fmt.Sprintf("Windows Terminal found in PATH: %s", wtPath))
-		return wtPath
-	}
-
-	// Check common installation paths
-	localAppData := os.Getenv("LOCALAPPDATA")
-	if localAppData != "" {
-		// Windows Terminal from Microsoft Store
-		wtPath := filepath.Join(localAppData, "Microsoft", "WindowsApps", "wt.exe")
-		if _, err := os.Stat(wtPath); err == nil {
-			a.log(fmt.Sprintf("Windows Terminal found at: %s", wtPath))
-			return wtPath
-		}
-	}
-
-	// Check Program Files paths (for manual installations)
-	programFiles := os.Getenv("ProgramFiles")
-	if programFiles != "" {
-		wtPath := filepath.Join(programFiles, "WindowsApps", "Microsoft.WindowsTerminal_*", "wt.exe")
-		matches, _ := filepath.Glob(wtPath)
-		if len(matches) > 0 {
-			a.log(fmt.Sprintf("Windows Terminal found at: %s", matches[0]))
-			return matches[0]
-		}
-	}
-
-	a.log("Windows Terminal not found")
-	return ""
 }

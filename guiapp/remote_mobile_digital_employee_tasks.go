@@ -222,17 +222,21 @@ func (c *RemoteHubClient) mobileDigitalEmployeeTaskLoop() {
 	// task after GUI online is claimed quickly even without a Hub push.
 	poll.noteHit()
 
-	c.publishMobileServerProfilesOnce()
-	c.pollMobileDigitalEmployeeTasksOnce()
-	c.pollMobileDocumentUploadTasksOnce()
-	c.pollMobileBackendSSHSessionsOnce()
-	c.pollMobileBackendSSHTasksOnce()
-	c.pollMobileBackendSSHFileOperationsOnce()
+	// The 允许同账号设备远程连接 switch disables every mobile-triggered task
+	// surface, not just digital-employee dispatch.
+	if !c.remoteDeviceControlBlocked() {
+		c.publishMobileServerProfilesOnce()
+		c.pollMobileDigitalEmployeeTasksOnce()
+		c.pollMobileDocumentUploadTasksOnce()
+		c.pollMobileBackendSSHSessionsOnce()
+		c.pollMobileBackendSSHTasksOnce()
+		c.pollMobileBackendSSHFileOperationsOnce()
+	}
 
 	timer := time.NewTimer(poll.interval())
 	defer timer.Stop()
 	runPollTick := func() {
-		if !c.IsConnected() {
+		if !c.IsConnected() || c.remoteDeviceControlBlocked() {
 			return
 		}
 		c.publishMobileServerProfilesOnce()
@@ -273,6 +277,10 @@ func (c *RemoteHubClient) handleMobileDigitalEmployeeTaskPush(msg inboundHubEnve
 	if c == nil {
 		return
 	}
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] mobile.digital_employee_task dropped: remote device connect disabled")
+		return
+	}
 	poll := c.ensureMobileTaskPollState()
 	poll.noteHit()
 	// Prefer waking the existing loop (single-flight via pollInFlight). Only
@@ -286,6 +294,9 @@ func (c *RemoteHubClient) handleMobileDigitalEmployeeTaskPush(msg inboundHubEnve
 }
 
 func (c *RemoteHubClient) pollMobileDigitalEmployeeTasksOnce() {
+	if c.remoteDeviceControlBlocked() {
+		return
+	}
 	poll := c.ensureMobileTaskPollState()
 	// Collapse overlapping push/timer/kick ticks into one claim attempt.
 	if !poll.pollInFlight.CompareAndSwap(false, true) {

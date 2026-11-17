@@ -4,6 +4,7 @@ import { WorkflowDocPreview } from "./WorkflowDocPreview";
 import { contrastingInkOnFill, type Theme } from "./aiAssistantPanelTheme";
 import { markdownPreviewIsDark } from "./markdownPreviewInk";
 import { AgentTaskPanel } from "./AgentTaskPanel";
+import { AgentBrowserStage, type AgentBrowserStageState } from "./AgentBrowserStage";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { usePreviewSlideLifecycle } from "./previewSlide";
 import type { AgentView } from "./agentViewTypes";
@@ -40,6 +41,14 @@ interface AssistantPreviewPaneProps {
     showWorkflowPreview: boolean;
     /** Isolation conflict side panel (tabs with source when both active). */
     showConflict?: boolean;
+    /** Live browser page inside this preview. The agent does not open a separate window. */
+    showBrowserPreview?: boolean;
+    browserStage?: AgentBrowserStageState | null;
+    onBrowserSetHold?: (hold: boolean) => void;
+    onBrowserInput?: (payload: string) => void;
+    onBrowserConfirm?: (approve: boolean) => void;
+    onBrowserFinish?: (done: boolean) => void;
+    onCloseBrowser?: () => void;
     conflictContent?: React.ReactNode;
     /** Remaining conflict count — shown as CF tab badge. */
     conflictCount?: number;
@@ -59,9 +68,10 @@ interface AssistantPreviewPaneProps {
     concealed?: boolean;
 }
 
-type PreviewPaneMode = "workflow" | "code" | "agent" | "conflict";
+type PreviewPaneMode = "workflow" | "code" | "agent" | "conflict" | "browser";
 
 function previewTabIcon(mode: PreviewPaneMode): string {
+    if (mode === "browser") return "WB";
     if (mode === "agent") return "AG";
     if (mode === "conflict") return "CF";
     return mode === "workflow" ? "WF" : "SRC";
@@ -70,6 +80,9 @@ function previewTabIcon(mode: PreviewPaneMode): string {
 function previewTabTooltip(mode: PreviewPaneMode, lang: string, cloudMode = false): string {
     if (mode === "workflow") {
         return (chromeText(lang, "Progress", "\u6d41\u7a0b/\u8fdb\u5ea6"));
+    }
+    if (mode === "browser") {
+        return (chromeText(lang, "Browser", "\u6d4f\u89c8\u5668"));
     }
     if (mode === "agent") {
         return (chromeText(lang, "Agent Task", "\u667a\u80fd\u4f53\u4efb\u52a1"));
@@ -323,6 +336,13 @@ export function AssistantPreviewPane({
     showAgentView,
     showWorkflowPreview,
     showConflict = false,
+    showBrowserPreview = false,
+    browserStage = null,
+    onBrowserSetHold,
+    onBrowserInput,
+    onBrowserConfirm,
+    onBrowserFinish,
+    onCloseBrowser,
     conflictContent = null,
     conflictCount = 0,
     onCloseConflict,
@@ -342,6 +362,7 @@ export function AssistantPreviewPane({
     const previousShowWorkflowRef = useRef(showWorkflowPreview);
     const previousShowAgentRef = useRef(showAgentView);
     const previousShowConflictRef = useRef(showConflict);
+    const previousShowBrowserRef = useRef(showBrowserPreview);
     const previousFileFocusRef = useRef(0);
 
     useEffect(() => {
@@ -349,14 +370,21 @@ export function AssistantPreviewPane({
         const workflowOpened = showWorkflowPreview && !previousShowWorkflowRef.current;
         const agentOpened = showAgentView && !previousShowAgentRef.current;
         const conflictOpened = showConflict && !previousShowConflictRef.current;
+        const browserOpened = showBrowserPreview && !previousShowBrowserRef.current;
         previousShowCodeRef.current = showCodePreview;
         previousShowWorkflowRef.current = showWorkflowPreview;
         previousShowAgentRef.current = showAgentView;
         previousShowConflictRef.current = showConflict;
+        previousShowBrowserRef.current = showBrowserPreview;
 
         // Prefer newly opened conflict tab so three-way is immediately visible.
         if (conflictOpened) {
             setActiveMode("conflict");
+            return;
+        }
+        // A browser session, login, or captcha needs the page in front.
+        if (browserOpened) {
+            setActiveMode("browser");
             return;
         }
         // Prefer a newly opened agent form over code/workflow: forms need user input
@@ -366,42 +394,46 @@ export function AssistantPreviewPane({
             setActiveMode("agent");
             return;
         }
-        if (!showWorkflowPreview && !showAgentView && !showConflict && showCodePreview) {
+        if (!showWorkflowPreview && !showAgentView && !showConflict && !showBrowserPreview && showCodePreview) {
             setActiveMode("code");
             return;
         }
-        if (showWorkflowPreview && !showCodePreview && !showAgentView && !showConflict) {
+        if (showWorkflowPreview && !showCodePreview && !showAgentView && !showConflict && !showBrowserPreview) {
             setActiveMode("workflow");
             return;
         }
-        if (showAgentView && !showWorkflowPreview && !showCodePreview && !showConflict) {
+        if (showAgentView && !showWorkflowPreview && !showCodePreview && !showConflict && !showBrowserPreview) {
             setActiveMode("agent");
             return;
         }
-        if (showConflict && !showWorkflowPreview && !showCodePreview && !showAgentView) {
+        if (showConflict && !showWorkflowPreview && !showCodePreview && !showAgentView && !showBrowserPreview) {
             setActiveMode("conflict");
+            return;
+        }
+        if (showBrowserPreview && !showWorkflowPreview && !showCodePreview && !showAgentView && !showConflict) {
+            setActiveMode("browser");
             return;
         }
         // Keep an open agent form in front while source files stream in; user can
         // still switch to SRC manually. Without this, codeOpened steals focus mid-form.
-        if (codeOpened && !showAgentView) {
+        if (codeOpened && !showAgentView && !showBrowserPreview) {
             setActiveMode("code");
             return;
         }
-        if (workflowOpened && !showAgentView) {
+        if (workflowOpened && !showAgentView && !showBrowserPreview) {
             setActiveMode("workflow");
             return;
         }
-    }, [showAgentView, showCodePreview, showWorkflowPreview, showConflict]);
+    }, [showAgentView, showCodePreview, showWorkflowPreview, showConflict, showBrowserPreview]);
 
     // A file the agent just created or modified must land on the file body,
     // even when the workflow progress tab was already in front.
     useEffect(() => {
         const fileFocused = fileFocusNonce > previousFileFocusRef.current;
         previousFileFocusRef.current = fileFocusNonce;
-        if (!fileFocused || !showCodePreview || showAgentView || showConflict) return;
+        if (!fileFocused || !showCodePreview || showAgentView || showConflict || showBrowserPreview) return;
         setActiveMode("code");
-    }, [fileFocusNonce, showAgentView, showCodePreview, showConflict]);
+    }, [fileFocusNonce, showAgentView, showCodePreview, showConflict, showBrowserPreview]);
 
     const docPreviewTheme = useMemo(() => ({
         isDark: theme.isDark === true,
@@ -436,6 +468,7 @@ export function AssistantPreviewPane({
     // Determine which modes are available
     const availableModes: PreviewPaneMode[] = [];
     if (showConflict && conflictContent) availableModes.push("conflict");
+    if (showBrowserPreview && browserStage) availableModes.push("browser");
     if (showAgentView && agentView) availableModes.push("agent");
     if (showWorkflowPreview) availableModes.push("workflow");
     if (showCodePreview) availableModes.push("code");
@@ -463,7 +496,8 @@ export function AssistantPreviewPane({
         if (showCodePreview) closeCodePreview();
         if (showWorkflowPreview) closeDocPreview();
         if (showConflict) onCloseConflict?.();
-    }, [showCodePreview, showWorkflowPreview, showConflict, closeCodePreview, closeDocPreview, onCloseConflict]);
+        if (showBrowserPreview) onCloseBrowser?.();
+    }, [showCodePreview, showWorkflowPreview, showConflict, showBrowserPreview, closeCodePreview, closeDocPreview, onCloseConflict, onCloseBrowser]);
     const { backdropProps } = useSafeBackdropDismiss(handleBackdropClose);
 
     // Freeze the width during slide-out: the parent resets splitRatio to 1 as
@@ -493,6 +527,10 @@ export function AssistantPreviewPane({
         // Close the active tab's surface first when multiple modes are open.
         if (effectiveMode === "conflict") {
             onCloseConflict?.();
+            return;
+        }
+        if (effectiveMode === "browser") {
+            onCloseBrowser?.();
             return;
         }
         if (effectiveMode === "code") {
@@ -604,7 +642,16 @@ export function AssistantPreviewPane({
                         {conflictContent}
                     </div>
                 ) : null}
-                {effectiveMode === "agent" && agentView ? (
+                {effectiveMode === "browser" && browserStage ? (
+                    <AgentBrowserStage
+                        state={browserStage}
+                        lang={lang}
+                        onSetHold={onBrowserSetHold}
+                        onInput={onBrowserInput}
+                        onConfirm={onBrowserConfirm}
+                        onFinish={onBrowserFinish}
+                    />
+                ) : effectiveMode === "agent" && agentView ? (
                     <AgentTaskPanel
                         view={agentView}
                         onDismiss={dismissAgentView}

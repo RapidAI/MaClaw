@@ -1,0 +1,97 @@
+{
+  "responded_event": {
+    "cursor": 7,
+    "cursor_from": 7,
+    "event": "snapshot",
+    "grant_id": "g1",
+    "lane": "control",
+    "live": {
+      "cursor": 7,
+      "display_text": "问",
+      "parts": [
+        {
+          "done": true,
+          "kind": "thinking",
+          "seq": 2,
+          "text": "想想"
+        },
+        {
+          "coding": {
+            "agent": "coding",
+            "event": "task_status",
+            "phase": "running",
+            "run_id": "run-1",
+            "task_id": "T2",
+            "title": "edit parser",
+            "ts": "2026-11-17T00:00:00Z",
+            "version": 1
+          },
+          "kind": "progress",
+          "seq": 3,
+          "text": "Coding Agent Event: {\"version\":1,\"agent\":\"coding\",\"event\":\"task_status\",\"phase\":\"running\",\"task_id\":\"T2\",\"title\":\"edit parser\",\"run_id\":\"run-1\",\"ts\":\"2026-11-17T00:00:00Z\"}"
+        },
+        {
+          "kind": "text",
+          "seq": 7,
+          "text": "终稿"
+        }
+      ],
+      "project_path": "D:\\proj\\final",
+      "request_id": "r1",
+      "responded": true,
+      "session_key": "desktop-user:D:\\proj\\final",
+      "started_at": 1794899343,
+      "stream_done": true
+    },
+    "project_path": "D:\\proj\\final",
+    "proto": 2,
+    "request_id": "r1",
+    "resync": true,
+    "session_key": "desktop-user:D:\\proj\\final"
+  },
+  "source": "json.Marshal of watch_task liveSnapshot as a resync snapshot, and of snapshotFrameLocked.envelope for a responded turn. Regenerate with MACLAW_UPDATE_WIRE_FIXTURE=1.",
+  "watch_event": {
+    "cursor": 6,
+    "cursor_from": 6,
+    "event": "snapshot",
+    "live": {
+      "cursor": 6,
+      "display_text": "问",
+      "parts": [
+        {
+          "done": true,
+          "kind": "thinking",
+          "seq": 2,
+          "text": "想想"
+        },
+        {
+          "coding": {
+            "agent": "coding",
+            "event": "task_status",
+            "phase": "running",
+            "run_id": "run-1",
+            "task_id": "T2",
+            "title": "edit parser",
+            "ts": "2026-11-17T00:00:00Z",
+            "version": 1
+          },
+          "kind": "progress",
+          "seq": 3,
+          "text": "Coding Agent Event: {\"version\":1,\"agent\":\"coding\",\"event\":\"task_status\",\"phase\":\"running\",\"task_id\":\"T2\",\"title\":\"edit parser\",\"run_id\":\"run-1\",\"ts\":\"2026-11-17T00:00:00Z\"}"
+        },
+        {
+          "kind": "text",
+          "seq": 4,
+          "text": "helloworld"
+        }
+      ],
+      "project_path": "D:\\proj\\demo",
+      "request_id": "r1",
+      "responded": false,
+      "session_key": "desktop-user:D:\\proj\\demo",
+      "started_at": 1794899343,
+      "stream_done": false
+    },
+    "resync": true
+  }
+}

@@ -1481,6 +1481,10 @@ export function FileCompanionFolderForPath(arg1) {
   return window['go']['main']['App']['FileCompanionFolderForPath'](arg1);
 }
 
+export function FileCompanionTakeLibraryView() {
+  return window['go']['main']['App']['FileCompanionTakeLibraryView']();
+}
+
 export function FileCompanionTakePlaces() {
   return window['go']['main']['App']['FileCompanionTakePlaces']();
 }
@@ -3635,6 +3639,10 @@ export function ChooseFileCompanionFiles() {
 
 export function ShowFileCompanion() {
   return window['go']['main']['App']['ShowFileCompanion']();
+}
+
+export function ShowFileCompanionLibrary() {
+  return window['go']['main']['App']['ShowFileCompanionLibrary']();
 }
 
 export function LaunchInstallerAndExit(arg1, arg2) {

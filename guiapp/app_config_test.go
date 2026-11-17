@@ -2657,9 +2657,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 			map[string]interface{}{"id": "p1", "name": "One", "path": "D:/one", "yolo_mode": false},
 			map[string]interface{}{"id": "p2", "name": "Two", "path": "D:/two", "yolo_mode": true},
 		},
-		"use_windows_terminal":       false,
-		"show_ai_trace_entry":        true,
-		"show_app_entry":             true,
+		"show_ai_trace_entry":        true,		"show_app_entry":             true,
 		"survey_enabled":             false,
 		"show_coding_tool_entry":     true,
 		"show_codex":                 false,
@@ -2688,7 +2686,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchConfigFields() error = %v", err)
 	}
-	if !patched.PauseEnvCheck || !patched.EnvCheckDone || patched.UseWindowsTerminal || !patched.ShowAITraceEntry || !patched.IsShowAppEntryEnabled() || patched.SurveyEnabled == nil || *patched.SurveyEnabled || !patched.ShowCodingToolEntry || patched.ShowCodex {
+	if !patched.PauseEnvCheck || !patched.EnvCheckDone || !patched.ShowAITraceEntry || !patched.IsShowAppEntryEnabled() || patched.SurveyEnabled == nil || *patched.SurveyEnabled || !patched.ShowCodingToolEntry || patched.ShowCodex {
 		t.Fatalf("boolean patch fields not applied: %#v", patched)
 	}
 	if patched.Language != "zh-Hans" || patched.ActiveTool != "codex" || patched.CurrentProject != "p2" || len(patched.Projects) != 2 || len(patched.FavoriteEmployees) != 2 || patched.FavoriteEmployeeNames["ve1"] != "Reviewer" {

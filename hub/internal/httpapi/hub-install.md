@@ -111,10 +111,16 @@ if ! go build -buildvcs=false -ldflags "-s -w" -o /opt/maclaw-hub/maclaw-hub ./h
   go build -buildvcs=false -ldflags "-s -w" -o /opt/maclaw-hub/maclaw-hub ./hub/cmd/hub || exit 1
 fi
 cp /opt/maclaw-src/hub/run-systemd.sh /opt/maclaw-hub/run-systemd.sh || exit 1
+rm -rf /opt/maclaw-hub/web || exit 1
+cp -a /opt/maclaw-src/hub/web /opt/maclaw-hub/web || exit 1
+test -f /opt/maclaw-hub/web/admin/index.html || exit 1
+test -f /opt/maclaw-hub/web/home/index.html || exit 1
 chmod 755 /opt/maclaw-hub/maclaw-hub /opt/maclaw-hub/run-systemd.sh || exit 1
 ```
 
 模块下不来，或校验和数据库连不上时，上面的编译会改用 `https://proxy.golang.org,direct` 和 `sum.golang.org` 再编一次。
+
+工作目录是 `/opt/maclaw-hub`。首页、管理台和其他页面都从旁边的 `web/` 读，源码在 `hub/web`（`web/home`、`web/admin`，以及绑定、积分、卡密这些页面）。只复制二进制和 `run-systemd.sh` 时，这些地址没有文件，全部返回 404。每次重新编译都把 `hub/web` 整份换到 `/opt/maclaw-hub/web`，页面才和这次的二进制一致。不要把仓库根目录的 `web/` 拷过来，进程不读那一份。
 
 ## 4. 写配置
 
@@ -248,6 +254,13 @@ until body=$(curl -fsS --max-time 2 http://127.0.0.1:9399/healthz 2>/dev/null) &
   fi
   sleep 1
 done
+for page in / /admin; do
+  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:9399${page}") || exit 1
+  if [ "$code" != 200 ]; then
+    echo "page ${page} returned ${code}; /opt/maclaw-hub/web is missing or incomplete"
+    exit 1
+  fi
+done
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
   firewall-cmd --add-port=9399/tcp || echo "firewall-cmd did not add 9399/tcp; hub is still running"
   firewall-cmd --permanent --add-port=9399/tcp || echo "firewall-cmd did not add 9399/tcp permanently; hub is still running"
@@ -257,7 +270,7 @@ if [ -f /etc/ufw/ufw.conf ] && grep -q '^ENABLED=yes' /etc/ufw/ufw.conf; then
 fi
 ```
 
-健康检查应打印包含 `"ok":true` 的 JSON，并且 `service` 是 `maclaw-hub`。端口要等启动时的注册尝试结束才打开。每个 Hub Center 大约要 15 秒，所以这里等到 90 秒，不要在端口还没开时停掉服务。机器开着 firewalld 或 ufw 时，把 9399/tcp 放行，否则外面连不上这台 Hub。firewalld 先改当前规则，再写入永久规则。不要重载 firewalld，重载会断开当前 SSH。
+健康检查应打印包含 `"ok":true` 的 JSON，并且 `service` 是 `maclaw-hub`。接着请求 `/` 和 `/admin`，两者都要是 200。不是 200 就是 `/opt/maclaw-hub/web` 没装上或装残了，页面会 404。端口要等启动时的注册尝试结束才打开。每个 Hub Center 大约要 15 秒，所以这里等到 90 秒，不要在端口还没开时停掉服务。机器开着 firewalld 或 ufw 时，把 9399/tcp 放行，否则外面连不上这台 Hub。firewalld 先改当前规则，再写入永久规则。不要重载 firewalld，重载会断开当前 SSH。
 
 ## 6. 确认注册
 

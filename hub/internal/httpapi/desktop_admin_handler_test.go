@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -564,6 +565,80 @@ func (d tenantScopedDir) ParentID(ctx context.Context, groupID string) (string, 
 		return "", nil
 	}
 	return "", nil
+}
+
+// pinSetSettings stores the srv link, then refuses the pin write.
+type pinSetSettings struct {
+	values map[string]string
+	sets   int
+}
+
+func (m *pinSetSettings) Get(_ context.Context, key string) (string, error) {
+	value, ok := m.values[key]
+	if !ok {
+		return "", context.Canceled
+	}
+	return value, nil
+}
+
+func (m *pinSetSettings) Set(_ context.Context, key, valueJSON string) error {
+	m.sets++
+	if m.sets > 1 {
+		return errors.New("store down")
+	}
+	if m.values == nil {
+		m.values = map[string]string{}
+	}
+	m.values[key] = valueJSON
+	return nil
+}
+
+func TestUserAssignmentRollsBackWhenTheNodePinIsNotStored(t *testing.T) {
+	poolSettings := newDesktopSettingsMem()
+	pool := desktoppool.New(poolSettings, nil)
+	ctx := context.Background()
+	server, err := pool.CreateServer(ctx, store.DefaultTenantID, desktoppool.Server{
+		Name: "lab", BaseURL: desktoppool.NodeBaseURL("dn_lab"), AccessToken: "tok", NodeID: "dn_lab",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bots := botmgmt.NewService(&pinSetSettings{})
+	if err := bots.AttachNodeSrv(ctx, store.DefaultTenantID, "dn_lab", "http://srv.dn_lab.node.invalid", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"scope":"user","target_id":"alice","server_id":"` + server.ID + `"}`
+	rec := httptest.NewRecorder()
+	PostDesktopAssignmentAdminHandler(pool, bots).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/admin/desktop-services/assignments", strings.NewReader(body)))
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "NODE_PIN") {
+		t.Fatalf("assign %d %s", rec.Code, rec.Body.String())
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil || len(view.Assignments) != 0 {
+		t.Fatalf("assignments = %+v err %v", view.Assignments, err)
+	}
+}
+
+func TestUserAssignmentToADesktopWithoutSrvStays(t *testing.T) {
+	pool := desktoppool.New(newDesktopSettingsMem(), nil)
+	ctx := context.Background()
+	server, err := pool.CreateServer(ctx, store.DefaultTenantID, desktoppool.Server{
+		Name: "lab", BaseURL: desktoppool.NodeBaseURL("dn_lab"), AccessToken: "tok", NodeID: "dn_lab",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bots := botmgmt.NewService(newDesktopSettingsMem())
+	body := `{"scope":"user","target_id":"alice","server_id":"` + server.ID + `"}`
+	rec := httptest.NewRecorder()
+	PostDesktopAssignmentAdminHandler(pool, bots).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/admin/desktop-services/assignments", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("assign %d %s", rec.Code, rec.Body.String())
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil || len(view.Assignments) != 1 {
+		t.Fatalf("assignments = %+v err %v", view.Assignments, err)
+	}
 }
 
 func mustJSONOrNil(v any) string {

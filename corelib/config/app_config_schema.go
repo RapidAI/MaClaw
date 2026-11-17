@@ -302,7 +302,7 @@ var maclawSrvHiddenConfigKeys = map[string]struct{}{
 	"claude": {}, "codex": {}, "opencode": {}, "codebuddy": {}, "iflow": {}, "kilo": {},
 	"projects": {}, "current_project": {}, "active_tool": {}, "default_tool": {}, "default_tool_provider": {},
 	"show_codex": {}, "show_opencode": {}, "show_codebuddy": {}, "show_iflow": {}, "show_kilo": {},
-	"extra_tool_configs": {}, "use_windows_terminal": {}, "nl_skills": {},
+	"extra_tool_configs": {}, "nl_skills": {},
 	// Desktop/coding-tool proxy scoping. Consumed only by the GUI client
 	// (gui/app_proxy.go, guiapp/app_proxy.go) and absent from
 	// sharedClientConfigKeys, so publishing it in the MaClawSrv or user-web
@@ -323,7 +323,7 @@ var userWebHiddenConfigKeys = map[string]struct{}{
 	"claude": {}, "codex": {}, "opencode": {}, "codebuddy": {}, "iflow": {}, "kilo": {},
 	"projects": {}, "current_project": {}, "active_tool": {}, "default_tool": {}, "default_tool_provider": {},
 	"show_codex": {}, "show_opencode": {}, "show_codebuddy": {}, "show_iflow": {}, "show_kilo": {},
-	"extra_tool_configs": {}, "use_windows_terminal": {}, "nl_skills": {},
+	"extra_tool_configs": {}, "nl_skills": {},
 	"default_proxy_scope_coding_tools": {},
 	"desktop_bot_llm_accounts":         {},
 	// Hub writes this onto the MaClawSrv user. It is not a form field.

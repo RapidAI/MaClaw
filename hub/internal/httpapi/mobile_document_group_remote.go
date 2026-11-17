@@ -1363,8 +1363,11 @@ func CompanionGroupRemoteRevokeHandler() http.HandlerFunc {
 		companionRemoteSnapForget(invite.UserID, invite.GroupID)
 		companionGroupInviteNotifierFor().revokeInvites(r.Context(), noticeID)
 		// A share-notice revoke that races this row's deletion can no longer
-		// prove the secret; sweep what the snapshot cache still knows.
-		companionForgetLocalGroupShareNotices(invite.UserID, groupID)
+		// prove the secret; sweep what the snapshot cache still knows — unless
+		// a second address of the same account still holds a seat it reads on.
+		if !companionRemoteAccountStillMember(groupID, invite.UserID) {
+			companionForgetLocalGroupShareNotices(invite.UserID, groupID)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -1375,19 +1378,24 @@ func companionDecideRemoteInvite(ctx context.Context, w http.ResponseWriter, own
 	var key string
 	var invite companionRemoteInvite
 	found := false
+	// The account may already sit inside on a different contact: one remote
+	// row exists per invited address, so an accept on a second invitation
+	// must settle the pending row yet skip the join digest.
+	alreadyMember := false
 	for id, item := range companionRemoteInvites.items {
 		if item.GroupID != groupID || !companionRemoteInviteMatches(item, ownerID, contacts) {
 			continue
 		}
-		if action == "accept" && item.Status == "accepted" {
-			key, invite, found = id, item, true
-			break
+		if item.Status == "accepted" {
+			alreadyMember = true
+			// Fallback for a re-accept; keep scanning, a pending invitation
+			// for another address is the row that actually needs settling.
+			if action == "accept" && !found {
+				key, invite, found = id, item, true
+			}
+			continue
 		}
-		if item.Status == "pending" && !item.Muted {
-			key, invite, found = id, item, true
-			break
-		}
-		if action == "ignore" && item.Status == "pending" {
+		if item.Status == "pending" && (!item.Muted || action == "ignore") {
 			key, invite, found = id, item, true
 			break
 		}
@@ -1417,6 +1425,10 @@ func companionDecideRemoteInvite(ctx context.Context, w http.ResponseWriter, own
 			current.Status = "accepted"
 			current.Muted = false
 			current.NotificationID = ""
+			// The accepter is the proven account; a row written before the
+			// field existed gets it backfilled so revokes find the notices
+			// that digest and share rows key on it.
+			current.UserID = ownerID
 			companionRemoteInvites.items[key] = current
 			if err := persistCompanionRemoteInvitesLocked(); err != nil {
 				companionRemoteInvites.items[key] = current
@@ -1429,8 +1441,14 @@ func companionDecideRemoteInvite(ctx context.Context, w http.ResponseWriter, own
 			}
 			companionRemoteInvites.Unlock()
 		}
-		companionRemoteSnapForget(invite.UserID, invite.GroupID)
+		companionRemoteSnapForget(ownerID, invite.GroupID)
 		companionGroupInviteNotifierFor().revokeInvites(ctx, noticeID)
+		if !alreadyMember {
+			// The origin's per-share notices predated this member. Fetch the
+			// group's documents through the just-accepted secret and raise one
+			// merged digest instead of a notice per share.
+			go companionRemoteGroupJoinedShareDigest(invite, ownerID)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return true
 	}
@@ -1450,7 +1468,7 @@ func companionDecideRemoteInvite(ctx context.Context, w http.ResponseWriter, own
 		return true
 	}
 	companionRemoteInvites.Unlock()
-	companionRemoteSnapForget(original.UserID, original.GroupID)
+	companionRemoteSnapForget(ownerID, original.GroupID)
 	// The origin is told after the local row is settled. A missed call leaves
 	// the admin able to invite again; the local bell is already quiet.
 	go companionRemoteDecideOrigin(context.Background(), original, action)
@@ -1481,37 +1499,49 @@ func companionRemoteDecideOrigin(ctx context.Context, invite companionRemoteInvi
 func companionLeaveRemoteInvite(ctx context.Context, w http.ResponseWriter, ownerID string, contacts map[string]struct{}, groupID string) bool {
 	loadCompanionRemoteInvites()
 	companionRemoteInvites.Lock()
-	var key string
-	var invite companionRemoteInvite
-	found := false
+	// Every address the account joined on counts: removing only one seat
+	// would keep the membership while its notices were already swept.
+	keys := make([]string, 0, 1)
+	invites := make([]companionRemoteInvite, 0, 1)
 	for id, item := range companionRemoteInvites.items {
 		if item.GroupID != groupID || item.Status != "accepted" || !companionRemoteInviteMatches(item, ownerID, contacts) {
 			continue
 		}
-		key, invite, found = id, item, true
-		break
+		keys = append(keys, id)
+		invites = append(invites, item)
 	}
-	if !found {
+	if len(keys) == 0 {
 		companionRemoteInvites.Unlock()
 		return false
 	}
 	companionRemoteInvites.Unlock()
-	// Tell the origin while the invite row still exists: the revokes it
-	// relays back are verified through this row, so deleting it first would
+	// Tell each origin while its invite row still exists: the revokes it
+	// relays back are verified through that row, so deleting it first would
 	// make every share notice on this hub strand. The leave completes locally
 	// even when the origin cannot be reached, and the caller hanging up must
 	// not abort the relay mid-flight.
-	companionRemoteDecideOrigin(context.Background(), invite, "leave")
+	for _, invite := range invites {
+		companionRemoteDecideOrigin(context.Background(), invite, "leave")
+	}
 	companionRemoteInvites.Lock()
-	current, ok := companionRemoteInvites.items[key]
-	if !ok || !companionSecretMatches(current.Secret, invite.Secret) {
+	deleted := make(map[string]companionRemoteInvite, len(keys))
+	for i, key := range keys {
+		current, ok := companionRemoteInvites.items[key]
+		if !ok || !companionSecretMatches(current.Secret, invites[i].Secret) {
+			continue
+		}
+		deleted[key] = current
+		delete(companionRemoteInvites.items, key)
+	}
+	if len(deleted) == 0 {
 		companionRemoteInvites.Unlock()
 		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "没有找到入群邀请")
 		return true
 	}
-	delete(companionRemoteInvites.items, key)
 	if err := persistCompanionRemoteInvitesLocked(); err != nil {
-		companionRemoteInvites.items[key] = current
+		for key, item := range deleted {
+			companionRemoteInvites.items[key] = item
+		}
 		companionRemoteInvites.Unlock()
 		writeError(w, http.StatusInternalServerError, "GROUP_FAILED", "无法保存群组")
 		return true
@@ -1560,6 +1590,8 @@ func companionForgetLocalGroupShareNotices(ownerID, groupID string) {
 	if svc == nil || strings.TrimSpace(ownerID) == "" || !companionGroupTokenPattern.MatchString(strings.TrimSpace(groupID)) {
 		return
 	}
+	// The join digest points at the same group; it dies with the notices.
+	revokeCompanionGroupDigests(context.Background(), groupID, ownerID)
 	var tokens []string
 	companionRemoteSnapCache.Lock()
 	if snap, ok := companionRemoteSnapCache.items[ownerID]; ok {

@@ -78,6 +78,11 @@ const SourceCompanionGroupInvite = "companion_group_invite"
 // person or a reading group. SourceID is the share token.
 const SourceCompanionShare = "companion_share"
 
+// SourceCompanionGroupDigest is the one merged notice a new reading-group
+// member gets for the documents shared before they joined. SourceID is
+// "<group id>:<user id>".
+const SourceCompanionGroupDigest = "companion_group_digest"
+
 // SourceCompanionHostTransfer is the actionable request to the nominated host.
 // SourceCompanionHostTransferNotice is the informational copy for participants.
 const SourceCompanionHostTransfer = "companion_host_transfer"
