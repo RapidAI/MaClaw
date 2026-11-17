@@ -4,17 +4,18 @@
 
 页面都是合成的，绑定在 `127.0.0.1`。没有支付、没有真实验证码，密码框拒绝填写。
 
-## 现在不会跑模型
+## 同一模型怎么跑
 
-同一模型对照要等父流程显式放入下面的环境变量。不要用别的模型顶替，也不要读取 OpenCode、`~/.maclaw` 或生产配置。
+Bot1 已经配好 GLM 5.3 Flash 官方直连。这个夹具不读取、不打印、不改那份生产配置。仓库里的官方兼容调用把模型 id 写成 `glm-5.3-flash`，基址形如 `https://open.bigmodel.cn/api/paas/v4`。`coding/paas` 和 `opencode/glm-5.3-flash-free` 不是这一路。
 
-- `MACLAW_BENCH_MODEL_BASE_URL`
-- `MACLAW_BENCH_MODEL_API_KEY`
-- `MACLAW_BENCH_MODEL_NAME`（预期是 GLM 5.3 Flash；OpenBot 免费目录里的 id 是 `opencode/glm-5.3-flash-free`）
-- `MACLAW_BENCH_MODEL_VISION=1`
-- `MACLAW_BENCH_CONFIRM=1`
+本云环境没有这份凭证。父流程在持有 Bot1 配置的机器上二选一：
 
-未设置时 `node run.mjs --mode agent` 退出码为 2，模型调用数为 0。
+1. 本机回环代理。代理进程自己使用已有配置，只听 `127.0.0.1`，只转发 chat completions，强制 `model=glm-5.3-flash`，日志去掉 `Authorization`。夹具侧设置 `MACLAW_BENCH_LOOPBACK=1`、`MACLAW_BENCH_MODEL_BASE_URL=http://127.0.0.1:<port>/v1`，不设置供应商密钥。
+2. 由父进程把密钥放进夹具进程的环境变量，不要放进命令行参数，也不要写进夹具会打开的文件。变量名是 `MACLAW_BENCH_MODEL_API_KEY`。基址和模型名仍用上面的官方值。
+
+两种都还要 `MACLAW_BENCH_MODEL_NAME=glm-5.3-flash`、`MACLAW_BENCH_MODEL_VISION=1`、`MACLAW_BENCH_CONFIRM=1`。设置 `MACLAW_BENCH_CONFIG_PATH` 或 `MACLAW_BENCH_READ_APP_CONFIG=1` 会直接拒绝。返回体里的 `model` 若不是 `glm-5.3-flash`，该臂中止，不算对照。错误文本会打码。截图臂若被端点拒绝图片，也中止，不改成纯文本再继续。页面仍是合成的，不发布、不付款。
+
+未满足时 `node run.mjs --mode agent` 退出码为 2，模型调用数为 0。接口自检：`node --test src/agent-gate.test.mjs`。
 
 ## 已经会跑的部分
 

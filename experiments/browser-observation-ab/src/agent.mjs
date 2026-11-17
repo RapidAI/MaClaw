@@ -1,4 +1,4 @@
-import { agentPrerequisite } from "./agent-gate.mjs";
+import { agentPrerequisite, chatCompletionsURL, redactSecrets } from "./agent-gate.mjs";
 import { clickRef, semanticSnapshot, typeRef } from "./observe.mjs";
 
 const MAX_STEPS = 5;
@@ -65,12 +65,12 @@ function toolsFor(arm) {
 
 async function complete(env, messages, tools, trace) {
   const started = Date.now();
-  const response = await fetch(new URL("/chat/completions", env.MACLAW_BENCH_MODEL_BASE_URL), {
+  const key = String(env.MACLAW_BENCH_MODEL_API_KEY || "");
+  const headers = { "content-type": "application/json" };
+  if (key) headers.authorization = `Bearer ${key}`;
+  const response = await fetch(chatCompletionsURL(env.MACLAW_BENCH_MODEL_BASE_URL), {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${env.MACLAW_BENCH_MODEL_API_KEY}`,
-      "content-type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
       model: env.MACLAW_BENCH_MODEL_NAME,
       temperature: 0,
@@ -99,9 +99,13 @@ async function complete(env, messages, tools, trace) {
           total_tokens: usage.total_tokens ?? null,
         }
       : null,
-    error: response.ok ? null : raw.slice(0, 300),
+    response_model: body && body.model ? String(body.model) : null,
+    error: response.ok ? null : redactSecrets(raw, [key]),
   });
   if (!response.ok) throw new Error(`model http ${response.status}`);
+  if (body && body.model && body.model !== env.MACLAW_BENCH_MODEL_NAME) {
+    throw new Error(`response model ${body.model} is not ${env.MACLAW_BENCH_MODEL_NAME}`);
+  }
   return body;
 }
 
