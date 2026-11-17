@@ -1,0 +1,9 @@
+This directory is an original measurement harness.
+
+It does not contain source code from nightly-labs/openbot. That project is
+licensed under the PolyForm Noncommercial License 1.0.0 and was only read,
+at a pinned commit, to describe its architecture. Do not copy its
+implementation into this tree.
+
+The pages under the local fixture server are synthetic. They are not a
+store, do not accept payment, and must not be pointed at a live site.

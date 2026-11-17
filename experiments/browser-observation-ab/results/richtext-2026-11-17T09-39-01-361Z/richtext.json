@@ -1,0 +1,478 @@
+{
+  "kind": "synthetic_richtext_not_csdn_publish",
+  "model_calls": 0,
+  "not_csdn_latency": "shopping/file-organizing step counts are not this task",
+  "public_editor_note": "editor.csdn.net/md initial HTML is an empty #app shell titled 写文章-CSDN博客 and loads csdn-upload.js plus /release/md chunks. Those chunks contain the strings 插入图片, 上传图片, 文章标题, contenteditable, article-bar, editor__inner. No login and no article was published. The fixture does not reuse that script.",
+  "reusable_capabilities": [
+    "contenteditable typing with a collapsed caret",
+    "toolbar button plus file chooser",
+    "editor DOM and preview image count, order, and vertical position",
+    "observe then correct a missing image by anchor text"
+  ],
+  "csdn_specific_helpers_used": [],
+  "cases": [
+    {
+      "id": "overwrite_hazard",
+      "reused_capability": "contenteditable selection replaces the range",
+      "text_after": "覆盖",
+      "detected_overwrite": true,
+      "model_calls": 0
+    },
+    {
+      "id": "caret_drift_probe",
+      "note": "fixture leaves the caret before the image; the next paragraph is not after it",
+      "judge_ok": false,
+      "problems": [
+        "image_count:1",
+        "image_order:fig-1.png",
+        "positions:text,img",
+        "vertical:1",
+        "missing_text:第二段在中间图之前",
+        "missing_text:第三段在最后一张图之前"
+      ],
+      "detected_bad_order": true,
+      "model_calls": 0
+    },
+    {
+      "id": "toolbar_without_file",
+      "note": "title and body are present and the image button was clicked; no file was chosen",
+      "title": "合成标题不少于五字",
+      "body_has_anchors": true,
+      "image_count": 0,
+      "success": false,
+      "proves_images_inserted": false,
+      "model_calls": 0
+    },
+    {
+      "id": "richtext_top",
+      "model_calls": 0,
+      "browser_primitives": 9,
+      "observations": 3,
+      "recovery": {
+        "anchor": "第二段在中间图之前",
+        "alt": "fig-2.png",
+        "judge": {
+          "ok": true,
+          "problems": [],
+          "image_count": 3,
+          "alts": [
+            "fig-1.png",
+            "fig-2.png",
+            "fig-3.png"
+          ]
+        }
+      },
+      "partial_state_is_not_success": false,
+      "published": false,
+      "judge": {
+        "ok": true,
+        "problems": [],
+        "image_count": 3,
+        "alts": [
+          "fig-1.png",
+          "fig-2.png",
+          "fig-3.png"
+        ]
+      },
+      "driver_queries": [
+        "role=textbox name=文章标题",
+        "contenteditable",
+        "role=button name=插入图片",
+        "filechooser",
+        "anchor text"
+      ],
+      "not_used": [
+        ".article-bar__title",
+        "editor.csdn.net",
+        "mp.csdn.net",
+        "发布文章"
+      ]
+    },
+    {
+      "id": "richtext_iframe",
+      "model_calls": 0,
+      "browser_primitives": 9,
+      "observations": 3,
+      "recovery": {
+        "anchor": "第二段在中间图之前",
+        "alt": "fig-2.png",
+        "judge": {
+          "ok": true,
+          "problems": [],
+          "image_count": 3,
+          "alts": [
+            "fig-1.png",
+            "fig-2.png",
+            "fig-3.png"
+          ]
+        }
+      },
+      "partial_state_is_not_success": false,
+      "published": false,
+      "judge": {
+        "ok": true,
+        "problems": [],
+        "image_count": 3,
+        "alts": [
+          "fig-1.png",
+          "fig-2.png",
+          "fig-3.png"
+        ]
+      },
+      "driver_queries": [
+        "role=textbox name=文章标题",
+        "contenteditable",
+        "role=button name=插入图片",
+        "filechooser",
+        "anchor text"
+      ],
+      "not_used": [
+        ".article-bar__title",
+        "editor.csdn.net",
+        "mp.csdn.net",
+        "发布文章"
+      ]
+    }
+  ],
+  "trace": [
+    {
+      "kind": "browser_primitive",
+      "task": "overwrite_hazard",
+      "op": "type",
+      "chars": 9,
+      "ms": 59,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "caret_drift_probe",
+      "op": "type",
+      "chars": 11,
+      "ms": 40,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "caret_drift_probe",
+      "op": "choose_file",
+      "file": "fig-1.png",
+      "ms": 32,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "role=button name=插入图片 + filechooser"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "caret_drift_probe",
+      "op": "type",
+      "chars": 6,
+      "ms": 5,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "toolbar_without_file",
+      "op": "type",
+      "chars": 11,
+      "ms": 47,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "toolbar_without_file",
+      "op": "type",
+      "chars": 9,
+      "ms": 9,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "toolbar_without_file",
+      "op": "type",
+      "chars": 11,
+      "ms": 7,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "toolbar_without_file",
+      "op": "type",
+      "chars": 6,
+      "ms": 6,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_top",
+      "op": "fill",
+      "name": "文章标题",
+      "ms": 14,
+      "model_call": false,
+      "query": "role=textbox name=文章标题"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_top",
+      "op": "type",
+      "chars": 11,
+      "ms": 42,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_top",
+      "op": "choose_file",
+      "file": "fig-1.png",
+      "ms": 33,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "role=button name=插入图片 + filechooser"
+    },
+    {
+      "kind": "observation",
+      "task": "richtext_top",
+      "channel": "editor_dom_and_preview",
+      "images": 1,
+      "model_call": false
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_top",
+      "op": "type",
+      "chars": 9,
+      "ms": 9,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_top",
+      "op": "choose_file",
+      "file": "fig-2.png",
+      "ms": 37,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "role=button name=插入图片 + filechooser"
+    },
+    {
+      "kind": "observation",
+      "task": "richtext_top",
+      "channel": "editor_dom_and_preview",
+      "images": 1,
+      "model_call": false
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_top",
+      "op": "type",
+      "chars": 11,
+      "ms": 6,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_top",
+      "op": "choose_file",
+      "file": "fig-3.png",
+      "ms": 43,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "role=button name=插入图片 + filechooser"
+    },
+    {
+      "kind": "observation",
+      "task": "richtext_top",
+      "channel": "editor_dom_and_preview",
+      "images": 2,
+      "model_call": false
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_top",
+      "op": "type",
+      "chars": 6,
+      "ms": 9,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "recovery",
+      "task": "richtext_top",
+      "op": "place_caret_after_anchor_text",
+      "anchor": "第二段在中间图之前",
+      "placed": true,
+      "model_call": false,
+      "site_keyword": false
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_top",
+      "op": "choose_file",
+      "file": "fig-2.png",
+      "ms": 38,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "role=button name=插入图片 + filechooser"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_iframe",
+      "op": "fill",
+      "name": "文章标题",
+      "ms": 6,
+      "model_call": false,
+      "query": "role=textbox name=文章标题"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_iframe",
+      "op": "type",
+      "chars": 11,
+      "ms": 54,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_iframe",
+      "op": "choose_file",
+      "file": "fig-1.png",
+      "ms": 33,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "role=button name=插入图片 + filechooser"
+    },
+    {
+      "kind": "observation",
+      "task": "richtext_iframe",
+      "channel": "editor_dom_and_preview",
+      "images": 1,
+      "model_call": false
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_iframe",
+      "op": "type",
+      "chars": 9,
+      "ms": 8,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_iframe",
+      "op": "choose_file",
+      "file": "fig-2.png",
+      "ms": 41,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "role=button name=插入图片 + filechooser"
+    },
+    {
+      "kind": "observation",
+      "task": "richtext_iframe",
+      "channel": "editor_dom_and_preview",
+      "images": 1,
+      "model_call": false
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_iframe",
+      "op": "type",
+      "chars": 11,
+      "ms": 9,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_iframe",
+      "op": "choose_file",
+      "file": "fig-3.png",
+      "ms": 41,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "role=button name=插入图片 + filechooser"
+    },
+    {
+      "kind": "observation",
+      "task": "richtext_iframe",
+      "channel": "editor_dom_and_preview",
+      "images": 2,
+      "model_call": false
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_iframe",
+      "op": "type",
+      "chars": 6,
+      "ms": 8,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "contenteditable"
+    },
+    {
+      "kind": "recovery",
+      "task": "richtext_iframe",
+      "op": "place_caret_after_anchor_text",
+      "anchor": "第二段在中间图之前",
+      "placed": true,
+      "model_call": false,
+      "site_keyword": false
+    },
+    {
+      "kind": "browser_primitive",
+      "task": "richtext_iframe",
+      "op": "choose_file",
+      "file": "fig-2.png",
+      "ms": 39,
+      "model_call": false,
+      "chat_progress": true,
+      "query": "role=button name=插入图片 + filechooser"
+    }
+  ],
+  "failures": [],
+  "llm_ab_executed": false,
+  "agent_gate": {
+    "ok": false,
+    "missing": [
+      "MACLAW_BENCH_MODEL_BASE_URL",
+      "MACLAW_BENCH_MODEL_API_KEY",
+      "MACLAW_BENCH_MODEL_NAME",
+      "MACLAW_BENCH_MODEL_VISION",
+      "MACLAW_BENCH_CONFIRM"
+    ],
+    "problems": [],
+    "present_names_only": [],
+    "model_name": null,
+    "max_calls": 180,
+    "temperature": 0,
+    "protocol": "openai-chat-completions-tools",
+    "intended_model_note": "父流程指定同一模型为 GLM 5.3 Flash（OpenBot 免费目录 id 为 opencode/glm-5.3-flash-free）。只有 MACLAW_BENCH_* 被显式设置且 CONFIRM=1 才允许调用；不读取 OpenCode 配置、不替换别的模型。",
+    "model_calls": 0,
+    "note": "未设置时禁止调用模型，也不把脚本策略记成模型成功。不要读取生产配置、用户会话或 ~/.maclaw。"
+  }
+}

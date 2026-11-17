@@ -1,0 +1,34 @@
+{"kind":"browser_primitive","task":"overwrite_hazard","op":"type","chars":9,"ms":59,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"caret_drift_probe","op":"type","chars":11,"ms":40,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"caret_drift_probe","op":"choose_file","file":"fig-1.png","ms":32,"model_call":false,"chat_progress":true,"query":"role=button name=插入图片 + filechooser"}
+{"kind":"browser_primitive","task":"caret_drift_probe","op":"type","chars":6,"ms":5,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"toolbar_without_file","op":"type","chars":11,"ms":47,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"toolbar_without_file","op":"type","chars":9,"ms":9,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"toolbar_without_file","op":"type","chars":11,"ms":7,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"toolbar_without_file","op":"type","chars":6,"ms":6,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"richtext_top","op":"fill","name":"文章标题","ms":14,"model_call":false,"query":"role=textbox name=文章标题"}
+{"kind":"browser_primitive","task":"richtext_top","op":"type","chars":11,"ms":42,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"richtext_top","op":"choose_file","file":"fig-1.png","ms":33,"model_call":false,"chat_progress":true,"query":"role=button name=插入图片 + filechooser"}
+{"kind":"observation","task":"richtext_top","channel":"editor_dom_and_preview","images":1,"model_call":false}
+{"kind":"browser_primitive","task":"richtext_top","op":"type","chars":9,"ms":9,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"richtext_top","op":"choose_file","file":"fig-2.png","ms":37,"model_call":false,"chat_progress":true,"query":"role=button name=插入图片 + filechooser"}
+{"kind":"observation","task":"richtext_top","channel":"editor_dom_and_preview","images":1,"model_call":false}
+{"kind":"browser_primitive","task":"richtext_top","op":"type","chars":11,"ms":6,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"richtext_top","op":"choose_file","file":"fig-3.png","ms":43,"model_call":false,"chat_progress":true,"query":"role=button name=插入图片 + filechooser"}
+{"kind":"observation","task":"richtext_top","channel":"editor_dom_and_preview","images":2,"model_call":false}
+{"kind":"browser_primitive","task":"richtext_top","op":"type","chars":6,"ms":9,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"recovery","task":"richtext_top","op":"place_caret_after_anchor_text","anchor":"第二段在中间图之前","placed":true,"model_call":false,"site_keyword":false}
+{"kind":"browser_primitive","task":"richtext_top","op":"choose_file","file":"fig-2.png","ms":38,"model_call":false,"chat_progress":true,"query":"role=button name=插入图片 + filechooser"}
+{"kind":"browser_primitive","task":"richtext_iframe","op":"fill","name":"文章标题","ms":6,"model_call":false,"query":"role=textbox name=文章标题"}
+{"kind":"browser_primitive","task":"richtext_iframe","op":"type","chars":11,"ms":54,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"richtext_iframe","op":"choose_file","file":"fig-1.png","ms":33,"model_call":false,"chat_progress":true,"query":"role=button name=插入图片 + filechooser"}
+{"kind":"observation","task":"richtext_iframe","channel":"editor_dom_and_preview","images":1,"model_call":false}
+{"kind":"browser_primitive","task":"richtext_iframe","op":"type","chars":9,"ms":8,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"richtext_iframe","op":"choose_file","file":"fig-2.png","ms":41,"model_call":false,"chat_progress":true,"query":"role=button name=插入图片 + filechooser"}
+{"kind":"observation","task":"richtext_iframe","channel":"editor_dom_and_preview","images":1,"model_call":false}
+{"kind":"browser_primitive","task":"richtext_iframe","op":"type","chars":11,"ms":9,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"browser_primitive","task":"richtext_iframe","op":"choose_file","file":"fig-3.png","ms":41,"model_call":false,"chat_progress":true,"query":"role=button name=插入图片 + filechooser"}
+{"kind":"observation","task":"richtext_iframe","channel":"editor_dom_and_preview","images":2,"model_call":false}
+{"kind":"browser_primitive","task":"richtext_iframe","op":"type","chars":6,"ms":8,"model_call":false,"chat_progress":true,"query":"contenteditable"}
+{"kind":"recovery","task":"richtext_iframe","op":"place_caret_after_anchor_text","anchor":"第二段在中间图之前","placed":true,"model_call":false,"site_keyword":false}
+{"kind":"browser_primitive","task":"richtext_iframe","op":"choose_file","file":"fig-2.png","ms":39,"model_call":false,"chat_progress":true,"query":"role=button name=插入图片 + filechooser"}
