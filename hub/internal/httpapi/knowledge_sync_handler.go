@@ -3,12 +3,14 @@ package httpapi
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -21,7 +23,18 @@ const (
 	knowledgeSyncOfficialLimitBytes  int64 = 500 << 20
 	knowledgeSyncMaxUploadBytes            = knowledgeSyncOfficialLimitBytes + (1 << 20)
 	knowledgeSyncNormalRetentionDays       = 7
+
+	// knowledgeSyncEmailCaseConflictCode is returned when more than one
+	// mixed-case _email directory matches the account. Nothing is renamed.
+	knowledgeSyncEmailCaseConflictCode    = "KNOWLEDGE_SYNC_CASE_CONFLICT"
+	knowledgeSyncEmailCaseConflictMessage = "more than one mixed-case knowledge sync directory matches this email; none were moved"
 )
+
+var errKnowledgeSyncEmailCaseConflict = errors.New(knowledgeSyncEmailCaseConflictMessage)
+
+// knowledgeSyncEmailCaseMu serializes the case-variant scan and rename so
+// two reads cannot each treat a different directory as the only candidate.
+var knowledgeSyncEmailCaseMu sync.Mutex
 
 type KnowledgeSyncView struct {
 	OwnerUserID         string         `json:"owner_user_id,omitempty"`
@@ -78,7 +91,11 @@ func KnowledgeSyncStatusHandler(identity *auth.IdentityService, baseDir string, 
 			return
 		}
 		status := knowledgeSyncServiceStatus(r, principal, firstKnowledgeSyncCenterService(centerSvc...))
-		meta, _ := loadKnowledgeSyncMeta(baseDir, principal)
+		meta, _, err := loadKnowledgeSyncMeta(baseDir, principal)
+		if errors.Is(err, errKnowledgeSyncEmailCaseConflict) {
+			writeError(w, http.StatusConflict, knowledgeSyncEmailCaseConflictCode, knowledgeSyncEmailCaseConflictMessage)
+			return
+		}
 		if meta != nil {
 			if status.ServiceStatus == "official_active" && (strings.TrimSpace(meta.ExpiresAt) != "" || meta.ServiceStatus != "official_active" || strings.TrimSpace(meta.OfficialExpiredAt) != "") {
 				meta.ExpiresAt = ""
@@ -151,7 +168,10 @@ func UploadKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir s
 		if meta.PackageVersion <= 0 {
 			meta.PackageVersion = 1
 		}
-		if previous, _ := loadKnowledgeSyncMeta(baseDir, principal); previous != nil && strings.TrimSpace(previous.CreatedAt) != "" {
+		if previous, _, err := loadKnowledgeSyncMeta(baseDir, principal); errors.Is(err, errKnowledgeSyncEmailCaseConflict) {
+			writeError(w, http.StatusConflict, knowledgeSyncEmailCaseConflictCode, knowledgeSyncEmailCaseConflictMessage)
+			return
+		} else if previous != nil && strings.TrimSpace(previous.CreatedAt) != "" {
 			meta.CreatedAt = previous.CreatedAt
 		}
 		if err := saveKnowledgeSyncPackage(baseDir, principal, payload, meta); err != nil {
@@ -169,7 +189,11 @@ func DownloadKnowledgeSyncPackageHandler(identity *auth.IdentityService, baseDir
 			return
 		}
 		status := knowledgeSyncServiceStatus(r, principal, firstKnowledgeSyncCenterService(centerSvc...))
-		meta, path := loadKnowledgeSyncMeta(baseDir, principal)
+		meta, path, err := loadKnowledgeSyncMeta(baseDir, principal)
+		if errors.Is(err, errKnowledgeSyncEmailCaseConflict) {
+			writeError(w, http.StatusConflict, knowledgeSyncEmailCaseConflictCode, knowledgeSyncEmailCaseConflictMessage)
+			return
+		}
 		if meta == nil || strings.TrimSpace(path) == "" {
 			writeError(w, http.StatusNotFound, "KNOWLEDGE_SYNC_NOT_FOUND", "knowledge sync package not found")
 			return
@@ -406,53 +430,72 @@ func knowledgeSyncUserStorageKey(principal *auth.ViewerPrincipal) string {
 	return principal.UserID
 }
 
-// adoptKnowledgeSyncEmailCaseDir renames one mixed-case _email directory
-// onto the lowercased storage key. This is production read behavior: a
-// status or download for that account publishes the older directory. The
-// principal email is already lowercased, so the legacy path and the
-// canonical path are the same string and a case-sensitive disk still holds
-// the older directory.
-//
-// An existing canonical path is left untouched, whether or not its meta is
-// complete. A rename that fails leaves the source in place. Only a direct
-// child of base/_email whose name is the same email with different case is
-// eligible.
-func adoptKnowledgeSyncEmailCaseDir(baseDir, canonicalDir string) {
-	if strings.TrimSpace(baseDir) == "" || strings.TrimSpace(canonicalDir) == "" {
-		return
+// adoptKnowledgeSyncEmailCaseDir moves a legacy mixed-case directory onto
+// the account's lowercased _email key. The path is derived here from the
+// principal; a caller-supplied path is not used. Any existing canonical
+// path, including an empty directory, is left untouched. Every eligible
+// direct child is counted first. Exactly one may be renamed. Two or more
+// is a conflict: nothing is renamed and the canonical path is not created.
+func adoptKnowledgeSyncEmailCaseDir(baseDir string, principal *auth.ViewerPrincipal) error {
+	if principal == nil || strings.TrimSpace(baseDir) == "" {
+		return nil
 	}
+	want := sanitizeKnowledgeSyncPathPart(knowledgeSyncUserStorageKey(principal))
+	if want == "" || want == "." || want == ".." || want != strings.ToLower(want) || strings.ContainsAny(want, `/\`) {
+		return nil
+	}
+	knowledgeSyncEmailCaseMu.Lock()
+	defer knowledgeSyncEmailCaseMu.Unlock()
+
 	parent := filepath.Clean(filepath.Join(baseDir, "_email"))
-	canonicalDir = filepath.Clean(canonicalDir)
-	want := filepath.Base(canonicalDir)
-	if want == "." || want == ".." || strings.ContainsAny(want, `/\`) || filepath.Dir(canonicalDir) != parent {
-		return
+	canonical := filepath.Join(parent, want)
+	if filepath.Base(canonical) != want || filepath.Dir(canonical) != parent {
+		return nil
 	}
-	if _, err := os.Lstat(canonicalDir); err == nil {
-		return
+	if _, err := os.Lstat(canonical); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return nil
 	}
 	entries, err := os.ReadDir(parent)
 	if err != nil {
-		return
+		return nil
 	}
+	var candidates []string
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == want || !strings.EqualFold(name, want) || strings.ContainsAny(name, `/\`) {
 			continue
 		}
-		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
-			continue
-		}
 		legacy := filepath.Join(parent, name)
-		if filepath.Dir(legacy) != parent {
+		if filepath.Base(legacy) != name || filepath.Dir(legacy) != parent {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(legacy, "meta.json")); err != nil {
+		info, err := os.Lstat(legacy)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			continue
 		}
-		if err := os.Rename(legacy, canonicalDir); err == nil {
-			return
+		metaInfo, err := os.Lstat(filepath.Join(legacy, "meta.json"))
+		if err != nil || metaInfo.Mode()&os.ModeSymlink != 0 || !metaInfo.Mode().IsRegular() {
+			continue
 		}
+		candidates = append(candidates, legacy)
 	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	if len(candidates) != 1 {
+		return errKnowledgeSyncEmailCaseConflict
+	}
+	if _, err := os.Lstat(canonical); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return nil
+	}
+	if err := os.Rename(candidates[0], canonical); err != nil {
+		return nil
+	}
+	return nil
 }
 
 func legacyKnowledgeSyncEmailDir(baseDir string, principal *auth.ViewerPrincipal) string {
@@ -480,12 +523,14 @@ func sanitizeKnowledgeSyncPathPart(value string) string {
 	return strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_", "..", "_").Replace(value)
 }
 
-func loadKnowledgeSyncMeta(baseDir string, principal *auth.ViewerPrincipal) (*knowledgeSyncMeta, string) {
+func loadKnowledgeSyncMeta(baseDir string, principal *auth.ViewerPrincipal) (*knowledgeSyncMeta, string, error) {
 	if principal == nil || strings.TrimSpace(baseDir) == "" {
-		return nil, ""
+		return nil, "", nil
 	}
 	dir := knowledgeSyncUserDir(baseDir, principal)
-	adoptKnowledgeSyncEmailCaseDir(baseDir, dir)
+	if err := adoptKnowledgeSyncEmailCaseDir(baseDir, principal); err != nil {
+		return nil, "", err
+	}
 	for _, legacy := range []string{legacyKnowledgeSyncEmailDir(baseDir, principal), legacyKnowledgeSyncTenantEmailDir(baseDir, principal), legacyKnowledgeSyncUserDir(baseDir, principal)} {
 		if legacy == dir {
 			continue
@@ -500,17 +545,17 @@ func loadKnowledgeSyncMeta(baseDir string, principal *auth.ViewerPrincipal) (*kn
 	metaPath := filepath.Join(dir, "meta.json")
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
-		return nil, ""
+		return nil, "", nil
 	}
 	var meta knowledgeSyncMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil, ""
+		return nil, "", nil
 	}
 	packagePath := filepath.Join(dir, "package.mksync")
 	if _, err := os.Stat(packagePath); err != nil {
-		return &meta, ""
+		return &meta, "", nil
 	}
-	return &meta, packagePath
+	return &meta, packagePath, nil
 }
 
 func removeKnowledgeSyncUserDirs(baseDir string, principal *auth.ViewerPrincipal) error {
