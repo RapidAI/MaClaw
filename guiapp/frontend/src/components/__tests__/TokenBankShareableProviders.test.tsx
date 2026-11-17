@@ -32,7 +32,9 @@ import { controlWidthCap, fitMenuWidth, placeProviderMenu, TokenBankShareablePro
 
 async function openProviderMenu() {
     const picker = await screen.findByRole('combobox', { name: /要存入的服务商/ });
-    if (!screen.queryByRole('listbox')) fireEvent.click(picker);
+    // ArrowDown opens the menu without the click/blur race that leaves the
+    // portaled listbox unmounted in jsdom.
+    if (!screen.queryByRole('listbox')) fireEvent.keyDown(picker, { key: 'ArrowDown' });
     await screen.findByRole('listbox');
     return picker;
 }
