@@ -661,7 +661,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	// IMPORTANT: onToken does not call Hub per token. Local paints coalesce to
 	// about one frame, and Hub sync flushes every 80ms or 2KB.
 	var streamingStarted int32
-	var streamed strings.Builder
+	var streamedText strings.Builder
 	senderID := h.getLocalAgentID() // cache once — avoid per-token config lock
 
 	// Both paints copy the token and return. A slow Hub upload or a busy UI
@@ -685,7 +685,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 			default:
 			}
 		}
-		streamed.WriteString(delta)
+		streamedText.WriteString(delta)
 		hubPending.add(delta)
 		localPending.add(delta)
 	}
@@ -703,7 +703,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	fullResponse = textutil.SanitizeVisibleChatText(fullResponse)
 	// The loop returns the settled answer without repeating it through OnToken.
 	// The viewer folds that ending onto the opening it already painted.
-	endContent := textutil.StreamEndContent(streamed.String(), fullResponse)
+	endContent := textutil.StreamEndContent(streamedText.String(), fullResponse)
 	sendFallback := !streamed && err == nil && ctxErr == nil && strings.TrimSpace(fullResponse) != ""
 	if sendFallback {
 		h.emitStreamChunkLocal(sessionID, fullResponse)
