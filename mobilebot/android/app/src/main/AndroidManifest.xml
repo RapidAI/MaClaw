@@ -5,7 +5,7 @@
     <!-- Needed to install the downloaded update APK on Android 8+. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application
-        android:label="MaClawBot"
+        android:label="MaclawGo"
         android:allowBackup="false"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">

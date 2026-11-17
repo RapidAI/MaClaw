@@ -142,7 +142,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
           .verifyCode(
             request: request,
             code: code,
-            machineName: 'MaClawBot',
+            machineName: 'MaclawGo',
             clientId: clientId,
             language: language,
           );
@@ -224,7 +224,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                     ),
                     const SizedBox(height: 14),
                     Text(
-                      'MaClawBot',
+                      'MaclawGo',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.headlineMedium,
                     ),

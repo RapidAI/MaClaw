@@ -811,9 +811,43 @@ func (p *Pool) PeekDesktopView(ctx context.Context, tenantID, userID string) (st
 		"user_id":   strings.TrimSpace(userID),
 	}
 	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/view", body, &out); err != nil {
-		return "", nil
+		// An older desktopd has no /view. That is "not running", not a
+		// failure: viewing must not start the desktop or fail the caller.
+		var status *upstream.StatusError
+		if errors.As(err, &status) && status.Status == http.StatusNotFound {
+			return "", nil
+		}
+		return "", err
 	}
 	return nodeEndpoint(server, out.Novnc), nil
+}
+
+// NudgeDesktopView asks the desktop service to turn a running screen's
+// picture back on. It never starts a stopped screen. An older desktopd
+// without this route is a no-op.
+func (p *Pool) NudgeDesktopView(ctx context.Context, tenantID, userID string) error {
+	if p == nil {
+		return nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return nil
+	}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/nudge", body, nil); err != nil {
+		var status *upstream.StatusError
+		if errors.As(err, &status) && status.Status == http.StatusNotFound {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // RunApp forwards one xdotool command to the Docker service that owns the user.

@@ -29,14 +29,14 @@ import 'features/remote/remote_task_screen.dart';
 import 'features/rooms/rooms_screen.dart';
 import 'features/status/status_screen.dart';
 
-class MaClawBotApp extends ConsumerWidget {
-  const MaClawBotApp({super.key});
+class MaclawGoApp extends ConsumerWidget {
+  const MaclawGoApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(_routerProvider);
     return MaterialApp.router(
-      title: 'MaClawBot',
+      title: 'MaclawGo',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),

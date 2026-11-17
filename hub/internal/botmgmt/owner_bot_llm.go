@@ -95,7 +95,7 @@ func migrateOwnerBotLLM(rec *record, hubUserID string) bool {
 		return dropOwnerLLMOverride(rec, hubUserID)
 	}
 	choice := ownerBotLLM{
-		Mode:        corelib.MaclawBotLLMModeCustom,
+		Mode:        corelib.MaclawGoLLMModeCustom,
 		Foreground:  cloneOwnerLLMOverride(override),
 		Background:  cloneOwnerLLMOverride(override),
 		ComputerUse: cloneOwnerLLMOverride(override),
@@ -136,27 +136,27 @@ func ownerBotLLMOf(rec record, hubUserID string) ownerBotLLM {
 	}
 	if override := effectiveOwnerLLMOverride(rec, hubUserID); override != nil {
 		return ownerBotLLM{
-			Mode:        corelib.MaclawBotLLMModeCustom,
+			Mode:        corelib.MaclawGoLLMModeCustom,
 			Foreground:  cloneOwnerLLMOverride(override),
 			Background:  cloneOwnerLLMOverride(override),
 			ComputerUse: cloneOwnerLLMOverride(override),
 		}
 	}
-	return ownerBotLLM{Mode: corelib.MaclawBotLLMModeDefault}
+	return ownerBotLLM{Mode: corelib.MaclawGoLLMModeDefault}
 }
 
 func ownerBotLLMIsCustom(rec record, hubUserID string) bool {
-	return ownerBotLLMOf(rec, hubUserID).Mode == corelib.MaclawBotLLMModeCustom
+	return ownerBotLLMOf(rec, hubUserID).Mode == corelib.MaclawGoLLMModeCustom
 }
 
 func cloneOwnerBotLLM(in ownerBotLLM) ownerBotLLM {
 	local := cloneLocalStages(in.Local)
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
-	if mode != corelib.MaclawBotLLMModeCustom {
-		return ownerBotLLM{Mode: corelib.MaclawBotLLMModeDefault, Local: local}
+	if mode != corelib.MaclawGoLLMModeCustom {
+		return ownerBotLLM{Mode: corelib.MaclawGoLLMModeDefault, Local: local}
 	}
 	return ownerBotLLM{
-		Mode:        corelib.MaclawBotLLMModeCustom,
+		Mode:        corelib.MaclawGoLLMModeCustom,
 		Foreground:  cloneOwnerLLMOverride(in.Foreground),
 		Background:  cloneOwnerLLMOverride(in.Background),
 		ComputerUse: cloneOwnerLLMOverride(in.ComputerUse),
@@ -186,8 +186,8 @@ func cloneOwnerLLMOverride(in *ownerLLMOverride) *ownerLLMOverride {
 }
 
 func (choice ownerBotLLM) view(stored bool) PrincipalLLMView {
-	if choice.Mode != corelib.MaclawBotLLMModeCustom {
-		view := PrincipalLLMView{Mode: corelib.MaclawBotLLMModeDefault, Choice: corelib.MaclawBotLLMModeDefault, Stored: stored}
+	if choice.Mode != corelib.MaclawGoLLMModeCustom {
+		view := PrincipalLLMView{Mode: corelib.MaclawGoLLMModeDefault, Choice: corelib.MaclawGoLLMModeDefault, Stored: stored}
 		view.LocalRoles = localRolesView(choice.Local)
 		return view
 	}
@@ -198,7 +198,7 @@ func (choice ownerBotLLM) view(stored bool) PrincipalLLMView {
 		Grounder:    roleView(choice.Grounder, true),
 	}
 	view := PrincipalLLMView{
-		Mode: corelib.MaclawBotLLMModeCustom, Choice: corelib.MaclawBotLLMModeCustom,
+		Mode: corelib.MaclawGoLLMModeCustom, Choice: corelib.MaclawGoLLMModeCustom,
 		Roles: roles, Stored: stored, LocalRoles: localRolesView(choice.Local),
 	}
 	// Older GUIs read one provider. A concrete provider is selectable. An
@@ -211,7 +211,7 @@ func (choice ownerBotLLM) view(stored bool) PrincipalLLMView {
 		view.KeySet = strings.TrimSpace(concrete.Key) != ""
 		return view
 	}
-	view.Mode = corelib.MaclawBotLLMModeDefault
+	view.Mode = corelib.MaclawGoLLMModeDefault
 	return view
 }
 
@@ -312,7 +312,7 @@ func normalizeOwnerBotLLM(in PrincipalLLMInput, prev ownerBotLLM, providers []ll
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
 	switch mode {
 	case "", "default", "system":
-		return withLocalStages(ownerBotLLM{Mode: corelib.MaclawBotLLMModeDefault}, in, prev)
+		return withLocalStages(ownerBotLLM{Mode: corelib.MaclawGoLLMModeDefault}, in, prev)
 	case "custom", "provider":
 	default:
 		return ownerBotLLM{}, fmt.Errorf("%w: llm mode must be default or custom", ErrInvalidInput)
@@ -323,7 +323,7 @@ func normalizeOwnerBotLLM(in PrincipalLLMInput, prev ownerBotLLM, providers []ll
 			return ownerBotLLM{}, err
 		}
 		return withLocalStages(ownerBotLLM{
-			Mode:        corelib.MaclawBotLLMModeCustom,
+			Mode:        corelib.MaclawGoLLMModeCustom,
 			Foreground:  cloneOwnerLLMOverride(one),
 			Background:  cloneOwnerLLMOverride(one),
 			ComputerUse: cloneOwnerLLMOverride(one),
@@ -349,7 +349,7 @@ func normalizeOwnerBotLLM(in PrincipalLLMInput, prev ownerBotLLM, providers []ll
 		return ownerBotLLM{}, err
 	}
 	return withLocalStages(ownerBotLLM{
-		Mode:        corelib.MaclawBotLLMModeCustom,
+		Mode:        corelib.MaclawGoLLMModeCustom,
 		Foreground:  fg,
 		Background:  bg,
 		ComputerUse: cu,
@@ -434,7 +434,7 @@ func localRuntimeChoice(choice ownerBotLLM) ownerBotLLM {
 	if choice.Local != nil {
 		local = choice.Local
 	}
-	out := ownerBotLLM{Mode: corelib.MaclawBotLLMModeCustom}
+	out := ownerBotLLM{Mode: corelib.MaclawGoLLMModeCustom}
 	if local == nil {
 		out.Foreground = stage(nil)
 		out.Background = stage(nil)
@@ -524,7 +524,7 @@ func consistentRoleProviders(roles ...*ownerLLMOverride) error {
 }
 
 func ownerBotLLMStamp(choice ownerBotLLM) string {
-	if choice.Mode != corelib.MaclawBotLLMModeCustom {
+	if choice.Mode != corelib.MaclawGoLLMModeCustom {
 		return ""
 	}
 	hash := sha256.New()

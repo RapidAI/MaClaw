@@ -125,16 +125,16 @@ type AppConfig struct {
 	// wrote for this MaClawSrv user. It carries no credentials; a pin names a
 	// provider already listed in maclaw_llm_providers (or the official hub-llm
 	// row). Empty or inherit follows MaclawLLMCurrentProvider.
-	// Read only when MaclawBotLLMMode is default (or empty, for a config Hub
+	// Read only when MaclawGoLLMMode is default (or empty, for a config Hub
 	// has not rewritten yet).
 	MaclawHubBotRoles MaclawHubBotRoles `json:"maclaw_hub_bot_roles,omitempty"`
-	// MaclawBotLLMMode is the one switch for how this MaClawSrv user picks a
+	// MaclawGoLLMMode is the one switch for how this MaClawSrv user picks a
 	// model per bot role. "custom" uses an explicit maclaw_llm_profiles pin
 	// when one is stored and otherwise the service. "default" reads
 	// MaclawHubBotRoles and the current provider. Empty keeps the older
 	// combined precedence so a config Hub has not rewritten still behaves as
 	// it did.
-	MaclawBotLLMMode string `json:"maclaw_bot_llm_mode,omitempty"`
+	MaclawGoLLMMode string `json:"maclaw_bot_llm_mode,omitempty"`
 	// DesktopBotLLMAccounts is per Hub user on this desktop: the migration
 	// marker and the last bot-model view (no credentials). MaClawSrv ignores it.
 	DesktopBotLLMAccounts map[string]DesktopBotLLMAccount `json:"desktop_bot_llm_accounts,omitempty"`
@@ -245,10 +245,13 @@ type AppConfig struct {
 	ShowAITraceEntry                   bool                           `json:"show_ai_trace_entry,omitempty"`
 	// ShowAppEntry controls the MaClaw Apps sidebar entry. Nil means on
 	// (same default-on contract as show_workflow_entry / show_utilities_entry).
-	ShowAppEntry         *bool  `json:"show_app_entry,omitempty"`
-	ShowWorkflowEntry    *bool  `json:"show_workflow_entry,omitempty"`
-	ShowUtilitiesEntry   *bool  `json:"show_utilities_entry,omitempty"`
-	SurveyEnabled        *bool  `json:"survey_enabled,omitempty"`
+	ShowAppEntry       *bool `json:"show_app_entry,omitempty"`
+	ShowWorkflowEntry  *bool `json:"show_workflow_entry,omitempty"`
+	ShowUtilitiesEntry *bool `json:"show_utilities_entry,omitempty"`
+	SurveyEnabled      *bool `json:"survey_enabled,omitempty"`
+	// RecentTaskCount caps the sidebar "最近任务" band. Nil uses the frontend
+	// default (5); an explicit 0 hides the band.
+	RecentTaskCount      *int   `json:"recent_task_count,omitempty"`
 	ShowAssistantEntry   bool   `json:"show_assistant_entry"`
 	ShowHubRanking       *bool  `json:"show_hub_ranking,omitempty"`
 	PetEnabled           bool   `json:"pet_enabled,omitempty"`
@@ -902,12 +905,12 @@ const (
 	MaclawHubBotRoleInherit = "inherit"
 	MaclawHubBotRolePin     = "pin"
 	MaclawHubBotRoleUnused  = "unused"
-	// MaclawBotLLMModeDefault means the service (Hub route or an administrator
+	// MaclawGoLLMModeDefault means the service (Hub route or an administrator
 	// role assignment) chooses every bot role.
-	MaclawBotLLMModeDefault = "default"
-	// MaclawBotLLMModeCustom means the owner's per-role pins are the only
+	MaclawGoLLMModeDefault = "default"
+	// MaclawGoLLMModeCustom means the owner's per-role pins are the only
 	// source for bot role models. A role left unset still follows the service.
-	MaclawBotLLMModeCustom = "custom"
+	MaclawGoLLMModeCustom = "custom"
 )
 
 // DesktopBotLLMAccount is one Hub user's cached bot-model view on the desktop.

@@ -145,6 +145,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     DuplicateTask: duplicateTaskMock,
     ChooseFileCompanionFiles: (...args: unknown[]) => chooseFileCompanionFilesMock(...args),
     ShowFileCompanion: (...args: unknown[]) => showFileCompanionMock(...args),
+    LoadConfig: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -1193,7 +1194,11 @@ describe('SidebarTaskManagement', () => {
         const older = { ...baseProject, id: 'older', name: 'Older task', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
         const newer = { ...baseProject, id: 'newer', name: 'Newer task', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z', last_activity: '2026-01-01T00:00:00Z' };
         const view = renderTaskManagement({ tasks: [older, newer] });
-        const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+        // Both tasks carry last_activity, so the 最近任务 band mirrors them on
+        // top; order assertions only care about the real folder's rows.
+        const names = () => screen.getAllByTestId('sidebar-task-row')
+            .filter(row => !row.closest('[data-testid="task-folder-recent"]'))
+            .map(row => row.textContent || '');
 
         expect(names()[0]).toContain('Newer task');
         expect(names()[1]).toContain('Older task');
@@ -1204,20 +1209,61 @@ describe('SidebarTaskManagement', () => {
         expect(names()[1]).toContain('Older task');
     });
 
+    it('lists recently opened tasks in a 最近任务 band above the folders', () => {
+        const groupedA = { ...baseProject, id: 'ga', name: 'Grouped A', project_path: 'D:/work/tasks/ga', working_dir: 'D:/work/proj', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-02T00:00:00Z' };
+        const groupedB = { ...baseProject, id: 'gb', name: 'Grouped B', project_path: 'D:/work/tasks/gb', working_dir: 'D:/work/proj', created_at: '2026-01-02T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
+        const solo = { ...baseProject, id: 'solo', name: 'Solo task', project_path: 'D:/work/tasks/solo', working_dir: 'D:/work/other', created_at: '2026-01-03T00:00:00Z', last_activity: '2026-08-01T00:00:00Z' };
+        const untouched = { ...baseProject, id: 'untouched', name: 'Untouched task', project_path: 'D:/work/tasks/untouched', created_at: '2026-09-01T00:00:00Z' };
+        renderTaskManagement({ tasks: [groupedA, groupedB, solo, untouched] });
+
+        const band = screen.getByTestId('task-folder-recent');
+        const rows = within(band).getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+        // groupedA/groupedB share a directory so the whole group lands in the
+        // band as one folder entry; a task that was never opened does not count.
+        expect(rows.filter(text => text.includes('Grouped'))).toHaveLength(2);
+        expect(rows.some(text => text.includes('Solo task'))).toBe(true);
+        expect(rows.some(text => text.includes('Untouched task'))).toBe(false);
+        const bandGroup = within(band).getByTestId('task-workdir-folder');
+        expect(within(bandGroup).getAllByTestId('sidebar-task-row')).toHaveLength(2);
+    });
+
+    it('keeps the 最近任务 band count at the configured entry cap', () => {
+        const tasks = Array.from({ length: 7 }, (_, i) => ({
+            ...baseProject,
+            id: `recent-${i}`,
+            name: `Recent ${i}`,
+            project_path: `D:/work/tasks/recent-${i}`,
+            working_dir: `D:/work/dir-${i}`,
+            created_at: `2026-01-0${i + 1}T00:00:00Z`,
+            last_activity: `2026-09-0${i + 1}T00:00:00Z`,
+        }));
+        renderTaskManagement({ tasks });
+        const band = screen.getByTestId('task-folder-recent');
+        // Default is five entries, newest activity first.
+        const rows = within(band).getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+        expect(rows).toHaveLength(5);
+        expect(rows[0]).toContain('Recent 6');
+        expect(rows[4]).toContain('Recent 2');
+    });
+
     it('reorders tasks by dragging a row and keeps that order when activity changes', () => {
         localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
         try {
             const older = { ...baseProject, id: 'older', name: 'Older task', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
             const newer = { ...baseProject, id: 'newer', name: 'Newer task', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z', last_activity: '2026-01-01T00:00:00Z' };
             const view = renderTaskManagement({ tasks: [older, newer] });
-            const rowOf = (name: string) => screen.getAllByTestId('sidebar-task-row').find(item => (item.textContent || '').includes(name)) as HTMLElement;
+            // The 最近任务 band mirrors these rows; drag/drop and order
+            // assertions must target the real folder's copies.
+            const realRows = () => screen.getAllByTestId('sidebar-task-row')
+                .filter(row => !row.closest('[data-testid="task-folder-recent"]'));
+            const rowOf = (name: string) => realRows().find(item => (item.textContent || '').includes(name)) as HTMLElement;
             const handleOf = (name: string) => rowOf(name).querySelector('[data-testid="task-drag-handle"]') as HTMLElement;
 
             fireEvent.dragStart(rowOf('Newer task').querySelector('.sidebar-task-row') as HTMLElement);
             fireEvent.dragOver(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
             fireEvent.drop(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
 
-            const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+            const names = () => realRows().map(row => row.textContent || '');
             expect(names()[0]).toContain('Older task');
             expect(names()[1]).toContain('Newer task');
 

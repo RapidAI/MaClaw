@@ -99,7 +99,7 @@ class AccountScreen extends ConsumerWidget {
           const SizedBox(height: 24),
           Center(
             child: Text(
-              'MaClawBot · 桌面 Bot 的移动工作台',
+              'MaclawGo · 桌面 Bot 的移动工作台',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),

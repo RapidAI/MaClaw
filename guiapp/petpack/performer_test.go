@@ -125,6 +125,44 @@ func TestValidatePerformerRejectsUnachievableIdleRepeatRule(t *testing.T) {
 	}
 }
 
+func TestPinnedMoodFiltersIdleAndFallsBack(t *testing.T) {
+	p := performanceTestPerformer()
+	for name, behavior := range p.Behaviors {
+		behavior.Moods = []string{"calm"}
+		p.Behaviors[name] = behavior
+	}
+	for i := 0; i < 4; i++ {
+		name := fmt.Sprintf("idle_%d", i)
+		behavior := p.Behaviors[name]
+		behavior.Moods = []string{"calm", "tired"}
+		p.Behaviors[name] = behavior
+	}
+	d := NewPerformanceDirector(p, performanceTestRig(), 3)
+	d.SetPinnedMood("tired")
+	for i := 0; i < 6; i++ {
+		step := d.SelectState(StateIdle, int64(1000+i*5000))
+		if step.isZero() || d.currentMood != "tired" {
+			t.Fatalf("pinned tired idle %d: step=%+v mood=%q", i, step, d.currentMood)
+		}
+		name := d.lastBehaviors[len(d.lastBehaviors)-1]
+		if name != "idle_0" && name != "idle_1" && name != "idle_2" && name != "idle_3" {
+			t.Fatalf("tired idle picked %s", name)
+		}
+	}
+	d.SetPinnedMood("concerned")
+	if step := d.SelectState(StateIdle, 80000); step.isZero() || d.currentMood != "calm" {
+		t.Fatalf("unmatched pin did not fall back: %+v mood=%q", step, d.currentMood)
+	}
+	d.SetPinnedMood("")
+	if step := d.SelectState(StateIdle, 90000); step.isZero() || d.currentMood != "calm" {
+		t.Fatalf("cleared pin did not restore calm: %+v mood=%q", step, d.currentMood)
+	}
+	d.SetPinnedMood("not-a-mood")
+	if d.pinnedMood != "" {
+		t.Fatalf("unknown mood stuck: %q", d.pinnedMood)
+	}
+}
+
 func TestPerformanceDirectorResetsImplicitIdleMoodToCalm(t *testing.T) {
 	p := performanceTestPerformer()
 	for name, behavior := range p.Behaviors {

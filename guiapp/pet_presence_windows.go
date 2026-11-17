@@ -72,7 +72,8 @@ func (w *windowsFloatingWindow) SetPetPresenceLine(line string) {
 		return
 	}
 	w.mu.Lock()
-	w.presenceLine = line
+	w.dutyLine = line
+	w.refreshPresenceLocked()
 	hwnd := w.hwnd
 	w.mu.Unlock()
 	if hwnd != 0 {

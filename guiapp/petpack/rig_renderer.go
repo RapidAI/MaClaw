@@ -496,6 +496,13 @@ type CharacterRenderer struct {
 	// including how many loop wraps have sounded. Expression layers do not.
 	soundClip  string
 	soundLoops int
+	// heldExpression and heldGaze replace the state's face while the host
+	// is holding a companionship feeling. They are not a new performer state.
+	// heldMood is the same hold, applied to idle selection. Empty means the
+	// pack's own face and mood.
+	heldExpression string
+	heldGaze       string
+	heldMood       string
 }
 
 func NewCharacterRenderer(resolved *ResolvedPack) (*CharacterRenderer, error) {
@@ -523,6 +530,37 @@ func NewCharacterRenderer(resolved *ResolvedPack) (*CharacterRenderer, error) {
 		seed *= 1099511628211
 	}
 	return &CharacterRenderer{rig: rigRenderer, director: NewPerformanceDirector(performer, rigRenderer.rig, seed)}, nil
+}
+
+// SetCompanionFeel holds a face and an idle mood for as long as the host
+// asks. A clip the pack did not author is ignored, and an unknown mood is
+// cleared. The body one-shot still ends on its own; this only keeps the
+// face and the quieter idle. Changed reports whether the hold moved.
+func (r *CharacterRenderer) SetCompanionFeel(expression, gaze, mood string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if expression != "" && (r.rig == nil || r.rig.Clip(expression) == nil) {
+		expression = ""
+	}
+	if gaze != "" && (r.rig == nil || r.rig.Clip(gaze) == nil) {
+		gaze = ""
+	}
+	if mood != "" && !allowedPerformerMoods[mood] {
+		mood = ""
+	}
+	if expression == r.heldExpression && gaze == r.heldGaze && mood == r.heldMood {
+		return false
+	}
+	r.heldExpression = expression
+	r.heldGaze = gaze
+	r.heldMood = mood
+	if r.director != nil {
+		r.director.SetPinnedMood(mood)
+	}
+	return true
 }
 
 // SetVisibleAdornmentSlots forwards the rearing prop set to the rig. Props
@@ -588,7 +626,7 @@ func (r *CharacterRenderer) RenderState(state PetRuntimeState, nowMS int64, size
 	// Its duration is measured from this frame, so do not immediately advance
 	// the newly installed step through the rest of the state machine.
 	if r.step.Body != "" && r.startedMS == nowMS && !r.exiting {
-		step, started, previous, previousAt, previousElapsed := r.step, r.startedMS, r.previous, r.previousAt, r.previousElapsed
+		step, started, previous, previousAt, previousElapsed := r.snapshotStepLocked()
 		r.mu.Unlock()
 		return r.renderPerformanceStep(step, started, previous, previousAt, previousElapsed, nowMS, size)
 	}
@@ -625,9 +663,26 @@ func (r *CharacterRenderer) RenderState(state PetRuntimeState, nowMS int64, size
 		r.triggerEventLocked("long_idle", nowMS)
 		r.idleSinceMS = nowMS
 	}
-	step, started, previous, previousAt, previousElapsed := r.step, r.startedMS, r.previous, r.previousAt, r.previousElapsed
+	step, started, previous, previousAt, previousElapsed := r.snapshotStepLocked()
 	r.mu.Unlock()
 	return r.renderPerformanceStep(step, started, previous, previousAt, previousElapsed, nowMS, size)
+}
+
+// snapshotStepLocked copies the step that will be drawn and applies the
+// companionship face. Caller holds r.mu. The stored step keeps the state's
+// own expression, so clearing the hold on the next frame restores it.
+func (r *CharacterRenderer) snapshotStepLocked() (PerformanceStep, int64, PerformanceStep, int64, int64) {
+	step := r.step
+	previous := r.previous
+	if r.heldExpression != "" {
+		step.Expression = r.heldExpression
+		previous.Expression = r.heldExpression
+	}
+	if r.heldGaze != "" {
+		step.Gaze = r.heldGaze
+		previous.Gaze = r.heldGaze
+	}
+	return step, r.startedMS, previous, r.previousAt, r.previousElapsed
 }
 
 // Clip returns the validated clip pointer for a body-track name.

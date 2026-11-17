@@ -399,7 +399,7 @@ func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal own
 		applyCustomFlat(current.AppConfig, localChoice, endpoint, viewerToken)
 		current.AppConfig["maclaw_llm_providers"] = providers
 		current.AppConfig["maclaw_llm_profiles"] = dropUnresolvedProfiles(customRoleProfiles(current.AppConfig["maclaw_llm_profiles"], localChoice), providers)
-		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawBotLLMModeCustom
+		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawGoLLMModeCustom
 		delete(current.AppConfig, "maclaw_hub_bot_roles")
 		if err := s.doAdmin(ctx, rec, http.MethodPut, path, map[string]any{"app_config": current.AppConfig}, nil); err != nil {
 			return fmt.Errorf("%w: write bot llm config: %s", ErrSrv, err.Error())
@@ -411,18 +411,18 @@ func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal own
 	for _, item := range settings.Providers {
 		providers = append(providers, llmProviderWire(item))
 	}
-	if choice.Mode == corelib.MaclawBotLLMModeCustom {
+	if choice.Mode == corelib.MaclawGoLLMModeCustom {
 		// Explicit rows are profile pins. Rows left unset follow the service,
 		// so the flat provider and the administrator role pins stay in place.
 		providers = appendCustomRoleProviders(providers, choice)
 	}
 	applyServiceBotLLMFlat(current.AppConfig, settings, endpoint, viewerToken)
 	current.AppConfig["maclaw_llm_providers"] = providers
-	if choice.Mode == corelib.MaclawBotLLMModeCustom {
+	if choice.Mode == corelib.MaclawGoLLMModeCustom {
 		current.AppConfig["maclaw_llm_profiles"] = customRoleProfiles(current.AppConfig["maclaw_llm_profiles"], choice)
-		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawBotLLMModeCustom
+		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawGoLLMModeCustom
 	} else {
-		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawBotLLMModeDefault
+		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawGoLLMModeDefault
 		clearRoleProfiles(current.AppConfig)
 	}
 	if roles := hubBotRolesAppConfig(settings); roles != nil {

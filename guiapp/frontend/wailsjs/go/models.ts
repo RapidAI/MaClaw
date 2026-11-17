@@ -2390,6 +2390,7 @@ export namespace corelib {
 	    show_workflow_entry?: boolean;
 	    show_utilities_entry?: boolean;
 	    survey_enabled?: boolean;
+	    recent_task_count?: number;
 	    show_assistant_entry: boolean;
 	    show_hub_ranking?: boolean;
 	    tray_task_completion_notify?: boolean;
@@ -2694,6 +2695,7 @@ export namespace corelib {
 	        this.show_workflow_entry = source["show_workflow_entry"];
 	        this.show_utilities_entry = source["show_utilities_entry"];
 	        this.survey_enabled = source["survey_enabled"];
+	        this.recent_task_count = source["recent_task_count"];
 	        this.show_assistant_entry = source["show_assistant_entry"];
 	        this.show_hub_ranking = source["show_hub_ranking"];
 	        this.tray_task_completion_notify = source["tray_task_completion_notify"];

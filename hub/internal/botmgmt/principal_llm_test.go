@@ -178,7 +178,7 @@ func TestOwnerLLMOverrideRoundTripRestoresSystemFreeDefault(t *testing.T) {
 	if entry["wire_api"] != "responses" {
 		t.Fatalf("override entry lost wire_api = %#v", entry)
 	}
-	if applied["maclaw_bot_llm_mode"] != corelib.MaclawBotLLMModeCustom {
+	if applied["maclaw_bot_llm_mode"] != corelib.MaclawGoLLMModeCustom {
 		t.Fatalf("custom mode = %#v", applied["maclaw_bot_llm_mode"])
 	}
 	assertSameRolePin(t, applied, "foreground", "MyProv", "mine-large")
@@ -213,7 +213,7 @@ func TestOwnerLLMOverrideRoundTripRestoresSystemFreeDefault(t *testing.T) {
 	if providers, _ := back["maclaw_llm_providers"].([]any); len(providers) != 1 {
 		t.Fatalf("restored providers = %#v", back["maclaw_llm_providers"])
 	}
-	if back["maclaw_bot_llm_mode"] != corelib.MaclawBotLLMModeDefault {
+	if back["maclaw_bot_llm_mode"] != corelib.MaclawGoLLMModeDefault {
 		t.Fatalf("restored mode = %#v", back["maclaw_bot_llm_mode"])
 	}
 	if _, ok := back["maclaw_llm_profiles"]; ok {
@@ -862,7 +862,7 @@ func TestNodeOnlySavePushesLocalStages(t *testing.T) {
 }
 
 func TestCloudStampIgnoresLocalStages(t *testing.T) {
-	plain := ownerBotLLM{Mode: corelib.MaclawBotLLMModeDefault}
+	plain := ownerBotLLM{Mode: corelib.MaclawGoLLMModeDefault}
 	withLocal := plain
 	withLocal.Local = &localStageLLM{
 		Foreground:  &ownerLLMOverride{Official: true, Model: "auto"},

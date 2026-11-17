@@ -486,7 +486,7 @@
 
 ## mobilebot (Flutter client)
 
-- `mobilebot/` is the active MaClawBot phone client (login → bots → chat →
+- `mobilebot/` is the active MaclawGo phone client (login → bots → chat →
   remote desktop → remote control → account). `mobile/maclaw_mobile/` is
   DEPRECATED — its CI workflow was removed with it.
 - Flutter pin lives in `mobilebot/.fvmrc` (single source — both workflows
@@ -511,7 +511,7 @@
   above).
 - CI: `.github/workflows/mobilebot.yml` (PR/push checks + debug APK artifact);
   `.github/workflows/main.yml` `build-android` job ships signed
-  `MaClawBot.apk` into tagged Releases — needs secrets
+  `MaclawGo.apk` into tagged Releases — needs secrets
   `MOBILEBOT_KEYSTORE_BASE64` / `_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`.
 - Hub deploy: `.cursor/rules/deploy-hub-binaries.mdc` — cross-compile
   `GOOS=linux go build -o build/deploy/maclaw-hub ./hub/cmd/hub`, then

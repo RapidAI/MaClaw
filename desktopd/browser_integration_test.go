@@ -138,12 +138,12 @@ sup.keep_screen_awake(20)
 print("\n".join("%s %s" % (" ".join(argv), display) for argv, display in calls))
 print("calls", len(calls))
 `)
-	for _, want := range []string{"xset s off :20", "xset s noblank :20", "xset s reset :20", "xset -dpms :20"} {
+	for _, want := range []string{"xset s off :20", "xset s noblank :20", "xset s reset :20", "xset -dpms :20", "xset dpms force on :20"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("screen saver command %s missing from %s", want, out)
 		}
 	}
-	if !strings.Contains(out, "calls 4") {
+	if !strings.Contains(out, "calls 5") {
 		t.Fatalf("missing xset still tried to change the display: %s", out)
 	}
 	raw, err := os.ReadFile("image/desktop_supervisor.py")

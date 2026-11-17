@@ -49,7 +49,7 @@ void main() {
         botApiProvider.overrideWithValue(api),
         sessionProvider.overrideWith(_FakeSession.new),
       ],
-      child: const MaClawBotApp(),
+      child: const MaclawGoApp(),
     ));
     // Let the router settle on '/' and the bots refresh land.
     for (var i = 0; i < 10; i++) {

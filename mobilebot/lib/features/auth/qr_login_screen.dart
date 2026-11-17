@@ -54,7 +54,7 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
           .read(authApiProvider)
           .redeemDesktopQr(
             payload: parsed,
-            machineName: 'MaClawBot',
+            machineName: 'MaclawGo',
             clientId: clientId,
             language: language,
           );
