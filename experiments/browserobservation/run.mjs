@@ -5,7 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentPrerequisite } from "./agent-gate.mjs";
-import { runBoundedArms } from "./agent.mjs";
+import { runBoundedArms, runConfoundedArms } from "./agent.mjs";
 import { startFixtures } from "./fixture-server.mjs";
 import { runOnce } from "./mechanical.mjs";
 import { promptBundle } from "./prompts.mjs";
@@ -128,7 +128,16 @@ if (mode === "agent") {
       outDir,
     });
     await writeFile(path.join(outDir, "ab-summary.json"), JSON.stringify(summary, null, 2));
-    console.log(JSON.stringify({ wrote: outDir, model_calls: summary.model_calls, ready: true, observed_llm: summary.observed_llm }, null, 2));
+    console.log(JSON.stringify({
+      wrote: outDir,
+      model_calls: summary.model_calls,
+      ready: summary.ready,
+      observed_llm: summary.observed_llm,
+      comparison: summary.comparison,
+      same_model_vision_arm: summary.same_model_vision_arm,
+      comparable: summary.comparable,
+      winner: null,
+    }, null, 2));
     process.exit(summary.aborted ? 1 : 0);
   } finally {
     await browser.close();
@@ -136,8 +145,47 @@ if (mode === "agent") {
   }
 }
 
+if (mode === "confounded") {
+  const helperReady = process.env.MACLAW_BENCH_HELPER_MODEL_BASE_URL && process.env.MACLAW_BENCH_HELPER_MODEL_NAME;
+  if (!gate.ok || !helperReady) {
+    console.log(JSON.stringify({
+      ...gate,
+      executed: false,
+      ready: false,
+      model_calls: 0,
+      observed_llm: false,
+      comparison: "confounded_text_glm_vs_vision_helper",
+      confounded: true,
+      not_primary_ab: true,
+      winner: null,
+    }, null, 2));
+    process.exit(2);
+  }
+  const outDir = process.env.MACLAW_BENCH_OUT || path.join(os.tmpdir(), `maclaw-confounded-${stamp}`);
+  await mkdir(outDir, { recursive: true });
+  const fixtures = await startFixtures();
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  try {
+    const summary = await runConfoundedArms({ env: process.env, browser, origin: fixtures.origin, outDir });
+    await writeFile(path.join(outDir, "confounded-summary.json"), JSON.stringify(summary, null, 2));
+    console.log(JSON.stringify({
+      wrote: outDir,
+      model_calls: summary.model_calls,
+      confounded: true,
+      not_primary_ab: true,
+      comparable: false,
+      winner: null,
+    }, null, 2));
+    process.exit(summary.executed ? 0 : 2);
+  } finally {
+    await browser.close();
+    await fixtures.close();
+  }
+}
+
 if (mode !== "microbench" && mode !== "mechanical") {
-  console.error("use --mode agent, --mode microbench, or --mode richtext");
+  console.error("use --mode agent, --mode confounded, --mode microbench, or --mode richtext");
   process.exit(2);
 }
 const outDir = process.env.MACLAW_BENCH_OUT || path.join(os.tmpdir(), `maclaw-microbench-${stamp}`);

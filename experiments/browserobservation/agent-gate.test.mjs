@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentPrerequisite, chatCompletionsURL, providerURL, redactSecrets } from "./agent-gate.mjs";
+import { agentPrerequisite, chatCompletionsURL, helperPrerequisite, providerURL, redactSecrets } from "./agent-gate.mjs";
 
 const ready = {
   MACLAW_BENCH_MODEL_BASE_URL: "https://open.bigmodel.cn/api/paas/v4",
@@ -62,6 +62,43 @@ test("Bot1 anthropic endpoint and member name are accepted", () => {
   assert.equal(gate.ok, true);
   assert.equal(gate.protocol, "anthropic");
   assert.equal(gate.vision_assumed, false);
+  assert.equal(gate.image_route, "unconfirmed");
+  assert.equal(gate.same_model_vision_arm, false);
+  assert.equal(gate.admin_test_is_harness, false);
+});
+
+test("admin fixed-prompt test is not a harness route", () => {
+  const gate = agentPrerequisite({ ...ready, MACLAW_BENCH_ROUTE: "admin-test" });
+  assert.equal(gate.ok, false);
+  assert.equal(gate.admin_test_is_harness, false);
+  assert.match(gate.problems.join(" "), /固定测试提示/);
+});
+
+test("image confirmation is explicit and still does not assume vision", () => {
+  const gate = agentPrerequisite({ ...ready, MACLAW_BENCH_IMAGE_ROUTE: "confirmed" });
+  assert.equal(gate.ok, true);
+  assert.equal(gate.image_route, "confirmed");
+  assert.equal(gate.same_model_vision_arm, true);
+  assert.equal(gate.vision_assumed, false);
+});
+
+test("confounded helper must be a different model with its own key", () => {
+  const same = helperPrerequisite({
+    ...ready,
+    MACLAW_BENCH_HELPER_MODEL_BASE_URL: "https://vision.example/v1",
+    MACLAW_BENCH_HELPER_MODEL_NAME: "glm-5.3-flash",
+    MACLAW_BENCH_HELPER_MODEL_API_KEY: "sk-helper-example",
+  });
+  assert.equal(same.ok, false);
+  const helper = helperPrerequisite({
+    MACLAW_BENCH_LOOPBACK: "1",
+    MACLAW_BENCH_HELPER_MODEL_BASE_URL: "http://127.0.0.1:9/v1",
+    MACLAW_BENCH_HELPER_MODEL_NAME: "vision-helper",
+    MACLAW_BENCH_HELPER_PROTOCOL: "openai",
+  });
+  assert.equal(helper.ok, true);
+  assert.equal(helper.not_primary_ab, true);
+  assert.equal(helper.key_present, false);
 });
 
 test("redaction removes bearer keys from traces", () => {

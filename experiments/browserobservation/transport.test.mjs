@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
-import { equalArmBudget, runProvisionedTrial } from "./agent.mjs";
+import { equalArmBudget, runBoundedArms, runConfoundedArms, runProvisionedTrial } from "./agent.mjs";
 
 const env = {
   MACLAW_BENCH_LOOPBACK: "1",
@@ -244,5 +244,107 @@ test("semantic arm gives the model snapshot text and clicks the ref it names", a
     assert.equal(seen.join("").includes("data:image/png"), false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("default same-model entry does not send an image while the route is unconfirmed", async () => {
+  const seen = [];
+  const server = await serve(async (req, res) => {
+    const raw = await new Promise((resolve) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    });
+    seen.push(raw);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      model: "glm-5.3-flash",
+      choices: [{ message: { tool_calls: [{ id: "d", type: "function", function: { name: "done", arguments: "{}" } }] } }],
+    }));
+  });
+  try {
+    const summary = await runBoundedArms({
+      env: { ...env, MACLAW_BENCH_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/v1` },
+      tasks: [{ id: "form_fill", path: "/form" }],
+      contractTest: true,
+      pageFactory: async () => ({
+        async evaluate() { return null; },
+        async screenshot() { throw new Error("screenshot arm ran without image confirmation"); },
+      }),
+      snapshotFn: async () => ({ text: "r1 button", store: new Map() }),
+    });
+    assert.equal(summary.contract_test_not_observed_llm, true);
+    assert.equal(summary.vision_arm_ran, false);
+    assert.equal(summary.comparable, false);
+    assert.equal(summary.winner, null);
+    assert.equal(summary.vision_scored, false);
+    assert.deepEqual(summary.results.map((trial) => trial.arm), ["semantic"]);
+    assert.equal(seen.join("").includes("base64"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("confounded helper receives the png and the text model does not", async () => {
+  const primary = [];
+  const helperBodies = [];
+  const textServer = await serve(async (req, res) => {
+    const raw = await new Promise((resolve) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    });
+    primary.push(raw);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      model: "glm-5.3-flash",
+      choices: [{ message: { tool_calls: [{ id: "d", type: "function", function: { name: "done", arguments: "{}" } }] } }],
+    }));
+  });
+  const helperServer = await serve(async (req, res) => {
+    const raw = await new Promise((resolve) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    });
+    helperBodies.push(raw);
+    const step = helperBodies.length;
+    const message = step === 1
+      ? { tool_calls: [{ id: "s", type: "function", function: { name: "screenshot", arguments: "{}" } }] }
+      : { tool_calls: [{ id: "c", type: "function", function: { name: "click", arguments: JSON.stringify({ x: 8, y: 9 }) } }] };
+    if (step > 2) message.tool_calls = [{ id: "d", type: "function", function: { name: "done", arguments: "{}" } }];
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ model: "vision-helper", choices: [{ message }] }));
+  });
+  const clicks = [];
+  try {
+    const summary = await runConfoundedArms({
+      env: {
+        ...env,
+        MACLAW_BENCH_MODEL_BASE_URL: `http://127.0.0.1:${textServer.address().port}/v1`,
+        MACLAW_BENCH_HELPER_MODEL_BASE_URL: `http://127.0.0.1:${helperServer.address().port}/v1`,
+        MACLAW_BENCH_HELPER_MODEL_NAME: "vision-helper",
+        MACLAW_BENCH_HELPER_PROTOCOL: "openai",
+      },
+      tasks: [{ id: "form_fill", path: "/form" }],
+      contractTest: true,
+      pageFactory: async () => ({
+        async evaluate() { return null; },
+        async screenshot() { return png(); },
+        mouse: { async click(x, y) { clicks.push({ x, y }); } },
+      }),
+      snapshotFn: async () => ({ text: "r1 button", store: new Map() }),
+    });
+    assert.equal(summary.confounded, true);
+    assert.equal(summary.not_primary_ab, true);
+    assert.equal(summary.comparable, false);
+    assert.equal(summary.winner, null);
+    assert.equal(summary.docs_do_not_require_this, true);
+    assert.equal(primary.join("").includes("base64"), false);
+    assert.match(helperBodies.join(""), /base64/);
+    assert.deepEqual(clicks, [{ x: 8, y: 9 }]);
+  } finally {
+    await new Promise((resolve) => textServer.close(resolve));
+    await new Promise((resolve) => helperServer.close(resolve));
   }
 });

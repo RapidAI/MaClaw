@@ -1,4 +1,4 @@
-import { agentPrerequisite, providerURL, redactSecrets, resolveProtocol, sameOfficialModel } from "./agent-gate.mjs";
+import { agentPrerequisite, helperPrerequisite, helperTrialEnv, providerURL, redactSecrets, resolveProtocol, sameOfficialModel, officialModelTail } from "./agent-gate.mjs";
 import { clickRef, semanticSnapshot, typeRef } from "./observe.mjs";
 import { ARM_A_RULES, ARM_B_RULES, TASK_GOALS } from "./prompts.mjs";
 
@@ -185,7 +185,7 @@ export function parseModelMessage(body, protocol) {
   };
 }
 
-export async function completeChat({ env, transcript, tools, trace, fetchImpl = fetch }) {
+export async function completeChat({ env, transcript, tools, trace, fetchImpl = fetch, member = "official-flash" }) {
   const started = Date.now();
   const key = String(env.MACLAW_BENCH_MODEL_API_KEY || "");
   const wire = buildWire(env, transcript, tools);
@@ -223,7 +223,9 @@ export async function completeChat({ env, transcript, tools, trace, fetchImpl = 
     error.status = response.status;
     throw error;
   }
-  if (!sameOfficialModel(env.MACLAW_BENCH_MODEL_NAME, parsed.model)) {
+  const namedMatch = !parsed.model || officialModelTail(parsed.model) === officialModelTail(env.MACLAW_BENCH_MODEL_NAME);
+  const matches = member === "named" ? namedMatch : sameOfficialModel(env.MACLAW_BENCH_MODEL_NAME, parsed.model);
+  if (!matches) {
     const error = new Error("model_mismatch");
     error.code = "model_mismatch";
     error.response_model = parsed.model;
@@ -267,8 +269,8 @@ async function applySemantic(page, call, snap, trace) {
   return clickRef(snap.store, ref);
 }
 
-export async function runProvisionedTrial({ page, arm, goal, env = process.env, fetchImpl = fetch, maxCalls = 5, contractTest = false, snapshotFn = null }) {
-  const gate = agentPrerequisite(env);
+export async function runProvisionedTrial({ page, arm, goal, env = process.env, fetchImpl = fetch, maxCalls = 5, contractTest = false, snapshotFn = null, member = "official-flash" }) {
+  const gate = agentPrerequisite(env, { member });
   if (!gate.ok) return { executed: false, ready: false, model_calls: 0, observed_llm: false, gate };
   const tools = toolsFor(arm);
   const seed = String(env.MACLAW_BENCH_SEED || "bench-1");
@@ -283,7 +285,7 @@ export async function runProvisionedTrial({ page, arm, goal, env = process.env, 
   let simulatedHandoff = false;
   try {
     while (modelCalls < maxCalls) {
-      const parsed = await completeChat({ env, transcript, tools, trace, fetchImpl });
+      const parsed = await completeChat({ env, transcript, tools, trace, fetchImpl, member });
       modelCalls += 1;
       const calls = parsed.toolCalls || [];
       transcript.push({ role: "assistant", text: parsed.text || "", toolCalls: calls });
@@ -347,6 +349,7 @@ async function finish({ page, trace, modelCalls, arm, aborted, simulatedHandoff,
     model_calls: modelCalls,
     stopped,
     aborted,
+    vision_scored: false,
     simulated_handoff: simulatedHandoff,
     human_verified: simulatedHandoff ? humanVerified : false,
     browser_primitives: trace.filter((event) => event.kind === "browser_primitive").length,
@@ -355,16 +358,35 @@ async function finish({ page, trace, modelCalls, arm, aborted, simulatedHandoff,
   };
 }
 
-export async function runBoundedArms({ env = process.env, browser, origin, tasks = AB_TASKS, fetchImpl = fetch, contractTest = false, pageFactory }) {
+function comparisonFields(results, imageConfirmed) {
+  const visionRejected = results.some((trial) => trial.aborted === "vision_rejected");
+  const bothArms = results.some((trial) => trial.arm === "screenshot") && results.some((trial) => trial.arm === "semantic");
+  return {
+    comparison: "same_model",
+    same_model_vision_arm: imageConfirmed,
+    vision_arm_ran: imageConfirmed,
+    comparable: Boolean(imageConfirmed && bothArms && !visionRejected),
+    winner: null,
+    vision_scored: false,
+    admin_test_is_harness: false,
+    primary_limitation: imageConfirmed
+      ? "截图臂只在父流程确认标准推理路由已经接受过图片后才发送 PNG。若响应拒绝图片，comparable 为 false，不把该臂记成更差。"
+      : "官方文档列出 glm-5.3-flash 的图像输入，但这个成员标签没有 vision，也还没有该路由的成功图片响应。默认只跑语义文本臂，不发送图片，也不把缺席的视觉臂记成更差。管理端固定测试提示不是这条路由。",
+  };
+}
+
+export async function runBoundedArms({ env = process.env, browser, origin, tasks = AB_TASKS, fetchImpl = fetch, contractTest = false, pageFactory, snapshotFn = null }) {
   const gate = agentPrerequisite(env);
-  if (!gate.ok) return { executed: false, ready: false, observed_llm: false, model_calls: 0, gate };
+  if (!gate.ok) return { executed: false, ready: false, observed_llm: false, model_calls: 0, comparison: "same_model", winner: null, gate };
+  const imageConfirmed = gate.image_route === "confirmed";
   const requested = Number(env.MACLAW_BENCH_PER_ARM_CALLS || 5);
   const budget = equalArmBudget(tasks.length, gate.max_calls, requested);
   if (!budget.fits) return { executed: false, ready: false, observed_llm: false, model_calls: 0, reason: "budget_does_not_fit_equal_arms" };
+  const arms = imageConfirmed ? ["screenshot", "semantic"] : ["semantic"];
   const results = [];
   let aborted = false;
   for (const task of tasks) {
-    for (const arm of ["screenshot", "semantic"]) {
+    for (const arm of arms) {
       const page = pageFactory ? await pageFactory(task, arm) : await openTask(browser, origin, task);
       const trial = await runProvisionedTrial({
         page,
@@ -374,9 +396,10 @@ export async function runBoundedArms({ env = process.env, browser, origin, tasks
         fetchImpl,
         maxCalls: budget.per_arm_calls,
         contractTest,
+        snapshotFn,
       });
       if (!pageFactory && page.context) await page.context().close();
-      results.push({ task: task.id, ...trial });
+      results.push({ task: task.id, role: arm === "screenshot" ? "same_model_vision" : "same_model_text", ...trial });
       if (trial.aborted) aborted = true;
     }
   }
@@ -390,6 +413,80 @@ export async function runBoundedArms({ env = process.env, browser, origin, tasks
     seed: env.MACLAW_BENCH_SEED || "bench-1",
     model_calls: results.reduce((sum, trial) => sum + trial.model_calls, 0),
     aborted,
+    ...comparisonFields(results, imageConfirmed),
+    results,
+  };
+}
+
+export async function runConfoundedArms({ env = process.env, browser, origin, tasks = AB_TASKS, fetchImpl = fetch, contractTest = false, pageFactory, snapshotFn = null }) {
+  const textGate = agentPrerequisite(env);
+  const helper = helperPrerequisite(env);
+  if (!textGate.ok || !helper.ok) {
+    return {
+      executed: false,
+      ready: false,
+      observed_llm: false,
+      model_calls: 0,
+      comparison: "confounded_text_glm_vs_vision_helper",
+      confounded: true,
+      not_same_model: true,
+      not_primary_ab: true,
+      winner: null,
+      vision_scored: false,
+      text_gate: textGate,
+      helper,
+    };
+  }
+  const requested = Number(env.MACLAW_BENCH_PER_ARM_CALLS || 5);
+  const budget = equalArmBudget(tasks.length, textGate.max_calls, requested);
+  if (!budget.fits) return { executed: false, ready: false, observed_llm: false, model_calls: 0, reason: "budget_does_not_fit_equal_arms" };
+  const helperEnv = helperTrialEnv(env);
+  const results = [];
+  for (const task of tasks) {
+    const textPage = pageFactory ? await pageFactory(task, "semantic") : await openTask(browser, origin, task);
+    const textTrial = await runProvisionedTrial({
+      page: textPage,
+      arm: "semantic",
+      goal: TASK_GOALS[task.id] || task.id,
+      env,
+      fetchImpl,
+      maxCalls: budget.per_arm_calls,
+      contractTest,
+      snapshotFn,
+    });
+    if (!pageFactory && textPage.context) await textPage.context().close();
+    results.push({ task: task.id, role: "primary_text", ...textTrial });
+    const helperPage = pageFactory ? await pageFactory(task, "screenshot") : await openTask(browser, origin, task);
+    const helperTrial = await runProvisionedTrial({
+      page: helperPage,
+      arm: "screenshot",
+      goal: TASK_GOALS[task.id] || task.id,
+      env: helperEnv,
+      fetchImpl,
+      maxCalls: budget.per_arm_calls,
+      contractTest,
+      member: "named",
+    });
+    if (!pageFactory && helperPage.context) await helperPage.context().close();
+    results.push({ task: task.id, role: "vision_helper", ...helperTrial });
+  }
+  return {
+    executed: true,
+    ready: true,
+    observed_llm: contractTest !== true,
+    contract_test_not_observed_llm: contractTest === true,
+    comparison: "confounded_text_glm_vs_vision_helper",
+    confounded: true,
+    not_same_model: true,
+    not_primary_ab: true,
+    comparable: false,
+    winner: null,
+    vision_scored: false,
+    docs_do_not_require_this: true,
+    text_model: env.MACLAW_BENCH_MODEL_NAME,
+    helper_model: env.MACLAW_BENCH_HELPER_MODEL_NAME,
+    model_calls: results.reduce((sum, trial) => sum + trial.model_calls, 0),
+    note: "官方模型页列出 glm-5.3-flash 的原生图像输入，所以这不是默认的同一模型对照。它只在父流程另外提供视觉助手时运行，不能把助手臂说成 GLM 视觉更差或更好。",
     results,
   };
 }
