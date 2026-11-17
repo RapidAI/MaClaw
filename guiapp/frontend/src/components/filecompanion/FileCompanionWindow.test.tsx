@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import FileCompanionWindow, {
     clampCompanionChatWidth,
     clampCompanionTabScroll,
@@ -70,6 +70,15 @@ const exportChatPdf = vi.fn();
 const exportChatCloud = vi.fn();
 const exportWebChatCloud = vi.fn();
 const showItemInFolder = vi.fn();
+// Delayed export mocks schedule a real timer and then return. The timer must
+// be cleared before the next test, or a late resolve calls ShowItemInFolder
+// on this shared mock during a later assertion.
+const pendingExportTimers: ReturnType<typeof setTimeout>[] = [];
+function exportPathLater(path: string, delayMs: number) {
+    return new Promise<string>((resolve) => {
+        pendingExportTimers.push(setTimeout(() => resolve(path), delayMs));
+    });
+}
 const exportTex = vi.fn();
 const exportChatTex = vi.fn();
 const exportWebPdf = vi.fn();
@@ -318,6 +327,10 @@ function doc(path: string, extra: Record<string, unknown> = {}) {
     const name = path.split(/[/\\]/).pop() || path;
     return { path, name, editable: false, readOnly: true, canExport: true, content: "", loadedHash: "h", sessionId: name, size: 12, error: "", ...extra };
 }
+
+afterEach(() => {
+    for (const timer of pendingExportTimers.splice(0)) clearTimeout(timer);
+});
 
 beforeEach(() => {
     setCompanionUiLang("zh-Hans");
@@ -8657,9 +8670,7 @@ describe("FileCompanionWindow", () => {
     // disabled, the reader sees a control that answers nothing, which reads as
     // broken rather than busy.
     it("shows an in-flight export instead of a button that answers nothing", async () => {
-        exportChatPdf.mockImplementation(() => new Promise<string>((resolve) => {
-            setTimeout(() => resolve("C:/out/a-伴读对话.pdf"), 150);
-        }));
+        exportChatPdf.mockImplementation(() => exportPathLater("C:/out/a-伴读对话.pdf", 150));
         boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
         open.mockImplementation(async (path: string) => doc(path, {
             messages: [
@@ -8697,9 +8708,7 @@ describe("FileCompanionWindow", () => {
     // with an equivalent lookup leaves it passing, so treat it as a guard
     // against the wiring changing, not against every way it could.
     it("keeps a running export bound to its own file when tabs change", async () => {
-        exportChatPdf.mockImplementation(() => new Promise<string>((resolve) => {
-            setTimeout(() => resolve("C:/out/a-伴读对话.pdf"), 150);
-        }));
+        exportChatPdf.mockImplementation(() => exportPathLater("C:/out/a-伴读对话.pdf", 150));
         // Distinct content per file, so an export that picked up the wrong
         // document is caught in what it wrote, not only in which path it sent.
         boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
