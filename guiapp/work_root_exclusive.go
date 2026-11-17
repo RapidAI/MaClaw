@@ -551,6 +551,9 @@ func (a *App) exclusiveWorkRoot(taskPath, dir string) string {
 	if a == nil {
 		return dir
 	}
+	if ghost, active, _ := a.repoMaintGuardForOwner(projectSessionOwnerID(taskPath)); active && ghost != "" {
+		return ghost
+	}
 	original := dir
 	taskPath = normalizeProjectSessionPath(taskPath)
 	dir = normalizeProjectSessionPath(dir)

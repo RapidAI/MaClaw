@@ -261,6 +261,80 @@ func TestOfferCheckoutCardCancelDoesNotRecord(t *testing.T) {
 	}
 }
 
+func TestCheckoutStopDoesNotDropAConfirmedCard(t *testing.T) {
+	t.Cleanup(func() {
+		ClearCheckoutConfirmation("alice")
+		SetUserHoldsBrowser(false, "")
+	})
+	stop := make(chan struct{})
+	close(stop)
+	sess := &BrowserAgentSession{OwnerID: "alice", stopCh: stop}
+	for i := 0; i < 32; i++ {
+		w := &checkoutWait{
+			card:     CheckoutCard{Amount: "9.98"},
+			owner:    "alice",
+			done:     make(chan struct{}),
+			gen:      ^uint64(0),
+			closed:   true,
+			approved: true,
+		}
+		close(w.done)
+		amount, err := waitCheckoutCard(sess, w)
+		if err != nil || amount != "9.98" {
+			t.Fatalf("confirmed card lost to stop: amount=%q err=%v", amount, err)
+		}
+	}
+	if amount, ok := PendingCheckoutConfirmation("alice"); ok {
+		t.Fatalf("reading the card stored %s", amount)
+	}
+}
+
+func TestCheckoutStopLeavesAnOpenCardStopped(t *testing.T) {
+	t.Cleanup(func() { ClearCheckoutConfirmation("alice") })
+	stop := make(chan struct{})
+	close(stop)
+	sess := &BrowserAgentSession{OwnerID: "alice", stopCh: stop}
+	w := &checkoutWait{
+		card:  CheckoutCard{Amount: "9.98"},
+		owner: "alice",
+		done:  make(chan struct{}),
+		gen:   ^uint64(0),
+	}
+	amount, err := waitCheckoutCard(sess, w)
+	if amount != "" || !errors.Is(err, errUserHoldStopped) {
+		t.Fatalf("open card amount=%q err=%v", amount, err)
+	}
+	if amount, ok := PendingCheckoutConfirmation("alice"); ok {
+		t.Fatalf("stop stored %s", amount)
+	}
+}
+
+func TestCheckoutApproveAfterCloseDoesNotRecord(t *testing.T) {
+	t.Cleanup(func() {
+		checkoutWaitMu.Lock()
+		checkoutWaitCurrent = nil
+		checkoutWaitMu.Unlock()
+		ClearCheckoutConfirmation("alice")
+		SetUserHoldsBrowser(false, "")
+	})
+	SetUserHoldsBrowser(false, "")
+	w := &checkoutWait{
+		card:   CheckoutCard{Amount: "9.98"},
+		owner:  "alice",
+		done:   make(chan struct{}),
+		closed: true,
+	}
+	checkoutWaitMu.Lock()
+	checkoutWaitCurrent = w
+	checkoutWaitMu.Unlock()
+	if err := ResolveCheckoutCard(true); err == nil {
+		t.Fatal("approving a closed card succeeded")
+	}
+	if amount, ok := PendingCheckoutConfirmation("alice"); ok {
+		t.Fatalf("closed card stored confirmation %s", amount)
+	}
+}
+
 func TestCancelUserHoldDoesNotTellTheModelToProbe(t *testing.T) {
 	t.Cleanup(func() { SetUserHoldsBrowser(false, "") })
 	SetUserHoldsBrowser(true, "secret")

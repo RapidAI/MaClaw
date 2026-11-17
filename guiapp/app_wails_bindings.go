@@ -2302,12 +2302,21 @@ type AIAssistantSendRequest struct {
 	// The message must run as that task, not as a local slash command or an
 	// open task-panel action.
 	RemoteControl bool `json:"-"`
+	// PromptProfile selects which host adapter is calling the shared assistant.
+	// Empty keeps the ACP programming path. "mcp" is the inbound MCP host.
+	PromptProfile string `json:"-"`
+	// TaskMode is the inbound MCP task mode. Explicit "chat" stays on the
+	// shared assistant path. Empty keeps the workspace-mutation heuristic.
+	TaskMode string `json:"-"`
 	// BackendDisplayText marks a turn the backend started for a GUI feature
 	// (for example a desktopd deploy). The round is announced with this user
 	// row text, since the panel never sent the request.
 	BackendDisplayText string `json:"-"`
 	// OnDone runs once with the final response of this turn.
 	OnDone func(*IMAgentResponse) `json:"-"`
+	// GitHubRepoMaint marks the automatic start of a repository maintenance
+	// task. Follow-up answers in that task leave it false.
+	GitHubRepoMaint bool `json:"-"`
 }
 
 type AIAssistantContextMessage struct {
@@ -2722,7 +2731,9 @@ func normalizeAIAssistantStreamDelta(existing, incoming string, snapshotMode boo
 
 // SendAIAssistantMessage handles a desktop AI assistant message (Wails binding).
 func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentResponse, error) {
-	a.ensureInteractionInfra()
+	if !repoMaintTestTurnActive(req) {
+		a.ensureInteractionInfra()
+	}
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
 		return nil, fmt.Errorf("message text is required")
@@ -2735,7 +2746,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	// It must run through the normal task loop, not be consumed by a desktop
 	// control/passthrough command handler.
 	isStartMenuLaunch := strings.TrimSpace(req.IMPlatform) != "" && strings.TrimSpace(req.IMTargetUID) != ""
-	if !isStartMenuLaunch && !req.RemoteControl {
+	if !isStartMenuLaunch && !req.RemoteControl && !req.GitHubRepoMaint {
 		if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
 			normalizeArtifactResponseSource(resp)
 			return resp, err
@@ -2794,6 +2805,16 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		}
 	}
 	if projectPath != "" {
+		if maintDir, maintActive, maintErr := a.repoMaintSendWorkspace(userID, projectPath, req.GitHubRepoMaint); maintActive || maintErr != nil {
+			if maintErr != nil {
+				return nil, maintErr
+			}
+			if maintDir != "" && maintDir != projectPath {
+				if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, maintDir); err != nil {
+					return nil, err
+				}
+			}
+		} else {
 		// Resolve the execution directory the same way the other project-task
 		// consumers do (im_tools_local.go, recentTaskExecutionProjectPath): a
 		// tab-bound override wins, then the task's persistent workingDir tag /
@@ -2829,6 +2850,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		if strings.TrimSpace(req.ExpertID) != "" {
 			a.bindExpertTaskWorkspace(userID, strings.TrimSpace(req.EventScopeID), projectPath)
 		}
+		}
 	}
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
 		log.Printf("[AI assistant] reject closed project request request_id=%s session_key=%q project_path=%q", requestID, userID, projectPath)
@@ -2841,6 +2863,21 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	// events emitted during the goroutine's execution carry the correct scope.
 	if scopeID := strings.TrimSpace(req.EventScopeID); scopeID != "" {
 		a.sessionEventScopeIDs.Store(userID, scopeID)
+	}
+
+	if req.GitHubRepoMaint || a.repoMaintOwnerActive(userID) {
+		prev := req.OnDone
+		auto := req.GitHubRepoMaint
+		req.OnDone = func(resp *IMAgentResponse) {
+			if prev != nil {
+				prev(resp)
+			}
+			a.finishRepoMaintTurn(userID, auto, resp)
+		}
+	}
+	if repoMaintTestTurnActive(req) {
+		a.runAIAssistantMessageAsyncForUser(req, nil, requestID, text, userID)
+		return &IMAgentResponse{RequestID: requestID, Deferred: true}, nil
 	}
 
 	hubClient := a.ensureHubClient()
@@ -3246,10 +3283,14 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	if msgLang == "" {
 		msgLang = a.CurrentLanguage
 	}
+	platform := desktopPlatform
+	if req.GitHubRepoMaint {
+		platform = githubRepoMaintPlatform
+	}
 	msg := IMUserMessage{
 		RequestID:                   requestID,
 		UserID:                      userID,
-		Platform:                    desktopPlatform,
+		Platform:                    platform,
 		Text:                        text,
 		Lang:                        msgLang,
 		ResumeSlotID:                strings.TrimSpace(req.ResumeSlotID),
@@ -3278,6 +3319,16 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	// request, so it has no in-flight round for the request_id. Announce the
 	// round first (same protocol as session-round/goal continuation and ACP
 	// Mode B) or every token/progress below is dropped as unmatched.
+	if repoMaintTestShortCircuit(req) {
+		var turned *IMAgentResponse
+		if repoMaintTestTurn != nil {
+			turned = repoMaintTestTurn(req)
+		} else {
+			turned = &IMAgentResponse{Error: "repo maint test turn"}
+		}
+		emitFinalResponse(turned)
+		return
+	}
 	if req.RemoteControl {
 		a.emitAIAssistantForegroundRoundStarted(requestID, userID, text, remoteControlTurnDisplayText(text))
 	} else if display := strings.TrimSpace(req.BackendDisplayText); display != "" {

@@ -195,7 +195,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 
 	// Goal continuation messages bypass all confirm gates — the goal itself
 	// is the user's confirmed intent. No need for per-turn confirmation.
-	if msg.Platform == "goal-continuation" || msg.Platform == sessionRoundContinuationPlatform {
+	if msg.Platform == "goal-continuation" || msg.Platform == sessionRoundContinuationPlatform || msg.Platform == githubRepoMaintPlatform {
 		result.SkipNeedsConfirmGate = true
 	}
 

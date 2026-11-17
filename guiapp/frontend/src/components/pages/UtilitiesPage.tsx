@@ -51,11 +51,13 @@ import type { ExpertDefinition } from '../ai/expertTypes';
 import type { CodingTaskLaunch } from '../ai/codingTaskLaunch';
 import { DEFAULT_EXPERT_ICON, expertDefinitionFromInstallResult, expertPageForIndex, overlayInstalledItems, parseExpertListJSON, withInstalledExpert } from '../ai/expertTypes';
 import { VirtualRepositoryWorkspace } from './VirtualRepositoryWorkspace';
+import { MCPServerPanel } from './MCPServerPanel';
+import { GitHubRepoMaintWorkspace } from './GitHubRepoMaintWorkspace';
 import { tailText } from '../../i18n/mnTail'
 
 export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
 
-type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'virtual-repository' | 'browser-extension' | 'hub-deploy' | 'bot-node';
+type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'virtual-repository' | 'browser-extension' | 'hub-deploy' | 'bot-node' | 'mcp-server' | 'github-repo-maint';
 
 type HubDeployRow = {
     id: string;
@@ -235,7 +237,7 @@ function getApp(): Promise<any | null> {
 }
 
 /** Stroke icons for home tool cards — same conventions as the AppsPage icon set. */
-const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' | 'node' }) => {
+const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' | 'node' | 'mcp' }) => {
     const common = {
         viewBox: '0 0 24 24',
         fill: 'none',
@@ -297,6 +299,14 @@ const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repos
                     <circle cx="18" cy="7" r="2.2" />
                     <circle cx="18" cy="17" r="2.2" />
                     <path d="M8.2 11.2 15.8 8M8.2 12.8 15.8 16" />
+                </svg>
+            );
+        case 'mcp':
+            return (
+                <svg {...common}>
+                    <rect x="3" y="4" width="18" height="6" rx="1.5" />
+                    <path d="M7 7h.01M12 7h5" />
+                    <path d="M8 14h8M10 14v4M14 14v4" />
                 </svg>
             );
     }
@@ -1358,6 +1368,9 @@ export const UtilitiesPage = ({
         vscodeExtCard: tailText(lang ?? "", 'Launch VS Code (Extension)', '启动 VS Code（扩展）'),
         vscodeExtDesc: tailText(lang ?? "", 'Install the first-party MaClaw extension — chat stays in the bottom panel, never hides the Explorer', '安装 MaClaw 一方扩展，聊天固定在 VS Code 底部面板，不遮挡文件管理器'),
         virtualRepositoryCard: tailText(lang ?? "", 'Virtual Repository', '虚拟仓库'),
+        githubRepoMaintCard: tailText(lang ?? "", 'GitHub repository maintenance', 'GitHub 仓库自动维护', 'GitHub 倉庫自動維護'),
+        githubRepoMaintDesc: tailText(lang ?? "", 'Start a coding task in a local checkout when GitHub reports an issue, pull request, push, or failed check', '仓库出现议题、拉取请求、推送或检查失败时，在本地检出里自动开工', '倉庫出現議題、拉取請求、推送或檢查失敗時，在本機檢出裡自動開工'),
+        githubRepoMaintOpen: tailText(lang ?? "", 'Open', '进入', '進入'),
         hubDeployCard: tailText(lang ?? "", 'Deploy Hub', 'HUB部署工具'),
         hubDeployDesc: tailText(lang ?? "", 'Install a Hub from source over SSH and register it with Hub Center', '填写 IP、SSH 账号后，从源码安装 Hub 并向 Hub Center 注册'),
         hubDeployEmail: tailText(lang ?? "", 'Owner email', '注册邮箱'),
@@ -1365,6 +1378,8 @@ export const UtilitiesPage = ({
         hubDeployConfirm: tailText(lang ?? "", 'Install', '确认安装'),
         hubDeployWorking: tailText(lang ?? "", 'Installing…', '正在安装…'),
         hubDeployEmpty: tailText(lang ?? "", 'No Hub installs yet', '还没有部署记录'),
+        mcpServerCard: tailText(lang ?? "", 'MCP server', 'MCP服务器'),
+        mcpServerDesc: tailText(lang ?? "", 'Let Cursor, Claude, and Codex create tasks on this computer and read the results', '让 Cursor、Claude、Codex 在这台电脑上创建任务并取回结果'),
         botNodeCard: tailText(lang ?? "", 'Private bot node', '私有Bot节点'),
         botNodeDesc: tailText(lang ?? "", 'Install desktopd and a bot node, then register it to this Hub with an enroll code', '安装 desktopd 与 bot 节点，并用注册码注册到当前 Hub'),
         botNodeName: tailText(lang ?? "", 'Name (optional)', '名称（可选）'),
@@ -2883,10 +2898,18 @@ export const UtilitiesPage = ({
         return <VirtualRepositoryWorkspace isZh={lang || (isZh ? "zh-Hans" : "en")} onBack={() => setView('home')} onOpenCodingTask={onOpenVirtualRepositoryTask} />;
     }
 
+    if (view === 'github-repo-maint') {
+        return <GitHubRepoMaintWorkspace lang={lang ?? ''} onBack={() => setView('home')} />;
+    }
+
+    if (view === 'mcp-server') {
+        return <MCPServerPanel lang={lang ?? ''} onBack={() => setView('home')} />;
+    }
+
     if (view === 'home') {
         const toolCards: Array<{
             key: string;
-            icon: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' | 'node';
+            icon: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' | 'node' | 'mcp';
             title: string;
             desc: string;
             cta: string;
@@ -2894,6 +2917,14 @@ export const UtilitiesPage = ({
             disabled?: boolean;
             onClick: () => void;
         }> = [
+            {
+                key: 'mcp-server',
+                icon: 'mcp',
+                title: t.mcpServerCard,
+                desc: t.mcpServerDesc,
+                cta: t.open,
+                onClick: () => setView('mcp-server'),
+            },
             {
                 key: 'hub-deploy',
                 icon: 'hub',
@@ -2909,6 +2940,14 @@ export const UtilitiesPage = ({
                 desc: t.virtualRepositoryDesc,
                 cta: t.open,
                 onClick: () => setView('virtual-repository'),
+            },
+            {
+                key: 'github-repo-maint',
+                icon: 'repository',
+                title: t.githubRepoMaintCard,
+                desc: t.githubRepoMaintDesc,
+                cta: t.githubRepoMaintOpen,
+                onClick: () => setView('github-repo-maint'),
             },
             {
                 key: 'survey',

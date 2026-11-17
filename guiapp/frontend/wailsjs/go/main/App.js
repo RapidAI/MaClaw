@@ -1709,6 +1709,14 @@ export function GetACPHostStatus() {
   return window['go']['main']['App']['GetACPHostStatus']();
 }
 
+export function GetMCPHostStatus() {
+  return window['go']['main']['App']['GetMCPHostStatus']();
+}
+
+export function GenerateMCPHostAPIKey() {
+  return window['go']['main']['App']['GenerateMCPHostAPIKey']();
+}
+
 export function GetAIAssistantInitStatus() {
   return window['go']['main']['App']['GetAIAssistantInitStatus']();
 }
@@ -5848,6 +5856,26 @@ export function GitHubAPIRequest(arg1, arg2) {
 
 export function GitHubCloneRepository(arg1, arg2) {
   return window['go']['main']['App']['GitHubCloneRepository'](arg1, arg2);
+}
+
+export function ListGitHubRepoMaintRules() {
+  return window['go']['main']['App']['ListGitHubRepoMaintRules']();
+}
+
+export function SaveGitHubRepoMaintRule(arg1) {
+  return window['go']['main']['App']['SaveGitHubRepoMaintRule'](arg1);
+}
+
+export function DeleteGitHubRepoMaintRule(arg1) {
+  return window['go']['main']['App']['DeleteGitHubRepoMaintRule'](arg1);
+}
+
+export function SetGitHubRepoMaintEnabled(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetGitHubRepoMaintEnabled'](arg1, arg2, arg3);
+}
+
+export function ReplayGitHubRepoMaint(arg1) {
+  return window['go']['main']['App']['ReplayGitHubRepoMaint'](arg1);
 }
 
 export function StartMaclawAppApprovalWorkflow(arg1) {

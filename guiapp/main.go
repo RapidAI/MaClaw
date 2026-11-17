@@ -47,6 +47,11 @@ func Main(v string) {
 	if handleCLIInfo(args) {
 		return
 	}
+	// `MaClaw mcp` is the stdio proxy for the inbound MCP server. It must
+	// exit before the window, the log file, and the dictionary load.
+	if isMCPStdioCommand(args) {
+		os.Exit(runMCPStdioProxy(os.Stdin, os.Stdout))
+	}
 	isTUI := isTUISubcommand(args)
 
 	// --- Log to file: ~/.maclaw/logs/maclaw.log ---

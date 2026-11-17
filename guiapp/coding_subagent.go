@@ -1729,6 +1729,9 @@ func (c *codingSubAgentCallbacks) ExtendIterationBudget(used, toolCalls int) int
 	if c.subagent.loopCtx != nil && c.subagent.loopCtx.IsCancelled() {
 		return 0
 	}
+	if c.repoMaintIterationCapped() {
+		return 0
+	}
 	extra := c.GetMaxIterations()
 	if extra <= 0 {
 		return 0

@@ -503,6 +503,13 @@ type App struct {
 	thirdPartyGateway   *thirdPartyGatewayManager
 	acpHost             *acpHost // Mode B: loopback ACP for VS Code programming agent
 	acpHostMu           sync.Mutex
+	mcpHost             *mcpHost // Inbound MCP: other tools create and read tasks on this GUI
+	mcpHostMu           sync.Mutex
+	mcpHostSyncMu       sync.Mutex
+	mcpRunsMu           sync.Mutex
+	mcpRuns             map[string]*mcpRunRecord
+	mcpPinsMu           sync.Mutex
+	mcpPins             map[string]mcpModelPin
 	imGatewaySyncMu     sync.Mutex
 	passthroughRegistry *PassthroughRegistry
 	// configMu serializes writers (load/mutate/publish). Hot-path readers do NOT
@@ -2892,6 +2899,7 @@ func (a *App) startup(ctx context.Context) {
 	startupBegin := time.Now()
 	log.Printf("[startup] begin")
 	bootLog("App.startup ctx_nil=%v", ctx == nil)
+	a.ensureRepoMaintWorker()
 	// Start the runtime sampler before any heavy work so the first sample
 	// captures the WebView processes created alongside this window.
 	startPerfSampler()
@@ -3083,6 +3091,7 @@ func (a *App) startup(ctx context.Context) {
 			// Defer slightly so hub/IM handler warmup can begin first.
 			time.Sleep(2 * time.Second)
 			a.ensureACPHost()
+			a.ensureMCPHost()
 		}()
 		// CodeGen SSO token validation on startup (qianxin brand only).
 		// Claude/QAgent Code now uses CodeGen's remote Anthropic-compatible
@@ -3481,6 +3490,7 @@ func (a *App) shutdown(ctx context.Context) {
 	// moved again while shutdown was starting.
 	a.persistLivePetOriginForExit()
 	a.stopLocalRelay()
+	a.stopMCPHost()
 	// Retire the companion on every shutdown path, including Wails-initiated
 	// quits that bypass requestAppQuit. The relay fires once per process.
 	a.signalFileCompanionQuit()
@@ -8510,6 +8520,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	policyModeChanged := false
 	imGatewayChanged := false
 	acpHostChanged := false
+	mcpHostChanged := false
 	petChanged := false
 
 	for key, value := range patch {
@@ -9112,6 +9123,23 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.SetAcpHostMirrorUI(v)
 			// no restart required
+		case "mcp_host_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetMcpHostEnabled(v)
+			mcpHostChanged = true
+		case "mcp_host_port":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 || v > 65535 {
+				return corelib.AppConfig{}, fmt.Errorf("mcp_host_port must be between 0 and 65535 (0 = try 18790)")
+			}
+			cfg.McpHostPort = v
+			mcpHostChanged = true
 		case "default_proxy_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -10124,6 +10152,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	}
 	if acpHostChanged && a.ctx != nil {
 		go a.syncACPHostFromConfig()
+	}
+	if mcpHostChanged && a.ctx != nil {
+		go a.syncMCPHostFromConfig()
 	}
 	if floatingChanged {
 		go func(cfg corelib.AppConfig) {

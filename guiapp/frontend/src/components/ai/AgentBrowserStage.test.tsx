@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AgentBrowserStage, containedImagePoint, mergeAgentBrowserStage, type AgentBrowserStageState } from "./AgentBrowserStage";
 
@@ -110,5 +110,29 @@ describe("AgentBrowserStage", () => {
         fireEvent.click(screen.getByTestId("agent-browser-attention-cancel"));
         expect(onFinish).toHaveBeenCalledWith(false);
         expect(screen.queryByTestId("agent-browser-shield")).toBeNull();
+    });
+
+    it("fills a code on the card and does not put it in the page chrome", async () => {
+        const onSecret = vi.fn().mockResolvedValue(undefined);
+        render(<AgentBrowserStage
+            state={{ ...base, secretMethod: "otp", secretDigits: 6, secretSubmission: "enter", host: "passport.jd.com", frame: "aGk=" }}
+            lang="zh-Hans"
+            onSecret={onSecret}
+        />);
+        expect(screen.getByTestId("agent-browser-secret-card").textContent).toContain("输入验证码");
+        expect(screen.getByTestId("agent-browser-secret-card").textContent).toContain("passport.jd.com");
+        expect(screen.getByTestId("agent-browser-shield")).toBeTruthy();
+        expect(screen.queryByTestId("agent-browser-take-control")).toBeNull();
+        const input = screen.getByTestId("agent-browser-secret-input") as HTMLInputElement;
+        const submit = screen.getByTestId("agent-browser-secret-submit") as HTMLButtonElement;
+        expect(submit.disabled).toBe(true);
+        fireEvent.change(input, { target: { value: "123456" } });
+        expect(submit.disabled).toBe(false);
+        expect(screen.getByTestId("agent-browser-stage").textContent).not.toContain("请在对话");
+        fireEvent.click(submit);
+        expect(onSecret).toHaveBeenCalledWith("123456", true);
+        await waitFor(() => expect((screen.getByTestId("agent-browser-secret-input") as HTMLInputElement).value).toBe(""));
+        expect(screen.getByTestId("agent-browser-stage").textContent).not.toContain("123456");
+        expect(screen.getByTestId("agent-browser-shield")).toBeTruthy();
     });
 });

@@ -119,6 +119,10 @@ func TestClassifyDesktopLaunchDoesNotStealKnownSubcommands(t *testing.T) {
 	if err := os.WriteFile(initFile, []byte("not a subcommand file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	mcpFile := filepath.Join(dir, "mcp")
+	if err := os.WriteFile(mcpFile, []byte("not a subcommand file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +142,8 @@ func TestClassifyDesktopLaunchDoesNotStealKnownSubcommands(t *testing.T) {
 		{"MaClaw", "generate-android-pwa-shell"},
 		{"MaClaw", "maclaw://onboarding?referral_handoff=1"},
 		{"MaClaw", "init", initFile},
+		{"MaClaw", "mcp"},
+		{"MaClaw", "mcp", mcpFile},
 	}
 	for _, args := range cases {
 		got := classifyDesktopLaunchForOS(args, "darwin")

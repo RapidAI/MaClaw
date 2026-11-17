@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobilebot/core/account_store.dart';
@@ -65,6 +66,8 @@ class _FakeRemoteApi extends RemoteControlApi {
   int lastAfterCursor = 0;
   StreamController<Map<String, dynamic>>? liveController;
   List<Map<String, dynamic>> followEvents = const [];
+  void Function(int watches)? onWatch;
+  Future<void> Function(int watches)? beforeReply;
 
   @override
   Future<Map<String, dynamic>> watchTask(
@@ -73,6 +76,9 @@ class _FakeRemoteApi extends RemoteControlApi {
   ) async {
     calls.add('watch:$grantId:$projectPath');
     final watches = calls.where((call) => call.startsWith('watch:')).length;
+    onWatch?.call(watches);
+    final wait = beforeReply;
+    if (wait != null) await wait(watches);
     if (watches > 1 && gapReplies.isNotEmpty) return gapReplies.removeAt(0);
     if (watches > 1 && gapWatchReply != null) return gapWatchReply!;
     final reply = <String, dynamic>{'stream_proto': 2};
@@ -530,7 +536,7 @@ void main() {
         ),
       );
       await _pumpFew(tester);
-      expect(find.text('helloworld续'), findsOneWidget);
+      expect(find.text('helloworld续', findRichText: true), findsOneWidget);
       expect(find.text('想想'), findsOneWidget);
       expect(find.text('running · edit parser'), findsOneWidget);
       expect(api.calls, contains('watch:g-view:/p/a'));
@@ -568,7 +574,7 @@ void main() {
         ),
       );
       await _pumpFew(tester);
-      expect(find.text('终稿续'), findsOneWidget);
+      expect(find.text('终稿续', findRichText: true), findsOneWidget);
       expect(find.text('想想'), findsOneWidget);
       expect(find.text('running · edit parser'), findsOneWidget);
       expect(find.text('helloworld'), findsNothing);
@@ -607,7 +613,7 @@ void main() {
         );
         await _pumpFew(tester);
         expect(api.lastAfterCursor, 40);
-        expect(find.text('补上'), findsOneWidget);
+        expect(find.text('补上', findRichText: true), findsOneWidget);
         expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
       },
     );
@@ -647,7 +653,7 @@ void main() {
       );
       await _pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
-      expect(find.text('补上'), findsOneWidget);
+      expect(find.text('补上', findRichText: true), findsOneWidget);
       await _pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
     });
@@ -687,7 +693,7 @@ void main() {
       );
       await _pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
-      expect(find.text('补上'), findsNothing);
+      expect(find.text('补上', findRichText: true), findsNothing);
       api.liveController?.add({
         'event': 'snapshot',
         'resync': true,
@@ -695,7 +701,7 @@ void main() {
       });
       await _pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
-      expect(find.text('补上'), findsOneWidget);
+      expect(find.text('补上', findRichText: true), findsOneWidget);
     });
 
     testWidgets('a watch that does not move the watermark does not ask again', (
@@ -729,6 +735,612 @@ void main() {
       });
       await _pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
+    });
+
+    testWidgets('a later frame of the same hole during the read does not ask', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..watchReplyCursor = 40
+        ..followEvents = [
+          {'event': 'snapshot', 'resync': true, 'cursor': 80},
+        ]
+        ..gapReplies = [
+          {'stream_proto': 2, 'cursor': 50},
+          {
+            'stream_proto': 2,
+            'cursor': 85,
+            'live': {
+              'request_id': 'r2',
+              'cursor': 85,
+              'parts': [
+                {'kind': 'text', 'text': '补上'},
+              ],
+            },
+          },
+        ];
+      api.onWatch = (watches) {
+        if (watches != 2) return;
+        api.liveController?.add({
+          'event': 'snapshot',
+          'resync': true,
+          'cursor': 85,
+        });
+      };
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
+      expect(find.text('补上', findRichText: true), findsOneWidget);
+      await _pumpFew(tester);
+      expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
+    });
+
+    testWidgets(
+      'a hole that opens during the follow-up read is asked after it',
+      (tester) async {
+        final api = _FakeRemoteApi()
+          ..detail = sampleDetail()
+          ..watchReplyCursor = 40
+          ..followEvents = [
+            {'event': 'snapshot', 'resync': true, 'cursor': 80},
+          ]
+          ..gapReplies = [
+            {'stream_proto': 2, 'cursor': 50},
+            {
+              'stream_proto': 2,
+              'cursor': 80,
+              'live': {
+                'request_id': 'r2',
+                'cursor': 80,
+                'parts': [
+                  {'kind': 'text', 'text': '半截'},
+                ],
+              },
+            },
+            {
+              'stream_proto': 2,
+              'cursor': 90,
+              'live': {
+                'request_id': 'r2',
+                'cursor': 90,
+                'parts': [
+                  {'kind': 'text', 'text': '补上'},
+                ],
+              },
+            },
+          ];
+        api.onWatch = (watches) {
+          if (watches != 3) return;
+          api.liveController?.add({
+            'event': 'snapshot',
+            'resync': true,
+            'cursor': 90,
+          });
+        };
+        await tester.pumpWidget(
+          _app(
+            api,
+            home: const RemoteTaskScreen(
+              grant: _grantView,
+              taskPath: '/p/a',
+              taskName: '任务甲',
+            ),
+          ),
+        );
+        await _pumpFew(tester);
+        expect(api.calls.where((call) => call.startsWith('watch:')).length, 4);
+        expect(find.text('补上', findRichText: true), findsOneWidget);
+        expect(find.text('半截'), findsNothing);
+        await _pumpFew(tester);
+        expect(api.calls.where((call) => call.startsWith('watch:')).length, 4);
+      },
+    );
+
+    testWidgets('a cursor hole says the output is catching up', (tester) async {
+      final gate = Completer<void>();
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..watchReplyCursor = 40
+        ..followEvents = [
+          {'event': 'snapshot', 'resync': true, 'cursor': 80},
+        ]
+        ..gapWatchReply = {
+          'stream_proto': 2,
+          'cursor': 80,
+          'live': {
+            'request_id': 'r2',
+            'cursor': 80,
+            'parts': [
+              {'kind': 'text', 'text': '补上'},
+            ],
+          },
+        }
+        ..beforeReply = (watches) {
+          if (watches == 2) return gate.future;
+          return Future<void>.value();
+        };
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.text('正在补齐中断的输出'), findsOneWidget);
+      gate.complete();
+      await _pumpFew(tester);
+      expect(find.text('正在补齐中断的输出'), findsNothing);
+      expect(find.text('补上', findRichText: true), findsOneWidget);
+    });
+
+    testWidgets(
+      'a responded answer already in the transcript is not shown twice',
+      (tester) async {
+        final api = _FakeRemoteApi()
+          ..detail = sampleDetail()
+          ..watchReplyLive = {
+            'request_id': 'r1',
+            'responded': true,
+            'cursor': 4,
+            'parts': [
+              {'kind': 'text', 'text': '已经生成好了'},
+            ],
+          }
+          ..followEvents = [
+            {'event': 'heartbeat', 'cursor': 4},
+          ];
+        await tester.pumpWidget(
+          _app(
+            api,
+            home: const RemoteTaskScreen(
+              grant: _grantView,
+              taskPath: '/p/a',
+              taskName: '任务甲',
+            ),
+          ),
+        );
+        await _pumpFew(tester);
+        expect(find.text('已经生成好了', findRichText: true), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a long transcript opens at the tail and stays put after the reader scrolls up',
+      (tester) async {
+        final api = _FakeRemoteApi()
+          ..detail = RemoteTaskDetail(
+            task: const RemoteTask(
+              id: '/p/a',
+              name: '任务甲',
+              projectPath: '/p/a',
+            ),
+            messages: [
+              for (var i = 0; i < 30; i++)
+                RemoteMessage(
+                  role: i.isEven ? 'user' : 'assistant',
+                  content: '记录 $i ${'内容' * 24}',
+                ),
+            ],
+          )
+          ..watchReplyLive = {
+            'request_id': 'r1',
+            'cursor': 4,
+            'parts': [
+              {'kind': 'text', 'text': '开头'},
+            ],
+          }
+          ..followEvents = [
+            {
+              'event': 'token',
+              'cursor': 5,
+              'cursor_from': 5,
+              'text': '续',
+              'pieces': ['续'],
+            },
+          ];
+        await tester.pumpWidget(
+          _app(
+            api,
+            home: const RemoteTaskScreen(
+              grant: _grantView,
+              taskPath: '/p/a',
+              taskName: '任务甲',
+            ),
+          ),
+        );
+        await _pumpFew(tester);
+        final position = tester
+            .widget<ListView>(find.byType(ListView))
+            .controller!
+            .position;
+        expect(position.maxScrollExtent, greaterThan(200));
+        expect(position.maxScrollExtent - position.pixels, lessThan(2));
+        expect(find.text('开头续', findRichText: true), findsOneWidget);
+
+        await tester.drag(find.byType(ListView), const Offset(0, 360));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        final parked = position.pixels;
+        final extent = position.maxScrollExtent;
+        expect(extent - parked, greaterThan(80));
+
+        api.liveController?.add({
+          'event': 'token',
+          'cursor': 6,
+          'cursor_from': 6,
+          'text': '又来了一段${'补' * 40}',
+          'pieces': ['又来了一段${'补' * 40}'],
+        });
+        await tester.pump();
+        await tester.pump();
+        // The new lines are below the fold. Growing them must not pull the
+        // reader back down; the old extent can stay put until that tail is built.
+        expect(position.pixels, parked);
+        position.jumpTo(position.maxScrollExtent);
+        await tester.pump();
+        expect(
+          find.textContaining('又来了一段', findRichText: true),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('a live reply on an empty transcript replaces the empty hint', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+        )
+        ..watchReplyLive = {
+          'request_id': 'r1',
+          'cursor': 2,
+          'parts': [
+            {'kind': 'text', 'text': '正在写'},
+          ],
+        }
+        ..followEvents = [
+          {'event': 'heartbeat', 'cursor': 2},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(find.text('正在写', findRichText: true), findsOneWidget);
+      expect(find.text('还没有对话记录'), findsNothing);
+    });
+
+    testWidgets(
+      'artifacts stay under the transcript so the latest reply is the tail',
+      (tester) async {
+        final api = _FakeRemoteApi()
+          ..detail = RemoteTaskDetail(
+            task: const RemoteTask(
+              id: '/p/a',
+              name: '任务甲',
+              projectPath: '/p/a',
+            ),
+            messages: [
+              for (var i = 0; i < 30; i++)
+                RemoteMessage(
+                  role: i.isEven ? 'user' : 'assistant',
+                  content: '记录 $i ${'内容' * 24}',
+                ),
+            ],
+            artifacts: const [RemoteArtifact(title: '报告.pdf')],
+          )
+          ..followEvents = [
+            {'event': 'heartbeat', 'cursor': 1},
+          ];
+        await tester.pumpWidget(
+          _app(
+            api,
+            home: const RemoteTaskScreen(
+              grant: _grantView,
+              taskPath: '/p/a',
+              taskName: '任务甲',
+            ),
+          ),
+        );
+        await _pumpFew(tester);
+        final transcript = find.byKey(const ValueKey('remote-task-transcript'));
+        final position = tester
+            .widget<ListView>(transcript)
+            .controller!
+            .position;
+        expect(position.maxScrollExtent, greaterThan(200));
+        expect(position.maxScrollExtent - position.pixels, lessThan(2));
+        final listBottom = tester.getRect(transcript).bottom;
+        expect(
+          tester.getRect(find.text('产出物')).top,
+          greaterThanOrEqualTo(listBottom - 1),
+        );
+        final reply = tester.getRect(find.textContaining('记录 28'));
+        expect(listBottom - reply.bottom, lessThan(240));
+        expect(reply.top, greaterThan(tester.getRect(transcript).top));
+      },
+    );
+
+    testWidgets('a trimmed history row does not replace the streamed answer', (
+      tester,
+    ) async {
+      final cap = '甲' * 4000;
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+          messages: [
+            RemoteMessage(
+              role: 'assistant',
+              content: '$cap…',
+              filePaths: ['/tmp/报告.pdf'],
+            ),
+          ],
+        )
+        ..watchReplyLive = {
+          'request_id': 'r1',
+          'responded': true,
+          'cursor': 8,
+          'parts': [
+            {'kind': 'text', 'text': '${cap}乙乙乙'},
+          ],
+        }
+        ..followEvents = [
+          {'event': 'heartbeat', 'cursor': 8},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(find.textContaining('乙乙乙', findRichText: true), findsOneWidget);
+      expect(find.textContaining('…', findRichText: true), findsNothing);
+      expect(find.text('报告.pdf'), findsOneWidget);
+    });
+
+    testWidgets('a final that contains the snapshot tail replaces that tail', (
+      tester,
+    ) async {
+      final cap = '甲' * 4000;
+      final tail = '乙' * 80;
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+          messages: [
+            RemoteMessage(
+              role: 'assistant',
+              content: '$cap…',
+              filePaths: ['/tmp/报告.pdf'],
+            ),
+          ],
+        )
+        ..watchReplyLive = {
+          'request_id': 'r1',
+          'cursor': 8,
+          'parts': [
+            {'kind': 'text', 'text': tail},
+          ],
+        }
+        ..followEvents = [
+          {
+            'event': 'response',
+            'cursor': 9,
+            'cursor_from': 9,
+            'request_id': 'r1',
+            'terminal': {'text': '${cap}中段$tail'},
+          },
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(find.textContaining('中段', findRichText: true), findsOneWidget);
+      expect(find.textContaining('…', findRichText: true), findsNothing);
+      expect(find.text('报告.pdf'), findsOneWidget);
+    });
+
+    testWidgets(
+      'a snapshot tail stays beside a trimmed history of another slice',
+      (tester) async {
+        final cap = '甲' * 4000;
+        final api = _FakeRemoteApi()
+          ..detail = RemoteTaskDetail(
+            task: const RemoteTask(
+              id: '/p/a',
+              name: '任务甲',
+              projectPath: '/p/a',
+            ),
+            messages: [RemoteMessage(role: 'assistant', content: '$cap…')],
+          )
+          ..watchReplyLive = {
+            'request_id': 'r1',
+            'cursor': 8,
+            'responded': true,
+            'parts': [
+              {'kind': 'text', 'text': '${'乙' * 80}结尾'},
+            ],
+          }
+          ..followEvents = [
+            {
+              'event': 'response',
+              'cursor': 9,
+              'cursor_from': 9,
+              'request_id': 'r1',
+              'terminal': {'text': cap},
+            },
+          ];
+        await tester.pumpWidget(
+          _app(
+            api,
+            home: const RemoteTaskScreen(
+              grant: _grantView,
+              taskPath: '/p/a',
+              taskName: '任务甲',
+            ),
+          ),
+        );
+        await _pumpFew(tester);
+        expect(find.textContaining('…', findRichText: true), findsOneWidget);
+        expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
+      },
+    );
+
+    testWidgets('the opening and the ending of one answer share one bubble', (
+      tester,
+    ) async {
+      final cap = '甲' * 4000;
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+          messages: [
+            const RemoteMessage(role: 'user', content: '写报告'),
+            RemoteMessage(
+              role: 'assistant',
+              content: '$cap…',
+              filePaths: ['/tmp/报告.pdf'],
+            ),
+          ],
+        )
+        ..watchReplyLive = {
+          'request_id': 'r1',
+          'cursor': 8,
+          'responded': true,
+          'display_text': '〔远控〕写报告',
+          'parts': [
+            {'kind': 'text', 'text': '${'乙' * 40}结尾'},
+          ],
+        }
+        ..followEvents = [
+          {'event': 'heartbeat', 'cursor': 8},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(find.byType(MarkdownBody), findsOneWidget);
+      expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
+      expect(find.text('报告.pdf'), findsOneWidget);
+    });
+
+    testWidgets('an opening and an ending that share a run are stitched once', (
+      tester,
+    ) async {
+      final shared = '重叠' * 40;
+      final cap = '${'甲' * (4000 - shared.length)}$shared';
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+          messages: [
+            const RemoteMessage(role: 'user', content: '写报告'),
+            RemoteMessage(role: 'assistant', content: '$cap…'),
+          ],
+        )
+        ..watchReplyLive = {
+          'request_id': 'r1',
+          'cursor': 8,
+          'responded': true,
+          'display_text': '写报告',
+          'parts': [
+            {'kind': 'text', 'text': '$shared${'乙' * 30}结尾'},
+          ],
+        }
+        ..followEvents = [
+          {'event': 'heartbeat', 'cursor': 8},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(find.byType(MarkdownBody), findsOneWidget);
+      expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
+      expect(find.textContaining('…', findRichText: true), findsNothing);
+    });
+
+    testWidgets('a later prompt keeps the older trimmed answer', (
+      tester,
+    ) async {
+      final cap = '甲' * 4000;
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+          messages: [
+            const RemoteMessage(role: 'user', content: '上一问'),
+            RemoteMessage(role: 'assistant', content: '$cap…'),
+          ],
+        )
+        ..watchReplyLive = {
+          'request_id': 'r2',
+          'cursor': 8,
+          'responded': true,
+          'display_text': '新问题',
+          'parts': [
+            {'kind': 'text', 'text': '结尾'},
+          ],
+        }
+        ..followEvents = [
+          {'event': 'heartbeat', 'cursor': 8},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(find.byType(MarkdownBody), findsNWidgets(2));
+      expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
     });
 
     testWidgets('shows messages and artifacts; view grant hides composer', (

@@ -36,6 +36,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/notification"
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/repomaint"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	skillpkg "github.com/RapidAI/CodeClaw/hub/internal/skill"
@@ -1619,5 +1620,29 @@ func NewRouter(
 	registerBotnodeDoc(mux)
 	registerSelfDesktopdDoc(mux)
 	registerHubInstallDoc(mux)
+
+	// GitHub repo maintenance: public HMAC webhook plus machine-authenticated
+	// rule and delivery routes. Offline rows stay in SQLite. The online hook
+	// uses SendToOnlineMachine and does not touch the short pending queue.
+	if hubDB != nil {
+		var repoMaintSender repomaint.OnlineSender
+		if deviceSvc != nil {
+			repoMaintSender = deviceSvc
+		}
+		repoMaintSvc, err := repomaint.Open(hubDB, repoMaintSender)
+		if err != nil {
+			log.Printf("[github-repo-maint] schema init failed: %v", err)
+		} else {
+			var repoMaintAuth repomaint.MachineAuthenticator
+			if identity != nil {
+				repoMaintAuth = identity
+			}
+			repoMaintSvc.Register(mux, repoMaintAuth)
+			if deviceSvc != nil {
+				deviceSvc.SetOnlineHook(repoMaintSvc.PushPending)
+			}
+			go repoMaintSvc.StartSweeper()
+		}
+	}
 	return mux
 }

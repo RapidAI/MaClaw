@@ -947,6 +947,12 @@ func (s *Session) SetFilesInFrame(frameID, selector string, files []string) erro
 }
 
 func (s *Session) Press(key string) error {
+	return s.PressInFrame("", key)
+}
+
+// PressInFrame sends the key to the frame that owns the focused field.
+// An out-of-process iframe does not see a key dispatched on the parent target.
+func (s *Session) PressInFrame(frameID, key string) error {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return fmt.Errorf("missing key")
@@ -954,21 +960,28 @@ func (s *Session) Press(key string) error {
 	spec := keyEventSpec(key)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.client.Send("Input.dispatchKeyEvent", map[string]interface{}{
-		"type":                  "keyDown",
-		"key":                   spec.key,
-		"code":                  spec.code,
-		"windowsVirtualKeyCode": spec.vk,
-	}, DefaultCmdTimeout); err != nil {
+	sessionID := ""
+	if frameID != "" && frameID != "main" {
+		sessionID = s.frameSessionID(frameID)
+	}
+	send := func(typ string) error {
+		params := map[string]interface{}{
+			"type":                  typ,
+			"key":                   spec.key,
+			"code":                  spec.code,
+			"windowsVirtualKeyCode": spec.vk,
+		}
+		if sessionID != "" {
+			_, err := s.client.SendOn(sessionID, "Input.dispatchKeyEvent", params, DefaultCmdTimeout)
+			return err
+		}
+		_, err := s.client.Send("Input.dispatchKeyEvent", params, DefaultCmdTimeout)
 		return err
 	}
-	_, err := s.client.Send("Input.dispatchKeyEvent", map[string]interface{}{
-		"type":                  "keyUp",
-		"key":                   spec.key,
-		"code":                  spec.code,
-		"windowsVirtualKeyCode": spec.vk,
-	}, DefaultCmdTimeout)
-	return err
+	if err := send("keyDown"); err != nil {
+		return err
+	}
+	return send("keyUp")
 }
 
 type keySpec struct {

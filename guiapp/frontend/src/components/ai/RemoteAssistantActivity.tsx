@@ -113,6 +113,8 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
         liveLabel = localizeText(lang, "Paused on the other computer", "对方任务已暂停", "對方任務已暫停");
     } else if (review) {
         liveLabel = localizeText(lang, "Waiting for review on the other computer…", "等待对方处理审核…", "等待對方處理審核…");
+    } else if (session.syncing) {
+        liveLabel = localizeText(lang, "Catching up the other computer's output…", "正在补齐中断的输出…", "正在補齊中斷的輸出…");
     } else if (workbench?.pending_approval && !hasLive) {
         liveLabel = localizeText(lang, "Plan waiting for approval on the other computer…", "对方任务等待计划确认…", "對方任務等待計畫確認…");
     } else if (activity?.awaitingReply && (!workflowStatus || workflowStatus.tone !== "info")) {

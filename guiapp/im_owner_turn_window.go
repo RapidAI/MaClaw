@@ -222,7 +222,7 @@ func (h *IMMessageHandler) ownerTurnSteerEligible(msg *IMUserMessage) bool {
 // cancel or a merge.
 func imHostAuthoredTurnPlatform(platform string) bool {
 	switch platform {
-	case "goal-continuation", unattendedWorkflowPlatform, sessionRoundContinuationPlatform:
+	case "goal-continuation", unattendedWorkflowPlatform, sessionRoundContinuationPlatform, githubRepoMaintPlatform:
 		return true
 	}
 	return false

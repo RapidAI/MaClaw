@@ -14,10 +14,10 @@ import (
 //
 // After a navigate the page must be loaded (document.readyState=complete) and
 // show at least one interactive element before the step returns; a page that
-// stays blank is reloaded once. A page that is a sign-in form, a captcha /
-// "安全验证" check, or is still blank after the wait is a login wall: the
-// result carries LoginWallMarker so the caller classifies the step as
-// login_wall and asks the person to take over instead of waiting blindly.
+// stays blank is reloaded once. A sign-in form is marked login_wall so the
+// agent calls submit_secret. A captcha / "安全验证" check, or a page that is
+// still blank after the wait, carries LoginWallMarker and hands the preview
+// to the person.
 //
 // MACLAW_BROWSER_NAV_READY_TIMEOUT (seconds, default 18, 0 disables) bounds
 // each wait; the blank-page threshold for a wall is MACLAW_BROWSER_BLANK_WALL
@@ -161,8 +161,10 @@ func (r NavReadyReport) Note() string {
 		b.WriteString(", reloaded once")
 	}
 	b.WriteString(")")
-	if r.Wall != "" {
-		fmt.Fprintf(&b, "\n%s %s: this page needs the person (sign-in, captcha/安全验证, or it stays blank). The person should take over the MaClaw preview. Do not ask for a password or code in chat. After they finish, probe before the next click or type.", LoginWallMarker, r.Wall)
+	if r.Wall == "login_form" || r.Wall == "login_url" {
+		fmt.Fprintf(&b, "\n%s %s: this is a sign-in page. Type the account name yourself. Call browser(action=\"submit_secret\", method, ref) for the password, email/SMS code, or authenticator code. method is password, otp, or authenticator. Do not pass the secret and do not ask for it in chat. A captcha, QR code, or passkey uses browser(action=\"request_takeover\").", LoginWallMarker, r.Wall)
+	} else if r.Wall != "" {
+		fmt.Fprintf(&b, "\n%s %s: this page needs the person (captcha/安全验证, or it stays blank). The person should take over the MaClaw preview. Do not ask for a password or code in chat. After they finish, probe before the next click or type.", LoginWallMarker, r.Wall)
 	} else if !r.Ready {
 		b.WriteString("\npage not fully ready yet; probe once more before acting.")
 	}
@@ -216,3 +218,17 @@ func (s *Session) waitPageReady() (NavReadyReport, bool) {
 var localPageRe = regexp.MustCompile(`(?i)^(file:|data:|blob:|about:|https?://(localhost|127\.|0\.0\.0\.0|\[::1\])[:/]?)`)
 
 func localPageURL(u string) bool { return localPageRe.MatchString(strings.TrimSpace(u)) }
+
+// wallHandsPageOver is the navigate takeover. A normal sign-in form stays
+// with the agent, which calls submit_secret for the password or code.
+// Captcha text and a blank remote page still hand the preview to the person.
+func wallHandsPageOver(wall string) (string, bool) {
+	switch wall {
+	case "captcha":
+		return "captcha", true
+	case "blank":
+		return "attention", true
+	default:
+		return "", false
+	}
+}

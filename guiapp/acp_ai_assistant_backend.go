@@ -51,6 +51,20 @@ func acpPromptMayMutateWorkspace(text string) bool {
 	return false
 }
 
+// assistantPromptUsesMutatingRuntime decides whether this prompt opens the
+// durable coding ledger. Explicit MCP chat is a conversation task, so the
+// text heuristic must not turn it into a workspace write. ACP and coding
+// tasks keep that heuristic.
+func assistantPromptUsesMutatingRuntime(profile, taskMode, text, projectPath string) bool {
+	if strings.TrimSpace(projectPath) == "" {
+		return false
+	}
+	if assistantHostProfile(profile) == assistantHostMCP && strings.EqualFold(strings.TrimSpace(taskMode), "chat") {
+		return false
+	}
+	return acpPromptMayMutateWorkspace(text)
+}
+
 type acpProgrammingRuntimeExecutor func(context.Context, codingruntime.ExecutionRequest) codingruntime.ExecutionResult
 
 func (f acpProgrammingRuntimeExecutor) Execute(ctx context.Context, request codingruntime.ExecutionRequest) codingruntime.ExecutionResult {
@@ -106,6 +120,71 @@ User request:
 const acpProgrammingWorkspacePrefix = "[VS Code / ACP programming workspace]"
 const acpProgrammingUserRequestMarker = "User request:"
 
+const (
+	assistantHostACP = "acp"
+	assistantHostMCP = "mcp"
+)
+
+// assistantHostProfile keeps every existing caller on the ACP path.
+// Only an explicit mcp profile selects the inbound MCP host.
+func assistantHostProfile(v string) string {
+	if strings.EqualFold(strings.TrimSpace(v), assistantHostMCP) {
+		return assistantHostMCP
+	}
+	return assistantHostACP
+}
+
+// mcpProgrammingRuntimeTaskID is the durable ledger identity for one MCP
+// coding prompt. It is separate from the ACP hash so the two hosts cannot
+// cancel each other's tasks.
+func mcpProgrammingRuntimeTaskID(ownerID, workspace, requestID string) string {
+	sum := sha256.Sum256([]byte("mcp-programming-runtime-v1\n" + strings.TrimSpace(ownerID) + "\n" + normalizeProjectSessionPath(workspace) + "\n" + strings.TrimSpace(requestID)))
+	return fmt.Sprintf("mcp-coding-%x", sum[:16])
+}
+
+// programmingHostPolicy is the wrapper ledger for one ACP or MCP prompt.
+// ACP keeps the git workspace gate because its project path is the editor
+// folder. MCP does not: a missing repository must not skip the turn before
+// the coding workbench can admit the real writer.
+func programmingHostPolicy(hostMCP bool, workspace, mode string) codingruntime.PolicySnapshot {
+	return codingruntime.PolicySnapshot{
+		ProjectRoot:                workspace,
+		Mode:                       mode,
+		FinalWorkspaceGateRequired: !hostMCP,
+	}
+}
+
+// programmingHostProber probes only when the wrapper gate will read the
+// result. Runner still runs the probe before and after the executor. MCP
+// leaves the gate off, so a git status there only delays the turn.
+func programmingHostProber(policy codingruntime.PolicySnapshot, workspace string) codingruntime.WorkspaceProber {
+	if !policy.FinalWorkspaceGateRequired {
+		return nil
+	}
+	return codingruntime.NewLocalGitWorkspaceProber(workspace)
+}
+
+// mcpPromptWorkspace is the directory MCP tells the model to edit and the
+// directory the coding ledger watches. toolDir is the cwd tools will use.
+// An empty tool dir keeps the task record path.
+func mcpPromptWorkspace(taskPath, toolDir string) string {
+	if dir := normalizeProjectSessionPath(toolDir); dir != "" {
+		return dir
+	}
+	return normalizeProjectSessionPath(taskPath)
+}
+
+// mcpTaskUserText is the MCP preamble. It is not the VS Code workspace
+// wrapper, so ACP continue-detection does not treat it as an editor prompt.
+func mcpTaskUserText(workspace, userText string) string {
+	userText = strings.TrimSpace(userText)
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return "[MCP task]\n\nUser request:\n" + userText
+	}
+	return fmt.Sprintf("[MCP task]\nworkspace: %s\n\nUser request:\n%s", workspace, userText)
+}
+
 // acpInnerUserRequest returns the User request body from acpProgrammingUserText.
 // Bare-continue planning must see "继续", not the VS Code workspace wrapper.
 func acpInnerUserRequest(userText string) string {
@@ -145,13 +224,29 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	a.ensureInteractionInfra()
 	projectPath := normalizeProjectSessionPath(req.ProjectPath)
 	req.ProjectPath = projectPath
+	profile := assistantHostProfile(req.PromptProfile)
+	hostMCP := profile == assistantHostMCP
+	logTag := "[acp-mode-b]"
+	slashSource := "acp-mode-b:"
+	policyMode := "acp"
+	leasePrefix := "gui:acp:"
+	workflowID := "acp"
+	if hostMCP {
+		logTag = "[mcp-host]"
+		slashSource = "mcp-host:"
+		policyMode = "mcp"
+		leasePrefix = "gui:mcp:"
+		workflowID = "mcp"
+	}
 	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
-	if sessionOwnerID := strings.TrimSpace(req.SessionOwnerID); sessionOwnerID != "" {
-		if !isACPAssistantSessionUserID(sessionOwnerID) {
-			return nil, fmt.Errorf("invalid ACP session owner: %q", sessionOwnerID)
+	if !hostMCP {
+		if sessionOwnerID := strings.TrimSpace(req.SessionOwnerID); sessionOwnerID != "" {
+			if !isACPAssistantSessionUserID(sessionOwnerID) {
+				return nil, fmt.Errorf("invalid ACP session owner: %q", sessionOwnerID)
+			}
+			userID = sessionOwnerID
+			a.bindACPAssistantSessionWorkingDir(userID, projectPath)
 		}
-		userID = sessionOwnerID
-		a.bindACPAssistantSessionWorkingDir(userID, projectPath)
 	}
 
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
@@ -161,7 +256,7 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 
 	// Passthrough slash commands (same as GUI). Match original text, not the
 	// workspace-wrapped body (wrappers would break /slash detection).
-	if resp, handled := a.TryHandlePassthroughSlashCommandWithSource(text, "acp-mode-b:"+userID); handled {
+	if resp, handled := a.TryHandlePassthroughSlashCommandWithSource(text, slashSource+userID); handled {
 		return resp, nil
 	}
 
@@ -172,13 +267,17 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 
 	requestID := strings.TrimSpace(req.RequestID)
 	if requestID == "" {
-		requestID = fmt.Sprintf("acp-prog-%d", time.Now().UnixNano())
+		idPrefix := "acp-prog-"
+		if hostMCP {
+			idPrefix = "mcp-prog-"
+		}
+		requestID = fmt.Sprintf("%s%d", idPrefix, time.Now().UnixNano())
 	}
-	// Keep ordinary ACP questions on the established shared-chat path. Only a
+	// Keep ordinary questions on the established shared-chat path. Only a
 	// likely workspace mutation gets a durable writer task (and consequently a
 	// cancellation record) so cancelling a simple question never creates a
-	// needless Ledger database/task.
-	mutatingRuntime := acpPromptMayMutateWorkspace(text) && projectPath != ""
+	// needless Ledger database/task. Explicit MCP chat never takes that ledger.
+	mutatingRuntime := assistantPromptUsesMutatingRuntime(profile, req.TaskMode, text, projectPath)
 
 	msgLang := strings.TrimSpace(req.Lang)
 	if msgLang == "" {
@@ -186,6 +285,9 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	}
 	// Same GUI IM path; tools resolve cwd via desktop-user:{projectPath}.
 	agentText := acpProgrammingUserText(projectPath, text)
+	if hostMCP {
+		agentText = mcpTaskUserText(projectPath, text)
+	}
 	msg := IMUserMessage{
 		RequestID:    requestID,
 		UserID:       userID,
@@ -231,6 +333,9 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	runtimeTaskID := ""
 	if mutatingRuntime {
 		runtimeTaskID = acpProgrammingRuntimeTaskID(userID, projectPath, requestID)
+		if hostMCP {
+			runtimeTaskID = mcpProgrammingRuntimeTaskID(userID, projectPath, requestID)
+		}
 	}
 	done := make(chan struct{})
 	defer close(done)
@@ -239,7 +344,7 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 		case <-ctx.Done():
 			a.cancelACPProgrammingRuntimeTask(runtimeTaskID)
 			if _, err := a.CancelAIAssistantSessionForSession(userID); err != nil {
-				log.Printf("[acp-mode-b] cancel session: %v", err)
+				log.Printf("%s cancel session: %v", logTag, err)
 			}
 			a.stopAIAssistantOwnerRuntime(userID)
 		case <-done:
@@ -258,7 +363,7 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	}
 	a.restoreProjectAgentSession(handler, msg.UserID, projectPath)
 	if projectContinuationHistoryMissing(req, handler, msg.UserID, projectPath) {
-		log.Printf("[acp-mode-b] continuation blocked without task history request_id=%s user=%q project=%q", requestID, msg.UserID, projectPath)
+		log.Printf("%s continuation blocked without task history request_id=%s user=%q project=%q", logTag, requestID, msg.UserID, projectPath)
 		resp := projectContinuationHistoryMissingResponse(req, msg.UserID)
 		resp.RequestID = requestID
 		return resp, nil
@@ -270,12 +375,29 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 		a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)
 	}
 
+	// The task record path is the session identity. Tools for a managed task
+	// execute in the tagged work root (or the task workspace/), not in the
+	// folder that only holds task.md. MCP must name that same directory in
+	// the prompt and in the coding ledger. ACP's project path is already the
+	// editor workspace, so it stays unchanged.
+	workspace := projectPath
+	if hostMCP {
+		workspace = mcpPromptWorkspace(projectPath, handler.projectTabWorkDirForOwner(userID))
+		if workspace == "" {
+			workspace = projectPath
+		}
+		msg.Text = mcpTaskUserText(workspace, text)
+		agentText = msg.Text
+	}
 	workDir := ""
 	if projectPath != "" {
 		workDir = a.EffectiveWorkingDirForOwner(userID)
 	}
-	log.Printf("[acp-mode-b] programming prompt request_id=%s user=%q project=%q work_dir=%q text_len=%d agent_text_len=%d",
-		requestID, userID, projectPath, workDir, len(text), len(agentText))
+	if hostMCP && workspace != "" {
+		workDir = workspace
+	}
+	log.Printf("%s programming prompt request_id=%s user=%q project=%q work_dir=%q text_len=%d agent_text_len=%d",
+		logTag, requestID, userID, projectPath, workDir, len(text), len(agentText))
 
 	// ACP remains on the shared GUI agent brain, but a likely workspace-mutating
 	// prompt is now explicitly bound to a durable Runtime task. We do not force
@@ -289,51 +411,78 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 		if store == nil {
 			return nil, fmt.Errorf("coding execution ledger is unavailable")
 		}
-		policy := codingruntime.PolicySnapshot{
-			ProjectRoot:                projectPath,
-			Mode:                       "acp",
-			FinalWorkspaceGateRequired: true,
-		}
+		// ACP's project path is the editor folder, so the wrapper keeps the git
+		// gate. MCP's tool directory often has no repository. The GUI coding
+		// workbench is the writer: it creates a baseline only when an
+		// implementation step is admitted. Requiring that gate here runs first
+		// and, on a missing HEAD, never calls the executor. The host then
+		// reported an empty success. Mode stays "mcp" so this wrapper does not
+		// take the local write lock the workbench needs.
+		policy := programmingHostPolicy(hostMCP, workspace, policyMode)
 		policyDigest, digestErr := codingruntime.PolicyDigest(policy)
 		if digestErr != nil {
-			return nil, fmt.Errorf("freeze ACP coding runtime policy: %w", digestErr)
+			return nil, fmt.Errorf("freeze %s coding runtime policy: %w", strings.ToUpper(policyMode), digestErr)
 		}
 		policy.Digest = policyDigest
 		// Let the shared IM entry build and own its usual loop context. Giving it
 		// a pre-created context bypasses the per-session serialization boundary,
 		// which would break normal ACP confirmation and history semantics.
+		hostWord := strings.ToUpper(policyMode)
+		errorCode := policyMode
+		executorStarted := false
 		executor := acpProgrammingRuntimeExecutor(func(runCtx context.Context, runtimeRequest codingruntime.ExecutionRequest) codingruntime.ExecutionResult {
+			executorStarted = true
 			if runCtx != nil && runCtx.Err() != nil {
-				return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "acp_request_cancelled", ErrorSummary: "ACP coding request was cancelled; inspect workspace before continuation"}
+				return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: errorCode + "_request_cancelled", ErrorSummary: hostWord + " coding request was cancelled; inspect workspace before continuation"}
 			}
 			resp = handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 			if runCtx != nil && runCtx.Err() != nil {
-				return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "acp_request_cancelled", ErrorSummary: "ACP coding request was cancelled; inspect workspace before continuation"}
+				return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: errorCode + "_request_cancelled", ErrorSummary: hostWord + " coding request was cancelled; inspect workspace before continuation"}
 			}
 			if resp != nil && resp.Confirmation != nil {
-				return codingruntime.ExecutionResult{Status: codingruntime.TaskBlocked, SideEffectState: codingruntime.SideEffectNone, ErrorCode: "acp_confirmation_required", ErrorSummary: "ACP coding request requires explicit confirmation before execution"}
+				return codingruntime.ExecutionResult{Status: codingruntime.TaskBlocked, SideEffectState: codingruntime.SideEffectNone, ErrorCode: errorCode + "_confirmation_required", ErrorSummary: hostWord + " coding request requires explicit confirmation before execution"}
 			}
 			if resp != nil && strings.TrimSpace(resp.Error) != "" {
-				return codingruntime.ExecutionResult{Status: codingruntime.TaskFailed, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "acp_agent_failed", ErrorSummary: "ACP coding agent failed; inspect host-local diagnostics"}
+				return codingruntime.ExecutionResult{Status: codingruntime.TaskFailed, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: errorCode + "_agent_failed", ErrorSummary: hostWord + " coding agent failed; inspect host-local diagnostics"}
 			}
-			return codingruntime.ExecutionResult{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectObserved, Evidence: []codingruntime.Evidence{{Type: "acp_agent_completion", Digest: codingRuntimeDigest(requestID)}}}
+			return codingruntime.ExecutionResult{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectObserved, Evidence: []codingruntime.Evidence{{Type: errorCode + "_agent_completion", Digest: codingRuntimeDigest(requestID)}}}
 		})
 		runner := codingruntime.Runner{
 			Store:           store,
-			LeaseOwner:      "gui:acp:" + userID,
+			LeaseOwner:      leasePrefix + userID,
 			LeaseDuration:   15 * time.Minute,
-			WorkspaceProber: codingruntime.NewLocalGitWorkspaceProber(projectPath),
+			WorkspaceProber: programmingHostProber(policy, workspace),
 		}
+		// ProjectRef stays the task record. Coding-subagent admission compares
+		// a child with the workbench attempt, whose project is already the
+		// tool directory. This wrapper is not that parent. Pointing ProjectRef
+		// at the tool directory would only relabel the probe.
 		task, attempt, runErr := runner.Run(ctx, codingruntime.Task{
 			TaskID:        runtimeTaskID,
-			WorkflowID:    "acp",
+			WorkflowID:    workflowID,
 			PhaseID:       requestID,
-			OwnerID:       "gui:acp:" + userID,
+			OwnerID:       leasePrefix + userID,
 			ProjectRef:    projectPath,
-			Mode:          "acp",
+			Mode:          policyMode,
 			RequestedWork: text,
 			PolicyDigest:  policyDigest,
 		}, policy, executor)
+		if hostMCP && !executorStarted && attempt != nil && attempt.Status == codingruntime.TaskBlocked {
+			reason := strings.TrimSpace(attempt.ErrorSummary)
+			if reason == "" {
+				reason = "编程任务在开始前被工作区检查拦住"
+			}
+			if resp == nil {
+				resp = &IMAgentResponse{}
+			}
+			resp.RequestID = requestID
+			resp.SessionKey = userID
+			if task != nil {
+				resp.CodingRuntimeTaskID = task.TaskID
+			}
+			resp.CodingRuntimeAttemptID = attempt.AttemptID
+			return resp, errors.New(reason)
+		}
 		if resp == nil {
 			resp = &IMAgentResponse{}
 		}

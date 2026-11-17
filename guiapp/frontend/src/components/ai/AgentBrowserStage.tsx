@@ -19,6 +19,9 @@ export interface AgentBrowserStageState {
     confirmAddress?: string;
     confirmAmount?: string;
     confirmDetail?: string;
+    secretMethod?: string;
+    secretDigits?: number;
+    secretSubmission?: string;
     seq: number;
 }
 
@@ -47,6 +50,9 @@ export function mergeAgentBrowserStage(
         confirmAddress: "confirmAddress" in next ? String(next.confirmAddress || "") : (prev?.confirmAddress || ""),
         confirmAmount: "confirmAmount" in next ? String(next.confirmAmount || "") : (prev?.confirmAmount || ""),
         confirmDetail: "confirmDetail" in next ? String(next.confirmDetail || "") : (prev?.confirmDetail || ""),
+        secretMethod: "secretMethod" in next ? String(next.secretMethod || "") : (prev?.secretMethod || ""),
+        secretDigits: "secretDigits" in next ? Number(next.secretDigits || 0) : (prev?.secretDigits || 0),
+        secretSubmission: "secretSubmission" in next ? String(next.secretSubmission || "") : (prev?.secretSubmission || ""),
         seq: seq || prev?.seq || 0,
     };
 }
@@ -85,6 +91,7 @@ type StageCaller = {
     AgentBrowserInput?: (payload: string) => Promise<unknown>;
     AgentBrowserClose?: () => Promise<unknown>;
     AgentBrowserConfirm?: (approve: boolean) => Promise<unknown>;
+    AgentBrowserSubmitSecret?: (secret: string, approve: boolean) => Promise<unknown>;
     AgentBrowserFinish?: (done: boolean) => Promise<unknown>;
 };
 
@@ -125,6 +132,12 @@ export function callAgentBrowserConfirm(approve: boolean) {
     if (typeof fn === "function") void fn(approve);
 }
 
+export function callAgentBrowserSubmitSecret(secret: string, approve: boolean) {
+    const fn = stageCaller()?.AgentBrowserSubmitSecret;
+    if (typeof fn === "function") return fn(secret, approve);
+    return Promise.resolve();
+}
+
 export function callAgentBrowserFinish(done: boolean) {
     const fn = stageCaller()?.AgentBrowserFinish;
     if (typeof fn === "function") void fn(done);
@@ -140,10 +153,97 @@ function askCopy(reason: string, lang: string): string {
     if (reason === "login") {
         return chromeText(lang, "Sign in on this page, then mark it done.", "请在这个页面上登录，完成后点「我已完成」。");
     }
+    if (reason === "passkey") {
+        return chromeText(lang, "Finish the passkey on this page. Nothing is sent to the chat.", "请在这个页面上完成通行密钥。不要把结果发到对话。");
+    }
+    if (reason === "qr") {
+        return chromeText(lang, "Scan the code on this page, then mark it done.", "请在这个页面上完成扫码，然后点「我已完成」。");
+    }
     if (reason && reason !== "confirm" && reason !== "preview") {
         return chromeText(lang, "Finish this step on the page, then mark it done.", "请在这个页面上完成这一步，然后点「我已完成」。");
     }
     return "";
+}
+
+function SecretFillCard({
+    state,
+    lang,
+    onSecret,
+}: {
+    state: AgentBrowserStageState;
+    lang: string;
+    onSecret?: (secret: string, approve: boolean) => void | Promise<unknown>;
+}) {
+    const [value, setValue] = useState("");
+    const [failed, setFailed] = useState(false);
+    const [sent, setSent] = useState(false);
+    const method = state.secretMethod || "password";
+    const digits = Number(state.secretDigits || 0);
+    const submit = state.secretSubmission === "enter" || state.secretSubmission === "click";
+    const title = method === "otp"
+        ? chromeText(lang, "Enter the code", "输入验证码")
+        : method === "authenticator"
+            ? chromeText(lang, "Enter the authenticator code", "输入验证器码")
+            : chromeText(lang, "Enter the password", "输入密码");
+    const ready = method === "password"
+        ? value.length > 0
+        : (digits > 0 ? value.length === digits && /^\d+$/.test(value) : /^\d{4,12}$/.test(value));
+    const host = state.host || "";
+    return (
+        <form
+            className="agent-browser-confirm agent-browser-secret"
+            data-testid="agent-browser-secret-card"
+            onSubmit={(event) => {
+                event.preventDefault();
+                if (!ready || sent) return;
+                const typed = value;
+                setSent(true);
+                void Promise.resolve(onSecret?.(typed, true)).then(() => {
+                    setValue("");
+                    setFailed(false);
+                }).catch(() => {
+                    setSent(false);
+                    setFailed(true);
+                });
+            }}
+        >
+            <h3>{title}</h3>
+            <p className="agent-browser-secret__note">
+                {host
+                    ? chromeText(lang, `Filled only on ${host}. It is not sent to the chat.`, `只填入 ${host}，不会发到对话。`)
+                    : chromeText(lang, "Filled only on this page. It is not sent to the chat.", "只填入这个页面，不会发到对话。")}
+            </p>
+            <input
+                type={method === "password" ? "password" : "text"}
+                inputMode={method === "password" ? undefined : "numeric"}
+                autoComplete="off"
+                data-testid="agent-browser-secret-input"
+                aria-label={title}
+                value={value}
+                maxLength={method === "password" ? 256 : (digits || 12)}
+                disabled={sent}
+                onChange={(event) => {
+                    setFailed(false);
+                    setValue(event.target.value);
+                }}
+            />
+            {failed ? (
+                <p className="agent-browser-secret__note" role="status">
+                    {chromeText(lang, "That entry was not accepted. Try again on this card.", "这一位没有通过，请在这张卡上再填一次。")}
+                </p>
+            ) : null}
+            <div className="agent-browser-confirm__actions">
+                <button type="button" data-testid="agent-browser-secret-cancel" disabled={sent} onClick={() => { void onSecret?.("", false); }}>
+                    {chromeText(lang, "Cancel", "取消")}
+                </button>
+                <button type="submit" data-testid="agent-browser-secret-submit" disabled={!ready || sent}>
+                    {submit
+                        ? chromeText(lang, "Fill and submit", "填入并提交")
+                        : chromeText(lang, "Fill in", "填入")}
+                </button>
+            </div>
+        </form>
+    );
 }
 
 function CheckoutConfirmCard({
@@ -208,6 +308,7 @@ export function AgentBrowserStage({
     onSetHold,
     onInput,
     onConfirm,
+    onSecret,
     onFinish,
 }: {
     state: AgentBrowserStageState;
@@ -215,6 +316,7 @@ export function AgentBrowserStage({
     onSetHold?: (hold: boolean) => void;
     onInput?: (payload: string) => void;
     onConfirm?: (approve: boolean) => void;
+    onSecret?: (secret: string, approve: boolean) => void | Promise<unknown>;
     onFinish?: (done: boolean) => void;
 }) {
     const imgRef = useRef<HTMLImageElement | null>(null);
@@ -223,9 +325,10 @@ export function AgentBrowserStage({
     const caption = state.title || state.url || chromeText(lang, "Browser", "浏览器");
     const hold = !!state.userHold;
     const confirming = !!state.confirmAmount;
-    const attention = !!state.attention && hold && !confirming;
-    const interactive = hold && !confirming;
-    const ask = confirming ? "" : askCopy(state.askReason, lang);
+    const filling = !!state.secretMethod && !confirming;
+    const attention = !!state.attention && hold && !confirming && !filling;
+    const interactive = hold && !confirming && !filling;
+    const ask = confirming || filling ? "" : askCopy(state.askReason, lang);
     const host = state.host || "";
     const hostLine = host
         ? chromeText(lang, `Finish this step on ${host}`, `请在 ${host} 上完成该步骤`)
@@ -252,7 +355,8 @@ export function AgentBrowserStage({
     const stageClass = "agent-browser-stage"
         + (interactive ? " is-user" : " is-bot")
         + (attention ? " is-attention" : "")
-        + (confirming ? " is-confirm" : "");
+        + (confirming ? " is-confirm" : "")
+        + (filling ? " is-secret" : "");
 
     return (
         <div className={stageClass} data-testid="agent-browser-stage">
@@ -264,11 +368,13 @@ export function AgentBrowserStage({
                 ) : null}
                 <p title={caption}>{confirming
                     ? chromeText(lang, "Confirm this payment", "请确认这笔支付")
-                    : attention
-                        ? hostLine
-                        : hold
-                            ? chromeText(lang, "You have the page", "你正在操作这个页面")
-                            : chromeText(lang, "Agent is browsing", "代理正在浏览")}</p>
+                    : filling
+                        ? chromeText(lang, "Fill this in on the card", "请在这张卡上填写")
+                        : attention
+                            ? hostLine
+                            : hold
+                                ? chromeText(lang, "You have the page", "你正在操作这个页面")
+                                : chromeText(lang, "Agent is browsing", "代理正在浏览")}</p>
             </div>
             {confirming ? (
                 <CheckoutConfirmCard
@@ -276,6 +382,14 @@ export function AgentBrowserStage({
                     state={state}
                     lang={lang}
                     onConfirm={onConfirm}
+                />
+            ) : null}
+            {filling ? (
+                <SecretFillCard
+                    key={(state.secretMethod || "") + "|" + String(state.secretDigits || 0) + "|" + (state.host || "")}
+                    state={state}
+                    lang={lang}
+                    onSecret={onSecret}
                 />
             ) : null}
             <div className={"agent-browser-stage__frame" + (attention ? " is-focal" : "")}>
@@ -361,7 +475,7 @@ export function AgentBrowserStage({
                             {chromeText(lang, "I'm done", "我已完成")}
                         </button>
                     </div>
-                ) : confirming ? null : (
+                ) : confirming || filling ? null : (
                     <div className="agent-browser-stage__mode" role="group" aria-label={chromeText(lang, "Page control", "页面控制")}>
                         <button
                             type="button"

@@ -59,27 +59,27 @@ type AppConfig struct {
 	EnvCheckInterval int    `json:"env_check_interval"`
 	LastEnvCheckTime string `json:"last_env_check_time"`
 	// Proxy settings (global default)
-	DefaultProxyEnabled          bool   `json:"default_proxy_enabled"`
-	DefaultProxyProtocol         string `json:"default_proxy_protocol,omitempty"` // "http", "https", "socks5"
-	DefaultProxyHost             string `json:"default_proxy_host"`
-	DefaultProxyPort             string `json:"default_proxy_port"`
-	DefaultProxyUsername         string `json:"default_proxy_username"`
-	DefaultProxyPassword         string `json:"default_proxy_password"`
-	DefaultProxyBypass           string `json:"default_proxy_bypass,omitempty"`             // semicolon-separated bypass list
-	DefaultProxyScopeMaclaw      bool   `json:"default_proxy_scope_maclaw,omitempty"`       // MacClaw LLM
-	DefaultProxyScopeCodingTools bool   `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
-	DefaultProxyScopeAgent       bool   `json:"default_proxy_scope_agent,omitempty"`        // web_search / web_fetch
-	RemoteEnabled       bool     `json:"remote_enabled"`
-	RemoteHubID         string   `json:"remote_hub_id,omitempty"`
-	RemoteHubURL        string   `json:"remote_hub_url"`
-	RemoteHubCenterURL  string   `json:"remote_hubcenter_url"`
-	RemoteHubCenterURLs []string `json:"remote_hubcenter_urls,omitempty"`
-	RemoteEmail         string   `json:"remote_email"`
-	RemoteMobile        string   `json:"remote_mobile"`
-	RemoteSN            string   `json:"remote_sn"`
-	RemoteUserID        string   `json:"remote_user_id"`
-	RemoteTenantID      string   `json:"remote_tenant_id,omitempty"`
-	RemoteTenantName    string   `json:"remote_tenant_name,omitempty"`
+	DefaultProxyEnabled          bool     `json:"default_proxy_enabled"`
+	DefaultProxyProtocol         string   `json:"default_proxy_protocol,omitempty"` // "http", "https", "socks5"
+	DefaultProxyHost             string   `json:"default_proxy_host"`
+	DefaultProxyPort             string   `json:"default_proxy_port"`
+	DefaultProxyUsername         string   `json:"default_proxy_username"`
+	DefaultProxyPassword         string   `json:"default_proxy_password"`
+	DefaultProxyBypass           string   `json:"default_proxy_bypass,omitempty"`             // semicolon-separated bypass list
+	DefaultProxyScopeMaclaw      bool     `json:"default_proxy_scope_maclaw,omitempty"`       // MacClaw LLM
+	DefaultProxyScopeCodingTools bool     `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
+	DefaultProxyScopeAgent       bool     `json:"default_proxy_scope_agent,omitempty"`        // web_search / web_fetch
+	RemoteEnabled                bool     `json:"remote_enabled"`
+	RemoteHubID                  string   `json:"remote_hub_id,omitempty"`
+	RemoteHubURL                 string   `json:"remote_hub_url"`
+	RemoteHubCenterURL           string   `json:"remote_hubcenter_url"`
+	RemoteHubCenterURLs          []string `json:"remote_hubcenter_urls,omitempty"`
+	RemoteEmail                  string   `json:"remote_email"`
+	RemoteMobile                 string   `json:"remote_mobile"`
+	RemoteSN                     string   `json:"remote_sn"`
+	RemoteUserID                 string   `json:"remote_user_id"`
+	RemoteTenantID               string   `json:"remote_tenant_id,omitempty"`
+	RemoteTenantName             string   `json:"remote_tenant_name,omitempty"`
 	// CloudWorkspaceCacheEncryption keeps writer caches encrypted while they
 	// are not mounted for task execution. The zero value is deliberately
 	// disabled for backwards compatibility.
@@ -430,6 +430,11 @@ type AppConfig struct {
 	// AcpHostMirrorUI: when true (default), Mode B token/progress also emits
 	// AI assistant Wails events so the GUI chat surface can mirror activity.
 	AcpHostMirrorUI *bool `json:"acp_host_mirror_ui,omitempty"`
+	// MCP host: this GUI is an inbound MCP server so other tools can create
+	// and read tasks. Nil or false means off. The listener starts only after
+	// the user turns it on. Port 0 tries 18790, then an ephemeral port.
+	McpHostEnabled *bool `json:"mcp_host_enabled,omitempty"`
+	McpHostPort    int   `json:"mcp_host_port,omitempty"`
 	// IMProgressNudgeEnabled controls whether IM channels show intermediate
 	// progress/nudge messages. Nil means default true. When false, only the
 	// first progress message and the final result are sent to the user.
@@ -2334,6 +2339,29 @@ func (c *AppConfig) PreferredAcpHostPort() int {
 		return 0
 	}
 	return c.AcpHostPort
+}
+
+// IsMcpHostEnabled reports whether the inbound MCP server should listen.
+// Unlike ACP, nil means off: the server stays down until the user turns it on.
+func (c *AppConfig) IsMcpHostEnabled() bool {
+	if c == nil || c.McpHostEnabled == nil {
+		return false
+	}
+	return *c.McpHostEnabled
+}
+
+// SetMcpHostEnabled sets the McpHostEnabled pointer field.
+func (c *AppConfig) SetMcpHostEnabled(v bool) {
+	c.McpHostEnabled = &v
+}
+
+// PreferredMcpHostPort returns the configured MCP port.
+// 0 means try 18790 and then an ephemeral port.
+func (c *AppConfig) PreferredMcpHostPort() int {
+	if c == nil || c.McpHostPort < 0 || c.McpHostPort > 65535 {
+		return 0
+	}
+	return c.McpHostPort
 }
 
 // HubCenterBaseURLs returns HubCenter seed URLs using the unique enrollment

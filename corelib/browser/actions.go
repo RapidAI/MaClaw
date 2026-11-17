@@ -129,8 +129,8 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	readyNote := ""
 	if rep, ok := s.session.waitPageReady(); ok {
 		readyNote = rep.Note()
-		if rep.Wall != "" {
-			if err := s.handPageToUser("login", rep.State.URL, rep.State.Title); err != nil && previewHandoffEnabled() {
+		if reason, take := wallHandsPageOver(rep.Wall); take {
+			if err := s.handPageToUser(reason, rep.State.URL, rep.State.Title); err != nil && previewHandoffEnabled() {
 				if errors.Is(err, errUserReleased) {
 					readyNote += "。用户已交还预览，先 probe 再继续"
 				} else {
@@ -513,7 +513,7 @@ func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserA
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
-	if ask := s.captchaAskIfNeeded("click"); ask != nil {
+	if ask := s.personAskIfNeeded("click"); ask != nil {
 		return ask, nil
 	}
 	if s == nil || s.session == nil {
@@ -573,7 +573,7 @@ func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserAction
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
-	if ask := s.captchaAskIfNeeded("click"); ask != nil {
+	if ask := s.personAskIfNeeded("click"); ask != nil {
 		return ask, nil
 	}
 	if s == nil || s.session == nil {
@@ -643,7 +643,7 @@ func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text,
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
-	if ask := s.captchaAskIfNeeded("type"); ask != nil {
+	if ask := s.personAskIfNeeded("type"); ask != nil {
 		return ask, nil
 	}
 	if s == nil || s.session == nil {
@@ -1176,7 +1176,7 @@ func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
-	if ask := s.captchaAskIfNeeded("press"); ask != nil {
+	if ask := s.personAskIfNeeded("press"); ask != nil {
 		return ask, nil
 	}
 	if err := s.requireLiveSession(); err != nil {
@@ -1211,7 +1211,7 @@ func (s *BrowserAgentSession) HandleDialog(accept bool, promptText string) (*Bro
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
-	if ask := s.captchaAskIfNeeded("dialog"); ask != nil {
+	if ask := s.personAskIfNeeded("dialog"); ask != nil {
 		return ask, nil
 	}
 	if err := s.requireLiveSession(); err != nil {
@@ -1238,7 +1238,7 @@ func (s *BrowserAgentSession) SelectOption(snapshotID, ref, selector, value stri
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
-	if ask := s.captchaAskIfNeeded("select"); ask != nil {
+	if ask := s.personAskIfNeeded("select"); ask != nil {
 		return ask, nil
 	}
 	if err := s.requireLiveSession(); err != nil {
@@ -1358,7 +1358,7 @@ func (s *BrowserAgentSession) SetFilesOn(snapshotID, ref, selector string, files
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
-	if ask := s.captchaAskIfNeeded("set_files"); ask != nil {
+	if ask := s.personAskIfNeeded("set_files"); ask != nil {
 		return ask, nil
 	}
 	if err := s.requireLiveSession(); err != nil {

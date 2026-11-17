@@ -40,6 +40,23 @@ describe('RemoteAssistantActivity', () => {
         expect(screen.getByTestId('remote-activity-meta').textContent).toContain('已用时');
     });
 
+    it('says the output is catching up while a cursor hole is open', () => {
+        renderActivity(session({
+            syncing: true,
+            activity: { workflow: { status: 'active', phase: 'execute' } },
+            live: {
+                requestId: 'r1',
+                displayText: '',
+                parts: [{ kind: 'text', seq: 1, text: '甲' }],
+                streamDone: false,
+                responded: false,
+                baseline: 0,
+                lastEventAt: Date.now(),
+            },
+        }));
+        expect(screen.getByTestId('assistant-reasoning-label').textContent).toBe('正在补齐中断的输出…');
+    });
+
     it('labels a send that is still waiting for the remote to pick it up', () => {
         renderActivity(session({
             activity: { awaitingReply: true, workflow: null },

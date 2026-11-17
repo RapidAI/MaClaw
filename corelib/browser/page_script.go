@@ -573,7 +573,7 @@ func wrapPageScript(script, siteHost string) string {
     const value = String(text == null ? '' : text);
     if (value.length > 4000) throw new Error('text is too long');
     const el = await waitEl(target, 2500);
-    if (secret(el)) throw new Error('refusing a password or card field');
+    if (secret(el)) throw new Error('refusing a password or card field. Use submit_secret for a password or code. Do not put the secret in the script.');
     setValue(el, value);
     note(did.typed, target);
     return norm(target);
@@ -603,9 +603,9 @@ func wrapPageScript(script, siteHost string) string {
     const name = norm(key);
     if (!name || name.length > 20) throw new Error('press needs one key');
     const el = document.activeElement || document.body;
-    if (secret(el)) throw new Error('refusing a password or card field');
+    if (secret(el)) throw new Error('refusing a password or card field. Use submit_secret for a password or code. Do not put the secret in the script.');
     if (/^enter$/i.test(name) && el && el.form && el.form.querySelector && el.form.querySelector('input[type="password"],input[autocomplete^="cc-"]')) {
-      throw new Error('refusing a password or card field');
+      throw new Error('refusing a password or card field. Use submit_secret for a password or code. Do not put the secret in the script.');
     }
     if (/^enter$/i.test(name) && el && el.form && typeof el.form.requestSubmit === 'function') {
       el.form.requestSubmit();
@@ -695,7 +695,7 @@ func wrapPageScript(script, siteHost string) string {
         Object.defineProperty(el, 'value', {
           configurable: true,
           get() { return ''; },
-          set() { throw new Error('refusing a password or card field'); }
+          set() { throw new Error('refusing a password or card field. Use submit_secret for a password or code. Do not put the secret in the script.'); }
         });
         sealed.push(el);
       } catch (e) {}

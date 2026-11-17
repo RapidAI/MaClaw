@@ -8882,6 +8882,12 @@ func (a *App) BoundWorkingDirForOwner(ownerID string) string {
 // The claimed directory stays on the task record; execution uses a private
 // checkout until that earlier session leaves.
 func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
+	if dir, active, blocked := a.repoMaintGuardForOwner(ownerID); active {
+		if blocked {
+			return ""
+		}
+		return dir
+	}
 	projectPath := projectPathFromSessionOwnerID(ownerID)
 	return a.exclusiveWorkRoot(projectPath, a.effectiveWorkingDirUnisolated(ownerID))
 }

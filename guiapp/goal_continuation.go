@@ -544,7 +544,7 @@ func (h *IMMessageHandler) releaseStoppedGoalForUserContinue(msg IMUserMessage, 
 		return
 	}
 	switch strings.TrimSpace(msg.Platform) {
-	case "goal-continuation", unattendedWorkflowPlatform, sessionRoundContinuationPlatform:
+	case "goal-continuation", unattendedWorkflowPlatform, sessionRoundContinuationPlatform, githubRepoMaintPlatform:
 		return
 	}
 	if isSessionRoundContinuation(msg.Text) || isGoalSystemContinuation(msg.Text) {

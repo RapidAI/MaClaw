@@ -769,6 +769,9 @@ func (c *RemoteHubClient) connectLocked() error {
 		return err
 	}
 	log.Printf("[onboarding] RemoteHubClient.connectLocked send_hello=%s total=%s", time.Since(helloStart), time.Since(start))
+	if c.app != nil {
+		go c.app.pullRepoMaintDeliveries()
+	}
 	return nil
 }
 
@@ -851,6 +854,9 @@ func (c *RemoteHubClient) connectAuthOnlyLocked() error {
 	}
 
 	log.Printf("[asyncHubConnect] auth completed in %s", time.Since(start))
+	if c.app != nil {
+		go c.app.pullRepoMaintDeliveries()
+	}
 	return nil
 }
 
@@ -1690,6 +1696,10 @@ func (c *RemoteHubClient) readLoop() {
 		case hubInboundMessageAck:
 			c.completeHubRequest(msg.RequestID, nil)
 			c.handleAck(msg)
+		case hubInboundMessageGitHubRepoMaint:
+			if c.app != nil {
+				go c.app.acceptRepoMaintFrame(msg.Payload)
+			}
 		case hubInboundMessageDeviceGatewayPlaybackReceipt:
 			c.handleDeviceGatewayPlaybackReceipt(msg)
 		case hubInboundMessageDeviceGatewayDevices:

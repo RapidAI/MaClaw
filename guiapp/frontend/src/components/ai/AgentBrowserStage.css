@@ -159,6 +159,28 @@
     cursor: default;
 }
 
+.agent-browser-secret input {
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 8px;
+    min-height: 36px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 8px;
+    padding: 0 10px;
+    background: #0c111d;
+    color: #fff;
+    font: inherit;
+    font-size: 16px;
+    letter-spacing: 0.08em;
+}
+
+.agent-browser-secret__note {
+    margin: 0;
+    color: #98a2b3;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
 .agent-browser-stage__mode-btn--done {
     background: #fff;
     color: #101828;

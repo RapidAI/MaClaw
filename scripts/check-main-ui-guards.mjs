@@ -618,7 +618,8 @@ const extractedFileLineLimits = [
   // 7830 -> 7890 (2026-11-12): measured 7836 lines.
   // 7890 -> 7950 (2026-11-14): measured 7896 lines.
   // 7950 -> 8020 (2026-11-17): measured 7951 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8020],
+  // 8020 -> 8100 (2026-11-17): browser stage & MCP integration measured 8058 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8100],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],

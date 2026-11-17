@@ -793,6 +793,14 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 // directory (otherwise a stale taskDir/workspace survives a directory change).
 func (h *IMMessageHandler) liveLocalCodingExecDir(userID, stored string) string {
 	if h != nil && h.app != nil {
+		if dir, active, blocked := h.app.repoMaintGuardForOwner(userID); active {
+			if blocked {
+				return ""
+			}
+			return dir
+		}
+	}
+	if h != nil && h.app != nil {
 		if dir := strings.TrimSpace(h.app.liveWorkingDirForCodingOwner(userID)); dir != "" {
 			return dir
 		}

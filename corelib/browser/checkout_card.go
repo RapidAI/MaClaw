@@ -36,6 +36,7 @@ type checkoutWait struct {
 	card     CheckoutCard
 	owner    string
 	done     chan struct{}
+	holdCh   chan struct{}
 	gen      uint64
 	closed   bool
 	approved bool
@@ -71,10 +72,17 @@ func (s *BrowserAgentSession) OfferCheckoutCard(card CheckoutCard) (string, erro
 	if !previewHandoffEnabled() {
 		return "", errCheckoutHandoffOff
 	}
+	// One install lock so a secret card cannot pass its own check in the gap.
+	previewCardMu.Lock()
+	if secretCardPending() {
+		previewCardMu.Unlock()
+		return "", errSecretBusy
+	}
 	checkoutWaitMu.Lock()
 	if checkoutWaitCurrent != nil {
 		w := checkoutWaitCurrent
 		checkoutWaitMu.Unlock()
+		previewCardMu.Unlock()
 		return waitCheckoutCard(s, w)
 	}
 	checkoutCardGen++
@@ -83,9 +91,12 @@ func (s *BrowserAgentSession) OfferCheckoutCard(card CheckoutCard) (string, erro
 		w.owner = s.ownerKey()
 	}
 	checkoutWaitCurrent = w
+	if lease := browserUserHold.set(true, "confirm", false); lease != nil {
+		w.holdCh = lease.ch
+	}
 	checkoutWaitMu.Unlock()
+	previewCardMu.Unlock()
 
-	SetUserHoldsBrowser(true, "confirm")
 	sessionID := ""
 	if s != nil {
 		sessionID = s.ID
@@ -113,37 +124,57 @@ func waitCheckoutCard(s *BrowserAgentSession, w *checkoutWait) (string, error) {
 	timer := time.NewTimer(userHoldWaitCap)
 	defer timer.Stop()
 	defer releaseCheckoutCardNotice(w)
-	select {
-	case <-w.done:
-		checkoutWaitMu.Lock()
-		approved, err, amount := w.approved, w.err, w.card.Amount
-		checkoutWaitMu.Unlock()
-		if err != nil {
-			return "", err
+	for {
+		// The person's decision wins when it is already stored. select would
+		// otherwise pick a ready session-stop or the deadline at random and
+		// drop a confirmation that can still be spent.
+		if amount, err, closed := checkoutClosedResult(w); closed {
+			return amount, err
 		}
-		if !approved {
-			return "", errCheckoutCancelled
+		select {
+		case <-w.done:
+		case <-stop:
+			finishCheckoutWait(w, false, errUserHoldStopped)
+		case <-timer.C:
+			finishCheckoutWait(w, false, errUserHoldTimeout)
 		}
-		return amount, nil
-	case <-stop:
-		finishCheckoutWait(w, false, errUserHoldStopped)
-		CancelUserHold()
-		return "", errUserHoldStopped
-	case <-timer.C:
-		finishCheckoutWait(w, false, errUserHoldTimeout)
-		SetUserHoldsBrowser(false, "")
-		return "", errUserHoldTimeout
 	}
 }
 
-func finishCheckoutWait(w *checkoutWait, approved bool, err error) {
+func checkoutClosedResult(w *checkoutWait) (string, error, bool) {
 	if w == nil {
-		return
+		return "", errCheckoutNone, true
+	}
+	checkoutWaitMu.Lock()
+	defer checkoutWaitMu.Unlock()
+	if !w.closed {
+		return "", nil, false
+	}
+	if w.err != nil {
+		return "", w.err, true
+	}
+	if !w.approved {
+		return "", errCheckoutCancelled, true
+	}
+	return w.card.Amount, nil, true
+}
+
+// finishCheckoutWait reports whether this call closed the wait. Approval
+// stores the amount in that same critical section. A wait that already
+// closed — cancel, stop, or timeout won — does not gain a confirmation.
+func finishCheckoutWait(w *checkoutWait, approved bool, err error) bool {
+	if w == nil {
+		return false
 	}
 	checkoutWaitMu.Lock()
 	defer checkoutWaitMu.Unlock()
 	if w.closed {
-		return
+		return false
+	}
+	if approved {
+		if _, ok := RecordCheckoutConfirmation(w.owner, "确认支付 ¥"+w.card.Amount); !ok {
+			return false
+		}
 	}
 	w.closed = true
 	w.approved = approved
@@ -152,10 +183,17 @@ func finishCheckoutWait(w *checkoutWait, approved bool, err error) {
 	if checkoutWaitCurrent == w {
 		checkoutWaitCurrent = nil
 	}
+	// Release only while this wait is still the latest card. A cancel tells
+	// queued actions not to retry the pay click.
+	if checkoutWaitCurrent == nil {
+		browserUserHold.releaseIfCurrent(w.holdCh, !approved && (err == nil || errors.Is(err, errUserHoldStopped)))
+	}
+	return true
 }
 
 // ResolveCheckoutCard records the person's decision. Approve stores the
 // amount from the card the GUI showed, not from anything the model wrote.
+// The store happens only when this call is the one that closes the card.
 func ResolveCheckoutCard(approve bool) error {
 	checkoutWaitMu.Lock()
 	w := checkoutWaitCurrent
@@ -163,17 +201,20 @@ func ResolveCheckoutCard(approve bool) error {
 	if w == nil {
 		return errCheckoutNone
 	}
-	if approve {
-		if _, ok := RecordCheckoutConfirmation(w.owner, "确认支付 ¥"+w.card.Amount); !ok {
-			return errCheckoutNoAmount
-		}
-		finishCheckoutWait(w, true, nil)
-		SetUserHoldsBrowser(false, "")
+	if !approve {
+		finishCheckoutWait(w, false, nil)
 		return nil
 	}
-	finishCheckoutWait(w, false, nil)
-	CancelUserHold()
-	return nil
+	if finishCheckoutWait(w, true, nil) {
+		return nil
+	}
+	checkoutWaitMu.Lock()
+	closed := w.closed
+	checkoutWaitMu.Unlock()
+	if !closed {
+		return errCheckoutNoAmount
+	}
+	return errCheckoutNone
 }
 
 // stopForCheckout shows a card built from the page when the preview is on.
@@ -275,7 +316,7 @@ func DesktopSecretTypeRefusal(name string) string {
 	if n == "" || !secretField(n) {
 		return ""
 	}
-	return "这是密码或验证码框。不要输入，也不要在对话里索要。请用户在屏幕上自己填写，然后重新观察。"
+	return "这是密码或验证码框。不要输入，也不要在对话里索要。网页字段改用 browser(action=\"submit_secret\", method, ref)。桌面上的框请用户自己填写，然后重新观察。"
 }
 
 // DesktopSecretSurfaceRefusal stops keys and untargeted typing while the

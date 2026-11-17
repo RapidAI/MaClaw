@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -19,7 +20,8 @@ import 'viewer_reducer.dart';
 /// 远程任务详情。先 watch_task（stream_proto 2）再订阅账号 SSE。
 /// 回复里的 cursor 是水位；SSE 出现新缺口时再问一次 watch_task，
 /// 因为账号流的补帧没有 live。这次回复若还没盖住洞里已经看到的光标，
-/// 再问一次；水位没往前走就停。SSE 打不开时才退回 3 秒 get_task。
+/// 再问一次；水位没往前走就停。补读还没结束时又开的洞，等这次读完再问。
+/// SSE 打不开时才退回 3 秒 get_task。
 /// 消息时间线、产出物下载/分享，按授权档位放开操作动作。
 /// 编码运行时恢复只展示，不另发操作。
 class RemoteTaskScreen extends ConsumerStatefulWidget {
@@ -53,7 +55,12 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   bool _degraded = false;
   bool _rewatching = false;
   bool _gapFollow = false;
+  bool _gapEdgeDeferred = false;
+  bool _stickToEnd = true;
+  int _pinning = 0;
+  String _revealStamp = '';
   int _gapSeen = 0;
+  int _fillGen = 0;
   int _streamGen = 0;
   ViewerReduceState _live = emptyViewerState();
   String _recovery = '';
@@ -88,6 +95,9 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
 
   Future<void> _openStream() async {
     final gen = ++_streamGen;
+    _fillGen++;
+    _rewatching = false;
+    _gapEdgeDeferred = false;
     _gapSeen = 0;
     _gapFollow = false;
     await _closeStream(keepGeneration: true);
@@ -157,35 +167,54 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   /// One ask per rising edge: later gapped frames of the same hole only raise
   /// [_gapSeen]. If that read moves the watermark but stops short of a cursor
   /// already dropped, ask once more. A reply that does not move it stops.
+  /// A hole that opens while this read is still in flight cannot start a
+  /// second one; it is asked once this read finishes, if it is still owed.
   Future<void> _fillViewerGap(int gen) async {
-    if (_rewatching || _degraded || _paused || !mounted || gen != _streamGen) {
+    if (_degraded || _paused || !mounted || gen != _streamGen) return;
+    if (_rewatching) {
+      _gapEdgeDeferred = true;
       return;
     }
+    final api = ref.read(remoteApiProvider);
+    if (api == null) return;
     _rewatching = true;
+    final fillGen = ++_fillGen;
+    _gapEdgeDeferred = false;
     try {
-      final api = ref.read(remoteApiProvider);
-      if (api == null) return;
       final advanced = await _readWatch(api, gen);
-      if (gen != _streamGen) return;
-      if (!advanced) {
+      if (gen == _streamGen && !advanced) {
         _gapFollow = false;
-        return;
-      }
-      if (_gapSeen == 0 || _live.last >= _gapSeen) {
+      } else if (gen == _streamGen &&
+          (_gapSeen == 0 || _live.last >= _gapSeen)) {
         _gapSeen = 0;
         _gapFollow = false;
-        return;
+      } else if (gen == _streamGen && _gapFollow) {
+        _gapFollow = false;
+        final again = await _readWatch(api, gen);
+        if (again &&
+            gen == _streamGen &&
+            (_gapSeen == 0 || _live.last >= _gapSeen)) {
+          _gapSeen = 0;
+          _gapFollow = false;
+        }
       }
-      if (!_gapFollow) return;
-      _gapFollow = false;
-      final again = await _readWatch(api, gen);
-      if (!again || gen != _streamGen) return;
-      if (_gapSeen == 0 || _live.last >= _gapSeen) _gapSeen = 0;
     } catch (_) {
       // A failed read leaves the gap set. The next time it clears and
       // opens again is the next ask, so a down hub cannot spin.
     } finally {
-      _rewatching = false;
+      if (fillGen == _fillGen) _rewatching = false;
+    }
+    if (fillGen != _fillGen ||
+        gen != _streamGen ||
+        !mounted ||
+        _paused ||
+        _degraded ||
+        !_gapEdgeDeferred) {
+      return;
+    }
+    _gapEdgeDeferred = false;
+    if (_live.gap || _gapSeen > _live.last) {
+      await _fillViewerGap(gen);
     }
   }
 
@@ -313,16 +342,10 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       _inputCtrl.clear();
       await _load();
       ref.invalidate(remoteTasksProvider(widget.grant.id));
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_scrollCtrl.hasClients) return;
-        unawaited(
-          _scrollCtrl.animateTo(
-            _scrollCtrl.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeOut,
-          ),
-        );
-      });
+      // Sending is a request to watch the reply, even if the reader had
+      // parked higher in the history.
+      _stickToEnd = true;
+      _revealTail();
     } on Object catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -469,8 +492,121 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     }
   }
 
+  /// User drag and the settle after a fling. Content growth and our own
+  /// tail jump do not count: those used to clear the follow latch before
+  /// the jump ran, so a streaming reply stayed above the fold.
+  bool _onScrollNotice(ScrollNotification notice) {
+    if (_pinning > 0) return false;
+    final dragged =
+        notice is ScrollUpdateNotification && notice.dragDetails != null;
+    final settled =
+        notice is UserScrollNotification &&
+        notice.direction == ScrollDirection.idle;
+    if (!dragged && !settled) return false;
+    final metrics = notice.metrics;
+    _stickToEnd = metrics.maxScrollExtent - metrics.pixels < 160;
+    return false;
+  }
+
+  String _shownLiveBody() {
+    final live = viewerShownAnswer(_live.body, _live.visible);
+    final messages = _detail?.messages;
+    if (live.isEmpty || messages == null || messages.isEmpty) return live;
+    if (messages.last.role != 'assistant') return live;
+    final history = messages.last.content;
+    if (_historyIsCappedPrefix(history, live)) return live;
+    final prefix = _trimmedHistoryPrefix(history);
+    if (prefix == null || prefix.startsWith(live) || live.startsWith(prefix)) {
+      return live;
+    }
+    if (!_trimmedTailIsThisRound()) return live;
+    return _joinedAnswerSlices(prefix, live);
+  }
+
+  /// The trimmed row is this round when the user line above it is the
+  /// round's prompt. A later prompt keeps that older answer as its own row.
+  bool _trimmedTailIsThisRound() {
+    final messages = _detail?.messages;
+    if (messages == null || messages.length < 2) return false;
+    final prompt = _roundPrompt(_live.displayText);
+    if (prompt.isEmpty) return false;
+    for (var i = messages.length - 2; i >= 0; i--) {
+      if (messages[i].role != 'user') continue;
+      return messages[i].content.trim() == prompt;
+    }
+    return false;
+  }
+
+  /// The finished answer already sits in the transcript. Keeping the live
+  /// copy would show it twice. A get_task row cut at 4000 runes is not that
+  /// answer — the stream still has the rest.
+  bool _transcriptOwnsLive() {
+    if (!_live.responded) return false;
+    final body = _shownLiveBody();
+    if (body.isEmpty) return false;
+    final messages = _detail?.messages;
+    if (messages == null || messages.isEmpty) return false;
+    final tail = messages.last;
+    if (tail.role != 'assistant') return false;
+    final content = tail.content.trim();
+    if (content.isEmpty || _historyIsCappedPrefix(content, body)) return false;
+    final n = body.length < 60 ? body.length : 60;
+    return content.startsWith(body.substring(0, n));
+  }
+
+  bool _omitCappedHistoryTail(RemoteMessage message, bool isTail) {
+    if (!isTail || message.role != 'assistant') return false;
+    return _historyIsCappedPrefix(message.content, _shownLiveBody());
+  }
+
+  List<String> _cappedTailFiles() {
+    final messages = _detail?.messages;
+    if (messages == null || messages.isEmpty) return const [];
+    final tail = messages.last;
+    if (!_omitCappedHistoryTail(tail, true)) return const [];
+    return tail.filePaths;
+  }
+
+  void _revealTail() {
+    if (!_stickToEnd) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_stickToEnd || !_scrollCtrl.hasClients) return;
+      final position = _scrollCtrl.position;
+      if (!position.hasContentDimensions) return;
+      final max = position.maxScrollExtent;
+      if (max <= position.pixels + 1) return;
+      _pinning++;
+      try {
+        position.jumpTo(max);
+      } finally {
+        _pinning--;
+      }
+    });
+  }
+
+  bool _liveHasCopy() {
+    if (_live.body.trim().isNotEmpty || _live.visible.trim().isNotEmpty) {
+      return true;
+    }
+    if (_live.thinking.any((block) => block.text.isNotEmpty)) return true;
+    if (_live.timeline.isNotEmpty ||
+        _live.cards.isNotEmpty ||
+        _live.notices.isNotEmpty) {
+      return true;
+    }
+    if (_recovery.isNotEmpty) return true;
+    return _live.gap || _rewatching;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final shownBody = _shownLiveBody();
+    final revealStamp =
+        '${_live.last}:${shownBody.length}:${_live.gap}:$_rewatching:${_detail?.messages.length ?? -1}';
+    if (revealStamp != _revealStamp) {
+      _revealStamp = revealStamp;
+      _revealTail();
+    }
     final theme = Theme.of(context);
     final detail = _detail;
     final canOperate = widget.grant.canOperate;
@@ -574,67 +710,63 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                     ),
                   ),
                 Expanded(
-                  child: ListView(
-                    controller: _scrollCtrl,
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      if (_degraded)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Text(
-                            '时间线已降级',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.error,
-                            ),
-                          ),
-                        ),
-                      _LiveRound(state: _live, recovery: _recovery),
-                      if (detail == null || detail.messages.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 24),
-                          child: Center(
+                  child: NotificationListener<ScrollNotification>(
+                    onNotification: _onScrollNotice,
+                    child: ListView(
+                      key: const ValueKey('remote-task-transcript'),
+                      controller: _scrollCtrl,
+                      padding: const EdgeInsets.all(12),
+                      children: [
+                        if (_degraded)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
                             child: Text(
-                              '还没有对话记录',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: theme.colorScheme.onSurfaceVariant,
+                              '时间线已降级',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.error,
                               ),
                             ),
                           ),
-                        )
-                      else
-                        for (final message in detail.messages)
-                          _MessageRow(
-                            message: message,
-                            onFetch: _fetchAndShare,
+                        if (detail != null)
+                          for (var i = 0; i < detail.messages.length; i++)
+                            if (!_omitCappedHistoryTail(
+                              detail.messages[i],
+                              i == detail.messages.length - 1,
+                            ))
+                              _MessageRow(
+                                message: detail.messages[i],
+                                onFetch: _fetchAndShare,
+                                downloading: _downloading,
+                              ),
+                        if ((detail == null || detail.messages.isEmpty) &&
+                            !_liveHasCopy())
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 24),
+                            child: Center(
+                              child: Text(
+                                '还没有对话记录',
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (!_transcriptOwnsLive())
+                          _LiveRound(
+                            state: _live,
+                            shownBody: shownBody,
+                            recovery: _recovery,
+                            syncing: _live.gap || _rewatching,
+                            filePaths: _cappedTailFiles(),
                             downloading: _downloading,
-                          ),
-                      if (detail != null && detail.artifacts.isNotEmpty) ...[
-                        const SizedBox(height: 16),
-                        Text('产出物', style: theme.textTheme.titleSmall),
-                        const SizedBox(height: 8),
-                        for (final artifact in detail.artifacts)
-                          Card(
-                            child: ListTile(
-                              dense: true,
-                              leading: const Icon(Icons.description_outlined),
-                              title: Text(
-                                artifact.title.isNotEmpty
-                                    ? artifact.title
-                                    : '产出物',
-                              ),
-                              subtitle: artifact.preview.isNotEmpty
-                                  ? Text(
-                                      artifact.preview,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    )
-                                  : null,
-                            ),
+                            onFetch: _fetchAndShare,
                           ),
                       ],
-                    ],
+                    ),
                   ),
                 ),
+                if (detail != null && detail.artifacts.isNotEmpty)
+                  _ArtifactStrip(artifacts: detail.artifacts),
                 if (canOperate)
                   SafeArea(
                     child: Padding(
@@ -679,55 +811,232 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
 
 class _LiveRound extends StatelessWidget {
   final ViewerReduceState state;
+  final String shownBody;
   final String recovery;
+  final bool syncing;
+  final List<String> filePaths;
+  final bool downloading;
+  final Future<void> Function(String path) onFetch;
 
-  const _LiveRound({required this.state, required this.recovery});
+  const _LiveRound({
+    required this.state,
+    required this.shownBody,
+    required this.recovery,
+    required this.syncing,
+    this.filePaths = const [],
+    this.downloading = false,
+    required this.onFetch,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final lines = <String>[];
+    final notes = <String>[];
     for (final block in state.thinking) {
       if (block.text.isEmpty) continue;
-      lines.add(block.done ? block.text : '思考中 ${block.text}');
+      notes.add(block.done ? block.text : '思考中 ${block.text}');
     }
-    final body = state.body.isNotEmpty ? state.body : state.visible;
-    if (body.isNotEmpty) lines.add(body);
+    final body = shownBody;
     for (final row in state.timeline) {
       final title = row.title.isNotEmpty ? row.title : row.text;
       final line = row.phase.isNotEmpty ? '${row.phase} · $title' : title;
-      if (line.isNotEmpty) lines.add(line);
+      if (line.isNotEmpty) notes.add(line);
     }
     for (final card in state.cards) {
       if (card.expired) {
-        lines.add('确认已失效');
+        notes.add('确认已失效');
       } else if (card.text.isNotEmpty) {
-        lines.add(card.text);
+        notes.add(card.text);
       } else if (card.kind == 'confirmation') {
-        lines.add('需要确认');
+        notes.add('需要确认');
       }
     }
     for (final note in state.notices) {
-      if (note.text.isNotEmpty) lines.add(note.text);
+      if (note.text.isNotEmpty) notes.add(note.text);
     }
-    if (state.trialStatus.isNotEmpty) lines.add(state.trialStatus);
-    if (state.trialFailures > 0) lines.add('失败 ${state.trialFailures}');
-    if (recovery.isNotEmpty) lines.add(recovery);
-    if (lines.isEmpty) return const SizedBox.shrink();
+    if (state.trialStatus.isNotEmpty) notes.add(state.trialStatus);
+    if (state.trialFailures > 0) notes.add('失败 ${state.trialFailures}');
+    if (recovery.isNotEmpty) notes.add(recovery);
+    if (notes.isEmpty && body.isEmpty && filePaths.isEmpty && !syncing) {
+      return const SizedBox.shrink();
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final line in lines)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Text(line, style: theme.textTheme.bodyMedium),
+          CircleAvatar(
+            radius: 15,
+            backgroundColor: theme.colorScheme.primaryContainer,
+            child: Icon(
+              Icons.smart_toy_outlined,
+              size: 17,
+              color: theme.colorScheme.onPrimaryContainer,
             ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final line in notes)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(line, style: theme.textTheme.bodyMedium),
+                  ),
+                if (body.isNotEmpty)
+                  MarkdownBody(
+                    data: linkifyMarkdownUrls(body),
+                    selectable: true,
+                    onTapLink: (text, href, title) {
+                      if (href != null) openExternalUrl(href);
+                    },
+                    styleSheet: _taskMarkdownStyle(theme),
+                  ),
+                if (syncing)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '正在补齐中断的输出',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                for (final path in filePaths)
+                  _FileCard(
+                    path: path,
+                    downloading: downloading,
+                    onTap: () => onFetch(path),
+                  ),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
+}
+
+/// body is the draft. visible is the terminal. A longer terminal replaces
+/// the draft when the draft is its prefix or its suffix. The snapshot keeps
+/// only the newest slice, and that slice is the suffix.
+String viewerShownAnswer(String draft, String terminal) {
+  final d = draft.trim();
+  final t = terminal.trim();
+  if (d.isEmpty) return t;
+  if (t.length <= d.length) return d;
+  if (t.startsWith(d) || t.endsWith(d)) return t;
+  return d;
+}
+
+/// get_task keeps the first 4000 runes and appends "…" (trimRemoteControlText).
+const _historyTextCap = 4000;
+
+const _answerSliceOverlapMin = 16;
+
+/// Longest prefix of [tail] that is a suffix of [prefix].
+int _sharedEdge(String prefix, String tail) {
+  if (prefix.isEmpty || tail.isEmpty) return 0;
+  final s = '$tail\u0000$prefix';
+  final pi = List<int>.filled(s.length, 0);
+  var k = 0;
+  for (var i = 1; i < s.length; i++) {
+    while (k > 0 && s.codeUnitAt(i) != s.codeUnitAt(k)) {
+      k = pi[k - 1];
+    }
+    if (s.codeUnitAt(i) == s.codeUnitAt(k)) k++;
+    pi[i] = k;
+  }
+  final n = pi[s.length - 1];
+  return n >= _answerSliceOverlapMin ? n : 0;
+}
+
+String _joinedAnswerSlices(String prefix, String tail) {
+  final overlap = _sharedEdge(prefix, tail);
+  if (overlap > 0) return prefix + tail.substring(overlap);
+  return '$prefix\n\n…\n\n$tail';
+}
+
+String? _trimmedHistoryPrefix(String history) {
+  final h = history.trim();
+  if (!h.endsWith('…') || h.length < _historyTextCap + 1) return null;
+  return h.substring(0, h.length - 1);
+}
+
+String _roundPrompt(String raw) {
+  final text = raw.trim();
+  final match = RegExp(r'^〔[^〕]*〕').firstMatch(text);
+  if (match == null) return text;
+  return text.substring(match.end).trim();
+}
+
+bool _historyIsCappedPrefix(String history, String live) {
+  final prefix = _trimmedHistoryPrefix(history);
+  final l = live.trim();
+  if (prefix == null || l.length <= prefix.length) return false;
+  return l.startsWith(prefix);
+}
+
+class _ArtifactStrip extends StatelessWidget {
+  final List<RemoteArtifact> artifacts;
+
+  const _ArtifactStrip({required this.artifacts});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surfaceContainerLow,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 132),
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+          children: [
+            Text('产出物', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 4),
+            for (final artifact in artifacts)
+              Card(
+                child: ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.description_outlined),
+                  title: Text(
+                    artifact.title.isNotEmpty ? artifact.title : '产出物',
+                  ),
+                  subtitle: artifact.preview.isNotEmpty
+                      ? Text(
+                          artifact.preview,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        )
+                      : null,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+MarkdownStyleSheet _taskMarkdownStyle(ThemeData theme) {
+  return MarkdownStyleSheet.fromTheme(theme).copyWith(
+    p: theme.textTheme.bodyMedium?.copyWith(height: 1.5),
+    a: theme.textTheme.bodyMedium?.copyWith(
+      color: theme.colorScheme.primary,
+      fontWeight: FontWeight.w600,
+      decoration: TextDecoration.underline,
+    ),
+    code: theme.textTheme.bodySmall?.copyWith(
+      fontFamily: 'monospace',
+      backgroundColor: theme.colorScheme.surfaceContainerHighest,
+    ),
+    codeblockDecoration: BoxDecoration(
+      color: theme.colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(8),
+    ),
+  );
 }
 
 class _MessageRow extends StatelessWidget {
@@ -837,23 +1146,7 @@ class _AssistantTurn extends StatelessWidget {
                     onTapLink: (text, href, title) {
                       if (href != null) openExternalUrl(href);
                     },
-                    styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                      p: theme.textTheme.bodyMedium?.copyWith(height: 1.5),
-                      a: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.primary,
-                        fontWeight: FontWeight.w600,
-                        decoration: TextDecoration.underline,
-                      ),
-                      code: theme.textTheme.bodySmall?.copyWith(
-                        fontFamily: 'monospace',
-                        backgroundColor:
-                            theme.colorScheme.surfaceContainerHighest,
-                      ),
-                      codeblockDecoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
+                    styleSheet: _taskMarkdownStyle(theme),
                   ),
                 if (message.resultStatus.isNotEmpty)
                   Padding(

@@ -3647,6 +3647,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// return still cleans up via defer; clearNonGuidePendingInjection keeps guides.
 	cleanupPureCodingRuntime := func() {}
 	defer func() { cleanupPureCodingRuntime() }()
+	var repoMaintAsked bool
+	var repoMaintOutcome string
+	var repoMaintHaveOutcome bool
+	defer repoMaintWatchTurn(h, userID, loopCtx, &repoMaintAsked, &repoMaintOutcome, &repoMaintHaveOutcome)()
 	if err := v2.EnsureProjectDir(projectPath); err != nil {
 		log.Printf("[workflow-v2] pure coding: failed to ensure project dir %s: %v", projectPath, err)
 	}
@@ -3767,6 +3771,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 		// Note: pre_plan fail_on_error does not abort planning (user still needs a plan);
 		// step-level fail_on_error is enforced on pre_step / pre_verify.
+		if loopCtx != nil && loopCtx.Platform == githubRepoMaintPlatform {
+			armGitHubRepoMaintSkipPlan(h, userID, loopCtx.Platform, &sessionMem)
+		}
 		tasks, planMarkdown, planned = h.resolveCodingWorkbenchTasksWithDecision(userID, userText, projectPath, sessionMem, decision, onProgress, onToken)
 		// A complex plan is a confirmation boundary in both local and remote
 		// workbenches.  The planner has already persisted it; return the same
@@ -4072,6 +4079,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 
 		if v1Result != nil {
+			if strings.TrimSpace(v1Result.AskQuestion) != "" {
+				repoMaintAsked = true
+			}
 			// Push step file changes into the right-hand preview immediately
 			// (after worktree path remap so events target the main project).
 			if sourcePreview {
@@ -4296,7 +4306,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	if sourcePreview {
 		emittedPreview = emitCodingWorkbenchSourcePreview(h.app, codeSessionID, projectPath, previewModified, previewCreated, stickyFiles, false, true, previewRoutePath)
 	}
-	h.recordStickyLocalCodingTurn(userID, projectPath, recordUserText, lastCodingResult, localCodingTurnOutcome(runResults, runCtx))
+	repoMaintOutcome = localCodingTurnOutcome(runResults, runCtx)
+	repoMaintHaveOutcome = true
+	h.recordStickyLocalCodingTurn(userID, projectPath, recordUserText, lastCodingResult, repoMaintOutcome)
 	// A shell write the tool audit did not record is not previewed and is not
 	// persisted here. This merge only keeps a path when emit returned files
 	// that the turn audit and sticky history both missed.
@@ -4507,6 +4519,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	// SSH/cancel preflight first; register before planning (see below).
 	cleanupPureCodingRuntime := func() {}
 	defer func() { cleanupPureCodingRuntime() }()
+	var repoMaintAsked bool
+	var repoMaintOutcome string
+	var repoMaintHaveOutcome bool
+	defer repoMaintWatchTurn(h, userID, loopCtx, &repoMaintAsked, &repoMaintOutcome, &repoMaintHaveOutcome)()
 	// SSHSessionManager only retains live sessions in memory. A sticky remote
 	// workbench, however, is persisted and can therefore outlive that manager
 	// (for example after a timeout removes the session or after app restart).
@@ -4638,6 +4654,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}
 		if prePlan := runCodingWorkbenchHookPhase(localHooksPath, hooks, "pre_plan"); prePlan.Report != "" {
 			log.Printf("[coding-hooks] remote pre_plan: %s", truncateRunesV2(prePlan.Report, 200))
+		}
+		if loopCtx != nil && loopCtx.Platform == githubRepoMaintPlatform {
+			armGitHubRepoMaintSkipPlan(h, userID, loopCtx.Platform, &sessionMem)
 		}
 		tasks, planMarkdown, planned = h.resolveCodingWorkbenchTasksWithDecision(userID, userText, remoteCtx.ProjectDir, sessionMem, decision, onProgress, onToken)
 		if planned && !resumeIncompletePlan {

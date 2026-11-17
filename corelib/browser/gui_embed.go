@@ -52,22 +52,25 @@ func managedLaunchArgs(port int, userDataDir string) []string {
 }
 
 // BrowserStageNotice tells the GUI to open the in-app page view.
-// Kind is session, captcha, login, attention, or confirm.
+// Kind is session, captcha, login, attention, confirm, secret, confirm_clear, or secret_clear.
 // Hold means the person must operate the page before the agent continues.
 // Item, shop, address, amount, and detail fill the payment confirmation card.
 type BrowserStageNotice struct {
-	Kind      string
-	SessionID string
-	URL       string
-	Title     string
-	Reason    string
-	Host      string
-	Hold      bool
-	Item      string
-	Shop      string
-	Address   string
-	Amount    string
-	Detail    string
+	Kind             string
+	SessionID        string
+	URL              string
+	Title            string
+	Reason           string
+	Host             string
+	Hold             bool
+	Item             string
+	Shop             string
+	Address          string
+	Amount           string
+	Detail           string
+	SecretMethod     string
+	SecretDigits     int
+	SecretSubmission string
 }
 
 var (
@@ -109,21 +112,28 @@ var (
 // the preview. Tests shrink it.
 var userHoldWaitCap = 15 * time.Minute
 
-// userHoldGate is process-wide: one managed browser, one person.
-type userHoldGate struct {
-	mu        sync.Mutex
-	held      bool
-	reason    string
+// holdLease is one hold. cancelled is set before ch is closed and is never
+// written again. A later hold is a new lease, so it cannot turn this cancel
+// into a hand-back, or this hand-back into a cancel.
+type holdLease struct {
+	ch        chan struct{}
 	cancelled bool
-	released  chan struct{}
 }
 
-var browserUserHold = &userHoldGate{released: closedHoldChan()}
+// userHoldGate is process-wide: one managed browser, one person.
+type userHoldGate struct {
+	mu     sync.Mutex
+	held   bool
+	reason string
+	lease  *holdLease
+}
 
-func closedHoldChan() chan struct{} {
+var browserUserHold = &userHoldGate{lease: closedHoldLease()}
+
+func closedHoldLease() *holdLease {
 	ch := make(chan struct{})
 	close(ch)
-	return ch
+	return &holdLease{ch: ch}
 }
 
 // SetUserHoldsBrowser marks that the person is driving the preview. Mutating
@@ -139,6 +149,29 @@ func CancelUserHold() {
 	browserUserHold.set(false, "", true)
 }
 
+// DismissBrowserPreview cancels a checkout or secret card that is still
+// waiting. A takeover with no card is handed back. The hold closed here is
+// the one that was already up: a hold started while the cards were closing,
+// and a secret the host is still typing, stay up.
+func DismissBrowserPreview() {
+	ch := activeHoldCh()
+	filling := SecretFillOwnsHold()
+	_ = ResolveCheckoutCard(false)
+	_ = ResolveSecretCard("", false)
+	if !filling {
+		browserUserHold.releaseIfCurrent(ch, false)
+	}
+}
+
+func activeHoldCh() chan struct{} {
+	browserUserHold.mu.Lock()
+	defer browserUserHold.mu.Unlock()
+	if !browserUserHold.held || browserUserHold.lease == nil {
+		return nil
+	}
+	return browserUserHold.lease.ch
+}
+
 // UserHoldsBrowser reports the current hold and why it was taken.
 func UserHoldsBrowser() (bool, string) {
 	browserUserHold.mu.Lock()
@@ -146,7 +179,10 @@ func UserHoldsBrowser() (bool, string) {
 	return browserUserHold.held, browserUserHold.reason
 }
 
-func (g *userHoldGate) set(held bool, reason string, cancel bool) {
+// set returns the lease that closes when this hold ends. A release that
+// lands before the waiter selects is still visible on that lease. Starting
+// a hold does not change the previous lease.
+func (g *userHoldGate) set(held bool, reason string, cancel bool) *holdLease {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	reason = strings.TrimSpace(reason)
@@ -155,47 +191,74 @@ func (g *userHoldGate) set(held bool, reason string, cancel bool) {
 			if reason != "" {
 				g.reason = reason
 			}
-			return
+			return g.lease
 		}
 		g.held = true
 		g.reason = reason
-		g.cancelled = false
-		g.released = make(chan struct{})
-		return
+		g.lease = &holdLease{ch: make(chan struct{})}
+		return g.lease
 	}
 	if !g.held {
+		return g.lease
+	}
+	g.held = false
+	g.reason = ""
+	g.lease.cancelled = cancel
+	close(g.lease.ch)
+	return g.lease
+}
+
+// releaseIfCurrent closes ch only when it is still the active hold. The
+// outcome is stored on that lease. A newer hold keeps its own lease.
+func (g *userHoldGate) releaseIfCurrent(ch chan struct{}, cancel bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if ch == nil || !g.held || g.lease == nil || g.lease.ch != ch {
 		return
 	}
 	g.held = false
 	g.reason = ""
-	g.cancelled = cancel
-	close(g.released)
+	g.lease.cancelled = cancel
+	close(g.lease.ch)
+}
+
+// holdLeaseError is the outcome both waiters read from the lease they
+// captured. The close happens before that read, so a later hold cannot
+// change it.
+func holdLeaseError(lease *holdLease) error {
+	if lease == nil {
+		return nil
+	}
+	if lease.cancelled {
+		return errUserCancelled
+	}
+	return errUserReleased
 }
 
 // waitUserHoldRelease blocks while the person holds the preview.
-// released is true only when a hold ended during this wait.
-func waitUserHoldRelease(ctx context.Context, stop <-chan struct{}) (bool, error) {
+// The lease is nil when no hold ended during this wait.
+func waitUserHoldRelease(ctx context.Context, stop <-chan struct{}) (*holdLease, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	browserUserHold.mu.Lock()
-	if !browserUserHold.held {
+	if !browserUserHold.held || browserUserHold.lease == nil {
 		browserUserHold.mu.Unlock()
-		return false, nil
+		return nil, nil
 	}
-	ch := browserUserHold.released
+	lease := browserUserHold.lease
 	browserUserHold.mu.Unlock()
 	timer := time.NewTimer(userHoldWaitCap)
 	defer timer.Stop()
 	select {
-	case <-ch:
-		return true, nil
+	case <-lease.ch:
+		return lease, nil
 	case <-stop:
-		return false, errUserHoldStopped
+		return nil, errUserHoldStopped
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return nil, ctx.Err()
 	case <-timer.C:
-		return false, errUserHoldTimeout
+		return nil, errUserHoldTimeout
 	}
 }
 
@@ -206,20 +269,11 @@ func (s *BrowserAgentSession) yieldToUserHold(ctx context.Context) error {
 	if s != nil {
 		stop = s.stopCh
 	}
-	released, err := waitUserHoldRelease(ctx, stop)
+	lease, err := waitUserHoldRelease(ctx, stop)
 	if err != nil {
 		return err
 	}
-	if !released {
-		return nil
-	}
-	browserUserHold.mu.Lock()
-	cancelled := browserUserHold.cancelled
-	browserUserHold.mu.Unlock()
-	if cancelled {
-		return errUserCancelled
-	}
-	return errUserReleased
+	return holdLeaseError(lease)
 }
 
 // handPageToUser opens the preview on the step the person has to finish
@@ -239,8 +293,12 @@ func (s *BrowserAgentSession) handPageToUser(reason, url, title string) error {
 		}
 	}
 	hold := previewHandoffEnabled()
+	var lease *holdLease
 	if hold {
-		SetUserHoldsBrowser(true, reason)
+		// Keep this lease. 我已完成 can close it before the select below
+		// runs, and a later "is it held?" check would miss that hand-back.
+		// The cancel bit stays on the lease the waiter captured.
+		lease = browserUserHold.set(true, reason, false)
 	}
 	kind := "attention"
 	if reason == "captcha" || reason == "captcha_widget" {
@@ -260,14 +318,36 @@ func (s *BrowserAgentSession) handPageToUser(reason, url, title string) error {
 	if !hold {
 		return nil
 	}
-	return s.blockIfUserHolds()
+	var stop <-chan struct{}
+	if s != nil {
+		stop = s.stopCh
+	}
+	return waitArmedHold(lease, stop)
 }
 
-// refuseSecretTyping never types the secret. In the preview it hands the page
-// to the person and waits. The returned error does not contain the text.
+// waitArmedHold waits on the lease returned when this hold started.
+func waitArmedHold(lease *holdLease, stop <-chan struct{}) error {
+	if lease == nil || lease.ch == nil {
+		return nil
+	}
+	timer := time.NewTimer(userHoldWaitCap)
+	defer timer.Stop()
+	select {
+	case <-lease.ch:
+	case <-stop:
+		return errUserHoldStopped
+	case <-timer.C:
+		return errUserHoldTimeout
+	}
+	return holdLeaseError(lease)
+}
+
+// refuseSecretTyping never types the model's secret. In the preview the model
+// must call submit_secret so the person types on the card. The returned error
+// does not contain the text. Without the preview the historical code stands.
 func (s *BrowserAgentSession) refuseSecretTyping() error {
-	if err := s.handPageToUser("secret", "", ""); err != nil {
-		return err
+	if previewHandoffEnabled() {
+		return errUseSubmitSecret
 	}
 	return errors.New("not_password_field")
 }

@@ -96,6 +96,55 @@ func TestUserHoldStopsWhenSessionStops(t *testing.T) {
 	}
 }
 
+func TestCancelledHoldLeaseSurvivesANewerHold(t *testing.T) {
+	t.Cleanup(func() { SetUserHoldsBrowser(false, "") })
+	SetUserHoldsBrowser(false, "")
+
+	cancelled := browserUserHold.set(true, "captcha", false)
+	CancelUserHold()
+	confirm := browserUserHold.set(true, "confirm", false)
+	if confirm == cancelled {
+		t.Fatal("newer hold reused the cancelled lease")
+	}
+	err := waitArmedHold(cancelled, nil)
+	if !errors.Is(err, errUserCancelled) || strings.Contains(err.Error(), "probe") {
+		t.Fatalf("cancel rewritten as a hand-back: %v", err)
+	}
+
+	SetUserHoldsBrowser(false, "")
+	err = waitArmedHold(confirm, nil)
+	if !errors.Is(err, errUserReleased) || !strings.Contains(err.Error(), "probe") {
+		t.Fatalf("hand-back err=%v", err)
+	}
+	later := browserUserHold.set(true, "captcha", false)
+	CancelUserHold()
+	if later == confirm {
+		t.Fatal("later hold reused the hand-back lease")
+	}
+	err = waitArmedHold(confirm, nil)
+	if !errors.Is(err, errUserReleased) || !strings.Contains(err.Error(), "probe") {
+		t.Fatalf("hand-back rewritten as a cancel: %v", err)
+	}
+	err = waitArmedHold(later, nil)
+	if !errors.Is(err, errUserCancelled) || strings.Contains(err.Error(), "probe") {
+		t.Fatalf("later cancel err=%v", err)
+	}
+}
+
+func TestDismissHandsBackOnlyTheHoldItSaw(t *testing.T) {
+	t.Cleanup(func() { SetUserHoldsBrowser(false, "") })
+	SetUserHoldsBrowser(false, "")
+	lease := browserUserHold.set(true, "captcha", false)
+	DismissBrowserPreview()
+	err := waitArmedHold(lease, nil)
+	if !errors.Is(err, errUserReleased) || !strings.Contains(err.Error(), "probe") {
+		t.Fatalf("plain dismiss err=%v", err)
+	}
+	if held, _ := UserHoldsBrowser(); held {
+		t.Fatal("plain dismiss left the hold up")
+	}
+}
+
 func TestCaptchaAskNotifiesStage(t *testing.T) {
 	var got BrowserStageNotice
 	SetBrowserStageNotifier(func(n BrowserStageNotice) { got = n })

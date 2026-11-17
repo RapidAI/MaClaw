@@ -1125,11 +1125,21 @@ func (a *App) mirrorACPFinal(requestID, sessionKey string, resp *IMAgentResponse
 }
 
 func (a *App) appendACPRoundToUIState(userDisplay, requestID, uiSession string) {
+	a.appendHostRoundToUIState(userDisplay, requestID, uiSession, "acp-mode-b", "acp")
+}
+
+func (a *App) appendHostRoundToUIState(userDisplay, requestID, uiSession, source, idPrefix string) {
 	if a == nil || strings.TrimSpace(userDisplay) == "" || strings.TrimSpace(requestID) == "" {
 		return
 	}
 	if uiSession == "" {
 		uiSession = "desktop-user"
+	}
+	if strings.TrimSpace(source) == "" {
+		source = "acp-mode-b"
+	}
+	if strings.TrimSpace(idPrefix) == "" {
+		idPrefix = "acp"
 	}
 	aiAssistantUIStateMu.Lock()
 	defer aiAssistantUIStateMu.Unlock()
@@ -1140,21 +1150,21 @@ func (a *App) appendACPRoundToUIState(userDisplay, requestID, uiSession string) 
 	now := float64(time.Now().UnixMilli())
 	state.Messages = append(state.Messages,
 		map[string]interface{}{
-			"id":         "acp-user-" + requestID,
+			"id":         idPrefix + "-user-" + requestID,
 			"role":       "user",
 			"content":    userDisplay,
 			"sessionKey": uiSession,
 			"timestamp":  now,
-			"source":     "acp-mode-b",
+			"source":     source,
 		},
 		map[string]interface{}{
-			"id":         "acp-asst-" + requestID,
+			"id":         idPrefix + "-asst-" + requestID,
 			"role":       "assistant",
 			"content":    "",
 			"requestId":  requestID,
 			"sessionKey": uiSession,
 			"timestamp":  now + 1,
-			"source":     "acp-mode-b",
+			"source":     source,
 		},
 	)
 	normalizeAIAssistantUIState(&state)

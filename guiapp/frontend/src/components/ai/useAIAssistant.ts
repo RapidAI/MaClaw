@@ -5881,7 +5881,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const sessionKey = normalizeRuntimeSessionKey(explicitSession || 'desktop-user');
         // ACP Mode B (programming agent): accept rounds even if another tab is
         // active so request_id-matched tokens still stream into the chat.
-        const isDetachedBackendRound = requestId.startsWith('acp-') || requestId.startsWith('horizon-');
+        const isDetachedBackendRound = requestId.startsWith('acp-') || requestId.startsWith('horizon-') || requestId.startsWith('mcp-');
         if (!isDetachedBackendRound && !isMatchingSessionEvent({ ...event, session_key: sessionKey }, activeSessionKeyForEvents())) {
             // Goal and session-round continuations keep running in the backend
             // while the user looks at another task. Their tokens stay out of the

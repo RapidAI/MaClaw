@@ -40,7 +40,17 @@ func agentLoopUsesComputerUse(h *IMMessageHandler, ctx *LoopContext) bool {
 }
 
 func (h *IMMessageHandler) resolveAgentLoopLLMConfig(ctx *LoopContext) corelib.MaclawLLMConfig {
+	// Resolve the role first so a pinned MCP model cannot skip the computer-use
+	// gate. Computer use keeps its vision model. A background loop keeps the
+	// background model. The pin still covers the user-visible turn, including a
+	// chat task whose model role is background.
 	role := agentLoopLLMRole(h, ctx)
+	if mcpPinnedModelAllowed(role, ctx) && ctx != nil && h != nil && h.app != nil {
+		if cfg, ok := h.app.mcpPinnedLLMConfig(ctx.UserID); ok && strings.TrimSpace(cfg.Model) != "" {
+			cfg.Profile = role
+			return cfg
+		}
+	}
 	if h != nil && h.app != nil {
 		cfg, err := h.app.ResolveMaclawLLMRole(role)
 		if err == nil && strings.TrimSpace(cfg.Model) != "" {
@@ -55,6 +65,19 @@ func (h *IMMessageHandler) resolveAgentLoopLLMConfig(ctx *LoopContext) corelib.M
 		cfg.Profile = role
 	}
 	return cfg
+}
+
+// mcpPinnedModelAllowed reports whether this loop should use the model the
+// MCP client chose for the task. Computer use needs its own vision model, and
+// a background loop is housekeeping rather than the task the person is watching.
+func mcpPinnedModelAllowed(role string, ctx *LoopContext) bool {
+	if role == maclawLLMRoleComputerUse {
+		return false
+	}
+	if ctx != nil && ctx.Kind == LoopKindBackground {
+		return false
+	}
+	return true
 }
 
 func maclawLLMRoleSkipsLocalRoute(profile string) bool {

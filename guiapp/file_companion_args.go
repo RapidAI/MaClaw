@@ -229,7 +229,7 @@ func pathsAfterLaunchMode(user []string, mode string) []string {
 func desktopArgsAreKnownSubcommand(args []string) bool {
 	for _, arg := range args {
 		switch arg {
-		case "init", "autostart", "remote-smoke", "generate-mobile-pwa-shell", "generate-android-pwa-shell":
+		case "init", "autostart", "remote-smoke", "generate-mobile-pwa-shell", "generate-android-pwa-shell", "mcp":
 			return true
 		}
 		lower := strings.ToLower(arg)

@@ -16,48 +16,54 @@ const agentBrowserStageEvent = "agent-browser-stage"
 
 // AgentBrowserStageView is the live page painted in the assistant preview.
 type AgentBrowserStageView struct {
-	Open           bool   `json:"open"`
-	SessionID      string `json:"sessionId"`
-	URL            string `json:"url"`
-	Title          string `json:"title"`
-	Frame          string `json:"frame"`
-	Width          int    `json:"width"`
-	Height         int    `json:"height"`
-	UserHold       bool   `json:"userHold"`
-	AskReason      string `json:"askReason"`
-	Host           string `json:"host"`
-	Attention      bool   `json:"attention"`
-	ConfirmItem    string `json:"confirmItem"`
-	ConfirmShop    string `json:"confirmShop"`
-	ConfirmAddress string `json:"confirmAddress"`
-	ConfirmAmount  string `json:"confirmAmount"`
-	ConfirmDetail  string `json:"confirmDetail"`
-	Seq            int64  `json:"seq"`
+	Open             bool   `json:"open"`
+	SessionID        string `json:"sessionId"`
+	URL              string `json:"url"`
+	Title            string `json:"title"`
+	Frame            string `json:"frame"`
+	Width            int    `json:"width"`
+	Height           int    `json:"height"`
+	UserHold         bool   `json:"userHold"`
+	AskReason        string `json:"askReason"`
+	Host             string `json:"host"`
+	Attention        bool   `json:"attention"`
+	ConfirmItem      string `json:"confirmItem"`
+	ConfirmShop      string `json:"confirmShop"`
+	ConfirmAddress   string `json:"confirmAddress"`
+	ConfirmAmount    string `json:"confirmAmount"`
+	ConfirmDetail    string `json:"confirmDetail"`
+	SecretMethod     string `json:"secretMethod"`
+	SecretDigits     int    `json:"secretDigits"`
+	SecretSubmission string `json:"secretSubmission"`
+	Seq              int64  `json:"seq"`
 }
 
 type agentBrowserStage struct {
-	mu             sync.Mutex
-	app            *App
-	open           bool
-	dismissed      bool
-	sessionID      string
-	url            string
-	title          string
-	frame          string
-	width          int
-	height         int
-	askReason      string
-	host           string
-	attention      bool
-	confirmItem    string
-	confirmShop    string
-	confirmAddress string
-	confirmAmount  string
-	confirmDetail  string
-	frameHash      uint64
-	seq            int64
-	pumping        bool
-	stop           chan struct{}
+	mu               sync.Mutex
+	app              *App
+	open             bool
+	dismissed        bool
+	sessionID        string
+	url              string
+	title            string
+	frame            string
+	width            int
+	height           int
+	askReason        string
+	host             string
+	attention        bool
+	confirmItem      string
+	confirmShop      string
+	confirmAddress   string
+	confirmAmount    string
+	confirmDetail    string
+	secretMethod     string
+	secretDigits     int
+	secretSubmission string
+	frameHash        uint64
+	seq              int64
+	pumping          bool
+	stop             chan struct{}
 }
 
 var liveAgentBrowser agentBrowserStage
@@ -81,11 +87,18 @@ func (a *App) installAgentBrowserStage() {
 
 func (st *agentBrowserStage) note(n browser.BrowserStageNotice) {
 	st.mu.Lock()
-	if n.Kind == "confirm_clear" {
-		if st.askReason == "confirm" {
-			st.askReason = ""
+	if n.Kind == "confirm_clear" || n.Kind == "secret_clear" {
+		if n.Kind == "confirm_clear" {
+			if st.askReason == "confirm" {
+				st.askReason = ""
+			}
+			st.clearConfirmLocked()
+		} else {
+			if st.askReason == "secret_card" {
+				st.askReason = ""
+			}
+			st.clearSecretLocked()
 		}
-		st.clearConfirmLocked()
 		st.mu.Unlock()
 		st.emit(false)
 		return
@@ -109,6 +122,7 @@ func (st *agentBrowserStage) note(n browser.BrowserStageNotice) {
 		st.askReason = ""
 		st.attention = false
 		st.clearConfirmLocked()
+		st.clearSecretLocked()
 	case "confirm":
 		st.askReason = "confirm"
 		st.attention = false
@@ -117,6 +131,14 @@ func (st *agentBrowserStage) note(n browser.BrowserStageNotice) {
 		st.confirmAddress = strings.TrimSpace(n.Address)
 		st.confirmAmount = strings.TrimSpace(n.Amount)
 		st.confirmDetail = strings.TrimSpace(n.Detail)
+		st.clearSecretLocked()
+	case "secret":
+		st.askReason = "secret_card"
+		st.attention = false
+		st.secretMethod = strings.TrimSpace(n.SecretMethod)
+		st.secretDigits = n.SecretDigits
+		st.secretSubmission = strings.TrimSpace(n.SecretSubmission)
+		st.clearConfirmLocked()
 	default:
 		if reason := strings.TrimSpace(n.Reason); reason != "" {
 			st.askReason = reason
@@ -124,6 +146,7 @@ func (st *agentBrowserStage) note(n browser.BrowserStageNotice) {
 		if n.Hold || n.Kind == "attention" {
 			st.attention = true
 			st.clearConfirmLocked()
+			st.clearSecretLocked()
 		}
 	}
 	st.mu.Unlock()
@@ -137,6 +160,12 @@ func (st *agentBrowserStage) clearConfirmLocked() {
 	st.confirmAddress = ""
 	st.confirmAmount = ""
 	st.confirmDetail = ""
+}
+
+func (st *agentBrowserStage) clearSecretLocked() {
+	st.secretMethod = ""
+	st.secretDigits = 0
+	st.secretSubmission = ""
 }
 
 func (st *agentBrowserStage) setHold(hold bool) {
@@ -164,11 +193,12 @@ func (st *agentBrowserStage) dismiss() {
 	st.dismissed = true
 	st.attention = false
 	st.clearConfirmLocked()
+	st.clearSecretLocked()
 	st.mu.Unlock()
-	// Hiding the card is a cancel. A plain hold is a hand-back so the agent
-	// probes instead of staying blocked.
-	_ = browser.ResolveCheckoutCard(false)
-	browser.SetUserHoldsBrowser(false, "")
+	// Hiding a card cancels it. A plain takeover is handed back. A secret
+	// still being typed, and any hold that starts while the cards close,
+	// stay up.
+	browser.DismissBrowserPreview()
 	st.emit(false)
 }
 
@@ -177,21 +207,24 @@ func (st *agentBrowserStage) snapshot(includeFrame bool) AgentBrowserStageView {
 	defer st.mu.Unlock()
 	st.seq++
 	view := AgentBrowserStageView{
-		Open:           st.open && !st.dismissed,
-		SessionID:      st.sessionID,
-		URL:            st.url,
-		Title:          st.title,
-		Width:          st.width,
-		Height:         st.height,
-		AskReason:      st.askReason,
-		Host:           st.host,
-		Attention:      st.attention,
-		ConfirmItem:    st.confirmItem,
-		ConfirmShop:    st.confirmShop,
-		ConfirmAddress: st.confirmAddress,
-		ConfirmAmount:  st.confirmAmount,
-		ConfirmDetail:  st.confirmDetail,
-		Seq:            st.seq,
+		Open:             st.open && !st.dismissed,
+		SessionID:        st.sessionID,
+		URL:              st.url,
+		Title:            st.title,
+		Width:            st.width,
+		Height:           st.height,
+		AskReason:        st.askReason,
+		Host:             st.host,
+		Attention:        st.attention,
+		ConfirmItem:      st.confirmItem,
+		ConfirmShop:      st.confirmShop,
+		ConfirmAddress:   st.confirmAddress,
+		ConfirmAmount:    st.confirmAmount,
+		ConfirmDetail:    st.confirmDetail,
+		SecretMethod:     st.secretMethod,
+		SecretDigits:     st.secretDigits,
+		SecretSubmission: st.secretSubmission,
+		Seq:              st.seq,
 	}
 	held, _ := browser.UserHoldsBrowser()
 	view.UserHold = held
@@ -325,6 +358,34 @@ func (a *App) AgentBrowserConfirm(approve bool) error {
 	liveAgentBrowser.clearConfirm()
 	liveAgentBrowser.emit(false)
 	return err
+}
+
+// AgentBrowserSubmitSecret records the secret card. approve false cancels.
+// An unacceptable value leaves the card open and does not keep the secret.
+// A successful submit leaves the card up until the host finishes filling:
+// the hold is still on, and clearing the card early would make the page
+// interactive while the secret is being typed. The secret is not written
+// to the preview state.
+func (a *App) AgentBrowserSubmitSecret(secret string, approve bool) error {
+	err := browser.ResolveSecretCard(secret, approve)
+	if err != nil {
+		return err
+	}
+	if approve {
+		return nil
+	}
+	liveAgentBrowser.clearSecret()
+	liveAgentBrowser.emit(false)
+	return nil
+}
+
+func (st *agentBrowserStage) clearSecret() {
+	st.mu.Lock()
+	if st.askReason == "secret_card" {
+		st.askReason = ""
+	}
+	st.clearSecretLocked()
+	st.mu.Unlock()
 }
 
 // AgentBrowserFinish ends a takeover. Done means the person finished the

@@ -127,7 +127,7 @@ import { useProjectTaskActivateEvent } from "./useProjectTaskActivateEvent";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
-import { callAgentBrowserClose, callAgentBrowserConfirm, callAgentBrowserFinish, callAgentBrowserInput, callAgentBrowserSetControl, mergeAgentBrowserStage, type AgentBrowserStageState } from "./AgentBrowserStage";
+import { callAgentBrowserClose, callAgentBrowserConfirm, callAgentBrowserFinish, callAgentBrowserInput, callAgentBrowserSetControl, callAgentBrowserSubmitSecret, mergeAgentBrowserStage, type AgentBrowserStageState } from "./AgentBrowserStage";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
 import { GoalQuickBar } from "./GoalQuickBar";
 import { ChatTaskTray } from "./ChatTaskTray";
@@ -3665,6 +3665,50 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => {
             if (typeof off === "function") off();
             else EventsOff("acp-mode-b-message");
+        };
+    }, [activateTab, createProjectTabWithContext]);
+
+    // MCP host: open the task tab for a task this GUI is running for another tool.
+    // Chat stays a conversation tab. Only coding_dev asks for the programming agent.
+    useEffect(() => {
+        const off = EventsOn("mcp-host-message", (payload: unknown) => {
+            let data: any = payload;
+            try {
+                if (typeof payload === "string") data = JSON.parse(payload);
+            } catch {
+                return;
+            }
+            if (!data || data.role !== "user") return;
+            const projectPath = normalizeProjectSessionPath(String(data.project_path || data.projectPath || ""));
+            if (!projectPath) return;
+            const sessionKey = String(data.session_key || data.sessionKey || "").trim();
+            if (!sessionKey) return;
+            const title = String(data.name || "").trim() || "MCP";
+            const mode = String(data.mode || "");
+            void (async () => {
+                try {
+                    const tab = createProjectTabWithContext(projectPath, title, {
+                        prepareMode: "restore-context",
+                        sessionKey,
+                        ...(mode === "coding_dev" ? { agentMode: "coding_dev" as const } : {}),
+                    });
+                    if (tab?.id) activateTab(tab.id);
+                    setActiveSessionKey(sessionKey);
+                    logAIPanelDiagnostic({
+                        event: "mcp_host_open_project",
+                        projectPath,
+                        sessionKey,
+                        requestId: String(data.request_id || ""),
+                        tabId: tab?.id || "",
+                    });
+                } catch (error) {
+                    console.error("[task_management] open MCP assistant tab failed:", error);
+                }
+            })();
+        });
+        return () => {
+            if (typeof off === "function") off();
+            else EventsOff("mcp-host-message");
         };
     }, [activateTab, createProjectTabWithContext]);
 
@@ -7933,6 +7977,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         onBrowserSetHold={callAgentBrowserSetControl}
                         onBrowserInput={callAgentBrowserInput}
                         onBrowserConfirm={callAgentBrowserConfirm}
+                        onBrowserSecret={callAgentBrowserSubmitSecret}
                         onBrowserFinish={callAgentBrowserFinish}
                         onCloseBrowser={() => {
                             setBrowserStage((prev) => (prev ? { ...prev, open: false } : prev));

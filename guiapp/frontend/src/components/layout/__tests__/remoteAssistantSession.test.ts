@@ -293,6 +293,7 @@ describe('remoteAssistantSession live mirror', () => {
         expect(recover).toHaveBeenCalledTimes(1);
         expect(recover).toHaveBeenCalledWith('g1', 'D:/tasks/a');
         expect(assistantBody()).toBe('甲');
+        expect(remoteAssistantSessionSnapshot()?.syncing).toBe(true);
         applyRemoteStreamPayload({
             grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
             event: 'token', cursor: 13, cursor_from: 13, text: '丙',
@@ -310,6 +311,7 @@ describe('remoteAssistantSession live mirror', () => {
         });
         expect(assistantBody()).toBe('甲乙丙丁');
         expect(recover).toHaveBeenCalledTimes(1);
+        expect(remoteAssistantSessionSnapshot()?.syncing).toBe(false);
     });
 
     it('asks for a fresh watch when the resync frame has no live body', () => {
@@ -437,6 +439,39 @@ describe('remoteAssistantSession live mirror', () => {
         expect(recover).toHaveBeenCalledTimes(1);
     });
 
+    it('asks again when a new hole opens after a short watch reply', () => {
+        const recover = vi.fn();
+        bindRemoteStreamRecovery(recover);
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 10,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 10);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 15, cursor_from: 15, text: '乙',
+        });
+        expect(recover).toHaveBeenCalledTimes(1);
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', null, undefined, 12);
+        expect(recover).toHaveBeenCalledTimes(2);
+        expect(assistantBody()).toBe('甲');
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a',
+            event: 'snapshot', resync: true, cursor: 20,
+        });
+        expect(recover).toHaveBeenCalledTimes(3);
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 20,
+            parts: [{ kind: 'text', seq: 1, text: '齐' }],
+        }, undefined, 20);
+        expect(assistantBody()).toBe('齐');
+        expect(recover).toHaveBeenCalledTimes(3);
+    });
+
     it('folds a higher snapshot of the next request and still ignores an older one', () => {
         publishRemoteAssistantSession(session());
         applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
@@ -518,5 +553,243 @@ describe('remoteAssistantSession live mirror', () => {
         expect(live?.parts.some(part => part.kind === 'thinking' && part.text === '想想' && part.done)).toBe(true);
         expect(live?.parts.some(part => part.kind === 'progress' && part.text.includes('T2') && part.text.includes('run-1'))).toBe(true);
         expect(live?.responded).toBe(true);
+    });
+
+    it('keeps the streamed answer when the polled transcript is only the capped prefix', () => {
+        const cap = '甲'.repeat(4000);
+        const full = `${cap}乙乙乙`;
+        publishRemoteAssistantSession(session());
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'response', response: { text: full },
+        });
+        publishRemoteAssistantSession(session({
+            messages: [{ role: 'assistant', content: `${cap}…`, localFilePaths: ['/tmp/报告.pdf'] }],
+        }));
+        const snap = remoteAssistantSessionSnapshot();
+        const assistants = (snap?.messages || []).filter(message => message.role === 'assistant');
+        expect(assistants).toHaveLength(1);
+        expect(assistants[0].content).toBe(full);
+        expect(assistants[0].localFilePaths).toEqual(['/tmp/报告.pdf']);
+        expect(snap?.live?.responded).toBe(true);
+    });
+
+    it('retires the live row once the transcript has the full answer', () => {
+        publishRemoteAssistantSession(session());
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'response', response: { text: '终稿' },
+        });
+        publishRemoteAssistantSession(session({
+            messages: [{ role: 'assistant', content: '终稿' }],
+        }));
+        const snap = remoteAssistantSessionSnapshot();
+        expect(snap?.live).toBeUndefined();
+        expect((snap?.messages || []).map(message => message.content)).toEqual(['终稿']);
+    });
+
+    it('replaces a snapshot tail with the final that contains it', () => {
+        const cap = '甲'.repeat(4000);
+        const tail = '乙'.repeat(80);
+        const full = `${cap}中段${tail}`;
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 8,
+            parts: [{ kind: 'text', text: tail }],
+        });
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'response', cursor: 9, cursor_from: 9,
+            terminal: { text: full },
+        });
+        expect(assistantBody()).toBe(full);
+        publishRemoteAssistantSession(session({
+            messages: [{ role: 'assistant', content: `${cap}…`, localFilePaths: ['/tmp/报告.pdf'] }],
+        }));
+        const assistants = (remoteAssistantSessionSnapshot()?.messages || []).filter(message => message.role === 'assistant');
+        expect(assistants).toHaveLength(1);
+        expect(assistants[0].content).toBe(full);
+        expect(assistants[0].localFilePaths).toEqual(['/tmp/报告.pdf']);
+    });
+
+    it('keeps a snapshot tail when the trimmed history is a different slice', () => {
+        const cap = '甲'.repeat(4000);
+        const tail = `${'乙'.repeat(80)}结尾`;
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 8,
+            responded: true,
+            parts: [{ kind: 'text', text: tail }],
+        });
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'response', cursor: 9, cursor_from: 9,
+            terminal: { text: cap },
+        });
+        publishRemoteAssistantSession(session({
+            messages: [{ role: 'assistant', content: `${cap}…` }],
+        }));
+        const snap = remoteAssistantSessionSnapshot();
+        const assistants = (snap?.messages || []).filter(message => message.role === 'assistant');
+        expect(assistants.map(message => message.content)).toEqual([`${cap}\n\n…\n\n${tail}`]);
+        expect(snap?.live?.responded).toBe(true);
+    });
+
+    it('joins the opening to the ending when that row is already this round', () => {
+        const cap = '甲'.repeat(4000);
+        const tail = `${'乙'.repeat(80)}结尾`;
+        publishRemoteAssistantSession(session({
+            messages: [
+                { role: 'user', content: '写报告' },
+                { role: 'assistant', content: `${cap}…`, localFilePaths: ['/tmp/报告.pdf'] },
+            ],
+        }));
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            display_text: '〔远控〕写报告',
+            cursor: 8,
+            responded: true,
+            parts: [{ kind: 'text', text: tail }],
+        });
+        const assistants = (remoteAssistantSessionSnapshot()?.messages || []).filter(message => message.role === 'assistant');
+        expect(assistants).toHaveLength(1);
+        expect(assistants[0].content).toBe(`${cap}\n\n…\n\n${tail}`);
+        expect(assistants[0].localFilePaths).toEqual(['/tmp/报告.pdf']);
+        expect((remoteAssistantSessionSnapshot()?.messages || []).filter(message => message.role === 'user').map(message => message.content)).toEqual(['写报告']);
+    });
+
+    it('stitches an opening and an ending that share a run', () => {
+        const shared = '重叠'.repeat(40);
+        const cap = `${'甲'.repeat(4000 - shared.length)}${shared}`;
+        const rest = `${'乙'.repeat(30)}结尾`;
+        const tail = `${shared}${rest}`;
+        publishRemoteAssistantSession(session({
+            messages: [
+                { role: 'user', content: '写报告' },
+                { role: 'assistant', content: `${cap}…` },
+            ],
+        }));
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            display_text: '写报告',
+            cursor: 8,
+            responded: true,
+            parts: [{ kind: 'text', text: tail }],
+        });
+        const assistants = (remoteAssistantSessionSnapshot()?.messages || []).filter(message => message.role === 'assistant');
+        expect(assistants).toHaveLength(1);
+        expect(assistants[0].content).toBe(`${cap}${rest}`);
+    });
+
+    it('keeps a gap when the opening and the ending only share a mark', () => {
+        const cap = `${'甲'.repeat(3999)}。`;
+        const tail = `。${'乙'.repeat(40)}结尾`;
+        publishRemoteAssistantSession(session({
+            messages: [
+                { role: 'user', content: '写报告' },
+                { role: 'assistant', content: `${cap}…` },
+            ],
+        }));
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            display_text: '写报告',
+            cursor: 8,
+            responded: true,
+            parts: [{ kind: 'text', text: tail }],
+        });
+        const assistants = (remoteAssistantSessionSnapshot()?.messages || []).filter(message => message.role === 'assistant');
+        expect(assistants).toHaveLength(1);
+        expect(assistants[0].content).toBe(`${cap}\n\n…\n\n${tail}`);
+    });
+
+    it('leaves an older trimmed answer when the live round is the next prompt', () => {
+        const cap = '甲'.repeat(4000);
+        const tail = `${'乙'.repeat(40)}结尾`;
+        publishRemoteAssistantSession(session({
+            messages: [
+                { role: 'user', content: '上一问' },
+                { role: 'assistant', content: `${cap}…` },
+            ],
+        }));
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r2',
+            project_path: 'D:/tasks/a',
+            display_text: '新问题',
+            cursor: 8,
+            responded: true,
+            parts: [{ kind: 'text', text: tail }],
+        });
+        expect((remoteAssistantSessionSnapshot()?.messages || []).map(message => `${message.role}:${message.content}`)).toEqual([
+            'user:上一问',
+            `assistant:${cap}…`,
+            'user:新问题',
+            `assistant:${tail}`,
+        ]);
+    });
+
+    it('keeps the streamed answer after the round has been quiet', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+        try {
+            const cap = '甲'.repeat(4000);
+            const full = `${cap}乙乙乙`;
+            publishRemoteAssistantSession(session());
+            applyRemoteStreamPayload({
+                grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+                event: 'response', response: { text: full },
+            });
+            const history = () => session({
+                messages: [{ role: 'assistant', content: `${cap}…`, localFilePaths: ['/tmp/报告.pdf'] }],
+            });
+            publishRemoteAssistantSession(history());
+            vi.advanceTimersByTime(120_000);
+            publishRemoteAssistantSession(history());
+            const assistants = (remoteAssistantSessionSnapshot()?.messages || []).filter(message => message.role === 'assistant');
+            expect(assistants).toHaveLength(1);
+            expect(assistants[0].content).toBe(full);
+            expect(assistants[0].localFilePaths).toEqual(['/tmp/报告.pdf']);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('retires a live opening the trimmed history already shows', () => {
+        const cap = `开头${'甲'.repeat(3998)}`;
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 4,
+            responded: true,
+            parts: [{ kind: 'text', text: '开头' }],
+        });
+        publishRemoteAssistantSession(session({
+            messages: [{ role: 'assistant', content: `${cap}…` }],
+        }));
+        const snap = remoteAssistantSessionSnapshot();
+        expect(snap?.live).toBeUndefined();
+        expect((snap?.messages || []).map(message => message.content)).toEqual([`${cap}…`]);
+    });
+
+    it('keeps the streamed draft when the final is a shorter prefix', () => {
+        const draft = `${'甲'.repeat(80)}乙乙乙`;
+        publishRemoteAssistantSession(session());
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 1, cursor_from: 1, text: draft,
+        });
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'response', cursor: 2, cursor_from: 2,
+            terminal: { text: '甲'.repeat(40) },
+        });
+        expect(assistantBody()).toBe(draft);
     });
 });

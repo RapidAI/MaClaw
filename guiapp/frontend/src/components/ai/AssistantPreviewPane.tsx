@@ -47,6 +47,7 @@ interface AssistantPreviewPaneProps {
     onBrowserSetHold?: (hold: boolean) => void;
     onBrowserInput?: (payload: string) => void;
     onBrowserConfirm?: (approve: boolean) => void;
+    onBrowserSecret?: (secret: string, approve: boolean) => void | Promise<unknown>;
     onBrowserFinish?: (done: boolean) => void;
     onCloseBrowser?: () => void;
     conflictContent?: React.ReactNode;
@@ -341,6 +342,7 @@ export function AssistantPreviewPane({
     onBrowserSetHold,
     onBrowserInput,
     onBrowserConfirm,
+    onBrowserSecret,
     onBrowserFinish,
     onCloseBrowser,
     conflictContent = null,
@@ -649,6 +651,7 @@ export function AssistantPreviewPane({
                         onSetHold={onBrowserSetHold}
                         onInput={onBrowserInput}
                         onConfirm={onBrowserConfirm}
+                        onSecret={onBrowserSecret}
                         onFinish={onBrowserFinish}
                     />
                 ) : effectiveMode === "agent" && agentView ? (

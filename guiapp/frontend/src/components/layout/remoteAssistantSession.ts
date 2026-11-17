@@ -107,6 +107,8 @@ export type RemoteAssistantSession = {
     activity?: RemoteAssistantActivity;
     /** The in-flight round mirrored live; absent when nothing streams. */
     live?: RemoteLiveRound | null;
+    /** A cursor hole is open. The bubble stays; the status says output is catching up. */
+    syncing?: boolean;
     /** Coding workbench checklist mirrored over workbench_steps events. */
     workbench?: RemoteWorkbenchState | null;
     messages: RemoteAssistantTranscriptMessage[];
@@ -239,6 +241,16 @@ function liveStamp(round: RemoteLiveRound | null | undefined): string {
     ].join(':');
 }
 
+// body is the draft (a late joiner only has the snapshot's newest slice).
+// visible is the terminal. Show the terminal when it is longer and the draft
+// is its prefix or its suffix. A shorter terminal leaves the draft in place.
+function shownAnswer(draft: string, terminal: string): string {
+    if (!draft) return terminal;
+    if (!terminal || terminal.length <= draft.length) return draft;
+    if (terminal.startsWith(draft) || terminal.endsWith(draft)) return terminal;
+    return draft;
+}
+
 function projectReducedRound(key: string, state: ViewerReduceState, eventName: string, workbench: RemoteWorkbenchState | null): void {
     if (eventName === 'workbench_steps') {
         if (workbench) workbenchByKey.set(key, workbench);
@@ -266,7 +278,7 @@ function projectReducedRound(key: string, state: ViewerReduceState, eventName: s
     state.thinking.forEach((block, index) => {
         parts.push({ kind: 'thinking', seq: index + 1, text: block.text, done: block.done });
     });
-    const shown = state.body || state.visible;
+    const shown = shownAnswer(state.body, state.visible);
     if (shown) parts.push({ kind: 'text', seq: parts.length + 1, text: shown });
     for (const row of state.timeline) {
         const label = row.text || `Coding Agent: ${row.phase} ${row.taskId} - ${row.title}`.trim();
@@ -302,7 +314,12 @@ export function applyRemoteStreamPayload(payload: unknown) {
                 requestRemoteStreamRecovery(String(p.grant_id || '').trim(), String(p.project_path || '').trim());
             }
         }
-        if (next.gap && next.last === prev.last && next.body === prev.body) return;
+        if (next.gap && next.last === prev.last && next.body === prev.body) {
+            // Keep the text already on screen. The status still has to flip
+            // to "catching up", or a hole looks like the other computer stopped.
+            emit();
+            return;
+        }
         const workbench = record.workbench && typeof record.workbench === 'object' ? record.workbench as RemoteWorkbenchState : null;
         projectReducedRound(key, next, eventName, workbench);
         return;
@@ -551,10 +568,78 @@ export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, l
     emit();
 }
 
+// get_task keeps the first 4000 runes and appends "…" (trimRemoteControlText).
+// That prefix is not the answer the stream already showed.
+const remoteHistoryTextCap = 4000;
+
+function trimmedHistoryPrefix(history: string): string | null {
+    const h = history.trim();
+    if (!h.endsWith('…') || h.length < remoteHistoryTextCap + 1) return null;
+    return h.slice(0, -1);
+}
+
+function historyIsCappedPrefix(history: string, live: string): boolean {
+    const prefix = trimmedHistoryPrefix(history);
+    const l = live.trim();
+    return !!prefix && l.length > prefix.length && l.startsWith(prefix);
+}
+
+// The 4000-rune row is the opening. It already shows a shorter live copy.
+// Anything else — the full stream, or a snapshot of the ending — is still
+// only on this round. get_task will not grow that row past the cut.
+function transcriptMissesRound(history: string, live: string): boolean {
+    const prefix = trimmedHistoryPrefix(history);
+    const l = live.trim();
+    if (!prefix || !l) return false;
+    return !prefix.startsWith(l);
+}
+
+// A shared run shorter than a clause is punctuation, not the same sentence.
+const answerSliceOverlapMin = 16;
+
+// Longest prefix of tail that is a suffix of prefix. The snapshot keeps the
+// newest slice, so that run is where the opening and the ending meet.
+function sharedEdge(prefix: string, tail: string): number {
+    if (!prefix || !tail) return 0;
+    const s = `${tail}\0${prefix}`;
+    const pi = new Array<number>(s.length);
+    pi[0] = 0;
+    let k = 0;
+    for (let i = 1; i < s.length; i++) {
+        while (k > 0 && s.charCodeAt(i) !== s.charCodeAt(k)) k = pi[k - 1];
+        if (s.charCodeAt(i) === s.charCodeAt(k)) k += 1;
+        pi[i] = k;
+    }
+    const n = pi[s.length - 1] || 0;
+    return n >= answerSliceOverlapMin ? n : 0;
+}
+
+function joinedAnswerSlices(prefix: string, tail: string): string {
+    const overlap = sharedEdge(prefix, tail);
+    if (overlap > 0) return prefix + tail.slice(overlap);
+    return `${prefix}\n\n…\n\n${tail}`;
+}
+
+// The trimmed row belongs to this round when its prompt is the round's
+// prompt, or when the row arrived after the round was first seen.
+function roundOwnsTrimmedTail(messages: RemoteAssistantTranscriptMessage[], index: number, round: RemoteLiveRound): boolean {
+    const prompt = stripRemoteOriginMarker(round.displayText);
+    if (prompt) {
+        for (let i = index - 1; i >= 0; i--) {
+            const row = messages[i];
+            if (row.role !== 'user') continue;
+            return row.content.trim() === prompt;
+        }
+        return false;
+    }
+    return round.baseline >= 0 && index >= round.baseline;
+}
+
 // Settles the live round against the polled transcript. The response having
 // landed plus a fresh non-user tail means the transcript now owns the turn.
-// The timeout path covers answers the transcript never grows for (stopped or
-// unwritten turns), so a mirrored draft cannot outlive its round forever.
+// A quiet round stays while the polled row is only the opening and this
+// round still holds the rest. The timeout drops a round the transcript
+// already shows, and a draft the transcript never grows for.
 function settleLiveRounds() {
     if (!raw) {
         liveRounds.clear();
@@ -578,6 +663,10 @@ function settleLiveRounds() {
     const round = liveRounds.get(key);
     if (!round) return;
     if (round.baseline < 0) round.baseline = raw.messages.length;
+    const tail = raw.messages[raw.messages.length - 1];
+    const roundText = (round.responseText || round.parts.filter(part => part.kind === 'text').map(part => part.text).join('')).trim();
+    const tailText = tail && tail.role !== 'user' ? (tail.content || '').trim() : '';
+    if (transcriptMissesRound(tailText, roundText)) return;
     const staleMs = round.responded ? 90_000 : 180_000;
     if (Date.now() - (round.lastEventAt || 0) > staleMs) {
         liveRounds.delete(key);
@@ -586,14 +675,11 @@ function settleLiveRounds() {
         return;
     }
     if (!round.responded) return;
-    const tail = raw.messages[raw.messages.length - 1];
     if (!tail || tail.role === 'user') return;
     // The transcript owns the turn once it grows past the round's baseline,
     // or when its tail already carries this answer — a response can land
     // between polls and baseline counts whatever was fetched, not what the
     // round saw, so the content check is the real arbiter.
-    const roundText = (round.responseText || round.parts.filter(part => part.kind === 'text').map(part => part.text).join('')).trim();
-    const tailText = (tail.content || '').trim();
     const covered = raw.messages.length > round.baseline
         || (roundText !== '' && tailText !== '' && tailText.startsWith(roundText.slice(0, Math.min(60, roundText.length))));
     if (covered) {
@@ -685,17 +771,40 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
             .map(part => part.text)
             .join('');
         const liveThinking = round.parts.some(part => part.kind === 'thinking' && !part.done);
+        // One answer. The polled row is its opening. Drop that row and keep
+        // its files on the live row. A shared run is stitched once. Otherwise
+        // the opening, a gap, and the ending stay in that order.
+        let carriedFiles: string[] | undefined;
+        let shown = content;
+        if (content.trim()) {
+            for (let i = merged.length - 1; i >= 0; i--) {
+                const row = merged[i];
+                if (row.role !== 'assistant' || row.remoteLive) continue;
+                const live = content.trim();
+                const prefix = trimmedHistoryPrefix(row.content);
+                if (historyIsCappedPrefix(row.content, live)) {
+                    carriedFiles = row.localFilePaths;
+                    merged.splice(i, 1);
+                } else if (prefix && !prefix.startsWith(live) && !live.startsWith(prefix) && roundOwnsTrimmedTail(merged, i, round)) {
+                    carriedFiles = row.localFilePaths;
+                    shown = joinedAnswerSlices(prefix, live);
+                    merged.splice(i, 1);
+                }
+                break;
+            }
+        }
         const reduced = viewerStates.get(key);
         const fields: Array<{ label: string; value: string }> = [];
         if (reduced?.trialStatus) fields.push({ label: 'Recovery', value: reduced.trialStatus });
         if (reduced && reduced.trialFailures > 0) fields.push({ label: 'Failures', value: String(reduced.trialFailures) });
-        if (content || thinking || liveThinking || fields.length) {
+        if (shown || thinking || liveThinking || fields.length) {
             merged.push({
                 role: 'assistant',
-                content,
+                content: shown,
                 reasoning: thinking || undefined,
                 remoteLive: true,
                 liveThinking,
+                localFilePaths: carriedFiles,
                 fields: fields.length ? fields : undefined,
             });
         }
@@ -714,7 +823,7 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
                 merged.push({ role: note.asError ? 'error' : 'assistant', content: note.text });
             }
         }
-        return { ...session, messages: merged, live: round, workbench: workbenchByKey.get(key) || null };
+        return { ...session, messages: merged, live: round, workbench: workbenchByKey.get(key) || null, syncing: !!reduced?.gap };
     }
     const workbench = workbenchByKey.get(key) || null;
     if (merged || workbench) return { ...session, messages: merged || session.messages, workbench };
@@ -735,6 +844,7 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.error,
         session.activity ? JSON.stringify(session.activity) : '',
         liveStamp(session.live),
+        session.syncing ? 'sync' : '',
         session.workbench ? JSON.stringify(session.workbench) : '',
         session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}\n${message.cardExpired ? 'expired' : ''}\n${message.confirmation?.id || ''}`).join('\n--\n'),
     ].join('\n');

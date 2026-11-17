@@ -2489,6 +2489,8 @@ export namespace corelib {
 	    acp_host_enabled?: boolean;
 	    acp_host_port?: number;
 	    acp_host_mirror_ui?: boolean;
+	    mcp_host_enabled?: boolean;
+	    mcp_host_port?: number;
 	    im_progress_nudge_enabled?: boolean;
 	    extra_tool_configs?: Record<string, ToolConfig>;
 	    ui_mode?: string;
@@ -2794,6 +2796,8 @@ export namespace corelib {
 	        this.acp_host_enabled = source["acp_host_enabled"];
 	        this.acp_host_port = source["acp_host_port"];
 	        this.acp_host_mirror_ui = source["acp_host_mirror_ui"];
+	        this.mcp_host_enabled = source["mcp_host_enabled"];
+	        this.mcp_host_port = source["mcp_host_port"];
 	        this.im_progress_nudge_enabled = source["im_progress_nudge_enabled"];
 	        this.extra_tool_configs = this.convertValues(source["extra_tool_configs"], ToolConfig, true);
 	        this.ui_mode = source["ui_mode"];
@@ -11076,6 +11080,44 @@ export namespace main {
 	        this.path = source["path"];
 	        this.skill_count = source["skill_count"];
 	        this.error = source["error"];
+	    }
+	}
+	export class GitHubRepoMaintRule {
+	    id: string;
+	    repo_url: string;
+	    owner: string;
+	    repo: string;
+	    ghost_dir: string;
+	    enabled: boolean;
+	    push_branch: string;
+	    commands: {[key: string]: string};
+	    enabled_kinds: {[key: string]: boolean};
+	    hook_ready: boolean;
+	    auth_blocked: boolean;
+	    last_error: string;
+	    queue_depth: number;
+	    intake_ready: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new GitHubRepoMaintRule(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.repo_url = source["repo_url"];
+	        this.owner = source["owner"];
+	        this.repo = source["repo"];
+	        this.ghost_dir = source["ghost_dir"];
+	        this.enabled = source["enabled"];
+	        this.push_branch = source["push_branch"];
+	        this.commands = source["commands"];
+	        this.enabled_kinds = source["enabled_kinds"];
+	        this.hook_ready = source["hook_ready"];
+	        this.auth_blocked = source["auth_blocked"];
+	        this.last_error = source["last_error"];
+	        this.queue_depth = source["queue_depth"];
+	        this.intake_ready = source["intake_ready"];
 	    }
 	}
 	export class GitHubCloneResult {

@@ -292,6 +292,13 @@ func shouldAskCaptchaWidget(hasSnapshot, snapshotWidget, didPeek bool, peekedWid
 	return hasSnapshot && snapshotWidget
 }
 
+func (s *BrowserAgentSession) personAskIfNeeded(action string) *BrowserActionResult {
+	if ask := s.captchaAskIfNeeded(action); ask != nil {
+		return ask
+	}
+	return s.qrAskIfNeeded(action)
+}
+
 func (s *BrowserAgentSession) captchaAskIfNeeded(action string) *BrowserActionResult {
 	if !isCaptchaMutatingAction(action) {
 		return nil
@@ -361,6 +368,49 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 			"url":        url,
 			"title":      title,
 		},
+	}
+}
+
+func (s *BrowserAgentSession) qrAskIfNeeded(action string) *BrowserActionResult {
+	if !isCaptchaMutatingAction(action) {
+		return nil
+	}
+	flags, ok := s.lastSnapshotFlags()
+	if !ok || !flags.LoginQR {
+		return nil
+	}
+	url, title := "", ""
+	sessionID := ""
+	if s != nil {
+		s.mu.RLock()
+		sessionID = s.ID
+		if s.snapshots != nil && s.lastSnapshotID != "" {
+			if snap := s.snapshots[s.lastSnapshotID]; snap != nil {
+				url = snap.URL
+				title = snap.Title
+			}
+		}
+		s.mu.RUnlock()
+	}
+	if err := s.handPageToUser("qr", url, title); err != nil && previewHandoffEnabled() {
+		display := "用户已在预览中完成扫码。先 probe，再继续。不要在对话里索要密码或验证码。"
+		if !errors.Is(err, errUserReleased) {
+			display = err.Error()
+		}
+		return &BrowserActionResult{
+			SessionID: sessionID,
+			Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
+			Status:    "blocked",
+			Display:   display,
+			Detail:    "login_qr",
+		}
+	}
+	return &BrowserActionResult{
+		SessionID: sessionID,
+		Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
+		Status:    "ask",
+		Display:   "page has a QR sign-in; the person scans it in the MaClaw preview (接管), then probe before clicking",
+		Detail:    "login_qr",
 	}
 }
 

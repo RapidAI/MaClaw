@@ -853,6 +853,10 @@ export function GenerateMobilePWAShell(arg1:main.MobilePWAShellRequest):Promise<
 
 export function GetACPHostStatus():Promise<Record<string, any>>;
 
+export function GetMCPHostStatus():Promise<Record<string, any>>;
+
+export function GenerateMCPHostAPIKey():Promise<Record<string, any>>;
+
 export function GetAIAssistantInitStatus():Promise<string>;
 
 export function GetAIAssistantTrace(arg1:string):Promise<main.AIAssistantTraceView>;
@@ -2912,6 +2916,16 @@ export function DisconnectGitHub():Promise<void>;
 export function GitHubAPIRequest(arg1:string,arg2:string):Promise<string>;
 
 export function GitHubCloneRepository(arg1:string,arg2:string):Promise<main.GitHubCloneResult>;
+
+export function ListGitHubRepoMaintRules():Promise<Array<main.GitHubRepoMaintRule>>;
+
+export function SaveGitHubRepoMaintRule(arg1:main.GitHubRepoMaintRule):Promise<main.GitHubRepoMaintRule>;
+
+export function DeleteGitHubRepoMaintRule(arg1:string):Promise<void>;
+
+export function SetGitHubRepoMaintEnabled(arg1:string,arg2:boolean,arg3:string):Promise<void>;
+
+export function ReplayGitHubRepoMaint(arg1:string):Promise<void>;
 
 export function StartMaclawAppApprovalWorkflow(arg1:main.MaclawAppApprovalWorkflowStartInput):Promise<Record<string, any>>;
 
