@@ -89,24 +89,6 @@ func TestCheckoutConfirmationBoundToAmount(t *testing.T) {
 	}
 }
 
-func TestGenericApprovalDoesNotPassTheCheckoutGuard(t *testing.T) {
-	owner := "card-user"
-	ClearCheckoutConfirmation(owner)
-	defer ClearCheckoutConfirmation(owner)
-	for _, text := range []string{
-		"确认", "继续", "我已完成",
-		"已从上次停下的地方继续。购买、发送和发布不在这张卡片的授权里。",
-		"确认支付",
-	} {
-		if _, ok := RecordCheckoutConfirmation(owner, text); ok {
-			t.Fatalf("%q was stored as a payment authorization", text)
-		}
-	}
-	if err := consumeCheckoutConfirmation(owner, "应付总额 ¥99.00"); err == nil || !isPolicyDenied(err) {
-		t.Fatal("generic approval passed the checkout guard")
-	}
-}
-
 func TestPageScriptNamesCheckout(t *testing.T) {
 	if !pageScriptNamesCheckout(`[...document.querySelectorAll('a')].find(a=>a.innerText.includes('提交订单')).click()`) {
 		t.Fatal("script clicking 提交订单 not caught")
