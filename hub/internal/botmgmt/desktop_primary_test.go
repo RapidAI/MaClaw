@@ -309,7 +309,7 @@ func TestDelegatedRunEndReportsToPrimaryMailbox(t *testing.T) {
 	if _, err := svc.NoteBotCrossRun(ctx, "tenant-a", "alice", "bot_pub", d.ID, "run_42"); err != nil {
 		t.Fatal(err)
 	}
-	svc.reportDelegateRunEnd("tenant-a", "alice", "bot_pub", "run_42", "succeeded", Reply{Text: "导出好了", Files: []ReplyFile{{Name: "orders.csv"}}}, nil)
+	svc.reportDelegateRunEnd("tenant-a", "alice", "bot_pub", "run_42", "succeeded", Reply{Text: "导出好了", TaskOutcome: "done", Files: []ReplyFile{{Name: "orders.csv"}}}, nil)
 	svc.reportDelegateRunEnd("tenant-a", "alice", "bot_pub", "run_other", "succeeded", Reply{Text: "not delegated"}, nil)
 	items, err := svc.BotMailbox(ctx, "tenant-a", "alice", "main", nil, false)
 	if err != nil || len(items) != 1 {

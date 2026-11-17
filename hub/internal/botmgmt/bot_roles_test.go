@@ -49,7 +49,7 @@ func TestRouterWordsOffTheDesktopForNoDesktopBots(t *testing.T) {
 		want    string
 		wantAlt string
 	}{
-		{"no_receipt", "", "这件做完了。", ""},
+		{"no_receipt", "", "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。", ""},
 		{"attention", "", "这件需要你看一眼。", ""},
 		{"attention", "请扫码登录", "请扫码登录", ""},
 		{"failed", "", "这件我没做成，中途出了问题。你说一声我再试一次。", ""},
@@ -63,7 +63,7 @@ func TestRouterWordsOffTheDesktopForNoDesktopBots(t *testing.T) {
 			t.Fatalf("%s names a desktop: %q", tc.reason, got)
 		}
 	}
-	if got := routerWordFinding(watchFinding{Reason: "no_receipt"}, false); !strings.Contains(got, "桌面") {
-		t.Fatalf("desktop bot lost its wording: %q", got)
+	if got := routerWordFinding(watchFinding{Reason: "no_receipt"}, false); strings.Contains(got, "做完了") || strings.Contains(got, "桌面") {
+		t.Fatalf("a missing result was called done: %q", got)
 	}
 }

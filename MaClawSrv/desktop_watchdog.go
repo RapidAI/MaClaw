@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"log"
@@ -12,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
@@ -570,6 +573,7 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 		return msg
 	}
 	defer desktopWatchdogEnd(run.ID)
+	defer agentservice.ClearRunRuntimeStatus(run.ID)
 	key := desktopLedgerKey(scope)
 	status := string(run.Status)
 	// The run's event stream ends with its end, so an observer of the
@@ -599,14 +603,17 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 			// The run finished; its post is not confirmed (not a success).
 			status += " publish_unconfirmed"
 		}
-		if !applied {
+		before := outcome
+		outcome, why = desktopReconcileDelivery(run, msg, outcome, why, runErr, false)
+		if !applied || outcome != before {
 			desktopApplyOutcome(msg, outcome, why)
-			if fix := desktopPostCorrection(run.ID, msg.Content); fix != "" {
+			if fix := desktopPostCorrection(run.ID, msg.Content); fix != "" && !strings.Contains(msg.Content, fix) {
 				msg.Content = fix + "\n" + msg.Content
-			} else if posted := desktopPostedNotice(run.ID, msg.Content); posted != "" {
+			} else if posted := desktopPostedNotice(run.ID, msg.Content); posted != "" && !strings.Contains(msg.Content, posted) {
 				msg.Content = posted + "\n" + msg.Content
 			}
 		}
+		desktopSyncVisible(msg)
 		desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status})
 		return msg
 	}
@@ -645,24 +652,643 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 				text = "这件我没做成，中途出了问题。你说一声我再试一次。"
 			}
 		} else {
-			text = "这件做完了，桌面上就是结果，你看一眼。"
-			if noDesktop {
-				text = "这件做完了。"
+			if msg == nil {
+				msg = &agentservice.Message{SessionID: run.SessionID, InstanceID: run.InstanceID, Role: agentservice.MessageRoleAssistant, CreatedAt: time.Now()}
 			}
+			outcome, why = desktopReconcileDelivery(run, msg, outcome, why, runErr, true)
+			text = msg.Content
 		}
 	}
 	if msg == nil {
 		msg = &agentservice.Message{SessionID: run.SessionID, InstanceID: run.InstanceID, Role: agentservice.MessageRoleAssistant, CreatedAt: time.Now()}
 	}
-	msg.Content = text
+	if strings.TrimSpace(msg.Content) == "" {
+		msg.Content = text
+	}
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
 	}
 	msg.Metadata["receipt"] = "srv"
 	desktopApplyOutcome(msg, outcome, why)
+	desktopSyncVisible(msg)
 	desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status + " receipt_by_srv"})
 	log.Printf("[watchdog] run=%s ended without a reply; srv receipt sent (status=%s)", run.ID, status)
 	return msg
+}
+
+// desktopUndeliveredSentence is the visible result when a run ends without
+// a requested output. It replaces a success claim that the evidence does not support.
+const desktopUndeliveredSentence = "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。"
+
+// desktopUnverifiedSentence is the visible line when execution finished but
+// the task effect was not verified. The reply's own text stays after it.
+const desktopUnverifiedSentence = "这件还不能确认已经完成，请以实际结果为准。"
+
+// deliveredOutputNames is files the deliver tool placed on the reply, with
+// bytes. A process screenshot is not one, and neither is a name or a media
+// id without bytes. The request text is not consulted.
+func deliveredOutputNames(msg *agentservice.Message) []string {
+	if msg == nil {
+		return nil
+	}
+	var names []string
+	for _, item := range msg.Attachments {
+		if item.Delivery != agent.AttachmentDeliveryFile || strings.TrimSpace(item.Data) == "" {
+			continue
+		}
+		name := strings.TrimSpace(item.FileName)
+		if name == "" {
+			name = "文件"
+		}
+		names = append(names, name)
+		if len(names) == 3 {
+			break
+		}
+	}
+	return names
+}
+
+func desktopRunHasConfirmedPost(runID string) bool {
+	for _, key := range desktopLedgerKeysForRun(runID) {
+		if _, ok := desktopLedgerRunPost(desktopLedgerEntries(key), runID); ok {
+			return true
+		}
+	}
+	if rec, ok := desktopPublishRecordOf(runID); ok && rec.posted() {
+		return true
+	}
+	return false
+}
+
+// desktopVisibleAnswer is text the person can read. A file is not required
+// for an answer to count. send_to_user is that text when the body is empty.
+func desktopVisibleAnswer(msg *agentservice.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if text := strings.TrimSpace(msg.Content); text != "" {
+		return text
+	}
+	if msg.Metadata == nil {
+		return ""
+	}
+	return strings.TrimSpace(msg.Metadata["send_to_user"])
+}
+
+// desktopReconcileDelivery turns tool and contract records into an outcome.
+// A text answer completes a turn that asked for no artifact. An open output
+// contract or an unposted publish stays unverified, whatever the prose says.
+// A process screenshot is not one of those records. A file does not replace
+// a measured not-done outcome or an unposted publish.
+func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, outcome, why string, runErr error, _ bool) (string, string) {
+	if msg == nil || run == nil || runErr != nil || run.Status == agentservice.RunStatusFailed || run.Status == agentservice.RunStatusCancelled {
+		return outcome, why
+	}
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	switch outcome {
+	case agentservice.TaskOutcomePartial, agentservice.TaskOutcomeBlocked, agentservice.TaskOutcomeNotSubmitted, agentservice.TaskOutcomeUnconfirmed, agentservice.TaskOutcomeUnverified, agentservice.TaskOutcomeAwaitingUser, agentservice.TaskOutcomeRunning:
+		return outcome, why
+	}
+	files := deliveredFileCount(msg)
+	complete, incomplete, other := desktopPostEvidence(run.ID)
+	contract, resolved := desktopWaitForContract(run.ID)
+	if resolved && contract.failed {
+		return agentservice.TaskOutcomeUnverified, "deliverable extraction failed"
+	}
+	if resolved && contract.typed {
+		verdict, why := desktopAttributedVerdict(run.ID, msg, contract.parsed)
+		noteDeliveredFiles(msg, files)
+		rememberContractOutcome(run, msg, contract.parsed, verdict)
+		return verdict, why
+	}
+	if resolved {
+		if verdict, why := desktopContractVerdict(contract.items, contract.slots, files, complete, incomplete, other); verdict != "" {
+			noteDeliveredFiles(msg, files)
+			return verdict, why
+		}
+	}
+	if desktopExtractionUnresolved(run.ID) {
+		noteDeliveredFiles(msg, files)
+		return agentservice.TaskOutcomeUnverified, "deliverable extraction unfinished"
+	}
+	if desktopPlanTurn(run) {
+		answered := desktopVisibleAnswer(msg) != ""
+		noteDeliveredFiles(msg, files)
+		if answered {
+			return agentservice.TaskOutcomeDone, "text answer"
+		}
+		return agentservice.TaskOutcomeUnverified, "plan is not delivery"
+	}
+	if other > 0 && complete == 0 {
+		noteDeliveredFiles(msg, files)
+		return agentservice.TaskOutcomeUnverified, "publish not verified"
+	}
+	if incomplete > 0 {
+		noteDeliveredFiles(msg, files)
+		return agentservice.TaskOutcomePartial, "publish incomplete"
+	}
+	if complete > 0 {
+		noteDeliveredFiles(msg, files)
+		return agentservice.TaskOutcomeDone, "published"
+	}
+	if files > 0 {
+		noteDeliveredFiles(msg, files)
+		return agentservice.TaskOutcomeDone, "file delivered"
+	}
+	if desktopVisibleAnswer(msg) != "" && (!desktopRunTookSteps(run.ID) || resolved) {
+		return agentservice.TaskOutcomeDone, "text answer"
+	}
+	if desktopVisibleAnswer(msg) != "" {
+		return agentservice.TaskOutcomeUnverified, "desktop effect not verified"
+	}
+	if msg.Metadata[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeBlocked &&
+		strings.Contains(msg.Content, desktopUndeliveredSentence) {
+		return agentservice.TaskOutcomeBlocked, why
+	}
+	msg.Content = desktopUndeliveredSentence
+	msg.Metadata["send_to_user"] = desktopUndeliveredSentence
+	msg.Metadata["send_to_user_kind"] = "report"
+	return agentservice.TaskOutcomeBlocked, "nothing was said and nothing was delivered"
+}
+
+const (
+	desktopContractFile = "file"
+	desktopContractPost = "post"
+	desktopContractText = "text"
+)
+
+type desktopOutputContract struct {
+	items    []string
+	slots    []string
+	parsed   []agent.DesktopDeliverable
+	failed   bool
+	typed    bool
+	resolved bool
+}
+
+var desktopOutputContracts sync.Map
+
+// noteDesktopOutputContract stores a resolved checklist whose items have no
+// kind. An empty list is a resolved "no artifact" contract. Without a kind,
+// more than one item cannot be proved complete by counting evidence.
+func noteDesktopOutputContract(runID string, items []string) {
+	noteDesktopOutputPlan(runID, items, nil)
+}
+
+// noteDesktopOutputSlots stores a structured contract. Each slot is "file"
+// or "post". Completion needs that many delivered files and fully live posts.
+func noteDesktopOutputSlots(runID string, slots []string) {
+	noteDesktopOutputPlan(runID, nil, slots)
+}
+
+func noteDesktopOutputPlan(runID string, items, slots []string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	desktopOutputContracts.Store(runID, desktopOutputContract{
+		items:    append([]string(nil), items...),
+		slots:    append([]string(nil), slots...),
+		resolved: true,
+	})
+}
+
+func noteParsedDeliverableContract(runID string, items []agent.DesktopDeliverable, failed bool) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	typed := false
+	texts := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.ID != "" || item.Kind != "" {
+			typed = true
+		}
+		if text := strings.TrimSpace(item.Text); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	desktopOutputContracts.Store(runID, desktopOutputContract{
+		items:    texts,
+		parsed:   append([]agent.DesktopDeliverable(nil), items...),
+		failed:   failed,
+		typed:    typed && !failed,
+		resolved: true,
+	})
+}
+
+func desktopOutputContractOf(runID string) (desktopOutputContract, bool) {
+	value, ok := desktopOutputContracts.Load(strings.TrimSpace(runID))
+	if !ok {
+		return desktopOutputContract{}, false
+	}
+	contract, _ := value.(desktopOutputContract)
+	if !contract.resolved && !contract.failed {
+		contract.resolved = true
+	}
+	return contract, true
+}
+
+func deliveredFileCount(msg *agentservice.Message) int {
+	if msg == nil {
+		return 0
+	}
+	n := 0
+	for _, item := range msg.Attachments {
+		if item.Delivery == agent.AttachmentDeliveryFile && strings.TrimSpace(item.Data) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func noteDeliveredFiles(msg *agentservice.Message, files int) {
+	if files == 0 || msg == nil || strings.TrimSpace(msg.Content) != "" {
+		return
+	}
+	names := deliveredOutputNames(msg)
+	if len(names) == 0 {
+		return
+	}
+	msg.Content = "结果文件已经附在这条回复上：" + strings.Join(names, "、") + "。"
+}
+
+type desktopPostSnapshot struct {
+	complete, incomplete, other int
+	ok                          bool
+}
+
+var desktopPostSnapshots sync.Map
+
+// desktopSnapshotPosts remembers the run's publish evidence before the reply
+// path takes the records. The receipt still has to see them.
+func desktopSnapshotPosts(runID string) {
+	complete, incomplete, other := desktopPostEvidenceLive(runID)
+	desktopPostSnapshots.Store(runID, desktopPostSnapshot{complete: complete, incomplete: incomplete, other: other, ok: true})
+}
+
+// desktopPostEvidence counts publish records. A fully live post is complete.
+// A live-but-incomplete post is not. When the run has no publish record, one
+// confirmed ledger entry counts as one complete post.
+func desktopPostEvidence(runID string) (complete, incomplete, other int) {
+	if value, ok := desktopPostSnapshots.Load(runID); ok {
+		snap, _ := value.(desktopPostSnapshot)
+		if snap.ok {
+			return snap.complete, snap.incomplete, snap.other
+		}
+	}
+	return desktopPostEvidenceLive(runID)
+}
+
+func desktopPostEvidenceLive(runID string) (complete, incomplete, other int) {
+	recs := desktopPublishRunRecords(runID)
+	if len(recs) == 0 {
+		if desktopRunHasConfirmedPost(runID) {
+			return 1, 0, 0
+		}
+		return 0, 0, 0
+	}
+	for _, rec := range recs {
+		switch rec.State {
+		case browser.PublishLive:
+			complete++
+		case browser.PublishLiveIncomplete:
+			incomplete++
+		default:
+			other++
+		}
+	}
+	return complete, incomplete, other
+}
+
+// desktopContractVerdict checks every required slot against its own evidence.
+// Opaque items have no kind: one item can be closed by one complete file or
+// one fully live post, and more than one item stays incomplete because the
+// evidence cannot be attributed. An empty checklist is not a verdict.
+func desktopContractVerdict(items, slots []string, files, complete, incomplete, other int) (string, string) {
+	if len(slots) > 0 {
+		// A count of files or posts is not proof that each required item
+		// was delivered. Without an item id on the evidence, the contract
+		// stays incomplete.
+		if files+complete+incomplete+other == 0 {
+			return agentservice.TaskOutcomeUnverified, "output contract open"
+		}
+		return agentservice.TaskOutcomePartial, "output contract unattributed"
+	}
+	switch len(items) {
+	case 0:
+		return "", ""
+	case 1:
+		if incomplete == 0 && other == 0 && complete == 0 && files == 1 {
+			return agentservice.TaskOutcomeDone, "file delivered"
+		}
+		if incomplete == 0 && other == 0 && files == 0 && complete == 1 {
+			return agentservice.TaskOutcomeDone, "published"
+		}
+		if files+complete+incomplete+other == 0 {
+			return agentservice.TaskOutcomeUnverified, "output contract open"
+		}
+		return agentservice.TaskOutcomePartial, "output contract incomplete"
+	default:
+		if files+complete+incomplete+other == 0 {
+			return agentservice.TaskOutcomeUnverified, "output contract open"
+		}
+		return agentservice.TaskOutcomePartial, "output contract incomplete"
+	}
+}
+
+type desktopPostClaim struct {
+	ItemID   string
+	Identity string
+	Complete bool
+}
+
+var (
+	desktopPostClaimMu     sync.Mutex
+	desktopPostClaimsByRun = map[string][]desktopPostClaim{}
+)
+
+func desktopNotePostClaim(runID string, claim desktopPostClaim) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	desktopPostClaimMu.Lock()
+	desktopPostClaimsByRun[runID] = append(desktopPostClaimsByRun[runID], claim)
+	desktopPostClaimMu.Unlock()
+}
+
+func desktopPostClaims(runID string) []desktopPostClaim {
+	desktopPostClaimMu.Lock()
+	defer desktopPostClaimMu.Unlock()
+	return append([]desktopPostClaim(nil), desktopPostClaimsByRun[runID]...)
+}
+
+func fileFingerprint(data string) string {
+	sum := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(sum[:])
+}
+
+// desktopAttributedVerdict marks a typed item done only when one piece of
+// evidence names its id and that evidence has not already satisfied a
+// different item. The same file bytes or the same post cannot close two items.
+// One text item is the reply itself. Several text items are not, because one
+// reply has no per-item identity.
+func desktopAttributedVerdict(runID string, msg *agentservice.Message, items []agent.DesktopDeliverable) (string, string) {
+	if len(items) == 0 {
+		return "", ""
+	}
+	byID := map[string]agent.DesktopDeliverable{}
+	textItems := 0
+	onlyText := ""
+	for _, item := range items {
+		if item.ID == "" {
+			return agentservice.TaskOutcomeUnverified, "output contract open"
+		}
+		byID[item.ID] = item
+		if item.Kind == desktopContractText {
+			textItems++
+			onlyText = item.ID
+		}
+	}
+	satisfied := map[string]bool{}
+	usedFile := map[string]string{}
+	usedPost := map[string]string{}
+	if msg != nil {
+		for _, att := range msg.Attachments {
+			if att.Delivery != agent.AttachmentDeliveryFile || strings.TrimSpace(att.Data) == "" {
+				continue
+			}
+			id := strings.TrimSpace(att.ItemID)
+			item, ok := byID[id]
+			if !ok || item.Kind != desktopContractFile || satisfied[id] {
+				continue
+			}
+			fp := fileFingerprint(att.Data)
+			if prev, taken := usedFile[fp]; taken && prev != id {
+				continue
+			}
+			usedFile[fp] = id
+			satisfied[id] = true
+		}
+	}
+	for _, claim := range desktopFileClaims(runID) {
+		id := strings.TrimSpace(claim.ItemID)
+		item, ok := byID[id]
+		if !ok || item.Kind != desktopContractFile || satisfied[id] || claim.Fingerprint == "" {
+			continue
+		}
+		if prev, taken := usedFile[claim.Fingerprint]; taken && prev != id {
+			continue
+		}
+		usedFile[claim.Fingerprint] = id
+		satisfied[id] = true
+	}
+	for _, claim := range desktopPostClaims(runID) {
+		if !claim.Complete {
+			continue
+		}
+		id := strings.TrimSpace(claim.ItemID)
+		item, ok := byID[id]
+		if !ok || item.Kind != desktopContractPost || satisfied[id] {
+			continue
+		}
+		ident := strings.TrimSpace(claim.Identity)
+		if ident == "" {
+			continue
+		}
+		if prev, taken := usedPost[ident]; taken && prev != id {
+			continue
+		}
+		usedPost[ident] = id
+		satisfied[id] = true
+	}
+	if textItems == 1 && desktopVisibleAnswer(msg) != "" {
+		satisfied[onlyText] = true
+	}
+	if desktopVisibleAnswer(msg) != "" {
+		for _, id := range desktopTextClaims(runID) {
+			item, ok := byID[id]
+			if ok && item.Kind == desktopContractText {
+				satisfied[id] = true
+			}
+		}
+	}
+	if len(satisfied) == len(items) {
+		return agentservice.TaskOutcomeDone, "outputs delivered"
+	}
+	if len(satisfied) == 0 {
+		return agentservice.TaskOutcomeUnverified, "output contract open"
+	}
+	return agentservice.TaskOutcomePartial, "output contract incomplete"
+}
+
+func rememberContractOutcome(run *agentservice.Run, msg *agentservice.Message, items []agent.DesktopDeliverable, outcome string) {
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return
+	}
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	msg.Metadata["output_contract"] = string(payload)
+	msg.Metadata["output_contract_outcome"] = outcome
+	if run.Metadata == nil {
+		run.Metadata = map[string]string{}
+	}
+	run.Metadata["output_contract"] = string(payload)
+	run.Metadata["output_contract_outcome"] = outcome
+}
+
+var desktopExtractionPending sync.Map
+
+// desktopContractWait is how long a receipt waits for an extraction that
+// already started. A lone file is not completion while that read is open.
+var desktopContractWait = 5 * time.Second
+
+func noteDesktopExtractionPending(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	desktopExtractionPending.Store(runID, struct{}{})
+}
+
+func desktopExtractionUnresolved(runID string) bool {
+	if _, pending := desktopExtractionPending.Load(runID); !pending {
+		return false
+	}
+	_, resolved := desktopOutputContractOf(runID)
+	return !resolved
+}
+
+func desktopWaitForContract(runID string) (desktopOutputContract, bool) {
+	if contract, ok := desktopOutputContractOf(runID); ok {
+		return contract, true
+	}
+	if _, pending := desktopExtractionPending.Load(runID); !pending {
+		return desktopOutputContract{}, false
+	}
+	deadline := time.Now().Add(desktopContractWait)
+	for time.Now().Before(deadline) {
+		if contract, ok := desktopOutputContractOf(runID); ok {
+			return contract, true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return desktopOutputContract{}, false
+}
+
+func desktopPlanTurn(run *agentservice.Run) bool {
+	return run != nil && run.Metadata != nil && strings.TrimSpace(run.Metadata["bot_phase"]) == "plan"
+}
+
+var (
+	desktopTextClaimMu     sync.Mutex
+	desktopTextClaimsByRun = map[string][]string{}
+)
+
+type desktopFileClaim struct {
+	ItemID      string
+	Fingerprint string
+}
+
+var (
+	desktopFileClaimMu     sync.Mutex
+	desktopFileClaimsByRun = map[string][]desktopFileClaim{}
+)
+
+func desktopNoteFileClaim(runID, itemID string, raw []byte) {
+	runID = strings.TrimSpace(runID)
+	itemID = strings.TrimSpace(itemID)
+	if runID == "" || itemID == "" || len(raw) == 0 {
+		return
+	}
+	fp := fileFingerprint(base64.StdEncoding.EncodeToString(raw))
+	desktopFileClaimMu.Lock()
+	desktopFileClaimsByRun[runID] = append(desktopFileClaimsByRun[runID], desktopFileClaim{ItemID: itemID, Fingerprint: fp})
+	desktopFileClaimMu.Unlock()
+}
+
+func desktopFileClaims(runID string) []desktopFileClaim {
+	desktopFileClaimMu.Lock()
+	defer desktopFileClaimMu.Unlock()
+	return append([]desktopFileClaim(nil), desktopFileClaimsByRun[strings.TrimSpace(runID)]...)
+}
+
+func desktopNoteTextClaims(runID string, ids []string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" || len(ids) == 0 {
+		return
+	}
+	desktopTextClaimMu.Lock()
+	defer desktopTextClaimMu.Unlock()
+	seen := map[string]bool{}
+	for _, id := range desktopTextClaimsByRun[runID] {
+		seen[id] = true
+	}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		desktopTextClaimsByRun[runID] = append(desktopTextClaimsByRun[runID], id)
+	}
+}
+
+func desktopTextClaims(runID string) []string {
+	desktopTextClaimMu.Lock()
+	defer desktopTextClaimMu.Unlock()
+	return append([]string(nil), desktopTextClaimsByRun[strings.TrimSpace(runID)]...)
+}
+
+func desktopRunTookSteps(runID string) bool {
+	desktopRecStateMu.Lock()
+	steps := desktopRecRunSteps[runID]
+	desktopRecStateMu.Unlock()
+	return steps
+}
+
+// desktopSyncVisible copies a receipt sentence into send_to_user when that
+// field is still empty. An ordinary reply with no measured outcome is left
+// alone: clients show send_to_user, and this must not invent one.
+func desktopSyncVisible(msg *agentservice.Message) {
+	if msg == nil {
+		return
+	}
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	outcome := strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey])
+	if outcome == agentservice.TaskOutcomeUnverified || outcome == agentservice.TaskOutcomePartial {
+		content := strings.TrimSpace(msg.Content)
+		send := strings.TrimSpace(msg.Metadata["send_to_user"])
+		notice := desktopUnverifiedSentence
+		if outcome == agentservice.TaskOutcomePartial {
+			notice = "这件还没完全做成"
+		}
+		if content != "" && !strings.Contains(send, notice) {
+			msg.Metadata["send_to_user"] = content
+			msg.Metadata["send_to_user_kind"] = "report"
+		}
+		return
+	}
+	if strings.TrimSpace(msg.Metadata["send_to_user"]) != "" || strings.TrimSpace(msg.Content) == "" {
+		return
+	}
+	content := strings.TrimSpace(msg.Content)
+	outcome = strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey])
+	receipt := outcome != "" || content == desktopUndeliveredSentence || strings.HasPrefix(content, "结果文件已经附在这条回复上：") || strings.HasPrefix(content, "这件我没做成")
+	if !receipt {
+		return
+	}
+	msg.Metadata["send_to_user"] = content
+	if strings.TrimSpace(msg.Metadata["send_to_user_kind"]) == "" {
+		msg.Metadata["send_to_user_kind"] = "report"
+	}
 }
 
 func desktopLedgerRunPost(entries []desktopLedgerEntry, runID string) (desktopLedgerEntry, bool) {
@@ -706,6 +1332,7 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 		"blocked":       "这件没做成，我已经停下，没有再重复尝试。",
 		"not_submitted": "这件还没提交，内容没有发出去。",
 		"unconfirmed":   "提交后没能确认结果，我没有重复提交，请以页面上的实际状态为准。",
+		"unverified":    desktopUnverifiedSentence,
 		"running":       "后台任务还在跑，我会定时查看进度并告诉你。",
 	}[outcome]
 	// A still-running job's why names the shell, the job id and a log tail.

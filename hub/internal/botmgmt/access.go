@@ -1047,6 +1047,15 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	return BotAdmission{Settled: true, Reply: reply, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title, Kind: intakeKind, Ack: intakeAck}, nil
 }
 
+// SettleFinishedRun is the settle a finished MaClawSrv run goes through:
+// the visible sentence, the measured outcome, and the desktop bookkeeping.
+func (s *Service) SettleFinishedRun(tenantID, userID, botID, instanceID, text string, meta map[string]string) (Reply, error) {
+	return s.settleDesktopCommand(tenantID, userID, botID, instanceID, "", false, desktopCommandBody{
+		Text:     text,
+		Metadata: meta,
+	})
+}
+
 // desktopCommandBody is the MaClawSrv message result, whether it arrived on
 // the admitting call or on a later read of the run.
 type desktopCommandBody struct {
@@ -1162,7 +1171,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 	}
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: sendToUser, Waiting: body.Waiting})
 	reply := Reply{Text: text, SendToUser: visible.Sentence, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
-	reply.TaskOutcome = desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey])
+	reply.TaskOutcome = desktopSettleOutcome(body.Metadata)
 	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser)
 	if meta := body.Metadata; meta != nil {
 		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
@@ -1234,7 +1243,7 @@ func noneDesktopSettle(body desktopCommandBody) (Reply, error) {
 	}
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: sendToUser, Waiting: body.Waiting})
 	reply := Reply{Text: text, SendToUser: visible.Sentence, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
-	reply.TaskOutcome = desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey])
+	reply.TaskOutcome = desktopSettleOutcome(body.Metadata)
 	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser)
 	if meta := body.Metadata; meta != nil {
 		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
@@ -1256,7 +1265,7 @@ func desktopSentenceReply(body desktopCommandBody) Reply {
 		sendToUser = strings.TrimSpace(body.Metadata["send_to_user"])
 	}
 	visible := desktopbot.Visible(desktopbot.Turn{SendToUser: sendToUser})
-	reply := Reply{TaskOutcome: desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey])}
+	reply := Reply{TaskOutcome: desktopSettleOutcome(body.Metadata)}
 	if visible.Bubble && !visible.Failed {
 		reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, visible.Sentence)
 		reply.Images = replyImages(body.Attachments)

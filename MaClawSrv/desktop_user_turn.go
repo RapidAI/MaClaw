@@ -427,6 +427,11 @@ func desktopFinishTurn(scope agentruntime.Scope, args map[string]any) (string, e
 		Text:    strings.TrimSpace(desktopArg(args, "text")),
 		Note:    strings.TrimSpace(desktopArg(args, "note")),
 	})
+	ids := desktopStrList(args, "item_ids")
+	if id := strings.TrimSpace(desktopArg(args, "item_id")); id != "" {
+		ids = append(ids, id)
+	}
+	desktopNoteTextClaims(runID, ids)
 	return "finish outcome=" + outcome, nil
 }
 

@@ -36,7 +36,9 @@ type PublishSpec struct {
 	// picked pictures local and sends them with the post. Only then is a
 	// local preview without an upload request accepted, and the submit
 	// answer or the published page must then carry remote picture URLs.
-	LazyUpload    bool
+	LazyUpload bool
+	// ItemID is the contract item this publish claims to satisfy.
+	ItemID        string
 	Title         string
 	TitleSelector string
 	Body          string

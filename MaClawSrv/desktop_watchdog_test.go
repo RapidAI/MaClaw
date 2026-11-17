@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 func TestPostedNoticeTreatsTheQueryAsTheSameLink(t *testing.T) {
@@ -116,6 +118,111 @@ func TestEnsureReceipt(t *testing.T) {
 	keep := &agentservice.Message{Content: "done"}
 	if m := desktopEnsureReceipt(scope, run, keep, nil, false, false); m.Content != "done" {
 		t.Fatal("reply overwritten")
+	}
+}
+
+func TestEnsureReceiptDoesNotClaimSuccessWithoutDelivery(t *testing.T) {
+	dir := t.TempDir()
+	old := desktopLedgerDir
+	desktopLedgerDir = func() string { return dir }
+	t.Cleanup(func() { desktopLedgerDir = old })
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u1"}
+	empty := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_empty", Status: agentservice.RunStatusSucceeded}, nil, nil, false, false)
+	if empty == nil || strings.Contains(empty.Content, "做完了") || empty.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
+		t.Fatalf("empty success claimed done: %+v", empty)
+	}
+	if !strings.Contains(empty.Content, "没做完") {
+		t.Fatalf("content=%q", empty.Content)
+	}
+	blank := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file"}}}
+	blankRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_blank", Status: agentservice.RunStatusSucceeded}, blank, nil, false, true)
+	if blankRun == nil || strings.Contains(blankRun.Content, "做完了") || blankRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
+		t.Fatalf("empty attachment claimed done: %+v", blankRun)
+	}
+	nameOnly := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file", FileName: "report.pdf"}}}
+	nameRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_name", Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}}, nameOnly, nil, false, true)
+	if nameRun == nil || nameRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone || strings.Contains(nameRun.Metadata["send_to_user"], "report.pdf") {
+		t.Fatalf("filename without bytes claimed delivered: %+v", nameRun)
+	}
+	shot := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "image", FileName: "desktop.png", MimeType: "image/png", Data: "aGVsbG8="}}}
+	shotRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_shot", Status: agentservice.RunStatusSucceeded}, shot, nil, false, false)
+	if shotRun == nil || shotRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
+		t.Fatalf("process screenshot claimed done: %+v", shotRun)
+	}
+	file := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file", FileName: "report.pdf", Data: "JVBERg==", Size: 12, Delivery: agent.AttachmentDeliveryFile}}}
+	got := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_file", Status: agentservice.RunStatusSucceeded}, file, nil, false, true)
+	if got == nil || !strings.Contains(got.Content, "report.pdf") || got.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || !strings.Contains(got.Metadata["send_to_user"], "report.pdf") {
+		t.Fatalf("delivered file was not acknowledged: %+v", got)
+	}
+	shotMarked := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "image", FileName: "desktop.png", MimeType: "image/png", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryShot}}}
+	shotMarkedRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_shot_mark", Status: agentservice.RunStatusSucceeded}, shotMarked, nil, false, false)
+	if shotMarkedRun == nil || shotMarkedRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
+		t.Fatalf("a shot mark completed the task: %+v", shotMarkedRun)
+	}
+	asked := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file", FileName: "screen.png", MimeType: "image/png", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryFile}}}
+	askedRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_asked", Status: agentservice.RunStatusSucceeded}, asked, nil, false, false)
+	if askedRun == nil || askedRun.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || !strings.Contains(askedRun.Metadata["send_to_user"], "screen.png") {
+		t.Fatalf("a delivered screenshot file was rejected: %+v", askedRun)
+	}
+	noteDesktopOutputContract("run_claim", []string{"一条已发布的结果"})
+	claim := &agentservice.Message{Content: "已经全部发好了", Attachments: []agent.MessageAttachment{{Type: "image", FileName: "desktop.png", MimeType: "image/png", Data: "aGVsbG8="}}}
+	claimRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_claim", Status: agentservice.RunStatusSucceeded}, claim, nil, false, false)
+	if claimRun.Metadata["task_outcome"] != agentservice.TaskOutcomeUnverified || !strings.Contains(claimRun.Content, "已经全部发好了") || !strings.Contains(claimRun.Metadata["send_to_user"], desktopUnverifiedSentence) || strings.Contains(claimRun.Metadata["task_outcome"], agentservice.TaskOutcomeDone) {
+		t.Fatalf("unverified claim became done: %+v", claimRun)
+	}
+	partial := &agentservice.Message{Content: "只做了一部分", Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomePartial, "send_to_user": "只做了一部分"}, Attachments: []agent.MessageAttachment{{Type: "file", FileName: "note.txt", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryFile}}}
+	partialRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_partial", Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomePartial}}, partial, nil, false, false)
+	if partialRun.Metadata["task_outcome"] != agentservice.TaskOutcomePartial || strings.Contains(partialRun.Content, "结果文件已经附") {
+		t.Fatalf("a file washed a partial result: %+v", partialRun)
+	}
+	openScope := agentruntime.Scope{TenantID: "t", UserID: "u1", RunID: "run_open_publish"}
+	desktopPublishRecordUpdate(openScope, func(r *desktopPublishRecord) { r.State = browser.PublishNotSubmitted })
+	t.Cleanup(func() { desktopPublishRecordTake("run_open_publish") })
+	washed := &agentservice.Message{Content: "已经全部发好了", Attachments: []agent.MessageAttachment{{Type: "file", FileName: "note.txt", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryFile}}}
+	washedRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_open_publish", Status: agentservice.RunStatusSucceeded}, washed, nil, false, false)
+	if washedRun.Metadata["task_outcome"] != agentservice.TaskOutcomeUnverified {
+		t.Fatalf("a file washed an unposted publish: %+v", washedRun)
+	}
+	liveScope := agentruntime.Scope{TenantID: "t", UserID: "u1", RunID: "run_live_publish"}
+	desktopPublishRecordUpdate(liveScope, func(r *desktopPublishRecord) { r.State = browser.PublishLive })
+	t.Cleanup(func() { desktopPublishRecordTake("run_live_publish") })
+	live := &agentservice.Message{Content: "发出去了"}
+	liveRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_live_publish", Status: agentservice.RunStatusSucceeded}, live, nil, false, false)
+	if liveRun.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || !strings.Contains(liveRun.Content, "发出去了") {
+		t.Fatalf("verified publish was not done: %+v", liveRun)
+	}
+	answer := &agentservice.Message{Content: "巴黎是法国的首都。", Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone, "send_to_user": "巴黎是法国的首都。"}}
+	answerRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_answer", Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}}, answer, nil, false, false)
+	if answerRun.Content != "巴黎是法国的首都。" || answerRun.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || answerRun.Metadata["send_to_user"] != "巴黎是法国的首都。" {
+		t.Fatalf("text answer replaced: %+v", answerRun)
+	}
+	again := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_empty", Status: agentservice.RunStatusSucceeded}, empty, nil, false, false)
+	if again.Content != empty.Content || strings.Count(again.Content, "没做完") != 1 {
+		t.Fatalf("second receipt changed the sentence: %q", again.Content)
+	}
+}
+
+func TestStatusLineKeepsRuntimeNoticeOnItsRun(t *testing.T) {
+	t.Cleanup(func() {
+		agentservice.ClearRunRuntimeStatus("run_notice_a")
+		agentservice.ClearRunRuntimeStatus("run_notice_b")
+	})
+	agentservice.SetRunRuntimeStatus("run_notice_a", "已从「Primary/old」改用「Backup/new」，正在重新请求（第 1 次）。")
+	agentservice.SetRunRuntimeStatus("run_notice_b", "重试 1/5：API 暂时不可用，2 秒后重试")
+	lineA := desktopRunStatusLine("run_notice_a")
+	lineB := desktopRunStatusLine("run_notice_b")
+	if !strings.Contains(lineA, "Backup/new") || strings.Contains(lineA, "重试 1/5") {
+		t.Fatalf("A=%q", lineA)
+	}
+	if !strings.Contains(lineB, "重试 1/5") || strings.Contains(lineB, "改用") {
+		t.Fatalf("B=%q", lineB)
+	}
+	agentservice.ClearRunRuntimeStatus("run_notice_a")
+	if strings.Contains(desktopRunStatusLine("run_notice_a"), "改用") {
+		t.Fatal("cleared notice stayed on A")
+	}
+	if !strings.Contains(desktopRunStatusLine("run_notice_b"), "重试 1/5") {
+		t.Fatal("clearing A dropped B")
 	}
 }
 

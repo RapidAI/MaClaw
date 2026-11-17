@@ -11,6 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"reflect"
@@ -269,7 +270,7 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		// Returning 202 from this request must not release the desktop.
 		ownsRun := false
 		in.ExecutionOwner = &ownsRun
-		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(s.svc, desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
 		sess, run, err := s.svc.SendMessageAsync(r.Context(), p, r.PathValue("instanceId"), in)
 		if err != nil {
 			callErr = err
@@ -525,7 +526,7 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	if wantsAsync {
 		ownsRun := false
 		in.ExecutionOwner = &ownsRun
-		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(s.svc, desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
 		run, err := s.svc.PostMessageAsync(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
 		if err != nil {
 			writeRedactedError(w, err, s.svc.DataRoot())
@@ -585,7 +586,24 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agen
 // desktopAsyncHooks hold the desktop for the detached run. The HTTP handler
 // returns as soon as the run exists. Finish stores the screenshot and the
 // handoff so a later read of the run can deliver them.
-func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, noDesktop bool, request ...string) (
+// desktopReceiptHold runs at the start of finish, after the run is already
+// terminal, so a test can observe that the pre-receipt row is not readable
+// as final. desktopReceiptSkipFinish drops the receipt, as a crash would.
+var (
+	desktopReceiptHold       func()
+	desktopReceiptSkipFinish bool
+)
+
+// persistDesktopReceipt writes the message and the run together. Tests
+// replace it to prove a failed write is not published as a final reply.
+var persistDesktopReceipt = func(svc *agentservice.Service, run *agentservice.Run, msg *agentservice.Message) error {
+	if svc == nil || run == nil || msg == nil {
+		return nil
+	}
+	return svc.PersistRunReceipt(run, msg)
+}
+
+func desktopAsyncHooks(svc *agentservice.Service, tenantID, userID, instanceID, botID string, owns *bool, noDesktop bool, request ...string) (
 	func(context.Context) context.Context,
 	func(context.Context, *agentservice.Run, *agentservice.Message, error),
 ) {
@@ -607,6 +625,9 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, n
 		return next
 	}
 	finish := func(_ context.Context, run *agentservice.Run, msg *agentservice.Message, err error) {
+		if run != nil {
+			defer agentservice.ClearRunReceiptInFlight(run.ID)
+		}
 		owner := owns == nil || *owns
 		if occupyOwned != nil {
 			*occupyOwned = owner
@@ -650,6 +671,7 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, n
 			msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 		}
 		if err == nil && msg != nil && run != nil && !noDesktop {
+			desktopSnapshotPosts(run.ID)
 			msg.Content = desktopReplyAfterDelegation(instanceID, run.ID, run.SessionID, msg.Content)
 			msg.Content = desktopReplyWithLink(run.ID, msg.Content)
 			if msg.Metadata == nil && strings.Contains(msg.Content, desktopUnconfirmedReply) {
@@ -660,9 +682,20 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, n
 		if err == nil && msg != nil && !noDesktop {
 			noteDesktopReplyHandoff(tenantID, userID, instanceID, msg.Content)
 		}
+		if desktopReceiptHold != nil {
+			desktopReceiptHold()
+		}
+		if desktopReceiptSkipFinish {
+			return
+		}
 		handoff, attention := takeDesktopTurn(tenantID, userID, instanceID)
 		// Exactly one result per task, on success and on failure.
 		msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID}, run, msg, err, handoff, noDesktop)
+		if perr := persistDesktopReceipt(svc, run, msg); perr != nil {
+			log.Printf("[desktop-receipt] run persist failed: %v", perr)
+			storeDesktopTurnFailure(run, perr)
+			return
+		}
 		storeDesktopTurnResult(run, msg, handoff, attention)
 		runID := ""
 		runStatus := ""
@@ -692,7 +725,7 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, n
 // process restart. The HTTP handler installs this slot for a normal turn.
 // A restart continuation does not come through HTTP, and without the slot
 // deliver reports that the turn has no reply that can carry files.
-func desktopResumeExecutionHooks(p agentservice.Principal, inst agentservice.Instance, ask string) (
+func desktopResumeExecutionHooks(svc *agentservice.Service, p agentservice.Principal, inst agentservice.Instance, ask string) (
 	func(context.Context) context.Context,
 	func(context.Context, *agentservice.Run, *agentservice.Message, error),
 ) {
@@ -701,7 +734,7 @@ func desktopResumeExecutionHooks(p agentservice.Principal, inst agentservice.Ins
 	if inst.Metadata != nil {
 		botID = strings.TrimSpace(inst.Metadata[desktopBotMetadataKey])
 	}
-	return desktopAsyncHooks(tenant, user, inst.ID, botID, nil, strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone, ask)
+	return desktopAsyncHooks(svc, tenant, user, inst.ID, botID, nil, strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone, ask)
 }
 
 func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

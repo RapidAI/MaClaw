@@ -225,8 +225,18 @@ func adoptRefreshedLLMSelection(cb LoopCallbacks, cfg, agg *corelib.MaclawLLMCon
 	log.Printf("[agent-loop] model selection changed during retry from %q to %q", cfg.Model, next.Model)
 	*cfg = next
 	*agg = next
-	cb.OnProgress(llmRetryLiveStatus("已改用当前模型，继续当前任务。"))
 	return true
+}
+
+// rememberLLMSwitch records a route change the retry is about to send.
+// A failover or a settings refresh that does not change the endpoint is
+// not recorded, so the status row cannot claim a switch that did not happen.
+func rememberLLMSwitch(from, to corelib.MaclawLLMConfig, saved *corelib.MaclawLLMConfig, have *bool) {
+	if !LLMSelectionChanged(from, to) {
+		return
+	}
+	*saved = from
+	*have = true
 }
 
 type ToolExecutionOutcome string
@@ -2453,12 +2463,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// because that is a different service rather than another wait
 				// on the dead one.
 				switchedSelection := false
+				var switchedFrom corelib.MaclawLLMConfig
+				haveSwitch := false
 				if kind == llmContinueStop {
+					before := cfg
 					if !adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
 						break
 					}
 					rotated = true
 					switchedSelection = true
+					rememberLLMSwitch(before, cfg, &switchedFrom, &haveSwitch)
 				}
 				if !rotated && !didAuthRefresh && llm.IsTransientTokenValidationError(err) {
 					didAuthRefresh = true
@@ -2473,18 +2487,25 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 				if !rotated && llmErrStatus(err) == http.StatusTooManyRequests {
 					if fo, ok := cb.(LLMProviderFailover); ok {
-						if next, ok := fo.FailoverLLMProvider(requestCtx, cfg, err); ok {
+						if next, changed := fo.FailoverLLMProvider(requestCtx, cfg, err); changed && LLMSelectionChanged(cfg, next) {
 							log.Printf("[agent-loop] HTTP 429 from provider %q, failing over to %q", cfg.ProviderName, next.ProviderName)
+							rememberLLMSwitch(cfg, next, &switchedFrom, &haveSwitch)
 							cfg = next
 							aggCFG = next
 							rotated = true
-							cb.OnProgress("当前模型服务限流，已切换到备用服务继续。")
+							switchedSelection = true
+						} else if changed {
+							log.Printf("[agent-loop] HTTP 429 failover from %q did not change the model endpoint", cfg.ProviderName)
 						}
 					}
 				}
-				if !rotated && adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
-					rotated = true
-					switchedSelection = true
+				if !rotated {
+					before := cfg
+					if adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
+						rotated = true
+						switchedSelection = true
+						rememberLLMSwitch(before, cfg, &switchedFrom, &haveSwitch)
+					}
 				}
 				if rotated {
 					backoff = 0
@@ -2597,8 +2618,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// adopted the new selection, the send uses that. Otherwise read
 				// once here, which is also the read that covers a switch during
 				// the countdown.
-				if !switchedSelection && adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
-					rotated = true
+				if !switchedSelection {
+					before := cfg
+					if adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
+						rotated = true
+						rememberLLMSwitch(before, cfg, &switchedFrom, &haveSwitch)
+					}
 				}
 				// A retry is a fresh HTTP operation, so it gets a fresh deadline from
 				// the active route. In particular, do not reuse an already-expired
@@ -2664,7 +2689,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					// request is in flight before this call, or a long route
 					// timeout keeps showing "32 秒后继续".
 					if backoff > 0 || rotated {
-						cb.OnProgress(LLMRetryInFlightStatus(continuationAttempt(continuation.fast, continuation.extra)))
+						attemptN := continuationAttempt(continuation.fast, continuation.extra)
+						if haveSwitch {
+							if text, ok := LLMRetrySwitchedInFlightStatus(attemptN, switchedFrom, cfg); ok {
+								cb.OnProgress(text)
+							} else {
+								cb.OnProgress(LLMRetryInFlightStatus(attemptN))
+							}
+						} else {
+							cb.OnProgress(LLMRetryInFlightStatus(attemptN))
+						}
 					}
 					// Replace the predecessor error here. Gating this call on
 					// err == nil skips the request, and every later attempt only sleeps.

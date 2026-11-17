@@ -693,6 +693,20 @@ func cloneMap(in map[string]string) map[string]string {
 	}
 	return out
 }
+
+// freezeRun detaches metadata before a run is handed to another goroutine
+// or stored. The caller must still be the only writer of the source map.
+// Later writes stay on the caller's map and do not race a reader of the
+// frozen copy.
+func freezeRun(run Run) Run {
+	run.Metadata = cloneMap(run.Metadata)
+	return run
+}
+
+func freezeMessage(msg Message) Message {
+	msg.Metadata = cloneMap(msg.Metadata)
+	return msg
+}
 func defaultString(v, fallback string) string {
 	if strings.TrimSpace(v) == "" {
 		return fallback

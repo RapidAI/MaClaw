@@ -37,6 +37,7 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		Files:          desktopUploadFiles(args),
 		UploadSelector: desktopArg(args, "upload_selector"),
 		UploadTrigger:  desktopArg(args, "upload_trigger"),
+		ItemID:         desktopArg(args, "item_id"),
 		Title:          desktopArg(args, "title"),
 		TitleSelector:  desktopArg(args, "title_selector"),
 		Body:           desktopArg(args, "body"),

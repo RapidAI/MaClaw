@@ -643,7 +643,7 @@ func desktopScheduleReports(text string, result desktopBotRelayResult, runErr er
 		AskText:     result.AskUserQuestion,
 		Handoff:     result.UserControl || strings.TrimSpace(result.AttentionReason) != "",
 		Changed:     strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser),
-		Done:        strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser) && !desktopTaskOutcomeNotDone(result.TaskOutcome),
+		Done:        strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser) && desktopTaskOutcomeOf(result.TaskOutcome) == "done",
 	})
 	// A scheduled run whose task is not done is reported, never left quiet.
 	return decision.Report || result.UserControl || strings.TrimSpace(result.AttentionReason) != "" || desktopTaskOutcomeNeedsReport(result.TaskOutcome)

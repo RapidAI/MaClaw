@@ -213,6 +213,11 @@ func trayResponseIsCompletion(resp *IMAgentResponse) bool {
 	if strings.TrimSpace(resp.Error) != "" || trayResponseWaitsForReply(resp) || trayResponseNeedsConfirm(resp) {
 		return false
 	}
+	if _, desktop := desktopBotTraySentence(resp); desktop {
+		// A desktop run is complete only when the server measured done.
+		// A missing or unknown outcome is not a finished task.
+		return desktopTaskOutcomeOf(resp.TaskOutcome) == "done"
+	}
 	if desktopTaskOutcomeNotDone(resp.TaskOutcome) {
 		// The run ended, its task did not (measured on the server).
 		return false

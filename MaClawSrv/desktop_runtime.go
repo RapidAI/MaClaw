@@ -164,6 +164,8 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"program":            map[string]any{"type": "string", "description": "Program for action=app_open. One name or an absolute path, such as xfce4-terminal. Not a shell and not a browser."},
 				"args":               map[string]any{"type": "array", "description": "Arguments for action=app_open. Not a shell command.", "items": map[string]any{"type": "string"}},
 				"packages":           map[string]any{"type": "array", "description": "Debian package names for action=install, such as libreoffice", "items": map[string]any{"type": "string"}},
+				"item_id":            map[string]any{"type": "string", "description": "action=deliver, publish, or finish: the checklist item id this call satisfies. action=finish may instead pass item_ids. The same bytes or the same post cannot satisfy a second item."},
+				"item_ids":           map[string]any{"type": "array", "description": "action=finish: checklist item ids of kind text that this sentence satisfies. Each id once.", "items": map[string]any{"type": "string"}},
 				"name":               map[string]any{"type": "string", "description": "Download name for action=deliver. Any ordinary file name. When path is empty, the chat receives the text in content under this name. action=screenshot: ends in .png and is written to /home/desktop/Desktop. action=script stores the script under a kebab-case name, such as save-draft, when it succeeds. action=skill_run runs that saved script."},
 				"content":            map[string]any{"type": "string", "description": "Text for action=deliver when path is empty, or the full file text for action=file_write. A file already on the desktop uses path."},
 				"url":                map[string]any{"type": "string", "description": "URL for navigate"},
@@ -3875,23 +3877,24 @@ func desktopShotName(mime string) string {
 }
 
 func deliverDesktopDocument(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+	itemID := desktopArg(args, "item_id")
 	if filePath := desktopArg(args, "path"); filePath != "" {
-		return deliverDesktopPath(ctx, scope, filePath, desktopArg(args, "name"))
+		return deliverDesktopPath(ctx, scope, filePath, desktopArg(args, "name"), itemID)
 	}
 	name, mime, raw, err := desktopDocument(desktopArg(args, "name"), desktopArg(args, "content"))
 	if err != nil {
 		return "", err
 	}
-	return deliverHeldBytes(ctx, scope, name, mime, raw)
+	return deliverHeldBytes(ctx, scope, name, mime, raw, itemID)
 }
 
 // deliverHeldBytes sends bytes that are already in hand. A timer firing has
 // no reply slot and uses its own message. A turn continued after a restart
 // does have a slot, and that path used to skip the identical-bytes check, so
 // the resumed weather turn handed over the same PDF again.
-func deliverHeldBytes(ctx context.Context, scope agentruntime.Scope, name, mime string, raw []byte) (string, error) {
+func deliverHeldBytes(ctx context.Context, scope agentruntime.Scope, name, mime string, raw []byte, itemID string) (string, error) {
 	if desktopShotSlotFrom(ctx) == nil {
-		return deliverFileOnItsOwn(ctx, scope, name, raw)
+		return deliverFileOnItsOwn(ctx, scope, name, raw, itemID)
 	}
 	if err := desktopRefuseRepeatScheduleFile(ctx, scope, name, raw); err != nil {
 		return "", err
@@ -3900,7 +3903,10 @@ func deliverHeldBytes(ctx context.Context, scope agentruntime.Scope, name, mime 
 	var err error
 	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
 		text, err = desktopSayFile(ctx, scope, name, raw)
-	} else if err = noteDesktopFile(ctx, name, mime, raw); err != nil {
+		if err == nil {
+			desktopNoteFileClaim(scope.RunID, itemID, raw)
+		}
+	} else if err = noteDesktopFileItem(ctx, name, mime, raw, itemID); err != nil {
 		return "", err
 	} else {
 		text = desktopDelivered(name, len(raw))
@@ -3997,7 +4003,7 @@ func desktopScheduleTurn(ctx context.Context) bool {
 	return v
 }
 
-func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath, name string) (string, error) {
+func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath, name, itemID string) (string, error) {
 	resolved, err := desktop.ContainerPath(filePath)
 	if err != nil {
 		return "", fmt.Errorf("desktop deliver rejected the path: %w", err)
@@ -4037,7 +4043,7 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 		}
 		return "", fmt.Errorf("desktop file could not be read")
 	}
-	return deliverHeldBytes(ctx, scope, name, desktopDeliverMIME(name), raw)
+	return deliverHeldBytes(ctx, scope, name, desktopDeliverMIME(name), raw, itemID)
 }
 
 // deliverLargeOnItsOwn sends a file the reply cannot carry, when the bytes
@@ -4055,7 +4061,7 @@ func deliverLargeOnItsOwn(ctx context.Context, scope agentruntime.Scope, resolve
 // already read are what is sent: the container file is not read again. The
 // person's app saves the file in this bot's folder. The cloud path is not
 // what they open.
-func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name string, raw []byte) (string, error) {
+func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name string, raw []byte, itemID string) (string, error) {
 	if err := desktopRefuseRepeatScheduleFile(ctx, scope, name, raw); err != nil {
 		return "", err
 	}
@@ -4066,6 +4072,7 @@ func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name str
 			return "", deliverOwnError(sayErr)
 		}
 		desktopNoteScheduleDelivered(ctx, scope, name, raw)
+		desktopNoteFileClaim(scope.RunID, itemID, raw)
 		return deliverOwnText(text), nil
 	}
 	if !saidFileFitsInbox(name, desktopDeliverMIME(name), len(raw)) {
@@ -4075,6 +4082,7 @@ func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name str
 		return "", deliverOwnError(sayErr)
 	}
 	desktopNoteScheduleDelivered(ctx, scope, name, raw)
+	desktopNoteFileClaim(scope.RunID, itemID, raw)
 	return deliverOwnText(fmt.Sprintf("Delivered %s (%d bytes) as its own chat message. The person's MaClaw app has the file. Say that it was sent as a separate message.", name, len(raw))), nil
 }
 
@@ -4219,6 +4227,10 @@ func desktopDelivered(name string, size int) string {
 }
 
 func noteDesktopFile(ctx context.Context, name, mime string, raw []byte) error {
+	return noteDesktopFileItem(ctx, name, mime, raw, "")
+}
+
+func noteDesktopFileItem(ctx context.Context, name, mime string, raw []byte, itemID string) error {
 	slot := desktopShotSlotFrom(ctx)
 	if slot == nil {
 		// A turn the server started itself (a background-job check or
@@ -4245,6 +4257,8 @@ func noteDesktopFile(ctx context.Context, name, mime string, raw []byte) error {
 		MimeType: mime,
 		Data:     encoded,
 		Size:     int64(len(raw)),
+		Delivery: agent.AttachmentDeliveryFile,
+		ItemID:   strings.TrimSpace(itemID),
 	}
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
@@ -4306,6 +4320,9 @@ func attachDesktopShot(msg *agentservice.Message, slot *desktopShotSlot) int {
 	if !ok || msg == nil || shot.Data == "" {
 		return 0
 	}
+	// A working screenshot is display only. It is not delivery-tool evidence
+	// and cannot settle the task, whatever the request text says.
+	shot.Delivery = ""
 	next := make([]agent.MessageAttachment, len(msg.Attachments)+1)
 	copy(next, msg.Attachments)
 	next[len(msg.Attachments)] = shot

@@ -11,6 +11,7 @@ import (
 
 func TestResumeHooksGiveTheTurnAFileSlot(t *testing.T) {
 	prep, finish := desktopResumeExecutionHooks(
+		nil,
 		agentservice.Principal{TenantID: "tenant-a", UserID: "svc"},
 		agentservice.Instance{ID: "inst_resume", Metadata: map[string]string{
 			"hub_bot": "1", "hub_user_id": "alice", "hub_tenant_id": "tenant-a", "hub_desktop_bot": "bot_1",
