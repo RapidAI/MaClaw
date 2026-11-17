@@ -27,7 +27,8 @@ A selected `go test` that prints `[no tests to run]` or `[no test files]`, or th
 | `.github/workflows/pr-check.yml`, `scripts/pr-gate/**` | `lifecycle`, `hub-outcome`, `frontend` |
 | Another Go package that contains `_test.go` | `go test` of that package (`go-packages`, at most 30 packages) |
 | `guiapp/frontend/**` | `npm ci`, vitest, `tsc --noEmit`, `vite build` |
-| Docs (`docs/**`, `*.md`, `.cursor/**`, `.agents/**`, root `LICENSE` / `NOTICE` / `PATENTS`) | selector tests only |
+| Markdown and other known doc types (`*.md`, images, and the same types under `docs/`, `.cursor/`, `.agents/`) | selector tests only |
+| A rename or copy | both the source path and the destination path. A Go source moved into `docs/` still selects the contract suites, and the executable destination is rejected |
 
 `MaClawSrv`, `corelib/agentservice`, and `hub/internal/botmgmt` are not run as full packages. The named tests below are the suite. Other tests in those three packages are outside this gate.
 
@@ -67,10 +68,10 @@ From the repo root, on the same commit you want to judge:
 ```bash
 node --test scripts/pr-gate/*.test.mjs
 
-# Plan for the current branch against origin/main. Empty output is a failure.
+# Plan for the current branch against origin/main. Do not feed
+# `git diff --name-only` into --files: that listing drops a rename's source.
 git fetch origin main
-git diff --name-only origin/main...HEAD
-node scripts/pr-gate/select.mjs --files $(git diff --name-only origin/main...HEAD)
+node scripts/pr-gate/select.mjs --git origin/main
 
 # Named suites. -json is required; a bare go test exit 0 is not this gate.
 export MACLAW_TEST_MODELS=off GOMAXPROCS=2

@@ -57,12 +57,41 @@ export function normalizePath(file) {
   return { ok: true, path: text };
 }
 
+const DOC_EXTENSIONS = new Set([
+  ".md", ".markdown", ".mdc", ".txt", ".rst", ".adoc",
+  ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".pdf",
+]);
+
+const EXECUTABLE_EXTENSIONS = new Set([
+  ".go", ".c", ".cc", ".cpp", ".h", ".hh", ".rs", ".py",
+  ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+  ".sh", ".bash", ".ps1", ".bat", ".cmd",
+  ".yml", ".yaml",
+]);
+
+function extensionOf(file) {
+  const base = file.slice(file.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return "";
+  return base.slice(dot).toLowerCase();
+}
+
+function isDocLocation(file) {
+  return file.startsWith("docs/") || file.startsWith(".cursor/") || file.startsWith(".agents/");
+}
+
 function isDoc(file) {
-  if (file.startsWith("docs/")) return true;
-  if (file.startsWith(".cursor/") || file.startsWith(".agents/")) return true;
-  if (file.endsWith(".md")) return true;
+  const ext = extensionOf(file);
+  if (EXECUTABLE_EXTENSIONS.has(ext)) return false;
+  if (ext === ".md" || ext === ".markdown" || ext === ".mdc") return true;
   if (!file.includes("/") && /^(LICENSE|NOTICE|PATENTS)/.test(file)) return true;
-  return false;
+  return isDocLocation(file) && DOC_EXTENSIONS.has(ext);
+}
+
+// A Go file (or other executable) moved under docs/ is not documentation.
+// An unknown type in a doc directory is not documentation either.
+function isAmbiguousExecutable(file) {
+  return isDocLocation(file) && !isDoc(file);
 }
 
 function isFrontend(file) {
@@ -138,6 +167,11 @@ export function classify(files, options = {}) {
     }
     if (isFrontend(file)) {
       plan.jobs.frontend = true;
+      sawOther = true;
+      continue;
+    }
+    if (isAmbiguousExecutable(file)) {
+      plan.rejected.push(`ambiguous executable path ${file}`);
       sawOther = true;
       continue;
     }

@@ -71,6 +71,30 @@ test("docs only skip expensive jobs", () => {
   assert.deepEqual(plan.jobs.packages, []);
 });
 
+test("an executable path under docs is not documentation", () => {
+  const plan = classify(["docs/a.go"]);
+  assert.notEqual(plan.result, "pass-docs-only");
+  assert.equal(plan.result, "rejected");
+  assert.equal(plan.jobs.lifecycle, false);
+  assert.match(plan.rejected.join("\n"), /ambiguous executable path docs\/a.go/);
+});
+
+test("a contract path plus an executable under docs fails closed and still records the contract", () => {
+  const plan = classify(["MaClawSrv/desktop_receipt_integration_test.go", "docs/a.go"]);
+  assert.equal(plan.jobs.lifecycle, true);
+  assert.equal(plan.jobs.hub, true);
+  assert.equal(plan.result, "rejected");
+  assert.match(plan.rejected.join("\n"), /ambiguous executable path docs\/a.go/);
+});
+
+test("deleting a module manifest still selects the contract suites", () => {
+  const plan = classify(["corelib/plugin/manifest.go"]);
+  assert.equal(plan.result, "selected");
+  assert.equal(plan.jobs.lifecycle, true);
+  assert.equal(plan.jobs.hub, true);
+  assert.ok(plan.jobs.packages.includes("./corelib/plugin"));
+});
+
 test("native GUI is an explicit skip, not a frontend run and not a pass of Go", () => {
   const plan = classify(["guiapp/app.go", "wails.json"]);
   assert.equal(plan.result, "pass-native-gui-not-run");

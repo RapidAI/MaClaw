@@ -1,6 +1,6 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 
+import { collectChangedPaths } from "./diff-names.mjs";
 import { classify } from "./policy.mjs";
 
 function fail(message) {
@@ -9,17 +9,11 @@ function fail(message) {
 }
 
 function changedFiles(base) {
-  const seen = spawnSync("git", ["cat-file", "-e", `${base}^{commit}`], { encoding: "utf8" });
-  if (seen.status !== 0) {
-    fail(`cannot see base commit ${base}; refusing to treat the diff as empty`);
+  try {
+    return collectChangedPaths(base, "HEAD");
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
   }
-  const diff = spawnSync(
-    "git",
-    ["diff", "--name-only", "--diff-filter=ACDMRTUXB", "-z", base, "HEAD"],
-    { encoding: "utf8" },
-  );
-  if (diff.status !== 0) fail(diff.stderr || "git diff failed");
-  return diff.stdout.split("\0").filter(Boolean);
 }
 
 function writeOutput(name, value) {
