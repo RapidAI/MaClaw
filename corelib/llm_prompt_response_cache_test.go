@@ -34,7 +34,10 @@ func TestLLMPromptResponseCacheSingleflightCachesResult(t *testing.T) {
 	cfg.SingleflightWaitTimeoutMS = 1000
 	cache := NewLLMPromptResponseCache(t.TempDir())
 	var calls atomic.Int32
-	start := make(chan struct{})
+	entered := make(chan struct{})
+	joined := make(chan struct{})
+	release := make(chan struct{})
+	cache.waiterHook = func() { close(joined) }
 	var wg sync.WaitGroup
 	type result struct {
 		body   string
@@ -44,7 +47,8 @@ func TestLLMPromptResponseCacheSingleflightCachesResult(t *testing.T) {
 
 	fn := func() ([]byte, error) {
 		calls.Add(1)
-		<-start
+		close(entered)
+		<-release
 		return []byte("shared"), nil
 	}
 	for i := 0; i < 2; i++ {
@@ -58,14 +62,10 @@ func TestLLMPromptResponseCacheSingleflightCachesResult(t *testing.T) {
 			}
 			results <- result{body: string(body), shared: shared}
 		}()
-		if i == 0 {
-			deadline := time.Now().Add(time.Second)
-			for calls.Load() == 0 && time.Now().Before(deadline) {
-				time.Sleep(time.Millisecond)
-			}
-		}
 	}
-	close(start)
+	<-entered
+	<-joined
+	close(release)
 	wg.Wait()
 	close(results)
 
