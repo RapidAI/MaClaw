@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
@@ -204,6 +206,72 @@ func TestDesktopBotDurableCases(t *testing.T) {
 			t.Fatalf("empty = %+v err=%v", empty, err)
 		}
 	})
+}
+
+func TestDesktopEffectClaimSurvivesRestart(t *testing.T) {
+	db, path := openDurableDB(t)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = db.RunDesktopStep(desktopbot.Step{
+			RunID: "run-mail", Tool: "email", Key: "mail-1",
+			Bind: desktopbot.ConsentBind("tenant/alice", "acct", "smtp.example", "a@example.com", "hello"),
+		}, "", func() (string, error) {
+			calls.Add(1)
+			close(started)
+			<-release
+			return "邮件已发送", nil
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the effect ran before its claim was stored")
+	}
+	restarted, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	var again atomic.Int32
+	_, _, err = restarted.RunDesktopStep(desktopbot.Step{
+		RunID: "run-mail", Tool: "email", Key: "mail-1",
+		Bind: desktopbot.ConsentBind("tenant/bob", "acct", "smtp.example", "a@example.com", "hello"),
+	}, "", func() (string, error) {
+		again.Add(1)
+		return "第二封", nil
+	})
+	if again.Load() != 0 || !errors.As(err, &desktopbot.ErrConsentStale{}) {
+		t.Fatalf("stale calls=%d err=%v", again.Load(), err)
+	}
+	_, _, err = restarted.RunDesktopStep(desktopbot.Step{
+		RunID: "run-mail", Tool: "email", Key: "mail-1",
+		Bind: desktopbot.ConsentBind("tenant/alice", "acct", "smtp.example", "a@example.com", "hello"),
+	}, "", func() (string, error) {
+		again.Add(1)
+		return "第二封", nil
+	})
+	if again.Load() != 0 || !errors.As(err, &desktopbot.ErrEffectUncertain{}) {
+		t.Fatalf("restart calls=%d err=%v", again.Load(), err)
+	}
+	close(release)
+	<-done
+	if calls.Load() != 1 {
+		t.Fatalf("calls=%d", calls.Load())
+	}
+	text, replayed, err := restarted.RunDesktopStep(desktopbot.Step{
+		RunID: "run-mail", Tool: "email", Key: "mail-1",
+		Bind: desktopbot.ConsentBind("tenant/alice", "acct", "smtp.example", "a@example.com", "hello"),
+	}, "", func() (string, error) {
+		again.Add(1)
+		return "第三封", nil
+	})
+	if err != nil || !replayed || text != "邮件已发送" || again.Load() != 0 {
+		t.Fatalf("text=%q replayed=%v again=%d err=%v", text, replayed, again.Load(), err)
+	}
 }
 
 func openDurableDB(t *testing.T) (*SQLiteStore, string) {

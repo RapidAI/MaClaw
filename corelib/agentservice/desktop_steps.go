@@ -187,9 +187,11 @@ func (s *SQLiteStore) ListDesktopSteps(runID string) ([]desktopbot.Step, error) 
 	return out, rows.Err()
 }
 
-// RunDesktopStep runs a side effect once. The same key returns the recorded
-// result and does not call run. A read-only step always runs and is not
-// stored. An empty key is not stored. A failed run is not marked done.
+// RunDesktopStep runs a side effect once. The claim is committed before run,
+// so a crash leaves the key uncertain instead of looking unstarted. The same
+// finished key returns the recorded result and does not call run. A read-only
+// step always runs and is not stored. An empty key is not stored. A definite
+// failure releases the claim. An uncertain failure keeps it.
 func (s *SQLiteStore) RunDesktopStep(step desktopbot.Step, command string, run func() (string, error)) (string, bool, error) {
 	if s == nil {
 		return "", false, ErrServiceClosed
@@ -202,39 +204,20 @@ func (s *SQLiteStore) RunDesktopStep(step desktopbot.Step, command string, run f
 		return text, false, err
 	}
 	s.mu.Lock()
-	if err := s.guardDesktopStepsLocked(); err != nil {
-		s.mu.Unlock()
-		return "", false, err
+	err := s.guardDesktopStepsLocked()
+	if err == nil && strings.TrimSpace(step.Key) != "" {
+		err = s.ensureDesktopStepTableLocked()
 	}
-	if strings.TrimSpace(step.Key) == "" {
-		s.mu.Unlock()
-		text, err := run()
-		return text, false, err
-	}
-	if err := s.ensureDesktopStepTableLocked(); err != nil {
-		s.mu.Unlock()
-		return "", false, err
-	}
-	text, done, err := s.finishedDesktopStepLocked(strings.TrimSpace(step.Key))
+	db := s.db
 	s.mu.Unlock()
 	if err != nil {
 		return "", false, err
 	}
-	if done {
-		return text, true, nil
-	}
-	text, err = run()
-	if err != nil {
+	if strings.TrimSpace(step.Key) == "" {
+		text, err := run()
 		return text, false, err
 	}
-	step.Key = strings.TrimSpace(step.Key)
-	step.Result = text
-	step.Done = true
-	step.Tool = desktopbot.EffectName(step.Tool, command)
-	if _, err := s.SaveDesktopStep(step); err != nil {
-		return text, false, err
-	}
-	return text, false, nil
+	return desktopbot.RunClaimed(db, step, command, run)
 }
 
 // ResumeDesktopRound starts at the step after the last completed one.

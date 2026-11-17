@@ -84,6 +84,7 @@ func deliverScheduledTaskResultForRun(svc *agentservice.Service, principal agent
 		RunID: runID,
 		Tool:  "delivery",
 		Key:   desktopbot.StepKey(runID, "delivery:"+runID, 0),
+		Bind:  scheduledDeliveryBind(principal, task, resultText),
 	}, "", func() (string, error) {
 		if err := send(); err != nil {
 			return "", err
@@ -91,6 +92,34 @@ func deliverScheduledTaskResultForRun(svc *agentservice.Service, principal agent
 		return resultText, nil
 	})
 	return err
+}
+
+func scheduledDeliveryBind(principal agentservice.Principal, task *scheduler.ScheduledTask, resultText string) string {
+	channel := ""
+	account := ""
+	target := ""
+	if task != nil && task.Delivery != nil {
+		channel = task.Delivery.Channel
+		account = task.Delivery.BotProfileID
+		target = scheduledDeliveryTargets(task.Delivery.Targets)
+	}
+	owner := strings.TrimSpace(principal.TenantID) + "/" + strings.TrimSpace(principal.UserID)
+	return desktopbot.ConsentBind(owner, account, channel, target, resultText)
+}
+
+func scheduledDeliveryTargets(targets []scheduler.DeliveryTarget) string {
+	parts := make([]string, 0, len(targets))
+	for _, target := range targets {
+		mentions := append([]string(nil), target.MentionUserIDs...)
+		parts = append(parts, strings.Join([]string{
+			strings.TrimSpace(target.Kind),
+			strings.TrimSpace(target.GroupID),
+			strings.TrimSpace(target.UserID),
+			strconv.FormatBool(target.MentionAll),
+			strings.Join(mentions, "+"),
+		}, "|"))
+	}
+	return strings.Join(parts, ",")
 }
 
 func deliverScheduledTaskBody(svc *agentservice.Service, principal agentservice.Principal, task *scheduler.ScheduledTask, resultText string, runErr error) error {

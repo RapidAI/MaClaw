@@ -789,11 +789,44 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		RunID: scope.RunID,
 		Tool:  action,
 		Key:   desktopStepKey(scope.RunID, agentruntime.ToolCallID(ctx)),
+		Bind: desktopbot.ConsentBind(
+			strings.TrimSpace(scope.TenantID)+"/"+strings.TrimSpace(scope.UserID),
+			strings.TrimSpace(scope.InstanceID),
+			"",
+			action,
+			desktopConsentContent(action, command, args),
+		),
 	}
 	text, _, err := steps.RunDesktopStep(step, command, func() (string, error) {
 		return operateDesktopBody(ctx, scope, args)
 	})
 	return text, err
+}
+
+// desktopConsentContent is the part of a desktop side effect that invalidates
+// an earlier claim when it changes. It is hashed before it is stored.
+func desktopConsentContent(action, command string, args map[string]any) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(action))
+	b.WriteByte('\n')
+	b.WriteString(strings.TrimSpace(command))
+	b.WriteByte('\n')
+	if args == nil {
+		return b.String()
+	}
+	switch packages := args["packages"].(type) {
+	case []any:
+		for _, item := range packages {
+			b.WriteString(strings.TrimSpace(fmt.Sprint(item)))
+			b.WriteByte('\n')
+		}
+	case []string:
+		for _, item := range packages {
+			b.WriteString(strings.TrimSpace(item))
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // desktopStepKey is the journal key of one side effect. The journal table is

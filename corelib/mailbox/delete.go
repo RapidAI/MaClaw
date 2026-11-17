@@ -229,6 +229,12 @@ func (h *Host) approveDelete(ctx context.Context, draft Draft) (text string, cla
 		h.auditDelete(draft, "uncertain", 0)
 		return MsgDeleteUncertain, "uncertain"
 	}
+	if runner, ok := h.Steps.(ExternalEffectRunner); ok && strings.TrimSpace(h.StepKey) != "" {
+		var claimed int
+		text, class, claimed = h.approveClaimedDelete(ctx, draft, secret, deleter, runner)
+		count = claimed
+		return text, class
+	}
 	result, err := deleter.ApplyDelete(ctx, draft.Account, secret, draft.Delete)
 	if err != nil {
 		class = classOf(err)

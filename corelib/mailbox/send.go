@@ -234,6 +234,9 @@ func (h *Host) Approve(ctx context.Context, draftID string) (string, string) {
 		h.noteUncertain(draft)
 		return MsgUncertain, "uncertain"
 	}
+	if runner, ok := h.Steps.(ExternalEffectRunner); ok && strings.TrimSpace(h.StepKey) != "" {
+		return h.approveClaimedSend(ctx, draft, secret, runner)
+	}
 	sendStarted := time.Now()
 	if err := h.Sender.Send(ctx, draft.Account, secret, draft.Message); err != nil {
 		class, msg := classifyTransport(err, false)

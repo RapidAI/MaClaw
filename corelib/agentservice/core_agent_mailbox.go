@@ -32,19 +32,39 @@ func (j mailboxStepJournal) Finish(key, tool, result string) error {
 	if j.steps == nil || strings.TrimSpace(key) == "" {
 		return nil
 	}
-	runID := strings.TrimSpace(j.runID)
-	if runID == "" {
-		runID = strings.TrimSpace(key)
-	}
-	_, _, err := j.steps.RunDesktopStep(desktopbot.Step{
-		RunID: runID,
-		Tool:  tool,
-		Key:   key,
-	}, "", func() (string, error) {
-		return result, nil
+	_, _, err := j.RunExternalEffect(mailbox.ExternalEffect{
+		Key:  key,
+		Tool: tool,
+		Run: func() (string, error) {
+			return result, nil
+		},
 	})
 	return err
 }
+
+// RunExternalEffect claims the send or delete in the service journal before
+// the network call. mailbox.Host uses this instead of Finish-after-send.
+func (j mailboxStepJournal) RunExternalEffect(effect mailbox.ExternalEffect) (string, bool, error) {
+	if effect.Run == nil {
+		return "", false, fmt.Errorf("mailbox effect has no body")
+	}
+	if j.steps == nil {
+		text, err := effect.Run()
+		return text, false, err
+	}
+	runID := strings.TrimSpace(j.runID)
+	if runID == "" {
+		runID = strings.TrimSpace(effect.Key)
+	}
+	return j.steps.RunDesktopStep(desktopbot.Step{
+		RunID: runID,
+		Tool:  effect.Tool,
+		Key:   effect.Key,
+		Bind:  effect.Bind,
+	}, "", effect.Run)
+}
+
+var _ mailbox.ExternalEffectRunner = mailboxStepJournal{}
 
 func mailboxToolContext(c *coreAgentCallbacks) context.Context {
 	if c == nil || c.ctx == nil {
