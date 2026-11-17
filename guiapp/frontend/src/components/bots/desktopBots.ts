@@ -13,6 +13,8 @@ export interface DesktopBot {
     desktopMode?: string;
     // Local computer this bot uses. Empty is the cloud computer.
     nodeId?: string;
+    // MaClawSrv instance. MCP enablement matches this or the hub bot id.
+    instanceId?: string;
 }
 
 export type BotPhase = 'plan' | 'execute';

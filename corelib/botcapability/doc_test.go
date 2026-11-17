@@ -114,3 +114,41 @@ func TestLookupMCPIgnoresIDCase(t *testing.T) {
 		t.Fatalf("%v %#v", err, got)
 	}
 }
+
+func TestBotScopeAndReadToolsDoNotLeakOrTrustAnnotations(t *testing.T) {
+	doc, err := Apply(Document{}, Update{UpsertMCP: []Server{{
+		Name: "search", Transport: "http", URL: "https://mcp.example/mcp",
+		AuthSecret: "sekret", Bots: []string{"bot_a", "inst_a"}, ReadTools: []string{"lookup"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := doc.MCP[0]
+	if !server.Allows("inst_a", "") || !server.Allows("", "bot_a") || server.Allows("inst_b", "bot_b") {
+		t.Fatalf("scope %#v", server.Bots)
+	}
+	if ToolNeedsApproval("lookup", server.ReadTools) {
+		t.Fatal("owner read tool asked")
+	}
+	if !ToolNeedsApproval("send_mail", server.ReadTools) || !ToolNeedsApproval("lookup", nil) || !ToolNeedsApproval("发布", []string{"发布"}) {
+		t.Fatal("effect or unknown tool skipped the ask")
+	}
+	viewRaw, _ := json.Marshal(ViewOf(doc))
+	if strings.Contains(string(viewRaw), "sekret") || !strings.Contains(string(viewRaw), "lookup") || !strings.Contains(string(viewRaw), "bot_a") {
+		t.Fatalf("view %s", viewRaw)
+	}
+	first, err := BindingStamp(server, "lookup", map[string]any{"type": "object"}, map[string]any{"q": "x"})
+	if err != nil || first == "" || strings.Contains(first, "sekret") {
+		t.Fatalf("stamp %s %v", first, err)
+	}
+	moved := server
+	moved.URL = "https://mcp.example/other"
+	second, err := BindingStamp(moved, "lookup", map[string]any{"type": "object"}, map[string]any{"q": "x"})
+	if err != nil || second == first {
+		t.Fatal("config change kept the stamp")
+	}
+	otherArgs, err := BindingStamp(server, "lookup", map[string]any{"type": "object"}, map[string]any{"q": "y"})
+	if err != nil || otherArgs == first {
+		t.Fatal("arguments kept the stamp")
+	}
+}
