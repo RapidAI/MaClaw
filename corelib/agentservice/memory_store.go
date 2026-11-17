@@ -599,6 +599,25 @@ func (s *MemoryStore) DeleteSession(tenantID, userID, instanceID, sessionID stri
 	return nil
 }
 
+// ReviseMessage replaces one stored message. A missing id is inserted.
+// Finish uses it to persist a receipt that was decided after the first save.
+func (s *MemoryStore) ReviseMessage(v Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := s.messages[v.SessionID]
+	for i := range items {
+		if items[i].ID == v.ID {
+			items[i] = v
+			s.messages[v.SessionID] = items
+			s.touchMessagesRewrite(v.SessionID)
+			return nil
+		}
+	}
+	s.messages[v.SessionID] = append(items, v)
+	s.touchMessagesAppend(v.SessionID)
+	return nil
+}
+
 func (s *MemoryStore) SaveMessage(v Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

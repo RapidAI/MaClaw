@@ -266,7 +266,9 @@ func runServer(ctx context.Context) error {
 	// not exist before initScheduler returns. Reconcile inside init still
 	// finishes before the clock fires.
 	schMgr := initScheduler(dataRoot, svc, executor)
-	svc.ResumeExecutionHooks = desktopResumeExecutionHooks
+	svc.ResumeExecutionHooks = func(p agentservice.Principal, inst agentservice.Instance, ask string) (func(context.Context) context.Context, func(context.Context, *agentservice.Run, *agentservice.Message, error)) {
+		return desktopResumeExecutionHooks(svc, p, inst, ask)
+	}
 	svc.ResumeHold = func(run agentservice.Run) func() {
 		return holdResumedDesktopSchedule(svc, run)
 	}

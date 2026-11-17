@@ -269,7 +269,7 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		// Returning 202 from this request must not release the desktop.
 		ownsRun := false
 		in.ExecutionOwner = &ownsRun
-		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(s.svc, desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
 		sess, run, err := s.svc.SendMessageAsync(r.Context(), p, r.PathValue("instanceId"), in)
 		if err != nil {
 			callErr = err
@@ -525,7 +525,7 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	if wantsAsync {
 		ownsRun := false
 		in.ExecutionOwner = &ownsRun
-		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(s.svc, desktopTenantID, desktopUserID, shotID, botID, &ownsRun, noDesktop, in.Content)
 		run, err := s.svc.PostMessageAsync(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
 		if err != nil {
 			writeRedactedError(w, err, s.svc.DataRoot())
@@ -585,7 +585,7 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agen
 // desktopAsyncHooks hold the desktop for the detached run. The HTTP handler
 // returns as soon as the run exists. Finish stores the screenshot and the
 // handoff so a later read of the run can deliver them.
-func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, noDesktop bool, request ...string) (
+func desktopAsyncHooks(svc *agentservice.Service, tenantID, userID, instanceID, botID string, owns *bool, noDesktop bool, request ...string) (
 	func(context.Context) context.Context,
 	func(context.Context, *agentservice.Run, *agentservice.Message, error),
 ) {
@@ -664,6 +664,9 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, n
 		// Exactly one result per task, on success and on failure.
 		msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID}, run, msg, err, handoff, noDesktop)
 		storeDesktopTurnResult(run, msg, handoff, attention)
+		if svc != nil && run != nil && msg != nil {
+			_ = svc.PersistRunReceipt(run, msg)
+		}
 		runID := ""
 		runStatus := ""
 		if run != nil {
@@ -692,7 +695,7 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, n
 // process restart. The HTTP handler installs this slot for a normal turn.
 // A restart continuation does not come through HTTP, and without the slot
 // deliver reports that the turn has no reply that can carry files.
-func desktopResumeExecutionHooks(p agentservice.Principal, inst agentservice.Instance, ask string) (
+func desktopResumeExecutionHooks(svc *agentservice.Service, p agentservice.Principal, inst agentservice.Instance, ask string) (
 	func(context.Context) context.Context,
 	func(context.Context, *agentservice.Run, *agentservice.Message, error),
 ) {
@@ -701,7 +704,7 @@ func desktopResumeExecutionHooks(p agentservice.Principal, inst agentservice.Ins
 	if inst.Metadata != nil {
 		botID = strings.TrimSpace(inst.Metadata[desktopBotMetadataKey])
 	}
-	return desktopAsyncHooks(tenant, user, inst.ID, botID, nil, strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone, ask)
+	return desktopAsyncHooks(svc, tenant, user, inst.ID, botID, nil, strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone, ask)
 }
 
 func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

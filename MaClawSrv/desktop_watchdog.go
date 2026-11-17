@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
@@ -600,14 +601,17 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 			// The run finished; its post is not confirmed (not a success).
 			status += " publish_unconfirmed"
 		}
-		if !applied {
+		before := outcome
+		outcome, why = desktopReconcileDelivery(run, msg, outcome, why, runErr, false)
+		if !applied || outcome != before {
 			desktopApplyOutcome(msg, outcome, why)
-			if fix := desktopPostCorrection(run.ID, msg.Content); fix != "" {
+			if fix := desktopPostCorrection(run.ID, msg.Content); fix != "" && !strings.Contains(msg.Content, fix) {
 				msg.Content = fix + "\n" + msg.Content
-			} else if posted := desktopPostedNotice(run.ID, msg.Content); posted != "" {
+			} else if posted := desktopPostedNotice(run.ID, msg.Content); posted != "" && !strings.Contains(msg.Content, posted) {
 				msg.Content = posted + "\n" + msg.Content
 			}
 		}
+		desktopSyncVisible(msg)
 		desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status})
 		return msg
 	}
@@ -640,51 +644,57 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 		}
 	}
 	if text == "" {
-		if names := deliveredAttachmentNames(msg); len(names) > 0 && runErr == nil && run.Status != agentservice.RunStatusFailed {
-			text = "结果文件已经附在这条回复上：" + strings.Join(names, "、") + "。"
-			if outcome == "" {
-				outcome = agentservice.TaskOutcomeDone
-				why = "attachment delivered"
-			}
-		} else if runErr != nil || run.Status == agentservice.RunStatusFailed {
+		if runErr != nil || run.Status == agentservice.RunStatusFailed {
 			text = "这件我没做成，中途出了问题，我停在当前页面，没有重复提交任何东西。你说一声我再试一次。"
 			if noDesktop {
 				text = "这件我没做成，中途出了问题。你说一声我再试一次。"
 			}
 		} else {
-			// No reply, no confirmed post, and no file on the message.
-			// Ending the run is not the same as delivering the result.
-			text = "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。"
-			if outcome == "" || outcome == agentservice.TaskOutcomeDone {
-				outcome = agentservice.TaskOutcomeBlocked
-				why = "no delivered result"
+			if msg == nil {
+				msg = &agentservice.Message{SessionID: run.SessionID, InstanceID: run.InstanceID, Role: agentservice.MessageRoleAssistant, CreatedAt: time.Now()}
 			}
+			outcome, why = desktopReconcileDelivery(run, msg, outcome, why, runErr, true)
+			text = msg.Content
 		}
 	}
 	if msg == nil {
 		msg = &agentservice.Message{SessionID: run.SessionID, InstanceID: run.InstanceID, Role: agentservice.MessageRoleAssistant, CreatedAt: time.Now()}
 	}
-	msg.Content = text
+	if strings.TrimSpace(msg.Content) == "" {
+		msg.Content = text
+	}
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
 	}
 	msg.Metadata["receipt"] = "srv"
 	desktopApplyOutcome(msg, outcome, why)
+	desktopSyncVisible(msg)
 	desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status + " receipt_by_srv"})
 	log.Printf("[watchdog] run=%s ended without a reply; srv receipt sent (status=%s)", run.ID, status)
 	return msg
 }
 
-func deliveredAttachmentNames(msg *agentservice.Message) []string {
+// desktopUndeliveredSentence is the visible result when a run ends without
+// a requested output. It replaces a success claim that the evidence does not support.
+const desktopUndeliveredSentence = "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。"
+
+// deliveredOutputNames is the requested outputs that actually reached the
+// reply. A process screenshot, a filename, or a media id without bytes is not one.
+func deliveredOutputNames(msg *agentservice.Message) []string {
 	if msg == nil {
 		return nil
 	}
 	var names []string
 	for _, item := range msg.Attachments {
-		name := strings.TrimSpace(item.FileName)
-		if name == "" && strings.TrimSpace(item.Data) == "" && strings.TrimSpace(item.SourceMediaID) == "" {
+		if strings.TrimSpace(item.Data) == "" {
 			continue
 		}
+		switch item.Delivery {
+		case agent.AttachmentDeliveryFile, agent.AttachmentDeliveryShot:
+		default:
+			continue
+		}
+		name := strings.TrimSpace(item.FileName)
 		if name == "" {
 			name = "文件"
 		}
@@ -694,6 +704,97 @@ func deliveredAttachmentNames(msg *agentservice.Message) []string {
 		}
 	}
 	return names
+}
+
+func desktopRunHasConfirmedPost(runID string) bool {
+	for _, key := range desktopLedgerKeysForRun(runID) {
+		if _, ok := desktopLedgerRunPost(desktopLedgerEntries(key), runID); ok {
+			return true
+		}
+	}
+	if rec, ok := desktopPublishRecordOf(runID); ok && rec.posted() {
+		return true
+	}
+	return false
+}
+
+func desktopClaimedDone(runID string, msg *agentservice.Message, outcome string) bool {
+	if outcome == agentservice.TaskOutcomeDone || desktopDeclaredOutcome(runID) == "done" {
+		return true
+	}
+	return msg != nil && msg.Metadata != nil && msg.Metadata[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeDone
+}
+
+// desktopReconcileDelivery keeps a real delivery and replaces a done claim
+// that has none. emptyBody is the path that still has to write the sentence.
+// A second call sees the same sentence and does not stack it.
+func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, outcome, why string, runErr error, emptyBody bool) (string, string) {
+	if msg == nil || run == nil || runErr != nil || run.Status == agentservice.RunStatusFailed || run.Status == agentservice.RunStatusCancelled {
+		return outcome, why
+	}
+	if names := deliveredOutputNames(msg); len(names) > 0 || desktopRunHasConfirmedPost(run.ID) {
+		if outcome == "" {
+			outcome = agentservice.TaskOutcomeDone
+			why = "delivered output"
+		}
+		if emptyBody && strings.TrimSpace(msg.Content) == "" && len(names) > 0 {
+			msg.Content = "结果文件已经附在这条回复上：" + strings.Join(names, "、") + "。"
+		}
+		desktopSyncVisible(msg)
+		return outcome, why
+	}
+	if !emptyBody && !desktopClaimedDone(run.ID, msg, outcome) {
+		return outcome, why
+	}
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	if msg.Metadata[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeBlocked &&
+		strings.TrimSpace(msg.Metadata["send_to_user"]) == desktopUndeliveredSentence &&
+		strings.Contains(msg.Content, desktopUndeliveredSentence) {
+		return agentservice.TaskOutcomeBlocked, why
+	}
+	if outcome == "" || outcome == agentservice.TaskOutcomeDone {
+		outcome = agentservice.TaskOutcomeBlocked
+		why = "no delivered result"
+	}
+	prevSend := strings.TrimSpace(msg.Metadata["send_to_user"])
+	finish, _ := desktopFinishSentence(run.ID)
+	content := strings.TrimSpace(msg.Content)
+	msg.Metadata["send_to_user"] = desktopUndeliveredSentence
+	msg.Metadata["send_to_user_kind"] = "report"
+	switch {
+	case content == "" || content == prevSend || (finish != "" && content == finish):
+		msg.Content = desktopUndeliveredSentence
+	case !strings.Contains(content, desktopUndeliveredSentence):
+		msg.Content = desktopUndeliveredSentence + "\n" + msg.Content
+	}
+	return outcome, why
+}
+
+// desktopSyncVisible copies a receipt sentence into send_to_user when that
+// field is still empty. An ordinary reply with no measured outcome is left
+// alone: clients show send_to_user, and this must not invent one.
+func desktopSyncVisible(msg *agentservice.Message) {
+	if msg == nil {
+		return
+	}
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	if strings.TrimSpace(msg.Metadata["send_to_user"]) != "" || strings.TrimSpace(msg.Content) == "" {
+		return
+	}
+	content := strings.TrimSpace(msg.Content)
+	outcome := strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey])
+	receipt := outcome != "" || content == desktopUndeliveredSentence || strings.HasPrefix(content, "结果文件已经附在这条回复上：") || strings.HasPrefix(content, "这件我没做成")
+	if !receipt {
+		return
+	}
+	msg.Metadata["send_to_user"] = content
+	if strings.TrimSpace(msg.Metadata["send_to_user_kind"]) == "" {
+		msg.Metadata["send_to_user_kind"] = "report"
+	}
 }
 
 func desktopLedgerRunPost(entries []desktopLedgerEntry, runID string) (desktopLedgerEntry, bool) {

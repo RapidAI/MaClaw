@@ -1047,6 +1047,15 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	return BotAdmission{Settled: true, Reply: reply, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title, Kind: intakeKind, Ack: intakeAck}, nil
 }
 
+// SettleFinishedRun is the settle a finished MaClawSrv run goes through:
+// the visible sentence, the measured outcome, and the desktop bookkeeping.
+func (s *Service) SettleFinishedRun(tenantID, userID, botID, instanceID, text string, meta map[string]string) (Reply, error) {
+	return s.settleDesktopCommand(tenantID, userID, botID, instanceID, "", false, desktopCommandBody{
+		Text:     text,
+		Metadata: meta,
+	})
+}
+
 // desktopCommandBody is the MaClawSrv message result, whether it arrived on
 // the admitting call or on a later read of the run.
 type desktopCommandBody struct {

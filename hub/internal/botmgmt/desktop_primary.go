@@ -803,6 +803,11 @@ func newCrossNoteID() string {
 	return "note_" + hex.EncodeToString(buf[:])
 }
 
+// ReportDelegateRunEnd is the watcher entry a finished delegated run uses.
+func (s *Service) ReportDelegateRunEnd(tenantID, userID, botID, runID, status string, reply Reply, runErr error) {
+	s.reportDelegateRunEnd(tenantID, userID, botID, runID, status, reply, runErr)
+}
+
 // reportDelegateRunEnd is Hub's own "teammate finished" message: when a run
 // that the primary delegated (a delegate note carries its run id) ends, Hub
 // puts a done/blocked report in the primary's mailbox. It runs on Hub's run

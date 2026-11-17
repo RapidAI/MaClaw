@@ -138,13 +138,29 @@ func TestEnsureReceiptDoesNotClaimSuccessWithoutDelivery(t *testing.T) {
 	if blankRun == nil || strings.Contains(blankRun.Content, "做完了") || blankRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
 		t.Fatalf("empty attachment claimed done: %+v", blankRun)
 	}
-	file := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file", FileName: "report.pdf", Size: 12}}}
+	nameOnly := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file", FileName: "report.pdf"}}}
+	nameRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_name", Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}}, nameOnly, nil, false, true)
+	if nameRun == nil || nameRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone || strings.Contains(nameRun.Metadata["send_to_user"], "report.pdf") {
+		t.Fatalf("filename without bytes claimed delivered: %+v", nameRun)
+	}
+	shot := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "image", FileName: "desktop.png", MimeType: "image/png", Data: "aGVsbG8="}}}
+	shotRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_shot", Status: agentservice.RunStatusSucceeded}, shot, nil, false, false)
+	if shotRun == nil || shotRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
+		t.Fatalf("process screenshot claimed done: %+v", shotRun)
+	}
+	file := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file", FileName: "report.pdf", Data: "JVBERg==", Size: 12, Delivery: agent.AttachmentDeliveryFile}}}
 	got := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_file", Status: agentservice.RunStatusSucceeded}, file, nil, false, true)
-	if got == nil || !strings.Contains(got.Content, "report.pdf") || got.Metadata["task_outcome"] != agentservice.TaskOutcomeDone {
+	if got == nil || !strings.Contains(got.Content, "report.pdf") || got.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || !strings.Contains(got.Metadata["send_to_user"], "report.pdf") {
 		t.Fatalf("delivered file was not acknowledged: %+v", got)
 	}
-	if strings.Contains(got.Content, "桌面") {
-		t.Fatalf("a delivered file was described as a desktop glance: %q", got.Content)
+	asked := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "image", FileName: "desktop.png", MimeType: "image/png", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryShot}}}
+	askedRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_asked", Status: agentservice.RunStatusSucceeded}, asked, nil, false, false)
+	if askedRun == nil || askedRun.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || !strings.Contains(askedRun.Metadata["send_to_user"], "desktop.png") {
+		t.Fatalf("requested screenshot was rejected: %+v", askedRun)
+	}
+	again := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_empty", Status: agentservice.RunStatusSucceeded}, empty, nil, false, false)
+	if again.Content != empty.Content || strings.Count(again.Content, "没做完") != 1 {
+		t.Fatalf("second receipt changed the sentence: %q", again.Content)
 	}
 }
 

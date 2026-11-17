@@ -435,6 +435,29 @@ func sqliteDeleteRuns(ctx context.Context, q sqlq, where string, args []any, ses
 	return nil
 }
 
+// ReviseMessage replaces the stored JSON of one message. The row id stays,
+// so a later read and a reopened store see the receipt from finish.
+func (s *SQLiteStore) ReviseMessage(v Message) error {
+	return s.write(func(ctx context.Context, q sqlq) error {
+		payload, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		res, err := q.ExecContext(ctx, `UPDATE as_messages SET v=? WHERE session_id=? AND id=?`, payload, v.SessionID, v.ID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return sqliteSaveMessage(ctx, q, v)
+		}
+		return nil
+	}, func(m *MemoryStore) error { return m.ReviseMessage(v) })
+}
+
 func (s *SQLiteStore) SaveMessage(v Message) error {
 	return s.write(func(ctx context.Context, q sqlq) error {
 		return sqliteSaveMessage(ctx, q, v)

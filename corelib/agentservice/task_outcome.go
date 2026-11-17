@@ -86,6 +86,32 @@ func applyTaskOutcome(run *Run, msg *Message) string {
 	return outcome
 }
 
+// PersistRunReceipt writes the receipt decided after the first save.
+// The run metadata and the assistant message stay the same record a
+// later read, a reconnect, or a restarted process returns.
+func (s *Service) PersistRunReceipt(run *Run, msg *Message) error {
+	if s == nil || s.store == nil || run == nil || msg == nil {
+		return nil
+	}
+	if msg.Metadata != nil {
+		if outcome := strings.TrimSpace(msg.Metadata[TaskOutcomeKey]); ValidTaskOutcome(outcome) {
+			if run.Metadata == nil {
+				run.Metadata = map[string]string{}
+			}
+			run.Metadata[TaskOutcomeKey] = outcome
+			if TaskOutcomeNeedsUser(outcome) {
+				run.WaitingForUser = true
+			}
+		}
+	}
+	if rev, ok := s.store.(interface{ ReviseMessage(Message) error }); ok {
+		if err := rev.ReviseMessage(*msg); err != nil {
+			return err
+		}
+	}
+	return s.store.SaveRun(*run)
+}
+
 func runTaskOutcome(run Run, msg *Message) string {
 	if o := run.Metadata[TaskOutcomeKey]; ValidTaskOutcome(o) {
 		return o

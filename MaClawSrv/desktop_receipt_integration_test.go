@@ -1,0 +1,302 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
+)
+
+type receiptTurn struct {
+	content  string
+	result   string
+	meta     map[string]string
+	shot     bool
+	file     bool
+	fileName string
+}
+
+type receiptExecutor struct {
+	turn receiptTurn
+}
+
+func (e *receiptExecutor) Execute(ctx context.Context, _ agentservice.ExecuteRequest) (*agentservice.ExecuteResult, error) {
+	if e.turn.shot && !noteDesktopShot(ctx, "image/png", "aGVsbG8=") {
+		return nil, context.Canceled
+	}
+	if e.turn.file {
+		if err := noteDesktopFile(ctx, e.turn.fileName, "application/pdf", []byte("%PDF-1.4")); err != nil {
+			return nil, err
+		}
+	}
+	return &agentservice.ExecuteResult{Content: e.turn.result, Metadata: e.turn.meta}, nil
+}
+
+type receiptView struct {
+	svc       *agentservice.Service
+	server    *HTTPServer
+	principal agentservice.Principal
+	token     string
+	run       *agentservice.Run
+	message   *agentservice.Message
+}
+
+func TestDesktopReceiptPersistsVisibleOutcome(t *testing.T) {
+	cases := []struct {
+		name, wantOutcome, wantPart, rejectPart string
+		turn                                    receiptTurn
+	}{
+		{
+			name:        "intermediate screenshot only",
+			turn:        receiptTurn{content: "打开页面", shot: true, meta: map[string]string{"task_outcome": "done", "send_to_user": "已经全部发好了"}},
+			wantOutcome: agentservice.TaskOutcomeBlocked,
+			wantPart:    "没做完",
+			rejectPart:  "已经全部发好了",
+		},
+		{
+			name:        "real file delivery",
+			turn:        receiptTurn{content: "做一份报告", file: true, fileName: "report.pdf"},
+			wantOutcome: agentservice.TaskOutcomeDone,
+			wantPart:    "report.pdf",
+		},
+		{
+			name:        "requested screenshot",
+			turn:        receiptTurn{content: "请把屏幕截图发我", shot: true},
+			wantOutcome: agentservice.TaskOutcomeDone,
+			wantPart:    "desktop.png",
+		},
+		{
+			name:        "finish done with an empty body",
+			turn:        receiptTurn{content: "把报表交出来", meta: map[string]string{"task_outcome": "done", "send_to_user": "已经全部发好了"}},
+			wantOutcome: agentservice.TaskOutcomeBlocked,
+			wantPart:    "没做完",
+			rejectPart:  "已经全部发好了",
+		},
+		{
+			name:        "success phrase contradicted by a process screenshot",
+			turn:        receiptTurn{content: "发布文章", result: "已经全部发好了", shot: true, meta: map[string]string{"task_outcome": "done", "send_to_user": "已经全部发好了"}},
+			wantOutcome: agentservice.TaskOutcomeBlocked,
+			wantPart:    "没做完",
+			rejectPart:  "已经全部发好了",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			view := runReceiptTurn(t, root, tc.turn)
+			assertReceipt(t, view.message, view.run, tc.wantOutcome, tc.wantPart, tc.rejectPart)
+			revised := desktopEnsureReceipt(agentruntime.Scope{TenantID: view.principal.TenantID, UserID: view.principal.UserID, InstanceID: view.run.InstanceID}, view.run, view.message, nil, false, false)
+			if err := view.svc.PersistRunReceipt(view.run, revised); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := view.svc.GetMessage(context.Background(), view.principal, view.run.InstanceID, view.run.SessionID, view.run.AssistantMessageID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(stored.Content, "没做完") > 1 || strings.Count(stored.Metadata["send_to_user"], "没做完") > 1 {
+				t.Fatalf("second finalize stacked the sentence: %#v", stored)
+			}
+			assertReceipt(t, stored, view.run, tc.wantOutcome, tc.wantPart, tc.rejectPart)
+			_ = view.svc.Close()
+			view.server.Close()
+			reopened := reopenReceipt(t, root, view)
+			assertReceipt(t, reopened.message, reopened.run, tc.wantOutcome, tc.wantPart, tc.rejectPart)
+			_ = reopened.svc.Close()
+		})
+	}
+}
+
+func TestFilenameOnlyReferenceIsNotADelivery(t *testing.T) {
+	root := t.TempDir()
+	svc, principal := newReceiptService(t, root, &receiptExecutor{})
+	inst := createReceiptInstance(t, svc, principal)
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := time.Now().Add(-time.Minute)
+	run := &agentservice.Run{ID: "run_name_only", TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}, StartedAt: done, CompletedAt: &done}
+	msg := &agentservice.Message{
+		ID: "msg_name_only", SessionID: sess.ID, TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID,
+		Role:        agentservice.MessageRoleAssistant,
+		Metadata:    map[string]string{"task_outcome": agentservice.TaskOutcomeDone, "send_to_user": "已经全部发好了"},
+		Attachments: []agent.MessageAttachment{{Type: "file", FileName: "report.pdf", SourceMediaID: "media_1"}},
+		CreatedAt:   time.Now(),
+	}
+	if err := svc.PersistRunReceipt(run, msg); err != nil {
+		t.Fatal(err)
+	}
+	prepare, finish := desktopAsyncHooks(svc, principal.TenantID, principal.UserID, inst.ID, "bot_pub", nil, false, "把报表交出来")
+	ctx := prepare(context.Background())
+	finish(ctx, run, msg, nil)
+	stored, err := svc.GetMessage(context.Background(), principal, inst.ID, sess.ID, msg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReceipt(t, stored, run, agentservice.TaskOutcomeBlocked, "没做完", "已经全部发好了")
+	if strings.Contains(stored.Metadata["send_to_user"], "report.pdf") {
+		t.Fatalf("filename was treated as the delivery: %q", stored.Metadata["send_to_user"])
+	}
+	finish(ctx, run, stored, nil)
+	stored2, err := svc.GetMessage(context.Background(), principal, inst.ID, sess.ID, msg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(stored2.Content, "没做完") != 1 || stored2.Metadata["send_to_user"] != stored.Metadata["send_to_user"] {
+		t.Fatalf("repeat finalize changed the stored receipt: %#v", stored2)
+	}
+	visible := desktopbot.Visible(desktopbot.Turn{Prose: stored2.Content, SendToUser: stored2.Metadata["send_to_user"]})
+	if !visible.Bubble || !strings.Contains(visible.Sentence, "没做完") || strings.Contains(visible.Sentence, "已经全部发好了") {
+		t.Fatalf("visible protocol = %#v", visible)
+	}
+	_ = svc.Close()
+	reopened, err := agentservice.NewService(agentservice.Config{DataRoot: root, TokenSecret: "test-token-secret-0123456789012345"}, nil, &receiptExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	again, err := reopened.GetMessage(context.Background(), principal, inst.ID, sess.ID, msg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReceipt(t, again, run, agentservice.TaskOutcomeBlocked, "没做完", "已经全部发好了")
+}
+
+func assertReceipt(t *testing.T, msg *agentservice.Message, run *agentservice.Run, outcome, want, reject string) {
+	t.Helper()
+	if msg == nil || msg.Metadata["task_outcome"] != outcome {
+		t.Fatalf("message outcome = %#v, want %s", msg, outcome)
+	}
+	visible := msg.Metadata["send_to_user"]
+	if !strings.Contains(visible, want) || (reject != "" && strings.Contains(visible, reject)) {
+		t.Fatalf("send_to_user = %q", visible)
+	}
+	shown := desktopbot.Visible(desktopbot.Turn{Prose: msg.Content, SendToUser: visible})
+	if !shown.Bubble || !strings.Contains(shown.Sentence, want) || (reject != "" && strings.Contains(shown.Sentence, reject)) {
+		t.Fatalf("visible = %#v", shown)
+	}
+	if run != nil && run.Metadata["task_outcome"] != outcome {
+		t.Fatalf("run outcome = %#v", run.Metadata)
+	}
+}
+
+func runReceiptTurn(t *testing.T, root string, turn receiptTurn) receiptView {
+	t.Helper()
+	svc, principal := newReceiptService(t, root, &receiptExecutor{turn: turn})
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	inst := createReceiptInstance(t, svc, principal)
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runKey := desktopRunKey(principal.TenantID, principal.UserID)
+	t.Cleanup(func() {
+		desktopRunsMu.Lock()
+		delete(desktopRuns, runKey)
+		delete(desktopHolds, runKey)
+		desktopRunsMu.Unlock()
+	})
+	payload, _ := json.Marshal(map[string]string{"content": turn.content, "client_session_key": "bot_receipt"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/messages", bytes.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Prefer", "respond-async")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	var admitted struct {
+		Run struct {
+			ID string `json:"id"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &admitted); err != nil || admitted.Run.ID == "" {
+		t.Fatalf("admission %s: %v", w.Body.String(), err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	var body struct {
+		agentservice.Run
+		DesktopReady bool                  `json:"desktop_ready"`
+		Message      *agentservice.Message `json:"message"`
+	}
+	for {
+		read := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/runs/"+admitted.Run.ID, nil)
+		read.Header.Set("Authorization", "Bearer "+token)
+		got := httptest.NewRecorder()
+		server.Handler().ServeHTTP(got, read)
+		if got.Code != http.StatusOK {
+			t.Fatalf("run status = %d body = %s", got.Code, got.Body.String())
+		}
+		if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.DesktopReady && body.Status == agentservice.RunStatusSucceeded && body.Message != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run did not finish: %#v", body.Run)
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	run := body.Run
+	return receiptView{svc: svc, server: server, principal: principal, token: token, run: &run, message: body.Message}
+}
+
+func reopenReceipt(t *testing.T, root string, view receiptView) receiptView {
+	t.Helper()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: root, TokenSecret: "test-token-secret-0123456789012345"}, nil, &receiptExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := svc.GetRun(context.Background(), view.principal, view.run.InstanceID, view.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := svc.GetMessage(context.Background(), view.principal, view.run.InstanceID, view.run.SessionID, view.run.AssistantMessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receiptView{svc: svc, principal: view.principal, run: run, message: msg}
+}
+
+func newReceiptService(t *testing.T, root string, exec agentservice.Executor) (*agentservice.Service, agentservice.Principal) {
+	t.Helper()
+	svc, err := agentservice.NewService(agentservice.Config{
+		DataRoot:    root,
+		TokenSecret: "test-token-secret-0123456789012345",
+	}, nil, exec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatal(err)
+	}
+	return svc, principal
+}
+
+func createReceiptInstance(t *testing.T, svc *agentservice.Service, principal agentservice.Principal) *agentservice.Instance {
+	t.Helper()
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inst
+}

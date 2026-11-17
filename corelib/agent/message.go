@@ -174,6 +174,13 @@ type StartMenuLaunch struct {
 	TargetUID  string `json:"target_uid,omitempty"`
 }
 
+// Attachment delivery marks. A process screenshot and a name with no bytes
+// stay unmarked: they are not evidence that a requested output was delivered.
+const (
+	AttachmentDeliveryFile = "file"
+	AttachmentDeliveryShot = "shot"
+)
+
 // MessageAttachment represents an image or file attached to a message.
 type MessageAttachment struct {
 	Type          string `json:"type"`                      // "image", "file", "audio", "video"
@@ -182,6 +189,11 @@ type MessageAttachment struct {
 	Data          string `json:"data,omitempty"`            // Base64-encoded content
 	Size          int64  `json:"size,omitempty"`            // Original size in bytes
 	SourceMediaID string `json:"source_media_id,omitempty"` // transport-local authenticated media reference
+	// Delivery is set only when this attachment is a requested output that
+	// was actually placed on the reply, and Data holds its bytes.
+	// AttachmentDeliveryFile is a deliver() payload. AttachmentDeliveryShot
+	// is a screenshot the person asked to receive. Empty is not a delivery.
+	Delivery string `json:"delivery,omitempty"`
 }
 
 // Response is the output from the agent handler.

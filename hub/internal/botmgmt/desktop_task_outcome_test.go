@@ -137,6 +137,40 @@ func TestDesktopRunTaskOutcomeReachesEveryReader(t *testing.T) {
 	}
 }
 
+func TestSettleFinishedRunAgreesWithUndeliveredReceipt(t *testing.T) {
+	svc := primaryFixture(t, []Bot{
+		{ID: "bot_main", Name: "主", OwnerUserID: "alice", InstanceID: "inst_main", CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "bot_pub", Name: "发布员", OwnerUserID: "alice", InstanceID: "inst_pub", CreatedAt: "2026-02-01T00:00:00Z"},
+	})
+	ctx := context.Background()
+	d, err := svc.PostBotCrossTalk(ctx, "tenant-a", "alice", "bot_main", BotCrossNote{Kind: "delegate", Target: "bot_pub", Text: "发布", Order: "发布文章"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := svc.ClaimBotCrossStart(ctx, "tenant-a", "alice", "bot_pub", d.ID); err != nil || !claimed {
+		t.Fatalf("claim %v %v", claimed, err)
+	}
+	if _, err := svc.NoteBotCrossRun(ctx, "tenant-a", "alice", "bot_pub", d.ID, "run_receipt"); err != nil {
+		t.Fatal(err)
+	}
+	honest := "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。"
+	reply, err := svc.SettleFinishedRun("tenant-a", "alice", "bot_pub", "inst_pub", honest, map[string]string{
+		"task_outcome": "blocked",
+		"send_to_user": honest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.TaskOutcome != "blocked" || strings.Contains(reply.SendToUser, "已经全部发好了") || !strings.Contains(reply.SendToUser, "没做完") {
+		t.Fatalf("settle = %#v", reply)
+	}
+	svc.ReportDelegateRunEnd("tenant-a", "alice", "bot_pub", "run_receipt", "succeeded", reply, nil)
+	items, err := svc.BotMailbox(ctx, "tenant-a", "alice", "main", nil, false)
+	if err != nil || len(items) != 1 || items[0].Topic != "blocked" {
+		t.Fatalf("delegated summary = %#v %v", items, err)
+	}
+}
+
 func TestDelegatedRunEndHonoursTaskOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		outcome, topic string

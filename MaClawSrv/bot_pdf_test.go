@@ -79,7 +79,7 @@ func TestNoDesktopAsyncFinishKeepsGeneratedPDF(t *testing.T) {
 	mod := botPDFModule{render: func(string) ([]byte, error) {
 		return []byte("%PDF-1.4\nasync"), nil
 	}}
-	prepare, finish := desktopAsyncHooks("t", "u", "inst-pdf", "bot_pdf", nil, true)
+	prepare, finish := desktopAsyncHooks(nil, "t", "u", "inst-pdf", "bot_pdf", nil, true)
 	ctx := prepare(context.Background())
 	request := pdfBotTurn("none", "execute")
 	request.Scope.InstanceID = "inst-pdf"
