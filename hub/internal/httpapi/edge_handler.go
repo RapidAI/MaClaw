@@ -188,23 +188,37 @@ func PostEdgeNodeSettingsAdminHandler(reg *edgenode.Registry, pool *desktoppool.
 			return
 		}
 		prevOwner := strings.TrimSpace(node.OwnerUserID)
+		prevName := node.Name
 		if err := reg.UpdateNode(r.Context(), node.ID, in.Name, &in.OwnerUserID); err != nil {
 			writeError(w, http.StatusBadGateway, "EDGE_NODES", err.Error())
 			return
 		}
+		revertOwner := func() {
+			_ = reg.UpdateNode(r.Context(), node.ID, prevName, &prevOwner)
+			if pool != nil {
+				_ = pool.SetNodeServersOwner(r.Context(), node.TenantID, node.ID, prevOwner)
+			}
+		}
 		if pool != nil {
 			if err := pool.SetNodeServersOwner(r.Context(), node.TenantID, node.ID, in.OwnerUserID); err != nil {
+				_ = reg.UpdateNode(r.Context(), node.ID, prevName, &prevOwner)
 				writeDesktopError(w, err)
 				return
 			}
 		}
 		if bots != nil && node.HasSrv && in.OwnerUserID != "" && in.OwnerUserID != prevOwner {
-			// Best effort: the desktop is already usable; the pins route
-			// each side's next bots to the srv they can actually wake. An
-			// exclusive desktop strands every other user's pin, not only
+			// Pin the new owner before dropping anyone else. A failed pin
+			// puts the previous owner back, so bots do not lose the node
+			// while the new account never receives it. A desktop without
+			// an srv link still changes owner.
+			if err := bots.PinOwnerNode(r.Context(), node.TenantID, in.OwnerUserID, node.ID); err != nil && !errors.Is(err, botmgmt.ErrSrv) {
+				revertOwner()
+				writeError(w, http.StatusBadGateway, "NODE_PIN", "the user was not pinned to this node's srv")
+				return
+			}
+			// An exclusive desktop strands every other user's pin, not only
 			// the previous owner's (a shared node may have pinned several).
 			_ = bots.UnpinNodeExcept(r.Context(), node.TenantID, node.ID, in.OwnerUserID)
-			_ = bots.PinOwnerNode(r.Context(), node.TenantID, in.OwnerUserID, node.ID)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"updated": node.ID})
 	}
@@ -265,6 +279,33 @@ func refreshRotatedDesktop(ctx context.Context, pool *desktoppool.Pool, tenantID
 		Name: name, BaseURL: desktoppool.NodeBaseURL(nodeID), AccessToken: key, NodeID: nodeID,
 	})
 	return err
+}
+
+// abortEdgeEnroll undoes a registration whose srv connection was not stored.
+// The code is already spent. A new node is removed with the desktop service
+// it just created. A rotation is put back, including the previous desktop key.
+func abortEdgeEnroll(ctx context.Context, reg *edgenode.Registry, pool *desktoppool.Pool, bots *botmgmt.Service, out edgenode.EnrollResult, hadDesktop bool) {
+	if out.Rotated {
+		_ = reg.Restore(ctx, out.Previous)
+		if hadDesktop && strings.TrimSpace(out.Previous.DesktopdKey) != "" {
+			_ = refreshRotatedDesktop(ctx, pool, out.TenantID, out.NodeID, out.Previous.Name, out.Previous.DesktopdKey)
+		}
+		return
+	}
+	if bots != nil {
+		_ = bots.ForgetNodeSrv(ctx, out.TenantID, out.NodeID)
+	}
+	if hadDesktop && pool != nil {
+		view, err := pool.View(ctx, out.TenantID)
+		if err == nil {
+			for _, server := range view.Servers {
+				if server.NodeID == out.NodeID {
+					_ = pool.DeleteServer(ctx, out.TenantID, server.ID)
+				}
+			}
+		}
+	}
+	_ = reg.Remove(ctx, out.NodeID)
 }
 
 // PostEdgeEnrollHandler POST /api/v1/edge/enroll
@@ -342,12 +383,25 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots 
 		if strings.TrimSpace(in.DirectBase) != "" {
 			_ = reg.SetDirectBase(r.Context(), out.NodeID, in.DirectBase)
 		}
-		if in.HasSrv && bots != nil {
-			if node, lookupErr := reg.Lookup(r.Context(), out.NodeID); lookupErr == nil {
-				_ = bots.AttachNodeSrv(r.Context(), node.TenantID, out.NodeID, "http://srv."+out.NodeID+".node.invalid", in.SrvAdmin)
-				if strings.TrimSpace(node.OwnerUserID) != "" {
-					_ = bots.PinOwnerNode(r.Context(), node.TenantID, node.OwnerUserID, out.NodeID)
+		if in.HasSrv {
+			// The node said it has a srv. Leaving it registered without that
+			// connection would accept bots onto a machine Hub cannot reach.
+			node, lookupErr := reg.Lookup(r.Context(), out.NodeID)
+			attachErr := lookupErr
+			if attachErr == nil {
+				if bots == nil {
+					attachErr = errors.New("srv connection was not recorded")
+				} else {
+					attachErr = bots.AttachNodeSrv(r.Context(), node.TenantID, out.NodeID, "http://srv."+out.NodeID+".node.invalid", in.SrvAdmin)
 				}
+			}
+			if attachErr == nil && bots != nil && strings.TrimSpace(node.OwnerUserID) != "" {
+				attachErr = bots.PinOwnerNode(r.Context(), node.TenantID, node.OwnerUserID, out.NodeID)
+			}
+			if attachErr != nil {
+				abortEdgeEnroll(r.Context(), reg, pool, bots, out, in.HasDesktopd)
+				writeError(w, http.StatusBadGateway, "EDGE_ENROLL", "srv connection was not recorded; issue a new code")
+				return
 			}
 		}
 		writeJSON(w, http.StatusCreated, out)

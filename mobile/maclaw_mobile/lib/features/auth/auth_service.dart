@@ -1,7 +1,37 @@
+import 'dart:io' show Platform;
+
 import 'package:dio/dio.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/api/official_service.dart';
 import '../../core/storage/secure_vault.dart';
+
+/// OS key reported to the Hub at enrollment so user management can show the
+/// last used mobile client platform (Android / iOS / HarmonyOS).
+String _clientPlatformTag() {
+  switch (Platform.operatingSystem) {
+    case 'android':
+      return 'android';
+    case 'ios':
+      return 'ios';
+    case 'ohos':
+    case 'harmonyos':
+      return 'harmonyos';
+    default:
+      return 'mobile';
+  }
+}
+
+/// Version string reported at enrollment, prefixed so distinct mobile apps
+/// sharing an account remain identifiable on the admin user card.
+Future<String> _clientAppVersion() async {
+  try {
+    final version = (await PackageInfo.fromPlatform()).version.trim();
+    return version.isEmpty ? 'maclaw-mobile' : 'maclaw-mobile/$version';
+  } catch (_) {
+    return 'maclaw-mobile';
+  }
+}
 
 String _digitsOnly(String value) {
   final buffer = StringBuffer();
@@ -221,7 +251,8 @@ class AuthService {
         'phone_number': normalizedPhone,
         'verify_code': verifyCode.trim(),
         'machine_name': 'MaClaw Mobile',
-        'platform': 'mobile',
+        'platform': _clientPlatformTag(),
+        'app_version': await _clientAppVersion(),
         'client_id': 'maclaw-mobile',
         if (tenantId.trim().isNotEmpty) 'tenant_id': tenantId.trim(),
       },

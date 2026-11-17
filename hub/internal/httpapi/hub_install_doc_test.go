@@ -50,6 +50,10 @@ func TestHubInstallDocIsTheRunbook(t *testing.T) {
 		"rm -f /opt/maclaw-hub/data/admin-setup.result",
 		"-buildvcs=false",
 		"ADMIN_SETUP_MARK",
+		"cp -a /opt/maclaw-src/hub/web /opt/maclaw-hub/web",
+		"/opt/maclaw-hub/web/admin/index.html",
+		"/opt/maclaw-hub/web/home/index.html",
+		"page ${page} returned",
 	} {
 		if !strings.Contains(body, phrase) {
 			t.Fatalf("runbook missing %q", phrase)

@@ -26909,9 +26909,9 @@ button.tbk-pill {
 .capc-hover.capc-open .capc-chevron,
 .capc-files.capc-open .capc-chevron { transform: rotate(180deg); }
 /* The list floats above the summary and overlaps the bar's top padding, so
-   the pointer can move onto the list without crossing a dead gap. The
-   checklist already spans the coding chat column, so 50% is half that area. */
-.capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 50%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
+   the pointer can move onto the list without crossing a dead gap. The bar
+   itself is the middle 40% of the column, so the list fills it. */
+.capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 100%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
 .capc-hover.capc-open .capc-popover { pointer-events: auto; visibility: visible; }
 /* border-box keeps the padding and border inside the height cap.
    content-box lets a full list stick about 18px into the task header. */
@@ -28937,6 +28937,14 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   margin-left: var(--mc-composer-inset-x, 24px);
   margin-right: var(--mc-composer-inset-x, 24px);
   align-self: stretch;
+}
+/* The steps bar is a hover target: keeping it to the middle 40% of the
+   column leaves clear space on both sides, so the pointer can pass along
+   the edges without opening the step list. */
+[data-testid='coding-agent-plan-checklist'] {
+  width: 40%;
+  margin-left: auto;
+  margin-right: auto;
 }
 .mc-goal-quick-bar {
   overflow: hidden;
@@ -31806,6 +31814,154 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   z-index: 99999;
 }
 .mc-workbench-status-popover[data-open='false'] { visibility: hidden; pointer-events: none; }
+
+/* Devices icon: opens the mobile-QR + remote-connect popover. Mirrors the
+   bell's chrome so the two controls read as a pair. */
+.mc-workbench-status-devices {
+  position: relative;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+}
+.mc-workbench-status-devices:hover { background: var(--theme-surface-muted, rgba(0, 0, 0, .05)); color: var(--mc-accent, #2e75cb); }
+.mc-workbench-status-devices:focus-visible { outline: 2px solid var(--mc-accent, #2e75cb); outline-offset: 1px; }
+.mc-workbench-status-devices[data-remote-connect='blocked'] { color: var(--theme-text-muted, #8a97a5); }
+.mc-workbench-status-devices__blocked {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--theme-danger, #b74a4a);
+  box-shadow: 0 0 0 2px var(--theme-surface, #fff);
+  pointer-events: none;
+}
+
+/* Floating card: mobile-auth QR + remote-device-connect switch.
+   position: fixed applied via inline style with computed coordinates. */
+.mc-workbench-devices-popover {
+  width: 236px;
+  padding: 12px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-lg);
+  background: var(--theme-surface);
+  box-shadow: 0 12px 30px rgba(27, 56, 93, .14);
+  color: var(--theme-text-primary);
+  box-sizing: border-box;
+  /* Anchored above the icon; a very short window must not overflow the top. */
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 99999;
+}
+.mc-workbench-devices-popover[data-open='false'] { visibility: hidden; pointer-events: none; }
+.mc-workbench-devices-popover__qr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 208px;
+}
+.mc-workbench-devices-popover__code {
+  padding: 10px;
+  border-radius: 10px;
+  background: #fff;
+  line-height: 0;
+}
+.mc-workbench-devices-popover__status,
+.mc-workbench-devices-popover__error {
+  padding: 16px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--theme-text-secondary);
+}
+.mc-workbench-devices-popover__error { color: var(--theme-danger, #b74a4a); }
+.mc-workbench-devices-popover__expires {
+  margin-top: 6px;
+  font-size: 11px;
+  text-align: center;
+  color: var(--theme-text-muted, #8a97a5);
+}
+.mc-workbench-devices-popover__divider {
+  height: 1px;
+  margin: 10px 0;
+  background: var(--theme-border);
+}
+.mc-workbench-devices-popover__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.mc-workbench-devices-popover__toggle-label {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--theme-text-primary);
+  cursor: pointer;
+}
+/* Local switch: mirrors the DesktopBotWorkspace .bot-switch look but scoped
+   to this popover — that stylesheet is lazy-loaded with the bot workspace,
+   so reusing the class here would render an unstyled checkbox otherwise. */
+.mc-devices-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  cursor: pointer;
+}
+.mc-devices-switch input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.mc-devices-switch__track {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--theme-switch-track-off);
+  transition: background-color var(--transition-fast, 120ms ease), border-color var(--transition-fast, 120ms ease);
+}
+.mc-devices-switch__track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--theme-switch-thumb, #fff);
+  box-shadow: var(--theme-switch-thumb-shadow);
+  transition: transform var(--transition-fast, 120ms ease);
+}
+.mc-devices-switch input:checked + .mc-devices-switch__track {
+  border-color: var(--theme-primary, #2e75cb);
+  background: var(--theme-primary, #2e75cb);
+}
+.mc-devices-switch input:checked + .mc-devices-switch__track::after {
+  transform: translateX(16px);
+}
+.mc-devices-switch input:focus-visible + .mc-devices-switch__track {
+  box-shadow: 0 0 0 3px var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+}
+.mc-devices-switch input:disabled + .mc-devices-switch__track {
+  opacity: 0.55;
+}
 /* The embedded card sheds its own chrome; the popover surface provides it.
    #App prefix outranks the #App .mc-workbench-status-card theme overrides. */
 #App .mc-workbench-status-popover .mc-workbench-status-card,

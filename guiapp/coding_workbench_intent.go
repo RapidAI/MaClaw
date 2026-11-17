@@ -718,13 +718,79 @@ func fallbackCodingRequestRestatement(userText string, mem stickyCodingWorkbench
 			if prior != "" {
 				return "继续做" + codingQuoteWorkName(prior) + "，从上次停下的地方接着做。"
 			}
-		} else if ask != "" && codingClosedRequirementSnippet(mem.SessionPlan) != "" {
-			return codingDescribeNewAsk("", ask)
-		} else if prior != "" && ask != "" {
+			// A bare continue with nothing stored has no ask to name.
+			return "先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+		} else if ask != "" {
+			// A new ask names itself even with no stored plan or work name.
 			return codingDescribeNewAsk(prior, ask)
 		}
 	}
+	if !codingWorkbenchContinueCue(userText) {
+		if head, more := codingRequestHeadline(userText); head != "" {
+			// A long ask still leads with its own first requirement instead of
+			// a process description.
+			line := "先处理「" + head + "」"
+			if more {
+				line += "，其余要求一并处理"
+			}
+			if prior != "" {
+				return "在" + codingQuoteWorkName(prior) + "里，" + line + "。"
+			}
+			return line + "。"
+		}
+	}
 	return "先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+}
+
+// codingLeadingInterjection marks a discourse opener that is not itself a
+// requirement; the headline peels it so the head names the real ask.
+func codingLeadingInterjection(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "太好了", "好的", "好", "嗯", "嗯嗯", "谢谢", "多谢", "辛苦了",
+		"ok", "okay", "thanks", "great", "nice":
+		return true
+	}
+	return false
+}
+
+// codingRequestHeadline extracts an ask's lead requirement: the first
+// clause at a sentence boundary, or the first comma clause when that
+// clause is already a usable phrase. Leading interjections and fragments
+// under two runes are peeled. more reports the request continues past head.
+func codingRequestHeadline(userText string) (head string, more bool) {
+	text := strings.TrimSpace(userText)
+	if text == "" {
+		return "", false
+	}
+	rest := ""
+	head = strings.TrimSpace(strings.TrimRight(text, "。！？!?：:，,、 "))
+	for {
+		i := strings.IndexAny(head, "。！？!?；;\n，,")
+		if i < 0 {
+			break
+		}
+		r, size := utf8.DecodeRuneInString(head[i:])
+		first := strings.TrimSpace(head[:i])
+		if first == "" || codingLeadingInterjection(first) || utf8.RuneCountInString(first) < 2 {
+			head = strings.TrimSpace(head[i+size:])
+			continue
+		}
+		// A sentence boundary always cuts; a comma clause must already be a
+		// usable phrase before it can stand alone.
+		if (r != '，' && r != ',') || utf8.RuneCountInString(first) >= 6 {
+			head, rest = first, head[i:]
+		}
+		break
+	}
+	head = strings.TrimSpace(head)
+	head = strings.NewReplacer("「", "", "」", "").Replace(head)
+	if utf8.RuneCountInString(head) < 2 {
+		return "", false
+	}
+	if utf8.RuneCountInString(head) > 40 {
+		return truncateRunesV2(head, 40) + "…", true
+	}
+	return head, strings.TrimSpace(rest) != ""
 }
 
 // codingDescribeStoredGoal turns a stored requirement into one sentence

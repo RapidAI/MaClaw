@@ -110,6 +110,31 @@ describe("useShareActions", () => {
         expect(dismiss).not.toHaveBeenCalled();
     });
 
+    it("opens the companion library for a group digest and dismisses", async () => {
+        const open = vi.fn().mockResolvedValue(undefined);
+        installBindings({ ShowFileCompanionLibrary: open });
+        const dismiss = vi.fn();
+        const { result } = renderHook(() => useShareActions("zh-Hans", dismiss));
+
+        await act(async () => { await result.current.openCompanionLibrary(); });
+
+        expect(open).toHaveBeenCalledTimes(1);
+        expect(dismiss).toHaveBeenCalledTimes(1);
+        expect(result.current.shareOpenError).toBe("");
+        expect(result.current.shareOpenBusy).toBe(false);
+    });
+
+    it("keeps the digest notice when the library binding fails", async () => {
+        installBindings({});
+        const dismiss = vi.fn();
+        const { result } = renderHook(() => useShareActions("en", dismiss));
+
+        await act(async () => { await result.current.openCompanionLibrary(); });
+
+        expect(result.current.shareOpenError).toContain("update");
+        expect(dismiss).not.toHaveBeenCalled();
+    });
+
     it("clears both errors together", async () => {
         installBindings({
             OpenFileCompanionShareFromNotification: vi.fn().mockRejectedValue(new Error("分享链接不存在")),

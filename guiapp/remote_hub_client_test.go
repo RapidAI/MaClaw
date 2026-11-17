@@ -1489,3 +1489,99 @@ func decodeInboundPayload(t *testing.T, raw json.RawMessage) map[string]any {
 	}
 	return out
 }
+
+func TestRemoteDeviceConnectSwitchGatesInboundControl(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	client := &RemoteHubClient{app: app}
+
+	// The switch predates the field: an unset value must default to allowed.
+	if client.remoteDeviceControlBlocked() {
+		t.Fatal("unset remote_device_connect_enabled must default to allowed")
+	}
+	if _, err := app.PatchConfigFields(map[string]any{"remote_device_connect_enabled": false}); err != nil {
+		t.Fatalf("patch remote_device_connect_enabled=false: %v", err)
+	}
+	if !client.remoteDeviceControlBlocked() {
+		t.Fatal("remote_device_connect_enabled=false must block inbound control")
+	}
+	if _, err := app.PatchConfigFields(map[string]any{"remote_device_connect_enabled": true}); err != nil {
+		t.Fatalf("patch remote_device_connect_enabled=true: %v", err)
+	}
+	if client.remoteDeviceControlBlocked() {
+		t.Fatal("remote_device_connect_enabled=true must allow inbound control")
+	}
+}
+
+func TestRemoteHubClientRejectsInboundControlWhenDeviceConnectDisabled(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if _, err := app.PatchConfigFields(map[string]any{"remote_device_connect_enabled": false}); err != nil {
+		t.Fatalf("patch remote_device_connect_enabled: %v", err)
+	}
+
+	type resultFrame struct {
+		Type      string `json:"type"`
+		RequestID string `json:"request_id"`
+		Payload   struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		} `json:"payload"`
+	}
+	results := make(chan resultFrame, 8)
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			var frame resultFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			results <- frame
+		}
+	}))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := &RemoteHubClient{app: app, conn: conn, connected: true, machineID: "gui-a"}
+
+	waitFrame := func(wantType string) resultFrame {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case frame := <-results:
+				if frame.Type == wantType {
+					return frame
+				}
+			case <-deadline:
+				t.Fatalf("timed out waiting for %s", wantType)
+			}
+		}
+	}
+
+	// remote_control.exec must answer with the disabled rejection so the
+	// controller does not wait for the hub timeout.
+	client.handleRemoteControlExec(inboundHubEnvelope{
+		RequestID: "rc-1",
+		Payload:   json.RawMessage(`{"grant_id":"g-1","op":"list_tasks"}`),
+	})
+	if frame := waitFrame("remote_control.result"); frame.RequestID != "rc-1" || frame.Payload.Error != errRemoteDeviceConnectDisabled.Error() {
+		t.Fatalf("unexpected remote_control.result %#v", frame)
+	}
+
+	// session.start must reject through the same error the viewer surfaces.
+	client.handleSessionStart(inboundHubEnvelope{
+		RequestID: "ss-1",
+		Payload:   json.RawMessage(`{"tool":"shell"}`),
+	})
+	if frame := waitFrame("error"); frame.RequestID != "ss-1" || frame.Payload.Message != errRemoteDeviceConnectDisabled.Error() {
+		t.Fatalf("unexpected error frame %#v", frame)
+	}
+}

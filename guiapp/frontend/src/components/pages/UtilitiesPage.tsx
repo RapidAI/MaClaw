@@ -83,6 +83,11 @@ function hubDeployStatusText(row: HubDeployRow): string {
     }
 }
 
+/** Badge color bucket for a Hub deploy row; waiting-for-confirm is its own state. */
+function hubDeployStatusKind(row: HubDeployRow): string {
+    return row.status === 'ready' && row.pending ? 'pending' : row.status;
+}
+
 type BotNodeRow = {
     id: string;
     name?: string;
@@ -1372,6 +1377,15 @@ export const UtilitiesPage = ({
         botNodeEmpty: tailText(lang ?? "", 'No private nodes yet', '还没有私有节点'),
         botNodeRegister: tailText(lang ?? "", 'Register with a new code', '用新码注册'),
         botNodeRegisterHint: tailText(lang ?? "", 'The previous code was not reused. Ask the admin for a new one after desktopd is healthy.', '不会重试旧码。desktopd 已经健康时，向管理员要一张新码再注册。'),
+        deploySectionHub: tailText(lang ?? "", 'Deploy a new Hub', '部署新 Hub'),
+        deploySectionBot: tailText(lang ?? "", 'Deploy a new node', '部署新节点'),
+        deployRecords: tailText(lang ?? "", 'Deployment records', '部署记录'),
+        deployAccessUrl: tailText(lang ?? "", 'Access URL', '访问地址'),
+        deployAdminAccount: tailText(lang ?? "", 'Admin account', '管理员账号'),
+        deployAdminPassword: tailText(lang ?? "", 'Admin password', '管理员密码'),
+        deployHubId: 'Hub ID',
+        deployBotHubUrl: tailText(lang ?? "", 'Hub address', 'Hub 地址'),
+        deployBotNodeId: tailText(lang ?? "", 'Node ID', '节点 ID'),
         browserExtensionCard: tailText(lang ?? "", 'Browser extension', '浏览器插件', '瀏覽器外掛'),
         browserExtensionDesc: tailText(lang ?? "", 'Download a paper from Chrome, Edge, or Safari into Companion.', '从 Chrome、Edge 或 Safari 把论文下载到伴读。', '從 Chrome、Edge 或 Safari 把論文下載到伴讀。'),
         browserExtensionRemove: tailText(lang ?? "", 'Remove registration', '移除登记', '移除登記'),
@@ -2482,127 +2496,305 @@ export const UtilitiesPage = ({
             if (mountedRef.current) setBotBusy(false);
         }
     };
+    /** Key of the deploy-record value currently showing the copied feedback. */
+    const [deployCopiedKey, setDeployCopiedKey] = useState('');
+    const deployCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(() => () => {
+        if (deployCopyTimer.current) clearTimeout(deployCopyTimer.current);
+    }, []);
+    const copyDeployText = async (key: string, text: string) => {
+        let copied = false;
+        try {
+            copied = await ClipboardSetText(text) !== false;
+        } catch {
+            copied = false;
+        }
+        if (!copied || !mountedRef.current) return;
+        setDeployCopiedKey(key);
+        if (deployCopyTimer.current) clearTimeout(deployCopyTimer.current);
+        deployCopyTimer.current = setTimeout(() => {
+            if (mountedRef.current) setDeployCopiedKey('');
+        }, 2000);
+    };
+    /** Trailing copy affordance for a deploy-record value (URL / ID / credentials). */
+    const deployCopyButton = (key: string, text: string) => (
+        <button
+            type="button"
+            className="utilities-deploy-copy"
+            data-copied={deployCopiedKey === key ? 'true' : undefined}
+            onClick={() => { void copyDeployText(key, text); }}
+        >
+            {deployCopiedKey === key ? t.browserExtensionCopied : t.browserExtensionCopy}
+        </button>
+    );
     if (view === 'bot-node') {
         return (
-            <div className="utilities-page" data-testid="bot-node-panel" data-mode={mode}>
-                <div className="utilities-page__header">
-                    <button type="button" className="utilities-link" onClick={() => setView('home')} disabled={botBusy}>{t.back}</button>
-                    <h2 className="utilities-page__title">{t.botNodeCard}</h2>
-                    <p className="utilities-page__subtitle">{t.botNodeDesc}</p>
+            <div className="utilities-page utilities-deploy" data-testid="bot-node-panel" data-mode={mode}>
+                <div className="utilities-page__header utilities-deploy__header">
+                    <button type="button" className="utilities-deploy__back" onClick={() => setView('home')} disabled={botBusy}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6" /></svg>
+                        {t.back}
+                    </button>
+                    <div className="utilities-deploy__hero">
+                        <span className="utilities-deploy__hero-icon" aria-hidden="true"><ToolCardIcon kind="node" /></span>
+                        <div className="utilities-deploy__hero-text">
+                            <h2 className="utilities-page__title">{t.botNodeCard}</h2>
+                            <p className="utilities-page__subtitle">{t.botNodeDesc}</p>
+                        </div>
+                    </div>
                 </div>
                 {botError ? <p className="utilities-error" role="alert">{botError}</p> : null}
-                <form className="utilities-field" onSubmit={(event) => { event.preventDefault(); void submitBotNode(); }}>
-                    <label className="utilities-field">{t.botNodeName}
-                        <input className="utilities-input" value={botName} onChange={(event) => setBotName(event.target.value)} autoComplete="off" />
-                    </label>
-                    <label className="utilities-field">IP
-                        <input className="utilities-input" value={botHost} onChange={(event) => setBotHost(event.target.value)} autoComplete="off" required />
-                    </label>
-                    <label className="utilities-field">{tailText(lang ?? '', 'SSH port', 'SSH 端口')}
-                        <input className="utilities-input" value={botPort} onChange={(event) => setBotPort(event.target.value)} inputMode="numeric" />
-                    </label>
-                    <label className="utilities-field">{tailText(lang ?? '', 'SSH user', 'SSH 用户')}
-                        <input className="utilities-input" value={botUser} onChange={(event) => setBotUser(event.target.value)} autoComplete="off" required />
-                    </label>
-                    <label className="utilities-field">{tailText(lang ?? '', 'SSH password', 'SSH 密码')}
-                        <input className="utilities-input" type="password" value={botPassword} onChange={(event) => setBotPassword(event.target.value)} autoComplete="off" required />
-                    </label>
-                    <label className="utilities-field">
-                        <input type="checkbox" checked={botSudo} onChange={(event) => setBotSudo(event.target.checked)} /> {t.botNodeSudo}
-                    </label>
-                    <label className="utilities-field">
-                        <input type="checkbox" checked={botWithSrv} onChange={(event) => setBotWithSrv(event.target.checked)} /> {t.botNodeWithSrv}
-                    </label>
-                    <label className="utilities-field">{t.botNodeCode}
-                        <input className="utilities-input" value={botCode} onChange={(event) => setBotCode(event.target.value)} autoComplete="off" spellCheck={false} required />
-                    </label>
-                    <p className="utilities-page__subtitle">{t.botNodeCodeHint}</p>
-                    <button type="submit" className="utilities-btn" disabled={botBusy}>{botBusy ? t.botNodeWorking : t.botNodeConfirm}</button>
+                <form className="utilities-deploy-card" onSubmit={(event) => { event.preventDefault(); void submitBotNode(); }}>
+                    <div className="utilities-deploy-card__head">
+                        <span className="utilities-deploy-card__head-icon" aria-hidden="true"><ToolCardIcon kind="node" /></span>
+                        <h3 className="utilities-deploy-card__title">{t.deploySectionBot}</h3>
+                    </div>
+                    <div className="utilities-deploy-card__grid">
+                        <label className="utilities-deploy-field utilities-deploy-field--full">
+                            <span>IP</span>
+                            <input className="utilities-input" value={botHost} onChange={(event) => setBotHost(event.target.value)} autoComplete="off" required placeholder={tailText(lang ?? '', 'e.g. 192.168.1.20', '例如 192.168.1.20')} />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH port', 'SSH 端口')}</span>
+                            <input className="utilities-input" value={botPort} onChange={(event) => setBotPort(event.target.value)} inputMode="numeric" placeholder="22" />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH user', 'SSH 用户')}</span>
+                            <input className="utilities-input" value={botUser} onChange={(event) => setBotUser(event.target.value)} autoComplete="off" required />
+                        </label>
+                        <label className="utilities-deploy-field utilities-deploy-field--full">
+                            <span>{tailText(lang ?? '', 'SSH password', 'SSH 密码')}</span>
+                            <input className="utilities-input" type="password" value={botPassword} onChange={(event) => setBotPassword(event.target.value)} autoComplete="off" required />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{t.botNodeName}</span>
+                            <input className="utilities-input" value={botName} onChange={(event) => setBotName(event.target.value)} autoComplete="off" />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{t.botNodeCode}</span>
+                            <input className="utilities-input" value={botCode} onChange={(event) => setBotCode(event.target.value)} autoComplete="off" spellCheck={false} required />
+                        </label>
+                        <div className="utilities-deploy-checks utilities-deploy-field--full">
+                            <label className="utilities-deploy-check">
+                                <input type="checkbox" checked={botSudo} onChange={(event) => setBotSudo(event.target.checked)} />
+                                {t.botNodeSudo}
+                            </label>
+                            <label className="utilities-deploy-check">
+                                <input type="checkbox" checked={botWithSrv} onChange={(event) => setBotWithSrv(event.target.checked)} />
+                                {t.botNodeWithSrv}
+                            </label>
+                        </div>
+                    </div>
+                    <p className="utilities-deploy-note">{t.botNodeCodeHint}</p>
+                    <div className="utilities-deploy-card__actions">
+                        <button type="submit" aria-busy={botBusy || undefined} className="utilities-btn utilities-btn--primary utilities-deploy-card__submit" disabled={botBusy}>{botBusy ? t.botNodeWorking : t.botNodeConfirm}</button>
+                    </div>
                 </form>
-                {botRows.length === 0 ? <p className="utilities-page__subtitle">{t.botNodeEmpty}</p> : (
-                    <ul data-testid="bot-node-list">
-                        {botRows.map((row) => {
-                            const retry = botRetry[row.id] ?? { password: '', code: '' };
-                            const canRetry = row.status === 'failed' && !row.node_id;
-                            return (
-                                <li key={row.id}>
-                                    <div>{row.name || `${row.user}@${row.host}`} · {row.user}@{row.host}:{row.port || 22} · {botNodeStatusText(row)}{row.with_srv ? ' · MaClawSrv' : ''}</div>
-                                    {row.hub_url ? <div>{row.hub_url}</div> : null}
-                                    {row.node_id ? <div>{row.node_id}</div> : null}
-                                    {row.message ? <div>{row.message}</div> : null}
-                                    {canRetry ? (
-                                        <form className="utilities-field" onSubmit={(event) => { event.preventDefault(); void submitBotNodeEnroll(row.id); }}>
-                                            <p className="utilities-page__subtitle">{t.botNodeRegisterHint}</p>
-                                            <label className="utilities-field">{tailText(lang ?? '', 'SSH password', 'SSH 密码')}
-                                                <input className="utilities-input" type="password" value={retry.password} autoComplete="off" onChange={(event) => {
-                                                    const value = event.target.value;
-                                                    setBotRetry((prev) => ({ ...prev, [row.id]: { password: value, code: prev[row.id]?.code ?? '' } }));
-                                                }} required />
-                                            </label>
-                                            <label className="utilities-field">{t.botNodeCode}
-                                                <input className="utilities-input" value={retry.code} autoComplete="off" spellCheck={false} onChange={(event) => {
-                                                    const value = event.target.value;
-                                                    setBotRetry((prev) => ({ ...prev, [row.id]: { password: prev[row.id]?.password ?? '', code: value } }));
-                                                }} required />
-                                            </label>
-                                            <button type="submit" className="utilities-btn" disabled={botBusy}>{t.botNodeRegister}</button>
-                                        </form>
-                                    ) : null}
-                                    {row.status !== 'deploying' && row.status !== 'registering' ? (
-                                        <button type="button" className="utilities-link" onClick={() => { void ClearBotNodeResult(row.id).then(() => refreshBotNodes()); }}>{t.delete}</button>
-                                    ) : null}
-                                </li>
-                            );
-                        })}
-                    </ul>
-                )}
+                <section className="utilities-deploy-records">
+                    <div className="utilities-deploy-records__head">
+                        <h3 className="utilities-deploy-records__title">{t.deployRecords}</h3>
+                        {botRows.length ? <span className="utilities-deploy-records__count">{botRows.length}</span> : null}
+                    </div>
+                    {botRows.length === 0 ? (
+                        <div className="utilities-deploy-empty">
+                            <span className="utilities-deploy-empty__icon" aria-hidden="true"><ToolCardIcon kind="node" /></span>
+                            <p>{t.botNodeEmpty}</p>
+                        </div>
+                    ) : (
+                        <ul className="utilities-deploy-records__list" data-testid="bot-node-list">
+                            {botRows.map((row) => {
+                                const retry = botRetry[row.id] ?? { password: '', code: '' };
+                                const canRetry = row.status === 'failed' && !row.node_id;
+                                const busyRow = row.status === 'deploying' || row.status === 'registering';
+                                return (
+                                    <li key={row.id} className="utilities-deploy-record" data-status={row.status}>
+                                        <div className="utilities-deploy-record__head">
+                                            <div className="utilities-deploy-record__target">
+                                                {row.name ? (
+                                                    <>
+                                                        <span className="utilities-deploy-record__name">{row.name}</span>
+                                                        <span className="utilities-deploy-record__addr">{row.user}@{row.host}:{row.port || 22}</span>
+                                                    </>
+                                                ) : (
+                                                    <span className="utilities-deploy-record__name utilities-deploy-record__name--mono">{row.user}@{row.host}:{row.port || 22}</span>
+                                                )}
+                                                {row.with_srv ? <span className="utilities-deploy-record__chip">MaClawSrv</span> : null}
+                                            </div>
+                                            <span className="utilities-deploy-record__badge" data-status={row.status}>
+                                                <span className="utilities-deploy-record__badge-dot" aria-hidden="true" />
+                                                {botNodeStatusText(row)}
+                                            </span>
+                                        </div>
+                                        {row.hub_url || row.node_id ? (
+                                            <dl className="utilities-deploy-record__fields">
+                                                {row.hub_url ? (
+                                                    <div className="utilities-deploy-record__field">
+                                                        <dt>{t.deployBotHubUrl}</dt>
+                                                        <dd><code>{row.hub_url}</code>{deployCopyButton(`bot-hub-${row.id}`, row.hub_url)}</dd>
+                                                    </div>
+                                                ) : null}
+                                                {row.node_id ? (
+                                                    <div className="utilities-deploy-record__field">
+                                                        <dt>{t.deployBotNodeId}</dt>
+                                                        <dd><code>{row.node_id}</code>{deployCopyButton(`bot-id-${row.id}`, row.node_id)}</dd>
+                                                    </div>
+                                                ) : null}
+                                            </dl>
+                                        ) : null}
+                                        {row.message ? <p className="utilities-deploy-record__message">{row.message}</p> : null}
+                                        {canRetry ? (
+                                            <form className="utilities-deploy-record__retry" onSubmit={(event) => { event.preventDefault(); void submitBotNodeEnroll(row.id); }}>
+                                                <p className="utilities-deploy-record__retry-note">{t.botNodeRegisterHint}</p>
+                                                <div className="utilities-deploy-record__retry-grid">
+                                                    <label className="utilities-deploy-field">
+                                                        <span>{tailText(lang ?? '', 'SSH password', 'SSH 密码')}</span>
+                                                        <input className="utilities-input" type="password" value={retry.password} autoComplete="off" onChange={(event) => {
+                                                            const value = event.target.value;
+                                                            setBotRetry((prev) => ({ ...prev, [row.id]: { password: value, code: prev[row.id]?.code ?? '' } }));
+                                                        }} required />
+                                                    </label>
+                                                    <label className="utilities-deploy-field">
+                                                        <span>{t.botNodeCode}</span>
+                                                        <input className="utilities-input" value={retry.code} autoComplete="off" spellCheck={false} onChange={(event) => {
+                                                            const value = event.target.value;
+                                                            setBotRetry((prev) => ({ ...prev, [row.id]: { password: prev[row.id]?.password ?? '', code: value } }));
+                                                        }} required />
+                                                    </label>
+                                                </div>
+                                                <div className="utilities-deploy-record__retry-actions">
+                                                    <button type="submit" aria-busy={botBusy || undefined} className="utilities-btn utilities-btn--primary utilities-deploy-card__submit" disabled={botBusy}>{t.botNodeRegister}</button>
+                                                </div>
+                                            </form>
+                                        ) : null}
+                                        {!busyRow ? (
+                                            <div className="utilities-deploy-record__footer">
+                                                <button type="button" className="utilities-btn utilities-btn--quiet-danger utilities-deploy-record__remove" onClick={() => { void ClearBotNodeResult(row.id).then(() => refreshBotNodes()); }}>{t.delete}</button>
+                                            </div>
+                                        ) : null}
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    )}
+                </section>
             </div>
         );
     }
     if (view === 'hub-deploy') {
         return (
-            <div className="utilities-page" data-testid="hub-deploy-panel" data-mode={mode}>
-                <div className="utilities-page__header">
-                    <button type="button" className="utilities-link" onClick={() => setView('home')} disabled={hubBusy}>{t.back}</button>
-                    <h2 className="utilities-page__title">{t.hubDeployCard}</h2>
-                    <p className="utilities-page__subtitle">{t.hubDeployDesc}</p>
+            <div className="utilities-page utilities-deploy" data-testid="hub-deploy-panel" data-mode={mode}>
+                <div className="utilities-page__header utilities-deploy__header">
+                    <button type="button" className="utilities-deploy__back" onClick={() => setView('home')} disabled={hubBusy}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6" /></svg>
+                        {t.back}
+                    </button>
+                    <div className="utilities-deploy__hero">
+                        <span className="utilities-deploy__hero-icon" aria-hidden="true"><ToolCardIcon kind="hub" /></span>
+                        <div className="utilities-deploy__hero-text">
+                            <h2 className="utilities-page__title">{t.hubDeployCard}</h2>
+                            <p className="utilities-page__subtitle">{t.hubDeployDesc}</p>
+                        </div>
+                    </div>
                 </div>
                 {hubError ? <p className="utilities-error" role="alert">{hubError}</p> : null}
-                <form className="utilities-field" onSubmit={(event) => { event.preventDefault(); void submitHubDeploy(); }}>
-                    <label className="utilities-field">IP
-                        <input className="utilities-input" value={hubHost} onChange={(event) => setHubHost(event.target.value)} autoComplete="off" required />
-                    </label>
-                    <label className="utilities-field">{tailText(lang ?? '', 'SSH port', 'SSH 端口')}
-                        <input className="utilities-input" value={hubPort} onChange={(event) => setHubPort(event.target.value)} inputMode="numeric" />
-                    </label>
-                    <label className="utilities-field">{tailText(lang ?? '', 'SSH user', 'SSH 用户')}
-                        <input className="utilities-input" value={hubUser} onChange={(event) => setHubUser(event.target.value)} autoComplete="off" required />
-                    </label>
-                    <label className="utilities-field">{tailText(lang ?? '', 'SSH password', 'SSH 密码')}
-                        <input className="utilities-input" type="password" value={hubPassword} onChange={(event) => setHubPassword(event.target.value)} autoComplete="off" required />
-                    </label>
-                    <label className="utilities-field">{t.hubDeployEmail}
-                        <input className="utilities-input" type="email" value={hubEmail} onChange={(event) => setHubEmail(event.target.value)} autoComplete="off" required />
-                    </label>
-                    <p className="utilities-page__subtitle">{t.hubDeployEmailHint}</p>
-                    <button type="submit" className="utilities-btn" disabled={hubBusy}>{hubBusy ? t.hubDeployWorking : t.hubDeployConfirm}</button>
+                <form className="utilities-deploy-card" onSubmit={(event) => { event.preventDefault(); void submitHubDeploy(); }}>
+                    <div className="utilities-deploy-card__head">
+                        <span className="utilities-deploy-card__head-icon" aria-hidden="true"><ToolCardIcon kind="hub" /></span>
+                        <h3 className="utilities-deploy-card__title">{t.deploySectionHub}</h3>
+                    </div>
+                    <div className="utilities-deploy-card__grid">
+                        <label className="utilities-deploy-field">
+                            <span>IP</span>
+                            <input className="utilities-input" value={hubHost} onChange={(event) => setHubHost(event.target.value)} autoComplete="off" required placeholder={tailText(lang ?? '', 'e.g. 192.168.1.20', '例如 192.168.1.20')} />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH port', 'SSH 端口')}</span>
+                            <input className="utilities-input" value={hubPort} onChange={(event) => setHubPort(event.target.value)} inputMode="numeric" placeholder="22" />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH user', 'SSH 用户')}</span>
+                            <input className="utilities-input" value={hubUser} onChange={(event) => setHubUser(event.target.value)} autoComplete="off" required />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH password', 'SSH 密码')}</span>
+                            <input className="utilities-input" type="password" value={hubPassword} onChange={(event) => setHubPassword(event.target.value)} autoComplete="off" required />
+                        </label>
+                        <label className="utilities-deploy-field utilities-deploy-field--full">
+                            <span>{t.hubDeployEmail}</span>
+                            <input className="utilities-input" type="email" value={hubEmail} onChange={(event) => setHubEmail(event.target.value)} autoComplete="off" required />
+                        </label>
+                    </div>
+                    <p className="utilities-deploy-note">{t.hubDeployEmailHint}</p>
+                    <div className="utilities-deploy-card__actions">
+                        <button type="submit" aria-busy={hubBusy || undefined} className="utilities-btn utilities-btn--primary utilities-deploy-card__submit" disabled={hubBusy}>{hubBusy ? t.hubDeployWorking : t.hubDeployConfirm}</button>
+                    </div>
                 </form>
-                {hubRows.length === 0 ? <p className="utilities-page__subtitle">{t.hubDeployEmpty}</p> : (
-                    <ul data-testid="hub-deploy-list">
-                        {hubRows.map((row) => (
-                            <li key={row.id}>
-                                <div>{row.user}@{row.host}:{row.port || 22} · {hubDeployStatusText(row)}</div>
-                                {row.public_url ? <div>{row.public_url}</div> : null}
-                                {row.hub_id ? <div>{row.hub_id}</div> : null}
-                                {row.message ? <div>{row.message}</div> : null}
-                                {row.admin_user && row.admin_password ? <div>{row.admin_user} · {row.admin_password}</div> : null}
-                                {row.status !== 'deploying' && row.status !== 'registering' ? (
-                                    <button type="button" className="utilities-link" onClick={() => { void ClearHubDeployResult(row.id).then(() => refreshHubDeploys()); }}>{t.delete}</button>
-                                ) : null}
-                            </li>
-                        ))}
-                    </ul>
-                )}
+                <section className="utilities-deploy-records">
+                    <div className="utilities-deploy-records__head">
+                        <h3 className="utilities-deploy-records__title">{t.deployRecords}</h3>
+                        {hubRows.length ? <span className="utilities-deploy-records__count">{hubRows.length}</span> : null}
+                    </div>
+                    {hubRows.length === 0 ? (
+                        <div className="utilities-deploy-empty">
+                            <span className="utilities-deploy-empty__icon" aria-hidden="true"><ToolCardIcon kind="hub" /></span>
+                            <p>{t.hubDeployEmpty}</p>
+                        </div>
+                    ) : (
+                        <ul className="utilities-deploy-records__list" data-testid="hub-deploy-list">
+                            {hubRows.map((row) => {
+                                const busyRow = row.status === 'deploying' || row.status === 'registering';
+                                const kind = hubDeployStatusKind(row);
+                                return (
+                                    <li key={row.id} className="utilities-deploy-record" data-status={kind}>
+                                        <div className="utilities-deploy-record__head">
+                                            <div className="utilities-deploy-record__target">
+                                                <span className="utilities-deploy-record__name utilities-deploy-record__name--mono">{row.user}@{row.host}:{row.port || 22}</span>
+                                            </div>
+                                            <span className="utilities-deploy-record__badge" data-status={kind}>
+                                                <span className="utilities-deploy-record__badge-dot" aria-hidden="true" />
+                                                {hubDeployStatusText(row)}
+                                            </span>
+                                        </div>
+                                        {row.public_url || row.hub_id || (row.admin_user && row.admin_password) ? (
+                                            <dl className="utilities-deploy-record__fields">
+                                                {row.public_url ? (
+                                                    <div className="utilities-deploy-record__field">
+                                                        <dt>{t.deployAccessUrl}</dt>
+                                                        <dd><code>{row.public_url}</code>{deployCopyButton(`hub-url-${row.id}`, row.public_url)}</dd>
+                                                    </div>
+                                                ) : null}
+                                                {row.hub_id ? (
+                                                    <div className="utilities-deploy-record__field">
+                                                        <dt>{t.deployHubId}</dt>
+                                                        <dd><code>{row.hub_id}</code>{deployCopyButton(`hub-id-${row.id}`, row.hub_id)}</dd>
+                                                    </div>
+                                                ) : null}
+                                                {row.admin_user && row.admin_password ? (
+                                                    <>
+                                                        <div className="utilities-deploy-record__field">
+                                                            <dt>{t.deployAdminAccount}</dt>
+                                                            <dd><code>{row.admin_user}</code>{deployCopyButton(`hub-admin-${row.id}`, row.admin_user)}</dd>
+                                                        </div>
+                                                        <div className="utilities-deploy-record__field">
+                                                            <dt>{t.deployAdminPassword}</dt>
+                                                            <dd><code>{row.admin_password}</code>{deployCopyButton(`hub-admin-pass-${row.id}`, row.admin_password)}</dd>
+                                                        </div>
+                                                    </>
+                                                ) : null}
+                                            </dl>
+                                        ) : null}
+                                        {row.message ? <p className="utilities-deploy-record__message">{row.message}</p> : null}
+                                        {!busyRow ? (
+                                            <div className="utilities-deploy-record__footer">
+                                                <button type="button" className="utilities-btn utilities-btn--quiet-danger utilities-deploy-record__remove" onClick={() => { void ClearHubDeployResult(row.id).then(() => refreshHubDeploys()); }}>{t.delete}</button>
+                                            </div>
+                                        ) : null}
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    )}
+                </section>
             </div>
         );
     }

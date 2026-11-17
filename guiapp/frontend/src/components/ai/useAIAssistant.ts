@@ -22,6 +22,8 @@ import { codingThoughtDeltaIsChrome, codingThoughtHasOpenFence, codingThoughtTex
 import { createStreamCoalescer } from "./streamCoalescer";
 import { conversationViewCut } from "./conversationViewWindow";
 import { markStreamTextReplacement, noteNonAppendStreamText } from "./streamTextRevision";
+import { isViewerReducerEnabled, viewerOwnsRaw } from "./viewerReducerFlag";
+import { acceptViewerEventForPanel, legacyFromViewerEvent, parseViewerEvent } from "./reduceViewerEvent";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -6628,6 +6630,16 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
     }, [clearPendingTaskForRequest, clearTransientProgress, forgetInFlightRound, pendingTaskVersion, resetActiveRound, stopResponseTimeout]);
 
+    const viewerPaintRef = useRef<{
+        round?: (payload: unknown) => void;
+        token?: (payload: unknown) => void;
+        newRound?: (payload: unknown) => void;
+        streamDone?: (payload: unknown) => void;
+        response?: (payload: unknown) => void;
+        card?: (payload: unknown) => void;
+        progress?: (payload: unknown) => void;
+    }>({});
+
     useEffect(() => {
         const foregroundRoundStartedHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
@@ -6752,10 +6764,18 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             });
         };
 
-        const offForegroundRoundStarted = subscribeEvent(FOREGROUND_ROUND_STARTED_EVENT, foregroundRoundStartedHandler);
-        const offStreamToken = subscribeEvent(STREAM_TOKEN_EVENT, tokenHandler);
-        const offNewRound = subscribeEvent(NEW_ROUND_EVENT, newRoundHandler);
-        const offStreamDone = subscribeEvent(STREAM_DONE_EVENT, streamDoneHandler);
+        viewerPaintRef.current.round = foregroundRoundStartedHandler;
+        viewerPaintRef.current.token = tokenHandler;
+        viewerPaintRef.current.newRound = newRoundHandler;
+        viewerPaintRef.current.streamDone = streamDoneHandler;
+        const guardRaw = (handler: (payload: unknown) => void) => (payload: unknown) => {
+            if (viewerOwnsRaw(payload)) return;
+            handler(payload);
+        };
+        const offForegroundRoundStarted = subscribeEvent(FOREGROUND_ROUND_STARTED_EVENT, guardRaw(foregroundRoundStartedHandler));
+        const offStreamToken = subscribeEvent(STREAM_TOKEN_EVENT, guardRaw(tokenHandler));
+        const offNewRound = subscribeEvent(NEW_ROUND_EVENT, guardRaw(newRoundHandler));
+        const offStreamDone = subscribeEvent(STREAM_DONE_EVENT, guardRaw(streamDoneHandler));
         return () => {
             offForegroundRoundStarted();
             offStreamToken();
@@ -6995,7 +7015,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 if (activeMatch) finalizeRound(round.generation);
             }
         };
-        const off = subscribeEvent(RESPONSE_EVENT, handler);
+        viewerPaintRef.current.response = handler;
+        const off = subscribeEvent(RESPONSE_EVENT, (payload: unknown) => {
+            if (viewerOwnsRaw(payload)) return;
+            handler(payload);
+        });
         return () => { off(); };
     }, [clearPendingTaskForRequest, clearTransientProgress, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, forgetOffscreenLiveRound, holdQuietOffscreenSession, preferences, recoverGoalContinuationRound, resetActiveRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
 
@@ -7129,7 +7153,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 setMessages(prev => applyFinal(prev));
             }
         };
-        const off = subscribeEvent('ai-continuation', handler);
+        viewerPaintRef.current.card = handler;
+        const off = subscribeEvent('ai-continuation', (payload: unknown) => {
+            if (viewerOwnsRaw(payload)) return;
+            handler(payload);
+        });
         return () => {
             tokenCoalescer.dispose();
             sideStreamCoalescersRef.current.delete(tokenCoalescer);
@@ -8035,11 +8063,46 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 appendCodingProgressToRound(progressRound, progressText, event.sequence);
             }
         };
-        const offProgress = subscribeEvent(PROGRESS_EVENT, handler);
+        viewerPaintRef.current.progress = handler;
+        const offProgress = subscribeEvent(PROGRESS_EVENT, (payload: unknown) => {
+            if (viewerOwnsRaw(payload)) return;
+            handler(payload);
+        });
         return () => {
             offProgress();
         };
     }, [activeSessionKeyForEvents, appendCodingProgressToRound, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, noteOffscreenLiveRoundTool, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound, touchOffscreenLiveRound]);
+
+    useEffect(() => {
+        const off = subscribeEvent('viewer-event', (payload: unknown) => {
+            if (!isViewerReducerEnabled()) return;
+            const event = parseViewerEvent(payload);
+            if (!event || !acceptViewerEventForPanel(event)) return;
+            const legacy = legacyFromViewerEvent(event);
+            if (!legacy || legacy.kind === 'workbench') return;
+            const paint = viewerPaintRef.current;
+            if (legacy.kind === 'token') {
+                const requestId = String(legacy.payload.request_id || '');
+                const activeId = activeRoundRef.current.requestId;
+                const detached = !!requestId && inFlightRoundsByRequestRef.current.has(requestId);
+                if (requestId && requestId !== activeId && !detached && paint.card) {
+                    const kind = event.replace === true ? 'final' : 'token';
+                    const pieceText = typeof legacy.payload.text === 'string' ? legacy.payload.text : '';
+                    paint.card({ ...legacy.payload, kind, text: pieceText });
+                    return;
+                }
+                paint.token?.(legacy.payload);
+                return;
+            }
+            if (legacy.kind === 'round') paint.round?.(legacy.payload);
+            else if (legacy.kind === 'new_round') paint.newRound?.(legacy.payload);
+            else if (legacy.kind === 'stream_done') paint.streamDone?.(legacy.payload);
+            else if (legacy.kind === 'progress') paint.progress?.(legacy.payload);
+            else if (legacy.kind === 'response') paint.response?.(legacy.payload);
+            else if (legacy.kind === 'card') paint.card?.(legacy.payload);
+        });
+        return () => off();
+    }, []);
 
     useEffect(() => {
         const handler = (payload: unknown) => {

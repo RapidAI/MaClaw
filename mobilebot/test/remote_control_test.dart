@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -52,6 +56,42 @@ class _FakeRemoteApi extends RemoteControlApi {
     calls.add('list:$grantId');
     if (opError != null) throw opError!;
     return tasksByGrant[grantId] ?? const [];
+  }
+
+  Map<String, dynamic>? watchReplyLive;
+  List<Map<String, dynamic>> followEvents = const [];
+
+  @override
+  Future<Map<String, dynamic>> watchTask(
+    String grantId,
+    String projectPath,
+  ) async {
+    calls.add('watch:$grantId:$projectPath');
+    final reply = <String, dynamic>{'stream_proto': 2};
+    if (watchReplyLive != null) reply['live'] = watchReplyLive;
+    return reply;
+  }
+
+  @override
+  Future<AccountEventStream> openAccountStream(
+    String grantId,
+    String projectPath, {
+    int afterCursor = 0,
+  }) async {
+    if (followEvents.isEmpty) throw StateError('sse-unavailable');
+    final pending = List<Map<String, dynamic>>.of(followEvents);
+    late final StreamController<Map<String, dynamic>> controller;
+    controller = StreamController<Map<String, dynamic>>(
+      onListen: () {
+        for (final event in pending) {
+          if (!controller.isClosed) controller.add(event);
+        }
+      },
+    );
+    return AccountEventStream(
+      events: controller.stream,
+      close: controller.close,
+    );
   }
 
   @override
@@ -430,6 +470,98 @@ void main() {
       ],
       artifacts: const [RemoteArtifact(title: '报告.pdf')],
     );
+
+    Map<String, dynamic> wireDoc() {
+      final file = File('../guiapp/testdata/viewer_wire_snapshots.json');
+      expect(file.existsSync(), isTrue, reason: file.absolute.path);
+      return Map<String, dynamic>.from(
+        jsonDecode(file.readAsStringSync()) as Map,
+      );
+    }
+
+    Map<String, dynamic> asWireMap(Object? value) =>
+        Map<String, dynamic>.from(value as Map);
+
+    int asWireInt(Object? value) {
+      if (value is int) return value;
+      if (value is num) return value.toInt();
+      return 0;
+    }
+
+    testWidgets('seeds the open round from the marshaled watch live', (
+      tester,
+    ) async {
+      final watch = asWireMap(wireDoc()['watch_event']);
+      final live = asWireMap(watch['live']);
+      expect(live.containsKey('text'), isFalse);
+      final cursor = asWireInt(live['cursor']);
+      expect(cursor, greaterThan(0));
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..watchReplyLive = live
+        ..followEvents = [
+          {
+            'event': 'token',
+            'cursor': cursor + 1,
+            'cursor_from': cursor + 1,
+            'text': '续',
+            'pieces': ['续'],
+          },
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(find.text('helloworld续'), findsOneWidget);
+      expect(find.text('想想'), findsOneWidget);
+      expect(find.text('running · edit parser'), findsOneWidget);
+      expect(api.calls, contains('watch:g-view:/p/a'));
+    });
+
+    testWidgets('seeds the open round from the marshaled responded snapshot', (
+      tester,
+    ) async {
+      final responded = asWireMap(wireDoc()['responded_event']);
+      final live = asWireMap(responded['live']);
+      expect(live.containsKey('text'), isFalse);
+      expect(live['responded'], isTrue);
+      final cursor = asWireInt(live['cursor']);
+      expect(cursor, greaterThan(0));
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..watchReplyLive = live
+        ..followEvents = [
+          {
+            'event': 'token',
+            'cursor': cursor + 1,
+            'cursor_from': cursor + 1,
+            'text': '续',
+            'pieces': ['续'],
+          },
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await _pumpFew(tester);
+      expect(find.text('终稿续'), findsOneWidget);
+      expect(find.text('想想'), findsOneWidget);
+      expect(find.text('running · edit parser'), findsOneWidget);
+      expect(find.text('helloworld'), findsNothing);
+    });
 
     testWidgets('shows messages and artifacts; view grant hides composer', (
       tester,

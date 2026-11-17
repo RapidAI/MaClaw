@@ -125,6 +125,18 @@ class _UpdateSheetState extends State<_UpdateSheet> {
   Future<void> _install() async {
     final apk = _apk;
     if (apk == null) return;
+    // 签名不一致时系统安装器只报“签名冲突”——提前检出并给出可操作的提示。
+    final compatible = await _updater.apkSignatureCompatible(apk);
+    if (!mounted) return;
+    if (compatible == false) {
+      setState(() {
+        _phase = _Phase.error;
+        _detail = '更新包与当前安装版本签名不一致，系统不允许覆盖安装。\n'
+            '请先卸载当前版本（账号数据保存在云端，重新登录即可恢复），'
+            '再到官网下载页安装新版本。';
+      });
+      return;
+    }
     final result = await OpenFilex.open(
       apk.path,
       type: 'application/vnd.android.package-archive',

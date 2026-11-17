@@ -13,7 +13,8 @@ func Playbook() string {
 - Prefer ref over CSS. If text matches several controls, probe again and click the specific @eN; do not guess.
 - Hover before clicking menu items. Press Enter/Escape/Tab for dialogs and comboboxes. Use dialog accept/dismiss for native JS alerts.
 - A lone submit/publish click needs expect=url_contains:… or text:…. Example: click Submit with expect=url_contains:/success. Inside task_run, put that submit last; the batch stops and returns the page, so expect is not required there. Links and tabs do not need expect. If missing_expect repeats on a lone click, add expect once and probe; never use computer_*.
-- If page flags include captcha_widget, stop and ask the user to solve it in the browser. After they continue, probe before any click/type. If the ask context has resume_task_id, continue the paused task_run with that id, then probe. login_wall and MFA/OTP are not automatic stops — type credentials or the verification code.
+- If page flags include captcha_widget, stop and ask the user to solve it in the MaClaw preview (接管), not a separate window. After they continue, probe before any click/type. If the ask context has resume_task_id, continue the paused task_run with that id, then probe. login_wall and MFA/OTP are not automatic stops — type credentials or the verification code.
+- The managed page is shown in the MaClaw preview. Login, captcha, and payment are solved there. After the person hands control back, probe before the next click or type.
 - Persistent mode keeps login/cookies. Isolated is clean debug only.`
 }
 

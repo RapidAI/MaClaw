@@ -518,6 +518,15 @@ func waitStepDuration(params map[string]string) time.Duration {
 }
 
 func (s *BrowserTaskSupervisor) executeOneStep(ctx context.Context, step StepSpec, timeout time.Duration) stepOutcome {
+	// Wait out a preview takeover before the step clock starts. A person can
+	// hold the page for minutes; that must not become a step timeout.
+	if browserStepYieldsToUser(step.Action) && s != nil && s.agentSessionFn != nil {
+		if agentSession, err := s.agentSessionFn(); err == nil && agentSession != nil {
+			if yerr := agentSession.yieldToUserHold(ctx); yerr != nil {
+				return stepOutcome{err: yerr}
+			}
+		}
+	}
 	stepCtx, stepCancel := context.WithTimeout(ctx, timeout)
 	defer stepCancel()
 

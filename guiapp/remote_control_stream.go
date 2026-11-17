@@ -3,10 +3,10 @@ package guiapp
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Remote-control live mirror.
@@ -14,20 +14,20 @@ import (
 // A controlling desktop opens a remote task and sends the watch_task op; from
 // then on every assistant stream event for that session is relayed over the
 // Hub as a remote_control.stream envelope so the controller renders the same
-// round the local panel does. Reasoning-lane tokens (\x01) are the one
-// deliberate exception: they are buffered into a thinking part and shipped
-// once the block closes, so the controller shows a folded 思考 box instead of
-// a live character stream. Everything else — content tokens, progress lines,
-// round boundaries, the final response — is forwarded verbatim.
+// round the local panel does. The in-process subscriber sees each viewer
+// event before the wire copy. Proto 2 coalesces body and reasoning at 80ms.
+// Proto 1 keeps the 150ms body window and omits the new fields. Progress does
+// not seal an open thinking block.
 
 // remoteStreamPart mirrors RemoteLivePart in remoteAssistantSession.ts. The
 // same shape is used on the wire and inside the watch snapshot, so a watcher
 // joining mid-turn and one receiving deltas see identical state.
 type remoteStreamPart struct {
-	Kind string `json:"kind"` // "text" | "thinking" | "progress"
-	Seq  uint64 `json:"seq"`
-	Text string `json:"text"`
-	Done bool   `json:"done,omitempty"` // thinking parts only
+	Kind   string                   `json:"kind"` // "text" | "thinking" | "progress"
+	Seq    uint64                   `json:"seq"`
+	Text   string                   `json:"text"`
+	Done   bool                     `json:"done,omitempty"` // thinking parts only
+	Coding *codingAgentEventPayload `json:"coding,omitempty"`
 }
 
 // remoteLiveSnapshot is the watch_task reply payload for a turn in flight.
@@ -40,16 +40,38 @@ type remoteLiveSnapshot struct {
 	StreamDone  bool               `json:"stream_done"`
 	Responded   bool               `json:"responded"`
 	StartedAt   int64              `json:"started_at,omitempty"`
+	Cursor      uint64             `json:"cursor,omitempty"`
 }
 
 // remoteLiveTurn tracks the relay state of one in-flight request so a late
 // watcher can be handed the parts accumulated so far.
 type remoteLiveTurn struct {
-	snapshot     remoteLiveSnapshot
-	thinkingOpen bool        // the tail part is an unfinished thinking block
-	pending      []string    // content-lane deltas inside the coalesce window
-	pendingSeq   uint64      // sequence of the first pending delta
-	flushTimer   *time.Timer // coalesce timer for pending
+	snapshot            remoteLiveSnapshot
+	thinkingOpen        bool     // the tail part is an unfinished thinking block
+	pending             []string // content-lane deltas not yet sealed into parts
+	pendingSeq          uint64   // sequence of the first pending delta
+	pendingFrom         uint64   // cursor of the first pending content delta
+	pendingTo           uint64   // cursor of the last pending content delta
+	pendingBytes        int
+	pendingClipped      bool // front pieces were dropped to stay under the part cap
+	pendingThink        []string
+	pendingThinkSeq     uint64
+	pendingThinkFrom    uint64
+	pendingThinkTo      uint64
+	pendingThinkBytes   int
+	pendingThinkClipped bool
+	// thinkStaged means pendingThink is the only copy of those deltas.
+	// A watched proto-2 window also fills the open part, and then this is false.
+	thinkStaged bool
+	cursor      uint64
+	// flushTimer is armed only while someone is watching. An unwatched turn
+	// keeps its tail in pending until the next watch_task, with no timer.
+	flushTimer *time.Timer
+	// flushDue means the coalesce window elapsed. The writer emits that
+	// tail. The timer must not deliver it: a higher cursor may already be
+	// leaving on the writer, and the reducer would drop that frame and
+	// then gap on every later one.
+	flushDue bool
 }
 
 const (
@@ -76,16 +98,33 @@ type remoteWatchRegistry struct {
 	// sink, when set (tests), replaces the Hub connection as the event target.
 	sink func(map[string]any)
 
-	mu      sync.Mutex
-	watches map[string]map[string]time.Time // grantID → sessionKey → expiry
-	turns   map[string]*remoteLiveTurn      // sessionKey → live turn
+	mu        sync.Mutex
+	watchMu   sync.Mutex
+	watches   map[string]map[string]time.Time // grantID → sessionKey → expiry
+	protos    map[string]map[string]int       // grantID → sessionKey → negotiated proto
+	turns     map[string]*remoteLiveTurn      // sessionKey → live turn
+	highWater map[string]uint64               // last folded cursor, kept after a settled turn is dropped
 
-	// The WebSocket write happens off the emit path: a stalled Hub connection
-	// must never back up ai-assistant-token for the local panel, so events are
-	// handed to one writer goroutine through a bounded queue. Overflow drops —
-	// the transcript poll is the designed fallback.
-	queue     chan map[string]any
+	// pending is the real wire queue. wireQueue is only a capacity-1 wakeup.
+	// publishViewerEvent holds the per-session gate from cursor allocation
+	// until relayCopy returns, so a higher cursor cannot be admitted while
+	// a lower one is still between allocation and this queue. relayCopy
+	// appends or overflows under r.mu, and the writer cuts both structures
+	// under that same lock. The local subscriber has already been delivered.
+	pending   []viewerEvent
+	wireQueue chan struct{}
 	queueOnce sync.Once
+	gapped    map[string]bool
+	dropped   map[string][]viewerEvent // events that missed the queue, folded into the next snapshot
+	// aside holds events that arrived after a session left the wire but
+	// while an older cursor for that session is still queued. They are not
+	// part of the 512 cap. The writer folds them in cursor order.
+	aside []viewerEvent
+	// outbound is frames already folded that still have to be written by the
+	// writer, so a publish goroutine never writes the hub socket itself.
+	outbound []map[string]any
+	// holdWrite, when set, blocks the writer before each read so tests can fill the queue.
+	holdWrite chan struct{}
 }
 
 func (a *App) remoteWatchRegistryOrNil() *remoteWatchRegistry {
@@ -97,6 +136,17 @@ func (a *App) remoteWatchRegistryOrNil() *remoteWatchRegistry {
 	return a.remoteWatches
 }
 
+func newRemoteWatchRegistry(a *App) *remoteWatchRegistry {
+	return &remoteWatchRegistry{
+		app:     a,
+		watches: map[string]map[string]time.Time{},
+		protos:  map[string]map[string]int{},
+		turns:   map[string]*remoteLiveTurn{},
+		gapped:  map[string]bool{},
+		dropped: map[string][]viewerEvent{},
+	}
+}
+
 func (a *App) ensureRemoteWatchRegistry() *remoteWatchRegistry {
 	if reg := a.remoteWatchRegistryOrNil(); reg != nil {
 		return reg
@@ -104,11 +154,7 @@ func (a *App) ensureRemoteWatchRegistry() *remoteWatchRegistry {
 	a.remoteInfraMu.Lock()
 	defer a.remoteInfraMu.Unlock()
 	if a.remoteWatches == nil {
-		a.remoteWatches = &remoteWatchRegistry{
-			app:     a,
-			watches: map[string]map[string]time.Time{},
-			turns:   map[string]*remoteLiveTurn{},
-		}
+		a.remoteWatches = newRemoteWatchRegistry(a)
 	}
 	return a.remoteWatches
 }
@@ -116,9 +162,34 @@ func (a *App) ensureRemoteWatchRegistry() *remoteWatchRegistry {
 // --- watch management -------------------------------------------------------
 
 func (r *remoteWatchRegistry) watch(grantID, sessionKey string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.watchWithProto(grantID, sessionKey, 1)
+}
+
+func (r *remoteWatchRegistry) watchWithProto(grantID, sessionKey string, proto int) {
+	r.watchMu.Lock()
+	wasWatched := r.sessionWatchedLocked(sessionKey)
 	r.watchLocked(grantID, sessionKey)
+	if proto < 1 {
+		proto = 1
+	}
+	set := r.protos[grantID]
+	if set == nil {
+		set = map[string]int{}
+		r.protos[grantID] = set
+	}
+	set[sessionKey] = proto
+	r.watchMu.Unlock()
+	if wasWatched {
+		return
+	}
+	// Release watchMu before r.mu. unwatch and the writer take r.mu first.
+	// The first watcher paints from watch_task. Seal the tail now so the
+	// next coalesce frame starts after the cursor this reply claims.
+	r.mu.Lock()
+	if turn := r.turns[sessionKey]; turn != nil {
+		r.sealPendingLocked(turn)
+	}
+	r.mu.Unlock()
 }
 
 // watchLocked refreshes the expiry; get_task and friends count as refreshes
@@ -138,22 +209,49 @@ func (r *remoteWatchRegistry) watchLocked(grantID, sessionKey string) {
 }
 
 func (r *remoteWatchRegistry) unwatch(grantID, sessionKey string) {
+	// r.mu then watchMu. The writer holds r.mu and then watchMu; the other
+	// order deadlocks a watch expiry against a flush.
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.watchMu.Lock()
 	if set := r.watches[grantID]; set != nil {
 		delete(set, sessionKey)
 		if len(set) == 0 {
 			delete(r.watches, grantID)
 		}
 	}
-	// A turn nobody watches is only kept while other grants still see it.
-	if !r.sessionWatchedLocked(sessionKey) {
+	if set := r.protos[grantID]; set != nil {
+		delete(set, sessionKey)
+		if len(set) == 0 {
+			delete(r.protos, grantID)
+		}
+	}
+	still := r.sessionWatchedLocked(sessionKey)
+	r.watchMu.Unlock()
+	if still {
+		return
+	}
+	turn := r.turns[sessionKey]
+	if turn == nil {
+		return
+	}
+	// An in-flight turn stays. The next controller paints it from watch_task
+	// instead of seeding at 0 and gapping on the next cursor. A settled turn
+	// is not returned by watch_task, so it can go.
+	r.sealPendingLocked(turn)
+	if turn.snapshot.Responded {
 		r.dropTurnLocked(sessionKey)
 	}
 }
 
 // grantsForLocked lists the non-expired watchers of one session and removes
 // the dead entries it passes.
+func (r *remoteWatchRegistry) grantsFor(sessionKey string) []string {
+	r.watchMu.Lock()
+	defer r.watchMu.Unlock()
+	return r.grantsForLocked(sessionKey)
+}
+
 func (r *remoteWatchRegistry) grantsForLocked(sessionKey string) []string {
 	now := time.Now()
 	var out []string
@@ -174,8 +272,30 @@ func (r *remoteWatchRegistry) grantsForLocked(sessionKey string) []string {
 	return out
 }
 
+func (r *remoteWatchRegistry) sessionWatched(sessionKey string) bool {
+	r.watchMu.Lock()
+	defer r.watchMu.Unlock()
+	return r.sessionWatchedLocked(sessionKey)
+}
+
 func (r *remoteWatchRegistry) sessionWatchedLocked(sessionKey string) bool {
 	return len(r.grantsForLocked(sessionKey)) > 0
+}
+
+func (r *remoteWatchRegistry) sessionProto2(sessionKey string) bool {
+	r.watchMu.Lock()
+	defer r.watchMu.Unlock()
+	now := time.Now()
+	for grantID, set := range r.watches {
+		expires, ok := set[sessionKey]
+		if !ok || now.After(expires) {
+			continue
+		}
+		if r.protos[grantID][sessionKey] >= 2 {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *remoteWatchRegistry) dropTurnLocked(sessionKey string) {
@@ -193,64 +313,54 @@ func (r *remoteWatchRegistry) dropTurnLocked(sessionKey string) {
 func (r *remoteWatchRegistry) liveSnapshot(sessionKey string) *remoteLiveSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	turn := r.turns[sessionKey]
-	if turn == nil || turn.snapshot.Responded {
-		return nil
+	return shrinkLiveSnapshot(r.liveSnapshotUnlocked(sessionKey, false))
+}
+
+// foldedCursor is the highest event cursor folded into this session.
+// The watch reply uses it as the seed watermark: cursors at or below are
+// either in the snapshot or already on the wire. The mark survives after a
+// settled turn is dropped, so the next frame does not look like a gap.
+func (r *remoteWatchRegistry) foldedCursor(sessionKey string) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if turn := r.turns[sessionKey]; turn != nil && turn.cursor > 0 {
+		return turn.cursor
 	}
-	snap := turn.snapshot
-	snap.Parts = append([]remoteStreamPart(nil), snap.Parts...)
-	return &snap
+	return r.highWater[sessionKey]
 }
 
 // --- relay ------------------------------------------------------------------
 
-// relayRemoteStreamEvent is the emitAIAssistantStreamEvent hook. Events for
-// sessions nobody watches exit on the registry-nil / no-grants paths without
-// touching the Hub.
+// relayRemoteStreamEvent is the emitAIAssistantStreamEvent hook. Unwatched
+// sessions fold into the live turn and do not touch the Hub.
 func (a *App) relayRemoteStreamEvent(name string, event AIAssistantStreamEvent) {
-	reg := a.remoteWatchRegistryOrNil()
-	if reg == nil {
+	if !viewerStreamAllowed(name) {
 		return
 	}
-	reg.relay(name, event)
+	for _, ev := range viewerEventsFromStream(name, event) {
+		ev.CursorFrom = ev.Cursor
+		a.publishViewerEvent(ev)
+	}
 }
 
 // relayRemoteAssistantResponse is the emitAIAssistantResponse hook; the
 // settled response mirrors to watchers as the terminal "response" event.
 func (a *App) relayRemoteAssistantResponse(requestID string, resp *IMAgentResponse) {
-	reg := a.remoteWatchRegistryOrNil()
-	if reg == nil || resp == nil {
+	if resp == nil {
 		return
 	}
 	sessionKey := strings.TrimSpace(resp.SessionKey)
 	if sessionKey == "" {
 		return
 	}
-	// Embedded media must not ride the mirror: a base64 voice/file/thumbnail
-	// blob blows the 240KiB envelope cap, which drops the terminal event and
-	// leaves the controller's round "unresponded" until it goes stale. The
-	// watcher only reads text and metadata; file paths stay so it can fetch
-	// the artifact itself.
-	trimmed := *resp
-	trimmed.FileData = ""
-	trimmed.VoiceData = ""
-	trimmed.VoiceParts = nil
-	trimmed.ThumbnailBase64 = ""
-	raw, err := json.Marshal(&trimmed)
-	if err != nil {
-		return
+	for _, ev := range thinkingDoneBeforeResponse(resp) {
+		ev.RequestID = requestID
+		ev.CursorFrom = ev.Cursor
+		a.publishViewerEvent(ev)
 	}
-	// A long answer plus its reasoning can still exceed the envelope. The
-	// terminal event is what settles the mirrored round, so degrade the body
-	// rather than drop the event — the transcript poll always has the full text.
-	if len(raw) > remoteStreamEnvelopeSkip {
-		trimmed.Reasoning = ""
-		trimmed.Text = trimRemoteStreamText(trimmed.Text, remoteStreamPartTextCap)
-		if raw, err = json.Marshal(&trimmed); err != nil {
-			return
-		}
-	}
-	reg.relayResponse(sessionKey, requestID, raw)
+	ev, _ := viewerEventFromResponse(requestID, resp)
+	ev.CursorFrom = ev.Cursor
+	a.publishViewerEvent(ev)
 }
 
 func newRemoteLiveTurn(sessionKey, requestID string) *remoteLiveTurn {
@@ -263,415 +373,88 @@ func newRemoteLiveTurn(sessionKey, requestID string) *remoteLiveTurn {
 	}}
 }
 
-// sender returns the event target: the injected sink synchronously, or an
-// enqueue onto the writer goroutine for the Hub path. A nil sender means
-// "drop and let the transcript poll cover it".
-func (r *remoteWatchRegistry) sender() func(map[string]any) {
-	if r.sink != nil {
-		return r.sink
-	}
-	if r.app.hubClient() == nil {
-		return nil
-	}
-	return r.dispatch
-}
-
-// dispatch queues one event for the writer goroutine. Callers hold r.mu, so
-// the queue order is the relay's event order.
-func (r *remoteWatchRegistry) dispatch(payload map[string]any) {
-	r.queueOnce.Do(func() {
-		r.queue = make(chan map[string]any, 512)
-		go r.writeLoop()
-	})
-	select {
-	case r.queue <- payload:
-	default:
-	}
-}
-
-func (r *remoteWatchRegistry) writeLoop() {
-	for payload := range r.queue {
-		if hub := r.app.hubClient(); hub != nil {
-			hub.sendRemoteControlStream(payload)
-		}
-	}
-}
-
-func (r *remoteWatchRegistry) relay(name string, event AIAssistantStreamEvent) {
-	sessionKey := strings.TrimSpace(event.SessionKey)
-	if sessionKey == "" {
-		return
-	}
-	send := r.sender()
-	if send == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	grants := r.grantsForLocked(sessionKey)
-	if len(grants) == 0 {
-		return
-	}
-	turn := r.turnForLocked(sessionKey, event.RequestID)
-	seq := event.Sequence
-	switch name {
-	case "ai-assistant-foreground-round-started":
-		// A new request on this session replaces whatever was live: rounds are
-		// sequential per session and the controller mirrors the latest one.
-		if turn.snapshot.RequestID != event.RequestID || turn.snapshot.Responded {
-			turn = newRemoteLiveTurn(sessionKey, event.RequestID)
-			r.turns[sessionKey] = turn
-		}
-		turn.snapshot.DisplayText = event.DisplayText
-		if turn.snapshot.DisplayText == "" {
-			turn.snapshot.DisplayText = event.Text
-		}
-		r.sendLocked(send, grants, sessionKey, event.RequestID, seq, "round_started", map[string]any{"display_text": turn.snapshot.DisplayText})
-	case "ai-assistant-token":
-		r.relayTokenLocked(send, grants, turn, event)
-	case "ai-assistant-progress":
-		if strings.TrimSpace(event.Text) == imHeartbeatMsg {
-			// The keepalive is liveness only. It must not close an open
-			// thinking block or paint "__heartbeat__" into the trail; a
-			// dedicated event still refreshes the controller's staleness
-			// window during long silent tool runs.
-			r.sendLocked(send, grants, sessionKey, event.RequestID, seq, "heartbeat", nil)
-			return
-		}
-		r.flushPendingLocked(send, grants, turn, seq)
-		r.closeThinkingLocked(send, grants, turn, seq)
-		text := trimRemoteStreamText(event.Text, remoteStreamProgressTextCap)
-		turn.snapshot.Parts = append(turn.snapshot.Parts, remoteStreamPart{Kind: "progress", Seq: seq, Text: text})
-		r.trimProgressLocked(turn)
-		r.sendLocked(send, grants, sessionKey, event.RequestID, seq, "progress", map[string]any{"text": text})
-	case "ai-assistant-new-round":
-		r.flushPendingLocked(send, grants, turn, seq)
-		r.closeThinkingLocked(send, grants, turn, seq)
-		r.sendLocked(send, grants, sessionKey, event.RequestID, seq, "new_round", nil)
-	case "ai-assistant-stream-done":
-		r.flushPendingLocked(send, grants, turn, seq)
-		r.closeThinkingLocked(send, grants, turn, seq)
-		turn.snapshot.StreamDone = true
-		r.sendLocked(send, grants, sessionKey, event.RequestID, seq, "stream_done", nil)
-	}
-}
-
-// relayTokenLocked splits one coalesced token batch into lanes. Reasoning
-// deltas accumulate into the open thinking part and ship as live deltas while
-// the block stays open (the close still carries the full text as ground
-// truth); content deltas join the pending run flushed on the 150ms window or
-// before the next non-token event, keeping wire order identical to local
-// order.
-func (r *remoteWatchRegistry) relayTokenLocked(send func(map[string]any), grants []string, turn *remoteLiveTurn, event AIAssistantStreamEvent) {
-	deltas := event.Deltas
-	if len(deltas) == 0 && event.Text != "" {
-		deltas = []string{event.Text}
-	}
-	var thinkingDelta strings.Builder
-	for _, delta := range deltas {
-		switch {
-		case strings.HasPrefix(delta, rejectedRoundContentToken):
-			// Draft reset: flush what was real, drop trailing text parts, and
-			// forward the marker verbatim — the controller drops its trailing
-			// text run and keeps whatever follows the marker as fresh content.
-			r.flushPendingLocked(send, grants, turn, event.Sequence)
-			r.flushThinkingDeltaLocked(send, grants, turn, event.Sequence, &thinkingDelta)
-			r.dropTrailingTextPartsLocked(turn)
-			part := remoteStreamPart{Kind: "text", Seq: event.Sequence, Text: strings.TrimPrefix(delta, rejectedRoundContentToken)}
-			if part.Text != "" {
-				turn.snapshot.Parts = append(turn.snapshot.Parts, part)
-			}
-			r.sendLocked(send, grants, turn.snapshot.SessionKey, turn.snapshot.RequestID, event.Sequence, "token", map[string]any{"text": delta})
-		case strings.HasPrefix(delta, "\x01"):
-			r.flushPendingLocked(send, grants, turn, event.Sequence)
-			if !turn.thinkingOpen {
-				turn.thinkingOpen = true
-				turn.snapshot.Parts = append(turn.snapshot.Parts, remoteStreamPart{Kind: "thinking", Seq: event.Sequence})
-				r.sendLocked(send, grants, turn.snapshot.SessionKey, turn.snapshot.RequestID, event.Sequence, "thinking", map[string]any{"state": "started"})
-			}
-			body := strings.TrimPrefix(delta, "\x01")
-			part := r.openThinkingPartLocked(turn)
-			if part == nil {
-				// Defensive: thinkingOpen without a part means a \x02 reset or
-				// a cap trim ate it — reopen so reasoning keeps its own lane
-				// instead of bleeding into a text part at the tail.
-				turn.snapshot.Parts = append(turn.snapshot.Parts, remoteStreamPart{Kind: "thinking", Seq: event.Sequence})
-				part = &turn.snapshot.Parts[len(turn.snapshot.Parts)-1]
-			}
-			part.Text = trimRemoteStreamTail(part.Text+body, remoteStreamPartThinkingCap)
-			thinkingDelta.WriteString(body)
-		default:
-			// Content tokens mean the model finished thinking — close the box
-			// the same moment the local panel folds it.
-			if turn.thinkingOpen {
-				r.flushThinkingDeltaLocked(send, grants, turn, event.Sequence, &thinkingDelta)
-				r.closeThinkingLocked(send, grants, turn, event.Sequence)
-			}
-			r.queueContentDelta(turn, event.Sequence, delta)
-		}
-	}
-	r.flushThinkingDeltaLocked(send, grants, turn, event.Sequence, &thinkingDelta)
-}
-
-// flushThinkingDeltaLocked ships the reasoning text collected since the last
-// send as one live delta, so the controller's 思考 box grows with the
-// controlled desktop's instead of appearing only when the block closes. The
-// closing "done" event still carries the full text as ground truth, so a
-// dropped delta self-corrects.
-func (r *remoteWatchRegistry) flushThinkingDeltaLocked(send func(map[string]any), grants []string, turn *remoteLiveTurn, seq uint64, acc *strings.Builder) {
-	if acc == nil || acc.Len() == 0 {
-		return
-	}
-	text := acc.String()
-	acc.Reset()
-	r.sendLocked(send, grants, turn.snapshot.SessionKey, turn.snapshot.RequestID, seq, "thinking", map[string]any{
-		"state": "delta",
-		"text":  text,
-	})
-}
-
-// queueContentDelta appends to the pending run and arms the flush timer.
-// Callers hold r.mu.
-func (r *remoteWatchRegistry) queueContentDelta(turn *remoteLiveTurn, seq uint64, delta string) {
-	if len(turn.pending) == 0 {
-		turn.pendingSeq = seq
-	}
-	turn.pending = append(turn.pending, delta)
-	if turn.flushTimer == nil {
-		turn.flushTimer = time.AfterFunc(remoteStreamTokenWindow, func() {
-			r.flushPending(turn)
-		})
-	}
-}
-
-// flushPending is the timer entry; it re-locks the registry and sends the
-// drained batch. Hub delivery order is registry.mu order, so a batch taken
-// here can never pass a control event sent while it was pending.
-func (r *remoteWatchRegistry) flushPending(turn *remoteLiveTurn) {
-	send := r.sender()
-	if send == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	grants := r.grantsForLocked(turn.snapshot.SessionKey)
-	if len(grants) == 0 {
-		turn.pending = nil
-		return
-	}
-	r.flushPendingLocked(send, grants, turn, 0)
-}
-
-// flushPendingLocked drains the content run into one token event.
-func (r *remoteWatchRegistry) flushPendingLocked(send func(map[string]any), grants []string, turn *remoteLiveTurn, seq uint64) {
-	if len(turn.pending) == 0 {
-		return
-	}
-	text := trimRemoteStreamTail(strings.Join(turn.pending, ""), remoteStreamPartTextCap)
-	if useSeq := turn.pendingSeq; useSeq > 0 {
-		seq = useSeq
-	}
-	turn.pending = nil
-	if turn.flushTimer != nil {
-		turn.flushTimer.Stop()
-		turn.flushTimer = nil
-	}
-	if text == "" {
-		return
-	}
-	if n := len(turn.snapshot.Parts); n > 0 && turn.snapshot.Parts[n-1].Kind == "text" {
-		part := &turn.snapshot.Parts[n-1]
-		part.Text = trimRemoteStreamTail(part.Text+text, remoteStreamPartTextCap)
-	} else {
-		turn.snapshot.Parts = append(turn.snapshot.Parts, remoteStreamPart{Kind: "text", Seq: seq, Text: text})
-	}
-	r.sendLocked(send, grants, turn.snapshot.SessionKey, turn.snapshot.RequestID, seq, "token", map[string]any{"text": text})
-}
-
-// openThinkingPartLocked finds the live thinking block anywhere in the tail
-// run. Text parts appended after it opened (a \x02 reset keeps thinking live)
-// must not absorb reasoning text.
-func (r *remoteWatchRegistry) openThinkingPartLocked(turn *remoteLiveTurn) *remoteStreamPart {
-	for i := len(turn.snapshot.Parts) - 1; i >= 0; i-- {
-		part := &turn.snapshot.Parts[i]
-		if part.Kind == "thinking" && !part.Done {
-			return part
-		}
-	}
-	return nil
-}
-
-// closeThinkingLocked seals the open thinking block, shipping its full text
-// in a single "done" event — the controller's folded 思考 box content.
-func (r *remoteWatchRegistry) closeThinkingLocked(send func(map[string]any), grants []string, turn *remoteLiveTurn, seq uint64) {
-	if !turn.thinkingOpen {
-		return
-	}
-	// The open block is the newest unfinished thinking part; text flushed
-	// after it may sit at the tail, so scan back rather than peek.
-	for i := len(turn.snapshot.Parts) - 1; i >= 0; i-- {
-		part := &turn.snapshot.Parts[i]
-		if part.Kind != "thinking" || part.Done {
-			continue
-		}
-		part.Done = true
-		r.sendLocked(send, grants, turn.snapshot.SessionKey, turn.snapshot.RequestID, seq, "thinking", map[string]any{
-			"state": "done",
-			"text":  part.Text,
-		})
-		break
-	}
-	turn.thinkingOpen = false
-}
-
-// dropTrailingTextPartsLocked removes the tail text run a \x02 reset voids.
-func (r *remoteWatchRegistry) dropTrailingTextPartsLocked(turn *remoteLiveTurn) {
-	for len(turn.snapshot.Parts) > 0 && turn.snapshot.Parts[len(turn.snapshot.Parts)-1].Kind == "text" {
-		turn.snapshot.Parts = turn.snapshot.Parts[:len(turn.snapshot.Parts)-1]
-	}
-}
-
 // relayRemoteWorkbenchSteps is the emitCodingWorkbenchStepsUpdate hook: the
 // plan-checklist snapshot the local panel just received also goes to every
 // watcher, so the controller renders the same step list in sync.
 func (a *App) relayRemoteWorkbenchSteps(sessionKey string, payload map[string]interface{}) {
-	reg := a.remoteWatchRegistryOrNil()
-	if reg == nil {
-		return
-	}
-	reg.relayWorkbenchSteps(sessionKey, payload)
-}
-
-func (r *remoteWatchRegistry) relayWorkbenchSteps(sessionKey string, payload map[string]interface{}) {
 	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" || len(payload) == 0 {
+	if a == nil || sessionKey == "" || len(payload) == 0 {
 		return
 	}
-	send := r.sender()
-	if send == nil {
+	raw, err := json.Marshal(payload)
+	if err != nil {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	grants := r.grantsForLocked(sessionKey)
-	if len(grants) == 0 {
-		return
+	ev := viewerEvent{
+		SessionKey: sessionKey, ProjectPath: projectPathFromSessionOwnerID(sessionKey),
+		Event: "workbench_steps", Lane: "control", Workbench: raw,
 	}
-	requestID := ""
-	if turn := r.turns[sessionKey]; turn != nil {
-		requestID = turn.snapshot.RequestID
-	}
-	r.sendLocked(send, grants, sessionKey, requestID, 0, "workbench_steps", map[string]any{"workbench": payload})
-}
-
-func (r *remoteWatchRegistry) trimProgressLocked(turn *remoteLiveTurn) {
-	count := 0
-	for _, part := range turn.snapshot.Parts {
-		if part.Kind == "progress" {
-			count++
-		}
-	}
-	overflow := count - remoteStreamProgressKeep
-	if overflow <= 0 {
-		return
-	}
-	out := turn.snapshot.Parts[:0]
-	for _, part := range turn.snapshot.Parts {
-		if part.Kind == "progress" && overflow > 0 {
-			overflow--
-			continue
-		}
-		out = append(out, part)
-	}
-	turn.snapshot.Parts = out
-}
-
-func (r *remoteWatchRegistry) turnForLocked(sessionKey, requestID string) *remoteLiveTurn {
-	turn := r.turns[sessionKey]
-	if turn == nil || (requestID != "" && turn.snapshot.RequestID != "" && turn.snapshot.RequestID != requestID) {
-		if turn != nil && turn.flushTimer != nil {
-			turn.flushTimer.Stop()
-		}
-		turn = newRemoteLiveTurn(sessionKey, requestID)
-		r.turns[sessionKey] = turn
-	}
-	if requestID != "" && turn.snapshot.RequestID == "" {
-		turn.snapshot.RequestID = requestID
-	}
-	return turn
-}
-
-func (r *remoteWatchRegistry) relayResponse(sessionKey, requestID string, raw json.RawMessage) {
-	send := r.sender()
-	if send == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	grants := r.grantsForLocked(sessionKey)
-	if len(grants) == 0 {
-		return
-	}
-	// Only settle the snapshot when the response belongs to the live turn. A
-	// stale response for an older request must not clobber a newer round's
-	// accumulated parts — turnForLocked would replace it, and a mid-turn
-	// watcher would then receive an empty snapshot for the live round.
-	if turn := r.turns[sessionKey]; turn != nil && (turn.snapshot.RequestID == "" || turn.snapshot.RequestID == requestID) {
-		r.flushPendingLocked(send, grants, turn, 0)
-		r.closeThinkingLocked(send, grants, turn, 0)
-		turn.snapshot.StreamDone = true
-		turn.snapshot.Responded = true
-	}
-	r.sendLocked(send, grants, sessionKey, requestID, 0, "response", map[string]any{
-		"response": raw,
-	})
-}
-
-// sendLocked writes one envelope per watching grant. The grant id is the
-// Hub's routing key: it resolves the controller machine and re-checks the
-// grant is active, so events can only reach a machine the Hub authorized.
-func (r *remoteWatchRegistry) sendLocked(send func(map[string]any), grants []string, sessionKey, requestID string, seq uint64, eventName string, extra map[string]any) {
-	if len(grants) == 0 {
-		return
-	}
-	for _, grantID := range grants {
-		payload := map[string]any{
-			"grant_id":    grantID,
-			"session_key": sessionKey,
-			"request_id":  requestID,
-			"event":       eventName,
-		}
-		if path := projectPathFromSessionOwnerID(sessionKey); path != "" {
-			payload["project_path"] = path
-		}
-		if seq > 0 {
-			payload["seq"] = seq
-		}
-		for k, v := range extra {
-			payload[k] = v
-		}
-		if raw, err := json.Marshal(payload); err == nil && len(raw) > remoteStreamEnvelopeSkip {
-			log.Printf("[remote-control] stream event %s dropped: %d bytes over limit", eventName, len(raw))
-			continue
-		}
-		send(payload)
-	}
+	a.publishViewerEvent(ev)
 }
 
 func trimRemoteStreamText(text string, limit int) string {
+	if limit <= 0 || text == "" {
+		return ""
+	}
 	if len(text) <= limit {
 		return text
 	}
-	return text[:limit] + "…"
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	if cut == 0 {
+		return ""
+	}
+	return text[:cut] + "…"
 }
 
 // trimRemoteStreamTail keeps the newest bytes of an accumulating part: the
-// tail is what a thinking trail or long answer is still producing.
+// tail is what a thinking trail or long answer is still producing. The cut
+// stays on a rune boundary. A limit that lands inside the final rune keeps
+// that rune.
 func trimRemoteStreamTail(text string, limit int) string {
+	if limit <= 0 || text == "" {
+		return ""
+	}
 	if len(text) <= limit {
 		return text
 	}
-	return "…" + text[len(text)-limit:]
+	cut := len(text) - limit
+	if cut < 0 {
+		cut = 0
+	}
+	if cut > 0 && !utf8.RuneStart(text[cut]) {
+		next := cut + 1
+		for next < len(text) && !utf8.RuneStart(text[next]) {
+			next++
+		}
+		if next < len(text) {
+			cut = next
+		} else {
+			for cut > 0 && !utf8.RuneStart(text[cut]) {
+				cut--
+			}
+		}
+	}
+	if cut >= len(text) {
+		return ""
+	}
+	return "…" + text[cut:]
+}
+
+// appendCappedTail concatenates until the cap, then keeps the rune-safe tail.
+func appendCappedTail(dst, add string, limit int) string {
+	if add == "" {
+		return dst
+	}
+	if limit <= 0 {
+		return ""
+	}
+	if len(dst)+len(add) <= limit {
+		return dst + add
+	}
+	return trimRemoteStreamTail(dst+add, limit)
 }
 
 // --- ops --------------------------------------------------------------------
@@ -684,6 +467,7 @@ func (a *App) remoteControlWatchTask(grantID string, body json.RawMessage) (any,
 	}
 	var req struct {
 		ProjectPath string `json:"project_path"`
+		StreamProto int    `json:"stream_proto"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, errors.New("远控请求无效")
@@ -693,12 +477,20 @@ func (a *App) remoteControlWatchTask(grantID string, body json.RawMessage) (any,
 		return nil, err
 	}
 	sessionKey := projectSessionOwnerID(path)
+	proto := negotiateStreamProto(req.StreamProto)
 	reg := a.ensureRemoteWatchRegistry()
-	reg.watch(grantID, sessionKey)
+	reg.watchWithProto(grantID, sessionKey, proto)
+	live := reg.liveSnapshot(sessionKey)
+	// The reply cursor claims coverage only up to what the wire writer has
+	// folded: anything still queued is absent from the snapshot but will
+	// arrive as a frame, so seeding past the folded mark would drop it.
+	cursor := reg.foldedCursor(sessionKey)
 	return map[string]any{
-		"watching":  true,
-		"live":      reg.liveSnapshot(sessionKey),
-		"workbench": a.remoteWorkbenchSnapshot(sessionKey),
+		"watching":     true,
+		"stream_proto": proto,
+		"cursor":       cursor,
+		"live":         live,
+		"workbench":    shrinkWorkbenchMap(a.remoteWorkbenchSnapshot(sessionKey)),
 	}, nil
 }
 
@@ -738,8 +530,8 @@ func (a *App) remoteControlTouchWatch(grantID, projectPath string) {
 		return
 	}
 	if reg := a.remoteWatchRegistryOrNil(); reg != nil {
-		reg.mu.Lock()
+		reg.watchMu.Lock()
 		reg.watchLocked(grantID, projectSessionOwnerID(normalizeProjectSessionPath(projectPath)))
-		reg.mu.Unlock()
+		reg.watchMu.Unlock()
 	}
 }

@@ -405,7 +405,15 @@ func UpdateHubVisibilityHandler(service *hubs.Service) http.HandlerFunc {
 			return
 		}
 
-		if err := service.UpdateVisibility(r.Context(), hubID, req.Visibility); err != nil {
+		lockedBy := "admin"
+		if admin := AdminFromContext(r.Context()); admin != nil {
+			if name := strings.TrimSpace(admin.Username); name != "" {
+				lockedBy = name
+			} else if email := strings.TrimSpace(admin.Email); email != "" {
+				lockedBy = email
+			}
+		}
+		if err := service.UpdateVisibility(r.Context(), hubID, req.Visibility, lockedBy); err != nil {
 			writeError(w, http.StatusInternalServerError, "UPDATE_HUB_VISIBILITY_FAILED", err.Error())
 			return
 		}

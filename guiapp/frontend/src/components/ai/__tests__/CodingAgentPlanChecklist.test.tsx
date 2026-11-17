@@ -769,6 +769,13 @@ describe("CodingAgentPlanChecklist", () => {
             expect(block).toContain("margin-left: var(--mc-composer-inset-x, 24px)");
             expect(block).toContain("margin-right: var(--mc-composer-inset-x, 24px)");
             expect(block).not.toContain("overflow-wrap");
+            // A hover target stays out of the pointer's way: the bar keeps the
+            // middle 40% of the column so the edges stay clear.
+            const half = css.indexOf("[data-testid='coding-agent-plan-checklist'] {\n  width: 40%");
+            expect(half).toBeGreaterThan(-1);
+            const halfBlock = css.slice(half, css.indexOf("}", half));
+            expect(halfBlock).toContain("margin-left: auto");
+            expect(halfBlock).toContain("margin-right: auto");
         }
         const layoutPartial = readFileSync(resolve(process.cwd(), "src/styles/partials/90-im-channels-markdown.css"), "utf8");
         for (const css of [layoutPartial, assembled]) {
@@ -777,7 +784,7 @@ describe("CodingAgentPlanChecklist", () => {
             expect(css).toContain(".capc-step-idx { flex-shrink: 0; min-width: 24px; opacity: 0.86; font-variant-numeric: tabular-nums; white-space: nowrap; }");
             expect(css).toContain(".capc-bar > .capc-files:first-child { margin-left: auto; }");
             expect(css).toContain(".capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 2px 4px; margin: 0; overflow: hidden; border-radius: 8px; transition: background-color 0.15s ease; }");
-            expect(css).toContain(".capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 50%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }");
+            expect(css).toContain(".capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 100%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }");
             expect(css).toContain(".capc-popover-card { box-sizing: border-box; max-height: min(320px, var(--capc-room, 42vh)); overflow: auto; overscroll-behavior: contain; padding: 8px 10px; border-radius: 12px; box-shadow: 0 12px 32px rgba(34, 56, 82, 0.16); }");
         }
     });

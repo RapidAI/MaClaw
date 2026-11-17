@@ -154,6 +154,7 @@ func (h *NotificationHandler) HandleListNotifications(w http.ResponseWriter, r *
 		ExcludeSources: []string{
 			notification.SourceCompanionGroupInvite,
 			notification.SourceCompanionShare,
+			notification.SourceCompanionGroupDigest,
 			notification.SourceCompanionHostTransfer,
 			notification.SourceCompanionHostTransferNotice,
 			notification.SourceRemoteControlInvite,

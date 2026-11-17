@@ -243,7 +243,7 @@ func TestMobileRegistrationSMSVerifyAndStartUsesSMSCredentialsWhenTenantUsesEmai
 	saveRegistrationSMSCredentialsForEmailMode(t, st.System, store.DefaultTenantID)
 	provider := &fakeRegistrationSMSProvider{checkPass: true}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/phone/verify-and-start", bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"303246","machine_name":"MaClaw Mobile","platform":"mobile","client_id":"maclaw-mobile"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/phone/verify-and-start", bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"303246","machine_name":"MaClaw Mobile","platform":"android","app_version":"maclaw-mobile/0.9.9","client_id":"maclaw-mobile"}`))
 	rr := httptest.NewRecorder()
 	MobileRegistrationSMSVerifyAndStartHandler(identity, st.System, func(RegistrationAuthConfig) registrationSMSProvider {
 		return provider
@@ -254,6 +254,18 @@ func TestMobileRegistrationSMSVerifyAndStartUsesSMSCredentialsWhenTenantUsesEmai
 	}
 	if provider.checkReq.PhoneNumber != "19900001111" || provider.checkReq.VerifyCode != "303246" {
 		t.Fatalf("unexpected check request: %+v", provider.checkReq)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode verify response: %v", err)
+	}
+	userID, _ := resp["user_id"].(string)
+	machine, err := identity.MachinesRepo().GetByUserAndClientID(auth.WithTenant(context.Background(), store.DefaultTenantID), userID, "maclaw-mobile")
+	if err != nil || machine == nil {
+		t.Fatalf("enrolled machine lookup: machine=%#v err=%v", machine, err)
+	}
+	if machine.Platform != "android" || machine.AppVersion != "maclaw-mobile/0.9.9" {
+		t.Fatalf("enrolled machine metadata = platform %q version %q", machine.Platform, machine.AppVersion)
 	}
 }
 

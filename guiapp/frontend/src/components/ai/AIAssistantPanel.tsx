@@ -43,6 +43,8 @@ import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
 import { RemoteAssistantActivity } from "./RemoteAssistantActivity";
+import { isViewerReducerEnabled, viewerOwnsRaw } from "./viewerReducerFlag";
+import { legacyFromViewerEvent, parseViewerEvent } from "./reduceViewerEvent";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
 import { chatTaskInSession, codingStepsAllPassed, executionSecondaryChromeStyle, formatTaskCreatedAt, handleTaskExecutionHeaderDoubleClick, openChatWorkForSession, resolveTaskExecutionStatus } from "./assistantTaskExecutionChrome";
@@ -113,7 +115,7 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListPendingScopeApprovals, ListWorkflowTemplateSummaries, LoadConfig, LoadProjectTabConversation, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
-import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepIsFailed, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
@@ -125,6 +127,7 @@ import { useProjectTaskActivateEvent } from "./useProjectTaskActivateEvent";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
+import { callAgentBrowserClose, callAgentBrowserInput, callAgentBrowserSetControl, mergeAgentBrowserStage, type AgentBrowserStageState } from "./AgentBrowserStage";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
 import { GoalQuickBar } from "./GoalQuickBar";
 import { ChatTaskTray } from "./ChatTaskTray";
@@ -1377,7 +1380,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingPendingApproval(pending);
             if (!pending) setCodingPendingPlanEditing(false);
         };
-        const off = EventsOn("coding-workbench-steps", (payload: any) => {
+        const onWorkbench = (payload: any) => {
+            if (viewerOwnsRaw(payload)) return;
             if (!pureCodingTabRef.current || isCodingWorkbenchHydrationSuppressed(projectPath)) return;
             // Render points the checklist at the new task before this listener
             // is replaced. A snapshot for the task we just left must not land.
@@ -1430,8 +1434,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setCodingExecutionPlan(String(st.execution_plan || "").trim());
                 setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
             });
+        };
+        const off = EventsOn("coding-workbench-steps", onWorkbench);
+        const offViewer = EventsOn("viewer-event", (payload: unknown) => {
+            if (!isViewerReducerEnabled()) return;
+            const event = parseViewerEvent(payload);
+            if (!event) return;
+            const legacy = legacyFromViewerEvent(event);
+            if (!legacy || legacy.kind !== "workbench") return;
+            onWorkbench(legacy.payload);
         });
-        return () => { if (typeof off === "function") off(); };
+        return () => {
+            if (typeof off === "function") off();
+            if (typeof offViewer === "function") offViewer();
+        };
     }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type]);
     // After a pure-coding turn finishes, refresh session/execution plan (auto-plan is written mid-turn).
     useEffect(() => {
@@ -4600,7 +4616,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         setCodingConflictPeak((prev) => Math.max(prev, codingConflictCount));
     }, [codingConflictCount]);
-    const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView || showCodingConflictPanel;
+    const [browserStage, setBrowserStage] = useState<AgentBrowserStageState | null>(null);
+    const showBrowserPreview = !!browserStage?.open;
+    useEffect(() => {
+        const off = EventsOn("agent-browser-stage", (payload: unknown) => {
+            setBrowserStage((prev) => mergeAgentBrowserStage(prev, (payload && typeof payload === "object") ? payload as Partial<AgentBrowserStageState> : null));
+        });
+        return () => { if (typeof off === "function") off(); };
+    }, []);
+    const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView || showCodingConflictPanel || showBrowserPreview;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     // Keep the preview overlay mounted after the first open so it can slide back
     // out instead of vanishing the moment the last preview surface closes.
@@ -4930,9 +4954,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Start / Skip / Reject stay up only while every step is still unstarted.
     // The checklist applies the same rule to its own buttons.
     const codingPlanGateOpen = codingPendingApproval && codingPlanAwaitingStart(codingChecklistSteps);
-    // A finished checklist is not pinned over the composer, even if the approval
-    // flag is stale. A failed row is not finished, so that card stays.
-    const codingChecklistRetired = !codingPlanGateOpen && codingChecklistSteps.length > 0 && codingChecklistAllDone(codingChecklistSteps);
     // While a goal command owns the session, the goal quick bar hosts the
     // changed-files chip in its right half; the plan checklist drops its copy.
     const [goalQuickBarVisible, setGoalQuickBarVisible] = useState(false);
@@ -5508,6 +5529,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 reasoning: message.reasoning || '',
                 localFilePaths: localFilePaths.length ? localFilePaths : undefined,
                 remoteFileFetch: localFilePaths.length ? remoteFileFetch : undefined,
+                fields: message.fields,
+                confirmation: message.confirmation ? { id: message.confirmation.id, summary: message.confirmation.summary || message.content || '' } : undefined,
+                actions: message.actions?.map(action => ({ label: action.label, command: action.command, style: 'primary' as const })),
                 timestamp: index + 1,
             };
         });
@@ -5544,6 +5568,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             );
         });
     }, [lang, remoteChat?.live, remoteTranscript, t]);
+    const remoteRenderedProgress = useMemo(() => {
+        const parts = (remoteChat?.live?.parts || []).filter(part => part.kind === "progress" && part.text);
+        if (!remoteChat || parts.length === 0) return null;
+        return parts.map((part, index) => (
+            <Fragment key={`remote-progress-${remoteChat.grantId}-${part.seq || index}`}>
+                {renderMessage({
+                    id: `remote-progress-${remoteChat.grantId}-${part.seq || index}`,
+                    role: "progress",
+                    content: part.text,
+                    timestamp: index + 1,
+                }, () => undefined, t, false, "", lang, false)}
+            </Fragment>
+        ));
+    }, [lang, remoteChat, t]);
     const remoteEmptyContent = useMemo(() => {
         if (!remoteChat) return undefined;
         if (remoteChat.loading) {
@@ -5648,6 +5686,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // One flag for the checklist, the chip, and the execution timeline. A
     // stored running step is only the cursor once this is false.
     const taskExecutionLive = taskExecutionStatus.tone === "running";
+    // A finished checklist is not pinned over the composer, even if the approval
+    // flag is stale. A finished session gets the same treatment: once the turn
+    // lands on completed/cancelled, a leftover pending or running cursor — or a
+    // lone restatement — has nothing left to report, so the bar folds away
+    // instead of pinning a stale summary over the next prompt. A failed row is
+    // not a close: that card stays so the failure can be read, and an
+    // awaiting-start plan keeps its gate.
+    const codingChecklistRetired = !codingPlanGateOpen
+        && !codingChecklistSteps.some((step) => codingStepIsFailed(String(step?.status || "")))
+        && (codingChecklistAllDone(codingChecklistSteps)
+            || ((taskExecutionStatus.tone === "completed" || taskExecutionStatus.tone === "cancelled")
+                && (codingChecklistSteps.length > 0 || !!codingRequirementRestatement)));
     // Report the live running signal so the sidebar task stats can merge it with
     // the durable snapshot (a pure agent loop run leaves no running snapshot).
     useEffect(() => {
@@ -7695,7 +7745,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     ) : null}
                     {remoteChat || !showPureCodingEmptyState ? null : pureCodingEmptyContent}
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
-                    <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? null : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat ? <RemoteAssistantActivity session={remoteChat} lang={lang} theme={t} /> : (hideWorkingTrail ? null : codingWorkingTrail)} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
+                    <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? remoteRenderedProgress : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat ? <RemoteAssistantActivity session={remoteChat} lang={lang} theme={t} /> : (hideWorkingTrail ? null : codingWorkingTrail)} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
                 </div>
@@ -7767,16 +7817,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     />
                 )}
                 {/* The files clause mirrors hideFileChanges: while the goal bar
-                    hosts the chip, files alone must not mount an empty section. */}
+                    hosts the chip, files alone must not mount an empty section.
+                    A retired checklist still mounts for that chip but stripped
+                    to it — the finished steps do not come back with it. */}
                 {!showWelcomeView && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || (codingTurnFiles.files.length > 0 && !goalQuickBarVisible)) && (
                     <CodingAgentPlanChecklist
                         lang={lang}
                         theme={t}
                         chrome={codingBannerChrome}
-                        steps={codingChecklistSteps}
+                        steps={codingChecklistRetired ? [] : codingChecklistSteps}
                         fileChanges={codingTurnFiles.files}
-                        understanding={codingRequirementRestatement}
-                        pendingApproval={codingPendingApproval}
+                        understanding={codingChecklistRetired ? "" : codingRequirementRestatement}
+                        pendingApproval={!codingChecklistRetired && codingPendingApproval}
                         ready={codingTaskReadyForIntents}
                         executionLive={taskExecutionLive}
                         executionStatusLabel={taskExecutionStatus.label}
@@ -7876,6 +7928,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         showCodePreview={showCodePreview}
                         showAgentView={showAgentView}
                         showWorkflowPreview={showWorkflowPreview}
+                        showBrowserPreview={showBrowserPreview}
+                        browserStage={browserStage}
+                        onBrowserSetHold={callAgentBrowserSetControl}
+                        onBrowserInput={callAgentBrowserInput}
+                        onCloseBrowser={() => {
+                            setBrowserStage((prev) => (prev ? { ...prev, open: false } : prev));
+                            callAgentBrowserClose();
+                        }}
                         showConflict={showCodingConflictPanel}
                         conflictCount={codingConflictCount}
                         onCloseConflict={closeCodingConflictSidePanel}

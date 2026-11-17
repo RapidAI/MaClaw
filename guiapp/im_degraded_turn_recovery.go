@@ -63,6 +63,10 @@ func (a *App) emitAIContinuationEvent(event AIContinuationEvent) {
 	if a == nil {
 		return
 	}
+	for _, ev := range viewerEventsFromContinuation(event) {
+		ev.CursorFrom = ev.Cursor
+		a.publishViewerEvent(ev)
+	}
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return

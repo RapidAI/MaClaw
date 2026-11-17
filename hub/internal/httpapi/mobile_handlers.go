@@ -1717,11 +1717,15 @@ func MobileDesktopAuthQRRedeemHandler(identity *auth.IdentityService) http.Handl
 			return
 		}
 		var req struct {
-			QRPayload   string `json:"qr_payload"`
-			MachineName string `json:"machine_name"`
-			Platform    string `json:"platform"`
-			ClientID    string `json:"client_id"`
-			Language    string `json:"language"`
+			QRPayload            string `json:"qr_payload"`
+			MachineName          string `json:"machine_name"`
+			Platform             string `json:"platform"`
+			Hostname             string `json:"hostname"`
+			Arch                 string `json:"arch"`
+			AppVersion           string `json:"app_version"`
+			HeartbeatIntervalSec int    `json:"heartbeat_interval_sec"`
+			ClientID             string `json:"client_id"`
+			Language             string `json:"language"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "BAD_JSON", "invalid JSON")
@@ -1786,6 +1790,10 @@ func MobileDesktopAuthQRRedeemHandler(identity *auth.IdentityService) http.Handl
 			respMap["phone_number"] = phone
 		}
 		writeJSON(w, http.StatusOK, respMap)
+
+		if resp != nil && resp.Status == "approved" && strings.TrimSpace(resp.MachineID) != "" {
+			updateEnrolledMachineMetadata(ctx, identity, resp.MachineID, req.MachineName, req.Platform, req.Hostname, req.Arch, req.AppVersion, req.HeartbeatIntervalSec)
+		}
 	}
 }
 

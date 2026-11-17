@@ -9,6 +9,17 @@ import { tailText } from "../../i18n/mnTail"
 export const COMPANION_SHARE_SOURCE = "companion_share";
 
 /**
+ * The merged notice a new reading-group member gets for documents shared
+ * before they joined. It is not a share notice: 确认 opens the companion's
+ * 文档管理 instead of one document. Source id is "<group id>:<user id>".
+ */
+export const COMPANION_GROUP_DIGEST_SOURCE = "companion_group_digest";
+
+export function isCompanionGroupDigestNotice(notice: AdminNotification): boolean {
+    return String(notice.source || "").trim() === COMPANION_GROUP_DIGEST_SOURCE;
+}
+
+/**
  * A host-transfer request is actionable: the nominee accepts or declines in
  * the bell, and only acceptance moves the seat. The informational copy for
  * other participants uses the notice source.

@@ -239,22 +239,7 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 
 			if resp.MachineID != "" {
 				metadataStart := time.Now()
-				heartbeat := req.HeartbeatIntervalSec
-				if heartbeat <= 0 || heartbeat > 3600 {
-					heartbeat = 30
-				} else if heartbeat < 5 {
-					heartbeat = 5
-				}
-				if err := identity.UpdateMachineMetadata(ctx, resp.MachineID, auth.MachineMetadata{
-					Name:                 req.MachineName,
-					Platform:             req.Platform,
-					Hostname:             req.Hostname,
-					Arch:                 req.Arch,
-					AppVersion:           req.AppVersion,
-					HeartbeatIntervalSec: heartbeat,
-				}); err != nil {
-					log.Printf("[enroll] update machine metadata failed for %s: %v", resp.MachineID, err)
-				}
+				updateEnrolledMachineMetadata(ctx, identity, resp.MachineID, req.MachineName, req.Platform, req.Hostname, req.Arch, req.AppVersion, req.HeartbeatIntervalSec)
 				log.Printf("[onboarding] EnrollStartHandler background_metadata=%s", time.Since(metadataStart))
 			}
 

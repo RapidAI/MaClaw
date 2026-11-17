@@ -13,6 +13,7 @@ import 'core/providers.dart';
 import 'core/theme.dart';
 import 'features/account/account_screen.dart';
 import 'features/account/update_dialog.dart';
+import 'features/assistant/assistant_screen.dart';
 import 'features/auth/login_screen.dart';
 import 'features/bots/bot_chat_controller.dart';
 import 'features/bots/bot_chat_screen.dart';
@@ -98,6 +99,10 @@ final _routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state, child) => _HomeShell(child: child),
         routes: [
           GoRoute(path: '/', builder: (_, _) => const BotsScreen()),
+          GoRoute(
+            path: '/assistant',
+            builder: (_, _) => const AssistantScreen(),
+          ),
           GoRoute(path: '/remote', builder: (_, _) => const RemoteScreen()),
           GoRoute(path: '/status', builder: (_, _) => const StatusScreen()),
           GoRoute(path: '/account', builder: (_, _) => const AccountScreen()),
@@ -251,6 +256,33 @@ class _BotRoute extends ConsumerWidget {
   }
 }
 
+/// The assistant's C-position marker: a filled disc behind the sparkle so
+/// the middle destination reads as the app's primary entry at a glance.
+class _CenterTabIcon extends StatelessWidget {
+  final IconData icon;
+  final bool filled;
+
+  const _CenterTabIcon({required this.icon, this.filled = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: filled ? scheme.primary : scheme.primaryContainer,
+      ),
+      child: Icon(
+        icon,
+        size: 26,
+        color: filled ? scheme.onPrimary : scheme.onPrimaryContainer,
+      ),
+    );
+  }
+}
+
 /// Bottom navigation shell: Bot 列表 / 工作状态 / 我的.
 class _HomeShell extends ConsumerStatefulWidget {
   final Widget child;
@@ -262,13 +294,14 @@ class _HomeShell extends ConsumerStatefulWidget {
 }
 
 class _HomeShellState extends ConsumerState<_HomeShell> {
-  static const _tabs = ['/', '/remote', '/status', '/account'];
+  static const _tabs = ['/', '/remote', '/assistant', '/status', '/account'];
   Timer? _updateTimer;
 
   int _indexOf(String location) {
     if (location.startsWith('/remote')) return 1;
-    if (location.startsWith('/status')) return 2;
-    if (location.startsWith('/account')) return 3;
+    if (location.startsWith('/assistant')) return 2;
+    if (location.startsWith('/status')) return 3;
+    if (location.startsWith('/account')) return 4;
     return 0;
   }
 
@@ -342,6 +375,14 @@ class _HomeShellState extends ConsumerState<_HomeShell> {
             icon: Icon(Icons.connected_tv_outlined),
             selectedIcon: Icon(Icons.connected_tv),
             label: '远控',
+          ),
+          NavigationDestination(
+            icon: _CenterTabIcon(icon: Icons.auto_awesome_outlined),
+            selectedIcon: _CenterTabIcon(
+              icon: Icons.auto_awesome,
+              filled: true,
+            ),
+            label: '助手',
           ),
           NavigationDestination(
             icon: Icon(Icons.fact_check_outlined),

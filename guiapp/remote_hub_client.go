@@ -1249,7 +1249,38 @@ func (c *RemoteHubClient) SendSessionImage(img ImageTransferMessage) error {
 	return c.conn.WriteJSON(msg)
 }
 
+// errRemoteDeviceConnectDisabled is the rejection controllers see when the
+// owner turned off 允许同账号设备远程连接 on this machine.
+var errRemoteDeviceConnectDisabled = errors.New("对方已关闭远程连接")
+
+// remoteDeviceControlBlocked reports whether the owner disabled inbound
+// control from same-account devices (the 允许同账号设备远程连接 switch). A
+// missing or unreadable config fails open: the field defaults to enabled, so
+// an unreadable value must not lock out control that predates the switch.
+func (c *RemoteHubClient) remoteDeviceControlBlocked() bool {
+	if c == nil || c.app == nil {
+		return false
+	}
+	// Peek the published snapshot first: session.input fires per keystroke
+	// and the full LoadConfig path copies skills on every call. The disk
+	// fingerprint check keeps hand-edited config.json changes visible —
+	// without it a stale snap would silently outlive external edits.
+	if snap := c.app.PeekConfig(); snap != nil && c.app.configCacheMatchesDisk() {
+		return !snap.IsRemoteDeviceConnectEnabled()
+	}
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		log.Printf("[hub-client] remote device connect check failed, allowing control: %v", err)
+		return false
+	}
+	return !cfg.IsRemoteDeviceConnectEnabled()
+}
+
 func (c *RemoteHubClient) handleRemoteControlExec(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		c.sendRemoteControlResult(msg.RequestID, nil, errRemoteDeviceConnectDisabled.Error())
+		return
+	}
 	var payload struct {
 		GrantID string          `json:"grant_id"`
 		Op      string          `json:"op"`
@@ -1836,6 +1867,10 @@ func (c *RemoteHubClient) completeHardwareDeviceList(requestID string, devices [
 }
 
 func (c *RemoteHubClient) handleSessionStart(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		c.replyStartError(msg.RequestID, errRemoteDeviceConnectDisabled)
+		return
+	}
 	var payload RemoteStartSessionRequest
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		c.replyStartError(msg.RequestID, err)
@@ -1874,6 +1909,10 @@ func (c *RemoteHubClient) handleSessionStart(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionInput(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.input dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}
@@ -1894,6 +1933,10 @@ func (c *RemoteHubClient) handleSessionInput(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionInterrupt(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.interrupt dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}
@@ -1904,6 +1947,10 @@ func (c *RemoteHubClient) handleSessionInterrupt(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionKill(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.kill dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}
@@ -1914,6 +1961,10 @@ func (c *RemoteHubClient) handleSessionKill(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionImageInput(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.image_input dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}
@@ -1934,6 +1985,10 @@ func (c *RemoteHubClient) handleSessionImageInput(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionScreenshot(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.screenshot dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}

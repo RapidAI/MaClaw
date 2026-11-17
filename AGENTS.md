@@ -204,6 +204,26 @@
   non-matching session becomes an offscreen live round adopted when its tab
   is opened. `display_text` is the user-row text (external origins use a
   `〔…〕` prefix, e.g. `〔远控〕`, `〔VS Code / ACP〕`).
+- The coding plan checklist bar (`CodingAgentPlanChecklist`, the "步骤" strip
+  above the composer) retires — unmounts, or strips to the files chip — when
+  `taskExecutionStatus.tone` lands on `completed`/`cancelled`, not just when
+  every step passes: a finished turn must not leave a stale pending/running
+  cursor or a lone 需求理解 hover target over the composer. Exceptions that
+  keep it mounted: `codingPlanGateOpen` (awaiting Start/Skip/Reject), any
+  `codingStepIsFailed` row, and non-terminal tones (paused/interrupted keep
+  resume context). The bar itself is centered at 40% column width
+  (`100-pet-store-mc.css` overrides the shared inset rule) so the pointer can
+  pass the edges without opening the step-list popover; `.capc-popover` is
+  `width:100%` of that bar.
+- The 需求理解 line (`fallbackCodingRequestRestatement` in
+  `coding_workbench_intent.go`) must NAME the work, not describe the process:
+  a context-free ask ≤48 runes echoes itself via `codingDescribeNewAsk`
+  ("这次<ask>，其它先不动"), and a longer ask leads with its first requirement
+  via `codingRequestHeadline` ("先处理「<head>」，其余要求一并处理"). The
+  generic process filler ("先看清当前项目里相关的实现和约束…") survives only
+  for inputs with no nameable ask — punctuation-only text or a bare continue
+  with nothing stored. The lightweight-LLM refinement
+  (`llmCodingRequestRestatement`) still replaces the fallback when available.
 
 ## Remote-control ops (guiapp ↔ hub)
 
@@ -575,3 +595,37 @@
   `IssueCodeBy`, or the user id for `IssueOwnedCode`; kept across secret
   rotation). `Broker.ApplyLive` also fills `LastSeen` from the live map —
   `last_seen` is in-memory only, not persisted to the tenant file.
+
+## HubCenter node visibility authority (hubcenter)
+
+- `hub_instances.visibility` has two writers: the hub itself (every
+  heartbeat/re-registration reports its own `hub_visibility`) and the
+  HubCenter admin (`POST /api/admin/hubs/{id}/visibility`). A reported
+  value used to win unconditionally, silently reverting admin edits.
+- `hub_instances.visibility_locked` is the arbiter: the admin UPDATE sets
+  it atomically; `applyReportedVisibility` (hubs/service.go) ignores
+  reports while locked and clears the lock once the hub reports the same
+  value (convergence — the hub then owns the field again). Empty reported
+  visibility is a no-op, never normalized to "private".
+- `hubRepo.UpdateRegistration` and the `ON CONFLICT DO UPDATE` in
+  `ReplaceConflictingHubInstance` both write the pair under the same CASE
+  guard on the live row, so a full-row write or replica built from a
+  pre-admin snapshot cannot clobber the lock — do not "simplify" them
+  back to literal SETs. A replica that carries the converged state still
+  applies (ELSE branch), so peer locks/convergences replicate normally.
+- `hub_instances.visibility_locked_by` records which admin set the lock
+  (username from `AdminFromContext`, fallback email then "admin").
+  `normalizeHubRegistrationPolicyFields` enforces the invariant
+  `locked=false -> locked_by=""`, so convergence clears the name too.
+- Downlink: the heartbeat response AND the re-registration result both
+  carry `visibility_lock` (`Service.HubVisibilityAuthority` →
+  `{visibility, locked, locked_by}`, always a fresh row read so the value
+  is the post-guard truth, not the in-memory snapshot). The hub stores it
+  on `registrationRecord.VisibilityLock`, exposes it via
+  `RegistrationState`, and its Center tab shows "已被 Hub Center 管理员
+  {by} 接管" plus the effective value (center-tab.js `renderCenterStatus`,
+  element `#visibilityLockHero` — keep that JS ASCII, CJK via \u escapes).
+  A response without the field (older Hub Center) clears the display.
+- To change a node's visibility from the hub side, set it on the hub's own
+  admin console (writes `system_settings.hub_visibility`); the next
+  heartbeat converges HubCenter and clears the lock.

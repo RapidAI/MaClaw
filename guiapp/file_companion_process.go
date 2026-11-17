@@ -71,6 +71,10 @@ type fileCompanionRuntime struct {
 	uiReady   bool
 	bootTaken bool
 	pending   []string
+	// libraryView asks the window to open its 文档管理 view. A launch or a
+	// second-instance --library sets it; GetFileCompanionBoot and
+	// FileCompanionTakeLibraryView each drain it for the frontend.
+	libraryView bool
 	// place lists browser-add paths that still need a category dialog.
 	// A path leaves this list when boot, TakePlaces, or the place event
 	// delivers it, so the dialog is not shown twice.
@@ -253,6 +257,9 @@ type FileCompanionBoot struct {
 	Notice string   `json:"notice,omitempty"`
 	// Place is the subset of Paths that came from a browser add.
 	Place []string `json:"place,omitempty"`
+	// Library asks the window to open on its 文档管理 view instead of a
+	// document or the 打开 panel.
+	Library bool `json:"library,omitempty"`
 }
 
 func (a *App) isFileCompanionProcess() bool {
@@ -557,6 +564,26 @@ func (a *App) ShowFileCompanion() error {
 	return a.startCompanionProcess([]string{exe, fileCompanionOpenArg})
 }
 
+// ShowFileCompanionLibrary opens the companion's 文档管理 view. The main
+// window launches `open-file --library`: a running companion receives it over
+// the single-instance channel and a fresh one reads it from boot. Inside the
+// companion the same request goes out as the file-companion:view event.
+func (a *App) ShowFileCompanionLibrary() error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	if a.isFileCompanionProcess() {
+		a.requestFileCompanionLibraryView()
+		a.revealFileCompanionWindow()
+		return nil
+	}
+	exe, err := companionExecutable()
+	if err != nil {
+		return err
+	}
+	return a.startCompanionProcess([]string{exe, fileCompanionOpenArg, fileCompanionLibraryArg})
+}
+
 // LaunchFileCompanion opens the documents in the companion. It does not insert
 // the paths into the current assistant session. The main window starts the
 // companion process. This process, when it is already the companion, delivers
@@ -658,6 +685,33 @@ func (a *App) seedFileCompanionQuit() {
 	st.process = true
 	st.quitLaunch = true
 	st.mu.Unlock()
+}
+
+// seedFileCompanionLibrary marks an `open-file --library` launch: the window
+// boots into its 文档管理 view instead of a document.
+func (a *App) seedFileCompanionLibrary() {
+	st := a.companionRuntime()
+	st.mu.Lock()
+	st.process = true
+	st.libraryView = true
+	st.mu.Unlock()
+}
+
+// requestFileCompanionLibraryView asks the already-running window to show
+// 文档管理. Before the UI is ready the flag waits for the boot read or
+// FileCompanionTakeLibraryView; afterwards it goes out as an event and the
+// flag stays unset, so a later take cannot redeliver it.
+func (a *App) requestFileCompanionLibraryView() {
+	st := a.companionRuntime()
+	st.mu.Lock()
+	ready := st.uiReady
+	if !ready {
+		st.libraryView = true
+	}
+	st.mu.Unlock()
+	if ready {
+		a.emitEvent("file-companion:view", "library")
+	}
 }
 
 func (a *App) seedFileCompanionNotice(code string) {
@@ -787,9 +841,26 @@ func (a *App) GetFileCompanionBoot() FileCompanionBoot {
 	boot.Paths = append([]string(nil), st.pending...)
 	boot.Place = takeCompanionPlace(&st.place, boot.Paths)
 	boot.Notice = st.notice
+	boot.Library = st.libraryView
 	st.pending = nil
 	st.notice = ""
+	st.libraryView = false
 	return boot
+}
+
+// FileCompanionTakeLibraryView drains a --library request that landed after
+// the boot read but before the window finished subscribing. Requests that
+// arrive once the window is ready emit file-companion:view instead.
+func (a *App) FileCompanionTakeLibraryView() bool {
+	if a == nil {
+		return false
+	}
+	st := a.companionRuntime()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := st.libraryView
+	st.libraryView = false
+	return out
 }
 
 // FileCompanionTakePlaces returns browser-add paths queued after boot.
@@ -864,6 +935,12 @@ func (a *App) onFileCompanionSecondInstance(data options.SecondInstanceData) {
 	if launch.Notice != "" {
 		logFileCompanion("second instance notice=%s", launch.Notice)
 		a.presentCompanionPaperNotice(launch.Notice)
+		return
+	}
+	if launch.Library {
+		logFileCompanion("second instance library view")
+		a.requestFileCompanionLibraryView()
+		a.revealFileCompanionWindow()
 		return
 	}
 	// This process cwd is the install directory. On Windows and Linux the
@@ -998,6 +1075,8 @@ func applyDesktopLaunchOptions(app *App, opts *options.App, launch desktopLaunch
 			opts.StartHidden = true
 		case launch.Notice != "":
 			app.seedFileCompanionNotice(launch.Notice)
+		case launch.Library:
+			app.seedFileCompanionLibrary()
 		case launch.Place:
 			app.seedFileCompanionPlace(launch.Paths)
 		default:

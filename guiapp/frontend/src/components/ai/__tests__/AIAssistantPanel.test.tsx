@@ -8964,6 +8964,89 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('coding-agent-plan-step-1').getAttribute('data-status')).toBe('failed');
     });
 
+    it('retires the coding plan checklist once the session is done, not only when steps pass', async () => {
+        // The completed badge and the bar must agree: a restatement-only
+        // checklist under a finished task has nothing left to report and the
+        // hover target would only reopen stale 需求理解 on pointer pass-by.
+        const projectPath = 'D:/tasks/done-session-restatement';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 9,
+            requirement_restatement: '在已有分析上继续评估这次的方案。',
+            step_statuses: [],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: '方案评估',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            tasks: [{
+                project_path: projectPath,
+                name: '方案评估',
+                has_output: true,
+            }],
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        // The new-agent prepare keeps the badge live for ~120ms after session
+        // ready; wait it out so the task reads completed, not 进行中.
+        await waitFor(() => {
+            const ready = (getByTestId('remote-coding-env-banner').textContent || '').toLowerCase();
+            expect(ready).not.toMatch(/starting|启动|啟動|connecting|preparing|正在连接|正在連線/);
+        }, { timeout: 3000 });
+        await waitFor(() => expect(getCodingWorkbenchStatusMock).toHaveBeenCalled());
+        expect(queryByTestId('coding-agent-plan-checklist')).toBeNull();
+        expect(document.body.textContent || '').not.toContain('继续评估这次的方案');
+    });
+
+    it('keeps the checklist while leftover steps still hold the task pending', async () => {
+        // A pending step token keeps the badge at 待处理 — the session is not
+        // reported finished, so the bar stays. Only the completed/cancelled
+        // badge retires it.
+        const projectPath = 'D:/tasks/pending-session-steps';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 9,
+            step_statuses: [
+                { index: 1, title: '读代码', status: 'passed' },
+                { index: 2, title: '写结论', status: 'pending' },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: '待办收尾',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            tasks: [{
+                project_path: projectPath,
+                name: '待办收尾',
+                has_output: true,
+            }],
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-checklist')).toBeTruthy());
+        expect(getByTestId('coding-agent-plan-step-2').textContent || '').toContain('写结论');
+    });
+
     it('live steps snapshot replaces and clears the continue paraphrase', async () => {
         const projectPath = 'D:/tasks/continue-plan-snapshot';
         const generic = '在已有工作（开发一个图形界面版的贪吃蛇）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。';
