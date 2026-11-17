@@ -562,6 +562,7 @@ func (s *Service) requireUserConfigForMCP(p Principal) (UserConfig, error) {
 }
 
 func (s *Service) saveRawUserConfig(p Principal, appCfg corelib.AppConfig) error {
+	runRawManagedSaveBeforeLock()
 	s.userConfigMu.Lock()
 	defer s.userConfigMu.Unlock()
 	if err := s.keepStoredManagedCapabilitiesLocked(p, &appCfg); err != nil {

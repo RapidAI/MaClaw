@@ -116,6 +116,27 @@ func SetUserVisibleConfigBeforeCommitForTest(fn func()) {
 	userVisibleConfigBeforeCommit.Store(&fn)
 }
 
+// rawManagedSaveBeforeLock runs after a raw MCP, mailbox, skill-market, or
+// Hub-center save has its snapshot and before that save takes userConfigMu.
+// Tests use it to land a Hub/admin write in that window. Production leaves
+// it unset. The hook must not call those raw saves.
+var rawManagedSaveBeforeLock atomic.Pointer[func()]
+
+// SetRawManagedSaveBeforeLockForTest installs that barrier.
+func SetRawManagedSaveBeforeLockForTest(fn func()) {
+	if fn == nil {
+		rawManagedSaveBeforeLock.Store(nil)
+		return
+	}
+	rawManagedSaveBeforeLock.Store(&fn)
+}
+
+func runRawManagedSaveBeforeLock() {
+	if hook := rawManagedSaveBeforeLock.Load(); hook != nil && *hook != nil {
+		(*hook)()
+	}
+}
+
 func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next corelib.AppConfig) (*UserConfig, error) {
 	return s.commitUserConfig(ctx, p, next, true)
 }
@@ -184,6 +205,7 @@ func (s *Service) keepStoredManagedCapabilitiesLocked(p Principal, next *corelib
 }
 
 func (s *Service) saveConfigKeepingManaged(p Principal, cfg UserConfig) error {
+	runRawManagedSaveBeforeLock()
 	s.userConfigMu.Lock()
 	defer s.userConfigMu.Unlock()
 	if err := s.keepStoredManagedCapabilitiesLocked(p, &cfg.AppConfig); err != nil {

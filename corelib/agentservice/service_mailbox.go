@@ -36,7 +36,10 @@ func (s *Service) ReplaceMailboxAccounts(ctx context.Context, p Principal, accou
 	next.MailboxSignatures = signatures
 	// Save the mailbox slices only. UpdateUserConfig would revoke dynamic
 	// capability contracts and is the partial-config path that drops fields
-	// the caller omitted.
+	// the caller omitted. The barrier runs after this snapshot and before
+	// the lock, so a Hub or admin write in that window is the managed
+	// document the locked read keeps.
+	runRawManagedSaveBeforeLock()
 	s.userConfigMu.Lock()
 	if err := s.keepStoredManagedCapabilitiesLocked(p, &next); err != nil {
 		s.userConfigMu.Unlock()
