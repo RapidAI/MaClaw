@@ -75,8 +75,9 @@ type Field struct {
 	Label string `json:"label"`
 }
 
-// Operation is the exact action a confirm grants. Version and Hash bind the
-// payload the person saw. A later edit is a new version.
+// Operation is the exact displayed action. Version and Hash bind the payload
+// the person saw. This slice does not grant purchase, payment, send, or
+// publish; those stay on their existing checked paths.
 type Operation struct {
 	Kind    string          `json:"kind"`
 	Payload json.RawMessage `json:"payload,omitempty"`
@@ -200,6 +201,9 @@ type Submission struct {
 	ShotID       string
 	CapturedAt   time.Time
 	LeaseID      string
+	// InstanceID is server routing copied from the run. It is not part of
+	// the consent hash and is not taken from the client body.
+	InstanceID string
 }
 
 // Outcome is the server's answer. Resume is true only on the transition that

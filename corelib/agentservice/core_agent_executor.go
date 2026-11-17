@@ -656,6 +656,24 @@ func resolveDesktopBotPhase(req *ExecuteRequest) {
 // path stays in agentservice so Principal/Tenant/User/Instance/Session are
 // constructed and authorized by Service before any model or tool call.
 func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (res *ExecuteResult, err error) {
+	if req.ChatCardContinuation != nil {
+		result, contErr := e.ContinueChatCard(ctx, req, *req.ChatCardContinuation)
+		if contErr != nil {
+			return nil, contErr
+		}
+		meta := map[string]string{
+			"chat_card_continuation": "1",
+			"chat_card_resume_id":    req.ChatCardContinuation.ResumeID,
+		}
+		if strings.TrimSpace(result.Evidence) != "" {
+			meta["task_outcome_evidence"] = result.Evidence
+			meta[TaskOutcomeKey] = TaskOutcomeUnverified
+		}
+		if len(result.Effects) > 0 {
+			meta["applied_effects"] = strings.Join(result.Effects, ",")
+		}
+		return &ExecuteResult{Content: result.Content, OutputType: "text/plain", Metadata: meta}, nil
+	}
 	resolveDesktopBotPhase(&req)
 	botID := botlog.FromMeta(req.Message.Metadata)
 	started := time.Now()

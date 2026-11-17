@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,10 @@ func TestChatCardDecisionResumesSameTask(t *testing.T) {
 		t.Fatal("interaction store was not opened")
 	}
 	defer server.Close()
+	const observed = "当前页面：登录框仍在，尚未登录"
+	svc.SetChatCardObserver(agentservice.ChatCardObserverFunc(func(context.Context, agentservice.Principal, string, string) (agentservice.ChatCardEvidence, error) {
+		return agentservice.ChatCardEvidence{Source: "page", Text: observed}, nil
+	}))
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
@@ -75,7 +80,7 @@ func TestChatCardDecisionResumesSameTask(t *testing.T) {
 	opened := postJSON(t, server, token, "/api/v1/instances/"+inst.ID+"/runs/"+run.ID+"/interactions", map[string]any{
 		"kind": "native_handoff", "question": "请在这台电脑上完成登录",
 		"lease_id": "lease-a", "desktop_mode": "isolated", "shot_base64": shot,
-		"target": map[string]string{"url": "https://shop.example/pay", "origin": "shop.example"},
+		"target": map[string]string{"url": "https://shop.example/pay", "origin": "shop.example", "frame": "pay-frame"},
 	}, http.StatusOK)
 	if opened["spotlight"] == true || opened["done"] == true || opened["handoff"] != "full_page" {
 		t.Fatalf("opened = %#v", opened)
@@ -152,13 +157,21 @@ func TestChatCardDecisionResumesSameTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decided := postJSON(t, server, token, "/api/v1/instances/"+inst.ID+"/runs/"+run.ID+"/interactions/"+cardID+"/decision", map[string]any{
+	if postStatus(t, server, token, "/api/v1/instances/"+inst.ID+"/runs/"+run.ID+"/interactions/"+cardID+"/decision", map[string]any{
 		"task_id": taskID, "bot_id": "bot-a", "choice_ids": []string{"completed"},
 		"operation_version": op["version"], "payload_hash": op["hash"], "consent_hash": consent,
 		"lease_id": "lease-a", "shot_id": shotView["id"], "captured_at": shotView["captured_at"],
 		"target_origin": "shop.example", "target_url": "https://shop.example/pay",
+	}) == http.StatusOK {
+		t.Fatal("a frame-bound card resumed without its frame")
+	}
+	decided := postJSON(t, server, token, "/api/v1/instances/"+inst.ID+"/runs/"+run.ID+"/interactions/"+cardID+"/decision", map[string]any{
+		"task_id": taskID, "bot_id": "bot-a", "choice_ids": []string{"completed"},
+		"operation_version": op["version"], "payload_hash": op["hash"], "consent_hash": consent,
+		"lease_id": "lease-a", "shot_id": shotView["id"], "captured_at": shotView["captured_at"],
+		"target_origin": "shop.example", "target_url": "https://shop.example/pay", "target_frame": "pay-frame",
 	}, http.StatusOK)
-	if decided["resume"] != true || decided["done"] == true || decided["mode"] != "verify" || decided["run_id"] != run.ID || decided["task_id"] != taskID || decided["resume_id"] == "" {
+	if decided["resume"] != true || decided["done"] == true || decided["mode"] != "verify" || decided["run_id"] != run.ID || decided["task_id"] != taskID || decided["resume_id"] == "" || decided["continuation_run_id"] == "" {
 		t.Fatalf("decision = %#v", decided)
 	}
 	if decided["granted"] != nil {
@@ -168,18 +181,25 @@ func TestChatCardDecisionResumesSameTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after) != len(before) {
-		t.Fatalf("resume replayed the task: messages %d -> %d", len(before), len(after))
+	if len(after) != len(before)+1 {
+		t.Fatalf("continuation messages %d -> %d", len(before), len(after))
+	}
+	if !strings.Contains(after[len(after)-1].Content, observed) {
+		t.Fatalf("continuation did not carry the observed page: %#v", after[len(after)-1])
 	}
 	kept, err := svc.GetRun(ctx, principal, inst.ID, run.ID)
-	if err != nil || kept.Status != agentservice.RunStatusSucceeded || kept.Metadata["chat_card_resume_id"] == "" {
+	if err != nil || kept.Status != agentservice.RunStatusSucceeded || kept.Metadata["chat_card_resume_id"] == "" || kept.Metadata["chat_card_continued"] == "" {
 		t.Fatalf("run = %#v %v", kept, err)
+	}
+	continued, err := svc.GetRun(ctx, principal, inst.ID, kept.Metadata["chat_card_continued"])
+	if err != nil || continued.Metadata["task_outcome_evidence"] != observed || continued.Metadata["task_outcome"] == "done" {
+		t.Fatalf("continuation = %#v %v", continued, err)
 	}
 	again := postJSON(t, server, token, "/api/v1/instances/"+inst.ID+"/runs/"+run.ID+"/interactions/"+cardID+"/decision", map[string]any{
 		"task_id": taskID, "bot_id": "bot-a", "choice_ids": []string{"completed"},
 		"operation_version": op["version"], "payload_hash": op["hash"], "consent_hash": consent,
 		"lease_id": "lease-a", "shot_id": shotView["id"], "captured_at": shotView["captured_at"],
-		"target_origin": "shop.example", "target_url": "https://shop.example/pay",
+		"target_origin": "shop.example", "target_url": "https://shop.example/pay", "target_frame": "pay-frame",
 	}, http.StatusOK)
 	if again["resume"] == true || again["already"] != true || again["run_id"] != run.ID {
 		t.Fatalf("repeat = %#v", again)

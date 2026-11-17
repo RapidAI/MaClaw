@@ -86,6 +86,11 @@ func (s *HTTPServer) handleOpenInteraction(w http.ResponseWriter, r *http.Reques
 		writeChatCardError(w, err)
 		return
 	}
+	prior := ""
+	if run.Metadata != nil {
+		prior = run.Metadata["side_effect"]
+	}
+	_ = s.svc.NoteChatCardCheckpoint(r.Context(), p, run.InstanceID, run.ID, card.ID, prior)
 	if sess, err := s.svc.GetSession(r.Context(), p, run.InstanceID, run.SessionID); err == nil && sess != nil {
 		if sess.Metadata == nil {
 			sess.Metadata = map[string]string{}
@@ -147,7 +152,7 @@ func (s *HTTPServer) handleInteractionDecision(w http.ResponseWriter, r *http.Re
 		ChoiceIDs: body.ChoiceIDs, Fields: body.Fields, OperationVersion: body.OperationVersion,
 		PayloadHash: body.PayloadHash, ConsentHash: body.ConsentHash, Decline: body.Decline, TargetOrigin: body.TargetOrigin,
 		TargetURL: body.TargetURL, TargetFrame: body.TargetFrame, ShotID: body.ShotID,
-		CapturedAt: body.CapturedAt, LeaseID: body.LeaseID,
+		CapturedAt: body.CapturedAt, LeaseID: body.LeaseID, InstanceID: run.InstanceID,
 	})
 	if err != nil {
 		writeChatCardError(w, err)
@@ -161,10 +166,15 @@ func (s *HTTPServer) handleInteractionDecision(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
+	continuationID := ""
+	if delivered != nil && delivered.Metadata != nil {
+		continuationID = delivered.Metadata["chat_card_continued"]
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": out.Status, "resume": out.Resume, "already": out.Already, "mode": out.Mode,
 		"task_id": out.TaskID, "run_id": delivered.ID, "request_id": out.RequestID,
 		"resume_id": out.ResumeID, "bot_id": out.BotID, "done": false,
+		"continuation_run_id": continuationID,
 	})
 }
 

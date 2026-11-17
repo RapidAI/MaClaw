@@ -656,7 +656,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			assistant.Metadata[TaskOutcomeNoticeKey] = "这一步还不能算完成，要以页面上的实际结果为准。"
 		}
 	}
-	s.attachChatCard(p, sess, run, &assistant)
+	s.attachChatCard(p, sess, &run, &assistant)
 	if s.AssistantMessageMetadataHook != nil {
 		for key, value := range s.AssistantMessageMetadataHook(ctx, p, inst, sess, run, assistant, cfg.AppConfig) {
 			if assistant.Metadata == nil {

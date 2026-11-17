@@ -24,6 +24,7 @@ export const lifecycleSuite = {
       "TestDesktopDeliverablesOnlyForExecuteDesktopTurns",
       "TestUserMessageDoesNotRecordCheckoutConfirmation",
       "TestChatCardResumeDoesNotReplaySideEffect",
+      "TestChatCardRestartDeliversContinuation",
     ],
   },
 };

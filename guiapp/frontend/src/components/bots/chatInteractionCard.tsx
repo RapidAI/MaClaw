@@ -23,7 +23,7 @@ export type ChatInteraction = {
     fields?: ChatInteractionField[];
     operation?: { kind?: string; version?: number; hash?: string };
     consent_hash?: string;
-    target?: { url?: string; origin?: string; title?: string };
+    target?: { url?: string; origin?: string; title?: string; frame?: string };
     handoff?: string;
     spotlight?: boolean;
     shot?: ChatInteractionShot;
@@ -43,6 +43,7 @@ export type ChatInteractionDecision = {
     decline?: boolean;
     target_origin?: string;
     target_url?: string;
+    target_frame?: string;
     shot_id?: string;
     captured_at?: string;
     lease_id?: string;
@@ -114,6 +115,7 @@ export function interactionDecision(card: ChatInteraction, choiceIds: string[], 
         decline,
         target_origin: card.target?.origin,
         target_url: card.target?.url,
+        target_frame: card.target?.frame || undefined,
         shot_id: card.shot?.id,
         captured_at: card.shot?.captured_at,
         lease_id: card.shot?.lease_id || card.lease_id,
@@ -178,8 +180,9 @@ function targetOf(raw: unknown): ChatInteraction['target'] | undefined {
     const url = text(row.url);
     const origin = text(row.origin);
     const title = text(row.title);
-    if (!url && !origin && !title) return undefined;
-    return { url, origin, title };
+    const frame = text(row.frame);
+    if (!url && !origin && !title && !frame) return undefined;
+    return { url, origin, title, frame };
 }
 
 function shotOf(raw: unknown): ChatInteractionShot | undefined {

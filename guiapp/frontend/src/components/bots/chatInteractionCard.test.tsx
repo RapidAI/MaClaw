@@ -73,6 +73,23 @@ describe('chat interaction card', () => {
         expect(interactionDecision(parsed!, ['note'], { password: 'secret' })).toBeUndefined();
     });
 
+    it('sends the card frame with the decision', () => {
+        const card = parseChatInteraction({
+            id: 'card_3', task_id: 'task-c', run_id: 'run-c', bot_id: 'bot-a',
+            kind: 'native_handoff', question: '请在这个框里完成',
+            choices: [{ id: 'completed', label: '我已完成' }],
+            operation: { kind: 'verify_native', version: 1, hash: 'ghi' },
+            consent_hash: 'consent-3',
+            target: { origin: 'shop.example', url: 'https://shop.example/pay', frame: 'pay-frame' },
+        });
+        expect(card?.target?.frame).toBe('pay-frame');
+        const decision = interactionDecision(card!, ['completed']);
+        expect(decision?.target_frame).toBe('pay-frame');
+        expect(decision?.target_url).toBe('https://shop.example/pay');
+        const unframed = interactionDecision({ ...card!, target: { origin: 'shop.example', url: 'https://shop.example/pay' } }, ['completed']);
+        expect(unframed?.target_frame).toBeUndefined();
+    });
+
     it('a confirm choice does not add a purchase grant', () => {
         const card = parseChatInteraction({
             id: 'card_2', task_id: 'task-b', run_id: 'run-b', bot_id: 'bot-a',

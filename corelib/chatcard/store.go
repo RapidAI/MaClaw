@@ -15,15 +15,31 @@ import (
 )
 
 // Resume is one durable continuation queued with the decision.
-// Delivering it stores a checkpoint. It does not run the task again.
+// Delivery runs only the post-checkpoint step. It does not replay the
+// work that already happened before the card.
 type Resume struct {
-	ID     string `json:"id"`
-	CardID string `json:"card_id"`
-	TaskID string `json:"task_id"`
-	RunID  string `json:"run_id"`
-	BotID  string `json:"bot_id"`
-	Mode   string `json:"mode"`
-	Status string `json:"status"`
+	ID         string `json:"id"`
+	CardID     string `json:"card_id"`
+	TaskID     string `json:"task_id"`
+	RunID      string `json:"run_id"`
+	InstanceID string `json:"instance_id,omitempty"`
+	BotID      string `json:"bot_id"`
+	Mode       string `json:"mode"`
+	Status     string `json:"status"`
+}
+
+// Execution is the continuation a resume has started or finished.
+// Completing it once is what commits the post-checkpoint result.
+type Execution struct {
+	ResumeID          string
+	Status            string
+	Mode              string
+	Evidence          string
+	Source            string
+	Effects           []string
+	Content           string
+	ContinuationRunID string
+	InstanceID        string
 }
 
 // Store is the durable record of chat cards. A process restart reopens it.
@@ -82,7 +98,26 @@ func (s *Store) migrate() error {
 		mode TEXT NOT NULL,
 		status TEXT NOT NULL,
 		created_at TEXT NOT NULL,
-		delivered_at TEXT
+		delivered_at TEXT,
+		instance_id TEXT NOT NULL DEFAULT ''
+	)`)
+	if err != nil {
+		return err
+	}
+	if _, err = s.db.Exec(`ALTER TABLE chat_card_outbox ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
+	}
+	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS chat_card_execution (
+		resume_id TEXT PRIMARY KEY,
+		status TEXT NOT NULL,
+		mode TEXT NOT NULL DEFAULT '',
+		evidence TEXT NOT NULL DEFAULT '',
+		source TEXT NOT NULL DEFAULT '',
+		effects TEXT NOT NULL DEFAULT '',
+		content TEXT NOT NULL DEFAULT '',
+		continuation_run_id TEXT NOT NULL DEFAULT '',
+		instance_id TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL
 	)`)
 	return err
 }
@@ -312,8 +347,8 @@ func (s *Store) Submit(actor Actor, sub Submission) (Outcome, error) {
 		return Outcome{}, ErrConflict
 	}
 	if out.Resume {
-		if _, err := tx.Exec(`INSERT INTO chat_card_outbox(resume_id, card_id, task_id, run_id, bot_id, mode, status, created_at) VALUES(?,?,?,?,?,?,?,?)`,
-			out.ResumeID, card.ID, card.TaskID, card.RunID, card.BotID, out.Mode, "queued", card.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.Exec(`INSERT INTO chat_card_outbox(resume_id, card_id, task_id, run_id, bot_id, mode, status, created_at, instance_id) VALUES(?,?,?,?,?,?,?,?,?)`,
+			out.ResumeID, card.ID, card.TaskID, card.RunID, card.BotID, out.Mode, "queued", card.UpdatedAt.Format(time.RFC3339Nano), strings.TrimSpace(sub.InstanceID)); err != nil {
 			return Outcome{}, err
 		}
 	}
@@ -483,7 +518,7 @@ func (s *Store) QueuedResumes() ([]Resume, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
-	rows, err := s.db.Query(`SELECT resume_id, card_id, task_id, run_id, bot_id, mode, status FROM chat_card_outbox WHERE status=? ORDER BY created_at`, "queued")
+	rows, err := s.db.Query(`SELECT resume_id, card_id, task_id, run_id, bot_id, mode, status, instance_id FROM chat_card_outbox WHERE status=? ORDER BY created_at`, "queued")
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +526,7 @@ func (s *Store) QueuedResumes() ([]Resume, error) {
 	var out []Resume
 	for rows.Next() {
 		var item Resume
-		if err := rows.Scan(&item.ID, &item.CardID, &item.TaskID, &item.RunID, &item.BotID, &item.Mode, &item.Status); err != nil {
+		if err := rows.Scan(&item.ID, &item.CardID, &item.TaskID, &item.RunID, &item.BotID, &item.Mode, &item.Status, &item.InstanceID); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -613,6 +648,78 @@ func contains(ids []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// BeginExecution inserts the resume as started, or returns the row that
+// is already there. A completed row is not started again.
+func (s *Store) BeginExecution(resumeID string) (Execution, error) {
+	if s == nil || s.db == nil {
+		return Execution{}, ErrNotFound
+	}
+	resumeID = strings.TrimSpace(resumeID)
+	if resumeID == "" {
+		return Execution{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.clock().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(`INSERT INTO chat_card_execution(resume_id, status, updated_at) VALUES(?,?,?) ON CONFLICT(resume_id) DO NOTHING`, resumeID, "started", now); err != nil {
+		return Execution{}, err
+	}
+	return s.executionLocked(resumeID)
+}
+
+// FinishExecution commits the continuation once. A second call returns the
+// stored row and committed=false, so the caller does not apply effects again.
+func (s *Store) FinishExecution(ex Execution) (committed bool, stored Execution, err error) {
+	if s == nil || s.db == nil {
+		return false, Execution{}, ErrNotFound
+	}
+	ex.ResumeID = strings.TrimSpace(ex.ResumeID)
+	if ex.ResumeID == "" {
+		return false, Execution{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.executionLocked(ex.ResumeID)
+	if err != nil {
+		return false, Execution{}, err
+	}
+	if current.Status == "completed" {
+		return false, current, nil
+	}
+	effects, err := json.Marshal(ex.Effects)
+	if err != nil {
+		return false, Execution{}, err
+	}
+	res, err := s.db.Exec(`UPDATE chat_card_execution SET status=?, mode=?, evidence=?, source=?, effects=?, content=?, continuation_run_id=?, instance_id=?, updated_at=? WHERE resume_id=? AND status=?`,
+		"completed", ex.Mode, ex.Evidence, ex.Source, string(effects), ex.Content, ex.ContinuationRunID, ex.InstanceID, s.clock().UTC().Format(time.RFC3339Nano), ex.ResumeID, "started")
+	if err != nil {
+		return false, Execution{}, err
+	}
+	n, _ := res.RowsAffected()
+	stored, err = s.executionLocked(ex.ResumeID)
+	if err != nil {
+		return false, Execution{}, err
+	}
+	return n == 1, stored, nil
+}
+
+func (s *Store) executionLocked(resumeID string) (Execution, error) {
+	var ex Execution
+	var effects string
+	err := s.db.QueryRow(`SELECT resume_id, status, mode, evidence, source, effects, content, continuation_run_id, instance_id FROM chat_card_execution WHERE resume_id=?`, resumeID).
+		Scan(&ex.ResumeID, &ex.Status, &ex.Mode, &ex.Evidence, &ex.Source, &effects, &ex.Content, &ex.ContinuationRunID, &ex.InstanceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Execution{}, ErrNotFound
+	}
+	if err != nil {
+		return Execution{}, err
+	}
+	if strings.TrimSpace(effects) != "" {
+		_ = json.Unmarshal([]byte(effects), &ex.Effects)
+	}
+	return ex, nil
 }
 
 func cloneFields(in map[string]string) map[string]string {
