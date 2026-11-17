@@ -849,6 +849,9 @@ func (s *Service) reportDelegateRunEnd(tenantID, userID, botID, runID, status st
 		return
 	}
 	topic, text := "done", strings.TrimSpace(reply.Text)
+	if runErr == nil && status != "failed" && status != "error" && desktopTaskOutcome(reply.TaskOutcome) == "" {
+		reply.TaskOutcome = "unverified"
+	}
 	switch {
 	case runErr != nil || status == "failed" || status == "error":
 		topic = "blocked"

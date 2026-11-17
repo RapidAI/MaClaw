@@ -21,6 +21,7 @@ func init() {
 	agentservice.DesktopWeb = desktopBotWeb
 	agentservice.FinishDesktopRound = finishDesktopRound
 	desktopMemoryPressured = readDesktopMemoryPressure
+	agentservice.RememberDesktopOutputContract = noteDesktopOutputContract
 	agentservice.DesktopTurnNeedsFinish = func(runID string) bool {
 		if desktopDeclaredOutcome(runID) != "" {
 			return false

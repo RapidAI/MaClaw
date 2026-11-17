@@ -30,6 +30,11 @@ var desktopDeliverablesWait = 20 * time.Second
 
 var desktopDeliverablesExtract = agent.ExtractDesktopDeliverables
 
+// RememberDesktopOutputContract records a resolved output contract for the
+// run. MaClawSrv installs it. An empty list means the turn asked for no
+// artifact, so a text answer can complete it.
+var RememberDesktopOutputContract func(runID string, items []string)
+
 // MACLAW_DESKTOP_DELIVERABLES=0 turns the checklist off.
 func desktopDeliverablesEnabled() bool {
 	return strings.TrimSpace(os.Getenv("MACLAW_DESKTOP_DELIVERABLES")) != "0"
@@ -103,6 +108,9 @@ func (c *coreAgentCallbacks) startDesktopDeliverables() {
 		st.mu.Lock()
 		st.items = items
 		st.mu.Unlock()
+		if RememberDesktopOutputContract != nil {
+			RememberDesktopOutputContract(c.runID, items)
+		}
 		log.Printf("[desktop-deliverables] items=%d %q", len(items), strings.Join(items, " | "))
 	}()
 }

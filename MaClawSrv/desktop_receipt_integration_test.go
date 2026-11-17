@@ -25,13 +25,18 @@ type receiptTurn struct {
 	shot     bool
 	file     bool
 	fileName string
+	contract []string
+	partial  bool
 }
 
 type receiptExecutor struct {
 	turn receiptTurn
 }
 
-func (e *receiptExecutor) Execute(ctx context.Context, _ agentservice.ExecuteRequest) (*agentservice.ExecuteResult, error) {
+func (e *receiptExecutor) Execute(ctx context.Context, req agentservice.ExecuteRequest) (*agentservice.ExecuteResult, error) {
+	if e.turn.contract != nil {
+		noteDesktopOutputContract(req.RunID, e.turn.contract)
+	}
 	if e.turn.shot && !noteDesktopShot(ctx, "image/png", "aGVsbG8=") {
 		return nil, context.Canceled
 	}
@@ -46,7 +51,14 @@ func (e *receiptExecutor) Execute(ctx context.Context, _ agentservice.ExecuteReq
 			return nil, err
 		}
 	}
-	return &agentservice.ExecuteResult{Content: e.turn.result, Metadata: e.turn.meta}, nil
+	meta := e.turn.meta
+	if e.turn.partial {
+		if meta == nil {
+			meta = map[string]string{}
+		}
+		meta["task_outcome"] = agentservice.TaskOutcomePartial
+	}
+	return &agentservice.ExecuteResult{Content: e.turn.result, Metadata: meta}, nil
 }
 
 type receiptView struct {
@@ -69,8 +81,8 @@ func TestDesktopReceiptPersistsVisibleOutcome(t *testing.T) {
 	}{
 		{
 			name:        "text answer on a computer",
-			turn:        receiptTurn{content: "法国的首都是哪里", result: answer},
-			wantOutcome: "",
+			turn:        receiptTurn{content: "法国的首都是哪里", result: answer, contract: []string{}},
+			wantOutcome: agentservice.TaskOutcomeDone,
 			wantPart:    answer,
 			rejectPart:  "没做完",
 		},
@@ -82,11 +94,19 @@ func TestDesktopReceiptPersistsVisibleOutcome(t *testing.T) {
 			rejectPart:  "没做完",
 		},
 		{
-			name:       "process screenshot does not complete a publish",
-			turn:       receiptTurn{content: "在屏幕上把文章发到知乎", result: "已经全部发好了", shot: true},
-			wantPart:   "已经全部发好了",
-			rejectPart: "没做完",
-			forbidDone: true,
+			name:        "process screenshot does not complete a publish",
+			turn:        receiptTurn{content: "在屏幕上把文章发到知乎", result: "已经全部发好了", shot: true, contract: []string{"已发布的帖子"}},
+			wantOutcome: agentservice.TaskOutcomeUnverified,
+			wantPart:    "已经全部发好了",
+			rejectPart:  "没做完",
+			forbidDone:  true,
+		},
+		{
+			name:        "partial result is not washed by a file",
+			turn:        receiptTurn{content: "把文章发出去", result: "只做了一部分", file: true, fileName: "note.txt", partial: true},
+			wantOutcome: agentservice.TaskOutcomePartial,
+			wantPart:    "只做了一部分",
+			rejectPart:  "结果文件已经附",
 		},
 		{
 			name:        "real file delivery",

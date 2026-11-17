@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
@@ -73,7 +74,7 @@ func TestNoneBotReplyLeavesTheOwnersKeyboard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reply.SendToUser != "好了" || reply.Handoff || reply.NovncURL != "" {
+	if !strings.Contains(reply.SendToUser, "好了") || reply.TaskOutcome != "unverified" || reply.Handoff || reply.NovncURL != "" {
 		t.Fatalf("reply = %+v", reply)
 	}
 	key := desktopViewKey("tenant-a", "alice")
@@ -181,7 +182,7 @@ func TestNoneBotDropsALeftoverKeyboardPin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reply.SendToUser != "好了" {
+	if !strings.Contains(reply.SendToUser, "好了") || reply.TaskOutcome != "unverified" {
 		t.Fatalf("reply = %+v", reply)
 	}
 	if got := svc.desktopHeld[key]; got != "bot_shared" {

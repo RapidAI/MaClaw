@@ -678,6 +678,10 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 // a requested output. It replaces a success claim that the evidence does not support.
 const desktopUndeliveredSentence = "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。"
 
+// desktopUnverifiedSentence is the visible line when execution finished but
+// the task effect was not verified. The reply's own text stays after it.
+const desktopUnverifiedSentence = "这件还不能确认已经完成，请以实际结果为准。"
+
 // deliveredOutputNames is files the deliver tool placed on the reply, with
 // bytes. A process screenshot is not one, and neither is a name or a media
 // id without bytes. The request text is not consulted.
@@ -729,10 +733,11 @@ func desktopVisibleAnswer(msg *agentservice.Message) string {
 	return strings.TrimSpace(msg.Metadata["send_to_user"])
 }
 
-// desktopReconcileDelivery records verified tool evidence and leaves every
-// other answer alone. A missing file or post is not a failed answer. A
-// process screenshot is not evidence that an action finished. When nothing
-// was said and nothing was verified, the run is not reported done.
+// desktopReconcileDelivery turns tool and contract records into an outcome.
+// A text answer completes a turn that asked for no artifact. An open output
+// contract or an unposted publish stays unverified, whatever the prose says.
+// A process screenshot is not one of those records. A file does not replace
+// a measured not-done outcome or an unposted publish.
 func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, outcome, why string, runErr error, _ bool) (string, string) {
 	if msg == nil || run == nil || runErr != nil || run.Status == agentservice.RunStatusFailed || run.Status == agentservice.RunStatusCancelled {
 		return outcome, why
@@ -740,37 +745,75 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
 	}
+	switch outcome {
+	case agentservice.TaskOutcomePartial, agentservice.TaskOutcomeBlocked, agentservice.TaskOutcomeNotSubmitted, agentservice.TaskOutcomeUnconfirmed, agentservice.TaskOutcomeUnverified, agentservice.TaskOutcomeAwaitingUser, agentservice.TaskOutcomeRunning:
+		return outcome, why
+	}
 	names := deliveredOutputNames(msg)
+	posted := desktopRunHasConfirmedPost(run.ID)
+	if posted {
+		return agentservice.TaskOutcomeDone, "published"
+	}
+	if rec, ok := desktopPublishRecordOf(run.ID); ok && !rec.posted() {
+		return agentservice.TaskOutcomeUnverified, "publish not verified"
+	}
+	items, resolved := desktopOutputContractOf(run.ID)
+	if resolved && len(items) > 0 && len(names) == 0 {
+		return agentservice.TaskOutcomeUnverified, "output contract open"
+	}
 	if len(names) > 0 {
-		// The file is verified. It does not replace a measured not-done
-		// outcome, and it does not speak for a different action.
 		if strings.TrimSpace(msg.Content) == "" {
 			msg.Content = "结果文件已经附在这条回复上：" + strings.Join(names, "、") + "。"
 		}
-		if outcome == "" && !desktopRunHasConfirmedPost(run.ID) {
-			outcome = agentservice.TaskOutcomeDone
-			why = "file delivered"
-		}
-		desktopSyncVisible(msg)
-		return outcome, why
+		return agentservice.TaskOutcomeDone, "file delivered"
 	}
-	if desktopRunHasConfirmedPost(run.ID) || desktopVisibleAnswer(msg) != "" {
-		return outcome, why
+	if desktopVisibleAnswer(msg) != "" && (!desktopRunTookSteps(run.ID) || resolved) {
+		return agentservice.TaskOutcomeDone, "text answer"
+	}
+	if desktopVisibleAnswer(msg) != "" {
+		return agentservice.TaskOutcomeUnverified, "desktop effect not verified"
 	}
 	if msg.Metadata[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeBlocked &&
-		strings.TrimSpace(msg.Metadata["send_to_user"]) == desktopUndeliveredSentence &&
 		strings.Contains(msg.Content, desktopUndeliveredSentence) {
 		return agentservice.TaskOutcomeBlocked, why
 	}
-	if outcome != "" && outcome != agentservice.TaskOutcomeDone {
-		return outcome, why
-	}
-	outcome = agentservice.TaskOutcomeBlocked
-	why = "nothing was said and nothing was delivered"
 	msg.Content = desktopUndeliveredSentence
 	msg.Metadata["send_to_user"] = desktopUndeliveredSentence
 	msg.Metadata["send_to_user_kind"] = "report"
-	return outcome, why
+	return agentservice.TaskOutcomeBlocked, "nothing was said and nothing was delivered"
+}
+
+type desktopOutputContract struct {
+	items []string
+}
+
+var desktopOutputContracts sync.Map
+
+// noteDesktopOutputContract stores a resolved checklist. An empty list is a
+// resolved "no artifact" contract, which a text answer may complete.
+func noteDesktopOutputContract(runID string, items []string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	copied := append([]string(nil), items...)
+	desktopOutputContracts.Store(runID, desktopOutputContract{items: copied})
+}
+
+func desktopOutputContractOf(runID string) (items []string, resolved bool) {
+	value, ok := desktopOutputContracts.Load(strings.TrimSpace(runID))
+	if !ok {
+		return nil, false
+	}
+	contract, _ := value.(desktopOutputContract)
+	return contract.items, true
+}
+
+func desktopRunTookSteps(runID string) bool {
+	desktopRecStateMu.Lock()
+	steps := desktopRecRunSteps[runID]
+	desktopRecStateMu.Unlock()
+	return steps
 }
 
 // desktopSyncVisible copies a receipt sentence into send_to_user when that
@@ -782,6 +825,15 @@ func desktopSyncVisible(msg *agentservice.Message) {
 	}
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
+	}
+	if strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey]) == agentservice.TaskOutcomeUnverified {
+		content := strings.TrimSpace(msg.Content)
+		send := strings.TrimSpace(msg.Metadata["send_to_user"])
+		if content != "" && !strings.Contains(send, desktopUnverifiedSentence) {
+			msg.Metadata["send_to_user"] = content
+			msg.Metadata["send_to_user_kind"] = "report"
+		}
+		return
 	}
 	if strings.TrimSpace(msg.Metadata["send_to_user"]) != "" || strings.TrimSpace(msg.Content) == "" {
 		return
@@ -839,6 +891,7 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 		"blocked":       "这件没做成，我已经停下，没有再重复尝试。",
 		"not_submitted": "这件还没提交，内容没有发出去。",
 		"unconfirmed":   "提交后没能确认结果，我没有重复提交，请以页面上的实际状态为准。",
+		"unverified":    desktopUnverifiedSentence,
 		"running":       "后台任务还在跑，我会定时查看进度并告诉你。",
 	}[outcome]
 	// A still-running job's why names the shell, the job id and a log tail.

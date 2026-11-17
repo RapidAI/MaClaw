@@ -21,6 +21,7 @@ const (
 	TaskOutcomeBlocked      = "blocked"
 	TaskOutcomeNotSubmitted = "not_submitted"
 	TaskOutcomeUnconfirmed  = "unconfirmed"
+	TaskOutcomeUnverified   = "unverified"
 	TaskOutcomeAwaitingUser = "awaiting_user"
 	TaskOutcomeRunning      = "running"
 )
@@ -28,7 +29,7 @@ const (
 // ValidTaskOutcome reports whether s is one of the defined outcomes.
 func ValidTaskOutcome(s string) bool {
 	switch s {
-	case TaskOutcomeDone, TaskOutcomePartial, TaskOutcomeBlocked, TaskOutcomeNotSubmitted, TaskOutcomeUnconfirmed, TaskOutcomeAwaitingUser, TaskOutcomeRunning:
+	case TaskOutcomeDone, TaskOutcomePartial, TaskOutcomeBlocked, TaskOutcomeNotSubmitted, TaskOutcomeUnconfirmed, TaskOutcomeUnverified, TaskOutcomeAwaitingUser, TaskOutcomeRunning:
 		return true
 	}
 	return false

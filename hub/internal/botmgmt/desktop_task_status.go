@@ -1102,6 +1102,10 @@ func desktopTaskStatusLine(item DesktopTaskStatus, lang string, withResult, show
 			line = not
 			break
 		}
+		if desktopTaskOutcome(item.TaskOutcome) == "" {
+			line = desktopOutcomeStatusLine("unverified", hant, en)
+			break
+		}
 		if en {
 			line = "That one is done."
 		} else if hant {

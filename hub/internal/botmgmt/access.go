@@ -1171,7 +1171,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 	}
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: sendToUser, Waiting: body.Waiting})
 	reply := Reply{Text: text, SendToUser: visible.Sentence, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
-	reply.TaskOutcome = desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey])
+	reply.TaskOutcome = desktopSettleOutcome(body.Metadata)
 	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser)
 	if meta := body.Metadata; meta != nil {
 		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
@@ -1243,7 +1243,7 @@ func noneDesktopSettle(body desktopCommandBody) (Reply, error) {
 	}
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: sendToUser, Waiting: body.Waiting})
 	reply := Reply{Text: text, SendToUser: visible.Sentence, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
-	reply.TaskOutcome = desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey])
+	reply.TaskOutcome = desktopSettleOutcome(body.Metadata)
 	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser)
 	if meta := body.Metadata; meta != nil {
 		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
@@ -1265,7 +1265,7 @@ func desktopSentenceReply(body desktopCommandBody) Reply {
 		sendToUser = strings.TrimSpace(body.Metadata["send_to_user"])
 	}
 	visible := desktopbot.Visible(desktopbot.Turn{SendToUser: sendToUser})
-	reply := Reply{TaskOutcome: desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey])}
+	reply := Reply{TaskOutcome: desktopSettleOutcome(body.Metadata)}
 	if visible.Bubble && !visible.Failed {
 		reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, visible.Sentence)
 		reply.Images = replyImages(body.Attachments)
