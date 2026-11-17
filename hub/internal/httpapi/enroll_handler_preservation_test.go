@@ -865,3 +865,41 @@ func TestEnrollStartHandler_Preservation_OrgMetadataWithoutTree(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// TestEnrollStartPersistsReportedAppVersion: the metadata write runs on a
+// background goroutine after the response, so the assertion polls until the
+// durable row shows the reported platform/version.
+func TestEnrollStartPersistsReportedAppVersion(t *testing.T) {
+	identity, _, _ := newPreservationTestIdentity(t)
+	handler := EnrollStartHandler(identity, nil, nil)
+
+	body := `{"email":"version-test@example.com","machine_name":"win-box","platform":"windows","hostname":"h1","arch":"amd64","app_version":"8.1.0.12464","client_id":"cid-ver"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("enroll status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var result struct {
+		MachineID string `json:"machine_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil || result.MachineID == "" {
+		t.Fatalf("decode response: err=%v body=%s", err, rr.Body.String())
+	}
+
+	ctx := auth.WithTenant(context.Background(), store.DefaultTenantID)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		machine, err := identity.MachinesRepo().GetByID(ctx, result.MachineID)
+		if err == nil && machine != nil && machine.AppVersion == "8.1.0.12464" {
+			if machine.Platform != "windows" || machine.Hostname != "h1" || machine.Arch != "amd64" {
+				t.Fatalf("machine metadata = %#v", machine)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	machine, _ := identity.MachinesRepo().GetByID(ctx, result.MachineID)
+	t.Fatalf("app_version not persisted after enroll/start: %#v", machine)
+}

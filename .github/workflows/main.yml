@@ -2625,10 +2625,11 @@ jobs:
           MOBILEBOT_KEYSTORE_PASSWORD: ${{ secrets.MOBILEBOT_KEYSTORE_PASSWORD }}
           MOBILEBOT_KEY_ALIAS: ${{ secrets.MOBILEBOT_KEY_ALIAS }}
           MOBILEBOT_KEY_PASSWORD: ${{ secrets.MOBILEBOT_KEY_PASSWORD }}
-          # A tag build publishes MaClawGo.apk — a debug-signed asset there
-          # breaks every subsequent OTA (signature conflict on the phone) and
-          # carries a random per-runner cert. Fail instead of warning.
-          REQUIRE_SIGNING: ${{ github.ref_type == 'tag' }}
+          # A tag build publishes MaClawGo.apk — release signing is enforced
+          # when vars.REQUIRE_MOBILEBOT_RELEASE_SIGNING is set to true; otherwise
+          # invalid or missing keystore secrets fall back to debug signing with
+          # a warning so desktop release publishing is not blocked.
+          REQUIRE_SIGNING: ${{ github.ref_type == 'tag' && vars.REQUIRE_MOBILEBOT_RELEASE_SIGNING == 'true' }}
         working-directory: mobilebot/android
         run: |
           set -euo pipefail

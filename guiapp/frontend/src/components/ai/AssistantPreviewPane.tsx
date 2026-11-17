@@ -46,6 +46,8 @@ interface AssistantPreviewPaneProps {
     browserStage?: AgentBrowserStageState | null;
     onBrowserSetHold?: (hold: boolean) => void;
     onBrowserInput?: (payload: string) => void;
+    onBrowserConfirm?: (approve: boolean) => void;
+    onBrowserFinish?: (done: boolean) => void;
     onCloseBrowser?: () => void;
     conflictContent?: React.ReactNode;
     /** Remaining conflict count — shown as CF tab badge. */
@@ -338,6 +340,8 @@ export function AssistantPreviewPane({
     browserStage = null,
     onBrowserSetHold,
     onBrowserInput,
+    onBrowserConfirm,
+    onBrowserFinish,
     onCloseBrowser,
     conflictContent = null,
     conflictCount = 0,
@@ -644,6 +648,8 @@ export function AssistantPreviewPane({
                         lang={lang}
                         onSetHold={onBrowserSetHold}
                         onInput={onBrowserInput}
+                        onConfirm={onBrowserConfirm}
+                        onFinish={onBrowserFinish}
                     />
                 ) : effectiveMode === "agent" && agentView ? (
                     <AgentTaskPanel

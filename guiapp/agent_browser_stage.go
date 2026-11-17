@@ -16,34 +16,48 @@ const agentBrowserStageEvent = "agent-browser-stage"
 
 // AgentBrowserStageView is the live page painted in the assistant preview.
 type AgentBrowserStageView struct {
-	Open      bool   `json:"open"`
-	SessionID string `json:"sessionId"`
-	URL       string `json:"url"`
-	Title     string `json:"title"`
-	Frame     string `json:"frame"`
-	Width     int    `json:"width"`
-	Height    int    `json:"height"`
-	UserHold  bool   `json:"userHold"`
-	AskReason string `json:"askReason"`
-	Seq       int64  `json:"seq"`
+	Open           bool   `json:"open"`
+	SessionID      string `json:"sessionId"`
+	URL            string `json:"url"`
+	Title          string `json:"title"`
+	Frame          string `json:"frame"`
+	Width          int    `json:"width"`
+	Height         int    `json:"height"`
+	UserHold       bool   `json:"userHold"`
+	AskReason      string `json:"askReason"`
+	Host           string `json:"host"`
+	Attention      bool   `json:"attention"`
+	ConfirmItem    string `json:"confirmItem"`
+	ConfirmShop    string `json:"confirmShop"`
+	ConfirmAddress string `json:"confirmAddress"`
+	ConfirmAmount  string `json:"confirmAmount"`
+	ConfirmDetail  string `json:"confirmDetail"`
+	Seq            int64  `json:"seq"`
 }
 
 type agentBrowserStage struct {
-	mu        sync.Mutex
-	app       *App
-	open      bool
-	dismissed bool
-	sessionID string
-	url       string
-	title     string
-	frame     string
-	width     int
-	height    int
-	askReason string
-	frameHash uint64
-	seq       int64
-	pumping   bool
-	stop      chan struct{}
+	mu             sync.Mutex
+	app            *App
+	open           bool
+	dismissed      bool
+	sessionID      string
+	url            string
+	title          string
+	frame          string
+	width          int
+	height         int
+	askReason      string
+	host           string
+	attention      bool
+	confirmItem    string
+	confirmShop    string
+	confirmAddress string
+	confirmAmount  string
+	confirmDetail  string
+	frameHash      uint64
+	seq            int64
+	pumping        bool
+	stop           chan struct{}
 }
 
 var liveAgentBrowser agentBrowserStage
@@ -67,6 +81,15 @@ func (a *App) installAgentBrowserStage() {
 
 func (st *agentBrowserStage) note(n browser.BrowserStageNotice) {
 	st.mu.Lock()
+	if n.Kind == "confirm_clear" {
+		if st.askReason == "confirm" {
+			st.askReason = ""
+		}
+		st.clearConfirmLocked()
+		st.mu.Unlock()
+		st.emit(false)
+		return
+	}
 	st.dismissed = false
 	st.open = true
 	if id := strings.TrimSpace(n.SessionID); id != "" {
@@ -78,23 +101,60 @@ func (st *agentBrowserStage) note(n browser.BrowserStageNotice) {
 	if title := strings.TrimSpace(n.Title); title != "" {
 		st.title = title
 	}
-	if reason := strings.TrimSpace(n.Reason); reason != "" {
-		st.askReason = reason
+	if host := strings.TrimSpace(n.Host); host != "" {
+		st.host = host
 	}
-	if n.Kind == "session" {
+	switch n.Kind {
+	case "session":
 		st.askReason = ""
+		st.attention = false
+		st.clearConfirmLocked()
+	case "confirm":
+		st.askReason = "confirm"
+		st.attention = false
+		st.confirmItem = strings.TrimSpace(n.Item)
+		st.confirmShop = strings.TrimSpace(n.Shop)
+		st.confirmAddress = strings.TrimSpace(n.Address)
+		st.confirmAmount = strings.TrimSpace(n.Amount)
+		st.confirmDetail = strings.TrimSpace(n.Detail)
+	default:
+		if reason := strings.TrimSpace(n.Reason); reason != "" {
+			st.askReason = reason
+		}
+		if n.Hold || n.Kind == "attention" {
+			st.attention = true
+			st.clearConfirmLocked()
+		}
 	}
 	st.mu.Unlock()
 	st.ensurePump()
 	st.emit(false)
 }
 
+func (st *agentBrowserStage) clearConfirmLocked() {
+	st.confirmItem = ""
+	st.confirmShop = ""
+	st.confirmAddress = ""
+	st.confirmAmount = ""
+	st.confirmDetail = ""
+}
+
 func (st *agentBrowserStage) setHold(hold bool) {
 	st.mu.Lock()
 	st.open = st.open || hold
-	if !hold && st.askReason != "" {
+	if !hold {
+		st.askReason = ""
+		st.attention = false
+	}
+	st.mu.Unlock()
+}
+
+func (st *agentBrowserStage) clearConfirm() {
+	st.mu.Lock()
+	if st.askReason == "confirm" {
 		st.askReason = ""
 	}
+	st.clearConfirmLocked()
 	st.mu.Unlock()
 }
 
@@ -102,7 +162,12 @@ func (st *agentBrowserStage) dismiss() {
 	st.mu.Lock()
 	st.open = false
 	st.dismissed = true
+	st.attention = false
+	st.clearConfirmLocked()
 	st.mu.Unlock()
+	// Hiding the card is a cancel. A plain hold is a hand-back so the agent
+	// probes instead of staying blocked.
+	_ = browser.ResolveCheckoutCard(false)
 	browser.SetUserHoldsBrowser(false, "")
 	st.emit(false)
 }
@@ -112,14 +177,21 @@ func (st *agentBrowserStage) snapshot(includeFrame bool) AgentBrowserStageView {
 	defer st.mu.Unlock()
 	st.seq++
 	view := AgentBrowserStageView{
-		Open:      st.open && !st.dismissed,
-		SessionID: st.sessionID,
-		URL:       st.url,
-		Title:     st.title,
-		Width:     st.width,
-		Height:    st.height,
-		AskReason: st.askReason,
-		Seq:       st.seq,
+		Open:           st.open && !st.dismissed,
+		SessionID:      st.sessionID,
+		URL:            st.url,
+		Title:          st.title,
+		Width:          st.width,
+		Height:         st.height,
+		AskReason:      st.askReason,
+		Host:           st.host,
+		Attention:      st.attention,
+		ConfirmItem:    st.confirmItem,
+		ConfirmShop:    st.confirmShop,
+		ConfirmAddress: st.confirmAddress,
+		ConfirmAmount:  st.confirmAmount,
+		ConfirmDetail:  st.confirmDetail,
+		Seq:            st.seq,
 	}
 	held, _ := browser.UserHoldsBrowser()
 	view.UserHold = held
@@ -140,6 +212,9 @@ func (st *agentBrowserStage) emit(includeFrame bool) {
 }
 
 func (st *agentBrowserStage) ensurePump() {
+	if testing.Testing() {
+		return
+	}
 	st.mu.Lock()
 	if st.pumping {
 		st.mu.Unlock()
@@ -239,6 +314,28 @@ func (a *App) AgentBrowserSetControl(hold bool) error {
 	}
 	browser.SetUserHoldsBrowser(hold, reason)
 	liveAgentBrowser.setHold(hold)
+	liveAgentBrowser.emit(false)
+	return nil
+}
+
+// AgentBrowserConfirm records the payment card. True stores the amount the
+// card showed. False cancels the purchase. Neither click pays.
+func (a *App) AgentBrowserConfirm(approve bool) error {
+	err := browser.ResolveCheckoutCard(approve)
+	liveAgentBrowser.clearConfirm()
+	liveAgentBrowser.emit(false)
+	return err
+}
+
+// AgentBrowserFinish ends a takeover. Done means the person finished the
+// step. False means they cancelled it.
+func (a *App) AgentBrowserFinish(done bool) error {
+	if done {
+		browser.SetUserHoldsBrowser(false, "")
+	} else {
+		browser.CancelUserHold()
+	}
+	liveAgentBrowser.setHold(false)
 	liveAgentBrowser.emit(false)
 	return nil
 }

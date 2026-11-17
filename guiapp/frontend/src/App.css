@@ -31888,10 +31888,35 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-workbench-devices-popover__error { color: var(--theme-danger, #b74a4a); }
 .mc-workbench-devices-popover__expires {
   margin-top: 6px;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   font-size: 11px;
-  text-align: center;
   color: var(--theme-text-muted, #8a97a5);
 }
+.mc-workbench-devices-popover__expires-text { flex: 1; text-align: center; padding-left: 26px; }
+/* Refresh: same chrome as the bell/devices icon buttons so the popover
+   footer reads as a pair with the status line controls. */
+.mc-workbench-devices-popover__refresh {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+}
+.mc-workbench-devices-popover__refresh:hover { background: var(--theme-surface-muted, rgba(0, 0, 0, .05)); color: var(--mc-accent, #2e75cb); }
+.mc-workbench-devices-popover__refresh:focus-visible { outline: 2px solid var(--mc-accent, #2e75cb); outline-offset: 1px; }
+.mc-workbench-devices-popover__refresh:disabled { opacity: .45; cursor: default; }
+.mc-workbench-devices-popover__refresh:disabled:hover { background: transparent; color: var(--theme-text-secondary); }
 .mc-workbench-devices-popover__divider {
   height: 1px;
   margin: 10px 0;

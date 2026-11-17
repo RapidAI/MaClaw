@@ -688,7 +688,7 @@ func (s *BrowserTaskSupervisor) doStep(sess *Session, step StepSpec) error {
 			return fmt.Errorf("navigate: missing url param")
 		}
 		if IsCashierURL(url) {
-			return policyDenied("%s", MsgCheckoutBlocked)
+			return policyDenied("%s", checkoutNeedsPersonMessage())
 		}
 		_, err := sess.Navigate(url)
 		return err
@@ -699,7 +699,7 @@ func (s *BrowserTaskSupervisor) doStep(sess *Session, step StepSpec) error {
 			return fmt.Errorf("click: missing selector param")
 		}
 		if IsCheckoutControl("", sel) {
-			return policyDenied("%s", MsgCheckoutBlocked)
+			return policyDenied("%s", checkoutNeedsPersonMessage())
 		}
 		return sess.Click(sel)
 

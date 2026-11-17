@@ -70,6 +70,122 @@ func checkoutKeySubmits(key string) bool {
 	return strings.Contains(k, "enter") || strings.Contains(k, "return")
 }
 
+// pressActivatesFocusedControl reports Space, which activates a focused
+// button. It is not Enter, so an empty focus on a cashier page does not count.
+func pressActivatesFocusedControl(key string) bool {
+	if strings.TrimSpace(key) == "" && strings.Contains(key, " ") {
+		return true
+	}
+	k := strings.ToLower(strings.TrimSpace(key))
+	k = strings.ReplaceAll(k, "_", "")
+	k = strings.ReplaceAll(k, "-", "")
+	return k == "space" || k == "spacebar"
+}
+
+// checkoutFocusLabel keeps a control name. A body dump is not a control.
+func checkoutFocusLabel(focused string) string {
+	focused = strings.TrimSpace(strings.Join(strings.Fields(focused), " "))
+	if len([]rune(focused)) > 80 {
+		return ""
+	}
+	return focused
+}
+
+func checkoutSearchField(label string) bool {
+	n := normalizeCheckoutText(label)
+	return strings.Contains(n, "搜索") || strings.Contains(n, "search")
+}
+
+// checkoutPressWouldCommit reports that a real key would submit an order.
+// Enter in a single-line field on the order page counts. Enter in a note
+// inserts a newline. Space counts only on the pay control itself.
+func checkoutPressWouldCommit(key string, page CheckoutPage) bool {
+	if pressActivatesFocusedControl(key) {
+		label := checkoutFocusLabel(page.Focused)
+		return label != "" && IsCheckoutControl(label, "")
+	}
+	if !checkoutKeySubmits(key) {
+		return false
+	}
+	if focusedPageDump(page.Focused) && !checkoutTagIsSingleLine(page.Tag) {
+		return false
+	}
+	if checkoutMultilineField(page.Focused) || checkoutTagIsMultiline(page.Tag) {
+		return false
+	}
+	label := checkoutFocusLabel(page.Focused)
+	if (CheckoutTarget{
+		Name: label, Text: label, Context: page.Context, URL: page.URL,
+		Key: key, Submits: true,
+	}).Commits() {
+		return true
+	}
+	if checkoutSearchField(label) || checkoutTagIsSearch(page.Tag) || checkoutSafeLabel(label) {
+		return false
+	}
+	if !checkoutOrderContext(page.Context) && !checkoutCommitURL(page.URL) {
+		return false
+	}
+	// A single-line field submits the form. An unlabeled input still does
+	// when the page read recorded its tag.
+	return checkoutTextField(label) || checkoutTagIsSingleLine(page.Tag)
+}
+
+// checkoutScriptPressWouldCommit reports a page-script press().
+// press("Enter") calls form.requestSubmit, so a note or another button on
+// the order form still submits. Search stays on its own form.
+func checkoutScriptPressWouldCommit(key string, page CheckoutPage) bool {
+	if pressActivatesFocusedControl(key) {
+		return checkoutPressWouldCommit(key, page)
+	}
+	if !checkoutKeySubmits(key) {
+		return false
+	}
+	label := checkoutFocusLabel(page.Focused)
+	if (checkoutSearchField(label) || checkoutTagIsSearch(page.Tag)) && !IsCheckoutControl(label, "") {
+		return false
+	}
+	if checkoutPressWouldCommit(key, page) {
+		return true
+	}
+	if focusedPageDump(page.Focused) && !checkoutTagIsSingleLine(page.Tag) {
+		return false
+	}
+	return checkoutOrderContext(page.Context) || checkoutCommitURL(page.URL)
+}
+
+func focusedPageDump(focused string) bool {
+	focused = strings.TrimSpace(strings.Join(strings.Fields(focused), " "))
+	return len([]rune(focused)) > 80
+}
+
+func checkoutMultilineField(label string) bool {
+	n := normalizeCheckoutText(label)
+	for _, m := range []string{"备注", "留言", "comment", "评价"} {
+		if strings.Contains(n, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkoutTagIsMultiline(tag string) bool {
+	return strings.EqualFold(strings.TrimSpace(tag), "textarea")
+}
+
+func checkoutTagIsSearch(tag string) bool {
+	return strings.EqualFold(strings.TrimSpace(tag), "search")
+}
+
+func checkoutTagIsSingleLine(tag string) bool {
+	switch strings.ToLower(strings.TrimSpace(tag)) {
+	case "text", "input", "tel", "email", "password", "number", "url":
+		return true
+	default:
+		return false
+	}
+}
+
 func checkoutSafeLabel(label string) bool {
 	l := normalizeCheckoutText(label)
 	if l == "" {
@@ -278,6 +394,7 @@ type CheckoutPage struct {
 	URL      string   `json:"url"`
 	Context  string   `json:"context"`
 	Focused  string   `json:"focused"`
+	Tag      string   `json:"tag"`
 	Selected []string `json:"selected"`
 }
 
@@ -288,7 +405,12 @@ const checkoutPageExpr = `(function(){
   function text(n){ return ((n && (n.innerText || n.textContent)) || '').replace(/\s+/g,' ').trim(); }
   var el = document.activeElement;
   var focused = '';
-  if (el) { focused = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || text(el) || (el.value || ''); }
+  var tag = '';
+  if (el) {
+    focused = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || text(el) || (el.value || '');
+    tag = String(el.tagName || '').toLowerCase();
+    if (tag === 'input') tag = String((el.getAttribute && el.getAttribute('type')) || 'text').toLowerCase();
+  }
   var body = text(document.body).slice(0, 4000);
   var selected = [];
   var nodes = document.querySelectorAll('[aria-checked="true"], input[type="checkbox"]:checked');
@@ -297,7 +419,7 @@ const checkoutPageExpr = `(function(){
     var line = text(row || nodes[i].parentElement || nodes[i]).slice(0, 80);
     if (line) selected.push(line);
   }
-  return JSON.stringify({url: location.href, context: body, focused: focused.slice(0, 200), selected: selected});
+  return JSON.stringify({url: location.href, context: body, focused: focused.slice(0, 200), tag: tag, selected: selected});
 })()`
 
 // ParseCheckoutPage reads the JSON from checkoutPageExpr.

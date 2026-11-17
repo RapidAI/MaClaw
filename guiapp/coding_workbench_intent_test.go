@@ -189,6 +189,76 @@ func TestFallbackAskKeepsWorkNameContext(t *testing.T) {
 	}
 }
 
+func TestFallbackLongAskSkipsLeadingInterjection(t *testing.T) {
+	got := fallbackCodingRequestRestatement("太好了！帮我把导出功能加上水印记录并且支持一键回填到原始表格里面去，顺便把错误提示文案也统一成中文规范显示", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "太好了") {
+		t.Fatalf("interjection leaked into the headline: %q", got)
+	}
+	if !strings.Contains(got, "帮我把导出功能加上水印记录") {
+		t.Fatalf("lead requirement dropped: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("帮我，把导出功能加上水印记录并且支持一键回填到原始表格里面去，顺便把错误提示文案也统一成中文规范显示", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "「帮我，") {
+		t.Fatalf("politeness opener leaked into the headline: %q", got)
+	}
+	if !strings.Contains(got, "把导出功能加上水印记录") {
+		t.Fatalf("lead requirement dropped after opener: %q", got)
+	}
+}
+
+func TestFallbackLongAskTruncationKeepsParensBalanced(t *testing.T) {
+	got := fallbackCodingRequestRestatement("先把左侧导航栏的菜单项（icon1、icon2、icon3、icon4、icon5、icon6）重新整理为线性风格并更新样式", stickyCodingWorkbenchMemory{})
+	if strings.Count(got, "（") != strings.Count(got, "）") || strings.Count(got, "(") != strings.Count(got, ")") {
+		t.Fatalf("truncated head left unbalanced parens: %q", got)
+	}
+	if !strings.Contains(got, "菜单项") {
+		t.Fatalf("head lost the lead requirement: %q", got)
+	}
+}
+
+func TestFallbackLongAskNamesGoalBeforeList(t *testing.T) {
+	got := fallbackCodingRequestRestatement("请完成下面这几件事：（1）梳理一下各个模块的职责划分和相互依赖关系（2）写一份完整的结构说明文档放到docs目录", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "（1）") || strings.Contains(got, "（2）") {
+		t.Fatalf("list marker leaked into the headline: %q", got)
+	}
+	if !strings.Contains(got, "完成下面这几件事") {
+		t.Fatalf("goal head dropped: %q", got)
+	}
+}
+
+func TestFallbackLongAskBareListNamesFirstItem(t *testing.T) {
+	got := fallbackCodingRequestRestatement("（1）把导出功能加上水印记录并支持一键回填到原始表格里面去、（2）把错误提示文案统一成中文规范显示样式", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "（1）") || strings.Contains(got, "（2）") {
+		t.Fatalf("list marker leaked: %q", got)
+	}
+	if !strings.Contains(got, "把导出功能加上水印记录") {
+		t.Fatalf("first list item dropped: %q", got)
+	}
+	if !strings.Contains(got, "其余要求") {
+		t.Fatalf("later items should stay acknowledged: %q", got)
+	}
+}
+
+func TestFallbackShortListAskNamesItems(t *testing.T) {
+	got := fallbackCodingRequestRestatement("（1）改标题、（2）改图标", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "（1）") || strings.Contains(got, "（2）") {
+		t.Fatalf("short list kept the markers: %q", got)
+	}
+	if !strings.Contains(got, "改标题") || !strings.Contains(got, "改图标") {
+		t.Fatalf("short list dropped an item: %q", got)
+	}
+}
+
+func TestFallbackListAskKeepsTrailingRequirement(t *testing.T) {
+	got := fallbackCodingRequestRestatement("（1）改标题、（2）改图标，周三前交付", stickyCodingWorkbenchMemory{})
+	if !strings.Contains(got, "改标题") || !strings.Contains(got, "改图标") {
+		t.Fatalf("list items dropped: %q", got)
+	}
+	if !strings.Contains(got, "其余要求") {
+		t.Fatalf("the requirement after the list must stay acknowledged: %q", got)
+	}
+}
+
 func TestFallbackBareContinueWithoutContextKeepsProcessLine(t *testing.T) {
 	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{})
 	if !strings.Contains(got, "先看清当前项目") {

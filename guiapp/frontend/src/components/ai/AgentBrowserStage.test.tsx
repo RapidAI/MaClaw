@@ -68,4 +68,47 @@ describe("AgentBrowserStage", () => {
         expect(payload.x).toBeCloseTo(0.25);
         expect(payload.y).toBeCloseTo(0.4);
     });
+
+    it("asks the person to confirm payment before the button enables", () => {
+        const onConfirm = vi.fn();
+        render(<AgentBrowserStage
+            state={{
+                ...base,
+                confirmAmount: "9.98",
+                confirmItem: "椰子水饮料 1250mL×2瓶",
+                confirmShop: "京喜自营官方店",
+                confirmAddress: "北京海淀区上地佳园",
+                askReason: "confirm",
+            }}
+            lang="zh-Hans"
+            onConfirm={onConfirm}
+        />);
+        expect(screen.getByTestId("agent-browser-confirm-card").textContent).toContain("确认支付 ¥9.98");
+        expect(screen.getByTestId("agent-browser-confirm-card").textContent).toContain("椰子水");
+        expect(screen.getByTestId("agent-browser-confirm-card").textContent).toContain("上地佳园");
+        const submit = screen.getByTestId("agent-browser-confirm-submit") as HTMLButtonElement;
+        expect(submit.disabled).toBe(true);
+        fireEvent.click(screen.getByTestId("agent-browser-confirm-check"));
+        expect(submit.disabled).toBe(false);
+        fireEvent.click(submit);
+        expect(onConfirm).toHaveBeenCalledWith(true);
+        expect(screen.getByTestId("agent-browser-shield")).toBeTruthy();
+    });
+
+    it("highlights the page and waits when the person must finish the step", () => {
+        const onFinish = vi.fn();
+        render(<AgentBrowserStage
+            state={{ ...base, userHold: true, attention: true, askReason: "secret", host: "item.jd.com", frame: "aGk=" }}
+            lang="zh-Hans"
+            onFinish={onFinish}
+        />);
+        expect(screen.getByTestId("agent-browser-stage").className).toContain("is-attention");
+        expect(screen.getByTestId("agent-browser-waiting").textContent).toContain("等待你操作");
+        expect(screen.getByText(/item\.jd\.com/)).toBeTruthy();
+        fireEvent.click(screen.getByTestId("agent-browser-attention-done"));
+        expect(onFinish).toHaveBeenCalledWith(true);
+        fireEvent.click(screen.getByTestId("agent-browser-attention-cancel"));
+        expect(onFinish).toHaveBeenCalledWith(false);
+        expect(screen.queryByTestId("agent-browser-shield")).toBeNull();
+    });
 });

@@ -104,10 +104,19 @@ class ViewerReduceState {
     last: last,
     requestId: requestId,
     body: body,
-    thinking: [for (final block in thinking) ViewerThinking(text: block.text, done: block.done)],
+    thinking: [
+      for (final block in thinking)
+        ViewerThinking(text: block.text, done: block.done),
+    ],
     timeline: [
       for (final row in timeline)
-        ViewerTimelineRow(phase: row.phase, taskId: row.taskId, title: row.title, runId: row.runId, text: row.text),
+        ViewerTimelineRow(
+          phase: row.phase,
+          taskId: row.taskId,
+          title: row.title,
+          runId: row.runId,
+          text: row.text,
+        ),
     ],
     cards: [
       for (final card in cards)
@@ -120,7 +129,10 @@ class ViewerReduceState {
           asError: card.asError,
         ),
     ],
-    notices: [for (final note in notices) ViewerNotice(text: note.text, asError: note.asError)],
+    notices: [
+      for (final note in notices)
+        ViewerNotice(text: note.text, asError: note.asError),
+    ],
     visible: visible,
     trialStatus: trialStatus,
     trialFailures: trialFailures,
@@ -249,7 +261,9 @@ String _runOf(Map coding) {
 void _apply(ViewerReduceState state, Map<String, dynamic> event) {
   final name = _text(event['event']);
   final requestId = _text(event['request_id']);
-  if (requestId.isNotEmpty && name == 'round_started' && requestId != state.requestId) {
+  if (requestId.isNotEmpty &&
+      name == 'round_started' &&
+      requestId != state.requestId) {
     state.requestId = requestId;
     state.body = '';
     state.thinking = [];
@@ -270,7 +284,9 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
       state.body = _applyPieces(body, _pieces(event));
       return;
     case 'thinking':
-      final mode = _text(event['state']).isEmpty ? 'delta' : _text(event['state']);
+      final mode = _text(event['state']).isEmpty
+          ? 'delta'
+          : _text(event['state']);
       if (mode == 'started') {
         final tail = state.thinking.isEmpty ? null : state.thinking.last;
         if (tail == null || tail.done) state.thinking.add(ViewerThinking());
@@ -315,14 +331,18 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
       if (name == 'stream_done') state.responded = false;
       return;
     case 'card':
-      final kind = _text(event['kind']).isEmpty ? 'notice' : _text(event['kind']);
+      final kind = _text(event['kind']).isEmpty
+          ? 'notice'
+          : _text(event['kind']);
       if (kind == 'notice' && _credential.hasMatch(requestId)) {
         for (final card in state.cards) {
           if (card.requestId == requestId) card.expired = true;
         }
         final note = _text(event['text']);
         if (note.isNotEmpty) {
-          state.notices.add(ViewerNotice(text: note, asError: event['as_error'] == true));
+          state.notices.add(
+            ViewerNotice(text: note, asError: event['as_error'] == true),
+          );
         }
         return;
       }
@@ -341,7 +361,9 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
       }
       final note = _text(event['text']);
       if (note.isNotEmpty) {
-        state.notices.add(ViewerNotice(text: note, asError: event['as_error'] == true));
+        state.notices.add(
+          ViewerNotice(text: note, asError: event['as_error'] == true),
+        );
       }
       return;
     case 'response':
@@ -442,7 +464,10 @@ ViewerReduceState _fromLive(Map<String, dynamic> event, int cursor) {
 }
 
 /// Folds one frame. Returns the same instance when the event is ignored.
-ViewerReduceState reduceViewerEvent(ViewerReduceState state, Map<String, dynamic> event) {
+ViewerReduceState reduceViewerEvent(
+  ViewerReduceState state,
+  Map<String, dynamic> event,
+) {
   final name = _text(event['event']);
   if (!_known(name)) return state;
   final cursor = _num(event['cursor']);
@@ -470,7 +495,10 @@ ViewerReduceState reduceViewerEvent(ViewerReduceState state, Map<String, dynamic
     return next;
   }
   final requestId = _text(event['request_id']);
-  if (from > state.last + 1 && name == 'round_started' && requestId.isNotEmpty && requestId != state.requestId) {
+  if (from > state.last + 1 &&
+      name == 'round_started' &&
+      requestId.isNotEmpty &&
+      requestId != state.requestId) {
     final next = state.clone();
     _apply(next, event);
     next.last = cursor;
@@ -488,17 +516,40 @@ Map<String, dynamic> watchTaskBody(String projectPath) => {
   'stream_proto': 2,
 };
 
-/// Seeds the phone reducer from a watch_task reply. A live map with cursor
-/// above 0 becomes one resync snapshot so the next SSE frame appends.
-ViewerReduceState seedViewerFromWatchReply(Map<String, dynamic> reply) {
-  final live = reply['live'];
-  if (live is! Map) return emptyViewerState();
-  final cursor = _num(live['cursor']);
-  if (cursor <= 0) return emptyViewerState();
-  return reduceViewerEvent(emptyViewerState(), {
+/// Seeds the phone reducer from a watch_task reply, folding onto [prev].
+///
+/// The reply cursor is the folded watermark. A settled turn omits live and
+/// still carries that cursor; ignoring it leaves last at 0, so the next SSE
+/// frame gaps for the rest of the stream. A live cursor above 0 wins, so
+/// frames between the snapshot and the watermark can still append. A cursor
+/// already passed returns the same instance.
+ViewerReduceState seedViewerFromWatchReply(
+  Map<String, dynamic> reply, [
+  ViewerReduceState? prev,
+]) {
+  final base = prev ?? emptyViewerState();
+  final raw = reply['live'];
+  final live = raw is Map ? Map<String, dynamic>.from(raw) : null;
+  final liveCursor = live == null ? 0 : _num(live['cursor']);
+  final at = liveCursor > 0 ? liveCursor : _num(reply['cursor']);
+  final requestId = live == null ? '' : _text(live['request_id']);
+  if (live == null || requestId.isEmpty) {
+    if (at > base.last) {
+      // Drop the latch when the watermark moves, so the next dropped frame
+      // is a new hole. The screen still owes a cursor it already saw above
+      // this mark; that debt is not this fold.
+      final next = base.clone();
+      next.last = at;
+      next.gap = false;
+      return next;
+    }
+    return base;
+  }
+  if (at <= 0) return base;
+  return reduceViewerEvent(base, {
     'event': 'snapshot',
     'resync': true,
-    'cursor': cursor,
+    'cursor': at,
     'live': live,
   });
 }

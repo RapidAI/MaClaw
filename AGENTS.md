@@ -219,11 +219,19 @@
   `coding_workbench_intent.go`) must NAME the work, not describe the process:
   a context-free ask ≤48 runes echoes itself via `codingDescribeNewAsk`
   ("这次<ask>，其它先不动"), and a longer ask leads with its first requirement
-  via `codingRequestHeadline` ("先处理「<head>」，其余要求一并处理"). The
-  generic process filler ("先看清当前项目里相关的实现和约束…") survives only
-  for inputs with no nameable ask — punctuation-only text or a bare continue
-  with nothing stored. The lightweight-LLM refinement
-  (`llmCodingRequestRestatement`) still replaces the fallback when available.
+  via `codingRequestHeadline` ("先处理「<head>」，其余要求一并处理") — the
+  headline peels leading discourse openers ("太好了！", "帮我，") and
+  sub-2-rune fragments, cuts at the first sentence boundary, only accepts a
+  comma clause ≥6 runes as the head, and resolves numbered breakdowns the
+  same way the session-goal echo does (`codingRequirementGoalCut`): the
+  goal before （1） is the requirement, a bare list names its items
+  ("改A、改B" — first item in full when titles exceed the 16-rune cap),
+  and any remainder past the head keeps `more` so "其余要求一并处理"
+  acknowledges it. The generic process filler
+  ("先看清当前项目里相关的实现和约束…") survives only for inputs with no
+  nameable ask — punctuation-only text or a bare continue with nothing
+  stored. The lightweight-LLM refinement (`llmCodingRequestRestatement`)
+  still replaces the fallback when available.
 
 ## Remote-control ops (guiapp ↔ hub)
 

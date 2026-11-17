@@ -7,6 +7,7 @@ import {
     applyRemoteStreamPayload,
     applyRemoteWatchSnapshot,
     bindRemoteAssistantActions,
+    bindRemoteStreamRecovery,
     publishRemoteAssistantSession,
     remoteAssistantSend,
     remoteAssistantSessionSnapshot,
@@ -34,6 +35,7 @@ function texts() {
 describe('remoteAssistantSession sent-line echo', () => {
     beforeEach(() => {
         bindRemoteAssistantActions(null);
+        bindRemoteStreamRecovery(null);
         publishRemoteAssistantSession(null);
     });
 
@@ -104,6 +106,7 @@ describe('remoteAssistantSession sent-line echo', () => {
 describe('remoteAssistantSession live mirror', () => {
     beforeEach(() => {
         bindRemoteAssistantActions(null);
+        bindRemoteStreamRecovery(null);
         publishRemoteAssistantSession(null);
     });
 
@@ -266,6 +269,203 @@ describe('remoteAssistantSession live mirror', () => {
         const live = remoteAssistantSessionSnapshot()?.live;
         expect(live?.requestId).toBe('r2');
         expect(live?.parts).toEqual([{ kind: 'text', seq: 2, text: '新内容' }]);
+    });
+
+    function assistantBody() {
+        const live = remoteAssistantSessionSnapshot()?.live;
+        return (live?.parts || []).filter(part => part.kind === 'text').map(part => part.text).join('');
+    }
+
+    it('asks for a fresh watch once when a proto-2 frame opens a cursor hole', () => {
+        const recover = vi.fn();
+        bindRemoteStreamRecovery(recover);
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 10,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 10);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 12, cursor_from: 12, text: '乙',
+        });
+        expect(recover).toHaveBeenCalledTimes(1);
+        expect(recover).toHaveBeenCalledWith('g1', 'D:/tasks/a');
+        expect(assistantBody()).toBe('甲');
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 13, cursor_from: 13, text: '丙',
+        });
+        expect(recover).toHaveBeenCalledTimes(1);
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 13,
+            parts: [{ kind: 'text', seq: 1, text: '甲乙丙' }],
+        }, undefined, 13);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 14, cursor_from: 14, text: '丁',
+        });
+        expect(assistantBody()).toBe('甲乙丙丁');
+        expect(recover).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks for a fresh watch when the resync frame has no live body', () => {
+        const recover = vi.fn();
+        bindRemoteStreamRecovery(recover);
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 10,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 10);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a',
+            event: 'snapshot', resync: true, cursor: 40,
+        });
+        expect(recover).toHaveBeenCalledTimes(1);
+        expect(assistantBody()).toBe('甲');
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a',
+            event: 'snapshot', resync: true, cursor: 41,
+        });
+        expect(recover).toHaveBeenCalledTimes(1);
+    });
+
+    it('a caught-up watermark lets the next hole ask for watch again', () => {
+        const recover = vi.fn();
+        bindRemoteStreamRecovery(recover);
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 10,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 10);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a',
+            event: 'snapshot', resync: true, cursor: 40,
+        });
+        expect(recover).toHaveBeenCalledTimes(1);
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', null, undefined, 40);
+        expect(assistantBody()).toBe('甲');
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 41, cursor_from: 41, text: '续',
+        });
+        expect(assistantBody()).toBe('甲续');
+        expect(recover).toHaveBeenCalledTimes(1);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a',
+            event: 'snapshot', resync: true, cursor: 50,
+        });
+        expect(recover).toHaveBeenCalledTimes(2);
+    });
+
+    it('asks once more when the watch reply is behind cursors already dropped', () => {
+        const recover = vi.fn();
+        bindRemoteStreamRecovery(recover);
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 10,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 10);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 12, cursor_from: 12, text: '乙',
+        });
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 15, cursor_from: 15, text: '丙',
+        });
+        expect(recover).toHaveBeenCalledTimes(1);
+        expect(assistantBody()).toBe('甲');
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', null, undefined, 12);
+        expect(recover).toHaveBeenCalledTimes(2);
+        expect(assistantBody()).toBe('甲');
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', null, undefined, 12);
+        expect(recover).toHaveBeenCalledTimes(2);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 13, cursor_from: 13, text: '续',
+        });
+        expect(assistantBody()).toBe('甲续');
+        expect(recover).toHaveBeenCalledTimes(2);
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 15,
+            parts: [{ kind: 'text', seq: 1, text: '甲乙丙' }],
+        }, undefined, 15);
+        expect(assistantBody()).toBe('甲乙丙');
+        expect(recover).toHaveBeenCalledTimes(2);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor: 16, cursor_from: 16, text: '丁',
+        });
+        expect(assistantBody()).toBe('甲乙丙丁');
+        expect(recover).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not ask again when the watch reply stays on the same watermark', () => {
+        const recover = vi.fn();
+        bindRemoteStreamRecovery(recover);
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 10,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 10);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a',
+            event: 'snapshot', resync: true, cursor: 40,
+        });
+        expect(recover).toHaveBeenCalledTimes(1);
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', null, undefined, 10);
+        expect(assistantBody()).toBe('甲');
+        expect(recover).toHaveBeenCalledTimes(1);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a',
+            event: 'snapshot', resync: true, cursor: 41,
+        });
+        expect(recover).toHaveBeenCalledTimes(1);
+    });
+
+    it('folds a higher snapshot of the next request and still ignores an older one', () => {
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            cursor: 10,
+            parts: [{ kind: 'text', seq: 1, text: '旧' }],
+        }, undefined, 10);
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r2',
+            project_path: 'D:/tasks/a',
+            cursor: 4,
+            parts: [{ kind: 'text', seq: 1, text: '更旧' }],
+        }, undefined, 4);
+        expect(assistantBody()).toBe('旧');
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r2',
+            project_path: 'D:/tasks/a',
+            display_text: '下一问',
+            cursor: 20,
+            parts: [{ kind: 'text', seq: 1, text: '新' }],
+        }, undefined, 20);
+        expect(remoteAssistantSessionSnapshot()?.live?.requestId).toBe('r2');
+        expect(assistantBody()).toBe('新');
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r2',
+            event: 'token', cursor: 21, cursor_from: 21, text: '续',
+        });
+        expect(assistantBody()).toBe('新续');
     });
 
     const wireSnapshots = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../../../../testdata/viewer_wire_snapshots.json'), 'utf8')) as {
