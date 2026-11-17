@@ -7,13 +7,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -26,6 +29,9 @@ type receiptTurn struct {
 	file     bool
 	fileName string
 	contract []string
+	slots    []string
+	files    []string
+	posts    []browser.PublishState
 	partial  bool
 }
 
@@ -34,20 +40,37 @@ type receiptExecutor struct {
 }
 
 func (e *receiptExecutor) Execute(ctx context.Context, req agentservice.ExecuteRequest) (*agentservice.ExecuteResult, error) {
-	if e.turn.contract != nil {
+	if e.turn.slots != nil {
+		noteDesktopOutputSlots(req.RunID, e.turn.slots)
+	} else if e.turn.contract != nil {
 		noteDesktopOutputContract(req.RunID, e.turn.contract)
 	}
 	if e.turn.shot && !noteDesktopShot(ctx, "image/png", "aGVsbG8=") {
 		return nil, context.Canceled
 	}
+	for i, state := range e.turn.posts {
+		if i > 0 {
+			desktopPublishParkCurrent(req.RunID)
+		}
+		posted := state
+		desktopPublishRecordUpdate(agentruntime.Scope{RunID: req.RunID}, func(r *desktopPublishRecord) {
+			r.State = posted
+			r.URL = "https://zhuanlan.zhihu.com/p/" + strconv.Itoa(i+1)
+			r.PostID = strconv.Itoa(i + 1)
+		})
+	}
+	names := append([]string(nil), e.turn.files...)
 	if e.turn.file {
+		names = append(names, e.turn.fileName)
+	}
+	for _, name := range names {
 		body := []byte("%PDF-1.4")
 		mime := "application/pdf"
-		if strings.HasSuffix(e.turn.fileName, ".png") {
+		if strings.HasSuffix(name, ".png") {
 			body = []byte("aGVsbG8=")
 			mime = "image/png"
 		}
-		if err := noteDesktopFile(ctx, e.turn.fileName, mime, body); err != nil {
+		if err := noteDesktopFile(ctx, name, mime, body); err != nil {
 			return nil, err
 		}
 	}
@@ -125,6 +148,59 @@ func TestDesktopReceiptPersistsVisibleOutcome(t *testing.T) {
 			turn:        receiptTurn{content: "把报表交出来"},
 			wantOutcome: agentservice.TaskOutcomeBlocked,
 			wantPart:    "没做完",
+		},
+		{
+			name:        "file and post, only the file",
+			turn:        receiptTurn{content: "交报告并发布", file: true, fileName: "report.pdf", slots: []string{desktopContractFile, desktopContractPost}},
+			wantOutcome: agentservice.TaskOutcomePartial,
+			wantPart:    "report.pdf",
+			forbidDone:  true,
+		},
+		{
+			name:        "opaque two items, only one file",
+			turn:        receiptTurn{content: "交报告并发布", file: true, fileName: "report.pdf", contract: []string{"报告.pdf", "知乎帖子链接"}},
+			wantOutcome: agentservice.TaskOutcomePartial,
+			wantPart:    "report.pdf",
+			forbidDone:  true,
+		},
+		{
+			name:        "file and post, incomplete post",
+			turn:        receiptTurn{content: "交报告并发布", result: "已经全部发好了", posts: []browser.PublishState{browser.PublishLiveIncomplete}, slots: []string{desktopContractFile, desktopContractPost}},
+			wantOutcome: agentservice.TaskOutcomePartial,
+			wantPart:    "但不完整",
+			forbidDone:  true,
+		},
+		{
+			name:        "file and post, both complete",
+			turn:        receiptTurn{content: "交报告并发布", file: true, fileName: "report.pdf", posts: []browser.PublishState{browser.PublishLive}, slots: []string{desktopContractFile, desktopContractPost}},
+			wantOutcome: agentservice.TaskOutcomeDone,
+			wantPart:    "zhuanlan.zhihu.com/p/1",
+		},
+		{
+			name:        "two files, one delivered",
+			turn:        receiptTurn{content: "交两份文件", files: []string{"a.pdf"}, slots: []string{desktopContractFile, desktopContractFile}},
+			wantOutcome: agentservice.TaskOutcomePartial,
+			wantPart:    "a.pdf",
+			forbidDone:  true,
+		},
+		{
+			name:        "two files, both delivered",
+			turn:        receiptTurn{content: "交两份文件", files: []string{"a.pdf", "b.pdf"}, slots: []string{desktopContractFile, desktopContractFile}},
+			wantOutcome: agentservice.TaskOutcomeDone,
+			wantPart:    "a.pdf",
+		},
+		{
+			name:        "two posts, one live",
+			turn:        receiptTurn{content: "发两篇", result: "发了一篇", posts: []browser.PublishState{browser.PublishLive}, slots: []string{desktopContractPost, desktopContractPost}},
+			wantOutcome: agentservice.TaskOutcomePartial,
+			wantPart:    "zhuanlan.zhihu.com/p/1",
+			forbidDone:  true,
+		},
+		{
+			name:        "two posts, both live",
+			turn:        receiptTurn{content: "发两篇", result: "两篇都发出去了", posts: []browser.PublishState{browser.PublishLive, browser.PublishLive}, slots: []string{desktopContractPost, desktopContractPost}},
+			wantOutcome: agentservice.TaskOutcomeDone,
+			wantPart:    "zhuanlan.zhihu.com/p/2",
 		},
 	}
 	for _, tc := range cases {
@@ -213,6 +289,74 @@ func TestFilenameOnlyReferenceIsNotADelivery(t *testing.T) {
 	}
 	if reopenedRun.Metadata["task_outcome"] != again.Metadata["task_outcome"] {
 		t.Fatalf("reopened run %q message %q", reopenedRun.Metadata["task_outcome"], again.Metadata["task_outcome"])
+	}
+}
+
+var desktopReceiptWatch func(ready bool, status agentservice.RunStatus, meta map[string]string, msg *agentservice.Message)
+
+func TestDesktopReceiptStaysUnreadyPastTwoSeconds(t *testing.T) {
+	started := time.Now()
+	desktopReceiptHold = func() { time.Sleep(2500 * time.Millisecond) }
+	desktopReceiptWatch = func(ready bool, _ agentservice.RunStatus, meta map[string]string, _ *agentservice.Message) {
+		if ready && time.Since(started) < 2*time.Second {
+			t.Errorf("pre-receipt row became ready after %s meta=%v", time.Since(started), meta)
+		}
+	}
+	t.Cleanup(func() {
+		desktopReceiptHold = nil
+		desktopReceiptWatch = nil
+	})
+	view := runReceiptTurn(t, t.TempDir(), receiptTurn{content: "做一份报告", file: true, fileName: "report.pdf", meta: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}})
+	t.Cleanup(func() {
+		_ = view.svc.Close()
+		view.server.Close()
+	})
+	if time.Since(started) < 2*time.Second {
+		t.Fatal("receipt finished before the hold")
+	}
+	assertReceipt(t, view.message, view.run, agentservice.TaskOutcomeDone, "report.pdf", "", false)
+}
+
+func TestDesktopAbandonedReceiptBecomesUnverified(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	desktopReceiptHold = func() { <-release }
+	desktopReceiptSkipFinish = true
+	desktopReceiptWatch = func(ready bool, status agentservice.RunStatus, meta map[string]string, msg *agentservice.Message) {
+		outcome := ""
+		if msg != nil && msg.Metadata != nil {
+			outcome = msg.Metadata[agentservice.TaskOutcomeKey]
+		}
+		if ready && outcome == agentservice.TaskOutcomeDone {
+			t.Errorf("pre-receipt done was published as final")
+		}
+		if !ready && status == agentservice.RunStatusSucceeded && meta[agentservice.ReceiptPendingKey] == "1" {
+			once.Do(func() { close(release) })
+		}
+	}
+	t.Cleanup(func() {
+		desktopReceiptHold = nil
+		desktopReceiptSkipFinish = false
+		desktopReceiptWatch = nil
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	root := t.TempDir()
+	view := runReceiptTurn(t, root, receiptTurn{content: "做一份报告", result: "已经全部发好了", meta: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}})
+	t.Cleanup(func() {
+		_ = view.svc.Close()
+		view.server.Close()
+	})
+	assertReceipt(t, view.message, view.run, agentservice.TaskOutcomeUnverified, "已经全部发好了", "", true)
+	_ = view.svc.Close()
+	reopened := reopenReceipt(t, root, view)
+	t.Cleanup(func() { _ = reopened.svc.Close() })
+	assertReceipt(t, reopened.message, reopened.run, agentservice.TaskOutcomeUnverified, "已经全部发好了", "", true)
+	if reopened.run.Metadata[agentservice.ReceiptPendingKey] != "" || reopened.run.Metadata[agentservice.ReceiptFinalKey] != "1" {
+		t.Fatalf("reopened flags = %v", reopened.run.Metadata)
 	}
 }
 
@@ -314,7 +458,7 @@ func runReceiptTurn(t *testing.T, root string, turn receiptTurn) receiptView {
 	if err := json.Unmarshal(w.Body.Bytes(), &admitted); err != nil || admitted.Run.ID == "" {
 		t.Fatalf("admission %s: %v", w.Body.String(), err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	var body struct {
 		agentservice.Run
 		DesktopReady bool                  `json:"desktop_ready"`
@@ -331,6 +475,9 @@ func runReceiptTurn(t *testing.T, root string, turn receiptTurn) receiptView {
 		}
 		if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
+		}
+		if desktopReceiptWatch != nil {
+			desktopReceiptWatch(body.DesktopReady, body.Status, body.Metadata, body.Message)
 		}
 		if body.ReceiptError != "" || (body.DesktopReady && body.Status == agentservice.RunStatusSucceeded && body.Message != nil) {
 			break

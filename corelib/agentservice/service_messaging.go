@@ -662,6 +662,12 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		}
 		return m
 	}
+	if RunReceiptInFlight(run.ID) {
+		if run.Metadata == nil {
+			run.Metadata = map[string]string{}
+		}
+		run.Metadata[ReceiptPendingKey] = "1"
+	}
 	terminalEvents := make([]RunEvent, 0, 3)
 	if run.WaitingForUser {
 		terminalEvents = append(terminalEvents, runTerminalEventFor(run, "ask_user", withOutcome(map[string]any{"response_source": run.ResponseSource})))
@@ -769,6 +775,9 @@ func (s *Service) PostMessageAsync(ctx context.Context, p Principal, instanceID,
 			admittedRunID = run.ID
 			saved := run
 			admittedRun = &saved
+		}
+		if in.FinishExecution != nil {
+			MarkRunReceiptInFlight(run.ID)
 		}
 		select {
 		case runCh <- run:

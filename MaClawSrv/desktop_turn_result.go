@@ -232,16 +232,10 @@ func desktopTerminalRun(status agentservice.RunStatus) bool {
 	}
 }
 
-// desktopStoredTerminalDelay is how long after a run ends its finish hook
-// still gets to publish the turn result. A just-finished run answers the
-// stored reply without the screenshot, files or handoff the hook is still
-// attaching, so this path waits out that window and only serves runs whose
-// finish had its chance (a replayed read after a restart is an old run).
-const desktopStoredTerminalDelay = 2 * time.Second
-
 // desktopStoredTerminalMessage is the assistant reply already stored for a
-// finished run. The in-memory turn result does not survive a process
-// restart, and Hub delivers a sentence only when the run read carries one.
+// finished run. A receipt still being written in this process is not
+// served. A pending receipt whose writer is gone (a restart) is finalized
+// as unverified instead of being treated as the pre-receipt outcome.
 func desktopStoredTerminalMessage(ctx context.Context, svc *agentservice.Service, p agentservice.Principal, run *agentservice.Run) *agentservice.Message {
 	if svc == nil || run == nil || strings.TrimSpace(run.AssistantMessageID) == "" {
 		return nil
@@ -249,14 +243,55 @@ func desktopStoredTerminalMessage(ctx context.Context, svc *agentservice.Service
 	if _, ok := loadDesktopTurnResult(run.ID); ok {
 		return nil
 	}
+	if pending, found := loadDesktopTurnAttempt(run.ID); found && !pending.Ready {
+		return nil
+	}
 	if !desktopTerminalRun(run.Status) {
 		return nil
 	}
-	if run.CompletedAt != nil && time.Since(*run.CompletedAt) < desktopStoredTerminalDelay {
+	if agentservice.RunReceiptInFlight(run.ID) {
 		return nil
+	}
+	if run.Metadata != nil && strings.TrimSpace(run.Metadata[agentservice.ReceiptPendingKey]) == "1" {
+		return desktopAbandonPendingReceipt(ctx, svc, p, run)
 	}
 	msg, err := svc.GetMessage(ctx, p, run.InstanceID, run.SessionID, run.AssistantMessageID)
 	if err != nil {
+		return nil
+	}
+	return msg
+}
+
+// desktopAbandonPendingReceipt finalizes a receipt whose writer is gone.
+// A pre-receipt "done" becomes unverified. An outcome that was already
+// not done is kept. The pending flag is cleared with that write.
+func desktopAbandonPendingReceipt(ctx context.Context, svc *agentservice.Service, p agentservice.Principal, run *agentservice.Run) *agentservice.Message {
+	msg, err := svc.GetMessage(ctx, p, run.InstanceID, run.SessionID, run.AssistantMessageID)
+	if err != nil || msg == nil {
+		return nil
+	}
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	outcome := strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey])
+	switch outcome {
+	case agentservice.TaskOutcomePartial, agentservice.TaskOutcomeBlocked, agentservice.TaskOutcomeNotSubmitted, agentservice.TaskOutcomeUnconfirmed, agentservice.TaskOutcomeUnverified, agentservice.TaskOutcomeAwaitingUser, agentservice.TaskOutcomeRunning:
+	default:
+		outcome = agentservice.TaskOutcomeUnverified
+		msg.Metadata[agentservice.TaskOutcomeKey] = outcome
+		if !strings.Contains(msg.Content, desktopUnverifiedSentence) {
+			if strings.TrimSpace(msg.Content) == "" {
+				msg.Content = desktopUnverifiedSentence
+			} else {
+				msg.Content = desktopUnverifiedSentence + "\n" + msg.Content
+			}
+		}
+		if !strings.Contains(msg.Metadata["send_to_user"], desktopUnverifiedSentence) {
+			msg.Metadata["send_to_user"] = strings.TrimSpace(msg.Content)
+			msg.Metadata["send_to_user_kind"] = "report"
+		}
+	}
+	if err := svc.PersistRunReceipt(run, msg); err != nil {
 		return nil
 	}
 	return msg

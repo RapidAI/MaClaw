@@ -749,22 +749,29 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	case agentservice.TaskOutcomePartial, agentservice.TaskOutcomeBlocked, agentservice.TaskOutcomeNotSubmitted, agentservice.TaskOutcomeUnconfirmed, agentservice.TaskOutcomeUnverified, agentservice.TaskOutcomeAwaitingUser, agentservice.TaskOutcomeRunning:
 		return outcome, why
 	}
-	names := deliveredOutputNames(msg)
-	posted := desktopRunHasConfirmedPost(run.ID)
-	if posted {
-		return agentservice.TaskOutcomeDone, "published"
+	files := deliveredFileCount(msg)
+	complete, incomplete, other := desktopPostEvidence(run.ID)
+	items, slots, resolved := desktopOutputContractOf(run.ID)
+	if resolved {
+		if verdict, why := desktopContractVerdict(items, slots, files, complete, incomplete, other); verdict != "" {
+			noteDeliveredFiles(msg, files)
+			return verdict, why
+		}
 	}
-	if rec, ok := desktopPublishRecordOf(run.ID); ok && !rec.posted() {
+	if other > 0 && complete == 0 {
+		noteDeliveredFiles(msg, files)
 		return agentservice.TaskOutcomeUnverified, "publish not verified"
 	}
-	items, resolved := desktopOutputContractOf(run.ID)
-	if resolved && len(items) > 0 && len(names) == 0 {
-		return agentservice.TaskOutcomeUnverified, "output contract open"
+	if incomplete > 0 {
+		noteDeliveredFiles(msg, files)
+		return agentservice.TaskOutcomePartial, "publish incomplete"
 	}
-	if len(names) > 0 {
-		if strings.TrimSpace(msg.Content) == "" {
-			msg.Content = "结果文件已经附在这条回复上：" + strings.Join(names, "、") + "。"
-		}
+	if complete > 0 {
+		noteDeliveredFiles(msg, files)
+		return agentservice.TaskOutcomeDone, "published"
+	}
+	if files > 0 {
+		noteDeliveredFiles(msg, files)
 		return agentservice.TaskOutcomeDone, "file delivered"
 	}
 	if desktopVisibleAnswer(msg) != "" && (!desktopRunTookSteps(run.ID) || resolved) {
@@ -783,30 +790,178 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	return agentservice.TaskOutcomeBlocked, "nothing was said and nothing was delivered"
 }
 
+const (
+	desktopContractFile = "file"
+	desktopContractPost = "post"
+)
+
 type desktopOutputContract struct {
 	items []string
+	slots []string
 }
 
 var desktopOutputContracts sync.Map
 
-// noteDesktopOutputContract stores a resolved checklist. An empty list is a
-// resolved "no artifact" contract, which a text answer may complete.
+// noteDesktopOutputContract stores a resolved checklist whose items have no
+// kind. An empty list is a resolved "no artifact" contract. Without a kind,
+// more than one item cannot be proved complete by counting evidence.
 func noteDesktopOutputContract(runID string, items []string) {
+	noteDesktopOutputPlan(runID, items, nil)
+}
+
+// noteDesktopOutputSlots stores a structured contract. Each slot is "file"
+// or "post". Completion needs that many delivered files and fully live posts.
+func noteDesktopOutputSlots(runID string, slots []string) {
+	noteDesktopOutputPlan(runID, nil, slots)
+}
+
+func noteDesktopOutputPlan(runID string, items, slots []string) {
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
 		return
 	}
-	copied := append([]string(nil), items...)
-	desktopOutputContracts.Store(runID, desktopOutputContract{items: copied})
+	desktopOutputContracts.Store(runID, desktopOutputContract{
+		items: append([]string(nil), items...),
+		slots: append([]string(nil), slots...),
+	})
 }
 
-func desktopOutputContractOf(runID string) (items []string, resolved bool) {
+func desktopOutputContractOf(runID string) (items, slots []string, resolved bool) {
 	value, ok := desktopOutputContracts.Load(strings.TrimSpace(runID))
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
 	contract, _ := value.(desktopOutputContract)
-	return contract.items, true
+	return contract.items, contract.slots, true
+}
+
+func deliveredFileCount(msg *agentservice.Message) int {
+	if msg == nil {
+		return 0
+	}
+	n := 0
+	for _, item := range msg.Attachments {
+		if item.Delivery == agent.AttachmentDeliveryFile && strings.TrimSpace(item.Data) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func noteDeliveredFiles(msg *agentservice.Message, files int) {
+	if files == 0 || msg == nil || strings.TrimSpace(msg.Content) != "" {
+		return
+	}
+	names := deliveredOutputNames(msg)
+	if len(names) == 0 {
+		return
+	}
+	msg.Content = "结果文件已经附在这条回复上：" + strings.Join(names, "、") + "。"
+}
+
+type desktopPostSnapshot struct {
+	complete, incomplete, other int
+	ok                          bool
+}
+
+var desktopPostSnapshots sync.Map
+
+// desktopSnapshotPosts remembers the run's publish evidence before the reply
+// path takes the records. The receipt still has to see them.
+func desktopSnapshotPosts(runID string) {
+	complete, incomplete, other := desktopPostEvidenceLive(runID)
+	desktopPostSnapshots.Store(runID, desktopPostSnapshot{complete: complete, incomplete: incomplete, other: other, ok: true})
+}
+
+// desktopPostEvidence counts publish records. A fully live post is complete.
+// A live-but-incomplete post is not. When the run has no publish record, one
+// confirmed ledger entry counts as one complete post.
+func desktopPostEvidence(runID string) (complete, incomplete, other int) {
+	if value, ok := desktopPostSnapshots.Load(runID); ok {
+		snap, _ := value.(desktopPostSnapshot)
+		if snap.ok {
+			return snap.complete, snap.incomplete, snap.other
+		}
+	}
+	return desktopPostEvidenceLive(runID)
+}
+
+func desktopPostEvidenceLive(runID string) (complete, incomplete, other int) {
+	recs := desktopPublishRunRecords(runID)
+	if len(recs) == 0 {
+		if desktopRunHasConfirmedPost(runID) {
+			return 1, 0, 0
+		}
+		return 0, 0, 0
+	}
+	for _, rec := range recs {
+		switch rec.State {
+		case browser.PublishLive:
+			complete++
+		case browser.PublishLiveIncomplete:
+			incomplete++
+		default:
+			other++
+		}
+	}
+	return complete, incomplete, other
+}
+
+// desktopContractVerdict checks every required slot against its own evidence.
+// Opaque items have no kind: one item can be closed by one complete file or
+// one fully live post, and more than one item stays incomplete because the
+// evidence cannot be attributed. An empty checklist is not a verdict.
+func desktopContractVerdict(items, slots []string, files, complete, incomplete, other int) (string, string) {
+	if len(slots) > 0 {
+		needFile, needPost := 0, 0
+		for _, slot := range slots {
+			switch slot {
+			case desktopContractFile:
+				needFile++
+			case desktopContractPost:
+				needPost++
+			default:
+				if files+complete+incomplete+other == 0 {
+					return agentservice.TaskOutcomeUnverified, "output contract open"
+				}
+				return agentservice.TaskOutcomePartial, "output contract incomplete"
+			}
+		}
+		if files >= needFile && complete >= needPost && incomplete == 0 && other == 0 {
+			switch {
+			case needPost > 0 && needFile == 0:
+				return agentservice.TaskOutcomeDone, "published"
+			case needFile > 0 && needPost == 0:
+				return agentservice.TaskOutcomeDone, "file delivered"
+			default:
+				return agentservice.TaskOutcomeDone, "outputs delivered"
+			}
+		}
+		if files+complete+incomplete+other == 0 {
+			return agentservice.TaskOutcomeUnverified, "output contract open"
+		}
+		return agentservice.TaskOutcomePartial, "output contract incomplete"
+	}
+	switch len(items) {
+	case 0:
+		return "", ""
+	case 1:
+		if incomplete == 0 && other == 0 && complete == 0 && files == 1 {
+			return agentservice.TaskOutcomeDone, "file delivered"
+		}
+		if incomplete == 0 && other == 0 && files == 0 && complete == 1 {
+			return agentservice.TaskOutcomeDone, "published"
+		}
+		if files+complete+incomplete+other == 0 {
+			return agentservice.TaskOutcomeUnverified, "output contract open"
+		}
+		return agentservice.TaskOutcomePartial, "output contract incomplete"
+	default:
+		if files+complete+incomplete+other == 0 {
+			return agentservice.TaskOutcomeUnverified, "output contract open"
+		}
+		return agentservice.TaskOutcomePartial, "output contract incomplete"
+	}
 }
 
 func desktopRunTookSteps(runID string) bool {
@@ -826,10 +981,15 @@ func desktopSyncVisible(msg *agentservice.Message) {
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
 	}
-	if strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey]) == agentservice.TaskOutcomeUnverified {
+	outcome := strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey])
+	if outcome == agentservice.TaskOutcomeUnverified || outcome == agentservice.TaskOutcomePartial {
 		content := strings.TrimSpace(msg.Content)
 		send := strings.TrimSpace(msg.Metadata["send_to_user"])
-		if content != "" && !strings.Contains(send, desktopUnverifiedSentence) {
+		notice := desktopUnverifiedSentence
+		if outcome == agentservice.TaskOutcomePartial {
+			notice = "这件还没完全做成"
+		}
+		if content != "" && !strings.Contains(send, notice) {
 			msg.Metadata["send_to_user"] = content
 			msg.Metadata["send_to_user_kind"] = "report"
 		}
@@ -839,7 +999,7 @@ func desktopSyncVisible(msg *agentservice.Message) {
 		return
 	}
 	content := strings.TrimSpace(msg.Content)
-	outcome := strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey])
+	outcome = strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey])
 	receipt := outcome != "" || content == desktopUndeliveredSentence || strings.HasPrefix(content, "结果文件已经附在这条回复上：") || strings.HasPrefix(content, "这件我没做成")
 	if !receipt {
 		return

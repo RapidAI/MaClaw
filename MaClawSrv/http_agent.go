@@ -586,6 +586,14 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agen
 // desktopAsyncHooks hold the desktop for the detached run. The HTTP handler
 // returns as soon as the run exists. Finish stores the screenshot and the
 // handoff so a later read of the run can deliver them.
+// desktopReceiptHold runs at the start of finish, after the run is already
+// terminal, so a test can observe that the pre-receipt row is not readable
+// as final. desktopReceiptSkipFinish drops the receipt, as a crash would.
+var (
+	desktopReceiptHold       func()
+	desktopReceiptSkipFinish bool
+)
+
 // persistDesktopReceipt writes the message and the run together. Tests
 // replace it to prove a failed write is not published as a final reply.
 var persistDesktopReceipt = func(svc *agentservice.Service, run *agentservice.Run, msg *agentservice.Message) error {
@@ -617,6 +625,9 @@ func desktopAsyncHooks(svc *agentservice.Service, tenantID, userID, instanceID, 
 		return next
 	}
 	finish := func(_ context.Context, run *agentservice.Run, msg *agentservice.Message, err error) {
+		if run != nil {
+			defer agentservice.ClearRunReceiptInFlight(run.ID)
+		}
 		owner := owns == nil || *owns
 		if occupyOwned != nil {
 			*occupyOwned = owner
@@ -660,6 +671,7 @@ func desktopAsyncHooks(svc *agentservice.Service, tenantID, userID, instanceID, 
 			msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 		}
 		if err == nil && msg != nil && run != nil && !noDesktop {
+			desktopSnapshotPosts(run.ID)
 			msg.Content = desktopReplyAfterDelegation(instanceID, run.ID, run.SessionID, msg.Content)
 			msg.Content = desktopReplyWithLink(run.ID, msg.Content)
 			if msg.Metadata == nil && strings.Contains(msg.Content, desktopUnconfirmedReply) {
@@ -669,6 +681,12 @@ func desktopAsyncHooks(svc *agentservice.Service, tenantID, userID, instanceID, 
 		}
 		if err == nil && msg != nil && !noDesktop {
 			noteDesktopReplyHandoff(tenantID, userID, instanceID, msg.Content)
+		}
+		if desktopReceiptHold != nil {
+			desktopReceiptHold()
+		}
+		if desktopReceiptSkipFinish {
+			return
 		}
 		handoff, attention := takeDesktopTurn(tenantID, userID, instanceID)
 		// Exactly one result per task, on success and on failure.
