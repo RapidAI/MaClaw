@@ -1340,7 +1340,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		defer beginDesktopActivity(scope.RunID, desktopScriptPhrase(desktopArg(args, "script")))()
 		result, callErr := browser.RunPageScriptBatch(session, desktopArg(args, "script"), desktopArg(args, "name"), userKey, desktopBrowserSkillRoot)
 		text, err = desktopActionText(result, callErr)
-		text, err = desktopVerifyBrowserScript(session, desktopArg(args, "script"), text, err)
+		text, err = desktopVerifyBrowserScript(ctx, scope, session, desktopArg(args, "script"), text, err)
 		desktopNoteAppliedProgress(scope, session, browser.ScriptWrittenText(desktopArg(args, "script")), text, err)
 		text, err = desktopVerifyRichBody(desktopOwner(scope), session, action, args, text, err)
 		if err != nil && desktopScriptErrIsNavigation(err) {

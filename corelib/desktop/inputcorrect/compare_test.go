@@ -212,8 +212,13 @@ func TestRunTruncationDuplicateAndNewline(t *testing.T) {
 	dup.Capability.Semantic = false
 	relay = &scriptRelay{obs: []Observation{dup, dup, dup, dup}}
 	out = Run(t.Context(), Request{Expected: "hello", Effect: EffectInput, Environment: "linux"}, relay, nil)
-	if !out.InputVerified || relay.acts[0].Kind != ActionClearField {
-		t.Fatalf("%+v acts=%+v", out, relay.acts)
+	if !out.InputVerified || relay.text != "hello" {
+		t.Fatalf("%+v text=%q acts=%+v", out, relay.text, relay.acts)
+	}
+	for _, act := range relay.acts {
+		if act.Kind == ActionClearField {
+			t.Fatal("correction cleared the field with a generic delete")
+		}
 	}
 	nl := plain("甲\r\n乙")
 	relay = &scriptRelay{obs: []Observation{nl}}

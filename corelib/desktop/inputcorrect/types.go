@@ -74,9 +74,13 @@ type Observation struct {
 // Action is one relay step. Kind is allow-listed. Text is the ordinary
 // field contents for this attempt and is not stored.
 type Action struct {
-	Kind      string
-	Text      string
-	ElementID int
+	Kind        string
+	Text        string
+	ElementID   int
+	ElementKey  string
+	FrameID     string
+	RefEpoch    int
+	LayoutScale int
 }
 
 // Request is the server's decision input.

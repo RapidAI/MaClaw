@@ -98,9 +98,6 @@ func desktopCorrectBrowserType(ctx context.Context, scope agentruntime.Scope, se
 func desktopApplyInputCorrection(ctx context.Context, scope agentruntime.Scope, relay inputcorrect.Relay, req inputcorrect.Request, base string, prior error) (string, error, bool) {
 	out := inputcorrect.Run(ctx, req, relay, desktopInputStore(scope))
 	log.Printf("[desktop-input] status=%s strategy=%s reason=%s attempts=%d images=%d", out.Status, out.Strategy, out.Reason, out.Attempts, out.Images)
-	if out.Status == inputcorrect.StatusSkipped {
-		return "", nil, false
-	}
 	text, oerr := desktopCorrectionResult(base, out)
 	if prior != nil && (oerr != nil || !strings.Contains(text, desktopExactInputMarker)) {
 		return base, prior, true
@@ -108,25 +105,41 @@ func desktopApplyInputCorrection(ctx context.Context, scope agentruntime.Scope, 
 	return text, oerr, true
 }
 
+// desktopInputOutcomeError is a typed non-success. Callers must not treat a
+// nil error as proof that the field matches or that an effect happened.
+type desktopInputOutcomeError struct {
+	Status string
+	Reason string
+}
+
+func (e *desktopInputOutcomeError) Error() string {
+	if e == nil {
+		return "input unverified"
+	}
+	return e.Status + ": " + e.Reason
+}
+
 func desktopCorrectionResult(base string, out inputcorrect.Outcome) (string, error) {
 	switch out.Status {
 	case inputcorrect.StatusVerified:
 		return strings.TrimRight(base, "\n") + "\n" + desktopExactInputMarker + "\n" + desktopAppliedMarker, nil
+	case inputcorrect.StatusSkipped:
+		return "", &desktopInputOutcomeError{Status: inputcorrect.StatusUnverified, Reason: "observation_unavailable"}
 	case inputcorrect.StatusUnverified:
-		if out.Reason == "secret_not_read" {
-			return desktopInputSecretMarker, nil
+		reason := out.Reason
+		if reason == "" {
+			reason = "readback_denied"
 		}
-		marker := desktopInputUnverifiedMarker
-		if out.Reason == "editor_unsettled" {
-			marker = desktopInputUnsettledMarker
+		if reason == "secret_not_read" {
+			return "", &desktopInputOutcomeError{Status: inputcorrect.StatusUnverified, Reason: reason}
 		}
-		return strings.TrimRight(base, "\n") + "\n" + marker, nil
+		return "", &desktopInputOutcomeError{Status: inputcorrect.StatusUnverified, Reason: reason}
 	case inputcorrect.StatusFailed:
-		return strings.TrimRight(base, "\n") + "\n" + desktopNotAppliedMarker + "\n" + out.Reason, nil
+		return "", &desktopInputOutcomeError{Status: inputcorrect.StatusFailed, Reason: out.Reason}
 	case inputcorrect.StatusRefused:
-		return "", fmt.Errorf("refused: %s", out.Reason)
+		return "", &desktopInputOutcomeError{Status: inputcorrect.StatusRefused, Reason: out.Reason}
 	default:
-		return base, nil
+		return "", &desktopInputOutcomeError{Status: inputcorrect.StatusUnverified, Reason: "unknown"}
 	}
 }
 
@@ -153,70 +166,19 @@ func (r desktopNativeInputRelay) Act(ctx context.Context, action inputcorrect.Ac
 		return fmt.Errorf("refused action")
 	}
 	switch action.Kind {
-	case inputcorrect.ActionClearField:
-		return r.keys(ctx, "ctrl+a", "Delete")
-	case inputcorrect.StrategySemantic:
-		if action.ElementID <= 0 {
-			return fmt.Errorf("semantic input needs an element id")
+	case inputcorrect.StrategySemantic, inputcorrect.StrategyEditorReplace:
+		if action.ElementID <= 0 || action.ElementKey == "" {
+			return fmt.Errorf("refused: element is not identified")
 		}
 		_, err := desktopCtlCall(ctx, r.scope, r.display, map[string]any{
 			"op": desktop.CtlA11yAct, "id": action.ElementID, "do": "set_text", "text": action.Text,
 		})
 		return err
-	case inputcorrect.StrategyClipboard:
-		if _, err := desktopCtlCall(ctx, r.scope, r.display, map[string]any{"op": desktop.CtlClipboardSet, "text": action.Text}); err != nil {
-			return err
-		}
-		return r.keys(ctx, "ctrl+v")
-	case inputcorrect.StrategySegmented:
-		for _, chunk := range chunkRunes(action.Text, 32) {
-			argv, err := computeruse.StepArgv(computeruse.Step{Kind: "type", Text: chunk}, desktop.Shot{Scale: 1})
-			if err != nil {
-				return err
-			}
-			if err := desktopDispatchApp(ctx, r.scope, r.display, argv); err != nil {
-				return err
-			}
-		}
-		return nil
-	case inputcorrect.StrategyEditorReplace:
-		return fmt.Errorf("editor replace is not available from desktop control")
+	case inputcorrect.StrategyClipboard, inputcorrect.StrategySegmented, inputcorrect.ActionClearField:
+		return fmt.Errorf("refused: desktop correction will not send a generic key or clear")
 	default:
 		return fmt.Errorf("refused action")
 	}
-}
-
-func (r desktopNativeInputRelay) keys(ctx context.Context, chords ...string) error {
-	for _, chord := range chords {
-		combo, err := computeruse.KeyCombo([]string{chord})
-		if err != nil {
-			return err
-		}
-		argv, err := computeruse.StepArgv(computeruse.Step{Kind: "key", Keys: []string{combo}}, desktop.Shot{Scale: 1})
-		if err != nil {
-			return err
-		}
-		if err := desktopDispatchApp(ctx, r.scope, r.display, argv); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func desktopDispatchApp(ctx context.Context, scope agentruntime.Scope, display string, argv []string) error {
-	if desktopRemoteApp != nil {
-		_, err := desktopRemoteApp(ctx, scope.TenantID, scope.UserID, display, argv)
-		return err
-	}
-	if client := desktopHubClientFromEnv(); client != nil {
-		_, err := client.App(ctx, scope.TenantID, scope.UserID, display, argv)
-		return err
-	}
-	if err := refuseLocalDesktop(ctx); err != nil {
-		return err
-	}
-	_, err := desktopAppCommand(display, argv...)
-	return err
 }
 
 func desktopObservationFromCtl(ax, screen, wins map[string]any) inputcorrect.Observation {
@@ -226,8 +188,6 @@ func desktopObservationFromCtl(ax, screen, wins map[string]any) inputcorrect.Obs
 		RefEpoch:    ctlInt(ax["ref_epoch"]),
 		ImageCount:  ctlInt(ax["images"]),
 		Capability: inputcorrect.Capability{
-			Clipboard:     true,
-			Keys:          true,
 			EditorReplace: ctlBool(ax["editor_replace"]),
 		},
 	}
@@ -252,19 +212,31 @@ func desktopObservationFromCtl(ax, screen, wins map[string]any) inputcorrect.Obs
 		obs.Clipped = true
 		return obs
 	}
-	name := strings.TrimSpace(ctlString(ax["name"]))
-	if role == "" {
-		role = "field"
-	}
-	obs.ElementKey = role + ":" + name
 	obs.ElementID = ctlInt(ax["id"])
-	obs.Identified = role != ""
+	name := strings.TrimSpace(ctlString(ax["name"]))
+	if role != "" && name != "" && obs.ElementID > 0 {
+		obs.ElementKey = role + ":" + name
+		obs.Identified = true
+	}
+	obs.UploadPending = ctlBool(ax["upload_pending"])
+	obs.EditorBusy = ctlBool(ax["editor_busy"])
+	if obs.ElementID <= 0 || text == "" && !obs.Identified {
+		obs.Identified = false
+		obs.ElementID = 0
+		obs.TextTrusted = false
+		obs.FieldText = ""
+		return obs
+	}
+	if !obs.Identified {
+		obs.TextTrusted = false
+		obs.FieldText = ""
+		return obs
+	}
 	obs.FieldText = text
 	obs.TextTrusted = true
 	obs.EdgeStripped = true
-	obs.UploadPending = ctlBool(ax["upload_pending"])
-	obs.EditorBusy = ctlBool(ax["editor_busy"])
-	obs.Capability.Semantic = obs.ElementID > 0 && obs.ImageCount == 0
+	obs.Capability.Semantic = obs.ImageCount == 0
+	obs.Capability.EditorReplace = obs.Capability.EditorReplace && obs.ImageCount > 0
 	return obs
 }
 
@@ -314,23 +286,6 @@ func ctlInt(v any) int {
 	default:
 		return 0
 	}
-}
-
-func chunkRunes(s string, n int) []string {
-	if n < 1 {
-		n = 32
-	}
-	rs := []rune(s)
-	var out []string
-	for len(rs) > 0 {
-		if len(rs) <= n {
-			out = append(out, string(rs))
-			break
-		}
-		out = append(out, string(rs[:n]))
-		rs = rs[n:]
-	}
-	return out
 }
 
 // desktopPageEval is the browser relay. Tests replace it; production reads
@@ -389,7 +344,7 @@ func (r desktopBrowserInputRelay) Act(_ context.Context, action inputcorrect.Act
 	if !inputcorrect.AllowedKind(action.Kind) || inputcorrect.ExternalEffect(action.Kind) {
 		return fmt.Errorf("refused action")
 	}
-	raw, err := desktopPageEval(r.session, desktopInputActExpr(action.Kind, action.Text, action.ElementID))
+	raw, err := desktopPageEval(r.session, desktopInputActExpr(action.Kind, action.Text, action.ElementKey, action.FrameID, action.ElementID, action.RefEpoch, action.LayoutScale))
 	if err != nil {
 		return err
 	}

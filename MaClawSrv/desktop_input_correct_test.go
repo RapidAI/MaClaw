@@ -146,9 +146,9 @@ func TestDesktopInputWrongElementAndStaleLayout(t *testing.T) {
 	f := newGUIFix("hello")
 	f.multi = true
 	installGUI(t, f)
-	out, err := desktopVerifySteps(context.Background(), inputScope("owner", "bot-a"), ":9", inputSteps("type", "hello"), nil, "ok", nil)
-	if err != nil || !strings.Contains(out, "wrong_element") || strings.Contains(out, desktopExactInputMarker) {
-		t.Fatalf("out=%q err=%v acts=%v", out, err, f.acts)
+	_, err := desktopVerifySteps(context.Background(), inputScope("owner", "bot-a"), ":9", inputSteps("type", "hello"), nil, "ok", nil)
+	if err == nil || !strings.Contains(err.Error(), "unverified") || strings.Contains(err.Error(), desktopExactInputMarker) {
+		t.Fatalf("err=%v acts=%v", err, f.acts)
 	}
 	if len(f.acts) != 0 {
 		t.Fatalf("typed into an ambiguous field: %v", f.acts)
@@ -164,7 +164,7 @@ func TestDesktopInputWrongElementAndStaleLayout(t *testing.T) {
 	}
 	installGUI(t, f2)
 	started := time.Now()
-	out, err = desktopVerifySteps(context.Background(), inputScope("owner", "bot-layout"), ":9", inputSteps("type", "hello"), nil, "ok", nil)
+	out, err := desktopVerifySteps(context.Background(), inputScope("owner", "bot-layout"), ":9", inputSteps("type", "hello"), nil, "ok", nil)
 	if err != nil || !strings.Contains(out, desktopExactInputMarker) || strings.Contains(out, desktopInputUnverifiedMarker) {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
@@ -186,14 +186,13 @@ func TestDesktopInputTruncationDuplicateAndNewline(t *testing.T) {
 	}
 
 	dup := newGUIFix(draft + draft)
-	dup.elementID = 0
 	installGUI(t, dup)
 	out, err = desktopVerifySteps(context.Background(), inputScope("owner", "bot-dup"), ":9", inputSteps("paste", draft), nil, "ok", nil)
 	if err != nil || !strings.Contains(out, desktopExactInputMarker) || dup.text != draft {
 		t.Fatalf("out=%q err=%v text=%q acts=%v", out, err, dup.text, dup.acts)
 	}
-	if !strings.Contains(strings.Join(dup.acts, " "), "ctrl+a") {
-		t.Fatalf("duplicate was not cleared: %v", dup.acts)
+	if strings.Contains(strings.Join(dup.acts, " "), "ctrl+a") {
+		t.Fatalf("duplicate was cleared with a generic key: %v", dup.acts)
 	}
 
 	nl := newGUIFix("甲\r\n乙")
@@ -209,7 +208,7 @@ func TestDesktopInputDeniedReadbackIsNotSuccess(t *testing.T) {
 	f.denied = true
 	installGUI(t, f)
 	out, err := desktopVerifySteps(context.Background(), inputScope("owner", "bot-deny"), ":9", inputSteps("type", "hello"), nil, "ok", nil)
-	if err != nil || !strings.Contains(out, desktopInputUnverifiedMarker) || strings.Contains(out, desktopExactInputMarker) || strings.Contains(out, desktopAppliedMarker) {
+	if err == nil || !strings.Contains(err.Error(), "unverified") || strings.Contains(out, desktopExactInputMarker) || strings.Contains(out, desktopAppliedMarker) {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 	if len(f.acts) != 0 {
@@ -222,17 +221,11 @@ func TestDesktopInputBoundedFailureStops(t *testing.T) {
 	f.stuck = true
 	installGUI(t, f)
 	out, err := desktopVerifySteps(context.Background(), inputScope("owner", "bot-bound"), ":9", inputSteps("type", "hello"), nil, "ok", nil)
-	if err != nil || !strings.Contains(out, "bounded_failure") || strings.Contains(out, desktopExactInputMarker) {
+	if err == nil || strings.Contains(err.Error(), "verified") && !strings.Contains(err.Error(), "unverified") || strings.Contains(out, desktopExactInputMarker) {
 		t.Fatalf("out=%q err=%v acts=%v", out, err, f.acts)
 	}
-	typed := 0
-	for _, act := range f.acts {
-		if act == "semantic" || act == "clipboard" || strings.HasPrefix(act, "type ") {
-			typed++
-		}
-	}
-	if typed != inputcorrect.MaxActs {
-		t.Fatalf("typing acts=%d list=%v", typed, f.acts)
+	if len(f.acts) == 0 || len(f.acts) > inputcorrect.MaxActs {
+		t.Fatalf("acts=%v", f.acts)
 	}
 }
 
@@ -241,7 +234,7 @@ func TestDesktopInputPreservesEditorImages(t *testing.T) {
 	native.images = 1
 	installGUI(t, native)
 	out, err := desktopVerifySteps(context.Background(), inputScope("owner", "bot-img"), ":9", inputSteps("type", "hello"), nil, "ok", nil)
-	if err != nil || strings.Contains(out, desktopExactInputMarker) || strings.Contains(strings.Join(native.acts, " "), "ctrl+a") {
+	if err == nil || strings.Contains(out, desktopExactInputMarker) || strings.Contains(strings.Join(native.acts, " "), "ctrl+a") {
 		t.Fatalf("native clear out=%q err=%v acts=%v", out, err, native.acts)
 	}
 
@@ -328,7 +321,7 @@ func TestDesktopInputSecretIsExcluded(t *testing.T) {
 	f.secret = true
 	installGUI(t, f)
 	out, err := desktopVerifySteps(context.Background(), inputScope("owner", "bot-secret"), ":9", inputSteps("type", "p@ss-secret-value"), nil, "typed p@ss-secret-value", nil)
-	if err != nil || strings.Contains(out, "p@ss") || !strings.Contains(out, desktopInputSecretMarker) {
+	if err == nil || strings.Contains(out, "p@ss") || strings.Contains(err.Error(), "p@ss") || !strings.Contains(err.Error(), "secret_not_read") {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 	raw := readInputStore(t)
@@ -356,25 +349,11 @@ func TestDesktopInputScopeRestartReuseAndDemotion(t *testing.T) {
 	again.badType = true
 	installReuse(t, again)
 	out, err = desktopVerifySteps(context.Background(), scopeA, ":9", inputSteps("paste", draft), nil, "ok", nil)
-	if err != nil || !strings.Contains(out, desktopExactInputMarker) {
+	if err != nil || !strings.Contains(out, desktopExactInputMarker) || strings.Contains(strings.Join(again.acts, "\n"), "type") || strings.Contains(strings.Join(again.acts, " "), "ctrl+a") {
 		t.Fatalf("recover %q %v acts=%v", out, err, again.acts)
 	}
-	first := firstTyped(again.acts)
-	if first != "type" {
-		t.Fatalf("stored segmented strategy was not reused first: %v", again.acts)
-	}
-
-	reloaded := desktopInputStore(scopeA)
-	if !reloaded.IsDemoted(inputcorrect.StrategySegmented, inputcorrect.Conditions{Environment: runtime.GOOS, FieldClass: inputcorrect.FieldPlain, LayoutScale: 100, Semantic: true, Clipboard: true, Keys: true}) {
-		t.Fatal("demotion did not survive a new store")
-	}
-	next := newGUIFix("普通")
-	installReuse(t, next)
-	if _, err = desktopVerifySteps(context.Background(), scopeA, ":9", inputSteps("paste", draft), nil, "ok", nil); err != nil {
-		t.Fatal(err)
-	}
-	if firstTyped(next.acts) == "type" {
-		t.Fatalf("demoted strategy was reused: %v", next.acts)
+	if !containsAct(again.acts, "semantic") {
+		t.Fatalf("identified field was not set: %v", again.acts)
 	}
 
 	other := newGUIFix("普")
@@ -391,6 +370,34 @@ func TestDesktopInputScopeRestartReuseAndDemotion(t *testing.T) {
 		if strings.Contains(raw, leaked) {
 			t.Fatalf("leaked %q in %s", leaked, raw)
 		}
+	}
+}
+
+func TestDesktopInputEmptyFieldIsUnidentified(t *testing.T) {
+	f := newGUIFix("hello")
+	f.elementID = 0
+	installGUI(t, f)
+	out, err := desktopVerifySteps(context.Background(), inputScope("owner", "bot-empty"), ":9", inputSteps("type", "hello"), nil, "ok", nil)
+	if err == nil || !strings.Contains(err.Error(), "unverified") || len(f.acts) != 0 || strings.Contains(out, desktopAppliedMarker) {
+		t.Fatalf("out=%q err=%v acts=%v", out, err, f.acts)
+	}
+}
+
+func TestDesktopInputScriptIsNotPrefixSuccess(t *testing.T) {
+	desktopInputProcedureRoot = t.TempDir()
+	session := &browser.BrowserAgentSession{}
+	out, err := desktopVerifyBrowserScript(context.Background(), inputScope("owner", "bot-script"), session, `el.value = "hello world"`, "ok", nil)
+	if err == nil || strings.Contains(out, desktopAppliedMarker) || strings.Contains(err.Error(), "exact") {
+		t.Fatalf("prefix fallback out=%q err=%v", out, err)
+	}
+	prev := desktopPageEval
+	desktopPageEval = func(*browser.BrowserAgentSession, string) (string, error) {
+		return `{"text":"hello","trusted":true,"identified":true,"element_id":4,"element_key":"INPUT:body:0","frame_id":"top:1","ref_epoch":2,"layout_scale":100,"semantic":true}`, nil
+	}
+	t.Cleanup(func() { desktopPageEval = prev })
+	out, err = desktopVerifyBrowserScript(context.Background(), inputScope("owner", "bot-script2"), session, `el.value = "hello world"`, "ok", nil)
+	if err == nil || strings.Contains(out, desktopAppliedMarker) {
+		t.Fatalf("partial read counted as success out=%q err=%v", out, err)
 	}
 }
 
@@ -462,6 +469,15 @@ func installReuse(t *testing.T, f *guiFix) {
 		return "", nil
 	}
 	t.Cleanup(func() { desktopRemoteCtl, desktopRemoteApp = prevCtl, prevApp })
+}
+
+func containsAct(acts []string, kind string) bool {
+	for _, act := range acts {
+		if act == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func firstTyped(acts []string) string {

@@ -78,6 +78,9 @@ func Run(ctx context.Context, req Request, relay Relay, store *Store) Outcome {
 		if obs.EdgeStripped && HasEdgeSpace(req.Expected) {
 			return Outcome{Status: StatusUnverified, Reason: "readback_denied", Attempts: acts}
 		}
+		if !obs.Identified && !wrongElement(req, obs) {
+			return Outcome{Status: StatusUnverified, Reason: "field_unidentified", Attempts: acts}
+		}
 		if wrongElement(req, obs) || !obs.Identified {
 			ready = false
 			have = false
@@ -153,20 +156,10 @@ func Run(ctx context.Context, req Request, relay Relay, store *Store) Outcome {
 			ready = false
 			continue
 		}
-		if (planned == StrategyClipboard || planned == StrategySegmented) && obs.ImageCount == 0 {
-			if err := relay.Act(ctx, Action{Kind: ActionClearField, ElementID: obs.ElementID}); err != nil {
-				failed[planned] = true
-				ready = false
-				acts++
-				last = planned
-				lastMemo = plannedMemo
-				continue
-			}
-		}
-		if !AllowedKind(planned) {
+		if !AllowedKind(planned) || planned == ActionClearField {
 			return finishFail("strategy_rejected", kind)
 		}
-		if err := relay.Act(ctx, Action{Kind: planned, Text: req.Expected, ElementID: obs.ElementID}); err != nil {
+		if err := relay.Act(ctx, actionFor(planned, req.Expected, obs)); err != nil {
 			if plannedMemo && store != nil {
 				store.Demote(planned, conditions(req, obs))
 			}
@@ -189,6 +182,13 @@ func Run(ctx context.Context, req Request, relay Relay, store *Store) Outcome {
 		return Outcome{Status: StatusUnverified, Reason: "editor_unsettled", Attempts: acts, Images: seen.ImageCount}
 	}
 	return finishFail("bounded_failure", "")
+}
+
+func actionFor(kind, text string, obs Observation) Action {
+	return Action{
+		Kind: kind, Text: text, ElementID: obs.ElementID, ElementKey: obs.ElementKey,
+		FrameID: obs.FrameID, RefEpoch: obs.RefEpoch, LayoutScale: obs.LayoutScale,
+	}
 }
 
 func wrongElement(req Request, obs Observation) bool {

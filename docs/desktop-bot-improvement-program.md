@@ -12,7 +12,7 @@ Server-side correction for ordinary text entry on the desktop bot:
 
 - The existing verify step (`MaClawSrv/desktop_verify.go`) calls `corelib/desktop/inputcorrect`.
 - The desktop control relay and the browser session only observe and perform an allow-listed action.
-- The field text must match exactly after Unicode NFC and newline unification (CR and CRLF become LF). A 24-character prefix is not success when the relay can read the field.
+- The field text must match exactly after Unicode NFC and newline unification (CR and CRLF become LF). Browser type, page script, and desktop steps all use that comparison. An unreadable field is an unverified error, not a prefix success.
 - A wrong element, a changed frame, ref epoch, or layout scale discards the plan and reads again. There is no fixed sleep.
 - On a plain-field mismatch the loop clears only that identified field, then tries another general strategy, at most three typings.
 - A rich field is not cleared. Replacement keeps the image count, or the attempt fails.
@@ -20,7 +20,7 @@ Server-side correction for ordinary text entry on the desktop bot:
 - A strategy is stored only after an exact read-back, with environment, field class, layout scale, and capabilities. A mismatch of those conditions does not reuse it. A failed reuse is demoted and stays demoted across a new process. Owner and bot do not share the file.
 - The stored record has no typed text, window title, cookie, key, coordinate, or recipient. It never grants send, publish, or pay.
 - A denied or clipped read-back is unverified. A secret field is not read into the result or the store.
-- An ambiguous send, publish, or pay outcome is not issued again in that run.
+- An ambiguous publish or pay click is not issued again in the same process. The block is an in-memory map for those action labels. It is not a durable record of every send.
 
 What this stage does not do: it does not change snapshot generation inside `corelib/browser`, it does not add element ids to the desktop supervisor, and it does not execute the page script in a live browser in CI. The script is guarded by source checks. Behavior tests use an in-process relay.
 
@@ -77,7 +77,7 @@ Integration: `MaClawSrv/desktop_upload.go` and the existing publish approval in 
 
 Gap: phase 1 sees `aria-busy` and image count only when a type correction reads the focused field. The upload action itself does not yet wait for a settled count, and it must not gain a site-specific selector.
 
-Acceptance: a pending upload stays unverified with no sleep budget longer than a few re-reads. A settled count that drops existing images fails. Publish still requires the current in-task approval. An ambiguous publish timeout is not retried (phase 1's effect gate).
+Acceptance: a pending upload stays unverified with no sleep budget longer than a few re-reads. A settled count that drops existing images fails. Publish still requires the current in-task approval. The in-memory publish/pay block is not a general send ledger.
 
 Component: `MaClawSrv` upload path. No Hub whitelist change unless a new remote-control op is added, which this stage should not need.
 
@@ -124,7 +124,7 @@ Component: `inputcorrect` plus the desktop action that owns that postcondition.
 ## Boundaries
 
 - PR 57 (`cursor/protect-bot-capabilities-3944`): config integrity. Do not merge it here and do not weaken it.
-- PR 60 (`cursor/chat-interaction-cards-9f05`): chat cards and handoff. Continuation after a card is still that PR's problem. Phase 1's effect gate only stops an ambiguous send, publish, or pay from being issued again.
+- PR 60 (`cursor/chat-interaction-cards-9f05`): chat cards and handoff. Continuation after a card is still that PR's problem. Phase 1's effect gate only stops a repeated publish or pay click in the same process after an ambiguous error. It does not cover every send.
 - PR 61 (`cursor/browser-observation-ab-afb8`): synthetic observation harness. It does not change the production browser path. Do not vendor it into `corelib/browser`.
 
 No merge and no deploy in this stage. A later deploy of phase 1 is a `MaClawSrv` binary only. It does not require a Hub or desktopd restart. Phase 5 does.
