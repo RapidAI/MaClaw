@@ -126,18 +126,6 @@ test("empty input and path traversal fail closed", () => {
   assert.equal(injected.jobs.lifecycle, false);
 });
 
-test("experiments stay out of the product suites", () => {
-  const plan = classify([
-    "experiments/browser-observation-ab/run.mjs",
-    "experiments/browser-observation-ab/results/summary.json",
-  ]);
-  assert.equal(plan.result, "pass-explicit-skips");
-  assert.equal(plan.jobs.lifecycle, false);
-  assert.equal(plan.jobs.frontend, false);
-  assert.deepEqual(plan.jobs.packages, []);
-  assert.ok(plan.skips.every((skip) => skip.reason === "isolated-experiment"));
-});
-
 test("third_party and hub admin are explicit skips, not docs-only", () => {
   const plan = classify([
     "third_party/wails/go.mod",

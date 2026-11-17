@@ -202,11 +202,6 @@ export function classify(files, options = {}) {
       sawOther = true;
       continue;
     }
-    if (file.startsWith("experiments/")) {
-      plan.skips.push({ path: file, reason: "isolated-experiment" });
-      sawOther = true;
-      continue;
-    }
     if (file.startsWith("hub/web/")) {
       plan.skips.push({ path: file, reason: "hub-admin-baseline" });
       sawOther = true;

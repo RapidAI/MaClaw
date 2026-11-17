@@ -344,14 +344,13 @@ export async function runOnce(browser, origin, saveShot) {
   const afterRefusal = await outcome(page);
   const handed = await handoff(page);
   const passwordOutcome = await outcome(page);
-  const passwordSuccess =
-    handed.human_completed_by_harness === true &&
-    passwordOutcome.detail.human_completed === true &&
-    passwordOutcome.detail.password_len === 0 &&
-    passwordOutcome.detail.password_typed === false;
   check("password_type_refused", refused.error === "secret_field_refused", refused);
-  check("password_unchanged_before_handoff", afterRefusal.detail.password_len === 0 && afterRefusal.detail.human_completed === false, afterRefusal);
-  check("password_handoff_wiring", passwordSuccess, passwordOutcome);
+  check("password_unchanged_before_simulated_handoff", afterRefusal.detail.password_len === 0 && afterRefusal.detail.human_completed === false, afterRefusal);
+  check(
+    "simulated_handoff_is_not_human_verification",
+    handed.human_completed_by_harness === true && passwordOutcome.detail.password_len === 0 && passwordOutcome.detail.human_verified !== true,
+    passwordOutcome,
+  );
   const { png, pngBuffer, ...passwordSerial } = passwordObserved;
   const efficiency = await runEfficiency(page, origin, external);
   for (const summary of efficiency.summaries) {
@@ -362,7 +361,9 @@ export async function runOnce(browser, origin, saveShot) {
 
   await context.close();
   return {
-    kind: "mechanical_and_interface_upper_bound_not_model_ab",
+    kind: "scripted_observation_overhead_microbench",
+    not_agent_success: true,
+    comparable_across_tasks: false,
     external_requests: external,
     failures,
     tasks: {
@@ -386,8 +387,9 @@ export async function runOnce(browser, origin, saveShot) {
         type_refused: refused,
         handoff: handed,
         outcome: passwordOutcome,
-        wiring_success: passwordSuccess,
-        note: "wiring check: the harness sets human_completed only inside handoff. This is not a model trial.",
+        simulated_handoff: true,
+        human_verified: false,
+        note: "The fixture flag is set by the scripted driver. That is not a person confirming the outcome.",
       },
     },
     efficiency,

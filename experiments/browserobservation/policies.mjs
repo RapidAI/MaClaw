@@ -226,8 +226,8 @@ export async function runEfficiency(page, origin, external) {
       browser_primitives: primitives,
       retries,
       chat_progress_events: primitives,
-      tool_rounds_if_separate: policy === "batched_tool" ? 1 : observations + primitives,
-      tool_rounds_if_batched: 1,
+      scripted_driver_rounds: policy === "batched_tool" ? observations + primitives : observations + primitives,
+      one_model_call_batch: { measured: false, note: "hypothesis_not_measured" },
       model_calls: 0,
       screenshots: related.filter((event) => event.channel === "screenshot").length,
       snapshots: related.filter((event) => event.channel === "semantic_snapshot").length,
@@ -324,8 +324,8 @@ export async function runEfficiency(page, origin, external) {
     observations: 2,
     retries: 1,
     chat_progress_events: 2,
-    tool_rounds_if_separate: 4,
-    tool_rounds_if_batched: 1,
+    scripted_driver_rounds: 4,
+    one_model_call_batch: { measured: false, note: "hypothesis_not_measured" },
     screenshots: 0,
     snapshots: 2,
   });
@@ -355,13 +355,13 @@ export async function runEfficiency(page, origin, external) {
     policy: "batched_tool",
     model_calls: 0,
     browser_primitives: 2,
-    tool_rounds_if_batched: 1,
+    one_model_call_batch: { measured: false, note: "hypothesis_not_measured" },
     secret_refused: refused.error === "secret_field_refused",
-    success:
-      refused.error === "secret_field_refused" &&
-      passwordOutcome.detail.password_len === 0 &&
-      passwordOutcome.detail.password_typed === false &&
-      passwordOutcome.detail.human_completed === true,
+    simulated_handoff: true,
+    human_verified: false,
+    password_left_empty: passwordOutcome.detail.password_len === 0 && passwordOutcome.detail.password_typed === false,
+    scored: false,
+    success: null,
     outcome: passwordOutcome,
   });
 

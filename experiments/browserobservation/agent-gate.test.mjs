@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentPrerequisite, chatCompletionsURL, redactSecrets } from "./agent-gate.mjs";
+import { agentPrerequisite, chatCompletionsURL, providerURL, redactSecrets } from "./agent-gate.mjs";
 
 const ready = {
   MACLAW_BENCH_MODEL_BASE_URL: "https://open.bigmodel.cn/api/paas/v4",
@@ -49,6 +49,19 @@ test("official base URL keeps the paas path", () => {
     chatCompletionsURL("https://open.bigmodel.cn/api/paas/v4").href,
     "https://open.bigmodel.cn/api/paas/v4/chat/completions",
   );
+});
+
+test("Bot1 anthropic endpoint and member name are accepted", () => {
+  const gate = agentPrerequisite({
+    ...ready,
+    MACLAW_BENCH_MODEL_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
+    MACLAW_BENCH_MODEL_NAME: "智谱编程/glm-5.3-flash",
+    MACLAW_BENCH_PROTOCOL: "anthropic",
+  });
+  delete gate.problems;
+  assert.equal(gate.ok, true);
+  assert.equal(gate.protocol, "anthropic");
+  assert.equal(gate.vision_assumed, false);
 });
 
 test("redaction removes bearer keys from traces", () => {

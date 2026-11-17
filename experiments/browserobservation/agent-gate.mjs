@@ -1,10 +1,40 @@
-const OFFICIAL_MODEL = "glm-5.3-flash";
+const OFFICIAL_TAIL = "glm-5.3-flash";
+const OFFICIAL_MEMBER = "智谱编程/glm-5.3-flash";
 
-export function chatCompletionsURL(base) {
+export function officialModelTail(name) {
+  const text = String(name || "").trim();
+  return text.includes("/") ? text.slice(text.lastIndexOf("/") + 1) : text;
+}
+
+export function isOfficialFlashMember(name) {
+  const text = String(name || "").trim();
+  return text === OFFICIAL_TAIL || text === OFFICIAL_MEMBER;
+}
+
+export function sameOfficialModel(requested, response) {
+  const got = String(response || "").trim();
+  if (!got) return true;
+  return isOfficialFlashMember(requested) && officialModelTail(requested) === officialModelTail(got) && officialModelTail(got) === OFFICIAL_TAIL;
+}
+
+export function resolveProtocol(env) {
+  const explicit = String(env.MACLAW_BENCH_PROTOCOL || "").trim().toLowerCase();
+  if (explicit === "anthropic" || explicit === "openai") return explicit;
+  const base = String(env.MACLAW_BENCH_MODEL_BASE_URL || "");
+  return base.includes("/anthropic") ? "anthropic" : "openai";
+}
+
+export function providerURL(base, protocol) {
   const url = new URL(base);
   const path = url.pathname.replace(/\/$/, "");
-  if (!path.endsWith("/chat/completions")) url.pathname = `${path}/chat/completions`;
+  const suffix = protocol === "anthropic" ? "/v1/messages" : "/chat/completions";
+  if (path.endsWith("/v1")) url.pathname = `${path}${suffix.slice(3)}`;
+  else if (!path.endsWith(suffix)) url.pathname = `${path}${suffix}`;
   return url;
+}
+
+export function chatCompletionsURL(base) {
+  return providerURL(base, "openai");
 }
 
 export function redactSecrets(text, secrets = []) {
@@ -20,7 +50,7 @@ export function redactSecrets(text, secrets = []) {
 
 export function agentPrerequisite(env = process.env) {
   const loopback = String(env.MACLAW_BENCH_LOOPBACK || "") === "1";
-  const required = ["MACLAW_BENCH_MODEL_BASE_URL", "MACLAW_BENCH_MODEL_NAME", "MACLAW_BENCH_MODEL_VISION", "MACLAW_BENCH_CONFIRM"];
+  const required = ["MACLAW_BENCH_MODEL_BASE_URL", "MACLAW_BENCH_MODEL_NAME", "MACLAW_BENCH_CONFIRM"];
   if (!loopback) required.splice(1, 0, "MACLAW_BENCH_MODEL_API_KEY");
   const missing = required.filter((name) => !String(env[name] || "").trim());
   const problems = [];
@@ -45,9 +75,10 @@ export function agentPrerequisite(env = process.env) {
     }
   }
   const model = String(env.MACLAW_BENCH_MODEL_NAME || "").trim();
-  if (model && model !== OFFICIAL_MODEL) problems.push(`两臂模型必须同为 ${OFFICIAL_MODEL}`);
-  if (String(env.MACLAW_BENCH_MODEL_VISION || "") !== "1" && !missing.includes("MACLAW_BENCH_MODEL_VISION")) {
-    problems.push("MACLAW_BENCH_MODEL_VISION 必须为 1；截图臂不能退成纯文本");
+  if (model && !isOfficialFlashMember(model)) problems.push(`两臂模型必须是 ${OFFICIAL_MEMBER} 或 ${OFFICIAL_TAIL}`);
+  const protocol = resolveProtocol(env);
+  if (String(env.MACLAW_BENCH_PROTOCOL || "").trim() && !["anthropic", "openai"].includes(String(env.MACLAW_BENCH_PROTOCOL).trim().toLowerCase())) {
+    problems.push("MACLAW_BENCH_PROTOCOL 只能是 anthropic 或 openai");
   }
   if (String(env.MACLAW_BENCH_CONFIRM || "") !== "1" && !missing.includes("MACLAW_BENCH_CONFIRM")) {
     problems.push("MACLAW_BENCH_CONFIRM 必须为 1");
@@ -62,13 +93,15 @@ export function agentPrerequisite(env = process.env) {
     key_present: Boolean(String(env.MACLAW_BENCH_MODEL_API_KEY || "").trim()),
     loopback,
     model_name: model || null,
-    official_model: OFFICIAL_MODEL,
+    official_model: OFFICIAL_TAIL,
+    official_member: OFFICIAL_MEMBER,
     max_calls: maxCalls,
     temperature: 0,
-    protocol: "openai-chat-completions-tools",
+    protocol: base ? protocol : null,
+    vision_assumed: false,
     model_calls: 0,
     intended_model_note:
-      "Bot1 官方直连的模型 id 按仓库既有调用是 glm-5.3-flash，OpenAI 兼容基址形如 https://open.bigmodel.cn/api/paas/v4。夹具不读取该密钥。",
+      "Bot1 已核对的官方直连是 https://open.bigmodel.cn/api/anthropic ，协议 Anthropic，成员 智谱编程/glm-5.3-flash。不假定它接受图片。夹具不读取密钥。",
     note: "密钥只存在于调用进程的环境或 Bot1 机器上的 127.0.0.1 代理。不要把生产配置路径交给夹具。",
   };
 }

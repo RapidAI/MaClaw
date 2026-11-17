@@ -1,19 +1,21 @@
 import { createHash } from "node:crypto";
+import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import { agentPrerequisite } from "./src/agent-gate.mjs";
-import { startFixtures } from "./src/fixture-server.mjs";
-import { runOnce } from "./src/mechanical.mjs";
-import { promptBundle } from "./src/prompts.mjs";
-import { runEditorFaults } from "./src/editor-faults.mjs";
-import { runRichtext } from "./src/richtext.mjs";
+import { agentPrerequisite } from "./agent-gate.mjs";
+import { runBoundedArms } from "./agent.mjs";
+import { startFixtures } from "./fixture-server.mjs";
+import { runOnce } from "./mechanical.mjs";
+import { promptBundle } from "./prompts.mjs";
+import { runEditorFaults } from "./editor-faults.mjs";
+import { runRichtext } from "./richtext.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const mode = process.argv.includes("--mode") ? process.argv[process.argv.indexOf("--mode") + 1] : "mechanical";
+const mode = process.argv.includes("--mode") ? process.argv[process.argv.indexOf("--mode") + 1] : "";
 const repeats = Number(process.env.MACLAW_BENCH_REPEATS || 3);
+const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 
 function git(args) {
   try {
@@ -32,9 +34,9 @@ function median(values) {
 
 function report(summary) {
   const lines = [];
-  lines.push("# 合成夹具测量（不是模型 A/B）");
+  lines.push("# 脚本化观察开销微基准（不是模型 A/B，也不是代理成功）");
   lines.push("");
-  lines.push("模型调用次数：0。未使用其他模型代替 GLM 5.3 Flash。");
+  lines.push("模型调用次数：0。各任务的策略集合并不相同，不能从这张表里选胜者。");
   lines.push("");
   lines.push("## 效率策略");
   lines.push("");
@@ -42,8 +44,8 @@ function report(summary) {
   lines.push("`observation_ms` 只计快照生成或截图生成。坐标臂的 bbox 探测记在 `harness_bbox_ms`，不计入 observation_ms，也不换成 token。");
   lines.push("`chat_progress_events` 是同一次工具回合里的进度，不是模型调用。`model_calls` 恒为 0。");
   lines.push("");
-  lines.push("| 任务 | 臂 | 策略 | 成功 | 中位 observation_ms | 中位 primitive_ms | 中位 bytes | 观察次数 | 原语 | 重试 | 分开工具回合 | 批处理工具回合 |");
-  lines.push("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+  lines.push("| 任务 | 脚本臂 | 策略 | 夹具检查 | 中位 observation_ms | 中位 primitive_ms | 中位 bytes | 观察次数 | 原语 | 重试 | 脚本驱动回合 |");
+  lines.push("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
   const groups = new Map();
   for (const repeat of summary.repeats) {
     for (const item of repeat.efficiency.summaries) {
@@ -56,7 +58,7 @@ function report(summary) {
     const [task, arm, policy] = key.split("|");
     const success = items.filter((item) => item.success).length;
     lines.push(
-      `| ${task} | ${arm} | ${policy} | ${success}/${items.length} | ${median(items.map((item) => item.observation_ms))} | ${median(items.map((item) => item.primitive_ms))} | ${median(items.map((item) => item.observation_bytes))} | ${items[0].observations} | ${items[0].browser_primitives} | ${items[0].retries} | ${items[0].tool_rounds_if_separate} | ${items[0].tool_rounds_if_batched} |`,
+      `| ${task} | ${arm} | ${policy} | ${success}/${items.length} | ${median(items.map((item) => item.observation_ms))} | ${median(items.map((item) => item.primitive_ms))} | ${median(items.map((item) => item.observation_bytes))} | ${items[0].observations ?? ""} | ${items[0].browser_primitives ?? ""} | ${items[0].retries ?? ""} | ${items[0].scripted_driver_rounds ?? ""} |`,
     );
   }
   lines.push("");
@@ -79,10 +81,10 @@ function report(summary) {
 
 const gate = agentPrerequisite();
 if (mode === "richtext") {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const outDir = path.join(root, "results", `richtext-${stamp}`);
+  const outDir = process.env.MACLAW_BENCH_OUT || path.join(os.tmpdir(), `maclaw-richtext-${stamp}`);
   await mkdir(outDir, { recursive: true });
   const fixtures = await startFixtures();
+  const { chromium } = await import("playwright");
   const browser = await chromium.launch({
     channel: "chrome",
     headless: true,
@@ -109,22 +111,39 @@ if (mode === "richtext") {
   process.exit(failures.length === 0 ? 0 : 1);
 }
 if (mode === "agent") {
-  const payload = {
-    ...gate,
-    executed: false,
-    model_calls: 0,
-    runner: gate.ok ? "src/agent.mjs#runProvisionedTrial" : null,
-  };
-  console.log(JSON.stringify(payload, null, 2));
-  if (!gate.ok) process.exit(2);
-  console.error("端点已配置。调用 src/agent.mjs 的 runProvisionedTrial 才会发模型请求；本次命令不发。");
-  process.exit(2);
+  if (!gate.ok) {
+    console.log(JSON.stringify({ ...gate, executed: false, ready: false, model_calls: 0, observed_llm: false }, null, 2));
+    process.exit(2);
+  }
+  const outDir = process.env.MACLAW_BENCH_OUT || path.join(os.tmpdir(), `maclaw-bench-${stamp}`);
+  await mkdir(outDir, { recursive: true });
+  const fixtures = await startFixtures();
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  try {
+    const summary = await runBoundedArms({
+      env: process.env,
+      browser,
+      origin: fixtures.origin,
+      outDir,
+    });
+    await writeFile(path.join(outDir, "ab-summary.json"), JSON.stringify(summary, null, 2));
+    console.log(JSON.stringify({ wrote: outDir, model_calls: summary.model_calls, ready: true, observed_llm: summary.observed_llm }, null, 2));
+    process.exit(summary.aborted ? 1 : 0);
+  } finally {
+    await browser.close();
+    await fixtures.close();
+  }
 }
 
-const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-const outDir = path.join(root, "results", stamp);
+if (mode !== "microbench" && mode !== "mechanical") {
+  console.error("use --mode agent, --mode microbench, or --mode richtext");
+  process.exit(2);
+}
+const outDir = process.env.MACLAW_BENCH_OUT || path.join(os.tmpdir(), `maclaw-microbench-${stamp}`);
 await mkdir(outDir, { recursive: true });
 const fixtures = await startFixtures();
+const { chromium } = await import("playwright");
 const browser = await chromium.launch({
   channel: "chrome",
   headless: true,
@@ -148,7 +167,9 @@ try {
 }
 
 const summary = {
-  kind: "mechanical_and_interface_upper_bound_not_model_ab",
+  kind: "scripted_observation_overhead_microbench",
+  not_agent_success: true,
+  comparable_across_tasks: false,
   model_calls: 0,
   llm_ab_executed: false,
   agent_gate: gate,

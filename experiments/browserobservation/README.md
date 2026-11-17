@@ -6,23 +6,41 @@
 
 ## 同一模型怎么跑
 
-Bot1 已经配好 GLM 5.3 Flash 官方直连。这个夹具不读取、不打印、不改那份生产配置。仓库里的官方兼容调用把模型 id 写成 `glm-5.3-flash`，基址形如 `https://open.bigmodel.cn/api/paas/v4`。`coding/paas` 和 `opencode/glm-5.3-flash-free` 不是这一路。
+Bot1 已核对的直连是 `https://open.bigmodel.cn/api/anthropic`，协议 Anthropic，成员 `智谱编程/glm-5.3-flash`。天气 PDF 那次 13 轮、339 秒不是这次对照。不假定该模型接受图片。截图臂会附 PNG；响应若拒绝图片，该臂记为 `vision_rejected`，不改成纯文本。语义臂不发图片。`coding/paas` 和 OpenCode 免费 id 不是这一路。
 
-本云环境没有这份凭证。父流程在持有 Bot1 配置的机器上二选一：
+在获准调用的主机上，密钥只留在该进程环境里：
 
-1. 本机回环代理。代理进程自己使用已有配置，只听 `127.0.0.1`，只转发 chat completions，强制 `model=glm-5.3-flash`，日志去掉 `Authorization`。夹具侧设置 `MACLAW_BENCH_LOOPBACK=1`、`MACLAW_BENCH_MODEL_BASE_URL=http://127.0.0.1:<port>/v1`，不设置供应商密钥。
-2. 由父进程把密钥放进夹具进程的环境变量，不要放进命令行参数，也不要写进夹具会打开的文件。变量名是 `MACLAW_BENCH_MODEL_API_KEY`。基址和模型名仍用上面的官方值。
+```bash
+cd experiments/browserobservation
+export MACLAW_BENCH_MODEL_BASE_URL=https://open.bigmodel.cn/api/anthropic
+export MACLAW_BENCH_PROTOCOL=anthropic
+export MACLAW_BENCH_MODEL_NAME='智谱编程/glm-5.3-flash'
+export MACLAW_BENCH_CONFIRM=1
+export MACLAW_BENCH_PER_ARM_CALLS=5
+export MACLAW_BENCH_MAX_CALLS=60
+export MACLAW_BENCH_SEED=bench-1
+export MACLAW_BENCH_OUT=/tmp/maclaw-bench
+# MACLAW_BENCH_MODEL_API_KEY 由该主机环境提供，不要 echo
+node run.mjs --mode agent
+```
 
-两种都还要 `MACLAW_BENCH_MODEL_NAME=glm-5.3-flash`、`MACLAW_BENCH_MODEL_VISION=1`、`MACLAW_BENCH_CONFIRM=1`。设置 `MACLAW_BENCH_CONFIG_PATH` 或 `MACLAW_BENCH_READ_APP_CONFIG=1` 会直接拒绝。返回体里的 `model` 若不是 `glm-5.3-flash`，该臂中止，不算对照。错误文本会打码。截图臂若被端点拒绝图片，也中止，不改成纯文本再继续。页面仍是合成的，不发布、不付款。
+回环代理时加 `MACLAW_BENCH_LOOPBACK=1`，基址改为 `http://127.0.0.1:<port>/anthropic`，协议仍是 anthropic，不放供应商密钥。不要设置 `MACLAW_BENCH_CONFIG_PATH`。
 
-未满足时 `node run.mjs --mode agent` 退出码为 2，模型调用数为 0。接口自检：`node --test src/agent-gate.test.mjs`。
+未满足时 `node run.mjs --mode agent` 退出码为 2，不会发请求。满足之后同一命令按相同任务、每臂次数和 seed 调用 `runBoundedArms`。这台机器没有授权路由，所以还没有真实模型结果。假服务契约不是真实模型：
+
+```bash
+node --test agent-gate.test.mjs transport.test.mjs
+go test -count=1 -timeout 2m ./experiments/browserobservation
+```
+
+`--mode microbench` 只测脚本化观察开销。生成物写到临时目录，不进源码树。
 
 ## 已经会跑的部分
 
 ```bash
-cd experiments/browser-observation-ab
+cd experiments/browserobservation
 npm install
-node run.mjs --mode mechanical
+node run.mjs --mode microbench
 ```
 
 机械测量比较三条对称策略，两臂都有：
