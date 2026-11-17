@@ -190,7 +190,7 @@ func TestScheduleDeliverRefusesTheSameBytesTwice(t *testing.T) {
 	ctx = context.WithValue(ctx, desktopDataDirKey{}, dir)
 	scope := agentruntime.Scope{RunID: "run_same", TenantID: "t", UserID: "alice", InstanceID: "inst"}
 	same := []byte("%PDF-1.4 same weather")
-	out, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", same)
+	out, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", same, "")
 	if err != nil || !strings.Contains(out, "Delivered") {
 		t.Fatalf("first out=%q err=%v", out, err)
 	}
@@ -202,13 +202,13 @@ func TestScheduleDeliverRefusesTheSameBytesTwice(t *testing.T) {
 	desktopScheduleDeliverLoaded = false
 	desktopScheduleDeliverFile = ""
 	desktopScheduleDeliverMu.Unlock()
-	if _, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", same); err == nil || !strings.Contains(err.Error(), "重新生成") {
+	if _, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", same, ""); err == nil || !strings.Contains(err.Error(), "重新生成") {
 		t.Fatalf("repeat err=%v", err)
 	}
-	if _, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", []byte("%PDF-1.4 newer weather")); err != nil {
+	if _, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", []byte("%PDF-1.4 newer weather"), ""); err != nil {
 		t.Fatalf("new bytes err=%v", err)
 	}
-	if _, err := deliverFileOnItsOwn(context.Background(), scope, "北京天气报告.pdf", same); err != nil {
+	if _, err := deliverFileOnItsOwn(context.Background(), scope, "北京天气报告.pdf", same, ""); err != nil {
 		t.Fatalf("chat err=%v", err)
 	}
 }
@@ -241,7 +241,7 @@ func TestResumedScheduleReplyRefusesTheBytesAlreadyDelivered(t *testing.T) {
 	ctx = context.WithValue(ctx, desktopDataDirKey{}, dir)
 	scope := agentruntime.Scope{RunID: "run_resume", TenantID: "t", UserID: "alice", InstanceID: "inst"}
 	same := []byte("%PDF-1.4 same weather")
-	if _, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", same); err != nil {
+	if _, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", same, ""); err != nil {
 		t.Fatalf("first err=%v", err)
 	}
 	desktopScheduleDeliverMu.Lock()

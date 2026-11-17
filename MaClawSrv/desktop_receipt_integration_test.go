@@ -40,6 +40,7 @@ type receiptTurn struct {
 	sameBytes bool
 	samePost  bool
 	partial   bool
+	textIDs   []string
 }
 
 type receiptExecutor struct {
@@ -55,6 +56,9 @@ func (e *receiptExecutor) Execute(ctx context.Context, req agentservice.ExecuteR
 		items, err := agent.ExtractDesktopDeliverableContract(ctx, corelib.MaclawLLMConfig{}, nil, e.turn.content)
 		agent.CompleteDesktopOutcome = prev
 		agentservice.RecordDesktopDeliverableExtraction(req.RunID, items, err)
+		if len(e.turn.textIDs) > 0 {
+			desktopNoteTextClaims(req.RunID, e.turn.textIDs)
+		}
 	} else if e.turn.slots != nil {
 		noteDesktopOutputSlots(req.RunID, e.turn.slots)
 	} else if e.turn.contract != nil {
@@ -417,6 +421,128 @@ func TestDesktopDeliverableExtractionChain(t *testing.T) {
 			_ = reopened.svc.Close()
 		})
 	}
+}
+
+func TestPlanFileIsNotDelivery(t *testing.T) {
+	view := runReceiptTurn(t, t.TempDir(), receiptTurn{
+		content: "做一份报告", file: true, fileName: "report.pdf",
+		userMeta: map[string]string{"bot_phase": "plan"},
+	})
+	t.Cleanup(func() {
+		_ = view.svc.Close()
+		view.server.Close()
+	})
+	assertReceipt(t, view.message, view.run, agentservice.TaskOutcomeUnverified, "不能确认", "", true)
+}
+
+func TestTextItemsNeedExplicitIDs(t *testing.T) {
+	answer := "第一段说明原因。第二段说明做法。"
+	doc := `{"items":[{"id":"t1","kind":"text","text":"原因"},{"id":"t2","kind":"text","text":"做法"}]}`
+	missing := runReceiptTurn(t, t.TempDir(), receiptTurn{content: "写两段", result: answer, modelJSON: doc})
+	t.Cleanup(func() {
+		_ = missing.svc.Close()
+		missing.server.Close()
+	})
+	assertReceipt(t, missing.message, missing.run, agentservice.TaskOutcomeUnverified, answer, "", true)
+	both := runReceiptTurn(t, t.TempDir(), receiptTurn{content: "写两段", result: answer, modelJSON: doc, textIDs: []string{"t1", "t2"}})
+	t.Cleanup(func() {
+		_ = both.svc.Close()
+		both.server.Close()
+	})
+	assertReceipt(t, both.message, both.run, agentservice.TaskOutcomeDone, answer, "", false)
+}
+
+func TestHTTPReadDuringFinalize(t *testing.T) {
+	release := make(chan struct{})
+	desktopReceiptHold = func() { <-release }
+	t.Cleanup(func() {
+		desktopReceiptHold = nil
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	svc, principal := newReceiptService(t, t.TempDir(), &receiptExecutor{turn: receiptTurn{
+		content: "交两份文件", modelJSON: `{"items":[{"id":"a","kind":"file","text":"甲"},{"id":"b","kind":"file","text":"乙"}]}`,
+		files: []string{"a.pdf", "b.pdf"}, fileIDs: []string{"a", "b"},
+	}})
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	t.Cleanup(func() {
+		_ = svc.Close()
+		server.Close()
+	})
+	inst := createReceiptInstance(t, svc, principal)
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{"content": "交两份文件", "client_session_key": "bot_race"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/messages", bytes.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Prefer", "respond-async")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	var admitted struct {
+		Run agentservice.Run `json:"run"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &admitted); err != nil || admitted.Run.ID == "" {
+		t.Fatalf("admission %s: %v", w.Body.String(), err)
+	}
+	// GET while finish is still running. The handler sanitizes a stored
+	// snapshot; a shared metadata map fails under -race.
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				read := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/runs/"+admitted.Run.ID, nil)
+				read.Header.Set("Authorization", "Bearer "+token)
+				got := httptest.NewRecorder()
+				server.Handler().ServeHTTP(got, read)
+				if got.Code != http.StatusOK {
+					return
+				}
+			}
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	deadline := time.Now().Add(8 * time.Second)
+	var body struct {
+		agentservice.Run
+		DesktopReady bool                  `json:"desktop_ready"`
+		Message      *agentservice.Message `json:"message"`
+	}
+	for {
+		read := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/runs/"+admitted.Run.ID, nil)
+		read.Header.Set("Authorization", "Bearer "+token)
+		got := httptest.NewRecorder()
+		server.Handler().ServeHTTP(got, read)
+		if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.DesktopReady && body.Message != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run did not finish: status=%s", body.Status)
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	close(stop)
+	readers.Wait()
+	assertReceipt(t, body.Message, &body.Run, agentservice.TaskOutcomeDone, "a.pdf", "", false)
 }
 
 func TestDesktopReceiptStaysUnreadyPastTwoSeconds(t *testing.T) {

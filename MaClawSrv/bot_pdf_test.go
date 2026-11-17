@@ -39,7 +39,7 @@ func TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn(t *testing.T) {
 				t.Fatal("PDF delivery was classified as read-only")
 			}
 			ctx, slot := withDesktopShotSlot(context.Background())
-			out, err := mod.InvokeTool(ctx, request, botPDFToolName, map[string]any{"title": "北京天气", "content": "# 北京天气\n晴"})
+			out, err := mod.InvokeTool(ctx, request, botPDFToolName, map[string]any{"title": "北京天气", "content": "# 北京天气\n晴", "item_id": "file-1"})
 			if err != nil || !strings.Contains(out, "北京天气.pdf") {
 				t.Fatalf("PDF result = %q, %v", out, err)
 			}
@@ -49,7 +49,7 @@ func TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn(t *testing.T) {
 			}
 			file := msg.Attachments[0]
 			raw, err := base64.StdEncoding.DecodeString(file.Data)
-			if err != nil || file.FileName != "北京天气.pdf" || file.MimeType != "application/pdf" || string(raw) != string(pdf) {
+			if err != nil || file.FileName != "北京天气.pdf" || file.MimeType != "application/pdf" || file.ItemID != "file-1" || string(raw) != string(pdf) {
 				t.Fatalf("file = %#v, decode = %v", file, err)
 			}
 		})

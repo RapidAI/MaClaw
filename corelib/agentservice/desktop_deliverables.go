@@ -48,10 +48,12 @@ func desktopDeliverablesEnabled() bool {
 }
 
 func (c *coreAgentCallbacks) desktopDeliverablesApply() bool {
-	if c == nil || !desktopDeliverablesEnabled() || !c.botUsesContainer() {
+	if c == nil || !desktopDeliverablesEnabled() {
 		return false
 	}
-	if strings.TrimSpace(c.messageMetadata["bot_phase"]) != "execute" || strings.TrimSpace(c.messageMetadata["bot_wake"]) == "1" {
+	// A plan describes the work. It does not deliver the outputs. Execute
+	// does, with or without a computer, including a mailbox wake.
+	if strings.TrimSpace(c.messageMetadata["bot_phase"]) != "execute" {
 		return false
 	}
 	return strings.TrimSpace(c.userText) != ""
@@ -97,6 +99,10 @@ func desktopDeliverableRequestText(c *coreAgentCallbacks) string {
 	return desktopOutcomeAsk(c, c.userText)
 }
 
+// BeginDesktopDeliverableExtraction is set by MaClawSrv. The receipt waits
+// for that extraction instead of treating a lone file as completion.
+var BeginDesktopDeliverableExtraction func(runID string)
+
 // startDesktopDeliverables reads the explicit deliverables of this turn.
 func (c *coreAgentCallbacks) startDesktopDeliverables() {
 	if !c.desktopDeliverablesApply() || c.deliverables != nil {
@@ -104,6 +110,9 @@ func (c *coreAgentCallbacks) startDesktopDeliverables() {
 	}
 	st := &desktopDeliverablesState{done: make(chan struct{})}
 	c.deliverables = st
+	if BeginDesktopDeliverableExtraction != nil {
+		BeginDesktopDeliverableExtraction(c.runID)
+	}
 	cfg, client, text := c.llmCfg, c.httpClient, desktopDeliverableRequestText(c)
 	go func() {
 		defer close(st.done)

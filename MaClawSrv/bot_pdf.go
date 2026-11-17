@@ -37,6 +37,7 @@ func (botPDFModule) Tools(_ context.Context, request agentruntime.TurnRequest) (
 			"properties": map[string]any{
 				"title":   map[string]any{"type": "string", "description": "File name and document heading, without .pdf"},
 				"content": map[string]any{"type": "string", "description": "Complete Markdown document to render as PDF"},
+				"item_id": map[string]any{"type": "string", "description": "Checklist item id of kind file that this PDF satisfies."},
 			},
 			"required": []string{"content"},
 		},
@@ -89,7 +90,7 @@ func (m botPDFModule) InvokeTool(ctx context.Context, request agentruntime.TurnR
 		return "", ctx.Err()
 	}
 	if desktopShotSlotFrom(ctx) != nil && base64.StdEncoding.EncodedLen(len(pdf)) <= desktopHubReplyFileMax {
-		if err := noteDesktopFile(ctx, name, "application/pdf", pdf); err != nil {
+		if err := noteDesktopFileItem(ctx, name, "application/pdf", pdf, desktopArg(args, "item_id")); err != nil {
 			return "", err
 		}
 		return desktopDelivered(name, len(pdf)), nil
@@ -98,5 +99,5 @@ func (m botPDFModule) InvokeTool(ctx context.Context, request agentruntime.TurnR
 	if err != nil {
 		return "", err
 	}
-	return deliverFileOnItsOwn(ctx, scope, name, pdf)
+	return deliverFileOnItsOwn(ctx, scope, name, pdf, desktopArg(args, "item_id"))
 }

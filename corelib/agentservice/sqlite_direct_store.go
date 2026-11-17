@@ -436,7 +436,7 @@ func sqliteDeleteRuns(ctx context.Context, q sqlq, where string, args []any, ses
 }
 
 func sqliteReviseMessage(ctx context.Context, q sqlq, v Message) error {
-	payload, err := json.Marshal(v)
+	payload, err := json.Marshal(freezeMessage(v))
 	if err != nil {
 		return err
 	}
@@ -490,7 +490,8 @@ func sqliteSaveMessage(ctx context.Context, q sqlq, v Message) error {
 			return ErrAlreadyExists
 		}
 	}
-	payload, err := json.Marshal(v)
+	frozen := freezeMessage(v)
+	payload, err := json.Marshal(frozen)
 	if err != nil {
 		return err
 	}
@@ -586,11 +587,12 @@ func (s *SQLiteStore) SaveRun(v Run) error {
 }
 
 func sqliteSaveRun(ctx context.Context, q sqlq, v Run) error {
-	payload, err := json.Marshal(v)
+	frozen := freezeRun(v)
+	payload, err := json.Marshal(frozen)
 	if err != nil {
 		return err
 	}
-	_, err = q.ExecContext(ctx, `INSERT OR REPLACE INTO as_runs(k, tenant_id, user_id, instance_id, session_id, user_message_id, v) VALUES(?,?,?,?,?,?,?)`, v.ID, v.TenantID, v.UserID, v.InstanceID, v.SessionID, v.UserMessageID, payload)
+	_, err = q.ExecContext(ctx, `INSERT OR REPLACE INTO as_runs(k, tenant_id, user_id, instance_id, session_id, user_message_id, v) VALUES(?,?,?,?,?,?,?)`, frozen.ID, frozen.TenantID, frozen.UserID, frozen.InstanceID, frozen.SessionID, frozen.UserMessageID, payload)
 	return err
 }
 

@@ -780,7 +780,7 @@ func (s *Service) PostMessageAsync(ctx context.Context, p Principal, instanceID,
 			MarkRunReceiptInFlight(run.ID)
 		}
 		select {
-		case runCh <- run:
+		case runCh <- freezeRun(run):
 		default:
 		}
 	}

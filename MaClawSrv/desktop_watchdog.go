@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"log"
@@ -752,7 +753,7 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	}
 	files := deliveredFileCount(msg)
 	complete, incomplete, other := desktopPostEvidence(run.ID)
-	contract, resolved := desktopOutputContractOf(run.ID)
+	contract, resolved := desktopWaitForContract(run.ID)
 	if resolved && contract.failed {
 		return agentservice.TaskOutcomeUnverified, "deliverable extraction failed"
 	}
@@ -767,6 +768,18 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 			noteDeliveredFiles(msg, files)
 			return verdict, why
 		}
+	}
+	if desktopExtractionUnresolved(run.ID) {
+		noteDeliveredFiles(msg, files)
+		return agentservice.TaskOutcomeUnverified, "deliverable extraction unfinished"
+	}
+	if desktopPlanTurn(run) {
+		answered := desktopVisibleAnswer(msg) != ""
+		noteDeliveredFiles(msg, files)
+		if answered {
+			return agentservice.TaskOutcomeDone, "text answer"
+		}
+		return agentservice.TaskOutcomeUnverified, "plan is not delivery"
 	}
 	if other > 0 && complete == 0 {
 		noteDeliveredFiles(msg, files)
@@ -1061,6 +1074,18 @@ func desktopAttributedVerdict(runID string, msg *agentservice.Message, items []a
 			satisfied[id] = true
 		}
 	}
+	for _, claim := range desktopFileClaims(runID) {
+		id := strings.TrimSpace(claim.ItemID)
+		item, ok := byID[id]
+		if !ok || item.Kind != desktopContractFile || satisfied[id] || claim.Fingerprint == "" {
+			continue
+		}
+		if prev, taken := usedFile[claim.Fingerprint]; taken && prev != id {
+			continue
+		}
+		usedFile[claim.Fingerprint] = id
+		satisfied[id] = true
+	}
 	for _, claim := range desktopPostClaims(runID) {
 		if !claim.Complete {
 			continue
@@ -1082,6 +1107,14 @@ func desktopAttributedVerdict(runID string, msg *agentservice.Message, items []a
 	}
 	if textItems == 1 && desktopVisibleAnswer(msg) != "" {
 		satisfied[onlyText] = true
+	}
+	if desktopVisibleAnswer(msg) != "" {
+		for _, id := range desktopTextClaims(runID) {
+			item, ok := byID[id]
+			if ok && item.Kind == desktopContractText {
+				satisfied[id] = true
+			}
+		}
 	}
 	if len(satisfied) == len(items) {
 		return agentservice.TaskOutcomeDone, "outputs delivered"
@@ -1107,6 +1140,109 @@ func rememberContractOutcome(run *agentservice.Run, msg *agentservice.Message, i
 	}
 	run.Metadata["output_contract"] = string(payload)
 	run.Metadata["output_contract_outcome"] = outcome
+}
+
+var desktopExtractionPending sync.Map
+
+// desktopContractWait is how long a receipt waits for an extraction that
+// already started. A lone file is not completion while that read is open.
+var desktopContractWait = 5 * time.Second
+
+func noteDesktopExtractionPending(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	desktopExtractionPending.Store(runID, struct{}{})
+}
+
+func desktopExtractionUnresolved(runID string) bool {
+	if _, pending := desktopExtractionPending.Load(runID); !pending {
+		return false
+	}
+	_, resolved := desktopOutputContractOf(runID)
+	return !resolved
+}
+
+func desktopWaitForContract(runID string) (desktopOutputContract, bool) {
+	if contract, ok := desktopOutputContractOf(runID); ok {
+		return contract, true
+	}
+	if _, pending := desktopExtractionPending.Load(runID); !pending {
+		return desktopOutputContract{}, false
+	}
+	deadline := time.Now().Add(desktopContractWait)
+	for time.Now().Before(deadline) {
+		if contract, ok := desktopOutputContractOf(runID); ok {
+			return contract, true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return desktopOutputContract{}, false
+}
+
+func desktopPlanTurn(run *agentservice.Run) bool {
+	return run != nil && run.Metadata != nil && strings.TrimSpace(run.Metadata["bot_phase"]) == "plan"
+}
+
+var (
+	desktopTextClaimMu     sync.Mutex
+	desktopTextClaimsByRun = map[string][]string{}
+)
+
+type desktopFileClaim struct {
+	ItemID      string
+	Fingerprint string
+}
+
+var (
+	desktopFileClaimMu     sync.Mutex
+	desktopFileClaimsByRun = map[string][]desktopFileClaim{}
+)
+
+func desktopNoteFileClaim(runID, itemID string, raw []byte) {
+	runID = strings.TrimSpace(runID)
+	itemID = strings.TrimSpace(itemID)
+	if runID == "" || itemID == "" || len(raw) == 0 {
+		return
+	}
+	fp := fileFingerprint(base64.StdEncoding.EncodeToString(raw))
+	desktopFileClaimMu.Lock()
+	desktopFileClaimsByRun[runID] = append(desktopFileClaimsByRun[runID], desktopFileClaim{ItemID: itemID, Fingerprint: fp})
+	desktopFileClaimMu.Unlock()
+}
+
+func desktopFileClaims(runID string) []desktopFileClaim {
+	desktopFileClaimMu.Lock()
+	defer desktopFileClaimMu.Unlock()
+	return append([]desktopFileClaim(nil), desktopFileClaimsByRun[strings.TrimSpace(runID)]...)
+}
+
+func desktopNoteTextClaims(runID string, ids []string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" || len(ids) == 0 {
+		return
+	}
+	desktopTextClaimMu.Lock()
+	defer desktopTextClaimMu.Unlock()
+	seen := map[string]bool{}
+	for _, id := range desktopTextClaimsByRun[runID] {
+		seen[id] = true
+	}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		desktopTextClaimsByRun[runID] = append(desktopTextClaimsByRun[runID], id)
+	}
+}
+
+func desktopTextClaims(runID string) []string {
+	desktopTextClaimMu.Lock()
+	defer desktopTextClaimMu.Unlock()
+	return append([]string(nil), desktopTextClaimsByRun[strings.TrimSpace(runID)]...)
 }
 
 func desktopRunTookSteps(runID string) bool {
