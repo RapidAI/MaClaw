@@ -266,6 +266,9 @@ func finishAgentSession(ownerID, cdpAddr string, policy BrowserPolicy, reuseExis
 	browserAgentSessions[agentSession.ID] = agentSession
 	browserAgentMu.Unlock()
 	log.Printf("[browser] agent session started id=%s owner=%q addr=%s mode=%s target=%s managed_dir=%q reuse=%v", agentSession.ID, ownerID, redactUserInfo(cdpAddr), mode, targetID, managedUserDataDir, reuseExisting)
+	if GUIEmbedEnabled() && browserAgentModeIsManaged(mode) {
+		notifyBrowserStage(BrowserStageNotice{Kind: "session", SessionID: agentSession.ID})
+	}
 	return agentSession, nil
 }
 

@@ -66,6 +66,15 @@ type SystemSettingsRepository interface {
 	Get(ctx context.Context, key string) (string, error)
 }
 
+// VisibilityLockInfo mirrors the authority payload Hub Center returns in the
+// heartbeat response: while an admin override is active at Hub Center, the
+// hub can show who manages its effective visibility.
+type VisibilityLockInfo struct {
+	Locked     bool   `json:"locked"`
+	LockedBy   string `json:"locked_by,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
+}
+
 type RegistrationState struct {
 	Enabled                       bool                                             `json:"enabled"`
 	BaseURL                       string                                           `json:"base_url"`
@@ -93,6 +102,7 @@ type RegistrationState struct {
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
 	AllowExternalProviders        bool                                             `json:"allow_external_providers"`
 	Authorizations                map[string]json.RawMessage                       `json:"authorizations,omitempty"`
+	VisibilityLock                *VisibilityLockInfo                              `json:"visibility_lock,omitempty"`
 }
 
 type registrationRecord struct {
@@ -109,6 +119,7 @@ type registrationRecord struct {
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
 	AllowExternalProviders        bool                                             `json:"allow_external_providers"`
 	Authorizations                map[string]json.RawMessage                       `json:"authorizations,omitempty"`
+	VisibilityLock                *VisibilityLockInfo                              `json:"visibility_lock,omitempty"`
 }
 
 type centerQualityProbe struct {
@@ -140,10 +151,11 @@ type registerHubRequest struct {
 }
 
 type registerHubResponse struct {
-	HubID               string `json:"hub_id"`
-	HubSecret           string `json:"hub_secret"`
-	PendingConfirmation bool   `json:"pending_confirmation"`
-	Message             string `json:"message"`
+	HubID               string              `json:"hub_id"`
+	HubSecret           string              `json:"hub_secret"`
+	PendingConfirmation bool                `json:"pending_confirmation"`
+	Message             string              `json:"message"`
+	VisibilityLock      *VisibilityLockInfo `json:"visibility_lock"`
 }
 
 type deviceCredentialBackupRequest struct {
@@ -543,6 +555,7 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 		DigitalEmployeeAuthorizations: registrationDigitalEmployeeAuthorizationsForStatus(record),
 		AllowExternalProviders:        record.AllowExternalProviders,
 		Authorizations:                cloneAuthorizationPayloads(record.Authorizations),
+		VisibilityLock:                record.VisibilityLock,
 	}, nil
 }
 func (s *Service) SetBaseURL(ctx context.Context, baseURL string) (*RegistrationState, error) {
@@ -785,6 +798,7 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 			LastError:           registerResp.Message,
 			LastBaseURL:         baseURL,
 			LastRegisteredAt:    time.Now().Unix(),
+			VisibilityLock:      registerResp.VisibilityLock,
 		}
 		if err := s.saveRegistration(ctx, record); err != nil {
 			return nil, err
@@ -2741,6 +2755,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 				DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations"`
 				AllowExternalProviders        *bool                                            `json:"allow_external_providers"`
 				Authorizations                map[string]json.RawMessage                       `json:"authorizations"`
+				VisibilityLock                *VisibilityLockInfo                              `json:"visibility_lock"`
 			}
 			_ = json.Unmarshal(body, &okResp)
 			if okResp.AllowExternalProviders != nil {
@@ -2757,6 +2772,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			}
 			mergeTenantDigitalEmployeeAuthorizations(&record, okResp.DigitalEmployeeAuthorizations)
 			mergeAuthorizationPayloads(&record, okResp.Authorizations)
+			record.VisibilityLock = okResp.VisibilityLock
 
 			// Diagnostic: log what authorizations were received from HubCenter heartbeat
 			{

@@ -741,6 +741,8 @@ export function SetFileCompanionDefaultFolder(arg1:string):Promise<{rev:number, 
 
 export function FileCompanionFolderForPath(arg1:string):Promise<string>;
 
+export function FileCompanionTakeLibraryView():Promise<boolean>;
+
 export function FileCompanionTakePlaces():Promise<Array<string>>;
 
 export function ShareFileCompanionDocument(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<Record<string, any>>;
@@ -1819,6 +1821,8 @@ export function LaunchFileCompanion(arg1:Array<string>):Promise<void>;
 export function ChooseFileCompanionFiles():Promise<Array<string>>;
 
 export function ShowFileCompanion():Promise<void>;
+
+export function ShowFileCompanionLibrary():Promise<void>;
 
 export function UnregisterFileCompanionLinuxDesktop():Promise<void>;
 

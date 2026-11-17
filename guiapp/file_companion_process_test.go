@@ -688,3 +688,115 @@ func TestLaunchFileCompanionDoesNotTouchAssistantSession(t *testing.T) {
 		t.Fatalf("transcript err=%v", err)
 	}
 }
+
+func TestFileCompanionLibraryLaunchBootsToLibraryView(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	launch := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "--library"}, goruntime.GOOS)
+	opts := &options.App{SingleInstanceLock: &options.SingleInstanceLock{}}
+	applyDesktopLaunchOptions(app, opts, launch)
+	boot := app.GetFileCompanionBoot()
+	if !boot.Library {
+		t.Fatalf("--library boot = %#v", boot)
+	}
+	if len(boot.Paths) != 0 {
+		t.Fatalf("--library boot carried documents %#v", boot.Paths)
+	}
+	if app.FileCompanionTakeLibraryView() {
+		t.Fatal("take drained a flag the boot read already consumed")
+	}
+}
+
+func TestFileCompanionSecondInstanceLibraryEmitsViewEvent(t *testing.T) {
+	app := &App{}
+	app.seedFileCompanionPaths(nil)
+	app.FileCompanionUIReady()
+	var events []string
+	app.testEmit = func(name string, data ...interface{}) { events = append(events, name) }
+	var shown int
+	app.processHooks.showWindow = func() { shown++ }
+
+	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", "--library"}})
+
+	found := false
+	for _, name := range events {
+		if name == "file-companion:view" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("events %v, want file-companion:view", events)
+	}
+	if shown != 1 {
+		t.Fatalf("shown = %d, want 1", shown)
+	}
+	if len(app.fileCompanion.emitted) != 0 {
+		t.Fatalf("library launch emitted document paths: %#v", app.fileCompanion.emitted)
+	}
+}
+
+func TestFileCompanionTakeLibraryViewDrainsPostBootRequest(t *testing.T) {
+	app := &App{}
+	app.seedFileCompanionPaths(nil)
+	boot := app.GetFileCompanionBoot()
+	if boot.Library {
+		t.Fatal("a plain open-file boot asked for the library view")
+	}
+	// A --library that lands after the boot read but before the window is
+	// ready must not emit an event the window has not subscribed to.
+	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", "--library"}})
+	if !app.FileCompanionTakeLibraryView() {
+		t.Fatal("take did not see the post-boot library request")
+	}
+	if app.FileCompanionTakeLibraryView() {
+		t.Fatal("take returned a drained library request again")
+	}
+}
+
+func TestShowFileCompanionLibrarySpawnsOpenFileLibrary(t *testing.T) {
+	app := &App{}
+	var argv []string
+	app.processHooks.startProcess = func(got []string) error {
+		argv = append([]string(nil), got...)
+		return nil
+	}
+	if err := app.ShowFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	if len(argv) != 3 || argv[1] != "open-file" || argv[2] != "--library" {
+		t.Fatalf("library argv = %#v", argv)
+	}
+}
+
+func TestShowFileCompanionLibraryInsideCompanionEmitsView(t *testing.T) {
+	app := &App{}
+	app.seedFileCompanionPaths(nil)
+	app.FileCompanionUIReady()
+	spawned := false
+	app.processHooks.startProcess = func([]string) error {
+		spawned = true
+		return nil
+	}
+	var events []string
+	app.testEmit = func(name string, data ...interface{}) { events = append(events, name) }
+	var shown int
+	app.processHooks.showWindow = func() { shown++ }
+
+	if err := app.ShowFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	if spawned {
+		t.Fatal("companion process started another companion")
+	}
+	found := false
+	for _, name := range events {
+		if name == "file-companion:view" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("events %v, want file-companion:view", events)
+	}
+	if shown != 1 {
+		t.Fatalf("shown = %d, want 1", shown)
+	}
+}

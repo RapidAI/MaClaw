@@ -1113,6 +1113,210 @@ func (s *Session) Screenshot(fullPage bool) (string, error) {
 	return resp.Data, nil
 }
 
+// ViewportJPEG captures the visible viewport as a base64 JPEG for the in-app
+// preview. It does not change Screenshot, which stays PNG for callers that
+// already depend on that format.
+func (s *Session) ViewportJPEG(quality int) (string, int, int, error) {
+	if s == nil {
+		return "", 0, 0, fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return "", 0, 0, fmt.Errorf("browser session not connected")
+	}
+	if quality <= 0 || quality > 100 {
+		quality = 55
+	}
+	width, height, sizeErr := s.viewportCSSSize()
+	result, err := client.Send("Page.captureScreenshot", map[string]interface{}{
+		"format":      "jpeg",
+		"quality":     quality,
+		"fromSurface": true,
+	}, DefaultCmdTimeout)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("viewport screenshot: %w", err)
+	}
+	var resp struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", 0, 0, fmt.Errorf("parse viewport screenshot: %w", err)
+	}
+	if resp.Data == "" {
+		return "", 0, 0, fmt.Errorf("viewport screenshot was empty")
+	}
+	w, h := 0, 0
+	if sizeErr == nil {
+		w = int(width + 0.5)
+		h = int(height + 0.5)
+	}
+	return resp.Data, w, h, nil
+}
+
+func (s *Session) viewportCSSSize() (float64, float64, error) {
+	if s == nil {
+		return 0, 0, fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return 0, 0, fmt.Errorf("browser session not connected")
+	}
+	result, err := client.Send("Page.getLayoutMetrics", nil, DefaultCmdTimeout)
+	if err != nil {
+		return 0, 0, err
+	}
+	var metrics struct {
+		CSSVisualViewport struct {
+			ClientWidth  float64 `json:"clientWidth"`
+			ClientHeight float64 `json:"clientHeight"`
+		} `json:"cssVisualViewport"`
+		LayoutViewport struct {
+			ClientWidth  float64 `json:"clientWidth"`
+			ClientHeight float64 `json:"clientHeight"`
+		} `json:"layoutViewport"`
+	}
+	if err := json.Unmarshal(result, &metrics); err != nil {
+		return 0, 0, err
+	}
+	w := metrics.CSSVisualViewport.ClientWidth
+	h := metrics.CSSVisualViewport.ClientHeight
+	if w <= 0 || h <= 0 {
+		w = metrics.LayoutViewport.ClientWidth
+		h = metrics.LayoutViewport.ClientHeight
+	}
+	if w <= 0 || h <= 0 {
+		return 0, 0, fmt.Errorf("viewport size is unknown")
+	}
+	return w, h, nil
+}
+
+// DispatchViewportPointer sends one mouse event. X and Y are fractions of the
+// CSS viewport. This is the person's takeover path and does not wait on the
+// user-hold gate.
+func (s *Session) DispatchViewportPointer(in ViewportInput) error {
+	if s == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	width, height, err := s.viewportCSSSize()
+	if err != nil {
+		return err
+	}
+	x, y, ok := MapViewportFraction(in.X, in.Y, width, height)
+	if !ok {
+		return fmt.Errorf("viewport size is unknown")
+	}
+	kind := in.Kind
+	switch kind {
+	case "move", "mousemove":
+		kind = "mouseMoved"
+	case "down", "mousedown":
+		kind = "mousePressed"
+	case "up", "mouseup":
+		kind = "mouseReleased"
+	case "wheel":
+		kind = "mouseWheel"
+	default:
+		return fmt.Errorf("unknown pointer event %q", in.Kind)
+	}
+	button := strings.TrimSpace(in.Button)
+	if button == "" {
+		button = "left"
+	}
+	params := map[string]interface{}{
+		"type": kind,
+		"x":    x,
+		"y":    y,
+	}
+	if kind != "mouseMoved" && kind != "mouseWheel" {
+		clicks := in.ClickCount
+		if clicks <= 0 {
+			clicks = 1
+		}
+		params["button"] = button
+		params["clickCount"] = clicks
+	}
+	if kind == "mouseWheel" {
+		params["deltaX"] = in.DeltaX
+		params["deltaY"] = in.DeltaY
+	}
+	if _, err := client.Send("Input.dispatchMouseEvent", params, DefaultCmdTimeout); err != nil {
+		return fmt.Errorf("pointer: %w", err)
+	}
+	return nil
+}
+
+// DispatchViewportKey sends a key or inserts text from the preview.
+func (s *Session) DispatchViewportKey(in ViewportInput) error {
+	if s == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	switch in.Kind {
+	case "text", "paste":
+		if _, err := client.Send("Input.insertText", map[string]interface{}{"text": in.Text}, DefaultCmdTimeout); err != nil {
+			return fmt.Errorf("insert text: %w", err)
+		}
+		return nil
+	case "down", "keydown":
+		return sendViewportKey(client, "keyDown", in.Key, in.Text)
+	case "up", "keyup":
+		return sendViewportKey(client, "keyUp", in.Key, in.Text)
+	default:
+		return fmt.Errorf("unknown key event %q", in.Kind)
+	}
+}
+
+func sendViewportKey(client *CDPClient, typ, key, text string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		key = text
+	}
+	if key == "" {
+		return fmt.Errorf("missing key")
+	}
+	params := map[string]interface{}{
+		"type": typ,
+		"key":  key,
+	}
+	if text != "" && typ == "keyDown" {
+		params["text"] = text
+	}
+	if _, err := client.Send("Input.dispatchKeyEvent", params, DefaultCmdTimeout); err != nil {
+		return fmt.Errorf("key: %w", err)
+	}
+	return nil
+}
+
+// ApplyViewportInput routes one preview event to the connected page.
+func (s *Session) ApplyViewportInput(in ViewportInput) error {
+	switch in.Kind {
+	case "move", "mousemove", "down", "mousedown", "up", "mouseup", "wheel":
+		return s.DispatchViewportPointer(in)
+	case "text", "paste", "downkey":
+		return s.DispatchViewportKey(in)
+	case "keydown", "keyup":
+		return s.DispatchViewportKey(in)
+	default:
+		// "down" is a pointer press. Key presses use keydown/keyup/text.
+		return fmt.Errorf("unknown preview input %q", in.Kind)
+	}
+}
+
 // GetText returns the text content of an element matching the CSS selector.
 func (s *Session) GetText(selector string) (string, error) {
 	return s.GetTextInFrame("", selector)

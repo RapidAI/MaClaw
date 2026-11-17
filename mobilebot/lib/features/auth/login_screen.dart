@@ -175,8 +175,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
   String _errorText(Object error) {
     final text = error.toString();
     if (text.contains('INVALID_SMS_VERIFY_CODE') ||
-        text.contains('Invalid SMS verification code')) {
-      return '验证码不正确';
+        text.contains('Invalid SMS verification code') ||
+        text.contains('INVALID_VERIFY_CODE')) {
+      return '验证码错误或已过期';
     }
     if (text.contains('INVALID_PHONE_NUMBER')) return '手机号格式不正确';
     if (text.contains('PHONE_ALREADY_REGISTERED')) return '该手机号已绑定其他账号';
@@ -287,11 +288,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                           controller: _codeCtrl,
                           keyboardType: TextInputType.number,
                           maxLength: 8,
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: '验证码',
                             counterText: '',
-                            prefixIcon: Icon(Icons.pin_outlined),
-                            border: OutlineInputBorder(),
+                            prefixIcon: const Icon(Icons.pin_outlined),
+                            border: const OutlineInputBorder(),
+                            helperText: _method == AuthMethod.email
+                                ? '验证码 5 分钟内有效'
+                                : '验证码 60 秒内有效',
                           ),
                           enabled: _request != null && !_verifying,
                           onSubmitted: (_) => _verify(),

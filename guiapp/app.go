@@ -263,7 +263,10 @@ type App struct {
 	remoteSessions                     *RemoteSessionManager
 	remoteInfraMu                      sync.RWMutex         // publishes remote infrastructure pointers after initialization
 	remoteWatches                      *remoteWatchRegistry // remote-control live mirror watches; nil until first watch_task op
-	remoteActivationBackgroundDisabled bool                 // test-only: skip post-activation background connect
+	viewerSubMu                        sync.Mutex
+	viewerSubs                         []func(viewerEvent)
+	testEmit                           func(name string, data ...interface{})
+	remoteActivationBackgroundDisabled bool // test-only: skip post-activation background connect
 	browserSessions                    *BrowserAgentManager
 	powerStateMutex                    sync.Mutex
 	powerStateProcess                  *exec.Cmd
@@ -470,22 +473,22 @@ type App struct {
 	buddyMu sync.Mutex
 	// buddyCfgWrite serializes buddy.json updates. A device sound report must
 	// not save a stale enabled=true over an uncheck that just released the port.
-	buddyCfgWrite       sync.Mutex
-	buddyRunner         *service.Runner
-	buddyCancel         context.CancelFunc
-	buddyDone           chan struct{}
-	buddyCfg            buddyConfig
-	buddyLastSnapshot   string
-	buddyLastPushAt     time.Time
+	buddyCfgWrite     sync.Mutex
+	buddyRunner       *service.Runner
+	buddyCancel       context.CancelFunc
+	buddyDone         chan struct{}
+	buddyCfg          buddyConfig
+	buddyLastSnapshot string
+	buddyLastPushAt   time.Time
 	// Last resolved ambient weather snapshot. Hardware re-attaches and the
 	// periodic loop reuse it while it sits inside the device expiry window
 	// instead of re-running the weather pipeline. ambientResolveMu
 	// serializes the resolve itself so a loop tick colliding with a device
 	// attach cannot double-spend a search + LLM request.
-	ambientWeatherMu sync.Mutex
-	ambientWeather   deviceAmbientWeather
-	ambientWeatherAt time.Time
-	ambientResolveMu sync.Mutex
+	ambientWeatherMu    sync.Mutex
+	ambientWeather      deviceAmbientWeather
+	ambientWeatherAt    time.Time
+	ambientResolveMu    sync.Mutex
 	qqBotGateway        *qqBotGatewayManager
 	telegramGateway     *telegramGatewayManager
 	slackGateway        *slackGatewayManager
@@ -2897,6 +2900,9 @@ func (a *App) startup(ctx context.Context) {
 	applyMemoryLimit()
 	startIdleMemoryReleaser()
 	a.ctx = ctx
+	// Managed browser pages stay in the assistant preview. This must run
+	// before any browser session so the first launch is already windowless.
+	a.installAgentBrowserStage()
 	// `MaClaw.exe --quit` only reaches OnStartup when no running instance was
 	// there to receive the handoff. The user asked for an exit, so do not open
 	// a window just because there was nothing to quit.
@@ -8557,6 +8563,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteEnabled = v
+		case "remote_device_connect_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.RemoteDeviceConnectEnabled = &v
 		case "remote_hub_id":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -9174,12 +9186,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.EnvCheckDone = v
-		case "use_windows_terminal":
-			v, err := boolField(key, value)
-			if err != nil {
-				return corelib.AppConfig{}, err
-			}
-			cfg.UseWindowsTerminal = v
 		case "show_ai_trace_entry":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -11906,6 +11912,9 @@ func (a *App) hasWailsEventsContext() bool {
 // calls runtime.EventsEmit unless the lifecycle context is present, so
 // headless/test code cannot kill the process via log.Fatalf.
 func (a *App) emitEvent(name string, data ...interface{}) {
+	if a != nil && a.testEmit != nil {
+		a.testEmit(name, data...)
+	}
 	if a != nil && name == "env-check-done" {
 		a.frontendEnvCheckDone.Store(true)
 		bootLog("emit env-check-done reactReady=%v", a.frontendReactReady.Load())

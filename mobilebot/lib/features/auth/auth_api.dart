@@ -1,8 +1,38 @@
+import 'dart:io' show Platform;
+
 import 'package:dio/dio.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/account_store.dart';
 import '../../core/hub_config.dart';
 import 'desktop_auth_qr.dart';
+
+/// OS key reported to the Hub at enrollment so user management can show the
+/// last used mobile client platform (Android / iOS / HarmonyOS).
+String clientPlatformTag() {
+  switch (Platform.operatingSystem) {
+    case 'android':
+      return 'android';
+    case 'ios':
+      return 'ios';
+    case 'ohos':
+    case 'harmonyos':
+      return 'harmonyos';
+    default:
+      return 'mobile';
+  }
+}
+
+/// Version string reported at enrollment, prefixed so distinct mobile apps
+/// sharing an account remain identifiable on the admin user card.
+Future<String> clientAppVersion() async {
+  try {
+    final version = (await PackageInfo.fromPlatform()).version.trim();
+    return version.isEmpty ? 'mobilebot' : 'mobilebot/$version';
+  } catch (_) {
+    return 'mobilebot';
+  }
+}
 
 /// Where a code-request left off: the Hub to verify against plus display
 /// hints for the code step.
@@ -115,8 +145,8 @@ class AuthApi {
         'email': request.identity,
       'verify_code': code.trim(),
       'machine_name': machineName,
-      'platform': 'mobile',
-      'app_version': 'mobilebot/1.0.0',
+      'platform': clientPlatformTag(),
+      'app_version': await clientAppVersion(),
       'client_id': clientId,
       if (hub.tenantId.isNotEmpty) 'tenant_id': hub.tenantId,
       if (language.trim().isNotEmpty) 'language': language.trim(),
@@ -188,7 +218,8 @@ class AuthApi {
         data: {
           'qr_payload': payload.raw,
           'machine_name': machineName,
-          'platform': 'mobile',
+          'platform': clientPlatformTag(),
+          'app_version': await clientAppVersion(),
           'client_id': clientId,
           if (language.isNotEmpty) 'language': language,
         },

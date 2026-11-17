@@ -22,6 +22,11 @@ const (
 	// an "Open with" document — always an absolute path — can never be
 	// mistaken for the relay token.
 	fileCompanionQuitArg = "--quit"
+	// fileCompanionLibraryArg asks the companion to show its 文档管理 view
+	// instead of opening a document (`MaClaw open-file --library`). A group
+	// join digest's 确认 button launches this so the member lands on the
+	// shared-document list.
+	fileCompanionLibraryArg = "--library"
 )
 
 // desktopLaunch classifies one process argv. Mode is "main" or "file-companion".
@@ -42,6 +47,10 @@ type desktopLaunch struct {
 	// arguments are quit tokens. Paths stays empty; the running companion
 	// quits instead of opening a document.
 	Quit bool
+	// Library is the open-file --library request: a companion launch whose
+	// only arguments are library tokens. Paths stays empty; the window
+	// reveals its 文档管理 view instead of a document.
+	Library bool
 }
 
 // fileCompanionLockID is the companion single-instance id. It appends a suffix
@@ -81,6 +90,14 @@ func classifyDesktopLaunchForOS(args []string, goos string) desktopLaunch {
 				LockID:   fileCompanionLockID(),
 				Explicit: true,
 				Quit:     true,
+			}
+		}
+		if filtered[0] == fileCompanionOpenArg && companionPathsRequestLibrary(paths) {
+			return desktopLaunch{
+				Mode:     desktopLaunchFileCompanion,
+				LockID:   fileCompanionLockID(),
+				Explicit: true,
+				Library:  true,
 			}
 		}
 		return desktopLaunch{
@@ -163,6 +180,22 @@ func companionPathsRequestQuit(paths []string) bool {
 	}
 	for _, path := range paths {
 		if path != "--quit" && path != "-quit" {
+			return false
+		}
+	}
+	return true
+}
+
+// companionPathsRequestLibrary reports that the companion launch is only a
+// 文档管理 request: at least one argument after the mode token and every one
+// of them is a dashed library token. A token mixed with real paths is treated
+// as a (missing) document, the same compromise the quit relay makes.
+func companionPathsRequestLibrary(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	for _, path := range paths {
+		if path != "--library" && path != "-library" {
 			return false
 		}
 	}

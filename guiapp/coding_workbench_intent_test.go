@@ -154,8 +154,48 @@ func TestCodingTextMentionsGUIWordBoundary(t *testing.T) {
 
 func TestFallbackDoesNotTreatGuidelinesAsGUI(t *testing.T) {
 	got := fallbackCodingRequestRestatement("follow the guidelines", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "\u56fe\u5f62\u754c\u9762") || strings.Contains(strings.ToLower(got), "gui") {
+	if strings.Contains(got, "\u56fe\u5f62\u754c\u9762") || codingHasASCIIWord(strings.ToLower(got), "gui") {
 		t.Fatalf("guidelines leaked into a GUI restatement: %q", got)
+	}
+}
+
+func TestFallbackNewAskWithoutContextStillNamesWork(t *testing.T) {
+	got := fallbackCodingRequestRestatement("分析前后端项目都有哪些功能", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "先看清当前项目") {
+		t.Fatalf("context-free ask still got the process filler: %q", got)
+	}
+	if !strings.Contains(got, "分析前后端项目都有哪些功能") {
+		t.Fatalf("restatement should name the ask: %q", got)
+	}
+}
+
+func TestFallbackLongAskLeadsWithFirstRequirement(t *testing.T) {
+	got := fallbackCodingRequestRestatement("帮我梳理一下这个项目里各个模块的职责和相互依赖关系，然后写一份完整的结构说明文档并且放到docs目录下面存档", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "先看清当前项目") {
+		t.Fatalf("long ask still got the process filler: %q", got)
+	}
+	if !strings.Contains(got, "梳理一下这个项目里各个模块") {
+		t.Fatalf("long ask should lead with its first requirement: %q", got)
+	}
+	if !strings.Contains(got, "其余要求") {
+		t.Fatalf("remaining requirements should stay acknowledged: %q", got)
+	}
+}
+
+func TestFallbackAskKeepsWorkNameContext(t *testing.T) {
+	got := fallbackCodingRequestRestatement("帮我把导出功能加上水印记录，再补一组回归测试", stickyCodingWorkbenchMemory{SessionPlan: "数据导出工具"})
+	if !strings.Contains(got, "「数据导出工具」") || !strings.Contains(got, "导出功能加上水印记录") {
+		t.Fatalf("new ask should keep the work name and the ask itself: %q", got)
+	}
+}
+
+func TestFallbackBareContinueWithoutContextKeepsProcessLine(t *testing.T) {
+	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{})
+	if !strings.Contains(got, "先看清当前项目") {
+		t.Fatalf("context-free continue must not quote the continue token itself: %q", got)
+	}
+	if strings.Contains(got, "「继续」") {
+		t.Fatalf("continue token leaked into the headline: %q", got)
 	}
 }
 

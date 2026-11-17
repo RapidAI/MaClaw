@@ -21,6 +21,7 @@ import type { SessionTab } from './components/remote/sessionTabs';
 import { startVisibleInterval } from './utils/visibleInterval';
 import { useStartupPerfProbe, reportInteractiveAfterPaint } from './components/startup/useStartupPerfProbe';
 import { defaultModelForQuickProvider } from './components/ai/assistantQuickModelMenu';
+import { setViewerReducerEnabled } from './components/ai/viewerReducerFlag';
 import { useAudioDevices } from './components/ai/useAudioDevices';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
@@ -349,7 +350,27 @@ function App() {
     // paint and dominated ~/.maclaw logs (10k+ lines in one session).
     useEffect(() => {
         logStartupTrace('app-render-begin');
-    }, []);    // Bind before the pull. A result that finished while this GUI was offline
+    }, []);
+    // The task panel reduces viewer-event only when the desktop says so.
+    // A missing binding (unit tests) leaves the flag off so raw events still paint.
+    useEffect(() => {
+        const fn = (window as unknown as { go?: { main?: { App?: { ViewerReducerEnabled?: () => unknown } } } }).go?.main?.App?.ViewerReducerEnabled;
+        if (typeof fn !== 'function') return;
+        try {
+            const result = fn();
+            const apply = (on: unknown) => {
+                if (on === true) setViewerReducerEnabled(true);
+            };
+            if (result && typeof (result as Promise<unknown>).then === 'function') {
+                void (result as Promise<unknown>).then(apply).catch(() => undefined);
+            } else {
+                apply(result);
+            }
+        } catch {
+            // vitest has no Wails binding
+        }
+    }, []);
+    // Bind before the pull. A result that finished while this GUI was offline
     // is written into the bot transcript even if the Bots page is not the one
     // on screen, and the same pull when the page opens is a no-op once acked.
     useEffect(() => {

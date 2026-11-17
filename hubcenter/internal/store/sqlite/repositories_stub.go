@@ -93,11 +93,11 @@ type hubUserUsageRepo struct {
 
 const hubInstanceSelectColumns = `id, installation_id, hub_origin, default_signup_scope, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 	       accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, registration_policy_json, hub_secret_hash,
-	       invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, allow_external_providers, last_seen_at, created_at, updated_at`
+	       invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, allow_external_providers, last_seen_at, created_at, updated_at, visibility_locked, visibility_locked_by`
 
 const hubInstanceSelectColumnsH = `h.id, h.installation_id, h.hub_origin, h.default_signup_scope, h.owner_email, h.name, h.description, h.base_url, h.host, h.port, h.visibility,
 	       h.enrollment_mode, h.corporate_email_domain, h.accept_public_signup, h.status, h.is_disabled, h.disabled_reason,
-	       h.capabilities_json, h.registration_policy_json, h.hub_secret_hash, h.invitation_code_required, h.digital_employee_quota, h.digital_employee_authorization_enabled, h.digital_employee_authorization_expires_at, h.allow_external_providers, h.last_seen_at, h.created_at, h.updated_at`
+	       h.capabilities_json, h.registration_policy_json, h.hub_secret_hash, h.invitation_code_required, h.digital_employee_quota, h.digital_employee_authorization_enabled, h.digital_employee_authorization_expires_at, h.allow_external_providers, h.last_seen_at, h.created_at, h.updated_at, h.visibility_locked, h.visibility_locked_by`
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
@@ -263,6 +263,8 @@ func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubIn
 	var lastSeen sql.NullString
 	var createdAt string
 	var updatedAt string
+	var visibilityLocked int
+	var visibilityLockedBy string
 	if err := scanner.Scan(
 		&item.ID,
 		&item.InstallationID,
@@ -292,9 +294,13 @@ func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubIn
 		&lastSeen,
 		&createdAt,
 		&updatedAt,
+		&visibilityLocked,
+		&visibilityLockedBy,
 	); err != nil {
 		return nil, err
 	}
+	item.VisibilityLocked = visibilityLocked == 1
+	item.VisibilityLockedBy = visibilityLockedBy
 	item.IsDisabled = isDisabled == 1
 	item.AcceptPublicSignup = acceptPublicSignup == 1
 	item.InvitationCodeRequired = invitationCodeRequired == 1
@@ -509,8 +515,8 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 		INSERT INTO hub_instances (
 			id, installation_id, hub_origin, default_signup_scope, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 			accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, registration_policy_json, hub_secret_hash,
-			invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, allow_external_providers, last_seen_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, allow_external_providers, last_seen_at, created_at, updated_at, visibility_locked, visibility_locked_by
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		hub.ID,
 		hub.InstallationID,
@@ -540,6 +546,8 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 		timePtrString(hub.LastSeenAt),
 		hub.CreatedAt.Format(time.RFC3339),
 		hub.UpdatedAt.Format(time.RFC3339),
+		boolToInt(hub.VisibilityLocked),
+		hub.VisibilityLockedBy,
 	)
 	return err
 }
@@ -616,12 +624,14 @@ func (r *hubRepo) ReplaceConflictingHubInstance(ctx context.Context, hub *store.
 		}
 	}
 
+	// The visibility pair is guarded the same way as UpdateRegistration: a
+	// local admin lock must survive a replicated row whose snapshot predates it.
 	_, err = conn.ExecContext(ctx, `
 		INSERT INTO hub_instances (
 			id, installation_id, hub_origin, default_signup_scope, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 			accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, registration_policy_json, hub_secret_hash,
-			invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, allow_external_providers, last_seen_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, allow_external_providers, last_seen_at, created_at, updated_at, visibility_locked, visibility_locked_by
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			installation_id = excluded.installation_id,
 			hub_origin = excluded.hub_origin,
@@ -632,7 +642,7 @@ func (r *hubRepo) ReplaceConflictingHubInstance(ctx context.Context, hub *store.
 			base_url = excluded.base_url,
 			host = excluded.host,
 			port = excluded.port,
-			visibility = excluded.visibility,
+			visibility = CASE WHEN hub_instances.visibility_locked = 1 AND hub_instances.visibility <> excluded.visibility THEN hub_instances.visibility ELSE excluded.visibility END,
 			enrollment_mode = excluded.enrollment_mode,
 			corporate_email_domain = excluded.corporate_email_domain,
 			accept_public_signup = excluded.accept_public_signup,
@@ -649,7 +659,9 @@ func (r *hubRepo) ReplaceConflictingHubInstance(ctx context.Context, hub *store.
 			allow_external_providers = excluded.allow_external_providers,
 			last_seen_at = excluded.last_seen_at,
 			created_at = excluded.created_at,
-			updated_at = excluded.updated_at
+			updated_at = excluded.updated_at,
+			visibility_locked = CASE WHEN hub_instances.visibility_locked = 1 AND hub_instances.visibility <> excluded.visibility THEN 1 ELSE excluded.visibility_locked END,
+			visibility_locked_by = CASE WHEN hub_instances.visibility_locked = 1 AND hub_instances.visibility <> excluded.visibility THEN hub_instances.visibility_locked_by ELSE excluded.visibility_locked_by END
 	`,
 		hub.ID,
 		hub.InstallationID,
@@ -679,6 +691,8 @@ func (r *hubRepo) ReplaceConflictingHubInstance(ctx context.Context, hub *store.
 		timePtrString(hub.LastSeenAt),
 		hub.CreatedAt.Format(time.RFC3339),
 		hub.UpdatedAt.Format(time.RFC3339),
+		boolToInt(hub.VisibilityLocked),
+		hub.VisibilityLockedBy,
 	)
 	if err != nil {
 		return err
@@ -714,6 +728,10 @@ func normalizeHubRegistrationPolicyFields(hub *store.HubInstance) {
 	hub.RegistrationPolicyJSON = strings.TrimSpace(hub.RegistrationPolicyJSON)
 	if hub.RegistrationPolicyJSON == "" {
 		hub.RegistrationPolicyJSON = "{}"
+	}
+	// locked_by is meaningful only while the lock is held.
+	if !hub.VisibilityLocked {
+		hub.VisibilityLockedBy = ""
 	}
 }
 
@@ -922,12 +940,12 @@ func (r *hubRepo) UpdateName(ctx context.Context, hubID string, name string, upd
 	return err
 }
 
-func (r *hubRepo) UpdateVisibility(ctx context.Context, hubID string, visibility string, updatedAt time.Time) error {
+func (r *hubRepo) UpdateVisibility(ctx context.Context, hubID string, visibility string, lockedBy string, updatedAt time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE hub_instances
-		SET visibility = ?, updated_at = ?
+		SET visibility = ?, visibility_locked = 1, visibility_locked_by = ?, updated_at = ?
 		WHERE id = ?
-	`, visibility, updatedAt.Format(time.RFC3339), hubID)
+	`, visibility, lockedBy, updatedAt.Format(time.RFC3339), hubID)
 	return err
 }
 
@@ -947,13 +965,21 @@ func (r *hubRepo) SetDisabled(ctx context.Context, hubID string, disabled bool, 
 func (r *hubRepo) UpdateRegistration(ctx context.Context, hub *store.HubInstance) error {
 	normalizeHubInstanceEndpoint(hub)
 	normalizeHubRegistrationPolicyFields(hub)
+	// The visibility pair is written under a guard: an admin-locked value
+	// (visibility_locked = 1) must survive a full-row write built from a
+	// snapshot read before the admin's UPDATE landed. The lock clears only
+	// when the incoming visibility already matches the locked value.
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE hub_instances
 		SET installation_id = ?, hub_origin = ?, default_signup_scope = ?, owner_email = ?, name = ?, description = ?, base_url = ?,
-		    host = ?, port = ?, visibility = ?, enrollment_mode = ?, corporate_email_domain = ?, accept_public_signup = ?, status = ?,
+		    host = ?, port = ?,
+		    visibility = CASE WHEN visibility_locked = 1 AND visibility <> ? THEN visibility ELSE ? END,
+		    enrollment_mode = ?, corporate_email_domain = ?, accept_public_signup = ?, status = ?,
 		    is_disabled = ?, disabled_reason = ?, capabilities_json = ?, registration_policy_json = ?, hub_secret_hash = ?,
 		    invitation_code_required = ?, digital_employee_quota = ?, digital_employee_authorization_enabled = ?,
-		    digital_employee_authorization_expires_at = ?, allow_external_providers = ?, last_seen_at = ?, updated_at = ?
+		    digital_employee_authorization_expires_at = ?, allow_external_providers = ?, last_seen_at = ?, updated_at = ?,
+		    visibility_locked = CASE WHEN visibility_locked = 1 AND visibility <> ? THEN 1 ELSE ? END,
+		    visibility_locked_by = CASE WHEN visibility_locked = 1 AND visibility <> ? THEN visibility_locked_by ELSE ? END
 		WHERE id = ?
 	`,
 		hub.InstallationID,
@@ -965,6 +991,7 @@ func (r *hubRepo) UpdateRegistration(ctx context.Context, hub *store.HubInstance
 		hub.BaseURL,
 		hub.Host,
 		hub.Port,
+		hub.Visibility,
 		hub.Visibility,
 		hub.EnrollmentMode,
 		hub.CorporateEmailDomain,
@@ -982,6 +1009,10 @@ func (r *hubRepo) UpdateRegistration(ctx context.Context, hub *store.HubInstance
 		boolToInt(hub.AllowExternalProviders),
 		timePtrString(hub.LastSeenAt),
 		hub.UpdatedAt.Format(time.RFC3339),
+		hub.Visibility,
+		boolToInt(hub.VisibilityLocked),
+		hub.Visibility,
+		hub.VisibilityLockedBy,
 		hub.ID,
 	)
 	return err

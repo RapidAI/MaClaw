@@ -823,6 +823,7 @@ func removeCompanionGroupMember(ctx context.Context, identity *auth.IdentityServ
 	next := make([]companionDocGroupMember, 0, len(group.Members))
 	found := false
 	noticeIDs := make([]string, 0, 1)
+	digestIDs := make([]string, 0, 1)
 	var relayed []companionDocGroupMember
 	for _, member := range group.Members {
 		if member.Contact == contact {
@@ -833,10 +834,29 @@ func removeCompanionGroupMember(ctx context.Context, identity *auth.IdentityServ
 			if member.HomeHubURL != "" && member.InviteSecret != "" {
 				relayed = append(relayed, member)
 			}
+			if member.UserID != "" {
+				digestIDs = append(digestIDs, member.UserID)
+			}
 			continue
 		}
 		next = append(next, member)
 	}
+	// The digest dies only when the account loses its last seat: a second
+	// invited address may still hold an accepted row for the same user id.
+	kept := digestIDs[:0]
+	for _, userID := range digestIDs {
+		still := false
+		for _, member := range next {
+			if member.Status == "accepted" && member.UserID == userID {
+				still = true
+				break
+			}
+		}
+		if !still {
+			kept = append(kept, userID)
+		}
+	}
+	digestIDs = kept
 	if !found {
 		companionDocGroups.Unlock()
 		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "群组里没有这位用户")
@@ -856,6 +876,8 @@ func removeCompanionGroupMember(ctx context.Context, identity *auth.IdentityServ
 	// A withdrawn invitation must leave the bell, not stay as a notice whose
 	// buttons the hub would reject.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	// The group digest points at documents they can no longer open.
+	revokeCompanionGroupDigests(ctx, groupID, digestIDs...)
 	// Their home hub also holds share notices for this group; withdraw them
 	// first — the invite revoke below deletes the row the receiving hub uses
 	// to check the secret, so a notice revoke arriving after it would 404.
@@ -956,6 +978,12 @@ func deleteCompanionGroup(ctx context.Context, identity *auth.IdentityService, w
 		return
 	}
 	noticeIDs := companionGroupMemberNotificationIDs(group.Members)
+	digestIDs := make([]string, 0, len(group.Members))
+	for _, member := range group.Members {
+		if member.UserID != "" {
+			digestIDs = append(digestIDs, member.UserID)
+		}
+	}
 	relayed := append([]companionDocGroupMember(nil), group.Members...)
 	previous := cloneCompanionGroup(group)
 	delete(companionDocGroups.items, groupID)
@@ -968,6 +996,8 @@ func deleteCompanionGroup(ctx context.Context, identity *auth.IdentityService, w
 	companionDocGroups.Unlock()
 	// Every pending invitation in a dissolved group is dead; its notice must go.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	// The group digest points at documents nobody can open anymore.
+	revokeCompanionGroupDigests(ctx, groupID, digestIDs...)
 	// Remote members keep share notices on their home hub; all of them die
 	// with the group. They must go before the invite revoke: the receiving
 	// hub proves the secret through the invite row that revoke deletes.
@@ -1044,6 +1074,8 @@ func CompanionDocumentGroupLeaveHandler(identity *auth.IdentityService) http.Han
 			return
 		}
 		companionDocGroups.Unlock()
+		// The leaver's group digest points at documents they can no longer open.
+		revokeCompanionGroupDigests(r.Context(), groupID, ownerID)
 		// The leaver may have been the host on a group share; that seat must
 		// not stay with someone who can no longer open the document.
 		reconcileGroupHostSeats(r.Context(), identity, groupID)
@@ -1176,7 +1208,17 @@ func decideCompanionGroupInvite(ctx context.Context, w http.ResponseWriter, r *h
 	kept := make([]companionDocGroupMember, 0, len(group.Members))
 	noticeIDs := make([]string, 0, 1)
 	found := false
+	// An account already sitting accepted (say it joined on a different
+	// contact) must not get the join digest a second time when it settles
+	// another pending invitation.
+	alreadyMember := false
 	for _, member := range group.Members {
+		if member.Status == "accepted" {
+			_, mine := contacts[member.Contact]
+			if mine || (ownerID != "" && member.UserID == ownerID) {
+				alreadyMember = true
+			}
+		}
 		if member.Status == "pending" && member.Contact != "" {
 			// The user id is the durable credential: the invited address may be
 			// any verified identity of this account and not its account email.
@@ -1229,6 +1271,11 @@ func decideCompanionGroupInvite(ctx context.Context, w http.ResponseWriter, r *h
 	companionDocGroups.Unlock()
 	// A decided invitation is answered. Its notice must leave every device.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	if action == "accept" && !alreadyMember {
+		// Documents shared before this person joined never named them in an
+		// audience. Tell them once, merged, instead of re-raising each share.
+		go companionGroupJoinedShareDigestLocal(group, ownerID, now)
+	}
 	// Every member lost access; a host seat held by a member must revert.
 	reconcileGroupHostSeats(ctx, identity, groupID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

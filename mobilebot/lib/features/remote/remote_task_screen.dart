@@ -11,11 +11,14 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../bots/bots_controller.dart' show failureMessage;
 import '../bots/widgets.dart' show linkifyMarkdownUrls, openExternalUrl;
+import 'remote_api.dart';
 import 'remote_models.dart';
 import 'remote_screen.dart' show remoteApiProvider, remoteTasksProvider;
+import 'viewer_reducer.dart';
 
-/// 远程任务详情 — get_task 轮询（3s，同桌面 watch_task 的进展效果），
-/// 消息时间线、产出物下载/分享，按授权档位放开操作动作。
+/// 远程任务详情。先 watch_task（stream_proto 2）再订阅账号 SSE；
+/// SSE 打不开时才退回 3 秒 get_task。消息时间线、产出物下载/分享，
+/// 按授权档位放开操作动作。编码运行时恢复只展示，不另发操作。
 class RemoteTaskScreen extends ConsumerStatefulWidget {
   final RcGrant grant;
   final String taskPath;
@@ -36,12 +39,20 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   Timer? _pollTimer;
+  Timer? _slowTimer;
   RemoteTaskDetail? _detail;
   String _error = '';
   bool _loading = true;
   bool _sending = false;
   bool _downloading = false;
   bool _pollInFlight = false;
+  bool _paused = false;
+  bool _degraded = false;
+  int _streamGen = 0;
+  ViewerReduceState _live = emptyViewerState();
+  String _recovery = '';
+  AccountEventStream? _account;
+  StreamSubscription<Map<String, dynamic>>? _liveSub;
 
   late final AppLifecycleListener _lifecycle;
 
@@ -49,33 +60,121 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   void initState() {
     super.initState();
     _load();
-    _startPoll();
-    // Stop polling while the app is backgrounded — an unseen screen must not
-    // keep the relay busy, and resuming reloads immediately so the user
-    // never stares at a stale snapshot.
+    _openStream();
+    // Stop the relay while the app is backgrounded. Resuming opens the
+    // stream again and only polls if that open fails.
     _lifecycle = AppLifecycleListener(
       onStateChange: (state) {
         if (state == AppLifecycleState.resumed) {
+          _paused = false;
           _load();
-          _startPoll();
+          _openStream();
         } else if (state == AppLifecycleState.paused ||
             state == AppLifecycleState.hidden ||
             state == AppLifecycleState.detached) {
-          _pollTimer?.cancel();
-          _pollTimer = null;
+          _paused = true;
+          _stopRefresh();
+          unawaited(_closeStream());
         }
       },
     );
   }
 
+  Future<void> _openStream() async {
+    final gen = ++_streamGen;
+    await _closeStream(keepGeneration: true);
+    if (!mounted || _paused || gen != _streamGen) return;
+    final api = ref.read(remoteApiProvider);
+    if (api == null) {
+      _startPoll();
+      return;
+    }
+    try {
+      final reply = await api.watchTask(widget.grant.id, widget.taskPath);
+      if (!mounted || _paused || gen != _streamGen) return;
+      final proto = reply['stream_proto'];
+      if (proto == 1 || proto == '1') {
+        setState(() => _degraded = true);
+      }
+      final seeded = seedViewerFromWatchReply(reply);
+      if (!mounted || _paused || gen != _streamGen) return;
+      if (seeded.last > 0) {
+        setState(() => _live = seeded);
+      }
+      final opened = await api.openAccountStream(
+        widget.grant.id,
+        widget.taskPath,
+      );
+      if (!mounted || _paused || gen != _streamGen) {
+        await opened.close();
+        return;
+      }
+      _startSlowRefresh();
+      _account = opened;
+      _liveSub = opened.events.listen(
+        (event) {
+          if (!mounted) return;
+          final recovery = _recoveryText(event);
+          setState(() {
+            _live = reduceViewerEvent(_live, event);
+            if (recovery.isNotEmpty) _recovery = recovery;
+          });
+        },
+        onError: (_) {
+          if (mounted && !_paused) _startPoll();
+        },
+        onDone: () {
+          if (mounted && !_paused && gen == _streamGen) _startPoll();
+        },
+      );
+    } catch (_) {
+      if (mounted && !_paused && gen == _streamGen) _startPoll();
+    }
+  }
+
+  Future<void> _closeStream({bool keepGeneration = false}) async {
+    if (!keepGeneration) _streamGen++;
+    final sub = _liveSub;
+    _liveSub = null;
+    final account = _account;
+    _account = null;
+    await sub?.cancel();
+    if (account != null) await account.close();
+  }
+
+  String _recoveryText(Map<String, dynamic> event) {
+    final terminal = event['terminal'];
+    if (terminal is! Map) return '';
+    final recovery = terminal['coding_runtime_recovery'];
+    if (recovery is Map) {
+      final summary = recovery['summary'];
+      return summary is String ? summary : '';
+    }
+    return recovery is String ? recovery : '';
+  }
+
+  void _stopRefresh() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _slowTimer?.cancel();
+    _slowTimer = null;
+  }
+
   void _startPoll() {
-    // The desktop streams watch_task over Wails events; on mobile a short
-    // poll of get_task gives the same moving picture while this screen is
-    // open. Cheap enough: one op call every 3s per open detail.
+    // SSE did not open. A 3s get_task is the only moving picture.
+    _slowTimer?.cancel();
+    _slowTimer = null;
     _pollTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
-      // Skip this tick while a fetch is still in flight; a slow hub must not
-      // stack overlapping get_task calls. User actions bypass the guard so
-      // their refresh is never deferred behind a pending poll.
+      if (!_pollInFlight) _load();
+    });
+  }
+
+  void _startSlowRefresh() {
+    // The stream carries the live round. A 15s get_task only refreshes
+    // workflow state and file paths, not a second copy of the tokens.
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _slowTimer ??= Timer.periodic(const Duration(seconds: 15), (_) {
       if (!_pollInFlight) _load();
     });
   }
@@ -83,7 +182,8 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   @override
   void dispose() {
     _lifecycle.dispose();
-    _pollTimer?.cancel();
+    _stopRefresh();
+    unawaited(_closeStream());
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -402,6 +502,17 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                     controller: _scrollCtrl,
                     padding: const EdgeInsets.all(12),
                     children: [
+                      if (_degraded)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Text(
+                            '时间线已降级',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.error,
+                            ),
+                          ),
+                        ),
+                      _LiveRound(state: _live, recovery: _recovery),
                       if (detail == null || detail.messages.isEmpty)
                         Padding(
                           padding: const EdgeInsets.symmetric(vertical: 24),
@@ -486,6 +597,59 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                   ),
               ],
             ),
+    );
+  }
+}
+
+class _LiveRound extends StatelessWidget {
+  final ViewerReduceState state;
+  final String recovery;
+
+  const _LiveRound({required this.state, required this.recovery});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final lines = <String>[];
+    for (final block in state.thinking) {
+      if (block.text.isEmpty) continue;
+      lines.add(block.done ? block.text : '思考中 ${block.text}');
+    }
+    final body = state.body.isNotEmpty ? state.body : state.visible;
+    if (body.isNotEmpty) lines.add(body);
+    for (final row in state.timeline) {
+      final title = row.title.isNotEmpty ? row.title : row.text;
+      final line = row.phase.isNotEmpty ? '${row.phase} · $title' : title;
+      if (line.isNotEmpty) lines.add(line);
+    }
+    for (final card in state.cards) {
+      if (card.expired) {
+        lines.add('确认已失效');
+      } else if (card.text.isNotEmpty) {
+        lines.add(card.text);
+      } else if (card.kind == 'confirmation') {
+        lines.add('需要确认');
+      }
+    }
+    for (final note in state.notices) {
+      if (note.text.isNotEmpty) lines.add(note.text);
+    }
+    if (state.trialStatus.isNotEmpty) lines.add(state.trialStatus);
+    if (state.trialFailures > 0) lines.add('失败 ${state.trialFailures}');
+    if (recovery.isNotEmpty) lines.add(recovery);
+    if (lines.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final line in lines)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(line, style: theme.textTheme.bodyMedium),
+            ),
+        ],
+      ),
     );
   }
 }

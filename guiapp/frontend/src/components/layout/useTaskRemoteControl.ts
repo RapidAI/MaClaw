@@ -368,16 +368,16 @@ export function useTaskRemoteControl() {
         if (next && selectedId && detailPath) {
             const grantId = selectedId;
             const path = detailPath;
-            void callBinding<string>('RemoteControlOp', '', grantId, 'watch_task', JSON.stringify({ project_path: path }))
+            void callBinding<string>('RemoteControlOp', '', grantId, 'watch_task', JSON.stringify({ project_path: path, stream_proto: 2 }))
                 .then(raw => {
                     if (watchKey.current !== next) return;
-                    let parsed: { live?: unknown; workbench?: unknown } = {};
+                    let parsed: { live?: unknown; workbench?: unknown; cursor?: number } = {};
                     try {
-                        parsed = JSON.parse(raw || '{}') as { live?: unknown; workbench?: unknown };
+                        parsed = JSON.parse(raw || '{}') as { live?: unknown; workbench?: unknown; cursor?: number };
                     } catch {
                         parsed = {};
                     }
-                    applyRemoteWatchSnapshot(grantId, path, parsed.live, parsed.workbench);
+                    applyRemoteWatchSnapshot(grantId, path, parsed.live, parsed.workbench, parsed.cursor);
                 })
                 .catch(() => undefined);
         }

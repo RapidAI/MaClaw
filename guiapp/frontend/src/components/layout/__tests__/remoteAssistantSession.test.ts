@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     applyRemoteStreamPayload,
@@ -170,6 +173,86 @@ describe('remoteAssistantSession live mirror', () => {
         expect(live?.parts).toEqual([{ kind: 'text', seq: 2, text: '进行中' }]);
     });
 
+    it('keeps folding proto-2 frames after a mid-turn watch snapshot', () => {
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            display_text: '〔远控〕继续',
+            cursor: 10,
+            parts: [
+                { kind: 'thinking', seq: 1, text: '想想', done: true },
+                { kind: 'text', seq: 2, text: '半句' },
+            ],
+        }, undefined, 10);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor_from: 11, cursor: 11, seq: 11, text: '继续输出',
+        });
+        const live = remoteAssistantSessionSnapshot()?.live;
+        expect(live?.requestId).toBe('r1');
+        expect(live?.parts.filter(part => part.kind === 'text').map(part => part.text).join('')).toBe('半句继续输出');
+    });
+
+    it('does not regress the reduce state when a watch snapshot trails newer frames', () => {
+        publishRemoteAssistantSession(session());
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'round_started', cursor_from: 1, cursor: 1, seq: 1, display_text: '新一轮',
+        });
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor_from: 2, cursor: 5, seq: 5, pieces: ['新', '内容'],
+        });
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            display_text: '新一轮',
+            cursor: 4,
+            parts: [{ kind: 'text', seq: 1, text: '新' }],
+        }, undefined, 4);
+        applyRemoteStreamPayload({
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r1',
+            event: 'token', cursor_from: 6, cursor: 6, seq: 6, text: '尾巴',
+        });
+        const live = remoteAssistantSessionSnapshot()?.live;
+        expect(live?.parts.filter(part => part.kind === 'text').map(part => part.text).join('')).toBe('新内容尾巴');
+    });
+
+    it('seeds the reducer from watch parts so the next proto-2 frame appends', () => {
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            display_text: '问',
+            cursor: 4,
+            responded: false,
+            parts: [
+                { kind: 'thinking', seq: 1, text: '想想', done: false },
+                { kind: 'text', seq: 2, text: '半句' },
+                { kind: 'progress', seq: 3, text: 'Coding Agent: running T2 - edit parser', coding: { phase: 'running', task_id: 'T2', title: 'edit parser', run_id: 'run-1' } },
+            ],
+        });
+        expect(texts()).toEqual(['user:问', 'assistant:半句']);
+        const seeded = remoteAssistantSessionSnapshot()?.live;
+        expect(seeded?.parts.some(part => part.kind === 'thinking' && part.text === '想想')).toBe(true);
+        expect(seeded?.parts.some(part => part.kind === 'progress' && part.text.includes('T2'))).toBe(true);
+        applyRemoteStreamPayload({
+            grant_id: 'g1',
+            project_path: 'D:/tasks/a',
+            request_id: 'r1',
+            event: 'token',
+            cursor: 5,
+            cursor_from: 5,
+            text: '续',
+            pieces: ['续'],
+        });
+        const live = remoteAssistantSessionSnapshot()?.live;
+        const body = (live?.parts || []).filter(part => part.kind === 'text').map(part => part.text).join('');
+        expect(body).toBe('半句续');
+        expect(live?.responded).toBe(false);
+    });
+
     it('ignores a watch snapshot that trails the live round', () => {
         publishRemoteAssistantSession(session());
         applyRemoteStreamPayload({ grant_id: 'g1', project_path: 'D:/tasks/a', request_id: 'r2', event: 'round_started', display_text: '新一轮', seq: 1 });
@@ -183,5 +266,57 @@ describe('remoteAssistantSession live mirror', () => {
         const live = remoteAssistantSessionSnapshot()?.live;
         expect(live?.requestId).toBe('r2');
         expect(live?.parts).toEqual([{ kind: 'text', seq: 2, text: '新内容' }]);
+    });
+
+    const wireSnapshots = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../../../../testdata/viewer_wire_snapshots.json'), 'utf8')) as {
+        watch_event: Record<string, unknown>;
+        responded_event: Record<string, unknown>;
+    };
+
+    function seedMarshaledLive(event: Record<string, unknown>) {
+        const live = event.live as {
+            project_path?: string;
+            request_id?: string;
+            cursor?: number;
+            text?: string;
+            parts?: Array<{ kind?: string; text?: string }>;
+        };
+        expect(live.text).toBeUndefined();
+        expect(Array.isArray(live.parts)).toBe(true);
+        const projectPath = String(live.project_path || '');
+        expect(projectPath.length).toBeGreaterThan(0);
+        publishRemoteAssistantSession(session({ projectPath }));
+        applyRemoteWatchSnapshot('g1', projectPath, live, undefined, Number(event.cursor));
+        const cursor = Number(live.cursor);
+        expect(cursor).toBeGreaterThan(0);
+        applyRemoteStreamPayload({
+            grant_id: 'g1',
+            project_path: projectPath,
+            request_id: live.request_id,
+            event: 'token',
+            cursor: cursor + 1,
+            cursor_from: cursor + 1,
+            text: '续',
+            pieces: ['续'],
+        });
+        return remoteAssistantSessionSnapshot()?.live;
+    }
+
+    it('seeds from the marshaled watch live so the next proto-2 frame appends', () => {
+        const live = seedMarshaledLive(wireSnapshots.watch_event);
+        const body = (live?.parts || []).filter(part => part.kind === 'text').map(part => part.text).join('');
+        expect(body).toBe('helloworld续');
+        expect(live?.parts.some(part => part.kind === 'thinking' && part.text === '想想' && part.done)).toBe(true);
+        expect(live?.parts.some(part => part.kind === 'progress' && part.text.includes('T2') && part.text.includes('edit parser'))).toBe(true);
+        expect(live?.responded).toBe(false);
+    });
+
+    it('seeds from the marshaled responded snapshot and keeps the final', () => {
+        const live = seedMarshaledLive(wireSnapshots.responded_event);
+        const body = (live?.parts || []).filter(part => part.kind === 'text').map(part => part.text).join('');
+        expect(body).toBe('终稿续');
+        expect(live?.parts.some(part => part.kind === 'thinking' && part.text === '想想' && part.done)).toBe(true);
+        expect(live?.parts.some(part => part.kind === 'progress' && part.text.includes('T2') && part.text.includes('run-1'))).toBe(true);
+        expect(live?.responded).toBe(true);
     });
 });

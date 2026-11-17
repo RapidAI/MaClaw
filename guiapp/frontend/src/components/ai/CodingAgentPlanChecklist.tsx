@@ -191,9 +191,8 @@ export function CodingAgentPlanChecklist({
         closeTimer.current = window.setTimeout(tick, 120);
     };
     const open = hasList && (hovered || focused);
-    // The list is only half the bar. Pinning it to the left means a pointer
-    // on the current-step status leaves the list as soon as it moves up.
-    // Center it on the pointer, and keep it inside the bar.
+    // The list is the bar's full width (the bar itself is the middle 40% of
+    // the column). Center it on the pointer, and keep it inside the bar.
     const placePopover = () => {
         const clientX = anchorX.current;
         const root = rootRef.current;
@@ -242,8 +241,9 @@ export function CodingAgentPlanChecklist({
             aria-label={title}
             className={"capc-checklist" + (open ? " capc-open" : "")}
             style={{
-                // Horizontal inset comes from --mc-composer-inset-x (same rule as
-                // the composer card). An inline margin shorthand would override it.
+                // Width and centering come from the stylesheet: the bar keeps the
+                // middle 40% of the column. An inline margin shorthand would
+                // override that, so only the vertical margin lives here.
                 marginBottom: 8,
                 border: `1px solid ${chrome.border}`,
                 background: chrome.surface,

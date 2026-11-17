@@ -2625,11 +2625,22 @@ jobs:
           MOBILEBOT_KEYSTORE_PASSWORD: ${{ secrets.MOBILEBOT_KEYSTORE_PASSWORD }}
           MOBILEBOT_KEY_ALIAS: ${{ secrets.MOBILEBOT_KEY_ALIAS }}
           MOBILEBOT_KEY_PASSWORD: ${{ secrets.MOBILEBOT_KEY_PASSWORD }}
+          # A tag build publishes MaClawGo.apk — a debug-signed asset there
+          # breaks every subsequent OTA (signature conflict on the phone) and
+          # carries a random per-runner cert. Fail instead of warning.
+          REQUIRE_SIGNING: ${{ github.ref_type == 'tag' }}
         working-directory: mobilebot/android
         run: |
           set -euo pipefail
+          fail_or_warn() {
+            if [ "$REQUIRE_SIGNING" = "true" ]; then
+              echo "::error::$1 — tag builds must ship a release-signed APK"
+              exit 1
+            fi
+            echo "::warning::$1 — release APK falls back to debug signing"
+          }
           if [ -z "$MOBILEBOT_KEYSTORE_BASE64" ]; then
-            echo "::warning::MOBILEBOT_KEYSTORE_BASE64 is not set — release APK falls back to debug signing"
+            fail_or_warn "MOBILEBOT_KEYSTORE_BASE64 is not set"
             exit 0
           fi
           # A pasted secret often carries line wraps or spaces from the copy
@@ -2638,7 +2649,7 @@ jobs:
           # truncated paste) must degrade to debug signing too rather than
           # fail the whole release; build.gradle.kts checks both files below.
           if ! printf '%s' "$MOBILEBOT_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > app/upload-keystore.jks 2>/dev/null; then
-            echo "::warning::MOBILEBOT_KEYSTORE_BASE64 is not valid base64 — release APK falls back to debug signing"
+            fail_or_warn "MOBILEBOT_KEYSTORE_BASE64 is not valid base64"
             rm -f app/upload-keystore.jks
             exit 0
           fi
@@ -2647,12 +2658,12 @@ jobs:
           # JKS starts FEEDFEED, PKCS12 starts 3082 (ASN.1 SEQUENCE).
           magic=$(head -c2 app/upload-keystore.jks | od -An -tx1 | tr -d '[:space:]')
           if [ "$magic" != "feed" ] && [ "$magic" != "3082" ]; then
-            echo "::warning::upload-keystore.jks is neither JKS nor PKCS12 (magic=$magic) — release APK falls back to debug signing"
+            fail_or_warn "upload-keystore.jks is neither JKS nor PKCS12 (magic=$magic)"
             rm -f app/upload-keystore.jks
             exit 0
           fi
           if [ -z "$MOBILEBOT_KEYSTORE_PASSWORD" ] || [ -z "$MOBILEBOT_KEY_ALIAS" ] || [ -z "$MOBILEBOT_KEY_PASSWORD" ]; then
-            echo "::warning::keystore decoded but MOBILEBOT_KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD incomplete — release APK falls back to debug signing"
+            fail_or_warn "keystore decoded but MOBILEBOT_KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD incomplete"
             rm -f app/upload-keystore.jks
             exit 0
           fi

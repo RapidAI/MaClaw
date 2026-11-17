@@ -533,7 +533,7 @@ func TestMobileDesktopAuthQRRedeemEnrollsScanner(t *testing.T) {
 	}
 	qrPayload, _ := created["qr_payload"].(string)
 
-	redeemBody := fmt.Sprintf(`{"qr_payload":%s,"machine_name":"MaclawGo","platform":"mobile","client_id":"scan-1"}`, strconv.Quote(qrPayload))
+	redeemBody := fmt.Sprintf(`{"qr_payload":%s,"machine_name":"MaclawGo","platform":"android","app_version":"mobilebot/1.2.3","client_id":"scan-1"}`, strconv.Quote(qrPayload))
 	redeemReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions/redeem", strings.NewReader(redeemBody))
 	redeemReq.Host = "tenant-a.maclaw.top"
 	redeemRec := httptest.NewRecorder()
@@ -553,6 +553,13 @@ func TestMobileDesktopAuthQRRedeemEnrollsScanner(t *testing.T) {
 	}
 	if got, _ := redeemed["phone_number"].(string); got != "19900004444" {
 		t.Fatalf("redeem phone_number=%q", got)
+	}
+	machine, err := identity.MachinesRepo().GetByUserAndClientID(auth.WithTenant(context.Background(), ownerEnroll.TenantID), ownerEnroll.UserID, "scan-1")
+	if err != nil || machine == nil {
+		t.Fatalf("redeemed machine lookup: machine=%#v err=%v", machine, err)
+	}
+	if machine.Platform != "android" || machine.AppVersion != "mobilebot/1.2.3" {
+		t.Fatalf("redeemed machine metadata = platform %q version %q", machine.Platform, machine.AppVersion)
 	}
 
 	// One-time: the same QR cannot be redeemed twice.

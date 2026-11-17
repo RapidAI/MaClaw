@@ -2300,7 +2300,6 @@ export namespace corelib {
 	    default_proxy_scope_maclaw?: boolean;
 	    default_proxy_scope_coding_tools?: boolean;
 	    default_proxy_scope_agent?: boolean;
-	    use_windows_terminal: boolean;
 	    remote_enabled: boolean;
 	    remote_hub_id?: string;
 	    remote_hub_url: string;
@@ -2321,6 +2320,7 @@ export namespace corelib {
 	    remote_heartbeat_sec: number;
 	    remote_nickname?: string;
 	    remote_client_id: string;
+	    remote_device_connect_enabled?: boolean;
 	    github_client_id?: string;
 	    default_launch_mode: string;
 	    maclaw_llm_url: string;
@@ -2605,7 +2605,6 @@ export namespace corelib {
 	        this.default_proxy_scope_maclaw = source["default_proxy_scope_maclaw"];
 	        this.default_proxy_scope_coding_tools = source["default_proxy_scope_coding_tools"];
 	        this.default_proxy_scope_agent = source["default_proxy_scope_agent"];
-	        this.use_windows_terminal = source["use_windows_terminal"];
 	        this.remote_enabled = source["remote_enabled"];
 	        this.remote_hub_id = source["remote_hub_id"];
 	        this.remote_hub_url = source["remote_hub_url"];
@@ -2626,6 +2625,7 @@ export namespace corelib {
 	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
 	        this.remote_nickname = source["remote_nickname"];
 	        this.remote_client_id = source["remote_client_id"];
+	        this.remote_device_connect_enabled = source["remote_device_connect_enabled"];
 	        this.github_client_id = source["github_client_id"];
 	        this.default_launch_mode = source["default_launch_mode"];
 	        this.maclaw_llm_url = source["maclaw_llm_url"];

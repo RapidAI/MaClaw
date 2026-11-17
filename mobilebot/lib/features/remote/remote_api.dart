@@ -1,5 +1,18 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import '../../core/api_client.dart';
 import 'remote_models.dart';
+import 'viewer_reducer.dart';
+
+/// One account-level SSE. [events] starts after the response headers arrive.
+class AccountEventStream {
+  AccountEventStream({required this.events, required this.close});
+
+  final Stream<Map<String, dynamic>> events;
+  final Future<void> Function() close;
+}
 
 /// Thin client over `/api/remote-control/*` — the same surface the desktop
 /// GUI drives through `App.RemoteControlOp` → `remote_control.exec`. Every op
@@ -177,5 +190,97 @@ class RemoteControlApi {
     final result = await _op(grantId, 'list_dirs', {'path': path});
     final list = result.isEmpty ? const <String, dynamic>{} : result;
     return RemoteDirList.fromJson(list);
+  }
+
+  /// Negotiates the viewer contract. The phone always asks for proto 2.
+  Future<Map<String, dynamic>> watchTask(String grantId, String projectPath) {
+    return _op(grantId, 'watch_task', watchTaskBody(projectPath));
+  }
+
+  /// GET the account SSE. Completes when the response headers say
+  /// `text/event-stream`, before the first `data:` line.
+  Future<AccountEventStream> openAccountStream(
+    String grantId,
+    String projectPath, {
+    int afterCursor = 0,
+  }) async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 10);
+    try {
+      final path =
+          '/api/remote-control/grants/${Uri.encodeComponent(grantId)}/stream';
+      final uri = Uri.parse(_client.absoluteUrl(path)).replace(
+        queryParameters: {
+          'project_path': projectPath,
+          if (afterCursor > 0) 'after_cursor': '$afterCursor',
+        },
+      );
+      final request = await client.getUrl(uri);
+      final token = _client.account.token;
+      if (token.isNotEmpty) {
+        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      }
+      request.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
+      final response = await request.close();
+      final contentType = response.headers.contentType?.mimeType ?? '';
+      if (response.statusCode != 200 ||
+          !contentType.contains('text/event-stream')) {
+        await response.drain<void>();
+        client.close(force: true);
+        throw StateError('sse-unavailable');
+      }
+      final controller = StreamController<Map<String, dynamic>>();
+      var pending = '';
+      void dispatch() {
+        final raw = pending;
+        pending = '';
+        if (raw.isEmpty || controller.isClosed) return;
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is Map) {
+            controller.add(Map<String, dynamic>.from(decoded));
+          }
+        } catch (error) {
+          if (!controller.isClosed) controller.addError(error);
+        }
+      }
+
+      final sub = response
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(
+            (line) {
+              if (line.isEmpty) {
+                dispatch();
+                return;
+              }
+              if (line.startsWith(':')) return;
+              if (!line.startsWith('data:')) return;
+              var data = line.substring(5);
+              if (data.startsWith(' ')) data = data.substring(1);
+              pending = pending.isEmpty ? data : '$pending\n$data';
+            },
+            onError: controller.addError,
+            onDone: () {
+              dispatch();
+              if (!controller.isClosed) controller.close();
+            },
+            cancelOnError: true,
+          );
+      var closed = false;
+      Future<void> close() async {
+        if (closed) return;
+        closed = true;
+        await sub.cancel();
+        client.close(force: true);
+        if (!controller.isClosed) await controller.close();
+      }
+
+      return AccountEventStream(events: controller.stream, close: close);
+    } catch (error) {
+      client.close(force: true);
+      if (error is StateError) rethrow;
+      throw StateError('sse-unavailable');
+    }
   }
 }

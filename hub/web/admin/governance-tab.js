@@ -71,6 +71,8 @@
     saveContentAuditConfigFailed: { zh: '\u4fdd\u5b58\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ', en: 'Save content audit config failed: ' },
     smartRouteAllEnabled: { zh: '\u5df2\u5f00\u542f\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route enabled for all users' },
     lastLoginLabel: { zh: '\u6700\u540e\u767b\u5f55', en: 'Last login' },
+    pcClientsLabel: { zh: '\u7535\u8111\u7aef', en: 'PC' },
+    mobileClientsLabel: { zh: '\u79fb\u52a8\u7aef', en: 'Mobile' },
     noLoginRecord: { zh: '\u6682\u65e0\u767b\u5f55\u8bb0\u5f55', en: 'No login record' },
     unknownPlatform: { zh: '\u672a\u77e5\u5e73\u53f0', en: 'Unknown platform' },
     unbindUser: { zh: '\u5220\u9664\u7ed1\u5b9a', en: 'Remove Binding' },
@@ -242,9 +244,10 @@
     var p = raw.toLowerCase();
     if (p === 'windows' || p === 'win32' || p === 'win') return 'Windows';
     if (p === 'darwin' || p === 'mac' || p === 'macos') return 'macOS';
-    if (p === 'linux') return 'Linux';
+    if (p === 'linux' || p.indexOf('linux-') === 0) return 'Linux';
     if (p === 'android') return 'Android';
     if (p === 'ios') return 'iOS';
+    if (p === 'harmonyos' || p === 'harmony_os' || p === 'harmony' || p === 'ohos') return 'HarmonyOS';
     if (p === 'mobile') return 'Mobile';
     if (p === 'unknown') return gt('unknownPlatform');
     return raw;
@@ -255,15 +258,105 @@
     return isNaN(date.getTime()) ? '' : date.toLocaleString();
   }
 
+  // Client platforms are grouped for the card: PC covers the desktop OSes,
+  // Mobile covers phone/tablet OSes, anything else stays in a fallback group.
+  var LOGIN_CLIENT_PC_ORDER = { windows: 0, win32: 0, win: 0, darwin: 1, mac: 1, macos: 1, linux: 2 };
+  var LOGIN_CLIENT_MOBILE_ORDER = { android: 0, ios: 1, harmonyos: 2, harmony_os: 2, harmony: 2, ohos: 2, mobile: 3 };
+
+  function loginClientGroupKey(platform) {
+    var p = String(platform || '').trim().toLowerCase();
+    if (!p) return 'other';
+    if (Object.prototype.hasOwnProperty.call(LOGIN_CLIENT_PC_ORDER, p)) return 'pc';
+    if (p.indexOf('linux-') === 0) return 'pc';
+    if (Object.prototype.hasOwnProperty.call(LOGIN_CLIENT_MOBILE_ORDER, p)) return 'mobile';
+    return 'other';
+  }
+
+  function loginClientGroupOrder(platform, group) {
+    var p = String(platform || '').trim().toLowerCase();
+    if (group === 'pc') {
+      if (p.indexOf('linux-') === 0) return LOGIN_CLIENT_PC_ORDER.linux;
+      return Object.prototype.hasOwnProperty.call(LOGIN_CLIENT_PC_ORDER, p) ? LOGIN_CLIENT_PC_ORDER[p] : 9;
+    }
+    if (group === 'mobile') {
+      return Object.prototype.hasOwnProperty.call(LOGIN_CLIENT_MOBILE_ORDER, p) ? LOGIN_CLIENT_MOBILE_ORDER[p] : 9;
+    }
+    return 0;
+  }
+
+  // loginClientEntries prefers the per-platform login_clients list and falls
+  // back to the legacy single last_login_* fields for older hubs.
+  function loginClientEntries(item) {
+    var entries = [];
+    if (item && Array.isArray(item.login_clients)) {
+      item.login_clients.forEach(function(client) {
+        if (!client) return;
+        var platform = String(client.platform || '').trim();
+        var version = String(client.app_version || '').trim();
+        var at = String(client.last_login_at || '').trim();
+        if (!platform && !version && !at) return;
+        entries.push({ platform: platform, version: version, at: at });
+      });
+    }
+    if (!entries.length && item && (item.last_login_platform || item.last_login_app_version || item.last_login_at)) {
+      entries.push({
+        platform: String(item.last_login_platform || '').trim(),
+        version: String(item.last_login_app_version || '').trim(),
+        at: String(item.last_login_at || '').trim()
+      });
+    }
+    return entries;
+  }
+
+  function loginClientEntryText(entry) {
+    var p = String(entry.platform || '').trim().toLowerCase();
+    // The generic 'mobile' key predates per-OS reporting: the group label
+    // already carries the word, so only the version adds information.
+    if (p === 'mobile') return entry.version || formatClientPlatform(p);
+    var platform = formatClientPlatform(entry.platform);
+    var text = [platform, entry.version].filter(Boolean).join(' ');
+    return text || gt('unknownPlatform');
+  }
+
   function renderBoundUserLastLogin(item) {
-    var platform = formatClientPlatform(item && item.last_login_platform);
-    var version = String(item && item.last_login_app_version || '').trim();
-    var client = [platform, version].filter(Boolean).join(' \u00b7 ');
-    var hasRecord = !!(item && (item.last_login_platform || item.last_login_app_version || item.last_login_at));
     var label = gt('lastLoginLabel');
-    var value = client || gt(hasRecord ? 'unknownPlatform' : 'noLoginRecord');
+    var entries = loginClientEntries(item);
+    var groups = { pc: [], mobile: [], other: [] };
+    var seen = {};
+    entries.forEach(function(entry) {
+      var group = loginClientGroupKey(entry.platform);
+      var text = loginClientEntryText(entry);
+      var dedupe = group + '|' + text;
+      if (seen[dedupe]) return;
+      seen[dedupe] = true;
+      groups[group].push({ order: loginClientGroupOrder(entry.platform, group), text: text });
+    });
+    ['pc', 'mobile', 'other'].forEach(function(group) {
+      groups[group].sort(function(a, b) { return a.order - b.order; });
+    });
+    var segments = [];
+    [
+      ['pc', 'pcClientsLabel'],
+      ['mobile', 'mobileClientsLabel']
+    ].forEach(function(pair) {
+      var list = groups[pair[0]];
+      if (!list.length) return;
+      var label = gt(pair[1]);
+      var texts = list.map(function(e) { return e.text; }).filter(function(t) { return t !== label; });
+      segments.push(texts.length ? label + ' \u00b7 ' + texts.join(' / ') : label);
+    });
+    if (groups.other.length) {
+      segments.push(groups.other.map(function(e) { return e.text; }).join(' / '));
+    }
+    var value = segments.join(' | ') || gt('noLoginRecord');
     var parts = [label + ': ' + value];
-    var when = formatLastLoginTime(item && item.last_login_at);
+    var latestAt = item && item.last_login_at;
+    if (!latestAt) {
+      entries.forEach(function(entry) {
+        if (entry.at && (!latestAt || entry.at > latestAt)) latestAt = entry.at;
+      });
+    }
+    var when = formatLastLoginTime(latestAt);
     if (when) parts.push(when);
     var title = parts.join(' | ');
     return '<div class="item-meta" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)" title="' + escapeHtml(title) + '">' + escapeHtml(label) + ': ' + escapeHtml(value) + '</div>';

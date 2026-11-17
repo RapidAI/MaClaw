@@ -8,7 +8,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
-const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在浏览器中完成验证后继续。继续之后必须先 probe，再 click/type。"
+const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在右侧预览窗点「接管」完成验证后继续。继续之后必须先 probe，再 click/type。"
 
 // browserPageFlagsCollectJS assumes pageText/anyIframeSrc/anySelector exist.
 const browserPageFlagsCollectJS = `
@@ -328,11 +328,18 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 		s.mu.RUnlock()
 	}
 	ctx := strings.TrimSpace(strings.Join([]string{title, url}, " "))
+	notifyBrowserStage(BrowserStageNotice{
+		Kind:      "captcha",
+		SessionID: sessionID,
+		URL:       url,
+		Title:     title,
+		Reason:    "captcha_widget",
+	})
 	return &BrowserActionResult{
 		SessionID: sessionID,
 		Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
 		Status:    "ask",
-		Display:   "page has a captcha challenge; solve it in the browser, then probe before clicking",
+		Display:   "page has a captcha challenge; the person solves it in the MaClaw preview (接管), then probe before clicking",
 		Detail:    "captcha_widget",
 		AskUser:   captchaAskUserRequest(ctx),
 		Data: map[string]interface{}{

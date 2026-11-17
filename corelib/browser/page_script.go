@@ -91,6 +91,9 @@ func (s *BrowserAgentSession) RunPageScriptForSite(script, siteHost string) (*Br
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
 	if !s.IsTargetAlive() {
 		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}

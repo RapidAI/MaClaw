@@ -265,6 +265,9 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 			auths = loaded
 		}
 		resp := map[string]any{"ok": true, "status": "online"}
+		if va, vaErr := service.HubVisibilityAuthority(r.Context(), hubID); vaErr == nil && va != nil {
+			resp["visibility_lock"] = va
+		}
 		authPayloads := map[string]any{}
 		if auth := auths[""]; auth != nil {
 			resp["digital_employee_authorization"] = auth

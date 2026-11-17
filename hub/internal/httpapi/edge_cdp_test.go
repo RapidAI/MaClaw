@@ -114,9 +114,19 @@ func TestCDPTicketRelaysAnotherNodeAndRewritesTheDebuggerURL(t *testing.T) {
 	otherReq.Header.Set("X-Forwarded-Proto", "https")
 	otherReq.Header.Set("Authorization", "Bearer global-token")
 	otherCtx := withEdgeCaller(withEdgeOrigin(otherReq.Context(), otherReq), otherReq)
-	plain := desktoppool.DesktopSession{CDP: "http://dockerd.example:19020", Display: ":1"}
+	plain := desktoppool.DesktopSession{CDP: "http://desktop:" + gate + "@dockerd.example:19020", Display: ":1"}
 	if got, err := cdpURLForSession(otherCtx, "tenant-a", "alice", plain); err != nil || got != plain.CDP {
 		t.Fatalf("public cdp %q err %v", got, err)
+	}
+	// A srv on a node still dials a public desktop itself. The address is
+	// not wrapped in a Hub ticket, and the gate token stays in the URL.
+	nodeReq := httptest.NewRequest(http.MethodPost, "https://hub.example/api/v1/desktop-services/session", nil)
+	nodeReq.Host = "hub.example"
+	nodeReq.Header.Set("X-Forwarded-Proto", "https")
+	nodeReq.Header.Set("Authorization", "Bearer "+enrolled.HubToken)
+	nodeCtx := withEdgeCaller(withEdgeOrigin(nodeReq.Context(), nodeReq), nodeReq)
+	if got, err := cdpURLForSession(nodeCtx, "tenant-a", "alice", plain); err != nil || got != plain.CDP || strings.Contains(got, edgeCDPPrefix) {
+		t.Fatalf("node srv public desktop cdp %q err %v", got, err)
 	}
 	ticketURL, err := cdpURLForSession(otherCtx, "tenant-a", "alice", session)
 	if err != nil {

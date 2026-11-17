@@ -300,8 +300,20 @@ func (h remoteControlHandler) relayControlledStream(machineID string, payload js
 	if err != nil {
 		return
 	}
+	if strings.TrimSpace(grant.ControllerMachineID) == "" && grant.ControllerHub == "" {
+		// Account controller (phone): the payload stays on the SSE queue.
+		// Do not Send("") — that is not a machine socket.
+		h.enqueueAccountStream(grant, payload)
+		return
+	}
 	if grant.ControllerHub == "" {
 		_ = (remoteControlMachines{devices: h.devices}).Send(grant.ControllerMachineID, remoteControlStreamEnvelope(grant.TargetMachineID, payload))
+		return
+	}
+	if strings.TrimSpace(grant.ControllerMachineID) == "" {
+		// A slow phone must not occupy one of the 16 federation slots.
+		// The controller hub enqueues and returns without Send("").
+		go h.postAccountFederationStream(grant, payload)
 		return
 	}
 	// Federated grant: this Hub cannot reach the controller's machine. Hand
@@ -341,11 +353,26 @@ func (h remoteControlHandler) federationStream(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "INVALID", "远控流事件无效")
 		return
 	}
+	if strings.TrimSpace(grant.ControllerMachineID) == "" {
+		h.enqueueAccountStream(grant, body.Body)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
 	if err := (remoteControlMachines{devices: h.devices}).Send(grant.ControllerMachineID, remoteControlStreamEnvelope(grant.TargetMachineID, body.Body)); err != nil {
 		writeRemoteControlError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h remoteControlHandler) postAccountFederationStream(grant remotecontrol.Grant, payload json.RawMessage) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := remoteControlRelayPost(ctx, grant.ControllerHub+"/api/remote-control/federation/grants/"+grant.ID+"/stream", remoteControlFederationRequest{
+		GrantID: grant.ID, OriginHub: grant.TargetHub, Secret: grant.FederationSecret, Body: payload,
+	}); err != nil {
+		log.Printf("[remote-control] account stream relay failed grant=%s hub=%s: %v", grant.ID, grant.ControllerHub, err)
+	}
 }
 
 func (h remoteControlHandler) federationStatus(w http.ResponseWriter, r *http.Request) {

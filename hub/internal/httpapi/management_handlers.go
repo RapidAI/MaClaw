@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -146,6 +147,18 @@ type BoundUserView struct {
 	LastLoginPlatform   string `json:"last_login_platform,omitempty"`
 	LastLoginAppVersion string `json:"last_login_app_version,omitempty"`
 	LastLoginAt         string `json:"last_login_at,omitempty"`
+	// LoginClients keeps the most recently active client per normalized
+	// platform (newest first) so the admin card can show the last used
+	// version separately for PC (windows/mac/linux) and mobile.
+	LoginClients []BoundUserLoginClient `json:"login_clients,omitempty"`
+}
+
+// BoundUserLoginClient is one last-seen client slot on the admin user card:
+// the most recently active machine for a normalized platform key.
+type BoundUserLoginClient struct {
+	Platform    string `json:"platform"`
+	AppVersion  string `json:"app_version,omitempty"`
+	LastLoginAt string `json:"last_login_at,omitempty"`
 }
 
 // BoundUserReferralView is a permission-safe attribution indicator for the
@@ -174,12 +187,42 @@ func boundUserIdentityKey(tenantID, userID string) string {
 	return store.NormalizeTenantID(tenantID) + "\x00" + strings.TrimSpace(userID)
 }
 
-// preloadBoundUserLastLogins returns the most recently active client
-// projection per user. The projection carries the platform and app version
-// reported by machine.hello/heartbeat, which is what the admin user card
-// surfaces as the last login client.
-func preloadBoundUserLastLogins(ctx context.Context, repo store.MachineRepository, users []*store.User) map[string]*store.MachineLoginClient {
-	out := map[string]*store.MachineLoginClient{}
+// normalizeLoginClientPlatform folds vendor spellings into the platform keys
+// the admin user card groups on, so two machines on the same OS share one
+// last-seen slot.
+func normalizeLoginClientPlatform(platform string) string {
+	switch p := strings.ToLower(strings.TrimSpace(platform)); p {
+	case "windows", "win32", "win":
+		return "windows"
+	case "mac", "macos", "darwin":
+		return "mac"
+	case "linux":
+		return "linux"
+	case "android":
+		return "android"
+	case "ios":
+		return "ios"
+	case "harmonyos", "harmony_os", "harmony", "ohos":
+		return "harmonyos"
+	case "mobile":
+		return "mobile"
+	case "":
+		return "unknown"
+	default:
+		if strings.HasPrefix(p, "linux-") {
+			return "linux"
+		}
+		return p
+	}
+}
+
+// preloadBoundUserLoginClients returns the most recently active client
+// projection per normalized platform for each user, newest first. The
+// projection carries the platform and app version reported by
+// machine.hello/heartbeat, which is what the admin user card surfaces as the
+// per-platform last login clients.
+func preloadBoundUserLoginClients(ctx context.Context, repo store.MachineRepository, users []*store.User) map[string][]BoundUserLoginClient {
+	out := map[string][]BoundUserLoginClient{}
 	if repo == nil {
 		return out
 	}
@@ -193,7 +236,11 @@ func preloadBoundUserLastLogins(ctx context.Context, repo store.MachineRepositor
 		tenants[tenantID] = struct{}{}
 		wanted[boundUserIdentityKey(tenantID, user.ID)] = struct{}{}
 	}
-	activity := make(map[string]time.Time, len(wanted))
+	type slot struct {
+		client   *store.MachineLoginClient
+		activity time.Time
+	}
+	slotsByUser := map[string]map[string]slot{}
 	for tenantID := range tenants {
 		clients, err := repo.ListLoginClientsByTenant(ctx, tenantID)
 		if err != nil {
@@ -208,12 +255,42 @@ func preloadBoundUserLastLogins(ctx context.Context, repo store.MachineRepositor
 			if _, ok := wanted[key]; !ok {
 				continue
 			}
+			platform := normalizeLoginClientPlatform(client.Platform)
 			seenAt := machineLoginActivity(client)
-			if _, ok := out[key]; !ok || seenAt.After(activity[key]) {
-				out[key] = client
-				activity[key] = seenAt
+			slots, ok := slotsByUser[key]
+			if !ok {
+				slots = map[string]slot{}
+				slotsByUser[key] = slots
+			}
+			if current, ok := slots[platform]; !ok || seenAt.After(current.activity) {
+				slots[platform] = slot{client: client, activity: seenAt}
 			}
 		}
+	}
+	for key, slots := range slotsByUser {
+		type entry struct {
+			platform string
+			slot     slot
+		}
+		ordered := make([]entry, 0, len(slots))
+		for platform, s := range slots {
+			ordered = append(ordered, entry{platform: platform, slot: s})
+		}
+		sort.Slice(ordered, func(i, j int) bool {
+			return ordered[i].slot.activity.After(ordered[j].slot.activity)
+		})
+		list := make([]BoundUserLoginClient, 0, len(ordered))
+		for _, item := range ordered {
+			view := BoundUserLoginClient{
+				Platform:   item.platform,
+				AppVersion: strings.TrimSpace(item.slot.client.AppVersion),
+			}
+			if at := item.slot.activity; !at.IsZero() {
+				view.LastLoginAt = at.Format(time.RFC3339)
+			}
+			list = append(list, view)
+		}
+		out[key] = list
 	}
 	return out
 }
@@ -235,16 +312,13 @@ func machineLoginActivity(client *store.MachineLoginClient) time.Time {
 	return client.CreatedAt.UTC()
 }
 
-func boundUserLastLoginFields(client *store.MachineLoginClient) (platform, appVersion, loginAt string) {
-	if client == nil {
+// boundUserLastLoginFields keeps the legacy single-client fields pointing at
+// the newest per-platform client slot.
+func boundUserLastLoginFields(clients []BoundUserLoginClient) (platform, appVersion, loginAt string) {
+	if len(clients) == 0 {
 		return "", "", ""
 	}
-	platform = strings.TrimSpace(client.Platform)
-	appVersion = strings.TrimSpace(client.AppVersion)
-	if at := machineLoginActivity(client); !at.IsZero() {
-		loginAt = at.Format(time.RFC3339)
-	}
-	return platform, appVersion, loginAt
+	return clients[0].Platform, clients[0].AppVersion, clients[0].LastLoginAt
 }
 
 func preloadBoundUserIdentities(ctx context.Context, repo store.UserRepository, users []*store.User) map[string][]*store.UserIdentity {
@@ -857,7 +931,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 		}
 		items = visible
 		identityRows := preloadBoundUserIdentities(r.Context(), identity.UsersRepo(), items)
-		lastLoginClients := preloadBoundUserLastLogins(r.Context(), identity.MachinesRepo(), items)
+		loginClientsByUser := preloadBoundUserLoginClients(r.Context(), identity.MachinesRepo(), items)
 		usersByTenantID := make(map[string]*store.User, len(items))
 		for _, user := range items {
 			if user != nil && strings.TrimSpace(user.ID) != "" {
@@ -942,7 +1016,8 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				}
 				referral = &BoundUserReferralView{ReferralID: item.ID, InviterUserID: item.InviterUserID, InviterDisplayName: inviterDisplayName, Status: item.Status, RegisteredAt: item.RegisteredAt.UTC().Format(time.RFC3339)}
 			}
-			lastLoginPlatform, lastLoginAppVersion, lastLoginAt := boundUserLastLoginFields(lastLoginClients[boundUserIdentityKey(tenantID, user.ID)])
+			loginClients := loginClientsByUser[boundUserIdentityKey(tenantID, user.ID)]
+			lastLoginPlatform, lastLoginAppVersion, lastLoginAt := boundUserLastLoginFields(loginClients)
 			out = append(out, BoundUserView{
 				ID:                  user.ID,
 				TenantID:            tenantID,
@@ -964,6 +1039,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 				LastLoginPlatform:   lastLoginPlatform,
 				LastLoginAppVersion: lastLoginAppVersion,
 				LastLoginAt:         lastLoginAt,
+				LoginClients:        loginClients,
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"users": out})

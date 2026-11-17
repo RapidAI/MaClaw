@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { emptyViewerState, reduceViewerEvent, type ViewerReduceState } from '../ai/reduceViewerEvent';
 
 export type RemoteAssistantTranscriptMessage = {
     role: string;
@@ -11,6 +12,10 @@ export type RemoteAssistantTranscriptMessage = {
     remoteLive?: boolean;
     /** The live row's thinking is still open on the controlled machine. */
     liveThinking?: boolean;
+    fields?: Array<{ label: string; value: string }>;
+    confirmation?: { id: string; summary?: string };
+    actions?: Array<{ label: string; command: string }>;
+    cardExpired?: boolean;
 };
 
 /** One ordered piece of a mirrored round; identical to remoteStreamPart in guiapp. */
@@ -19,6 +24,7 @@ export type RemoteLivePart = {
     seq: number;
     text: string;
     done?: boolean;
+    coding?: { phase?: string; task_id?: string; taskId?: string; title?: string; run_id?: string; runId?: string };
 };
 
 /** The in-flight round mirrored from the controlled machine over remote_control.stream. */
@@ -156,6 +162,7 @@ function markKey(session: RemoteAssistantSession | null) {
 // desktop's, and the closing "done" event still carries the full text.
 
 const liveRounds = new Map<string, RemoteLiveRound>();
+const viewerStates = new Map<string, ViewerReduceState>();
 // Progress parts kept per round — twice the backend snapshot cap so a watcher
 // that joined mid-turn keeps a margin of older lines.
 const REMOTE_PROGRESS_PARTS_KEPT = 80;
@@ -210,12 +217,77 @@ type RemoteStreamPayload = {
 };
 
 /** Folds one remote_control.stream event into the session's live round. */
+function liveStamp(round: RemoteLiveRound | null | undefined): string {
+    if (!round) return '';
+    let weight = 0;
+    for (const part of round.parts) weight += part.text.length + (part.done ? 1 : 0) + part.seq;
+    const tail = round.parts[round.parts.length - 1];
+    return [
+        round.requestId,
+        round.parts.length,
+        weight,
+        tail ? `${tail.kind}:${tail.done ? 1 : 0}` : '',
+        round.responded ? 'r' : '',
+        round.streamDone ? 'd' : '',
+    ].join(':');
+}
+
+function projectReducedRound(key: string, state: ViewerReduceState, eventName: string, workbench: RemoteWorkbenchState | null): void {
+    if (eventName === 'workbench_steps') {
+        if (workbench) workbenchByKey.set(key, workbench);
+        else workbenchByKey.delete(key);
+        emit();
+        return;
+    }
+    if (!state.requestId) {
+        // A heartbeat before round_started refreshes an existing round's
+        // liveness only — it must not fabricate an empty one.
+        if (eventName === 'heartbeat') {
+            const round = liveRounds.get(key);
+            if (round) {
+                round.lastEventAt = Date.now();
+                emit();
+            }
+        }
+        return;
+    }
+    const round = ensureLiveRound(key, state.requestId);
+    round.displayText = state.displayText;
+    round.responded = state.responded;
+    round.streamDone = state.responded;
+    const parts: RemoteLivePart[] = [];
+    state.thinking.forEach((block, index) => {
+        parts.push({ kind: 'thinking', seq: index + 1, text: block.text, done: block.done });
+    });
+    const shown = state.body || state.visible;
+    if (shown) parts.push({ kind: 'text', seq: parts.length + 1, text: shown });
+    for (const row of state.timeline) {
+        const label = row.text || `Coding Agent: ${row.phase} ${row.taskId} - ${row.title}`.trim();
+        parts.push({ kind: 'progress', seq: parts.length + 1, text: label });
+    }
+    round.parts = parts;
+    round.lastEventAt = Date.now();
+    emit();
+}
+
 export function applyRemoteStreamPayload(payload: unknown) {
     const parsed = typeof payload === 'string' ? (() => { try { return JSON.parse(payload); } catch { return null; } })() : payload;
     const p = (parsed && typeof parsed === 'object' ? parsed : {}) as RemoteStreamPayload;
     const key = liveKey(String(p.grant_id || '').trim(), String(p.project_path || '').trim());
     const eventName = String(p.event || '');
     if (!key || !eventName) return;
+    const record = p as unknown as Record<string, unknown>;
+    const cursor = typeof record.cursor === 'number' ? record.cursor : 0;
+    if (cursor > 0 || Object.prototype.hasOwnProperty.call(record, 'cursor_from')) {
+        const prev = viewerStates.get(key) || emptyViewerState();
+        const next = reduceViewerEvent(prev, record);
+        if (next === prev) return;
+        viewerStates.set(key, next);
+        if (next.gap && next.last === prev.last && next.body === prev.body) return;
+        const workbench = record.workbench && typeof record.workbench === 'object' ? record.workbench as RemoteWorkbenchState : null;
+        projectReducedRound(key, next, eventName, workbench);
+        return;
+    }
     const requestId = String(p.request_id || '');
     const seq = typeof p.seq === 'number' ? p.seq : 0;
     let round: RemoteLiveRound | undefined;
@@ -227,7 +299,24 @@ export function applyRemoteStreamPayload(payload: unknown) {
         }
         case 'token': {
             round = ensureLiveRound(key, requestId);
-            const text = String(p.text || '');
+            const pieces = Array.isArray((p as { pieces?: unknown }).pieces)
+                ? ((p as { pieces?: unknown[] }).pieces || []).map(piece => String(piece ?? ''))
+                : [];
+            const text = pieces.length > 0 ? '' : String(p.text || '');
+            if (pieces.length > 0) {
+                for (const piece of pieces) {
+                    if (piece === '\x02' || piece.startsWith('\x02')) {
+                        while (round.parts.length && round.parts[round.parts.length - 1].kind === 'text') round.parts.pop();
+                        const body = piece.slice(1);
+                        if (body) round.parts.push({ kind: 'text', seq, text: body });
+                    } else if (piece) {
+                        const tail = round.parts[round.parts.length - 1];
+                        if (tail && tail.kind === 'text') tail.text += piece;
+                        else round.parts.push({ kind: 'text', seq, text: piece });
+                    }
+                }
+                break;
+            }
             if (text.startsWith('\x02')) {
                 // Rejected-round reset: drop the trailing draft text run, keep
                 // whatever follows the marker as the fresh content.
@@ -347,10 +436,41 @@ type RemoteWatchSnapshot = {
     stream_done?: boolean;
     responded?: boolean;
     started_at?: number;
+    cursor?: number;
 };
 
+/**
+ * Seeds the proto-2 reduce state from a watch reply. Without this, a
+ * controller joining mid-turn drops every envelope after the snapshot as a
+ * cursor gap — the mirror stays frozen until a new round or a resync frame.
+ * The seeded projection also mirrors what the snapshot installed, so the
+ * first accepted frame does not blank the pre-watch content.
+ */
+function seedViewerState(key: string, live: RemoteWatchSnapshot | null, cursor: number): ViewerReduceState | null {
+    if (!key) return null;
+    const liveCursor = live && typeof live.cursor === 'number' && live.cursor > 0 ? live.cursor : 0;
+    const at = liveCursor || (cursor > 0 ? cursor : 0);
+    if (!live || !String(live.request_id || '')) {
+        const prev = viewerStates.get(key) || emptyViewerState();
+        if (at > prev.last) viewerStates.set(key, { ...prev, last: at });
+        return null;
+    }
+    if (at <= 0) return null;
+    // Same fold as a resync snapshot. A cursor the reducer already passed
+    // comes back unchanged, so a late reply cannot rewind the round.
+    const prev = viewerStates.get(key) || emptyViewerState();
+    const next = reduceViewerEvent(prev, {
+        event: 'snapshot',
+        resync: true,
+        cursor: at,
+        live,
+    });
+    if (next !== prev) viewerStates.set(key, next);
+    return next;
+}
+
 /** Installs the in-flight turn and workbench snapshot a watch_task reply carried (mid-turn catch-up). */
-export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, live: unknown, workbench?: unknown) {
+export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, live: unknown, workbench?: unknown, cursor?: number) {
     const p = (live && typeof live === 'object' ? live : null) as RemoteWatchSnapshot | null;
     // The live snapshot's path is the backend's canonical spelling — the same
     // one stream envelopes carry — so it stays the key when present. The
@@ -361,6 +481,7 @@ export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, l
         workbenchByKey.set(key, workbench as RemoteWorkbenchState);
     }
     if (!p || !String(p.request_id || '')) {
+        seedViewerState(key, null, typeof cursor === 'number' ? cursor : 0);
         emit();
         return;
     }
@@ -371,6 +492,17 @@ export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, l
     const current = liveRounds.get(key);
     if (current && current.requestId && current.requestId !== String(p.request_id)) {
         emit();
+        return;
+    }
+    const seeded = seedViewerState(key, p, typeof cursor === 'number' ? cursor : 0);
+    if (seeded && seeded.last > 0) {
+        projectReducedRound(key, seeded, 'snapshot', null);
+        const round = liveRounds.get(key);
+        if (round) {
+            if (typeof p.started_at === 'number' && p.started_at > 0) round.startedAt = p.started_at;
+            round.streamDone = seeded.responded || !!p.stream_done;
+            if (raw && round.baseline < 0) round.baseline = raw.messages.length;
+        }
         return;
     }
     liveRounds.set(key, {
@@ -393,12 +525,16 @@ export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, l
 function settleLiveRounds() {
     if (!raw) {
         liveRounds.clear();
+        viewerStates.clear();
         workbenchByKey.clear();
         return;
     }
     const key = markKey(raw);
     for (const roundKey of [...liveRounds.keys()]) {
-        if (roundKey !== key) liveRounds.delete(roundKey);
+        if (roundKey !== key) {
+            liveRounds.delete(roundKey);
+            viewerStates.delete(roundKey);
+        }
     }
     for (const wbKey of [...workbenchByKey.keys()]) {
         if (wbKey !== key) workbenchByKey.delete(wbKey);
@@ -409,6 +545,7 @@ function settleLiveRounds() {
     const staleMs = round.responded ? 90_000 : 180_000;
     if (Date.now() - (round.lastEventAt || 0) > staleMs) {
         liveRounds.delete(key);
+        viewerStates.delete(key);
         return;
     }
     if (!round.responded) return;
@@ -422,7 +559,10 @@ function settleLiveRounds() {
     const tailText = (tail.content || '').trim();
     const covered = raw.messages.length > round.baseline
         || (roundText !== '' && tailText !== '' && tailText.startsWith(roundText.slice(0, Math.min(60, roundText.length))));
-    if (covered) liveRounds.delete(key);
+    if (covered) {
+        liveRounds.delete(key);
+        viewerStates.delete(key);
+    }
 }
 
 let remoteStreamBound = false;
@@ -473,8 +613,34 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
             .map(part => part.text)
             .join('');
         const liveThinking = round.parts.some(part => part.kind === 'thinking' && !part.done);
-        if (content || thinking || liveThinking) {
-            merged.push({ role: 'assistant', content, reasoning: thinking || undefined, remoteLive: true, liveThinking });
+        const reduced = viewerStates.get(key);
+        const fields: Array<{ label: string; value: string }> = [];
+        if (reduced?.trialStatus) fields.push({ label: 'Recovery', value: reduced.trialStatus });
+        if (reduced && reduced.trialFailures > 0) fields.push({ label: 'Failures', value: String(reduced.trialFailures) });
+        if (content || thinking || liveThinking || fields.length) {
+            merged.push({
+                role: 'assistant',
+                content,
+                reasoning: thinking || undefined,
+                remoteLive: true,
+                liveThinking,
+                fields: fields.length ? fields : undefined,
+            });
+        }
+        if (reduced) {
+            for (const card of reduced.cards) {
+                if (card.kind !== 'confirmation' && !card.text) continue;
+                merged.push({
+                    role: 'assistant',
+                    content: card.text || '',
+                    confirmation: card.confirmationId ? { id: card.confirmationId, summary: card.text } : undefined,
+                    actions: card.expired ? undefined : card.actions,
+                    cardExpired: card.expired,
+                });
+            }
+            for (const note of reduced.notices) {
+                merged.push({ role: note.asError ? 'error' : 'assistant', content: note.text });
+            }
         }
         return { ...session, messages: merged, live: round, workbench: workbenchByKey.get(key) || null };
     }
@@ -496,9 +662,9 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.taskName,
         session.error,
         session.activity ? JSON.stringify(session.activity) : '',
-        session.live ? JSON.stringify(session.live.parts) + (session.live.responded ? 'r' : '') : '',
+        liveStamp(session.live),
         session.workbench ? JSON.stringify(session.workbench) : '',
-        session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}`).join('\n--\n'),
+        session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}\n${message.cardExpired ? 'expired' : ''}\n${message.confirmation?.id || ''}`).join('\n--\n'),
     ].join('\n');
 }
 

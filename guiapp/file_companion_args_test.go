@@ -223,6 +223,41 @@ func TestClassifyDesktopLaunchOpenFileQuitIsARelay(t *testing.T) {
 	}
 }
 
+func TestClassifyDesktopLaunchOpenFileLibraryIsAViewRequest(t *testing.T) {
+	for _, args := range [][]string{
+		{"MaClaw", "open-file", "--library"},
+		{"MaClaw", "open-file", "-library"},
+		{"MaClaw", "open-file", "--library", "--library"},
+	} {
+		got := classifyDesktopLaunchForOS(args, "windows")
+		if got.Mode != desktopLaunchFileCompanion || got.LockID != fileCompanionLockID() || !got.Library {
+			t.Fatalf("%q = %#v, want a file-companion library launch", args, got)
+		}
+		if len(got.Paths) != 0 {
+			t.Fatalf("%q paths = %#v, library launch carries no documents", args, got.Paths)
+		}
+	}
+
+	// A token mixed with real paths is a document launch, not a view request.
+	mixed := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "--library", "notes.md"}, "windows")
+	if mixed.Library || len(mixed.Paths) != 2 || mixed.Paths[0] != "--library" {
+		t.Fatalf("mixed library+doc = %#v", mixed)
+	}
+
+	// Bare "library" stays a relative filename; only dashed tokens switch.
+	bare := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "library"}, "windows")
+	if bare.Library || len(bare.Paths) != 1 || bare.Paths[0] != "library" {
+		t.Fatalf("bare library file = %#v", bare)
+	}
+
+	// companion-paper-open's tokens are all documents to place; --library
+	// stays one of them.
+	paper := classifyDesktopLaunchForOS([]string{"MaClaw", companionPaperOpenArg, "--library"}, "windows")
+	if paper.Library || len(paper.Paths) != 1 || paper.Paths[0] != "--library" {
+		t.Fatalf("paper-open --library = %#v", paper)
+	}
+}
+
 func TestCompanionPaperOpenAsksForAFolder(t *testing.T) {
 	got := classifyDesktopLaunchForOS([]string{"MaClaw", companionPaperOpenArg, `C:\papers\2510.16079.pdf`}, "windows")
 	if got.Mode != desktopLaunchFileCompanion || !got.Explicit || !got.Place || got.Notice != "" {

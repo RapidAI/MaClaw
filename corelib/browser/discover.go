@@ -366,12 +366,7 @@ func launchDebugBrowserCtx(ctx context.Context, bi *browserInfo, userDataDir str
 		}
 		port = freePort
 	}
-	args := []string{
-		fmt.Sprintf("--remote-debugging-port=%d", port),
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--user-data-dir=" + userDataDir,
-	}
+	args := managedLaunchArgs(port, userDataDir)
 	cmd := exec.Command(bi.path, args...)
 	var stderr bytes.Buffer
 	cmd.Stdout = nil

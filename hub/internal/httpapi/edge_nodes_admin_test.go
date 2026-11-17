@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -337,6 +338,41 @@ func TestNodeSettingsRenamesAndReassigns(t *testing.T) {
 	}
 }
 
+type failingBotSettings struct{}
+
+func (failingBotSettings) Get(context.Context, string) (string, error) { return "", io.EOF }
+
+func (failingBotSettings) Set(context.Context, string, string) error {
+	return errors.New("store down")
+}
+
+func TestEnrollWithSrvRollsBackWhenTheConnectionIsNotStored(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	bots := botmgmt.NewService(failingBotSettings{})
+	ctx := context.Background()
+	code, err := reg.IssueCode(ctx, store.DefaultTenantID, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	body := `{"code":"` + code.Code + `","desktopd_key":"key-1","srv_admin_secret":"srv-admin","version":"v1","has_desktopd":true,"has_srv":true}`
+	PostEdgeEnrollHandler(reg, pool, bots).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(body)))
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "srv connection was not recorded") {
+		t.Fatalf("enroll %d %s", rec.Code, rec.Body.String())
+	}
+	nodes, err := reg.List(ctx, store.DefaultTenantID)
+	if err != nil || len(nodes) != 0 {
+		t.Fatalf("nodes = %+v err %v", nodes, err)
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil || len(view.Servers) != 0 {
+		t.Fatalf("servers = %+v err %v", view.Servers, err)
+	}
+}
+
 func TestNodeSettingsMovesTheSrvPinToTheNewOwner(t *testing.T) {
 	t.Setenv("HUB_EDGE_NODES", "on")
 	settings := &edgeMemSettings{}
@@ -412,5 +448,71 @@ func TestNodeSettingsMovesTheSrvPinToTheNewOwner(t *testing.T) {
 	}
 	if pins()["carol"] != first.NodeID {
 		t.Fatalf("carol was not pinned: %+v", pins())
+	}
+}
+
+type gateBotSettings struct {
+	botSettingsMem
+	fail bool
+}
+
+func (m *gateBotSettings) Set(ctx context.Context, key, valueJSON string) error {
+	if m.fail {
+		return errors.New("store down")
+	}
+	return m.botSettingsMem.Set(ctx, key, valueJSON)
+}
+
+func TestNodeOwnerChangeRollsBackWhenTheNewPinIsNotStored(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	storeMem := &gateBotSettings{}
+	bots := botmgmt.NewService(storeMem)
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	body := `{"code":"` + code.Code + `","desktopd_key":"key-1","srv_admin_secret":"srv-admin","version":"v1","has_desktopd":true,"has_srv":true}`
+	PostEdgeEnrollHandler(reg, pool, bots).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("enroll %d %s", rec.Code, rec.Body.String())
+	}
+	var enrolled edgenode.EnrollResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &enrolled); err != nil {
+		t.Fatal(err)
+	}
+	storeMem.fail = true
+	out := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/bots/nodes/"+enrolled.NodeID+"/settings", strings.NewReader(`{"name":"desk","owner_user_id":"bob"}`))
+	req.SetPathValue("id", enrolled.NodeID)
+	PostEdgeNodeSettingsAdminHandler(reg, pool, bots).ServeHTTP(out, req)
+	if out.Code != http.StatusBadGateway || !strings.Contains(out.Body.String(), "NODE_PIN") {
+		t.Fatalf("settings %d %s", out.Code, out.Body.String())
+	}
+	node, err := reg.Lookup(ctx, enrolled.NodeID)
+	if err != nil || node.OwnerUserID != "alice" {
+		t.Fatalf("owner = %+v err %v", node, err)
+	}
+	var saved struct {
+		OwnerNode map[string]string `json:"owner_node"`
+	}
+	if err := json.Unmarshal([]byte(storeMem.value), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.OwnerNode["alice"] != enrolled.NodeID || saved.OwnerNode["bob"] != "" {
+		t.Fatalf("pins = %+v", saved.OwnerNode)
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, server := range view.Servers {
+		if server.NodeID == enrolled.NodeID && server.OwnerID != "alice" {
+			t.Fatalf("desktop owner = %s", server.OwnerID)
+		}
 	}
 }
