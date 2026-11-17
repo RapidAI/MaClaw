@@ -406,32 +406,46 @@ func knowledgeSyncUserStorageKey(principal *auth.ViewerPrincipal) string {
 	return principal.UserID
 }
 
-// adoptKnowledgeSyncEmailCaseDir renames a mixed-case _email directory onto
-// the lowercased storage key. The principal email is already lowercased, so
-// the legacy path and the canonical path are the same string and a
-// case-sensitive disk still holds the older directory.
+// adoptKnowledgeSyncEmailCaseDir renames one mixed-case _email directory
+// onto the lowercased storage key. This is production read behavior: a
+// status or download for that account publishes the older directory. The
+// principal email is already lowercased, so the legacy path and the
+// canonical path are the same string and a case-sensitive disk still holds
+// the older directory.
+//
+// An existing canonical path is left untouched, whether or not its meta is
+// complete. A rename that fails leaves the source in place. Only a direct
+// child of base/_email whose name is the same email with different case is
+// eligible.
 func adoptKnowledgeSyncEmailCaseDir(baseDir, canonicalDir string) {
 	if strings.TrimSpace(baseDir) == "" || strings.TrimSpace(canonicalDir) == "" {
 		return
 	}
-	if _, err := os.Stat(filepath.Join(canonicalDir, "meta.json")); err == nil {
+	parent := filepath.Clean(filepath.Join(baseDir, "_email"))
+	canonicalDir = filepath.Clean(canonicalDir)
+	want := filepath.Base(canonicalDir)
+	if want == "." || want == ".." || strings.ContainsAny(want, `/\`) || filepath.Dir(canonicalDir) != parent {
 		return
 	}
-	parent := filepath.Join(baseDir, "_email")
+	if _, err := os.Lstat(canonicalDir); err == nil {
+		return
+	}
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		return
 	}
-	want := filepath.Base(canonicalDir)
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		name := entry.Name()
+		if name == want || !strings.EqualFold(name, want) || strings.ContainsAny(name, `/\`) {
 			continue
 		}
-		name := entry.Name()
-		if name == want || !strings.EqualFold(name, want) {
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
 			continue
 		}
 		legacy := filepath.Join(parent, name)
+		if filepath.Dir(legacy) != parent {
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(legacy, "meta.json")); err != nil {
 			continue
 		}
