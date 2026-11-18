@@ -656,6 +656,24 @@ func resolveDesktopBotPhase(req *ExecuteRequest) {
 // path stays in agentservice so Principal/Tenant/User/Instance/Session are
 // constructed and authorized by Service before any model or tool call.
 func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (res *ExecuteResult, err error) {
+	if req.ChatCardContinuation != nil {
+		result, contErr := e.ContinueChatCard(ctx, req, *req.ChatCardContinuation)
+		if contErr != nil {
+			return nil, contErr
+		}
+		meta := map[string]string{
+			"chat_card_continuation": "1",
+			"chat_card_resume_id":    req.ChatCardContinuation.ResumeID,
+		}
+		if strings.TrimSpace(result.Evidence) != "" {
+			meta["task_outcome_evidence"] = result.Evidence
+			meta[TaskOutcomeKey] = TaskOutcomeUnverified
+		}
+		if len(result.Effects) > 0 {
+			meta["applied_effects"] = strings.Join(result.Effects, ",")
+		}
+		return &ExecuteResult{Content: result.Content, OutputType: "text/plain", Metadata: meta}, nil
+	}
 	resolveDesktopBotPhase(&req)
 	botID := botlog.FromMeta(req.Message.Metadata)
 	started := time.Now()
@@ -749,7 +767,9 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	if text, handled := e.consumeMailboxConfirmation(ctx, req); handled {
 		return &ExecuteResult{Content: text, OutputType: "text/plain"}, nil
 	}
-	recordUserCheckoutConfirmation(req)
+	// Chat text is not a payment authorization. A purchase uses the browser
+	// guard's one-operation confirmation, recorded by that host after the
+	// amount was read from the page.
 	llmCfg, err := ResolveTurnLLMRole(req.Config, req.Message.Metadata, req.Instance.Metadata)
 	if err != nil {
 		return nil, err

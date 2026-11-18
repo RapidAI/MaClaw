@@ -13,6 +13,7 @@ import (
 )
 
 func TestToolFileOnTheSameNodeDoesNotCrossTheTunnel(t *testing.T) {
+	t.Cleanup(holdEdgeState())
 	t.Setenv("HUB_EDGE_NODES", "on")
 	reg := edgenode.NewRegistry(&edgeMemSettings{})
 	code, err := reg.IssueCode(context.Background(), "tenant-a", "lab")

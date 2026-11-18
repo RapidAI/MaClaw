@@ -11,6 +11,7 @@ import (
 )
 
 func TestNodeTokenRejectsAnotherTenantAndGlobalTokenDoesNot(t *testing.T) {
+	t.Cleanup(holdEdgeState())
 	t.Setenv("HUB_EDGE_NODES", "on")
 	t.Setenv("MACLAW_DESKTOP_API_TOKEN", "global-token")
 	reg := edgenode.NewRegistry(&edgeMemSettings{})

@@ -1,22 +1,49 @@
 package agentservice
 
 import (
+	"context"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
-func TestUserMessageRecordsCheckoutConfirmation(t *testing.T) {
-	p := Principal{TenantID: "t", UserID: "u-checkout"}
-	owner := memoryOwnerIDForPrincipal(p)
+func TestUserMessageDoesNotRecordCheckoutConfirmation(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	owner := memoryOwnerIDForPrincipal(principal)
 	browser.ClearCheckoutConfirmation(owner)
-	recordUserCheckoutConfirmation(ExecuteRequest{Principal: p, Message: Message{Content: "帮我把购物车结算一下"}})
+	defer browser.ClearCheckoutConfirmation(owner)
 	if _, ok := browser.PendingCheckoutConfirmation(owner); ok {
-		t.Fatal("ordinary request must not confirm a payment")
+		t.Fatal("a user started with a payment authorization")
 	}
-	recordUserCheckoutConfirmation(ExecuteRequest{Principal: p, Message: Message{Content: "确认支付 ¥99"}})
-	if amt, ok := browser.PendingCheckoutConfirmation(owner); !ok || amt != "99.00" {
-		t.Fatalf("got %q %v", amt, ok)
+	_, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
+		Content: "确认支付 ¥99",
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	browser.ClearCheckoutConfirmation(owner)
+	if amount, ok := browser.PendingCheckoutConfirmation(owner); ok {
+		t.Fatalf("user text granted payment authorization %s", amount)
+	}
+	exec := &CoreAgentExecutor{}
+	result, err := exec.Execute(context.Background(), ExecuteRequest{
+		ChatCardContinuation: &ChatCardContinuation{Mode: "continue", Answer: "确认支付 ¥99", ResumeID: "resume-pay"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Metadata["task_outcome"] == "done" {
+		t.Fatalf("continuation = %#v", result)
+	}
+	if amount, ok := browser.PendingCheckoutConfirmation(owner); ok {
+		t.Fatalf("card continuation granted payment authorization %s", amount)
+	}
+	for _, text := range []string{"确认", "继续", "我已完成", "确认支付"} {
+		if _, ok := browser.RecordCheckoutConfirmation(owner, text); ok {
+			t.Fatalf("%q was stored as a payment authorization", text)
+		}
+	}
+	if _, ok := browser.PendingCheckoutConfirmation(owner); ok {
+		t.Fatal("a generic approval is waiting in the checkout guard")
+	}
 }

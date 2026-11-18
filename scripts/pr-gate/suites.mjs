@@ -18,9 +18,15 @@ export const lifecycleSuite = {
       "TestDesktopReceiptPersistFailureIsNotReady",
       "TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn",
       "TestNoDesktopAsyncFinishKeepsGeneratedPDF",
+      "TestChatCardDecisionResumesSameTask",
     ],
     "./corelib/agentservice": [
       "TestDesktopDeliverablesOnlyForExecuteDesktopTurns",
+      "TestUserMessageDoesNotRecordCheckoutConfirmation",
+      "TestChatCardResumeDoesNotReplaySideEffect",
+      "TestChatCardRestartDeliversContinuation",
+      "TestChatCardAskContinuesTheSameTask",
+      "TestChatCardNoEvidenceIsUnverifiedOnce",
     ],
   },
 };
@@ -37,6 +43,7 @@ export const hubOutcomeSuite = {
       "TestDelegatedRunEndLeavesRunningJobOpen",
       "TestPendingReceiptIsNotDone",
       "TestPendingReceiptWaitsUntilReady",
+      "TestChatCardDecisionReachesHub",
     ],
   },
 };

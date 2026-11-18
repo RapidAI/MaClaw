@@ -36,7 +36,8 @@ func desktopAsking(meta map[string]string) bool {
 		strings.TrimSpace(meta["ask_user_secret_name"]) != "" ||
 		strings.TrimSpace(meta["send_to_user_kind"]) == "ask" ||
 		strings.TrimSpace(meta["response_source"]) == "ask_user" ||
-		desktopTaskChoiceLine(meta["ask_user_options_json"]) != ""
+		desktopTaskChoiceLine(meta["ask_user_options_json"]) != "" ||
+		strings.TrimSpace(meta["interaction_json"]) != ""
 }
 
 // desktopSettleOutcome is the outcome a finished run presents. Missing and

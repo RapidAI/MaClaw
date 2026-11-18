@@ -3,6 +3,7 @@ import { PostDesktopBotCross, SpeakDesktopBotReply } from '../../../wailsjs/go/m
 import { desktopBotLine } from './desktopBotAck';
 import { startDesktopBotSync } from './desktopBotSync';
 import { desktopTurnFromPayload, isDesktopBotFiller } from './visibleDesktopTurn';
+import { parseChatInteraction } from './chatInteractionCard';
 import {
     appendDesktopBotReport,
     applySupplementOutcomes,
@@ -196,7 +197,8 @@ export function handleDesktopBotResult(payload: unknown) {
     const shotPaths = result.failed ? undefined : shotPathsFrom(data);
     const attachmentIds = result.failed ? undefined : attachmentIdsFrom(data);
     const ask = askFrom(data);
-    if (!turnHasVisibleResult(result, ask, images, shotPaths, attached, attachmentIds)) {
+    const interaction = parseChatInteraction(data.interaction_json ?? data.InteractionJSON);
+    if (!interaction && !turnHasVisibleResult(result, ask, images, shotPaths, attached, attachmentIds)) {
         dropPendingBotReply(resultUser, resultBot, requestId);
         return;
     }
@@ -208,6 +210,7 @@ export function handleDesktopBotResult(payload: unknown) {
         userControl: screen.userControl,
         attentionReason: screen.reason,
         askUser: ask,
+        interaction,
         requestId,
         images,
         shotPaths,
@@ -252,7 +255,8 @@ export function handleDesktopBotReport(payload: unknown) {
     const shotPaths = result.failed ? undefined : shotPathsFrom(data);
     const attachmentIds = result.failed ? undefined : attachmentIdsFrom(data);
     const ask = askFrom(data);
-    if (!turnHasVisibleResult(result, ask, images, shotPaths, attached, attachmentIds)) return;
+    const interaction = parseChatInteraction(data.interaction_json ?? data.InteractionJSON);
+    if (!interaction && !turnHasVisibleResult(result, ask, images, shotPaths, attached, attachmentIds)) return;
     const reportUser = sessionKey.slice(0, split);
     const reportBot = sessionKey.slice(split + 1);
     const sentence = sentenceForTurn(result, ask);
@@ -263,6 +267,7 @@ export function handleDesktopBotReport(payload: unknown) {
         userControl: screen.userControl,
         attentionReason: screen.reason,
         askUser: ask,
+        interaction,
         requestId,
         images,
         shotPaths,

@@ -110,6 +110,9 @@ const syncLiveWatchView = (payload: unknown) => {
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
     SendDesktopBotTask: (...args: unknown[]) => sendTask(...args),
+    SubmitDesktopBotInteraction: async () => '{"resume":true,"done":false}',
+    OpenDesktopBotInteraction: async () => ({ novnc_url: '' }),
+    GetChatCardShot: async () => ({ mime: 'image/png', data: '' }),
     SendDesktopBotTaskTo: (botId: string, text: string, phase: string, continueSession?: string, askRun?: string) => {
         continueSessionSent(String(continueSession || ''));
         return askRun ? sendTask(botId, text, phase, askRun) : sendTask(botId, text, phase);

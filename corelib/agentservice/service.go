@@ -14,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/chatcard"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -103,6 +104,17 @@ type Service struct {
 	// Guarded by dynamicSemanticMu, like dynamicSemantic: hosts may construct
 	// the publisher from a request-goroutine while routing is being configured.
 	registry *coretool.CapabilityRegistry
+
+	// chatCards is the durable interaction record. Nil keeps the older ask path.
+	chatCards *chatcard.Store
+	// chatCardObserver re-reads the current task when a person says they
+	// finished a handoff. Nil means verification cannot claim evidence.
+	chatCardObserver ChatCardObserver
+	// chatCardBeforeFinish, when set by a test, fails the delivery after the
+	// continuation has run and before its result is committed.
+	chatCardBeforeFinish func() error
+	chatCardMu           sync.Mutex
+	chatCardCancel       context.CancelFunc
 
 	// AssistantMessageMetadataHook lets the hosting server attach runtime
 	// capability metadata after an assistant response is produced.
@@ -488,6 +500,7 @@ func (s *Service) Close() error {
 		return nil
 	}
 	s.closeOnce.Do(func() {
+		s.stopChatCardReconciler()
 		var closeErrs []error
 		collectCloseErr := func(err error) {
 			if err != nil {

@@ -144,6 +144,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     ClearFileCompanionChat: (...args: unknown[]) => clearChat(...args),
     FileCompanionUIReady: (...args: unknown[]) => ready(...args),
     FileCompanionTakePlaces: vi.fn(async () => []),
+    FileCompanionTakeLibraryView: vi.fn(async () => false),
     ChooseFileCompanionFiles: (...args: unknown[]) => choose(...args),
     FileCompanionOpenArxiv: (...args: unknown[]) => openArxiv(...args),
     FileCompanionSearchArxiv: (...args: unknown[]) => searchArxiv(...args),

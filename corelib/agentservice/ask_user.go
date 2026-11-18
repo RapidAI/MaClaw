@@ -13,9 +13,15 @@ const (
 	sessionMetaPendingAskUserQuestion  = "pending_ask_user_question"
 	sessionMetaPendingAskUserInputType = "pending_ask_user_input_type"
 	sessionMetaPendingAskUserOptions   = "pending_ask_user_options_json"
+	sessionMetaPendingChatCard         = "pending_chat_card"
 )
 
 func buildEffectiveUserContent(sess Session, raw string) (string, *agent.AskUserRequest) {
+	// A chat card is resolved only by its decision endpoint. Free text,
+	// including a generic 确认, must not be read as that decision.
+	if sess.Metadata != nil && strings.TrimSpace(sess.Metadata[sessionMetaPendingChatCard]) != "" {
+		return raw, nil
+	}
 	if sess.Metadata == nil || sess.Metadata[sessionMetaPendingAskUser] != "true" {
 		return raw, nil
 	}

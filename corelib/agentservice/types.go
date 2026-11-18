@@ -1159,6 +1159,11 @@ type ExecuteRequest struct {
 	// result may be truncated by the caller for display.
 	OnToolResult func(name, result string)
 
+	// ChatCardContinuation is set only by the service when it delivers a
+	// queued card resume. It is not part of transport JSON, so a client
+	// message cannot turn a normal turn into a continuation.
+	ChatCardContinuation *ChatCardContinuation `json:"-"`
+
 	// MoAPreset optionally arms multi-model council for this request only
 	// (Phase 6). Empty uses default_preset when metadata/session also empty and
 	// allow_auto matches; explicit value selects a named AppConfig.moa preset.
