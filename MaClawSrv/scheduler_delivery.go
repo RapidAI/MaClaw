@@ -77,15 +77,14 @@ func deliverScheduledTaskResultForRun(svc *agentservice.Service, principal agent
 	}
 	steps := currentDesktopSteps()
 	runID = strings.TrimSpace(runID)
-	if steps == nil || runID == "" {
-		return send()
+	if steps == nil {
+		return desktopbot.ErrEffectIdentity{}
 	}
-	_, _, err := steps.RunDesktopStep(desktopbot.Step{
-		RunID: runID,
-		Tool:  "delivery",
-		Key:   desktopbot.StepKey(runID, "delivery:"+runID, 0),
-		Bind:  scheduledDeliveryBind(principal, task, resultText),
-	}, "", func() (string, error) {
+	permit, err := scheduledDeliveryPermit(principal, task, resultText, runID)
+	if err != nil {
+		return err
+	}
+	_, _, err = steps.RunAuthorized(permit, "", func() (string, error) {
 		if err := send(); err != nil {
 			return "", err
 		}
@@ -94,17 +93,38 @@ func deliverScheduledTaskResultForRun(svc *agentservice.Service, principal agent
 	return err
 }
 
-func scheduledDeliveryBind(principal agentservice.Principal, task *scheduler.ScheduledTask, resultText string) string {
-	channel := ""
-	account := ""
-	target := ""
-	if task != nil && task.Delivery != nil {
-		channel = task.Delivery.Channel
-		account = task.Delivery.BotProfileID
-		target = scheduledDeliveryTargets(task.Delivery.Targets)
+func scheduledDeliveryPermit(principal agentservice.Principal, task *scheduler.ScheduledTask, resultText, runID string) (desktopbot.EffectPermit, error) {
+	tenant := strings.TrimSpace(principal.TenantID)
+	user := strings.TrimSpace(principal.UserID)
+	if tenant == "" || user == "" || strings.TrimSpace(runID) == "" || task == nil || task.Delivery == nil {
+		return desktopbot.EffectPermit{}, desktopbot.ErrEffectIdentity{}
 	}
-	owner := strings.TrimSpace(principal.TenantID) + "/" + strings.TrimSpace(principal.UserID)
-	return desktopbot.ConsentBind(owner, account, channel, target, resultText)
+	channel := strings.TrimSpace(task.Delivery.Channel)
+	target := scheduledDeliveryTargets(task.Delivery.Targets)
+	if channel == "" || target == "" || strings.TrimSpace(resultText) == "" {
+		return desktopbot.EffectPermit{}, desktopbot.ErrEffectIdentity{}
+	}
+	account := strings.TrimSpace(task.Delivery.BotProfileID)
+	if account == "" {
+		account = user
+	}
+	args, err := desktopbot.CanonicalEffectArgs("", map[string]any{
+		"channel": channel,
+		"targets": target,
+		"body":    resultText,
+	})
+	if err != nil {
+		return desktopbot.EffectPermit{}, err
+	}
+	return desktopbot.EffectPermit{
+		RunID:   runID,
+		Owner:   tenant + "/" + user,
+		Account: account,
+		Host:    channel,
+		Target:  target,
+		Tool:    "delivery",
+		Args:    args,
+	}, nil
 }
 
 func scheduledDeliveryTargets(targets []scheduler.DeliveryTarget) string {

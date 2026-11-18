@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
@@ -90,5 +91,31 @@ func desktopDangerAnswerTurn(request agentruntime.TurnRequest, scope agentruntim
 		return
 	}
 	prefix := strings.Join([]string{strings.TrimSpace(scope.TenantID), strings.TrimSpace(scope.UserID), strings.TrimSpace(scope.InstanceID)}, "\x00") + "\x00"
-	desktopbot.AnswerDanger(prefix, yes, desktopbot.DangerNow())
+	if desktopbot.AnswerDanger(prefix, yes, desktopbot.DangerNow()) > 0 && yes {
+		noteDesktopUserEffectAuth(scope)
+	}
+}
+
+var desktopFreshAuth sync.Map
+
+func desktopFreshAuthKey(scope agentruntime.Scope) string {
+	return strings.Join([]string{
+		strings.TrimSpace(scope.TenantID),
+		strings.TrimSpace(scope.UserID),
+		strings.TrimSpace(scope.InstanceID),
+		strings.TrimSpace(scope.RunID),
+	}, "\x00")
+}
+
+// noteDesktopUserEffectAuth records one user confirmation. The next side
+// effect may start a new journal generation. The model cannot set this.
+func noteDesktopUserEffectAuth(scope agentruntime.Scope) {
+	desktopFreshAuth.Store(desktopFreshAuthKey(scope), true)
+}
+
+// takeDesktopUserEffectAuth consumes that confirmation. A later model call
+// in the same run does not get another generation.
+func takeDesktopUserEffectAuth(scope agentruntime.Scope) bool {
+	_, ok := desktopFreshAuth.LoadAndDelete(desktopFreshAuthKey(scope))
+	return ok
 }

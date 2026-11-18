@@ -15,6 +15,9 @@ import (
 // agentservice_state stays 1.
 type DesktopStepper interface {
 	RunDesktopStep(step desktopbot.Step, command string, run func() (string, error)) (text string, replayed bool, err error)
+	// RunAuthorized is the server permit path. cap_mcp should use this with
+	// an EffectPermit instead of a model tool-call id.
+	RunAuthorized(permit desktopbot.EffectPermit, command string, run func() (string, error)) (text string, replayed bool, err error)
 	ResumeDesktopRound(runID, progressNext string) (desktopbot.ResumePlan, error)
 	FinishedDesktopStep(key string) (text string, done bool, err error)
 }
@@ -214,10 +217,31 @@ func (s *SQLiteStore) RunDesktopStep(step desktopbot.Step, command string, run f
 		return "", false, err
 	}
 	if strings.TrimSpace(step.Key) == "" {
-		text, err := run()
-		return text, false, err
+		return "", false, desktopbot.ErrEffectIdentity{}
 	}
 	return desktopbot.RunClaimed(db, step, command, run)
+}
+
+// RunAuthorized journals one server permit. A missing identity or parameter
+// returns before the effect runs.
+func (s *SQLiteStore) RunAuthorized(permit desktopbot.EffectPermit, command string, run func() (string, error)) (string, bool, error) {
+	if s == nil {
+		return "", false, ErrServiceClosed
+	}
+	if run == nil {
+		return "", false, fmt.Errorf("desktop step has no body")
+	}
+	s.mu.Lock()
+	err := s.guardDesktopStepsLocked()
+	if err == nil {
+		err = s.ensureDesktopStepTableLocked()
+	}
+	db := s.db
+	s.mu.Unlock()
+	if err != nil {
+		return "", false, err
+	}
+	return desktopbot.RunAuthorized(db, permit, command, run)
 }
 
 // ResumeDesktopRound starts at the step after the last completed one.
