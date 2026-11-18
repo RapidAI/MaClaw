@@ -25,6 +25,7 @@ type mcpTaskAPI interface {
 	mcpCreateTask(ctx context.Context, args mcpCreateArgs) (mcpTaskView, error)
 	mcpGetTask(ctx context.Context, projectPath string) (mcpTaskView, error)
 	mcpStopTask(ctx context.Context, projectPath string) (mcpTaskView, error)
+	mcpSendCommand(ctx context.Context, projectPath, command string, wait bool) (mcpTaskView, error)
 	mcpListTasks(ctx context.Context) ([]mcpTaskView, error)
 }
 
@@ -41,13 +42,20 @@ type mcpCreateArgs struct {
 type mcpHTTP struct {
 	token func() string
 	api   mcpTaskAPI
+	// lanAllowed reports the wildcard-bind opt-in state; nil means loopback
+	// only. LAN clients still need the Bearer key.
+	lanAllowed func() bool
 }
 
 func newMCPHTTP(token func() string, api mcpTaskAPI) http.Handler {
+	return newMCPHTTPLAN(token, api, nil)
+}
+
+func newMCPHTTPLAN(token func() string, api mcpTaskAPI, lanAllowed func() bool) http.Handler {
 	if token == nil {
 		token = func() string { return "" }
 	}
-	return &mcpHTTP{token: token, api: api}
+	return &mcpHTTP{token: token, api: api, lanAllowed: lanAllowed}
 }
 
 type mcpRPCError struct {
@@ -65,11 +73,12 @@ func (h *mcpHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !mcpRemoteIsLoopback(r) {
+	lanOn := h.lanAllowed != nil && h.lanAllowed()
+	if !mcpRemoteIsLoopback(r) && !lanOn {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !mcpOriginAllowed(r.Header.Get("Origin")) {
+	if !mcpOriginAllowed(r.Header.Get("Origin"), lanOn) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -165,6 +174,14 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 			return mcpToolError(err.Error()), nil
 		}
 		return mcpToolText(view, view.Status == mcpStatusFailed), nil
+	case "send_command":
+		path := mcpFirstString(args, "project_path", "projectPath")
+		command := mcpFirstString(args, "command", "text", "prompt", "message")
+		view, err := h.api.mcpSendCommand(ctx, path, command, mcpLookupBool(args, "wait"))
+		if err != nil {
+			return mcpToolError(err.Error()), nil
+		}
+		return mcpToolText(view, view.Status == mcpStatusFailed), nil
 	case "list_tasks":
 		tasks, err := h.api.mcpListTasks(ctx)
 		if err != nil {
@@ -223,7 +240,7 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "create_task",
-			"description": "在这台电脑上创建会话或编程任务，并可选地立刻开始。这台 GUI 是会话服务，创建、停止和查看与远控、ACP 共用同一套能力。mode 省略且带了工作目录时按编程任务处理；显式 chat 保持会话。provider 和 model 可选，指定 model 时必须同时指定 provider。wait 默认 false，true 会等到这轮结束。",
+			"description": "在这台电脑上创建会话或编程任务，并可选地立刻开始。这台 GUI 是会话服务，创建、停止和查看与远控、ACP 共用同一套能力。mode 省略且带了工作目录时按编程任务处理；显式 chat 保持会话。provider 和 model 可选，指定 model 时必须同时指定 provider。wait 默认 false，true 会等到这轮结束。编程计划或其它确认会以 needs_confirmation 结束，并用 commands 告诉调用方怎么继续。",
 			"inputSchema": object(map[string]any{
 				"name":        str("任务名称。为空时从 prompt 取第一行。"),
 				"prompt":      str("要执行的内容。为空则只创建任务，不开始。"),
@@ -237,7 +254,7 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "get_task",
-			"description": "查看一个任务的状态和结果。needs_confirmation 表示这轮停在本机确认，结果还没出来。",
+			"description": "查看一个任务的状态和结果。needs_confirmation 表示这轮已经停下来等确认。running 时如果带了 confirmation_kind 和 commands，表示这轮还在跑，但卡在授权或安全确认上。commands 里的每一条都可以原样交给 send_command。",
 			"inputSchema": object(map[string]any{
 				"project_path": str("create_task 返回的 project_path。"),
 			}, []string{"project_path"}),
@@ -248,6 +265,15 @@ func mcpToolDefinitions() []map[string]any {
 			"inputSchema": object(map[string]any{
 				"project_path": str("要停止的任务。"),
 			}, []string{"project_path"}),
+		},
+		{
+			"name":        "send_command",
+			"description": "向一个已有任务发送任意命令或后续内容。斜杠命令、确认按钮和自由回答都原样进入该任务。编程计划用 /plan approve、/plan skip、/plan reject。确认卡、未完成项、会话恢复、授权和安全确认用该任务 commands 里的原文。普通命令在任务 running 时会拒绝；commands 里的授权和安全确认可以在 running 时发送，当前这轮会继续。wait 默认 false。",
+			"inputSchema": object(map[string]any{
+				"project_path": str("任务的 project_path。"),
+				"command":      str("要发回的原文。别名 text、prompt、message。"),
+				"wait":         map[string]any{"type": "boolean", "description": "为 true 时阻塞到本轮结束。默认 false。"},
+			}, []string{"project_path", "command"}),
 		},
 		{
 			"name":        "list_tasks",
@@ -425,7 +451,11 @@ type mcpAddr struct{ value string }
 func (a mcpAddr) Network() string { return "tcp" }
 func (a mcpAddr) String() string  { return a.value }
 
-func mcpOriginAllowed(origin string) bool {
+// mcpOriginAllowed gates browser-supplied Origin headers (DNS-rebinding
+// defense). Loopback origins are always accepted. With LAN access on, private
+// network origins are accepted too; public hostnames stay rejected because a
+// public origin points at an internet page, not a LAN peer.
+func mcpOriginAllowed(origin string, lanAllowed bool) bool {
 	origin = strings.TrimSpace(origin)
 	if origin == "" {
 		return true
@@ -438,8 +468,11 @@ func mcpOriginAllowed(origin string) bool {
 	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
 		return true
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return true
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() {
+			return true
+		}
+		return lanAllowed && ip.IsPrivate()
 	}
 	return false
 }

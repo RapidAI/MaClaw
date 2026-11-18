@@ -433,8 +433,11 @@ type AppConfig struct {
 	// MCP host: this GUI is an inbound MCP server so other tools can create
 	// and read tasks. Nil or false means off. The listener starts only after
 	// the user turns it on. Port 0 tries 18790, then an ephemeral port.
-	McpHostEnabled *bool `json:"mcp_host_enabled,omitempty"`
-	McpHostPort    int   `json:"mcp_host_port,omitempty"`
+	// LanEnabled opts in to a wildcard bind so LAN clients can reach the same
+	// endpoint; the API key stays mandatory for every caller.
+	McpHostEnabled    *bool `json:"mcp_host_enabled,omitempty"`
+	McpHostPort       int   `json:"mcp_host_port,omitempty"`
+	McpHostLanEnabled *bool `json:"mcp_host_lan_enabled,omitempty"`
 	// IMProgressNudgeEnabled controls whether IM channels show intermediate
 	// progress/nudge messages. Nil means default true. When false, only the
 	// first progress message and the final result are sent to the user.
@@ -2353,6 +2356,20 @@ func (c *AppConfig) IsMcpHostEnabled() bool {
 // SetMcpHostEnabled sets the McpHostEnabled pointer field.
 func (c *AppConfig) SetMcpHostEnabled(v bool) {
 	c.McpHostEnabled = &v
+}
+
+// IsMcpHostLanEnabled reports whether the MCP host may bind a non-loopback
+// (wildcard) listener so LAN clients can connect. Nil means off.
+func (c *AppConfig) IsMcpHostLanEnabled() bool {
+	if c == nil || c.McpHostLanEnabled == nil {
+		return false
+	}
+	return *c.McpHostLanEnabled
+}
+
+// SetMcpHostLanEnabled sets the McpHostLanEnabled pointer field.
+func (c *AppConfig) SetMcpHostLanEnabled(v bool) {
+	c.McpHostLanEnabled = &v
 }
 
 // PreferredMcpHostPort returns the configured MCP port.

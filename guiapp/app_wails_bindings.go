@@ -2308,6 +2308,9 @@ type AIAssistantSendRequest struct {
 	// TaskMode is the inbound MCP task mode. Explicit "chat" stays on the
 	// shared assistant path. Empty keeps the workspace-mutation heuristic.
 	TaskMode string `json:"-"`
+	// HostRawText keeps an MCP follow-up or button command as typed. The
+	// workspace preamble would hide slash commands and confirmation actions.
+	HostRawText bool `json:"-"`
 	// BackendDisplayText marks a turn the backend started for a GUI feature
 	// (for example a desktopd deploy). The round is announced with this user
 	// row text, since the panel never sent the request.
@@ -2815,41 +2818,41 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 				}
 			}
 		} else {
-		// Resolve the execution directory the same way the other project-task
-		// consumers do (im_tools_local.go, recentTaskExecutionProjectPath): a
-		// tab-bound override wins, then the task's persistent workingDir tag /
-		// managed workspace subdirectory, then the global default. Using only
-		// EffectiveWorkingDirForOwner here skipped the task's own workingDir,
-		// so a "continue" on a task with a configured worktree never created
-		// or entered that directory.
-		executionProjectPath := a.BoundWorkingDirForOwner(userID)
-		// A stored process default is not a directory the user chose for this
-		// expert. Prefer the task record so the folder is created there; the
-		// bind below points the session at the same place.
-		if strings.TrimSpace(req.ExpertID) != "" && isProcessDefaultWorkspacePath(executionProjectPath) {
-			executionProjectPath = ""
-		}
-		if executionProjectPath == "" {
-			executionProjectPath = a.recentTaskExecutionProjectPath(projectPath)
-		}
-		if executionProjectPath == "" {
-			executionProjectPath = a.EffectiveWorkingDirForOwner(userID)
-		} else {
-			executionProjectPath = a.exclusiveWorkRoot(projectPath, executionProjectPath)
-		}
-		if executionProjectPath != projectPath {
-			log.Printf("[AI assistant] route tab to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
-			if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
-				log.Printf("[AI assistant] reject tab working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
-				return nil, err
+			// Resolve the execution directory the same way the other project-task
+			// consumers do (im_tools_local.go, recentTaskExecutionProjectPath): a
+			// tab-bound override wins, then the task's persistent workingDir tag /
+			// managed workspace subdirectory, then the global default. Using only
+			// EffectiveWorkingDirForOwner here skipped the task's own workingDir,
+			// so a "continue" on a task with a configured worktree never created
+			// or entered that directory.
+			executionProjectPath := a.BoundWorkingDirForOwner(userID)
+			// A stored process default is not a directory the user chose for this
+			// expert. Prefer the task record so the folder is created there; the
+			// bind below points the session at the same place.
+			if strings.TrimSpace(req.ExpertID) != "" && isProcessDefaultWorkspacePath(executionProjectPath) {
+				executionProjectPath = ""
 			}
-		}
-		// Expert sessions are keyed by expert id, so the block above only
-		// creates the workspace. Tools still inherit the desktop directory
-		// unless this session is pointed at the same directory the preview reads.
-		if strings.TrimSpace(req.ExpertID) != "" {
-			a.bindExpertTaskWorkspace(userID, strings.TrimSpace(req.EventScopeID), projectPath)
-		}
+			if executionProjectPath == "" {
+				executionProjectPath = a.recentTaskExecutionProjectPath(projectPath)
+			}
+			if executionProjectPath == "" {
+				executionProjectPath = a.EffectiveWorkingDirForOwner(userID)
+			} else {
+				executionProjectPath = a.exclusiveWorkRoot(projectPath, executionProjectPath)
+			}
+			if executionProjectPath != projectPath {
+				log.Printf("[AI assistant] route tab to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
+				if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
+					log.Printf("[AI assistant] reject tab working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
+					return nil, err
+				}
+			}
+			// Expert sessions are keyed by expert id, so the block above only
+			// creates the workspace. Tools still inherit the desktop directory
+			// unless this session is pointed at the same directory the preview reads.
+			if strings.TrimSpace(req.ExpertID) != "" {
+				a.bindExpertTaskWorkspace(userID, strings.TrimSpace(req.EventScopeID), projectPath)
+			}
 		}
 	}
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {

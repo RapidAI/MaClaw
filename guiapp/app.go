@@ -9140,6 +9140,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.McpHostPort = v
 			mcpHostChanged = true
+		case "mcp_host_lan_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetMcpHostLanEnabled(v)
+			mcpHostChanged = true
 		case "default_proxy_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

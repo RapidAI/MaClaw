@@ -371,6 +371,7 @@ func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source s
 		emitFactors = []string{}
 	}
 	lang := a.skillConfirmLang()
+	entry.Prompt = buildSkillRiskPromptForLang(lang, skillName, source, level, factors)
 	confirmLabel, rejectLabel := localizedSkillInstallActionLabels(lang)
 	payload := map[string]interface{}{
 		"confirm_id": confirmID,

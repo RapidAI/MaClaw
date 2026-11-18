@@ -245,7 +245,9 @@ const patchConfigFieldsDynamicAllowedSnippets = [
   ['guiapp/frontend/src/components/settings/ModelRoutesSettingsSection.tsx', 'PatchConfigFields({ model_routes })', 'model routes panel persists its closed model_routes patch'],
   ['guiapp/openhuman_wiring.go', 'PatchConfigFields(model_routes)', 'model router reload documents the closed model_routes patch'],
   ['guiapp/computer_use_warmup.go', 'a.PatchConfigFields(patch)', 'computer-use log prune policy patch is assembled from validated keep/max-age fields and optional auto-prune toggle'],
+  ['guiapp/frontend/src/components/pages/MCPServerPanel.tsx', 'PatchConfigFields({ [field]: value })', 'MCP toggles restrict field to the two literal mcp_host_enabled keys'],
 ];
+
 const collectDynamicPatchConfigFieldFailures = (files, readFile, allowedEntries = patchConfigFieldsDynamicAllowedSnippets) => {
   const fileSet = new Set(files);
   const allowedByFile = new Map();

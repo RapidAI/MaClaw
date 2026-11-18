@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -134,11 +135,362 @@ func TestInboundMCPConfirmationIsNotCompleted(t *testing.T) {
 	}
 }
 
+func TestInboundMCPConfirmationCommandsAreOperable(t *testing.T) {
+	plan := &IMAgentResponse{Text: "需要确认执行计划", Actions: codingPlanApproveActions()}
+	status, text, errText, _ := mcpRunOutcome(nil, false, plan)
+	status, text, kind, commands := mcpConfirmationCallerNotice(status, text, plan)
+	if status != mcpStatusNeedsConfirmation || kind != mcpConfirmKindPlan || errText != "" || !strings.Contains(text, "send_command") {
+		t.Fatalf("plan status=%s kind=%s text=%q err=%q", status, kind, text, errText)
+	}
+	if len(commands) < 3 || commands[0] != "/plan approve" {
+		t.Fatalf("plan commands %v", commands)
+	}
+
+	card := &IMAgentResponse{Text: "请确认", Confirmation: &IMResponseConfirmation{ID: "card-1", Summary: "写文件"}}
+	status, text, _, _ = mcpRunOutcome(nil, false, card)
+	status, text, kind, commands = mcpConfirmationCallerNotice(status, text, card)
+	if status != mcpStatusNeedsConfirmation || kind != "confirm" || !strings.Contains(text, "send_command") {
+		t.Fatalf("card status=%s kind=%s text=%q", status, kind, text)
+	}
+	if !containsAll(commands, "__confirm_execution__ card-1", "__cancel_execution__ card-1") {
+		t.Fatalf("card commands %v", commands)
+	}
+
+	asked := &IMAgentResponse{Text: "先停一下", AskUserQuestion: "用哪个端口？"}
+	status, text, kind, commands = mcpConfirmationCallerNotice(mcpStatusCompleted, "先停一下", asked)
+	if status != mcpStatusNeedsConfirmation || kind != "ask" || !strings.Contains(text, "用哪个端口") || len(commands) != 0 {
+		t.Fatalf("ask status=%s kind=%s text=%q commands=%v", status, kind, text, commands)
+	}
+
+	secret := &IMAgentResponse{Text: "登录", AskUserSecretName: "SITE_PASSWORD"}
+	status, text, kind, commands = mcpConfirmationCallerNotice(mcpStatusCompleted, "登录", secret)
+	if status != mcpStatusNeedsConfirmation || kind != "ask" || !strings.Contains(text, "SITE_PASSWORD") || len(commands) != 0 {
+		t.Fatalf("secret status=%s kind=%s text=%q commands=%v", status, kind, text, commands)
+	}
+
+	desktop := &IMAgentResponse{Text: "停在桌面", DesktopUserControl: true, DesktopAttentionReason: "验证码"}
+	status, text, kind, commands = mcpConfirmationCallerNotice(mcpStatusCompleted, "停在桌面", desktop)
+	if status != mcpStatusNeedsConfirmation || kind != "desktop" || !strings.Contains(text, "验证码") || !strings.Contains(text, "send_command") || len(commands) != 0 {
+		t.Fatalf("desktop status=%s kind=%s text=%q commands=%v", status, kind, text, commands)
+	}
+
+	traced := &IMAgentResponse{Text: "没有可见结果", Actions: []IMResponseAction{{Command: "__view_trace__ run-1"}, {Command: "__wf_review__ supplement_focus"}}}
+	status, _, kind, commands = mcpConfirmationCallerNotice(mcpStatusCompleted, "没有可见结果", traced)
+	if status != mcpStatusCompleted || kind != "" || len(commands) != 0 {
+		t.Fatalf("trace is not a confirmation status=%s kind=%s commands=%v", status, kind, commands)
+	}
+	review := &IMAgentResponse{Text: "请审阅文档", Actions: []IMResponseAction{{Command: "__wf_review__ confirm"}, {Command: "__wf_review__ supplement_focus"}, {Command: "__wf_review__ abort"}}}
+	status, _, kind, commands = mcpConfirmationCallerNotice(mcpStatusCompleted, "请审阅文档", review)
+	if status != mcpStatusNeedsConfirmation || kind != "action" || !containsAll(commands, "__wf_review__ confirm", "__wf_review__ abort") || containsAll(commands, "__wf_review__ supplement_focus") {
+		t.Fatalf("review status=%s kind=%s commands=%v", status, kind, commands)
+	}
+
+	recovery := &IMAgentResponse{CodingRuntimeRecovery: &CodingRuntimeRecoveryReview{TaskID: "task-1", ReviewDigest: "sha256:abc"}}
+	_, _, kind, commands = mcpConfirmationCallerNotice(mcpStatusCompleted, "请审阅", recovery)
+	if kind != "recovery" || !containsAll(commands, "__coding_recovery_confirm__ task-1 sha256:abc", "__coding_recovery_decline__ task-1 sha256:abc") {
+		t.Fatalf("recovery kind=%s commands=%v", kind, commands)
+	}
+
+	status, _, kind, commands = mcpConfirmationCallerNotice(mcpStatusCancelled, "停了", plan)
+	if status != mcpStatusCancelled || kind != "" || commands != nil {
+		t.Fatalf("cancel must win status=%s kind=%s commands=%v", status, kind, commands)
+	}
+
+	if !mcpCommandSkipsWorkspaceWrap("/plan approve") || !mcpCommandSkipsWorkspaceWrap("__confirm_execution__ card-1") || !mcpCommandSkipsWorkspaceWrap("／plan reject") {
+		t.Fatal("commands must stay raw")
+	}
+	if mcpCommandSkipsWorkspaceWrap("把按钮改成蓝色") {
+		t.Fatal("prose is a follow-up, not a button token")
+	}
+	bound := mcpBindActionCommand("__resume_unfinished__ slot-9")
+	if !bound.Bound || bound.ResumeSlotID != "slot-9" || !bound.UIAction || bound.Text == "__resume_unfinished__ slot-9" {
+		t.Fatalf("resume binding %+v", bound)
+	}
+	dismiss := mcpBindActionCommand("__dismiss_recoverable_session__ sess-2")
+	if dismiss.DismissRecoverableSessionID != "sess-2" || !dismiss.UIAction {
+		t.Fatalf("session binding %+v", dismiss)
+	}
+	reviewBind := mcpBindActionCommand("__wf_review__ confirm")
+	if !reviewBind.Bound || !reviewBind.UIAction || reviewBind.Text != "__wf_review__ confirm" {
+		t.Fatalf("workflow review binding %+v", reviewBind)
+	}
+
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-live", Workspace: `D:\repo`})
+	if _, err := app.mcpSendCommand(context.Background(), "p", "/plan approve", false); err == nil || !strings.Contains(err.Error(), "还在运行") {
+		t.Fatalf("running send: %v", err)
+	}
+
+	store := newAIConfirmationStore("")
+	owner := projectSessionOwnerID("p")
+	store.set(&pendingConfirmation{UserID: owner, ID: "card-9", Summary: "写文件"})
+	app.imHandler = &IMMessageHandler{confirmationStore: store}
+	app.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+		PendingPlanJSON:     `{"tasks":[{"index":1}]}`,
+		PendingPlanMarkdown: "## 改登录",
+	})
+	app.imHandler.pendingAskUser.Store(owner, &pendingAskUserState{Question: "用哪个端口？", Options: []string{"8080"}})
+	view := app.mcpApplyLiveConfirmation(mcpTaskView{ProjectPath: "p", Status: mcpStatusCompleted, Text: "计划写好了"})
+	if view.Status != mcpStatusNeedsConfirmation || view.ConfirmationKind != mcpConfirmKindPlan {
+		t.Fatalf("live %+v", view)
+	}
+	if !containsAll(view.Commands, "/plan approve", "__confirm_execution__ card-9", "__cancel_execution__ card-9") {
+		t.Fatalf("live commands %v", view.Commands)
+	}
+	if !strings.Contains(view.Text, "## 改登录") || !strings.Contains(view.Text, "用哪个端口") || !strings.Contains(view.Text, "8080") || !strings.Contains(view.Text, "send_command") {
+		t.Fatalf("live text %q", view.Text)
+	}
+	running := app.mcpApplyLiveConfirmation(mcpTaskView{ProjectPath: "p", Status: mcpStatusRunning, Text: "跑着"})
+	if running.Status != mcpStatusRunning || running.ConfirmationKind != "" {
+		t.Fatalf("running view %+v", running)
+	}
+
+	scopeCh := make(chan ScopeApprovalDecision, 1)
+	scopeID := storePendingScopeApproval(nil, ScopeApprovalRequest{
+		ProjectPath: "p",
+		ToolName:    "write",
+		Path:        "outside.txt",
+		Message:     "要写仓库外的文件",
+	}, scopeCh)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(scopeID) })
+	otherCh := make(chan ScopeApprovalDecision, 1)
+	otherID := storePendingScopeApproval(nil, ScopeApprovalRequest{ProjectPath: "other", Message: "别的任务"}, otherCh)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(otherID) })
+	workCh := make(chan ScopeApprovalDecision, 1)
+	workID := storePendingScopeApproval(nil, ScopeApprovalRequest{ProjectPath: `D:\repo`, Message: "工作目录越界"}, workCh)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(workID) })
+	nestedCh := make(chan ScopeApprovalDecision, 1)
+	nestedID := storePendingScopeApproval(nil, ScopeApprovalRequest{ProjectPath: `D:\repo\child`, Message: "子目录"}, nestedCh)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(nestedID) })
+	highCh := make(chan ScopeApprovalDecision, 1)
+	highID := storePendingScopeApproval(nil, ScopeApprovalRequest{
+		ProjectPath: "p",
+		Kind:        localHighRiskApprovalKind,
+		Message:     "高风险命令",
+	}, highCh)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(highID) })
+	commitCh := make(chan ScopeApprovalDecision, 1)
+	commitID := storePendingScopeApproval(nil, ScopeApprovalRequest{
+		ProjectPath: "p",
+		Kind:        commitShapeApprovalKind,
+		Message:     "提交形态",
+	}, commitCh)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(commitID) })
+	gated, err := app.mcpGetTask(context.Background(), "p")
+	if err != nil || gated.Status != mcpStatusRunning || gated.ConfirmationKind != "scope" || !strings.Contains(gated.Text, "要写仓库外的文件") || !strings.Contains(gated.Text, "工作目录越界") || !strings.Contains(gated.Text, "send_command") {
+		t.Fatalf("running gate %+v err=%v", gated, err)
+	}
+	if !containsAll(gated.Commands,
+		"__scope_approval__ "+scopeID+" allow_dir",
+		"__scope_approval__ "+scopeID+" full_access",
+		"__scope_approval__ "+scopeID+" deny",
+		"__scope_approval__ "+workID+" allow_dir",
+		"__scope_approval__ "+workID+" deny",
+		"__scope_approval__ "+highID+" allow_once",
+		"__scope_approval__ "+highID+" full_access",
+		"__scope_approval__ "+highID+" deny",
+		"__scope_approval__ "+commitID+" allow_once",
+		"__scope_approval__ "+commitID+" allow_task",
+		"__scope_approval__ "+commitID+" deny",
+	) || commandsContainAny(gated.Commands,
+		"__scope_approval__ "+scopeID+" allow_once",
+		"__scope_approval__ "+scopeID+" allow_task",
+		"__scope_approval__ "+workID+" allow_once",
+		"__scope_approval__ "+highID+" allow_dir",
+		"__scope_approval__ "+highID+" allow_task",
+		"__scope_approval__ "+commitID+" allow_dir",
+		"__scope_approval__ "+commitID+" full_access",
+		"__scope_approval__ "+otherID+" deny",
+		"__scope_approval__ "+nestedID+" deny",
+	) {
+		t.Fatalf("scope commands %v", gated.Commands)
+	}
+	if _, err := app.mcpSendCommand(context.Background(), "p", "__scope_approval__ "+scopeID+" allow_task", false); err == nil || !strings.Contains(err.Error(), "没有这个决定") {
+		t.Fatalf("path allow_task: %v", err)
+	}
+	select {
+	case decision := <-scopeCh:
+		t.Fatalf("rejected path decision delivered %q", decision)
+	default:
+	}
+	if _, err := app.mcpSendCommand(context.Background(), "p", "__scope_approval__ "+highID+" allow_dir", false); err == nil || !strings.Contains(err.Error(), "没有这个决定") {
+		t.Fatalf("high-risk allow_dir: %v", err)
+	}
+	select {
+	case decision := <-highCh:
+		t.Fatalf("rejected high-risk decision delivered %q", decision)
+	default:
+	}
+	resolved, err := app.mcpSendCommand(context.Background(), "p", "__scope_approval__ "+scopeID+" allow_dir", false)
+	if err != nil || resolved.Status != mcpStatusRunning || !strings.Contains(resolved.Text, "已提交授权决定") {
+		t.Fatalf("scope resolve %+v err=%v", resolved, err)
+	}
+	select {
+	case decision := <-scopeCh:
+		if decision != ScopeApprovalAllowDir {
+			t.Fatalf("scope decision %q", decision)
+		}
+	default:
+		t.Fatal("scope decision was not delivered")
+	}
+	if _, err := app.mcpSendCommand(context.Background(), "p", "/plan approve", false); err == nil || !strings.Contains(err.Error(), "还在运行") {
+		t.Fatalf("ordinary command while running: %v", err)
+	}
+	pendingScopeApprovals.Delete(workID)
+	pendingScopeApprovals.Delete(nestedID)
+	pendingScopeApprovals.Delete(otherID)
+	pendingScopeApprovals.Delete(highID)
+	pendingScopeApprovals.Delete(commitID)
+
+	critCh := make(chan criticalRiskConfirmResponse, 1)
+	app.imHandler.pendingCriticalConfirm.Store("crit_mcp", &pendingCriticalConfirmEntry{Ch: critCh, Prompt: "安装危险技能", Owner: owner})
+	t.Cleanup(func() { app.imHandler.pendingCriticalConfirm.Delete("crit_mcp") })
+	foreignCh := make(chan criticalRiskConfirmResponse, 1)
+	app.imHandler.pendingCriticalConfirm.Store("crit_other", &pendingCriticalConfirmEntry{Ch: foreignCh, Prompt: "别人的安装", Owner: "desktop-user:other"})
+	t.Cleanup(func() { app.imHandler.pendingCriticalConfirm.Delete("crit_other") })
+	gated, err = app.mcpGetTask(context.Background(), "p")
+	if err != nil || gated.ConfirmationKind != "critical" || !containsAll(gated.Commands, "__resolve_critical_confirm__ crit_mcp confirm", "__resolve_critical_confirm__ crit_mcp reject") || containsAll(gated.Commands, "__resolve_critical_confirm__ crit_other confirm") {
+		t.Fatalf("critical gate %+v err=%v", gated, err)
+	}
+	if _, err := app.mcpSendCommand(context.Background(), "p", "__resolve_critical_confirm__ crit_other reject", false); err == nil {
+		t.Fatal("foreign critical confirm was accepted")
+	}
+	select {
+	case <-foreignCh:
+		t.Fatal("foreign critical confirm was delivered")
+	default:
+	}
+	if _, err := app.mcpSendCommand(context.Background(), "p", "__resolve_critical_confirm__ crit_mcp confirm", false); err != nil {
+		t.Fatalf("critical resolve: %v", err)
+	}
+	select {
+	case resp := <-critCh:
+		if !resp.Confirmed {
+			t.Fatal("critical confirm was rejected")
+		}
+	default:
+		t.Fatal("critical confirm was not delivered")
+	}
+}
+
+func TestInboundMCPScopeDecisionReachesTheToolAndClosesTheDialog(t *testing.T) {
+	var event string
+	app := &App{testEmit: func(name string, data ...interface{}) {
+		if name == "subagent-scope-approval-resolved" {
+			event = name
+		}
+	}}
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-live"})
+	handler := &IMMessageHandler{app: app}
+	ch := make(chan ScopeApprovalDecision, 1)
+	id := storePendingScopeApproval(handler, ScopeApprovalRequest{ProjectPath: "p", Message: "写外面"}, ch)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(id) })
+
+	full := make(chan ScopeApprovalDecision, 1)
+	full <- ScopeApprovalDeny
+	fullID := storePendingScopeApproval(handler, ScopeApprovalRequest{ProjectPath: "p", Message: "通道已满"}, full)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(fullID) })
+	if _, err := app.mcpSendCommand(context.Background(), "p", "__scope_approval__ "+fullID+" allow_dir", false); err == nil || !strings.Contains(err.Error(), "已过期") {
+		t.Fatalf("undelivered decision: %v", err)
+	}
+	select {
+	case decision := <-full:
+		if decision != ScopeApprovalDeny {
+			t.Fatalf("buffered decision changed to %q", decision)
+		}
+	default:
+		t.Fatal("buffered decision was removed")
+	}
+
+	view, err := app.mcpSendCommand(context.Background(), "p", "__scope_approval__ "+id+" allow_dir", false)
+	if err != nil || view.Status != mcpStatusRunning || !strings.Contains(view.Text, "已提交授权决定") {
+		t.Fatalf("scope resolve %+v err=%v", view, err)
+	}
+	if event != "subagent-scope-approval-resolved" {
+		t.Fatalf("dialog event %q", event)
+	}
+	select {
+	case decision := <-ch:
+		if decision != ScopeApprovalAllowDir {
+			t.Fatalf("scope decision %q", decision)
+		}
+	default:
+		t.Fatal("scope decision was not delivered")
+	}
+	if _, err := app.mcpSendCommand(context.Background(), "p", "__scope_approval__ "+id+" deny", false); err == nil || !strings.Contains(err.Error(), "已过期") {
+		t.Fatalf("second decision: %v", err)
+	}
+}
+
+func containsAll(commands []string, want ...string) bool {
+	have := map[string]struct{}{}
+	for _, command := range commands {
+		have[command] = struct{}{}
+	}
+	for _, command := range want {
+		if _, ok := have[command]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func commandsContainAny(commands []string, want ...string) bool {
+	have := map[string]struct{}{}
+	for _, command := range commands {
+		have[command] = struct{}{}
+	}
+	for _, command := range want {
+		if _, ok := have[command]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func TestInboundMCPCriticalResolveClosesTheDesktopDialog(t *testing.T) {
+	var event string
+	var confirmID string
+	app := &App{testEmit: func(name string, data ...interface{}) {
+		if name != "critical-risk-confirm-resolved" || len(data) == 0 {
+			return
+		}
+		payload, _ := data[0].(map[string]interface{})
+		if payload == nil {
+			return
+		}
+		event = name
+		confirmID, _ = payload["confirm_id"].(string)
+	}}
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-live"})
+	owner := projectSessionOwnerID("p")
+	app.imHandler = &IMMessageHandler{app: app}
+	ch := make(chan criticalRiskConfirmResponse, 1)
+	app.imHandler.pendingCriticalConfirm.Store("crit_mcp", &pendingCriticalConfirmEntry{Ch: ch, Prompt: "安装危险技能", Owner: owner})
+	t.Cleanup(func() { app.imHandler.pendingCriticalConfirm.Delete("crit_mcp") })
+
+	view, err := app.mcpSendCommand(context.Background(), "p", "__resolve_critical_confirm__ crit_mcp confirm", false)
+	if err != nil || view.Status != mcpStatusRunning || !strings.Contains(view.Text, "已提交安全确认") {
+		t.Fatalf("critical resolve %+v err=%v", view, err)
+	}
+	if event != "critical-risk-confirm-resolved" || confirmID != "crit_mcp" {
+		t.Fatalf("dialog event %q id %q", event, confirmID)
+	}
+	select {
+	case resp := <-ch:
+		if !resp.Confirmed {
+			t.Fatal("critical confirm was rejected")
+		}
+	default:
+		t.Fatal("critical confirm was not delivered")
+	}
+}
+
 func TestInboundMCPFinishDoesNotOverwriteCancel(t *testing.T) {
 	app := &App{}
 	app.mcpReplaceRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-1"})
 	app.mcpCancelRun("p")
-	app.mcpFinishRun("p", "mcp-1", mcpStatusCompleted, "late", "", false)
+	app.mcpFinishRun("p", "mcp-1", mcpStatusCompleted, "late", "", false, "", nil)
 	view, ok := app.mcpViewFromRegistry("p")
 	if !ok || view.Status != mcpStatusCancelled {
 		t.Fatalf("status %+v ok=%v", view, ok)
@@ -268,11 +620,11 @@ func TestInboundMCPAPIKeyReusedUntilRotate(t *testing.T) {
 }
 
 func TestInboundMCPStatusHidesAccessUntilRunning(t *testing.T) {
-	off := mcpStatusPayload(false, true, "127.0.0.1:1", 1, "mck_secret", "MaClaw.exe", "")
+	off := mcpStatusPayload(false, true, false, "127.0.0.1:1", 1, "mck_secret", "MaClaw.exe", "")
 	if _, ok := off["apiKey"]; ok || off["enabled"] != false {
 		t.Fatalf("off payload %+v", off)
 	}
-	failed := mcpStatusPayload(true, false, "", 0, "mck_secret", "MaClaw.exe", "bind failed")
+	failed := mcpStatusPayload(true, false, false, "", 0, "mck_secret", "MaClaw.exe", "bind failed")
 	if _, ok := failed["apiKey"]; ok {
 		t.Fatalf("failed payload leaked the key: %+v", failed)
 	}
@@ -282,7 +634,7 @@ func TestInboundMCPStatusHidesAccessUntilRunning(t *testing.T) {
 	if failed["error"] != "bind failed" || failed["running"] != false {
 		t.Fatalf("failed payload %+v", failed)
 	}
-	running := mcpStatusPayload(true, true, "127.0.0.1:18790", 18790, "mck_secret", `C:\MaClaw.exe`, "")
+	running := mcpStatusPayload(true, true, false, "127.0.0.1:18790", 18790, "mck_secret", `C:\MaClaw.exe`, "")
 	if running["apiKey"] != "mck_secret" {
 		t.Fatalf("running payload %+v", running)
 	}
@@ -296,9 +648,160 @@ func TestInboundMCPStatusHidesAccessUntilRunning(t *testing.T) {
 	}
 }
 
+func TestInboundMCPStatusLANConfig(t *testing.T) {
+	prevLAN := mcpLANAddressFn
+	t.Cleanup(func() { mcpLANAddressFn = prevLAN })
+	mcpLANAddressFn = func() string { return "192.168.1.20" }
+
+	off := mcpStatusPayload(true, false, true, "", 0, "mck_secret", "MaClaw.exe", "")
+	if off["lanEnabled"] != true {
+		t.Fatalf("lan flag missing while off: %+v", off)
+	}
+	if _, ok := off["lanURL"]; ok {
+		t.Fatalf("lan url leaked while not running: %+v", off)
+	}
+
+	lan := mcpStatusPayload(true, true, true, "127.0.0.1:18790", 18790, "mck_secret", `C:\MaClaw.exe`, "")
+	lanURL, _ := lan["lanURL"].(string)
+	if lanURL != "http://192.168.1.20:18790/mcp" {
+		t.Fatalf("lan url %q", lanURL)
+	}
+	lanCfg, _ := lan["lanHTTPConfig"].(string)
+	if !strings.Contains(lanCfg, "http://192.168.1.20:18790/mcp") || !strings.Contains(lanCfg, "Bearer mck_secret") {
+		t.Fatalf("lan config %s", lanCfg)
+	}
+	loopCfg, _ := lan["httpConfig"].(string)
+	if !strings.Contains(loopCfg, "http://127.0.0.1:18790/mcp") {
+		t.Fatalf("loopback config must stay untouched: %s", loopCfg)
+	}
+
+	mcpLANAddressFn = func() string { return "" }
+	noIP := mcpStatusPayload(true, true, true, "127.0.0.1:18790", 18790, "mck_secret", "MaClaw.exe", "")
+	_, hasURL := noIP["lanURL"]
+	_, hasLanCfg := noIP["lanHTTPConfig"]
+	if hasURL || hasLanCfg {
+		t.Fatalf("no lan address must hide the lan config: %+v", noIP)
+	}
+
+	lanOff := mcpStatusPayload(true, true, false, "127.0.0.1:18790", 18790, "mck_secret", "MaClaw.exe", "")
+	if _, ok := lanOff["lanURL"]; ok {
+		t.Fatalf("lan off must not carry a lan url: %+v", lanOff)
+	}
+}
+
+func TestListenMCPBindAddress(t *testing.T) {
+	loopLn, port, err := listenMCP(0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loopLn.Close() })
+	if !isLoopbackAddr(loopLn.Addr()) || port <= 0 {
+		t.Fatalf("loopback bind %s port %d", loopLn.Addr(), port)
+	}
+
+	lanLn, lanPort, err := listenMCP(0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lanLn.Close() })
+	tcpAddr, ok := lanLn.Addr().(*net.TCPAddr)
+	if !ok || !tcpAddr.IP.IsUnspecified() || lanPort <= 0 {
+		t.Fatalf("lan bind %s port %d", lanLn.Addr(), lanPort)
+	}
+	// Loopback stays reachable through the wildcard bind.
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(lanPort)), time.Second)
+	if err != nil {
+		t.Fatalf("loopback dial via wildcard bind: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestMCPHostLanConfigToggle(t *testing.T) {
+	var cfg corelib.AppConfig
+	if cfg.IsMcpHostLanEnabled() {
+		t.Fatal("nil lan switch must stay off")
+	}
+	cfg.SetMcpHostLanEnabled(true)
+	if !cfg.IsMcpHostLanEnabled() {
+		t.Fatal("explicit true must turn lan on")
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded corelib.AppConfig
+	if err := json.Unmarshal(raw, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.IsMcpHostLanEnabled() {
+		t.Fatalf("lan flag must round-trip: %s", raw)
+	}
+}
+
+// The LAN flag rides config, not the host snapshot: a nil host (listener
+// never started) must not report lanEnabled=false and flip the panel's LAN
+// switch back to Off after a GenerateMCPHostAPIKey response.
+func TestMCPStatusWhileEnabledKeepsLanFlagWithoutHost(t *testing.T) {
+	app := &App{}
+	out := app.mcpStatusWhileEnabled(nil, "mck_rotated", true)
+	if out["lanEnabled"] != true || out["running"] != false {
+		t.Fatalf("nil host payload %+v", out)
+	}
+	if _, ok := out["apiKey"]; ok {
+		t.Fatalf("nil host payload must not leak the key: %+v", out)
+	}
+}
+
+func TestMCPHTTPLanRemoteGate(t *testing.T) {
+	api := &fakeMCPTasks{}
+	lanOn := newMCPHTTPLAN(func() string { return "mck_testkey" }, api, func() bool { return true })
+	lanOff := newMCPHTTPLAN(func() string { return "mck_testkey" }, api, nil)
+
+	post := func(h http.Handler, remoteAddr, token, origin string) int {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		req.RemoteAddr = remoteAddr
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Loopback-only state refuses a non-loopback client before auth.
+	if code := post(lanOff, "192.168.1.30:51000", "mck_testkey", ""); code != http.StatusForbidden {
+		t.Fatalf("lan off remote %d", code)
+	}
+	// LAN on: a non-loopback client still needs the key.
+	if code := post(lanOn, "192.168.1.30:51000", "", ""); code != http.StatusUnauthorized {
+		t.Fatalf("lan remote without key %d", code)
+	}
+	if code := post(lanOn, "192.168.1.30:51000", "mck_testkey", ""); code != http.StatusOK {
+		t.Fatalf("lan remote with key %d", code)
+	}
+	// A browser origin from a LAN peer is accepted with lan on and refused
+	// with lan off; a public origin stays refused in both modes (the
+	// DNS-rebinding guard).
+	if code := post(lanOn, "192.168.1.30:51000", "mck_testkey", "http://192.168.1.30:6274"); code != http.StatusOK {
+		t.Fatalf("lan private origin %d", code)
+	}
+	if code := post(lanOn, "192.168.1.30:51000", "mck_testkey", "https://evil.example"); code != http.StatusForbidden {
+		t.Fatalf("lan public origin %d", code)
+	}
+	if code := post(lanOff, "127.0.0.1:51001", "mck_testkey", "http://192.168.1.30:6274"); code != http.StatusForbidden {
+		t.Fatalf("loopback remote with lan origin %d", code)
+	}
+}
+
 type fakeMCPTasks struct {
 	mu       sync.Mutex
 	created  mcpCreateArgs
+	command  string
 	released chan struct{}
 }
 
@@ -334,6 +837,22 @@ func (f *fakeMCPTasks) mcpGetTask(ctx context.Context, projectPath string) (mcpT
 
 func (f *fakeMCPTasks) mcpStopTask(ctx context.Context, projectPath string) (mcpTaskView, error) {
 	return mcpTaskView{ProjectPath: projectPath, Status: mcpStatusCancelled}, nil
+}
+
+func (f *fakeMCPTasks) mcpSendCommand(ctx context.Context, projectPath, command string, wait bool) (mcpTaskView, error) {
+	f.mu.Lock()
+	f.command = command
+	f.mu.Unlock()
+	if strings.TrimSpace(command) == "" {
+		return mcpTaskView{}, errFakeMCPMissing
+	}
+	return mcpTaskView{
+		ProjectPath:      projectPath,
+		Status:           mcpStatusNeedsConfirmation,
+		ConfirmationKind: "plan",
+		Commands:         mcpPlanDecisionCommands(),
+		Text:             "待确认",
+	}, nil
 }
 
 func (f *fakeMCPTasks) mcpListTasks(ctx context.Context) ([]mcpTaskView, error) {
@@ -376,8 +895,18 @@ func TestInboundMCPProtocolAuthOriginAndTools(t *testing.T) {
 		t.Fatalf("current version %s", current.Body)
 	}
 	listed := mcpPost(t, endpoint, "mck_testkey", `{"jsonrpc":"2.0","id":4,"method":"tools/list"}`, "")
-	if !strings.Contains(listed.Body, "list_models") || !strings.Contains(listed.Body, "create_task") {
+	if !strings.Contains(listed.Body, "list_models") || !strings.Contains(listed.Body, "create_task") || !strings.Contains(listed.Body, "send_command") {
 		t.Fatalf("tools/list %s", listed.Body)
+	}
+	sent := mcpPost(t, endpoint, "mck_testkey", `{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"send_command","arguments":{"project_path":"D:\\work","command":"/plan approve"}}}`, "")
+	if !strings.Contains(sent.Body, "needs_confirmation") || !strings.Contains(sent.Body, "/plan approve") || strings.Contains(sent.Body, `"isError":true`) {
+		t.Fatalf("send_command %s", sent.Body)
+	}
+	api.mu.Lock()
+	sentCommand := api.command
+	api.mu.Unlock()
+	if sentCommand != "/plan approve" {
+		t.Fatalf("recorded command %q", sentCommand)
 	}
 	unknown := mcpPost(t, endpoint, "mck_testkey", `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nope"}}`, "")
 	if !strings.Contains(unknown.Body, `"isError":true`) || strings.Contains(unknown.Body, `"error":{"code"`) {

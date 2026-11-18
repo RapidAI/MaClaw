@@ -12,6 +12,9 @@ type MCPHostStatus = {
     command?: string;
     stdioConfig?: string;
     httpConfig?: string;
+    lanEnabled?: boolean;
+    lanURL?: string;
+    lanHTTPConfig?: string;
     error?: string;
 };
 
@@ -43,7 +46,8 @@ async function copyText(text: string): Promise<boolean> {
 const MCP_TOOLS = [
     ['list_models', '列出可用服务商和模型，不返回密钥'],
     ['create_task', '创建会话或编程任务，可指定服务商和模型'],
-    ['get_task', '查看状态和结果'],
+    ['get_task', '查看状态和结果。需要确认时会给出可发回的命令，运行中的授权确认也会列出'],
+    ['send_command', '向任务发送任意命令。计划、确认卡和运行中的授权确认都用返回的命令原文'],
     ['stop_task', '停止正在运行的任务'],
     ['list_tasks', '列出这台电脑上的最近任务'],
 ] as const;
@@ -85,17 +89,18 @@ export function MCPServerPanel({ lang, onBack }: { lang: string; onBack: () => v
 
     const enabled = status.enabled === true;
     const running = enabled && status.running === true;
+    const lanEnabled = status.lanEnabled === true;
 
-    const toggle = async () => {
+    const patchMCPField = async (field: string, value: boolean, missing: string) => {
         const app = mcpApp();
         if (!app?.PatchConfigFields) {
-            setError(tailText(lang, 'Cannot change the switch yet', '现在还不能改这个开关'));
+            setError(missing);
             return;
         }
         setBusy(true);
         setError('');
         try {
-            await app.PatchConfigFields({ mcp_host_enabled: !enabled });
+            await app.PatchConfigFields({ [field]: value });
             await reload();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
@@ -103,6 +108,10 @@ export function MCPServerPanel({ lang, onBack }: { lang: string; onBack: () => v
             setBusy(false);
         }
     };
+
+    const toggle = () => patchMCPField('mcp_host_enabled', !enabled, tailText(lang, 'Cannot change the switch yet', '现在还不能改这个开关'));
+
+    const toggleLan = () => patchMCPField('mcp_host_lan_enabled', !lanEnabled, tailText(lang, 'Cannot change the switch yet', '现在还不能改这个开关'));
 
     const generateKey = async () => {
         const ok = await showConfirm(
@@ -182,6 +191,32 @@ export function MCPServerPanel({ lang, onBack }: { lang: string; onBack: () => v
                         '默认关闭。打开并开始监听之后，才显示接入信息。',
                     )}
                 </p>
+                {enabled ? (
+                    <>
+                        <div className="utilities-deploy-card__head" data-testid="mcp-server-lan-row">
+                            <h3 className="utilities-deploy-card__title">{tailText(lang, 'Allow LAN access', '允许局域网接入', '允許區域網路接入')}</h3>
+                            <button
+                                type="button"
+                                role="switch"
+                                className="utilities-btn"
+                                aria-checked={lanEnabled}
+                                data-testid="mcp-server-lan"
+                                disabled={busy}
+                                onClick={() => { void toggleLan(); }}
+                            >
+                                {lanEnabled ? tailText(lang, 'On', '已开启') : tailText(lang, 'Off', '已关闭')}
+                            </button>
+                        </div>
+                        <p className="utilities-page__subtitle">
+                            {tailText(
+                                lang,
+                                'LAN devices connect with the same API key. Windows Firewall may ask to allow access on the first connection.',
+                                '局域网设备用同一个 API key 连接。首次连接时 Windows 防火墙可能提示放行。',
+                                '區域網路裝置用同一個 API key 連線。首次連線時 Windows 防火牆可能提示放行。',
+                            )}
+                        </p>
+                    </>
+                ) : null}
                 {running ? (
                     <>
                         <p className="utilities-status-chip" data-state="running">
@@ -213,6 +248,31 @@ export function MCPServerPanel({ lang, onBack }: { lang: string; onBack: () => v
                             </button>
                         </div>
                         <textarea className="utilities-input" data-testid="mcp-server-http" readOnly rows={6} value={status.httpConfig || ''} />
+                        {lanEnabled ? (
+                            <div data-testid="mcp-server-lan-block">
+                                <div className="utilities-deploy-card__head">
+                                    <h3 className="utilities-deploy-card__title">{tailText(lang, 'HTTP (LAN)', 'HTTP（局域网）', 'HTTP（區域網路）')}</h3>
+                                    {status.lanURL && status.lanHTTPConfig ? (
+                                        <button type="button" className="utilities-btn utilities-btn--ghost" onClick={() => { void copy('http-lan', status.lanHTTPConfig || ''); }}>
+                                            {copied === 'http-lan' ? tailText(lang, 'Copied', '已复制') : tailText(lang, 'Copy', '复制')}
+                                        </button>
+                                    ) : null}
+                                </div>
+                                {status.lanURL && status.lanHTTPConfig ? (
+                                    <>
+                                        <p className="utilities-status-chip" data-state="running">
+                                            <span className="utilities-status-chip__dot" aria-hidden />
+                                            {status.lanURL}
+                                        </p>
+                                        <textarea className="utilities-input" data-testid="mcp-server-http-lan" readOnly rows={6} value={status.lanHTTPConfig || ''} />
+                                    </>
+                                ) : (
+                                    <p className="utilities-page__subtitle">
+                                        {tailText(lang, 'No LAN address detected on this computer.', '没有在这台电脑上找到局域网地址。', '沒有在這台電腦上找到區域網路地址。')}
+                                    </p>
+                                )}
+                            </div>
+                        ) : null}
                         <button
                             type="button"
                             className="utilities-btn"

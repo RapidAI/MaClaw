@@ -33,6 +33,12 @@ type criticalRiskConfirmResponse struct {
 type pendingCriticalConfirmEntry struct {
 	Ch       chan criticalRiskConfirmResponse
 	resolved int32 // 0 = pending, 1 = resolved; atomic CAS guards channel ops
+	// Prompt is the text shown to the person. MCP lists it so a caller can
+	// decide without the desktop dialog. It is not part of the resolve race.
+	Prompt string
+	// Owner is the session that opened this prompt. MCP only offers the
+	// command on that session's task.
+	Owner string
 }
 
 // tryResolve atomically transitions the entry from pending to resolved.
@@ -341,7 +347,8 @@ func (h *IMMessageHandler) confirmRiskSkillInstall(
 
 	confirmID := nextSkillConfirmID("crit")
 	entry := &pendingCriticalConfirmEntry{
-		Ch: make(chan criticalRiskConfirmResponse, 1),
+		Ch:    make(chan criticalRiskConfirmResponse, 1),
+		Owner: strings.TrimSpace(userID),
 	}
 	h.pendingCriticalConfirm.Store(confirmID, entry)
 
@@ -363,6 +370,7 @@ func (h *IMMessageHandler) confirmRiskSkillInstall(
 	// read must not hide the pending confirmation from the caller.
 	lang := h.skillConfirmLang()
 	promptText := buildSkillRiskPromptForLang(lang, skillName, source, level, factors)
+	entry.Prompt = promptText
 	confirmLabel, rejectLabel := localizedSkillInstallActionLabels(lang)
 
 	if ctx == nil {
@@ -481,6 +489,13 @@ func (h *IMMessageHandler) ResolveCriticalConfirm(confirmID string, confirmed bo
 	// We won the race — safe to send on the channel (it's not closed).
 	h.pendingCriticalConfirm.Delete(confirmID)
 	entry.Ch <- criticalRiskConfirmResponse{Confirmed: confirmed}
+	if h.app != nil {
+		// The desktop modal is already open. Tell it to close; a later click
+		// must not send a second decision.
+		h.app.emitEvent("critical-risk-confirm-resolved", map[string]interface{}{
+			"confirm_id": confirmID,
+		})
+	}
 	log.Printf("[critical-confirm] resolve: confirmID=%s confirmed=%v", confirmID, confirmed)
 	return nil
 }

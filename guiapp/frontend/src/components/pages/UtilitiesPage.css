@@ -4631,6 +4631,16 @@ fieldset.expert-editor__body {
  * card with a two-column field grid, then deployment records as status
  * cards. All colors ride the --theme-* vars so dark mode follows the shell. */
 
+/* MCP server panel (tools mode): the stdio/HTTP config blocks make the page
+   tall. Keep the whole panel a bounded scroller with its own vertical bar so
+   the content stays reachable on short windows even when an ancestor stops
+   providing page-level scroll. */
+.utilities-page[data-testid='mcp-server-panel'] {
+    max-height: 100%;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+}
+
 .utilities-deploy__header {
     margin-bottom: 22px;
 }

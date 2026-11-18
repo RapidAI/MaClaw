@@ -33,6 +33,12 @@ const onStatus = {
     stdioConfig: '{"mcpServers":{"maclaw":{"command":"MaClaw.exe","args":["mcp"]}}}',
     httpConfig: '{"mcpServers":{"maclaw":{"url":"http://127.0.0.1:18790/mcp","headers":{"Authorization":"Bearer mck_test_key_value"}}}}',
 };
+const lanStatus = {
+    ...onStatus,
+    lanEnabled: true,
+    lanURL: 'http://192.168.1.20:18790/mcp',
+    lanHTTPConfig: '{"mcpServers":{"maclaw":{"url":"http://192.168.1.20:18790/mcp","headers":{"Authorization":"Bearer mck_test_key_value"}}}}',
+};
 
 function install(status: Record<string, unknown> = offStatus) {
     const patch = vi.fn().mockResolvedValue({});
@@ -81,6 +87,7 @@ describe('MCP server tool card', () => {
         expect((screen.getByTestId('mcp-server-http') as HTMLTextAreaElement).value).toContain('Authorization');
         expect(screen.getByTestId('mcp-server-tools').textContent).toContain('list_models');
         expect(screen.getByTestId('mcp-server-tools').textContent).toContain('create_task');
+        expect(screen.getByTestId('mcp-server-tools').textContent).toContain('send_command');
     });
 
     it('patches the switch and confirms before generating a key', async () => {
@@ -104,5 +111,36 @@ describe('MCP server tool card', () => {
         fireEvent.click(screen.getByTestId('mcp-server-generate-key'));
         await waitFor(() => expect(showConfirm).toHaveBeenCalled());
         expect(generate).not.toHaveBeenCalled();
+    });
+
+    it('shows the LAN http config while lan access is on and patches the lan switch', async () => {
+        const { patch } = install(lanStatus);
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        fireEvent.click(screen.getByTestId('utilities-mcp-server-card'));
+        await waitFor(() => expect(screen.getByTestId('mcp-server-http-lan')).toBeTruthy());
+        expect((screen.getByTestId('mcp-server-http-lan') as HTMLTextAreaElement).value).toContain('192.168.1.20:18790');
+        expect(screen.getByTestId('mcp-server-lan').getAttribute('aria-checked')).toBe('true');
+        expect(screen.getByTestId('mcp-server-lan-block').textContent).toContain('HTTP（局域网）');
+        fireEvent.click(screen.getByTestId('mcp-server-lan'));
+        await waitFor(() => expect(patch).toHaveBeenCalledWith({ mcp_host_lan_enabled: false }));
+    });
+
+    it('keeps the lan config hidden while lan access is off', async () => {
+        install(onStatus);
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        fireEvent.click(screen.getByTestId('utilities-mcp-server-card'));
+        await waitFor(() => expect(screen.getByTestId('mcp-server-http')).toBeTruthy());
+        expect(screen.getByTestId('mcp-server-lan').getAttribute('aria-checked')).toBe('false');
+        expect(screen.queryByTestId('mcp-server-http-lan')).toBeNull();
+        expect(screen.queryByTestId('mcp-server-lan-block')).toBeNull();
+    });
+
+    it('reports a missing lan address instead of an empty block', async () => {
+        install({ ...lanStatus, lanURL: undefined, lanHTTPConfig: undefined });
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        fireEvent.click(screen.getByTestId('utilities-mcp-server-card'));
+        await waitFor(() => expect(screen.getByTestId('mcp-server-lan-block')).toBeTruthy());
+        expect(screen.queryByTestId('mcp-server-http-lan')).toBeNull();
+        expect(screen.getByTestId('mcp-server-lan-block').textContent).toContain('没有在这台电脑上找到局域网地址');
     });
 });
