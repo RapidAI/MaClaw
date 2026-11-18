@@ -2361,11 +2361,21 @@ func mergeTagsReplacePrefixed(existing, desired []string, dropPrefixes []string)
 	return out
 }
 
+// upsertWorkingDirectoryContentLine updates or appends "Working directory: …"
+// without wiping the rest of task.md / artifact content.
+func upsertWorkingDirectoryContentLine(content, workDir string) string {
+	return upsertLabeledContentLine(content, "Working directory:", workDir)
+}
+
 // upsertRemoteWorkDirContentLine updates or appends "Remote work directory: …"
 // without wiping the rest of task.md / artifact content.
 func upsertRemoteWorkDirContentLine(content, workDir string) string {
+	return upsertLabeledContentLine(content, "Remote work directory:", workDir)
+}
+
+func upsertLabeledContentLine(content, prefix, workDir string) string {
 	workDir = strings.TrimSpace(workDir)
-	const prefix = "Remote work directory:"
+	prefix = strings.TrimSpace(prefix)
 	if content == "" {
 		if workDir == "" {
 			return ""
@@ -2985,6 +2995,9 @@ type CodingWorkbenchStatus struct {
 	PlanDialogue bool `json:"plan_dialogue,omitempty"`
 	// StepStatuses is live Todo status for the active plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// ExecutionStatus and Stop are the same projection MCP get_task returns.
+	ExecutionStatus string       `json:"execution_status,omitempty"`
+	Stop            *mcpStopView `json:"stop,omitempty"`
 	// StepsRevision matches the live event's steps_revision. A status read
 	// that started from an older snapshot must not repaint the gate.
 	StepsRevision int64 `json:"steps_revision,omitempty"`
@@ -3112,6 +3125,7 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 		// Project notes at the exit boundary, like the live event does: a legacy
 		// row must not hand the checklist a report body.
 		st.StepStatuses = codingWorkbenchStepsSnapshot(mem.StepStatuses)
+		st.ExecutionStatus, st.Stop = mcpExecutionFromWorkbench(st.StepStatuses)
 	}
 	st.StepsRevision = mem.StepsEmitSeq
 	if len(mem.ProjectInstructionSources) > 0 {
@@ -4575,7 +4589,14 @@ func (a *App) liveWorkingDirForCodingOwner(ownerID string) string {
 	dir := a.EffectiveWorkingDirForOwner(ownerID)
 	identity := projectPathFromSessionOwnerID(ownerID)
 	if isLocalCodingIdentityOrSandbox(identity, dir) {
-		dir = a.EffectiveDesktopWorkingDir()
+		// A checkout that fell back into the task folder is not a work root.
+		// The directory named on the task stays that directory. Only a coding
+		// task that never named one inherits the desktop directory.
+		if tagged := a.codingTaskTaggedWorkRoot(identity); tagged != "" {
+			dir = tagged
+		} else {
+			dir = a.EffectiveDesktopWorkingDir()
+		}
 	}
 	if isLocalCodingIdentityOrSandbox(identity, dir) {
 		return ""
@@ -7722,15 +7743,23 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 	existing, err := persist.LoadSession(tabID)
 	if err == nil && existing != nil {
 		adopted := adoptCloudWorkspaceSessionSnapshot(persist, existing, projectPath)
-		if a.seedCloudWorkspaceTabWorkingDir(existing, projectPath) || adopted {
+		seeded := a.seedCloudWorkspaceTabWorkingDir(existing, projectPath)
+		// A coding task's working_dir tag is the execution directory. The
+		// session file is a cache of that tag; a stale cache is rewritten
+		// before it is published. A chat session keeps its own directory.
+		aligned := a.alignCodingSessionWorkingDir(existing, projectPath)
+		if seeded || adopted || aligned {
 			if saveErr := persist.SaveSession(existing); saveErr != nil {
 				log.Printf("[CreateProjectTabSession] restore sidecar session failed: %v", saveErr)
 				return ""
 			}
 		}
+		if aligned {
+			// The in-memory override is the same cache. Drop it so the bind
+			// publishes the directory just written to the session file.
+			a.tabWorkingDirOverrides.Delete(tabID)
+		}
 		dropCloudWorkspaceRestoreSnapshot(persist, tabID, projectPath)
-		// An existing session owns its tab-local override. Restore it before the
-		// tab can render or dispatch a message.
 		a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
 		a.upsertProjectTabIndexEntry(persist, tabID, projectPath, time.Now())
 		return fmt.Sprintf("已恢复项目会话：%s", projectName)
@@ -8387,13 +8416,29 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 			return nil
 		}
 	}
-	// Commit the durable source of truth before publishing the in-memory value.
-	// If the write fails, returning an error must leave this tab's active tools
-	// on its previous directory rather than creating a hidden transient override.
+	// The session file is a cache of the task's working_dir tag. Write the cache
+	// first. A failure here has not touched the task record, so the previous
+	// directory stays in effect. The tag is written only after the cache lands,
+	// and it is flushed after this lock is released.
+	previousTag := ""
+	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		previousTag = normalizeProjectSessionPath(a.recentTaskWorkingDir(projectPath))
+	}
+	previousSession := normalizeProjectSessionPath(a.assistantTabWorkingDir(tabID))
 	if err := a.persistAssistantTabWorkingDir(tabID, projectPath, newDir); err != nil {
 		a.tabWorkingDirMu.Unlock()
 		log.Printf("[SetTabWorkingDir] tab=%s persist dir=%q failed: %v", tabID, newDir, err)
 		return err
+	}
+	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		if err := a.writeTaskWorkingDir(projectPath, newDir); err != nil {
+			if restoreErr := a.persistAssistantTabWorkingDir(tabID, projectPath, previousSession); restoreErr != nil {
+				log.Printf("[SetTabWorkingDir] restore session tab=%s dir=%q err=%v", tabID, previousSession, restoreErr)
+			}
+			a.tabWorkingDirMu.Unlock()
+			log.Printf("[SetTabWorkingDir] persist task working dir tab=%s project=%q err=%v", tabID, projectPath, err)
+			return err
+		}
 	}
 	// Tools resolve by owner while the UI and persistence resolve by tab ID, so
 	// publish both mappings as soon as the durable update has succeeded.
@@ -8401,10 +8446,37 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	a.assistantSessionWorkingDirs.Store(ownerID, newDir)
 	a.syncActiveWorkflowWorkingDir(ownerID, newDir)
 	a.tabWorkingDirMu.Unlock()
-	if projectPath != "" {
+	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		// Flush outside the tab lock. A failed flush rolls the record and the
+		// cache back so the error still means the previous directory.
+		if err := a.flushTaskWorkingDir(); err != nil {
+			a.tabWorkingDirMu.Lock()
+			if previousTag != "" {
+				if restoreErr := a.writeTaskWorkingDir(projectPath, previousTag); restoreErr != nil {
+					log.Printf("[SetTabWorkingDir] restore task dir tab=%s project=%q err=%v", tabID, projectPath, restoreErr)
+				}
+			}
+			if restoreErr := a.persistAssistantTabWorkingDir(tabID, projectPath, previousSession); restoreErr != nil {
+				log.Printf("[SetTabWorkingDir] restore session tab=%s dir=%q err=%v", tabID, previousSession, restoreErr)
+			} else if previousSession != "" {
+				a.tabWorkingDirOverrides.Store(tabID, previousSession)
+				a.assistantSessionWorkingDirs.Store(ownerID, previousSession)
+				a.syncActiveWorkflowWorkingDir(ownerID, previousSession)
+			} else {
+				a.tabWorkingDirOverrides.Delete(tabID)
+				a.assistantSessionWorkingDirs.Delete(ownerID)
+			}
+			a.tabWorkingDirMu.Unlock()
+			_ = a.flushTaskWorkingDir()
+			log.Printf("[SetTabWorkingDir] flush task working dir tab=%s project=%q err=%v", tabID, projectPath, err)
+			return err
+		}
+	} else if projectPath != "" {
 		if err := a.persistTaskWorkingDir(projectPath, newDir); err != nil {
 			log.Printf("[SetTabWorkingDir] persist task working dir tab=%s project=%q err=%v", tabID, projectPath, err)
 		}
+	}
+	if projectPath != "" {
 		a.syncCodingWorkbenchWorkingDir(projectPath, newDir)
 	}
 	log.Printf("[SetTabWorkingDir] tab=%s owner=%q dir=%q", tabID, ownerID, newDir)
@@ -8844,13 +8916,56 @@ func (a *App) bindAssistantTabWorkingDir(tabID, ownerID string) {
 	a.bindAssistantTabWorkingDirLocked(tabID, ownerID)
 }
 
+// rewriteCodingSessionCacheLocked stores the coding task's working_dir tag
+// into the session file. Callers hold tabWorkingDirMu. A missing file is left
+// for CreateProjectTabSession to seed. A save error is logged: the in-memory
+// bind still names the record.
+func (a *App) rewriteCodingSessionCacheLocked(tabID, dir string) {
+	if a == nil {
+		return
+	}
+	tabID = strings.TrimSpace(tabID)
+	dir = normalizeProjectSessionPath(dir)
+	if tabID == "" || dir == "" {
+		return
+	}
+	persist := a.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil {
+		if err != nil {
+			log.Printf("[bindAssistantTabWorkingDir] load session tab=%s err=%v", tabID, err)
+		}
+		return
+	}
+	if normalizeProjectSessionPath(session.WorkingDir) == dir {
+		return
+	}
+	session.WorkingDir = dir
+	if err := persist.SaveSession(session); err != nil {
+		log.Printf("[bindAssistantTabWorkingDir] repair session tab=%s dir=%q err=%v", tabID, dir, err)
+	}
+}
+
 // bindAssistantTabWorkingDirLocked is bindAssistantTabWorkingDir's internal
 // form for callers that already hold tabWorkingDirMu.
 func (a *App) bindAssistantTabWorkingDirLocked(tabID, ownerID string) {
 	dir := a.assistantTabWorkingDir(tabID)
-	if cloudDir := a.cloudWorkspaceExecutionDir(projectPathFromSessionOwnerID(ownerID)); cloudDir != "" {
+	projectPath := projectPathFromSessionOwnerID(ownerID)
+	if cloudDir := a.cloudWorkspaceExecutionDir(projectPath); cloudDir != "" {
 		if dir == "" || !cloudWorkspacePathInsideRoot(cloudDir, dir) {
 			dir = cloudDir
+		}
+	}
+	// The working_dir tag is the coding task's execution directory. The
+	// session file and the in-memory override are copies of it. GetTabWorkingDir
+	// calls this on every chip refresh, and a restored tab does not pass
+	// through CreateProjectTabSession, so this publish rewrites the file
+	// before the owner bind. Horizon and in-flight stamps read that bind.
+	// An expert keeps the directory its chip chose.
+	if expertIDFromUserID(ownerID) == "" {
+		if tagged := a.codingTaskTaggedWorkRoot(projectPath); tagged != "" {
+			dir = tagged
+			a.rewriteCodingSessionCacheLocked(tabID, tagged)
 		}
 	}
 	if dir != "" {
@@ -8969,10 +9084,16 @@ func (a *App) effectiveWorkingDirUnisolated(ownerID string) string {
 		cloudDir = a.cloudWorkspaceExecutionDir(projectPath)
 	}
 	if dir := a.BoundWorkingDirForOwner(ownerID); dir != "" {
-		if cloudDir == "" || cloudWorkspacePathInsideRoot(cloudDir, dir) {
-			return dir
+		if cloudDir != "" && !cloudWorkspacePathInsideRoot(cloudDir, dir) {
+			return cloudDir
 		}
-		return cloudDir
+		// The working_dir tag is the task's execution directory. The owner
+		// bind is a cache of that tag, or the inherited directory when the
+		// task never named one. A cache must not replace the named directory.
+		if tagged := a.codingTaskTaggedWorkRoot(projectPath); tagged != "" {
+			return tagged
+		}
+		return dir
 	}
 	if cloudDir != "" {
 		return cloudDir
@@ -9046,8 +9167,63 @@ func (a *App) GetTabWorkingDir(tabID string) map[string]interface{} {
 	}
 }
 
+// alignCodingSessionWorkingDir copies the coding task's working_dir tag onto
+// the session cache. A chat or expert record has no coding tag, so its
+// session directory stays where the tab left it.
+func (a *App) alignCodingSessionWorkingDir(session *TabSessionData, projectPath string) bool {
+	if a == nil || session == nil {
+		return false
+	}
+	dir := normalizeProjectSessionPath(a.codingTaskTaggedWorkRoot(projectPath))
+	if dir == "" || normalizeProjectSessionPath(session.WorkingDir) == dir {
+		return false
+	}
+	session.WorkingDir = dir
+	return true
+}
+
+// projectTurnExecutionDir is the directory a project-tab turn prepares.
+// A local coding task uses the directory on its record. A session cache does
+// not replace that directory. Chat and expert turns keep the cache, then the
+// record, and still give a shared tree to the earlier live session.
+func (a *App) projectTurnExecutionDir(userID, projectPath, expertID string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if strings.TrimSpace(expertID) == "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		return a.EffectiveWorkingDirForOwner(userID)
+	}
+	executionProjectPath := a.BoundWorkingDirForOwner(userID)
+	if strings.TrimSpace(expertID) != "" && isProcessDefaultWorkspacePath(executionProjectPath) {
+		executionProjectPath = ""
+	}
+	if strings.TrimSpace(executionProjectPath) == "" {
+		executionProjectPath = a.recentTaskExecutionProjectPath(projectPath)
+	}
+	if strings.TrimSpace(executionProjectPath) == "" {
+		return a.EffectiveWorkingDirForOwner(userID)
+	}
+	return a.exclusiveWorkRoot(projectPath, executionProjectPath)
+}
+
 // persistTaskWorkingDir updates the persistent workingDir tag for a task.
 func (a *App) persistTaskWorkingDir(projectPath, newDir string) error {
+	if err := a.writeTaskWorkingDir(projectPath, newDir); err != nil {
+		return err
+	}
+	return a.flushTaskWorkingDir()
+}
+
+func (a *App) flushTaskWorkingDir() error {
+	if a == nil || a.memoryStore == nil {
+		return fmt.Errorf("memory store unavailable")
+	}
+	return a.memoryStore.Flush()
+}
+
+// writeTaskWorkingDir stores the execution directory on the task artifact.
+// The project index is only a projection of that artifact: ReplacePrefixedTags
+// alone is wiped by the next index rebuild. The task.md line is the same
+// directory, so recovery names it too. Caller flushes.
+func (a *App) writeTaskWorkingDir(projectPath, newDir string) error {
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store unavailable")
@@ -9056,7 +9232,9 @@ func (a *App) persistTaskWorkingDir(projectPath, newDir string) error {
 	if pi == nil {
 		return fmt.Errorf("project index unavailable")
 	}
-	if rec := pi.Get(projectPath); rec == nil {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	rec := pi.Get(projectPath)
+	if rec == nil {
 		return fmt.Errorf("project record not found for %s", projectPath)
 	}
 	newDir = normalizeRecentTaskWorkingDir(newDir)
@@ -9066,18 +9244,119 @@ func (a *App) persistTaskWorkingDir(projectPath, newDir string) error {
 	if a.projectPathIsLocalCodingWorkbench(projectPath) && isLocalCodingIdentityOrSandbox(projectPath, newDir) {
 		return fmt.Errorf("coding work root cannot be the task identity directory")
 	}
-	if a.recentTaskWorkingDir(projectPath) == newDir {
-		return nil
-	}
 	newTag := recentTaskWorkingDirTag(newDir)
 	if newTag == "" {
 		return fmt.Errorf("invalid working directory %s", newDir)
 	}
-	// ReplacePrefixedTags is the project-index write path. UpsertTaskArtifact
-	// merges tags and would keep the previous working_dir: value first.
+	taskFile := filepath.Join(projectPath, "task.md")
+	content := ""
+	if data, err := os.ReadFile(taskFile); err == nil {
+		content = string(data)
+	}
+	title := strings.TrimSpace(rec.Name)
+	fileDir := workingDirectoryContentLine(content)
+	if strings.TrimSpace(content) == "" {
+		if title == "" {
+			title = "task"
+		}
+		content = fmt.Sprintf("# %s\n\nCreated from task management.\n", title)
+	}
+	content = upsertWorkingDirectoryContentLine(content, newDir)
+	existing := a.taskArtifactForProject(projectPath)
+	if a.recentTaskWorkingDir(projectPath) == newDir && taskArtifactHasWorkingDir(existing, newDir) && fileDir == newDir {
+		return nil
+	}
+	identity := taskArtifactIdentityTags(existing.Tags, projectPath)
+	desired := append(append([]string{}, identity...), newTag)
+	if title == "" {
+		title = strings.TrimSpace(existing.Title)
+	}
+	if _, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+		Title:            title,
+		Content:          content,
+		Tags:             desired,
+		IdentityTagCount: len(identity),
+		SourceURL:        taskFile,
+		SourceType:       "manual",
+		MergeExistingTags: func(existingTags, desiredTags []string) []string {
+			return mergeTagsReplacePrefixed(existingTags, desiredTags, []string{recentTaskWorkingDirTagPrefix})
+		},
+	}); err != nil {
+		return err
+	}
+	// The artifact accepted the directory. A file error is logged: the record
+	// is the authority, and the line is rewritten on the next change.
+	if err := os.WriteFile(taskFile, []byte(content), 0o644); err != nil {
+		log.Printf("[project_search] working directory task.md write failed project=%q err=%v", projectPath, err)
+	}
+	// IndexEntry only merge-appends tags. Replace the prefix so a reader does
+	// not keep the previous directory until the scheduled rebuild lands.
 	pi.ReplacePrefixedTags(projectPath, []string{recentTaskWorkingDirTagPrefix}, []string{newTag})
 	a.emitProjectIndexChanged(projectPath)
-	return a.memoryStore.Flush()
+	return nil
+}
+
+func (a *App) taskArtifactForProject(projectPath string) memory.Entry {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || a.memoryStore == nil || projectPath == "" {
+		return memory.Entry{}
+	}
+	var fallback memory.Entry
+	for _, entry := range a.memoryStore.List(memory.CategoryTaskArtifact, "") {
+		if !entryHasAllTaskIdentity(entry.Tags, projectPath) {
+			continue
+		}
+		source := strings.TrimSpace(entry.SourceURL)
+		if strings.EqualFold(filepath.Base(source), "task.md") && normalizeProjectSessionPath(filepath.Dir(source)) == projectPath {
+			return entry
+		}
+		if fallback.ID == "" {
+			fallback = entry
+		}
+	}
+	return fallback
+}
+
+func entryHasAllTaskIdentity(tags []string, projectPath string) bool {
+	hasManual := false
+	hasRecent := false
+	hasPath := false
+	for _, tag := range tags {
+		switch strings.TrimSpace(tag) {
+		case taskLegacyManualTag:
+			hasManual = true
+		case taskLegacyRecentTag:
+			hasRecent = true
+		default:
+			if normalizeProjectSessionPath(tag) == projectPath {
+				hasPath = true
+			}
+		}
+	}
+	return hasManual && hasRecent && hasPath
+}
+
+func taskArtifactIdentityTags(existing []string, projectPath string) []string {
+	if len(existing) >= 3 && existing[0] == taskLegacyManualTag && existing[1] == taskLegacyRecentTag && normalizeProjectSessionPath(existing[2]) == projectPath {
+		return append([]string{}, existing[:3]...)
+	}
+	return []string{taskLegacyManualTag, taskLegacyRecentTag, projectPath}
+}
+
+func taskArtifactHasWorkingDir(entry memory.Entry, dir string) bool {
+	if strings.TrimSpace(entry.ID) == "" {
+		return false
+	}
+	return normalizeProjectSessionPath(recentTaskWorkingDirFromTags(entry.Tags)) == normalizeProjectSessionPath(dir)
+}
+
+func workingDirectoryContentLine(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(line), "Working directory:"); ok {
+			return normalizeRecentTaskWorkingDir(strings.TrimSpace(value))
+		}
+	}
+	return ""
 }
 
 // resolveProjectPathForTab resolves the project path backing a project tab:

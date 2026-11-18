@@ -2413,7 +2413,7 @@ func peelCodingContinueTrailingParticles(rest string) string {
 
 func codingPlanStepWasStarted(status string) bool {
 	switch strings.TrimSpace(status) {
-	case codingStepPassed, codingStepFailed, codingStepVerifyFail, codingStepSkipped, codingStepRunning:
+	case codingStepPassed, codingStepFailed, codingStepVerifyFail, codingStepSkipped, codingStepRunning, mcpStepWaiting:
 		return true
 	default:
 		return false

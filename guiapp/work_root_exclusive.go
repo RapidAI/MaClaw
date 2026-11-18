@@ -177,19 +177,21 @@ func (a *App) earlierLiveWorkRootHolder(selfPath, dir string) (string, int64) {
 }
 
 // claimedWorkRoot is the directory a task record says it executes in.
-// It does not fall back to the process workspace. A session with no
-// resolvable claim holds nothing.
+// A local coding task's working_dir tag is that directory. The session
+// cache is only the claim when the task never named one, so a stale
+// desktop bind cannot occupy the process workspace or hide the record.
+// A session with no resolvable claim holds nothing.
 func (a *App) claimedWorkRoot(projectPath string) (string, bool) {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if a == nil || projectPath == "" {
 		return "", false
 	}
 	owner := projectSessionOwnerID(projectPath)
-	if dir := a.BoundWorkingDirForOwner(owner); dir != "" && !isLocalCodingIdentityOrSandbox(projectPath, dir) {
-		return dir, true
-	}
 	if wd := a.codingTaskTaggedWorkRoot(projectPath); wd != "" {
 		return wd, true
+	}
+	if dir := a.BoundWorkingDirForOwner(owner); dir != "" && !isLocalCodingIdentityOrSandbox(projectPath, dir) {
+		return dir, true
 	}
 	if wd := a.recentTaskWorkingDir(projectPath); wd != "" {
 		return wd, true

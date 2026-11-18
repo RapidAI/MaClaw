@@ -43,7 +43,7 @@ import { useContinueEditTaskResultDraft } from "./useContinueEditTaskResultDraft
 import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
-import { RemoteAssistantActivity } from "./RemoteAssistantActivity";
+import { RemoteAssistantActivity, RemoteCodingPlanChecklist } from "./RemoteAssistantActivity";
 import { isViewerReducerEnabled, viewerOwnsRaw } from "./viewerReducerFlag";
 import { legacyFromViewerEvent, parseViewerEvent } from "./reduceViewerEvent";
 import { AssistantTitleBar } from "./AssistantTitleBar";
@@ -118,7 +118,7 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListPendingScopeApprovals, ListWorkflowTemplateSummaries, LoadConfig, LoadProjectTabConversation, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
-import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepIsFailed, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepIsFailed, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingSharedExecutionStatus, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
@@ -301,7 +301,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [codingPendingPlanEditing, setCodingPendingPlanEditing] = useState(false);
     const [codingPendingPlanDraft, setCodingPendingPlanDraft] = useState("");
     const [codingPendingPlanSaving, setCodingPendingPlanSaving] = useState(false);
-    const [codingStepStatuses, setCodingStepStatuses] = useState<Array<{ index: number; title?: string; status: string; summary?: string; verify_cmd?: string; verify_ok?: boolean }>>([]);
+    const [codingStepStatuses, setCodingStepStatuses] = useState<Array<{ index: number; title?: string; status: string; summary?: string; verify_cmd?: string; verify_ok?: boolean; blocked_by?: string[]; block_reason?: string; child_task_id?: string }>>([]);
+    const [codingExecutionStatus, setCodingExecutionStatus] = useState("");
     const [codingSessionCost, setCodingSessionCost] = useState("");
     const [codingWorktreeMode, setCodingWorktreeMode] = useState<"auto" | "always" | "off">("auto");
     const [codingRouteInfo, setCodingRouteInfo] = useState("");
@@ -892,6 +893,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setCodingExecutionPlan("");
                 setCodingSessionPlan("");
                 setCodingStepStatuses([]);
+                setCodingExecutionStatus("");
                 setCodingPendingApproval(false);
                 setCodingPendingPlanEditing(false);
                 setCodingPendingPlanDraft("");
@@ -1028,6 +1030,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingPlanDialogue(false);
             codingStepsClockRef.current = { seq: 0, unix: 0, started: false };
             setCodingStepStatuses([]);
+            setCodingExecutionStatus("");
             setCodingSessionCost("");
             setCodingWorktreeMode("auto");
             setCodingRouteInfo("");
@@ -1104,6 +1107,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setCodingPendingPlanEditing(false);
                 }
                 setCodingStepStatuses(incomingSteps);
+                setCodingExecutionStatus(codingSharedExecutionStatus(st));
             }
             {
                 const inTok = Number(st.session_input_tokens) || 0;
@@ -1406,6 +1410,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (Array.isArray(payload?.step_statuses) || Array.isArray(payload?.stepStatuses)) {
                 if (isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
                 if (!applySteps(payload?.step_statuses ?? payload?.stepStatuses, payload?.steps_revision ?? payload?.stepsRevision)) return;
+                setCodingExecutionStatus(codingSharedExecutionStatus(payload));
                 codingWorkbenchStepsGenRef.current += 1;
                 applyPendingApproval(payload);
                 if (Object.prototype.hasOwnProperty.call(payload, "plan_dialogue") || Object.prototype.hasOwnProperty.call(payload, "planDialogue")) {
@@ -1432,6 +1437,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (checklistOwnerAtPoll !== codingChecklistOwnerRef.current) return;
                 if (stepsGen !== codingWorkbenchStepsGenRef.current) return;
                 if (!applySteps(st.step_statuses, st.steps_revision)) return;
+                setCodingExecutionStatus(codingSharedExecutionStatus(st));
                 codingWorkbenchStepsGenRef.current += 1;
                 applyPendingApproval(st);
                 setCodingExecutionPlan(String(st.execution_plan || "").trim());
@@ -1484,6 +1490,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         setCodingPendingPlanEditing(false);
                     }
                     setCodingStepStatuses(incomingSteps);
+                    setCodingExecutionStatus(codingSharedExecutionStatus(st));
                 }
                 {
                     const inTok = Number(st.session_input_tokens) || 0;
@@ -1841,6 +1848,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
             setCodingPendingApproval(!!st?.pending_approval);
             setCodingStepStatuses(incomingSteps);
+            setCodingExecutionStatus(codingSharedExecutionStatus(st));
             setCodingExecutionPlan(String(st?.execution_plan || "").trim());
             setCodingRequirementRestatement(String(st?.requirement_restatement || "").trim());
         } catch {
@@ -1854,6 +1862,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
                 setCodingPendingApproval(!!st?.pending_approval);
                 setCodingStepStatuses(incomingSteps);
+                setCodingExecutionStatus(codingSharedExecutionStatus(st));
             } catch { /* ignore */ }
         }
     }, [activeTab?.agentMode, activeTab?.id, activeTab?.projectPath, activeTab?.remoteNeedsReconnect, activeTab?.type, codingPendingPlanEditing, codingPendingPlanDraft, remoteReconnect.needsReconnect, remoteReconnectStatusPath]);
@@ -1874,6 +1883,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const incomingSteps = codingWorkbenchStepsFromPayload(st?.step_statuses);
             if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
             setCodingStepStatuses(incomingSteps);
+            setCodingExecutionStatus(codingSharedExecutionStatus(st));
             setCodingPendingApproval(!!st?.pending_approval);
         } catch { /* keep editor open */ }
         finally { setCodingPendingPlanSaving(false); }
@@ -2215,6 +2225,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setCodingPendingPlanEditing(false);
                 }
                 setCodingStepStatuses(incomingSteps);
+                setCodingExecutionStatus(codingSharedExecutionStatus(st));
             }
         } catch { /* ignore */ }
     }, [activeTab?.projectPath, activeTab?.type]);
@@ -2534,6 +2545,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setCodingPendingPlanDraft("");
         codingStepsClockRef.current = { seq: 0, unix: 0, started: false };
         setCodingStepStatuses([]);
+        setCodingExecutionStatus("");
     }, []);
     const projectStreamHistoryRef = useRef<{ tabId: string; messages: ChatMessage[] } | null>(null);
     const activeSessionStreamingRef = useRef(false);
@@ -3471,6 +3483,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const remoteSafety = typeof options === "object" ? options.remoteSafety : undefined;
         const remoteNeedsReconnect = typeof options === "object" ? options.remoteNeedsReconnect : undefined;
         const startedAt = performance.now();
+        // ACP mirrors stay on their external session. Any other session key
+        // is the task owner, so the chip must read again after registration
+        // publishes the task's working directory.
+        const refreshOnSessionReady = prepareMode === "new-agent" || (sessionKey !== "" && !isACPAssistantSessionKey(sessionKey));
         const scheduleNewAgentReady = (readyTab: { id: string; projectPath?: string }, delayMs: number, reason: string, options?: { skipInitialOpenCheck?: boolean }) => {
             const isStillOpen = () => getTabs().some(openTab => openTab.id === readyTab.id && openTab.type === "project" && openTab.projectPath === readyTab.projectPath);
             if (!options?.skipInitialOpenCheck && !isStillOpen()) return;
@@ -3493,12 +3509,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             openIntent, ...(typeof options === "object" && options.focus === false ? { focus: false } : {}),
             cloudWorkspaceId: cloudWorkspaceId || undefined,
             fileWorkspaceId: fileWorkspaceId || undefined,
-            ...(prepareMode === "new-agent" ? {
+            ...(refreshOnSessionReady ? {
                 onSessionReady: (readyTab: { id: string; projectPath?: string }) => {
                     setProjectTabSessionReadyRevisions(previous => ({
                         ...previous,
                         [readyTab.id]: (previous[readyTab.id] || 0) + 1,
                     }));
+                    if (prepareMode !== "new-agent") return;
                     const minimumVisibleMs = Math.max(0, 120 - (performance.now() - startedAt));
                     scheduleNewAgentReady(readyTab, minimumVisibleMs, "session-ready");
                 },
@@ -5740,7 +5757,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pendingUnfinishedStatus,
         turnIncomplete: assistantTurnIncomplete,
         openChatWork,
-    }), [activeProjectPreparing, activeTaskExecutionSnapshot, assistantTurnIncomplete, cancelPending, codingStepStatuses, displayMessages.length, liveWorkActive, openChatWork, pendingUnfinishedStatus, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
+        executionStatus: codingExecutionStatus,
+    }), [activeProjectPreparing, activeTaskExecutionSnapshot, assistantTurnIncomplete, cancelPending, codingExecutionStatus, codingStepStatuses, displayMessages.length, liveWorkActive, openChatWork, pendingUnfinishedStatus, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
     // One flag for the checklist, the chip, and the execution timeline. A
     // stored running step is only the cursor once this is false.
     const taskExecutionLive = taskExecutionStatus.tone === "running";
@@ -5751,7 +5769,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // instead of pinning a stale summary over the next prompt. A failed row is
     // not a close: that card stays so the failure can be read, and an
     // awaiting-start plan keeps its gate.
+    // failed and waiting_review are the shared projection. A dependency skip
+    // is still status skipped, so the all-skipped close must not hide it.
+    const codingProjectionOpen = codingExecutionStatus === "failed" || codingExecutionStatus === "waiting_review";
     const codingChecklistRetired = !codingPlanGateOpen
+        && !codingProjectionOpen
         && !codingChecklistSteps.some((step) => codingStepIsFailed(String(step?.status || "")))
         && (codingChecklistAllDone(codingChecklistSteps)
             || ((taskExecutionStatus.tone === "completed" || taskExecutionStatus.tone === "cancelled")
@@ -7882,7 +7904,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     hosts the chip, files alone must not mount an empty section.
                     A retired checklist still mounts for that chip but stripped
                     to it — the finished steps do not come back with it. */}
-                {!showWelcomeView && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || (codingTurnFiles.files.length > 0 && !goalQuickBarVisible)) && (
+                {!showWelcomeView && remoteChat ? <RemoteCodingPlanChecklist session={remoteChat} lang={lang} theme={t} /> : null}
+                {!showWelcomeView && !remoteChat && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || (codingTurnFiles.files.length > 0 && !goalQuickBarVisible)) && (
                     <CodingAgentPlanChecklist
                         lang={lang}
                         theme={t}

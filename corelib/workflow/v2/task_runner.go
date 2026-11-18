@@ -37,8 +37,24 @@ type TaskRunResult struct {
 	// It is intentionally separate from TaskSkipped: a host must offer an
 	// explicit, fresh review attempt after the Runtime has delivered bounded
 	// child results. It never authorizes TaskRunner to replay the old attempt.
-	RuntimeHandoff bool          `json:"runtime_handoff,omitempty"`
-	Duration       time.Duration `json:"duration"`
+	RuntimeHandoff bool `json:"runtime_handoff,omitempty"`
+	// Children are the internal tasks this step started. Admission is not
+	// completion: a queued child stays admitted until its own result exists.
+	Children []ChildTaskView `json:"children,omitempty"`
+	Duration time.Duration   `json:"duration"`
+}
+
+// ChildTaskView is the query shape for one internal coding task.
+// Status "admitted" means the child was accepted and has not finished.
+type ChildTaskView struct {
+	TaskID        string `json:"child_task_id"`
+	ParentTaskID  string `json:"parent_task_id,omitempty"`
+	Name          string `json:"name,omitempty"`
+	Status        string `json:"status"`
+	Progress      string `json:"progress,omitempty"`
+	Result        string `json:"result,omitempty"`
+	ReviewPending bool   `json:"review_pending,omitempty"`
+	Review        string `json:"review,omitempty"`
 }
 
 // TaskRunnerConfig holds configuration for the task runner.

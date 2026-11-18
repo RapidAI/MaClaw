@@ -26,6 +26,7 @@ type CodingStepOutcome struct {
 	Error     string
 	Retryable bool
 	Files     []string
+	Children  []v2.ChildTaskView
 }
 
 // mcpStepFile is one workspace file and the hash at a recorded moment.
@@ -37,13 +38,17 @@ type mcpStepFile struct {
 // mcpStepView is one step on get_task. Status, the failure reason, and
 // whether that step can be retried are fields, not only sentences in text.
 type mcpStepView struct {
-	ID        string         `json:"id,omitempty"`
-	Title     string         `json:"title,omitempty"`
-	Status    string         `json:"status"`
-	Error     string         `json:"error,omitempty"`
-	Retryable bool           `json:"retryable"`
-	Files     []mcpStepFile  `json:"files,omitempty"`
-	Checks    []mcpCheckView `json:"checks,omitempty"`
+	ID          string         `json:"id,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Status      string         `json:"status"`
+	Error       string         `json:"error,omitempty"`
+	Retryable   bool           `json:"retryable"`
+	BlockedBy   []string       `json:"blocked_by,omitempty"`
+	BlockReason string         `json:"block_reason,omitempty"`
+	ChildTaskID string         `json:"child_task_id,omitempty"`
+	Children    []mcpChildView `json:"children,omitempty"`
+	Files       []mcpStepFile  `json:"files,omitempty"`
+	Checks      []mcpCheckView `json:"checks,omitempty"`
 }
 
 // mcpCheckView ties a browser screenshot or assertion to the step and the
@@ -94,6 +99,7 @@ func codingStepOutcomeFromResult(result v2.TaskRunResult) CodingStepOutcome {
 		Error:     strings.TrimSpace(errText),
 		Retryable: retryable,
 		Files:     uniqueSortedSubAgentStrings(files),
+		Children:  cloneChildTaskViews(result.Children),
 	}
 }
 
@@ -119,6 +125,8 @@ func mcpClassifyRunStatus(status, errText string) (string, bool) {
 			return mcpStepUnfinished, true
 		}
 		return mcpStepSkipped, false
+	case mcpStepWaiting:
+		return mcpStepWaiting, false
 	case codingStepPending, codingStepRunning, mcpStepUnfinished, "":
 		return mcpStepUnfinished, true
 	default:
@@ -169,7 +177,7 @@ func mcpHandoffReason(errText string, handoff bool) (string, bool) {
 
 func mcpNormalizeRetryStatus(status, errText string, handoff bool) (string, string) {
 	if reason, ok := mcpHandoffReason(errText, handoff); ok {
-		return mcpStepSkipped, reason
+		return mcpStepWaiting, reason
 	}
 	return status, errText
 }
@@ -195,11 +203,11 @@ func mcpNamedStepRetryable(status, errText string, openElsewhere bool) (string, 
 
 func mcpClassifyOpen(status, errText string) bool {
 	classified, _ := mcpClassifyRunStatus(status, errText)
-	if classified == mcpStepFailed || classified == mcpStepUnfinished {
+	if classified == mcpStepFailed || classified == mcpStepUnfinished || classified == mcpStepWaiting {
 		return true
 	}
 	// A child-review handoff has not passed. Dependency skips behind it are
-	// still waiting on that review.
+	// still waiting on that review. Rows stored before projection still say skipped.
 	return classified == mcpStepSkipped && mcpSkipIsReviewHandoff(errText)
 }
 
@@ -225,6 +233,10 @@ func mcpStepViewFromCoding(step CodingStepOutcome) mcpStepView {
 		Status:    status,
 		Error:     strings.TrimSpace(step.Error),
 		Retryable: retryable,
+		Children:  mcpChildrenFromRun(step.Children),
+	}
+	if len(view.Children) > 0 {
+		view.ChildTaskID = view.Children[0].ChildTaskID
 	}
 	for _, path := range step.Files {
 		path = strings.TrimSpace(path)
@@ -233,7 +245,7 @@ func mcpStepViewFromCoding(step CodingStepOutcome) mcpStepView {
 		}
 		view.Files = append(view.Files, mcpStepFile{Path: path})
 	}
-	return view
+	return mcpPresentStep(view)
 }
 
 func mcpStepsBlockCompletion(steps []mcpStepView) bool {
@@ -286,7 +298,7 @@ func mcpStepsFromFinishText(text string, resp *IMAgentResponse) []mcpStepView {
 
 func mcpStepFailureDetail(steps []mcpStepView, text string, resp *IMAgentResponse) string {
 	for _, step := range steps {
-		if step.Status == mcpStepPassed || step.Status == mcpStepSkipped {
+		if step.Status == mcpStepPassed || step.Status == mcpStepSkipped || step.Status == mcpStepWaiting {
 			continue
 		}
 		if errText := strings.TrimSpace(step.Error); errText != "" {
@@ -294,7 +306,7 @@ func mcpStepFailureDetail(steps []mcpStepView, text string, resp *IMAgentRespons
 		}
 	}
 	for _, step := range steps {
-		if step.Status != mcpStepSkipped || !mcpSkipIsReviewHandoff(step.Error) {
+		if step.Status != mcpStepWaiting && (step.Status != mcpStepSkipped || !mcpSkipIsReviewHandoff(step.Error)) {
 			continue
 		}
 		if errText := strings.TrimSpace(step.Error); errText != "" {
@@ -623,6 +635,8 @@ func mcpCloneSteps(steps []mcpStepView) []mcpStepView {
 		out[i] = step
 		out[i].Files = mcpCloneStepFiles(step.Files)
 		out[i].Checks = mcpCloneChecks(step.Checks)
+		out[i].BlockedBy = append([]string(nil), step.BlockedBy...)
+		out[i].Children = mcpCloneChildren(step.Children)
 	}
 	return out
 }

@@ -508,6 +508,12 @@ type App struct {
 	mcpHostSyncMu      sync.Mutex
 	mcpRunsMu          sync.Mutex
 	mcpRuns            map[string]*mcpRunRecord
+	// mcpRunArchive keeps replaced rounds so get_task and read_log can ask
+	// for one run_id. The live map only holds the current round.
+	mcpRunArchive map[string][]*mcpRunRecord
+	// mcpChildPending holds a child result that landed before the run listed
+	// that child. Admission and finish apply it. Capped at mcpChildPendingLimit.
+	mcpChildPending map[string]mcpChildView
 	// mcpTurnHeld is the follow-up that may install the next run. It closes
 	// the gap where two sends both still see needs_confirmation.
 	mcpTurnHeld         map[string]uint64

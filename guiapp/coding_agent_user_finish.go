@@ -606,6 +606,7 @@ func remoteCodingStepToRunResult(step *v2.TaskItem, result *RemoteCodingSubAgent
 	rr.FilesCreated = append([]string{}, result.FilesCreated...)
 	rr.FilesModified = append([]string{}, result.FilesModified...)
 	rr.RuntimeTaskID = result.RuntimeTaskID
+	rr.Children = cloneChildTaskViews(result.Children)
 	return rr
 }
 

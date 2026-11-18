@@ -259,7 +259,7 @@ function readableWorkflowPhase(phase?: string): string {
 
 /** The sidebar has workflow snapshots, not live agent runtime data. */
 export function workflowStatusForTask(
-    workflow: TaskManagementItem['active_workflow'],
+    workflow: TaskManagementItem['active_workflow'] | null,
     lang: string,
 ): TaskWorkflowStatus | null {
     if (!workflow) return null;

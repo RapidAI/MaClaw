@@ -2837,28 +2837,10 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 				}
 			}
 		} else {
-			// Resolve the execution directory the same way the other project-task
-			// consumers do (im_tools_local.go, recentTaskExecutionProjectPath): a
-			// tab-bound override wins, then the task's persistent workingDir tag /
-			// managed workspace subdirectory, then the global default. Using only
-			// EffectiveWorkingDirForOwner here skipped the task's own workingDir,
-			// so a "continue" on a task with a configured worktree never created
-			// or entered that directory.
-			executionProjectPath := a.BoundWorkingDirForOwner(userID)
-			// A stored process default is not a directory the user chose for this
-			// expert. Prefer the task record so the folder is created there; the
-			// bind below points the session at the same place.
-			if strings.TrimSpace(req.ExpertID) != "" && isProcessDefaultWorkspacePath(executionProjectPath) {
-				executionProjectPath = ""
-			}
-			if executionProjectPath == "" {
-				executionProjectPath = a.recentTaskExecutionProjectPath(projectPath)
-			}
-			if executionProjectPath == "" {
-				executionProjectPath = a.EffectiveWorkingDirForOwner(userID)
-			} else {
-				executionProjectPath = a.exclusiveWorkRoot(projectPath, executionProjectPath)
-			}
+			// The task record names a coding task's directory. The session cache
+			// is a copy, so a stale desktop bind must not become the directory
+			// this turn prepares. Chat and expert turns still prefer the cache.
+			executionProjectPath := a.projectTurnExecutionDir(userID, projectPath, req.ExpertID)
 			if executionProjectPath != projectPath {
 				log.Printf("[AI assistant] route tab to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
 				if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {

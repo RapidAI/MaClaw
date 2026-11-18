@@ -24,6 +24,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -307,6 +308,9 @@ func TestInboundMCPDisplayStatus(t *testing.T) {
 	if got := mcpDisplayStatus(mcpStatusNeedsConfirmation, "done", "请确认"); got != mcpStatusNeedsConfirmation {
 		t.Fatalf("confirmation lost to %s", got)
 	}
+	if got := mcpDisplayStatus(mcpStatusWaitingReview, "done", "子任务结果待审阅"); got != mcpStatusWaitingReview {
+		t.Fatalf("review lost to %s", got)
+	}
 }
 
 func TestInboundMCPConfirmationIsNotCompleted(t *testing.T) {
@@ -476,7 +480,7 @@ func TestInboundMCPConfirmationCommandsAreOperable(t *testing.T) {
 		Message:     "提交形态",
 	}, commitCh)
 	t.Cleanup(func() { pendingScopeApprovals.Delete(commitID) })
-	gated, err := app.mcpGetTask(context.Background(), "p")
+	gated, err := app.mcpGetTask(context.Background(), "p", "")
 	if err != nil || gated.Status != mcpStatusRunning || gated.ConfirmationKind != "scope" || !strings.Contains(gated.Text, "要写仓库外的文件") || !strings.Contains(gated.Text, "工作目录越界") || !strings.Contains(gated.Text, "send_command") {
 		t.Fatalf("running gate %+v err=%v", gated, err)
 	}
@@ -552,7 +556,7 @@ func TestInboundMCPConfirmationCommandsAreOperable(t *testing.T) {
 	foreignCh := make(chan criticalRiskConfirmResponse, 1)
 	app.imHandler.pendingCriticalConfirm.Store("crit_other", &pendingCriticalConfirmEntry{Ch: foreignCh, Prompt: "别人的安装", Owner: "desktop-user:other"})
 	t.Cleanup(func() { app.imHandler.pendingCriticalConfirm.Delete("crit_other") })
-	gated, err = app.mcpGetTask(context.Background(), "p")
+	gated, err = app.mcpGetTask(context.Background(), "p", "")
 	criticalConfirmID := gated.ConfirmationID
 	if !strings.HasPrefix(criticalConfirmID, "mcf_") || criticalConfirmID == scopeConfirmID {
 		t.Fatalf("critical confirmation id %q previous %q", criticalConfirmID, scopeConfirmID)
@@ -598,7 +602,7 @@ func TestInboundMCPScopeDecisionReachesTheToolAndClosesTheDialog(t *testing.T) {
 	full <- ScopeApprovalDeny
 	fullID := storePendingScopeApproval(handler, ScopeApprovalRequest{ProjectPath: "p", Message: "通道已满"}, full)
 	t.Cleanup(func() { pendingScopeApprovals.Delete(fullID) })
-	issued, err := app.mcpGetTask(context.Background(), "p")
+	issued, err := app.mcpGetTask(context.Background(), "p", "")
 	if err != nil || !strings.HasPrefix(issued.ConfirmationID, "mcf_") {
 		t.Fatalf("issued confirmation %+v err=%v", issued, err)
 	}
@@ -614,7 +618,7 @@ func TestInboundMCPScopeDecisionReachesTheToolAndClosesTheDialog(t *testing.T) {
 		t.Fatal("buffered decision was removed")
 	}
 
-	issued, err = app.mcpGetTask(context.Background(), "p")
+	issued, err = app.mcpGetTask(context.Background(), "p", "")
 	if err != nil || !strings.HasPrefix(issued.ConfirmationID, "mcf_") {
 		t.Fatalf("next confirmation %+v err=%v", issued, err)
 	}
@@ -685,7 +689,7 @@ func TestInboundMCPCriticalResolveClosesTheDesktopDialog(t *testing.T) {
 	app.imHandler.pendingCriticalConfirm.Store("crit_mcp", &pendingCriticalConfirmEntry{Ch: ch, Prompt: "安装危险技能", Owner: owner})
 	t.Cleanup(func() { app.imHandler.pendingCriticalConfirm.Delete("crit_mcp") })
 
-	issued, err := app.mcpGetTask(context.Background(), "p")
+	issued, err := app.mcpGetTask(context.Background(), "p", "")
 	if err != nil || !strings.HasPrefix(issued.ConfirmationID, "mcf_") {
 		t.Fatalf("critical confirmation %+v err=%v", issued, err)
 	}
@@ -1199,7 +1203,7 @@ func (f *fakeMCPTasks) mcpCreateTask(ctx context.Context, args mcpCreateArgs) (m
 	return view, nil
 }
 
-func (f *fakeMCPTasks) mcpGetTask(ctx context.Context, projectPath string) (mcpTaskView, error) {
+func (f *fakeMCPTasks) mcpGetTask(ctx context.Context, projectPath, runID string) (mcpTaskView, error) {
 	if strings.TrimSpace(projectPath) == "" {
 		return mcpTaskView{}, errFakeMCPMissing
 	}
@@ -1230,7 +1234,7 @@ func (f *fakeMCPTasks) mcpListTasks(ctx context.Context) ([]mcpTaskView, error) 
 	return []mcpTaskView{{ProjectPath: `D:\work`, Status: mcpStatusIdle}}, nil
 }
 
-func (f *fakeMCPTasks) mcpReadLog(ctx context.Context, projectPath string, cursor int) (mcpLogPage, error) {
+func (f *fakeMCPTasks) mcpReadLog(ctx context.Context, projectPath, runID string, cursor int) (mcpLogPage, error) {
 	return mcpLogPage{ProjectPath: projectPath, Events: []mcpLogEvent{}, NextCursor: cursor}, nil
 }
 
@@ -1465,6 +1469,49 @@ func TestInboundMCPPreferFollowUpOverStaleRun(t *testing.T) {
 	if followed.Text != "后来在界面里继续" || followed.Provider != "Daily" || followed.Model != "m" {
 		t.Fatalf("follow-up %+v", followed)
 	}
+	waiting := mcpPreferTaskView(
+		mcpTaskView{
+			Status: mcpStatusWaitingReview, Error: mcpReviewHandoffErrorText, RunID: "run-a",
+			EndReason: mcpStatusWaitingReview, EndDetail: mcpReviewHandoffErrorText,
+			Steps:        []mcpStepView{{ID: "T5", Status: mcpStepWaiting, Error: mcpReviewHandoffErrorText}},
+			Stop:         &mcpStopView{Class: mcpStopReview, Reason: mcpReviewHandoffErrorText},
+			historyCount: 2, historySeal: "交接",
+		},
+		mcpTaskView{Status: mcpStatusCompleted, Text: "后来的一句", historyCount: 3},
+	)
+	if waiting.Status != mcpStatusWaitingReview || waiting.Text != "后来的一句" || len(waiting.Steps) != 1 || waiting.Steps[0].Status != mcpStepWaiting || waiting.Stop == nil || waiting.Stop.Class != mcpStopReview {
+		t.Fatalf("review upgraded %+v", waiting)
+	}
+	blocked := mcpPreferTaskView(
+		mcpTaskView{
+			Status: mcpStatusFailed, Error: "boom",
+			Steps:        []mcpStepView{{ID: "T1", Status: mcpStepFailed, Error: "boom"}},
+			historyCount: 2, historySeal: "失败",
+		},
+		mcpTaskView{Status: mcpStatusCompleted, Text: "后来的一句", historyCount: 3},
+	)
+	if blocked.Status != mcpStatusFailed || len(blocked.Steps) != 1 || blocked.Steps[0].ID != "T1" {
+		t.Fatalf("failure upgraded %+v", blocked)
+	}
+	workflowRunning := mcpPreferTaskView(
+		mcpTaskView{
+			Status: mcpStatusFailed, Error: "boom",
+			Steps:        []mcpStepView{{ID: "T1", Status: mcpStepFailed, Error: "boom"}},
+			Stop:         &mcpStopView{Class: mcpStopProgram, Reason: "boom"},
+			historyCount: 2, historySeal: "失败",
+		},
+		mcpTaskView{Status: mcpStatusRunning, Text: "工作流还显示在跑", historyCount: 3},
+	)
+	if workflowRunning.Status != mcpStatusFailed || workflowRunning.Text != "工作流还显示在跑" || workflowRunning.Stop == nil || workflowRunning.Stop.Class != mcpStopProgram || len(workflowRunning.Steps) != 1 {
+		t.Fatalf("workflow running hid the failure %+v", workflowRunning)
+	}
+	nextRun := mcpPreferTaskView(
+		mcpTaskView{Status: mcpStatusCompleted, historyCount: 2, historySeal: "好了"},
+		mcpTaskView{Status: mcpStatusRunning, Text: "下一轮", historyCount: 3},
+	)
+	if nextRun.Status != mcpStatusRunning || nextRun.Text != "下一轮" || nextRun.Stop != nil {
+		t.Fatalf("completed run must follow a later workflow %+v", nextRun)
+	}
 }
 
 func TestInboundMCPPinnedModelSkipsComputerUseAndBackground(t *testing.T) {
@@ -1597,6 +1644,267 @@ func TestInboundMCPPromptWorkspaceUsesToolDir(t *testing.T) {
 	}
 }
 
+func TestInboundMCPCreateWorkspaceSurvivesDesktopDefault(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	repo := t.TempDir()
+	created := app.CreateTaskWithMode("MCP coding", repo, taskCodingDevTag)
+	if created.ProjectPath == "" {
+		t.Fatal("empty project path")
+	}
+	repo = normalizeProjectSessionPath(repo)
+	owner := projectSessionOwnerID(created.ProjectPath)
+	// A session cache is not a second execution directory. The desktop default
+	// and any other cached folder both lose to the directory named on the task.
+	desktop := normalizeProjectSessionPath(corelib.WorkspaceDir())
+	cached := normalizeProjectSessionPath(t.TempDir())
+	for _, bound := range []string{desktop, cached} {
+		if bound == "" || bound == repo {
+			continue
+		}
+		app.assistantSessionWorkingDirs.Store(owner, bound)
+		if got := normalizeProjectSessionPath(app.EffectiveWorkingDirForOwner(owner)); got != repo {
+			t.Fatalf("owner dir %s want %s cache %s", got, repo, bound)
+		}
+		h := &IMMessageHandler{app: app}
+		toolDir := h.projectTabWorkDirForOwner(owner)
+		if got := normalizeProjectSessionPath(mcpPromptWorkspace(created.ProjectPath, toolDir)); got != repo {
+			t.Fatalf("prompt workspace %s tool %s repo %s cache %s", got, toolDir, repo, bound)
+		}
+	}
+
+	tabID := "proj-mcp-workdir"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); msg == "" {
+		t.Fatal("CreateProjectTabSession returned empty")
+	}
+	if got := normalizeProjectSessionPath(fmt.Sprint(app.GetTabWorkingDir(tabID)["path"])); got != repo {
+		t.Fatalf("header dir %s want %s", got, repo)
+	}
+	next := normalizeProjectSessionPath(t.TempDir())
+	if err := app.SetTabWorkingDir(tabID, next); err != nil {
+		t.Fatal(err)
+	}
+	if got := normalizeProjectSessionPath(app.recentTaskWorkingDir(created.ProjectPath)); got != next {
+		t.Fatalf("task tag %s want %s", got, next)
+	}
+	h := &IMMessageHandler{app: app}
+	if got := normalizeProjectSessionPath(h.projectTabWorkDirForOwner(owner)); got != next {
+		t.Fatalf("tool dir after choose %s want %s", got, next)
+	}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: created.ProjectPath,
+		Mode:        taskCodingDevTag,
+		Status:      mcpStatusRunning,
+		RequestID:   "mcp-keep-dir",
+		Workspace:   repo,
+	})
+	app.mcpSetRunWorkspace(created.ProjectPath, "mcp-keep-dir", h.projectTabWorkDirForOwner(owner))
+	view, ok := app.mcpViewFromRegistry(created.ProjectPath)
+	if !ok || normalizeProjectSessionPath(view.workspace) != next || normalizeProjectSessionPath(view.WorkingDir) != next {
+		t.Fatalf("published directory %+v want %s", view, next)
+	}
+	named := mcpApplyNamedWorkingDir(mcpTaskView{ProjectPath: created.ProjectPath, Mode: taskCodingDevTag}, []string{recentTaskWorkingDirTag(next)})
+	if normalizeProjectSessionPath(named.workspace) != next || normalizeProjectSessionPath(named.WorkingDir) != next {
+		t.Fatalf("query directory %+v want %s", named, next)
+	}
+	if app.memoryStore != nil {
+		app.memoryStore.WaitRebuild()
+		app.memoryStore.ProjectIndex().Rebuild(app.memoryStore.List(memory.CategoryTaskArtifact, ""))
+	}
+	if got := normalizeProjectSessionPath(app.recentTaskWorkingDir(created.ProjectPath)); got != next {
+		t.Fatalf("rebuilt tag %s want %s", got, next)
+	}
+	body, err := os.ReadFile(filepath.Join(created.ProjectPath, "task.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "Working directory: "+next) {
+		t.Fatalf("task file directory %s want %s", body, next)
+	}
+}
+
+func TestInboundMCPWorkingDirSessionFailureKeepsTag(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	repo := normalizeProjectSessionPath(t.TempDir())
+	created := app.CreateTaskWithMode("MCP coding", repo, taskCodingDevTag)
+	if created.ProjectPath == "" {
+		t.Fatal("empty project path")
+	}
+	tabID := "proj-mcp-workdir-fail"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); msg == "" {
+		t.Fatal("CreateProjectTabSession returned empty")
+	}
+	if err := app.ensureProjectTabSessionPersist().Close(); err != nil {
+		t.Fatal(err)
+	}
+	next := normalizeProjectSessionPath(t.TempDir())
+	if err := app.SetTabWorkingDir(tabID, next); err == nil {
+		t.Fatal("closed session store must fail the directory change")
+	}
+	if got := normalizeProjectSessionPath(app.recentTaskWorkingDir(created.ProjectPath)); got != repo {
+		t.Fatalf("tag %s want %s", got, repo)
+	}
+	owner := projectSessionOwnerID(created.ProjectPath)
+	if got := normalizeProjectSessionPath(app.EffectiveWorkingDirForOwner(owner)); got != repo {
+		t.Fatalf("owner dir %s want %s", got, repo)
+	}
+	body, err := os.ReadFile(filepath.Join(created.ProjectPath, "task.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "Working directory: "+next) {
+		t.Fatalf("failed change wrote %s", body)
+	}
+}
+
+func TestInboundMCPStaleSessionCacheDoesNotReplaceTaskDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	repo := normalizeProjectSessionPath(t.TempDir())
+	stale := normalizeProjectSessionPath(t.TempDir())
+	created := app.CreateTaskWithMode("MCP coding", repo, taskCodingDevTag)
+	if created.ProjectPath == "" {
+		t.Fatal("empty project path")
+	}
+	tabID := "proj-mcp-stale-cache"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); msg == "" {
+		t.Fatal("CreateProjectTabSession returned empty")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil {
+		t.Fatalf("load session: %v", err)
+	}
+	session.WorkingDir = stale
+	if err := persist.SaveSession(session); err != nil {
+		t.Fatal(err)
+	}
+	owner := projectSessionOwnerID(created.ProjectPath)
+	app.assistantSessionWorkingDirs.Store(owner, stale)
+	app.tabWorkingDirOverrides.Store(tabID, stale)
+
+	if got, ok := app.claimedWorkRoot(created.ProjectPath); !ok || normalizeProjectSessionPath(got) != repo {
+		t.Fatalf("claim %q ok=%v want %s", got, ok, repo)
+	}
+	if got := normalizeProjectSessionPath(app.projectTurnExecutionDir(owner, created.ProjectPath, "")); got != repo {
+		t.Fatalf("turn dir %s want %s", got, repo)
+	}
+	if got := normalizeProjectSessionPath(fmt.Sprint(app.GetTabWorkingDir(tabID)["path"])); got != repo {
+		t.Fatalf("header dir %s want %s", got, repo)
+	}
+	// The header already followed the tag. The chip refresh must also publish
+	// that tag as the owner bind, which horizon and in-flight stamps read.
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(owner)); got != repo {
+		t.Fatalf("bind after header %s want %s", got, repo)
+	}
+	if value, ok := app.tabWorkingDirOverrides.Load(tabID); !ok || normalizeProjectSessionPath(fmt.Sprint(value)) != repo {
+		t.Fatalf("override after header %v want %s", value, repo)
+	}
+	refreshed, err := persist.LoadSession(tabID)
+	if err != nil || refreshed == nil {
+		t.Fatalf("reload session after header: %v", err)
+	}
+	if got := normalizeProjectSessionPath(refreshed.WorkingDir); got != repo {
+		t.Fatalf("session cache after header %s want %s", got, repo)
+	}
+	h := &IMMessageHandler{app: app}
+	if got := normalizeProjectSessionPath(h.projectTabWorkDirForOwner(owner)); got != repo {
+		t.Fatalf("tool dir %s want %s", got, repo)
+	}
+	if got := normalizeProjectSessionPath(app.recentTaskWorkingDir(created.ProjectPath)); got != repo {
+		t.Fatalf("tag %s want %s", got, repo)
+	}
+
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); msg == "" {
+		t.Fatal("reopen returned empty")
+	}
+	repaired, err := persist.LoadSession(tabID)
+	if err != nil || repaired == nil {
+		t.Fatalf("reload session: %v", err)
+	}
+	if got := normalizeProjectSessionPath(repaired.WorkingDir); got != repo {
+		t.Fatalf("session cache %s want %s", got, repo)
+	}
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(owner)); got != repo {
+		t.Fatalf("bind %s want %s", got, repo)
+	}
+
+	chat := app.CreateTaskWithMode("MCP chat", repo, "")
+	if chat.ProjectPath == "" {
+		t.Fatal("empty chat path")
+	}
+	chatTab := "proj-mcp-chat-cache"
+	if msg := app.CreateProjectTabSession(chatTab, chat.ProjectPath); msg == "" {
+		t.Fatal("chat session returned empty")
+	}
+	chatSession, err := persist.LoadSession(chatTab)
+	if err != nil || chatSession == nil {
+		t.Fatalf("load chat session: %v", err)
+	}
+	chatSession.WorkingDir = stale
+	if err := persist.SaveSession(chatSession); err != nil {
+		t.Fatal(err)
+	}
+	chatOwner := projectSessionOwnerID(chat.ProjectPath)
+	app.assistantSessionWorkingDirs.Store(chatOwner, stale)
+	app.tabWorkingDirOverrides.Store(chatTab, stale)
+	if got := normalizeProjectSessionPath(fmt.Sprint(app.GetTabWorkingDir(chatTab)["path"])); got != stale {
+		t.Fatalf("chat header %s want %s", got, stale)
+	}
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(chatOwner)); got != stale {
+		t.Fatalf("chat bind %s want %s", got, stale)
+	}
+	chatAfterHeader, err := persist.LoadSession(chatTab)
+	if err != nil || chatAfterHeader == nil {
+		t.Fatalf("reload chat session after header: %v", err)
+	}
+	if got := normalizeProjectSessionPath(chatAfterHeader.WorkingDir); got != stale {
+		t.Fatalf("chat session after header %s want %s", got, stale)
+	}
+	if msg := app.CreateProjectTabSession(chatTab, chat.ProjectPath); msg == "" {
+		t.Fatal("chat reopen returned empty")
+	}
+	kept, err := persist.LoadSession(chatTab)
+	if err != nil || kept == nil {
+		t.Fatalf("reload chat session: %v", err)
+	}
+	if got := normalizeProjectSessionPath(kept.WorkingDir); got != stale {
+		t.Fatalf("chat session %s want %s", got, stale)
+	}
+	if got := normalizeProjectSessionPath(app.projectTurnExecutionDir(chatOwner, chat.ProjectPath, "")); got != stale {
+		t.Fatalf("chat turn dir %s want %s", got, stale)
+	}
+}
+
+func TestInboundMCPMirrorTabUsesTaskDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	repo := normalizeProjectSessionPath(t.TempDir())
+	created := app.CreateTaskWithMode("MCP coding", repo, taskCodingDevTag)
+	if created.ProjectPath == "" {
+		t.Fatal("empty project path")
+	}
+	owner := projectSessionOwnerID(created.ProjectPath)
+	desktop := normalizeProjectSessionPath(app.EffectiveDesktopWorkingDir())
+	if desktop == "" || desktop == repo {
+		t.Fatalf("desktop fixture %q", desktop)
+	}
+	app.assistantSessionWorkingDirs.Store(owner, desktop)
+	// The MCP host opens this task under the mirror tab id. Registration
+	// publishes the task record over a desktop bind left on the owner.
+	tabID := "acp-mcp-mirror"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); msg == "" {
+		t.Fatal("CreateProjectTabSession returned empty")
+	}
+	if got := normalizeProjectSessionPath(fmt.Sprint(app.GetTabWorkingDir(tabID)["path"])); got != repo {
+		t.Fatalf("header %s want %s", got, repo)
+	}
+	if got := normalizeProjectSessionPath(app.BoundWorkingDirForOwner(owner)); got != repo {
+		t.Fatalf("bind %s want %s", got, repo)
+	}
+	h := &IMMessageHandler{app: app}
+	if got := normalizeProjectSessionPath(h.projectTabWorkDirForOwner(owner)); got != repo {
+		t.Fatalf("tool dir %s want %s", got, repo)
+	}
+}
+
 func TestInboundMCPChatDoesNotOpenCodingLedger(t *testing.T) {
 	if assistantPromptUsesMutatingRuntime(assistantHostMCP, "chat", "请修改这段代码", `D:\work`) {
 		t.Fatal("explicit chat must stay on the shared assistant path")
@@ -1705,7 +2013,7 @@ func TestInboundMCPTaskDetailRoundAndEndReason(t *testing.T) {
 		Round:       2,
 		StartedAt:   started,
 	})
-	view, err := app.mcpGetTask(context.Background(), "p")
+	view, err := app.mcpGetTask(context.Background(), "p", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1746,7 +2054,7 @@ func TestInboundMCPLogCursorRedactsSecrets(t *testing.T) {
 	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-1"})
 	app.mcpAppendLog("p", "mcp-1", mcpLogEvent{Kind: "progress", Text: "调用 mck_abc1234567 和 sk-supersecretvalue"})
 	app.mcpRecordToolEvent("p", "mcp-1", ACPToolEvent{Phase: "end", Name: "read_file", OK: false, Result: "token=mck_deadbeef01"})
-	page, err := app.mcpReadLog(context.Background(), "p", 0)
+	page, err := app.mcpReadLog(context.Background(), "p", "", 0)
 	if err != nil || len(page.Events) != 2 || page.NextCursor != 2 {
 		t.Fatalf("page %+v err=%v", page, err)
 	}
@@ -1758,19 +2066,19 @@ func TestInboundMCPLogCursorRedactsSecrets(t *testing.T) {
 	if !strings.Contains(body, "mck_[redacted]") || !strings.Contains(body, "sk-[redacted]") || page.Events[1].Kind != "tool" || page.Events[1].OK == nil || *page.Events[1].OK {
 		t.Fatalf("redacted page %s", body)
 	}
-	rest, err := app.mcpReadLog(context.Background(), "p", page.Events[0].Seq)
+	rest, err := app.mcpReadLog(context.Background(), "p", "", page.Events[0].Seq)
 	if err != nil || len(rest.Events) != 1 || rest.Events[0].Seq != 2 || rest.NextCursor != 2 {
 		t.Fatalf("cursor %+v err=%v", rest, err)
 	}
-	empty, err := app.mcpReadLog(context.Background(), "p", 2)
+	empty, err := app.mcpReadLog(context.Background(), "p", "", 2)
 	if err != nil || len(empty.Events) != 0 || empty.NextCursor != 2 {
 		t.Fatalf("tail %+v err=%v", empty, err)
 	}
-	if _, err := app.mcpReadLog(context.Background(), "missing", 0); err == nil {
+	if _, err := app.mcpReadLog(context.Background(), "missing", "", 0); err == nil {
 		t.Fatal("missing task returned a log")
 	}
 	app.mcpAppendLog("p", "mcp-1", mcpLogEvent{Kind: "error", Text: `"api_key": "supersecretvalue" ghp_abcdefghijklmnopqrstuvwxyz` + "\n-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"})
-	secretPage, err := app.mcpReadLog(context.Background(), "p", 2)
+	secretPage, err := app.mcpReadLog(context.Background(), "p", "", 2)
 	if err != nil || len(secretPage.Events) != 1 {
 		t.Fatalf("secret page %+v err=%v", secretPage, err)
 	}
@@ -1780,7 +2088,7 @@ func TestInboundMCPLogCursorRedactsSecrets(t *testing.T) {
 	}
 	app.mcpReplaceRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-2"})
 	app.mcpAppendLog("p", "mcp-2", mcpLogEvent{Kind: "progress", Text: "下一轮"})
-	continued, err := app.mcpReadLog(context.Background(), "p", secretPage.NextCursor)
+	continued, err := app.mcpReadLog(context.Background(), "p", "", secretPage.NextCursor)
 	if err != nil || len(continued.Events) != 1 || continued.Events[0].Seq != secretPage.NextCursor+1 || continued.Gap || continued.Events[0].Text != "下一轮" {
 		t.Fatalf("continued %+v err=%v", continued, err)
 	}
@@ -1789,7 +2097,7 @@ func TestInboundMCPLogCursorRedactsSecrets(t *testing.T) {
 		rec.logs = rec.logs[1:]
 	}
 	app.mcpRunsMu.Unlock()
-	gapped, err := app.mcpReadLog(context.Background(), "p", 0)
+	gapped, err := app.mcpReadLog(context.Background(), "p", "", 0)
 	if err != nil || !gapped.Gap || len(gapped.Events) == 0 || gapped.Events[0].Seq <= 1 {
 		t.Fatalf("gap %+v err=%v", gapped, err)
 	}
@@ -1848,7 +2156,7 @@ func TestInboundMCPConfirmationIDIsSingleUse(t *testing.T) {
 	scopeID := storePendingScopeApproval(nil, ScopeApprovalRequest{ProjectPath: "q", Message: "写外面"}, scopeCh)
 	t.Cleanup(func() { pendingScopeApprovals.Delete(scopeID) })
 	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "q", Status: mcpStatusRunning, RequestID: "mcp-q"})
-	gated, err := app.mcpGetTask(context.Background(), "q")
+	gated, err := app.mcpGetTask(context.Background(), "q", "")
 	if err != nil || gated.ConfirmationID == "" {
 		t.Fatalf("gate %+v err=%v", gated, err)
 	}
@@ -2544,10 +2852,10 @@ func TestInboundMCPPriorSkipBecomesRetryableAfterParentPasses(t *testing.T) {
 	waiting := mcpStepsFromAgent(&IMAgentResponse{CodingSteps: []CodingStepOutcome{{
 		ID: "T5", Status: mcpStepSkipped, Error: "waiting_child",
 	}}})
-	if len(waiting) != 1 || waiting[0].Status != mcpStepSkipped || waiting[0].Retryable || !mcpStepsBlockCompletion(waiting) {
+	if len(waiting) != 1 || waiting[0].Status != mcpStepWaiting || waiting[0].Retryable || !mcpStepsBlockCompletion(waiting) {
 		t.Fatalf("waiting %+v", waiting)
 	}
-	if merged := mcpMergeSteps(waiting, nil); len(merged) != 1 || merged[0].Status != mcpStepSkipped || merged[0].Retryable {
+	if merged := mcpMergeSteps(waiting, nil); len(merged) != 1 || merged[0].Status != mcpStepWaiting || merged[0].Retryable {
 		t.Fatalf("waiting reopened %+v", merged)
 	}
 	if err := mcpRetryRejectedBySteps(waiting, []string{"T5"}); err == nil || !strings.Contains(err.Error(), "不能单独重试") {
@@ -2637,19 +2945,19 @@ func TestInboundMCPReviewHandoffStaysOffRetry(t *testing.T) {
 	empty := codingStepOutcomeFromResult(v2.TaskRunResult{
 		TaskIndex: 5, Status: v2.TaskSkipped, RuntimeHandoff: true, Summary: childSummary,
 	})
-	if empty.Status != mcpStepSkipped || empty.Retryable || empty.Error != mcpReviewHandoffErrorText || empty.ID != "T5" {
+	if empty.Status != mcpStepWaiting || empty.Retryable || empty.Error != mcpReviewHandoffErrorText || empty.ID != "T5" {
 		t.Fatalf("empty handoff %+v", empty)
 	}
 	failed := codingStepOutcomeFromResult(v2.TaskRunResult{
 		TaskIndex: 5, Status: v2.TaskFailed, RuntimeHandoff: true,
 	})
-	if failed.Status != mcpStepSkipped || failed.Retryable || failed.Error != mcpReviewHandoffErrorText {
+	if failed.Status != mcpStepWaiting || failed.Retryable || failed.Error != mcpReviewHandoffErrorText {
 		t.Fatalf("failed handoff %+v", failed)
 	}
 	coded := codingStepOutcomeFromResult(v2.TaskRunResult{
 		TaskIndex: 5, Status: v2.TaskSkipped, Error: "runtime_child_review_required",
 	})
-	if coded.Status != mcpStepSkipped || coded.Retryable || coded.Error != "runtime_child_review_required" {
+	if coded.Status != mcpStepWaiting || coded.Retryable || coded.Error != "runtime_child_review_required" {
 		t.Fatalf("review code %+v", coded)
 	}
 
@@ -2661,7 +2969,7 @@ func TestInboundMCPReviewHandoffStaysOffRetry(t *testing.T) {
 		t.Fatal("handoff completed the task")
 	}
 	held := mcpMergeSteps(steps, nil)
-	if len(held) != 2 || held[1].Status != mcpStepSkipped || held[1].Retryable || held[1].Error != mcpReviewHandoffErrorText {
+	if len(held) != 2 || held[1].Status != mcpStepWaiting || held[1].Retryable || held[1].Error != mcpReviewHandoffErrorText {
 		t.Fatalf("reopened %+v", held)
 	}
 	if err := mcpRetryRejectedBySteps(held, []string{"T5"}); err == nil || !strings.Contains(err.Error(), "不能单独重试") {
@@ -2694,7 +3002,7 @@ func TestInboundMCPReviewHandoffStaysOffRetry(t *testing.T) {
 		Status:  TaskExecWaitingChild,
 		Summary: childSummary,
 	})
-	if status != v2.TaskSkipped || stepStatus != codingStepSkipped || stepSummary != mcpReviewHandoffErrorText || !mcpSkipIsReviewHandoff(resultErr) {
+	if status != v2.TaskSkipped || stepStatus != mcpStepWaiting || stepSummary != mcpReviewHandoffErrorText || !mcpSkipIsReviewHandoff(resultErr) {
 		t.Fatalf("workbench %s %s %q %q", status, stepStatus, stepSummary, resultErr)
 	}
 
@@ -2743,7 +3051,7 @@ func TestInboundMCPHandoffHoldsDependentSkip(t *testing.T) {
 	})
 	app.mcpFinishRun("p", "mcp-handoff-dep", mcpStatusCompleted, "子任务好了", "", false, "", nil, nil)
 	view, ok := app.mcpViewFromRegistry("p")
-	if !ok || view.Status != mcpStatusFailed || view.Error != mcpReviewHandoffErrorText || len(view.Steps) != 2 {
+	if !ok || view.Status != mcpStatusWaitingReview || view.Error != mcpReviewHandoffErrorText || len(view.Steps) != 2 {
 		t.Fatalf("finish %+v ok=%v", view, ok)
 	}
 	if view.Steps[1].Status != mcpStepSkipped || view.Steps[1].Retryable || view.Steps[1].Error != "dependency not met" {
@@ -2891,6 +3199,270 @@ func TestInboundMCPStopDropsUncommittedInstall(t *testing.T) {
 	}
 	if _, ok := app.mcpViewFromRegistry("fresh"); ok {
 		t.Fatal("unstored stop left a run")
+	}
+}
+
+func TestInboundMCPRunsStayOnTheirOwnSteps(t *testing.T) {
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-a", RunID: "run-a", StatusVersion: 1,
+		Steps: []mcpStepView{{ID: "T1", Status: mcpStepPassed, Title: "上一轮"}},
+	})
+	app.mcpFinishRun("p", "mcp-a", mcpStatusCompleted, "好了", "", false, "", nil, nil)
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-b", RunID: "run-b", StatusVersion: 1,
+	})
+	live, err := app.mcpGetTask(context.Background(), "p", "")
+	if err != nil || live.RunID != "run-b" || len(live.Steps) != 0 || live.Status != mcpStatusRunning {
+		t.Fatalf("live %+v err=%v", live, err)
+	}
+	old, err := app.mcpGetTask(context.Background(), "p", "run-a")
+	if err != nil || len(old.Steps) != 1 || old.Steps[0].ID != "T1" || old.RunID != "run-a" {
+		t.Fatalf("old %+v err=%v", old, err)
+	}
+	if live.StatusVersion == old.StatusVersion {
+		t.Fatalf("versions live=%d old=%d", live.StatusVersion, old.StatusVersion)
+	}
+	if _, err := app.mcpGetTask(context.Background(), "p", "run-missing"); err == nil || !strings.Contains(err.Error(), "没有这一轮执行") {
+		t.Fatalf("missing: %v", err)
+	}
+}
+
+func TestInboundMCPReadLogFiltersByRun(t *testing.T) {
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-a", RunID: "run-a"})
+	app.mcpAppendLog("p", "mcp-a", mcpLogEvent{Kind: "progress", Text: "第一轮"})
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-b", RunID: "run-b"})
+	app.mcpAppendLog("p", "mcp-b", mcpLogEvent{Kind: "progress", Text: "下一轮"})
+	all, err := app.mcpReadLog(context.Background(), "p", "", 0)
+	if err != nil || len(all.Events) != 2 || all.Events[1].Seq != all.Events[0].Seq+1 || all.Events[1].Text != "下一轮" {
+		t.Fatalf("all %+v err=%v", all, err)
+	}
+	scoped, err := app.mcpReadLog(context.Background(), "p", "run-a", 0)
+	if err != nil || len(scoped.Events) != 1 || scoped.Events[0].Text != "第一轮" || scoped.RunID != "run-a" {
+		t.Fatalf("scoped %+v err=%v", scoped, err)
+	}
+	replaced, err := app.mcpGetTask(context.Background(), "p", "run-a")
+	if err != nil || replaced.Status != mcpStatusCancelled || replaced.Stop == nil || replaced.Stop.Class != mcpStopUser || replaced.Stop.Reason == "" {
+		t.Fatalf("replaced %+v err=%v", replaced, err)
+	}
+}
+
+func TestInboundMCPCancelRecordsUserStop(t *testing.T) {
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-1", RunID: "run-1",
+		Steps: []mcpStepView{{ID: "T2", Status: mcpStepUnfinished}},
+	})
+	app.mcpCancelRun("p")
+	view, ok := app.mcpViewFromRegistry("p")
+	if !ok || view.Status != mcpStatusCancelled || view.Stop == nil || view.Stop.Class != mcpStopUser || view.Stop.Reason == "" || view.Stop.At == "" || view.Stop.StepID != "T2" {
+		t.Fatalf("view=%+v stop=%+v ok=%v", view, view.Stop, ok)
+	}
+}
+
+func TestInboundMCPStopAndGateExplainTheBlock(t *testing.T) {
+	status, errText, steps := mcpApplyStepGate(mcpStatusCompleted, "", []mcpStepView{{ID: "T1", Status: mcpStepFailed, Error: "boom", Retryable: true}})
+	stop := mcpStopFor(status, errText, steps, nil, time.Unix(10, 0).UTC())
+	if status != mcpStatusFailed || stop == nil || stop.Class != mcpStopProgram || stop.StepID != "T1" {
+		t.Fatalf("program status=%s stop=%+v err=%s", status, stop, errText)
+	}
+	timeout := mcpStopFor(mcpStatusCancelled, "", nil, context.DeadlineExceeded, time.Unix(11, 0).UTC())
+	if timeout == nil || timeout.Class != mcpStopTimeout || timeout.Reason != "执行超时" {
+		t.Fatalf("timeout %+v", timeout)
+	}
+	depStatus, _, depSteps := mcpApplyStepGate(mcpStatusCompleted, "", []mcpStepView{{ID: "T3", Status: mcpStepSkipped, Error: "dependency not met"}})
+	depStop := mcpStopFor(depStatus, "", depSteps, nil, time.Unix(12, 0).UTC())
+	if depStatus == mcpStatusCompleted || depStop == nil || depStop.Class != mcpStopDependency || depSteps[0].BlockReason == "" {
+		t.Fatalf("dep status=%s stop=%+v step=%+v", depStatus, depStop, depSteps)
+	}
+	waitStatus, waitErr, waitSteps := mcpApplyStepGate(mcpStatusCompleted, "", []mcpStepView{
+		{ID: "T5", Status: mcpStepSkipped, Error: "waiting_child", ChildTaskID: "child-1"},
+		{ID: "T6", Status: mcpStepSkipped, Error: "dependency not met"},
+	})
+	if waitStatus != mcpStatusWaitingReview || waitErr != mcpReviewHandoffErrorText || waitStatus == mcpStatusFailed {
+		t.Fatalf("wait %s %s", waitStatus, waitErr)
+	}
+	if len(waitSteps) != 2 || waitSteps[0].Status != mcpStepWaiting || waitSteps[1].Status != mcpStepSkipped || waitSteps[1].BlockReason != "等待子任务审阅" || len(waitSteps[1].BlockedBy) != 1 || waitSteps[1].BlockedBy[0] != "T5" {
+		t.Fatalf("steps %+v", waitSteps)
+	}
+}
+
+func TestInboundMCPAdmittedChildIsNotComplete(t *testing.T) {
+	if codingChildPublicStatus(codingruntime.TaskQueued) != "admitted" {
+		t.Fatal("queued must stay admitted")
+	}
+	children := mcpChildrenFromToolText("child_task_id=child-9 parent_task_id=parent-1 name=explorer status=queued")
+	if len(children) != 1 || children[0].Status != "admitted" || children[0].ChildTaskID != "child-9" || children[0].Status == mcpStatusCompleted {
+		t.Fatalf("%+v", children)
+	}
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-c", RunID: "run-c"})
+	app.mcpNoteAdmittedChildren("p", "mcp-c", "child_task_id=child-9 parent_task_id=parent-1 name=explorer status=queued")
+	view, ok := app.mcpViewFromRegistry("p")
+	if !ok || view.Status == mcpStatusCompleted || view.ChildTaskID != "child-9" || len(view.Children) != 1 || view.Children[0].Status != "admitted" {
+		t.Fatalf("ok=%v %+v", ok, view)
+	}
+}
+
+func TestInboundMCPChildResultLandsOnTheWaitingRun(t *testing.T) {
+	kept := mcpMergeChildren(
+		[]mcpChildView{{
+			ChildTaskID: "child-9", Name: "explorer", Status: mcpStatusCompleted,
+			Progress: mcpStatusCompleted, Result: "found the leak", Review: "found the leak", ReviewPending: true,
+		}},
+		mcpChildrenFromSteps([]mcpStepView{{ID: "T5", Status: mcpStepWaiting, ChildTaskID: "child-9"}}),
+	)
+	if len(kept) != 1 || kept[0].Status != mcpStatusCompleted || kept[0].Result != "found the leak" || kept[0].Review != "found the leak" || kept[0].Name != "explorer" {
+		t.Fatalf("admission row replaced the result %+v", kept)
+	}
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-c", RunID: "run-c", StatusVersion: 1})
+	app.mcpNoteAdmittedChildren("p", "mcp-c", "child_task_id=child-9 parent_task_id=parent-1 name=explorer status=queued")
+	before, ok := app.mcpViewFromRegistry("p")
+	if !ok || before.Status != mcpStatusRunning || before.ChildTaskID != "child-9" || before.Children[0].Status != "admitted" {
+		t.Fatalf("admitted %+v", before)
+	}
+	app.mcpNoteChildOutcome(mcpChildView{
+		ChildTaskID: "child-9", ParentTaskID: "parent-1", Name: "explorer",
+		Status: mcpStatusCompleted, Progress: mcpStatusCompleted,
+		Result: "found the leak", Review: "found the leak", ReviewPending: true,
+	})
+	landed, ok := app.mcpViewFromRegistry("p")
+	if !ok || landed.Status != mcpStatusRunning || landed.StatusVersion <= before.StatusVersion || len(landed.Children) != 1 || landed.Children[0].Status != mcpStatusCompleted || landed.Children[0].Result != "found the leak" {
+		t.Fatalf("landed %+v", landed)
+	}
+	app.mcpFinishRun("p", "mcp-c", mcpStatusCompleted, "子任务好了", "", false, "", nil, []mcpStepView{{
+		ID: "T5", Status: mcpStepSkipped, Error: "waiting_child", ChildTaskID: "child-9",
+	}})
+	finished, ok := app.mcpViewFromRegistry("p")
+	if !ok || finished.Status != mcpStatusWaitingReview || finished.Status == mcpStatusCompleted {
+		t.Fatalf("parent %+v", finished)
+	}
+	published := app.mcpReturnTask(finished)
+	if len(published.Children) != 1 || published.Children[0].Status != mcpStatusCompleted || published.Children[0].Result != "found the leak" || published.Children[0].Review != "found the leak" {
+		t.Fatalf("published %+v", published.Children)
+	}
+	if len(published.Steps) != 1 || len(published.Steps[0].Children) != 1 || published.Steps[0].Children[0].Status != mcpStatusCompleted || published.Steps[0].Children[0].Result != "found the leak" || published.Steps[0].ChildTaskID != "child-9" {
+		t.Fatalf("step child %+v", published.Steps)
+	}
+	path := normalizeProjectSessionPath("p")
+	app.mcpRunsMu.Lock()
+	app.mcpArchiveRunLocked(app.mcpRuns[path])
+	app.mcpRuns[path] = &mcpRunRecord{ProjectPath: path, Status: mcpStatusRunning, RequestID: "mcp-d", RunID: "run-d", StatusVersion: 1}
+	app.mcpRunsMu.Unlock()
+	app.mcpNoteChildOutcome(mcpChildView{
+		ChildTaskID: "child-9", ParentTaskID: "parent-1", Name: "explorer",
+		Status: mcpStatusCompleted, Progress: mcpStatusCompleted,
+		Result: "found the leak and the caller", Review: "found the leak and the caller", ReviewPending: true,
+	})
+	old, ok := app.mcpViewForRun("p", "run-c")
+	if !ok || old.Status != mcpStatusWaitingReview || len(old.Children) != 1 || old.Children[0].Result != "found the leak and the caller" {
+		t.Fatalf("archived %+v", old)
+	}
+	live, ok := app.mcpViewFromRegistry("p")
+	if !ok || live.Status != mcpStatusRunning || live.RunID != "run-d" || len(live.Children) != 0 || live.StatusVersion != 1 {
+		t.Fatalf("live %+v", live)
+	}
+	store := codingruntime.NewMemoryStore()
+	now := time.Now().UTC()
+	parent, err := store.CreateTask(codingruntime.Task{TaskID: "parent-1", ProjectRef: "repo", Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentAttempt, err := store.StartAttempt(parent.TaskID, "parent", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "repo", Mode: "local"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := codingruntime.PolicySnapshot{ProjectRoot: "repo", Mode: "local", ReadOnly: true}
+	service := codingruntime.ChildTaskService{Store: store, Now: func() time.Time { return now }}
+	handle, err := service.AdmitReadOnlyChild(parentAttempt.AttemptID, "parent", codingruntime.ChildTaskSpec{
+		Name: "explorer", RequestedWork: "inspect the leak", ProjectRef: "repo", Mode: "local",
+	}, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := codingruntime.Runner{Store: store, LeaseOwner: "child", Now: func() time.Time { return now }}
+	if _, _, _, err := service.RunReadOnlyChild(context.Background(), runner, handle.TaskID, policy, testReadOnlyChildExecutorFunc(func(context.Context, codingruntime.ExecutionRequest) codingruntime.ChildTaskResult {
+		return codingruntime.ChildTaskResult{Status: codingruntime.TaskCompleted, Summary: "ledger summary", EvidenceDigest: "sha256:child"}
+	})); err != nil {
+		t.Fatal(err)
+	}
+	fromLedger := mcpChildViewFromRunOutcome(
+		*handle,
+		codingruntime.ChildRunOutcome{Attempt: &codingruntime.Attempt{Status: codingruntime.TaskCompleted, ErrorSummary: "attempt text"}},
+		store,
+	)
+	if fromLedger.Status != mcpStatusCompleted || fromLedger.Result != "ledger summary" || fromLedger.Name != "explorer" || fromLedger.Review != "ledger summary" {
+		t.Fatalf("ledger view %+v", fromLedger)
+	}
+}
+
+func TestInboundMCPChildResultArrivesBeforeAdmission(t *testing.T) {
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-c", RunID: "run-c", StatusVersion: 1})
+	app.mcpNoteChildOutcome(mcpChildView{
+		ChildTaskID: "child-9", ParentTaskID: "parent-1", Name: "explorer",
+		Status: mcpStatusCompleted, Progress: mcpStatusCompleted,
+		Result: "found the leak", Review: "found the leak", ReviewPending: true,
+	})
+	early, ok := app.mcpViewFromRegistry("p")
+	if !ok || early.Status != mcpStatusRunning || len(early.Children) != 0 || early.StatusVersion != 1 {
+		t.Fatalf("early %+v", early)
+	}
+	app.mcpNoteAdmittedChildren("p", "mcp-c", "child_task_id=child-9 parent_task_id=parent-1 name=explorer status=queued")
+	landed, ok := app.mcpViewFromRegistry("p")
+	if !ok || landed.Status != mcpStatusRunning || landed.StatusVersion == 1 || len(landed.Children) != 1 || landed.Children[0].Status != mcpStatusCompleted || landed.Children[0].Result != "found the leak" || landed.Children[0].Review != "found the leak" {
+		t.Fatalf("landed %+v", landed)
+	}
+	version := landed.StatusVersion
+	app.mcpNoteAdmittedChildren("p", "mcp-c", "child_task_id=child-9 parent_task_id=parent-1 name=explorer status=queued")
+	again, ok := app.mcpViewFromRegistry("p")
+	if !ok || again.StatusVersion != version || again.Children[0].Status != mcpStatusCompleted || again.Children[0].Result != "found the leak" {
+		t.Fatalf("repeat %+v", again)
+	}
+
+	late := &App{}
+	late.mcpStoreRun(&mcpRunRecord{ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-c", RunID: "run-c", StatusVersion: 1})
+	late.mcpNoteChildOutcome(mcpChildView{
+		ChildTaskID: "child-9", ParentTaskID: "parent-1", Name: "explorer",
+		Status: mcpStatusCompleted, Progress: mcpStatusCompleted,
+		Result: "found the leak", Review: "found the leak", ReviewPending: true,
+	})
+	late.mcpFinishRun("p", "mcp-c", mcpStatusCompleted, "子任务好了", "", false, "", nil, []mcpStepView{{
+		ID: "T5", Status: mcpStepSkipped, Error: "waiting_child", ChildTaskID: "child-9",
+	}})
+	finished, ok := late.mcpViewFromRegistry("p")
+	if !ok || finished.Status != mcpStatusWaitingReview || len(finished.Children) != 1 || finished.Children[0].Status != mcpStatusCompleted || finished.Children[0].Result != "found the leak" {
+		t.Fatalf("finish %+v", finished)
+	}
+	published := late.mcpReturnTask(finished)
+	if len(published.Children) != 1 || published.Children[0].Status != mcpStatusCompleted || published.Children[0].Review != "found the leak" {
+		t.Fatalf("published %+v", published.Children)
+	}
+	if len(published.Steps) != 1 || len(published.Steps[0].Children) != 1 || published.Steps[0].Children[0].Result != "found the leak" || published.Steps[0].Children[0].Status != published.Children[0].Status {
+		t.Fatalf("step child %+v", published.Steps)
+	}
+
+	failed := mcpChildViewFromRunOutcome(
+		codingruntime.ChildTaskHandle{TaskID: "child-9", ParentTaskID: "parent-1", Name: "explorer"},
+		codingruntime.ChildRunOutcome{Err: errors.New("disk full"), Attempt: &codingruntime.Attempt{Status: codingruntime.TaskFailed}},
+		nil,
+	)
+	if failed.Status != mcpStatusFailed || failed.Result != "disk full" || failed.Review == mcpReviewHandoffErrorText || strings.TrimSpace(failed.Review) == "" {
+		t.Fatalf("failed child %+v", failed)
+	}
+}
+
+func TestInboundMCPSpawnNamesTheChild(t *testing.T) {
+	text := formatAdmittedReadOnlyChildHandles([]codingruntime.ChildTaskHandle{{
+		TaskID: "child-1", ParentTaskID: "parent-1", Name: "explorer", Status: codingruntime.TaskQueued,
+	}})
+	if !strings.Contains(text, "child_task_id=child-1") || !strings.Contains(text, "status=admitted") || strings.Contains(text, "completed") {
+		t.Fatalf("%s", text)
+	}
+	if !strings.Contains(text, "spawn_coding_agent admitted read-only child task(s); parent attempt released its lease:") || !strings.Contains(text, "fresh parent attempt") {
+		t.Fatalf("%s", text)
 	}
 }
 

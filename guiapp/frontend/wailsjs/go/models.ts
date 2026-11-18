@@ -9298,6 +9298,9 @@ export namespace main {
 	    verify_cmd?: string;
 	    verify_ok?: boolean;
 	    updated_unix?: number;
+	    blocked_by?: string[];
+	    block_reason?: string;
+	    child_task_id?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new codingWorkbenchStepStatus(source);
@@ -9312,6 +9315,9 @@ export namespace main {
 	        this.verify_cmd = source["verify_cmd"];
 	        this.verify_ok = source["verify_ok"];
 	        this.updated_unix = source["updated_unix"];
+	        this.blocked_by = source["blocked_by"];
+	        this.block_reason = source["block_reason"];
+	        this.child_task_id = source["child_task_id"];
 	    }
 	}
 	export class CodingWorkbenchStatus {
@@ -9330,6 +9336,8 @@ export namespace main {
 	    plan_dialogue?: boolean;
 	    step_statuses?: codingWorkbenchStepStatus[];
     steps_revision?: number;
+	    execution_status?: string;
+	    stop?: { class?: string; source?: string; reason?: string; at?: string; step_id?: string };
 	    project_instruction_sources?: string[];
 	    checkpoint_label?: string;
 	    session_input_tokens?: number;
@@ -9389,6 +9397,9 @@ export namespace main {
 	        this.pending_approval = source["pending_approval"];
 	        this.plan_dialogue = source["plan_dialogue"];
 	        this.step_statuses = this.convertValues(source["step_statuses"], codingWorkbenchStepStatus);
+	        this.steps_revision = source["steps_revision"];
+	        this.execution_status = source["execution_status"];
+	        this.stop = source["stop"];
 	        this.project_instruction_sources = source["project_instruction_sources"];
 	        this.checkpoint_label = source["checkpoint_label"];
 	        this.session_input_tokens = source["session_input_tokens"];

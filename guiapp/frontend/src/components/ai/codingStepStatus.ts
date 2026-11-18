@@ -62,7 +62,24 @@ export type CodingWorkbenchStepRow = {
     verify_ok?: boolean;
     /** Unix seconds from the backend. 0 means the producer did not stamp the row. */
     updated_unix: number;
+    blocked_by?: string[];
+    block_reason?: string;
+    child_task_id?: string;
 };
+
+/** Shared execution status published with the checklist. Empty means the caller still infers. */
+export function codingSharedExecutionStatus(raw: unknown): string {
+    if (!raw || typeof raw !== "object") return "";
+    const rec = raw as Record<string, unknown>;
+    const value = rec.execution_status ?? rec.executionStatus;
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function codingStringList(value: unknown): string[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    const out = value.map((item) => String(item || "").trim()).filter(Boolean);
+    return out.length > 0 ? out : undefined;
+}
 
 /** Normalize a status or event step list. A non-array is an empty checklist. */
 export function codingWorkbenchStepsFromPayload(raw: unknown): CodingWorkbenchStepRow[] {
@@ -77,6 +94,9 @@ export function codingWorkbenchStepsFromPayload(raw: unknown): CodingWorkbenchSt
             verify_cmd: String(step.verify_cmd || ""),
             verify_ok: typeof step.verify_ok === "boolean" ? step.verify_ok : undefined,
             updated_unix: Number(step.updated_unix) || 0,
+            blocked_by: codingStringList(step.blocked_by ?? step.blockedBy),
+            block_reason: String(step.block_reason || step.blockReason || "").trim() || undefined,
+            child_task_id: String(step.child_task_id || step.childTaskId || "").trim() || undefined,
         };
     });
 }
@@ -168,6 +188,7 @@ export function codingPlanAwaitingStart<T extends { status?: string }>(steps: T[
     const list = steps || [];
     return list.every((step) => {
         const status = String(step?.status || "");
+        if (status.toLowerCase() === "waiting_review") return false;
         return !codingStepIsActive(status) && !codingStepIsSettled(status);
     });
 }

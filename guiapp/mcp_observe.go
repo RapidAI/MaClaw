@@ -42,19 +42,22 @@ const (
 // mcpLogEvent is one cursor row. The task text stays a separate field;
 // callers page through these instead of receiving the whole transcript.
 type mcpLogEvent struct {
-	Seq  int    `json:"seq"`
-	At   string `json:"at"`
-	Kind string `json:"kind"`
-	Name string `json:"name,omitempty"`
-	Text string `json:"text,omitempty"`
-	OK   *bool  `json:"ok,omitempty"`
+	Seq   int    `json:"seq"`
+	At    string `json:"at"`
+	Kind  string `json:"kind"`
+	Name  string `json:"name,omitempty"`
+	Text  string `json:"text,omitempty"`
+	OK    *bool  `json:"ok,omitempty"`
+	RunID string `json:"run_id,omitempty"`
 }
 
 type mcpLogPage struct {
-	ProjectPath string        `json:"project_path"`
-	Events      []mcpLogEvent `json:"events"`
-	NextCursor  int           `json:"next_cursor"`
-	Gap         bool          `json:"gap,omitempty"`
+	ProjectPath   string        `json:"project_path"`
+	RunID         string        `json:"run_id,omitempty"`
+	StatusVersion int           `json:"status_version,omitempty"`
+	Events        []mcpLogEvent `json:"events"`
+	NextCursor    int           `json:"next_cursor"`
+	Gap           bool          `json:"gap,omitempty"`
 }
 
 type mcpArtifactFile struct {
@@ -134,6 +137,7 @@ func (a *App) mcpPublishTaskView(view mcpTaskView) mcpTaskView {
 	}
 	view = a.mcpFillProviderModel(view)
 	view = a.mcpEnsureConfirmationID(view)
+	view = mcpPublishChildren(view)
 	return a.mcpAnnotateStepFreshness(view)
 }
 
@@ -146,12 +150,21 @@ func (a *App) mcpReturnTask(view mcpTaskView) mcpTaskView {
 		view.EndReason = ""
 		view.EndDetail = ""
 		view.FinishedAt = ""
+		view.Stop = nil
 	} else {
 		view = a.mcpApplyLiveConfirmation(view)
 		if view.Status == mcpStatusNeedsConfirmation {
 			view.EndReason = mcpStatusNeedsConfirmation
 			if strings.TrimSpace(view.EndDetail) == "" {
 				view.EndDetail = view.ConfirmationKind
+			}
+		}
+		if view.Status == mcpStatusWaitingReview {
+			if strings.TrimSpace(view.EndReason) == "" {
+				view.EndReason = mcpStatusWaitingReview
+			}
+			if strings.TrimSpace(view.EndDetail) == "" && view.Stop != nil {
+				view.EndDetail = view.Stop.Reason
 			}
 		}
 	}
@@ -425,6 +438,9 @@ func mcpPushLogLocked(rec *mcpRunRecord, ev mcpLogEvent) {
 	if ev.Text == "" && ev.Name == "" {
 		return
 	}
+	if strings.TrimSpace(ev.RunID) == "" {
+		ev.RunID = rec.RunID
+	}
 	rec.logSeq++
 	ev.Seq = rec.logSeq
 	if ev.At == "" {
@@ -434,6 +450,7 @@ func mcpPushLogLocked(rec *mcpRunRecord, ev mcpLogEvent) {
 	if len(rec.logs) > mcpLogLimit {
 		rec.logs = append([]mcpLogEvent(nil), rec.logs[len(rec.logs)-mcpLogLimit:]...)
 	}
+	mcpTouchLocked(rec)
 }
 
 func (a *App) mcpAppendLog(path, requestID string, ev mcpLogEvent) {
@@ -459,6 +476,9 @@ func (a *App) mcpRecordToolEvent(path, requestID string, ev ACPToolEvent) {
 		event.OK = &ok
 	}
 	a.mcpAppendLog(path, requestID, event)
+	if ev.Phase == "end" {
+		a.mcpNoteAdmittedChildren(path, requestID, ev.Result)
+	}
 }
 
 func mcpToolLogText(ev ACPToolEvent) string {
@@ -490,23 +510,24 @@ func mcpToolLogText(ev ACPToolEvent) string {
 	return strings.Join(parts, " ")
 }
 
-func (a *App) mcpReadLog(ctx context.Context, projectPath string, cursor int) (mcpLogPage, error) {
+func (a *App) mcpReadLog(ctx context.Context, projectPath, runID string, cursor int) (mcpLogPage, error) {
 	if cursor < 0 {
 		cursor = 0
 	}
 	path := normalizeProjectSessionPath(projectPath)
+	runID = strings.TrimSpace(runID)
 	if a == nil || path == "" {
 		return mcpLogPage{}, errors.New("没有找到这个任务")
 	}
 	a.mcpRunsMu.Lock()
 	defer a.mcpRunsMu.Unlock()
-	rec := a.mcpRuns[path]
-	if rec == nil {
-		return mcpLogPage{}, errors.New("没有找到这个任务")
+	rec, err := a.mcpRunForReadLocked(path, runID)
+	if err != nil {
+		return mcpLogPage{}, err
 	}
 	events := make([]mcpLogEvent, 0)
 	for _, ev := range rec.logs {
-		if ev.Seq <= cursor {
+		if ev.Seq <= cursor || !mcpLogMatchesRun(ev, rec, runID) {
 			continue
 		}
 		events = append(events, ev)
@@ -520,7 +541,11 @@ func (a *App) mcpReadLog(ctx context.Context, projectPath string, cursor int) (m
 		next = events[n-1].Seq
 		gap = events[0].Seq > cursor+1
 	}
-	return mcpLogPage{ProjectPath: path, Events: events, NextCursor: next, Gap: gap}, nil
+	pageRun := runID
+	if pageRun == "" {
+		pageRun = rec.RunID
+	}
+	return mcpLogPage{ProjectPath: path, RunID: pageRun, StatusVersion: rec.StatusVersion, Events: events, NextCursor: next, Gap: gap}, nil
 }
 
 func (a *App) mcpArtifactRoot(projectPath string) (string, mcpTaskView, error) {

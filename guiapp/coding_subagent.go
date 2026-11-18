@@ -56,6 +56,7 @@ import (
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // CodingSubAgent executes a single coding task in a clean context.
@@ -305,8 +306,10 @@ type CodingSubAgentResult struct {
 	// waiting_child parent handoff. Workflow V2 preserves it separately from a
 	// generic skipped status so users can explicitly review child results.
 	RuntimeHandoff bool
-	Iterations     int
-	ToolCalls      int
+	// Children are internal tasks this attempt admitted. Admission is not completion.
+	Children   []v2.ChildTaskView
+	Iterations int
+	ToolCalls  int
 
 	// Token / cost accounting for this SubAgent loop (when provider reports usage).
 	InputTokens  int

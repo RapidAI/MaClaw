@@ -25,11 +25,11 @@ const (
 type mcpTaskAPI interface {
 	mcpListModels(ctx context.Context) (mcpModelCatalog, error)
 	mcpCreateTask(ctx context.Context, args mcpCreateArgs) (mcpTaskView, error)
-	mcpGetTask(ctx context.Context, projectPath string) (mcpTaskView, error)
+	mcpGetTask(ctx context.Context, projectPath, runID string) (mcpTaskView, error)
 	mcpStopTask(ctx context.Context, projectPath string) (mcpTaskView, error)
 	mcpSendCommand(ctx context.Context, projectPath, command, confirmationID, clientRequestID string, wait bool) (mcpTaskView, error)
 	mcpListTasks(ctx context.Context) ([]mcpTaskView, error)
-	mcpReadLog(ctx context.Context, projectPath string, cursor int) (mcpLogPage, error)
+	mcpReadLog(ctx context.Context, projectPath, runID string, cursor int) (mcpLogPage, error)
 	mcpListArtifacts(ctx context.Context, projectPath string) (mcpArtifactList, error)
 	mcpReadArtifact(ctx context.Context, projectPath, relPath string, download bool) (mcpArtifactBody, error)
 	mcpGetRequest(ctx context.Context, clientRequestID string) (mcpRequestView, error)
@@ -186,7 +186,8 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 		return mcpToolText(view, view.Status == mcpStatusFailed), nil
 	case "get_task":
 		path := mcpFirstString(args, "project_path", "projectPath")
-		view, err := h.api.mcpGetTask(ctx, path)
+		runID := mcpFirstString(args, "run_id", "runId")
+		view, err := h.api.mcpGetTask(ctx, path, runID)
 		if err != nil {
 			return mcpToolError(err.Error()), nil
 		}
@@ -219,7 +220,8 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 		return mcpToolText(map[string]any{"tasks": tasks}, false), nil
 	case "read_log":
 		path := mcpFirstString(args, "project_path", "projectPath")
-		page, err := h.api.mcpReadLog(ctx, path, mcpLookupInt(args, "cursor"))
+		runID := mcpFirstString(args, "run_id", "runId")
+		page, err := h.api.mcpReadLog(ctx, path, runID, mcpLookupInt(args, "cursor"))
 		if err != nil {
 			return mcpToolError(err.Error()), nil
 		}
@@ -351,9 +353,10 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "get_task",
-			"description": "查看一个任务的状态和结果。返回 provider、model、working_dir、round、started_at、finished_at、end_reason、end_detail。steps 列出每一步的 id、status、error 和 retryable。有失败或未完成步骤时 status 不会是 completed。checks 是浏览器截图和断言，带当时的文件哈希；文件变了之后 stale 为 true。远程编程任务还会返回 ssh_host、ssh_user、ssh_port、remote_work_dir，不含密码。end_reason 在结束后是 completed、failed、cancelled 或 needs_confirmation。needs_confirmation 表示这轮已经停下来等确认。running 时如果带了 confirmation_kind 和 commands，表示这轮还在跑，但卡在授权或安全确认上。有确认时还会给出 confirmation_id。commands 里的每一条都可以原样交给 send_command，决定类命令必须带上这个 confirmation_id。",
+			"description": "查看一个任务的状态和结果。返回 provider、model、working_dir、round、run_id、status_version、started_at、finished_at、end_reason、end_detail。run_id 是这一轮执行；传入时只返回这一轮，不传则返回当前轮。status_version 随这一轮的状态变化增加。stop 给出 class、source、reason、at 和 step_id，class 可以是 user_stop、timeout、program_error、dependency_failure 或 waiting_review。steps 列出每一步的 id、status、error、retryable，未执行的步骤还有 blocked_by 和 block_reason。等待子任务审阅时步骤和任务的 status 都是 waiting_review，不是 failed，也不是 completed。必要步骤没通过时 status 不会是 completed。child_task_id 是第一个内部任务，children 列出全部；已接受的子任务 status 是 admitted，不是 completed。checks 是浏览器截图和断言，带当时的文件哈希；文件变了之后 stale 为 true。远程编程任务还会返回 ssh_host、ssh_user、ssh_port、remote_work_dir，不含密码。end_reason 在结束后是 completed、failed、cancelled、waiting_review 或 needs_confirmation。needs_confirmation 表示这轮已经停下来等确认。running 时如果带了 confirmation_kind 和 commands，表示这轮还在跑，但卡在授权或安全确认上。有确认时还会给出 confirmation_id。commands 里的每一条都可以原样交给 send_command，决定类命令必须带上这个 confirmation_id。",
 			"inputSchema": object(map[string]any{
 				"project_path": str("create_task 返回的 project_path。"),
+				"run_id":       str("只查询这一轮。省略时返回当前轮。别名 runId。"),
 			}, []string{"project_path"}),
 		},
 		{
@@ -365,7 +368,7 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "send_command",
-			"description": "向一个已有任务发送任意命令或后续内容。斜杠命令、确认按钮和自由回答都原样进入该任务。编程计划用 /plan approve、/plan skip、/plan reject。确认卡、未完成项、会话恢复、授权和安全确认用该任务 commands 里的原文，并且必须带上这次 get_task 返回的 confirmation_id。编号不匹配或已经用过会拒绝，也不会沿用上一轮确认。普通命令在任务 running 时会拒绝；commands 里的授权和安全确认可以在 running 时发送，当前这轮会继续。可以带 client_request_id，同一个编号不会把指令再执行一次。wait 默认 false。",
+			"description": "向一个已有任务发送任意命令或后续内容。斜杠命令、确认按钮和自由回答都原样进入该任务。返回这一轮的 run_id 和 status_version。新一轮的 steps 只属于这一轮，上一轮用 get_task 的 run_id 查询。编程计划用 /plan approve、/plan skip、/plan reject。确认卡、未完成项、会话恢复、授权和安全确认用该任务 commands 里的原文，并且必须带上这次 get_task 返回的 confirmation_id。编号不匹配或已经用过会拒绝，也不会沿用上一轮确认。普通命令在任务 running 时会拒绝；commands 里的授权和安全确认可以在 running 时发送，当前这轮会继续。可以带 client_request_id，同一个编号不会把指令再执行一次。返回已接受不代表执行完成。wait 默认 false。",
 			"inputSchema": object(map[string]any{
 				"project_path":      str("任务的 project_path。"),
 				"command":           str("要发回的原文。别名 text、prompt、message。"),
@@ -381,9 +384,10 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "read_log",
-			"description": "按游标读取任务进展、工具调用和错误。cursor 传上一次的 next_cursor，第一次传 0。序号跨轮次继续增加。如果中间丢过记录，gap 为 true。不会返回整段拼接文本。密钥会打码。",
+			"description": "按游标读取任务进展、工具调用和错误。cursor 传上一次的 next_cursor，第一次传 0。不传 run_id 时序号跨轮次继续增加。传入 run_id 时只返回这一轮，并带上 run_id 和 status_version。如果中间丢过记录，gap 为 true。不会返回整段拼接文本。密钥会打码。",
 			"inputSchema": object(map[string]any{
 				"project_path": str("任务的 project_path。"),
+				"run_id":       str("只读取这一轮。省略时跨轮次继续。别名 runId。"),
 				"cursor":       map[string]any{"type": "integer", "description": "上次返回的 next_cursor。第一次用 0。"},
 			}, []string{"project_path"}),
 		},

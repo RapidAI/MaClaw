@@ -982,6 +982,7 @@ func runAdmittedLocalReadOnlyChild(store codingruntime.Store, parentTaskID strin
 			emitCodingSubAgentProgress(onProgress, fmt.Sprintf("read-only child %s completed: %s", handle.TaskID, status))
 		}
 	}
+	publishMCPChildOutcome(child.handler, handle, outcome, store)
 	// Once this child's bounded result is durable, the last-finishing sibling
 	// continues the parent's main task automatically — no manual review action.
 	autoResumeCodingChildReviewIfReady(child.handler, resumeOwnerID, parentTaskID, resumeTarget)
@@ -992,6 +993,11 @@ func formatAdmittedReadOnlyChildHandles(handles []codingruntime.ChildTaskHandle)
 	lines = append(lines, "spawn_coding_agent admitted read-only child task(s); parent attempt released its lease:")
 	for _, handle := range handles {
 		lines = append(lines, fmt.Sprintf("- task_id=%s name=%s status=%s", handle.TaskID, handle.Name, handle.Status))
+		pub := codingChildPublicStatus(handle.Status)
+		if pub == mcpStatusCompleted {
+			pub = "admitted"
+		}
+		lines = append(lines, fmt.Sprintf("child_task_id=%s parent_task_id=%s name=%s status=%s", handle.TaskID, handle.ParentTaskID, handle.Name, pub))
 	}
 	lines = append(lines, "Child results will be persisted as bounded summaries/evidence digests; a fresh parent attempt must explicitly review them.")
 	return strings.Join(lines, "\n")

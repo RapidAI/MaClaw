@@ -58,6 +58,12 @@ type mcpTaskView struct {
 	RemoteWorkDir    string         `json:"remote_work_dir,omitempty"`
 	Steps            []mcpStepView  `json:"steps,omitempty"`
 	Checks           []mcpCheckView `json:"checks,omitempty"`
+	RunID            string         `json:"run_id,omitempty"`
+	StatusVersion    int            `json:"status_version,omitempty"`
+	ParentTaskID     string         `json:"parent_task_id,omitempty"`
+	ChildTaskID      string         `json:"child_task_id,omitempty"`
+	Children         []mcpChildView `json:"children,omitempty"`
+	Stop             *mcpStopView   `json:"stop,omitempty"`
 	// workspace is the directory tools are editing. Scope approvals name that
 	// directory, which is not always the task record path. Publish copies it
 	// to WorkingDir. The unexported field stays the scope-match key.
@@ -100,6 +106,12 @@ type mcpRunRecord struct {
 	RemoteWorkDir      string
 	Steps              []mcpStepView
 	Checks             []mcpCheckView
+	RunID              string
+	StatusVersion      int
+	ParentTaskID       string
+	ChildTaskID        string
+	Children           []mcpChildView
+	Stop               *mcpStopView
 	cancel             context.CancelFunc
 }
 
@@ -137,6 +149,12 @@ func (rec *mcpRunRecord) view() mcpTaskView {
 		RemoteWorkDir:    rec.RemoteWorkDir,
 		Steps:            mcpCloneSteps(rec.Steps),
 		Checks:           mcpCloneChecks(rec.Checks),
+		RunID:            rec.RunID,
+		StatusVersion:    rec.StatusVersion,
+		ParentTaskID:     rec.ParentTaskID,
+		ChildTaskID:      rec.ChildTaskID,
+		Children:         mcpCloneChildren(rec.Children),
+		Stop:             mcpCloneStop(rec.Stop),
 		workspace:        rec.Workspace,
 		historyCount:     rec.historyCount,
 		historySeal:      rec.historySeal,
@@ -628,10 +646,18 @@ func (a *App) mcpRetrySteps(ctx context.Context, projectPath string, rawIDs []st
 	return view, err
 }
 
-func (a *App) mcpGetTask(ctx context.Context, projectPath string) (mcpTaskView, error) {
+func (a *App) mcpGetTask(ctx context.Context, projectPath, runID string) (mcpTaskView, error) {
 	path := normalizeProjectSessionPath(projectPath)
+	runID = strings.TrimSpace(runID)
 	if a == nil || path == "" {
 		return mcpTaskView{}, errors.New("没有找到这个任务")
+	}
+	if runID != "" {
+		view, ok := a.mcpViewForRun(path, runID)
+		if !ok {
+			return mcpTaskView{}, errors.New("没有这一轮执行")
+		}
+		return a.mcpReturnTask(view), nil
 	}
 	if view, ok := a.mcpViewFromRegistry(path); ok && view.Status == mcpStatusRunning {
 		return a.mcpReturnTask(view), nil
@@ -780,8 +806,9 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		RemotePort:    view.RemotePort,
 		RemoteWorkDir: view.RemoteWorkDir,
 		Round:         a.mcpNextRound(path),
+		RunID:         mcpNewRunID(),
+		StatusVersion: 1,
 		StartedAt:     time.Now(),
-		Steps:         mcpCloneSteps(view.Steps),
 		Checks:        mcpCloneChecks(view.Checks),
 		historyCount:  mark.count,
 		historySeal:   mark.text,
@@ -843,7 +870,8 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 				a.mcpRecordToolEvent(path, requestID, ev)
 			},
 		})
-		status, finalText, errText, keepText, steps := mcpRunOutcome(err, runCtx.Err() != nil, resp)
+		cause := runCtx.Err()
+		status, finalText, errText, keepText, steps := mcpRunOutcomeCause(err, cause, resp)
 		steps = a.mcpStampStepFiles(path, steps)
 		var kind string
 		var commands []string
@@ -855,13 +883,15 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		// Seal against the saved transcript, not resp.Text. The registry copy
 		// can grow a workspace-file suffix after history is already stored.
 		a.mcpSealConversation(path, requestID, a.mcpConversationMark(path))
-		a.mcpFinishRun(path, requestID, status, finalText, errText, keepText, kind, commands, steps)
+		a.mcpFinishRunCause(path, requestID, status, finalText, errText, keepText, kind, commands, steps, cause)
 	}()
 
 	view.ProjectPath = path
 	view.Status = mcpStatusRunning
 	view.RequestID = requestID
 	view.Round = rec.Round
+	view.RunID = rec.RunID
+	view.StatusVersion = rec.StatusVersion
 	view.StartedAt = mcpFormatTime(rec.StartedAt)
 	view.workspace = rec.Workspace
 	view.FinishedAt = ""
@@ -870,6 +900,10 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	view.ConfirmationKind = ""
 	view.ConfirmationID = ""
 	view.Commands = nil
+	view.Steps = nil
+	view.Stop = nil
+	view.Children = nil
+	view.ChildTaskID = ""
 	if !wait {
 		return a.mcpReturnTask(view), nil
 	}
@@ -976,7 +1010,30 @@ func (a *App) mcpCommitRun(rec *mcpRunRecord, token uint64, replaceRunning bool)
 	}
 	var cancel context.CancelFunc
 	dismiss := false
+	if strings.TrimSpace(rec.RunID) == "" {
+		rec.RunID = mcpNewRunID()
+	}
+	if rec.StatusVersion <= 0 {
+		rec.StatusVersion = 1
+	}
 	if prev := a.mcpRuns[path]; prev != nil {
+		if mcpRunStillWaiting(prev.Status) && prev.RequestID != rec.RequestID {
+			// The card belongs to the turn we are replacing. Clear it only after
+			// the registry lock is released, and only from a handler that already
+			// exists — building hub infra here can load the user config.
+			now := time.Now()
+			prev.Status = mcpStatusCancelled
+			prev.FinishedAt = now
+			prev.EndReason = mcpStatusCancelled
+			prev.Stop = mcpStopFor(mcpStatusCancelled, "", prev.Steps, context.Canceled, now)
+			mcpTouchLocked(prev)
+			dismiss = true
+			cancel = prev.cancel
+			prev.cancel = nil
+		}
+		// Archive the round's final state. The clone owns its log slice, so
+		// carrying the cursor onto the replacement does not rewrite this round.
+		a.mcpArchiveRunLocked(prev)
 		// The cursor is the task's, not the round's. A client holding
 		// next_cursor must still see events from the replacement run.
 		if rec.logSeq < prev.logSeq {
@@ -984,15 +1041,6 @@ func (a *App) mcpCommitRun(rec *mcpRunRecord, token uint64, replaceRunning bool)
 		}
 		if len(rec.logs) == 0 && len(prev.logs) > 0 {
 			rec.logs = append([]mcpLogEvent(nil), prev.logs...)
-		}
-		if mcpRunStillWaiting(prev.Status) && prev.RequestID != rec.RequestID {
-			// The card belongs to the turn we are replacing. Clear it only after
-			// the registry lock is released, and only from a handler that already
-			// exists — building hub infra here can load the user config.
-			dismiss = true
-			prev.Status = mcpStatusCancelled
-			cancel = prev.cancel
-			prev.cancel = nil
 		}
 	}
 	a.mcpRuns[path] = rec
@@ -1764,11 +1812,20 @@ func (a *App) mcpApplyLiveConfirmation(view mcpTaskView) mcpTaskView {
 // recovery review ends this call before the work exists, so it must not
 // look like a finished answer. Cancellation still wins.
 func mcpRunOutcome(runErr error, cancelled bool, resp *IMAgentResponse) (status, text, errText string, keepText bool, steps []mcpStepView) {
+	var cause error
+	if cancelled {
+		cause = context.Canceled
+	}
+	return mcpRunOutcomeCause(runErr, cause, resp)
+}
+
+func mcpRunOutcomeCause(runErr, cause error, resp *IMAgentResponse) (status, text, errText string, keepText bool, steps []mcpStepView) {
 	status = mcpStatusCompleted
 	keepText = true
-	if cancelled {
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded), errors.Is(cause, context.Canceled):
 		status = mcpStatusCancelled
-	} else if runErr != nil {
+	case runErr != nil:
 		status = mcpStatusFailed
 		errText = runErr.Error()
 	}
@@ -1788,19 +1845,11 @@ func mcpRunOutcome(runErr error, cancelled bool, resp *IMAgentResponse) (status,
 	steps = mcpStepsFromAgent(resp)
 	// A failed or unfinished step is not a completed task, even when the
 	// assistant text is non-empty and the response error is blank.
-	if status == mcpStatusCompleted {
-		if len(steps) > 0 {
-			if mcpStepsBlockCompletion(steps) {
-				status = mcpStatusFailed
-			}
-		} else if mcpOutcomeBlocksCompletion(text, resp) {
-			status = mcpStatusFailed
-			steps = mcpStepsFromFinishText(text, resp)
-		}
+	if status == mcpStatusCompleted && len(steps) == 0 && mcpOutcomeBlocksCompletion(text, resp) {
+		status = mcpStatusFailed
+		steps = mcpStepsFromFinishText(text, resp)
 	}
-	if status == mcpStatusFailed && strings.TrimSpace(errText) == "" {
-		errText = mcpStepFailureDetail(steps, text, resp)
-	}
+	status, errText, steps = mcpApplyStepGate(status, errText, steps)
 	if text != "" {
 		keepText = false
 	}
@@ -1856,12 +1905,15 @@ func (a *App) mcpCancelRun(path string) {
 	// and start the turn that stop just rejected.
 	dropClaim := rec == nil
 	if rec != nil && mcpRunStillWaiting(rec.Status) {
+		now := time.Now()
 		rec.Status = mcpStatusCancelled
-		rec.FinishedAt = time.Now()
+		rec.FinishedAt = now
 		rec.EndReason = mcpStatusCancelled
 		rec.EndDetail = ""
 		rec.ConfirmationID = ""
 		rec.confirmFingerprint = ""
+		rec.Stop = mcpStopFor(mcpStatusCancelled, "", rec.Steps, context.Canceled, now)
+		mcpTouchLocked(rec)
 		cancel = rec.cancel
 		rec.cancel = nil
 		dropClaim = true
@@ -1876,6 +1928,10 @@ func (a *App) mcpCancelRun(path string) {
 }
 
 func (a *App) mcpFinishRun(path, requestID, status, text, errText string, keepText bool, kind string, commands []string, steps []mcpStepView) {
+	a.mcpFinishRunCause(path, requestID, status, text, errText, keepText, kind, commands, steps, nil)
+}
+
+func (a *App) mcpFinishRunCause(path, requestID, status, text, errText string, keepText bool, kind string, commands []string, steps []mcpStepView, cause error) {
 	if a == nil {
 		return
 	}
@@ -1889,26 +1945,28 @@ func (a *App) mcpFinishRun(path, requestID, status, text, errText string, keepTe
 	// Merge under the lock so a screenshot taken while the transcript is
 	// sealed stays on the step. Completion follows the merged checklist:
 	// a retry that only reports the step it reran must not hide another
-	// step that is still failed.
+	// step that is still failed. A new run starts with an empty checklist,
+	// so this merge stays inside the round that already holds the steps.
 	steps = mcpMergeSteps(rec.Steps, steps)
-	if status == mcpStatusCompleted && mcpStepsBlockCompletion(steps) {
-		status = mcpStatusFailed
-		if strings.TrimSpace(errText) == "" {
-			errText = mcpStepFailureDetail(steps, text, nil)
-		}
-	}
+	status, errText, steps = mcpApplyStepGate(status, errText, steps)
 	rec.Status = status
 	rec.Error = errText
 	rec.FinishedAt = time.Now()
 	rec.EndReason = status
 	rec.EndDetail = ""
-	if status == mcpStatusFailed {
+	switch status {
+	case mcpStatusFailed, mcpStatusWaitingReview:
 		rec.EndDetail = errText
-	} else if status == mcpStatusNeedsConfirmation {
+	case mcpStatusNeedsConfirmation:
 		rec.EndDetail = kind
 	}
+	rec.Stop = mcpStopFor(status, errText, steps, cause, rec.FinishedAt)
+	versionBefore := rec.StatusVersion
 	if strings.TrimSpace(errText) != "" {
 		mcpPushLogLocked(rec, mcpLogEvent{Kind: "error", Text: errText})
+	}
+	if rec.StatusVersion == versionBefore {
+		mcpTouchLocked(rec)
 	}
 	if !keepText {
 		rec.Text = text
@@ -1921,6 +1979,10 @@ func (a *App) mcpFinishRun(path, requestID, status, text, errText string, keepTe
 	rec.ConfirmationKind = kind
 	rec.Commands = append([]string(nil), commands...)
 	rec.Steps = mcpCloneSteps(steps)
+	rec.Children = a.mcpOverlayPendingChildrenLocked(mcpMergeChildren(rec.Children, mcpChildrenFromSteps(steps)))
+	if strings.TrimSpace(rec.ChildTaskID) == "" && len(rec.Children) > 0 {
+		rec.ChildTaskID = rec.Children[0].ChildTaskID
+	}
 	rec.ConfirmationID = ""
 	rec.confirmFingerprint = ""
 	rec.cancel = nil
@@ -1949,6 +2011,7 @@ func (a *App) mcpAppendRunText(path, requestID, delta string) {
 		return
 	}
 	rec.Text += delta
+	mcpTouchLocked(rec)
 }
 
 func (a *App) mcpSetRunWorkspace(path, requestID, workspace string) {
@@ -1971,7 +2034,11 @@ func (a *App) mcpSetRunWorkspace(path, requestID, workspace string) {
 	if rec.Mode == taskRemoteCodingDevTag && strings.TrimSpace(rec.Workspace) != "" {
 		return
 	}
+	if rec.Workspace == workspace {
+		return
+	}
 	rec.Workspace = workspace
+	mcpTouchLocked(rec)
 }
 
 func (a *App) mcpViewFromRegistry(path string) (mcpTaskView, bool) {
@@ -2015,7 +2082,7 @@ func (a *App) mcpTaskViewFromStore(path string) mcpTaskView {
 		view.Steps = mcpStepsFromFinishText(text, nil)
 		view.Error = mcpStepFailureDetail(view.Steps, text, nil)
 	}
-	return mcpSealRemoteWorkspace(view)
+	return mcpSealRemoteWorkspace(mcpApplyNamedWorkingDir(view, snap.Tags))
 }
 
 func mcpRemoteMetaFromTags(tags []string) (host, user, workDir string, port int) {
@@ -2088,9 +2155,35 @@ func mcpPreferTaskView(reg, store mcpTaskView) mcpTaskView {
 		return reg
 	}
 	if mcpConversationMoved(reg, store) {
-		return mcpFillTaskView(store, reg)
+		return mcpHoldProjectedOutcome(mcpFillTaskView(store, reg), reg)
 	}
 	return mcpFillTaskView(reg, store)
+}
+
+// mcpHoldProjectedOutcome keeps the run projection when a later assistant
+// sentence, or a task-list workflow that is still running, queued, or paused,
+// would otherwise replace it. The sentence stays visible. waiting_review and
+// a step list that has not passed stay the task outcome. That workflow flag
+// is not a new MCP run: a new run is already the registry row.
+func mcpHoldProjectedOutcome(view, reg mcpTaskView) mcpTaskView {
+	upgrade := view.Status == mcpStatusCompleted || view.Status == mcpStatusIdle || view.Status == "" || view.Status == mcpStatusRunning
+	blocked := reg.Status == mcpStatusWaitingReview || (upgrade && reg.Status != mcpStatusCompleted && reg.Status != mcpStatusRunning && reg.Status != "" && mcpStepsBlockCompletion(reg.Steps))
+	if !blocked {
+		return view
+	}
+	view.Status = reg.Status
+	view.Error = reg.Error
+	if strings.TrimSpace(reg.EndReason) != "" {
+		view.EndReason = reg.EndReason
+		view.EndDetail = reg.EndDetail
+	}
+	if reg.Stop != nil {
+		view.Stop = mcpCloneStop(reg.Stop)
+	}
+	if len(reg.Steps) > 0 {
+		view.Steps = mcpCloneSteps(reg.Steps)
+	}
+	return view
 }
 
 func mcpConversationMoved(reg, store mcpTaskView) bool {
@@ -2121,6 +2214,24 @@ func mcpFillTaskView(primary, fallback mcpTaskView) mcpTaskView {
 	}
 	if strings.TrimSpace(primary.RequestID) == "" {
 		primary.RequestID = fallback.RequestID
+	}
+	if strings.TrimSpace(primary.RunID) == "" {
+		primary.RunID = fallback.RunID
+	}
+	if primary.StatusVersion == 0 {
+		primary.StatusVersion = fallback.StatusVersion
+	}
+	if primary.Stop == nil {
+		primary.Stop = mcpCloneStop(fallback.Stop)
+	}
+	if strings.TrimSpace(primary.ChildTaskID) == "" {
+		primary.ChildTaskID = fallback.ChildTaskID
+	}
+	if strings.TrimSpace(primary.ParentTaskID) == "" {
+		primary.ParentTaskID = fallback.ParentTaskID
+	}
+	if len(primary.Children) == 0 && len(fallback.Children) > 0 {
+		primary.Children = mcpCloneChildren(fallback.Children)
 	}
 	if strings.TrimSpace(primary.workspace) == "" {
 		primary.workspace = fallback.workspace
@@ -2266,7 +2377,28 @@ func mcpViewWithTaskTags(view mcpTaskView, tags []string) mcpTaskView {
 	if strings.TrimSpace(view.RemoteWorkDir) == "" {
 		view.RemoteWorkDir = workDir
 	}
-	return mcpSealRemoteWorkspace(view)
+	return mcpSealRemoteWorkspace(mcpApplyNamedWorkingDir(view, tags))
+}
+
+// mcpApplyNamedWorkingDir copies the task's working_dir tag onto a local view
+// that does not already name a directory. A remote tree keeps the SSH
+// workdir. A task-folder sandbox is not an execution directory.
+func mcpApplyNamedWorkingDir(view mcpTaskView, tags []string) mcpTaskView {
+	if strings.TrimSpace(view.Mode) == taskRemoteCodingDevTag || strings.TrimSpace(view.RemoteHost) != "" {
+		return view
+	}
+	if strings.TrimSpace(view.workspace) != "" {
+		return view
+	}
+	dir := normalizeProjectSessionPath(recentTaskWorkingDirFromTags(tags))
+	if dir == "" || isLocalCodingIdentityOrSandbox(view.ProjectPath, dir) {
+		return view
+	}
+	view.workspace = dir
+	if strings.TrimSpace(view.WorkingDir) == "" {
+		view.WorkingDir = dir
+	}
+	return view
 }
 
 func mcpNormalizeTaskMode(mode, workingDir string) (string, error) {
@@ -2289,7 +2421,7 @@ func mcpNormalizeTaskMode(mode, workingDir string) (string, error) {
 
 func mcpDisplayStatus(registryStatus, workflowStatus, lastAssistant string) string {
 	switch registryStatus {
-	case mcpStatusRunning, mcpStatusCancelled, mcpStatusFailed, mcpStatusCompleted, mcpStatusNeedsConfirmation:
+	case mcpStatusRunning, mcpStatusCancelled, mcpStatusFailed, mcpStatusCompleted, mcpStatusNeedsConfirmation, mcpStatusWaitingReview:
 		return registryStatus
 	}
 	switch strings.ToLower(strings.TrimSpace(workflowStatus)) {

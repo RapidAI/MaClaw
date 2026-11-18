@@ -39,6 +39,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // RemoteCodingSubAgent executes coding tasks on a remote server via SSH.
@@ -236,7 +237,9 @@ type RemoteCodingSubAgentResult struct {
 	RuntimeTaskID string
 	// RuntimeHandoff is true only for an explicit waiting_child parent handoff.
 	// It lets the workflow offer a fresh child-result review, not a retry.
-	RuntimeHandoff        bool
+	RuntimeHandoff bool
+	// Children are internal tasks this attempt admitted. Admission is not completion.
+	Children              []v2.ChildTaskView
 	Iterations            int
 	ToolCalls             int
 	InputTokens           int

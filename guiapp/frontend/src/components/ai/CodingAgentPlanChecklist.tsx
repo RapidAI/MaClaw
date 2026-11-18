@@ -398,6 +398,15 @@ export function CodingAgentPlanChecklist({
                                                         {st.summary}
                                                     </span>
                                                 ) : null}
+                                                {(st.block_reason || st.blocked_by?.length) ? (
+                                                    <span
+                                                        data-testid={`coding-agent-plan-step-${st.index}-block`}
+                                                        className="capc-step-note"
+                                                        style={{ color: chrome.muted, overflowWrap: "anywhere" }}
+                                                    >
+                                                        {[st.block_reason, st.blocked_by?.length ? `blocked_by ${st.blocked_by.join(", ")}` : ""].filter(Boolean).join(" · ")}
+                                                    </span>
+                                                ) : null}
                                             </span>
                                             {/* The glyph is aria-hidden and the color carries no
                                                 meaning for screen readers, so state the status. */}

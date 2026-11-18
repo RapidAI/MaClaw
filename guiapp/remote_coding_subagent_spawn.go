@@ -277,6 +277,7 @@ func runAdmittedRemoteReadOnlyChild(store codingruntime.Store, parentTaskID stri
 			emitCodingSubAgentProgress(onProgress, fmt.Sprintf("remote read-only child %s completed: %s", handle.TaskID, status))
 		}
 	}
+	publishMCPChildOutcome(child.handler, handle, outcome, store)
 	// Once this child's bounded result is durable, the last-finishing sibling
 	// continues the parent's main task automatically — no manual review action.
 	autoResumeCodingChildReviewIfReady(child.handler, resumeOwnerID, parentTaskID, resumeTarget)

@@ -48,10 +48,13 @@ type codingWorkbenchStepStatus struct {
 	// Summary is the checklist row's one-line note, never the step's result
 	// report. Writers route through codingStepChecklistNote; the full result
 	// stays on TaskRunResult.Summary for the turn's final answer.
-	Summary     string `json:"summary,omitempty"`
-	VerifyCmd   string `json:"verify_cmd,omitempty"`
-	VerifyOK    *bool  `json:"verify_ok,omitempty"`
-	UpdatedUnix int64  `json:"updated_unix,omitempty"`
+	Summary     string   `json:"summary,omitempty"`
+	VerifyCmd   string   `json:"verify_cmd,omitempty"`
+	VerifyOK    *bool    `json:"verify_ok,omitempty"`
+	UpdatedUnix int64    `json:"updated_unix,omitempty"`
+	BlockedBy   []string `json:"blocked_by,omitempty"`
+	BlockReason string   `json:"block_reason,omitempty"`
+	ChildTaskID string   `json:"child_task_id,omitempty"`
 }
 
 func (s codingWorkbenchStepStatus) MarshalJSON() ([]byte, error) {
@@ -529,10 +532,14 @@ func (h *IMMessageHandler) setStickyCodingStepStatuses(userID string, steps []co
 // item of the checklist the agent published with todo_write, so painting that
 // outcome onto row 1 would leave the later rows looking independently passed.
 func (h *IMMessageHandler) recordOrchestratedCodingStepStatus(planned bool, userID string, index int, status, summary string) {
+	h.recordOrchestratedCodingStepChild(planned, userID, index, status, summary, "")
+}
+
+func (h *IMMessageHandler) recordOrchestratedCodingStepChild(planned bool, userID string, index int, status, summary, childTaskID string) {
 	if !planned {
 		return
 	}
-	h.updateStickyCodingStepStatus(userID, index, status, summary)
+	h.updateStickyCodingStepStatus(userID, index, status, summary, childTaskID)
 }
 
 // skipRemainingOrchestratedCodingSteps marks later plan steps skipped after a
@@ -549,7 +556,7 @@ func (h *IMMessageHandler) skipRemainingOrchestratedCodingSteps(planned bool, us
 // the SubAgent's full final answer; only its first outcome line becomes the
 // checklist note, because the row above the composer is an annotation and the
 // report belongs to the transcript (codingStepChecklistNote).
-func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int, status, resultSummary string) {
+func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int, status, resultSummary, childTaskID string) {
 	if h == nil || index < 1 {
 		return
 	}
@@ -558,6 +565,7 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 		return
 	}
 	note := codingStepChecklistNote(resultSummary)
+	childTaskID = strings.TrimSpace(childTaskID)
 	// Memory-only: multi-step runs touch this many times; disk flush at turn end.
 	h.updateStickyCodingWorkbenchMemoryOpts(userID, false, func(mem *stickyCodingWorkbenchMemory) {
 		now := time.Now().Unix()
@@ -567,6 +575,9 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 				mem.StepStatuses[i].Status = status
 				if note != "" {
 					mem.StepStatuses[i].Summary = note
+				}
+				if childTaskID != "" {
+					mem.StepStatuses[i].ChildTaskID = childTaskID
 				}
 				mem.StepStatuses[i].UpdatedUnix = now
 				found = true
@@ -578,6 +589,7 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 				Index:       index,
 				Status:      status,
 				Summary:     note,
+				ChildTaskID: childTaskID,
 				UpdatedUnix: now,
 			})
 		}
@@ -691,8 +703,24 @@ func codingWorkbenchStepsSnapshot(steps []codingWorkbenchStepStatus) []codingWor
 	copy(out, steps)
 	for i := range out {
 		out[i].Summary = codingStepChecklistNote(out[i].Summary)
+		out[i].BlockedBy = append([]string(nil), steps[i].BlockedBy...)
 	}
-	return out
+	if !workbenchPlanStarted(out) {
+		return out
+	}
+	return annotateWorkbenchBlocks(out)
+}
+
+func workbenchPlanStarted(steps []codingWorkbenchStepStatus) bool {
+	for _, step := range steps {
+		switch strings.TrimSpace(step.Status) {
+		case "", codingStepPending:
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // codingWorkbenchStepsEventPayload shapes the checklist snapshot shared by
@@ -707,16 +735,24 @@ func (h *IMMessageHandler) codingWorkbenchStepsEventPayload(userID string, mem s
 			projectPath = strings.TrimSpace(mem.ProjectPath)
 		}
 	}
-	return map[string]interface{}{
+	steps := codingWorkbenchStepsSnapshot(mem.StepStatuses)
+	payload := map[string]interface{}{
 		"user_id":                 userID,
 		"project_path":            projectPath,
-		"step_statuses":           codingWorkbenchStepsSnapshot(mem.StepStatuses),
+		"step_statuses":           steps,
 		"execution_plan":          strings.TrimSpace(mem.ExecutionPlan),
 		"requirement_restatement": strings.TrimSpace(mem.RequirementRestatement),
 		"pending_approval":        h.codingPlanHasPendingApproval(userID, mem),
 		"plan_dialogue":           mem.PlanDialogue,
 		"steps_revision":          mem.StepsEmitSeq,
 	}
+	if status, stop := mcpExecutionFromWorkbench(steps); status != "" {
+		payload["execution_status"] = status
+		if stop != nil {
+			payload["stop"] = stop
+		}
+	}
+	return payload
 }
 
 // codingWorkbenchStepsSnapshotForSession reads the current checklist without
