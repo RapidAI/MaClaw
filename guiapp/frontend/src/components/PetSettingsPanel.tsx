@@ -36,6 +36,17 @@ import { petMn } from '../i18n/mnPet';
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type PetStoreListing = { id: string; status: string; name: string; version: string; price: number };
 
+function compareDottedPackVersions(a: string, b: string): number {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+        const diff = (pa[i] || 0) - (pb[i] || 0);
+        if (diff !== 0) return diff;
+    }
+    return 0;
+}
+
 function orderPackOptions(packs: unknown[], lang: Lang): PetSkinOption[] {
     const options = packs.map((p) => packInfoToSkinOption(p as Record<string, unknown>, lang));
     const byId = new Map(options.map((o) => [o.id, o]));
@@ -650,11 +661,11 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         setShareError('');
         setShareSuccess('');
         // Updating a listed pack keeps the listing's own fields as defaults so
-        // a version bump cannot silently reset its market name or paid price.
+        // a version bump cannot silently reset its market name, price, or version.
         const listing = activeStoreListing(packToShare);
         setSharePrice(listing ? String(Math.max(0, Math.trunc(listing.price))) : '0');
         setShareName(listing?.name || packToShare.label);
-        setShareVersion(packToShare.version || listing?.version || '1.0.0');
+        setShareVersion(listing?.version || packToShare.version || '1.0.0');
         setShareSetupPack(packToShare);
     }, [selectedSkinOption, petStoreListings]);
 
@@ -716,7 +727,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                 ));
                 return false;
             }
-            const result = await SubmitPetStorePack(zipPath, name.trim(), description.trim(), version.trim() || '1.0.0', price, packToShare.id);
+            const result = await SubmitPetStorePack(zipPath, name.trim(), description.trim(), version.trim(), price, packToShare.id);
             setShareSuccess(result && result.updated === true
                 ? text(
                     lang,
@@ -741,6 +752,27 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     '该宠物包已有上架或暂停的发布记录。请先在“我的上传”中下架或恢复该记录。',
                     '該寵物包已有上架或暫停的發佈記錄。請先在「我的上傳」中下架或恢復該記錄。',
                     'This pet pack already has an active or paused listing. Manage that listing in My Uploads first.'
+                ));
+            } else if (normalized.includes('version is required')) {
+                setShareError(text(
+                    lang,
+                    '请填写版本号，例如 1.0.0。',
+                    '請填寫版本號，例如 1.0.0。',
+                    'Enter a version number, for example 1.0.0.'
+                ));
+            } else if (normalized.includes('version is older than the published version')) {
+                setShareError(text(
+                    lang,
+                    '版本号不能低于已发布的版本。',
+                    '版本號不能低於已發佈的版本。',
+                    'The version cannot be older than the published version.'
+                ));
+            } else if (normalized.includes('does not match pet-pack.yaml') && normalized.includes('version')) {
+                setShareError(text(
+                    lang,
+                    '版本号必须与 pet-pack.yaml 里的 version 一致。',
+                    '版本號必須與 pet-pack.yaml 裡的 version 一致。',
+                    'The version must match version in pet-pack.yaml.'
                 ));
             } else if (normalized.includes('already published by another creator') || normalized.includes('source pack id claimed')) {
                 setShareError(text(
@@ -847,6 +879,16 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             setShareError(text(lang, '请填写宠物包名称。', '請填寫寵物包名稱。', 'Enter a pet-pack name.'));
             return;
         }
+        const version = shareVersion.trim().replace(/^v/i, '');
+        if (!/^\d{1,9}(?:\.\d{1,9}){0,3}$/.test(version)) {
+            setShareError(text(lang, '请填写版本号，例如 1.0.0。', '請填寫版本號，例如 1.0.0。', 'Enter a version number, for example 1.0.0.'));
+            return;
+        }
+        const published = String(activeStoreListing(shareSetupPack)?.version || '').trim().replace(/^v/i, '');
+        if (/^\d{1,9}(?:\.\d{1,9}){0,3}$/.test(published) && compareDottedPackVersions(version, published) < 0) {
+            setShareError(text(lang, '版本号不能低于已发布的版本。', '版本號不能低於已發佈的版本。', 'The version cannot be older than the published version.'));
+            return;
+        }
         if (!Number.isInteger(price) || price < 0 || price > 999999) {
             setShareError(text(lang, '价格必须是 0 到 999999 之间的整数 Credits。', '價格必須是 0 到 999999 之間的整數 Credits。', 'Price must be a whole number from 0 to 999999 Credits.'));
             return;
@@ -857,12 +899,12 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         // The card may show a localized description, but a listing must retain
         // the package author's manifest description rather than a UI-language
         // projection of it.
-        void shareSelectedPetPack(pack, shareName, pack.manifestDescription || pack.desc, shareVersion, price)
+        void shareSelectedPetPack(pack, shareName, pack.manifestDescription || pack.desc, version, price)
             .finally(() => {
                 shareSubmittingRef.current = false;
                 setShareSubmitting(false);
             });
-    }, [lang, shareName, sharePrice, shareSelectedPetPack, shareSetupPack, shareSuccess, shareVersion]);
+    }, [lang, petStoreListings, shareName, sharePrice, shareSelectedPetPack, shareSetupPack, shareSuccess, shareVersion]);
 
     const submitShareSetup = useCallback((event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -1076,7 +1118,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         <div className="pet-share-setup-pack"><strong>{shareSetupPack.label}</strong><span>{shareSetupPack.id}</span></div>
                         <label className="pet-share-setup-field">{text(lang, '名称', '名稱', 'Name')}<input value={shareName} maxLength={60} disabled={shareSubmitting || !!shareSuccess} onChange={(event) => { setShareName(event.target.value); setShareError(''); }} /></label>
                         <div className="pet-share-setup-description"><span>{text(lang, '说明', '說明', 'Description')}</span><p>{shareSetupPack.desc || text(lang, '该宠物包未提供说明。', '該寵物包未提供說明。', 'This pet pack has no description.')}</p></div>
-                        <label className="pet-share-setup-field">{text(lang, '版本', '版本', 'Version')}<input value={shareVersion} maxLength={80} disabled={shareSubmitting || !!shareSuccess} onChange={(event) => { setShareVersion(event.target.value); setShareError(''); }} /></label>
+                        <label className="pet-share-setup-field">{text(lang, '版本', '版本', 'Version')}<input value={shareVersion} maxLength={40} inputMode="decimal" disabled={shareSubmitting || !!shareSuccess} onChange={(event) => { setShareVersion(event.target.value); setShareError(''); }} /></label>
                         <fieldset>
                             <legend>{text(lang, '发布方式', '發佈方式', 'Listing type')}</legend>
                             <label><input type="radio" name="pet-share-price" checked={sharePrice === '0'} disabled={shareSubmitting || !!shareSuccess} onChange={() => { setSharePrice('0'); setShareError(''); }} /> {text(lang, '免费', '免費', 'Free')}</label>

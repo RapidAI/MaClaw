@@ -3,6 +3,8 @@ package guiapp
 import (
 	"regexp"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 // reduceViewerEvent is the desktop fold of one viewer-contract frame. The
@@ -122,11 +124,19 @@ func viewerPieces(event map[string]any) []string {
 func applyViewerPieces(body string, pieces []string) string {
 	next := body
 	for _, piece := range pieces {
-		if piece == "\x02" || strings.HasPrefix(piece, "\x02") {
-			next = strings.TrimPrefix(piece, "\x02")
+		if piece == "" {
 			continue
 		}
-		next += piece
+		// A leading U+0002 replaces the draft. The suffix is the new body,
+		// so a sentinel glued inside it must not survive the join.
+		if strings.HasPrefix(piece, rejectedRoundContentToken) {
+			next = textutil.SanitizeVisibleChatText(strings.TrimPrefix(piece, rejectedRoundContentToken))
+			continue
+		}
+		visible := textutil.SanitizeVisibleChatText(piece)
+		if visible != "" {
+			next += visible
+		}
 	}
 	return next
 }
@@ -138,13 +148,17 @@ func sealViewerThinking(state *viewerReduceState) {
 }
 
 func appendViewerThinking(state *viewerReduceState, delta string) {
+	body := textutil.SanitizeVisibleChatText(delta)
+	if body == "" {
+		return
+	}
 	for i := len(state.Thinking) - 1; i >= 0; i-- {
 		if !state.Thinking[i].Done {
-			state.Thinking[i].Text += delta
+			state.Thinking[i].Text += body
 			return
 		}
 	}
-	state.Thinking = append(state.Thinking, viewerThinking{Text: delta})
+	state.Thinking = append(state.Thinking, viewerThinking{Text: body})
 }
 
 func viewerMap(v any) map[string]any {
@@ -235,7 +249,7 @@ func applyViewerPayload(state *viewerReduceState, event map[string]any) {
 				state.Thinking = append(state.Thinking, viewerThinking{})
 			}
 		case "done":
-			doneText := viewerText(event["text"])
+			doneText := textutil.SanitizeVisibleChatText(viewerText(event["text"]))
 			found := false
 			for i := len(state.Thinking) - 1; i >= 0; i-- {
 				if !state.Thinking[i].Done {
@@ -360,10 +374,10 @@ func applyViewerLiveParts(state *viewerReduceState, raw []any) {
 		}
 		switch viewerText(part["kind"]) {
 		case "text":
-			body.WriteString(viewerText(part["text"]))
+			body.WriteString(textutil.SanitizeVisibleChatText(viewerText(part["text"])))
 		case "thinking":
 			state.Thinking = append(state.Thinking, viewerThinking{
-				Text: viewerText(part["text"]),
+				Text: textutil.SanitizeVisibleChatText(viewerText(part["text"])),
 				Done: part["done"] == true,
 			})
 		case "progress":
@@ -396,11 +410,14 @@ func replaceViewerFromLive(event map[string]any, cursor uint64) viewerReduceStat
 		applyViewerLiveParts(&next, raw)
 		return next
 	}
-	next.Body = viewerText(live["text"])
+	next.Body = textutil.SanitizeVisibleChatText(viewerText(live["text"]))
 	if raw, ok := live["thinking"].([]any); ok {
 		for _, item := range raw {
 			block := viewerMap(item)
-			next.Thinking = append(next.Thinking, viewerThinking{Text: viewerText(block["text"]), Done: block["done"] == true})
+			next.Thinking = append(next.Thinking, viewerThinking{
+				Text: textutil.SanitizeVisibleChatText(viewerText(block["text"])),
+				Done: block["done"] == true,
+			})
 		}
 	}
 	return next

@@ -446,6 +446,14 @@ type IMMessageHandler struct {
 	// resume incomplete coding tasks. Values: "failed" | "resume". Keyed by userID.
 	pendingCodingExecRetryAction sync.Map
 
+	// pendingCodingExecRetrySteps names the steps a directed retry may run.
+	// An empty value means the existing retry runs every failed step.
+	pendingCodingExecRetrySteps sync.Map
+
+	// pendingCodingExecRetryError is the refusal from a directed retry that
+	// resolved before any step started. Keyed by userID.
+	pendingCodingExecRetryError sync.Map
+
 	// stickyCodingWorkbenchMemory holds multi-turn plan/result context for pure
 	// coding environments (create-task local/remote) so follow-up messages share
 	// prior summaries and touched files.

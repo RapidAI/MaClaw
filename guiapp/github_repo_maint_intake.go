@@ -1131,22 +1131,28 @@ func (a *App) setRepoMaintJobStatus(job repoMaintJobRow, status, taskPath, userI
 	if err != nil {
 		return err
 	}
+	// The row is the owner. Callers requeue with the snapshot taken before this
+	// turn wrote session_user_id, so that field is empty on the failure path.
+	var previousUser string
+	_ = db.QueryRow(`SELECT session_user_id FROM jobs WHERE id=?`, job.ID).Scan(&previousUser)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := db.Exec(`UPDATE jobs SET status=?, task_project_path=?, session_user_id=?, last_error=?, updated_at=? WHERE id=?`,
 		status, taskPath, userID, last, now, job.ID); err != nil {
 		return err
 	}
 	if status == "running" || status == "awaiting_user" {
+		if previousUser != "" && previousUser != userID {
+			repoMaintActiveUsers.Delete(previousUser)
+		}
 		if userID != "" {
 			repoMaintActiveUsers.Store(userID, job.GhostDir)
 		}
 		return nil
 	}
-	if userID != "" {
-		repoMaintActiveUsers.Delete(userID)
-	}
-	if job.SessionUserID != "" && job.SessionUserID != userID {
-		repoMaintActiveUsers.Delete(job.SessionUserID)
+	for _, id := range []string{userID, previousUser, job.SessionUserID} {
+		if strings.TrimSpace(id) != "" {
+			repoMaintActiveUsers.Delete(id)
+		}
 	}
 	return nil
 }

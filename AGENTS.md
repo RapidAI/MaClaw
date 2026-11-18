@@ -215,11 +215,53 @@
   (`100-pet-store-mc.css` overrides the shared inset rule) so the pointer can
   pass the edges without opening the step-list popover; `.capc-popover` is
   `width:100%` of that bar.
-- The 需求理解 line (`fallbackCodingRequestRestatement` in
-  `coding_workbench_intent.go`) must NAME the work, not describe the process:
-  a context-free ask ≤48 runes echoes itself via `codingDescribeNewAsk`
-  ("这次<ask>，其它先不动"), and a longer ask leads with its first requirement
-  via `codingRequestHeadline` ("先处理「<head>」，其余要求一并处理") — the
+- The 需求理解 line (`fallbackCodingRequestRestatementFor` in
+  `coding_workbench_intent.go`) must NAME the work, not describe the process.
+  The sentence follows `codingRequestDecision.Kind` from the whole-request
+  classifier (`resolveCodingRequestDecision`). Kind and acceptance tokens
+  are matched with surrounding space removed and case folded
+  (`normalizeCodingRequestDecision`), so a capitalized token stays the
+  decision the model returned. `parseCodingRequestDecision` still counts
+  that decision when needs_plan or acceptance is null, a string, or 0/1,
+  when a comma sits immediately before } or ], and when the model echoes
+  the schema the last valid object is the decision. The host does not scan the
+  wording for 哪些/什么/吗/怎么/改成/介绍/完/好/图形界面 or any other marker;
+  those lists misclassify other questions. A short implementation edit
+  (≤48 runes) still echoes itself via `codingDescribeNewAsk`
+  ("这次<ask>，其它先不动"). Inquiry uses `codingDescribeQuestion`
+  ("对照当前实现，回答「q」，这一步只读不改文件"); a session that already
+  wrote files drops 不改文件 ("对照现有实现，回答「q」。"). An operational
+  launch (acceptance empty or launch, not command) says
+  "运行当前已有程序并确认它能正常工作，这一步不改源代码。"
+  With a work name that becomes
+  "在「name」里，运行当前已有程序并确认它能正常工作，这一步不改源代码。"
+  A continue cue (`codingWorkbenchContinueCue`) wins before kind, so 继续
+  stays a resume. When the classifier is down the decision is
+  implementation, so the sentence is the edit echo and is not invented as
+  a read-only answer from the words. `codingRequestLooksModeratelyComplex`
+  only raises NeedsPlan after the judgment is already implementation, or
+  inside that no-model fallback; it must not skip the classifier.
+  Publish runs on the classifier decision and before
+  `applyCodingSessionImplementationPosture`, so a written-session inquiry
+  keeps the answer sentence while write tools can still be restored.
+  Inquiry and an operational launch keep the host sentence
+  (`codingRequestUnderstandingKeepsHostFallback`); a second model must not
+  overwrite 不改文件 / 不改源代码. A work name that is the same sentence
+  as the ask is skipped (`codingRequestWorkName`), including a title whose
+  only difference is a short comma note. The next candidate is used: the
+  previous summary, then the project identity. A readme line that is not a
+  short title does not hide a later CMake name, a single source stem, or a
+  unique binary. A stored line that contains a sentence boundary
+  (。！？.!?；;…, including a mark with more words after it) is not a
+  title, so it does not hide the project name. A dot inside an identifier
+  such as snake.cpp or v1.2 still counts. The readme walk skips a sentence
+  and can use a later short title; other prose does not hide the CMake
+  name. A project() in a comment, or a ${variable} name, is not the
+  project name. A task titled with the user's command
+  is not repeated as 在「同一句话」里, and that title does not hide the
+  project name. A longer
+  implementation ask leads with its first requirement via
+  `codingRequestHeadline` ("先处理「<head>」，其余要求一并处理") — the
   headline peels leading discourse openers ("太好了！", "帮我，") and
   sub-2-rune fragments, cuts at the first sentence boundary, only accepts a
   comma clause ≥6 runes as the head, and resolves numbered breakdowns the
@@ -231,7 +273,7 @@
   ("先看清当前项目里相关的实现和约束…") survives only for inputs with no
   nameable ask — punctuation-only text or a bare continue with nothing
   stored. The lightweight-LLM refinement (`llmCodingRequestRestatement`)
-  still replaces the fallback when available.
+  still replaces the fallback when the host sentence is not locked.
 
 ## Remote-control ops (guiapp ↔ hub)
 
@@ -501,6 +543,36 @@
   listener restart. `~/.maclaw/mcp/endpoint.json` stays loopback-only for
   local discovery; the LAN URL exists only in the UI payload.
 
+## MCP host access log (guiapp)
+
+- `mcpAccessStore` (`guiapp/mcp_access_log.go`) records remote TASK
+  INITIATIONS only: `create_task` (local + remote-coding paths) and
+  `send_command` (recovery confirms included). The send record fires inside
+  `mcpStartPrompt`'s `bind` — i.e. only after `mcpCommitRun` succeeds, so a
+  send that never starts a run stays unlogged. Read-only tools, 401/403
+  rejections, and claim replays (`mcpReplayRequest`) are never recorded.
+- Client identity rides the REQUEST CONTEXT: `ServeHTTP` stashes
+  `mcpClientInfo` (IP from `RemoteAddr` — no X-Forwarded-For, the listener
+  is direct — plus the key MASKED by `mcpMaskKey`, which is idempotent)
+  right after the Bearer check. `recordMCPAccess` re-masks at entry: never
+  store the full key, the JSONL (`~/.maclaw/logs/mcp_host_access.jsonl`)
+  is a user-shareable file. A context WITHOUT client info (tests calling
+  the task methods directly) is a NO-OP, not an error.
+- Storage: in-memory ring capped at `mcpAccessEntryLimit` (200) + JSONL
+  append; past `mcpAccessFileMaxBytes` (1MB) the file is rewritten from the
+  ring, and a FAILED rewrite falls back to a plain append instead of
+  dropping the entry. All file ops happen under the store mutex (the MCP
+  host is the single writer). Partial/corrupt lines are skipped on load.
+- Panel bindings: `GetMCPAccessLog` (newest first; keys `time/ip/apiKey/
+  action/task/projectPath`) and `ClearMCPAccessLog` (memory + file delete).
+  The MCPServerPanel access-log card is ALWAYS rendered (history can be
+  reviewed/cleared while the server is off) and live-refreshes via
+  `mcp-host-message`; keep the `EventsOn` unsubscribe in the effect cleanup.
+- Panel test mocks must return a FRESH array per `GetMCPAccessLog` call —
+  the backend builds a new slice every call, and a same-reference resolve
+  lets React's `Object.is` bail out of the re-render (this bit the panel
+  test once).
+
 ## Goal plan arg encodings (corelib/goal)
 
 - `goal.ParseSteps` tolerates the encodings weak models emit for
@@ -577,6 +649,65 @@
   + uncommenting the dependency_overrides block at the top of
   `mobilebot/pubspec.yaml`; see `mobilebot/README.md`「HarmonyOS NEXT」.
   Updates on ohos go through AppGallery, not the R2 self-updater.
+
+## mobilebot: voice input, bot media, update signing, l10n
+
+- Voice input on Android was dead on EVERY Android 11+ device: the manifest
+  lacked the `<queries>` intent for `android.speech.RecognitionService`, so
+  package visibility filtered out the recognizer and `speech_to_text`
+  `initialize()` always failed → every mic tap fell to the ~330 MB local
+  SenseVoice download. The manifest needs that queries intent plus the
+  bluetooth permissions the plugin requests (`BLUETOOTH_CONNECT` runtime on
+  S+; `BLUETOOTH`/`BLUETOOTH_ADMIN` maxSdkVersion 30 for pre-S headsets).
+- Dictation locale: never hardcode `zh_CN` — `pickAsrLocale(available)`
+  (`core/voice_engine.dart`) picks zh-CN → any zh-* → null (recognizer
+  default); a hardcoded unsupported locale dies with
+  language-not-supported before a single word is heard. Plugin side, a
+  null `localeId` omits `EXTRA_LANGUAGE` entirely = device default.
+- Bot reply media never travels in the journal: the projection strips
+  bytes, the desktop saves delivered files on ITS OWN disk (only
+  unsavable ones keep attachment ids), and Hub's `ReplyFile` carries no
+  attachment id. So on the phone: `_settleReply` PATCHES media into the
+  bubble the desktop's journal projection already landed (per-field —
+  never clobber a restored list with an empty one), `_keepEarlierSeq`
+  keeps the local media over the projection echo of our own line, and
+  `_restoreSyncedMedia` PROBES idless assistant bubbles within
+  `mediaRestoreWindow` (48h) — explicit `attachmentIds` still refetch
+  unconditionally regardless of age. Without these, attachments vanish
+  after an app restart and on a phone watching a desktop-sent turn.
+- Update signature check (`MainActivity.kt` `apkSignatureMatches`):
+  `false` = REAL mismatch (the OS would fail the install with
+  INSTALL_FAILED_UPDATE_INCOMPATIBLE); `null` = undeterminable —
+  unparsable archive, different applicationId, or EMPTY cert set
+  (`signingInfo` is null for archives on Android 9/10, and v2-only APKs
+  expose no legacy `signatures` pre-P; AGP disables v1 when minSdk ≥ 24).
+  Treating the empty set as a mismatch blocked every legitimate same-key
+  update on those devices. Dart side: `null` → let the system installer
+  decide; `false` → the sheet shows uninstall-first guidance plus a
+  browser download-page entry (`updOpenDownloadPage`).
+- l10n: `app_en.arb` is fully translated; `app_zh_Hant.arb` is OpenCC s2t
+  of the zh template (regenerate with s2t when new keys land);
+  `app_mn.arb` is STILL the zh placeholder — needs a native speaker
+  before the mn locale ships. Tests that pump `MaclawGoApp` and assert
+  zh text MUST override `initialLanguageProvider` with `zhHans`: the test
+  host resolves en_US, and the translated en bundle no longer hides
+  behind placeholder Chinese (see bot_route_scope_test).
+- Commit set when landing the l10n migration: `l10n.yaml`, `lib/l10n/`
+  (the four ARBs; `gen/` is gitignored), and the untracked
+  `lib/core/locale.dart`/`chat_ui.dart`/`ui_kit.dart` must ride along with
+  the `generate: true` pubspec — a pubspec without the ARBs makes CI's
+  `flutter pub get` fail on the missing template. `flutter pub get`
+  DOES regenerate `gen/` (verified), so the workflow needs no extra step.
+- Known follow-ups beyond the 48h probe: (1) thread the attachment id
+  through Hub's `ReplyFile` (`replyAttachment.item_id` →
+  `attachment_id`) — MaClawSrv's `MessageAttachment.ItemID` is only set
+  for Hub file-store deliveries, so the mobile's already-ready
+  `BotReplyFile.attachmentId` parse + unconditional `attachmentIds`
+  refetch would then cover old media indefinitely; (2) large deliverables
+  (>700 KB base64 cap) still never reach the phone — that needs a mobile
+  download path over Hub's bot file store, not just an id; (3) the
+  `_voiceNames` in voice_settings_sheet are zh proper names, kept
+  untranslated on purpose pending a locale decision.
 
 ## Bot 电脑数限额 (hub botmgmt)
 

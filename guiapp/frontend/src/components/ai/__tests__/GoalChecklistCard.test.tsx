@@ -5,6 +5,7 @@ import {
     GoalChecklistCard,
     goalChecklistBodyFromText,
     goalChecklistDoneCount,
+    goalChecklistStageName,
 } from "../GoalChecklistCard";
 import { renderMessage } from "../aiAssistantMarkdown";
 import { lightTheme } from "../aiAssistantPanelTheme";
@@ -133,6 +134,33 @@ describe("GoalChecklistCard rendering", () => {
         expect(screen.getByText("正在分解：实现一个登录系统")).toBeTruthy();
         expect(screen.getByText("进行中")).toBeTruthy();
         expect(screen.queryByText("1.")).toBeNull();
+    });
+
+    it("shows only the stage name when the title carries the whole step contract", () => {
+        const contract = "实现整体视觉升级，重点是背景、页面布局、游戏主区域和信息面板的华丽质感。引入现代化深色或霓虹配色、分层渐变、光晕。";
+        expect(goalChecklistStageName(contract)).toBe("实现整体视觉升级");
+        expect(goalChecklistStageName("查询北京实时天气")).toBe("查询北京实时天气");
+        expect(goalChecklistStageName("编译、运行与测试验证")).toBe("编译、运行与测试验证");
+        expect(goalChecklistStageName("运行 snake_logic_test.js 并做页面级验证，确认视觉改动没有破坏逻辑。")).toBe("运行 snake_logic_test.js 并做页面级验证");
+        expect(goalChecklistStageName("Explore the page. Locate the board and leave the rules alone.")).toBe("Explore the page");
+        // The contract's comma must not win over a short name that already ended,
+        // including when the whole title is still under the keep length.
+        expect(goalChecklistStageName("搭建工程骨架。本步只创建目录和构建文件，不要实现游戏逻辑。")).toBe("搭建工程骨架");
+        expect(goalChecklistStageName("搭建工程骨架。本步只创建目录。")).toBe("搭建工程骨架");
+        expect(goalChecklistStageName("写文档；不要改逻辑和测试，本步只记录结论并列出命令。")).toBe("写文档");
+        // A short tail after the comma is still the name.
+        expect(goalChecklistStageName("确认页面结构与样式挂载点并列出后续文件清单，不写代码")).toBe("确认页面结构与样式挂载点并列出后续文件清单，不写代码");
+        // "Dr.", "e.g." and "!=" are not the end of the stage name.
+        expect(goalChecklistStageName("Please ask Dr. Smith to review the diff.")).toBe("Please ask Dr. Smith to review the diff");
+        expect(goalChecklistStageName("Confirm a != b. Then rewrite the renderer and the score display.")).toBe("Confirm a != b");
+        expect(goalChecklistStageName("Follow the existing e.g. pattern in the score label and the status line today.")).toContain("e.g. pattern");
+        expect(goalChecklistStageName("甲".repeat(60))).toBe(`${"甲".repeat(48)}…`);
+        const body = goalChecklistBodyFromText(`目标清单\n→ 1. ${contract}`)!;
+        render(<GoalChecklistCard lang="zh-cn" body={body} />);
+        const name = screen.getByText("实现整体视觉升级");
+        expect(name).toBeTruthy();
+        expect(screen.queryByText(/霓虹配色/)).toBeNull();
+        expect(name.getAttribute("title")).toBeNull();
     });
 
     it("shows the running chip on the compressed single-step snapshot", () => {

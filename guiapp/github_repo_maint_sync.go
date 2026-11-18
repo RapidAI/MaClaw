@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
 // errRepoMaintReplayNotReady is returned until intake owns replay.
@@ -146,6 +147,51 @@ type repoMaintHubRuleBody struct {
 	EventKinds   []string `json:"event_kinds"`
 }
 
+// syncEnabledRepoMaintSubscription publishes a new event set and push
+// branch for a rule that is already on. Hub is updated first, so a removed
+// kind stops being accepted before GitHub is patched. The PATCH repeats
+// config.secret; GitHub clears the HMAC key when a patch omits it. A failed
+// patch puts the previous Hub row back.
+func (a *App) syncEnabledRepoMaintSubscription(old repoMaintRuleRow, kinds map[string]bool, branch string) error {
+	if old.HookID <= 0 {
+		return fmt.Errorf("GitHub hook 尚未挂上，无法更新事件")
+	}
+	hub, err := a.repoMaintHubIdentity()
+	if err != nil {
+		return err
+	}
+	secret, err := a.repoMaintSecret(old.ID)
+	if err != nil {
+		return err
+	}
+	webhookURL, err := a.repoMaintWebhookURL(hub.BaseURL, old.HookToken)
+	if err != nil {
+		return err
+	}
+	next := old
+	next.Kinds = kinds
+	next.PushBranch = branch
+	if err := a.putRepoMaintHubRule(hub, next, secret, true, old.HookID); err != nil {
+		return err
+	}
+	spec := gitHubHookSpec{
+		URL:    webhookURL,
+		Secret: secret,
+		Events: githubHookEventsForKinds(kinds),
+		Active: true,
+	}
+	if err := a.updateGitHubRepoHook(old.Owner, old.Repo, old.HookID, spec); err != nil {
+		if rollErr := a.putRepoMaintHubRule(hub, old, secret, true, old.HookID); rollErr != nil {
+			log.Printf("[github-repo-maint] hub subscription rollback failed rule_id=%s err=%v", old.ID, rollErr)
+			_ = a.touchRepoMaintError(old.ID, "GitHub hook 更新失败，Hub 上的事件集合可能已变")
+			return fmt.Errorf("GitHub hook 更新失败，Hub 上的事件集合可能已变")
+		}
+		return fmt.Errorf("GitHub hook 更新失败，规则未保存")
+	}
+	log.Printf("[github-repo-maint] subscription updated rule_id=%s hook_id=%d", old.ID, old.HookID)
+	return nil
+}
+
 func (a *App) putRepoMaintHubRule(id repoMaintHubIdentity, rule repoMaintRuleRow, secret string, enabled bool, hookID int64) error {
 	rawURL, err := repoMaintJoin(id.BaseURL, "api", "github", "repo-maint", "rules", rule.ID)
 	if err != nil {
@@ -248,7 +294,8 @@ func sameHubHost(got, base *url.URL) bool {
 // SetGitHubRepoMaintEnabled turns a rule on or off.
 // replay is "new_only", "backfill", or empty when the rule was enabled before.
 // Intake must be ready before the first enable, or this returns without
-// calling Hub or GitHub.
+// calling Hub or GitHub. A stored grant without the exact scope "repo"
+// is refused before checkout or any Hub write.
 func (a *App) SetGitHubRepoMaintEnabled(id string, enabled bool, replay string) error {
 	id = strings.TrimSpace(id)
 	rule, err := a.loadRepoMaintRule(id)
@@ -266,6 +313,12 @@ func (a *App) SetGitHubRepoMaintEnabled(id string, enabled bool, replay string) 
 	}
 	if a.loadGitHubAccessToken() == "" {
 		return fmt.Errorf("GitHub 未连接")
+	}
+	// The login stores this grant. The page refuses the same way; the
+	// mutation must too, or a missing repo still writes a Hub rule and
+	// then rolls it back as a hook failure.
+	if !oauth.GitHubScopesHaveRepo(a.githubConnectionStatus().Scopes) {
+		return fmt.Errorf("请重新连接 GitHub，令牌需要包含 repo")
 	}
 	hub, err := a.repoMaintHubIdentity()
 	if err != nil {
@@ -509,6 +562,11 @@ func (a *App) DeleteGitHubRepoMaintRule(id string) error {
 	}
 	if _, err := db.Exec(`DELETE FROM rules WHERE id=?`, id); err != nil {
 		return err
+	}
+	// The coding tasks stay in the sidebar. Only the rule's binding goes away.
+	// A later rule is a new id and starts its own tasks.
+	if _, err := db.Exec(`DELETE FROM event_tasks WHERE rule_id=?`, id); err != nil {
+		log.Printf("[github-repo-maint] event task map delete failed rule_id=%s", id)
 	}
 	if a.credentialStore != nil {
 		_ = a.credentialStore.Delete(repoMaintSecretProvider(id))

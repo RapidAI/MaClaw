@@ -123,7 +123,7 @@ export function mergeChatMessages(...groups: Array<unknown[] | undefined>): Chat
             if (id) {
                 const existingIndex = indexById.get(id);
                 if (existingIndex !== undefined) {
-                    merged[existingIndex] = chatMessage;
+                    merged[existingIndex] = withKeptGoalStageFields(merged[existingIndex], chatMessage);
                     anchor = existingIndex;
                     continue;
                 }
@@ -140,6 +140,20 @@ export function mergeChatMessages(...groups: Array<unknown[] | undefined>): Chat
         }
     }
     return merged;
+}
+
+/** A thinner later row must not drop the stage command or the filed-report flag. */
+function withKeptGoalStageFields(earlier: ChatMessage, later: ChatMessage): ChatMessage {
+    const goalStageCommand = later.goalStageCommand || earlier.goalStageCommand;
+    const goalStageSettled = !!(later.goalStageSettled || earlier.goalStageSettled);
+    if ((goalStageCommand || undefined) === (later.goalStageCommand || undefined) && goalStageSettled === !!later.goalStageSettled) {
+        return later;
+    }
+    return {
+        ...later,
+        ...(goalStageCommand ? { goalStageCommand } : {}),
+        ...(goalStageSettled ? { goalStageSettled: true } : {}),
+    };
 }
 
 type CodingTrail = NonNullable<ChatMessage["codingTimeline"]>;

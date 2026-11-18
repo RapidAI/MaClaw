@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 // Viewer contract shared by the local panel, a controlling desktop, and mobilebot.
@@ -342,6 +344,17 @@ func closeThinkingEvents(session, requestID string, seq uint64, path string) []v
 	}}
 }
 
+// visibleRejectToken keeps the rejected-round marker and strips tofu from
+// the replacement suffix. An exact "\x02" stays "\x02". "\x02重写" stays
+// "\x02重写". "\x02ke\x01pt" becomes "\x02kept".
+func visibleRejectToken(delta string) string {
+	body := textutil.SanitizeVisibleChatText(strings.TrimPrefix(delta, rejectedRoundContentToken))
+	if body == "" {
+		return rejectedRoundContentToken
+	}
+	return rejectedRoundContentToken + body
+}
+
 func tokenViewerEvents(event AIAssistantStreamEvent, path string) []viewerEvent {
 	session := strings.TrimSpace(event.SessionKey)
 	deltas := event.Deltas
@@ -352,13 +365,19 @@ func tokenViewerEvents(event AIAssistantStreamEvent, path string) []viewerEvent 
 	for _, delta := range deltas {
 		switch {
 		case strings.HasPrefix(delta, rejectedRoundContentToken):
+			// The suffix replaces the draft. Interior sentinels in it are not
+			// text; the marker itself must stay so viewers still reset.
+			text := visibleRejectToken(delta)
 			out = append(out, viewerEvent{
 				SessionKey: session, ProjectPath: path, RequestID: event.RequestID,
 				Event: "token", Seq: event.Sequence, Lane: "content",
-				Text: delta, Pieces: []string{delta},
+				Text: text, Pieces: []string{text},
 			})
 		case strings.HasPrefix(delta, "\x01"):
-			body := strings.TrimPrefix(delta, "\x01")
+			_, body := textutil.SplitVisibleStreamDelta(delta)
+			if body == "" {
+				continue
+			}
 			if open, _ := viewerThinkOpen.Load(session); open != true {
 				viewerThinkOpen.Store(session, true)
 				viewerThinkText.Store(session, "")
@@ -381,17 +400,19 @@ func tokenViewerEvents(event AIAssistantStreamEvent, path string) []viewerEvent 
 			}
 			out = append(out, ev)
 		default:
+			body := textutil.SanitizeVisibleChatText(delta)
+			if body == "" {
+				continue
+			}
 			if open, _ := viewerThinkOpen.Load(session); open == true {
 				out = append(out, closeThinkingEvents(session, event.RequestID, event.Sequence, path)...)
 			}
 			ev := viewerEvent{
 				SessionKey: session, ProjectPath: path, RequestID: event.RequestID,
 				Event: "token", Seq: event.Sequence, Lane: "content",
-				Text: delta,
+				Text: body,
 			}
-			if delta != "" {
-				ev.Pieces = []string{delta}
-			}
+			ev.Pieces = []string{body}
 			out = append(out, ev)
 		}
 	}
@@ -409,18 +430,20 @@ func viewerEventsFromContinuation(event AIContinuationEvent) []viewerEvent {
 	case "token":
 		base.Event = "token"
 		base.Lane = "content"
-		base.Text = event.Text
-		if event.Text != "" {
-			base.Pieces = []string{event.Text}
+		body := textutil.SanitizeVisibleChatText(event.Text)
+		base.Text = body
+		if body != "" {
+			base.Pieces = []string{body}
 		}
 		return []viewerEvent{base}
 	case "final":
 		base.Event = "token"
 		base.Lane = "content"
-		base.Text = event.Text
+		body := textutil.SanitizeVisibleChatText(event.Text)
+		base.Text = body
 		base.Replace = true
-		if event.Text != "" {
-			base.Pieces = []string{event.Text}
+		if body != "" {
+			base.Pieces = []string{body}
 		}
 		return []viewerEvent{base}
 	case "notice", "confirmation":

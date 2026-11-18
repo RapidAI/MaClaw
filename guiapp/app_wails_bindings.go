@@ -28,6 +28,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/session"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -2524,11 +2525,15 @@ func coalesceAssistantTokenDeltas(deltas []string) []coalescedAssistantToken {
 			out = append(out, coalescedAssistantToken{Text: delta})
 			continue
 		}
+		marker, body := textutil.SplitVisibleStreamDelta(delta)
+		if body == "" {
+			continue
+		}
 		next := "content"
-		body := delta
-		if strings.HasPrefix(delta, "\x01") {
+		piece := body
+		if marker == "\x01" {
 			next = "reasoning"
-			body = strings.TrimPrefix(delta, "\x01")
+			piece = "\x01" + body
 		}
 		if lane != "" && lane != next {
 			flush()
@@ -2537,7 +2542,7 @@ func coalesceAssistantTokenDeltas(deltas []string) []coalescedAssistantToken {
 			b.WriteString("\x01")
 		}
 		b.WriteString(body)
-		pieces = append(pieces, delta)
+		pieces = append(pieces, piece)
 		lane = next
 	}
 	flush()
@@ -2677,13 +2682,24 @@ func (n *aiAssistantStreamDeltaNormalizer) Normalize(delta string) string {
 	if delta == "" {
 		return ""
 	}
-	if delta == rejectedRoundContentToken {
+	// Any leading U+0002 is the rejected-round reset, including a suffix glued
+	// to the marker. Splitting it would append that suffix as the next answer
+	// and leave the forecast in the bubble.
+	if strings.HasPrefix(delta, rejectedRoundContentToken) {
 		n.content = ""
 		n.contentSnapshotMode = false
-		return delta
+		body := textutil.SanitizeVisibleChatText(strings.TrimPrefix(delta, rejectedRoundContentToken))
+		if body == "" {
+			return rejectedRoundContentToken
+		}
+		return rejectedRoundContentToken + body
 	}
-	if strings.HasPrefix(delta, "\x01") {
-		next, snapshotMode := normalizeAIAssistantStreamDelta(n.reasoning, strings.TrimPrefix(delta, "\x01"), n.reasoningSnapshotMode)
+	marker, body := textutil.SplitVisibleStreamDelta(delta)
+	if marker == "\x01" {
+		if body == "" {
+			return ""
+		}
+		next, snapshotMode := normalizeAIAssistantStreamDelta(n.reasoning, body, n.reasoningSnapshotMode)
 		if next == "" {
 			return ""
 		}
@@ -2691,7 +2707,10 @@ func (n *aiAssistantStreamDeltaNormalizer) Normalize(delta string) string {
 		n.reasoningSnapshotMode = n.reasoningSnapshotMode || snapshotMode
 		return "\x01" + next
 	}
-	next, snapshotMode := normalizeAIAssistantStreamDelta(n.content, delta, n.contentSnapshotMode)
+	if body == "" {
+		return ""
+	}
+	next, snapshotMode := normalizeAIAssistantStreamDelta(n.content, body, n.contentSnapshotMode)
 	if next == "" {
 		return ""
 	}
@@ -3739,7 +3758,13 @@ func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, er
 		emitEvent("ai-btw-progress", text)
 	}
 	onToken := func(delta string) {
-		emitEvent("ai-btw-token", delta)
+		// /btw paints one content bubble. Drop the reasoning-lane marker
+		// before the pieces are joined, or each token starts with a square.
+		_, body := textutil.SplitVisibleStreamDelta(delta)
+		if body == "" {
+			return
+		}
+		emitEvent("ai-btw-token", body)
 	}
 
 	msg := IMUserMessage{

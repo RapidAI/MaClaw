@@ -485,31 +485,40 @@ type App struct {
 	// instead of re-running the weather pipeline. ambientResolveMu
 	// serializes the resolve itself so a loop tick colliding with a device
 	// attach cannot double-spend a search + LLM request.
-	ambientWeatherMu    sync.Mutex
-	ambientWeather      deviceAmbientWeather
-	ambientWeatherAt    time.Time
-	ambientResolveMu    sync.Mutex
-	qqBotGateway        *qqBotGatewayManager
-	telegramGateway     *telegramGatewayManager
-	slackGateway        *slackGatewayManager
-	messengerGateway    *messengerGatewayManager
-	weixinGateway       *weixinGatewayManager
-	lansengerGateway    *lansengerGatewayManager
-	lansengerGateways   *lansengerGatewayRegistry
-	localStartMenu      *localStartMenuService
-	localStartMenuMu    sync.Mutex
-	lansengerWatch      *lansengerWatchService
-	lansengerWatchOnce  sync.Once
-	thirdPartyGateway   *thirdPartyGatewayManager
-	acpHost             *acpHost // Mode B: loopback ACP for VS Code programming agent
-	acpHostMu           sync.Mutex
-	mcpHost             *mcpHost // Inbound MCP: other tools create and read tasks on this GUI
-	mcpHostMu           sync.Mutex
-	mcpHostSyncMu       sync.Mutex
-	mcpRunsMu           sync.Mutex
-	mcpRuns             map[string]*mcpRunRecord
+	ambientWeatherMu   sync.Mutex
+	ambientWeather     deviceAmbientWeather
+	ambientWeatherAt   time.Time
+	ambientResolveMu   sync.Mutex
+	qqBotGateway       *qqBotGatewayManager
+	telegramGateway    *telegramGatewayManager
+	slackGateway       *slackGatewayManager
+	messengerGateway   *messengerGatewayManager
+	weixinGateway      *weixinGatewayManager
+	lansengerGateway   *lansengerGatewayManager
+	lansengerGateways  *lansengerGatewayRegistry
+	localStartMenu     *localStartMenuService
+	localStartMenuMu   sync.Mutex
+	lansengerWatch     *lansengerWatchService
+	lansengerWatchOnce sync.Once
+	thirdPartyGateway  *thirdPartyGatewayManager
+	acpHost            *acpHost // Mode B: loopback ACP for VS Code programming agent
+	acpHostMu          sync.Mutex
+	mcpHost            *mcpHost // Inbound MCP: other tools create and read tasks on this GUI
+	mcpHostMu          sync.Mutex
+	mcpHostSyncMu      sync.Mutex
+	mcpRunsMu          sync.Mutex
+	mcpRuns            map[string]*mcpRunRecord
+	// mcpTurnHeld is the follow-up that may install the next run. It closes
+	// the gap where two sends both still see needs_confirmation.
+	mcpTurnHeld         map[string]uint64
+	mcpTurnSeq          map[string]uint64
+	mcpAccess           mcpAccessStore
 	mcpPinsMu           sync.Mutex
 	mcpPins             map[string]mcpModelPin
+	mcpReqMu            sync.Mutex
+	mcpReqs             map[string]*mcpClientRequest
+	mcpReqOrder         []string
+	mcpConfirmIDs       map[string]string
 	imGatewaySyncMu     sync.Mutex
 	passthroughRegistry *PassthroughRegistry
 	// configMu serializes writers (load/mutate/publish). Hot-path readers do NOT
@@ -3426,6 +3435,31 @@ func (a *App) GetCodingFontFamily() (string, error) {
 func (a *App) SetCodingFontFamily(id string) error {
 	id = normalizeFontFamilyID(id, codingFontFamilyIDs)
 	_, err := a.PatchConfigFields(map[string]interface{}{"coding_font_family": id})
+	return err
+}
+
+func chatBubblesEnabled(cfg corelib.AppConfig) bool {
+	if cfg.ChatBubblesEnabled == nil {
+		return true
+	}
+	return *cfg.ChatBubblesEnabled
+}
+
+// GetChatBubblesEnabled reports whether assistant conversations draw message
+// bubbles. A missing value stays on. A failed load is an error: callers must
+// not treat that failure as the stored default, or a switch already taken
+// from a config payload flips back on.
+func (a *App) GetChatBubblesEnabled() (bool, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return false, err
+	}
+	return chatBubblesEnabled(cfg), nil
+}
+
+// SetChatBubblesEnabled persists the assistant conversation bubble frame.
+func (a *App) SetChatBubblesEnabled(enabled bool) error {
+	_, err := a.PatchConfigFields(map[string]interface{}{"chat_bubbles_enabled": enabled})
 	return err
 }
 
@@ -9647,6 +9681,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.CodingFontFamily = normalizeFontFamilyID(v, codingFontFamilyIDs)
+		case "chat_bubbles_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.ChatBubblesEnabled = &v
 		case "env_check_interval":
 			v, err := intField(key, value)
 			if err != nil {

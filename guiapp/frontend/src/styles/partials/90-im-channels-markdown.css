@@ -3948,6 +3948,9 @@
    capc variant spins a <g> sized by its own fill-box). */
 .gkc-spin { transform-box: view-box; transform-origin: center; animation: capc-spin 0.9s linear infinite; }
 
+/* One goal stage's assignment. It stays when that stage's process list folds. */
+.goal-stage-command { margin: 12px 0 2px; color: var(--theme-text-primary, #24364e); font-size: 14px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+
 /* CodingAgentProgressStatus.tsx */
 .caps-file-head { font-weight: 600; flex: 1; min-width: 0; }
 .caps-expand-btn { padding: 0; border: none; background: none; color: var(--theme-primary, #3b82f6); font-size: 11px; font-weight: 600; cursor: pointer; }

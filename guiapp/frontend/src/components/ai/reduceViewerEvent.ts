@@ -1,4 +1,5 @@
 import { parseCodingAgentProgress } from './CodingAgentProgressStatus';
+import { sanitizeVisibleChatText } from './visibleChatText';
 
 export interface ViewerThinking {
     text: string;
@@ -84,14 +85,21 @@ function piecesOf(event: ViewerEvent): string[] {
     return joined ? [joined] : [];
 }
 
+function visibleTokenPiece(piece: string): string {
+    if (piece.startsWith('\x02')) return `\x02${sanitizeVisibleChatText(piece.slice(1))}`;
+    return sanitizeVisibleChatText(piece);
+}
+
 function applyPieces(body: string, pieces: string[]): string {
     let next = body;
     for (const piece of pieces) {
-        if (piece === '\x02' || piece.startsWith('\x02')) {
-            next = piece.slice(1);
+        if (!piece) continue;
+        if (piece.startsWith('\x02')) {
+            next = sanitizeVisibleChatText(piece.slice(1));
             continue;
         }
-        next += piece;
+        const visible = sanitizeVisibleChatText(piece);
+        if (visible) next += visible;
     }
     return next;
 }
@@ -101,9 +109,11 @@ function sealThinking(state: ViewerReduceState): void {
 }
 
 function appendThinking(state: ViewerReduceState, delta: string): void {
+    const body = sanitizeVisibleChatText(delta);
+    if (!body) return;
     const open = [...state.thinking].reverse().find(block => !block.done);
-    if (open) open.text += delta;
-    else state.thinking.push({ text: delta, done: false });
+    if (open) open.text += body;
+    else state.thinking.push({ text: body, done: false });
 }
 
 function rowFromCoding(coding: Record<string, unknown>, fallback: string): ViewerTimelineRow {
@@ -177,7 +187,7 @@ function applyPayload(state: ViewerReduceState, event: ViewerEvent): void {
             }
             if (mode === 'done') {
                 const tail = [...state.thinking].reverse().find(block => !block.done);
-                const doneText = text(event.text);
+                const doneText = sanitizeVisibleChatText(text(event.text));
                 if (tail) {
                     if (doneText) tail.text = doneText;
                     tail.done = true;
@@ -224,7 +234,7 @@ function applyPayload(state: ViewerReduceState, event: ViewerEvent): void {
                 for (const card of state.cards) {
                     if (card.requestId === cardRequest) card.expired = true;
                 }
-                const note = text(event.text);
+                const note = sanitizeVisibleChatText(text(event.text));
                 if (note) state.notices.push({ text: note, asError: event.as_error === true });
                 return;
             }
@@ -237,13 +247,13 @@ function applyPayload(state: ViewerReduceState, event: ViewerEvent): void {
                     kind,
                     expired: false,
                     confirmationId: text(confirmation.id),
-                    text: text(event.text),
+                    text: sanitizeVisibleChatText(text(event.text)),
                     asError: false,
                     actions: eventActions(event.actions),
                 });
                 return;
             }
-            const note = text(event.text);
+            const note = sanitizeVisibleChatText(text(event.text));
             if (note) state.notices.push({ text: note, asError: event.as_error === true });
             return;
         }
@@ -254,8 +264,8 @@ function applyPayload(state: ViewerReduceState, event: ViewerEvent): void {
             const terminal = event.terminal && typeof event.terminal === 'object'
                 ? event.terminal as Record<string, unknown>
                 : (event.response && typeof event.response === 'object' ? event.response as Record<string, unknown> : {});
-            const body = text(terminal.text);
-            const summary = text(terminal.trial_reflect_summary) || text(terminal.trace_summary);
+            const body = sanitizeVisibleChatText(text(terminal.text));
+            const summary = sanitizeVisibleChatText(text(terminal.trial_reflect_summary) || text(terminal.trace_summary));
             state.visible = body || summary;
             state.trialStatus = text(terminal.trial_reflect_status);
             state.trialFailures = num(terminal.trial_reflect_failures);
@@ -290,11 +300,11 @@ function applyLiveParts(state: ViewerReduceState, parts: unknown[]): void {
         if (!part) continue;
         const kind = text(part.kind);
         if (kind === 'text') {
-            body += text(part.text);
+            body += sanitizeVisibleChatText(text(part.text));
             continue;
         }
         if (kind === 'thinking') {
-            state.thinking.push({ text: text(part.text), done: part.done === true });
+            state.thinking.push({ text: sanitizeVisibleChatText(text(part.text)), done: part.done === true });
             continue;
         }
         if (kind === 'progress') {
@@ -343,11 +353,11 @@ function replaceFromLive(state: ViewerReduceState, event: ViewerEvent, cursor: n
         applyLiveParts(next, live.parts);
         return next;
     }
-    next.body = text(live.text);
+    next.body = sanitizeVisibleChatText(text(live.text));
     if (Array.isArray(live.thinking)) {
         next.thinking = live.thinking.map(item => {
             const block = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-            return { text: text(block.text), done: block.done === true };
+            return { text: sanitizeVisibleChatText(text(block.text)), done: block.done === true };
         });
     }
     return next;
@@ -420,13 +430,14 @@ export function legacyFromViewerEvent(event: ViewerEvent): { kind: 'token' | 'ro
         sequence: num(event.cursor) || num(event.seq),
     };
     if (name === 'token') {
-        const pieces = piecesOf(event);
+        const pieces = piecesOf(event).map(visibleTokenPiece).filter(piece => piece !== '');
         return { kind: 'token', payload: { ...base, text: pieces.join(''), deltas: pieces } };
     }
     if (name === 'thinking') {
         const mode = text(event.state) || 'delta';
         if (mode === 'done') return null;
-        const delta = text(event.text);
+        const delta = sanitizeVisibleChatText(text(event.text));
+        if (!delta) return null;
         return { kind: 'token', payload: { ...base, text: `\x01${delta}`, deltas: [`\x01${delta}`] } };
     }
     if (name === 'round_started') {

@@ -1,7 +1,12 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobilebot/features/bots/bot_models.dart';
+import 'package:mobilebot/l10n/gen/app_localizations.dart';
 
 void main() {
+  // The helpers take a localization object; the zh template mirrors the
+  // original hardcoded strings these tests assert on.
+  final S = lookupAppLocalizations(const Locale('zh'));
   group('Bot', () {
     test('parses hub shape incl. appearance and primary', () {
       final bot = Bot.fromJson({
@@ -29,35 +34,31 @@ void main() {
       final open = DesktopBotQuota.fromJson({'limit': null, 'used': 2});
       expect(open.known, isTrue);
       expect(open.exhausted, isFalse);
-      expect(open.label, '已用 2');
+      expect(open.label(S), '已用 2');
       final full = DesktopBotQuota.fromJson({'limit': 1, 'used': 1});
       expect(full.exhausted, isTrue);
-      expect(full.label, '已用 1 / 1');
+      expect(full.label(S), '已用 1 / 1');
       expect(DesktopBotQuota.fromJson(null).known, isFalse);
-      expect(desktopModeMark(''), '电脑·共用');
-      expect(desktopModeMark('isolated'), '电脑·独立');
-      expect(desktopModeMark('none'), '无电脑');
+      expect(desktopModeMark('', S), '电脑·共用');
+      expect(desktopModeMark('isolated', S), '电脑·独立');
+      expect(desktopModeMark('none', S), '无电脑');
       expect(botHasComputer('none'), isFalse);
       expect(botHasComputer('shared'), isTrue);
     });
 
     test('title falls back to description then id', () {
-      expect(
-          Bot.fromJson({'id': 'b2', 'description': ' d '}).title, 'd');
+      expect(Bot.fromJson({'id': 'b2', 'description': ' d '}).title, 'd');
       expect(Bot.fromJson({'id': 'b3'}).title, 'b3');
     });
 
     test('initials use first letters of words', () {
-      expect(Bot.fromJson({'id': 'x', 'name': 'Research Bot'}).initials,
-          'RB');
+      expect(Bot.fromJson({'id': 'x', 'name': 'Research Bot'}).initials, 'RB');
       expect(Bot.fromJson({'id': 'x', 'name': '研'}).initials, '研');
     });
 
     test('initials keep emoji and grapheme clusters whole', () {
-      expect(
-          Bot.fromJson({'id': 'x', 'name': '🤖助手'}).initials, '🤖');
-      expect(Bot.fromJson({'id': 'x', 'name': '👨‍💻 助手'}).initials,
-          '👨‍💻助');
+      expect(Bot.fromJson({'id': 'x', 'name': '🤖助手'}).initials, '🤖');
+      expect(Bot.fromJson({'id': 'x', 'name': '👨‍💻 助手'}).initials, '👨‍💻助');
     });
   });
 
@@ -102,8 +103,9 @@ void main() {
 
     test('SaidNote.isMine for the persons own room messages', () {
       expect(
-          SaidNote.fromJson({'from': 'human', 'kind': 'room'}).isMine,
-          isTrue);
+        SaidNote.fromJson({'from': 'human', 'kind': 'room'}).isMine,
+        isTrue,
+      );
     });
   });
 
@@ -205,9 +207,7 @@ void main() {
     });
 
     test('choice question is answerable via options', () {
-      final q = BotQuestion.fromJson({
-        'ask_user_options_json': '["A","B"]',
-      });
+      final q = BotQuestion.fromJson({'ask_user_options_json': '["A","B"]'});
       expect(q.isChoice, isTrue);
       expect(q.isAnswerable, isTrue);
       expect(q.isSecret, isFalse);
@@ -239,7 +239,10 @@ void main() {
       expect(routed.routed, isTrue);
       expect(routed.botId, 'b2');
 
-      final missed = FollowUpRoute.fromJson({'routed': false, 'reason': 'run_ended'});
+      final missed = FollowUpRoute.fromJson({
+        'routed': false,
+        'reason': 'run_ended',
+      });
       expect(missed.routed, isFalse);
       expect(missed.reason, 'run_ended');
     });
@@ -261,21 +264,25 @@ void main() {
     });
 
     test('computer caps and result parse', () {
-      final caps = DesktopComputerCaps.fromJson(
-          {'restart_allowed': true, 'reset_allowed': false});
+      final caps = DesktopComputerCaps.fromJson({
+        'restart_allowed': true,
+        'reset_allowed': false,
+      });
       expect(caps.restartAllowed, isTrue);
       expect(caps.resetAllowed, isFalse);
 
-      final r = ComputerResult.fromJson(
-          {'action': 'restart', 'container': 'c1', 'status': 'restarted'});
+      final r = ComputerResult.fromJson({
+        'action': 'restart',
+        'container': 'c1',
+        'status': 'restarted',
+      });
       expect(r.action, 'restart');
       expect(r.status, 'restarted');
     });
   });
 
   group('BotDesktop', () {
-    test('watch answer parses input_granted separately from user_control',
-        () {
+    test('watch answer parses input_granted separately from user_control', () {
       final d = BotDesktop.fromJson({
         'novnc_url': '/vnc.html?x=1',
         'user_control': true,
@@ -293,5 +300,4 @@ void main() {
       expect(d.userControl, isFalse);
     });
   });
-
 }

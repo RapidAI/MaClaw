@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 const remoteStreamQueueCap = 512
@@ -509,9 +511,23 @@ func (r *remoteWatchRegistry) foldLocked(ev viewerEvent) []map[string]any {
 		if strings.HasPrefix(ev.Text, rejectedRoundContentToken) {
 			frames = append(frames, r.flushOpenLocked(turn)...)
 			r.dropTrailingTextPartsLocked(turn)
-			body := strings.TrimPrefix(ev.Text, rejectedRoundContentToken)
+			// Copy before fanout. Pieces share the caller's backing array.
+			text := visibleRejectToken(ev.Text)
+			body := strings.TrimPrefix(text, rejectedRoundContentToken)
 			if body != "" {
 				turn.snapshot.Parts = append(turn.snapshot.Parts, remoteStreamPart{Kind: "text", Seq: ev.Seq, Text: body})
+			}
+			ev.Text = text
+			if len(ev.Pieces) > 0 {
+				cleaned := make([]string, len(ev.Pieces))
+				for i, piece := range ev.Pieces {
+					if strings.HasPrefix(piece, rejectedRoundContentToken) {
+						cleaned[i] = visibleRejectToken(piece)
+					} else {
+						cleaned[i] = textutil.SanitizeVisibleChatText(piece)
+					}
+				}
+				ev.Pieces = cleaned
 			}
 			frames = append(frames, r.fanoutLocked(ev)...)
 			return frames

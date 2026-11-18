@@ -29,6 +29,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/permission"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
@@ -1639,13 +1640,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	// replace it.
 	var iterationStreamed strings.Builder
 	streamOnToken := func(delta string) {
-		if delta == "" {
+		forwarded, ok := forwardVisibleStreamToken(delta, &iterationStreamed)
+		if !ok {
 			return
 		}
-		if !strings.HasPrefix(delta, "\x01") {
-			iterationStreamed.WriteString(delta)
-		}
-		cb.OnToken(delta)
+		cb.OnToken(forwarded)
 	}
 	// Latest desktop image from this turn. The finish check reads it; the
 	// worker's own report does not stand in for it.
@@ -6720,11 +6719,50 @@ func appendLoopDisplayReasoning(buf *strings.Builder, reasoning string) {
 	buf.WriteString(reasoning)
 }
 
+// forwardVisibleStreamToken prepares one model delta for the host.
+// A leading U+0002 is the rejected-round reset. It is forwarded unchanged
+// and is not reply text, so it is not written into streamed. Sanitizing it
+// drops the marker and leaves the cleared forecast in the bubble.
+// A leading U+0001 stays the reasoning lane. Interior sentinels are removed
+// so a joined token string cannot paint a square between words.
+func forwardVisibleStreamToken(delta string, streamed *strings.Builder) (string, bool) {
+	if delta == "" {
+		return "", false
+	}
+	if strings.HasPrefix(delta, "\x02") {
+		// The suffix is replacement text for viewers that keep it. Interior
+		// sentinels in that suffix are not text.
+		body := textutil.SanitizeVisibleChatText(delta[1:])
+		if body == "" {
+			return "\x02", true
+		}
+		return "\x02" + body, true
+	}
+	marker, body := textutil.SplitVisibleStreamDelta(delta)
+	if body == "" {
+		return "", false
+	}
+	if marker == "\x01" {
+		return "\x01" + body, true
+	}
+	if streamed != nil {
+		streamed.WriteString(body)
+	}
+	return body, true
+}
+
 func reasoningSentinelCallback(rawOnToken llm.TokenCallback) llm.TokenCallback {
 	return func(delta string) {
-		if rawOnToken != nil && delta != "" {
-			rawOnToken("\x01" + delta)
+		if rawOnToken == nil || delta == "" {
+			return
 		}
+		// The marker is the lane, not part of the thought. Strip any sentinel
+		// already inside this piece before prefixing one.
+		body := textutil.SanitizeVisibleChatText(delta)
+		if body == "" {
+			return
+		}
+		rawOnToken("\x01" + body)
 	}
 }
 

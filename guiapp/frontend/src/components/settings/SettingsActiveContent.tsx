@@ -162,6 +162,9 @@ export type SettingsActiveContentProps = {
     setDarkSchemeId: (id: AssistantDarkSchemeId) => void;
     lightSchemeId: AssistantLightSchemeId;
     setLightSchemeId: (id: AssistantLightSchemeId) => void;
+    chatBubblesEnabled?: boolean;
+    setChatBubblesEnabled?: (enabled: boolean) => void;
+    chatBubblesDraftRef?: { current: boolean | null };
 };
 
 function wrapPanel(className: string, children: ReactNode) {
@@ -272,6 +275,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         setDarkSchemeId,
         lightSchemeId,
         setLightSchemeId,
+        chatBubblesEnabled,
+        setChatBubblesEnabled,
+        chatBubblesDraftRef,
     } = props;
 
     // Resolve before switch so invalid / currently-hidden tabs never paint an empty body.
@@ -663,6 +669,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     setDarkSchemeId={setDarkSchemeId}
                     lightSchemeId={lightSchemeId}
                     setLightSchemeId={setLightSchemeId}
+                    chatBubblesEnabled={chatBubblesEnabled}
+                    setChatBubblesEnabled={setChatBubblesEnabled}
+                    chatBubblesDraftRef={chatBubblesDraftRef}
                 />
             ));
             break;

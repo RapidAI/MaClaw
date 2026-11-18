@@ -34,26 +34,30 @@ void main() {
 
   test('pendingReplyIsStale mirrors the desktop orphan rule', () {
     final now = DateTime.now().millisecondsSinceEpoch;
-    final oldId = 'm-${(now - botPendingReplyWaitMs - 60000).toRadixString(36)}-x';
+    final oldId =
+        'm-${(now - botPendingReplyWaitMs - 60000).toRadixString(36)}-x';
     expect(pendingReplyIsStale(pending: true, id: oldId, nowMs: now), isTrue);
     // Settled bubbles and fresh pendings stay.
     expect(pendingReplyIsStale(pending: false, id: oldId, nowMs: now), isFalse);
     expect(
-      pendingReplyIsStale(
-          pending: true, id: newDesktopMessageId(), nowMs: now),
+      pendingReplyIsStale(pending: true, id: newDesktopMessageId(), nowMs: now),
       isFalse,
     );
     // Undated bubbles cannot prove their age — kept, never swept.
-    expect(pendingReplyIsStale(pending: true, id: 'legacy', nowMs: now),
-        isFalse);
+    expect(
+      pendingReplyIsStale(pending: true, id: 'legacy', nowMs: now),
+      isFalse,
+    );
     // `at` proves age when the id does not carry a timestamp.
     expect(
       pendingReplyIsStale(
-          pending: true,
-          id: 'legacy',
-          at: DateTime.fromMillisecondsSinceEpoch(
-              now - botPendingReplyWaitMs - 1),
-          nowMs: now),
+        pending: true,
+        id: 'legacy',
+        at: DateTime.fromMillisecondsSinceEpoch(
+          now - botPendingReplyWaitMs - 1,
+        ),
+        nowMs: now,
+      ),
       isTrue,
     );
   });

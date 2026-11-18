@@ -86,6 +86,74 @@ func TestComputerUseSecretTypeDoesNotInject(t *testing.T) {
 	}
 }
 
+func TestComputerUseOCRPayClickDoesNotInject(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.SetAllowPixelClick(true)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 200, 100}, Source: "yolo"},
+	}, []taskengine.OCRResult{
+		{Text: "立即支付", BBox: [4]int{10, 10, 40, 20}},
+	}, "")
+	in := installCountingComputerUse(t, sess)
+	msg := cuHandleClick(map[string]interface{}{"x": 30, "y": 20})
+	if in.clicks != 0 || !strings.Contains(msg, "confirm_order") || strings.Contains(msg, "123456") {
+		t.Fatalf("clicks=%d msg=%s", in.clicks, msg)
+	}
+}
+
+func TestComputerUsePayEnterDoesNotInject(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1}, nil, []taskengine.UIElement{
+		{Name: "立即支付", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	msg := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if in.keys != 0 || !strings.Contains(msg, "confirm_order") || strings.Contains(msg, "123456") {
+		t.Fatalf("keys=%d msg=%s", in.keys, msg)
+	}
+}
+
+func TestComputerUseEnterInSearchStillSends(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 120, Height: 40, ScaleFactor: 1}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+		{Name: "立即支付", BBox: [4]int{60, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	click := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 1 {
+		t.Fatalf("search click %d %s", in.clicks, click)
+	}
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 120, Height: 40, ScaleFactor: 1}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+		{Name: "立即支付", BBox: [4]int{60, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	msg := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if in.keys != 1 || strings.Contains(msg, "blocked") {
+		t.Fatalf("keys=%d msg=%s", in.keys, msg)
+	}
+}
+
+func TestComputerUsePasswordFieldKeysDoNotInject(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1}, nil, []taskengine.UIElement{
+		{Name: "支付密码", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	click := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 1 {
+		t.Fatalf("focus click %d %s", in.clicks, click)
+	}
+	typed := cuHandleType(map[string]interface{}{"text": "998877"})
+	keyed := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if in.types != 0 || in.keys != 0 {
+		t.Fatalf("types=%d keys=%d typed=%s keyed=%s", in.types, in.keys, typed, keyed)
+	}
+	if strings.Contains(typed, "998877") || strings.Contains(keyed, "998877") || !strings.Contains(typed, "密码") {
+		t.Fatalf("typed=%s keyed=%s", typed, keyed)
+	}
+}
+
 func TestComputerUsePayClickWaitsForThePerson(t *testing.T) {
 	sess := computeruse.NewSession(computeruse.DefaultConfig())
 	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1}, nil, []taskengine.UIElement{

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'l10n_test_helper.dart';
 import 'package:mobilebot/core/account_store.dart';
 import 'package:mobilebot/core/api_client.dart';
 import 'package:mobilebot/features/remote/remote_api.dart';
@@ -215,7 +216,7 @@ class _FakeRemoteApi extends RemoteControlApi {
 
 Widget _app(_FakeRemoteApi api, {Widget? home}) => ProviderScope(
   overrides: [remoteApiProvider.overrideWithValue(api)],
-  child: MaterialApp(home: home ?? const RemoteScreen()),
+  child: l10nApp(child: home ?? const RemoteScreen()),
 );
 
 void main() {
@@ -297,7 +298,7 @@ void main() {
 
   /// pumpAndSettle never settles while the "running" banner's progress
   /// indicator animates — step a few frames instead.
-  Future<void> _pumpFew(WidgetTester tester) async {
+  Future<void> pumpFew(WidgetTester tester) async {
     for (var i = 0; i < 6; i++) {
       await tester.pump(const Duration(milliseconds: 80));
     }
@@ -535,7 +536,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(find.text('helloworld续', findRichText: true), findsOneWidget);
       expect(find.text('想想'), findsOneWidget);
       expect(find.text('running · edit parser'), findsOneWidget);
@@ -573,7 +574,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(find.text('终稿续', findRichText: true), findsOneWidget);
       expect(find.text('想想'), findsOneWidget);
       expect(find.text('running · edit parser'), findsOneWidget);
@@ -611,7 +612,7 @@ void main() {
             ),
           ),
         );
-        await _pumpFew(tester);
+        await pumpFew(tester);
         expect(api.lastAfterCursor, 40);
         expect(find.text('补上', findRichText: true), findsOneWidget);
         expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
@@ -651,10 +652,10 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
       expect(find.text('补上', findRichText: true), findsOneWidget);
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
     });
 
@@ -691,7 +692,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
       expect(find.text('补上', findRichText: true), findsNothing);
       api.liveController?.add({
@@ -699,7 +700,7 @@ void main() {
         'resync': true,
         'cursor': 90,
       });
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
       expect(find.text('补上', findRichText: true), findsOneWidget);
     });
@@ -726,14 +727,14 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
       api.liveController?.add({
         'event': 'snapshot',
         'resync': true,
         'cursor': 81,
       });
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 2);
     });
 
@@ -778,10 +779,10 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
       expect(find.text('补上', findRichText: true), findsOneWidget);
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(api.calls.where((call) => call.startsWith('watch:')).length, 3);
     });
 
@@ -837,11 +838,11 @@ void main() {
             ),
           ),
         );
-        await _pumpFew(tester);
+        await pumpFew(tester);
         expect(api.calls.where((call) => call.startsWith('watch:')).length, 4);
         expect(find.text('补上', findRichText: true), findsOneWidget);
         expect(find.text('半截'), findsNothing);
-        await _pumpFew(tester);
+        await pumpFew(tester);
         expect(api.calls.where((call) => call.startsWith('watch:')).length, 4);
       },
     );
@@ -883,7 +884,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
       expect(find.text('正在补齐中断的输出'), findsOneWidget);
       gate.complete();
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(find.text('正在补齐中断的输出'), findsNothing);
       expect(find.text('补上', findRichText: true), findsOneWidget);
     });
@@ -914,11 +915,61 @@ void main() {
             ),
           ),
         );
-        await _pumpFew(tester);
+        await pumpFew(tester);
         expect(find.text('已经生成好了', findRichText: true), findsOneWidget);
       },
     );
 
+    testWidgets('a new round after ownership clears the live latch', (
+      tester,
+    ) async {
+      // Round r1 is owned by the transcript (body matches the tail row). The
+      // ownership latch must NOT suppress the NEXT round's live view once
+      // round_started swaps in a new requestId.
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..watchReplyLive = {
+          'request_id': 'r1',
+          'responded': true,
+          'cursor': 4,
+          'parts': [
+            {'kind': 'text', 'text': '已经生成好了'},
+          ],
+        }
+        ..followEvents = [
+          {
+            'event': 'round_started',
+            'cursor': 5,
+            'cursor_from': 5,
+            'request_id': 'r2',
+            'display_text': '第二轮',
+          },
+          {
+            'event': 'thinking',
+            'cursor': 6,
+            'cursor_from': 6,
+            'request_id': 'r2',
+            'state': 'done',
+            'text': '新一轮思考',
+          },
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+      // r1 owned by the transcript, live round retired.
+      expect(find.text('已经生成好了', findRichText: true), findsOneWidget);
+      // r2 arrives: latches reset, the new round's thinking is on screen.
+      await pumpFew(tester);
+      expect(find.text('新一轮思考', findRichText: true), findsOneWidget);
+    });
     testWidgets(
       'a long transcript opens at the tail and stays put after the reader scrolls up',
       (tester) async {
@@ -963,7 +1014,7 @@ void main() {
             ),
           ),
         );
-        await _pumpFew(tester);
+        await pumpFew(tester);
         final position = tester
             .widget<ListView>(find.byType(ListView))
             .controller!
@@ -1027,7 +1078,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(find.text('正在写', findRichText: true), findsOneWidget);
       expect(find.text('还没有对话记录'), findsNothing);
     });
@@ -1064,7 +1115,7 @@ void main() {
             ),
           ),
         );
-        await _pumpFew(tester);
+        await pumpFew(tester);
         final transcript = find.byKey(const ValueKey('remote-task-transcript'));
         final position = tester
             .widget<ListView>(transcript)
@@ -1103,7 +1154,7 @@ void main() {
           'responded': true,
           'cursor': 8,
           'parts': [
-            {'kind': 'text', 'text': '${cap}乙乙乙'},
+            {'kind': 'text', 'text': '$cap乙乙乙'},
           ],
         }
         ..followEvents = [
@@ -1119,7 +1170,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(find.textContaining('乙乙乙', findRichText: true), findsOneWidget);
       expect(find.textContaining('…', findRichText: true), findsNothing);
       expect(find.text('报告.pdf'), findsOneWidget);
@@ -1154,7 +1205,7 @@ void main() {
             'cursor': 9,
             'cursor_from': 9,
             'request_id': 'r1',
-            'terminal': {'text': '${cap}中段$tail'},
+            'terminal': {'text': '$cap中段$tail'},
           },
         ];
       await tester.pumpWidget(
@@ -1167,7 +1218,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(find.textContaining('中段', findRichText: true), findsOneWidget);
       expect(find.textContaining('…', findRichText: true), findsNothing);
       expect(find.text('报告.pdf'), findsOneWidget);
@@ -1213,7 +1264,7 @@ void main() {
             ),
           ),
         );
-        await _pumpFew(tester);
+        await pumpFew(tester);
         expect(find.textContaining('…', findRichText: true), findsOneWidget);
         expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
       },
@@ -1257,7 +1308,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(find.byType(MarkdownBody), findsOneWidget);
       expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
       expect(find.text('报告.pdf'), findsOneWidget);
@@ -1298,7 +1349,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(find.byType(MarkdownBody), findsOneWidget);
       expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
       expect(find.textContaining('…', findRichText: true), findsNothing);
@@ -1338,7 +1389,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(find.byType(MarkdownBody), findsNWidgets(2));
       expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
     });
@@ -1357,13 +1408,13 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
 
       expect(find.text('帮我查一下'), findsOneWidget);
       expect(find.text('已经生成好了', findRichText: true), findsOneWidget);
       expect(find.text('产出物'), findsOneWidget);
       expect(find.text('报告.pdf'), findsNWidgets(2)); // chip + artifact row
-      expect(find.byIcon(Icons.send), findsNothing);
+      expect(find.byIcon(Icons.arrow_upward_rounded), findsNothing);
       expect(find.byIcon(Icons.more_vert), findsNothing);
     });
 
@@ -1379,12 +1430,12 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
 
       expect(find.byIcon(Icons.more_vert), findsOneWidget);
       await tester.enterText(find.byType(TextField).last, '继续处理第二批');
-      await tester.tap(find.byIcon(Icons.send));
-      await _pumpFew(tester);
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await pumpFew(tester);
 
       expect(api.calls, contains('send:g-ops:/p/a:继续处理第二批'));
     });
@@ -1401,7 +1452,7 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
 
       // The fetch path runs through fetchFile; share_plus itself can't run
       // on a widget-test host, so assert the op call fires (the share call
@@ -1410,6 +1461,32 @@ void main() {
       await tester.pump();
       // fetchFile completed synchronously on the fake; base64 'YWJj' decodes.
       expect(api.detail, isNotNull);
+    });
+
+    testWidgets('file card open button runs the fetch and open path', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()..detail = sampleDetail();
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+
+      // 打开 shares the fetch with 分享; OpenFilex itself has no plugin on a
+      // widget-test host — _fetchAndOpen catches that and toasts, so the tap
+      // must not crash the task screen.
+      await tester.tap(find.byIcon(Icons.open_in_new));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('报告.pdf'), findsWidgets);
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('slash command is rejected locally without an op call', (
@@ -1426,11 +1503,11 @@ void main() {
           ),
         ),
       );
-      await _pumpFew(tester);
+      await pumpFew(tester);
 
       await tester.enterText(find.byType(TextField).last, '/plan approve');
-      await tester.tap(find.byIcon(Icons.send));
-      await _pumpFew(tester);
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await pumpFew(tester);
 
       expect(api.calls.where((c) => c.startsWith('send:')), isEmpty);
       expect(find.text('远控只能发送任务消息，不能运行本机命令'), findsOneWidget);
@@ -1440,19 +1517,19 @@ void main() {
       final api = _FakeRemoteApi()
         ..snapshot = const RemoteControlState(grants: [_grantOps]);
       await tester.pumpWidget(_app(api));
-      await _pumpFew(tester);
+      await pumpFew(tester);
 
       await tester.tap(find.text('新建任务'));
-      await _pumpFew(tester);
+      await pumpFew(tester);
       await tester.tap(find.byIcon(Icons.folder_open));
-      await _pumpFew(tester);
+      await pumpFew(tester);
 
       expect(api.calls, contains('dirs:'));
       expect(find.text('主目录'), findsOneWidget);
       expect(find.text('D:\\'), findsOneWidget);
 
       await tester.tap(find.text('D:\\'));
-      await _pumpFew(tester);
+      await pumpFew(tester);
       expect(api.calls, contains('dirs:D:\\'));
     });
   });

@@ -3,7 +3,8 @@ import 'package:mobilebot/core/speech_text.dart';
 
 void main() {
   test('strips markdown structure, keeps prose', () {
-    const md = '# 标题\n\n**重要**：请查看 [文档](https://x.com)。\n'
+    const md =
+        '# 标题\n\n**重要**：请查看 [文档](https://x.com)。\n'
         '- 第一项\n- 第二项\n\n`code` 与 <https://bare.link>\n';
     final out = plainTextForSpeech(md);
     expect(out, contains('标题'));

@@ -1,15 +1,25 @@
 package textutil
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf16"
+)
 
-// answerSliceOverlapMin is the shortest shared run that is one clause.
-// A single punctuation mark is not the same sentence.
+// answerSliceOverlapMin is the shortest shared run that is one clause, counted
+// in UTF-16 code units — the same unit the desktop viewer uses for string
+// length. A single punctuation mark is not the same sentence.
 const answerSliceOverlapMin = 16
 
 // ProjectAnswerSlices joins the streamed opening and the settled ending of one
-// digital-employee answer. A shared run is kept once. A longer slice that
-// already contains the other replaces it. A short fragment is the next piece
-// of the same sentence. Anything else stays in order with a gap between them.
+// digital-employee answer.
+//
+// The agent loop trims the settled answer, while the token stream keeps the
+// newline that trim removed. Matching ignores that edge so one sentence is not
+// shown twice. A shared run of at least one clause is kept once. A longer
+// slice that already contains the other replaces it. A short ending is the
+// next piece of the same sentence (a saved stream fragment). A short opening
+// is not glued onto a different long answer. Anything else stays in order
+// with a gap between them.
 func ProjectAnswerSlices(opening, ending string) string {
 	if opening == "" {
 		return ending
@@ -20,23 +30,47 @@ func ProjectAnswerSlices(opening, ending string) string {
 	if strings.HasPrefix(strings.TrimSpace(ending), "[系统提示]") {
 		return opening + "\n\n" + ending
 	}
-	openingRunes := []rune(opening)
-	endingRunes := []rune(ending)
-	if strings.HasPrefix(ending, opening) || strings.HasSuffix(ending, opening) {
-		if len(endingRunes) >= len(openingRunes) {
-			return ending
-		}
+	openCmp := trimAnswerEdgeRight(opening)
+	endCmp := trimAnswerEdgeLeft(ending)
+	if openCmp == "" {
+		return ending
 	}
-	if strings.HasPrefix(opening, ending) || strings.HasSuffix(opening, ending) {
+	if endCmp == "" {
 		return opening
 	}
-	if n := sharedAnswerEdge(openingRunes, endingRunes); n > 0 {
-		return opening + string(endingRunes[n:])
+	openUnits := utf16Units(openCmp)
+	endUnits := utf16Units(endCmp)
+	if (strings.HasPrefix(endCmp, openCmp) || strings.HasSuffix(endCmp, openCmp)) && len(endUnits) >= len(openUnits) {
+		return ending
 	}
-	if len(endingRunes) < answerSliceOverlapMin || len(openingRunes) < answerSliceOverlapMin {
+	if strings.HasPrefix(openCmp, endCmp) || strings.HasSuffix(openCmp, endCmp) {
+		return opening
+	}
+	if n := sharedAnswerEdge(openUnits, endUnits); n > 0 {
+		return openCmp + dropUTF16Prefix(endCmp, n)
+	}
+	// The ending is the piece that used to be appended. A short opening is a
+	// different sentence from a long settled answer, so it keeps the gap.
+	if utf16Len(ending) < answerSliceOverlapMin {
 		return opening + ending
 	}
 	return opening + "\n\n…\n\n" + ending
+}
+
+// ClipKeepTail bounds text to maxRunes and retains the end. A folded answer
+// carries the settled ending there; keeping the head drops it. The marker
+// sits outside the budget, the same way the head clip marks a cut request.
+// maxRunes <= 0 leaves the text unchanged.
+func ClipKeepTail(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || maxRunes <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return "..." + string(runes[len(runes)-maxRunes:])
 }
 
 // StreamEndContent is the settled slice a viewer still has to fold onto the
@@ -52,29 +86,76 @@ func StreamEndContent(streamed, final string) string {
 	return final
 }
 
+func trimAnswerEdgeRight(s string) string {
+	return strings.TrimRight(s, " \t\r\n")
+}
+
+func trimAnswerEdgeLeft(s string) string {
+	return strings.TrimLeft(s, " \t\r\n")
+}
+
+func utf16Units(s string) []uint16 {
+	return utf16.Encode([]rune(s))
+}
+
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r > 0xFFFF {
+			n++
+		}
+	}
+	return n
+}
+
+// dropUTF16Prefix drops the first n UTF-16 code units. A match produced by
+// sharedAnswerEdge ends on a code-point boundary for well-formed text.
+func dropUTF16Prefix(s string, units int) string {
+	if units <= 0 {
+		return s
+	}
+	n := 0
+	for i, r := range s {
+		if n >= units {
+			return s[i:]
+		}
+		n++
+		if r > 0xFFFF {
+			n++
+		}
+	}
+	return ""
+}
+
 // sharedAnswerEdge is the longest prefix of tail that is a suffix of prefix.
-func sharedAnswerEdge(prefix, tail []rune) int {
+// The walk stays inside tail, so a NUL in the text cannot form a false edge.
+func sharedAnswerEdge(prefix, tail []uint16) int {
 	if len(prefix) == 0 || len(tail) == 0 {
 		return 0
 	}
-	s := make([]rune, 0, len(tail)+1+len(prefix))
-	s = append(s, tail...)
-	s = append(s, 0)
-	s = append(s, prefix...)
-	pi := make([]int, len(s))
+	pi := make([]int, len(tail))
 	k := 0
-	for i := 1; i < len(s); i++ {
-		for k > 0 && s[i] != s[k] {
+	for i := 1; i < len(tail); i++ {
+		for k > 0 && tail[i] != tail[k] {
 			k = pi[k-1]
 		}
-		if s[i] == s[k] {
+		if tail[i] == tail[k] {
 			k++
 		}
 		pi[i] = k
 	}
-	n := pi[len(s)-1]
-	if n >= answerSliceOverlapMin {
-		return n
+	k = 0
+	for _, c := range prefix {
+		for k > 0 && (k == len(tail) || tail[k] != c) {
+			k = pi[k-1]
+		}
+		if k < len(tail) && tail[k] == c {
+			k++
+		}
+	}
+	if k >= answerSliceOverlapMin {
+		return k
 	}
 	return 0
 }

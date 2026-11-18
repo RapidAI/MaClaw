@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatBubblesEnabled, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess, GetCurrentLanguage, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
@@ -160,6 +160,7 @@ import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
 import { getAssistantDarkScheme, readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
 import { getAssistantLightScheme, readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
 import { chatFontFamilySaveQueue, chatFontSizeSaveQueue, clampChatFontSize, codingFontFamilySaveQueue, decideConfigChatFontSize, decideConfigFontFamily, normalizeAssistantFontId, serialNewestHasStarted, snapshotConfirmsDraft } from './components/ai/assistantFonts';
+import { chatBubblesEchoClearsDraft, chatBubblesFromRead, chatBubblesSaveQueue } from './components/ai/chatBubblesSetting';
 import { useAIAssistant, emitDesktopPetState } from './components/ai/useAIAssistant';
 import { START_VOICE_INPUT_EVENT } from './components/ai/useVoiceInput';
 import { useDialog } from './components/CustomDialog';
@@ -759,6 +760,7 @@ function App() {
     const [chatFontSize, setChatFontSize] = useState<number>(14);
     const [chatFontFamily, setChatFontFamily] = useState<string>("system");
     const [codingFontFamily, setCodingFontFamily] = useState<string>("system");
+    const [chatBubblesEnabled, setChatBubblesEnabled] = useState(true);
     // Startup hydration reads are tagged with these counters. A user choice or a
     // config-changed payload bumps the matching counter so an earlier read cannot
     // overwrite that newer value. The config-load retry closes the loading shell
@@ -773,6 +775,8 @@ function App() {
     const chatFontSizeDraftRef = useRef<number | null>(null);
     const chatFontFamilyDraftRef = useRef<string | null>(null);
     const codingFontFamilyDraftRef = useRef<string | null>(null);
+    const chatBubblesEpochRef = useRef(0);
+    const chatBubblesDraftRef = useRef<boolean | null>(null);
     const selectChatFontSize = useCallback((value: number | ((current: number) => number)) => {
         assistantFontEpochRef.current.size += 1;
         setChatFontSize(value);
@@ -786,6 +790,10 @@ function App() {
         assistantFontEpochRef.current.coding += 1;
         assistantFontShownRef.current.coding = fontId;
         setCodingFontFamily(fontId);
+    }, []);
+    const selectChatBubblesEnabled = useCallback((enabled: boolean) => {
+        chatBubblesEpochRef.current += 1;
+        setChatBubblesEnabled(enabled);
     }, []);
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
     const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
@@ -2596,7 +2604,11 @@ function App() {
             chat: assistantFontEpochRef.current.chat,
             coding: assistantFontEpochRef.current.coding,
         };
-        const applyStartupAssistantFonts = (loaded: { chat_font_size?: number; chat_font_family?: string; coding_font_family?: string } | null | undefined) => {
+        // Same tag as the font reads, including the retry below. A choice or a
+        // config echo while this load is in flight moves the epoch, and the
+        // recovered snapshot must not turn the switch back.
+        const bubbleHydrationEpoch = chatBubblesEpochRef.current;
+        const applyStartupAssistantFonts = (loaded: { chat_font_size?: number; chat_font_family?: string; coding_font_family?: string; chat_bubbles_enabled?: boolean } | null | undefined) => {
             // The retry closes the shell without waiting for GetChatFontSize.
             // Apply the size already on this config, clamped the same way as
             // GetChatFontSize, so the transcript does not stay at 14 until that read returns.
@@ -2631,6 +2643,20 @@ function App() {
                 assistantFontShownRef.current.coding = normalized;
                 setCodingFontFamily(normalized);
             }).catch(() => {});
+            if (chatBubblesEpochRef.current === bubbleHydrationEpoch) {
+                const startupBubbles = chatBubblesFromRead(loaded?.chat_bubbles_enabled, chatBubblesDraftRef.current, bubbleHydrationEpoch, chatBubblesEpochRef.current);
+                if (startupBubbles) {
+                    if (chatBubblesEchoClearsDraft(startupBubbles.enabled, chatBubblesDraftRef.current, serialNewestHasStarted(chatBubblesSaveQueue))) {
+                        chatBubblesDraftRef.current = null;
+                    }
+                    setChatBubblesEnabled(startupBubbles.enabled);
+                }
+                callBackend(() => GetChatBubblesEnabled()).then((on) => {
+                    if (chatBubblesEpochRef.current !== bubbleHydrationEpoch) return;
+                    if (chatBubblesDraftRef.current != null) return;
+                    setChatBubblesEnabled(on !== false);
+                }).catch(() => {});
+            }
         };
 
         // Config Logic — LoadConfigForUI omits NLSkills (skills come from ListNLSkills).
@@ -2740,7 +2766,7 @@ function App() {
         });
 
         // Listen for external config changes (e.g. from Tray)
-        const applyConfigChange = (cfg: corelib.AppConfig) => {
+        const applyConfigChange = (cfg: corelib.AppConfig, bubbleEpochAtRead?: number) => {
             setConfig(cfg);
             // Prefer the payload's zoom field to avoid an extra backend round-trip.
             if (typeof cfg.ui_zoom_factor === 'number') {
@@ -2816,6 +2842,18 @@ function App() {
                     setCodingFontFamily(id);
                 }).catch(() => {});
             }
+            // A payload is the write that just landed. A reload is tagged when
+            // the read started, so an older LoadConfig cannot turn the switch
+            // back after this echo has already cleared the draft.
+            const bubbleEpoch = bubbleEpochAtRead ?? chatBubblesEpochRef.current;
+            const bubbles = chatBubblesFromRead(cfg.chat_bubbles_enabled, chatBubblesDraftRef.current, bubbleEpoch, chatBubblesEpochRef.current);
+            if (bubbles) {
+                if (chatBubblesEchoClearsDraft(bubbles.enabled, chatBubblesDraftRef.current, serialNewestHasStarted(chatBubblesSaveQueue))) {
+                    chatBubblesDraftRef.current = null;
+                }
+                chatBubblesEpochRef.current += 1;
+                setChatBubblesEnabled(bubbles.enabled);
+            }
             const tool = normalizeToolTab(cfg.active_tool);
             setActiveTool(tool);
             const toolCfg = (cfg as any)[tool];
@@ -2831,7 +2869,10 @@ function App() {
                 applyConfigChange(cfg);
                 return;
             }
-            void callBackend(() => LoadConfigForUI()).then(applyConfigChange).catch((err) => {
+            const bubbleEpoch = chatBubblesEpochRef.current;
+            void callBackend(() => LoadConfigForUI()).then((loaded) => {
+                applyConfigChange(loaded, bubbleEpoch);
+            }).catch((err) => {
                 console.warn('Failed to reload config after config event:', err);
             });
         };
@@ -6254,6 +6295,7 @@ ${instruction}`;
                             chatFontSize={chatFontSize}
                             chatFontFamily={chatFontFamily}
                             codingFontFamily={codingFontFamily}
+                            chatBubblesEnabled={chatBubblesEnabled}
                             themeMode={aiThemeMode}
                             darkSchemeId={aiDarkSchemeId}
                             lightSchemeId={aiLightSchemeId}
@@ -6448,6 +6490,9 @@ ${instruction}`;
                             setDarkSchemeId={handleAIDarkSchemeChange}
                             lightSchemeId={aiLightSchemeId}
                             setLightSchemeId={handleAILightSchemeChange}
+                            chatBubblesEnabled={chatBubblesEnabled}
+                            setChatBubblesEnabled={selectChatBubblesEnabled}
+                            chatBubblesDraftRef={chatBubblesDraftRef}
                         />
                 ) : (
                 <Suspense

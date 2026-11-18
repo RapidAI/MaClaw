@@ -3569,6 +3569,60 @@ describe('AIAssistantPanel property tests', () => {
         expect(document.body.textContent || '').toContain('They can work in medical devices, hospitals, R&D, or further study.');
     });
 
+    it('keeps the copied coding process list instead of concatenated reasoning', async () => {
+        const projectPath = 'D:/tasks/copied-instruction-sets';
+        const joinedReasoning = '先把各段思考拼在一起，工具步骤不在这里';
+        const richTranscript = [
+            { id: 'user-1', role: 'user', content: '本程序现在支持哪些指令集', timestamp: 1 },
+            {
+                id: 'assistant-1',
+                role: 'assistant',
+                content: '结论：支持 AVX512',
+                reasoning: joinedReasoning,
+                timestamp: 2,
+                codingTimeline: [
+                    { id: 'thought-1', sequence: 1, kind: 'thinking', content: '先看构建文件', timestamp: 1 },
+                    { id: 'search-1', sequence: 2, kind: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_finished","phase":"running","detail":"code_search","outcome":"success","target":"qmobjdetv26"}', timestamp: 2 },
+                ],
+            },
+        ];
+        let sessionReady = false;
+        let releaseSession: () => void = () => {};
+        createProjectTabSessionMock.mockImplementationOnce(() => new Promise(resolve => {
+            releaseSession = () => {
+                sessionReady = true;
+                resolve('已打开项目：副本');
+            };
+        }));
+        loadProjectTabConversationMock.mockImplementation(() => Promise.resolve(sessionReady ? richTranscript : null));
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: '本程序现在支持哪些指令集' },
+            { role: 'assistant', content: '结论：支持 AVX512', reasoning_content: joinedReasoning },
+        ]);
+
+        renderPanel({
+            lang: 'zh',
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: '（副本）本程序现在支持哪些指令集',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'coding_dev',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(createProjectTabSessionMock).toHaveBeenCalled());
+        expect(loadProjectTabConversationMock).not.toHaveBeenCalled();
+        await act(async () => { releaseSession(); });
+
+        await waitFor(() => expect(document.body.textContent || '').toContain('已搜索了 1 个模式'));
+        expect(document.body.textContent || '').toContain('结论：支持 AVX512');
+        expect(document.body.textContent || '').not.toContain(joinedReasoning);
+        expect(loadProjectConversationHistoryMock).not.toHaveBeenCalled();
+    });
+
     it('restores backend conversation when a cloud workspace task is opened as a new-agent tab', async () => {
         const projectPath = 'D:/tasks/yun-duan-gong-zuo-qu-ren-wu-other-machine';
         loadProjectConversationHistoryMock.mockResolvedValue([
@@ -4483,9 +4537,9 @@ describe('AIAssistantPanel property tests', () => {
             streamingSessionKeys: [],
         }} />);
         await waitFor(() => expect(getByTestId('coding-agent-interleaved-timeline')).toBeTruthy());
-        expect(container.textContent || '').toContain(thought);
+        expect(getByTestId('coding-agent-interleaved-timeline').getAttribute('data-process-open')).toBe('false');
+        expect(container.textContent || '').not.toContain(thought);
         expect(container.textContent || '').toContain('目标已开始：改进画质');
-        expect(container.querySelector('[data-process-kind="todo"]')).toBeTruthy();
 
         const thinner = makeMsg({
             id: 'goal-cont-assistant',
@@ -4505,6 +4559,12 @@ describe('AIAssistantPanel property tests', () => {
             streamingSessionKeys: [],
         }} />);
         await waitFor(() => expect(getByTestId('coding-agent-interleaved-timeline')).toBeTruthy());
+        expect(container.textContent || '').toContain('步骤已核对');
+        const folded = getByTestId('coding-agent-interleaved-timeline');
+        expect(folded.getAttribute('data-process-open')).toBe('false');
+        expect(container.textContent || '').not.toContain(thought);
+        fireEvent.click(getByTestId('coding-agent-process-summary'));
+        expect(folded.getAttribute('data-process-open')).toBe('true');
         expect(container.textContent || '').toContain(thought);
         expect(container.querySelector('[data-process-kind="todo"]')).toBeTruthy();
     });
@@ -4620,6 +4680,99 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.textContent || '').toContain('session_tokens');
         expect(container.textContent || '').toContain('Turn');
         expect(container.textContent || '').toContain('正在执行命令');
+    });
+
+    it('folds a finished goal stage and leaves its command and summary while the goal is still running', async () => {
+        const projectPath = 'D:/tasks/goal-stage-fold';
+        const sessionKey = `desktop-user:${projectPath}`;
+        const command = '本轮只能提交步骤 2：物理内核';
+        const report = '第 2 步已完成。物理内核已归档。';
+        const thought = '碰撞还差一条边界。';
+        const done = makeMsg({
+            id: 'goal-stage-done',
+            role: 'assistant',
+            content: report,
+            requestId: 'goal-cont-fold-1',
+            sessionKey,
+            timestamp: 2,
+            goalStageCommand: command,
+            goalStageSettled: true,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: thought, timestamp: 2 },
+                { id: 'p1', sequence: 2, kind: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"bash","command":"git status --short"}', timestamp: 3 },
+            ],
+        });
+        const runningThought = '下一步先看渲染入口。';
+        const running = makeMsg({
+            id: 'goal-stage-run',
+            role: 'assistant',
+            content: '',
+            requestId: 'goal-cont-fold-2',
+            sessionKey,
+            timestamp: 4,
+            goalStageCommand: '本轮只能提交步骤 3：渲染',
+            codingTimeline: [
+                { id: 't2', sequence: 1, kind: 'thinking', content: runningThought, timestamp: 4 },
+            ],
+        });
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'assistant', content: '下一轮只执行 S0。' },
+        ]);
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            lang: 'zh-Hans' as const,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Goal stage fold',
+                autoSend: false,
+                prepareMode: 'restore-context' as const,
+                agentMode: 'coding_dev' as const,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, container, getByTestId, getAllByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(container.textContent || '').toContain('下一轮只执行 S0。'));
+        const busy = {
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+            busySessionKeys: [sessionKey],
+            streamingSessionKeys: [],
+        };
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [done],
+            ...busy,
+        }} />);
+        await waitFor(() => expect(container.textContent || '').toContain(report));
+        expect(container.textContent || '').toContain(command);
+        expect(getByTestId('goal-stage-command').textContent).toBe(command);
+        expect(getByTestId('coding-agent-interleaved-timeline').getAttribute('data-process-open')).toBe('false');
+        expect(container.textContent || '').not.toContain(thought);
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [done, running],
+            ...busy,
+            streaming: true,
+            streamingSessionKey: sessionKey,
+            streamingSessionKeys: [sessionKey],
+        }} />);
+        await waitFor(() => expect(container.textContent || '').toContain(runningThought));
+        const timelines = getAllByTestId('coding-agent-interleaved-timeline');
+        expect(timelines).toHaveLength(2);
+        expect(timelines[0].getAttribute('data-process-open')).toBe('false');
+        expect(timelines[1].getAttribute('data-process-open')).toBe('true');
+        expect(container.textContent || '').toContain(command);
+        expect(container.textContent || '').toContain('本轮只能提交步骤 3：渲染');
+        expect(container.textContent || '').toContain(report);
+        expect(container.textContent || '').not.toContain(thought);
+        fireEvent.click(getAllByTestId('coding-agent-process-summary')[0]);
+        expect(timelines[0].getAttribute('data-process-open')).toBe('true');
+        expect(container.textContent || '').toContain(thought);
     });
 
     it('auto-opens the cloud file preview when a restored cloud workspace tab resolves its cache path', async () => {

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -7,10 +8,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/app_update.dart';
 import 'core/platform.dart' show supportsSideloadUpdate;
+import 'core/locale.dart';
 import 'core/native_voice.dart';
 import 'core/voice_engine.dart';
 import 'core/providers.dart';
 import 'core/theme.dart';
+import 'core/ui_kit.dart';
+import 'l10n/gen/app_localizations.dart';
 import 'features/account/account_screen.dart';
 import 'features/account/update_dialog.dart';
 import 'features/assistant/assistant_screen.dart';
@@ -36,11 +40,18 @@ class MaclawGoApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(_routerProvider);
+    final language = ref.watch(appLanguageProvider);
     return MaterialApp.router(
       title: 'MaclawGo',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
+      // 手动选择优先；否则按系统语言在 zh/zh_Hant/en/mn 间解析。
+      locale: localeFor(language),
+      localeResolutionCallback: (deviceLocale, _) =>
+          resolveAppLocale(deviceLocale, manual: language),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
       routerConfig: router,
     );
   }
@@ -83,11 +94,7 @@ final _routerProvider = Provider<GoRouter>((ref) {
       return null;
     },
     routes: [
-      GoRoute(
-        path: '/splash',
-        builder: (_, _) =>
-            const Scaffold(body: Center(child: CircularProgressIndicator())),
-      ),
+      GoRoute(path: '/splash', builder: (_, _) => const _SplashScreen()),
       GoRoute(
         path: '/login',
         builder: (context, state) => LoginScreen(
@@ -145,11 +152,11 @@ final _routerProvider = Provider<GoRouter>((ref) {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('找不到这个房间'),
+                  Text(context.S.errorRoomNotFound),
                   const SizedBox(height: 12),
                   FilledButton.tonal(
                     onPressed: () => context.go('/rooms'),
-                    child: const Text('返回房间列表'),
+                    child: Text(context.S.backToRooms),
                   ),
                 ],
               ),
@@ -174,11 +181,11 @@ final _routerProvider = Provider<GoRouter>((ref) {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('找不到这个远程任务'),
+                  Text(context.S.errorTaskNotFound),
                   const SizedBox(height: 12),
                   FilledButton.tonal(
                     onPressed: () => context.go('/remote'),
-                    child: const Text('返回远程控制'),
+                    child: Text(context.S.backToRemote),
                   ),
                 ],
               ),
@@ -201,6 +208,43 @@ final _routerProvider = Provider<GoRouter>((ref) {
 });
 
 enum _BotTab { chat, desktop, status, settings, style, demo }
+
+/// Branded session-loading screen — the first thing a launch shows, so it
+/// carries the mark and name while the session store warms up.
+class _SplashScreen extends StatelessWidget {
+  const _SplashScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const BrandMark(
+              size: 84,
+            ).animate().fadeIn(duration: const Duration(milliseconds: 350)),
+            const SizedBox(height: AppSpacing.lg),
+            Text(
+              'MaclawGo',
+              style: theme.textTheme.headlineSmall,
+            ).animate().fadeIn(
+              delay: const Duration(milliseconds: 120),
+              duration: const Duration(milliseconds: 350),
+            ),
+            const SizedBox(height: AppSpacing.xl + 4),
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2.4),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 /// Resolves the route's bot against the loaded list, then mounts the right
 /// screen inside a ProviderScope that binds the chat controller to it.
@@ -231,11 +275,11 @@ class _BotRoute extends ConsumerWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('找不到这个 Bot'),
+              Text(context.S.errorBotNotFound),
               const SizedBox(height: 12),
               FilledButton.tonal(
                 onPressed: () => context.go('/'),
-                child: const Text('返回列表'),
+                child: Text(context.S.backToBots),
               ),
             ],
           ),
@@ -358,43 +402,53 @@ class _HomeShellState extends ConsumerState<_HomeShell> {
   Widget build(BuildContext context) {
     final location = GoRouterState.of(context).matchedLocation;
     final index = _indexOf(location);
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       body: widget.child,
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        onDestinationSelected: (i) {
-          if (i != index) context.go(_tabs[i]);
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.smart_toy_outlined),
-            selectedIcon: Icon(Icons.smart_toy),
-            label: 'Bot',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.connected_tv_outlined),
-            selectedIcon: Icon(Icons.connected_tv),
-            label: '远控',
-          ),
-          NavigationDestination(
-            icon: _CenterTabIcon(icon: Icons.auto_awesome_outlined),
-            selectedIcon: _CenterTabIcon(
-              icon: Icons.auto_awesome,
-              filled: true,
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            top: BorderSide(
+              color: scheme.outlineVariant.withValues(alpha: 0.5),
             ),
-            label: '助手',
           ),
-          NavigationDestination(
-            icon: Icon(Icons.fact_check_outlined),
-            selectedIcon: Icon(Icons.fact_check),
-            label: '工作状态',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person),
-            label: '我的',
-          ),
-        ],
+        ),
+        child: NavigationBar(
+          selectedIndex: index,
+          onDestinationSelected: (i) {
+            if (i != index) context.go(_tabs[i]);
+          },
+          destinations: [
+            NavigationDestination(
+              icon: Icon(Icons.smart_toy_outlined),
+              selectedIcon: Icon(Icons.smart_toy),
+              label: context.S.tabBots,
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.connected_tv_outlined),
+              selectedIcon: Icon(Icons.connected_tv),
+              label: context.S.tabRemote,
+            ),
+            NavigationDestination(
+              icon: _CenterTabIcon(icon: Icons.auto_awesome_outlined),
+              selectedIcon: _CenterTabIcon(
+                icon: Icons.auto_awesome,
+                filled: true,
+              ),
+              label: context.S.tabAssistant,
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.fact_check_outlined),
+              selectedIcon: Icon(Icons.fact_check),
+              label: context.S.tabStatus,
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person),
+              label: context.S.tabMe,
+            ),
+          ],
+        ),
       ),
     );
   }

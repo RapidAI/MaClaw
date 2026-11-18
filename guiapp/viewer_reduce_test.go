@@ -58,6 +58,59 @@ func TestReduceViewerEventMatchesWireSnapshot(t *testing.T) {
 	assertWireSnapshotReduction(t, mustRemarshal(t, doc["responded_event"]), "终稿", true)
 }
 
+func TestApplyViewerPiecesStripsInteriorSentinel(t *testing.T) {
+	if got := applyViewerPieces("forecast", []string{"\x02重写"}); got != "重写" {
+		t.Fatalf("clean suffix = %q", got)
+	}
+	if got := applyViewerPieces("forecast", []string{"\x02"}); got != "" {
+		t.Fatalf("exact reset = %q", got)
+	}
+	if got := applyViewerPieces("", []string{"The\x01", "\x01 user", "\x02ke\x01pt"}); got != "kept" {
+		t.Fatalf("joined = %q", got)
+	}
+	if got := applyViewerPieces("kept", []string{" tail"}); got != "kept tail" {
+		t.Fatalf("append = %q", got)
+	}
+}
+
+func TestAppendViewerThinkingStripsInteriorSentinel(t *testing.T) {
+	state := emptyViewerReduceState()
+	appendViewerThinking(&state, "The\x01 user")
+	appendViewerThinking(&state, "\x01")
+	if len(state.Thinking) != 1 || state.Thinking[0].Text != "The user" {
+		t.Fatalf("thinking = %+v", state.Thinking)
+	}
+	state = reduceViewerEvent(state, map[string]any{
+		"event": "thinking",
+		"state": "done",
+		"text":  "The\x01 user\x01 wants",
+	})
+	if len(state.Thinking) != 1 || state.Thinking[0].Text != "The user wants" || !state.Thinking[0].Done {
+		t.Fatalf("done = %+v", state.Thinking)
+	}
+}
+
+func TestTokenViewerEventsSanitizesRejectSuffix(t *testing.T) {
+	events := tokenViewerEvents(AIAssistantStreamEvent{
+		SessionKey: "s", RequestID: "r", Text: "\x02ke\x01pt", Sequence: 1,
+	}, "")
+	if len(events) != 1 || events[0].Text != "\x02kept" || len(events[0].Pieces) != 1 || events[0].Pieces[0] != "\x02kept" {
+		t.Fatalf("dirty suffix = %+v", events)
+	}
+	events = tokenViewerEvents(AIAssistantStreamEvent{
+		SessionKey: "s", RequestID: "r", Text: "\x02重写",
+	}, "")
+	if len(events) != 1 || events[0].Text != "\x02重写" {
+		t.Fatalf("clean suffix = %+v", events)
+	}
+	events = tokenViewerEvents(AIAssistantStreamEvent{
+		SessionKey: "s", RequestID: "r", Text: "\x02",
+	}, "")
+	if len(events) != 1 || events[0].Text != "\x02" {
+		t.Fatalf("exact marker = %+v", events)
+	}
+}
+
 func TestReduceViewerEventFlagOffSkipsViewerEvent(t *testing.T) {
 	t.Setenv("MACLAW_VIEWER_REDUCER", "0")
 	app := &App{}

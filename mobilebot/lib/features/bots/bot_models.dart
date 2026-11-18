@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'package:characters/characters.dart';
 
 import '../../core/json_safe.dart';
+import '../../l10n/gen/app_localizations.dart';
 
 export '../../core/json_safe.dart';
 
@@ -14,12 +15,12 @@ export '../../core/json_safe.dart';
 enum BotWorkState { idle, running, waitingForUser, awaitingAnswer, failed }
 
 extension BotWorkStateLabel on BotWorkState {
-  String label() => switch (this) {
-    BotWorkState.idle => '空闲',
-    BotWorkState.running => '运行中',
-    BotWorkState.waitingForUser => '待接管',
-    BotWorkState.awaitingAnswer => '待回答',
-    BotWorkState.failed => '失败',
+  String label(AppLocalizations S) => switch (this) {
+    BotWorkState.idle => S.workStateIdle,
+    BotWorkState.running => S.workStateRunning,
+    BotWorkState.waitingForUser => S.workStateWaitingUser,
+    BotWorkState.awaitingAnswer => S.workStateAwaitingAnswer,
+    BotWorkState.failed => S.workStateFailed,
   };
 
   bool get needsUser =>
@@ -112,10 +113,10 @@ class DesktopBotQuota {
   /// specifically — a LAN pin does not apply to an already-created bot.
   bool get cloudMissing => known && cloudDesktop == false;
 
-  String get label {
+  String label(AppLocalizations S) {
     if (!known) return '';
-    if (limit == null) return '已用 $used';
-    return '已用 $used / $limit';
+    if (limit == null) return S.quotaUsed(used);
+    return S.quotaUsedOf(used, limit!);
   }
 
   DesktopBotQuota bump() => DesktopBotQuota(
@@ -151,10 +152,10 @@ class DesktopBotQuota {
 }
 
 /// List mark. An empty mode is the shared computer, matching the desktop client.
-String desktopModeMark(String mode) => switch (mode) {
-  'none' => '无电脑',
-  'isolated' => '电脑·独立',
-  _ => '电脑·共用',
+String desktopModeMark(String mode, AppLocalizations S) => switch (mode) {
+  'none' => S.desktopMarkNone,
+  'isolated' => S.desktopMarkIsolated,
+  _ => S.desktopMarkShared,
 };
 
 bool botHasComputer(String mode) => mode != 'none';
@@ -290,7 +291,8 @@ class BotReplyFile {
     this.attachmentId = '',
   });
 
-  String get displayName => name.trim().isEmpty ? '文件' : name.trim();
+  String displayName(AppLocalizations S) =>
+      name.trim().isEmpty ? S.fallbackFileName : name.trim();
 
   factory BotReplyFile.fromJson(Map<String, dynamic> json) => BotReplyFile(
     name: syncText(json['name']),
@@ -1254,14 +1256,20 @@ class BotSchedule {
     status: syncText(json['status']).trim(),
   );
 
-  String get when {
-    if (intervalMinutes > 0) return '每 $intervalMinutes 分钟';
+  String when(AppLocalizations S) {
+    if (intervalMinutes > 0) return S.scheduleEveryMinutes(intervalMinutes);
     final hh = hour.toString().padLeft(2, '0');
     final mm = minute.toString().padLeft(2, '0');
-    const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-    final day = dayOfWeek >= 0 && dayOfWeek < days.length
-        ? days[dayOfWeek]
-        : '每天';
+    final day = switch (dayOfWeek) {
+      0 => S.scheduleDowSun,
+      1 => S.scheduleDowMon,
+      2 => S.scheduleDowTue,
+      3 => S.scheduleDowWed,
+      4 => S.scheduleDowThu,
+      5 => S.scheduleDowFri,
+      6 => S.scheduleDowSat,
+      _ => S.scheduleEveryDay,
+    };
     return '$day $hh:$mm';
   }
 }

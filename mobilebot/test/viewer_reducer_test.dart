@@ -279,6 +279,31 @@ void main() {
     expect(later.body, '新');
   });
 
+  test('token pieces drop interior sentinels and keep a reject suffix', () {
+    var state = reduceViewerEvent(emptyViewerState(), {
+      'event': 'token',
+      'text': 'The\x01 user',
+    });
+    state = reduceViewerEvent(state, {
+      'event': 'token',
+      'pieces': ['\x01 wants', '\x02ke\x01pt'],
+    });
+    expect(state.body, 'kept');
+    state = reduceViewerEvent(state, {
+      'event': 'thinking',
+      'state': 'delta',
+      'text': 'The\x01 plan',
+    });
+    expect(state.thinking.single.text, 'The plan');
+    state = reduceViewerEvent(emptyViewerState(), {
+      'event': 'token',
+      'text': '\x02重写',
+    });
+    expect(state.body, '重写');
+    state = reduceViewerEvent(state, {'event': 'token', 'text': '\x02'});
+    expect(state.body, isEmpty);
+  });
+
   test('watch_task asks for stream proto 2', () {
     final body = watchTaskBody(r'D:\work\demo');
     expect(body['project_path'], r'D:\work\demo');

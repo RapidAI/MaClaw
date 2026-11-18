@@ -478,18 +478,18 @@ func TestMobileDesktopAuthQRSessionRequiresRequestHost(t *testing.T) {
 	}
 }
 
-func TestMobileDesktopAuthQRSessionRequiresVerifiedPhoneIdentity(t *testing.T) {
+func TestMobileDesktopAuthQRSessionAllowsEmailUserWithoutPhone(t *testing.T) {
 	clearMobileLLMAuthorizationsForTest(t)
 	identity, _, _ := newHTTPAPITestServices(t)
-	desktopViewerToken, _ := issueViewerToken(t, identity, "desktop-owner@example.com")
+	desktopViewerToken, _ := issueViewerToken(t, identity, "desktop-owner-unbound@example.com")
 	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
 	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
 	createRec := httptest.NewRecorder()
 
 	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
 
-	if createRec.Code != http.StatusForbidden || !strings.Contains(createRec.Body.String(), "PHONE_IDENTITY_REQUIRED") {
-		t.Fatalf("status=%d body=%s, want phone identity requirement", createRec.Code, createRec.Body.String())
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s, want 201 without a bound phone", createRec.Code, createRec.Body.String())
 	}
 }
 

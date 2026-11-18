@@ -3,23 +3,32 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mobilebot/app.dart';
 import 'package:mobilebot/core/account_store.dart';
 import 'package:mobilebot/core/api_client.dart';
+import 'package:mobilebot/core/locale.dart';
 import 'package:mobilebot/core/providers.dart';
 import 'package:mobilebot/features/bots/bot_api.dart';
 import 'package:mobilebot/features/bots/bot_models.dart';
 import 'package:mobilebot/features/bots/bots_controller.dart';
 
 final _account = Account(
-    key: 't', label: 't', hubUrl: 'https://h.example.com',
-    token: 'tok', clientId: 'c1', addedAt: DateTime(2026));
+  key: 't',
+  label: 't',
+  hubUrl: 'https://h.example.com',
+  token: 'tok',
+  clientId: 'c1',
+  addedAt: DateTime(2026),
+);
 
 const _bot = Bot(id: 'b1', name: '小助', description: 'd');
 
 class _FakeApi extends BotApi {
   _FakeApi() : super(ApiClient(_account));
   @override
-  Future<ConversationPage> conversation(
-          {String botId = '', int after = 0, int limit = 200, int waitSeconds = 0}) async =>
-      const ConversationPage();
+  Future<ConversationPage> conversation({
+    String botId = '',
+    int after = 0,
+    int limit = 200,
+    int waitSeconds = 0,
+  }) async => const ConversationPage();
   @override
   Future<List<PendingDelivery>> pendingDeliveries() async => const [];
   @override
@@ -41,16 +50,22 @@ void main() {
   // bot route's nested ProviderScope (via declared `dependencies`), not the
   // root container — otherwise BotChatController.build hits
   // "botChatBotIdProvider not overridden" on every chat open.
-  testWidgets('navigating to /bot/:id builds the chat inside the scope',
-      (tester) async {
+  testWidgets('navigating to /bot/:id builds the chat inside the scope', (
+    tester,
+  ) async {
     final api = _FakeApi();
-    await tester.pumpWidget(ProviderScope(
-      overrides: [
-        botApiProvider.overrideWithValue(api),
-        sessionProvider.overrideWith(_FakeSession.new),
-      ],
-      child: const MaclawGoApp(),
-    ));
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          // Pin 简体中文: the zh-text expectations below must not depend on
+          // the test host's system locale (en_US) resolving the en bundle.
+          initialLanguageProvider.overrideWithValue(AppLanguage.zhHans),
+          botApiProvider.overrideWithValue(api),
+          sessionProvider.overrideWith(_FakeSession.new),
+        ],
+        child: const MaclawGoApp(),
+      ),
+    );
     // Let the router settle on '/' and the bots refresh land.
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 50));

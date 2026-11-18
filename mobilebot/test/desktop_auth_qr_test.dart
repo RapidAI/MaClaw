@@ -18,7 +18,9 @@ void main() {
 
     test('rejects non-auth QR types', () {
       expect(
-        () => parseDesktopAuthQrPayload(_payload(type: 'maclaw_mobile_llm_authorization')),
+        () => parseDesktopAuthQrPayload(
+          _payload(type: 'maclaw_mobile_llm_authorization'),
+        ),
         throwsFormatException,
       );
     });
@@ -26,7 +28,12 @@ void main() {
     test('rejects expired sessions', () {
       expect(
         () => parseDesktopAuthQrPayload(
-          _payload(expiresAt: DateTime.now().toUtc().subtract(const Duration(minutes: 1)).toIso8601String()),
+          _payload(
+            expiresAt: DateTime.now()
+                .toUtc()
+                .subtract(const Duration(minutes: 1))
+                .toIso8601String(),
+          ),
         ),
         throwsFormatException,
       );
@@ -35,7 +42,10 @@ void main() {
     test('rejects non-https hub urls', () {
       expect(
         () => parseDesktopAuthQrPayload(
-          _payload().replaceAll('https://hub.example.com', 'http://hub.example.com'),
+          _payload().replaceAll(
+            'https://hub.example.com',
+            'http://hub.example.com',
+          ),
         ),
         throwsFormatException,
       );
@@ -43,7 +53,10 @@ void main() {
 
     test('rejects non-JSON and empty input', () {
       expect(() => parseDesktopAuthQrPayload(''), throwsFormatException);
-      expect(() => parseDesktopAuthQrPayload('not json'), throwsFormatException);
+      expect(
+        () => parseDesktopAuthQrPayload('not json'),
+        throwsFormatException,
+      );
       expect(() => parseDesktopAuthQrPayload('[1,2]'), throwsFormatException);
     });
   });

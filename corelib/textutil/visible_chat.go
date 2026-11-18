@@ -26,6 +26,22 @@ func VisibleChatStreamDelta(s string) string {
 	return SanitizeVisibleChatText(s)
 }
 
+// SplitVisibleStreamDelta separates one transport lane marker from the visible
+// body. A leading U+0001 is the reasoning lane; a leading U+0002 is the
+// rejected-round marker. Every other non-displayable rune, including a
+// sentinel glued between tokens, is removed from the body. Concatenating the
+// raw prefixed tokens is what paints "□The□ user□ wants".
+func SplitVisibleStreamDelta(delta string) (marker, body string) {
+	if delta == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(delta, "\x01") || strings.HasPrefix(delta, "\x02") {
+		marker = delta[:1]
+		delta = delta[1:]
+	}
+	return marker, SanitizeVisibleChatText(delta)
+}
+
 // FirstVisibleChatText returns the first candidate that still has visible text
 // after tofu sanitizing. Use it for assembled replies (SSE done vs aggregated
 // chunks, JSON fallbacks) so a sentinel-only payload cannot hide a real answer.

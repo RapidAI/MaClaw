@@ -2,11 +2,16 @@
 // the desktop reducer in guiapp/frontend/src/components/ai/reduceViewerEvent.ts.
 
 class ViewerThinking {
-  ViewerThinking({this.text = '', this.done = false});
+  ViewerThinking({this.text = '', this.done = false, this.seq = 0});
   String text;
   bool done;
 
-  Map<String, dynamic> toJson() => {'text': text, 'done': done};
+  /// Arrival order across ALL live items (thinking/timeline/cards/notices),
+  /// stamped from the state's global counter — the typed lists alone lose
+  /// the interleaving of a real turn.
+  int seq;
+
+  Map<String, dynamic> toJson() => {'text': text, 'done': done, 'seq': seq};
 }
 
 class ViewerTimelineRow {
@@ -16,6 +21,7 @@ class ViewerTimelineRow {
     this.title = '',
     this.runId = '',
     this.text = '',
+    this.seq = 0,
   });
   String phase;
   String taskId;
@@ -23,12 +29,16 @@ class ViewerTimelineRow {
   String runId;
   String text;
 
+  /// Arrival order across all live items — see [ViewerThinking.seq].
+  int seq;
+
   Map<String, dynamic> toJson() => {
     'phase': phase,
     'taskId': taskId,
     'title': title,
     'runId': runId,
     if (text.isNotEmpty) 'text': text,
+    'seq': seq,
   };
 }
 
@@ -40,6 +50,7 @@ class ViewerCard {
     this.confirmationId = '',
     this.text = '',
     this.asError = false,
+    this.seq = 0,
   });
   String requestId;
   String kind;
@@ -48,6 +59,9 @@ class ViewerCard {
   String text;
   bool asError;
 
+  /// Arrival order across all live items — see [ViewerThinking.seq].
+  int seq;
+
   Map<String, dynamic> toJson() => {
     'requestId': requestId,
     'kind': kind,
@@ -55,15 +69,23 @@ class ViewerCard {
     'confirmationId': confirmationId,
     'text': text,
     'asError': asError,
+    'seq': seq,
   };
 }
 
 class ViewerNotice {
-  ViewerNotice({this.text = '', this.asError = false});
+  ViewerNotice({this.text = '', this.asError = false, this.seq = 0});
   String text;
   bool asError;
 
-  Map<String, dynamic> toJson() => {'text': text, 'asError': asError};
+  /// Arrival order across all live items — see [ViewerThinking.seq].
+  int seq;
+
+  Map<String, dynamic> toJson() => {
+    'text': text,
+    'asError': asError,
+    'seq': seq,
+  };
 }
 
 class ViewerReduceState {
@@ -81,6 +103,7 @@ class ViewerReduceState {
     this.gap = false,
     this.responded = false,
     this.displayText = '',
+    this.nextSeq = 0,
   }) : thinking = thinking ?? <ViewerThinking>[],
        timeline = timeline ?? <ViewerTimelineRow>[],
        cards = cards ?? <ViewerCard>[],
@@ -100,13 +123,16 @@ class ViewerReduceState {
   bool responded;
   String displayText;
 
+  /// Monotonic arrival counter stamping every live item's [seq].
+  int nextSeq;
+
   ViewerReduceState clone() => ViewerReduceState(
     last: last,
     requestId: requestId,
     body: body,
     thinking: [
       for (final block in thinking)
-        ViewerThinking(text: block.text, done: block.done),
+        ViewerThinking(text: block.text, done: block.done, seq: block.seq),
     ],
     timeline: [
       for (final row in timeline)
@@ -116,6 +142,7 @@ class ViewerReduceState {
           title: row.title,
           runId: row.runId,
           text: row.text,
+          seq: row.seq,
         ),
     ],
     cards: [
@@ -127,11 +154,12 @@ class ViewerReduceState {
           confirmationId: card.confirmationId,
           text: card.text,
           asError: card.asError,
+          seq: card.seq,
         ),
     ],
     notices: [
       for (final note in notices)
-        ViewerNotice(text: note.text, asError: note.asError),
+        ViewerNotice(text: note.text, asError: note.asError, seq: note.seq),
     ],
     visible: visible,
     trialStatus: trialStatus,
@@ -155,6 +183,7 @@ class ViewerReduceState {
     'gap': gap,
     'responded': responded,
     'displayText': displayText,
+    'nextSeq': nextSeq,
   };
 }
 
@@ -188,6 +217,49 @@ int _num(Object? value) {
 
 String _text(Object? value) => value is String ? value : '';
 
+/// True when a UTF-16 code unit would paint as a hollow square. Tab, LF, and
+/// CR stay. This matches the desktop reducer: controls, U+25A1, BMP private
+/// use, and U+FFF0–U+FFFF.
+bool _chatTextHasTofu(String value) {
+  for (var i = 0; i < value.length; i++) {
+    final c = value.codeUnitAt(i);
+    if (c < 0x20) {
+      if (c != 0x09 && c != 0x0a && c != 0x0d) return true;
+      continue;
+    }
+    if ((c >= 0x7f && c <= 0x9f) ||
+        c == 0x25a1 ||
+        (c >= 0xe000 && c <= 0xf8ff) ||
+        c >= 0xfff0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Drops stream markers and other tofu from text that is about to be shown.
+/// A clean string is returned unchanged. A leading U+0002 is not handled
+/// here; the caller keeps that marker as the rejected-round reset.
+String _visibleChatText(String value) {
+  if (value.isEmpty || !_chatTextHasTofu(value)) return value;
+  final out = StringBuffer();
+  for (var i = 0; i < value.length; i++) {
+    final c = value.codeUnitAt(i);
+    if (c < 0x20) {
+      if (c == 0x09 || c == 0x0a || c == 0x0d) out.writeCharCode(c);
+      continue;
+    }
+    if ((c >= 0x7f && c <= 0x9f) ||
+        c == 0x25a1 ||
+        (c >= 0xe000 && c <= 0xf8ff) ||
+        c >= 0xfff0) {
+      continue;
+    }
+    out.writeCharCode(c);
+  }
+  return out.toString();
+}
+
 List<String> _pieces(Map<String, dynamic> event) {
   final raw = event['pieces'];
   if (raw is List && raw.isNotEmpty) {
@@ -200,11 +272,14 @@ List<String> _pieces(Map<String, dynamic> event) {
 String _applyPieces(String body, List<String> pieces) {
   var next = body;
   for (final piece in pieces) {
-    if (piece == '\x02' || piece.startsWith('\x02')) {
-      next = piece.substring(1);
+    if (piece.isEmpty) continue;
+    // A leading U+0002 replaces the draft. The suffix is the new body.
+    if (piece.startsWith('\x02')) {
+      next = _visibleChatText(piece.substring(1));
       continue;
     }
-    next += piece;
+    final visible = _visibleChatText(piece);
+    if (visible.isNotEmpty) next += visible;
   }
   return next;
 }
@@ -216,14 +291,20 @@ void _seal(ViewerReduceState state) {
 }
 
 void _appendThinking(ViewerReduceState state, String delta) {
+  final body = _visibleChatText(delta);
+  if (body.isEmpty) return;
   for (var i = state.thinking.length - 1; i >= 0; i--) {
     if (!state.thinking[i].done) {
-      state.thinking[i].text += delta;
+      state.thinking[i].text += body;
       return;
     }
   }
-  state.thinking.add(ViewerThinking(text: delta));
+  state.thinking.add(ViewerThinking(text: body, seq: state.nextSeq++));
 }
+
+/// Fills the seq of items created without one (creation sites stamp via the
+/// counter; this keeps explicit construction sites terse).
+int _stamp(ViewerReduceState state) => state.nextSeq++;
 
 final _legacyLine = RegExp(
   r'^Coding Agent:\s*([a-z]+)(?:\s+(T\d+))?(?:\s+-\s*(.*))?$',
@@ -289,11 +370,13 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
           : _text(event['state']);
       if (mode == 'started') {
         final tail = state.thinking.isEmpty ? null : state.thinking.last;
-        if (tail == null || tail.done) state.thinking.add(ViewerThinking());
+        if (tail == null || tail.done) {
+          state.thinking.add(ViewerThinking(seq: _stamp(state)));
+        }
         return;
       }
       if (mode == 'done') {
-        final doneText = _text(event['text']);
+        final doneText = _visibleChatText(_text(event['text']));
         for (var i = state.thinking.length - 1; i >= 0; i--) {
           if (!state.thinking[i].done) {
             if (doneText.isNotEmpty) state.thinking[i].text = doneText;
@@ -301,7 +384,9 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
             return;
           }
         }
-        state.thinking.add(ViewerThinking(text: doneText, done: true));
+        state.thinking.add(
+          ViewerThinking(text: doneText, done: true, seq: _stamp(state)),
+        );
         return;
       }
       for (final delta in _pieces(event)) {
@@ -318,12 +403,16 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
             taskId: _taskOf(coding),
             title: _text(coding['title']),
             runId: _runOf(coding),
+            seq: _stamp(state),
           ),
         );
         return;
       }
       final row = raw.isEmpty ? null : _rowFromText(raw);
-      if (row != null) state.timeline.add(row);
+      if (row != null) {
+        row.seq = _stamp(state);
+        state.timeline.add(row);
+      }
       return;
     case 'new_round':
     case 'stream_done':
@@ -338,10 +427,14 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
         for (final card in state.cards) {
           if (card.requestId == requestId) card.expired = true;
         }
-        final note = _text(event['text']);
+        final note = _visibleChatText(_text(event['text']));
         if (note.isNotEmpty) {
           state.notices.add(
-            ViewerNotice(text: note, asError: event['as_error'] == true),
+            ViewerNotice(
+              text: note,
+              asError: event['as_error'] == true,
+              seq: _stamp(state),
+            ),
           );
         }
         return;
@@ -354,15 +447,20 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
             requestId: requestId,
             kind: kind,
             confirmationId: id,
-            text: _text(event['text']),
+            text: _visibleChatText(_text(event['text'])),
+            seq: _stamp(state),
           ),
         );
         return;
       }
-      final note = _text(event['text']);
+      final note = _visibleChatText(_text(event['text']));
       if (note.isNotEmpty) {
         state.notices.add(
-          ViewerNotice(text: note, asError: event['as_error'] == true),
+          ViewerNotice(
+            text: note,
+            asError: event['as_error'] == true,
+            seq: _stamp(state),
+          ),
         );
       }
       return;
@@ -378,10 +476,12 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
       final terminal = event['terminal'] is Map
           ? event['terminal'] as Map
           : (event['response'] is Map ? event['response'] as Map : const {});
-      final body = _text(terminal['text']);
-      final summary = _text(terminal['trial_reflect_summary']).isNotEmpty
-          ? _text(terminal['trial_reflect_summary'])
-          : _text(terminal['trace_summary']);
+      final body = _visibleChatText(_text(terminal['text']));
+      final summary = _visibleChatText(
+        _text(terminal['trial_reflect_summary']).isNotEmpty
+            ? _text(terminal['trial_reflect_summary'])
+            : _text(terminal['trace_summary']),
+      );
       state.visible = body.isNotEmpty ? body : summary;
       state.trialStatus = _text(terminal['trial_reflect_status']);
       state.trialFailures = _num(terminal['trial_reflect_failures']);
@@ -393,6 +493,7 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
             requestId: requestId,
             kind: 'confirmation',
             confirmationId: _text(confirmation['id']),
+            seq: _stamp(state),
           ),
         );
       }
@@ -406,12 +507,20 @@ void _applyLiveParts(ViewerReduceState state, List parts) {
   final body = StringBuffer();
   for (final item in parts) {
     if (item is! Map) continue;
+    // parts preserve the snapshot's real arrival order — stamp each created
+    // item with the shared counter so the merged transcript interleaves
+    // thinking/progress/text exactly as the turn produced them.
+    final seq = state.nextSeq++;
     final kind = _text(item['kind']);
     if (kind == 'text') {
-      body.write(_text(item['text']));
+      body.write(_visibleChatText(_text(item['text'])));
     } else if (kind == 'thinking') {
       state.thinking.add(
-        ViewerThinking(text: _text(item['text']), done: item['done'] == true),
+        ViewerThinking(
+          text: _visibleChatText(_text(item['text'])),
+          done: item['done'] == true,
+          seq: seq,
+        ),
       );
     } else if (kind == 'progress') {
       final coding = item['coding'];
@@ -423,12 +532,16 @@ void _applyLiveParts(ViewerReduceState state, List parts) {
             title: _text(coding['title']),
             runId: _runOf(coding),
             text: _text(item['text']),
+            seq: seq,
           ),
         );
       } else {
         final raw = _text(item['text']);
         final row = raw.isEmpty ? null : _rowFromText(raw);
-        if (row != null) state.timeline.add(row);
+        if (row != null) {
+          row.seq = seq;
+          state.timeline.add(row);
+        }
       }
     }
   }
@@ -451,13 +564,17 @@ ViewerReduceState _fromLive(Map<String, dynamic> event, int cursor) {
     _applyLiveParts(next, parts);
     return next;
   }
-  next.body = _text(live['text']);
+  next.body = _visibleChatText(_text(live['text']));
   final blocks = live['thinking'];
   if (blocks is List) {
     next.thinking = [
       for (final item in blocks)
         if (item is Map)
-          ViewerThinking(text: _text(item['text']), done: item['done'] == true),
+          ViewerThinking(
+            text: _visibleChatText(_text(item['text'])),
+            done: item['done'] == true,
+            seq: next.nextSeq++,
+          ),
     ];
   }
   return next;

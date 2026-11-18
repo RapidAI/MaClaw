@@ -53,7 +53,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, applyBufferedStreamParts, applyIncomingStreamDelta, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, mergeReasoningText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
+import { useAIAssistant, applyBufferedStreamParts, applyIncomingStreamDelta, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, visibleAppendedChatText, mergeReasoningText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
 import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, SendBtwQuery, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
@@ -2547,6 +2547,7 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(0);
         expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toBe(displayText);
         expect(messageContents(result.current.messages)).not.toContain(prompt);
+        expect(result.current.messages.find(message => message.requestId === requestId)?.goalStageCommand).toBe('继续推进目标：实现一个 C++ 贪吃蛇');
 
         await act(async () => {
             emitRuntimeEvent('ai-assistant-new-round', { request_id: requestId, session_key: 'desktop-user' });
@@ -2571,6 +2572,7 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.sending).toBe(false);
         expect(result.current.progressMessages).toEqual([]);
         expect(assistantMessages(result.current.messages)[0].content).toBe('已完成本轮实现。');
+        expect(result.current.messages.find(message => message.requestId === requestId)?.goalStageSettled).toBe(true);
 
         await act(async () => {
             emitRuntimeEvent('ai-assistant-foreground-round-started', {
@@ -2586,6 +2588,7 @@ describe('useAIAssistant property tests', () => {
         expect(checklists[0].role).toBe('system');
         expect(checklists[0].content).toContain('→ 2. 物理内核');
         expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(0);
+        expect(result.current.messages.find(message => message.requestId === 'goal-cont-next-step')?.goalStageCommand).toBe('本轮只能提交步骤 2：物理内核');
 
         await act(async () => {
             emitRuntimeEvent('ai-assistant-token', {
@@ -3084,6 +3087,44 @@ describe('useAIAssistant property tests', () => {
         // not need (and must not keep) a second identity.
         expect(result.current.offscreenLiveSessionKeys).toEqual([]);
         expect(result.current.busySessionKeys).toEqual([session]);
+    });
+
+    it('keeps the goal stage command when that stage finishes on another tab', async () => {
+        const session = 'desktop-user:D:/tasks/goal-stage-offscreen';
+        const requestId = 'goal-cont-offscreen-stage';
+        const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user:D:/tasks/visible' });
+        const prompt = [
+            '[系统续接][execute] 按步骤执行目标：贪吃蛇',
+            '',
+            '本轮只能提交步骤 4：实现绘制与界面。已完成的步骤不要再调用 goal。',
+        ].join('\n');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: prompt,
+                display_text: '目标清单\n→ 9. 别的步骤 | Token: 9/40',
+            });
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: requestId,
+                session_key: session,
+                text: '绘制循环已经接上。',
+            });
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: session,
+                text: '步骤 4 已完成。',
+                error: '',
+                fields: null,
+                actions: null,
+            });
+        });
+
+        const assistant = result.current.messages.find(message => message.requestId === requestId);
+        expect(assistant?.goalStageCommand).toBe('本轮只能提交步骤 4：实现绘制与界面');
+        expect(assistant?.goalStageSettled).toBe(true);
+        expect(assistant?.content).toContain('步骤 4 已完成。');
     });
 
     it('shows a desktop deploy turn when its task tab opens after the round started', async () => {
@@ -3921,6 +3962,23 @@ describe('useAIAssistant property tests', () => {
         expect(sanitizeAIAssistantStreamText('\x01think\uEB90ing')).toBe('\x01thinking');
         expect(sanitizeAIAssistantStreamText('reason\u25A1ing\uFFFC\uFFFD')).toBe('reasoning');
         expect(sanitizeAIAssistantStreamText('\x01The\u0001 user')).toBe('\x01The user');
+        expect(visibleAppendedChatText('\x01The\x01 user\x01Ma\x01Cl')).toBe('The userMaCl');
+        const glued = {
+            content: '',
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        expect(applyIncomingStreamDelta(glued, '\x01The\x01 user\x01 wants')).toBe('\x01The user wants');
+        expect(glued.reasoning).toBe('The user wants');
+        expect(applyIncomingStreamDelta(glued, 'desktop\x01d and Ma\x01Cl')).toBe('desktopd and MaCl');
+        expect(glued.content).toBe('desktopd and MaCl');
+        expect(applyIncomingStreamDelta(glued, '\x02')).toBe('\x02');
+        expect(applyIncomingStreamDelta(glued, '\x02kept')).toBe('\x02kept');
+        expect(glued.content).toBe('desktopd and MaCl');
+        const clean = 'The user wants desktopd';
+        expect(sanitizeAIAssistantStreamText(clean)).toBe(clean);
+        expect(sanitizeAIAssistantStreamText('\x01' + clean)).toBe('\x01' + clean);
         expect(sanitizeAIAssistantStreamText('\x02')).toBe('\x02');
         expect(sanitizeAIAssistantStreamText('\x02visible\u0000')).toBe('\x02visible');
         expect(sanitizeAIAssistantStreamText('visible\x02')).toBe('visible');
@@ -4541,7 +4599,7 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
-        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。');
     });
 
     it('suppresses english conversational echo summaries with punctuation for short chit-chat replies', async () => {
@@ -4561,7 +4619,7 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
-        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。');
     });
 
     it('suppresses ok-style conversational echo summaries', async () => {
@@ -4581,7 +4639,7 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
-        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。');
     });
 
     it('keeps direct short chit-chat replies visible instead of applying empty fallback', async () => {
@@ -4641,7 +4699,7 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
-        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。');
     });
 
     it('suppresses conversational echo summaries for short chit-chat replies', async () => {
@@ -4661,7 +4719,7 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
-        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。');
     });
 
     it('suppresses conversational echo summaries for short english chit-chat replies', async () => {
@@ -4681,7 +4739,7 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
-        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。');
     });
 
     it('keeps execution-like empty terminal summaries visible', async () => {
@@ -6126,6 +6184,63 @@ describe('useAIAssistant property tests', () => {
             { label: 'Existing', value: 'keep me' },
         ]);
         expect(assistantMsg?.actions).toBeUndefined();
+    });
+
+    it('drops a backend trace invite and View trace action when the entry is off', async () => {
+        mockSendResponse = {
+            text: '任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。',
+            error: '',
+            fields: null,
+            actions: [
+                { label: 'View trace', command: '__view_trace__ run-trace-1', style: 'default' },
+                { label: 'Retry', command: 'retry now', style: 'default' },
+            ],
+            run_id: 'run-trace-1',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('show trace');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('任务已结束，但没有生成可展示的结果。');
+        expect(assistantMsg?.actions).toEqual([
+            { label: 'Retry', command: 'retry now', style: 'default' },
+        ]);
+    });
+
+    it('keeps one View trace action and the invite when the entry is on', async () => {
+        (LoadConfig as any).mockResolvedValueOnce({ show_ai_trace_entry: true });
+        mockSendResponse = {
+            text: '任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。',
+            error: '',
+            fields: null,
+            actions: [
+                { label: 'View trace', command: '__view_trace__ run-trace-1', style: 'default' },
+            ],
+            run_id: 'run-trace-1',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(LoadConfig).toHaveBeenCalled();
+        });
+        act(() => {
+            emitRuntimeEvent('config-changed', new corelib.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
+        });
+
+        await act(async () => {
+            await result.current.sendMessage('show trace');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+        expect(assistantMsg?.actions).toEqual([
+            { label: 'View trace', command: '__view_trace__ run-trace-1', style: 'default' },
+        ]);
     });
 
     it('shows trace fields and action when trace entry is enabled in config', async () => {

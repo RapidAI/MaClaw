@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../../core/locale.dart';
 import '../../core/providers.dart';
 import 'desktop_auth_qr.dart';
 
@@ -62,7 +63,9 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
       if (!result.confirmed) {
         setState(() {
           _submitting = false;
-          _message = result.message.isNotEmpty ? result.message : '登录已提交，等待审批';
+          _message = result.message.isNotEmpty
+              ? result.message
+              : context.S.pendingApproval;
         });
         return;
       }
@@ -82,20 +85,21 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
 
   String _errorText(Object error) {
     final text = error.toString();
+    final S = context.S;
     if (text.contains('INVALID_DESKTOP_QR')) {
-      return '二维码无效、已使用或已过期，请在电脑端重新生成';
+      return S.qrInvalid;
     }
     if (text.contains('QR_OWNER_UNAVAILABLE')) {
-      return '生成该二维码的账号不可用';
+      return S.qrOwnerUnavailable;
     }
     if (text.contains('PHONE_IDENTITY_REQUIRED')) {
-      return '该账号未绑定手机号，无法使用扫码登录';
+      return S.qrPhoneRequired;
     }
     // An older Hub has no redeem route at all.
     if (text.contains('HTTP_404') || text.contains('NOT_FOUND')) {
-      return '当前 Hub 版本不支持扫码登录，请更新 Hub 或改用验证码登录';
+      return S.qrHubTooOld;
     }
-    return text.isNotEmpty ? text : '操作失败，请重试';
+    return text.isNotEmpty ? text : S.opFailedRetry;
   }
 
   void _handleDetect(BarcodeCapture capture) {
@@ -112,15 +116,15 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('扫码登录')),
+      appBar: AppBar(title: Text(context.S.scanToSignIn)),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
           children: [
-            Text('扫描桌面端的"移动认证二维码"', style: theme.textTheme.titleLarge),
+            Text(context.S.qrScanTitle, style: theme.textTheme.titleLarge),
             const SizedBox(height: 8),
             Text(
-              '在电脑端 MaClaw「关于 → Hub 身份 → 移动认证二维码」打开二维码，5 分钟内扫描即可登录同一账号。',
+              context.S.qrScanHint,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: scheme.onSurfaceVariant,
               ),
@@ -131,7 +135,14 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
                 child: DecoratedBox(
-                  decoration: BoxDecoration(color: scheme.surfaceContainer),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainer,
+                    border: Border.all(
+                      color: scheme.primary.withValues(alpha: 0.45),
+                      width: 1.6,
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
                   child:
                       widget.scannerBuilder?.call(_submit) ??
                       widget.scanner ??
@@ -146,8 +157,8 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
               controller: _manualCtrl,
               minLines: 2,
               maxLines: 4,
-              decoration: const InputDecoration(
-                labelText: '或粘贴二维码内容',
+              decoration: InputDecoration(
+                labelText: context.S.qrPasteLabel,
                 prefixIcon: Icon(Icons.qr_code_2_outlined),
               ),
             ),
@@ -160,7 +171,9 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.login),
-              label: Text(_submitting ? '登录中' : '确认登录'),
+              label: Text(
+                _submitting ? context.S.signingIn : context.S.confirmSignIn,
+              ),
             ),
             if (_message != null) ...[
               const SizedBox(height: 12),

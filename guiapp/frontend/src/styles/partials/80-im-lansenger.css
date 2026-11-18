@@ -492,6 +492,19 @@
     line-height: 1.55;
 }
 
+.ui-settings-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-height: 28px;
+    cursor: pointer;
+}
+
+.ui-settings-toggle h4 {
+    margin: 0;
+}
+
 .system-settings-panel {
     display: grid;
     gap: 14px;

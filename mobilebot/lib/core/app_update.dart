@@ -130,10 +130,9 @@ class AppUpdater {
     if (!Platform.isAndroid) return null;
     try {
       const channel = MethodChannel('maclawgo/update');
-      return await channel.invokeMethod<bool>(
-        'apkSignatureMatches',
-        {'path': apk.path},
-      );
+      return await channel.invokeMethod<bool>('apkSignatureMatches', {
+        'path': apk.path,
+      });
     } on Object {
       return null;
     }

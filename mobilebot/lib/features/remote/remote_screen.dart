@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/providers.dart';
+import '../../core/locale.dart';
+import '../../core/ui_kit.dart';
 import '../bots/bots_controller.dart' show failureMessage;
 import 'remote_api.dart';
 import 'remote_models.dart';
@@ -68,10 +71,10 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
     final state = ref.watch(remoteStateProvider);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('远程控制'),
+        title: Text(context.S.rcTitle),
         actions: [
           IconButton(
-            tooltip: '设备与授权',
+            tooltip: context.S.rcManageDevices,
             icon: const Icon(Icons.devices_outlined),
             onPressed: () => showModalBottomSheet<void>(
               context: context,
@@ -81,7 +84,7 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
             ),
           ),
           IconButton(
-            tooltip: '邀请他人',
+            tooltip: context.S.rcInviteOthers,
             icon: const Icon(Icons.person_add_alt_1),
             onPressed: () => showModalBottomSheet<void>(
               context: context,
@@ -91,14 +94,14 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
             ),
           ),
           IconButton(
-            tooltip: '刷新',
+            tooltip: context.S.refresh,
             icon: const Icon(Icons.refresh),
             onPressed: () => ref.invalidate(remoteStateProvider),
           ),
         ],
       ),
       body: state.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
+        loading: () => const SkeletonList(itemCount: 5),
         error: (error, _) => RefreshIndicator(
           onRefresh: () async => ref.invalidate(remoteStateProvider),
           child: ListView(
@@ -128,14 +131,12 @@ class _RemoteError extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(message),
-          const SizedBox(height: 12),
-          FilledButton.tonal(onPressed: onRetry, child: const Text('重试')),
-        ],
+    return EmptyState(
+      icon: Icons.cloud_off,
+      title: message,
+      action: FilledButton.tonal(
+        onPressed: onRetry,
+        child: Text(context.S.retry),
       ),
     );
   }
@@ -173,20 +174,18 @@ class _RemoteBody extends ConsumerWidget {
         padding: const EdgeInsets.all(16),
         children: [
           if (snapshot.invites.isNotEmpty) ...[
-            Text('邀请我', style: theme.textTheme.titleSmall),
-            const SizedBox(height: 8),
+            SectionHeader(title: context.S.rcSectionInvites),
             for (final grant in snapshot.invites)
               _IncomingInviteCard(grant: grant, machines: snapshot.machines),
             const SizedBox(height: 16),
           ],
-          Text('远程机', style: theme.textTheme.titleSmall),
-          const SizedBox(height: 8),
+          SectionHeader(title: context.S.rcSectionMachines),
           if (usable.isEmpty)
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Text(
-                  '还没有可控制的机器。\n在下面的「我的设备」里挑一台配对，或让别的账号邀请你。',
+                  context.S.rcNoMachines,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -225,7 +224,7 @@ class _ManageSheet extends ConsumerWidget {
         controller: scrollCtrl,
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
         children: [
-          Text('设备与授权', style: theme.textTheme.titleMedium),
+          Text(context.S.rcManageDevices, style: theme.textTheme.titleMedium),
           const SizedBox(height: 16),
           if (snapshot == null)
             const Padding(
@@ -234,28 +233,34 @@ class _ManageSheet extends ConsumerWidget {
             )
           else ...[
             if (snapshot.controlled.isNotEmpty) ...[
-              Text('正在远控我的电脑', style: theme.textTheme.titleSmall),
+              Text(
+                context.S.rcControlledByOthers,
+                style: theme.textTheme.titleSmall,
+              ),
               const SizedBox(height: 8),
               for (final grant in snapshot.controlled)
                 _ControlledRow(grant: grant),
               const SizedBox(height: 16),
             ],
             if (snapshot.pending.isNotEmpty) ...[
-              Text('等待对方处理', style: theme.textTheme.titleSmall),
+              Text(
+                context.S.rcPendingOutgoing,
+                style: theme.textTheme.titleSmall,
+              ),
               const SizedBox(height: 8),
               for (final grant in snapshot.pending)
                 _PendingOutgoingRow(grant: grant),
               const SizedBox(height: 16),
             ],
             if (snapshot.usableControlled.isNotEmpty) ...[
-              Text('我可以控制', style: theme.textTheme.titleSmall),
+              Text(context.S.rcICanControl, style: theme.textTheme.titleSmall),
               const SizedBox(height: 8),
               for (final grant in snapshot.usableControlled)
                 _GrantRow(grant: grant, revocable: true),
               const SizedBox(height: 16),
             ],
             if (snapshot.machines.isNotEmpty) ...[
-              Text('我的设备', style: theme.textTheme.titleSmall),
+              Text(context.S.rcMyDevices, style: theme.textTheme.titleSmall),
               const SizedBox(height: 8),
               for (final machine in snapshot.machines)
                 _MachineRow(machine: machine),
@@ -268,7 +273,7 @@ class _ManageSheet extends ConsumerWidget {
                 padding: const EdgeInsets.symmetric(vertical: 32),
                 child: Center(
                   child: Text(
-                    '暂无设备与授权记录',
+                    context.S.rcNoRecords,
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -312,8 +317,7 @@ class _MachineDropdown extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  Icons.circle,
+                StatusDot(
                   size: 8,
                   color: grant.online
                       ? theme.colorScheme.primary
@@ -330,7 +334,7 @@ class _MachineDropdown extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  grant.permissionLabel,
+                  grant.permissionLabel(context.S),
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -378,13 +382,13 @@ class _IncomingInviteCard extends ConsumerWidget {
     if (machines.isEmpty) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('没有可绑定的电脑，请在桌面端接受')));
+      ).showSnackBar(SnackBar(content: Text(context.S.rcNoBindableMachine)));
       return;
     }
     final machine = await showDialog<RcMachine>(
       context: context,
       builder: (context) => SimpleDialog(
-        title: const Text('让哪台电脑接受这次远控？'),
+        title: Text(context.S.rcPickMachineTitle),
         children: [
           for (final m in machines)
             SimpleDialogOption(
@@ -399,7 +403,10 @@ class _IncomingInviteCard extends ConsumerWidget {
                   const SizedBox(width: 8),
                   Expanded(child: Text(m.title)),
                   if (!m.online)
-                    Text('离线', style: Theme.of(context).textTheme.labelSmall),
+                    Text(
+                      context.S.rcOffline,
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
                 ],
               ),
             ),
@@ -419,7 +426,7 @@ class _IncomingInviteCard extends ConsumerWidget {
     final theme = Theme.of(context);
     final who = grant.fromMachine.isNotEmpty
         ? grant.fromMachine
-        : (grant.account.isNotEmpty ? grant.account : '对方');
+        : (grant.account.isNotEmpty ? grant.account : context.S.rcCounterparty);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -427,7 +434,7 @@ class _IncomingInviteCard extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '$who 想远控你的电脑（${grant.permissionLabel}）',
+              context.S.rcWantsToControl(who, grant.permissionLabel(context.S)),
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 8),
@@ -435,7 +442,7 @@ class _IncomingInviteCard extends ConsumerWidget {
               children: [
                 FilledButton.tonal(
                   onPressed: () => _accept(context, ref),
-                  child: const Text('接受'),
+                  child: Text(context.S.rcAccept),
                 ),
                 const SizedBox(width: 8),
                 TextButton(
@@ -444,7 +451,7 @@ class _IncomingInviteCard extends ConsumerWidget {
                     ref,
                     (api) => api.rejectGrant(grant.id),
                   ),
-                  child: const Text('拒绝'),
+                  child: Text(context.S.rcReject),
                 ),
                 TextButton(
                   onPressed: () => _runGrantAction(
@@ -452,7 +459,7 @@ class _IncomingInviteCard extends ConsumerWidget {
                     ref,
                     (api) => api.ignoreGrant(grant.id),
                   ),
-                  child: const Text('忽略'),
+                  child: Text(context.S.rcIgnore),
                 ),
               ],
             ),
@@ -486,9 +493,11 @@ class _PendingOutgoingRow extends ConsumerWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        subtitle: Text('等待对方处理 · ${grant.permissionLabel}'),
+        subtitle: Text(
+          context.S.rcPendingPermission(grant.permissionLabel(context.S)),
+        ),
         trailing: TextButton(
-          child: const Text('取消'),
+          child: Text(context.S.cancel),
           onPressed: () =>
               _runGrantAction(context, ref, (api) => api.revokeGrant(grant.id)),
         ),
@@ -508,18 +517,17 @@ class _ControlledRow extends ConsumerWidget {
     final theme = Theme.of(context);
     final who = grant.fromMachine.isNotEmpty
         ? grant.fromMachine
-        : (grant.account.isNotEmpty ? grant.account : '对方');
+        : (grant.account.isNotEmpty ? grant.account : context.S.rcCounterparty);
     return Card(
       child: ListTile(
         dense: true,
         leading: Icon(Icons.circle, size: 10, color: theme.colorScheme.primary),
         title: Text(who, maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text(
-          '正在远控 ${grant.machineName.isNotEmpty ? grant.machineName : '我的电脑'}'
-          ' · ${grant.permissionLabel}',
+          '${context.S.rcControlling(grant.machineName.isNotEmpty ? grant.machineName : context.S.rcMyMachine)} · ${grant.permissionLabel(context.S)}',
         ),
         trailing: TextButton(
-          child: const Text('结束'),
+          child: Text(context.S.rcEnd),
           onPressed: () =>
               _runGrantAction(context, ref, (api) => api.revokeGrant(grant.id)),
         ),
@@ -550,14 +558,14 @@ class _GrantRow extends ConsumerWidget {
         title: Text(grant.title),
         subtitle: Text(
           [
-            grant.permissionLabel,
+            grant.permissionLabel(context.S),
             if (grant.status != 'active') grant.status,
-            if (grant.sameAccount) '同账号',
+            if (grant.sameAccount) context.S.rcSameAccount,
           ].join(' · '),
         ),
         trailing: revocable
             ? TextButton(
-                child: const Text('取消授权'),
+                child: Text(context.S.rcRevoke),
                 onPressed: () => _runGrantAction(
                   context,
                   ref,
@@ -585,17 +593,23 @@ class _MachineRow extends ConsumerWidget {
         var selected = 'view';
         return StatefulBuilder(
           builder: (context, setDialogState) => AlertDialog(
-            title: Text('配对 ${machine.title}'),
+            title: Text(context.S.rcPairTitle(machine.title)),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('配对后这台机器会出现在「远程机」里。'),
+                Text(context.S.rcPairHint),
                 const SizedBox(height: 12),
                 SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'view', label: Text('仅查看')),
-                    ButtonSegment(value: 'operate', label: Text('可操作')),
+                  segments: [
+                    ButtonSegment(
+                      value: 'view',
+                      label: Text(context.S.rcViewOnly),
+                    ),
+                    ButtonSegment(
+                      value: 'operate',
+                      label: Text(context.S.rcOperate),
+                    ),
                   ],
                   selected: {selected},
                   onSelectionChanged: (v) =>
@@ -606,11 +620,11 @@ class _MachineRow extends ConsumerWidget {
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('取消'),
+                child: Text(context.S.cancel),
               ),
               FilledButton(
                 onPressed: () => Navigator.of(context).pop(selected),
-                child: const Text('配对'),
+                child: Text(context.S.rcPair),
               ),
             ],
           ),
@@ -638,10 +652,12 @@ class _MachineRow extends ConsumerWidget {
               : theme.colorScheme.outline,
         ),
         title: Text(machine.title),
-        subtitle: Text(machine.online ? '在线' : '离线'),
+        subtitle: Text(
+          machine.online ? context.S.rcOnline : context.S.rcOffline,
+        ),
         trailing: TextButton(
           onPressed: () => _pair(context, ref),
-          child: const Text('配对'),
+          child: Text(context.S.rcPair),
         ),
       ),
     );
@@ -671,7 +687,7 @@ class _InviteSheetState extends ConsumerState<_InviteSheet> {
   Future<void> _send() async {
     final account = _accountCtrl.text.trim();
     if (account.isEmpty) {
-      setState(() => _error = '请输入对方帐号（邮箱或手机号）');
+      setState(() => _error = context.S.rcIdentityRequired);
       return;
     }
     setState(() {
@@ -703,26 +719,29 @@ class _InviteSheetState extends ConsumerState<_InviteSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('邀请他人', style: Theme.of(context).textTheme.titleMedium),
+          Text(
+            context.S.rcInviteOthers,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
           const SizedBox(height: 8),
           Text(
-            '对方在其中一台电脑上接受后，你就可以远控那台电脑。',
+            context.S.rcInviteHint,
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 16),
           TextField(
             controller: _accountCtrl,
             keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(
-              labelText: '对方帐号（邮箱或手机号）',
+            decoration: InputDecoration(
+              labelText: context.S.rcIdentityLabel,
               border: OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
           SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: 'view', label: Text('仅查看')),
-              ButtonSegment(value: 'operate', label: Text('可操作')),
+            segments: [
+              ButtonSegment(value: 'view', label: Text(context.S.rcViewOnly)),
+              ButtonSegment(value: 'operate', label: Text(context.S.rcOperate)),
             ],
             selected: {_permission},
             onSelectionChanged: (v) => setState(() => _permission = v.first),
@@ -744,7 +763,7 @@ class _InviteSheetState extends ConsumerState<_InviteSheet> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Text('发送邀请'),
+                : Text(context.S.rcSendInvite),
           ),
         ],
       ),
@@ -779,33 +798,32 @@ class _TaskSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Text('任务', style: theme.textTheme.titleSmall),
-            const Spacer(),
-            if (grant.canOperate)
-              FilledButton.tonalIcon(
-                onPressed: () => _createRemoteTask(context, grant),
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text('新建任务'),
-              )
-            else
-              Tooltip(
-                message: '当前是「仅查看」授权，不能新建任务',
-                triggerMode: TooltipTriggerMode.tap,
-                child: Chip(
-                  avatar: const Icon(Icons.visibility_outlined, size: 14),
-                  label: const Text('仅查看'),
-                  visualDensity: VisualDensity.compact,
+        SectionHeader(
+          title: context.S.rcTasksTitle,
+          trailing: grant.canOperate
+              ? FilledButton.tonalIcon(
+                  onPressed: () => _createRemoteTask(context, grant),
+                  icon: const Icon(Icons.add, size: 18),
+                  label: Text(context.S.rcNewTask),
+                )
+              : Tooltip(
+                  message: context.S.rcViewOnlyTooltip,
+                  triggerMode: TooltipTriggerMode.tap,
+                  child: Chip(
+                    avatar: const Icon(Icons.visibility_outlined, size: 14),
+                    label: Text(context.S.rcViewOnly),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 ),
-              ),
-          ],
         ),
-        const SizedBox(height: 8),
         tasks.when(
           loading: () => const Padding(
-            padding: EdgeInsets.symmetric(vertical: 24),
-            child: Center(child: CircularProgressIndicator()),
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: SkeletonBox(
+              width: double.infinity,
+              height: 76,
+              radius: BorderRadius.all(Radius.circular(18)),
+            ),
           ),
           error: (error, _) => Card(
             child: Padding(
@@ -818,33 +836,18 @@ class _TaskSection extends ConsumerWidget {
           ),
           data: (items) {
             if (items.isEmpty) {
-              return Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    children: [
-                      Icon(
-                        Icons.task_alt,
-                        size: 36,
-                        color: theme.colorScheme.outline,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '这台机器还没有任务',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      if (grant.canOperate) ...[
-                        const SizedBox(height: 12),
-                        FilledButton.tonalIcon(
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: EmptyState(
+                  icon: Icons.task_alt,
+                  title: context.S.rcNoTasks,
+                  action: grant.canOperate
+                      ? FilledButton.tonalIcon(
                           onPressed: () => _createRemoteTask(context, grant),
                           icon: const Icon(Icons.add, size: 18),
-                          label: const Text('新建第一个任务'),
-                        ),
-                      ],
-                    ],
-                  ),
+                          label: Text(context.S.rcNewFirstTask),
+                        )
+                      : null,
                 ),
               );
             }
@@ -871,103 +874,166 @@ class _TaskCard extends ConsumerWidget {
 
   const _TaskCard({required this.grant, required this.task});
 
+  /// 任务类型 → 图标与着色芯片。coding_dev 是编程任务；其余（含空）
+  /// 都是普通对话任务。
+  (IconData, Color) _typeOf(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final wf = task.workflowType.toLowerCase();
+    if (wf.contains('coding') || wf.contains('dev')) {
+      return (Icons.code_rounded, scheme.tertiary);
+    }
+    return (Icons.chat_bubble_outline_rounded, scheme.primary);
+  }
+
+  /// activeStatus 的终态 → (kind, label, color)。kind 是给图标选择用的
+  /// 语义键（与本地化文本解耦）；label 走翻译。
+  (String, String, Color) _stateOf(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final S = context.S;
+    final status = task.activeStatus.toLowerCase();
+    if (task.running) {
+      return (
+        'running',
+        task.activePhase.isNotEmpty ? task.activePhase : S.rcStateRunning,
+        scheme.primary,
+      );
+    }
+    if (status.contains('fail') || status.contains('error')) {
+      return ('failed', S.stStateFailed, const Color(0xFFD64545));
+    }
+    if (status.contains('cancel')) {
+      return ('cancelled', S.rcStateCancelled, scheme.onSurfaceVariant);
+    }
+    if (status.contains('interrupt')) {
+      return ('interrupted', S.rcStateInterrupted, const Color(0xFFD97B42));
+    }
+    if (status.contains('completed') || status.contains('done')) {
+      return ('completed', S.stStateCompleted, const Color(0xFF6AA84F));
+    }
+    if (task.activeStatus.isNotEmpty) {
+      return ('other', task.activeStatus, scheme.onSurfaceVariant);
+    }
+    return ('notStarted', S.rcStateNotStarted, scheme.onSurfaceVariant);
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final (typeIcon, typeColor) = _typeOf(context);
+    final (stateKind, stateLabel, stateColor) = _stateOf(context);
     return Card(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () => context.push(
-          '/remote/task',
-          extra: (grant: grant, taskPath: task.path, taskName: task.title),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => context.push(
+              '/remote/task',
+              extra: (grant: grant, taskPath: task.path, taskName: task.title),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 任务类型芯片 — tinted rounded square, hue carries the type.
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: typeColor.withValues(alpha: 0.13),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(typeIcon, size: 21, color: typeColor),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (task.pinned)
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                task.title,
+                                style: theme.textTheme.titleSmall,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (task.pinned)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 4),
+                                child: Icon(
+                                  Icons.push_pin,
+                                  size: 14,
+                                  color: theme.colorScheme.primary,
+                                ),
+                              ),
+                          ],
+                        ),
+                        if (task.preview.isNotEmpty)
                           Padding(
-                            padding: const EdgeInsets.only(right: 4),
-                            child: Icon(
-                              Icons.push_pin,
-                              size: 14,
-                              color: theme.colorScheme.primary,
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Text(
+                              task.preview,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                        if (task.pendingReview)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 4),
-                            child: Icon(
-                              Icons.rate_review_outlined,
-                              size: 14,
-                              color: theme.colorScheme.tertiary,
-                            ),
-                          ),
-                        Expanded(
-                          child: Text(
-                            task.title,
-                            style: theme.textTheme.titleSmall,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Row(
+                            children: [
+                              // 状态徽章 — 运行中带脉冲点，终端态用语义色。
+                              AppBadge(
+                                label: stateLabel,
+                                color: stateColor,
+                                icon: task.running
+                                    ? Icons.circle
+                                    : _stateIcon(stateKind),
+                              ),
+                              if (task.pendingReview) ...[
+                                const SizedBox(width: 6),
+                                AppBadge(
+                                  label: context.S.rcPendingReview,
+                                  color: theme.colorScheme.tertiary,
+                                  icon: Icons.rate_review_outlined,
+                                ),
+                              ],
+                              const Spacer(),
+                              if (task.lastActivity.isNotEmpty)
+                                Text(
+                                  task.lastActivity,
+                                  style: theme.textTheme.labelMedium,
+                                ),
+                            ],
                           ),
                         ),
                       ],
                     ),
-                    if (task.preview.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          task.preview,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    if (task.activePhase.isNotEmpty ||
-                        task.lastActivity.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          [
-                            if (task.activePhase.isNotEmpty) task.activePhase,
-                            if (task.activeStatus.isNotEmpty) task.activeStatus,
-                            task.lastActivity,
-                          ].where((s) => s.isNotEmpty).join(' · '),
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              if (task.running)
-                Padding(
-                  padding: const EdgeInsets.only(left: 8, top: 4),
-                  child: SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: theme.colorScheme.primary,
-                    ),
                   ),
-                ),
-            ],
+                  const SizedBox(width: 4),
+                  Icon(
+                    Icons.chevron_right,
+                    size: 18,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ],
+              ),
+            ),
           ),
-        ),
-      ),
-    );
+        )
+        .animate(delay: (task.id.hashCode.abs() % 3 * 40).ms)
+        .fadeIn(duration: 240.ms);
   }
+
+  IconData? _stateIcon(String kind) => switch (kind) {
+    'completed' => Icons.check_circle_outline,
+    'failed' => Icons.error_outline,
+    'cancelled' || 'interrupted' => Icons.stop_circle_outlined,
+    _ => null,
+  };
 }
 
 /// 在远程机上新建任务 — 名称 + 模式 + 远程工作目录（经 list_dirs 浏览）。
@@ -1010,7 +1076,7 @@ class _CreateRemoteTaskSheetState extends ConsumerState<CreateRemoteTaskSheet> {
   Future<void> _create() async {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty) {
-      setState(() => _error = '请输入任务名称');
+      setState(() => _error = context.S.rcNameRequired);
       return;
     }
     setState(() {
@@ -1048,22 +1114,25 @@ class _CreateRemoteTaskSheetState extends ConsumerState<CreateRemoteTaskSheet> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            '在 ${widget.grant.title} 上新建任务',
+            context.S.rcCreateTaskOn(widget.grant.title),
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 16),
           TextField(
             controller: _nameCtrl,
-            decoration: const InputDecoration(
-              labelText: '任务名称',
+            decoration: InputDecoration(
+              labelText: context.S.rcTaskNameLabel,
               border: OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
           SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: '', label: Text('对话')),
-              ButtonSegment(value: 'coding_dev', label: Text('编程')),
+            segments: [
+              ButtonSegment(value: '', label: Text(context.S.rcModeChat)),
+              ButtonSegment(
+                value: 'coding_dev',
+                label: Text(context.S.rcModeCoding),
+              ),
             ],
             selected: {_mode},
             onSelectionChanged: (v) => setState(() => _mode = v.first),
@@ -1072,11 +1141,11 @@ class _CreateRemoteTaskSheetState extends ConsumerState<CreateRemoteTaskSheet> {
           TextField(
             controller: _dirCtrl,
             decoration: InputDecoration(
-              labelText: '工作目录（可选）',
-              hintText: '留空用对方默认目录',
+              labelText: context.S.rcWorkDirLabel,
+              hintText: context.S.rcWorkDirHint,
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
-                tooltip: '浏览对方目录',
+                tooltip: context.S.rcBrowseTheirDir,
                 icon: const Icon(Icons.folder_open),
                 onPressed: _saving ? null : _pickDir,
               ),
@@ -1099,7 +1168,7 @@ class _CreateRemoteTaskSheetState extends ConsumerState<CreateRemoteTaskSheet> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Text('创建'),
+                : Text(context.S.rcCreate),
           ),
         ],
       ),
@@ -1160,7 +1229,7 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
               children: [
                 Expanded(
                   child: Text(
-                    page == null ? '浏览目录' : page.path,
+                    page == null ? context.S.rcBrowseDir : page.path,
                     style: theme.textTheme.titleSmall,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -1169,7 +1238,7 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
                 if (page != null)
                   FilledButton.tonal(
                     onPressed: () => Navigator.of(context).pop(page.path),
-                    child: const Text('选这个'),
+                    child: Text(context.S.rcPickThis),
                   ),
               ],
             ),
@@ -1195,7 +1264,7 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
                       padding: const EdgeInsets.only(right: 6),
                       child: ActionChip(
                         avatar: const Icon(Icons.home_outlined, size: 16),
-                        label: const Text('主目录'),
+                        label: Text(context.S.rcHomeDir),
                         onPressed: () => _browse(page.home),
                       ),
                     ),
@@ -1220,7 +1289,7 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
                         ListTile(
                           dense: true,
                           leading: const Icon(Icons.arrow_upward, size: 18),
-                          title: const Text('上一级'),
+                          title: Text(context.S.rcParent),
                           onTap: () => _browse(page.parent),
                         ),
                       if (page != null &&
@@ -1229,7 +1298,7 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
                         ListTile(
                           dense: true,
                           leading: const Icon(Icons.home_outlined, size: 18),
-                          title: const Text('跳到默认目录'),
+                          title: Text(context.S.rcJumpDefault),
                           onTap: () => _browse(page.defaultDir),
                         ),
                       if (page != null)
@@ -1247,7 +1316,7 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
                         Padding(
                           padding: const EdgeInsets.all(12),
                           child: Text(
-                            '子目录太多，只显示了前一部分',
+                            context.S.rcTooManyDirs,
                             style: theme.textTheme.labelSmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
                             ),
@@ -1256,9 +1325,9 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
                       if (page != null &&
                           page.dirs.isEmpty &&
                           page.parent.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.all(20),
-                          child: Text('这个目录没有子文件夹'),
+                        Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Text(context.S.rcNoSubdirs),
                         ),
                     ],
                   ),

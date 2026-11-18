@@ -9,6 +9,7 @@ import { changedPreviewFilePath, cloneCodePreviewState, initialState as initialC
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { assistantMessageHasVisibleBody, reasoningTrailMarkdownOptions, renderMessage } from "./aiAssistantMarkdown";
+import { ChatBubblesProvider } from "./ChatBubbleFrame";
 import {
     formatRecordingCompletionDisplay,
     formatRecordingCompletionMessage,
@@ -101,6 +102,8 @@ import { codingLiveHeaderProgress, codingTimelineForDisplay, progressMessagesFor
 import { codingTimelineOwnedProgressTexts, compactCodingAgentProgressMessages, latestCodingToolTrailAt, retainAssistantProgressText } from "./compactCodingAgentProgressMessages";
 import { CodingAgentPreviewFocusContext } from "./CodingAgentProgressStatus";
 import { CodingAgentProcessTimeline } from "./CodingAgentProcessTimeline";
+import { GoalStageCommand, withGoalStageCommand } from "./goalStageCommand";
+import { goalStageProcessLive } from "./goalStagePresentation";
 import { GoalChecklistOverlay } from "./GoalChecklistOverlay";
 
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
@@ -207,7 +210,7 @@ const noopAssistantMessagesSubscribe = () => () => {};
 const getEmptyAssistantMessages = () => emptyAssistantMessages;
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, chatFontFamily = "system", codingFontFamily = "system", themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onAddCustomModel, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayName, brandDisplayNameCN } = props;
+    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, chatFontFamily = "system", codingFontFamily = "system", chatBubblesEnabled = true, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onAddCustomModel, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayName, brandDisplayNameCN } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -866,7 +869,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const pending = (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
         if (pending && typeof pending.catch === "function") pending.catch(() => {});
     }, []);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, hydrateClosedExpertTabHistory, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, setLatexRelativePath, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError, landedTranscriptEpoch, adoptBackendTranscript, backendTranscriptGeneration, loadProjectMemoryFallback } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, waitForProjectTabSession, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, hydrateClosedExpertTabHistory, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, setLatexRelativePath, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError, landedTranscriptEpoch, adoptBackendTranscript, backendTranscriptGeneration, loadProjectMemoryFallback } = useAITabManager();
     const { requested: workbenchHomeRequested, dismiss: dismissWorkbenchHome } = useWorkbenchLandingMode(startOnWorkbenchHome, activeTab.id, activeTab.type);
     cloudTreeRefreshTabIdRef.current = activeTab.id;
     visibleCodingProjectRef.current = visibleCodingProject(activeTab);
@@ -3525,6 +3528,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 			restore = (async () => {
 				try {
 					const transcriptGeneration = backendTranscriptGeneration(tab.id);
+					// A copied task seeds its visual transcript, including the
+					// coding process list, inside CreateProjectTabSession.
+					// Reading before that write sees an empty file and falls
+					// through to conversation memory. Memory only has the
+					// concatenated reasoning, so the tool rows disappear and
+					// the slim copy is saved back over the seed.
+					// The tracker resolves on failure as well; it does not reject.
+					await waitForProjectTabSession(tab.id);
+					if (clearedProjectTabIdsRef.current.has(tab.id)
+						|| (projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0) !== hydrationGeneration
+						|| !getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && openTab.projectPath === tab.projectPath)) return;
 					let session: unknown = null;
 					try {
 						session = await LoadProjectTabConversation(tab.id);
@@ -3623,7 +3637,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             })();
         }
         return tab;
-    }, [adoptBackendTranscript, backendTranscriptGeneration, createProjectTab, finishProjectTabPreparing, getTabs, hasProjectTab, loadProjectContext, getTabState, loadProjectMemoryFallback, paintTranscriptIfViewEmpty, saveTabState, setProjectTabPreparing]);
+    }, [adoptBackendTranscript, backendTranscriptGeneration, createProjectTab, finishProjectTabPreparing, getTabs, hasProjectTab, loadProjectContext, getTabState, loadProjectMemoryFallback, paintTranscriptIfViewEmpty, saveTabState, setProjectTabPreparing, waitForProjectTabSession]);
 
     // Mode B: VS Code programming agent → open/activate matching project tab so
     // acp- foreground rounds land in the same workspace session as the agent.
@@ -6926,6 +6940,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (!replyCached || replyCached.contentKey !== replyKey) cache.set(replyCacheId, { contentKey: replyKey, node: reply });
                 const timelineNode = (
                     <Fragment key={msg.id}>
+                        <GoalStageCommand text={msg.goalStageCommand} />
                         <CodingAgentProcessTimeline
                             items={codingTimeline}
                             theme={t}
@@ -6934,7 +6949,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             openThoughtIndex={openThoughtIndex}
                             liveLabel={shownLiveLabel}
                             liveObject={liveReasoningObject}
-                            live={messageOwnsLive}
+                            live={goalStageProcessLive(messageOwnsLive, liveWorkStreaming, activeSessionHasWork, msg.goalStageSettled)}
                         />
                         {reply}
                     </Fragment>
@@ -6955,7 +6970,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const reasoningFingerprint = liveStreamingTail
                 ? liveTextFingerprint(msg.reasoning, streamTextRevision(msg.id))
                 : (msg.reasoning ?? '');
-            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content, streamTextRevision(msg.id)) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText, streamTextRevision(msg.id)) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${replyCardFingerprint(msg)}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && liveWorkStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
+            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content, streamTextRevision(msg.id)) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText, streamTextRevision(msg.id)) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${replyCardFingerprint(msg)}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && liveWorkStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}|${msg.goalStageCommand ?? ''}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -6992,6 +7007,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 }
                 node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, messageOwnsLive && liveWorkStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, shownLiveLabel, liveObjectForMessage, isLast && activeSessionHasWork, isLatexExpertId(activeTab.expertId));
             }
+            node = withGoalStageCommand(msg.id, msg.goalStageCommand, node);
             cache.set(msg.id, { contentKey, node, message: isLast ? undefined : msg });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
             if (branchPoint) {
@@ -7788,9 +7804,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         <ExpertTabEmptyBanner activeTab={activeTab} lang={lang} theme={t} />
                     ) : null}
                     {remoteChat || !showPureCodingEmptyState ? null : pureCodingEmptyContent}
+                    <ChatBubblesProvider enabled={chatBubblesEnabled !== false}>
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
                     <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? remoteRenderedProgress : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat ? <RemoteAssistantActivity session={remoteChat} lang={lang} theme={t} /> : (hideWorkingTrail ? null : codingWorkingTrail)} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
+                    </ChatBubblesProvider>
                     <div ref={outputEndRef} />
                 </div>
                 {scrolledUp ? (

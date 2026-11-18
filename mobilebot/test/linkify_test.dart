@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobilebot/features/bots/widgets.dart';
+import 'package:mobilebot/core/ui_kit.dart';
 
 void main() {
   group('linkifyMarkdownUrls', () {

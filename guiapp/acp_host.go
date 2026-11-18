@@ -873,27 +873,23 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 	}
 
 	onToken := func(delta string) {
-		if strings.TrimSpace(delta) == "" {
-			return
-		}
-		// \x01 is the internal reasoning marker used by the shared agent loop.
-		// Keep it out of normal assistant text: VS Code renders thought updates in
-		// a separate collapsible block, while a raw control code appears as □.
-		if strings.HasPrefix(delta, "\x01") {
-			// Reasoning is streamed token-by-token. Preserve its whitespace and do
-			// not inject line breaks between tokens, otherwise prose is corrupted.
-			// Sanitize after removing the lane marker as providers may include
-			// additional markers/control bytes between token fragments. If these
-			// reach ACP clients they render as white tofu squares.
-			reasoningDelta := visibleACPStreamDelta(strings.TrimPrefix(delta, "\x01"))
-			emitThought(reasoningDelta, false)
-			if mirrorUI {
-				s.app.mirrorACPToken(requestID, sess.UserID, "\x01"+reasoningDelta)
+		mirror, message, thought := routeACPStreamToken(delta)
+		if thought {
+			// Reasoning is streamed token-by-token. Preserve its whitespace and
+			// do not inject line breaks between tokens.
+			emitThought(message, false)
+			if mirrorUI && mirror != "" {
+				s.app.mirrorACPToken(requestID, sess.UserID, mirror)
 			}
 			return
 		}
-		delta = visibleACPStreamDelta(delta)
-		if delta == "" {
+		if message == "" {
+			// A rejected-round marker has no ACP opcode. Mirror it so the
+			// desktop bubble can drop the forecast; do not write the control
+			// into the VS Code transcript.
+			if mirrorUI && mirror != "" {
+				s.app.mirrorACPToken(requestID, sess.UserID, mirror)
+			}
 			return
 		}
 		// Stream deltas with original whitespace (model tokens).
@@ -901,7 +897,7 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 			SessionID: sid,
 			Update: map[string]any{
 				"sessionUpdate": "agent_message_chunk",
-				"content":       map[string]any{"type": "text", "text": delta},
+				"content":       map[string]any{"type": "text", "text": message},
 			},
 		}); err != nil {
 			log.Printf("[acp-host] session/update token write failed session=%s: %v", sid, err)
@@ -909,7 +905,7 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 			tokenChunks.Add(1)
 		}
 		if mirrorUI {
-			s.app.mirrorACPToken(requestID, sess.UserID, delta)
+			s.app.mirrorACPToken(requestID, sess.UserID, message)
 		}
 	}
 	onProgress := func(progressText string) {
@@ -997,6 +993,32 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 		writeContent("(empty response)", true)
 	}
 	return acpagent.SessionPromptResult{StopReason: acpagent.StopEndTurn}, nil
+}
+
+// routeACPStreamToken splits one agent delta for the ACP client and the
+// desktop mirror. A leading U+0002 is the rejected-round reset: the mirror
+// must see it raw, and it is not an assistant message chunk. A leading
+// U+0001 stays the reasoning lane. Interior controls are removed from text.
+func routeACPStreamToken(delta string) (mirror, message string, thought bool) {
+	if delta == "" {
+		return "", "", false
+	}
+	if strings.HasPrefix(delta, rejectedRoundContentToken) {
+		body := visibleACPStreamDelta(strings.TrimPrefix(delta, rejectedRoundContentToken))
+		if body == "" {
+			return rejectedRoundContentToken, "", false
+		}
+		return rejectedRoundContentToken + body, "", false
+	}
+	if strings.TrimSpace(delta) == "" {
+		return "", "", false
+	}
+	if strings.HasPrefix(delta, "\x01") {
+		body := visibleACPStreamDelta(strings.TrimPrefix(delta, "\x01"))
+		return "\x01" + body, body, true
+	}
+	body := visibleACPStreamDelta(delta)
+	return body, body, false
 }
 
 // visibleACPStreamDelta removes non-rendering transport controls at the ACP

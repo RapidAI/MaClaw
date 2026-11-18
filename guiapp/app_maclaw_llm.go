@@ -5113,12 +5113,10 @@ func (a *App) CreateMobileAuthDesktopQRSession() (MobileLLMQRCodeSession, error)
 	}
 	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
 	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
-	mobile := mobileAuthBoundPhoneDigits(cfg.RemoteMobile, cfg.RemoteEmail)
+	// No bound-phone requirement here: the QR logs the mobile app into this
+	// already-registered Hub account, which works for email-only accounts too.
 	if hubURL == "" || viewerToken == "" || strings.TrimSpace(cfg.RemoteMachineID) == "" || strings.TrimSpace(cfg.RemoteMachineToken) == "" {
 		return MobileLLMQRCodeSession{}, fmt.Errorf("MaClaw Hub registration is required before creating a mobile authentication QR code")
-	}
-	if mobile == "" {
-		return MobileLLMQRCodeSession{}, fmt.Errorf("mobile authentication QR code requires a bound phone number")
 	}
 
 	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/mobile/auth/desktop-qr-sessions", bytes.NewReader([]byte(`{}`)))
@@ -5144,28 +5142,6 @@ func (a *App) CreateMobileAuthDesktopQRSession() (MobileLLMQRCodeSession, error)
 		return MobileLLMQRCodeSession{}, fmt.Errorf("Hub did not return a mobile authentication QR payload")
 	}
 	return session, nil
-}
-
-// mobileAuthBoundPhoneDigits returns digits from a stored mobile field or a
-// phone-primary Hub email (phone:<digits>). Empty means no usable bound phone.
-func mobileAuthBoundPhoneDigits(remoteMobile, remoteEmail string) string {
-	if digits := mobileAuthPhoneDigits(remoteMobile); digits != "" {
-		return digits
-	}
-	email := strings.TrimSpace(remoteEmail)
-	if strings.HasPrefix(strings.ToLower(email), "phone:") {
-		return mobileAuthPhoneDigits(email[len("phone:"):])
-	}
-	return ""
-}
-
-func mobileAuthPhoneDigits(value string) string {
-	// Reuse enrollment phone normalization so GUI registration and auth QR agree.
-	digits := normalizeRemoteRegistrationPhoneNumber(value)
-	if len(digits) < 8 || len(digits) > 15 {
-		return ""
-	}
-	return digits
 }
 
 func mobileAuthDesktopQRSessionHTTPError(status int, body []byte) error {

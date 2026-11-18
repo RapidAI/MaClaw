@@ -711,10 +711,8 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		parentSessionID = s.loopCtx.ID
 		userID = strings.TrimSpace(s.loopCtx.UserID)
 	}
-	resumeCoding := s.nestDepth == 0 && !s.horizonPosture
-	var resume codingAgentResume
+	resume, resumeCoding := codingAgentResumeForTurn(s.loopCtx, s.nestDepth, s.horizonPosture, userID, s.projectPath)
 	if resumeCoding {
-		resume = loadCodingAgentResume(userID, s.projectPath)
 		restoredSnaps := cb.installRestoredReadSnapshots(s.projectPath, resume.Snapshots)
 		if len(resume.History) > 0 || restoredSnaps > 0 {
 			log.Printf("[coding-env] restored coding agent state user=%s history=%d snapshots=%d", userID, len(resume.History), restoredSnaps)

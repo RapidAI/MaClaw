@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1098,6 +1099,25 @@ func (s *BrowserAgentSession) requireLiveSession() error {
 		return fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}
 	return nil
+}
+
+// CaptureScreenshotPNG returns the raw PNG of the current page.
+func (s *BrowserAgentSession) CaptureScreenshotPNG() ([]byte, error) {
+	if err := s.requireLiveSession(); err != nil {
+		return nil, err
+	}
+	encoded, err := s.session.Screenshot(false)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("screenshot is empty")
+	}
+	return raw, nil
 }
 
 func (s *BrowserAgentSession) Hover(snapshotID, ref, selector string) (*BrowserActionResult, error) {

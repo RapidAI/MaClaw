@@ -119,7 +119,8 @@ export function callAgentBrowserSetControl(hold: boolean) {
 
 export function callAgentBrowserInput(payload: string) {
     const fn = stageCaller()?.AgentBrowserInput;
-    if (typeof fn === "function") void fn(payload);
+    if (typeof fn === "function") return fn(payload);
+    return Promise.resolve();
 }
 
 export function callAgentBrowserClose() {
@@ -314,13 +315,49 @@ export function AgentBrowserStage({
     state: AgentBrowserStageState;
     lang: string;
     onSetHold?: (hold: boolean) => void;
-    onInput?: (payload: string) => void;
+    onInput?: (payload: string) => unknown;
     onConfirm?: (approve: boolean) => void;
     onSecret?: (secret: string, approve: boolean) => void | Promise<unknown>;
     onFinish?: (done: boolean) => void;
 }) {
     const imgRef = useRef<HTMLImageElement | null>(null);
+    const keysRef = useRef<HTMLInputElement | null>(null);
     const moveAt = useRef(0);
+    // Advances when a press focuses a different field. Keystrokes keep the
+    // generation they were typed under, so an in-flight phone number is not
+    // written into the code box, and a new code may start with the same digits.
+    const caretGen = useRef(0);
+    // Preview events share one queue. Enter must not reach the page before
+    // the characters that were just typed into the same field.
+    const pendingInputs = useRef(0);
+    const inputTail = useRef(Promise.resolve());
+    const enqueue = (payload: Record<string, unknown>) => {
+        const body = JSON.stringify(payload);
+        const exec = () => {
+            try {
+                return Promise.resolve(onInput?.(body));
+            } catch (err) {
+                return Promise.reject(err);
+            }
+        };
+        const track = (work: Promise<unknown>) => {
+            const result = work.then(() => undefined);
+            inputTail.current = work.then(() => undefined, () => undefined);
+            return result;
+        };
+        if (pendingInputs.current === 0) {
+            pendingInputs.current = 1;
+            return track(exec().finally(() => {
+                pendingInputs.current -= 1;
+            }));
+        }
+        return track(inputTail.current.then(() => {
+            pendingInputs.current += 1;
+            return exec().finally(() => {
+                pendingInputs.current -= 1;
+            });
+        }));
+    };
     const src = frameDataURL(state.frame);
     const caption = state.title || state.url || chromeText(lang, "Browser", "浏览器");
     const hold = !!state.userHold;
@@ -335,7 +372,7 @@ export function AgentBrowserStage({
         : chromeText(lang, "Finish this step on the page", "请在这个页面上完成该步骤");
 
     const send = (payload: Record<string, unknown>) => {
-        onInput?.(JSON.stringify(payload));
+        void enqueue(payload).then(() => undefined, () => undefined);
     };
 
     const pointFromEvent = (event: React.PointerEvent<HTMLImageElement>) => {
@@ -400,12 +437,35 @@ export function AgentBrowserStage({
                         alt={caption}
                         draggable={false}
                         data-testid="agent-browser-frame"
+                        onMouseDown={(event) => {
+                            if (!interactive) return;
+                            // The picture is not a text field. Leaving this mouse
+                            // press to the browser blurs the bar, and the next
+                            // keys never reach the page.
+                            event.preventDefault();
+                            keysRef.current?.focus();
+                        }}
                         onPointerDown={(event) => {
                             if (!interactive) return;
                             const point = pointFromEvent(event);
                             if (!point) return;
+                            event.preventDefault();
                             event.currentTarget.setPointerCapture?.(event.pointerId);
-                            send({ kind: "down", x: point.x, y: point.y, button: "left", click_count: 1 });
+                            keysRef.current?.focus();
+                            // The page says whether this press is a new field.
+                            // The bar stays until that answer arrives, so a second
+                            // press on the same phone box does not wipe the number.
+                            void enqueue({ kind: "down", x: point.x, y: point.y, button: "left", click_count: 1 }).then(
+                                () => undefined,
+                                (err: unknown) => {
+                                    if (!String(err).includes("viewport caret moved")) return;
+                                    caretGen.current += 1;
+                                    if (keysRef.current) {
+                                        keysRef.current.value = "";
+                                        keysRef.current.focus();
+                                    }
+                                },
+                            );
                         }}
                         onPointerMove={(event) => {
                             if (!interactive) return;
@@ -501,32 +561,40 @@ export function AgentBrowserStage({
             <p className="agent-browser-stage__caption" title={state.url || caption}>{caption}</p>
             {interactive ? (
                 <input
+                    ref={keysRef}
                     className="agent-browser-stage__keys"
                     data-testid="agent-browser-keys"
                     aria-label={chromeText(lang, "Type on the page", "在页面上输入")}
                     placeholder={attention
                         ? chromeText(lang, "Password stays on the page", "密码在这里输入，不会发到对话")
-                        : chromeText(lang, "Type here, Enter sends", "在这里输入，回车发送")}
+                        : chromeText(lang, "Click a field on the page, then type here", "先点页面上的输入框，再在这里输入")}
+                    onInput={(event) => {
+                        const native = event.nativeEvent;
+                        if (native instanceof InputEvent && native.isComposing) return;
+                        void enqueue({ kind: "text", text: event.currentTarget.value, gen: caretGen.current }).then(() => undefined, () => undefined);
+                    }}
+                    onCompositionEnd={(event) => {
+                        void enqueue({ kind: "text", text: event.currentTarget.value, gen: caretGen.current }).then(() => undefined, () => undefined);
+                    }}
                     onKeyDown={(event) => {
                         if (event.key === "Enter") {
                             event.preventDefault();
                             const text = event.currentTarget.value;
-                            if (text) send({ kind: "text", text });
-                            send({ kind: "keydown", key: "Enter" });
-                            send({ kind: "keyup", key: "Enter" });
-                            event.currentTarget.value = "";
-                            return;
-                        }
-                        if (event.key === "Backspace") {
-                            event.preventDefault();
-                            send({ kind: "keydown", key: "Backspace" });
-                            send({ kind: "keyup", key: "Backspace" });
+                            // Enter follows a write that stuck. A rejected write
+                            // means the field was not focused, so the key must not
+                            // submit an empty login.
+                            void enqueue({ kind: "text", text, gen: caretGen.current }).then(
+                                () => enqueue({ kind: "keydown", key: "Enter" }).then(() => enqueue({ kind: "keyup", key: "Enter" })),
+                                () => undefined,
+                            ).then(() => undefined, () => undefined);
                             return;
                         }
                         if (event.key === "Tab" || event.key === "Escape") {
                             event.preventDefault();
-                            send({ kind: "keydown", key: event.key });
-                            send({ kind: "keyup", key: event.key });
+                            void enqueue({ kind: "keydown", key: event.key }).then(
+                                () => enqueue({ kind: "keyup", key: event.key }),
+                                () => undefined,
+                            ).then(() => undefined, () => undefined);
                         }
                     }}
                 />

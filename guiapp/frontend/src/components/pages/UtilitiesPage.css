@@ -5151,3 +5151,724 @@ fieldset.expert-editor__body {
         grid-template-columns: 1fr;
     }
 }
+
+/* --- GitHub repository maintenance workspace ------------------------------ */
+
+.utilities-repomaint-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    padding: 3px 10px;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-surface-muted, #f0f4f9);
+    color: var(--theme-text-secondary, #546479);
+    font-size: 0.74rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.utilities-repomaint-status__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-pill, 999px);
+    background: currentColor;
+    opacity: 0.85;
+}
+
+.utilities-repomaint-status[data-status='ready'] {
+    background: color-mix(in srgb, var(--theme-success, #4f7f6f) 14%, var(--theme-surface, #ffffff));
+    color: color-mix(in srgb, var(--theme-success, #4f7f6f) 78%, var(--theme-text-primary, #24364e));
+}
+
+.utilities-repomaint-device {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 4px;
+    padding: 14px 16px;
+    border: 1px dashed color-mix(in srgb, var(--theme-primary, #2e75cb) 35%, var(--theme-border, #d5e0ef));
+    border-radius: var(--radius-md, 8px);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 5%, var(--theme-page-bg, #ffffff));
+    text-align: center;
+}
+
+.utilities-repomaint-device__label {
+    color: var(--theme-text-secondary, #546479);
+    font-size: 0.78rem;
+    overflow-wrap: anywhere;
+}
+
+.utilities-repomaint-device__coderow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.utilities-repomaint-device__code {
+    padding: 5px 16px;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: var(--radius-md, 8px);
+    background: var(--theme-surface, #ffffff);
+    color: var(--theme-primary-strong, #235a9e);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 1.24rem;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+}
+
+.utilities-repomaint-device__copy {
+    flex: 0 0 auto;
+    min-width: 64px;
+    font-size: 0.76rem;
+}
+
+.utilities-repomaint-device__waitrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.utilities-repomaint-device__wait {
+    color: var(--theme-text-muted, #8a99ac);
+    font-size: 0.76rem;
+}
+
+.utilities-repomaint-device__cancel {
+    padding: 3px 10px;
+    font-size: 0.74rem;
+}
+
+/* Rule cards: a quiet status accent on the leading edge plus a hover lift. */
+.utilities-repomaint-card {
+    position: relative;
+    transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+.utilities-repomaint-card::before {
+    content: "";
+    position: absolute;
+    top: 12px;
+    bottom: 12px;
+    left: 0;
+    width: 3px;
+    border-radius: var(--radius-pill, 999px);
+    background: color-mix(in srgb, var(--theme-text-muted, #8a99ac) 36%, transparent);
+}
+
+.utilities-repomaint-card[data-status='ready']::before {
+    background: var(--theme-success, #4f7f6f);
+}
+
+.utilities-repomaint-card[data-status='failed']::before {
+    background: var(--theme-danger, #dc1f25);
+}
+
+.utilities-repomaint-card:not([data-status='failed']):hover {
+    border-color: color-mix(in srgb, var(--theme-border, #d5e0ef) 55%, var(--theme-text-muted, #8a99ac));
+    box-shadow: 0 8px 22px -10px color-mix(in srgb, var(--theme-text-primary, #24364e) 22%, transparent);
+}
+
+.utilities-repomaint-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 7px 18px;
+}
+
+.utilities-repomaint-rule-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+}
+
+.utilities-repomaint-rule-actions {
+    justify-content: flex-start;
+    align-items: center;
+    gap: 10px;
+}
+
+.utilities-repomaint-rule-spacer {
+    flex: 1 1 auto;
+}
+
+.utilities-repomaint-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    position: relative;
+    cursor: pointer;
+    user-select: none;
+    color: var(--theme-text-secondary, #46586f);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.utilities-repomaint-switch input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+}
+
+.utilities-repomaint-switch__track {
+    position: relative;
+    flex: 0 0 auto;
+    width: 30px;
+    height: 17px;
+    border-radius: var(--radius-pill, 999px);
+    background: color-mix(in srgb, var(--theme-text-muted, #8a99ac) 45%, var(--theme-surface, #ffffff));
+    transition: background 150ms ease-out;
+}
+
+.utilities-repomaint-switch__thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 13px;
+    height: 13px;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-surface, #ffffff);
+    box-shadow: 0 1px 2px rgba(30, 58, 95, 0.25);
+    transition: left 150ms ease-out;
+}
+
+.utilities-repomaint-switch input:checked + .utilities-repomaint-switch__track {
+    background: var(--theme-success, #4f7f6f);
+}
+
+.utilities-repomaint-switch input:checked + .utilities-repomaint-switch__track .utilities-repomaint-switch__thumb {
+    left: 15px;
+}
+
+.utilities-repomaint-switch input:focus-visible + .utilities-repomaint-switch__track {
+    outline: 2px solid var(--theme-primary, #2e75cb);
+    outline-offset: 2px;
+}
+
+.utilities-repomaint-switch input:disabled + .utilities-repomaint-switch__track {
+    opacity: 0.5;
+}
+
+.utilities-repomaint-replay {
+    font-size: 0.76rem;
+    padding: 4px 10px;
+}
+
+.utilities-repomaint-delete {
+    font-size: 0.76rem;
+    padding: 4px 10px;
+}
+
+.utilities-repomaint-edit,
+.utilities-repomaint-cancel-edit {
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+.utilities-repomaint-cancel-edit {
+    margin-left: auto;
+}
+
+.utilities-repomaint-editing-chip {
+    overflow: hidden;
+    max-width: 320px;
+    padding: 2px 9px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary, #2e75cb) 28%, var(--theme-border, #d5e0ef));
+    border-radius: var(--radius-pill, 999px);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 8%, var(--theme-surface, #ffffff));
+    color: var(--theme-primary-strong, #235a9e);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.utilities-repomaint-dirrow {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+}
+
+.utilities-repomaint-dirrow .utilities-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.utilities-repomaint-dirrow__pick {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.utilities-repomaint-events {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 10px;
+    margin-bottom: 4px;
+}
+
+.utilities-repomaint-group {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0 -2px;
+    color: var(--theme-text-muted, #8a99ac);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.utilities-repomaint-events > .utilities-repomaint-group:first-child {
+    margin-top: 0;
+}
+
+.utilities-repomaint-group__count {
+    padding: 1px 8px;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-surface-muted, #f0f4f9);
+    color: var(--theme-text-muted, #8a99ac);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.utilities-repomaint-event {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: 10px;
+    background: var(--theme-page-bg, #ffffff);
+    transition: border-color 150ms ease-out, background 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+.utilities-repomaint-event:not(.utilities-repomaint-event--on):not(.utilities-repomaint-event--invalid):hover {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 26%, var(--theme-border, #d5e0ef));
+}
+
+.utilities-repomaint-event--on {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 40%, var(--theme-border, #d5e0ef));
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 5%, var(--theme-page-bg, #ffffff));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary, #2e75cb) 22%, transparent);
+}
+
+.utilities-repomaint-event--invalid {
+    border-color: color-mix(in srgb, var(--theme-danger, #dc1f25) 45%, var(--theme-border, #d5e0ef));
+    background: color-mix(in srgb, var(--theme-danger, #dc1f25) 5%, var(--theme-page-bg, #ffffff));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-danger, #dc1f25) 22%, transparent);
+}
+
+.utilities-repomaint-event--invalid .utilities-repomaint-event__head {
+    color: color-mix(in srgb, var(--theme-danger, #dc1f25) 78%, var(--theme-text-primary, #24364e));
+}
+
+.utilities-repomaint-event__head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    padding: 9px 12px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--theme-text-secondary, #46586f);
+    font-size: 0.8rem;
+    font-weight: 600;
+    min-width: 0;
+}
+
+.utilities-repomaint-event--on .utilities-repomaint-event__head {
+    color: var(--theme-primary-strong, #235a9e);
+}
+
+.utilities-repomaint-event__head input {
+    margin: 0;
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    accent-color: var(--theme-primary, #2e75cb);
+}
+
+.utilities-repomaint-event__name {
+    min-width: 0;
+}
+
+.utilities-repomaint-event__kind {
+    margin-left: auto;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 1px 7px;
+    border-radius: 6px;
+    background: var(--theme-surface-muted, #f0f4f9);
+    color: var(--theme-text-muted, #8a99ac);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.7rem;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.utilities-repomaint-event--on .utilities-repomaint-event__kind {
+    background: var(--theme-surface, #ffffff);
+    color: var(--theme-primary-strong, #235a9e);
+}
+
+.utilities-repomaint-event__body {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    padding: 0 12px 12px;
+}
+
+.utilities-repomaint-command-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.utilities-repomaint-command-field > span {
+    color: var(--theme-text-muted, #8a99ac);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.utilities-repomaint-command {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.8rem;
+    resize: vertical;
+    min-height: 56px;
+}
+
+.utilities-repomaint-mono-input {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.8rem;
+}
+
+.utilities-repomaint-overlay {
+    position: fixed;
+    inset: 0;
+    /* Same layering as the expert editor overlay: above page chrome, below
+       global app-level confirmation dialogs. The node is portaled onto
+       .app-viewport, outside the scaled layer. */
+    z-index: 1500;
+    /* Flex, not grid: a grid row sized from the dialog's content makes
+       max-height: 100% indefinite, and the save row then grows past the
+       window. A fixed overlay has a definite height, so a flex child can
+       resolve that percentage and still shrink to a short form. */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-items: safe center;
+    justify-content: safe center;
+    box-sizing: border-box;
+    padding: 24px;
+    overflow: auto;
+    background: color-mix(in srgb, var(--theme-overlay-color, #0f172a) 45%, transparent);
+    animation: utilities-repomaint-fade 140ms ease-out;
+}
+
+.utilities-repomaint-overlay--editor {
+    /* A short window scrolls the frame itself. The event list scrolls inside
+       the dialog, so the save row stays in that frame. */
+    overflow: auto;
+}
+
+@keyframes utilities-repomaint-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.utilities-repomaint-dialog {
+    width: min(460px, 100%);
+    padding: 20px 22px;
+    border: 1px solid var(--theme-border-subtle, var(--theme-border, #d5e0ef));
+    border-radius: var(--radius-lg, 14px);
+    background: var(--theme-surface, #ffffff);
+    box-shadow: 0 18px 50px rgba(15, 23, 42, 0.25);
+    animation: utilities-repomaint-pop 160ms ease-out;
+}
+
+.utilities-repomaint-dialog--editor {
+    width: min(760px, 100%);
+    /* Size against the overlay, not 100vh. On a maximised frameless WebView2,
+       vh can exceed the work area and slide the save row under the taskbar.
+       Height stays with the form. max-height is the cap; min-height 0 lets
+       the event list shrink inside that cap instead of pushing the save row out. */
+    max-height: min(880px, 100%);
+    box-sizing: border-box;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 18px 0 14px;
+    overflow: hidden;
+}
+
+.utilities-repomaint-dialog--editor .utilities-repomaint-dialog__head {
+    flex: 0 0 auto;
+    padding: 0 22px;
+}
+
+.utilities-repomaint-dialog--editor .utilities-repomaint-editing-chip {
+    margin-left: auto;
+}
+
+.utilities-repomaint-editor-scroll {
+    flex: 1 1 auto;
+    overflow: auto;
+    overscroll-behavior: contain;
+    min-height: 0;
+    padding: 0 22px 8px;
+}
+
+.utilities-repomaint-dialog--editor .utilities-input:read-only {
+    background: var(--theme-surface-muted, #f1f6fc);
+    color: var(--theme-text-secondary, #546479);
+}
+
+.utilities-repomaint-dialog--editor .utilities-repomaint-editor-actions {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    margin: 0;
+    padding: 12px 22px 0;
+    border-top: 1px solid var(--theme-border-subtle, var(--theme-border, #d5e0ef));
+}
+
+.utilities-repomaint-dialog--editor .utilities-repomaint-editor-status {
+    margin-right: auto;
+}
+
+@keyframes utilities-repomaint-pop {
+    from { opacity: 0; transform: translateY(6px) scale(0.98); }
+    to { opacity: 1; transform: none; }
+}
+
+.utilities-repomaint-dialog__head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    min-width: 0;
+}
+
+.utilities-repomaint-dialog__head .utilities-repomaint-dialog__title {
+    margin: 0;
+}
+
+.utilities-repomaint-option:focus-visible,
+.utilities-repomaint-event:has(input:focus-visible) {
+    outline: 2px solid var(--theme-primary, #2e75cb);
+    outline-offset: 2px;
+}
+
+.utilities-repomaint-dialog__icon {
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: var(--theme-surface-muted, #f0f4f9);
+    color: var(--theme-text-muted, #8a99ac);
+}
+
+.utilities-repomaint-dialog__icon svg {
+    width: 17px;
+    height: 17px;
+}
+
+.utilities-repomaint-dialog__icon--warn {
+    background: color-mix(in srgb, var(--theme-warning, #aa5d05) 12%, var(--theme-surface, #ffffff));
+    color: color-mix(in srgb, var(--theme-warning, #aa5d05) 80%, var(--theme-text-primary, #24364e));
+}
+
+.utilities-repomaint-dialog__icon--primary {
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 12%, var(--theme-surface, #ffffff));
+    color: var(--theme-primary-strong, #235a9e);
+}
+
+.utilities-repomaint-dialog__title {
+    margin: 0 0 8px;
+    color: var(--theme-text-primary, #24364e);
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.utilities-repomaint-dialog__text {
+    margin: 0 0 16px;
+    color: var(--theme-text-secondary, #546479);
+    font-size: 0.84rem;
+    line-height: 1.6;
+}
+
+.utilities-repomaint-dialog__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.utilities-repomaint-options {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.utilities-repomaint-editor-actions {
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.utilities-repomaint-editor-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.utilities-repomaint-save-error {
+    color: color-mix(in srgb, var(--theme-danger, #dc1f25) 78%, var(--theme-text-primary, #24364e));
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.utilities-repomaint-armed-note {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 12px;
+    border-radius: var(--radius-pill, 999px);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 10%, var(--theme-surface, #ffffff));
+    color: var(--theme-primary-strong, #235a9e);
+    font-size: 0.76rem;
+    font-weight: 600;
+}
+
+.utilities-repomaint-armed-note--empty {
+    background: var(--theme-surface-muted, #f0f4f9);
+    color: var(--theme-text-muted, #8a99ac);
+    font-weight: 500;
+}
+
+.utilities-repomaint-option {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    padding: 11px 14px;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: var(--radius-md, 8px);
+    background: var(--theme-page-bg, #ffffff);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 150ms ease-out, border-color 150ms ease-out;
+}
+
+.utilities-repomaint-option:not(:disabled):hover {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 45%, var(--theme-border, #d5e0ef));
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 8%, var(--theme-surface, #ffffff));
+}
+
+.utilities-repomaint-option__title {
+    color: var(--theme-text-primary, #24364e);
+    font-size: 0.86rem;
+    font-weight: 700;
+}
+
+.utilities-repomaint-option__desc {
+    color: var(--theme-text-secondary, #546479);
+    font-size: 0.76rem;
+    line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+    .utilities-repomaint-overlay {
+        padding: 14px;
+    }
+
+    .utilities-repomaint-rule-actions {
+        flex-wrap: wrap;
+    }
+
+    .utilities-repomaint-events {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .utilities-repomaint-overlay,
+    .utilities-repomaint-dialog,
+    .utilities-deploy-record__badge[data-status='pending'] .utilities-deploy-record__badge-dot {
+        animation: none;
+    }
+}
+
+.utilities-access-log {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.utilities-access-log__row {
+    border: 1px solid var(--theme-border-subtle, var(--theme-border, #d5e0ef));
+    border-radius: var(--radius-md, 10px);
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.utilities-access-log__meta,
+.utilities-access-log__task {
+    margin: 0;
+    min-width: 0;
+}
+
+.utilities-access-log__meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    color: var(--theme-text-muted, #5b6b80);
+    font-size: 0.75rem;
+}
+
+.utilities-access-log__action {
+    color: var(--theme-text-secondary, #546479);
+    background: color-mix(in srgb, var(--theme-text-muted, #5b6b80) 10%, transparent);
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: 0.72rem;
+}
+
+.utilities-access-log__task {
+    color: var(--theme-text-primary, #24364e);
+    font-size: 0.84rem;
+    font-weight: 500;
+    overflow-wrap: anywhere;
+}
+
+.utilities-access-log__path {
+    margin-left: 8px;
+    color: var(--theme-text-muted, #5b6b80);
+    font-size: 0.75rem;
+    font-weight: 400;
+    overflow-wrap: anywhere;
+}

@@ -77,6 +77,9 @@ func approvedCodingPlanDecision() codingRequestDecision {
 // normalizeCodingRequestDecision validates a propagated decision and enforces
 // the invariant that only implementation work may have a planning boundary.
 func normalizeCodingRequestDecision(decision codingRequestDecision) (codingRequestDecision, bool) {
+	// The schema tokens are lowercase. A padded or capitalized token is the
+	// same decision. Dropping it would publish the implementation echo.
+	decision.Kind = codingRequestKind(strings.ToLower(strings.TrimSpace(string(decision.Kind))))
 	switch decision.Kind {
 	case codingRequestInquiry:
 		decision.NeedsPlan = false
@@ -132,11 +135,10 @@ func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingR
 	if h == nil || h.client == nil || strings.TrimSpace(userText) == "" {
 		return fallback
 	}
-	// Rewrite / multi-step asks already have a local plan floor. Waiting on the
-	// classifier here only delays the first user-visible restatement.
-	if codingRequestLooksModeratelyComplex(userText) {
-		return fallback
-	}
+	// A marker such as 图形界面 or 重写 also appears in questions. Do not skip
+	// the classifier and force an implementation plan from those words.
+	// applyCodingRequestPlanFloor still raises NeedsPlan when the judgment
+	// itself is implementation.
 	cfg := h.getCodingLightweightLLMConfig()
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		cfg = h.getCodingLLMConfig()
@@ -235,21 +237,184 @@ func codingRequestLooksModeratelyComplex(userText string) bool {
 	return false
 }
 
+// parseCodingRequestDecision reads the classifier document. A strict
+// unmarshal into codingRequestDecision drops the decision when a weak
+// model writes null, a stringly bool, or 0/1, or echoes the schema and
+// then the real object. The host would then publish the implementation
+// echo. This keeps the decision the model returned. It does not read the
+// user's words, and it does not treat any other word as true.
 func parseCodingRequestDecision(raw string) (codingRequestDecision, bool) {
-	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "\uFEFF"))
 	if raw == "" {
 		return codingRequestDecision{}, false
 	}
-	if i := strings.Index(raw, "{"); i >= 0 {
-		if j := strings.LastIndex(raw, "}"); j > i {
-			raw = raw[i : j+1]
+	if span, ok := codingDecisionBraceSpan(raw); ok {
+		decision, parsed, valid := decodeCodingRequestDecisionDocument(span)
+		if parsed {
+			// One JSON document is the decision. A nested object must not
+			// replace a kind this document already stated.
+			if !valid {
+				return codingRequestDecision{}, false
+			}
+			return decision, true
 		}
 	}
-	var decision codingRequestDecision
-	if err := json.Unmarshal([]byte(raw), &decision); err != nil {
+	// The first-to-last span is not one document. Keep the last object
+	// that normalizes, so a leading schema echo does not hide the answer
+	// and a trailing echo does not erase it.
+	var last codingRequestDecision
+	found := false
+	for _, obj := range codingDecisionJSONObjects(raw) {
+		decision, parsed, valid := decodeCodingRequestDecisionDocument(obj)
+		if parsed && valid {
+			last = decision
+			found = true
+		}
+	}
+	if !found {
 		return codingRequestDecision{}, false
 	}
-	return normalizeCodingRequestDecision(decision)
+	return last, true
+}
+
+// codingRequestDecisionDocument leaves needs_plan and acceptance raw.
+// Unmarshaling those fields straight into bool and string rejects null,
+// "true", and 1, and that rejection used to discard the whole document.
+type codingRequestDecisionDocument struct {
+	Kind       string          `json:"kind"`
+	NeedsPlan  json.RawMessage `json:"needs_plan"`
+	Acceptance json.RawMessage `json:"acceptance"`
+}
+
+// decodeCodingRequestDecisionDocument reports whether raw is one JSON
+// document and whether that document is a known decision. A comma sitting
+// immediately before } or ] is still that document; encoding/json rejects
+// it and the host would otherwise publish the implementation echo.
+func decodeCodingRequestDecisionDocument(raw string) (decision codingRequestDecision, parsed bool, valid bool) {
+	decision, parsed, valid = decodeCodingRequestDecisionObject(raw)
+	if parsed {
+		return decision, parsed, valid
+	}
+	relaxed := relaxTrailingCommas(raw)
+	if relaxed == raw {
+		return codingRequestDecision{}, false, false
+	}
+	return decodeCodingRequestDecisionObject(relaxed)
+}
+
+func decodeCodingRequestDecisionObject(raw string) (decision codingRequestDecision, parsed bool, valid bool) {
+	var doc codingRequestDecisionDocument
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return codingRequestDecision{}, false, false
+	}
+	decision, valid = normalizeCodingRequestDecision(codingRequestDecision{
+		Kind:       codingRequestKind(doc.Kind),
+		NeedsPlan:  codingDecisionBool(doc.NeedsPlan),
+		Acceptance: codingOperationalAcceptance(codingDecisionString(doc.Acceptance)),
+	})
+	return decision, true, valid
+}
+
+// codingDecisionBool accepts a JSON bool, the numbers 0 and 1, and the
+// strings true/false/0/1 in either case. Anything else, including null
+// and words such as yes, stays false so a bad plan flag cannot widen
+// the turn. Inquiry and operational still force the flag off later.
+func codingDecisionBool(raw json.RawMessage) bool {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return false
+	}
+	var flag bool
+	if err := json.Unmarshal([]byte(text), &flag); err == nil {
+		return flag
+	}
+	var number float64
+	if err := json.Unmarshal([]byte(text), &number); err == nil {
+		return number == 1
+	}
+	var word string
+	if err := json.Unmarshal([]byte(text), &word); err == nil {
+		switch strings.ToLower(strings.TrimSpace(word)) {
+		case "true", "1":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// codingDecisionString accepts a JSON string. Null, a missing field, and
+// any other JSON type are empty. Operational empty stays launch.
+func codingDecisionString(raw json.RawMessage) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ""
+	}
+	var word string
+	if err := json.Unmarshal([]byte(text), &word); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(word)
+}
+
+func codingDecisionBraceSpan(raw string) (string, bool) {
+	i := strings.Index(raw, "{")
+	if i < 0 {
+		return "", false
+	}
+	j := strings.LastIndex(raw, "}")
+	if j <= i {
+		return "", false
+	}
+	return raw[i : j+1], true
+}
+
+// codingDecisionJSONObjects returns every balanced object. Braces inside
+// strings are not objects. A schema echo and the real answer are separate
+// objects when the model writes both.
+func codingDecisionJSONObjects(raw string) []string {
+	var out []string
+	depth := 0
+	start := -1
+	inString := false
+	escape := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && start >= 0 {
+				out = append(out, raw[start:i+1])
+				start = -1
+			}
+		}
+	}
+	return out
 }
 
 // codingRequestNeedsPlanFallback is intentionally structural. It is used only
@@ -2337,6 +2502,51 @@ func selectIncompleteCodingPlanTasks(userText string, mem stickyCodingWorkbenchM
 	return codingPlanTasksForResume(selected), true
 }
 
+// codingPlanSelectNamedSteps returns only the named failed or unfinished
+// steps. Passed steps stay as they are and are not part of the next run.
+func codingPlanSelectNamedSteps(mem stickyCodingWorkbenchMemory, rawIDs []string) ([]*v2.TaskItem, error) {
+	ids, err := mcpNormalizeStepIDs(rawIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(mem.StepStatuses) == 0 {
+		return nil, fmt.Errorf("还没有可续跑的编码检查点")
+	}
+	byIndex := make(map[int]codingWorkbenchStepStatus, len(mem.StepStatuses))
+	open := false
+	for _, st := range mem.StepStatuses {
+		if st.Index > 0 {
+			byIndex[st.Index] = st
+		}
+		if mcpClassifyOpen(st.Status, st.Summary) {
+			open = true
+		}
+	}
+	selected := make([]*v2.TaskItem, 0, len(ids))
+	for _, id := range ids {
+		n, _, ok := parseCodingStepID(id)
+		if !ok {
+			return nil, fmt.Errorf("步骤编号无法识别：%s", id)
+		}
+		st, found := byIndex[n]
+		if !found {
+			return nil, fmt.Errorf("没有步骤 %s", id)
+		}
+		classified, retryable := mcpNamedStepRetryable(st.Status, st.Summary, open)
+		if classified == mcpStepPassed {
+			return nil, fmt.Errorf("%s 已经通过，不会重跑", id)
+		}
+		if !retryable {
+			return nil, fmt.Errorf("%s 不能单独重试", id)
+		}
+		selected = append(selected, taskFromCodingStepStatus(st))
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("要指定要重试的步骤")
+	}
+	return codingPlanTasksForResume(selected), nil
+}
+
 func taskFromCodingStepStatus(st codingWorkbenchStepStatus) *v2.TaskItem {
 	title := strings.TrimSpace(st.Title)
 	if title == "" {
@@ -2831,6 +3041,21 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	onToken func(string),
 ) (tasks []*v2.TaskItem, planMarkdown string, planned bool) {
 	userText = strings.TrimSpace(userText)
+	// Take the directed ids before an empty turn becomes "执行编程任务".
+	// Only the retry command owns those ids. Any other resolve must leave them.
+	if ids := h.takeDirectedRetryForCommand(userID, userText); len(ids) > 0 {
+		selected, selErr := codingPlanSelectNamedSteps(sessionMem, ids)
+		if selErr != nil {
+			h.noteCodingExecRetryError(userID, selErr.Error())
+			return nil, "", false
+		}
+		log.Printf("[coding-plan] directed step resume user=%s steps=%d", userID, len(selected))
+		h.reopenIncompleteCodingPlanSteps(userID, sessionMem, selected)
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("继续指定步骤：%d 步", len(selected)))
+		}
+		return selected, strings.TrimSpace(sessionMem.ExecutionPlan), true
+	}
 	if userText == "" {
 		userText = "执行编程任务"
 	}
@@ -2941,11 +3166,6 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	if userPlan := extractUserProvidedCodingPlan(requestText); len(userPlan) >= codingWorkbenchPlanMinTasks {
 		tasks = userPlan
 		log.Printf("[coding-plan] using user-provided steps user=%s steps=%d", userID, len(tasks))
-	} else if codingRestatementFallbackIsSpecific(requestText, sessionMem) {
-		// Rewrite follow-ups already have a host restatement. Do not wait on a
-		// planner LLM that usually falls back to the same two-step plan.
-		tasks = defaultModerateCodingPlan(requestText, sessionMem.RequirementRestatement)
-		log.Printf("[coding-plan] host rewrite plan user=%s steps=%d", userID, len(tasks))
 	} else {
 		if onProgress != nil {
 			onProgress("复杂编程任务：正在自动规划步骤…")

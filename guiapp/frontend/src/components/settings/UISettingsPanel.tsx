@@ -1,4 +1,5 @@
-import { GetChatFontFamily, GetCodingFontFamily, SetChatFontFamily, SetCodingFontFamily, SetUIZoomFactor } from '../../../wailsjs/go/main/App';
+import { GetChatBubblesEnabled, GetChatFontFamily, GetCodingFontFamily, SetChatBubblesEnabled, SetChatFontFamily, SetCodingFontFamily, SetUIZoomFactor } from '../../../wailsjs/go/main/App';
+import { publishChatBubbles } from '../ai/chatBubblesSetting';
 import { type Dispatch, type SetStateAction, useEffect, useRef } from 'react';
 import { corelib, main } from '../../../wailsjs/go/models';
 import {
@@ -56,6 +57,11 @@ type UISettingsPanelProps = {
     setDarkSchemeId: (schemeId: AssistantDarkSchemeId) => void;
     lightSchemeId: AssistantLightSchemeId;
     setLightSchemeId: (schemeId: AssistantLightSchemeId) => void;
+    /** Assistant conversation frames. Omitted stays on. */
+    chatBubblesEnabled?: boolean;
+    setChatBubblesEnabled?: (enabled: boolean) => void;
+    /** Unsaved bubble choice. A config echo must not flip the switch back. */
+    chatBubblesDraftRef?: { current: boolean | null };
 };
 
 const textForLang = localizeText;
@@ -176,6 +182,9 @@ export const UISettingsPanel = ({
     setDarkSchemeId,
     lightSchemeId,
     setLightSchemeId,
+    chatBubblesEnabled = true,
+    setChatBubblesEnabled,
+    chatBubblesDraftRef,
 }: UISettingsPanelProps) => {
     const zoomPercent = uiScaleToPercent(uiZoom);
     const zoomLabel = uiZoomAuto
@@ -236,6 +245,16 @@ export const UISettingsPanel = ({
         void SetUIZoomFactor(UI_SCALE_AUTO).catch(() => {});
     };
     const { commit: commitChatFontSize, rangeHandlers: chatFontSizeHandlers } = useChatFontSizeCommit(chatFontSize, setChatFontSize, chatFontSizeDraftRef);
+    const bubbleLabel = textForLang(lang, "Conversation bubbles", "对话气泡", "對話氣泡");
+    const setChatBubbles = (enabled: boolean) => {
+        publishChatBubbles(
+            enabled,
+            chatBubblesDraftRef,
+            setChatBubblesEnabled,
+            SetChatBubblesEnabled,
+            () => GetChatBubblesEnabled(),
+        );
+    };
 
     return (
     <div className="settings-panel ui-settings-panel">
@@ -441,6 +460,31 @@ export const UISettingsPanel = ({
             </div>
             <p>
                 {textForLang(lang, 'Adjust the AI assistant chat area font size (12-24px) independently from UI zoom.', '\u72ec\u7acb\u8c03\u6574 AI \u52a9\u624b\u804a\u5929\u533a\u7684\u5b57\u4f53\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u54cd\u754c\u9762\u7f29\u653e\u3002', '\u7368\u7acb\u8abf\u6574 AI \u52a9\u624b\u804a\u5929\u5340\u7684\u5b57\u9ad4\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u97ff\u4ecb\u9762\u7e2e\u653e\u3002')}
+            </p>
+        </section>
+
+        <section className="ui-settings-card">
+            <label className="ui-settings-toggle">
+                <h4>{bubbleLabel}</h4>
+                <span className="proxy-settings-switch">
+                    <input
+                        type="checkbox"
+                        role="switch"
+                        data-testid="chat-bubbles-toggle"
+                        aria-label={bubbleLabel}
+                        checked={chatBubblesEnabled}
+                        onChange={(event) => setChatBubbles(event.target.checked)}
+                    />
+                    <span aria-hidden="true" />
+                </span>
+            </label>
+            <p>
+                {textForLang(
+                    lang,
+                    "Shows the bubble around messages in the assistant conversation. Turn it off to keep the text and hide the box.",
+                    "显示助手对话中的气泡框。关闭后气泡框不再显示，消息文字仍保留。",
+                    "顯示助手對話中的氣泡框。關閉後氣泡框不再顯示，訊息文字仍保留。",
+                )}
             </p>
         </section>
 

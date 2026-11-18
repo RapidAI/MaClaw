@@ -1320,6 +1320,21 @@ func buildVEConversationHistoryFromMessages(messages []a2a.Message, localID stri
 			stream.WriteString(chunk)
 			continue
 		case a2a.MessageStreamEnd:
+			// stream_end is the settled answer. The chunks are only the
+			// opening the loop already painted. A restored session has no
+			// in-memory final, so dropping this leaves the next turn with
+			// the opening alone.
+			if streamFrom != "" && fromID != "" && !veGroupParticipantIdentityMatches(streamFrom, fromID) {
+				flushStream()
+			}
+			if msg.Content != "" {
+				if streamFrom == "" {
+					streamFrom = fromID
+				}
+				folded := textutil.ProjectAnswerSlices(stream.String(), msg.Content)
+				stream.Reset()
+				stream.WriteString(folded)
+			}
 			flushStream()
 			continue
 		default:
@@ -1636,6 +1651,11 @@ func (h *VEMessageHandler) syncLocalStream(sessionID, senderID string, pending *
 	})
 }
 
+// drainPendingStream paints the first buffered text immediately, then holds a
+// short open buffer until interval elapses or the buffer reaches maxBytes.
+// Close flushes whatever is left. Later tokens must not restart the timer: a
+// one-token-at-a-time model would otherwise never reach the interval, and an
+// unarmed timer is not itself a reason to flush.
 func drainPendingStream(pending *pendingStreamText, interval time.Duration, maxBytes int, flush func(string)) {
 	if pending == nil || flush == nil {
 		return
@@ -1664,29 +1684,39 @@ func drainPendingStream(pending *pendingStreamText, interval time.Duration, maxB
 		}
 		armed = false
 	}
+	defer disarm()
 	for {
+		timerFired := false
 		select {
 		case <-pending.wake:
 		case <-timer.C:
 			armed = false
+			timerFired = true
 		}
-		minBytes := maxBytes
-		if !sent || !armed {
-			minBytes = 1
-		}
-		chunk, closed := pending.take(minBytes)
-		if chunk != "" {
-			flush(chunk)
-			sent = true
-			disarm()
-		}
-		if closed {
-			tail, _ := pending.take(1)
-			if tail != "" {
-				flush(tail)
+		for {
+			minBytes := maxBytes
+			if !sent || timerFired {
+				minBytes = 1
 			}
-			disarm()
-			return
+			timerFired = false
+			chunk, closed := pending.take(minBytes)
+			if chunk != "" {
+				flush(chunk)
+				sent = true
+				disarm()
+			}
+			if closed {
+				tail, _ := pending.take(1)
+				if tail != "" {
+					flush(tail)
+				}
+				return
+			}
+			// Bytes that landed during flush already met the cap. Their wake
+			// may have been the one just consumed, so do not wait the interval.
+			if pending.len() < maxBytes {
+				break
+			}
 		}
 		if pending.len() > 0 && !armed {
 			timer.Reset(interval)

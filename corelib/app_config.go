@@ -245,6 +245,8 @@ type AppConfig struct {
 	TrustedSkillPackageKeyFingerprints []string                       `json:"trusted_skill_package_key_fingerprints,omitempty"`
 	CapabilityMarketPolicy             CapabilityMarketPolicy         `json:"capability_market_policy,omitempty"`
 	MaclawDebugToolCalls               bool                           `json:"maclaw_debug_tool_calls,omitempty"`
+	// ShowAITraceEntry shows the Trace / run-details entry on assistant
+	// messages. Off is the install default; do not seed it in AppConfigDefaults.
 	ShowAITraceEntry                   bool                           `json:"show_ai_trace_entry,omitempty"`
 	// ShowAppEntry controls the MaClaw Apps sidebar entry. Nil means on
 	// (same default-on contract as show_workflow_entry / show_utilities_entry).
@@ -587,6 +589,10 @@ type AppConfig struct {
 	// Programming-assistant font id. Empty or "system" keeps the current UI face.
 	// Ids are the coding catalog in assistantFonts.ts. Independent from ChatFontFamily.
 	CodingFontFamily string `json:"coding_font_family,omitempty"`
+	// ChatBubblesEnabled draws the frame around messages in the assistant
+	// conversation. Nil means on. An explicit false hides that frame and
+	// leaves the message text.
+	ChatBubblesEnabled *bool `json:"chat_bubbles_enabled,omitempty"`
 	// SSH host presets.
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
 	// Knowledge Skill token budget.
@@ -1771,6 +1777,7 @@ func AppConfigDefaults() AppConfig {
 		ASRVoiceCorrectionEnabled:  true,
 		TTSEnabled:                 true,
 		ScreenParsingEnabled:       boolPtrValue(true),
+		ChatBubblesEnabled:         boolPtrValue(true),
 		ComputerUseEnabled:         boolPtrValue(true),
 		IMProgressNudgeEnabled:     boolPtrValue(true),
 		KnowledgeAutoRecallEnabled: boolPtrValue(true),

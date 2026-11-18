@@ -1594,10 +1594,13 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             }
             return CreateProjectTabSession(tabId, projectPath).then((notice) => {
                 if (!isEmptyProjectTabSessionNotice(notice)) options?.onSessionReady?.(newTab);
-                return undefined;
+                // The tracker treats an empty notice as a failed registration.
+                // Dropping it here made that failure look successful, so the
+                // next open never tried again.
+                return notice;
             });
         };
-        trackProjectTabSessionReady(tabId, pendingClose ? pendingClose.then(() => register(), () => register()) : register());
+        trackProjectTabSessionReady(tabId, pendingClose ? pendingClose.catch(() => {}).then<unknown>(() => register()) : register());
 
         // Add tab and auto-activate
         updateTabState(() => ({

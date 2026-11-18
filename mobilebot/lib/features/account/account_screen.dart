@@ -5,7 +5,9 @@ import 'package:go_router/go_router.dart';
 import '../../core/account_store.dart';
 import '../../core/providers.dart';
 import '../../core/native_voice.dart';
+import '../../core/locale.dart';
 import '../../core/platform.dart';
+import '../../core/ui_kit.dart';
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
 import 'update_dialog.dart';
@@ -19,8 +21,9 @@ class AccountScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionProvider);
     final active = session.active;
+    final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('我的')),
+      appBar: AppBar(title: Text(context.S.tabMe)),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -29,57 +32,75 @@ class AccountScreen extends ConsumerWidget {
           const _CreditsCard(),
           const SizedBox(height: 12),
           Card(
-            child: ListTile(
-              leading: const Icon(Icons.psychology_alt_outlined),
-              title: const Text('当前模型'),
-              subtitle: const Text('各阶段生效的模型配置'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => context.push('/llm-settings'),
+            child: Column(
+              children: [
+                ListTile(
+                  leading: _SettingsIcon(
+                    icon: Icons.psychology_alt_outlined,
+                    color: theme.colorScheme.primary,
+                  ),
+                  title: Text(context.S.acCurrentModel),
+                  subtitle: Text(context.S.acCurrentModelHint),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => context.push('/llm-settings'),
+                ),
+                if (NativeVoice.supported) ...[
+                  const Divider(indent: 68),
+                  ListTile(
+                    leading: _SettingsIcon(
+                      icon: Icons.record_voice_over_outlined,
+                      color: theme.colorScheme.tertiary,
+                    ),
+                    title: Text(context.S.voiceTitle),
+                    subtitle: Text(context.S.acVoiceEngineHint),
+                    trailing: const Icon(Icons.chevron_right, size: 20),
+                    onTap: () => showModalBottomSheet<void>(
+                      context: context,
+                      isScrollControlled: true,
+                      showDragHandle: true,
+                      builder: (_) => const VoiceSettingsSheet(),
+                    ),
+                  ),
+                ],
+                if (supportsSideloadUpdate) ...[
+                  const Divider(indent: 68),
+                  ListTile(
+                    leading: _SettingsIcon(
+                      icon: Icons.system_update_alt,
+                      color: theme.colorScheme.secondary,
+                    ),
+                    title: Text(context.S.checkUpdate),
+                    subtitle: Text(context.S.acCheckUpdateHint),
+                    trailing: const Icon(Icons.chevron_right, size: 20),
+                    onTap: () => showUpdateSheet(context),
+                  ),
+                ],
+                const Divider(indent: 68),
+                ListTile(
+                  leading: _SettingsIcon(
+                    icon: Icons.language,
+                    color: theme.colorScheme.primary,
+                  ),
+                  title: Text(context.S.settingsLanguage),
+                  subtitle: Text(() {
+                    final lang = ref.watch(appLanguageProvider);
+                    return lang == AppLanguage.system
+                        ? context.S.languageSystem
+                        : languageDisplayName(lang);
+                  }()),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => _pickLanguage(context, ref),
+                ),
+              ],
             ),
           ),
-          if (NativeVoice.supported) ...[
-            const SizedBox(height: 12),
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.record_voice_over_outlined),
-                title: const Text('语音引擎'),
-                subtitle: const Text('朗读音色与识别方式 · 本地下载模型'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => showModalBottomSheet<void>(
-                  context: context,
-                  isScrollControlled: true,
-                  showDragHandle: true,
-                  builder: (_) => const VoiceSettingsSheet(),
-                ),
-              ),
+          SectionHeader(
+            title: context.S.acAccountsCount(session.accounts.length),
+            trailing: TextButton.icon(
+              onPressed: () => context.push('/login?mode=add'),
+              icon: const Icon(Icons.person_add_alt_1, size: 18),
+              label: Text(context.S.addAccountTitle),
             ),
-          ],
-          if (supportsSideloadUpdate) ...[
-            const SizedBox(height: 12),
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.system_update_alt),
-                title: const Text('检查更新'),
-                subtitle: const Text('从 GitHub / Cloudflare R2 获取新版本'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => showUpdateSheet(context),
-              ),
-            ),
-          ],
-          const SizedBox(height: 24),
-          Row(
-            children: [
-              Text(
-                '账号（${session.accounts.length}）',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              const Spacer(),
-              TextButton.icon(
-                onPressed: () => context.push('/login?mode=add'),
-                icon: const Icon(Icons.person_add_alt_1, size: 18),
-                label: const Text('添加账号'),
-              ),
-            ],
           ),
           for (final account in session.accounts)
             _AccountTile(
@@ -94,12 +115,12 @@ class AccountScreen extends ConsumerWidget {
               ),
               onPressed: () => _confirmLogout(context, ref, active),
               icon: const Icon(Icons.logout),
-              label: const Text('退出当前账号'),
+              label: Text(context.S.acSignOut),
             ),
           const SizedBox(height: 24),
           Center(
             child: Text(
-              'MaclawGo · 桌面 Bot 的移动工作台',
+              context.S.acFooter,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
@@ -110,6 +131,46 @@ class AccountScreen extends ConsumerWidget {
     );
   }
 
+  /// 语言选择 sheet — 每个选项用它自己的语言显示名字。
+  Future<void> _pickLanguage(BuildContext context, WidgetRef ref) async {
+    final current = ref.read(appLanguageProvider);
+    final chosen = await showModalBottomSheet<AppLanguage>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final lang in AppLanguage.values)
+              ListTile(
+                leading: lang == AppLanguage.system
+                    ? Icon(
+                        Icons.settings_suggest_outlined,
+                        color: Theme.of(sheetContext).colorScheme.primary,
+                      )
+                    : null,
+                title: Text(
+                  lang == AppLanguage.system
+                      ? sheetContext.S.languageSystem
+                      : languageDisplayName(lang),
+                ),
+                trailing: lang == current
+                    ? Icon(
+                        Icons.check,
+                        color: Theme.of(sheetContext).colorScheme.primary,
+                      )
+                    : null,
+                onTap: () => Navigator.of(sheetContext).pop(lang),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (chosen != null && chosen != current) {
+      await ref.read(appLanguageProvider.notifier).set(chosen);
+    }
+  }
+
   Future<void> _confirmLogout(
     BuildContext context,
     WidgetRef ref,
@@ -118,16 +179,16 @@ class AccountScreen extends ConsumerWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('退出当前账号？'),
-        content: Text('将移除本机上「${account.label}」的登录信息。'),
+        title: Text(context.S.acSignOutConfirm),
+        content: Text(context.S.acRemoveBody(account.label)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
+            child: Text(context.S.cancel),
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('退出'),
+            child: Text(context.S.acSignOutAction),
           ),
         ],
       ),
@@ -172,7 +233,7 @@ class _CreditsCard extends ConsumerWidget {
               children: [
                 Icon(Icons.bolt, size: 18, color: theme.colorScheme.primary),
                 const SizedBox(width: 6),
-                Text('Bot 额度', style: theme.textTheme.titleSmall),
+                Text(context.S.acCredits, style: theme.textTheme.titleSmall),
               ],
             ),
             const SizedBox(height: 10),
@@ -180,14 +241,20 @@ class _CreditsCard extends ConsumerWidget {
               LinearProgressIndicator(value: progress),
               const SizedBox(height: 6),
               Text(
-                '已用 ${used.toStringAsFixed(1)} / ${total.toStringAsFixed(0)}，剩余 ${credits.remaining.toStringAsFixed(1)}',
+                context.S.acCreditsUsedRemain(
+                  used.toStringAsFixed(1),
+                  total.toStringAsFixed(0),
+                  credits.remaining.toStringAsFixed(1),
+                ),
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
             ] else
               Text(
-                credits.unlimited ? '不限量' : '已用 ${used.toStringAsFixed(1)}',
+                credits.unlimited
+                    ? context.S.acCreditsUnlimited
+                    : context.S.acCreditsUsed(used.toStringAsFixed(1)),
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -208,20 +275,21 @@ class _AccountCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(
           children: [
             CircleAvatar(
-              radius: 26,
-              backgroundColor: theme.colorScheme.primary,
+              radius: 28,
+              backgroundColor: scheme.primary,
               child: Text(
                 account.label.isNotEmpty
                     ? account.label.characters.first.toUpperCase()
                     : '?',
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: scheme.onPrimary,
                   fontSize: 22,
                   fontWeight: FontWeight.w600,
                 ),
@@ -237,25 +305,44 @@ class _AccountCard extends StatelessWidget {
                   Text(
                     account.subtitle,
                     style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
+                      color: scheme.onSurfaceVariant,
                     ),
                   ),
                   Text(
                     account.hubUrl,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
+                    style: theme.textTheme.labelMedium,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
             ),
-            if (active)
-              Icon(Icons.check_circle, color: theme.colorScheme.primary),
+            if (active) Icon(Icons.check_circle, color: scheme.primary),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Rounded tinted chip behind a settings tile's leading icon — the modern
+/// grouped-settings look (one hue per row).
+class _SettingsIcon extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+
+  const _SettingsIcon({required this.icon, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Icon(icon, size: 21, color: color),
     );
   }
 }
@@ -299,7 +386,7 @@ class _AccountTile extends ConsumerWidget {
         ),
         trailing: isActive
             ? Text(
-                '当前',
+                context.S.acCurrent,
                 style: TextStyle(
                   color: theme.colorScheme.primary,
                   fontWeight: FontWeight.w600,
@@ -307,7 +394,7 @@ class _AccountTile extends ConsumerWidget {
               )
             : IconButton(
                 icon: const Icon(Icons.delete_outline, size: 20),
-                tooltip: '移除账号',
+                tooltip: context.S.acRemoveAccount,
                 onPressed: () => _remove(context, ref),
               ),
         onTap: isActive
@@ -322,16 +409,16 @@ class _AccountTile extends ConsumerWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('移除账号？'),
-        content: Text('将移除本机上「${account.label}」的登录信息。'),
+        title: Text(context.S.acRemoveConfirm),
+        content: Text(context.S.acRemoveBody(account.label)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
+            child: Text(context.S.cancel),
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('移除'),
+            child: Text(context.S.acRemove),
           ),
         ],
       ),

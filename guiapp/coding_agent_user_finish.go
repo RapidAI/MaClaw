@@ -588,15 +588,24 @@ func remoteCodingStepToRunResult(step *v2.TaskItem, result *RemoteCodingSubAgent
 		if rr.Error == "" {
 			rr.Error = "cancelled"
 		}
+	case "waiting_child":
+		rr.Status = v2.TaskSkipped
+		rr.RuntimeHandoff = true
+		rr.Error = result.Error
 	default:
 		rr.Status = v2.TaskFailed
 		rr.Error = result.Error
+	}
+	if result.RuntimeHandoff || rr.RuntimeHandoff {
+		rr.Status = v2.TaskSkipped
+		rr.RuntimeHandoff = true
+		reason, _ := mcpHandoffReason(rr.Error, true)
+		rr.Error = reason
 	}
 	rr.Summary = result.Summary
 	rr.FilesCreated = append([]string{}, result.FilesCreated...)
 	rr.FilesModified = append([]string{}, result.FilesModified...)
 	rr.RuntimeTaskID = result.RuntimeTaskID
-	rr.RuntimeHandoff = result.RuntimeHandoff
 	return rr
 }
 

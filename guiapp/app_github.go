@@ -164,6 +164,11 @@ func (a *App) StartGitHubOAuth() (GitHubDeviceInfo, error) {
 		oauth.ApplyProxyFromAppConfig(cfg)
 	}
 	clientID, _ := a.effectiveGitHubClientID()
+	if oauth.GitHubAppClientID(clientID) {
+		// A GitHub App device flow ignores the requested scope, so the stored
+		// grant stays empty and "reconnect to add repo" can never succeed.
+		return GitHubDeviceInfo{}, fmt.Errorf("这个 Client ID 是 GitHub App，设备码登录发不出 repo 权限。请改用 OAuth App 的 Client ID，或留空使用内置登录")
+	}
 
 	// beginOAuthFlow cancels any in-flight OAuth flow (any provider) and owns
 	// the global slot until finish/claim.
@@ -247,7 +252,7 @@ func (a *App) WaitGitHubOAuth() (GitHubConnectionStatus, error) {
 		a.clearGitHubOwnedGen(flow.generation)
 	}()
 
-	token, err := oauth.PollGitHubDeviceCodeWith(flow.ctx, flow.clientID, flow.deviceCode, flow.interval)
+	token, grantedScopes, err := oauth.PollGitHubDeviceCodeWith(flow.ctx, flow.clientID, flow.deviceCode, flow.interval)
 	if err != nil {
 		// Distinguish the two exits: a cancelled login should stay silent in
 		// the UI, a timed-out one is an actual error the user must see.
@@ -260,7 +265,7 @@ func (a *App) WaitGitHubOAuth() (GitHubConnectionStatus, error) {
 		return GitHubConnectionStatus{}, fmt.Errorf("GitHub 登录失败: %w", err)
 	}
 
-	user, scopes, err := oauth.FetchGitHubUser(flow.ctx, token)
+	user, headerScopes, err := oauth.FetchGitHubUser(flow.ctx, token)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return GitHubConnectionStatus{}, fmt.Errorf("GitHub 登录超时，请重试")
@@ -271,6 +276,7 @@ func (a *App) WaitGitHubOAuth() (GitHubConnectionStatus, error) {
 		return GitHubConnectionStatus{}, fmt.Errorf("GitHub 登录成功但获取账号信息失败: %w", err)
 	}
 
+	scopes := oauth.GitHubEffectiveScopes(headerScopes, grantedScopes)
 	if err := flow.claim(func() error {
 		if a.credentialStore == nil {
 			return fmt.Errorf("credential store 未初始化")

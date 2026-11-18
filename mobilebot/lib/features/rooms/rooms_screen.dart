@@ -5,7 +5,9 @@ import 'package:intl/intl.dart';
 
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
-import '../bots/widgets.dart';
+import '../../core/chat_ui.dart' show ChatComposer;
+import '../../core/locale.dart';
+import '../../core/ui_kit.dart';
 import '../status/status_screen.dart' show shareInboxFile;
 
 final _roomsProvider = FutureProvider.autoDispose<List<BotRoom>>((ref) async {
@@ -24,11 +26,11 @@ class RoomsScreen extends ConsumerWidget {
     final data = ref.watch(_roomsProvider);
     final bots = ref.watch(botsProvider).bots;
     return Scaffold(
-      appBar: AppBar(title: const Text('Bot 房间')),
+      appBar: AppBar(title: Text(context.S.stBotRooms)),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openEditor(context, ref, bots, null),
         icon: const Icon(Icons.add),
-        label: const Text('新建房间'),
+        label: Text(context.S.roomNew),
       ),
       body: RefreshIndicator(
         onRefresh: () async {
@@ -50,12 +52,12 @@ class RoomsScreen extends ConsumerWidget {
           data: (rooms) {
             if (rooms.isEmpty) {
               return ListView(
-                children: const [
-                  SizedBox(height: 140),
+                children: [
+                  const SizedBox(height: 140),
                   EmptyState(
                     icon: Icons.groups_outlined,
-                    title: '还没有房间',
-                    hint: '建一个让你和几个 Bot 群聊',
+                    title: context.S.roomEmptyTitle,
+                    hint: context.S.roomEmptyHint,
                   ),
                 ],
               );
@@ -73,22 +75,26 @@ class RoomsScreen extends ConsumerWidget {
                   child: ListTile(
                     leading: CircleAvatar(
                       child: Text(
-                        room.name.isEmpty ? '房' : room.name.characters.first,
+                        room.name.isEmpty
+                            ? context.S.roomInitial
+                            : room.name.characters.first,
                       ),
                     ),
                     title: Text(
-                      room.name.isEmpty ? '未命名房间' : room.name,
+                      room.name.isEmpty ? context.S.roomUnnamed : room.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(
-                      memberNames.isEmpty ? '还没有成员' : memberNames,
+                      memberNames.isEmpty
+                          ? context.S.roomNoMembers
+                          : memberNames,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     trailing: IconButton(
                       icon: const Icon(Icons.tune),
-                      tooltip: '编辑房间',
+                      tooltip: context.S.roomEdit,
                       onPressed: () => _openEditor(context, ref, bots, room),
                     ),
                     onTap: () => context.push(
@@ -179,23 +185,26 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
   }
 
   Future<void> _delete() async {
+    final S = context.S;
     final api = ref.read(botApiProvider);
     if (api == null || widget.room == null) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除房间？'),
+        title: Text(S.roomDeleteTitle),
         content: Text(
-          '「${widget.room!.name.isEmpty ? '未命名房间' : widget.room!.name}」及其成员注意力设置将被移除。',
+          S.roomDeleteBody(
+            widget.room!.name.isEmpty ? S.roomUnnamed : widget.room!.name,
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
+            child: Text(S.cancel),
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('删除'),
+            child: Text(S.roomDelete),
           ),
         ],
       ),
@@ -218,6 +227,7 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final S = context.S;
     return Padding(
       padding: EdgeInsets.only(
         left: 16,
@@ -230,19 +240,19 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            widget.room == null ? '新建房间' : '编辑房间',
+            widget.room == null ? S.roomNew : S.roomEdit,
             style: theme.textTheme.titleMedium,
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _nameCtrl,
-            decoration: const InputDecoration(
-              labelText: '房间名',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: S.roomNameLabel,
+              border: const OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
-          Text('成员', style: theme.textTheme.titleSmall),
+          Text(S.roomMembers, style: theme.textTheme.titleSmall),
           Flexible(
             child: ListView(
               shrinkWrap: true,
@@ -265,13 +275,19 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
                         ? DropdownButton<String>(
                             value: _attentionOf(bot.id),
                             underline: const SizedBox.shrink(),
-                            items: const [
-                              DropdownMenuItem(value: 'all', child: Text('全部')),
+                            items: [
+                              DropdownMenuItem(
+                                value: 'all',
+                                child: Text(S.roomAttnAll),
+                              ),
                               DropdownMenuItem(
                                 value: 'mentions',
-                                child: Text('仅@提及'),
+                                child: Text(S.roomAttnMentions),
                               ),
-                              DropdownMenuItem(value: 'off', child: Text('不听')),
+                              DropdownMenuItem(
+                                value: 'off',
+                                child: Text(S.roomAttnOff),
+                              ),
                             ],
                             onChanged: (v) =>
                                 setState(() => _attention[bot.id] = v!),
@@ -288,7 +304,7 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
                 TextButton(
                   onPressed: _saving ? null : _delete,
                   child: Text(
-                    '删除',
+                    S.roomDelete,
                     style: TextStyle(color: theme.colorScheme.error),
                   ),
                 ),
@@ -301,7 +317,7 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : Text(widget.room == null ? '创建' : '保存'),
+                    : Text(widget.room == null ? S.botsCreateAction : S.save),
               ),
             ],
           ),
@@ -335,6 +351,7 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
   }
 
   Future<void> _send() async {
+    final S = context.S;
     final api = ref.read(botApiProvider);
     final text = _inputCtrl.text.trim();
     if (api == null || text.isEmpty || _sending) return;
@@ -365,7 +382,7 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
         ].join('、');
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('已唤醒：$names')));
+        ).showSnackBar(SnackBar(content: Text(S.roomWoken(names))));
         // Woken bots answer asynchronously — without a stream the first
         // replies only show on a manual pull, so poll a few times.
         for (final delay in const [4, 12, 30]) {
@@ -388,12 +405,15 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
   @override
   Widget build(BuildContext context) {
     final bots = ref.watch(botsProvider).bots;
+    final S = context.S;
     return Scaffold(
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.room.name.isEmpty ? '房间' : widget.room.name),
+            Text(
+              widget.room.name.isEmpty ? S.roomDefaultName : widget.room.name,
+            ),
             Text(
               widget.room.members
                   .map(
@@ -417,42 +437,12 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
               scrollCtrl: _scrollCtrl,
             ),
           ),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _inputCtrl,
-                      minLines: 1,
-                      maxLines: 4,
-                      decoration: InputDecoration(
-                        hintText: '在房间里说话，@Bot名 可点名',
-                        filled: true,
-                        fillColor: Theme.of(
-                          context,
-                        ).colorScheme.surfaceContainerHighest,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 10,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(22),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton.filled(
-                    onPressed: _sending ? null : _send,
-                    icon: const Icon(Icons.send),
-                  ),
-                ],
-              ),
-            ),
+          ChatComposer(
+            controller: _inputCtrl,
+            hint: S.roomComposerHint,
+            sending: _sending,
+            onSend: _send,
+            onSubmitted: (_) => _send(),
           ),
         ],
       ),
@@ -513,9 +503,9 @@ class _RoomTranscript extends ConsumerWidget {
                 onRefresh: () => _refresh(ref),
                 child: ListView(
                   physics: const AlwaysScrollableScrollPhysics(),
-                  children: const [
-                    SizedBox(height: 160),
-                    Center(child: Text('在房间里说点什么，Bot 们会听到')),
+                  children: [
+                    const SizedBox(height: 160),
+                    Center(child: Text(context.S.roomEmptyTranscript)),
                   ],
                 ),
               );
@@ -613,7 +603,7 @@ class _RoomTranscript extends ConsumerWidget {
                                   'MM-dd HH:mm',
                                 ).format(note.createdAt!.toLocal()),
                                 style: TextStyle(
-                                  fontSize: 10,
+                                  fontSize: 10.5,
                                   color: mine
                                       ? theme.colorScheme.onPrimary.withValues(
                                           alpha: 0.7,

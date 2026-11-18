@@ -1640,8 +1640,10 @@ func MobileLLMDesktopQRSessionHandler(identity *auth.IdentityService) http.Handl
 }
 
 // MobileDesktopAuthQRSessionHandler creates a one-time QR payload that lets a
-// MaClaw mobile app connect to the same already-registered Hub user (phone
-// identity required). The QR only carries a session id; credentials stay on Hub.
+// MaClaw mobile app connect to the same already-registered Hub user. The QR
+// only carries a session id; credentials stay on Hub. A bound phone is NOT
+// required: email-only accounts redeem through their email identity, so the
+// desktop can log the mobile app in regardless of phone binding.
 func MobileDesktopAuthQRSessionHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if identity == nil {
@@ -1651,10 +1653,6 @@ func MobileDesktopAuthQRSessionHandler(identity *auth.IdentityService) http.Hand
 		principal, err := authenticateViewerRequest(r, identity)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
-			return
-		}
-		if !mobilePrincipalHasVerifiedPhoneIdentity(r.Context(), identity, principal) {
-			writeError(w, http.StatusForbidden, "PHONE_IDENTITY_REQUIRED", "Mobile authentication QR code requires a verified phone identity")
 			return
 		}
 		hubURL := strings.TrimSpace(mobileRequestBaseURL(r))
@@ -1763,7 +1761,10 @@ func MobileDesktopAuthQRRedeemHandler(identity *auth.IdentityService) http.Handl
 				"the account that issued this QR is no longer available")
 			return
 		}
-		enrollOpts := []auth.EnrollOption{auth.WithPhoneVerifiedRegistration()}
+		// The QR owner already exists (they authenticated to mint this
+		// session), so StartEnrollment only issues a machine on the account;
+		// no registration-verification option applies.
+		var enrollOpts []auth.EnrollOption
 		if lang := strings.TrimSpace(req.Language); lang != "" {
 			enrollOpts = append(enrollOpts, auth.WithLanguage(lang))
 		} else if acceptLang := r.Header.Get("Accept-Language"); strings.Contains(acceptLang, "zh") {
@@ -1818,29 +1819,6 @@ func parseMobileDesktopAuthQRPayload(raw string) (mobileDesktopLlmQRPayload, err
 		return mobileDesktopLlmQRPayload{}, fmt.Errorf("session_id is required")
 	}
 	return payload, nil
-}
-
-// mobilePrincipalHasVerifiedPhoneIdentity reports whether the viewer may issue
-// a mobile authentication QR. Phone-primary accounts use email "phone:<digits>";
-// email accounts must have a verified phone identity binding.
-func mobilePrincipalHasVerifiedPhoneIdentity(ctx context.Context, identity *auth.IdentityService, principal *auth.ViewerPrincipal) bool {
-	if principal == nil || identity == nil {
-		return false
-	}
-	if mobilePhoneDigitsFromAccountEmail(principal.Email) != "" {
-		return true
-	}
-	repo := identity.UsersRepo()
-	if repo == nil {
-		return false
-	}
-	tenantCtx := auth.WithTenant(ctx, principal.TenantID)
-	user, err := repo.GetByID(tenantCtx, principal.UserID)
-	if err != nil || user == nil {
-		return false
-	}
-	phone, err := identity.BoundPhoneNumberForUser(tenantCtx, user)
-	return err == nil && strings.TrimSpace(phone) != ""
 }
 
 func mobilePhoneDigitsFromAccountEmail(email string) string {

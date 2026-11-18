@@ -316,7 +316,7 @@ describe('PetStoreDialog', () => {
         expect(screen.queryByRole('button', { name: '更新' })).toBeNull();
     });
 
-    it('offers Update when the listing was republished after the install even at the same version', async () => {
+    it('stays on disabled 已安装 when the same version is republished later', async () => {
         const republishedPack = { ...pack, version: '1.0.0', updated_at: '2026-11-15T00:00:00Z' };
         vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [republishedPack], total_pages: 1 });
         vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({
@@ -325,19 +325,48 @@ describe('PetStoreDialog', () => {
         });
         vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({ 'pet-one-source': { version: '1.0.0', installed_at: 1700000000 } });
         renderStore('zh-Hans');
-        const updateButton = await screen.findByRole('button', { name: '更新' });
-        await act(async () => { fireEvent.click(updateButton); });
-        await waitFor(() => expect(screen.getByRole('dialog', { name: '安装完成' })).toBeTruthy());
-        expect(AppAPI.InstallPetStorePack).toHaveBeenCalledWith('pet-one');
+        const installedButton = await screen.findByRole('button', { name: '已安装' });
+        expect((installedButton as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByRole('button', { name: '更新' })).toBeNull();
+        expect(AppAPI.InstallPetStorePack).not.toHaveBeenCalled();
     });
 
-    it('stays on 已安装 when the listing was republished before the install', async () => {
+    it('stays on 已安装 when the listing timestamp is older than the install', async () => {
         const olderPack = { ...pack, version: '1.0.0', updated_at: '2023-01-01T00:00:00Z' };
         vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [olderPack], total_pages: 1 });
         vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({ 'pet-one-source': { version: '1.0.0', installed_at: 1700000000 } });
         renderStore('zh-Hans');
-        await screen.findByRole('button', { name: '已安装' });
+        const installedButton = await screen.findByRole('button', { name: '已安装' });
+        expect((installedButton as HTMLButtonElement).disabled).toBe(true);
         expect(screen.queryByRole('button', { name: '更新' })).toBeNull();
+    });
+
+    it('stays on disabled 已安装 when only the archive bytes changed', async () => {
+        const republishedPack = { ...pack, version: '1.0.0', updated_at: '2023-01-01T00:00:00Z', content_hash: 'server-hash' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [republishedPack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({ 'pet-one-source': { version: '1.0.0', installed_at: 1700000000, content_hash: 'installed-hash' } });
+        renderStore('zh-Hans');
+        const installedButton = await screen.findByRole('button', { name: '已安装' });
+        expect((installedButton as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByRole('button', { name: '更新' })).toBeNull();
+    });
+
+    it('reads PascalCase install details and compares the version number', async () => {
+        const samePack = { ...pack, version: 'v1.0.0', updated_at: '2026-11-15T00:00:00Z' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [samePack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({
+            'pet-one-source': { Version: 'v1.0.0', InstalledAt: Date.parse('2026-11-01T00:00:00Z') },
+        });
+        const view = renderStore('zh-Hans');
+        const installedButton = await screen.findByRole('button', { name: '已安装' });
+        expect((installedButton as HTMLButtonElement).disabled).toBe(true);
+
+        const updatedPack = { ...pack, version: 'v1.1.0' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [updatedPack], total_pages: 1 });
+        view.unmount();
+        renderStore('zh-Hans');
+        const updateButton = await screen.findByRole('button', { name: '更新' });
+        expect((updateButton as HTMLButtonElement).disabled).toBe(false);
     });
 
     it('leaves the card on Install when the purchase succeeds but the install fails', async () => {

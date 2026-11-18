@@ -113,6 +113,10 @@ func foregroundWindowTitle() string {
 	return strings.TrimSpace(string(out))
 }
 
+func foregroundWindowID() uint64 { return 0 }
+
+func windowIDAtPoint(x, y int) uint64 { return 0 }
+
 // windowTitleAtPoint hit-tests wmctrl window geometries and returns the
 // smallest containing window title (avoids matching the desktop).
 func windowTitleAtPoint(x, y int) string {

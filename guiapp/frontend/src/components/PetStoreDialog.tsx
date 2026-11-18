@@ -82,6 +82,7 @@ const reportDateLabel = (value: unknown, period: ReportPeriod, lang: Lang) => {
 // Loose semver compare for manifest versions ("1.2.3"): positive when the
 // first argument is newer. Non-numeric versions fall back to inequality so a
 // changed string still offers the update path.
+const normalizePackVersion = (value: unknown) => String(value || '').trim().replace(/^v/i, '');
 const comparePackVersions = (a: string, b: string) => {
     const pa = a.split('.').map(Number);
     const pb = b.split('.').map(Number);
@@ -94,6 +95,19 @@ const comparePackVersions = (a: string, b: string) => {
         if (diff !== 0) return diff;
     }
     return 0;
+};
+const probeText = (detail: StorePack, ...keys: string[]) => {
+    for (const key of keys) {
+        const value = detail?.[key];
+        if (value != null && String(value).trim() !== '') return String(value).trim();
+    }
+    return '';
+};
+// The installed copy is identified by source pack id. Only its version is
+// needed to decide 更新 vs 已安装.
+const installedDetailFromProbe = (raw: unknown): { version: string } => {
+    const detail = (raw && typeof raw === 'object') ? raw as StorePack : {};
+    return { version: normalizePackVersion(probeText(detail, 'version', 'Version')) };
 };
 const isActiveAccountPack = (entry: StorePack) => String(entry.status || 'active').toLowerCase() === 'active';
 // Buyers and the author can always download active/withdrawn/paused packs;
@@ -168,13 +182,9 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     // keeps a just-completed install on 已安装 instead of inviting another
     // redundant download.
     const [installedListingIDs, setInstalledListingIDs] = useState<Set<string>>(() => new Set());
-    // Installed manifest versions and local install times keyed by source
-    // pack ID (and by the manifest ID the bridge returned). A listing whose
-    // declared version is newer than the installed copy — or whose
-    // updated_at is newer than the install time, catching a republish that
-    // kept the same version — offers an Update action instead of a dead
-    // 已安装 state.
-    const [installedDetails, setInstalledDetails] = useState<Map<string, { version: string; installedAt: number }>>(() => new Map());
+    // Installed versions keyed by source pack ID. The same id with a higher
+    // listing version is an update; the same version stays 已安装.
+    const [installedDetails, setInstalledDetails] = useState<Map<string, { version: string }>>(() => new Map());
     const searchRef = useRef<HTMLInputElement>(null);
     const shellRef = useRef<HTMLElement>(null);
     const tablistRef = useRef<HTMLDivElement>(null);
@@ -188,7 +198,7 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
     // Same caching rule as installedProbeCacheRef: account refreshes and
     // paging must not repeat bridge calls for a pack whose installed version
     // was already read this session.
-    const installedDetailCacheRef = useRef<Map<string, { version: string; installedAt: number }>>(new Map());
+    const installedDetailCacheRef = useRef<Map<string, { version: string }>>(new Map());
     // Source and listing IDs the server confirmed as owned during this dialog
     // session — either by a successful purchase or by an "already own"
     // response. Merged into every account refresh so a lagging read cannot
@@ -201,30 +211,22 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
         const sourcePackID = String(pack.source_pack_id || '');
         return (!!sourcePackID && installedPackIDs.has(sourcePackID)) || installedListingIDs.has(String(pack.id || ''));
     };
-    // An installed market pack is only "up to date" when the listing's
-    // declared version is not newer than the installed manifest version AND
-    // the listing was not republished after the local install (a creator can
-    // re-upload new content without bumping the version — updated_at still
-    // moves). A missing probe result stays on 已安装 rather than offering a
-    // download that may be identical.
+    // New vs old is the source pack id plus version. A higher listing version
+    // for that id enables 更新. The same version, a missing version, or a
+    // missing probe stays on disabled 已安装. updated_at is not a version.
     const packHasUpdate = (pack: StorePack) => {
         const sourcePackID = String(pack.source_pack_id || '').trim();
         if (!sourcePackID) return false;
-        const detail = installedDetails.get(sourcePackID);
-        if (!detail) return false;
-        const serverVersion = String(pack.version || '').trim();
-        if (serverVersion && detail.version && comparePackVersions(serverVersion, detail.version) > 0) return true;
-        const updatedAt = Date.parse(String(pack.updated_at || ''));
-        return Number.isFinite(updatedAt) && detail.installedAt > 0 && updatedAt > detail.installedAt * 1000;
+        const installedVersion = normalizePackVersion(installedDetails.get(sourcePackID)?.version);
+        const serverVersion = normalizePackVersion(pack.version);
+        if (!serverVersion || !installedVersion) return false;
+        return comparePackVersions(serverVersion, installedVersion) > 0;
     };
     const packUpdateTitle = (pack: StorePack) => {
         if (!packHasUpdate(pack)) return undefined;
-        const serverVersion = String(pack.version || '').trim();
-        const installedVersion = String(installedDetails.get(String(pack.source_pack_id || '').trim())?.version || '').trim();
-        if (serverVersion && installedVersion && comparePackVersions(serverVersion, installedVersion) > 0) {
-            return t(lang, '有新版本 v{server}（当前 v{installed}），点击更新。', 'Update to v{server} (installed v{installed}).').replace('{server}', serverVersion).replace('{installed}', installedVersion);
-        }
-        return t(lang, '服务端包内容已更新，点击重新安装。', 'The server package changed — reinstall to update.');
+        const serverVersion = normalizePackVersion(pack.version);
+        const installedVersion = normalizePackVersion(installedDetails.get(String(pack.source_pack_id || '').trim())?.version);
+        return t(lang, '有新版本 v{server}（当前 v{installed}），点击更新。', 'Update to v{server} (installed v{installed}).').replace('{server}', serverVersion).replace('{installed}', installedVersion);
     };
     // Probe native installation state only when the set of source pack IDs
     // changes. Account refreshes otherwise recreate the same data and used to
@@ -354,6 +356,7 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
         });
         if (missingSourcePackIDs.length === 0) {
             applyInstalledState();
+            applyInstalledVersions();
             return;
         }
         void GetPetStoreInstalledPackDetails(missingSourcePackIDs).then((result) => {
@@ -371,11 +374,7 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
                 // before a just-finished install must not clobber the newer
                 // version recordPackInstalled recorded.
                 if (installed && !installedDetailCacheRef.current.has(sourcePackID)) {
-                    const detail = details[sourcePackID] || {};
-                    installedDetailCacheRef.current.set(sourcePackID, {
-                        version: String(detail.version ?? ''),
-                        installedAt: Number(detail.installed_at) || 0,
-                    });
+                    installedDetailCacheRef.current.set(sourcePackID, installedDetailFromProbe(details[sourcePackID]));
                 }
             });
             if (requestID === installedRequestRef.current) {
@@ -498,7 +497,7 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
         // install just happened, so the card drops straight back to 已安装
         // instead of offering an update to the version that was just
         // downloaded.
-        const detail = { version: String(pack.version || '').trim(), installedAt: Date.now() / 1000 };
+        const detail = { version: normalizePackVersion(pack.version) };
         for (const key of [sourcePackID, installedID]) {
             if (key) installedDetailCacheRef.current.set(key, detail);
         }
@@ -525,11 +524,10 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
             const details = await GetPetStoreInstalledPackDetails([sourcePackID]);
             if (details && Object.prototype.hasOwnProperty.call(details, sourcePackID)) {
                 recordPackInstalled(pack, sourcePackID);
-                // recordPackInstalled seeds the listing version and "now" as
-                // the install time; overwrite both with the probed on-disk
-                // values so an older local copy still offers the update.
-                const probed = details[sourcePackID] || {};
-                const detail = { version: String(probed.version ?? '').trim(), installedAt: Number(probed.installed_at) || 0 };
+                // recordPackInstalled seeds the listing version. Replace it
+                // with the on-disk version so an older local copy still
+                // compares as older than the listing.
+                const detail = installedDetailFromProbe(details[sourcePackID]);
                 installedDetailCacheRef.current.set(sourcePackID, detail);
                 setInstalledDetails((current) => new Map(current).set(sourcePackID, detail));
             }
@@ -684,9 +682,10 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
                                     const owned = ownedSourcePackIDs.has(String(pack.source_pack_id || '')) || ownedListingIDs.has(String(pack.id || ''));
                                     const installed = isPackInstalled(pack);
                                     const hasUpdate = packHasUpdate(pack);
+                                    const description = String(pack.description || '').trim();
                                     return <article className="pet-store-pack" key={String(pack.id)}>
                                     <div className="pet-store-pack-art">{pack.preview_data_url ? <img src={String(pack.preview_data_url)} alt={t(lang, '{name} 预览', '{name} preview').replace('{name}', String(pack.name))} loading={index < 4 ? 'eager' : 'lazy'} decoding="async" /> : <span aria-hidden="true">{[...String(pack.name || '?')][0]}</span>}</div>
-                                    <div className="pet-store-pack-copy"><h3 title={String(pack.name || '')}>{pack.name}</h3><p>{pack.description || t(lang, '创作者未填写简介。', 'No description from the creator.')}</p></div>
+                                    <div className="pet-store-pack-copy"><h3 title={String(pack.name || '')}>{pack.name}</h3><p className="pet-store-pack-desc" title={description || undefined}>{description || t(lang, '创作者未填写简介。', 'No description from the creator.')}</p></div>
                                     <dl><div><dt>{t(lang, '下载', 'Downloads')}</dt><dd>{number(pack.download_count)}</dd></div><div><dt>{t(lang, '销售额', 'Sales')}</dt><dd>{number(pack.sales_amount)}</dd></div><div><dt>{t(lang, '发布', 'Published')}</dt><dd>{date(pack.created_at, lang)}</dd></div></dl>
                                     <footer><span className={Number(pack.price) > 0 ? 'pet-store-price' : 'pet-store-free'}>{Number(pack.price) > 0 ? `${number(pack.price)} Credits` : t(lang, '免费', 'Free')}</span><button type="button" className="btn-primary" disabled={busyID !== '' || (installed && !hasUpdate)} title={packUpdateTitle(pack)} onClick={() => void (installed || owned ? install(pack) : purchase(pack))}>{isPackBusy(pack) ? t(lang, '处理中…', 'Working…') : installed ? (hasUpdate ? t(lang, '更新', 'Update') : t(lang, '已安装', 'Installed')) : owned ? t(lang, '安装', 'Install') : t(lang, '获取', 'Get')}</button></footer>
                                 </article>;

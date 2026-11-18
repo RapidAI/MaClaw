@@ -3,8 +3,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { UtilitiesPage } from '../UtilitiesPage';
 
-const { showConfirm } = vi.hoisted(() => ({
+const { showConfirm, mcpEventHandlers } = vi.hoisted(() => ({
     showConfirm: vi.fn().mockResolvedValue(true),
+    mcpEventHandlers: [] as Array<{ name: string; handler: (...args: unknown[]) => void }>,
 }));
 
 vi.mock('../../CustomDialog', () => ({
@@ -16,7 +17,13 @@ vi.mock('../../CustomDialog', () => ({
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
-    EventsOn: vi.fn(() => vi.fn()),
+    EventsOn: vi.fn((name: string, handler: (...args: unknown[]) => void) => {
+        mcpEventHandlers.push({ name, handler });
+        return () => {
+            const at = mcpEventHandlers.findIndex((entry) => entry.name === name && entry.handler === handler);
+            if (at >= 0) mcpEventHandlers.splice(at, 1);
+        };
+    }),
     EventsOff: vi.fn(),
     BrowserOpenURL: vi.fn(),
     ClipboardSetText: vi.fn().mockResolvedValue(true),
@@ -40,10 +47,34 @@ const lanStatus = {
     lanHTTPConfig: '{"mcpServers":{"maclaw":{"url":"http://192.168.1.20:18790/mcp","headers":{"Authorization":"Bearer mck_test_key_value"}}}}',
 };
 
-function install(status: Record<string, unknown> = offStatus) {
+const accessEntries = [
+    {
+        time: '2026-11-18 10:00:00',
+        ip: '192.168.1.30',
+        apiKey: 'mck_access…6789',
+        action: 'send_command',
+        task: '修复登录页',
+        projectPath: 'D:\\work\\app',
+    },
+    {
+        time: '2026-11-18 09:55:00',
+        ip: '127.0.0.1',
+        apiKey: 'mck_012345…0123',
+        action: 'create_task',
+        task: '访问日志任务',
+        projectPath: '',
+    },
+];
+
+function install(status: Record<string, unknown> = offStatus, entries: Record<string, unknown>[] = []) {
     const patch = vi.fn().mockResolvedValue({});
     const generate = vi.fn().mockResolvedValue({ ...onStatus, apiKey: 'mck_rotated_key' });
     const getStatus = vi.fn().mockResolvedValue(status);
+    let accessLog = entries;
+    // Return a copy each call: the backend builds a fresh slice per request,
+    // and a same-reference resolve would let React bail out of the re-render.
+    const getAccessLog = vi.fn(() => Promise.resolve(accessLog.slice()));
+    const clearAccessLog = vi.fn(async () => { accessLog = []; });
     (window as unknown as { go: unknown }).go = {
         main: {
             App: {
@@ -52,10 +83,12 @@ function install(status: Record<string, unknown> = offStatus) {
                 GetMCPHostStatus: getStatus,
                 PatchConfigFields: patch,
                 GenerateMCPHostAPIKey: generate,
+                GetMCPAccessLog: getAccessLog,
+                ClearMCPAccessLog: clearAccessLog,
             },
         },
     };
-    return { patch, generate, getStatus };
+    return { patch, generate, getStatus, getAccessLog, clearAccessLog };
 }
 
 describe('MCP server tool card', () => {
@@ -63,6 +96,7 @@ describe('MCP server tool card', () => {
         delete (window as unknown as { go?: unknown }).go;
         showConfirm.mockReset();
         showConfirm.mockResolvedValue(true);
+        mcpEventHandlers.length = 0;
     });
 
     it('opens the panel and hides the key while the server is off', async () => {
@@ -142,5 +176,69 @@ describe('MCP server tool card', () => {
         await waitFor(() => expect(screen.getByTestId('mcp-server-lan-block')).toBeTruthy());
         expect(screen.queryByTestId('mcp-server-http-lan')).toBeNull();
         expect(screen.getByTestId('mcp-server-lan-block').textContent).toContain('没有在这台电脑上找到局域网地址');
+    });
+
+    it('renders access entries with caller ip, masked key, and task name', async () => {
+        install(onStatus, accessEntries);
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        fireEvent.click(screen.getByTestId('utilities-mcp-server-card'));
+        await waitFor(() => expect(screen.getByTestId('mcp-server-access-log')).toBeTruthy());
+        const rows = screen.getAllByTestId('mcp-server-access-row');
+        expect(rows.length).toBe(2);
+        expect(rows[0].textContent).toContain('192.168.1.30');
+        expect(rows[0].textContent).toContain('mck_access…6789');
+        expect(rows[0].textContent).toContain('修复登录页');
+        expect(rows[1].textContent).toContain('127.0.0.1');
+        expect(rows[1].textContent).toContain('create_task');
+        expect(screen.queryByTestId('mcp-server-access-empty')).toBeNull();
+        expect((screen.getByTestId('mcp-server-access-clear') as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('confirms before clearing the access log and shows the empty state after', async () => {
+        const { clearAccessLog } = install(onStatus, accessEntries);
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        fireEvent.click(screen.getByTestId('utilities-mcp-server-card'));
+        await waitFor(() => expect(screen.getAllByTestId('mcp-server-access-row').length).toBe(2));
+        fireEvent.click(screen.getByTestId('mcp-server-access-clear'));
+        await waitFor(() => expect(showConfirm).toHaveBeenCalled());
+        await waitFor(() => expect(clearAccessLog).toHaveBeenCalled());
+        await waitFor(() => expect(screen.getByTestId('mcp-server-access-empty')).toBeTruthy());
+        expect(screen.queryByTestId('mcp-server-access-row')).toBeNull();
+    });
+
+    it('keeps the access log when the clear confirmation is cancelled', async () => {
+        showConfirm.mockResolvedValue(false);
+        const { clearAccessLog } = install(onStatus, accessEntries);
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        fireEvent.click(screen.getByTestId('utilities-mcp-server-card'));
+        await waitFor(() => expect(screen.getByTestId('mcp-server-access-clear')).toBeTruthy());
+        fireEvent.click(screen.getByTestId('mcp-server-access-clear'));
+        await waitFor(() => expect(showConfirm).toHaveBeenCalled());
+        expect(clearAccessLog).not.toHaveBeenCalled();
+        expect(screen.getAllByTestId('mcp-server-access-row').length).toBe(2);
+    });
+
+    it('shows the access empty state when nothing was recorded yet', async () => {
+        install(onStatus, []);
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        fireEvent.click(screen.getByTestId('utilities-mcp-server-card'));
+        await waitFor(() => expect(screen.getByTestId('mcp-server-access-empty')).toBeTruthy());
+        expect((screen.getByTestId('mcp-server-access-clear') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('refreshes the access log when a mcp-host-message arrives and unsubscribes on unmount', async () => {
+        const list = [accessEntries[0]];
+        install(onStatus, list);
+        const { unmount } = render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        fireEvent.click(screen.getByTestId('utilities-mcp-server-card'));
+        await waitFor(() => expect(screen.getAllByTestId('mcp-server-access-row').length).toBe(1));
+        const handler = mcpEventHandlers.find((entry) => entry.name === 'mcp-host-message');
+        expect(handler).toBeTruthy();
+        list.push(accessEntries[1]);
+        handler?.handler();
+        await waitFor(() => expect(screen.getAllByTestId('mcp-server-access-row').length).toBe(2));
+        expect(screen.getByText('访问日志任务')).toBeTruthy();
+        unmount();
+        expect(mcpEventHandlers.find((entry) => entry.name === 'mcp-host-message')).toBeUndefined();
     });
 });

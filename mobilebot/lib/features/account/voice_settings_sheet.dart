@@ -5,6 +5,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/locale.dart';
 import '../../core/providers.dart';
 import '../../core/voice_assets.dart';
 import '../../core/voice_engine.dart';
@@ -158,14 +159,17 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('语音引擎', style: theme.textTheme.titleMedium),
+          Text(context.S.voiceTitle, style: theme.textTheme.titleMedium),
           const SizedBox(height: 16),
 
-          Text('朗读（TTS）', style: theme.textTheme.labelLarge),
+          Text(context.S.vsTts, style: theme.textTheme.labelLarge),
           const SizedBox(height: 6),
           SegmentedButton<TtsEngine>(
-            segments: const [
-              ButtonSegment(value: TtsEngine.system, label: Text('系统音色')),
+            segments: [
+              ButtonSegment(
+                value: TtsEngine.system,
+                label: Text(context.S.vsTtsSystem),
+              ),
               ButtonSegment(value: TtsEngine.kokoro, label: Text('Kokoro')),
             ],
             selected: {_ttsEngine},
@@ -181,10 +185,10 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
             OutlinedButton.icon(
               onPressed: busy ? null : _downloadTts,
               icon: const Icon(Icons.download, size: 16),
-              label: const Text('下载 Kokoro 模型与音色包'),
+              label: Text(context.S.vsDownloadKokoro),
             )
           else ...[
-            Text('音色', style: theme.textTheme.labelMedium),
+            Text(context.S.vsVoices, style: theme.textTheme.labelMedium),
             const SizedBox(height: 4),
             DropdownButtonFormField<String>(
               initialValue: _voice,
@@ -211,14 +215,17 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
           ],
           const SizedBox(height: 20),
 
-          Text('语音识别（ASR）', style: theme.textTheme.labelLarge),
+          Text(context.S.vsAsr, style: theme.textTheme.labelLarge),
           const SizedBox(height: 6),
           SegmentedButton<AsrEngine>(
-            segments: const [
-              ButtonSegment(value: AsrEngine.system, label: Text('系统识别')),
+            segments: [
+              ButtonSegment(
+                value: AsrEngine.system,
+                label: Text(context.S.vsAsrSystem),
+              ),
               ButtonSegment(
                 value: AsrEngine.local,
-                label: Text('本地 SenseVoice'),
+                label: Text(context.S.vsAsrLocal),
               ),
             ],
             selected: {_asrEngine},
@@ -234,11 +241,11 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
             OutlinedButton.icon(
               onPressed: busy ? null : _downloadAsr,
               icon: const Icon(Icons.download, size: 16),
-              label: const Text('下载 SenseVoice 识别模型'),
+              label: Text(context.S.vsDownloadSenseVoice),
             )
           else
             Text(
-              '模型已就绪——系统识别不可用时自动用它',
+              context.S.vsSenseVoiceReady,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -260,8 +267,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
             ),
           const SizedBox(height: 8),
           Text(
-            '本地模型与桌面端 MaClaw 相同（Kokoro-82M / SenseVoice-small），'
-            '下载后完全离线可用。',
+            context.S.vsLocalNote,
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),

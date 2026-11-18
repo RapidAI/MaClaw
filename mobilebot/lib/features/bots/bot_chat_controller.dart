@@ -217,8 +217,7 @@ class BotChatController extends Notifier<ChatState> {
               queueHeld: false,
             );
             final replyId = '${msg.id}:gave-up';
-            if (outcome.isNotEmpty &&
-                !messages.any((m) => m.id == replyId)) {
+            if (outcome.isNotEmpty && !messages.any((m) => m.id == replyId)) {
               final reply = ChatMessage(
                 id: replyId,
                 role: 'assistant',
@@ -245,11 +244,20 @@ class BotChatController extends Notifier<ChatState> {
   /// A line keeps the sequence of its first write. A later edit, or a second
   /// copy of the same server line, must not move it down the chat.
   ChatMessage _keepEarlierSeq(ChatMessage current, ChatMessage incoming) {
+    var next = incoming;
     if (current.syncSeq > 0 &&
-        (incoming.syncSeq <= 0 || current.syncSeq < incoming.syncSeq)) {
-      return incoming.copyWith(syncSeq: current.syncSeq);
+        (next.syncSeq <= 0 || current.syncSeq < next.syncSeq)) {
+      next = next.copyWith(syncSeq: current.syncSeq);
     }
-    return incoming;
+    // Media never travels in the journal — the echo of this client's own
+    // settled bubble must not strip the bytes the run poll staged.
+    if (next.images.isEmpty && current.images.isNotEmpty) {
+      next = next.copyWith(images: current.images);
+    }
+    if (next.files.isEmpty && current.files.isNotEmpty) {
+      next = next.copyWith(files: current.files);
+    }
+    return next;
   }
 
   int _entryDisplaySeq(ConversationEntry entry) =>
@@ -416,16 +424,31 @@ class BotChatController extends Notifier<ChatState> {
     _restoreSyncedMedia();
   }
 
-  /// Attachment bytes never travel in the journal — a synced assistant
-  /// bubble only carries `attachmentIds` + `runId`. Re-fetch the finished
-  /// run and patch its media in, like the desktop staging the picture on
-  /// first paint.
+  /// Attachment bytes never travel in the journal. A synced assistant
+  /// bubble used to carry `attachmentIds` + `runId`, but the desktop saves
+  /// delivered files on its own disk and Hub's ReplyFile carries no
+  /// attachment id — so a projection usually has NEITHER bytes NOR ids, and
+  /// gating the refetch on ids made attachments vanish after an app
+  /// restart (or on a phone watching a desktop-sent turn). Now:
+  ///  - explicit `attachmentIds` still refetch unconditionally (a stated
+  ///    media list is worth asking for whatever its age);
+  ///  - idless bubbles PROBE one refetch, bounded to [mediaRestoreWindow]
+  ///    so reopening a chat does not poll the whole transcript — older runs
+  ///    are reaped server-side anyway. `_fetchRunMedia` is a no-op for
+  ///    text-only replies, and the run poll is authoritative for the rest.
+  static const mediaRestoreWindow = Duration(hours: 48);
+
   void _restoreSyncedMedia() {
     if (_disposed) return;
+    final freshBefore = DateTime.now().subtract(mediaRestoreWindow);
     for (final m in state.messages) {
-      if (m.role != 'assistant' || m.failed) continue;
+      if (m.role != 'assistant' || m.failed || m.ack) continue;
       if (m.images.isNotEmpty || m.files.isNotEmpty) continue;
-      if (m.attachmentIds.isEmpty || m.runId.isEmpty) continue;
+      if (m.runId.isEmpty) continue;
+      if (m.attachmentIds.isEmpty &&
+          (m.at == null || m.at!.isBefore(freshBefore))) {
+        continue;
+      }
       if (!_mediaFetches.add(m.id)) continue;
       unawaited(_fetchRunMedia(m.id, m.runId));
     }
@@ -704,19 +727,23 @@ class BotChatController extends Notifier<ChatState> {
     // writing its projection would double it for every other client too.
     // Windowed: an identical reply from older history is a new turn's
     // genuine answer (bots repeat "收到" all the time), not a duplicate.
-    final alreadyShown =
-        !reply.isEmpty &&
-        messages.any(
-          (m) =>
-              m.role == 'assistant' &&
-              !m.ack &&
-              !m.failed &&
-              m.content == reply.text &&
-              (m.at == null ||
-                  DateTime.now().difference(m.at!) <
-                      const Duration(minutes: 5)),
-        );
-    if (!alreadyShown) {
+    int shownAt = -1;
+    if (!reply.isEmpty) {
+      for (var i = messages.length - 1; i >= 0; i--) {
+        final m = messages[i];
+        if (m.role == 'assistant' &&
+            !m.ack &&
+            !m.failed &&
+            m.content == reply.text &&
+            (m.at == null ||
+                DateTime.now().difference(m.at!) <
+                    const Duration(minutes: 5))) {
+          shownAt = i;
+          break;
+        }
+      }
+    }
+    if (shownAt < 0) {
       final assistantMessage = ChatMessage(
         id: newDesktopMessageId(),
         role: 'assistant',
@@ -735,6 +762,22 @@ class BotChatController extends Notifier<ChatState> {
       );
       messages.add(assistantMessage);
       _writeProjection(assistantMessage);
+    } else if ((reply.images.isNotEmpty && messages[shownAt].images.isEmpty) ||
+        (reply.files.isNotEmpty && messages[shownAt].files.isEmpty)) {
+      // The projected bubble won the race but never carried the bytes: the
+      // journal strips media and the desktop saves delivered files on its
+      // own disk (no attachment ids to refetch). Patch this reply's media
+      // into the shown bubble — the desktop stages the picture on first
+      // paint the same way. Per-field: the sync media restore may already
+      // have staged the other list on this bubble. Hub ReplyFile carries
+      // no attachment id, so the projection's media ids are unchanged and
+      // no re-publish is needed.
+      final shown = messages[shownAt];
+      messages[shownAt] = shown.copyWith(
+        images: shown.images.isEmpty ? reply.images : null,
+        files: shown.files.isEmpty ? reply.files : null,
+      );
+      state = state.copyWith(messages: messages);
     }
     _sessionForRun = '';
     // Mark the pending user bubble settled.

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -907,7 +908,7 @@ func groupDiscussionSummaryMessageLines(messages []corea2a.Message) []string {
 			if fromID == "" {
 				fromID = "unknown"
 			}
-			lines = append(lines, fmt.Sprintf("[%s] %s", fromID, truncateGroupDiscussionSummaryText(content, groupDiscussionSummaryLineMaxChars)))
+			lines = append(lines, fmt.Sprintf("[%s] %s", fromID, textutil.ClipKeepTail(content, groupDiscussionSummaryLineMaxChars)))
 		}
 		streamFrom = ""
 		streamContent.Reset()
@@ -915,7 +916,25 @@ func groupDiscussionSummaryMessageLines(messages []corea2a.Message) []string {
 	for _, msg := range messages {
 		content := strings.TrimSpace(msg.Content)
 		switch msg.Kind {
-		case corea2a.MessageStreamEnd, corea2a.MessageStreamStatus, corea2a.MessageHandoff:
+		case corea2a.MessageStreamEnd:
+			// The compressed line is the only record once this window rolls
+			// forward. Dropping stream_end keeps the opening and loses the
+			// settled ending permanently.
+			endFrom := strings.TrimSpace(msg.FromID)
+			if streamFrom != "" && endFrom != "" && !groupDiscussionParticipantIdentityMatches(streamFrom, endFrom) {
+				flushStream()
+			}
+			if msg.Content != "" {
+				if streamFrom == "" {
+					streamFrom = endFrom
+				}
+				folded := textutil.ProjectAnswerSlices(streamContent.String(), msg.Content)
+				streamContent.Reset()
+				streamContent.WriteString(folded)
+			}
+			flushStream()
+			continue
+		case corea2a.MessageStreamStatus, corea2a.MessageHandoff:
 			flushStream()
 			continue
 		case corea2a.MessageStreamChunk:
@@ -941,10 +960,17 @@ func groupDiscussionSummaryMessageLines(messages []corea2a.Message) []string {
 		if fromID == "" {
 			fromID = "unknown"
 		}
-		lines = append(lines, fmt.Sprintf("[%s] %s", fromID, truncateGroupDiscussionSummaryText(content, groupDiscussionSummaryLineMaxChars)))
+		lines = append(lines, fmt.Sprintf("[%s] %s", fromID, groupDiscussionSummaryClip(content, msg.Kind)))
 	}
 	flushStream()
 	return lines
+}
+
+func groupDiscussionSummaryClip(content string, kind corea2a.MessageKind) string {
+	if kind == corea2a.MessageAnswer {
+		return textutil.ClipKeepTail(content, groupDiscussionSummaryLineMaxChars)
+	}
+	return truncateGroupDiscussionSummaryText(content, groupDiscussionSummaryLineMaxChars)
 }
 
 func truncateGroupDiscussionSummaryText(value string, maxRunes int) string {

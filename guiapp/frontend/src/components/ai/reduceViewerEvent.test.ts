@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { emptyViewerState, reduceViewerEvent, type ViewerReduceState } from './reduceViewerEvent';
+import { emptyViewerState, legacyFromViewerEvent, reduceViewerEvent, type ViewerReduceState } from './reduceViewerEvent';
 
 const vectors = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../../../testdata/viewer_contract_vectors.json'), 'utf8')) as {
     cases: Array<{ name: string; events: Record<string, unknown>[]; expect: Record<string, unknown> }>;
@@ -27,6 +27,28 @@ function expectSubset(actual: unknown, expected: unknown): void {
     }
     expect(actual).toEqual(expected);
 }
+
+describe('lane sentinels', () => {
+    it('drops sentinels glued between content tokens', () => {
+        const state = reduceViewerEvent(emptyViewerState(), {
+            event: 'token',
+            pieces: ['The\x01', '\x01 user', '\x01 wants'],
+        });
+        expect(state.body).toBe('The user wants');
+    });
+
+    it('drops sentinels inside a thinking delta and re-prefixes one lane marker', () => {
+        const state = reduceViewerEvent(emptyViewerState(), {
+            event: 'thinking',
+            state: 'delta',
+            text: 'Ma\x01Cl\x01aw',
+        });
+        expect(state.thinking).toEqual([{ text: 'MaClaw', done: false }]);
+        const legacy = legacyFromViewerEvent({ event: 'thinking', state: 'delta', text: 'The\x01 user' });
+        expect(legacy?.payload.text).toBe('\x01The user');
+        expect(legacy?.payload.deltas).toEqual(['\x01The user']);
+    });
+});
 
 describe('reduceViewerEvent golden vectors', () => {
     for (const item of vectors.cases) {

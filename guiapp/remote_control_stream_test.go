@@ -232,6 +232,38 @@ func TestRemoteStreamReasoningStaysInThinkingLaneAfterReset(t *testing.T) {
 	}
 }
 
+func TestRemoteStreamRejectSuffixDropsInteriorSentinel(t *testing.T) {
+	app := &App{}
+	reg := app.ensureRemoteWatchRegistry()
+	cap := &remoteStreamCapture{}
+	reg.sink = cap.sink
+	session := streamSessionKey()
+	reg.watch("g1", session)
+
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x01想想", Sequence: 1,
+	})
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x02ke\x01pt", Sequence: 2,
+	})
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x01再想", Sequence: 3,
+	})
+
+	snap := waitLiveSnapshot(t, reg, session, func(snap *remoteLiveSnapshot) bool {
+		return snap != nil && len(snap.Parts) == 2 && snap.Parts[0].Text == "想想再想"
+	})
+	if snap == nil || len(snap.Parts) != 2 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if snap.Parts[0].Kind != "thinking" || snap.Parts[0].Done || snap.Parts[0].Text != "想想再想" {
+		t.Fatalf("thinking part = %+v", snap.Parts[0])
+	}
+	if snap.Parts[1].Kind != "text" || snap.Parts[1].Text != "kept" {
+		t.Fatalf("text part = %+v", snap.Parts[1])
+	}
+}
+
 func TestRemoteStreamRelayIgnoresUnwatchedSessions(t *testing.T) {
 	app := &App{}
 	reg := app.ensureRemoteWatchRegistry()

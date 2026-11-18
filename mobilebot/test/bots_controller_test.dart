@@ -57,11 +57,11 @@ class _FakeApi extends BotApi {
   }) async {
     if (createError != null) throw createError!;
     return Bot(
-        id: 'new-1',
-        name: name,
-        description: description,
-          desktopMode: needsComputer ? 'shared' : 'none',
-        );
+      id: 'new-1',
+      name: name,
+      description: description,
+      desktopMode: needsComputer ? 'shared' : 'none',
+    );
   }
 
   @override
@@ -72,19 +72,16 @@ class _FakeApi extends BotApi {
 
 class _FakeSession extends SessionController {
   @override
-  SessionState build() => SessionState(
-        loaded: true,
-        accounts: [_account],
-        active: _account,
-      );
+  SessionState build() =>
+      SessionState(loaded: true, accounts: [_account], active: _account);
 }
 
 ProviderContainer _container(_FakeApi api) => ProviderContainer(
-      overrides: [
-        botApiProvider.overrideWithValue(api),
-        sessionProvider.overrideWith(_FakeSession.new),
-      ],
-    );
+  overrides: [
+    botApiProvider.overrideWithValue(api),
+    sessionProvider.overrideWith(_FakeSession.new),
+  ],
+);
 
 Future<void> _settle(ProviderContainer container) async {
   // build() schedules refresh() in a microtask; let it finish.
@@ -135,8 +132,11 @@ void main() {
 
   test('BOT_DISABLED lands the disabled state without expiring', () async {
     final api = _FakeApi()
-      ..refreshError =
-          const HubApiException('BOT_DISABLED', '未开通 Bot 功能', statusCode: 403);
+      ..refreshError = const HubApiException(
+        'BOT_DISABLED',
+        '未开通 Bot 功能',
+        statusCode: 403,
+      );
     final container = _container(api);
     addTearDown(container.dispose);
 
@@ -150,8 +150,11 @@ void main() {
 
   test('an unauthorized refresh marks the session expired', () async {
     final api = _FakeApi()
-      ..refreshError =
-          const HubApiException('UNAUTHORIZED', '凭证过期', statusCode: 401);
+      ..refreshError = const HubApiException(
+        'UNAUTHORIZED',
+        '凭证过期',
+        statusCode: 401,
+      );
     final container = _container(api);
     addTearDown(container.dispose);
 
@@ -164,10 +167,12 @@ void main() {
     final slow = Completer<List<Bot>>();
     final oldApi = _FakeApi()..pendingBots = slow.future;
     final newApi = _FakeApi()..bots = const [_botB];
-    final container = ProviderContainer(overrides: [
-      botApiProvider.overrideWithValue(oldApi),
-      sessionProvider.overrideWith(_FakeSession.new),
-    ]);
+    final container = ProviderContainer(
+      overrides: [
+        botApiProvider.overrideWithValue(oldApi),
+        sessionProvider.overrideWith(_FakeSession.new),
+      ],
+    );
     addTearDown(container.dispose);
 
     // The initial refresh starts against the old api, then the provider is
@@ -193,11 +198,11 @@ void main() {
     addTearDown(container.dispose);
     await _settle(container);
 
-    final created =
-        await container.read(botsProvider.notifier).create('新Bot', 'd');
+    final created = await container
+        .read(botsProvider.notifier)
+        .create('新Bot', 'd');
     expect(created.id, 'new-1');
-    expect(container.read(botsProvider).bots.map((b) => b.id),
-        ['a', 'new-1']);
+    expect(container.read(botsProvider).bots.map((b) => b.id), ['a', 'new-1']);
 
     await container.read(botsProvider.notifier).remove(_botA);
     expect(api.deletedBotId, 'a');
@@ -251,10 +256,16 @@ void main() {
   test('a quota rejection resyncs the grant', () async {
     final api = _FakeApi()
       ..desktopQuota = const DesktopBotQuota(limit: 2, used: 0, known: true)
-      ..quotaAfterFirstList =
-          const DesktopBotQuota(limit: 1, used: 1, known: true)
+      ..quotaAfterFirstList = const DesktopBotQuota(
+        limit: 1,
+        used: 1,
+        known: true,
+      )
       ..createError = const HubApiException(
-          'DESKTOP_QUOTA_EXCEEDED', '额度已满', statusCode: 409);
+        'DESKTOP_QUOTA_EXCEEDED',
+        '额度已满',
+        statusCode: 409,
+      );
     final container = _container(api);
     addTearDown(container.dispose);
     await _settle(container);
@@ -264,9 +275,11 @@ void main() {
       container.read(botsProvider.notifier).create('新Bot', ''),
       throwsA(isA<HubApiException>()),
     );
-    for (var i = 0;
-        i < 50 && !container.read(botsProvider).quota.exhausted;
-        i++) {
+    for (
+      var i = 0;
+      i < 50 && !container.read(botsProvider).quota.exhausted;
+      i++
+    ) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     expect(api.listCalls, greaterThan(1));

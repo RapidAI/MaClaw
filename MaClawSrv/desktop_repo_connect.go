@@ -414,5 +414,6 @@ func desktopRepoPollDeviceLive(ctx context.Context, service, deviceCode, gitlabH
 	if service == gitforge.GitLab {
 		return gitforge.PollGitLabDevice(ctx, desktopRepoHTTP, gitlabHost, os.Getenv("MACLAW_GITLAB_CLIENT_ID"), os.Getenv("MACLAW_GITLAB_CLIENT_SECRET"), deviceCode, interval)
 	}
-	return oauth.PollGitHubDeviceCodeWith(ctx, oauth.GitHubAccountClientID, deviceCode, interval)
+	token, _, err := oauth.PollGitHubDeviceCodeWith(ctx, oauth.GitHubAccountClientID, deviceCode, interval)
+	return token, err
 }

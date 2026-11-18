@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import 'bot_models.dart';
 import 'bots_controller.dart';
+import '../../core/locale.dart';
 import 'widgets.dart';
 
 /// Bot 设置 — 对应桌面 GUI 的 BotEditDialog / BotStyleDialog /
@@ -76,16 +77,16 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除定时任务'),
-        content: Text('确定删除定时任务「$name」？'),
+        title: Text(context.S.stDeleteScheduleTitle),
+        content: Text(context.S.stDeleteScheduleBody(name)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
+            child: Text(context.S.cancel),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('删除'),
+            child: Text(context.S.delete),
           ),
         ],
       ),
@@ -122,7 +123,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     if (name.isEmpty) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('名称不能为空')));
+      ).showSnackBar(SnackBar(content: Text(context.S.stNameEmpty)));
       return;
     }
     if (botNameTaken(
@@ -132,7 +133,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     )) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('已经有一个叫这个名字的 Bot 了，换个名字吧')));
+      ).showSnackBar(SnackBar(content: Text(context.S.stNameTaken)));
       return;
     }
     setState(() => _saving = true);
@@ -158,7 +159,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('已保存')));
+        ).showSnackBar(SnackBar(content: Text(context.S.stSaved)));
         context.pop();
       }
     } on Object catch (error) {
@@ -181,7 +182,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('已设为主 Bot')));
+        ).showSnackBar(SnackBar(content: Text(context.S.stSetPrimaryDone)));
         // widget.bot is the pre-refresh copy — track the flag locally so the
         // subtitle/check icon update without re-entering the screen.
         setState(() {
@@ -222,19 +223,22 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('长期偏好', style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                context.S.stLongTermPrefs,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const SizedBox(height: 4),
-              const Text(
-                '写下的偏好会长期生效，之后的每个任务都会遵循（例如"结果用表格呈现""截图带上关键步骤"）。',
-                style: TextStyle(fontSize: 12),
+              Text(
+                context.S.stPrefsHint,
+                style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: ctrl,
                 minLines: 2,
                 maxLines: 4,
-                decoration: const InputDecoration(
-                  hintText: '记录一条偏好…',
+                decoration: InputDecoration(
+                  hintText: context.S.stPrefsFieldHint,
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -243,21 +247,22 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                 children: [
                   TextButton.icon(
                     onPressed: () async {
+                      final S = context.S;
                       final navigator = Navigator.of(context);
                       // Irreversible — wipe every recorded preference.
                       final confirmed = await showDialog<bool>(
                         context: context,
                         builder: (context) => AlertDialog(
-                          title: const Text('撤回全部偏好？'),
-                          content: const Text('将移除这个 Bot 已记录的全部长期偏好，不可恢复。'),
+                          title: Text(context.S.stWithdrawPrefsTitle),
+                          content: Text(context.S.stWithdrawPrefsBody),
                           actions: [
                             TextButton(
                               onPressed: () => Navigator.of(context).pop(false),
-                              child: const Text('取消'),
+                              child: Text(context.S.cancel),
                             ),
                             FilledButton(
                               onPressed: () => Navigator.of(context).pop(true),
-                              child: const Text('撤回'),
+                              child: Text(context.S.stWithdraw),
                             ),
                           ],
                         ),
@@ -268,7 +273,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                         navigator.pop();
                         if (mounted) {
                           ScaffoldMessenger.of(this.context).showSnackBar(
-                            const SnackBar(content: Text('已撤回全部偏好')),
+                            SnackBar(content: Text(S.stWithdrawDone)),
                           );
                         }
                       } on Object catch (error) {
@@ -281,7 +286,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                       }
                     },
                     icon: const Icon(Icons.delete_outline, size: 18),
-                    label: const Text('撤回全部偏好'),
+                    label: Text(context.S.stWithdrawAll),
                   ),
                   const Spacer(),
                   FilledButton(
@@ -289,12 +294,13 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                       final text = ctrl.text.trim();
                       final navigator = Navigator.of(context);
                       if (text.isEmpty) return;
+                      final S = context.S;
                       try {
                         await api.savePreference(widget.bot.id, text);
                         navigator.pop();
                         if (mounted) {
                           ScaffoldMessenger.of(this.context).showSnackBar(
-                            const SnackBar(content: Text('偏好已记录')),
+                            SnackBar(content: Text(S.stPrefRecorded)),
                           );
                         }
                       } on Object catch (error) {
@@ -306,7 +312,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                         }
                       }
                     },
-                    child: const Text('记录'),
+                    child: Text(context.S.stRecord),
                   ),
                 ],
               ),
@@ -323,19 +329,19 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除 Bot？'),
-        content: Text('将删除「${widget.bot.title}」及其会话记录，此操作不可撤销。'),
+        title: Text(context.S.stDeleteBotTitle),
+        content: Text(context.S.stDeleteBotBody(widget.bot.title)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
+            child: Text(context.S.cancel),
           ),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: Theme.of(context).colorScheme.error,
             ),
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('删除'),
+            child: Text(context.S.delete),
           ),
         ],
       ),
@@ -358,7 +364,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Bot 设置'),
+        title: Text(context.S.stScreenTitle),
         actions: [
           TextButton(
             onPressed: _saving ? null : _save,
@@ -368,7 +374,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                     height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Text('保存'),
+                : Text(context.S.save),
           ),
         ],
       ),
@@ -382,12 +388,16 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                 children: [
                   TextField(
                     controller: _nameCtrl,
-                    decoration: const InputDecoration(labelText: '名称'),
+                    decoration: InputDecoration(
+                      labelText: context.S.stNameLabel,
+                    ),
                   ),
                   const SizedBox(height: 12),
                   TextField(
                     controller: _descCtrl,
-                    decoration: const InputDecoration(labelText: '简介'),
+                    decoration: InputDecoration(
+                      labelText: context.S.stDescLabel,
+                    ),
                     maxLines: 3,
                   ),
                 ],
@@ -401,12 +411,21 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('定时任务', style: theme.textTheme.titleSmall),
+                  Text(
+                    context.S.stScheduleTitle,
+                    style: theme.textTheme.titleSmall,
+                  ),
                   const SizedBox(height: 4),
                   if (_scheduleNote.isNotEmpty)
-                    Text(_scheduleNote, style: const TextStyle(fontSize: 12))
+                    Text(
+                      _scheduleNote,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    )
                   else if (_schedules.isEmpty)
-                    const Text('还没有定时任务。', style: TextStyle(fontSize: 13))
+                    Text(
+                      context.S.stNoSchedule,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    )
                   else
                     for (final item in _schedules)
                       ListTile(
@@ -414,9 +433,9 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                         title: Text(
                           item.name.isEmpty ? item.action : item.name,
                         ),
-                        subtitle: Text(item.when),
+                        subtitle: Text(item.when(context.S)),
                         trailing: IconButton(
-                          tooltip: '删除',
+                          tooltip: context.S.delete,
                           icon: const Icon(Icons.delete_outline),
                           onPressed: () => _deleteSchedule(item),
                         ),
@@ -432,7 +451,10 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('外观', style: theme.textTheme.titleSmall),
+                  Text(
+                    context.S.stAppearance,
+                    style: theme.textTheme.titleSmall,
+                  ),
                   const SizedBox(height: 12),
                   Wrap(
                     spacing: 10,
@@ -471,7 +493,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                     children: [
                       for (final shape in botShapes)
                         ChoiceChip(
-                          label: Text(botShapeLabel(shape)),
+                          label: Text(botShapeLabel(shape, context.S)),
                           selected: _shape == shape,
                           onSelected: (_) => setState(() => _shape = shape),
                         ),
@@ -488,7 +510,10 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('电脑', style: theme.textTheme.titleSmall),
+                  Text(
+                    context.S.stComputerSection,
+                    style: theme.textTheme.titleSmall,
+                  ),
                   const SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,
@@ -496,19 +521,19 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                       segments: [
                         ButtonSegment(
                           value: 'shared',
-                          label: const Text('共用'),
+                          label: Text(context.S.stModeShared),
                           icon: const Icon(Icons.computer),
                           enabled: _computerChoiceEnabled('shared'),
                         ),
                         ButtonSegment(
                           value: 'isolated',
-                          label: const Text('独立'),
+                          label: Text(context.S.stModeIsolated),
                           icon: const Icon(Icons.desktop_windows),
                           enabled: _computerChoiceEnabled('isolated'),
                         ),
-                        const ButtonSegment(
+                        ButtonSegment(
                           value: 'none',
-                          label: Text('无电脑'),
+                          label: Text(context.S.stModeNone),
                           icon: Icon(Icons.desktop_access_disabled_outlined),
                         ),
                       ],
@@ -523,19 +548,19 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                   const SizedBox(height: 8),
                   Text(
                     switch (_desktopMode) {
-                      'none' => '这个 Bot 不使用电脑',
-                      'isolated' => 'Bot 使用自己的独立电脑画面',
-                      _ => 'Bot 使用你账号下的共享电脑画面',
+                      'none' => context.S.stModeNoneHint,
+                      'isolated' => context.S.stModeIsolatedHint,
+                      _ => context.S.stModeSharedHint,
                     },
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
-                  if (ref.watch(botsProvider).quota.label.isNotEmpty)
+                  if (ref.watch(botsProvider).quota.label(context.S).isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
                       child: Text(
-                        ref.watch(botsProvider).quota.label,
+                        ref.watch(botsProvider).quota.label(context.S),
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
@@ -551,8 +576,8 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               children: [
                 ListTile(
                   leading: const Icon(Icons.psychology_outlined),
-                  title: const Text('人格与记忆'),
-                  subtitle: const Text('自定义 Bot 的性格、语气和长期记忆'),
+                  title: Text(context.S.stPersonaMemory),
+                  subtitle: Text(context.S.stPersonaMemoryHint),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => context.push(
                     '/bot/${Uri.encodeComponent(widget.bot.id)}/style',
@@ -561,8 +586,8 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                 const Divider(height: 1, indent: 16, endIndent: 16),
                 ListTile(
                   leading: const Icon(Icons.tune),
-                  title: const Text('长期偏好'),
-                  subtitle: const Text('记录 Bot 在每个任务里都要遵循的偏好'),
+                  title: Text(context.S.stLongTermPrefs),
+                  subtitle: Text(context.S.stLongTermPrefsHint),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _preferenceSheet,
                 ),
@@ -570,8 +595,8 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                   const Divider(height: 1, indent: 16, endIndent: 16),
                   ListTile(
                     leading: const Icon(Icons.smart_display_outlined),
-                    title: const Text('演示录制'),
-                    subtitle: const Text('录一段操作过程，提炼成 Bot 的技能（需独立电脑）'),
+                    title: Text(context.S.stDemoRecord),
+                    subtitle: Text(context.S.stDemoRecordHint),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => context.push(
                       '/bot/${Uri.encodeComponent(widget.bot.id)}/demo',
@@ -585,17 +610,17 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
           Card(
             child: ListTile(
               leading: const Icon(Icons.star_outline),
-              title: const Text('主 Bot'),
+              title: Text(context.S.stPrimaryTitle),
               subtitle: Text(
                 _primary
-                    ? '已是主 Bot，其他 Bot 的委托由它派发'
-                    : '设为主 Bot 后，它可以给团队里其他 Bot 派任务',
+                    ? context.S.stIsPrimaryHint
+                    : context.S.stMakePrimaryHint,
               ),
               trailing: _primary
                   ? Icon(Icons.check_circle, color: theme.colorScheme.primary)
                   : TextButton(
                       onPressed: _saving ? null : _makePrimary,
-                      child: const Text('设为主 Bot'),
+                      child: Text(context.S.stMakePrimary),
                     ),
             ),
           ),
@@ -606,7 +631,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
             ),
             onPressed: _delete,
             icon: const Icon(Icons.delete_outline),
-            label: const Text('删除这个 Bot'),
+            label: Text(context.S.stDeleteBot),
           ),
         ],
       ),
@@ -691,7 +716,7 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('已保存')));
+        ).showSnackBar(SnackBar(content: Text(context.S.stSaved)));
         context.pop();
       }
     } on Object catch (error) {
@@ -711,9 +736,9 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
     try {
       await api.rollbackStyle(widget.bot.id, version);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('已回滚到版本 $version')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(context.S.stRolledBack(version.toString()))),
+      );
       await _load();
       if (mounted) setState(() => _saving = false);
     } on Object catch (error) {
@@ -731,18 +756,18 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('人格与记忆'),
+        title: Text(context.S.stPersonaMemory),
         actions: [
           TextButton(
             onPressed: _saving || _loading || !_enabled ? null : _save,
-            child: const Text('保存'),
+            child: Text(context.S.save),
           ),
         ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : !_enabled
-          ? const Center(child: Text('当前 Hub 未开启人格设置'))
+          ? Center(child: Text(context.S.stPersonaDisabled))
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -758,9 +783,9 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
                   ),
                 TextField(
                   controller: _soulCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '人格',
-                    hintText: '这个 Bot 是谁，怎么说话',
+                  decoration: InputDecoration(
+                    labelText: context.S.stPersonaLabel,
+                    hintText: context.S.stPersonaFieldHint,
                     border: OutlineInputBorder(),
                     alignLabelWithHint: true,
                   ),
@@ -769,9 +794,9 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
                 const SizedBox(height: 12),
                 TextField(
                   controller: _memoryCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '长期记忆',
-                    hintText: 'Bot 应记住的事（偏好、约定、背景）',
+                  decoration: InputDecoration(
+                    labelText: context.S.stMemoryLabel,
+                    hintText: context.S.stMemoryFieldHint,
                     border: OutlineInputBorder(),
                     alignLabelWithHint: true,
                   ),
@@ -779,14 +804,17 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
                 ),
                 if (_history.isNotEmpty) ...[
                   const SizedBox(height: 24),
-                  Text('历史版本', style: theme.textTheme.titleSmall),
+                  Text(
+                    context.S.stHistoryTitle,
+                    style: theme.textTheme.titleSmall,
+                  ),
                   const SizedBox(height: 8),
                   for (final item in _history.reversed)
                     ListTile(
                       dense: true,
                       contentPadding: EdgeInsets.zero,
                       leading: const Icon(Icons.history, size: 20),
-                      title: Text('版本 ${item['version']}'),
+                      title: Text(context.S.stVersion(item['version'])),
                       subtitle: Text(
                         DateTime.tryParse(
                               (item['updated_at'] ?? '').toString(),
@@ -798,7 +826,7 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
                         onPressed: _saving
                             ? null
                             : () => _rollback(syncInt(item['version'])),
-                        child: const Text('回滚'),
+                        child: Text(context.S.stRollback),
                       ),
                     ),
                 ],

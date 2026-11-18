@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent } from 'react';
 import { Z } from "../ui/zIndex";
 import { createPortal } from 'react-dom';
 import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, LoadConfig, MoveTaskConversation, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
@@ -92,6 +92,10 @@ export type TaskContextMenu = {
     orderKey?: string;
     /** True when the row already lives in the Archive folder. */
     archived?: boolean;
+    /** Visible row that opened the menu (`taskListRenameAnchor`). */
+    listAnchor?: string;
+    /** Stored task name. The row title can be a shortened rewrite of this. */
+    storedName?: string;
 } | null;
 
 type WorkdirFolderContextMenu = {
@@ -704,6 +708,17 @@ export function taskOrderKey(task: {
     const expert = expertIDFromTaskTags(task.tags);
     if (expert) return `expert:${expert}`;
     return `id:${task.id || task.name || ''}`;
+}
+
+/** One visible row. 最近任务 repeats a task that still lives in 会话 or 编程. */
+export function taskListRenameAnchor(folderKind: string, orderKey: string): string {
+    return `${folderKind}:${orderKey}`;
+}
+
+/** True while the rename field still holds focus. A click that leaves the field blurs it before the click event, while the path state is still the previous render. */
+function renameFieldHasFocus(): boolean {
+    const active = document.activeElement;
+    return active instanceof Element && active.closest('[data-testid="task-rename-input"]') !== null;
 }
 
 export function readTaskListOrder(): string[] {
@@ -1912,6 +1927,8 @@ function buildTaskContextMenuItems(opts: {
     remotePermission?: 'view' | 'operate';
     /** True when this rename must stay on the remote machine even if the tab changes before blur. */
     markRenameScope?: (remote: boolean) => void;
+    /** Remembers which visible row was clicked before both copies mount a field. */
+    prepareRename?: (menu: NonNullable<TaskContextMenu>) => void;
 }): TaskContextMenuItem[] {
     const {
         lang, menu, setRenamingTaskPath, setRenameValue,
@@ -1949,13 +1966,18 @@ function buildTaskContextMenuItems(opts: {
         {
             label: textForLang(lang, 'Rename', '重命名', '重命名'),
             icon: 'rename',
+            testId: 'task-context-rename',
             action: () => {
                 // Remember where the rename started. Blur can run after the
                 // machine tab has already changed, and that must not rename a
                 // local task that happens to use the same path.
                 opts.markRenameScope?.(opts.remotePermission === 'operate');
+                // 最近任务 lists the same project path again. Two autoFocused
+                // fields fight, and the one that loses focus cancels the rename
+                // before the title ever looks editable.
+                opts.prepareRename?.(menu);
                 setRenamingTaskPath(menu.projectPath);
-                setRenameValue(menu.name);
+                setRenameValue((menu.storedName || menu.name).trim());
                 setTaskContextMenu(null);
             },
         },
@@ -2732,6 +2754,57 @@ export const SidebarTaskManagement = ({
     remoteRef.current = remote;
     const renameCancelRef = useRef(false);
     const renameRemoteRef = useRef(false);
+    // Which visible row is being renamed. A task under 最近任务 and again in
+    // its home folder shares one project path, so the path alone matches both.
+    const [renameAnchor, setRenameAnchor] = useState<string | null>(null);
+    // Identifies the rename that opened the field now on screen. A blur from
+    // the field being replaced still runs after the next rename has stored
+    // its path, and must not save or close that newer field.
+    const renameSessionRef = useRef(0);
+    useEffect(() => {
+        if (!renamingTaskPath) setRenameAnchor(null);
+    }, [renamingTaskPath]);
+    const commitTaskRenameBlur = async (
+        event: FocusEvent<HTMLInputElement>,
+        session: number,
+        projectPath: string,
+        originalName: string,
+    ) => {
+        if (renameSessionRef.current !== session) return;
+        const next = event.relatedTarget;
+        if (next instanceof Element && next.closest('[data-testid="task-rename-input"]')) return;
+        if (renameSessionRef.current !== session) return;
+        if (renameCancelRef.current) {
+            renameCancelRef.current = false;
+            renameRemoteRef.current = false;
+            setRenamingTaskPath(null);
+            return;
+        }
+        // The field text wins over rename state. An IME commits into the DOM
+        // in the same turn as blur, before that state renders.
+        const typed = typeof event.currentTarget?.value === 'string' ? event.currentTarget.value : renameValue;
+        const trimmed = typed.trim();
+        const remoteRename = renameRemoteRef.current;
+        renameRemoteRef.current = false;
+        // The editor is seeded with the stored name. A shortened row title is
+        // a display rewrite, so typing that title back is a real rename.
+        const changed = trimmed !== '' && trimmed !== originalName;
+        if (remoteRename) {
+            const gate = remoteRef.current;
+            if (gate.selected && gate.operate && changed) {
+                await gate.renameTask(projectPath, trimmed);
+            }
+            if (renameSessionRef.current !== session) return;
+            setRenamingTaskPath(null);
+            return;
+        }
+        if (changed) {
+            await renameTask(projectPath, trimmed);
+            refreshTasks();
+        }
+        if (renameSessionRef.current !== session) return;
+        setRenamingTaskPath(null);
+    };
     const [creatingTask, setCreatingTask] = useState(false);
     const [creatingTaskMode, setCreatingTaskMode] = useState<'' | PureCodingAgentMode>('');
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -5182,7 +5255,9 @@ export const SidebarTaskManagement = ({
             if (remoteRef.current.selected.online !== false) remoteRef.current.openTask(task.project_path);
             return;
         }
-        if (renamingTaskPath || removingTaskPaths.has(task.project_path)) return;
+        // The click that leaves the field is the same gesture. The path state
+        // is still set until the blur's render, so focus decides, not that state.
+        if (renameFieldHasFocus() || removingTaskPaths.has(task.project_path)) return;
         const open = isTaskInstanceOpen(task);
         const bucket = taskStatusBucketFor(task);
         const liveRunning = isLiveRunningRow(task);
@@ -5223,7 +5298,7 @@ export const SidebarTaskManagement = ({
             return;
         }
         const projectPath = task.project_path;
-        if (renamingTaskPath || removingTaskPaths.has(projectPath)) return;
+        if (renameFieldHasFocus() || removingTaskPaths.has(projectPath)) return;
         if (openingTaskPathRef.current === projectPath) return;
         const recentOpen = recentTaskOpenRef.current;
         if (recentOpen?.path === projectPath && Date.now() - recentOpen.at < 500) return;
@@ -6159,6 +6234,7 @@ export const SidebarTaskManagement = ({
             const taskTitleText = listedTaskTitle(proj)
                 || (cloudWorkspace ? (taskSecondaryLabel || cloudFallback || rowPathHint) : proj.project_path);
             const storedTaskName = String(proj.name || '').trim();
+            const renameSession = renameSessionRef.current;
             const identitySubtitle = taskSecondaryLabel && taskSecondaryLabel !== taskTitleText && taskSecondaryLabel !== storedTaskName ? taskSecondaryLabel : '';
             // Local tasks surface their working directory under the subtitle;
             // cloud workspace rows keep the existing compact layout.
@@ -6196,7 +6272,7 @@ export const SidebarTaskManagement = ({
             };
             const orderKey = taskOrderKey(proj);
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected && folder.kind !== 'recent'} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current || folder.kind === 'recent') { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (remote.selected) { void handleTaskDoubleClick(proj); return; } if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, archived: remote.selected ? !!proj.archived : archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, remote.selected ? textForLang(lang, 'Click to open.', '单击打开', '單擊開啟') : textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected && folder.kind !== 'recent'} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current || folder.kind === 'recent') { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; if ((e.target as HTMLElement | null)?.closest('input, textarea, select')) return; e.preventDefault(); if (remote.selected) { void handleTaskDoubleClick(proj); return; } if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, storedName: String(proj.name || '').trim(), listAnchor: taskListRenameAnchor(folder.kind, orderKey), archived: remote.selected ? !!proj.archived : archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, remote.selected ? textForLang(lang, 'Click to open.', '单击打开', '單擊開啟') : textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
                     {remote.selected || folder.kind === 'recent' ? null : <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>}
                     <span className="stsm-row-body">
@@ -6255,7 +6331,7 @@ export const SidebarTaskManagement = ({
                                 {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
                             </span>
                         )}
-                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { if (renameCancelRef.current) { renameCancelRef.current = false; renameRemoteRef.current = false; setRenamingTaskPath(null); return; } const trimmed = renameValue.trim(); const remoteRename = renameRemoteRef.current; renameRemoteRef.current = false; if (remoteRename) { const gate = remoteRef.current; if (gate.selected && gate.operate && trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await gate.renameTask(proj.project_path, trimmed); } setRenamingTaskPath(null); return; } if (trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') { if (e.nativeEvent.isComposing || e.keyCode === 229) return; (e.target as HTMLInputElement).blur(); } if (e.key === 'Escape') { e.preventDefault(); renameCancelRef.current = true; setRenamingTaskPath(null); } }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
+                        {renamingTaskPath === proj.project_path && renameAnchor === taskListRenameAnchor(folder.kind, orderKey) ? <input data-testid="task-rename-input" autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={e => { void commitTaskRenameBlur(e, renameSession, proj.project_path, storedTaskName || taskTitleText); }} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { if (e.nativeEvent.isComposing || e.keyCode === 229) return; (e.target as HTMLInputElement).blur(); } if (e.key === 'Escape') { e.preventDefault(); renameCancelRef.current = true; setRenamingTaskPath(null); } }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
                         {secondaryText ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
                         {showWorkspaceLine ? (
                             <span
@@ -7166,6 +7242,10 @@ export const SidebarTaskManagement = ({
                 onDuplicateTask: duplicateTask,
                 remotePermission: remote.selected ? (remote.selected.permission === 'operate' ? 'operate' : 'view') : undefined,
                 markRenameScope: (remote) => { renameRemoteRef.current = remote; },
+                prepareRename: (menu) => {
+                    renameSessionRef.current += 1;
+                    setRenameAnchor(menu.listAnchor || null);
+                },
                 pinTask: async (projectPath, pinned) => {
                     const gate = remoteRef.current;
                     if (gate.selected) {
@@ -7219,6 +7299,12 @@ export const SidebarTaskManagement = ({
                         role="menuitem"
                         aria-disabled={item.disabled || undefined}
                         title={item.title}
+                        onMouseDown={event => {
+                            // Rename mounts an inline field after this menu unmounts.
+                            // A focus move on mousedown blurs that field in the same
+                            // turn, and an unchanged name looks like a dead click.
+                            event.preventDefault();
+                        }}
                         onClick={() => {
                             if (item.disabled) return;
                             void item.action();

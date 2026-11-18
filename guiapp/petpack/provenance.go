@@ -79,11 +79,9 @@ func (r *Registry) IsPackMarketInstalled(id string) bool {
 
 // MarketInstalledPackInfo returns the installed manifest version and the
 // local install time when the local copy was installed through the Pet Store.
-// The install time is the provenance marker's mtime — it is written during
-// the same atomic install that extracts the archive, so it reliably predates
-// any republish the market later lists. The market compares the version with
-// the listing's declared version and the install time with the listing's
-// updated_at to offer an update instead of a dead "installed" state.
+// The install time is the provenance marker's mtime. The desktop decides
+// 更新 from this version and the pack id: a higher listing version for the
+// same id is newer, and the same version stays installed.
 func (r *Registry) MarketInstalledPackInfo(id string) (version string, installedAt time.Time, ok bool) {
 	if r == nil {
 		return "", time.Time{}, false

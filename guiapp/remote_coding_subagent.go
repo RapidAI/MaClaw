@@ -770,10 +770,8 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		parentSessionID = r.loopCtx.ID
 		userID = strings.TrimSpace(r.loopCtx.UserID)
 	}
-	resumeRemote := r.nestDepth == 0
-	var resume codingAgentResume
+	resume, resumeRemote := codingAgentResumeForTurn(r.loopCtx, r.nestDepth, false, userID, r.projectDir)
 	if resumeRemote {
-		resume = loadCodingAgentResume(userID, r.projectDir)
 		if len(resume.History) > 0 {
 			log.Printf("[coding-env] restored coding agent state user=%s history=%d snapshots=%d", userID, len(resume.History), 0)
 		}

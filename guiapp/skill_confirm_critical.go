@@ -362,6 +362,7 @@ func (h *IMMessageHandler) confirmRiskSkillInstall(
 			h.pendingCriticalConfirm.Delete(confirmID)
 			h.clearCriticalConfirmIM(confirmID)
 			close(entry.Ch)
+			h.emitCriticalConfirmResolved(confirmID)
 			log.Printf("[critical-confirm] cleanup: confirmID=%s expired after %v", confirmID, confirmTimeout)
 		}
 	}()
@@ -436,6 +437,7 @@ func (h *IMMessageHandler) finishCancelledCriticalConfirm(entry *pendingCritical
 		if h != nil {
 			h.pendingCriticalConfirm.Delete(confirmID)
 			h.clearCriticalConfirmIM(confirmID)
+			h.emitCriticalConfirmResolved(confirmID)
 		}
 		log.Printf("[critical-confirm] context cancelled confirm_id=%s skill=%q", confirmID, skillName)
 		return false
@@ -489,13 +491,29 @@ func (h *IMMessageHandler) ResolveCriticalConfirm(confirmID string, confirmed bo
 	// We won the race — safe to send on the channel (it's not closed).
 	h.pendingCriticalConfirm.Delete(confirmID)
 	entry.Ch <- criticalRiskConfirmResponse{Confirmed: confirmed}
-	if h.app != nil {
-		// The desktop modal is already open. Tell it to close; a later click
-		// must not send a second decision.
-		h.app.emitEvent("critical-risk-confirm-resolved", map[string]interface{}{
-			"confirm_id": confirmID,
-		})
-	}
+	// The desktop modal is already open. Tell it to close; a later click
+	// must not send a second decision.
+	h.emitCriticalConfirmResolved(confirmID)
 	log.Printf("[critical-confirm] resolve: confirmID=%s confirmed=%v", confirmID, confirmed)
 	return nil
+}
+
+func (h *IMMessageHandler) emitCriticalConfirmResolved(confirmID string) {
+	if h == nil || h.app == nil {
+		return
+	}
+	h.app.emitCriticalConfirmResolved(confirmID)
+}
+
+func (a *App) emitCriticalConfirmResolved(confirmID string) {
+	if a == nil {
+		return
+	}
+	confirmID = strings.TrimSpace(confirmID)
+	if confirmID == "" {
+		return
+	}
+	a.emitEvent("critical-risk-confirm-resolved", map[string]interface{}{
+		"confirm_id": confirmID,
+	})
 }

@@ -18,6 +18,9 @@ import '../../core/platform.dart';
 import '../../core/providers.dart';
 import '../../core/speech_text.dart';
 import '../../core/voice_engine.dart';
+import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
+import '../../core/locale.dart';
+import '../../l10n/gen/app_localizations.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -25,6 +28,8 @@ import 'package:go_router/go_router.dart';
 import 'bot_chat_controller.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
+import '../../core/ui_kit.dart'
+    show LinkifiedText, linkifyMarkdownUrls, openExternalUrl;
 import 'widgets.dart';
 
 /// One bot's workspace — the mobile version of the desktop GUI's
@@ -120,7 +125,9 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     _speechPrefix = _inputCtrl.text;
     setState(() => _listening = true);
     await _speech.listen(
-      listenOptions: stt.SpeechListenOptions(localeId: 'zh_CN'),
+      listenOptions: stt.SpeechListenOptions(
+        localeId: pickAsrLocale(await _speech.locales()),
+      ),
       onResult: (result) {
         _inputCtrl.text = _speechPrefix.isEmpty
             ? result.recognizedWords
@@ -139,6 +146,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       return;
     }
     if (!supportsVoiceInput || !supportsVoiceOutput) return;
+    final S = context.S;
     final tts = _tts ??= FlutterTts();
     try {
       await tts.setLanguage('zh-CN');
@@ -147,11 +155,11 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       // 基线：开启时已有回复不再朗读，只读开启后的新回复。
       _lastSpokenMsgId = _latestAssistantId(ref.read(botChatProvider));
     } catch (_) {
-      _toast('语音朗读初始化失败');
+      _toast(S.chatVoiceInitFailed);
       return;
     }
     setState(() => _voiceMode = true);
-    _toast('语音助手已开启：说话自动发送，回复自动朗读');
+    _toast(S.chatVoiceAssistantStarted);
     _voiceListen();
   }
 
@@ -213,7 +221,9 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     _voiceCaptured = '';
     setState(() => _listening = true);
     await _speech.listen(
-      listenOptions: stt.SpeechListenOptions(localeId: 'zh_CN'),
+      listenOptions: stt.SpeechListenOptions(
+        localeId: pickAsrLocale(await _speech.locales()),
+      ),
       onResult: (result) => _voiceCaptured = result.recognizedWords,
     );
   }
@@ -227,9 +237,10 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   /// 共享采集：record 流式 PCM16@16k + 简易能量 VAD，尾静默 1.2s 或
   /// 20s 封顶收句。keepGoing 变 false 立即收句。失败已 toast，返回 null。
   Future<Uint8List?> _capturePcm({required bool Function() keepGoing}) async {
+    final S = context.S;
     final recorder = _recorder ??= AudioRecorder();
     if (!await recorder.hasPermission()) {
-      _toast('没有麦克风权限');
+      _toast(S.chatMicPermissionDenied);
       return null;
     }
     late final Stream<Uint8List> stream;
@@ -242,7 +253,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         ),
       );
     } on Object {
-      _toast('无法打开麦克风录音');
+      _toast(S.chatMicOpenFailed);
       return null;
     }
     if (mounted) setState(() => _listening = true);
@@ -277,11 +288,12 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
 
   /// 本地 SenseVoice 聆听：采集 → FFI 转写 → 自动发送。
   Future<void> _recordListen() async {
+    final S = context.S;
     final engine = ref.read(voiceEngineProvider);
     if (!await engine.localAsrReady()) {
       _ensureLocalVoiceModels();
       _stopVoiceMode();
-      _toast('语音识别不可用，正在后台下载本地模型，稍后再试');
+      _toast(S.chatAsrUnavailableDownloading);
       return;
     }
     final pcm = await _capturePcm(keepGoing: () => _voiceMode);
@@ -315,34 +327,36 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   /// 写进输入框（可编辑后再发），与系统路径同一前缀拼接语义。
   Future<void> _localDictate() async {
     if (_listening) return;
+    final S = context.S;
     final engine = ref.read(voiceEngineProvider);
     if (!await engine.localAsrReady()) {
       _ensureLocalVoiceModels();
-      _toast('语音识别不可用，正在后台下载本地模型，稍后再试');
+      _toast(S.chatAsrUnavailableDownloading);
       return;
     }
     final prefix = _inputCtrl.text;
     final pcm = await _capturePcm(keepGoing: () => _listening);
     if (pcm == null || !mounted) return;
     if (pcm.length < 32000) {
-      _toast('没听清，请再试');
+      _toast(S.chatNotHeard);
       return;
     }
     final String text;
     try {
       text = (await engine.transcribe(pcm)).trim();
     } on Object {
-      _toast('语音识别失败，请重试');
+      _toast(S.chatAsrFailed);
       return;
     }
     if (!RegExp(r'[\w一-鿿]{2,}').hasMatch(text)) {
-      _toast('没听清，请再试');
+      _toast(S.chatNotHeard);
       return;
     }
     setState(() {
       _inputCtrl.text = prefix.isEmpty ? text : '$prefix $text';
-      _inputCtrl.selection =
-          TextSelection.collapsed(offset: _inputCtrl.text.length);
+      _inputCtrl.selection = TextSelection.collapsed(
+        offset: _inputCtrl.text.length,
+      );
     });
   }
 
@@ -426,31 +440,32 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   /// Add a supplementary instruction to the run still in flight
   /// (`POST /runs/{id}/supplement`) and toast the outcome Hub reports.
   Future<void> _supplement() async {
+    final S = context.S;
     final ctrl = TextEditingController();
     String? text;
     try {
       text = await showDialog<String>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('给当前任务补充说明'),
+          title: Text(S.composerSupplement),
           content: TextField(
             controller: ctrl,
             autofocus: true,
             minLines: 1,
             maxLines: 4,
-            decoration: const InputDecoration(
-              hintText: '例如：只要前 5 条结果',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              hintText: S.chatSupplementHint,
+              border: const OutlineInputBorder(),
             ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
+              child: Text(S.cancel),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, ctrl.text),
-              child: const Text('追加'),
+              child: Text(S.chatSupplementAppend),
             ),
           ],
         ),
@@ -469,10 +484,12 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
           result == null
               ? ref.read(botChatProvider).error.isNotEmpty
                     ? ref.read(botChatProvider).error
-                    : '追加失败'
+                    : S.chatSupplementFailed
               : result.accepted
-              ? '已补充到当前任务'
-              : (result.detail.isNotEmpty ? result.detail : '任务已结束，补充未送达'),
+              ? S.chatSupplementAccepted
+              : (result.detail.isNotEmpty
+                    ? result.detail
+                    : S.chatSupplementRejected),
         ),
       ),
     );
@@ -484,7 +501,10 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   /// 附件入口 — 拍照 / 相册 / 文件三选一。图片经 image_picker（带压缩），
   /// 其余走通用文件选择器；都落到 Bot 电脑的素材目录。
   Future<void> _attach() async {
-    if (_uploadProgress != null || !botHasComputer(widget.bot.desktopMode)) return;
+    if (_uploadProgress != null || !botHasComputer(widget.bot.desktopMode)) {
+      return;
+    }
+    final S = context.S;
     final choice = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -494,17 +514,17 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
           children: [
             ListTile(
               leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('拍照'),
+              title: Text(S.chatAttachCamera),
               onTap: () => Navigator.of(context).pop('camera'),
             ),
             ListTile(
               leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('相册'),
+              title: Text(S.chatAttachGallery),
               onTap: () => Navigator.of(context).pop('gallery'),
             ),
             ListTile(
               leading: const Icon(Icons.attach_file),
-              title: const Text('文件'),
+              title: Text(S.chatAttachFile),
               onTap: () => Navigator.of(context).pop('file'),
             ),
             const SizedBox(height: 8),
@@ -554,6 +574,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   }
 
   Future<void> _uploadOne(String name, File? disk, Uint8List? bytes) async {
+    final S = context.S;
     final api = ref.read(botApiProvider);
     if (api == null || !mounted) return;
     setState(() {
@@ -583,17 +604,16 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       if (!mounted) return;
       final line = path.isNotEmpty ? path : '~/素材/${widget.bot.name}/$name';
       final current = _inputCtrl.text;
-      _inputCtrl.text = current.isEmpty
-          ? '素材已传送到 $line'
-          : '$current\n素材已传送到 $line';
+      final notice = S.chatMaterialSent(line);
+      _inputCtrl.text = current.isEmpty ? notice : '$current\n$notice';
       _inputCtrl.selection = TextSelection.collapsed(
         offset: _inputCtrl.text.length,
       );
     } on Object catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('$name 上传失败：$error')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(S.chatUploadFailed(name, error.toString()))),
+        );
       }
     } finally {
       if (mounted) {
@@ -648,10 +668,12 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
                   ),
                   Text(
                     _voiceMode
-                        ? (_ttsBusy ? '语音播报中…' : '聆听中…')
+                        ? (_ttsBusy
+                              ? context.S.chatVoiceSpeaking
+                              : context.S.chatVoiceListening)
                         : ((state.sending || state.activeRunId != null)
-                              ? '正在处理…'
-                              : '在线'),
+                              ? context.S.chatProcessing
+                              : context.S.chatOnline),
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: (state.sending || state.activeRunId != null)
                           ? Theme.of(context).colorScheme.primary
@@ -666,7 +688,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         actions: [
           if (botHasComputer(widget.bot.desktopMode))
             IconButton(
-              tooltip: '电脑画面',
+              tooltip: context.S.botsDesktopTooltip,
               icon: const Icon(Icons.desktop_windows_outlined),
               onPressed: () => context.push(
                 '/bot/${Uri.encodeComponent(widget.bot.id)}/desktop',
@@ -674,7 +696,9 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             ),
           if (supportsVoiceInput && supportsVoiceOutput)
             IconButton(
-              tooltip: _voiceMode ? '关闭语音助手' : '语音助手',
+              tooltip: _voiceMode
+                  ? context.S.chatVoiceAssistantOff
+                  : context.S.chatVoiceAssistantOn,
               icon: Icon(
                 _voiceMode ? Icons.headset : Icons.headset_outlined,
                 color: _voiceMode
@@ -684,14 +708,14 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
               onPressed: _toggleVoiceMode,
             ),
           IconButton(
-            tooltip: '任务状态',
+            tooltip: context.S.chatStatusTooltip,
             icon: const Icon(Icons.fact_check_outlined),
             onPressed: () => context.push(
               '/bot/${Uri.encodeComponent(widget.bot.id)}/status',
             ),
           ),
           IconButton(
-            tooltip: '设置',
+            tooltip: context.S.chatSettingsTooltip,
             icon: const Icon(Icons.settings_outlined),
             onPressed: () => context.push(
               '/bot/${Uri.encodeComponent(widget.bot.id)}/settings',
@@ -708,7 +732,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
                 TextButton(
                   onPressed: () =>
                       ref.read(botChatProvider.notifier).clearError(),
-                  child: const Text('知道了'),
+                  child: Text(context.S.chatAcknowledge),
                 ),
               ],
             ),
@@ -724,7 +748,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '上传 $_uploadingName…',
+                    context.S.chatUploading(_uploadingName),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   LinearProgressIndicator(value: _uploadProgress),
@@ -745,7 +769,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '下一条消息将继续该任务线程',
+                        context.S.chatContinueThreadHint,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Theme.of(
                             context,
@@ -756,33 +780,40 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
                     TextButton(
                       onPressed: () =>
                           ref.read(botChatProvider.notifier).continueTask(''),
-                      child: const Text('取消', style: TextStyle(fontSize: 12)),
+                      child: Text(
+                        context.S.cancel,
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     ),
                   ],
                 ),
               ),
             ),
-          _Composer(
-            inputCtrl: _inputCtrl,
+          ChatComposer(
+            controller: _inputCtrl,
+            hint: context.S.chatComposerHint,
             sending: state.sending,
-            canSupplement: state.activeRunId != null,
-            showAttach: botHasComputer(widget.bot.desktopMode),
-            onAttach: botHasComputer(widget.bot.desktopMode) && _uploadProgress == null
-                ? _attach
-                : null,
-            listening: _listening,
-            onMic: supportsVoiceInput
-                ? (_voiceMode ? _voiceMic : _toggleListening)
-                : null,
             onSend: () {
               final text = _inputCtrl.text;
               if (text.trim().isEmpty) return;
               _inputCtrl.clear();
               ref.read(botChatProvider.notifier).send(text);
             },
-            onSupplement: _supplement,
-            onCancel: () =>
-                ref.read(botChatProvider.notifier).cancelActiveRun(),
+            textInputAction: TextInputAction.newline,
+            onAttach:
+                botHasComputer(widget.bot.desktopMode) &&
+                    _uploadProgress == null
+                ? _attach
+                : null,
+            attachTooltip: context.S.chatAttachTooltip,
+            onMic: supportsVoiceInput
+                ? (_voiceMode ? _voiceMic : _toggleListening)
+                : null,
+            listening: _listening,
+            onSupplement: state.activeRunId != null ? _supplement : null,
+            onStop: state.activeRunId != null
+                ? () => ref.read(botChatProvider.notifier).cancelActiveRun()
+                : null,
           ),
         ],
       ),
@@ -813,7 +844,7 @@ class _MessageList extends ConsumerWidget {
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Text(
-            '和 ${bot.title} 说点什么开始吧',
+            context.S.chatEmptyGreeting(bot.title),
             style: TextStyle(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -853,29 +884,19 @@ class _MessageBubble extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final isUser = message.isUser;
-    final bubbleColor = message.failed
-        ? theme.colorScheme.errorContainer
-        : isUser
-        ? theme.colorScheme.primary
-        : theme.colorScheme.surfaceContainerHigh;
     final textColor = isUser
         ? theme.colorScheme.onPrimary
         : theme.colorScheme.onSurface;
-    final bubble = Container(
-      constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width * 0.78,
-      ),
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: bubbleColor,
-        borderRadius: BorderRadius.only(
-          topLeft: const Radius.circular(16),
-          topRight: const Radius.circular(16),
-          bottomLeft: Radius.circular(isUser ? 16 : 4),
-          bottomRight: Radius.circular(isUser ? 4 : 16),
-        ),
-      ),
+    return MessageBubble(
+      role: isUser ? ChatRole.user : ChatRole.assistant,
+      color: message.failed ? theme.colorScheme.errorContainer : null,
+      maxWidth: MediaQuery.of(context).size.width * 0.78,
+      leading: isUser
+          ? null
+          : Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: BotAvatar(bot: bot, radius: 14),
+            ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -926,7 +947,7 @@ class _MessageBubble extends ConsumerWidget {
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    '发送中…',
+                    context.S.chatSending,
                     style: TextStyle(fontSize: 11, color: textColor),
                   ),
                 ],
@@ -936,7 +957,7 @@ class _MessageBubble extends ConsumerWidget {
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                _queueTag(message),
+                _queueTag(message, context.S),
                 style: TextStyle(fontSize: 11, color: textColor),
               ),
             ),
@@ -947,7 +968,7 @@ class _MessageBubble extends ConsumerWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    '发送失败',
+                    context.S.chatSendFailed,
                     style: TextStyle(
                       fontSize: 11,
                       color: theme.colorScheme.error,
@@ -961,7 +982,10 @@ class _MessageBubble extends ConsumerWidget {
                       minimumSize: Size.zero,
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
-                    child: const Text('重发', style: TextStyle(fontSize: 11)),
+                    child: Text(
+                      context.S.chatResend,
+                      style: const TextStyle(fontSize: 11),
+                    ),
                   ),
                 ],
               ),
@@ -975,7 +999,10 @@ class _MessageBubble extends ConsumerWidget {
               alignment: Alignment.centerLeft,
               child: ActionChip(
                 avatar: const Icon(Icons.play_arrow, size: 16),
-                label: const Text('按这个安排执行', style: TextStyle(fontSize: 12)),
+                label: Text(
+                  context.S.chatRunPlan,
+                  style: const TextStyle(fontSize: 12),
+                ),
                 onPressed: () => ref
                     .read(botChatProvider.notifier)
                     .send(botConfirmTaskText, phase: BotPhase.execute),
@@ -986,7 +1013,10 @@ class _MessageBubble extends ConsumerWidget {
               alignment: Alignment.centerLeft,
               child: ActionChip(
                 avatar: const Icon(Icons.replay, size: 16),
-                label: const Text('继续这个任务', style: TextStyle(fontSize: 12)),
+                label: Text(
+                  context.S.chatContinueTask,
+                  style: const TextStyle(fontSize: 12),
+                ),
                 onPressed: () => ref
                     .read(botChatProvider.notifier)
                     .continueTask(message.conversation),
@@ -1019,20 +1049,6 @@ class _MessageBubble extends ConsumerWidget {
             _HandoffBanner(message: message, bot: bot),
         ],
       ),
-    );
-    if (isUser) {
-      return Align(alignment: Alignment.centerRight, child: bubble);
-    }
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 2),
-          child: BotAvatar(bot: bot, radius: 14),
-        ),
-        const SizedBox(width: 8),
-        Flexible(child: bubble),
-      ],
     );
   }
 }
@@ -1080,8 +1096,10 @@ class _ReplyFileChip extends StatelessWidget {
     if (file.data.isEmpty) return;
     try {
       final bytes = base64Decode(file.data);
+      final safe = file
+          .displayName(context.S)
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
       final dir = await getTemporaryDirectory();
-      final safe = file.displayName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
       final path = '${dir.path}${Platform.pathSeparator}$safe';
       await File(path).writeAsBytes(bytes, flush: true);
       if (!context.mounted) return;
@@ -1096,7 +1114,7 @@ class _ReplyFileChip extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('文件解析失败')));
+        ).showSnackBar(SnackBar(content: Text(context.S.chatFileParseFailed)));
       }
     }
   }
@@ -1108,7 +1126,7 @@ class _ReplyFileChip extends StatelessWidget {
       child: ActionChip(
         avatar: const Icon(Icons.attach_file, size: 18),
         label: Text(
-          file.displayName,
+          file.displayName(context.S),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
@@ -1166,8 +1184,8 @@ class _AskCardState extends ConsumerState<_AskCard> {
                   question.question.isNotEmpty
                       ? question.question
                       : question.isSecret
-                      ? '需要输入 ${question.secretName}'
-                      : '需要你的回答',
+                      ? context.S.chatSecretRequired(question.secretName)
+                      : context.S.chatAnswerRequired,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -1202,7 +1220,9 @@ class _AskCardState extends ConsumerState<_AskCard> {
                     obscureText: question.isSecret,
                     decoration: InputDecoration(
                       isDense: true,
-                      hintText: question.isSecret ? '输入密钥（不会显示在聊天中）' : '输入回答',
+                      hintText: question.isSecret
+                          ? context.S.chatSecretHint
+                          : context.S.chatAnswerHint,
                       border: const OutlineInputBorder(),
                     ),
                   ),
@@ -1217,7 +1237,7 @@ class _AskCardState extends ConsumerState<_AskCard> {
                         .read(botChatProvider.notifier)
                         .answerQuestion(widget.message, value);
                   },
-                  child: const Text('提交'),
+                  child: Text(context.S.chatSubmit),
                 ),
               ],
             ),
@@ -1257,7 +1277,7 @@ class _HandoffBanner extends StatelessWidget {
             child: Text(
               message.attentionReason.isNotEmpty
                   ? message.attentionReason
-                  : 'Bot 把电脑交给你了',
+                  : context.S.chatHandoffDefault,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onTertiaryContainer,
               ),
@@ -1266,7 +1286,7 @@ class _HandoffBanner extends StatelessWidget {
           TextButton(
             onPressed: () =>
                 context.push('/bot/${Uri.encodeComponent(bot.id)}/desktop'),
-            child: const Text('去查看'),
+            child: Text(context.S.chatHandoffView),
           ),
         ],
       ),
@@ -1274,131 +1294,11 @@ class _HandoffBanner extends StatelessWidget {
   }
 }
 
-class _Composer extends StatelessWidget {
-  final TextEditingController inputCtrl;
-  final bool sending;
-  final bool canSupplement;
-  final bool showAttach;
-  final VoidCallback? onAttach;
-  final bool listening;
-  final VoidCallback? onMic;
-  final VoidCallback onSend;
-  final VoidCallback onSupplement;
-  final VoidCallback onCancel;
-
-  const _Composer({
-    required this.inputCtrl,
-    required this.sending,
-    required this.canSupplement,
-    required this.showAttach,
-    required this.onAttach,
-    required this.listening,
-    required this.onMic,
-    required this.onSend,
-    required this.onSupplement,
-    required this.onCancel,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(26),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    if (showAttach)
-                      IconButton(
-                        onPressed: onAttach,
-                        visualDensity: VisualDensity.compact,
-                        icon: const Icon(Icons.attach_file),
-                        tooltip: '传送文件到 Bot 的电脑',
-                      ),
-                    Expanded(
-                      child: TextField(
-                        controller: inputCtrl,
-                        minLines: 1,
-                        maxLines: 5,
-                        textInputAction: TextInputAction.newline,
-                        decoration: const InputDecoration(
-                          hintText: '给 Bot 下达任务…',
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 2,
-                            vertical: 12,
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (onMic != null)
-                      IconButton(
-                        onPressed: onMic,
-                        visualDensity: VisualDensity.compact,
-                        icon: Icon(
-                          listening ? Icons.mic : Icons.mic_none,
-                          color: listening ? scheme.error : null,
-                        ),
-                        tooltip: listening ? '停止语音输入' : '语音输入',
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (canSupplement)
-                  IconButton(
-                    onPressed: onSupplement,
-                    icon: const Icon(Icons.playlist_add),
-                    tooltip: '给当前任务补充说明',
-                  ),
-                // The send button stays usable while a run executes — the
-                // Hub queues the message (`queued` reply) behind the turn.
-                IconButton.filled(
-                  onPressed: sending ? null : onSend,
-                  icon: sending
-                      ? SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: scheme.onPrimary,
-                          ),
-                        )
-                      : const Icon(Icons.send),
-                  tooltip: '发送',
-                ),
-                if (canSupplement)
-                  IconButton(
-                    onPressed: onCancel,
-                    icon: const Icon(Icons.stop),
-                    tooltip: '停止当前任务',
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-String _queueTag(ChatMessage message) {
+String _queueTag(ChatMessage message, AppLocalizations S) {
   // held = the person still holds the desktop keyboard (user_control).
-  if (message.queueHeld) return '已暂存（电脑正被你接管中）';
-  if (message.queuePosition > 0) return '排队中 · 第 ${message.queuePosition} 位';
-  return '排队中，Bot 忙完后处理';
+  if (message.queueHeld) return S.chatQueueHeld;
+  if (message.queuePosition > 0) {
+    return S.chatQueuedPosition(message.queuePosition);
+  }
+  return S.chatQueuedBusy;
 }

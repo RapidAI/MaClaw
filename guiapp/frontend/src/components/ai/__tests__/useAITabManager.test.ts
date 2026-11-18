@@ -847,6 +847,25 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         expect(CreateProjectTabSession).toHaveBeenCalledTimes(1);
     });
 
+    it("registers a project tab session again after an empty notice", async () => {
+        vi.mocked(CreateProjectTabSession).mockResolvedValueOnce("" as any);
+        const { result } = renderHook(() => useAITabManager());
+        let tabId = "";
+        act(() => {
+            tabId = result.current.createProjectTab("D:/tasks/empty-notice", "Empty notice")?.id || "";
+        });
+        expect(tabId).toBeTruthy();
+        await waitFor(() => expect(CreateProjectTabSession).toHaveBeenCalledTimes(1));
+        await act(async () => {
+            await result.current.waitForProjectTabSession(tabId);
+        });
+        vi.mocked(CreateProjectTabSession).mockResolvedValueOnce("已打开项目");
+        act(() => {
+            result.current.createProjectTab("D:/tasks/empty-notice", "Empty notice");
+        });
+        await waitFor(() => expect(CreateProjectTabSession).toHaveBeenCalledTimes(2));
+    });
+
     it("signals that the project-tab session is ready after backend initialization", async () => {
         const onReady = vi.fn();
         const { result } = renderHook(() => useAITabManager());

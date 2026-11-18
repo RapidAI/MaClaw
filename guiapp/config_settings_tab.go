@@ -56,6 +56,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"chat_font_size",
 		"chat_font_family",
 		"coding_font_family",
+		"chat_bubbles_enabled",
 	},
 	"pet": {
 		"pet_enabled",

@@ -2801,4 +2801,130 @@ describe('Virtual repository utility', () => {
 		expect(localButton.querySelector('.vrepo-button-spinner')).toBeNull();
 		await act(async () => resolveLaunch({ project_path: 'D:\\tasks\\remote_1', task_title: 'Product workspace', agent_mode: 'remote_coding_dev' }));
 	});
+
+	it('offers folder creation and node operations on the tree context menu', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace',
+			nodes: [{ id: 'bin', name: 'bin', order: 10 }],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const bin = await screen.findByRole('treeitem', { name: /^bin$/i });
+		fireEvent.contextMenu(bin, { clientX: 40, clientY: 40 });
+		const menu = screen.getByRole('menu', { name: 'bin' });
+		expect(within(menu).getByText('bin')).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'New virtual folder' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Add mapping' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Edit' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Remove' })).toBeTruthy();
+		// The menu action pre-targets the right-clicked folder as the parent.
+		fireEvent.click(within(menu).getByRole('menuitem', { name: 'New virtual folder' }));
+		const dialog = await screen.findByRole('dialog', { name: 'New virtual folder' });
+		expect((within(dialog).getByLabelText('Parent folder') as HTMLSelectElement).value).toBe('bin');
+		fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'libs' } });
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(backend.SaveVirtualRepository).toHaveBeenCalled());
+		const saved = JSON.parse(backend.SaveVirtualRepository.mock.calls.at(-1)![0]);
+		const libs = saved.nodes.find((node: any) => node.name === 'libs');
+		expect(libs.parent_id).toBe('bin');
+		expect(libs.repository).toBeUndefined();
+	});
+
+	it('offers checkout for an unchecked-out mapping through the tree context menu', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace',
+			nodes: [{ id: 'source', name: 'Source', order: 10, repository: { kind: 'git', relative_path: 'Source', remote_url: 'https://example.com/source.git', enabled: true } }],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.InspectVirtualRepository.mockResolvedValue(JSON.stringify([{ node_id: 'source', kind: 'git', exists: false, is_repository: false, clean: true, error_code: 'not_checked_out' }]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const source = await screen.findByRole('treeitem', { name: /Source.*git/i });
+		fireEvent.contextMenu(source, { clientX: 40, clientY: 40 });
+		const menu = screen.getByRole('menu', { name: 'Source' });
+		expect(within(menu).getByRole('menuitem', { name: 'Edit' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Checkout repository' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Remove' })).toBeTruthy();
+		fireEvent.click(within(menu).getByRole('menuitem', { name: 'Checkout repository' }));
+		await waitFor(() => expect(backend.CheckoutVirtualRepositoryNode).toHaveBeenCalledWith('vrepo_1', 'source', ''));
+	});
+
+	it('offers repository-level actions on the tree root context menu without remove', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const root = await screen.findByRole('treeitem', { name: 'Workspace' });
+		fireEvent.contextMenu(root, { clientX: 40, clientY: 40 });
+		const menu = screen.getByRole('menu', { name: 'Workspace' });
+		expect(within(menu).getByRole('menuitem', { name: 'New virtual folder' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Add mapping' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Refresh status' })).toBeTruthy();
+		// The repository root cannot be removed from the virtual tree.
+		expect(within(menu).queryByRole('menuitem', { name: 'Remove' })).toBeNull();
+		fireEvent.click(within(menu).getByRole('menuitem', { name: 'Refresh status' }));
+		await waitFor(() => expect(backend.InspectVirtualRepository).toHaveBeenCalledWith('D:\\workspace'));
+	});
+
+	it('opens and dismisses the tree context menu with the keyboard', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace',
+			nodes: [{ id: 'bin', name: 'bin', order: 10 }],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const bin = await screen.findByRole('treeitem', { name: /^bin$/i });
+		fireEvent.click(bin);
+		fireEvent.keyDown(bin, { key: 'ContextMenu' });
+		const menu = screen.getByRole('menu', { name: 'bin' });
+		const first = within(menu).getByRole('menuitem', { name: 'New virtual folder' });
+		await waitFor(() => expect(document.activeElement).toBe(first));
+		fireEvent.keyDown(first, { key: 'ArrowDown' });
+		const second = within(menu).getByRole('menuitem', { name: 'Add mapping' });
+		expect(document.activeElement).toBe(second);
+		fireEvent.keyDown(second, { key: 'Escape' });
+		await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+		await waitFor(() => expect(document.activeElement).toBe(bin));
+	});
+
+	it('creates a mapping under a selected folder instead of overwriting it', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace',
+			nodes: [{ id: 'bin', name: 'bin', order: 10 }],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByRole('treeitem', { name: /^bin$/i }));
+		fireEvent.click(screen.getByLabelText('Add mapping'));
+		const dialog = await screen.findByRole('dialog', { name: 'Add mapping' });
+		expect((within(dialog).getByLabelText('Parent folder') as HTMLSelectElement).value).toBe('bin');
+		fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'source2' } });
+		fireEvent.change(within(dialog).getByLabelText('Repository URL'), { target: { value: 'https://example.com/s2.git' } });
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(backend.SaveVirtualRepository).toHaveBeenCalled());
+		const saved = JSON.parse(backend.SaveVirtualRepository.mock.calls.at(-1)![0]);
+		const folder = saved.nodes.find((node: any) => node.id === 'bin');
+		expect(folder.repository).toBeUndefined();
+		const mapping = saved.nodes.find((node: any) => node.name === 'source2');
+		expect(mapping.parent_id).toBe('bin');
+		expect(mapping.id).not.toBe('bin');
+	});
 });

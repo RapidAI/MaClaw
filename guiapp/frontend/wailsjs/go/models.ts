@@ -2528,6 +2528,7 @@ export namespace corelib {
 	    chat_font_size?: number;
 	    chat_font_family?: string;
 	    coding_font_family?: string;
+	    chat_bubbles_enabled?: boolean;
 	    ssh_hosts?: SSHHostEntry[];
 	    knowledge_skill_token_budget: number;
 	    knowledge_vision_llm?: KnowledgeVisionLLMConfig;
@@ -2835,6 +2836,7 @@ export namespace corelib {
 	        this.chat_font_size = source["chat_font_size"];
 	        this.chat_font_family = source["chat_font_family"];
 	        this.coding_font_family = source["coding_font_family"];
+	        this.chat_bubbles_enabled = source["chat_bubbles_enabled"];
 	        this.ssh_hosts = this.convertValues(source["ssh_hosts"], SSHHostEntry);
 	        this.knowledge_skill_token_budget = source["knowledge_skill_token_budget"];
 	        this.knowledge_vision_llm = this.convertValues(source["knowledge_vision_llm"], KnowledgeVisionLLMConfig);

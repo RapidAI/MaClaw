@@ -118,9 +118,7 @@ class AssistantApi {
     final data = await _client.guard(
       () => _client.dio.post<Map<String, dynamic>>(
         '/api/mobile/documents/upload',
-        data: FormData.fromMap({
-          'file': MultipartFile.fromFileSync(path),
-        }),
+        data: FormData.fromMap({'file': MultipartFile.fromFileSync(path)}),
         options: _client.opts(
           sendTimeout: const Duration(minutes: 2),
           receiveTimeout: const Duration(seconds: 30),

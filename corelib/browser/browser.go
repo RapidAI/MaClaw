@@ -59,6 +59,19 @@ type Session struct {
 	// the tabs are not tracked.
 	tabBot string
 	tabRun string
+
+	// viewportMu serializes the person's preview events. The caret and the
+	// mirror of what they typed have to move in the order the events arrived.
+	viewportMu      sync.Mutex
+	viewportCaretX  float64
+	viewportCaretY  float64
+	viewportCaretOK bool
+	// viewportMirror is the sidecar value last written into the caret.
+	// It is not a log line. The same field keeps it. A different field
+	// clears it and advances viewportGen. Text stamped with an older
+	// generation is not written into the new field.
+	viewportMirror string
+	viewportGen    int
 }
 
 var (
@@ -1130,11 +1143,20 @@ func (s *Session) ViewportJPEG(quality int) (string, int, int, error) {
 		quality = 55
 	}
 	width, height, sizeErr := s.viewportCSSSize()
-	result, err := client.Send("Page.captureScreenshot", map[string]interface{}{
-		"format":      "jpeg",
-		"quality":     quality,
-		"fromSurface": true,
-	}, DefaultCmdTimeout)
+	params := map[string]interface{}{
+		"format":                "jpeg",
+		"quality":               quality,
+		"fromSurface":           true,
+		"captureBeyondViewport": false,
+	}
+	// The click path maps fractions onto this same CSS viewport. A screenshot
+	// of a larger surface would put the phone field somewhere the click misses.
+	if sizeErr == nil && width > 0 && height > 0 {
+		params["clip"] = map[string]interface{}{
+			"x": 0, "y": 0, "width": width, "height": height, "scale": 1,
+		}
+	}
+	result, err := client.Send("Page.captureScreenshot", params, DefaultCmdTimeout)
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("viewport screenshot: %w", err)
 	}
@@ -1249,8 +1271,28 @@ func (s *Session) DispatchViewportPointer(in ViewportInput) error {
 		params["deltaX"] = in.DeltaX
 		params["deltaY"] = in.DeltaY
 	}
+	// Headless Chrome does not focus the page, so a click never becomes a
+	// caret and later typing is dropped. A new document drops an earlier
+	// emulation, so every press sends it again. A failed command is not
+	// remembered as success.
+	if kind == "mousePressed" {
+		s.ensurePageFocusEmulation(client)
+	}
 	if _, err := client.Send("Input.dispatchMouseEvent", params, DefaultCmdTimeout); err != nil {
 		return fmt.Errorf("pointer: %w", err)
+	}
+	if button == "left" && kind == "mousePressed" {
+		// The press chooses the field. Release must not pick again: a second
+		// pick can stamp a different control and leave the bar on the old one.
+		s.noteViewportCaretPoint(x, y)
+		same, found := s.focusViewportCaret(client)
+		if found && !same {
+			s.armViewportNewCaret()
+			return errViewportNewCaret
+		}
+	}
+	if button == "left" && kind == "mouseReleased" {
+		s.refocusStampedCaret(client)
 	}
 	return nil
 }
@@ -1268,10 +1310,7 @@ func (s *Session) DispatchViewportKey(in ViewportInput) error {
 	}
 	switch in.Kind {
 	case "text", "paste":
-		if _, err := client.Send("Input.insertText", map[string]interface{}{"text": in.Text}, DefaultCmdTimeout); err != nil {
-			return fmt.Errorf("insert text: %w", err)
-		}
-		return nil
+		return s.applyViewportText(client, in.Text, in.Gen)
 	case "down", "keydown":
 		return sendViewportKey(client, "keyDown", in.Key, in.Text)
 	case "up", "keyup":
@@ -1293,7 +1332,15 @@ func sendViewportKey(client *CDPClient, typ, key, text string) error {
 		"type": typ,
 		"key":  key,
 	}
-	if text != "" && typ == "keyDown" {
+	if code, vk, ok := viewportKeyCode(key); ok {
+		// Enter, Tab, Escape, and Backspace name the key. They must not
+		// carry text: the field value is already written, and keyDown text
+		// is inserted as a character. Enter's "\r" would submit and also
+		// insert a newline.
+		params["code"] = code
+		params["windowsVirtualKeyCode"] = vk
+		params["nativeVirtualKeyCode"] = vk
+	} else if text != "" && typ == "keyDown" {
 		params["text"] = text
 	}
 	if _, err := client.Send("Input.dispatchKeyEvent", params, DefaultCmdTimeout); err != nil {
@@ -1303,7 +1350,14 @@ func sendViewportKey(client *CDPClient, typ, key, text string) error {
 }
 
 // ApplyViewportInput routes one preview event to the connected page.
+// Events are applied in arrival order. A later Enter must not pass the
+// text that was typed into the same field.
 func (s *Session) ApplyViewportInput(in ViewportInput) error {
+	if s == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	s.viewportMu.Lock()
+	defer s.viewportMu.Unlock()
 	switch in.Kind {
 	case "move", "mousemove", "down", "mousedown", "up", "mouseup", "wheel":
 		return s.DispatchViewportPointer(in)

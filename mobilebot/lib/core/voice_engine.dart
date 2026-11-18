@@ -8,6 +8,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:speech_to_text/speech_to_text.dart' show LocaleName;
 
 import 'native_voice.dart';
 import 'voice_assets.dart';
@@ -17,6 +18,31 @@ enum TtsEngine { system, kokoro }
 /// 'system' = speech_to_text; 'local' = bundled SenseVoice (used when the
 /// platform recognizer is unavailable, e.g. GMS-free devices).
 enum AsrEngine { system, local }
+
+/// The recognizer locale for dictation, picked from what the platform
+/// recognizer actually offers. 'zh_CN' used to be hardcoded — on a
+/// recognizer without it the listen intent carries
+/// EXTRA_LANGUAGE=zh-CN and recognition dies with
+/// language-not-supported before a single word is heard. Preference:
+/// mainland zh first, any other Chinese locale next, else null = let the
+/// recognizer use its own default.
+String? pickAsrLocale(List<LocaleName> available) {
+  String? best;
+  var bestScore = 0;
+  for (final l in available) {
+    final id = l.localeId.toLowerCase().replaceAll('_', '-');
+    final score = id == 'zh-cn'
+        ? 4
+        : (id == 'zh' || id.startsWith('zh-'))
+        ? 3
+        : 0;
+    if (score > bestScore) {
+      best = l.localeId;
+      bestScore = score;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
 
 final voiceEngineProvider = Provider<VoiceEngine>((ref) => VoiceEngine());
 

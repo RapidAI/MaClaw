@@ -6204,6 +6204,76 @@ func (a *App) stagedTaskTranscriptForNewTab(persist *ProjectTabSessionPersist, p
 	return session
 }
 
+// stagedCodingTranscript is the visual copy staged for a forked task: the
+// scroll-back archive plus the hot tail. Conversation memory is not a
+// substitute; it only has concatenated reasoning.
+func (a *App) stagedCodingTranscript(persist *ProjectTabSessionPersist, projectPath string) []interface{} {
+	if a == nil || persist == nil || !a.projectHasStagedTaskTranscript(projectPath) {
+		return nil
+	}
+	seed := a.stagedTaskTranscriptForNewTab(persist, projectPath)
+	var hot []interface{}
+	if seed != nil {
+		hot = seed.Conversation
+	}
+	archive, err := persist.LoadConversationViewArchive(taskCopyArchiveTabID(projectPath))
+	if err != nil || len(archive) == 0 {
+		return hot
+	}
+	if len(hot) == 0 {
+		return archive
+	}
+	return mergeConversationSnapshots(archive, hot)
+}
+
+// restoreStagedCodingProcessRows puts the copied task's tool rows back onto
+// a tab session that lost them. The staged transcript is the visual copy.
+// Turns added after the copy stay. An empty conversation is a clear and is
+// left empty, including its scroll-back archive.
+func (a *App) restoreStagedCodingProcessRows(persist *ProjectTabSessionPersist, session *TabSessionData, projectPath string) bool {
+	if a == nil || persist == nil || session == nil || len(session.Conversation) == 0 {
+		return false
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		projectPath = normalizeProjectSessionPath(session.ProjectPath)
+	}
+	full := a.stagedCodingTranscript(persist, projectPath)
+	if len(full) == 0 {
+		return false
+	}
+	next, restored := preserveCodingProcessRows(full, session.Conversation)
+	if restored {
+		session.Conversation = next
+	}
+	// The archive write stands on its own. Returning it as a session change
+	// would rewrite the hot tail and bump its activity time.
+	a.healTabCodingProcessArchive(persist, session.TabID, full)
+	return restored
+}
+
+// healTabCodingProcessArchive fills tool rows on the scroll-back turns.
+// The staged snapshot keeps its own archive and is not rewritten here.
+func (a *App) healTabCodingProcessArchive(persist *ProjectTabSessionPersist, tabID string, stored []interface{}) bool {
+	tabID = strings.TrimSpace(tabID)
+	if persist == nil || tabID == "" || len(stored) == 0 || strings.HasPrefix(tabID, "task-copy-") {
+		return false
+	}
+	archive, err := persist.LoadConversationViewArchive(tabID)
+	if err != nil || len(archive) == 0 {
+		return false
+	}
+	next, restored := preserveCodingProcessRows(stored, archive)
+	if !restored {
+		return false
+	}
+	if err := persist.SaveConversationViewArchive(tabID, next); err != nil {
+		log.Printf("[coding-process] restore archived rows tab=%s err=%v", tabID, err)
+		return false
+	}
+	return true
+}
+
 // taskCopyArchiveTabID is the staged transcript id for a forked task.
 func taskCopyArchiveTabID(projectPath string) string {
 	return expertTaskArchiveTabIDWithPrefix(projectPath, "task-copy-")
@@ -9244,7 +9314,31 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 			log.Printf("[SaveProjectTabConversation] ignored stale tab=%s clear_at=%d", tabID, session.ConversationClearedAt)
 			return
 		}
-		session.Conversation = conversation
+		// The tab session is the visual transcript. A restored projection
+		// keeps the words and drops codingTimeline; writing it through
+		// replaces the process list. Put those rows back on the same turn.
+		// The current file may only still have the hot tail, so a copied
+		// task also consults the staged transcript before the window fold
+		// writes the older turns back out.
+		next, kept := preserveCodingProcessRows(session.Conversation, conversation)
+		session.Conversation = next
+		if strings.TrimSpace(session.ProjectPath) == "" {
+			session.ProjectPath = projectPathFromConversation(conversation)
+		}
+		if full := a.stagedCodingTranscript(persist, session.ProjectPath); len(full) > 0 {
+			var also bool
+			next, also = preserveCodingProcessRows(full, session.Conversation)
+			if also {
+				session.Conversation = next
+				kept = true
+			}
+			if a.healTabCodingProcessArchive(persist, tabID, full) {
+				kept = true
+			}
+		}
+		if kept {
+			log.Printf("[SaveProjectTabConversation] kept coding process rows tab=%s", tabID)
+		}
 	}
 	// A stashed expert transcript is rewritten onto the paper's session key.
 	// Record that path so reopening the paper finds this copy, not only an
@@ -9354,12 +9448,20 @@ func mergeConversationSnapshots(older, newer []interface{}) []interface{} {
 			newerLoose[key] = struct{}{}
 		}
 	}
+	// The newer snapshot replaces the same id, but a restored projection
+	// drops codingTimeline. The process list still belongs to that turn.
+	timelines := map[string]interface{}{}
 	merged := make([]interface{}, 0, len(older)+len(newer))
 	for _, raw := range older {
 		// Same words with different ids are different turns. Only an id-less
 		// copy is folded into a message the UI already has.
 		if id := conversationMessageID(raw); id != "" {
 			if _, ok := newerIDs[id]; ok {
+				if _, recorded := timelines[id]; !recorded {
+					if timeline := codingTimelineValue(raw); timeline != nil {
+						timelines[id] = timeline
+					}
+				}
 				continue
 			}
 			merged = append(merged, raw)
@@ -9372,10 +9474,29 @@ func mergeConversationSnapshots(older, newer []interface{}) []interface{} {
 		}
 		merged = append(merged, raw)
 	}
-	return append(merged, newer...)
+	merged = append(merged, newer...)
+	if len(timelines) == 0 {
+		return merged
+	}
+	for i, raw := range merged {
+		id := conversationMessageID(raw)
+		if id == "" || codingTimelineValue(raw) != nil {
+			continue
+		}
+		timeline, ok := timelines[id]
+		if !ok {
+			continue
+		}
+		merged[i] = messageWithCodingTimeline(raw, timeline)
+	}
+	return merged
 }
 
 func conversationMessageID(raw interface{}) string {
+	if msg, ok := raw.(map[string]interface{}); ok {
+		id, _ := msg["id"].(string)
+		return strings.TrimSpace(id)
+	}
 	entry, ok := conversationMessageFields(raw)
 	if !ok {
 		return ""
@@ -9409,6 +9530,257 @@ func conversationMessageFields(raw interface{}) (struct {
 		return entry, false
 	}
 	return entry, true
+}
+
+// codingTurn is one user or assistant message used to line a lossy snapshot
+// up with the transcript that still has the process list.
+type codingTurn struct {
+	index   int
+	role    string
+	content string
+	raw     interface{}
+}
+
+// preserveCodingProcessRows copies codingTimeline onto incoming messages that
+// lost it. The same message id is the same turn. A restored-* id is the
+// memory projection of a turn, matched by role and text. The match has to
+// consume every incoming turn or reach the end of the stored transcript, so
+// a shared opening line is not the same turn. Any other id is a different
+// turn, even when the words match. An incoming process list is kept as the
+// newer one.
+func preserveCodingProcessRows(stored, incoming []interface{}) ([]interface{}, bool) {
+	if len(stored) == 0 || len(incoming) == 0 || !conversationHasCodingTimeline(stored) {
+		return incoming, false
+	}
+	out := append([]interface{}(nil), incoming...)
+	changed := false
+	byID := make(map[string]interface{}, len(stored))
+	for _, raw := range stored {
+		id := conversationMessageID(raw)
+		if id == "" || isRestoredConversationID(id) {
+			continue
+		}
+		if _, exists := byID[id]; !exists {
+			byID[id] = raw
+		}
+	}
+	for i, raw := range out {
+		id := conversationMessageID(raw)
+		if id == "" || isRestoredConversationID(id) || codingTimelineValue(raw) != nil {
+			continue
+		}
+		prev, ok := byID[id]
+		if !ok {
+			continue
+		}
+		timeline := codingTimelineValue(prev)
+		if timeline == nil {
+			continue
+		}
+		out[i] = messageWithCodingTimeline(raw, timeline)
+		changed = true
+	}
+	storedTurns := codingTurns(stored)
+	incomingTurns := codingTurns(out)
+	offset, count := alignCodingTurns(storedTurns, incomingTurns)
+	for i := 0; i < count; i++ {
+		inc := incomingTurns[i]
+		if codingTimelineValue(out[inc.index]) != nil {
+			continue
+		}
+		id := conversationMessageID(out[inc.index])
+		if id != "" && !isRestoredConversationID(id) {
+			continue
+		}
+		timeline := codingTimelineValue(storedTurns[offset+i].raw)
+		if timeline == nil {
+			continue
+		}
+		out[inc.index] = messageWithCodingTimeline(out[inc.index], timeline)
+		changed = true
+	}
+	if !changed {
+		return incoming, false
+	}
+	return out, true
+}
+
+func isRestoredConversationID(id string) bool {
+	return strings.HasPrefix(strings.TrimSpace(id), "restored-")
+}
+
+func codingTurns(conversation []interface{}) []codingTurn {
+	turns := make([]codingTurn, 0, len(conversation))
+	for i, raw := range conversation {
+		role, content, ok := conversationRoleAndContent(raw)
+		if !ok || (role != "user" && role != "assistant") {
+			continue
+		}
+		turns = append(turns, codingTurn{index: i, role: role, content: content, raw: raw})
+	}
+	return turns
+}
+
+// alignCodingTurns lines incoming up with stored. A run counts only when it
+// uses every incoming turn or reaches the end of stored. The longest run
+// wins, then the rightmost start. One repeated line that matches more than
+// one stored turn stays unmatched: either process list could be the wrong one.
+func alignCodingTurns(stored, incoming []codingTurn) (offset, count int) {
+	if len(stored) == 0 || len(incoming) == 0 {
+		return 0, 0
+	}
+	bestOff, bestN, ties := 0, 0, 0
+	for start := 0; start < len(stored); start++ {
+		n := 0
+		for n < len(incoming) && start+n < len(stored) &&
+			stored[start+n].role == incoming[n].role &&
+			stored[start+n].content == incoming[n].content {
+			n++
+		}
+		if n == 0 || (n != len(incoming) && start+n != len(stored)) {
+			continue
+		}
+		if n > bestN {
+			bestOff, bestN, ties = start, n, 1
+			continue
+		}
+		if n == bestN {
+			ties++
+			if start > bestOff {
+				bestOff = start
+			}
+		}
+	}
+	if bestN == 0 || (bestN == 1 && ties > 1) {
+		return 0, 0
+	}
+	return bestOff, bestN
+}
+
+func conversationHasCodingTimeline(conversation []interface{}) bool {
+	for _, raw := range conversation {
+		if codingTimelineValue(raw) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func conversationRoleAndContent(raw interface{}) (role, content string, ok bool) {
+	if msg, isMap := raw.(map[string]interface{}); isMap {
+		role, _ = msg["role"].(string)
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role == "" {
+			return "", "", false
+		}
+		// The map already holds the fields. Marshaling the whole message
+		// would copy its process list on every snapshot save.
+		return role, strings.TrimSpace(stringifyProjectConversationContent(msg["content"])), true
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return "", "", false
+	}
+	var entry struct {
+		Role    string      `json:"role"`
+		Content interface{} `json:"content"`
+	}
+	if json.Unmarshal(data, &entry) != nil {
+		return "", "", false
+	}
+	role = strings.ToLower(strings.TrimSpace(entry.Role))
+	content = strings.TrimSpace(stringifyProjectConversationContent(entry.Content))
+	if role == "" {
+		return "", "", false
+	}
+	return role, content, true
+}
+
+func codingTimelineValue(raw interface{}) interface{} {
+	if msg, ok := raw.(map[string]interface{}); ok {
+		return nonEmptyCodingTimeline(msg["codingTimeline"])
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var entry struct {
+		CodingTimeline json.RawMessage `json:"codingTimeline"`
+	}
+	if json.Unmarshal(data, &entry) != nil || strings.TrimSpace(string(entry.CodingTimeline)) == "" {
+		return nil
+	}
+	var decoded interface{}
+	if json.Unmarshal(entry.CodingTimeline, &decoded) != nil {
+		return nil
+	}
+	return nonEmptyCodingTimeline(decoded)
+}
+
+func nonEmptyCodingTimeline(value interface{}) interface{} {
+	switch timeline := value.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		if len(timeline) == 0 {
+			return nil
+		}
+		return timeline
+	default:
+		data, err := json.Marshal(timeline)
+		if err != nil {
+			return nil
+		}
+		trimmed := strings.TrimSpace(string(data))
+		if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+			return nil
+		}
+		var decoded interface{}
+		if json.Unmarshal(data, &decoded) != nil {
+			return nil
+		}
+		items, ok := decoded.([]interface{})
+		if !ok || len(items) == 0 {
+			return nil
+		}
+		return items
+	}
+}
+
+func messageWithCodingTimeline(raw, timeline interface{}) interface{} {
+	cloned := cloneJSONValue(timeline)
+	switch msg := raw.(type) {
+	case map[string]interface{}:
+		next := make(map[string]interface{}, len(msg)+1)
+		for key, value := range msg {
+			next[key] = value
+		}
+		next["codingTimeline"] = cloned
+		return next
+	default:
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return raw
+		}
+		var generic map[string]interface{}
+		if json.Unmarshal(data, &generic) != nil {
+			return raw
+		}
+		generic["codingTimeline"] = cloned
+		return generic
+	}
+}
+
+func cloneJSONValue(value interface{}) interface{} {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var cloned interface{}
+	if json.Unmarshal(data, &cloned) != nil {
+		return value
+	}
+	return cloned
 }
 
 // tabConversationPassesClearFence rejects snapshots created before the most
@@ -9458,13 +9830,34 @@ func (a *App) LoadProjectTabConversation(tabID string) []interface{} {
 	}
 	persist := a.ensureProjectTabSessionPersist()
 	session, err := persist.LoadSession(tabID)
-	if err != nil || session == nil {
+	if err != nil || session == nil || len(session.Conversation) == 0 {
 		return nil
 	}
-	if len(session.Conversation) == 0 {
+	// Ordinary transcripts stay off the session lifecycle lock. Only a copied
+	// or forked task can still be missing its process list, and that repair
+	// writes the same file a debounced snapshot replaces. Opening the memory
+	// store is startup's job. A nil store reports no staged transcript, so
+	// this load returns the file as stored and a later open can still repair it.
+	if !a.projectHasStagedTaskTranscript(session.ProjectPath) {
+		return a.finishProjectTabConversationLoad(persist, tabID, session, false)
+	}
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+	session, err = persist.LoadSession(tabID)
+	if err != nil || session == nil || len(session.Conversation) == 0 {
 		return nil
 	}
+	healed := a.restoreStagedCodingProcessRows(persist, session, session.ProjectPath)
+	return a.finishProjectTabConversationLoad(persist, tabID, session, healed)
+}
+
+func (a *App) finishProjectTabConversationLoad(persist *ProjectTabSessionPersist, tabID string, session *TabSessionData, healed bool) []interface{} {
 	if len(session.Conversation) <= conversationViewHotMessages {
+		if healed {
+			if err := persist.SaveSession(session); err != nil {
+				log.Printf("[LoadProjectTabConversation] restore coding process rows tab=%s err=%v", tabID, err)
+			}
+		}
 		return session.Conversation
 	}
 	hot := foldProjectTabConversationWindow(persist, tabID, session.Conversation)

@@ -469,9 +469,8 @@ func (a *App) IsPetStorePackInstalled(sourcePackID string) bool {
 // PetStoreInstalledPack describes a market-installed copy on this machine.
 type PetStoreInstalledPack struct {
 	Version string `json:"version"`
-	// InstalledAt is the local install time in unix seconds. Comparing it with
-	// the listing's updated_at detects a republish that kept the same declared
-	// version, which a version comparison alone would miss.
+	// InstalledAt is the local install time in unix seconds. The update button
+	// does not use it: new vs old is the source pack id plus Version.
 	InstalledAt int64 `json:"installed_at"`
 }
 
@@ -492,7 +491,11 @@ func (a *App) GetPetStoreInstalledPackDetails(sourcePackIDs []string) map[string
 			continue
 		}
 		if version, installedAt, ok := reg.MarketInstalledPackInfo(sourcePackID); ok {
-			details[sourcePackID] = PetStoreInstalledPack{Version: version, InstalledAt: installedAt.Unix()}
+			var installedUnix int64
+			if !installedAt.IsZero() {
+				installedUnix = installedAt.Unix()
+			}
+			details[sourcePackID] = PetStoreInstalledPack{Version: version, InstalledAt: installedUnix}
 		}
 	}
 	return details
@@ -563,6 +566,10 @@ func (a *App) InstallPetStorePack(id string) (string, error) {
 func (a *App) SubmitPetStorePack(zipPath, name, description, version string, price int64, sourcePackID string) (map[string]interface{}, error) {
 	if price < 0 || price > 999999 {
 		return nil, errString("price must be 0-999999 credits")
+	}
+	version = petpack.NormalizePackVersion(version)
+	if !petpack.ValidPackVersion(version) {
+		return nil, errString("version is required")
 	}
 	sourcePackID = strings.TrimSpace(sourcePackID)
 	if !petpack.IsValidPackID(sourcePackID) {

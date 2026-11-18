@@ -4,6 +4,10 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+
+import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
+import '../../core/locale.dart';
+import '../../core/ui_kit.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -76,12 +80,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     super.initState();
     if (supportsVoiceOutput) {
       _tts = FlutterTts();
-      unawaited(
-        _tts!
-            .setLanguage('zh-CN')
-            .then((_) {})
-            .catchError((_) {}),
-      );
+      unawaited(_tts!.setLanguage('zh-CN').then((_) {}).catchError((_) {}));
     }
   }
 
@@ -116,6 +115,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   ].reversed.take(20).toList().reversed.toList();
 
   Future<void> _send() async {
+    final S = context.S;
     final api = ref.read(assistantApiProvider);
     final text = _inputCtrl.text.trim();
     if (api == null || _busy) return;
@@ -155,8 +155,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         } else {
           pending.failed = true;
           pending.text = job.isFailed
-              ? (job.message.isNotEmpty ? job.message : '回答失败，请重试')
-              : '回答超时，请重试';
+              ? (job.message.isNotEmpty ? job.message : S.asstAnswerFailed)
+              : S.asstAnswerTimeout;
         }
       });
       if (!pending.failed) _speakOnce(pending);
@@ -203,17 +203,17 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           children: [
             ListTile(
               leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('拍照'),
+              title: Text(context.S.chatAttachCamera),
               onTap: () => Navigator.of(context).pop('camera'),
             ),
             ListTile(
               leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('相册'),
+              title: Text(context.S.chatAttachGallery),
               onTap: () => Navigator.of(context).pop('gallery'),
             ),
             ListTile(
               leading: const Icon(Icons.attach_file),
-              title: const Text('文件'),
+              title: Text(context.S.chatAttachFile),
               onTap: () => Navigator.of(context).pop('file'),
             ),
             const SizedBox(height: 8),
@@ -245,6 +245,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   }
 
   Future<void> _uploadAndBind(String path, String name) async {
+    final S = context.S;
     final api = ref.read(assistantApiProvider);
     if (api == null) return;
     setState(() {
@@ -265,12 +266,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       if (!mounted) return;
       if (task.isReady && task.draftId.isNotEmpty) {
         setState(() => _docDraftId = task.draftId);
-        _toast('已附加：$name');
+        _toast(S.asstAttached(name));
       } else {
-        _toast(task.isFailed ? '附件处理失败' : '附件处理超时，请重试');
+        _toast(task.isFailed ? S.asstAttachFailed : S.asstAttachTimeout);
       }
     } on Object catch (error) {
-      _toast('附件上传失败：$error');
+      _toast(S.asstAttachUploadFailed(error.toString()));
     } finally {
       if (mounted) setState(() => _docUploading = false);
     }
@@ -300,7 +301,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         usedSystem = true;
         setState(() => _listening = true);
         await _speech.listen(
-          listenOptions: stt.SpeechListenOptions(localeId: 'zh_CN'),
+          listenOptions: stt.SpeechListenOptions(
+            localeId: pickAsrLocale(await _speech.locales()),
+          ),
           onResult: (r) => captured = r.recognizedWords,
         );
       }
@@ -309,9 +312,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   }
 
   Future<Uint8List?> _capturePcm() async {
+    final S = context.S;
     final recorder = _recorder ??= AudioRecorder();
     if (!await recorder.hasPermission()) {
-      _toast('没有麦克风权限');
+      _toast(S.chatMicPermissionDenied);
       return null;
     }
     late final Stream<Uint8List> stream;
@@ -324,7 +328,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         ),
       );
     } on Object {
-      _toast('无法打开麦克风录音');
+      _toast(S.chatMicOpenFailed);
       return null;
     }
     if (mounted) setState(() => _listening = true);
@@ -358,18 +362,19 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   }
 
   Future<void> _localDictate() async {
+    final S = context.S;
     final engine = ref.read(voiceEngineProvider);
     if (!await engine.localAsrReady()) {
       final hub = ref.read(sessionProvider).active?.hubUrl;
       unawaited(engine.autoEnsure(hubBase: hub));
-      _toast('语音识别不可用，正在后台下载本地模型，稍后再试');
+      _toast(S.chatAsrUnavailableDownloading);
       return;
     }
     setState(() => _listening = true);
     final pcm = await _capturePcm();
     if (pcm == null || !mounted) return;
     if (pcm.length < 32000) {
-      _toast('没听清，请再试');
+      _toast(S.chatNotHeard);
       return;
     }
     try {
@@ -377,10 +382,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       if (RegExp(r'[\w一-鿿]{2,}').hasMatch(text)) {
         _appendInput(text);
       } else {
-        _toast('没听清，请再试');
+        _toast(S.chatNotHeard);
       }
     } on Object {
-      _toast('语音识别失败，请重试');
+      _toast(S.chatAsrFailed);
     }
   }
 
@@ -430,11 +435,13 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('助手'),
+        title: Text(context.S.tabAssistant),
         actions: [
           if (supportsVoiceOutput)
             IconButton(
-              tooltip: _readOut ? '关闭语音播报' : '开启语音播报',
+              tooltip: _readOut
+                  ? context.S.asstReadOutDisable
+                  : context.S.asstReadOutEnable,
               icon: Icon(
                 _readOut ? Icons.volume_up : Icons.volume_off_outlined,
               ),
@@ -447,7 +454,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
               },
             ),
           IconButton(
-            tooltip: '新对话',
+            tooltip: context.S.asstNewChat,
             icon: const Icon(Icons.add_comment_outlined),
             onPressed: _busy ? null : _newChat,
           ),
@@ -457,16 +464,17 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         children: [
           Expanded(
             child: _messages.isEmpty
-                ? _EmptyState(onAsk: (q) {
-                    _inputCtrl.text = q;
-                    _send();
-                  })
+                ? _EmptyState(
+                    onAsk: (q) {
+                      _inputCtrl.text = q;
+                      _send();
+                    },
+                  )
                 : ListView.builder(
                     controller: _scrollCtrl,
                     padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
                     itemCount: _messages.length,
-                    itemBuilder: (context, i) =>
-                        _bubble(theme, _messages[i]),
+                    itemBuilder: (context, i) => _bubble(theme, _messages[i]),
                   ),
           ),
           if (_docName.isNotEmpty || _docUploading)
@@ -492,58 +500,26 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                 ),
               ),
             ),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.add_circle_outline),
-                    tooltip: '添加图片或文件',
-                    onPressed: _busy || _docUploading ? null : _attach,
-                  ),
-                  Expanded(
-                    child: TextField(
-                      controller: _inputCtrl,
-                      minLines: 1,
-                      maxLines: 5,
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => _send(),
-                      decoration: InputDecoration(
-                        hintText: _listening ? '聆听中…' : '问点什么…',
-                        border: const OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                  ),
-                  if (supportsVoiceInput)
-                    IconButton(
-                      icon: Icon(_listening ? Icons.mic : Icons.mic_none),
-                      tooltip: '语音输入',
-                      onPressed: _listening
-                          ? () {
-                              _speech.stop();
-                              _recorder?.stop();
-                              setState(() => _listening = false);
-                            }
-                          : _dictate,
-                    ),
-                  IconButton(
-                    icon: _busy
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.send),
-                    tooltip: '发送',
-                    onPressed: _busy ? null : _send,
-                  ),
-                ],
-              ),
-            ),
+          ChatComposer(
+            controller: _inputCtrl,
+            hint: _listening
+                ? context.S.chatVoiceListening
+                : context.S.asstComposerHint,
+            sending: _busy,
+            onSend: _send,
+            onSubmitted: (_) => _send(),
+            onAttach: _busy || _docUploading ? null : _attach,
+            attachTooltip: context.S.asstAttachTooltip,
+            onMic: supportsVoiceInput
+                ? (_listening
+                      ? () {
+                          _speech.stop();
+                          _recorder?.stop();
+                          setState(() => _listening = false);
+                        }
+                      : _dictate)
+                : null,
+            listening: _listening,
           ),
         ],
       ),
@@ -551,60 +527,63 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   }
 
   Widget _bubble(ThemeData theme, _Msg m) {
-    final align = m.isUser ? Alignment.centerRight : Alignment.centerLeft;
-    final bg = m.isUser
-        ? theme.colorScheme.primaryContainer
-        : theme.colorScheme.surfaceContainerHighest;
-    return Align(
-      alignment: align,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-        constraints: const BoxConstraints(maxWidth: 520),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (m.attachment.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.attach_file, size: 14),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        m.attachment,
-                        style: theme.textTheme.bodySmall,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
+    final scheme = theme.colorScheme;
+    return MessageBubble(
+      role: m.isUser ? ChatRole.user : ChatRole.assistant,
+      maxWidth: MediaQuery.of(context).size.width * 0.78,
+      leading: m.isUser
+          ? null
+          : Container(
+              width: 28,
+              height: 28,
+              margin: const EdgeInsets.only(top: 2),
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer,
+                shape: BoxShape.circle,
               ),
-            if (m.pending)
-              const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            else if (m.isUser)
-              Text(m.text)
-            else ...[
-              MarkdownBody(data: m.text, selectable: true),
-              if (m.failed)
-                TextButton.icon(
-                  onPressed: () => _retry(m),
-                  icon: const Icon(Icons.refresh, size: 16),
-                  label: const Text('重试'),
-                ),
-            ],
+              child: Icon(Icons.auto_awesome, size: 15, color: scheme.primary),
+            ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (m.attachment.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.attach_file, size: 14),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: Text(
+                      m.attachment,
+                      style: theme.textTheme.bodySmall,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (m.pending)
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else if (m.isUser)
+            Text(m.text)
+          else ...[
+            MarkdownBody(data: m.text, selectable: true),
+            if (m.failed)
+              TextButton.icon(
+                onPressed: () => _retry(m),
+                icon: const Icon(Icons.refresh, size: 16),
+                label: Text(context.S.retry),
+              ),
           ],
-        ),
+        ],
       ),
     );
   }
@@ -617,40 +596,29 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    const suggestions = ['帮我写一份周报提纲', '解释一个技术概念', '总结我发的文档'];
+    final suggestions = [
+      context.S.asstSuggestWeekly,
+      context.S.asstSuggestExplain,
+      context.S.asstSuggestSummarize,
+    ];
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
         const SizedBox(height: 40),
-        Icon(
-          Icons.auto_awesome,
-          size: 56,
-          color: theme.colorScheme.primary,
-        ),
-        const SizedBox(height: 14),
-        Text(
-          '直接提问，无需创建 Bot',
-          textAlign: TextAlign.center,
-          style: theme.textTheme.titleLarge,
-        ),
-        const SizedBox(height: 6),
-        Text(
-          '支持文字、图片、文档与语音',
-          textAlign: TextAlign.center,
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
+        EmptyState(
+          icon: Icons.auto_awesome,
+          title: context.S.asstEmptyTitle,
+          hint: context.S.asstEmptyHint,
+          action: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: [
+              for (final s in suggestions)
+                OutlinedButton(onPressed: () => onAsk(s), child: Text(s)),
+            ],
           ),
         ),
-        const SizedBox(height: 24),
-        for (final s in suggestions)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: OutlinedButton(
-              onPressed: () => onAsk(s),
-              child: Text(s),
-            ),
-          ),
       ],
     );
   }

@@ -857,6 +857,10 @@ export function GetMCPHostStatus():Promise<Record<string, any>>;
 
 export function GenerateMCPHostAPIKey():Promise<Record<string, any>>;
 
+export function GetMCPAccessLog():Promise<Array<Record<string, any>>>;
+
+export function ClearMCPAccessLog():Promise<void>;
+
 export function GetAIAssistantInitStatus():Promise<string>;
 
 export function GetAIAssistantTrace(arg1:string):Promise<main.AIAssistantTraceView>;
@@ -890,6 +894,8 @@ export function GetBrowserSessionTrace(arg1:string):Promise<main.AIAssistantTrac
 export function GetBrowserSessions():Promise<main.BrowserAgentManager>;
 
 export function GetCapabilityGapDetector():Promise<main.CapabilityGapDetector>;
+
+export function GetChatBubblesEnabled():Promise<boolean>;
 
 export function GetChatFontFamily():Promise<string>;
 
@@ -2733,6 +2739,8 @@ export function SetAuthRequestSoundConfig(arg1:string,arg2:boolean):Promise<void
 export function SetAutoCompress(arg1:boolean):Promise<void>;
 
 export function SetBugReportEnabled(arg1:boolean):Promise<corelib.AppConfig>;
+
+export function SetChatBubblesEnabled(arg1:boolean):Promise<void>;
 
 export function SetChatFontFamily(arg1:string):Promise<void>;
 

@@ -83,6 +83,51 @@ func TestDesktopPayAndSecretRefusals(t *testing.T) {
 	}
 }
 
+func TestDesktopPayKeyRefusal(t *testing.T) {
+	reason, title, msg := DesktopPayKeyRefusal("enter", "", "", []string{"页面", "立即支付"})
+	if reason != "checkout" || title != "立即支付" || msg == "" || strings.Contains(msg, "123456") {
+		t.Fatalf("enter %s %s %s", reason, title, msg)
+	}
+	if reason, _, msg := DesktopPayKeyRefusal("ctrl+enter", "", "", []string{"提交订单"}); reason != "checkout" || msg == "" {
+		t.Fatalf("ctrl+enter %s %s", reason, msg)
+	}
+	if reason, _, _ := DesktopPayKeyRefusal("space", "", "", []string{"立即支付"}); reason != "" {
+		t.Fatalf("space without a focused pay control: %s", reason)
+	}
+	if reason, title, _ := DesktopPayKeyRefusal("space", "立即支付", "button", nil); reason != "checkout" || title != "立即支付" {
+		t.Fatalf("space on pay %s %s", reason, title)
+	}
+	if reason, _, _ := DesktopPayKeyRefusal("enter", "搜索", "edit", []string{"立即支付"}); reason != "" {
+		t.Fatalf("search enter %s", reason)
+	}
+	if reason, _, _ := DesktopPayKeyRefusal("enter", "备注", "edit", []string{"立即支付"}); reason != "" {
+		t.Fatalf("note enter %s", reason)
+	}
+	if reason, _, _ := DesktopPayKeyRefusal("enter", "支付方式", "", []string{"立即支付"}); reason != "" {
+		t.Fatalf("payment method enter %s", reason)
+	}
+	if reason, _, _ := DesktopPayKeyRefusal("ctrl+c", "", "", []string{"立即支付"}); reason != "" {
+		t.Fatalf("copy %s", reason)
+	}
+	if reason, _, _ := DesktopPayKeyRefusal("center", "", "", []string{"立即支付"}); reason != "" {
+		t.Fatalf("center must not look like enter: %s", reason)
+	}
+	reason, title, msg = DesktopPayKeyRefusal("a", "支付密码", "edit", []string{"登录"})
+	if reason != "secret" || title != "支付密码" || msg == "" || strings.Contains(msg, "998877") {
+		t.Fatalf("secret key %s %s %s", reason, title, msg)
+	}
+	if reason, _, _ := DesktopPayKeyRefusal("enter", "支付密码", "button", nil); reason != "secret" {
+		t.Fatalf("a password box labeled as a button is still the caret: %s", reason)
+	}
+	if reason, _, msg := DesktopPayKeyRefusal("enter", "获取验证码", "button", nil); reason != "" || strings.Contains(msg, "验证码") {
+		t.Fatalf("get-code button must stay usable: %s %s", reason, msg)
+	}
+	longLine := strings.Repeat("商品说明", 30) + "立即支付"
+	if reason, _, _ := DesktopPayKeyRefusal("enter", "", "", []string{longLine, "搜索"}); reason != "" {
+		t.Fatalf("a paragraph is not a pay button: %s", reason)
+	}
+}
+
 func TestMergeCheckoutCardPinsPayableTotal(t *testing.T) {
 	page := CheckoutCardFromPage(strings.Join([]string{
 		"椰子水饮料 1250mL×2瓶",

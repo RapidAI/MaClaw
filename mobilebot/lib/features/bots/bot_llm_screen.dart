@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'bots_controller.dart';
+import '../../core/locale.dart';
 
 /// 当前模型 — 只读展示 `GET /api/v1/bots/llm` 的各阶段生效配置
 /// （前台/后台/电脑操作/界面定位）。编辑入口留在桌面端。
@@ -57,7 +58,7 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('当前模型')),
+      appBar: AppBar(title: Text(context.S.acCurrentModel)),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
@@ -75,7 +76,9 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        _mode == 'custom' ? '自定义模型服务' : '平台默认模型',
+                        _mode == 'custom'
+                            ? context.S.llmCustom
+                            : context.S.llmPlatformDefault,
                         style: theme.textTheme.titleSmall,
                       ),
                     ],
@@ -105,13 +108,16 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
                     ),
                   if (_effective.isNotEmpty) ...[
                     const SizedBox(height: 20),
-                    Text('各阶段生效', style: theme.textTheme.titleSmall),
+                    Text(
+                      context.S.llmStages,
+                      style: theme.textTheme.titleSmall,
+                    ),
                     const SizedBox(height: 4),
-                    for (final role in const [
-                      ('foreground', '前台对话'),
-                      ('background', '后台任务'),
-                      ('computer_use', '电脑操作'),
-                      ('grounder', '界面定位'),
+                    for (final role in [
+                      ('foreground', context.S.llmForeground),
+                      ('background', context.S.llmBackground),
+                      ('computer_use', context.S.llmComputerUse),
+                      ('grounder', context.S.llmGrounder),
                     ])
                       _EffectiveRoleRow(
                         label: role.$2,
@@ -122,7 +128,7 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
                     Padding(
                       padding: const EdgeInsets.only(top: 20),
                       child: Text(
-                        '暂无生效配置',
+                        context.S.llmNoConfig,
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
@@ -149,9 +155,9 @@ class _EffectiveRoleRow extends StatelessWidget {
     final unused = map['unused'] == true;
     final official = map['official'] == true;
     final detail = unused
-        ? '未启用'
+        ? context.S.llmNotEnabled
         : official
-        ? '官方模型'
+        ? context.S.llmOfficialModel
         : [
             (map['name'] ?? '').toString(),
             (map['model'] ?? '').toString(),

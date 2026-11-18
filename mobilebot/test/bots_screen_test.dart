@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'l10n_test_helper.dart';
 import 'package:mobilebot/core/account_store.dart';
 import 'package:mobilebot/core/api_client.dart';
 import 'package:mobilebot/core/providers.dart';
@@ -33,20 +34,17 @@ class _FakeApi extends BotApi {
 
 class _FakeSession extends SessionController {
   @override
-  SessionState build() => SessionState(
-        loaded: true,
-        accounts: [_account],
-        active: _account,
-      );
+  SessionState build() =>
+      SessionState(loaded: true, accounts: [_account], active: _account);
 }
 
 Widget _app(_FakeApi api) => ProviderScope(
-      overrides: [
-        botApiProvider.overrideWithValue(api),
-        sessionProvider.overrideWith(_FakeSession.new),
-      ],
-      child: const MaterialApp(home: BotsScreen()),
-    );
+  overrides: [
+    botApiProvider.overrideWithValue(api),
+    sessionProvider.overrideWith(_FakeSession.new),
+  ],
+  child: l10nApp(child: const BotsScreen()),
+);
 
 const _bot = Bot(
   id: 'b1',
@@ -95,9 +93,7 @@ void main() {
 
   testWidgets('a no-computer bot hides the screen button', (tester) async {
     final api = _FakeApi()
-      ..bots = const [
-        Bot(id: 'n1', name: '文书', desktopMode: 'none'),
-      ];
+      ..bots = const [Bot(id: 'n1', name: '文书', desktopMode: 'none')];
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 

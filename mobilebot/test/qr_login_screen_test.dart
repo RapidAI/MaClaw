@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'l10n_test_helper.dart';
 import 'package:mobilebot/core/account_store.dart';
 import 'package:mobilebot/core/providers.dart';
 import 'package:mobilebot/features/auth/auth_api.dart';
@@ -42,39 +43,42 @@ class _FakeSession extends SessionController {
 }
 
 Widget _app(_FakeAuthApi api, _FakeSession session) => ProviderScope(
-      overrides: [
-        authApiProvider.overrideWithValue(api),
-        sessionProvider.overrideWith(() => session),
-        clientIdProvider.overrideWith((_) async => 'cid-1'),
-      ],
-      child: MaterialApp(
-        home: QrLoginScreen(
-          scannerBuilder: (onPayload) =>
-              TextButton(
-            onPressed: () => onPayload(_qrPayload),
-            child: const Text('scan'),
-          ),
-        ),
+  overrides: [
+    authApiProvider.overrideWithValue(api),
+    sessionProvider.overrideWith(() => session),
+    clientIdProvider.overrideWith((_) async => 'cid-1'),
+  ],
+  child: l10nApp(
+    child: QrLoginScreen(
+      scannerBuilder: (onPayload) => TextButton(
+        onPressed: () => onPayload(_qrPayload),
+        child: const Text('scan'),
       ),
-    );
+    ),
+  ),
+);
 
 void main() {
   testWidgets('invalid QR shows an error without calling the api', (t) async {
     final api = _FakeAuthApi();
     final session = _FakeSession();
-    await t.pumpWidget(ProviderScope(
-      overrides: [
-        authApiProvider.overrideWithValue(api),
-        sessionProvider.overrideWith(() => session),
-        clientIdProvider.overrideWith((_) async => 'cid-1'),
-      ],
-      child: MaterialApp(
-        home: QrLoginScreen(
-          scannerBuilder: (onPayload) =>
-              TextButton(onPressed: () => onPayload('junk'), child: const Text('scan')),
+    await t.pumpWidget(
+      ProviderScope(
+        overrides: [
+          authApiProvider.overrideWithValue(api),
+          sessionProvider.overrideWith(() => session),
+          clientIdProvider.overrideWith((_) async => 'cid-1'),
+        ],
+        child: l10nApp(
+          child: QrLoginScreen(
+            scannerBuilder: (onPayload) => TextButton(
+              onPressed: () => onPayload('junk'),
+              child: const Text('scan'),
+            ),
+          ),
         ),
       ),
-    ));
+    );
     await t.tap(find.text('scan'));
     await t.pumpAndSettle();
     expect(api.lastPayload, isNull);

@@ -222,6 +222,10 @@ func (h *IMMessageHandler) clearCodingExecCheckpoint(userID string) {
 	codingExecCheckpointEpochMu.Lock()
 	h.codingExecCheckpoint.Delete(userID)
 	codingExecCheckpointEpochMu.Unlock()
+	// The checkpoint file is not the retry attempt. A stale checkpoint is
+	// dropped so the workbench can run the same "重试失败" command, and that
+	// command still needs the step ids. They are taken by the command, or
+	// dropped when the phase gate rejects the attempt or selection fails.
 	h.pendingCodingExecRetryAction.Delete(userID)
 	deleteCodingExecCheckpointFromDisk(userID, projectPath)
 }
@@ -441,6 +445,93 @@ func childHandoffTaskItemsFromResults(tasks []*v2.TaskItem, results []v2.TaskRun
 	return out
 }
 
+func (h *IMMessageHandler) storeCodingExecRetrySteps(userID string, ids []string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	if len(ids) == 0 {
+		h.pendingCodingExecRetrySteps.Delete(userID)
+		return
+	}
+	h.pendingCodingExecRetrySteps.Store(userID, append([]string(nil), ids...))
+}
+
+func (h *IMMessageHandler) takeCodingExecRetrySteps(userID string) []string {
+	if h == nil {
+		return nil
+	}
+	userID = strings.TrimSpace(userID)
+	raw, ok := h.pendingCodingExecRetrySteps.LoadAndDelete(userID)
+	if !ok {
+		return nil
+	}
+	ids, _ := raw.([]string)
+	if len(ids) == 0 {
+		return nil
+	}
+	return append([]string(nil), ids...)
+}
+
+// takeDirectedRetryForCommand consumes stored step ids only when this text
+// is the retry or resume command. Checked on the trimmed text, before a
+// caller replaces an empty message with a default sentence.
+func (h *IMMessageHandler) takeDirectedRetryForCommand(userID, userText string) []string {
+	if h == nil {
+		return nil
+	}
+	switch parseCodingExecRetryCommand(strings.TrimSpace(userText)) {
+	case codingExecRetryActionFailed, codingExecRetryActionResume:
+		return h.takeCodingExecRetrySteps(userID)
+	default:
+		return nil
+	}
+}
+
+func (h *IMMessageHandler) peekCodingExecRetrySteps(userID string) []string {
+	if h == nil {
+		return nil
+	}
+	userID = strings.TrimSpace(userID)
+	raw, ok := h.pendingCodingExecRetrySteps.Load(userID)
+	if !ok {
+		return nil
+	}
+	ids, _ := raw.([]string)
+	if len(ids) == 0 {
+		return nil
+	}
+	return append([]string(nil), ids...)
+}
+
+func (h *IMMessageHandler) noteCodingExecRetryError(userID, message string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	message = strings.TrimSpace(message)
+	if userID == "" || message == "" {
+		return
+	}
+	h.pendingCodingExecRetryError.Store(userID, message)
+}
+
+func (h *IMMessageHandler) takeCodingExecRetryError(userID string) string {
+	if h == nil {
+		return ""
+	}
+	userID = strings.TrimSpace(userID)
+	raw, ok := h.pendingCodingExecRetryError.LoadAndDelete(userID)
+	if !ok {
+		return ""
+	}
+	message, _ := raw.(string)
+	return strings.TrimSpace(message)
+}
+
 // tasksForSubsetRerun clones tasks and clears DependsOn so TaskRunner can re-run a
 // subset. Dependencies were already satisfied when those tasks first executed
 // (or were ready when cancelled); keeping DependsOn would skip them because the
@@ -632,56 +723,66 @@ func (h *IMMessageHandler) tryQueueCodingExecRetryCommand(userID, text string) *
 		return nil
 	}
 	var targets []*v2.TaskItem
-	switch action {
-	case codingExecRetryActionFailed:
-		targets = failedTaskItemsFromResults(cp.Tasks, cp.Results)
-		if len(targets) == 0 {
-			cmdResume := codingExecCmdResume()
-			cmdCancel := codingExecCmdCancelWorkflow()
-			return &workflowIMRouteResult{
-				Response: &IMAgentResponse{
-					Text: codingExecText(
-						fmt.Sprintf("No failed tasks to retry.\nIf tasks were cancelled/skipped, send **%s**.", cmdResume),
-						fmt.Sprintf("没有失败任务可重试。\n若有被取消/跳过的任务，请发送 **%s**。", cmdResume),
-						fmt.Sprintf("沒有失敗任務可重試。\n若有被取消/跳過的任務，請傳送 **%s**。", cmdResume),
-					),
-					Actions: []IMResponseAction{
-						{Label: cmdResume, Command: cmdResume, Style: "primary"},
-						{Label: cmdCancel, Command: cmdCancel, Style: "danger"},
+	if directed := h.peekCodingExecRetrySteps(userID); len(directed) > 0 &&
+		(action == codingExecRetryActionFailed || action == codingExecRetryActionResume) {
+		selected, selErr := codingExecSelectRetrySteps(cp.Tasks, cp.Results, directed)
+		if selErr != nil {
+			h.storeCodingExecRetrySteps(userID, nil)
+			return &workflowIMRouteResult{Response: &IMAgentResponse{Text: selErr.Error(), Error: selErr.Error()}}
+		}
+		targets = selected
+	} else {
+		switch action {
+		case codingExecRetryActionFailed:
+			targets = failedTaskItemsFromResults(cp.Tasks, cp.Results)
+			if len(targets) == 0 {
+				cmdResume := codingExecCmdResume()
+				cmdCancel := codingExecCmdCancelWorkflow()
+				return &workflowIMRouteResult{
+					Response: &IMAgentResponse{
+						Text: codingExecText(
+							fmt.Sprintf("No failed tasks to retry.\nIf tasks were cancelled/skipped, send **%s**.", cmdResume),
+							fmt.Sprintf("没有失败任务可重试。\n若有被取消/跳过的任务，请发送 **%s**。", cmdResume),
+							fmt.Sprintf("沒有失敗任務可重試。\n若有被取消/跳過的任務，請傳送 **%s**。", cmdResume),
+						),
+						Actions: []IMResponseAction{
+							{Label: cmdResume, Command: cmdResume, Style: "primary"},
+							{Label: cmdCancel, Command: cmdCancel, Style: "danger"},
+						},
 					},
-				},
+				}
 			}
-		}
-	case codingExecRetryActionResume:
-		targets = incompleteTaskItemsFromResults(cp.Tasks, cp.Results)
-		if len(targets) == 0 {
-			cmdCancel := codingExecCmdCancelWorkflow()
-			return &workflowIMRouteResult{
-				Response: &IMAgentResponse{
-					Text: codingExecText(
-						fmt.Sprintf("No incomplete tasks. If everything passed, send “continue” to advance acceptance, or **%s** to end.", cmdCancel),
-						fmt.Sprintf("没有未完成的任务。若全部已通过，可发送「继续」推进验收，或「%s」结束。", cmdCancel),
-						fmt.Sprintf("沒有未完成的任務。若全部已通過，可傳送「繼續」推進驗收，或「%s」結束。", cmdCancel),
-					),
-					Actions: []IMResponseAction{
-						{Label: cmdCancel, Command: cmdCancel, Style: "danger"},
+		case codingExecRetryActionResume:
+			targets = incompleteTaskItemsFromResults(cp.Tasks, cp.Results)
+			if len(targets) == 0 {
+				cmdCancel := codingExecCmdCancelWorkflow()
+				return &workflowIMRouteResult{
+					Response: &IMAgentResponse{
+						Text: codingExecText(
+							fmt.Sprintf("No incomplete tasks. If everything passed, send “continue” to advance acceptance, or **%s** to end.", cmdCancel),
+							fmt.Sprintf("没有未完成的任务。若全部已通过，可发送「继续」推进验收，或「%s」结束。", cmdCancel),
+							fmt.Sprintf("沒有未完成的任務。若全部已通過，可傳送「繼續」推進驗收，或「%s」結束。", cmdCancel),
+						),
+						Actions: []IMResponseAction{
+							{Label: cmdCancel, Command: cmdCancel, Style: "danger"},
+						},
 					},
-				},
+				}
 			}
+		case codingExecRetryActionReviewChildren:
+			targets = childHandoffTaskItemsFromResults(cp.Tasks, cp.Results)
+			if len(targets) == 0 {
+				return &workflowIMRouteResult{Response: &IMAgentResponse{Text: codingExecText(
+					"No Runtime child-result handoff is ready for review.",
+					"没有可审阅的 Runtime 子任务结果交接。",
+					"沒有可審閱的 Runtime 子任務結果交接。",
+				)}}
+			}
+			// Continue to the normal execution path. It revalidates the durable
+			// Runtime handoff before starting any parent attempt.
+		default:
+			return nil
 		}
-	case codingExecRetryActionReviewChildren:
-		targets = childHandoffTaskItemsFromResults(cp.Tasks, cp.Results)
-		if len(targets) == 0 {
-			return &workflowIMRouteResult{Response: &IMAgentResponse{Text: codingExecText(
-				"No Runtime child-result handoff is ready for review.",
-				"没有可审阅的 Runtime 子任务结果交接。",
-				"沒有可審閱的 Runtime 子任務結果交接。",
-			)}}
-		}
-		// Continue to the normal execution path. It revalidates the durable
-		// Runtime handoff before starting any parent attempt.
-	default:
-		return nil
 	}
 
 	// Prevent pure sticky coding from intercepting this SubAgent turn.

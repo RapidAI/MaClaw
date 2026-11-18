@@ -175,6 +175,50 @@ func ensureRepoMaintEventJSON(db *sql.DB) error {
 	return err
 }
 
+func (a *App) loadRepoMaintEventTask(ruleID, kind string) (string, bool, error) {
+	db, err := a.repoMaintDB()
+	if err != nil {
+		return "", false, err
+	}
+	var path string
+	err = db.QueryRow(`SELECT task_project_path FROM event_tasks WHERE rule_id=? AND event_kind=?`, ruleID, kind).Scan(&path)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", false, nil
+	}
+	return path, true, nil
+}
+
+func (a *App) saveRepoMaintEventTask(ruleID, kind, projectPath string) error {
+	db, err := a.repoMaintDB()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = db.Exec(`INSERT INTO event_tasks (rule_id, event_kind, task_project_path, updated_at)
+		VALUES (?,?,?,?)
+		ON CONFLICT(rule_id, event_kind) DO UPDATE SET
+			task_project_path=excluded.task_project_path,
+			updated_at=excluded.updated_at`,
+		ruleID, kind, projectPath, now)
+	return err
+}
+
+func (a *App) clearRepoMaintEventTask(ruleID, kind string) error {
+	db, err := a.repoMaintDB()
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`DELETE FROM event_tasks WHERE rule_id=? AND event_kind=?`, ruleID, kind)
+	return err
+}
+
 func mkdirAllParent(path string) error {
 	return os.MkdirAll(filepath.Dir(path), 0o755)
 }
@@ -219,6 +263,17 @@ var repoMaintSchemaStmts = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS jobs_delivery ON jobs(delivery_id) WHERE delivery_id <> ''`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS jobs_logical_open ON jobs(rule_id, event_kind, object_id) WHERE status IN ('queued', 'running', 'awaiting_user', 'comment_pending', 'succeeded', 'blocked_workspace')`,
 	`CREATE INDEX IF NOT EXISTS jobs_dir ON jobs(ghost_dir, status, created_at)`,
+	// One durable coding task per repository rule and event kind. The job row
+	// records which task ran that delivery. This row is the identity that the
+	// next delivery of the same kind continues. A restart clears the job's
+	// task path; it must not clear this mapping.
+	`CREATE TABLE IF NOT EXISTS event_tasks (
+    rule_id TEXT NOT NULL,
+    event_kind TEXT NOT NULL,
+    task_project_path TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (rule_id, event_kind)
+)`,
 }
 
 func (a *App) ListGitHubRepoMaintRules() ([]GitHubRepoMaintRule, error) {
@@ -343,7 +398,11 @@ func (a *App) loadRepoMaintRule(id string) (repoMaintRuleRow, error) {
 }
 
 // SaveGitHubRepoMaintRule validates and stores a draft or an edit.
-// It does not register a webhook and it does not change the master switch.
+// It does not change the master switch, and a rule that is off is not
+// registered. When an enabled rule's event set or push branch changes, the
+// local row is updated and then Hub and the GitHub hook are updated
+// together. The hook PATCH repeats the same secret. If that update fails,
+// the local row is restored to the previous set.
 func (a *App) SaveGitHubRepoMaintRule(in GitHubRepoMaintRule) (GitHubRepoMaintRule, error) {
 	owner, repo, repoURL, ghost, commands, kinds, branch, err := validateRepoMaintDraft(in)
 	if err != nil {
@@ -362,6 +421,8 @@ func (a *App) SaveGitHubRepoMaintRule(in GitHubRepoMaintRule) (GitHubRepoMaintRu
 
 	id := strings.TrimSpace(in.ID)
 	var existing repoMaintRuleRow
+	var syncSubscription bool
+	var prior repoMaintRuleRow
 	if id != "" {
 		existing, err = scanRepoMaintRule(tx.QueryRow(`SELECT id, owner, repo, repo_url, ghost_dir, enabled, push_branch, commands_json, kinds_json, hook_id, hook_token, auth_blocked, delete_pending, replay_mode, replay_next_url, last_error, updated_at FROM rules WHERE id=?`, id))
 		if err == sql.ErrNoRows {
@@ -377,6 +438,28 @@ func (a *App) SaveGitHubRepoMaintRule(in GitHubRepoMaintRule) (GitHubRepoMaintRu
 	}
 	if err := rejectDuplicateRepoMaint(tx, id, owner, repo, ghost); err != nil {
 		return GitHubRepoMaintRule{}, err
+	}
+	// The remote update happens after this transaction commits. Refuse the
+	// cases that cannot be patched before the local row changes, so a
+	// failure does not leave a new event set that GitHub will never send.
+	syncSubscription = existing.ID != "" && existing.Enabled && repoMaintSubscriptionChanged(existing, kinds, branch)
+	if syncSubscription {
+		if len(enabledRepoMaintKinds(kinds)) == 0 {
+			return GitHubRepoMaintRule{}, fmt.Errorf("至少打开一个事件并填写命令")
+		}
+		if existing.HookID <= 0 {
+			return GitHubRepoMaintRule{}, fmt.Errorf("GitHub hook 尚未挂上，无法更新事件")
+		}
+		if a.loadGitHubAccessToken() == "" {
+			return GitHubRepoMaintRule{}, fmt.Errorf("GitHub 未连接")
+		}
+		if !oauth.GitHubScopesHaveRepo(a.githubConnectionStatus().Scopes) {
+			return GitHubRepoMaintRule{}, fmt.Errorf("请重新连接 GitHub，令牌需要包含 repo")
+		}
+		if _, err := a.repoMaintHubIdentity(); err != nil {
+			return GitHubRepoMaintRule{}, err
+		}
+		prior = existing
 	}
 	if existing.ID == "" {
 		var n int
@@ -427,6 +510,14 @@ func (a *App) SaveGitHubRepoMaintRule(in GitHubRepoMaintRule) (GitHubRepoMaintRu
 	}
 	if err := tx.Commit(); err != nil {
 		return GitHubRepoMaintRule{}, err
+	}
+	if syncSubscription {
+		if err := a.syncEnabledRepoMaintSubscription(prior, kinds, branch); err != nil {
+			if restErr := a.restoreRepoMaintSubscription(prior); restErr != nil {
+				log.Printf("[github-repo-maint] restore subscription failed rule_id=%s err=%v", prior.ID, restErr)
+			}
+			return GitHubRepoMaintRule{}, err
+		}
 	}
 	log.Printf("[github-repo-maint] rule saved rule_id=%s", id)
 	a.requeueRepoMaintIfReady(id, ghost)
@@ -534,6 +625,32 @@ func sameGhostDir(a, b string) bool {
 		return true
 	}
 	return strings.EqualFold(a, b)
+}
+
+func repoMaintSubscriptionChanged(old repoMaintRuleRow, kinds map[string]bool, branch string) bool {
+	if old.PushBranch != branch {
+		return true
+	}
+	for _, kind := range githubRepoMaintKinds {
+		if old.Kinds[kind] != kinds[kind] {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) restoreRepoMaintSubscription(old repoMaintRuleRow) error {
+	commandsJSON, kindsJSON, err := marshalRepoMaintMaps(old.Commands, old.Kinds)
+	if err != nil {
+		return err
+	}
+	db, err := a.repoMaintDB()
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE rules SET push_branch=?, commands_json=?, kinds_json=?, updated_at=? WHERE id=?`,
+		old.PushBranch, commandsJSON, kindsJSON, time.Now().UTC().Format(time.RFC3339Nano), old.ID)
+	return err
 }
 
 func marshalRepoMaintMaps(commands map[string]string, kinds map[string]bool) (string, string, error) {

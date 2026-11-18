@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 const (
@@ -305,17 +306,9 @@ func normalizeAIAssistantUIMessage(message map[string]interface{}) {
 }
 
 func sanitizeAIAssistantUIPersistedText(value string) string {
-	value = strings.TrimPrefix(value, "\x01")
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\r', '\t':
-			return r
-		}
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
-			return -1
-		}
-		return r
-	}, value)
+	// Same tofu set as the live bubble. A transcript reopened from disk must
+	// not bring per-token U+0001 markers back as squares.
+	return textutil.SanitizeVisibleChatText(value)
 }
 
 func isPersistableAIAssistantUIMessage(message map[string]interface{}) bool {

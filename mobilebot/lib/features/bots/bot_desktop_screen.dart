@@ -3,15 +3,18 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show DeviceOrientation, SystemChrome;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import 'bot_api.dart';
+import '../../core/locale.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
 import 'desktop_wake_text.dart';
+import '../../core/ui_kit.dart' show EmptyState;
 
 /// 电脑画面 — the mobile counterpart of the desktop stage in the GUI's
 /// DesktopBotWorkspace. The watch hold pins the bot's desktop while the page
@@ -62,6 +65,11 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   void initState() {
     super.initState();
     if (_noComputer) return;
+    // 电脑画面横屏看 — desktop aspect ratios waste portrait; restore on exit.
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
     WidgetsBinding.instance.addObserver(this);
     _loadViewerPref();
     _hold(wake: false);
@@ -70,6 +78,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   @override
   void dispose() {
     if (!_noComputer) {
+      SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
       WidgetsBinding.instance.removeObserver(this);
       _holdTimer?.cancel();
       _loadGuardTimer?.cancel();
@@ -127,7 +136,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
       if (mounted && _waking) {
         setState(() {
           _waking = false;
-          _error = '等了一分钟电脑仍没有起来，请稍后再试';
+          _error = context.S.dtWakeTimeout;
         });
       }
     });
@@ -217,7 +226,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
       } else {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('另一台设备正在操作这台电脑')));
+        ).showSnackBar(SnackBar(content: Text(context.S.dtBusyOther)));
       }
     } on Object catch (error) {
       if (mounted) {
@@ -244,7 +253,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     setState(() => _controlling = false);
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('控制权已交给另一台设备')));
+    ).showSnackBar(SnackBar(content: Text(context.S.dtHandedOver)));
   }
 
   /// One claim round-trip — shared by the switch, the renewal tick and the
@@ -280,7 +289,11 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
         if (!mounted || granted != false) return;
         setState(() => _controlling = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(wasPaused ? '另一台设备正在操作这台电脑' : '控制权已交给另一台设备')),
+          SnackBar(
+            content: Text(
+              wasPaused ? context.S.dtBusyOther : context.S.dtHandedOver,
+            ),
+          ),
         );
       }),
     );
@@ -357,9 +370,9 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) {
           String proxyLabel(String mode) => switch (mode) {
-            'proxy' => '始终代理',
-            'direct' => '直连',
-            'smart' || '' => '智能（自动选择）',
+            'proxy' => context.S.dtProxyAlways,
+            'direct' => context.S.dtProxyDirect,
+            'smart' || '' => context.S.dtProxySmart,
             _ => mode,
           };
 
@@ -374,7 +387,9 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                 messenger.showSnackBar(
                   SnackBar(
                     content: Text(
-                      next.warning.isNotEmpty ? next.warning : '已保存，下次打开画面时生效',
+                      next.warning.isNotEmpty
+                          ? next.warning
+                          : context.S.dtSavedNextOpen,
                     ),
                   ),
                 );
@@ -387,6 +402,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
           }
 
           Future<void> computerAction(String action, String title) async {
+            final S = context.S;
             var force = false;
             final ok = await showDialog<bool>(
               context: context,
@@ -399,13 +415,13 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                     children: [
                       Text(
                         action == 'reset'
-                            ? '重置会把电脑恢复到初始镜像，未保存的数据将丢失。'
-                            : '重启会中断电脑上正在进行的工作。',
+                            ? context.S.dtResetWarning
+                            : context.S.dtRestartWarning,
                       ),
                       CheckboxListTile(
                         value: force,
                         onChanged: (v) => setDialog(() => force = v ?? false),
-                        title: const Text('强制（跳过优雅停止）'),
+                        title: Text(context.S.dtForceSkip),
                         controlAffinity: ListTileControlAffinity.leading,
                         contentPadding: EdgeInsets.zero,
                       ),
@@ -414,7 +430,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(context, false),
-                      child: const Text('取消'),
+                      child: Text(context.S.cancel),
                     ),
                     FilledButton(
                       onPressed: () => Navigator.pop(context, true),
@@ -435,7 +451,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                   content: Text(
                     result.status.isNotEmpty
                         ? '$title：${result.status}'
-                        : '$title完成',
+                        : S.dtActionDone(title),
                   ),
                 ),
               );
@@ -452,14 +468,14 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
               shrinkWrap: true,
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
               children: [
-                Text('代理模式', style: Theme.of(context).textTheme.titleSmall),
+                Text(
+                  context.S.dtProxyMode,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
                 if (proxy.locked)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 4, bottom: 4),
-                    child: Text(
-                      '管理员已锁定代理模式，当前为租户默认。',
-                      style: TextStyle(fontSize: 12),
-                    ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4, bottom: 4),
+                    child: Text(context.S.dtProxyLocked),
                   ),
                 RadioGroup<String>(
                   groupValue: proxy.userMode,
@@ -473,7 +489,13 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                           enabled: !proxy.locked,
                           title: Text(
                             mode.isEmpty
-                                ? '跟随租户默认（${proxyLabel(proxy.tenantDefault.isEmpty ? 'smart' : proxy.tenantDefault)}）'
+                                ? context.S.dtProxyFollowTenant(
+                                    proxyLabel(
+                                      proxy.tenantDefault.isEmpty
+                                          ? 'smart'
+                                          : proxy.tenantDefault,
+                                    ),
+                                  )
                                 : proxyLabel(mode),
                           ),
                           dense: true,
@@ -483,7 +505,10 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                   ),
                 ),
                 const Divider(height: 24),
-                Text('维护', style: Theme.of(context).textTheme.titleSmall),
+                Text(
+                  context.S.dtMaintenance,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
                 const SizedBox(height: 4),
                 Wrap(
                   spacing: 8,
@@ -491,26 +516,26 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                   children: [
                     OutlinedButton.icon(
                       onPressed: caps.restartAllowed
-                          ? () => computerAction('restart', '重启电脑')
+                          ? () => computerAction('restart', context.S.dtRestart)
                           : null,
                       icon: const Icon(Icons.restart_alt),
-                      label: const Text('重启电脑'),
+                      label: Text(context.S.dtRestart),
                     ),
                     OutlinedButton.icon(
                       onPressed: caps.resetAllowed
-                          ? () => computerAction('reset', '重置电脑')
+                          ? () => computerAction('reset', context.S.dtReset)
                           : null,
                       icon: const Icon(Icons.restore),
-                      label: const Text('重置电脑'),
+                      label: Text(context.S.dtReset),
                     ),
                   ],
                 ),
                 if (!caps.restartAllowed && !caps.resetAllowed)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 4),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
                     child: Text(
-                      '当前租户未开放电脑维护操作。',
-                      style: TextStyle(fontSize: 12),
+                      context.S.dtMaintenanceUnavailable,
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
               ],
@@ -525,15 +550,15 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   Widget build(BuildContext context) {
     if (_noComputer) {
       return Scaffold(
-        appBar: AppBar(title: Text('${widget.bot.title} 的电脑')),
-        body: const Center(child: Text('这个 bot 没有电脑')),
+        appBar: AppBar(title: Text(context.S.dtTitle(widget.bot.title))),
+        body: Center(child: Text(context.S.dtNoComputer)),
       );
     }
     final theme = Theme.of(context);
     final url = _watchUrl();
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.bot.title} 的电脑'),
+        title: Text(context.S.dtTitle(widget.bot.title)),
         actions: [
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
@@ -549,11 +574,12 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                   });
                   await _saveViewerPref(next);
                 case 'handback':
+                  final S = context.S;
                   final messenger = ScaffoldMessenger.of(context);
                   try {
                     await _api?.handBackDesktop(widget.bot.id);
                     messenger.showSnackBar(
-                      const SnackBar(content: Text('已把电脑交还给 Bot')),
+                      SnackBar(content: Text(S.dtHandedBack)),
                     );
                   } on Object catch (error) {
                     messenger.showSnackBar(
@@ -565,15 +591,23 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
               }
             },
             itemBuilder: (context) => [
-              const PopupMenuItem(value: 'refresh', child: Text('刷新')),
+              PopupMenuItem(value: 'refresh', child: Text(context.S.refresh)),
               PopupMenuItem(
                 value: 'viewer',
                 child: Text(
-                  _viewer == 'h264' ? '切换到 noVNC 画面' : '切换到 H.264 画面',
+                  _viewer == 'h264'
+                      ? context.S.dtSwitchToVnc
+                      : context.S.dtSwitchToH264,
                 ),
               ),
-              const PopupMenuItem(value: 'handback', child: Text('交还电脑')),
-              const PopupMenuItem(value: 'computer', child: Text('电脑维护…')),
+              PopupMenuItem(
+                value: 'handback',
+                child: Text(context.S.dtHandback),
+              ),
+              PopupMenuItem(
+                value: 'computer',
+                child: Text(context.S.dtComputerMaintenance),
+              ),
             ],
           ),
         ],
@@ -585,16 +619,28 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
               width: double.infinity,
               color: theme.colorScheme.tertiaryContainer,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: Text(
-                _desktop.attentionReason,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onTertiaryContainer,
-                ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.notifications_active_outlined,
+                    size: 16,
+                    color: theme.colorScheme.onTertiaryContainer,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _desktop.attentionReason,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onTertiaryContainer,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           if (_desktop.isRunning && _desktop.userControl)
             Material(
-              color: theme.colorScheme.surfaceContainerHighest,
+              color: theme.colorScheme.surfaceContainerLow,
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
@@ -606,7 +652,9 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        _controlling ? '接管中：可以操作这台电脑' : '观看模式（不操作电脑）',
+                        _controlling
+                            ? context.S.dtControlling
+                            : context.S.dtWatching,
                         style: theme.textTheme.bodySmall,
                       ),
                     ),
@@ -634,38 +682,24 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
         url: url,
       );
     }
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.desktop_access_disabled_outlined,
-              size: 64,
-              color: Colors.grey.shade400,
+    return EmptyState(
+      icon: Icons.desktop_access_disabled_outlined,
+      title: _waking
+          ? context.S.dtWaking
+          : _error.isNotEmpty
+          ? _error
+          : context.S.dtNoPicture,
+      action: _waking
+          ? const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2.4),
+            )
+          : FilledButton.icon(
+              onPressed: () => _hold(wake: true),
+              icon: const Icon(Icons.power_settings_new),
+              label: Text(context.S.dtWake),
             ),
-            const SizedBox(height: 16),
-            Text(
-              _waking
-                  ? '正在唤醒电脑…'
-                  : _error.isNotEmpty
-                  ? _error
-                  : '电脑还没有画面',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyLarge,
-            ),
-            const SizedBox(height: 20),
-            if (!_waking)
-              FilledButton.icon(
-                onPressed: () => _hold(wake: true),
-                icon: const Icon(Icons.power_settings_new),
-                label: const Text('唤醒电脑'),
-              ),
-            if (_waking) const CircularProgressIndicator(),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -687,6 +721,24 @@ class _DesktopWebViewState extends State<DesktopWebView> {
   double _progress = 0;
   String _loadError = '';
 
+  // ── Pinch zoom ──────────────────────────────────────────────────────────
+  // Raw Listener, NOT InteractiveViewer: the viewer's scale recognizer wins
+  // the gesture arena on one-finger drags too (it returns early for disabled
+  // pan, but the platform view still gets a cancel) — that would kill the
+  // single-finger remote mouse. A Listener never claims the arena, so
+  // one-finger events reach the page untouched while two fingers drive the
+  // transform below.
+  final _zoom = TransformationController();
+  final _pointers = <int, Offset>{};
+  bool _pinching = false;
+  Offset _pinchFocalStart = Offset.zero;
+  double _pinchDistanceStart = 1;
+  Matrix4 _pinchMatrixStart = Matrix4.identity();
+  Size _viewportSize = Size.zero;
+
+  static const _minScale = 1.0;
+  static const _maxScale = 4.0;
+
   @override
   void initState() {
     super.initState();
@@ -700,13 +752,21 @@ class _DesktopWebViewState extends State<DesktopWebView> {
           },
           onWebResourceError: (error) {
             if (mounted && error.isForMainFrame == true) {
-              setState(() => _loadError = '画面加载失败（${error.errorCode}）');
+              setState(
+                () => _loadError = context.S.dtLoadFailed(error.errorCode),
+              );
             }
           },
         ),
       )
       ..loadRequest(Uri.parse(widget.url));
     _webView = _buildWebView();
+  }
+
+  @override
+  void dispose() {
+    _zoom.dispose();
+    super.dispose();
   }
 
   /// The default SurfaceTexture platform-view path re-rasterizes WebView
@@ -731,13 +791,143 @@ class _DesktopWebViewState extends State<DesktopWebView> {
     return WebViewWidget.fromPlatformCreationParams(params: params);
   }
 
+  void _onPointerDown(PointerDownEvent event) {
+    _pointers[event.pointer] = event.localPosition;
+    if (_pointers.length == 2) _beginPinch();
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    if (!_pointers.containsKey(event.pointer)) return;
+    _pointers[event.pointer] = event.localPosition;
+    if (_pointers.length >= 2) {
+      if (!_pinching) _beginPinch();
+      _updatePinch();
+    }
+  }
+
+  void _onPointerEnd(PointerEvent event) {
+    _pointers.remove(event.pointer);
+    if (_pointers.length < 2) _pinching = false;
+  }
+
+  void _beginPinch() {
+    final pts = _pointers.values.toList();
+    if (pts.length < 2) return;
+    _pinching = true;
+    _pinchFocalStart = (pts[0] + pts[1]) / 2;
+    _pinchDistanceStart = (pts[0] - pts[1]).distance;
+    _pinchMatrixStart = _zoom.value.clone();
+  }
+
+  /// M' = T(focal_now) · S(s) · T(−focal_start) · M_start — the fingers'
+  /// midpoint stays glued to the same scene point while scale follows the
+  /// finger distance; translation is clamped so the scaled picture keeps
+  /// covering the viewport.
+  void _updatePinch() {
+    if (!_pinching || _pointers.length < 2) return;
+    final pts = _pointers.values.toList();
+    final dist = (pts[0] - pts[1]).distance;
+    if (dist == 0 || _viewportSize == Size.zero) return;
+    final scaleStart = _pinchMatrixStart.getMaxScaleOnAxis();
+    final scale = (scaleStart * dist / _pinchDistanceStart).clamp(
+      _minScale,
+      _maxScale,
+    );
+    final focal = (pts[0] + pts[1]) / 2;
+    final matrix = Matrix4.identity()
+      ..translateByDouble(focal.dx, focal.dy, 0, 1)
+      ..scaleByDouble(scale / scaleStart, scale / scaleStart, 1, 1)
+      ..translateByDouble(-_pinchFocalStart.dx, -_pinchFocalStart.dy, 0, 1)
+      ..multiply(_pinchMatrixStart);
+    var translation = matrix.getTranslation();
+    final maxX = 0.0;
+    final minX = _viewportSize.width * (1 - scale);
+    final maxY = 0.0;
+    final minY = _viewportSize.height * (1 - scale);
+    translation.x = translation.x.clamp(minX, maxX);
+    translation.y = translation.y.clamp(minY, maxY);
+    matrix.setTranslationRaw(translation.x, translation.y, 0);
+    _zoom.value = matrix;
+  }
+
+  void _resetZoom() {
+    _zoom.value = Matrix4.identity();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Stack(
+      fit: StackFit.expand,
       children: [
-        _webView,
+        Listener(
+          onPointerDown: _onPointerDown,
+          onPointerMove: _onPointerMove,
+          onPointerUp: _onPointerEnd,
+          onPointerCancel: _onPointerEnd,
+          child: ClipRect(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                _viewportSize = constraints.biggest;
+                return AnimatedBuilder(
+                  animation: _zoom,
+                  builder: (context, child) =>
+                      Transform(transform: _zoom.value, child: child),
+                  child: SizedBox.expand(child: _webView),
+                );
+              },
+            ),
+          ),
+        ),
         if (_progress < 1 && _loadError.isEmpty)
           LinearProgressIndicator(value: _progress > 0 ? _progress : null),
+        AnimatedBuilder(
+          animation: _zoom,
+          builder: (context, _) {
+            final scale = _zoom.value.getMaxScaleOnAxis();
+            return scale > _minScale + 0.05
+                ? Align(
+                    alignment: Alignment.topRight,
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: Material(
+                        color: scheme.inverseSurface.withValues(alpha: 0.85),
+                        borderRadius: BorderRadius.circular(20),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: _resetZoom,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.close_fullscreen,
+                                  size: 14,
+                                  color: scheme.onInverseSurface,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '${scale.toStringAsFixed(1)}×',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: scheme.onInverseSurface,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                : const SizedBox.shrink();
+          },
+        ),
         if (_loadError.isNotEmpty)
           Center(
             child: Column(
@@ -750,7 +940,7 @@ class _DesktopWebViewState extends State<DesktopWebView> {
                     setState(() => _loadError = '');
                     _controller.loadRequest(Uri.parse(widget.url));
                   },
-                  child: const Text('重新加载'),
+                  child: Text(context.S.dtReload),
                 ),
               ],
             ),

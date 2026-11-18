@@ -377,6 +377,10 @@ type ViewportInput struct {
 	DeltaY     float64 `json:"delta_y"`
 	Key        string  `json:"key"`
 	Text       string  `json:"text"`
+	// Gen is the preview bar's caret generation. It advances when the press
+	// focuses a different field. Text from the previous field carries the
+	// old number and is not written into the new one.
+	Gen int `json:"gen"`
 }
 
 // ParseViewportInput decodes a preview input payload.

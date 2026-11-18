@@ -148,6 +148,20 @@ describe("visibleAssistantReplyForMessage", () => {
         expect(visible.content).toBe("我先查一下。");
         expect(visible.reasoning).toBe("直接搜索。");
     });
+
+    it("drops sentinels glued between tokens before the bubble is painted", () => {
+        const visible = visibleAssistantReplyForMessage("The\x01 user\x01Ma\x01Cl", "desk\x01top", { toolCalls: true });
+        expect(visible.content).toBe("The userMaCl");
+        expect(visible.reasoning).toBe("desktop");
+    });
+
+    it("peels a plan once the glued reasoning sentinel is gone", () => {
+        const plan = "The\x01 user wants me to SSH into a Linux server and upgrade desktopd and MaClawSrv following the documentation.";
+        const visible = visibleAssistantReplyForMessage(plan, "", { live: true });
+        expect(visible.content).toBe("");
+        expect(visible.reasoning.startsWith("The user wants")).toBe(true);
+        expect(visible.reasoning.includes("\x01")).toBe(false);
+    });
 });
 
 describe("resolveVisibleAssistantReply", () => {

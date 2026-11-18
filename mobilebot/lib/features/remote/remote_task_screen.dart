@@ -5,13 +5,16 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../bots/bots_controller.dart' show failureMessage;
-import '../bots/widgets.dart' show linkifyMarkdownUrls, openExternalUrl;
+import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
+import '../../core/locale.dart';
+import '../../core/ui_kit.dart' show linkifyMarkdownUrls, openExternalUrl;
 import 'remote_api.dart';
 import 'remote_models.dart';
 import 'remote_screen.dart' show remoteApiProvider, remoteTasksProvider;
@@ -64,6 +67,14 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   int _streamGen = 0;
   ViewerReduceState _live = emptyViewerState();
   String _recovery = '';
+
+  ///  事件到达后锁存—— 会把 state.responded 清掉，
+  /// 没有这个锁存，历史已接管本轮后 live 轮会整体复活，与历史的完整
+  /// 思考/正文同屏重复。新 round（或 requestId 变化）时清掉。
+  bool _respondedLatch = false;
+
+  /// 一旦转录的尾行拥有本轮正文，锁存整轮归属，live 轮彻底退场。
+  bool _ownRoundLatch = false;
   AccountEventStream? _account;
   StreamSubscription<Map<String, dynamic>>? _liveSub;
 
@@ -117,6 +128,12 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       final seeded = seedViewerFromWatchReply(reply, _live);
       if (!mounted || _paused || gen != _streamGen) return;
       if (!identical(seeded, _live)) {
+        // 快照换轮（requestId 变化）时，上一轮的归属/响应锁存必须跟着退场。
+        if (seeded.requestId.isNotEmpty &&
+            seeded.requestId != _live.requestId) {
+          _respondedLatch = false;
+          _ownRoundLatch = false;
+        }
         setState(() => _live = seeded);
       }
       final opened = await api.openAccountStream(
@@ -135,6 +152,13 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
           if (!mounted || _paused || gen != _streamGen) return;
           final prev = _live;
           final next = reduceViewerEvent(prev, event);
+          final eventName = event['event']?.toString() ?? '';
+          if (eventName == 'response') _respondedLatch = true;
+          if (eventName == 'round_started' ||
+              next.requestId != prev.requestId) {
+            _respondedLatch = false;
+            _ownRoundLatch = false;
+          }
           final recovery = _recoveryText(event);
           final openedGap = next.gap && !prev.gap;
           if (next.gap) {
@@ -226,6 +250,10 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     final seeded = seedViewerFromWatchReply(reply, _live);
     if (!mounted || _paused || gen != _streamGen) return false;
     if (!identical(seeded, _live)) {
+      if (seeded.requestId.isNotEmpty && seeded.requestId != _live.requestId) {
+        _respondedLatch = false;
+        _ownRoundLatch = false;
+      }
       setState(() => _live = seeded);
     }
     return seeded.last > before;
@@ -330,7 +358,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       // round-trip instead of surfacing the server error.
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('远控只能发送任务消息，不能运行本机命令')));
+      ).showSnackBar(SnackBar(content: Text(context.S.rtLocalCmdRejected)));
       return;
     }
     final api = ref.read(remoteApiProvider);
@@ -365,7 +393,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       final name = await showDialog<String>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('重命名任务'),
+          title: Text(context.S.rtRename),
           content: TextField(
             controller: ctrl,
             autofocus: true,
@@ -374,11 +402,11 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
+              child: Text(context.S.cancel),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-              child: const Text('保存'),
+              child: Text(context.S.save),
             ),
           ],
         ),
@@ -424,16 +452,16 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('停止任务'),
-        content: const Text('确定要停止这台机器上正在运行的任务吗？'),
+        title: Text(context.S.rtStopTaskTitle),
+        content: Text(context.S.rtStopTaskBody),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
+            child: Text(context.S.cancel),
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('停止'),
+            child: Text(context.S.stop),
           ),
         ],
       ),
@@ -454,15 +482,17 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     }
   }
 
-  /// fetch_file → temp file → system share sheet (download to other apps).
-  Future<void> _fetchAndShare(String path) async {
+  /// fetch_file → temp file (unique per download) — shared by the 打开 and
+  /// 分享 actions. Returns the written path, or null after a reported error.
+  Future<String?> _fetchToFile(String path) async {
+    final S = context.S;
     final api = ref.read(remoteApiProvider);
-    if (api == null || _downloading) return;
+    if (api == null || _downloading) return null;
     setState(() => _downloading = true);
     try {
       final file = await api.fetchFile(widget.grant.id, widget.taskPath, path);
       if (file.dataBase64.isEmpty) {
-        throw StateError('远端没有返回文件内容');
+        throw StateError(S.rtNoFileContent);
       }
       final bytes = base64Decode(file.dataBase64);
       final dir = await getTemporaryDirectory();
@@ -479,16 +509,55 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
           : '$safe-$stamp';
       final target = '${dir.path}${Platform.pathSeparator}remote-$unique';
       await File(target).writeAsBytes(bytes, flush: true);
-      if (!mounted) return;
-      await SharePlus.instance.share(ShareParams(files: [XFile(target)]));
+      return target;
     } on Object catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('下载失败：${failureMessage(error)}')),
+          SnackBar(
+            content: Text(context.S.rtDownloadFailed(failureMessage(error))),
+          ),
         );
       }
+      return null;
     } finally {
       if (mounted) setState(() => _downloading = false);
+    }
+  }
+
+  /// fetch_file → temp file → system share sheet (download to other apps).
+  Future<void> _fetchAndShare(String path) async {
+    final target = await _fetchToFile(path);
+    if (target == null || !mounted) return;
+    await SharePlus.instance.share(ShareParams(files: [XFile(target)]));
+  }
+
+  /// fetch_file → temp file → the system default app for this file type.
+  Future<void> _fetchAndOpen(String path) async {
+    final target = await _fetchToFile(path);
+    if (target == null || !mounted) return;
+    final OpenResult result;
+    try {
+      result = await OpenFilex.open(target);
+    } on Object {
+      // Plugin unavailable (or the platform threw) — never crash the task
+      // screen over an open that cannot proceed.
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(context.S.rtNoAppToOpen)));
+      return;
+    }
+    if (!mounted) return;
+    if (result.type != ResultType.done) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result.message.isNotEmpty
+                ? result.message
+                : context.S.rtNoAppToOpen,
+          ),
+        ),
+      );
     }
   }
 
@@ -541,17 +610,29 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   /// copy would show it twice. A get_task row cut at 4000 runes is not that
   /// answer — the stream still has the rest.
   bool _transcriptOwnsLive() {
-    if (!_live.responded) return false;
+    if (_ownRoundLatch) return true;
+    if (!_live.responded && !_respondedLatch) return false;
     final body = _shownLiveBody();
-    if (body.isEmpty) return false;
     final messages = _detail?.messages;
     if (messages == null || messages.isEmpty) return false;
     final tail = messages.last;
     if (tail.role != 'assistant') return false;
     final content = tail.content.trim();
-    if (content.isEmpty || _historyIsCappedPrefix(content, body)) return false;
-    final n = body.length < 60 ? body.length : 60;
-    return content.startsWith(body.substring(0, n));
+    if (body.isNotEmpty) {
+      if (content.isEmpty || _historyIsCappedPrefix(content, body)) {
+        return false;
+      }
+      final n = body.length < 60 ? body.length : 60;
+      final owned = content.startsWith(body.substring(0, n));
+      if (owned) _ownRoundLatch = true;
+      return owned;
+    }
+    // 正文为空的轮（仅文件/思考）：尾行就是本轮时，历史即拥有。
+    if (_trimmedTailIsThisRound()) {
+      _ownRoundLatch = true;
+      return true;
+    }
+    return false;
   }
 
   bool _omitCappedHistoryTail(RemoteMessage message, bool isTail) {
@@ -612,7 +693,9 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     final canOperate = widget.grant.canOperate;
     final title = detail?.task.title.isNotEmpty == true
         ? detail!.task.title
-        : (widget.taskName.isNotEmpty ? widget.taskName : '远程任务');
+        : (widget.taskName.isNotEmpty
+              ? widget.taskName
+              : context.S.rtDefaultTaskName);
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -625,14 +708,14 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
               overflow: TextOverflow.ellipsis,
             ),
             Text(
-              '${widget.grant.title} · ${widget.grant.permissionLabel}',
+              '${widget.grant.title} · ${widget.grant.permissionLabel(context.S)}',
               style: theme.textTheme.labelSmall,
             ),
           ],
         ),
         actions: [
           IconButton(
-            tooltip: '刷新',
+            tooltip: context.S.refresh,
             icon: const Icon(Icons.refresh),
             onPressed: _load,
           ),
@@ -650,12 +733,19 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                 }
               },
               itemBuilder: (_) => [
-                const PopupMenuItem(value: 'rename', child: Text('重命名')),
+                PopupMenuItem(value: 'rename', child: Text(context.S.rtRename)),
                 PopupMenuItem(
                   value: 'pin',
-                  child: Text(detail?.task.pinned == true ? '取消置顶' : '置顶'),
+                  child: Text(
+                    detail?.task.pinned == true
+                        ? context.S.rtUnpin
+                        : context.S.rtPin,
+                  ),
                 ),
-                const PopupMenuItem(value: 'stop', child: Text('停止任务')),
+                PopupMenuItem(
+                  value: 'stop',
+                  child: Text(context.S.rtStopTaskTitle),
+                ),
               ],
             ),
         ],
@@ -669,7 +759,10 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                 children: [
                   Text(_error),
                   const SizedBox(height: 12),
-                  FilledButton.tonal(onPressed: _load, child: const Text('重试')),
+                  FilledButton.tonal(
+                    onPressed: _load,
+                    child: Text(context.S.retry),
+                  ),
                 ],
               ),
             )
@@ -699,8 +792,10 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                         Expanded(
                           child: Text(
                             detail.task.activePhase.isNotEmpty
-                                ? '运行中 · ${detail.task.activePhase}'
-                                : '运行中',
+                                ? context.S.rtRunningWith(
+                                    detail.task.activePhase,
+                                  )
+                                : context.S.rcStateRunning,
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.primary,
                             ),
@@ -721,7 +816,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                           Padding(
                             padding: const EdgeInsets.only(bottom: 8),
                             child: Text(
-                              '时间线已降级',
+                              context.S.rtTimelineDegraded,
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: theme.colorScheme.error,
                               ),
@@ -736,6 +831,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                               _MessageRow(
                                 message: detail.messages[i],
                                 onFetch: _fetchAndShare,
+                                onOpen: _fetchAndOpen,
                                 downloading: _downloading,
                               ),
                         if ((detail == null || detail.messages.isEmpty) &&
@@ -744,7 +840,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                             padding: const EdgeInsets.symmetric(vertical: 24),
                             child: Center(
                               child: Text(
-                                '还没有对话记录',
+                                context.S.rtNoTranscript,
                                 style: theme.textTheme.bodyMedium?.copyWith(
                                   color: theme.colorScheme.onSurfaceVariant,
                                 ),
@@ -760,48 +856,26 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                             filePaths: _cappedTailFiles(),
                             downloading: _downloading,
                             onFetch: _fetchAndShare,
+                            onOpen: _fetchAndOpen,
                           ),
                       ],
                     ),
                   ),
                 ),
                 if (detail != null && detail.artifacts.isNotEmpty)
-                  _ArtifactStrip(artifacts: detail.artifacts),
+                  _ArtifactStrip(
+                    artifacts: detail.artifacts,
+                    onFetch: _fetchAndShare,
+                    onOpen: _fetchAndOpen,
+                    downloading: _downloading,
+                  ),
                 if (canOperate)
-                  SafeArea(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _inputCtrl,
-                              minLines: 1,
-                              maxLines: 4,
-                              decoration: const InputDecoration(
-                                hintText: '给这台机器的任务发消息…',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                              onSubmitted: (_) => _send(),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          IconButton.filled(
-                            onPressed: _sending ? null : _send,
-                            icon: _sending
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.send, size: 18),
-                          ),
-                        ],
-                      ),
-                    ),
+                  ChatComposer(
+                    controller: _inputCtrl,
+                    hint: context.S.rtComposerHint,
+                    sending: _sending,
+                    onSend: _send,
+                    onSubmitted: (_) => _send(),
                   ),
               ],
             ),
@@ -817,6 +891,7 @@ class _LiveRound extends StatelessWidget {
   final List<String> filePaths;
   final bool downloading;
   final Future<void> Function(String path) onFetch;
+  final Future<void> Function(String path) onOpen;
 
   const _LiveRound({
     required this.state,
@@ -826,16 +901,18 @@ class _LiveRound extends StatelessWidget {
     this.filePaths = const [],
     this.downloading = false,
     required this.onFetch,
+    required this.onOpen,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final S = context.S;
     final notes = <String>[];
-    for (final block in state.thinking) {
-      if (block.text.isEmpty) continue;
-      notes.add(block.done ? block.text : '思考中 ${block.text}');
-    }
+    final thinking = [
+      for (final block in state.thinking)
+        if (block.text.trim().isNotEmpty) block.text,
+    ].join('\n\n');
     final body = shownBody;
     for (final row in state.timeline) {
       final title = row.title.isNotEmpty ? row.title : row.text;
@@ -844,20 +921,24 @@ class _LiveRound extends StatelessWidget {
     }
     for (final card in state.cards) {
       if (card.expired) {
-        notes.add('确认已失效');
+        notes.add(S.rtConfirmInvalid);
       } else if (card.text.isNotEmpty) {
         notes.add(card.text);
       } else if (card.kind == 'confirmation') {
-        notes.add('需要确认');
+        notes.add(S.rtConfirmRequired);
       }
     }
     for (final note in state.notices) {
       if (note.text.isNotEmpty) notes.add(note.text);
     }
     if (state.trialStatus.isNotEmpty) notes.add(state.trialStatus);
-    if (state.trialFailures > 0) notes.add('失败 ${state.trialFailures}');
+    if (state.trialFailures > 0) notes.add(S.rtFailures(state.trialFailures));
     if (recovery.isNotEmpty) notes.add(recovery);
-    if (notes.isEmpty && body.isEmpty && filePaths.isEmpty && !syncing) {
+    if (thinking.isEmpty &&
+        notes.isEmpty &&
+        body.isEmpty &&
+        filePaths.isEmpty &&
+        !syncing) {
       return const SizedBox.shrink();
     }
     return Padding(
@@ -879,10 +960,19 @@ class _LiveRound extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (thinking.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: _ReasoningBlock(
+                      text: thinking,
+                      streaming: true,
+                      initiallyExpanded: true,
+                    ),
+                  ),
                 for (final line in notes)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 4),
-                    child: Text(line, style: theme.textTheme.bodyMedium),
+                    child: _NoteLine(text: line),
                   ),
                 if (body.isNotEmpty)
                   MarkdownBody(
@@ -897,7 +987,7 @@ class _LiveRound extends StatelessWidget {
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: Text(
-                      '正在补齐中断的输出',
+                      context.S.rtResuming,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -908,6 +998,7 @@ class _LiveRound extends StatelessWidget {
                     path: path,
                     downloading: downloading,
                     onTap: () => onFetch(path),
+                    onOpen: () => onOpen(path),
                   ),
               ],
             ),
@@ -980,8 +1071,16 @@ bool _historyIsCappedPrefix(String history, String live) {
 
 class _ArtifactStrip extends StatelessWidget {
   final List<RemoteArtifact> artifacts;
+  final Future<void> Function(String path) onFetch;
+  final Future<void> Function(String path) onOpen;
+  final bool downloading;
 
-  const _ArtifactStrip({required this.artifacts});
+  const _ArtifactStrip({
+    required this.artifacts,
+    required this.onFetch,
+    required this.onOpen,
+    this.downloading = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -994,15 +1093,23 @@ class _ArtifactStrip extends StatelessWidget {
           shrinkWrap: true,
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
           children: [
-            Text('产出物', style: theme.textTheme.titleSmall),
+            Text(context.S.rtArtifacts, style: theme.textTheme.titleSmall),
             const SizedBox(height: 4),
             for (final artifact in artifacts)
               Card(
                 child: ListTile(
                   dense: true,
+                  // sourceUrl 是产物在受控机上的路径——fetch_file 只回传
+                  // 任务记录里投递过的文件，路径没被投递时服务端会如实报错。
+                  enabled: artifact.sourceUrl.isNotEmpty,
+                  onTap: artifact.sourceUrl.isEmpty
+                      ? null
+                      : () => onOpen(artifact.sourceUrl),
                   leading: const Icon(Icons.description_outlined),
                   title: Text(
-                    artifact.title.isNotEmpty ? artifact.title : '产出物',
+                    artifact.title.isNotEmpty
+                        ? artifact.title
+                        : context.S.rtArtifacts,
                   ),
                   subtitle: artifact.preview.isNotEmpty
                       ? Text(
@@ -1011,10 +1118,68 @@ class _ArtifactStrip extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                         )
                       : null,
+                  trailing: artifact.sourceUrl.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: context.S.rtDownload,
+                          icon: downloading
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.download_outlined),
+                          onPressed: downloading
+                              ? null
+                              : () => onFetch(artifact.sourceUrl),
+                        ),
                 ),
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// One live-note / reasoning line rendered as markdown — the bot's streaming
+/// text carries formatting (steps, code ticks, lists) and plain Text showed
+/// it raw. Compact spacing + optional muted/error tone.
+class _NoteLine extends StatelessWidget {
+  final String text;
+  final bool muted;
+
+  const _NoteLine({required this.text, this.muted = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final base = muted
+        ? theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+            height: 1.5,
+          )
+        : theme.textTheme.bodyMedium?.copyWith(height: 1.45);
+    return MarkdownBody(
+      // 推理/笔记里的链接要可点（桌面端同行为），文本可选中以便复制。
+      data: linkifyMarkdownUrls(text),
+      selectable: true,
+      onTapLink: (text, href, title) {
+        if (href != null) openExternalUrl(href);
+      },
+      styleSheet: _taskMarkdownStyle(theme).copyWith(
+        p: base,
+        a: theme.textTheme.bodyMedium?.copyWith(
+          color: theme.colorScheme.primary,
+          fontWeight: FontWeight.w600,
+          decoration: TextDecoration.underline,
+        ),
+        h1: theme.textTheme.titleSmall,
+        h2: theme.textTheme.titleSmall,
+        h3: theme.textTheme.titleSmall,
+        blockSpacing: 4,
       ),
     );
   }
@@ -1042,11 +1207,13 @@ MarkdownStyleSheet _taskMarkdownStyle(ThemeData theme) {
 class _MessageRow extends StatelessWidget {
   final RemoteMessage message;
   final Future<void> Function(String path) onFetch;
+  final Future<void> Function(String path) onOpen;
   final bool downloading;
 
   const _MessageRow({
     required this.message,
     required this.onFetch,
+    required this.onOpen,
     required this.downloading,
   });
 
@@ -1057,6 +1224,7 @@ class _MessageRow extends StatelessWidget {
         : _AssistantTurn(
             message: message,
             onFetch: onFetch,
+            onOpen: onOpen,
             downloading: downloading,
           );
   }
@@ -1070,32 +1238,11 @@ class _UserBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Align(
-      alignment: Alignment.centerRight,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.8,
-        ),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.primary,
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(18),
-            topRight: Radius.circular(18),
-            bottomLeft: Radius.circular(18),
-            bottomRight: Radius.circular(4),
-          ),
-        ),
-        child: SelectableText(
-          text,
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onPrimary,
-            height: 1.45,
-          ),
-        ),
-      ),
+    return MessageBubble(
+      role: ChatRole.user,
+      maxWidth: MediaQuery.of(context).size.width * 0.78,
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      child: SelectableText(text, style: const TextStyle(height: 1.45)),
     );
   }
 }
@@ -1105,66 +1252,63 @@ class _UserBubble extends StatelessWidget {
 class _AssistantTurn extends StatelessWidget {
   final RemoteMessage message;
   final Future<void> Function(String path) onFetch;
+  final Future<void> Function(String path) onOpen;
   final bool downloading;
 
   const _AssistantTurn({
     required this.message,
     required this.onFetch,
+    required this.onOpen,
     required this.downloading,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
+    return MessageBubble(
+      role: ChatRole.assistant,
+      maxWidth: MediaQuery.of(context).size.width * 0.84,
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      leading: CircleAvatar(
+        radius: 15,
+        backgroundColor: theme.colorScheme.primaryContainer,
+        child: Icon(
+          Icons.smart_toy_outlined,
+          size: 17,
+          color: theme.colorScheme.onPrimaryContainer,
+        ),
+      ),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CircleAvatar(
-            radius: 15,
-            backgroundColor: theme.colorScheme.primaryContainer,
-            child: Icon(
-              Icons.smart_toy_outlined,
-              size: 17,
-              color: theme.colorScheme.onPrimaryContainer,
+          if (message.reasoning.isNotEmpty) ...[
+            _ReasoningBlock(text: message.reasoning),
+            const SizedBox(height: 8),
+          ],
+          if (message.content.isNotEmpty)
+            MarkdownBody(
+              data: linkifyMarkdownUrls(message.content),
+              selectable: true,
+              onTapLink: (text, href, title) {
+                if (href != null) openExternalUrl(href);
+              },
+              styleSheet: _taskMarkdownStyle(theme),
             ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (message.reasoning.isNotEmpty) ...[
-                  _ReasoningBlock(text: message.reasoning),
-                  const SizedBox(height: 8),
-                ],
-                if (message.content.isNotEmpty)
-                  MarkdownBody(
-                    data: linkifyMarkdownUrls(message.content),
-                    selectable: true,
-                    onTapLink: (text, href, title) {
-                      if (href != null) openExternalUrl(href);
-                    },
-                    styleSheet: _taskMarkdownStyle(theme),
-                  ),
-                if (message.resultStatus.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: _StatusChip(status: message.resultStatus),
-                  ),
-                if (message.filePaths.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  for (final path in message.filePaths)
-                    _FileCard(
-                      path: path,
-                      downloading: downloading,
-                      onTap: () => onFetch(path),
-                    ),
-                ],
-              ],
+          if (message.resultStatus.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: _StatusChip(status: message.resultStatus),
             ),
-          ),
+          if (message.filePaths.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            for (final path in message.filePaths)
+              _FileCard(
+                path: path,
+                downloading: downloading,
+                onTap: () => onFetch(path),
+                onOpen: () => onOpen(path),
+              ),
+          ],
         ],
       ),
     );
@@ -1175,7 +1319,17 @@ class _AssistantTurn extends StatelessWidget {
 class _ReasoningBlock extends StatelessWidget {
   final String text;
 
-  const _ReasoningBlock({required this.text});
+  /// live 轮流式阶段为 true：标题走「思考中」，正文随 delta 增长。
+  final bool streaming;
+
+  /// live 观察态默认展开（正文随流增长可见）；历史里保持折叠。
+  final bool initiallyExpanded;
+
+  const _ReasoningBlock({
+    required this.text,
+    this.streaming = false,
+    this.initiallyExpanded = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1187,6 +1341,7 @@ class _ReasoningBlock extends StatelessWidget {
       ),
       child: ExpansionTile(
         dense: true,
+        initiallyExpanded: initiallyExpanded,
         tilePadding: const EdgeInsets.symmetric(horizontal: 10),
         childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
         leading: Icon(
@@ -1195,23 +1350,16 @@ class _ReasoningBlock extends StatelessWidget {
           color: theme.colorScheme.onSurfaceVariant,
         ),
         title: Text(
-          '思考过程',
+          streaming ? context.S.rtThinkingStreaming : context.S.rtReasoning,
           style: theme.textTheme.labelMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
+            color: streaming
+                ? theme.colorScheme.primary
+                : theme.colorScheme.onSurfaceVariant,
           ),
         ),
         iconColor: theme.colorScheme.onSurfaceVariant,
         collapsedIconColor: theme.colorScheme.onSurfaceVariant,
-        children: [
-          SelectableText(
-            text,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              fontStyle: FontStyle.italic,
-              height: 1.5,
-            ),
-          ),
-        ],
+        children: [_NoteLine(text: text, muted: true)],
       ),
     );
   }
@@ -1254,16 +1402,19 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-/// 产出文件卡片 — 图标 + 文件名 + 下载指示。
+/// 产出文件卡片 — 图标 + 文件名 + 打开/下载指示。点卡片分享，
+/// 右侧「打开」用系统默认应用查看。
 class _FileCard extends StatelessWidget {
   final String path;
   final bool downloading;
   final VoidCallback onTap;
+  final VoidCallback onOpen;
 
   const _FileCard({
     required this.path,
     required this.downloading,
     required this.onTap,
+    required this.onOpen,
   });
 
   IconData _iconFor(String name) {
@@ -1331,17 +1482,38 @@ class _FileCard extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 4),
               downloading
-                  ? const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 12),
+                      child: SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 1.5),
+                      ),
                     )
-                  : Icon(
-                      Icons.download_outlined,
-                      size: 16,
-                      color: theme.colorScheme.onSurfaceVariant,
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: context.S.rtOpen,
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 30,
+                            minHeight: 30,
+                          ),
+                          icon: const Icon(Icons.open_in_new, size: 16),
+                          color: theme.colorScheme.primary,
+                          onPressed: onOpen,
+                        ),
+                        const SizedBox(width: 2),
+                        Icon(
+                          Icons.download_outlined,
+                          size: 16,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ],
                     ),
             ],
           ),

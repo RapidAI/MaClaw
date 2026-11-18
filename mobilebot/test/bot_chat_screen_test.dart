@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'l10n_test_helper.dart';
 import 'package:mobilebot/core/account_store.dart';
 import 'package:mobilebot/core/api_client.dart';
 import 'package:mobilebot/core/providers.dart';
@@ -32,8 +33,7 @@ class _FakeApi extends BotApi {
     int after = 0,
     int limit = 200,
     int waitSeconds = 0,
-  }) async =>
-      page;
+  }) async => page;
 
   String? lastSent;
   BotPhase? lastPhase;
@@ -59,13 +59,14 @@ class _FakeApi extends BotApi {
   Future<List<ActiveRun>> activeRuns(String botId) async => const [];
 
   @override
-  Future<QueueView> queueStatus(
-          String botId, String clientMessageId) async =>
+  Future<QueueView> queueStatus(String botId, String clientMessageId) async =>
       const QueueView(state: 'queued', position: 1);
 
   @override
   Future<void> writeConversation(
-      String clientId, List<Map<String, dynamic>> entries) async {}
+    String clientId,
+    List<Map<String, dynamic>> entries,
+  ) async {}
 
   @override
   Future<void> ackRun(String botId, String runId) async {}
@@ -73,11 +74,8 @@ class _FakeApi extends BotApi {
 
 class _FakeSession extends SessionController {
   @override
-  SessionState build() => SessionState(
-        loaded: true,
-        accounts: [_account],
-        active: _account,
-      );
+  SessionState build() =>
+      SessionState(loaded: true, accounts: [_account], active: _account);
 }
 
 ConversationEntry _msg(int seq, String id, Map<String, dynamic> data) =>
@@ -91,21 +89,24 @@ ConversationEntry _msg(int seq, String id, Map<String, dynamic> data) =>
     );
 
 Widget _app(_FakeApi api) => ProviderScope(
-      overrides: [
-        botApiProvider.overrideWithValue(api),
-        sessionProvider.overrideWith(_FakeSession.new),
-        botChatBotIdProvider.overrideWithValue('b1'),
-      ],
-      child: const MaterialApp(home: BotChatScreen(bot: _bot)),
-    );
+  overrides: [
+    botApiProvider.overrideWithValue(api),
+    sessionProvider.overrideWith(_FakeSession.new),
+    botChatBotIdProvider.overrideWithValue('b1'),
+  ],
+  child: l10nApp(child: const BotChatScreen(bot: _bot)),
+);
 
 void main() {
   testWidgets('renders history messages and the composer', (tester) async {
     final api = _FakeApi()
-      ..page = ConversationPage(head: 2, entries: [
-        _msg(1, 'u1', {'role': 'user', 'content': '做个表格'}),
-        _msg(2, 'a1', {'role': 'assistant', 'content': '好了'}),
-      ]);
+      ..page = ConversationPage(
+        head: 2,
+        entries: [
+          _msg(1, 'u1', {'role': 'user', 'content': '做个表格'}),
+          _msg(2, 'a1', {'role': 'assistant', 'content': '好了'}),
+        ],
+      );
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 
@@ -117,9 +118,12 @@ void main() {
 
   testWidgets('shows the queue tag on a queued user bubble', (tester) async {
     final api = _FakeApi()
-      ..page = ConversationPage(head: 1, entries: [
-        _msg(1, 'u1', {'role': 'user', 'content': '排队的事', 'queued': true}),
-      ]);
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'u1', {'role': 'user', 'content': '排队的事', 'queued': true}),
+        ],
+      );
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 
@@ -128,14 +132,17 @@ void main() {
 
   testWidgets('plan replies offer the run-it chip', (tester) async {
     final api = _FakeApi()
-      ..page = ConversationPage(head: 1, entries: [
-        _msg(1, 'a1', {
-          'role': 'assistant',
-          'content': '安排：先搜集资料再写成表格',
-          'phase': 'plan',
-          'workOrder': '搜集资料并写成表格',
-        }),
-      ]);
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '安排：先搜集资料再写成表格',
+            'phase': 'plan',
+            'workOrder': '搜集资料并写成表格',
+          }),
+        ],
+      );
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 
@@ -152,13 +159,16 @@ void main() {
 
   testWidgets('per-run thread replies offer the continue chip', (tester) async {
     final api = _FakeApi()
-      ..page = ConversationPage(head: 1, entries: [
-        _msg(1, 'a1', {
-          'role': 'assistant',
-          'content': '任务线程的回复',
-          'conversation': 'b1#run-9',
-        }),
-      ]);
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '任务线程的回复',
+            'conversation': 'b1#run-9',
+          }),
+        ],
+      );
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 

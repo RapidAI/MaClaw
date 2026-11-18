@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ClipboardSetText } from '../../../wailsjs/runtime';
+import { ClipboardSetText, EventsOn } from '../../../wailsjs/runtime';
 import { useDialog } from '../CustomDialog';
 import { tailText } from '../../i18n/mnTail';
 
@@ -18,10 +18,21 @@ type MCPHostStatus = {
     error?: string;
 };
 
+type MCPAccessEntry = {
+    time?: string;
+    ip?: string;
+    apiKey?: string;
+    action?: string;
+    task?: string;
+    projectPath?: string;
+};
+
 type MCPApp = {
     GetMCPHostStatus?: () => Promise<MCPHostStatus>;
     PatchConfigFields?: (patch: Record<string, unknown>) => Promise<unknown>;
     GenerateMCPHostAPIKey?: () => Promise<MCPHostStatus>;
+    GetMCPAccessLog?: () => Promise<MCPAccessEntry[]>;
+    ClearMCPAccessLog?: () => Promise<unknown>;
 };
 
 function mcpApp(): MCPApp | null {
@@ -45,11 +56,19 @@ async function copyText(text: string): Promise<boolean> {
 
 const MCP_TOOLS = [
     ['list_models', '列出可用服务商和模型，不返回密钥'],
-    ['create_task', '创建会话或编程任务，可指定服务商和模型'],
-    ['get_task', '查看状态和结果。需要确认时会给出可发回的命令，运行中的授权确认也会列出'],
-    ['send_command', '向任务发送任意命令。计划、确认卡和运行中的授权确认都用返回的命令原文'],
+    ['create_task', '创建会话、本机编程或远程编程任务，可指定服务商和模型'],
+    ['get_task', '查看状态、模型、工作目录、轮次、结束原因和每步结果'],
+    ['send_command', '向任务发送命令。决定要带上这次的确认编号，用过即失效'],
     ['stop_task', '停止正在运行的任务'],
     ['list_tasks', '列出这台电脑上的最近任务'],
+    ['read_log', '按游标读取进展、工具调用和错误'],
+    ['list_artifacts', '列出工作目录里的文件、大小和哈希'],
+    ['read_artifact', '在工作目录内读取或下载文件'],
+    ['get_request', '按请求编号查询创建或指令是否已受理'],
+    ['get_capabilities', '查看接口版本、功能、模型配置和浏览器测试的具体方法'],
+    ['retry_steps', '按步骤编号重试失败项，保留已完成结果'],
+    ['browser_test', '打开、观察、点击、按键、截图并断言任务页面'],
+    ['pack_artifacts', '打包选定的任务文件，返回清单和哈希'],
 ] as const;
 
 export function MCPServerPanel({ lang, onBack }: { lang: string; onBack: () => void }) {
@@ -58,6 +77,18 @@ export function MCPServerPanel({ lang, onBack }: { lang: string; onBack: () => v
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const [copied, setCopied] = useState('');
+    const [accessLog, setAccessLog] = useState<MCPAccessEntry[]>([]);
+
+    const loadAccessLog = useCallback(async () => {
+        const app = mcpApp();
+        if (!app?.GetMCPAccessLog) return;
+        try {
+            const entries = await app.GetMCPAccessLog();
+            setAccessLog(Array.isArray(entries) ? entries : []);
+        } catch {
+            // The access log is auxiliary: a failed refresh keeps showing the previous list.
+        }
+    }, []);
 
     const reload = useCallback(async () => {
         const app = mcpApp();
@@ -82,10 +113,15 @@ export function MCPServerPanel({ lang, onBack }: { lang: string; onBack: () => v
                 if (!cancelled) setError(err instanceof Error ? err.message : String(err));
             }
         })();
+        void loadAccessLog();
+        // MCP mirrors every remote user turn as mcp-host-message: new access
+        // entries coincide with it, so the open panel refreshes live.
+        const offLogEvent = EventsOn('mcp-host-message', () => { void loadAccessLog(); });
         return () => {
             cancelled = true;
+            offLogEvent?.();
         };
-    }, []);
+    }, [loadAccessLog]);
 
     const enabled = status.enabled === true;
     const running = enabled && status.running === true;
@@ -144,6 +180,30 @@ export function MCPServerPanel({ lang, onBack }: { lang: string; onBack: () => v
         if (ok) {
             setCopied(id);
             window.setTimeout(() => setCopied((current) => (current === id ? '' : current)), 1600);
+        }
+    };
+
+    const clearAccessLog = async () => {
+        const ok = await showConfirm(
+            tailText(lang, 'Clear every recorded MCP access entry? This cannot be undone.', '确定清除全部 MCP 访问记录吗？清除后无法恢复。', '確定清除全部 MCP 存取記錄嗎？清除後無法恢復。'),
+            tailText(lang, 'Clear access log', '清除访问日志', '清除存取日誌'),
+            { confirmVariant: 'danger' },
+        );
+        if (!ok) return;
+        const app = mcpApp();
+        if (!app?.ClearMCPAccessLog) {
+            setError(tailText(lang, 'Cannot clear the access log yet', '现在还不能清除访问日志'));
+            return;
+        }
+        setBusy(true);
+        setError('');
+        try {
+            await app.ClearMCPAccessLog();
+            await loadAccessLog();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setBusy(false);
         }
     };
 
@@ -292,6 +352,50 @@ export function MCPServerPanel({ lang, onBack }: { lang: string; onBack: () => v
                         </div>
                     </>
                 ) : null}
+            </section>
+            <section className="utilities-deploy-card" data-testid="mcp-server-access-log">
+                <div className="utilities-deploy-card__head">
+                    <h3 className="utilities-deploy-card__title">{tailText(lang, 'Access log', '访问日志', '存取日誌')}</h3>
+                    <button
+                        type="button"
+                        className="utilities-btn utilities-btn--quiet-danger"
+                        data-testid="mcp-server-access-clear"
+                        disabled={busy || accessLog.length === 0}
+                        onClick={() => { void clearAccessLog(); }}
+                    >
+                        {tailText(lang, 'Clear log', '清除日志', '清除日誌')}
+                    </button>
+                </div>
+                <p className="utilities-page__subtitle">
+                    {tailText(
+                        lang,
+                        'Tasks started through MCP record the caller IP, the API key, and the task name.',
+                        '通过 MCP 发起的任务会记录来源 IP、API key 和任务名。',
+                        '透過 MCP 發起的任務會記錄來源 IP、API key 和任務名。',
+                    )}
+                </p>
+                {accessLog.length === 0 ? (
+                    <p className="utilities-page__subtitle" data-testid="mcp-server-access-empty">
+                        {tailText(lang, 'No entries yet.', '暂无记录。', '暫無記錄。')}
+                    </p>
+                ) : (
+                    <ul className="utilities-access-log">
+                        {accessLog.map((entry, index) => (
+                            <li key={index} className="utilities-access-log__row" data-testid="mcp-server-access-row">
+                                <p className="utilities-access-log__meta">
+                                    <span>{entry.time}</span>
+                                    <span>{entry.ip}</span>
+                                    <span>{entry.apiKey}</span>
+                                    <code className="utilities-access-log__action">{entry.action}</code>
+                                </p>
+                                <p className="utilities-access-log__task">
+                                    {entry.task}
+                                    {entry.projectPath ? <span className="utilities-access-log__path">{entry.projectPath}</span> : null}
+                                </p>
+                            </li>
+                        ))}
+                    </ul>
+                )}
             </section>
         </div>
     );

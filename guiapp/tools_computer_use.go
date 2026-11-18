@@ -525,6 +525,13 @@ func cuPolicyWindowTitle(x, y int) string {
 	return accessibility.ForegroundWindowTitle()
 }
 
+func cuPolicyWindowID(x, y int) uint64 {
+	if id := accessibility.WindowIDAtPoint(x, y); id != 0 {
+		return id
+	}
+	return accessibility.ForegroundWindowID()
+}
+
 // cuObserveResult returns the observation text together with whether the
 // observation actually succeeded.
 //
@@ -1145,6 +1152,39 @@ func cuMarkSemantic(mark *computeruse.MarkedElement) bool {
 	return false
 }
 
+// cuNoteClickTarget remembers the control a click landed on so a later
+// Enter or untargeted type knows which field has the caret.
+func cuNoteClickTarget(sess *computeruse.Session, mark *computeruse.MarkedElement, x, y int, window string, windowID uint64) {
+	if sess == nil {
+		return
+	}
+	name := ""
+	kind := ""
+	// A ref already knows its window from observe. Do not replace an empty
+	// one with the live title under the point: that point can sit in another
+	// window while the control itself was not attributed.
+	win := ""
+	id := uint64(0)
+	if mark != nil {
+		name = mark.Name
+		kind = mark.Type
+		win = mark.Window
+		id = mark.WindowID
+	} else {
+		win = window
+		id = windowID
+	}
+	if strings.TrimSpace(name) == "" {
+		name = sess.ElementNameAtScreen(x, y)
+		kind = ""
+	}
+	if strings.TrimSpace(name) == "" {
+		name = sess.OCRTextAtScreen(x, y)
+		kind = ""
+	}
+	sess.NoteActuatedID(name, win, kind, id)
+}
+
 func cuMarkToA11y(mark *computeruse.MarkedElement, screenX, screenY int) *accessibility.Element {
 	return &accessibility.Element{
 		Role:         mark.Type,
@@ -1232,6 +1272,9 @@ func cuHandleClick(args map[string]interface{}) string {
 	if hit := sess.ElementNameAtScreen(x, y); hit != "" {
 		payNames = append(payNames, hit)
 	}
+	if hit := sess.OCRTextAtScreen(x, y); hit != "" {
+		payNames = append(payNames, hit)
+	}
 	for _, payName := range payNames {
 		refusal := browser.DesktopPayClickRefusal(payName)
 		if refusal == "" {
@@ -1271,6 +1314,11 @@ func cuHandleClick(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_click failed: %v", err)
 	}
 	sess.RecordAction("click", detail+" via "+strategy, true, "", true)
+	policyID := uint64(0)
+	if mark == nil {
+		policyID = cuPolicyWindowID(x, y)
+	}
+	cuNoteClickTarget(sess, mark, x, y, policyTitle, policyID)
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("click", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
@@ -1307,6 +1355,11 @@ func cuHandleType(args map[string]interface{}) string {
 		emitComputerUseActionUI("type", detail, false, err.Error())
 		return fmt.Sprintf("computer_type blocked: %v", err)
 	}
+	if crop, stale := sess.ObserveDocumentStale(foreground, accessibility.ForegroundWindowID()); stale {
+		sess.RecordAction("type", "stale-document", false, "stale-document", false)
+		emitComputerUseActionUI("type", "stale-document", false, "stale-document")
+		return fmt.Sprintf("computer_type: foreground document changed (observed %q, now %q); call computer_observe again", crop, foreground)
+	}
 	var typeEl *computeruse.MarkedElement
 	var typeX, typeY int
 	if ref != "" {
@@ -1322,11 +1375,22 @@ func cuHandleType(args map[string]interface{}) string {
 			emitComputerUseActionUI("type", detail, false, "secret")
 			return "computer_type blocked: " + cuPersonHandoff("secret", el.Name, refusal)
 		}
-	} else if computeruse.DesktopHandoffEnabled() {
-		if refusal := browser.DesktopSecretSurfaceRefusal(foreground); refusal != "" {
-			sess.RecordAction("type", "secret", false, "secret", false)
-			emitComputerUseActionUI("type", "secret", false, "secret")
-			return "computer_type blocked: " + cuPersonHandoff("secret", foreground, refusal)
+	} else {
+		// Untargeted typing goes to the caret. The last control the agent
+		// clicked is that caret when the window title is not itself a dialog.
+		if name, _ := sess.ActuatedForKey(foreground, accessibility.ForegroundWindowID()); name != "" {
+			if refusal := browser.DesktopSecretTypeRefusal(name); refusal != "" {
+				sess.RecordAction("type", "secret", false, "secret", false)
+				emitComputerUseActionUI("type", "secret", false, "secret")
+				return "computer_type blocked: " + cuPersonHandoff("secret", name, refusal)
+			}
+		}
+		if computeruse.DesktopHandoffEnabled() {
+			if refusal := browser.DesktopSecretSurfaceRefusal(foreground); refusal != "" {
+				sess.RecordAction("type", "secret", false, "secret", false)
+				emitComputerUseActionUI("type", "secret", false, "secret")
+				return "computer_type blocked: " + cuPersonHandoff("secret", foreground, refusal)
+			}
 		}
 	}
 	if err := sess.BeginAction("type", detail); err != nil {
@@ -1370,6 +1434,9 @@ func cuHandleType(args map[string]interface{}) string {
 		}
 	}
 	sess.RecordAction("type", detail+" via "+strategy, true, "", true)
+	if typeEl != nil {
+		sess.NoteActuatedID(typeEl.Name, typeEl.Window, typeEl.Type, typeEl.WindowID)
+	}
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("type", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
@@ -1412,6 +1479,22 @@ func cuHandleKey(args map[string]interface{}) string {
 			emitComputerUseActionUI("key", "secret", false, "secret")
 			return "computer_key blocked: " + cuPersonHandoff("secret", foreground, refusal)
 		}
+	}
+	fgID := accessibility.ForegroundWindowID()
+	// The same window can navigate. Enter and Space must not use the previous
+	// page's labels, which often have no pay button yet.
+	if browser.DesktopSubmitKey(detail) {
+		if crop, stale := sess.ObserveDocumentStale(foreground, fgID); stale {
+			sess.RecordAction("key", "stale-document", false, "stale-document", false)
+			emitComputerUseActionUI("key", "stale-document", false, "stale-document")
+			return fmt.Sprintf("computer_key: foreground document changed (observed %q, now %q); call computer_observe again", crop, foreground)
+		}
+	}
+	focused, kind := sess.ActuatedForKey(foreground, fgID)
+	if reason, title, refusal := browser.DesktopPayKeyRefusal(detail, focused, kind, sess.KeySurfaceLabelsFor(foreground, fgID)); refusal != "" {
+		sess.RecordAction("key", reason, false, reason, false)
+		emitComputerUseActionUI("key", reason, false, reason)
+		return "computer_key blocked: " + cuPersonHandoff(reason, title, refusal)
 	}
 	if err := sess.BeginAction("key", detail); err != nil {
 		return fmt.Sprintf("computer_key: %v", err)

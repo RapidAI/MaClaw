@@ -4,6 +4,7 @@
 library;
 
 import '../../core/json_safe.dart';
+import '../../l10n/gen/app_localizations.dart';
 
 /// One desktop registered to the signed-in account.
 class RcMachine {
@@ -53,7 +54,8 @@ class RcGrant {
   bool get isActive => status == 'active';
   bool get canOperate => isActive && permission == 'operate';
 
-  String get permissionLabel => permission == 'operate' ? '可操作' : '仅查看';
+  String permissionLabel(AppLocalizations S) =>
+      permission == 'operate' ? S.rcOperate : S.rcViewOnly;
 
   String get title {
     if (machineName.isNotEmpty) return machineName;
@@ -229,6 +231,10 @@ class RemoteArtifact {
   final String title;
   final String sourceType;
   final String sourceHint;
+
+  /// 产物在受控机上的源路径（desktop 的 source_url）。可能是文件路径，
+  /// 也可能是工程检索指针；仅文件路径能经 fetch_file 回传。
+  final String sourceUrl;
   final String preview;
   final String updatedAt;
 
@@ -236,6 +242,7 @@ class RemoteArtifact {
     this.title = '',
     this.sourceType = '',
     this.sourceHint = '',
+    this.sourceUrl = '',
     this.preview = '',
     this.updatedAt = '',
   });
@@ -244,6 +251,7 @@ class RemoteArtifact {
     title: syncText(json['title']),
     sourceType: syncText(json['source_type']),
     sourceHint: syncText(json['source_hint']),
+    sourceUrl: syncText(json['source_url']),
     preview: syncText(json['preview']),
     updatedAt: syncText(json['updated_at']),
   );

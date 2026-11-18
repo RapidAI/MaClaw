@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/platform.dart';
 import 'bot_models.dart';
+import '../../core/locale.dart';
 import 'bots_controller.dart';
 
 /// 演示录制 — 桌面 GUI 演示功能（demo/start|narrate|stop|distill）的手机版：
@@ -121,7 +122,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     }
     if (!await _recorder.hasPermission()) {
       if (mounted) {
-        setState(() => _error = '没有麦克风权限，请在系统设置中授权后重试');
+        setState(() => _error = context.S.demoMicDenied);
       }
       return;
     }
@@ -241,7 +242,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text('${widget.bot.title} · 演示录制')),
+      appBar: AppBar(title: Text(context.S.demoTitle(widget.bot.title))),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -275,7 +276,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         ),
         const SizedBox(height: 12),
         Text(
-          '录一段在 ${widget.bot.title} 电脑上的操作过程，加上旁白说明，结束后可以提炼成它能反复使用的技能。\n\n需要这个 Bot 使用独立电脑（desktop_mode=isolated）。',
+          context.S.demoIntro(widget.bot.title),
           style: theme.textTheme.bodyMedium?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),
@@ -283,9 +284,9 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         const SizedBox(height: 20),
         TextField(
           controller: _titleCtrl,
-          decoration: const InputDecoration(
-            labelText: '演示标题',
-            hintText: '如：在 Excel 里生成周报',
+          decoration: InputDecoration(
+            labelText: context.S.demoTitleLabel,
+            hintText: context.S.demoTitleHint,
             border: OutlineInputBorder(),
           ),
         ),
@@ -293,7 +294,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         FilledButton.icon(
           onPressed: _busy ? null : _start,
           icon: const Icon(Icons.fiber_manual_record, size: 16),
-          label: const Text('开始录制'),
+          label: Text(context.S.demoStart),
         ),
       ],
     );
@@ -319,7 +320,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '录制中 — 去 ${widget.bot.title} 的电脑上操作',
+                  context.S.demoRecording(widget.bot.title),
                   style: TextStyle(color: theme.colorScheme.onErrorContainer),
                 ),
               ),
@@ -327,21 +328,21 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                 onPressed: () => context.push(
                   '/bot/${Uri.encodeComponent(widget.bot.id)}/desktop',
                 ),
-                child: const Text('看画面'),
+                child: Text(context.S.demoWatch),
               ),
             ],
           ),
         ),
         const SizedBox(height: 16),
-        Text('旁白', style: theme.textTheme.titleSmall),
+        Text(context.S.demoNarration, style: theme.textTheme.titleSmall),
         const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
               child: TextField(
                 controller: _narrateCtrl,
-                decoration: const InputDecoration(
-                  hintText: '这一步在做什么…',
+                decoration: InputDecoration(
+                  hintText: context.S.demoNarrationHint,
                   border: OutlineInputBorder(),
                   isDense: true,
                 ),
@@ -349,7 +350,9 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
             ),
             if (_asrAvailable && supportsVoiceInput)
               IconButton(
-                tooltip: _micRecording ? '停止录音' : '语音旁白',
+                tooltip: _micRecording
+                    ? context.S.demoStopRecord
+                    : context.S.demoVoiceNarration,
                 icon: Icon(
                   _micRecording ? Icons.stop : Icons.mic,
                   color: _micRecording ? theme.colorScheme.error : null,
@@ -385,7 +388,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         FilledButton.tonalIcon(
           onPressed: _busy ? null : _stop,
           icon: const Icon(Icons.stop),
-          label: const Text('结束录制'),
+          label: Text(context.S.demoFinish),
         ),
       ],
     );
@@ -395,7 +398,10 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('录制完成 · ${_events.length} 个事件', style: theme.textTheme.titleSmall),
+        Text(
+          context.S.demoDone(_events.length),
+          style: theme.textTheme.titleSmall,
+        ),
         const SizedBox(height: 8),
         for (final e in _events)
           Card(
@@ -428,9 +434,9 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         const SizedBox(height: 16),
         TextField(
           controller: _notesCtrl,
-          decoration: const InputDecoration(
-            labelText: '补充说明（可选）',
-            hintText: '给提炼模型的额外提示，如注意事项',
+          decoration: InputDecoration(
+            labelText: context.S.demoExtraLabel,
+            hintText: context.S.demoExtraHint,
             border: OutlineInputBorder(),
           ),
           maxLines: 3,
@@ -439,7 +445,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         FilledButton.icon(
           onPressed: _busy || _timeline.isEmpty ? null : _distill,
           icon: const Icon(Icons.auto_fix_high),
-          label: const Text('提炼为技能'),
+          label: Text(context.S.demoDistill),
         ),
       ],
     );
@@ -455,7 +461,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         Icon(Icons.task_alt, size: 56, color: theme.colorScheme.primary),
         const SizedBox(height: 12),
         Text(
-          '技能已提炼',
+          context.S.demoSkillReady,
           style: theme.textTheme.titleMedium,
           textAlign: TextAlign.center,
         ),
@@ -477,7 +483,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: Text(
-                      '${steps.length} 个步骤',
+                      context.S.demoStepCount(steps.length),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -499,7 +505,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
             _titleCtrl.clear();
             _notesCtrl.clear();
           }),
-          child: const Text('再录一段'),
+          child: Text(context.S.demoRecordAgain),
         ),
       ],
     );

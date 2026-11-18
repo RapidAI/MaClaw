@@ -10,9 +10,6 @@ void main() {
   });
 
   test('a refused public connection stays the service line', () {
-    expect(
-      desktopWakeFailureText('connect: connection refused'),
-      '电脑服务暂时连不上',
-    );
+    expect(desktopWakeFailureText('connect: connection refused'), '电脑服务暂时连不上');
   });
 }

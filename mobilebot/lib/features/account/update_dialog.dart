@@ -6,16 +6,22 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_update.dart';
+import '../../core/locale.dart';
 
 /// 检查更新 bottom sheet — Android only (iOS has no sideload channel; the
 /// caller hides the entry there). Mirrors the desktop update dialog: check →
 /// offer → download with progress → sha256 verify → hand to the installer.
-Future<void> showUpdateSheet(BuildContext context, {AppUpdate? prechecked}) {
+Future<void> showUpdateSheet(
+  BuildContext context, {
+  AppUpdate? prechecked,
+  AppUpdater? updater,
+}) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
-    builder: (context) => _UpdateSheet(prechecked: prechecked),
+    builder: (context) =>
+        _UpdateSheet(prechecked: prechecked, updater: updater),
   );
 }
 
@@ -23,7 +29,10 @@ class _UpdateSheet extends StatefulWidget {
   /// A silent background check may already have the result — skip the fetch.
   final AppUpdate? prechecked;
 
-  const _UpdateSheet({this.prechecked});
+  /// Injectable for tests; production always uses the real updater.
+  final AppUpdater? updater;
+
+  const _UpdateSheet({this.prechecked, this.updater});
 
   @override
   State<_UpdateSheet> createState() => _UpdateSheetState();
@@ -32,7 +41,7 @@ class _UpdateSheet extends StatefulWidget {
 enum _Phase { checking, idle, upToDate, available, downloading, ready, error }
 
 class _UpdateSheetState extends State<_UpdateSheet> {
-  final _updater = AppUpdater();
+  late final AppUpdater _updater = widget.updater ?? AppUpdater();
   _Phase _phase = _Phase.checking;
   String _detail = '';
   AppUpdate? _update;
@@ -68,7 +77,7 @@ class _UpdateSheetState extends State<_UpdateSheet> {
           _phase = _Phase.error;
           _detail = result.latestVersion.isNotEmpty
               ? result.latestVersion
-              : '无法连接更新服务器';
+              : context.S.updCantReachServer;
         });
       } else if (result.hasUpdate) {
         setState(() {
@@ -79,8 +88,8 @@ class _UpdateSheetState extends State<_UpdateSheet> {
         setState(() {
           _phase = _Phase.upToDate;
           _detail = result.latestVersion.isNotEmpty
-              ? '当前已是最新版本（${result.latestVersion}）'
-              : '当前已是最新版本';
+              ? context.S.updUpToDateVersion(result.latestVersion)
+              : context.S.updUpToDate;
         });
       }
     } on Object catch (error) {
@@ -131,9 +140,7 @@ class _UpdateSheetState extends State<_UpdateSheet> {
     if (compatible == false) {
       setState(() {
         _phase = _Phase.error;
-        _detail = '更新包与当前安装版本签名不一致，系统不允许覆盖安装。\n'
-            '请先卸载当前版本（账号数据保存在云端，重新登录即可恢复），'
-            '再到官网下载页安装新版本。';
+        _detail = context.S.updSignatureMismatch;
       });
       return;
     }
@@ -145,7 +152,9 @@ class _UpdateSheetState extends State<_UpdateSheet> {
     // INSTALL_FAILED / user denied the unknown-sources prompt — surface it.
     if (result.type != ResultType.done) {
       setState(() {
-        _detail = result.message.isNotEmpty ? result.message : '无法打开安装器';
+        _detail = result.message.isNotEmpty
+            ? result.message
+            : context.S.updCantOpenInstaller;
       });
     }
   }
@@ -165,13 +174,15 @@ class _UpdateSheetState extends State<_UpdateSheet> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            '检查更新',
+            context.S.checkUpdate,
             textAlign: TextAlign.center,
             style: theme.textTheme.titleLarge,
           ),
           const SizedBox(height: 4),
           Text(
-            _currentVersion.isEmpty ? 'MaClawGo' : '当前版本 $_currentVersion',
+            _currentVersion.isEmpty
+                ? 'MaClawGo'
+                : context.S.updCurrentVersion(_currentVersion),
             textAlign: TextAlign.center,
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
@@ -198,13 +209,12 @@ class _UpdateSheetState extends State<_UpdateSheet> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  '发现新版本 ${_update!.version}',
+                  context.S.updNewVersion(_update!.version),
                   style: theme.textTheme.titleMedium,
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '将从 GitHub / Cloudflare R2 下载 $updateAssetName，'
-                  '校验后由系统安装器完成安装。',
+                  context.S.updInstallHint(updateAssetName),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -213,11 +223,11 @@ class _UpdateSheetState extends State<_UpdateSheet> {
                 FilledButton.icon(
                   onPressed: _download,
                   icon: const Icon(Icons.download),
-                  label: const Text('下载并安装'),
+                  label: Text(context.S.updDownloadInstall),
                 ),
                 TextButton(
                   onPressed: () => launchUrl(Uri.parse(_update!.releaseUrl)),
-                  child: const Text('在浏览器中查看'),
+                  child: Text(context.S.updViewInBrowser),
                 ),
               ],
             ),
@@ -227,7 +237,9 @@ class _UpdateSheetState extends State<_UpdateSheet> {
                 LinearProgressIndicator(value: _progress),
                 const SizedBox(height: 8),
                 Text(
-                  '下载中 ${(100 * _progress).toStringAsFixed(0)}%',
+                  context.S.updDownloading(
+                    (100 * _progress).toStringAsFixed(0),
+                  ),
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodySmall,
                 ),
@@ -241,7 +253,7 @@ class _UpdateSheetState extends State<_UpdateSheet> {
                   color: theme.colorScheme.primary,
                 ),
                 const SizedBox(height: 8),
-                const Text('已下载，正在打开安装器…'),
+                Text(context.S.updOpeningInstaller),
                 if (_detail.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text(
@@ -262,12 +274,21 @@ class _UpdateSheetState extends State<_UpdateSheet> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  _detail.isEmpty ? '检查更新失败' : _detail,
+                  _detail.isEmpty ? context.S.updCheckFailed : _detail,
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 12),
-                FilledButton.tonal(onPressed: _check, child: const Text('重试')),
+                FilledButton.tonal(
+                  onPressed: _check,
+                  child: Text(context.S.retry),
+                ),
+                // 签名不一致等场景要「卸载后手动安装」——给出官网下载页。
+                if (_update != null)
+                  TextButton(
+                    onPressed: () => launchUrl(Uri.parse(_update!.releaseUrl)),
+                    child: Text(context.S.updOpenDownloadPage),
+                  ),
               ],
             ),
           },

@@ -1717,6 +1717,14 @@ export function GenerateMCPHostAPIKey() {
   return window['go']['main']['App']['GenerateMCPHostAPIKey']();
 }
 
+export function GetMCPAccessLog() {
+  return window['go']['main']['App']['GetMCPAccessLog']();
+}
+
+export function ClearMCPAccessLog() {
+  return window['go']['main']['App']['ClearMCPAccessLog']();
+}
+
 export function GetAIAssistantInitStatus() {
   return window['go']['main']['App']['GetAIAssistantInitStatus']();
 }
@@ -1783,6 +1791,10 @@ export function GetBrowserSessions() {
 
 export function GetCapabilityGapDetector() {
   return window['go']['main']['App']['GetCapabilityGapDetector']();
+}
+
+export function GetChatBubblesEnabled() {
+  return window['go']['main']['App']['GetChatBubblesEnabled']();
 }
 
 export function GetChatFontFamily() {
@@ -5480,6 +5492,10 @@ export function SetAutoCompress(arg1) {
 
 export function SetBugReportEnabled(arg1) {
   return window['go']['main']['App']['SetBugReportEnabled'](arg1);
+}
+
+export function SetChatBubblesEnabled(arg1) {
+  return window['go']['main']['App']['SetChatBubblesEnabled'](arg1);
 }
 
 export function SetChatFontFamily(arg1) {

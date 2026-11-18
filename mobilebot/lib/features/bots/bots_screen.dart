@@ -1,11 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'bot_models.dart';
 import 'bots_controller.dart';
+import '../../core/locale.dart';
+import '../../core/ui_kit.dart';
 import 'widgets.dart';
 
 /// Bot 列表页 — 对应桌面 GUI 的 bot 侧栏。
@@ -17,7 +20,7 @@ class BotsScreen extends ConsumerWidget {
     final state = ref.watch(botsProvider);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('我的 Bot'),
+        title: Text(context.S.botsTitle),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -28,7 +31,7 @@ class BotsScreen extends ConsumerWidget {
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showCreateSheet(context, ref),
         icon: const Icon(Icons.add),
-        label: const Text('新建 Bot'),
+        label: Text(context.S.botsCreate),
       ),
       body: RefreshIndicator(
         onRefresh: () => ref.read(botsProvider.notifier).refresh(),
@@ -39,7 +42,7 @@ class BotsScreen extends ConsumerWidget {
 
   Widget _buildBody(BuildContext context, WidgetRef ref, BotsState state) {
     if (state.loading && state.bots.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return const SkeletonList(itemCount: 5);
     }
     if (!state.access.enabled) {
       return ListView(
@@ -49,7 +52,7 @@ class BotsScreen extends ConsumerWidget {
             icon: Icons.block,
             title: state.access.message.isNotEmpty
                 ? state.access.message
-                : '当前账号未开通 Bot 功能',
+                : context.S.botsAccessDisabled,
           ),
         ],
       );
@@ -63,7 +66,7 @@ class BotsScreen extends ConsumerWidget {
             title: state.error,
             action: FilledButton.tonal(
               onPressed: () => ref.read(botsProvider.notifier).refresh(),
-              child: const Text('重试'),
+              child: Text(context.S.botsRetry),
             ),
           ),
         ],
@@ -71,12 +74,12 @@ class BotsScreen extends ConsumerWidget {
     }
     if (state.bots.isEmpty) {
       return ListView(
-        children: const [
-          SizedBox(height: 140),
+        children: [
+          const SizedBox(height: 140),
           EmptyState(
             icon: Icons.smart_toy_outlined,
-            title: '还没有 Bot',
-            hint: '点击右下角创建一个',
+            title: context.S.botsEmptyTitle,
+            hint: context.S.botsEmptyHint,
           ),
         ],
       );
@@ -87,7 +90,7 @@ class BotsScreen extends ConsumerWidget {
       separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
         final bot = state.bots[index];
-        return _BotCard(bot: bot);
+        return _BotCard(bot: bot, index: index);
       },
     );
   }
@@ -107,108 +110,109 @@ class BotsScreen extends ConsumerWidget {
 
 class _BotCard extends ConsumerWidget {
   final Bot bot;
+  final int index;
 
-  const _BotCard({required this.bot});
+  const _BotCard({required this.bot, this.index = 0});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: () => context.push('/bot/${Uri.encodeComponent(bot.id)}'),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              BotAvatar(bot: bot, radius: 24),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () => context.push('/bot/${Uri.encodeComponent(bot.id)}'),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                children: [
+                  BotAvatar(bot: bot, radius: 24),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Flexible(
-                          child: Text(
-                            bot.title,
-                            style: theme.textTheme.titleMedium,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (bot.primary)
-                          Container(
-                            margin: const EdgeInsets.only(left: 6),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 5,
-                              vertical: 1,
-                            ),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primaryContainer,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              '主',
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: theme.colorScheme.onPrimaryContainer,
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                bot.title,
+                                style: theme.textTheme.titleMedium,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                          ),
-                        Container(
-                          margin: const EdgeInsets.only(left: 6),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 5,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            desktopModeMark(bot.desktopMode),
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
+                            if (bot.primary)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 6),
+                                child: AppBadge(
+                                  label: context.S.botsPrimaryMark,
+                                  color: theme.colorScheme.primary,
+                                  icon: Icons.star_rounded,
+                                ),
+                              ),
+                            Padding(
+                              padding: const EdgeInsets.only(left: 6),
+                              child: AppBadge(
+                                label: desktopModeMark(
+                                  bot.desktopMode,
+                                  context.S,
+                                ),
+                                color: botHasComputer(bot.desktopMode)
+                                    ? theme.colorScheme.primary
+                                    : theme.colorScheme.onSurfaceVariant,
+                                icon: botHasComputer(bot.desktopMode)
+                                    ? Icons.computer_rounded
+                                    : null,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (bot.description.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              bot.description,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                        ),
                       ],
                     ),
-                    if (bot.description.isNotEmpty)
-                      Text(
-                        bot.description,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (botHasComputer(bot.desktopMode))
+                        IconButton(
+                          tooltip: context.S.botsDesktopTooltip,
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.desktop_windows_outlined),
+                          onPressed: () => context.push(
+                            '/bot/${Uri.encodeComponent(bot.id)}/desktop',
+                          ),
                         ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                      Icon(
+                        Icons.chevron_right,
+                        color: theme.colorScheme.onSurfaceVariant,
                       ),
-                  ],
-                ),
-              ),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (botHasComputer(bot.desktopMode))
-                    IconButton(
-                      tooltip: '电脑画面',
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(Icons.desktop_windows_outlined),
-                      onPressed: () => context.push(
-                        '/bot/${Uri.encodeComponent(bot.id)}/desktop',
-                      ),
-                    ),
-                  Icon(
-                    Icons.chevron_right,
-                    color: theme.colorScheme.onSurfaceVariant,
+                    ],
                   ),
                 ],
               ),
-            ],
+            ),
           ),
-        ),
-      ),
-    );
+        )
+        .animate(delay: (index * 45).ms)
+        .fadeIn(duration: 260.ms)
+        .slideY(
+          begin: 0.03,
+          end: 0,
+          duration: 260.ms,
+          curve: Curves.easeOutCubic,
+        );
   }
 }
 
@@ -255,30 +259,34 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
     final locked = quota.exhausted || quota.computerMissing;
     final needsComputer = locked ? false : _needsComputer;
     final taken = botNameTaken(_nameCtrl.text, ref.watch(botsProvider).bots);
+    final quotaLabel = quota.label(context.S);
     return SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottom),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('新建 Bot', style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            context.S.botsCreate,
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
           const SizedBox(height: 16),
           TextField(
             controller: _nameCtrl,
             autofocus: true,
-            decoration: const InputDecoration(
-              labelText: '名称',
-              hintText: '给 Bot 起个名字',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: context.S.botsNameLabel,
+              hintText: context.S.botsNameHint,
+              border: const OutlineInputBorder(),
             ),
             maxLength: 40,
           ),
           TextField(
             controller: _descCtrl,
-            decoration: const InputDecoration(
-              labelText: '简介（可选）',
-              hintText: '这个 Bot 帮你做什么',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: context.S.botsDescLabel,
+              hintText: context.S.botsDescHint,
+              border: const OutlineInputBorder(),
             ),
             maxLines: 2,
           ),
@@ -320,10 +328,10 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
           const SizedBox(height: 8),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('这个 bot 需要电脑'),
+            title: Text(context.S.botsNeedsComputer),
             subtitle: quota.computerMissing
-                ? const Text('这个账号还没有分配电脑：只能创建无电脑的 Bot')
-                : (quota.label.isEmpty ? null : Text(quota.label)),
+                ? Text(context.S.botsNoComputerQuota)
+                : (quotaLabel.isEmpty ? null : Text(quotaLabel)),
             value: needsComputer,
             onChanged: locked || _saving
                 ? null
@@ -334,10 +342,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
             children: [
               for (final shape in botShapes)
                 ChoiceChip(
-                  label: Text(
-                    botShapeLabel(shape),
-                    style: const TextStyle(fontSize: 12),
-                  ),
+                  label: Text(botShapeLabel(shape, context.S)),
                   visualDensity: VisualDensity.compact,
                   selected: _shape == shape,
                   onSelected: (_) => setState(() => _shape = shape),
@@ -348,7 +353,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
-                '已经有一个叫这个名字的 Bot 了，换个名字吧',
+                context.S.botsNameTaken,
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
             ),
@@ -369,7 +374,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Text('创建'),
+                : Text(context.S.botsCreateAction),
           ),
         ],
       ),
@@ -379,7 +384,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
   Future<void> _create() async {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty) {
-      setState(() => _error = '请输入名称');
+      setState(() => _error = context.S.botsNameRequired);
       return;
     }
     setState(() {

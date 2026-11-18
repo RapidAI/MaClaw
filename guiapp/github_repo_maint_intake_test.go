@@ -357,8 +357,8 @@ func TestGitHubRepoMaintIntake(t *testing.T) {
 	planUser := projectSessionOwnerID(planDir)
 	handler.updateStickyCodingWorkbenchMemory(planUser, func(mem *stickyCodingWorkbenchMemory) {
 		mem.PlanMode = codingPlanModeApprove
+		mem.SkipNextPlan = true
 	})
-	armGitHubRepoMaintSkipPlan(handler, planUser, githubRepoMaintPlatform, nil)
 	mem := handler.getStickyCodingWorkbenchMemory(planUser)
 	if mem.PlanMode != codingPlanModeApprove || !mem.SkipNextPlan {
 		t.Fatalf("armed memory = %+v", mem)
@@ -913,6 +913,386 @@ func TestGitHubRepoMaintBlockedClone(t *testing.T) {
 	if clones != 1 {
 		t.Fatalf("second pump clones = %d", clones)
 	}
+}
+
+func TestGitHubRepoMaintEventTask(t *testing.T) {
+	prevGit := newGitHubHTTPClient
+	prevHub := newRepoMaintHubHTTPClient
+	prevTurn := repoMaintTestTurn
+	prevSendErr := repoMaintTestSendErr
+	client := repoMaintInstantHTTPClient()
+	newGitHubHTTPClient = func() *http.Client { return client }
+	newRepoMaintHubHTTPClient = func() *http.Client { return client }
+	t.Cleanup(func() {
+		newGitHubHTTPClient = prevGit
+		newRepoMaintHubHTTPClient = prevHub
+		repoMaintTestTurn = prevTurn
+		repoMaintTestSendErr = prevSendErr
+	})
+
+	app := newRepoMaintTestApp(t, "https://203.0.113.10", true)
+	app.disableBackgroundEmbeddingForTest = true
+	t.Cleanup(func() {
+		taskAsyncFlushWG.Wait()
+		skillHubRefreshWG.Wait()
+		app.stopMemoryPipelineSchedule("test-cleanup")
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+		}
+		closeRepoMaintDB(filepath.Join(app.GetDataDir(), githubRepoMaintDBName))
+	})
+	ghostA := initRepoMaintGhost(t, "yucejade", "jjquant-v2")
+	ghostB := initRepoMaintGhost(t, "yucejade", "other-repo")
+	ruleA := saveEnabledRepoMaintRule(t, app, ghostA, "https://github.com/yucejade/jjquant-v2")
+	ruleB := saveEnabledRepoMaintRule(t, app, ghostB, "https://github.com/yucejade/other-repo")
+
+	var turns int
+	var lastText, lastDisplay, lastPath string
+	repoMaintTestTurn = func(req AIAssistantSendRequest) *IMAgentResponse {
+		turns++
+		lastText = req.Text
+		lastDisplay = req.BackendDisplayText
+		lastPath = req.ProjectPath
+		repoMaintTurnFacts.Store(projectSessionOwnerID(req.ProjectPath), repoMaintTurnFact{Outcome: "completed", Set: true})
+		return &IMAgentResponse{}
+	}
+
+	acceptRepoMaintIssue(t, app, ruleA, 1, "first issue")
+	acceptRepoMaintIssue(t, app, ruleA, 2, "second issue")
+	acceptRepoMaintPull(t, app, ruleA, 3, "first pull")
+	app.pumpRepoMaintOnce()
+	if turns != 1 {
+		t.Fatalf("turns = %d, want the first issue only", turns)
+	}
+	issuePath := repoMaintJobByObject(t, app, "issue:1").TaskProjectPath
+	if issuePath == "" || repoMaintJobByObject(t, app, "issue:1").Status != "succeeded" {
+		t.Fatalf("first issue = %+v", repoMaintJobByObject(t, app, "issue:1"))
+	}
+	if repoMaintJobByObject(t, app, "issue:2").Status != "queued" || repoMaintJobByObject(t, app, "pr:3").Status != "queued" {
+		t.Fatal("same checkout started a second task")
+	}
+	app.pumpRepoMaintOnce()
+	if turns != 2 || !strings.Contains(lastText, "second issue") || !strings.Contains(lastDisplay, "#2") {
+		t.Fatalf("second issue did not continue the task: turns=%d display=%q", turns, lastDisplay)
+	}
+	if got := repoMaintJobByObject(t, app, "issue:2"); got.Status != "succeeded" || got.TaskProjectPath != issuePath {
+		t.Fatalf("second issue task = %+v, want %s", got, issuePath)
+	}
+	if repoMaintJobByObject(t, app, "pr:3").Status != "queued" {
+		t.Fatal("pull request ran beside the issue task")
+	}
+	app.pumpRepoMaintOnce()
+	pullPath := repoMaintJobByObject(t, app, "pr:3").TaskProjectPath
+	if turns != 3 || pullPath == "" || pullPath == issuePath {
+		t.Fatalf("pull task = %q issue task = %q turns=%d", pullPath, issuePath, turns)
+	}
+	if !sameNormalizedPath(app.recentTaskWorkingDir(issuePath), ghostA) || !sameNormalizedPath(app.recentTaskWorkingDir(pullPath), ghostA) {
+		t.Fatalf("working dirs issue=%q pull=%q ghost=%q", app.recentTaskWorkingDir(issuePath), app.recentTaskWorkingDir(pullPath), ghostA)
+	}
+	issueName := repoMaintTaskRecordName(t, app, issuePath)
+	pullName := repoMaintTaskRecordName(t, app, pullPath)
+	if issueName != "jjquant-v2 · 议题已创建" || strings.Contains(issueName, "#") {
+		t.Fatalf("issue task name = %q", issueName)
+	}
+	if pullName != "jjquant-v2 · 拉取请求已创建" {
+		t.Fatalf("pull task name = %q", pullName)
+	}
+	if repoMaintEventTaskPath(t, app, ruleA.ID, "issues.opened") != issuePath {
+		t.Fatal("issue mapping does not point at the running task")
+	}
+
+	acceptRepoMaintIssue(t, app, ruleB, 1, "other repo issue")
+	app.pumpRepoMaintOnce()
+	otherPath := repoMaintJobForRule(t, app, ruleB.ID, "issue:1")
+	if otherPath.TaskProjectPath == "" || otherPath.TaskProjectPath == issuePath || otherPath.TaskProjectPath == pullPath {
+		t.Fatalf("other repo task = %+v", otherPath)
+	}
+	if !sameNormalizedPath(app.recentTaskWorkingDir(otherPath.TaskProjectPath), ghostB) {
+		t.Fatalf("other working dir = %q", app.recentTaskWorkingDir(otherPath.TaskProjectPath))
+	}
+
+	app.ensureMemoryStore()
+	pi := app.memoryStore.ProjectIndex()
+	pi.SetArchived(pullPath, true)
+	acceptRepoMaintPull(t, app, ruleA, 4, "second pull")
+	app.pumpRepoMaintOnce()
+	pullAgain := repoMaintJobByObject(t, app, "pr:4")
+	if pullAgain.Status != "succeeded" || pullAgain.TaskProjectPath == "" || pullAgain.TaskProjectPath == pullPath {
+		t.Fatalf("archived pull was reused: %+v", pullAgain)
+	}
+	if !pi.IsArchived(pullPath) {
+		t.Fatal("archived pull task was reopened")
+	}
+	if !sameNormalizedPath(app.recentTaskWorkingDir(pullAgain.TaskProjectPath), ghostA) {
+		t.Fatal("replacement pull task left the checkout")
+	}
+
+	pi.SetHidden(issuePath, true)
+	acceptRepoMaintIssue(t, app, ruleA, 5, "after hide")
+	app.pumpRepoMaintOnce()
+	hiddenNext := repoMaintJobByObject(t, app, "issue:5")
+	if hiddenNext.Status != "succeeded" || hiddenNext.TaskProjectPath == "" || hiddenNext.TaskProjectPath == issuePath {
+		t.Fatalf("hidden issue task was reused: %+v", hiddenNext)
+	}
+	if !pi.IsHidden(issuePath) {
+		t.Fatal("hidden issue task was reopened")
+	}
+	issuePath = hiddenNext.TaskProjectPath
+	if repoMaintEventTaskPath(t, app, ruleA.ID, "issues.opened") != issuePath {
+		t.Fatal("mapping was not updated after the hidden task")
+	}
+	if repoMaintTaskRecordName(t, app, issuePath) != "jjquant-v2 · 议题已创建" {
+		t.Fatalf("replacement name = %q", repoMaintTaskRecordName(t, app, issuePath))
+	}
+
+	repoMaintTestSendErr = fmt.Errorf("send failed")
+	acceptRepoMaintIssue(t, app, ruleA, 6, "send fails")
+	app.pumpRepoMaintOnce()
+	repoMaintTestSendErr = nil
+	failedReuse := repoMaintJobByObject(t, app, "issue:6")
+	if failedReuse.Status != "queued" {
+		t.Fatalf("reused send failure status = %s", failedReuse.Status)
+	}
+	if repoMaintEventTaskPath(t, app, ruleA.ID, "issues.opened") != issuePath {
+		t.Fatal("reused send failure cleared the task mapping")
+	}
+	if pi.Get(issuePath) == nil || pi.IsHidden(issuePath) {
+		t.Fatal("reused send failure deleted the task")
+	}
+	app.pumpRepoMaintOnce()
+	if got := repoMaintJobByObject(t, app, "issue:6"); got.Status != "succeeded" || got.TaskProjectPath != issuePath {
+		t.Fatalf("retry after reused send failure = %+v", got)
+	}
+
+	repoMaintTestSendErr = fmt.Errorf("send failed")
+	turnsBefore := turns
+	acceptRepoMaintPush(t, app, ruleA, "abc123")
+	app.pumpRepoMaintOnce()
+	repoMaintTestSendErr = nil
+	if turns != turnsBefore+1 || lastPath == "" {
+		t.Fatalf("fresh send did not reach the turn: turns %d -> %d", turnsBefore, turns)
+	}
+	freshPath := lastPath
+	pushJob := repoMaintJobForRule(t, app, ruleA.ID, "commit:abc123")
+	if pushJob.Status != "queued" || repoMaintEventTaskPath(t, app, ruleA.ID, "push") != "" {
+		t.Fatalf("fresh send failure kept the mapping: %+v path=%q", pushJob, repoMaintEventTaskPath(t, app, ruleA.ID, "push"))
+	}
+	if pi.Get(freshPath) != nil {
+		t.Fatal("fresh send failure kept the new task")
+	}
+	app.pumpRepoMaintOnce()
+	pushJob = repoMaintJobForRule(t, app, ruleA.ID, "commit:abc123")
+	if pushJob.Status != "succeeded" || pushJob.TaskProjectPath == "" || pushJob.TaskProjectPath == freshPath {
+		t.Fatalf("push retry = %+v fresh=%s", pushJob, freshPath)
+	}
+	if !sameNormalizedPath(app.recentTaskWorkingDir(pushJob.TaskProjectPath), ghostA) {
+		t.Fatal("push task left the checkout")
+	}
+
+	ghostA2 := initRepoMaintGhost(t, "yucejade", "jjquant-v2")
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE rules SET ghost_dir=? WHERE id=?`, ghostA2, ruleA.ID); err != nil {
+		t.Fatal(err)
+	}
+	acceptRepoMaintIssue(t, app, ruleA, 7, "moved checkout")
+	app.pumpRepoMaintOnce()
+	moved := repoMaintJobByObject(t, app, "issue:7")
+	if moved.Status != "succeeded" || moved.TaskProjectPath != issuePath {
+		t.Fatalf("moved checkout created a task: %+v", moved)
+	}
+	if !sameNormalizedPath(app.recentTaskWorkingDir(issuePath), ghostA2) {
+		t.Fatalf("issue working dir = %q, want %q", app.recentTaskWorkingDir(issuePath), ghostA2)
+	}
+	if !sameNormalizedPath(app.recentTaskWorkingDir(pullAgain.TaskProjectPath), ghostA) {
+		t.Fatal("a different event task followed the moved checkout")
+	}
+
+	if _, err := db.Exec(`UPDATE jobs SET status='running', task_project_path=?, session_user_id=? WHERE id=?`, issuePath, "desktop-user:restart", moved.ID); err != nil {
+		t.Fatal(err)
+	}
+	app.requeueOrphanedRepoMaintRuns()
+	restarted := repoMaintJobByObject(t, app, "issue:7")
+	if restarted.Status != "queued" || restarted.LastError != "进程已重启" || restarted.TaskProjectPath != "" {
+		t.Fatalf("requeue = %+v", restarted)
+	}
+	if repoMaintEventTaskPath(t, app, ruleA.ID, "issues.opened") != issuePath {
+		t.Fatal("restart dropped the event task")
+	}
+
+	if _, err := db.Exec(`UPDATE rules SET enabled=0, hook_token='', hook_id=0, last_error='', replay_mode='none', delete_pending=0 WHERE id=?`, ruleB.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeleteGitHubRepoMaintRule(ruleB.ID); err != nil {
+		t.Fatal(err)
+	}
+	if repoMaintEventTaskPath(t, app, ruleB.ID, "issues.opened") != "" {
+		t.Fatal("deleted rule kept its event task mapping")
+	}
+	if pi.Get(otherPath.TaskProjectPath) == nil {
+		t.Fatal("deleting the rule deleted the coding task")
+	}
+}
+
+type repoMaintTestRoundTrip func(*http.Request) (*http.Response, error)
+
+func (f repoMaintTestRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func repoMaintInstantHTTPClient() *http.Client {
+	return &http.Client{Transport: repoMaintTestRoundTrip(func(r *http.Request) (*http.Response, error) {
+		body := `[]`
+		if r.Method == http.MethodPost {
+			body = `{"id":1}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+}
+
+func initRepoMaintGhost(t *testing.T, owner, repo string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "ghost")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGit(dir, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGit(dir, "remote", "add", "origin", "https://github.com/"+owner+"/"+repo+".git"); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func saveEnabledRepoMaintRule(t *testing.T, app *App, ghost, repoURL string) GitHubRepoMaintRule {
+	t.Helper()
+	saved, err := app.SaveGitHubRepoMaintRule(GitHubRepoMaintRule{
+		RepoURL:    repoURL,
+		GhostDir:   ghost,
+		PushBranch: "main",
+		Commands: map[string]string{
+			"issues.opened":       "看一下议题",
+			"pull_request.opened": "看一下拉取请求",
+			"push":                "更新日志",
+		},
+		EnabledKinds: map[string]bool{
+			"issues.opened": true, "pull_request.opened": true, "push": true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE rules SET enabled=1 WHERE id=?`, saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	saved.Enabled = true
+	return saved
+}
+
+func acceptRepoMaintIssue(t *testing.T, app *App, rule GitHubRepoMaintRule, number int, title string) {
+	t.Helper()
+	ev := repoMaintEvent{
+		DeliveryID: fmt.Sprintf("d-%s-issue-%d", rule.ID, number),
+		RuleID:     rule.ID,
+		EventKind:  "issues.opened",
+		ObjectID:   "issue:" + itoa(number),
+		Owner:      rule.Owner,
+		Repo:       rule.Repo,
+		Number:     number,
+		Title:      title,
+	}
+	if err := app.acceptRepoMaintDelivery(ev); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func acceptRepoMaintPull(t *testing.T, app *App, rule GitHubRepoMaintRule, number int, title string) {
+	t.Helper()
+	ev := repoMaintEvent{
+		DeliveryID: fmt.Sprintf("d-%s-pr-%d", rule.ID, number),
+		RuleID:     rule.ID,
+		EventKind:  "pull_request.opened",
+		ObjectID:   "pr:" + itoa(number),
+		Owner:      rule.Owner,
+		Repo:       rule.Repo,
+		Number:     number,
+		Title:      title,
+	}
+	if err := app.acceptRepoMaintDelivery(ev); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func acceptRepoMaintPush(t *testing.T, app *App, rule GitHubRepoMaintRule, sha string) {
+	t.Helper()
+	ev := repoMaintEvent{
+		DeliveryID:    "d-" + rule.ID + "-push-" + sha,
+		RuleID:        rule.ID,
+		EventKind:     "push",
+		ObjectID:      "commit:" + sha,
+		Owner:         rule.Owner,
+		Repo:          rule.Repo,
+		Ref:           "refs/heads/main",
+		SHA:           sha,
+		DefaultBranch: "main",
+	}
+	if err := app.acceptRepoMaintDelivery(ev); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func repoMaintEventTaskPath(t *testing.T, app *App, ruleID, kind string) string {
+	t.Helper()
+	db, err := app.repoMaintDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	err = db.QueryRow(`SELECT task_project_path FROM event_tasks WHERE rule_id=? AND event_kind=?`, ruleID, kind).Scan(&path)
+	if err == sql.ErrNoRows {
+		return ""
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func repoMaintJobForRule(t *testing.T, app *App, ruleID, objectID string) repoMaintJobRow {
+	t.Helper()
+	for _, job := range repoMaintJobs(t, app) {
+		if job.RuleID == ruleID && job.ObjectID == objectID {
+			return job
+		}
+	}
+	t.Fatalf("missing job %s %s", ruleID, objectID)
+	return repoMaintJobRow{}
+}
+
+func repoMaintTaskRecordName(t *testing.T, app *App, projectPath string) string {
+	t.Helper()
+	app.ensureMemoryStore()
+	if app.memoryStore == nil || app.memoryStore.ProjectIndex() == nil {
+		t.Fatal("project index missing")
+	}
+	rec := app.memoryStore.ProjectIndex().Get(projectPath)
+	if rec == nil {
+		t.Fatalf("task record missing %s", projectPath)
+	}
+	return rec.Name
 }
 
 func insertRepoMaintRuleRaw(t *testing.T, app *App, id, owner, repo, ghost string) {

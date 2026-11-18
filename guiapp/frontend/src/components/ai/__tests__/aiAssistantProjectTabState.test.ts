@@ -131,6 +131,17 @@ describe('aiAssistantProjectTabState', () => {
         expect(merged[1].codingTimeline).toEqual(trail);
     });
 
+    it('keeps a goal stage command and settled flag when a later row omits them', () => {
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', requestId: 'goal-cont-1', timestamp: 1, goalStageCommand: '本轮只能提交步骤 2：物理内核', goalStageSettled: true }],
+            undefined,
+            [{ id: 'goal', role: 'assistant', content: '步骤已核对', requestId: 'goal-cont-1', timestamp: 2 }],
+        );
+        expect(merged[0].content).toBe('步骤已核对');
+        expect(merged[0].goalStageCommand).toBe('本轮只能提交步骤 2：物理内核');
+        expect(merged[0].goalStageSettled).toBe(true);
+    });
+
     it('keeps a tool row the later trail skipped when a further event arrived', () => {
         const saved = [
             { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'Inspect quality.h', timestamp: 2 },

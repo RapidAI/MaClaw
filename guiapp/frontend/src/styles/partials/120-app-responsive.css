@@ -1893,16 +1893,24 @@
 #App .mc-conversation-body [data-testid^='assistant-chat-user-bubble-'],
 #App .mc-task-execution .assistant-chat-user-message,
 #App .mc-task-execution [data-role='user-message'] {
+  color: var(--mc-ink) !important;
+}
+#App .mc-conversation-body [data-testid^='assistant-chat-user-bubble-']:not([data-chat-bubble='off']),
+#App .mc-task-execution .assistant-chat-user-message,
+#App .mc-task-execution [data-role='user-message'] {
   background: color-mix(in srgb, var(--mc-accent) 10%, var(--mc-surface)) !important;
   border-color: color-mix(in srgb, var(--mc-accent) 28%, var(--mc-line)) !important;
-  color: var(--mc-ink) !important;
 }
 #App .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-'],
 #App .mc-task-execution .assistant-chat-ai-message,
 #App .mc-task-execution [data-role='assistant-message'] {
+  color: var(--mc-ink) !important;
+}
+#App .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:not([data-chat-bubble='off']),
+#App .mc-task-execution .assistant-chat-ai-message,
+#App .mc-task-execution [data-role='assistant-message'] {
   background: var(--mc-surface) !important;
   border-color: var(--mc-line) !important;
-  color: var(--mc-ink) !important;
   box-shadow: var(--shadow-sm) !important;
 }
 #App .mc-conversation-body [data-testid^='assistant-chat-user-'] time,

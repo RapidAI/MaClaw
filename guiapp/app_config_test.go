@@ -1279,6 +1279,47 @@ func TestGetSettingsTabConfigIncludesZeroValues(t *testing.T) {
 	}
 }
 
+func TestChatBubblesEnabledDefaultsOn(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.Language = "zh-Hans"
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	if on, err := app.GetChatBubblesEnabled(); err != nil || !on {
+		t.Fatalf("absent chat bubbles should stay on, got on=%v err=%v", on, err)
+	}
+
+	if err := app.SetChatBubblesEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if on, err := app.GetChatBubblesEnabled(); err != nil || on {
+		t.Fatalf("chat bubbles stayed on after turning them off, got on=%v err=%v", on, err)
+	}
+	ui, err := app.GetSettingsTabConfig("ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := ui["chat_bubbles_enabled"]; !ok || v != false {
+		t.Fatalf("chat_bubbles_enabled want false present, got ok=%v v=%#v", ok, v)
+	}
+
+	reloaded := &App{testHomeDir: tmpHome}
+	if on, err := reloaded.GetChatBubblesEnabled(); err != nil || on {
+		t.Fatalf("turned-off chat bubbles did not survive reload, got on=%v err=%v", on, err)
+	}
+	if err := reloaded.SetChatBubblesEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if on, err := reloaded.GetChatBubblesEnabled(); err != nil || !on {
+		t.Fatalf("chat bubbles stayed off after turning them on, got on=%v err=%v", on, err)
+	}
+}
+
 func TestChatAndCodingFontFamily(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1384,6 +1425,9 @@ func TestChatFontGettersRejectUnreadableConfig(t *testing.T) {
 	}
 	if id, err := app.GetCodingFontFamily(); err == nil {
 		t.Fatalf("GetCodingFontFamily() = %q, nil; want load error", id)
+	}
+	if on, err := app.GetChatBubblesEnabled(); err == nil {
+		t.Fatalf("GetChatBubblesEnabled() = %v, nil; want load error", on)
 	}
 }
 
@@ -2657,7 +2701,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 			map[string]interface{}{"id": "p1", "name": "One", "path": "D:/one", "yolo_mode": false},
 			map[string]interface{}{"id": "p2", "name": "Two", "path": "D:/two", "yolo_mode": true},
 		},
-		"show_ai_trace_entry":        true,		"show_app_entry":             true,
+		"show_ai_trace_entry": true, "show_app_entry": true,
 		"survey_enabled":             false,
 		"show_coding_tool_entry":     true,
 		"show_codex":                 false,

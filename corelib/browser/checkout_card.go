@@ -319,6 +319,99 @@ func DesktopSecretTypeRefusal(name string) string {
 	return "这是密码或验证码框。不要输入，也不要在对话里索要。网页字段改用 browser(action=\"submit_secret\", method, ref)。桌面上的框请用户自己填写，然后重新观察。"
 }
 
+// DesktopPayKeyRefusal stops a key that would submit a pay control, and stops
+// every key while the agent itself is in a password or code field. combo is
+// the key chord. focused is the control the agent last clicked or typed into.
+// labels are the names already observed in the foreground window. Enter in a
+// search box, a note, or a payment-method row is still sent. Space activates
+// only the focused control, so an unknown focus does not block it. The
+// refusal does not contain the keystrokes.
+func DesktopPayKeyRefusal(combo, focused, kind string, labels []string) (reason, title, msg string) {
+	focused = checkoutFocusLabel(focused)
+	if focused != "" && desktopSecretCaret(focused, kind) {
+		return "secret", focused, DesktopSecretTypeRefusal(focused)
+	}
+	pay := focused
+	if !IsCheckoutControl(pay, "") {
+		pay = desktopPayLabel(labels)
+	}
+	if desktopComboActivates(combo) {
+		if focused != "" && IsCheckoutControl(focused, "") {
+			return "checkout", focused, DesktopPayClickRefusal(focused)
+		}
+		return "", "", ""
+	}
+	if !desktopComboSubmits(combo) || pay == "" {
+		return "", "", ""
+	}
+	if focused != "" && (checkoutSearchField(focused) || checkoutMultilineField(focused) || checkoutSafeLabel(focused)) {
+		return "", "", ""
+	}
+	return "checkout", pay, DesktopPayClickRefusal(pay)
+}
+
+func desktopPayLabel(labels []string) string {
+	best := ""
+	bestLen := int(^uint(0) >> 1)
+	for _, raw := range labels {
+		label := checkoutFocusLabel(raw)
+		if label == "" || !IsCheckoutControl(label, "") {
+			continue
+		}
+		if n := len([]rune(label)); n < bestLen {
+			best = label
+			bestLen = n
+		}
+	}
+	return best
+}
+
+func desktopComboParts(combo string) []string {
+	return strings.FieldsFunc(combo, func(r rune) bool {
+		return r == '+' || r == ' ' || r == '-'
+	})
+}
+
+func desktopKeyIsEnter(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	k = strings.ReplaceAll(k, "_", "")
+	k = strings.ReplaceAll(k, " ", "")
+	switch k {
+	case "enter", "return", "kpenter":
+		return true
+	default:
+		return false
+	}
+}
+
+func desktopComboSubmits(combo string) bool {
+	for _, part := range desktopComboParts(combo) {
+		if desktopKeyIsEnter(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopKeyIsSpace(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	k = strings.ReplaceAll(k, "_", "")
+	k = strings.ReplaceAll(k, "-", "")
+	return k == "space" || k == "spacebar"
+}
+
+// A modified space is an input method or a shortcut, not a button click.
+func desktopComboActivates(combo string) bool {
+	parts := desktopComboParts(combo)
+	return len(parts) == 1 && desktopKeyIsSpace(parts[0])
+}
+
+// DesktopSubmitKey reports that the chord can activate the focused control
+// or submit the page. Arrow keys and clipboard chords do not.
+func DesktopSubmitKey(combo string) bool {
+	return desktopComboSubmits(combo) || desktopComboActivates(combo)
+}
+
 // DesktopSecretSurfaceRefusal stops keys and untargeted typing while the
 // foreground window is a password or verification dialog. A document titled
 // 密码学 is not such a dialog. The refusal does not contain typed text.
@@ -337,6 +430,31 @@ func secretField(n string) bool {
 		}
 	}
 	return containsASCIIToken(n, "otp")
+}
+
+// desktopSecretCaret reports that the agent's last control is a password or
+// code field. A button that only mentions the code, such as 获取验证码, is not
+// the caret. kind comes from the observed control; an empty kind stays closed.
+func desktopSecretCaret(name, kind string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" || !secretField(n) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "button", "checkbox", "radio", "link", "menuitem", "tab", "listitem", "treeitem", "icon", "menu":
+		return !secretActionName(n)
+	default:
+		return true
+	}
+}
+
+func secretActionName(n string) bool {
+	for _, marker := range []string{"获取", "发送", "重发", "重新发送", "重新获取", "点击", "按钮", "resend", "get code", "send code"} {
+		if strings.Contains(n, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func secretSurface(n string) bool {

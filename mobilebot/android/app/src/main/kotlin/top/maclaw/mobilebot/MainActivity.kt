@@ -18,9 +18,10 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "apkSignatureMatches" -> {
                     val path = call.argument<String>("path")
-                    result.success(
-                        path != null && apkSignatureMatches(path),
-                    )
+                    // null = could not determine (unreadable archive, no
+                    // signer certs) — the Dart side then lets the installer
+                    // proceed and report its own error.
+                    result.success(path?.let { apkSignatureMatches(it) })
                 }
                 else -> result.notImplemented()
             }
@@ -29,27 +30,58 @@ class MainActivity : FlutterActivity() {
 
     /**
      * Compares the downloaded APK's signing certificate against the installed
-     * app's own. A mismatch means the OS would fail the install with
-     * INSTALL_FAILED_UPDATE_INCOMPATIBLE — the updater surfaces a friendly
-     * "uninstall first" hint instead.
+     * app's own. `false` is a REAL mismatch (the OS would fail the install
+     * with INSTALL_FAILED_UPDATE_INCOMPATIBLE); `null` means undeterminable:
+     * the archive could not be parsed, holds a different applicationId, or
+     * its signer set is empty. The empty case matters — `getPackageArchiveInfo`
+     * returns no `signingInfo` on Android 9/10, and a v2-only APK exposes no
+     * legacy `signatures` below API 28, so treating the empty set as a
+     * mismatch would block every legitimate same-key update on those devices
+     * with the "签名不一致" error.
      */
-    private fun apkSignatureMatches(apkPath: String): Boolean {
-        val pm = packageManager
-        val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            PackageManager.GET_SIGNING_CERTIFICATES
+    private fun apkSignatureMatches(apkPath: String): Boolean? {
+        return try {
+            val pm = packageManager
+            val flag = signingFlags()
+            val mine = pm.getPackageInfo(packageName, flag)
+            val apkInfo = pm.getPackageArchiveInfo(apkPath, flag) ?: return null
+            // A different applicationId installs as a separate app — no
+            // update conflict either way; leave the decision to the installer.
+            if (apkInfo.packageName != packageName) return null
+            val apkCerts = certHashes(apkInfo)
+            val myCerts = certHashes(mine)
+            if (apkCerts.isEmpty() || myCerts.isEmpty()) return null
+            apkCerts == myCerts
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * GET_SIGNING_CERTIFICATES fills `signingInfo` (installed apps, and
+     * archives on API 30+); GET_SIGNATURES keeps the legacy `signatures`
+     * list readable, which is the only source that works on Android 9/10
+     * archives and pre-P devices — request both and prefer signingInfo.
+     */
+    private fun signingFlags(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES or
+                @Suppress("DEPRECATION") PackageManager.GET_SIGNATURES
         } else {
             @Suppress("DEPRECATION")
             PackageManager.GET_SIGNATURES
         }
-        val apkInfo = pm.getPackageArchiveInfo(apkPath, flag) ?: return false
-        val mine = pm.getPackageInfo(packageName, flag)
-        return certHashes(apkInfo) == certHashes(mine)
-    }
 
     private fun certHashes(info: android.content.pm.PackageInfo): Set<String> {
         val signers: Array<Signature> =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                info.signingInfo?.apkContentsSigners ?: emptyArray()
+                val viaSigningInfo = info.signingInfo?.apkContentsSigners
+                if (!viaSigningInfo.isNullOrEmpty()) {
+                    viaSigningInfo
+                } else {
+                    @Suppress("DEPRECATION")
+                    info.signatures ?: emptyArray()
+                }
             } else {
                 @Suppress("DEPRECATION")
                 info.signatures ?: emptyArray()

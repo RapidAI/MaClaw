@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -213,6 +214,19 @@ func TestGitHubRepoMaintRuleLifecycle(t *testing.T) {
 		t.Fatalf("missing hub err=%v calls=%d", err, len(calls))
 	}
 	publishRepoMaintConfig(app, "https://203.0.113.10")
+	if err := app.credentialStore.Modify(oauth.GitHubAccountProviderID, func(old *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		if old == nil {
+			return nil, fmt.Errorf("missing credential")
+		}
+		old.Scopes = "public_repo"
+		return old, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SetGitHubRepoMaintEnabled(saved.ID, true, "new_only"); err == nil || !strings.Contains(err.Error(), "令牌需要包含 repo") || len(calls) != 0 || cloneCalls != 0 {
+		t.Fatalf("missing repo scope err=%v calls=%d clones=%d", err, len(calls), cloneCalls)
+	}
+	saveGitHubToken(t, app)
 	if err := app.SetGitHubRepoMaintEnabled(saved.ID, true, ""); err == nil {
 		t.Fatal("first enable without a replay choice succeeded")
 	}
@@ -482,5 +496,272 @@ func repoMaintDraft(dir string) GitHubRepoMaintRule {
 		GhostDir:     dir,
 		Commands:     map[string]string{"push": "更新日志", "issues.opened": "看一下议题"},
 		EnabledKinds: map[string]bool{"push": true, "issues.opened": true},
+	}
+}
+
+func TestGitHubRepoMaintEnabledSaveUpdatesSubscription(t *testing.T) {
+	var mu sync.Mutex
+	var calls []recordedHubCall
+	failPatch := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls = append(calls, recordedHubCall{
+			Method: r.Method, Path: r.URL.Path, Body: append([]byte(nil), body...),
+		})
+		reject := failPatch && r.Method == http.MethodPatch
+		mu.Unlock()
+		if reject {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"boom"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":42}`))
+	}))
+	defer srv.Close()
+
+	dialTLS := func() *http.Client {
+		client := defaultGitHubHTTPClient()
+		client.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				switch addr {
+				case "api.github.com:443", "203.0.113.10:443":
+					return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+				default:
+					t.Errorf("dialed %s", addr)
+					return nil, context.Canceled
+				}
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		return client
+	}
+	prevGit := newGitHubHTTPClient
+	prevHub := newRepoMaintHubHTTPClient
+	prevIntake := githubRepoMaintIntakeReady
+	newGitHubHTTPClient = dialTLS
+	newRepoMaintHubHTTPClient = dialTLS
+	githubRepoMaintIntakeReady = true
+	t.Cleanup(func() {
+		newGitHubHTTPClient = prevGit
+		newRepoMaintHubHTTPClient = prevHub
+		githubRepoMaintIntakeReady = prevIntake
+	})
+
+	app := newRepoMaintTestApp(t, "https://203.0.113.10", true)
+	dbPath := filepath.Join(app.GetDataDir(), githubRepoMaintDBName)
+	t.Cleanup(func() { closeRepoMaintDB(dbPath) })
+	ghost := filepath.Join(t.TempDir(), "ghost")
+	if err := os.MkdirAll(ghost, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGit(ghost, "init"); err != nil || runGit(ghost, "remote", "add", "origin", "https://github.com/yucejade/jjquant-v2.git") != nil {
+		t.Fatal("checkout")
+	}
+	saved, err := app.SaveGitHubRepoMaintRule(GitHubRepoMaintRule{
+		RepoURL:      "https://github.com/yucejade/jjquant-v2",
+		GhostDir:     ghost,
+		Commands:     map[string]string{"issues.opened": "看一下议题"},
+		EnabledKinds: map[string]bool{"issues.opened": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := app.repoMaintSecret(saved.ID)
+	if err != nil || secret == "" {
+		t.Fatal(err)
+	}
+	if err := app.SetGitHubRepoMaintEnabled(saved.ID, true, "new_only"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	calls = nil
+	mu.Unlock()
+
+	// A new command does not change which events GitHub delivers.
+	app.setGitHubTokenCache("")
+	_ = app.credentialStore.Delete(oauth.GitHubAccountProviderID)
+	rewritten := GitHubRepoMaintRule{
+		ID:           saved.ID,
+		RepoURL:      saved.RepoURL,
+		GhostDir:     ghost,
+		Commands:     map[string]string{"issues.opened": "换一句"},
+		EnabledKinds: map[string]bool{"issues.opened": true},
+	}
+	if _, err := app.SaveGitHubRepoMaintRule(rewritten); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(calls) != 0 {
+		t.Fatalf("command edit called out %d times", len(calls))
+	}
+	mu.Unlock()
+	saveGitHubToken(t, app)
+
+	withPush := rewritten
+	withPush.Commands = map[string]string{"issues.opened": "换一句", "push": "记一笔"}
+	withPush.EnabledKinds = map[string]bool{"issues.opened": true, "push": true}
+	if _, err := app.SaveGitHubRepoMaintRule(withPush); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := append([]recordedHubCall(nil), calls...)
+	calls = nil
+	mu.Unlock()
+	if len(got) != 2 || got[0].Method != http.MethodPut || got[1].Method != http.MethodPatch || got[1].Path != "/repos/yucejade/jjquant-v2/hooks/42" {
+		t.Fatalf("subscription update = %s", callSummary(got))
+	}
+	if strings.Join(jsonStringList(t, got[0].Body, "event_kinds"), ",") != "issues.opened,push" {
+		t.Fatal("hub event set")
+	}
+	assertHookPatch(t, got[1].Body, secret, "issues,push", true)
+
+	branched := withPush
+	branched.PushBranch = "release"
+	if _, err := app.SaveGitHubRepoMaintRule(branched); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got = append([]recordedHubCall(nil), calls...)
+	calls = nil
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("branch update calls=%d", len(got))
+	}
+	var hub map[string]any
+	if err := json.Unmarshal(got[0].Body, &hub); err != nil {
+		t.Fatal(err)
+	}
+	if hub["push_branch"] != "release" {
+		t.Fatal("hub push branch")
+	}
+	assertHookPatch(t, got[1].Body, secret, "issues,push", true)
+
+	mu.Lock()
+	failPatch = true
+	mu.Unlock()
+	failed := branched
+	failed.Commands = map[string]string{"issues.opened": "换一句", "push": "记一笔", "check_run.failure": "看失败"}
+	failed.EnabledKinds = map[string]bool{"issues.opened": true, "push": true, "check_run.failure": true}
+	if _, err := app.SaveGitHubRepoMaintRule(failed); err == nil || !strings.Contains(err.Error(), "规则未保存") {
+		t.Fatalf("patch failure err=%v", err)
+	}
+	mu.Lock()
+	got = append([]recordedHubCall(nil), calls...)
+	failPatch = false
+	calls = nil
+	mu.Unlock()
+	if len(got) != 3 || got[1].Method != http.MethodPatch || got[2].Method != http.MethodPut {
+		t.Fatalf("rollback = %s", callSummary(got))
+	}
+	if strings.Join(jsonStringList(t, got[2].Body, "event_kinds"), ",") != "issues.opened,push" {
+		t.Fatal("hub rollback event set")
+	}
+	view, err := app.publicRepoMaintRule(saved.ID)
+	if err != nil || view.EnabledKinds["check_run.failure"] || !view.EnabledKinds["push"] || view.PushBranch != "release" || view.Commands["issues.opened"] != "换一句" {
+		t.Fatal("local subscription was not restored")
+	}
+
+	cleared := branched
+	cleared.Commands = map[string]string{}
+	cleared.EnabledKinds = map[string]bool{}
+	if _, err := app.SaveGitHubRepoMaintRule(cleared); err == nil || !strings.Contains(err.Error(), "至少打开一个事件") {
+		t.Fatalf("empty subscription err=%v", err)
+	}
+	mu.Lock()
+	if len(calls) != 0 {
+		t.Fatalf("empty subscription called out %d times", len(calls))
+	}
+	mu.Unlock()
+
+	if err := app.credentialStore.Modify(oauth.GitHubAccountProviderID, func(old *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		if old == nil {
+			return nil, fmt.Errorf("missing credential")
+		}
+		old.Scopes = "public_repo"
+		return old, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	scoped := branched
+	scoped.PushBranch = "other"
+	if _, err := app.SaveGitHubRepoMaintRule(scoped); err == nil || !strings.Contains(err.Error(), "令牌需要包含 repo") {
+		t.Fatalf("scope err=%v", err)
+	}
+	mu.Lock()
+	if len(calls) != 0 {
+		t.Fatalf("missing repo scope called out %d times", len(calls))
+	}
+	mu.Unlock()
+	if token := app.loadGitHubAccessToken(); token == "" {
+		t.Fatal("scope refusal cleared the credential")
+	}
+	saveGitHubToken(t, app)
+
+	if err := app.SetGitHubRepoMaintEnabled(saved.ID, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	calls = nil
+	mu.Unlock()
+	app.setGitHubTokenCache("")
+	_ = app.credentialStore.Delete(oauth.GitHubAccountProviderID)
+	if _, err := app.SaveGitHubRepoMaintRule(GitHubRepoMaintRule{
+		ID:           saved.ID,
+		RepoURL:      saved.RepoURL,
+		GhostDir:     ghost,
+		Commands:     map[string]string{"issues.closed": "记下关闭"},
+		EnabledKinds: map[string]bool{"issues.closed": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(calls) != 0 {
+		t.Fatalf("disabled save called out %d times", len(calls))
+	}
+	mu.Unlock()
+}
+
+func jsonStringList(t *testing.T, body []byte, key string) []string {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := doc[key].([]any)
+	if !ok {
+		t.Fatalf("%s missing", key)
+	}
+	out := make([]string, len(raw))
+	for i, item := range raw {
+		text, ok := item.(string)
+		if !ok {
+			t.Fatalf("%s item", key)
+		}
+		out[i] = text
+	}
+	return out
+}
+
+func assertHookPatch(t *testing.T, body []byte, secret, events string, active bool) {
+	t.Helper()
+	var hook map[string]any
+	if err := json.Unmarshal(body, &hook); err != nil {
+		t.Fatal(err)
+	}
+	if hook["active"] != active {
+		t.Fatal("hook active")
+	}
+	if strings.Join(jsonStringList(t, body, "events"), ",") != events {
+		t.Fatal("hook events")
+	}
+	cfg, _ := hook["config"].(map[string]any)
+	if cfg["secret"] != secret || cfg["insecure_ssl"] != "0" || cfg["content_type"] != "json" {
+		t.Fatal("hook config")
+	}
+	rawURL, _ := cfg["url"].(string)
+	if !strings.HasPrefix(rawURL, "https://203.0.113.10/api/github/repo-maint/hooks/") || strings.Contains(rawURL, secret) {
+		t.Fatal("hook url")
 	}
 }

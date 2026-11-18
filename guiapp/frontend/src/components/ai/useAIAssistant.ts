@@ -15,6 +15,7 @@ import { liveStatusProgress } from "./aiAssistantProgressUtils";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import { ROUND_PROSE_PRESERVE_MIN_CHARS, clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
+import { goalStageCommandFromRound, goalStageHasReport } from "./goalStagePresentation";
 import { capReasoningForDisplay, cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
 import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, resumeDesktopChatTask, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
 import { takeAssistantStreamToken } from "../bots/visibleDesktopTurn";
@@ -24,6 +25,7 @@ import { conversationViewCut } from "./conversationViewWindow";
 import { markStreamTextReplacement, noteNonAppendStreamText } from "./streamTextRevision";
 import { isViewerReducerEnabled, viewerOwnsRaw } from "./viewerReducerFlag";
 import { acceptViewerEventForPanel, legacyFromViewerEvent, parseViewerEvent } from "./reduceViewerEvent";
+import { chatTextHasTofu, stripChatTofu } from "./visibleChatText";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -190,7 +192,7 @@ export type AIAssistantActionRouteOptions = Pick<SendMessageOptions, 'project_pa
 type ShowConfirm = (
     message: string,
     title?: string,
-    options?: { confirmText?: string; cancelText?: string; confirmVariant?: 'primary' | 'danger' },
+    options?: { confirmText?: string; cancelText?: string; confirmVariant?: 'primary' | 'danger'; dialogKey?: string },
 ) => Promise<boolean>;
 
 interface UseAIAssistantOptions {
@@ -259,17 +261,15 @@ export function sanitizeAIAssistantStreamText(value: string): string {
     // fonts and render as tofu squares.
     const reasoning = value.startsWith('\x01');
     const rejected = !reasoning && value.startsWith('\x02');
-    const visible = (reasoning || rejected ? value.slice(1) : value)
-        // Transport markers/control bytes and Unicode replacement/object
-        // characters have no meaningful text representation in the panel.
-        // Some ACP providers put the reasoning marker before every token, so
-        // filter controls throughout the delta (not just at its beginning).
-        // Keep normal full-width punctuation/letters (FF01–FFEF); only
-        // strip the non-rendering specials at the end of the block. Some
-        // providers use U+25A1 ("□") as a replacement glyph when a token
-        // cannot be decoded; letting it through makes the entire reasoning
-        // trail appear to be filled with squares in the GUI.
-        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u25A1\uE000-\uF8FF\uFFF0-\uFFFF]/g, '');
+    const start = reasoning || rejected ? 1 : 0;
+    // Clean tokens are the common case. The scan matches the tofu class
+    // (controls except tab/LF/CR, U+25A1, BMP private use, U+FFF0–U+FFFF).
+    if (!chatTextHasTofu(value, start)) return value;
+    // Transport markers and replacement/object characters have no glyph.
+    // Some providers put the reasoning marker before every token, so filter
+    // controls throughout the body. Keep full-width punctuation (FF01–FFEF).
+    // U+25A1 ("□") is a decode stand-in and paints as a square.
+    const visible = stripChatTofu(value.slice(start));
     if (reasoning) return `\x01${visible}`;
     if (rejected) return `\x02${visible}`;
     return visible;
@@ -277,6 +277,18 @@ export function sanitizeAIAssistantStreamText(value: string): string {
 
 function sanitizeAIAssistantFinalText(value: string): string {
     return stripLeakedReasoningProtocol(sanitizeAIAssistantStreamText(value).replace(/^[\x01\x02]/, ''));
+}
+
+/** Visible body of one delta about to be concatenated into chat text.
+ * A leading U+0001/U+0002 is only a lane signal. Markers glued between
+ * tokens have no glyph and paint as hollow squares. */
+export function visibleAppendedChatText(value: string): string {
+    if (!value) return "";
+    const cleaned = sanitizeAIAssistantStreamText(value);
+    if (!cleaned) return "";
+    const lead = cleaned.charCodeAt(0);
+    if (lead === 1 || lead === 2) return cleaned.slice(1);
+    return cleaned;
 }
 
 // Gateways that already parsed a structured tool call still leave the model's
@@ -630,6 +642,10 @@ export interface ChatMessage {
      * scrolled-up reader back to the tail.
      */
     hostInitiated?: boolean;
+    /** Host assignment for one goal stage, shown above that stage's process and report. */
+    goalStageCommand?: string;
+    /** The goal stage filed its report. Its process list stays folded while the goal continues. */
+    goalStageSettled?: boolean;
     /** Runtime owner. Project-tab messages must never be treated as local chat context. */
     sessionKey?: string;
     /** UI tab that initiated the round, used only for tab-local recovery/display. */
@@ -834,6 +850,9 @@ interface OffscreenLiveRound {
     sessionKey: string;
     lastSeenAt: number;
     displayText: string;
+    // Computed while the start event still has the continuation prompt.
+    // Adopting or settling the round later only has the checklist text.
+    goalStageCommand?: string;
     parts: OffscreenRoundPart[];
     // Dropped prefix stays in the array until a compact, so trim is not a shift per token.
     start: number;
@@ -849,11 +868,12 @@ interface OffscreenLiveRound {
     contentRound: number;
 }
 
-function emptyOffscreenLiveRound(sessionKey: string, displayText: string): OffscreenLiveRound {
+function emptyOffscreenLiveRound(sessionKey: string, displayText: string, goalStageCommand = ""): OffscreenLiveRound {
     return {
         sessionKey,
         lastSeenAt: Date.now(),
         displayText,
+        ...(goalStageCommand ? { goalStageCommand } : {}),
         parts: [],
         start: 0,
         chars: 0,
@@ -1023,7 +1043,8 @@ function pushOffscreenLiveRoundText(entry: OffscreenLiveRound, pieces: readonly 
         // Do not glue this round onto the previous one. A later rejection has
         // to be able to drop this round without taking the report with it.
         if (last && last.round === entry.contentRound && offscreenTextCanExtend(last, delta)) {
-            const extra = delta.startsWith('\x01') ? delta.slice(1) : delta;
+            const extra = visibleAppendedChatText(delta.startsWith('\x01') ? delta.slice(1) : delta);
+            if (!extra) continue;
             last.text += extra;
             entry.chars += extra.length;
             continue;
@@ -1112,6 +1133,10 @@ function settleOffscreenTerminalMessages(
         sessionKey,
         timestamp: Date.now(),
     }, entry.parts.slice(entry.start));
+    if (requestId.startsWith('goal-cont-') && !assistant.goalStageCommand) {
+        const stageCommand = entry.goalStageCommand || goalStageCommandFromRound('', entry.displayText);
+        if (stageCommand) assistant.goalStageCommand = stageCommand;
+    }
     const withRows = silent
         ? [...messages, assistant]
         : [...messages, {
@@ -2597,7 +2622,7 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
         return { ...message, reasoning: nextReasoning || undefined, reasoningLive: true, codingTimeline: nextTimeline };
     }
 
-    const contentDelta = delta;
+    const contentDelta = visibleAppendedChatText(delta);
     if (!contentDelta) return message;
     const rawNextContent = message.content ? message.content + contentDelta : contentDelta;
     // Tags are short. Scan the new delta plus the previous tail instead of
@@ -2737,21 +2762,28 @@ function streamRoleCursor(state: StreamAppendState, kind: "content" | "reasoning
 
 function normalizeStreamDeltaWithState(streamState: StreamAppendState, incoming: string): string {
     if (!incoming) return '';
-    if (incoming.startsWith('\x01')) {
-        const incomingReasoning = stripRolePrefixReasoning(incoming.slice(1));
+    // The rejected-round token is exactly a leading U+0002. Sanitizing it
+    // first would turn the reset into ordinary prose.
+    if (isRejectedRoundContentToken(incoming)) return incoming;
+    // Keep one leading U+0001 so the reasoning lane still splits. Strip every
+    // sentinel inside the body before role-prefix and snapshot matching.
+    const cleaned = sanitizeAIAssistantStreamText(incoming);
+    if (!cleaned || cleaned === '\x01') return '';
+    if (cleaned.startsWith('\x01')) {
+        const incomingReasoning = stripRolePrefixReasoning(cleaned.slice(1));
         const result = streamAppendDeltaLazy(streamState, 'reasoning', incomingReasoning, streamState.reasoningSnapshotMode);
         if (result.snapshotMode) streamState.reasoningSnapshotMode = true;
         if (!result.delta) return '';
         streamLanePush(streamState, 'reasoning', result.delta);
         return `\x01${result.delta}`;
     }
-    const incomingContent = stripRolePrefixFrontend(incoming);
+    const incomingContent = stripRolePrefixFrontend(cleaned);
     const result = streamAppendDeltaLazy(streamState, 'content', incomingContent, streamState.contentSnapshotMode);
     if (result.snapshotMode) streamState.contentSnapshotMode = true;
     if (!result.delta) return '';
-    // Keep state aligned with display text, but return the raw delta. Split
-    // prefixes such as "Brow" + "ser: ..." need the second raw piece so the
-    // message write can strip the full reconstructed prefix from the UI text.
+    // The body above already dropped lane sentinels. Return this piece, not a
+    // joined snapshot: "Brow" + "ser: ..." need the second raw piece so the
+    // message write can strip the reconstructed prefix.
     streamLanePush(streamState, 'content', result.delta);
     return result.delta;
 }
@@ -3247,6 +3279,23 @@ function buildTraceDetailMessage(view: AIAssistantTraceView, runID: string): str
     return lines.join('\n');
 }
 
+function isTraceDetailCommand(command: string): boolean {
+    return /^__view_trace__\s+\S+$/.test(command.trim());
+}
+
+// The install default hides the run-details entry. Drop the product's own
+// "see Trace" invite so a closed setting does not point at a missing control.
+function omitHiddenTraceInvite(text: string, showTraceEntry: boolean): string {
+    if (showTraceEntry || !text) return text;
+    return text
+        .replace(/[ \t]*可查看 Trace[^。]*。/g, '')
+        .replace(/[ \t]*详情看 Trace。/g, '')
+        .replace(/[ \t]*Details are in Trace\.?/g, '')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 function buildTraceDetailAction(response: any, showTraceEntry: boolean): ChatAction[] | undefined {
     if (!showTraceEntry) return undefined;
     const runID = typeof response?.run_id === 'string' ? response.run_id.trim() : '';
@@ -3635,7 +3684,7 @@ export function isTerminalClassCode(error: string): boolean {
 export function terminalAssistantResult(message: ChatMessage, response: any): string | undefined {
     if (!message.toolCalls?.length) return undefined;
     if (resolveResponseSource(response) === 'session_round_continuation') return undefined;
-    const raw = typeof response?.text === "string" ? response.text : "";
+    const raw = visibleAppendedChatText(typeof response?.text === "string" ? response.text : "");
     let text = stripAssistantToolCallMarkers(stripRolePrefixFrontend(raw)).trim();
     const err = typeof response?.error === "string" ? response.error.trim() : "";
     // A status code is the turn's terminal class. It is not a second paragraph.
@@ -3673,8 +3722,8 @@ export function responseIsQuietContinuation(response: any): boolean {
 const QUIET_CONTINUATION_HOLD_MS = 4000;
 
 function selectFinalRoundContent(message: ChatMessage, response: any): string {
-    const rawFinalText = typeof response?.text === 'string' ? response.text : '';
-    const rawStreamedContent = message.content || '';
+    const rawFinalText = visibleAppendedChatText(typeof response?.text === 'string' ? response.text : '');
+    const rawStreamedContent = visibleAppendedChatText(message.content || '');
     const finalText = stripRolePrefixFrontend(rawFinalText);
     const streamedContent = stripRolePrefixFrontend(rawStreamedContent);
     const responseSource = resolveResponseSource(response);
@@ -3779,9 +3828,9 @@ function hasStructuredResponsePayload(response: any): boolean {
 }
 
 function resolveFinalRoundReasoning(message: ChatMessage, response: any): string | undefined {
-    const rawFinalReasoning = typeof response?.reasoning === 'string' ? response.reasoning : '';
+    const rawFinalReasoning = visibleAppendedChatText(typeof response?.reasoning === 'string' ? response.reasoning : '');
     const finalReasoning = stripRolePrefixReasoning(rawFinalReasoning);
-    const streamedReasoning = stripRolePrefixReasoning(message.reasoning || '');
+    const streamedReasoning = stripRolePrefixReasoning(visibleAppendedChatText(message.reasoning || ''));
     if (streamedReasoning && finalReasoning) {
         return mergeReasoningText(streamedReasoning, finalReasoning) || undefined;
     }
@@ -3862,8 +3911,8 @@ function appendFinalReasoningToCodingTimeline(message: ChatMessage, response: an
 
 function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences): ChatMessage[] {
     const finalizeMessage = (message: ChatMessage): ChatMessage | null => {
-        const nextContent = resolveFinalRoundContent(message, response);
-        const resultText = terminalAssistantResult(message, response);
+        const nextContent = omitHiddenTraceInvite(resolveFinalRoundContent(message, response), preferences.showTraceEntry);
+        const resultText = omitHiddenTraceInvite(terminalAssistantResult(message, response) || '', preferences.showTraceEntry) || undefined;
         const resultStatus = terminalAssistantResultStatus(message, response);
         // The transcript still shows each call. Don't also file that same
         // text under 思考过程 when the official answer arrives.
@@ -3876,7 +3925,7 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
             resolveFinalRoundReasoning(message, response) || "",
         ) || undefined;
         const nextFields = mergeResponseFields(response.fields, normalizeTraceFields(response, preferences.showTraceEntry));
-        const responseActions = normalizeActions(response.actions) || [];
+        const responseActions = (normalizeActions(response.actions) || []).filter(action => !isTraceDetailCommand(action.command));
         const traceActions = buildTraceDetailAction(response, preferences.showTraceEntry) || [];
         const nextActions = [...responseActions, ...traceActions];
         const {
@@ -3892,9 +3941,11 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
             return null;
         }
         noteNonAppendStreamText(message, { content: nextContent, resultText, reasoning: nextReasoning });
+        const goalStageSettled = goalStageHasReport(message.requestId, nextContent) || message.goalStageSettled;
         return {
             ...message,
             content: nextContent,
+            ...(goalStageSettled ? { goalStageSettled: true } : {}),
             resultText,
             resultStatus,
             reasoning: nextReasoning,
@@ -5413,7 +5464,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     }, [notifyForegroundIdle]);
 
     /** Remember a backend round whose session is not the visible transcript. */
-    const rememberOffscreenLiveRound = useCallback((requestId: string, sessionKey: string, displayText = '') => {
+    const rememberOffscreenLiveRound = useCallback((requestId: string, sessionKey: string, displayText = '', goalStageCommand = '') => {
         const id = String(requestId || '').trim();
         const owner = normalizeRuntimeSessionKey(sessionKey || '');
         // The local assistant owns no task row, and an anonymous event names no
@@ -5424,16 +5475,18 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const forgottenAt = forgottenEventSessionsRef.current.get(owner);
         if (forgottenAt && Date.now() - forgottenAt < FORGOTTEN_EVENT_SESSION_TTL_MS) return;
         const announced = displayText.trim();
+        const stageCommand = goalStageCommand.trim();
         const existing = offscreenLiveRoundsByRequestRef.current.get(id);
         if (existing && existing.sessionKey === owner) {
             existing.lastSeenAt = Date.now();
             if (announced && !existing.displayText) existing.displayText = announced;
+            if (stageCommand && !existing.goalStageCommand) existing.goalStageCommand = stageCommand;
             return;
         }
         // This wave owns the sidebar row. The previous handoff's hold would
         // otherwise keep the row running after this wave finishes.
         quietHoldReleaseRef.current(owner, id);
-        offscreenLiveRoundsByRequestRef.current.set(id, emptyOffscreenLiveRound(owner, announced));
+        offscreenLiveRoundsByRequestRef.current.set(id, emptyOffscreenLiveRound(owner, announced, stageCommand));
         setOffscreenLiveRoundVersion(version => version + 1);
     }, []);
 
@@ -5887,7 +5940,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // while the user looks at another task. Their tokens stay out of the
             // visible transcript, but the task is genuinely busy: publish the
             // identity so the sidebar stops showing the stale pause snapshot.
-            rememberOffscreenLiveRound(requestId, sessionKey, event.display_text?.trim() || '');
+            rememberOffscreenLiveRound(
+                requestId,
+                sessionKey,
+                event.display_text?.trim() || '',
+                requestId.startsWith('goal-cont-') ? goalStageCommandFromRound(event.text || '', event.display_text || '') : '',
+            );
             return null;
         }
         forgottenEventSessionsRef.current.delete(sessionKey);
@@ -5912,6 +5970,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const bufferedParts = buffered ? buffered.parts.slice(buffered.start) : [];
         const bufferedAppend = buffered?.append;
         const bufferedBoundary = !!buffered?.pendingRoundBoundary;
+        const bufferedStageCommand = buffered?.goalStageCommand || '';
         forgetOffscreenLiveRound(requestId);
         setRoundState(nextRound);
         // Install dedup state before the panel hears about the row. A snapshot
@@ -5921,6 +5980,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // draft visible, and let that token apply the same replacement.
         if (bufferedBoundary) replaceRoundProseOnFirstTokenRef.current.add(requestId);
         const goalRound = requestId.startsWith('goal-cont-');
+        // A later adopt has no prompt. Keep the command taken from the start event.
+        const stageCommand = !goalRound
+            ? ''
+            : (event.text || '').trim()
+                ? goalStageCommandFromRound(event.text || '', displayText)
+                : (bufferedStageCommand || goalStageCommandFromRound('', displayText));
         // One write. A first pass that inserts an empty bubble notifies the
         // panel before the hidden prose is attached.
         const assistantSeed: ChatMessage = bufferedParts.length > 0
@@ -5940,6 +6005,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 sessionKey,
                 timestamp: Date.now(),
             };
+        if (stageCommand) assistantSeed.goalStageCommand = stageCommand;
         setMessages(prev => {
             // An adopted offscreen round already passed its start event. It has
             // no display row to add now; only the placeholder its tokens need.
@@ -7056,7 +7122,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
         const tokenCoalescer = createStreamCoalescer<string, { delta: string; sessionKey: string }>({
             onFlush: (requestId, items) => {
-                const joined = items.map(item => item.delta).join('');
+                const joined = visibleAppendedChatText(items.map(item => item.delta).join(''));
                 if (!joined) return;
                 publishContinuationToken(requestId, joined, items[0]?.sessionKey);
             },
@@ -7075,7 +7141,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const requestId = event.request_id;
             const sessionKey = normalizeRuntimeSessionKey(event.session_key || 'desktop-user');
             if (event.kind === 'notice') {
-                const text = String(event.text || '').trim();
+                const text = visibleAppendedChatText(String(event.text || '')).trim();
                 // P0-4 credential gate: timeout / loop-cancel notices carry
                 // request_id "credential-card-<id>". Move that card to a
                 // terminal status so the idle-wait bypass cannot outlive the
@@ -7113,7 +7179,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 setMessages(prev => [...prev, {
                     id: nextId(),
                     role: 'assistant' as const,
-                    content: String(rawEvent.text || '').trim(),
+                    content: visibleAppendedChatText(String(rawEvent.text || '')).trim(),
                     confirmation,
                     actions,
                     requestId,
@@ -7123,7 +7189,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 return;
             }
             if (event.kind === 'token') {
-                const delta = String(event.text || '');
+                const delta = visibleAppendedChatText(String(event.text || ''));
                 if (!delta) return;
                 if (tokenCoalescer.push(requestId, { delta, sessionKey })) {
                     publishContinuationToken(requestId, delta, sessionKey);
@@ -7131,7 +7197,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 return;
             }
             if (event.kind === 'final') {
-                const text = String(event.text || '');
+                const text = visibleAppendedChatText(String(event.text || ''));
                 tokenCoalescer.flush(requestId);
                 const applyFinal = (messages: ChatMessage[]): ChatMessage[] => {
                     const idx = messages.findIndex(m => m.requestId === requestId && m.role === 'assistant');
@@ -7609,13 +7675,16 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             setMessages(prev => apply(prev));
         };
         const tokenCoalescer = createStreamCoalescer<string, string>({
-            onFlush: (_key, deltas) => publishBtwToken(deltas.join('')),
+            onFlush: (_key, deltas) => {
+                const joined = visibleAppendedChatText(deltas.join(''));
+                if (joined) publishBtwToken(joined);
+            },
         });
         sideStreamCoalescersRef.current.add(tokenCoalescer);
         const tokenHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
             if (event?.request_id !== requestId) return;
-            const delta = event?.text || '';
+            const delta = visibleAppendedChatText(event?.text || '');
             if (!delta) return;
             if (tokenCoalescer.push(requestId, delta)) publishBtwToken(delta);
         };
@@ -7630,7 +7699,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
         try {
             const response = await SendBtwQuery(trimmedQuery, requestId) as any;
-            const finalText = response?.text || response?.error || '查询失败';
+            const finalText = visibleAppendedChatText(String(response?.text || ''))
+                || visibleAppendedChatText(String(response?.error || ''))
+                || '查询失败';
             // Replace placeholder content with the final result.
             // If streaming already populated content, the final text is authoritative.
             tokenCoalescer.flush(requestId);
