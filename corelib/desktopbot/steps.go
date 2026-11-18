@@ -23,6 +23,9 @@ type Step struct {
 	Key    string
 	Result string
 	Done   bool
+	// Bind is the consent identity for this attempt. It is hashed into an
+	// unfinished claim and is not a journal column.
+	Bind string
 }
 
 // ResumePlan is where a crashed round continues.
@@ -116,6 +119,7 @@ func ResumeFrom(steps []Step) int {
 // ResumeExecution starts after the last completed step. The progress file
 // still supplies the person-facing line. A line that would repeat a completed
 // send or deploy is blocked, and the plan never carries a sentence to send.
+// A claimed effect with no outcome is blocked too: resume does not replay it.
 func ResumeExecution(fileText string, copy Sections, steps []Step) ResumePlan {
 	plan := ResumePlan{
 		Start:    ResumeFrom(steps),
@@ -125,17 +129,29 @@ func ResumeExecution(fileText string, copy Sections, steps []Step) ResumePlan {
 	progress := fileText + "\n" + plan.Display
 	seen := map[string]struct{}{}
 	for _, step := range steps {
-		if !step.Done || strings.TrimSpace(step.Key) == "" || !SideEffect(step.Tool, "") {
+		key := strings.TrimSpace(step.Key)
+		if key == "" {
+			continue
+		}
+		if EffectPending(step) {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			plan.Blocked = append(plan.Blocked, key)
+			continue
+		}
+		if !step.Done || !SideEffect(step.Tool, "") {
 			continue
 		}
 		if !ProgressRepeatsDone(progress, step.Tool) {
 			continue
 		}
-		if _, ok := seen[step.Key]; ok {
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[step.Key] = struct{}{}
-		plan.Blocked = append(plan.Blocked, step.Key)
+		seen[key] = struct{}{}
+		plan.Blocked = append(plan.Blocked, key)
 	}
 	plan.Sentence = ""
 	return plan

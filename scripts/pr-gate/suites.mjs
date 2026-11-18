@@ -21,6 +21,7 @@ export const lifecycleSuite = {
     ],
     "./corelib/agentservice": [
       "TestDesktopDeliverablesOnlyForExecuteDesktopTurns",
+      "TestDesktopEffectClaimSurvivesRestart",
     ],
   },
 };

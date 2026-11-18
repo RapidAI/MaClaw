@@ -77,20 +77,69 @@ func deliverScheduledTaskResultForRun(svc *agentservice.Service, principal agent
 	}
 	steps := currentDesktopSteps()
 	runID = strings.TrimSpace(runID)
-	if steps == nil || runID == "" {
-		return send()
+	if steps == nil {
+		return desktopbot.ErrEffectIdentity{}
 	}
-	_, _, err := steps.RunDesktopStep(desktopbot.Step{
-		RunID: runID,
-		Tool:  "delivery",
-		Key:   desktopbot.StepKey(runID, "delivery:"+runID, 0),
-	}, "", func() (string, error) {
+	permit, err := scheduledDeliveryPermit(principal, task, resultText, runID)
+	if err != nil {
+		return err
+	}
+	_, _, err = steps.RunAuthorized(permit, "", func() (string, error) {
 		if err := send(); err != nil {
 			return "", err
 		}
 		return resultText, nil
 	})
 	return err
+}
+
+func scheduledDeliveryPermit(principal agentservice.Principal, task *scheduler.ScheduledTask, resultText, runID string) (desktopbot.EffectPermit, error) {
+	tenant := strings.TrimSpace(principal.TenantID)
+	user := strings.TrimSpace(principal.UserID)
+	if tenant == "" || user == "" || strings.TrimSpace(runID) == "" || task == nil || task.Delivery == nil {
+		return desktopbot.EffectPermit{}, desktopbot.ErrEffectIdentity{}
+	}
+	channel := strings.TrimSpace(task.Delivery.Channel)
+	target := scheduledDeliveryTargets(task.Delivery.Targets)
+	if channel == "" || target == "" || strings.TrimSpace(resultText) == "" {
+		return desktopbot.EffectPermit{}, desktopbot.ErrEffectIdentity{}
+	}
+	account := strings.TrimSpace(task.Delivery.BotProfileID)
+	if account == "" {
+		account = user
+	}
+	args, err := desktopbot.CanonicalEffectArgs("", map[string]any{
+		"channel": channel,
+		"targets": target,
+		"body":    resultText,
+	})
+	if err != nil {
+		return desktopbot.EffectPermit{}, err
+	}
+	return desktopbot.EffectPermit{
+		RunID:   runID,
+		Owner:   tenant + "/" + user,
+		Account: account,
+		Host:    channel,
+		Target:  target,
+		Tool:    "delivery",
+		Args:    args,
+	}, nil
+}
+
+func scheduledDeliveryTargets(targets []scheduler.DeliveryTarget) string {
+	parts := make([]string, 0, len(targets))
+	for _, target := range targets {
+		mentions := append([]string(nil), target.MentionUserIDs...)
+		parts = append(parts, strings.Join([]string{
+			strings.TrimSpace(target.Kind),
+			strings.TrimSpace(target.GroupID),
+			strings.TrimSpace(target.UserID),
+			strconv.FormatBool(target.MentionAll),
+			strings.Join(mentions, "+"),
+		}, "|"))
+	}
+	return strings.Join(parts, ",")
 }
 
 func deliverScheduledTaskBody(svc *agentservice.Service, principal agentservice.Principal, task *scheduler.ScheduledTask, resultText string, runErr error) error {

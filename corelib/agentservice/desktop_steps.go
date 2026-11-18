@@ -15,6 +15,9 @@ import (
 // agentservice_state stays 1.
 type DesktopStepper interface {
 	RunDesktopStep(step desktopbot.Step, command string, run func() (string, error)) (text string, replayed bool, err error)
+	// RunAuthorized is the server permit path. cap_mcp should use this with
+	// an EffectPermit instead of a model tool-call id.
+	RunAuthorized(permit desktopbot.EffectPermit, command string, run func() (string, error)) (text string, replayed bool, err error)
 	ResumeDesktopRound(runID, progressNext string) (desktopbot.ResumePlan, error)
 	FinishedDesktopStep(key string) (text string, done bool, err error)
 }
@@ -187,9 +190,11 @@ func (s *SQLiteStore) ListDesktopSteps(runID string) ([]desktopbot.Step, error) 
 	return out, rows.Err()
 }
 
-// RunDesktopStep runs a side effect once. The same key returns the recorded
-// result and does not call run. A read-only step always runs and is not
-// stored. An empty key is not stored. A failed run is not marked done.
+// RunDesktopStep runs a side effect once. The claim is committed before run,
+// so a crash leaves the key uncertain instead of looking unstarted. The same
+// finished key returns the recorded result and does not call run. A read-only
+// step always runs and is not stored. An empty key is not stored. A definite
+// failure releases the claim. An uncertain failure keeps it.
 func (s *SQLiteStore) RunDesktopStep(step desktopbot.Step, command string, run func() (string, error)) (string, bool, error) {
 	if s == nil {
 		return "", false, ErrServiceClosed
@@ -202,39 +207,41 @@ func (s *SQLiteStore) RunDesktopStep(step desktopbot.Step, command string, run f
 		return text, false, err
 	}
 	s.mu.Lock()
-	if err := s.guardDesktopStepsLocked(); err != nil {
-		s.mu.Unlock()
-		return "", false, err
+	err := s.guardDesktopStepsLocked()
+	if err == nil && strings.TrimSpace(step.Key) != "" {
+		err = s.ensureDesktopStepTableLocked()
 	}
-	if strings.TrimSpace(step.Key) == "" {
-		s.mu.Unlock()
-		text, err := run()
-		return text, false, err
-	}
-	if err := s.ensureDesktopStepTableLocked(); err != nil {
-		s.mu.Unlock()
-		return "", false, err
-	}
-	text, done, err := s.finishedDesktopStepLocked(strings.TrimSpace(step.Key))
+	db := s.db
 	s.mu.Unlock()
 	if err != nil {
 		return "", false, err
 	}
-	if done {
-		return text, true, nil
+	if strings.TrimSpace(step.Key) == "" {
+		return "", false, desktopbot.ErrEffectIdentity{}
 	}
-	text, err = run()
+	return desktopbot.RunClaimed(db, step, command, run)
+}
+
+// RunAuthorized journals one server permit. A missing identity or parameter
+// returns before the effect runs.
+func (s *SQLiteStore) RunAuthorized(permit desktopbot.EffectPermit, command string, run func() (string, error)) (string, bool, error) {
+	if s == nil {
+		return "", false, ErrServiceClosed
+	}
+	if run == nil {
+		return "", false, fmt.Errorf("desktop step has no body")
+	}
+	s.mu.Lock()
+	err := s.guardDesktopStepsLocked()
+	if err == nil {
+		err = s.ensureDesktopStepTableLocked()
+	}
+	db := s.db
+	s.mu.Unlock()
 	if err != nil {
-		return text, false, err
+		return "", false, err
 	}
-	step.Key = strings.TrimSpace(step.Key)
-	step.Result = text
-	step.Done = true
-	step.Tool = desktopbot.EffectName(step.Tool, command)
-	if _, err := s.SaveDesktopStep(step); err != nil {
-		return text, false, err
-	}
-	return text, false, nil
+	return desktopbot.RunAuthorized(db, permit, command, run)
 }
 
 // ResumeDesktopRound starts at the step after the last completed one.

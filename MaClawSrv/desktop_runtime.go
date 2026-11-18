@@ -778,39 +778,62 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	}
 	steps := currentDesktopSteps()
 	if steps == nil {
-		return operateDesktopBody(ctx, scope, args)
+		return "", desktopbot.ErrEffectIdentity{}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// The first attempt still enters the body, so an install, git push, or
-	// compose up still asks. A key that already succeeded returns here.
-	step := desktopbot.Step{
-		RunID: scope.RunID,
-		Tool:  action,
-		Key:   desktopStepKey(scope.RunID, agentruntime.ToolCallID(ctx)),
+	permit, err := desktopEffectPermit(scope, action, command, args)
+	if err != nil {
+		return "", err
 	}
-	text, _, err := steps.RunDesktopStep(step, command, func() (string, error) {
+	// The tool-call id is intentionally unused. A new model id is not a new
+	// authorization. Fresh is consumed only after the user confirms.
+	_ = agentruntime.ToolCallID(ctx)
+	permit.Fresh = takeDesktopUserEffectAuth(scope)
+	text, _, err := steps.RunAuthorized(permit, command, func() (string, error) {
 		return operateDesktopBody(ctx, scope, args)
 	})
 	return text, err
 }
 
-// desktopStepKey is the journal key of one side effect. The journal table is
-// keyed by this string alone, across runs. A tool_call_id by itself is not
-// unique there: local models and recovered tool-call markup reuse ids such as
-// call_0, so a later run's install or git push would get the earlier run's
-// result without running. The run id scopes it. No call id, no journal.
-func desktopStepKey(runID, toolCallID string) string {
-	toolCallID = strings.TrimSpace(toolCallID)
-	if toolCallID == "" {
+// desktopEffectPermit is the server authorization for one desktop side effect.
+// It includes the owner, the bot, and every non-secret argument.
+func desktopEffectPermit(scope agentruntime.Scope, action, command string, args map[string]any) (desktopbot.EffectPermit, error) {
+	canonical, err := desktopbot.CanonicalEffectArgs(command, args)
+	if err != nil {
+		return desktopbot.EffectPermit{}, err
+	}
+	tenant := strings.TrimSpace(scope.TenantID)
+	user := strings.TrimSpace(scope.UserID)
+	if tenant == "" || user == "" || strings.TrimSpace(scope.RunID) == "" {
+		return desktopbot.EffectPermit{}, desktopbot.ErrEffectIdentity{}
+	}
+	account := strings.TrimSpace(scope.InstanceID)
+	if account == "" {
+		account = user
+	}
+	target := desktopbot.EffectTarget(command, args)
+	if target == "" {
+		target = canonical
+	}
+	return desktopbot.EffectPermit{
+		RunID:   strings.TrimSpace(scope.RunID),
+		Owner:   tenant + "/" + user,
+		Account: account,
+		Host:    desktopbot.EffectTarget("", map[string]any{"host": argsHost(args)}),
+		Target:  target,
+		Tool:    action,
+		Args:    canonical,
+	}, nil
+}
+
+func argsHost(args map[string]any) string {
+	if args == nil {
 		return ""
 	}
-	runID = strings.TrimSpace(runID)
-	if runID == "" {
-		return desktopbot.StepKey("", toolCallID, 0)
-	}
-	return runID + ":" + toolCallID
+	value, _ := args["host"].(string)
+	return strings.TrimSpace(value)
 }
 
 func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[string]any) (out string, err error) {

@@ -7,7 +7,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
-	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
@@ -16,9 +15,13 @@ func TestDesktopBotDurableCases(t *testing.T) {
 		t.Setenv(desktopHubURLEnv, "")
 		t.Setenv(desktopHubTokenEnv, "")
 		db := openSrvDurableDB(t)
-		if _, err := db.SaveDesktopStep(desktopbot.Step{
-			RunID: "run-1", Number: 1, Tool: "install", Key: "run-1:call-install", Result: "已安装", Done: true,
-		}); err != nil {
+		scope := agentruntime.Scope{TenantID: "tenant", UserID: "alice", InstanceID: "bot", RunID: "run-1"}
+		args := map[string]any{"action": "install", "packages": []any{"curl"}}
+		permit, err := desktopEffectPermit(scope, "install", "", args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := db.RunAuthorized(permit, "", func() (string, error) { return "已安装", nil }); err != nil {
 			t.Fatal(err)
 		}
 		bindDesktopSteps(db)
@@ -31,26 +34,29 @@ func TestDesktopBotDurableCases(t *testing.T) {
 		}
 		t.Cleanup(func() { desktopRemoteSession = prev })
 
-		ctx := agentruntime.WithToolCallID(context.Background(), "call-install")
-		text, err := operateDesktop(ctx, agentruntime.Scope{TenantID: "tenant", UserID: "alice", RunID: "run-1"}, map[string]any{
-			"action": "install", "packages": []any{"curl"},
-		})
-		if err != nil || text != "已安装" || opened != 0 {
-			t.Fatalf("text=%q err=%v opened=%d", text, err, opened)
+		for _, callID := range []string{"call-install", "call-other", ""} {
+			ctx := agentruntime.WithToolCallID(context.Background(), callID)
+			text, err := operateDesktop(ctx, scope, args)
+			if err != nil || text != "已安装" || opened != 0 {
+				t.Fatalf("call=%q text=%q err=%v opened=%d", callID, text, err, opened)
+			}
 		}
 	})
 
 	t.Run("email_not_sent_twice", func(t *testing.T) {
 		db := openSrvDurableDB(t)
-		if _, _, err := db.RunDesktopStep(desktopbot.Step{RunID: "run-mail", Tool: "delivery", Key: "delivery:run-mail"}, "", func() (string, error) {
-			return "首页开了", nil
-		}); err != nil {
+		principal := agentservice.Principal{TenantID: "tenant", UserID: "alice"}
+		task := durableDeliveryTask()
+		permit, err := scheduledDeliveryPermit(principal, task, "首页开了", "run-mail")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := db.RunAuthorized(permit, "", func() (string, error) { return "首页开了", nil }); err != nil {
 			t.Fatal(err)
 		}
 		bindDesktopSteps(db)
 		t.Cleanup(func() { bindDesktopSteps(nil) })
-		task := durableDeliveryTask()
-		if err := deliverScheduledTaskResultForRun(nil, agentservice.Principal{}, task, "首页开了", nil, "run-mail"); err != nil {
+		if err := deliverScheduledTaskResultForRun(nil, principal, task, "首页开了", nil, "run-mail"); err != nil {
 			t.Fatal(err)
 		}
 	})
