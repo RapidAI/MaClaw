@@ -3019,6 +3019,253 @@ func TestInboundMCPReviewHandoffStaysOffRetry(t *testing.T) {
 	}
 }
 
+func TestInboundMCPRemoteHandoffKeepsTheChildAndTheDependentSkip(t *testing.T) {
+	result := &RemoteCodingSubAgentResult{
+		Status:   "waiting_child",
+		Summary:  "children",
+		Children: []v2.ChildTaskView{{TaskID: "child-9", Name: "explorer"}},
+	}
+	stepStatus, summary, childID := remoteCodingStickyStep(result)
+	if stepStatus != mcpStepWaiting || summary != mcpReviewHandoffErrorText || childID != "child-9" {
+		t.Fatalf("sticky %s %q %s", stepStatus, summary, childID)
+	}
+	passed, passedSummary, passedChild := remoteCodingStickyStep(&RemoteCodingSubAgentResult{Status: "success", Summary: "done"})
+	if passed != codingStepPassed || passedSummary != "done" || passedChild != "" {
+		t.Fatalf("passed %s %q %s", passed, passedSummary, passedChild)
+	}
+
+	reported := []v2.TaskRunResult{
+		remoteCodingStepToRunResult(&v2.TaskItem{Index: 5, Title: "交接"}, result),
+		{TaskIndex: 6, Title: "后续", Status: v2.TaskSkipped, Error: "skipped: prior step failed"},
+	}
+	status, errText, steps := mcpApplyStepGate(mcpStatusCompleted, "", mcpStepsFromAgent(&IMAgentResponse{CodingSteps: codingStepsFromResults(reported)}))
+	if status != mcpStatusWaitingReview || errText != mcpReviewHandoffErrorText || len(steps) != 2 {
+		t.Fatalf("gate %s %q %+v", status, errText, steps)
+	}
+	if steps[0].Status != mcpStepWaiting || steps[0].ChildTaskID != "child-9" || len(steps[0].BlockedBy) != 1 || steps[0].BlockedBy[0] != "child-9" {
+		t.Fatalf("handoff step %+v", steps[0])
+	}
+	if steps[1].Status != mcpStepSkipped || steps[1].Retryable || steps[1].BlockReason != "等待子任务审阅" || len(steps[1].BlockedBy) != 1 || steps[1].BlockedBy[0] != "T5" {
+		t.Fatalf("dependent %+v", steps[1])
+	}
+
+	snap := codingWorkbenchStepsSnapshot([]codingWorkbenchStepStatus{
+		{Index: 5, Title: "交接", Status: stepStatus, Summary: summary, ChildTaskID: childID},
+		{Index: 6, Title: "后续", Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+	})
+	published, stop := mcpExecutionFromWorkbench(snap)
+	if published != mcpStatusWaitingReview || stop == nil || stop.Class != mcpStopReview || len(snap) != 2 {
+		t.Fatalf("workbench %s %+v %+v", published, stop, snap)
+	}
+	if snap[0].Status != mcpStepWaiting || snap[0].ChildTaskID != "child-9" || len(snap[0].BlockedBy) != 1 || snap[0].BlockedBy[0] != "child-9" {
+		t.Fatalf("workbench handoff %+v", snap[0])
+	}
+	if snap[1].Status != codingStepSkipped || snap[1].BlockReason != "等待子任务审阅" || len(snap[1].BlockedBy) != 1 || snap[1].BlockedBy[0] != "T5" {
+		t.Fatalf("workbench dependent %+v", snap[1])
+	}
+}
+
+func TestInboundMCPContinueKeepsTheReviewHandoff(t *testing.T) {
+	held := stickyCodingWorkbenchMemory{StepStatuses: []codingWorkbenchStepStatus{
+		{Index: 5, Title: "交接", Status: mcpStepWaiting, Summary: mcpReviewHandoffErrorText, ChildTaskID: "child-9"},
+		{Index: 6, Title: "后续", Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+	}}
+	tasks, ok := selectIncompleteCodingPlanTasks("继续", held)
+	if !ok || len(tasks) != 0 {
+		t.Fatalf("review hold tasks=%#v ok=%v", tasks, ok)
+	}
+	downgraded := held
+	downgraded.StepStatuses = append([]codingWorkbenchStepStatus(nil), held.StepStatuses...)
+	downgraded.StepStatuses[0].Status = codingStepSkipped
+	tasks, ok = selectIncompleteCodingPlanTasks("继续", downgraded)
+	if !ok || len(tasks) != 0 {
+		t.Fatalf("downgraded handoff tasks=%#v ok=%v", tasks, ok)
+	}
+	failed := stickyCodingWorkbenchMemory{StepStatuses: []codingWorkbenchStepStatus{
+		{Index: 4, Title: "编写", Status: codingStepFailed, Summary: "disk full"},
+		{Index: 5, Title: "交接", Status: mcpStepWaiting, Summary: mcpReviewHandoffErrorText, ChildTaskID: "child-9"},
+		{Index: 6, Title: "后续", Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+	}}
+	tasks, ok = selectIncompleteCodingPlanTasks("继续", failed)
+	if !ok || len(tasks) != 1 || tasks[0].Index != 4 {
+		t.Fatalf("failure beside review tasks=%#v ok=%v", tasks, ok)
+	}
+
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	h.updateStickyCodingWorkbenchMemory(userID, func(stored *stickyCodingWorkbenchMemory) {
+		*stored = held
+	})
+	resumed, _, planned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续", "D:/repo", held,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if planned != true || len(resumed) != 0 {
+		t.Fatalf("resolve planned=%v tasks=%#v", planned, resumed)
+	}
+	got := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+	if len(got) != 2 || got[0].Status != mcpStepWaiting || got[0].ChildTaskID != "child-9" || got[0].Summary != mcpReviewHandoffErrorText {
+		t.Fatalf("checklist reopened %+v", got)
+	}
+	if !codingRunnerSkipNeedsStickyMirror(v2.TaskRunResult{Status: v2.TaskSkipped, Error: "skipped: prior step failed"}) {
+		t.Fatal("a runner skip must still reach the checklist")
+	}
+	if codingRunnerSkipNeedsStickyMirror(v2.TaskRunResult{Status: v2.TaskSkipped, RuntimeHandoff: true, Error: mcpReviewHandoffErrorText}) {
+		t.Fatal("a handoff must stay waiting_review on the checklist")
+	}
+
+	known := []v2.ChildTaskView{{TaskID: "child-9", Status: mcpStatusCompleted, Result: "found the leak", Review: "found the leak"}}
+	status, _, errText, _, steps := mcpRunOutcomeCause(nil, nil, &IMAgentResponse{
+		Text:        mcpReviewHandoffErrorText,
+		CodingSteps: codingReviewHoldSteps(held.StepStatuses, known),
+	})
+	if status != mcpStatusWaitingReview || errText != mcpReviewHandoffErrorText || len(steps) != 2 {
+		t.Fatalf("hold %s %q %+v", status, errText, steps)
+	}
+	if steps[0].Status != mcpStepWaiting || steps[0].ChildTaskID != "child-9" || len(steps[0].Children) != 1 || steps[0].Children[0].Result != "found the leak" {
+		t.Fatalf("hold child %+v", steps[0])
+	}
+	if steps[1].Status != mcpStepSkipped || steps[1].Retryable || steps[1].BlockReason != "等待子任务审阅" || len(steps[1].BlockedBy) != 1 || steps[1].BlockedBy[0] != "T5" {
+		t.Fatalf("hold dependent %+v", steps[1])
+	}
+}
+
+func TestInboundMCPContinuePassesAnotherStepButKeepsTheReview(t *testing.T) {
+	sticky := []codingWorkbenchStepStatus{
+		{Index: 1, Title: "已完成", Status: codingStepPassed, Summary: "done"},
+		{Index: 4, Title: "编写", Status: codingStepPassed, Summary: "wrote it"},
+		{Index: 5, Title: "交接", Status: mcpStepWaiting, Summary: mcpReviewHandoffErrorText, ChildTaskID: "child-9"},
+		{Index: 6, Title: "后续", Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+	}
+	executed := []v2.TaskRunResult{{
+		TaskIndex: 4,
+		Title:     "编写",
+		Status:    v2.TaskPassed,
+		Summary:   "wrote it",
+	}}
+	known := []v2.ChildTaskView{{TaskID: "child-9", Status: mcpStatusCompleted, Result: "found the leak", Review: "found the leak"}}
+	kept := codingResumeKeptOutcomes(executed, sticky, known)
+	status, _, errText, _, steps := mcpRunOutcomeCause(nil, nil, &IMAgentResponse{
+		Text:        "编写已通过",
+		CodingSteps: kept,
+	})
+	if status != mcpStatusWaitingReview || errText != mcpReviewHandoffErrorText {
+		t.Fatalf("status %s %q", status, errText)
+	}
+	if len(steps) != 3 {
+		t.Fatalf("steps %+v", steps)
+	}
+	if steps[0].ID != "T4" || steps[0].Status != mcpStepPassed {
+		t.Fatalf("rerun %+v", steps[0])
+	}
+	if steps[1].ID != "T5" || steps[1].Status != mcpStepWaiting || steps[1].ChildTaskID != "child-9" || len(steps[1].Children) != 1 || steps[1].Children[0].Result != "found the leak" {
+		t.Fatalf("handoff %+v", steps[1])
+	}
+	if steps[2].ID != "T6" || steps[2].Status != mcpStepSkipped || steps[2].Retryable || steps[2].BlockReason != "等待子任务审阅" {
+		t.Fatalf("dependent %+v", steps[2])
+	}
+	for _, step := range steps {
+		if step.ID == "T1" {
+			t.Fatalf("passed history copied onto this round: %+v", steps)
+		}
+	}
+
+	failedRun := []v2.TaskRunResult{{
+		TaskIndex: 4,
+		Title:     "编写",
+		Status:    v2.TaskFailed,
+		Error:     "disk full",
+	}}
+	failedKept := codingResumeKeptOutcomes(failedRun, []codingWorkbenchStepStatus{
+		{Index: 4, Title: "编写", Status: codingStepFailed, Summary: "disk full"},
+		{Index: 5, Title: "交接", Status: mcpStepWaiting, Summary: mcpReviewHandoffErrorText, ChildTaskID: "child-9"},
+	}, known)
+	failedStatus, _, failedErr, _, failedSteps := mcpRunOutcomeCause(nil, nil, &IMAgentResponse{
+		Text:        "编写失败",
+		CodingSteps: failedKept,
+	})
+	if failedStatus != mcpStatusFailed || failedErr != "disk full" {
+		t.Fatalf("failed status %s %q", failedStatus, failedErr)
+	}
+	sawHandoff := false
+	for _, step := range failedSteps {
+		if step.ID == "T5" && step.Status == mcpStepWaiting && step.ChildTaskID == "child-9" {
+			sawHandoff = true
+		}
+	}
+	if !sawHandoff {
+		t.Fatalf("failure hid the review %+v", failedSteps)
+	}
+}
+
+func TestInboundMCPKnownChildrenKeepTheReviewResult(t *testing.T) {
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p",
+		Status:      mcpStatusWaitingReview,
+		RequestID:   "mcp-old",
+		RunID:       "run-old",
+		Children: []mcpChildView{{
+			ChildTaskID:   "child-9",
+			Status:        mcpStatusCompleted,
+			Result:        "found the leak",
+			Review:        "found the leak",
+			ReviewPending: true,
+		}},
+	})
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p",
+		Status:      mcpStatusRunning,
+		RequestID:   "mcp-new",
+		RunID:       "run-new",
+	})
+	known := app.mcpKnownChildren("p")
+	if len(known) != 1 || known[0].TaskID != "child-9" || known[0].Result != "found the leak" {
+		t.Fatalf("empty live %+v", known)
+	}
+
+	app.mcpRunsMu.Lock()
+	app.mcpRuns["p"].Children = []mcpChildView{{
+		ChildTaskID: "child-new",
+		Status:      "admitted",
+		Name:        "explorer",
+	}}
+	app.mcpRunsMu.Unlock()
+	known = app.mcpKnownChildren("p")
+	kept := codingResumeKeptOutcomes(
+		[]v2.TaskRunResult{{TaskIndex: 4, Title: "编写", Status: v2.TaskPassed, Summary: "wrote it"}},
+		[]codingWorkbenchStepStatus{
+			{Index: 4, Title: "编写", Status: codingStepPassed, Summary: "wrote it"},
+			{Index: 5, Title: "交接", Status: mcpStepWaiting, Summary: mcpReviewHandoffErrorText, ChildTaskID: "child-9"},
+		},
+		known,
+	)
+	status, _, errText, _, steps := mcpRunOutcomeCause(nil, nil, &IMAgentResponse{
+		Text:        "编写已通过",
+		CodingSteps: kept,
+	})
+	if status != mcpStatusWaitingReview || errText != mcpReviewHandoffErrorText || len(steps) != 2 {
+		t.Fatalf("kept %s %q %+v", status, errText, steps)
+	}
+	if steps[1].ID != "T5" || steps[1].ChildTaskID != "child-9" || len(steps[1].Children) != 1 || steps[1].Children[0].Result != "found the leak" {
+		t.Fatalf("handoff result %+v", steps[1])
+	}
+
+	app.mcpRunsMu.Lock()
+	app.mcpRuns["p"].Children = []mcpChildView{{
+		ChildTaskID:   "child-9",
+		Status:        "admitted",
+		Review:        mcpReviewHandoffErrorText,
+		ReviewPending: true,
+	}}
+	app.mcpRunsMu.Unlock()
+	known = app.mcpKnownChildren("p")
+	if len(known) != 1 || known[0].TaskID != "child-9" || known[0].Result != "found the leak" {
+		t.Fatalf("admission hid the result %+v", known)
+	}
+}
+
 func TestInboundMCPHandoffHoldsDependentSkip(t *testing.T) {
 	prev := []mcpStepView{
 		{ID: "T5", Status: mcpStepSkipped, Error: mcpReviewHandoffErrorText},

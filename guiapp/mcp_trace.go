@@ -740,6 +740,58 @@ func mcpTouchLocked(rec *mcpRunRecord) {
 	rec.StatusVersion++
 }
 
+// mcpKnownChildren is the child list a later round can report without
+// starting another parent attempt. Older rounds are merged first. The live
+// run then overlays the same child id. An admission row does not replace a
+// bounded result already recorded, and a child admitted on this round does
+// not hide a different child from the review that is still open.
+func (a *App) mcpKnownChildren(path string) []v2.ChildTaskView {
+	if a == nil {
+		return nil
+	}
+	path = normalizeProjectSessionPath(path)
+	if path == "" {
+		return nil
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	var merged []mcpChildView
+	for _, rec := range a.mcpRunArchive[path] {
+		if rec == nil || len(rec.Children) == 0 {
+			continue
+		}
+		merged = mcpMergeChildren(merged, rec.Children)
+	}
+	if rec := a.mcpRuns[path]; rec != nil && len(rec.Children) > 0 {
+		merged = mcpMergeChildren(merged, rec.Children)
+	}
+	return mcpChildrenToRun(merged)
+}
+
+func mcpChildrenToRun(children []mcpChildView) []v2.ChildTaskView {
+	if len(children) == 0 {
+		return nil
+	}
+	out := make([]v2.ChildTaskView, 0, len(children))
+	for _, child := range children {
+		id := strings.TrimSpace(child.ChildTaskID)
+		if id == "" {
+			continue
+		}
+		out = append(out, v2.ChildTaskView{
+			TaskID:        id,
+			ParentTaskID:  child.ParentTaskID,
+			Name:          child.Name,
+			Status:        child.Status,
+			Progress:      child.Progress,
+			Result:        child.Result,
+			ReviewPending: child.ReviewPending,
+			Review:        child.Review,
+		})
+	}
+	return out
+}
+
 func (a *App) mcpArchiveRunLocked(prev *mcpRunRecord) {
 	if a == nil || prev == nil || strings.TrimSpace(prev.RunID) == "" {
 		return

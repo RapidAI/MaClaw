@@ -2424,6 +2424,132 @@ func codingPlanStepNeedsResume(status string) bool {
 	return strings.TrimSpace(status) != codingStepPassed
 }
 
+// codingPlanStepIsReviewHandoff is a child-result review, not a step 继续 can
+// rerun. The stored row is waiting_review after the plan step is recorded. A
+// row mirrored from the runner status is only skipped, and the handoff
+// sentence is what still identifies it.
+func codingPlanStepIsReviewHandoff(st codingWorkbenchStepStatus) bool {
+	if strings.TrimSpace(st.Status) == mcpStepWaiting {
+		return true
+	}
+	return mcpSkipIsReviewHandoff(st.Summary)
+}
+
+// codingReviewHoldSteps is the checklist 继续 reports when it does not start
+// another executor. The child already admitted stays on the step, including a
+// bounded result recorded on an earlier round.
+func codingReviewHoldSteps(steps []codingWorkbenchStepStatus, known []v2.ChildTaskView) []CodingStepOutcome {
+	snap := codingWorkbenchStepsSnapshot(steps)
+	byID := make(map[string]v2.ChildTaskView, len(known))
+	for _, child := range known {
+		if id := strings.TrimSpace(child.TaskID); id != "" {
+			byID[id] = child
+		}
+	}
+	out := make([]CodingStepOutcome, 0, len(snap))
+	for _, st := range snap {
+		if st.Index <= 0 && strings.TrimSpace(st.Title) == "" && strings.TrimSpace(st.Status) == "" {
+			continue
+		}
+		id := ""
+		if st.Index > 0 {
+			id = fmt.Sprintf("T%d", st.Index)
+		}
+		var children []v2.ChildTaskView
+		if childID := strings.TrimSpace(st.ChildTaskID); childID != "" {
+			if child, ok := byID[childID]; ok {
+				children = []v2.ChildTaskView{child}
+			} else {
+				children = []v2.ChildTaskView{{TaskID: childID}}
+			}
+		}
+		out = append(out, CodingStepOutcome{
+			ID:       id,
+			Title:    st.Title,
+			Status:   st.Status,
+			Error:    st.Summary,
+			Children: children,
+		})
+	}
+	return out
+}
+
+func (h *IMMessageHandler) codingChildReviewHoldResponse(userID string) *IMAgentResponse {
+	mem := stickyCodingWorkbenchMemory{}
+	if h != nil {
+		mem = h.getStickyCodingWorkbenchMemory(userID)
+	}
+	var known []v2.ChildTaskView
+	if h != nil && h.app != nil {
+		known = h.app.mcpKnownChildren(projectPathFromSessionOwnerID(userID))
+	}
+	return &IMAgentResponse{
+		Text:        mcpReviewHandoffErrorText,
+		CodingSteps: codingReviewHoldSteps(mem.StepStatuses, known),
+	}
+}
+
+// codingResumeKeptOutcomes is the checklist a resumed round reports.
+// The round only executed the steps 继续 was allowed to rerun. A new MCP
+// run starts empty, so finishing with only that subset marks the task
+// complete while the review handoff is still open. Passed rows stay on the
+// earlier round. The handoff, the skips waiting on it, and any other
+// unfinished row this round did not run stay on this result.
+func codingResumeKeptOutcomes(executed []v2.TaskRunResult, steps []codingWorkbenchStepStatus, known []v2.ChildTaskView) []CodingStepOutcome {
+	out := codingStepsFromResults(executed)
+	have := make(map[string]bool, len(out))
+	for _, step := range out {
+		if id := strings.TrimSpace(step.ID); id != "" {
+			have[id] = true
+		}
+	}
+	for _, step := range codingReviewHoldSteps(steps, known) {
+		id := strings.TrimSpace(step.ID)
+		if id == "" || have[id] {
+			continue
+		}
+		if !codingResumeStepStillBlocks(step) {
+			continue
+		}
+		out = append(out, step)
+		have[id] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func codingResumeStepStillBlocks(step CodingStepOutcome) bool {
+	if codingPlanStepIsReviewHandoff(codingWorkbenchStepStatus{Status: step.Status, Summary: step.Error}) {
+		return true
+	}
+	if mcpSkipWaitsOnPrior(step.Error) {
+		return true
+	}
+	switch strings.TrimSpace(step.Status) {
+	case codingStepFailed, codingStepVerifyFail, mcpStepUnfinished, codingStepRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *IMMessageHandler) setCodingResumeStepOutcomes(resp *IMAgentResponse, resume bool, reported []v2.TaskRunResult, steps []codingWorkbenchStepStatus, userID string) {
+	if resp == nil {
+		return
+	}
+	if !resume {
+		setCodingStepOutcomes(resp, reported)
+		return
+	}
+	var known []v2.ChildTaskView
+	if h != nil && h.app != nil {
+		known = h.app.mcpKnownChildren(projectPathFromSessionOwnerID(userID))
+	}
+	resp.CodingSteps = codingResumeKeptOutcomes(reported, steps, known)
+}
+
 // codingWorkbenchShouldResumeIncompletePlan reports whether this utterance
 // should re-enter the current plan instead of planning a new turn.
 func codingWorkbenchShouldResumeIncompletePlan(userText string, mem stickyCodingWorkbenchMemory) bool {
@@ -2445,17 +2571,35 @@ func selectIncompleteCodingPlanTasks(userText string, mem stickyCodingWorkbenchM
 	// continue that stops before the runner marks a step running looks like
 	// an approval that never started, and the next continue deletes the list.
 	started := mem.PlanRunStarted
-	incomplete := make(map[int]codingWorkbenchStepStatus)
+	handoffOpen := false
 	for _, st := range mem.StepStatuses {
 		if codingPlanStepWasStarted(st.Status) {
 			started = true
 		}
-		if codingPlanStepNeedsResume(st.Status) {
-			incomplete[st.Index] = st
+		if codingPlanStepIsReviewHandoff(st) {
+			handoffOpen = true
 		}
 	}
-	if !started || len(incomplete) == 0 {
+	incomplete := make(map[int]codingWorkbenchStepStatus)
+	for _, st := range mem.StepStatuses {
+		// The review command is the only resume for a child handoff.
+		// Reopening that row to pending lets a later pass mark the task
+		// complete while the child result is still unreviewed.
+		if codingPlanStepIsReviewHandoff(st) || !codingPlanStepNeedsResume(st.Status) {
+			continue
+		}
+		// A dependency skip behind the review stays skipped. A dependency
+		// skip behind a real failure is still part of that retry.
+		if handoffOpen && mcpSkipWaitsOnPrior(st.Summary) {
+			continue
+		}
+		incomplete[st.Index] = st
+	}
+	if !started || (len(incomplete) == 0 && !handoffOpen) {
 		return nil, false
+	}
+	if len(incomplete) == 0 {
+		return nil, true
 	}
 	parsed := parseCodingWorkbenchPlan(mem.ExecutionPlan)
 	byIndex := make(map[int]*v2.TaskItem, len(parsed))
@@ -3119,6 +3263,13 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	// single-task turn would wipe that checklist and start requirement
 	// understanding over.
 	if execute, ok := selectIncompleteCodingPlanTasks(userText, sessionMem); ok {
+		if len(execute) == 0 {
+			// The plan is open only because a child review has not finished.
+			// An empty execute list must not fall through to a new single task:
+			// that path clears the checklist and can report the task complete.
+			log.Printf("[coding-plan] continue stays on child review user=%s", userID)
+			return nil, strings.TrimSpace(sessionMem.ExecutionPlan), true
+		}
 		log.Printf("[coding-plan] resume incomplete plan user=%s steps=%d", userID, len(execute))
 		if md := codingChecklistResumePlanMarkdown(requestText, sessionMem); md != "" {
 			sessionMem.ExecutionPlan = md

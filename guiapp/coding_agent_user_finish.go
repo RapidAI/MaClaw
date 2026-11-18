@@ -610,6 +610,37 @@ func remoteCodingStepToRunResult(step *v2.TaskItem, result *RemoteCodingSubAgent
 	return rr
 }
 
+// remoteCodingStickyStep is the checklist row for one remote plan step.
+// The runner result stays skipped. The row matches a local handoff:
+// waiting_review, plus the child this review is about. A later step must
+// not store the handoff sentence as its own error. That sentence is how a
+// step is recognized as the handoff, so a dependent would never reopen.
+func remoteCodingStickyStep(result *RemoteCodingSubAgentResult) (stepStatus, summary, childID string) {
+	stepStatus = codingStepFailed
+	if result == nil {
+		return codingStepFailed, "nil result", ""
+	}
+	summary = strings.TrimSpace(result.Summary)
+	if summary == "" {
+		summary = strings.TrimSpace(result.Error)
+	}
+	if result.Status == "success" {
+		stepStatus = codingStepPassed
+	}
+	if result.RuntimeHandoff || strings.EqualFold(strings.TrimSpace(result.Status), "waiting_child") || mcpSkipIsReviewHandoff(result.Error) {
+		stepStatus = mcpStepWaiting
+		summary = mcpReviewHandoffErrorText
+	}
+	if stepStatus == codingStepFailed && codingLoopIterationExhausted(result.Error) {
+		stepStatus = codingStepRunning
+		summary = stickyCodingCarrySummary(result.Summary, result.Error)
+	}
+	if len(result.Children) > 0 {
+		childID = strings.TrimSpace(result.Children[0].TaskID)
+	}
+	return stepStatus, summary, childID
+}
+
 func appendCodingWorkbenchSkippedResults(results []v2.TaskRunResult, tasks []*v2.TaskItem, steps []codingWorkbenchStepStatus) []v2.TaskRunResult {
 	seen := make(map[int]bool, len(results))
 	for _, result := range results {

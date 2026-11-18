@@ -3277,6 +3277,20 @@ func codingWorkbenchStepOutcome(v1Result *CodingSubAgentResult) (v2.TaskRunStatu
 	return status, stepStatus, stepSummary, resultErr
 }
 
+// codingRunnerSkipNeedsStickyMirror reports a skip the task runner recorded
+// without a subagent result. A review handoff is already waiting_review on
+// the checklist. Copying the runner's skipped status over that row hides the
+// child and makes 继续 treat the review as ordinary unfinished work.
+func codingRunnerSkipNeedsStickyMirror(rr v2.TaskRunResult) bool {
+	if rr.Status != v2.TaskSkipped {
+		return false
+	}
+	if rr.RuntimeHandoff || mcpSkipIsReviewHandoff(rr.Error) {
+		return false
+	}
+	return true
+}
+
 // failedTaskItemsFromResults returns original task items whose matching result failed.
 func failedTaskItemsFromResults(tasks []*v2.TaskItem, results []v2.TaskRunResult) []*v2.TaskItem {
 	if len(tasks) == 0 || len(results) == 0 {
@@ -3867,6 +3881,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		reqCtx = strings.TrimSpace(reqCtx + "\n\nA multi-step execution plan was generated for this request. Complete the CURRENT step fully, then stop; later steps run as separate tasks.")
 	}
 	if len(tasks) == 0 {
+		if resumeIncompletePlan {
+			return h.codingChildReviewHoldResponse(userID)
+		}
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(recordUserText, 80), Description: recordUserText}}
 		// The plan sentence may already have been appended. This turn has no
 		// steps, so the contract is the stored restatement.
@@ -4326,9 +4343,11 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			onProgress(progress)
 		}
 	})
-	// TaskRunner may skip later steps without calling SubAgent — mirror into sticky Todo.
+	// TaskRunner may skip later steps without calling SubAgent — mirror those
+	// into the sticky checklist. A review handoff is already waiting_review;
+	// the runner status is skipped only because the ledger has no waiting value.
 	for _, rr := range runResults {
-		if rr.Status == v2.TaskSkipped {
+		if codingRunnerSkipNeedsStickyMirror(rr) {
 			h.recordOrchestratedCodingStepStatus(planned, userID, rr.TaskIndex, codingStepSkipped, rr.Error)
 		}
 	}
@@ -4409,7 +4428,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		body = codingExecText("No coding steps ran.", "No coding steps ran.", "No coding steps ran.")
 	}
 	resp := &IMAgentResponse{Text: body}
-	setCodingStepOutcomes(resp, reported)
+	h.setCodingResumeStepOutcomes(resp, resumeIncompletePlan, reported, memAfter.StepStatuses, userID)
 	if continuing {
 		resp.sessionRoundContinue = true
 		resp.ResponseSource = sessionRoundContinuationSource
@@ -4758,6 +4777,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		sessionMem = h.getStickyCodingWorkbenchMemory(userID)
 	}
 	if len(tasks) == 0 {
+		if resumeIncompletePlan {
+			return h.codingChildReviewHoldResponse(userID)
+		}
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(recordUserText, 80), Description: recordUserText}}
 		planned = false
 	}
@@ -4972,23 +4994,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			if stepResult.RouteModel != "" || stepResult.RouteSource != "" {
 				h.recordStickyCodingRoute(userID, stepResult.RouteModel, stepResult.RouteSource, stepResult.RouteTask, stepResult.RouteReason)
 			}
-			sum := strings.TrimSpace(stepResult.Summary)
-			if sum == "" {
-				sum = strings.TrimSpace(stepResult.Error)
-			}
-			stepStatus := codingStepFailed
-			if stepResult.Status == "success" {
-				stepStatus = codingStepPassed
-			}
-			reviewHandoff := stepResult.RuntimeHandoff || strings.EqualFold(strings.TrimSpace(stepResult.Status), "waiting_child") || mcpSkipIsReviewHandoff(stepResult.Error)
-			if reviewHandoff {
-				stepStatus = codingStepSkipped
-				sum = mcpReviewHandoffErrorText
-			}
-			if stepStatus == codingStepFailed && codingLoopIterationExhausted(stepResult.Error) {
-				stepStatus = codingStepRunning
-				sum = stickyCodingCarrySummary(stepResult.Summary, stepResult.Error)
-			}
+			stepStatus, sum, childID := remoteCodingStickyStep(stepResult)
 			// Remote step verification gate (parity with local pure-coding).
 			if stepResult.Status == "success" && planned &&
 				stepNeedsVerifyGate(step.Title, step.Description, step.Index, planStepTotal) {
@@ -5006,7 +5012,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 						sum = gateSum
 					}
 					stepResult.Summary = sum
-					h.recordOrchestratedCodingStepStatus(planned, userID, step.Index, stepStatus, sum)
+					h.recordOrchestratedCodingStepChild(planned, userID, step.Index, stepStatus, sum, childID)
 					setRemotePlanLastSummary(&sessionMem, planned, step.Index, step.Title, "verify_failed", sum)
 					runResults = append(runResults, remoteCodingStepToRunResult(step, stepResult))
 					_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
@@ -5056,10 +5062,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 						}
 						stepResult.Summary = sum
 					}
-					h.recordOrchestratedCodingStepStatus(planned, userID, step.Index, stepStatus, sum)
+					h.recordOrchestratedCodingStepChild(planned, userID, step.Index, stepStatus, sum, childID)
 				}
 			} else {
-				h.recordOrchestratedCodingStepStatus(planned, userID, step.Index, stepStatus, sum)
+				h.recordOrchestratedCodingStepChild(planned, userID, step.Index, stepStatus, sum, childID)
 			}
 			_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
 			stepResult.Summary = sum
@@ -5071,11 +5077,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			// this round too, but the later steps are still open.
 			if stepResult.Status != "success" {
 				if !codingLoopIterationExhausted(stepResult.Error) {
-					reason := "skipped: prior step failed"
-					if reviewHandoff {
-						reason = mcpReviewHandoffErrorText
-					}
-					h.skipRemainingOrchestratedCodingSteps(planned, userID, step.Index, reason)
+					// Dependents stay prior-step skips. The handoff sentence
+					// would make each of them a second review handoff.
+					h.skipRemainingOrchestratedCodingSteps(planned, userID, step.Index, "skipped: prior step failed")
 				}
 				break
 			}
@@ -5153,7 +5157,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		Text:            report,
 		TraceEventCount: codingSubAgentActivityTraceCount(totalTools, totalIters),
 	}
-	setCodingStepOutcomes(resp, reported)
+	h.setCodingResumeStepOutcomes(resp, resumeIncompletePlan, reported, memAfter.StepStatuses, userID)
 	if continuing {
 		resp.sessionRoundContinue = true
 		resp.ResponseSource = sessionRoundContinuationSource
