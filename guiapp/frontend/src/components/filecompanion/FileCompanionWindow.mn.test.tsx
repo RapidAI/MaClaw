@@ -28,6 +28,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionResumePaths: vi.fn(async () => []),
     FileCompanionUIReady: vi.fn(async () => []),
     FileCompanionTakePlaces: vi.fn(async () => []),
+    FileCompanionTakeLibraryView: vi.fn(async () => false),
     FileCompanionPlayerSupported: vi.fn(async () => false),
     ChooseFileCompanionFiles: vi.fn(async () => []),
     FileCompanionOpen: vi.fn(async () => ({})),
