@@ -34,6 +34,10 @@ type SQLiteStore struct {
 	legacyJSONPath string
 	closed         bool
 	legacy         bool
+	// liveSteps holds the desktop_step_journal idempotency keys this process
+	// prepared and is still running. A prepared row owned by a dead process is
+	// reconciled to unknown; a prepared row in liveSteps is left alone.
+	liveSteps map[string]struct{}
 }
 
 const sqliteRowsFormatVersion = 2
@@ -168,7 +172,7 @@ func newSQLiteStore(path, legacyJSONPath string) (*SQLiteStore, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(4)
-	store := &SQLiteStore{db: db, path: path, legacyJSONPath: legacyJSONPath}
+	store := &SQLiteStore{db: db, path: path, legacyJSONPath: legacyJSONPath, liveSteps: map[string]struct{}{}}
 	if err := store.open(); err != nil {
 		_ = db.Close()
 		return nil, err

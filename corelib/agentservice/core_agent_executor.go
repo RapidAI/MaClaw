@@ -2803,7 +2803,9 @@ func (c *coreAgentCallbacks) replayDoneDesktopStep(name, argsJSON, callID string
 			}
 		}
 	}
-	if !desktopbot.SideEffect(tool, command) {
+	// cap_mcp is journaled the same as a named side effect; replaying its
+	// committed result must also return without re-dialing the MCP tool.
+	if !desktopbot.SideEffect(tool, command) && tool != "cap_mcp" {
 		return "", false
 	}
 	key := desktopbot.StepKey(c.runtimeRequest.RunID, callID, 0)

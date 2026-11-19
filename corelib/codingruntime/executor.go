@@ -410,6 +410,7 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 	finished, err := r.Store.FinishAttempt(attempt.AttemptID, r.LeaseOwner, FinishInput{
 		Status: result.Status, SideEffectState: result.SideEffectState, WorkspaceAfter: result.WorkspaceAfter,
 		ErrorCode: result.ErrorCode, ErrorSummary: result.ErrorSummary,
+		ExpectedVersion: attempt.Version, EvidenceDigest: completionEvidenceDigest(result),
 	}, r.now())
 	if err != nil {
 		return created, attempt, err
@@ -628,6 +629,33 @@ func noChangeEvidenceAccepted(result ExecutionResult) bool {
 		}
 	}
 	return false
+}
+
+// completionEvidenceDigest folds every bounded evidence digest plus the
+// terminal facts into one hash recorded on the attempt row. A completed
+// attempt must reach FinishAttempt with this non-empty digest; the Store
+// refuses a completion that has none, so a verified outcome can never be
+// persisted as an undifferentiated success.
+func completionEvidenceDigest(result ExecutionResult) string {
+	var b strings.Builder
+	b.WriteString(string(result.Status))
+	b.WriteString("|")
+	b.WriteString(string(result.SideEffectState))
+	for _, evidence := range result.Evidence {
+		if digest := strings.TrimSpace(normalizeEvidenceForLedger(evidence).Digest); digest != "" {
+			b.WriteString("|")
+			b.WriteString(digest)
+		}
+	}
+	if digest := strings.TrimSpace(result.NoWorkspaceChangeEvidenceDigest); digest != "" {
+		b.WriteString("|")
+		b.WriteString(digest)
+	}
+	if result.WorkspaceAfter != nil {
+		b.WriteString("|")
+		b.WriteString(workspaceProbeDigest(*result.WorkspaceAfter))
+	}
+	return codingRuntimeErrorDigest(b.String())
 }
 
 func codingRuntimeErrorDigest(value string) string {

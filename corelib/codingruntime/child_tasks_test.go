@@ -397,7 +397,7 @@ func TestRunReadOnlyChildRecoversTerminalUndeliveredChildWithoutRerunningExecuto
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = tt.store.FinishAttempt(childAttempt.AttemptID, "child", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectNone, ErrorSummary: "completed before delivery"}, now); err != nil {
+			if _, err = tt.store.FinishAttempt(childAttempt.AttemptID, "child", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectNone, ErrorSummary: "completed before delivery", ExpectedVersion: childAttempt.Version, EvidenceDigest: "sha256:done"}, now); err != nil {
 				t.Fatal(err)
 			}
 			calls := 0

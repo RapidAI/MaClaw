@@ -82,6 +82,30 @@ CREATE TABLE IF NOT EXISTS coding_runtime_semantic_anchors (
  FOREIGN KEY(runtime_attempt_id) REFERENCES coding_runtime_attempts(attempt_id)
 );
 CREATE INDEX IF NOT EXISTS coding_runtime_semantic_anchor_task ON coding_runtime_semantic_anchors(runtime_task_id);`)
+	if err != nil {
+		return err
+	}
+	// Honest-completion columns are additive. Existing databases upgrade in
+	// place; rows that predate the columns keep version 0 / empty digest and
+	// are upgraded the first time they are finished through the CAS path.
+	if err := s.ensureAttemptColumn("version", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return s.ensureAttemptColumn("evidence_digest", "TEXT NOT NULL DEFAULT ''")
+}
+
+// ensureAttemptColumn adds a column to coding_runtime_attempts only when it is
+// absent, so both freshly created and previously migrated databases converge
+// on the same shape without a table rebuild.
+func (s *SQLiteStore) ensureAttemptColumn(name, decl string) error {
+	var found int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('coding_runtime_attempts') WHERE name=?`, name).Scan(&found); err != nil {
+		return err
+	}
+	if found > 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`ALTER TABLE coding_runtime_attempts ADD COLUMN ` + name + ` ` + decl)
 	return err
 }
 
@@ -681,8 +705,8 @@ func (s *SQLiteStore) StartAttempt(taskID, leaseOwner string, leaseFor time.Dura
 		return nil, err
 	}
 	policyJSON, _ := json.Marshal(policy)
-	attempt := &Attempt{AttemptID: uuid.NewString(), TaskID: taskID, AttemptNo: no, LeaseOwner: leaseOwner, LeaseUntil: now.Add(leaseFor), Status: TaskRunning, Policy: policy, SideEffectState: SideEffectNone, StartedAt: now}
-	_, err = tx.Exec(`INSERT INTO coding_runtime_attempts(attempt_id,task_id,attempt_no,lease_owner,lease_until,status,policy_json,side_effect_state,workspace_before_json,workspace_after_json,error_code,error_summary,started_at,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attempt.AttemptID, attempt.TaskID, attempt.AttemptNo, attempt.LeaseOwner, unixNanos(attempt.LeaseUntil), attempt.Status, string(policyJSON), attempt.SideEffectState, "", "", "", "", unixNanos(now), 0)
+	attempt := &Attempt{AttemptID: uuid.NewString(), TaskID: taskID, AttemptNo: no, LeaseOwner: leaseOwner, LeaseUntil: now.Add(leaseFor), Status: TaskRunning, Policy: policy, SideEffectState: SideEffectNone, Version: 1, StartedAt: now}
+	_, err = tx.Exec(`INSERT INTO coding_runtime_attempts(attempt_id,task_id,attempt_no,lease_owner,lease_until,status,policy_json,side_effect_state,workspace_before_json,workspace_after_json,error_code,error_summary,started_at,finished_at,version,evidence_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attempt.AttemptID, attempt.TaskID, attempt.AttemptNo, attempt.LeaseOwner, unixNanos(attempt.LeaseUntil), attempt.Status, string(policyJSON), attempt.SideEffectState, "", "", "", "", unixNanos(now), 0, attempt.Version, "")
 	if err != nil {
 		if isConstraint(err) {
 			return nil, ErrLeaseHeld
@@ -1059,10 +1083,19 @@ func (s *SQLiteStore) FinishAttempt(attemptID, leaseOwner string, input FinishIn
 	if attempt.LeaseOwner != leaseOwner {
 		return nil, ErrLeaseOwnerMismatch
 	}
+	if err := validateFinishInputForLedger(input); err != nil {
+		return nil, err
+	}
+	if input.ExpectedVersion != 0 && attempt.Version != input.ExpectedVersion {
+		return nil, ErrAttemptVersionConflict
+	}
 	after, _ := json.Marshal(input.WorkspaceAfter)
-	_, err = tx.Exec(`UPDATE coding_runtime_attempts SET lease_until=0,status=?,side_effect_state=?,workspace_after_json=?,error_code=?,error_summary=?,finished_at=? WHERE attempt_id=?`, input.Status, input.SideEffectState, string(after), input.ErrorCode, input.ErrorSummary, unixNanos(now), attemptID)
+	res, err := tx.Exec(`UPDATE coding_runtime_attempts SET lease_until=0,status=?,side_effect_state=?,workspace_after_json=?,error_code=?,error_summary=?,finished_at=?,version=version+1,evidence_digest=? WHERE attempt_id=?`, input.Status, input.SideEffectState, string(after), input.ErrorCode, input.ErrorSummary, unixNanos(now), input.EvidenceDigest, attemptID)
 	if err != nil {
 		return nil, err
+	}
+	if affected, raErr := res.RowsAffected(); raErr == nil && affected != 1 {
+		return nil, ErrAttemptVersionConflict
 	}
 	_, err = tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE task_id=?`, input.Status, unixNanos(now), attempt.TaskID)
 	if err != nil {
@@ -1072,6 +1105,8 @@ func (s *SQLiteStore) FinishAttempt(attemptID, leaseOwner string, input FinishIn
 		return nil, err
 	}
 	attempt.Status, attempt.SideEffectState, attempt.WorkspaceAfter, attempt.ErrorCode, attempt.ErrorSummary, attempt.FinishedAt, attempt.LeaseUntil = input.Status, input.SideEffectState, cloneProbe(input.WorkspaceAfter), input.ErrorCode, input.ErrorSummary, now, time.Time{}
+	attempt.Version++
+	attempt.EvidenceDigest = input.EvidenceDigest
 	return attempt, nil
 }
 
@@ -1637,7 +1672,7 @@ func (s *SQLiteStore) getAttempt(q rowQuerier, id string) (*Attempt, error) {
 	var a Attempt
 	var status, side, policy, before, after string
 	var lease, started, finished int64
-	err := q.QueryRow(`SELECT attempt_id,task_id,attempt_no,lease_owner,lease_until,status,policy_json,side_effect_state,workspace_before_json,workspace_after_json,error_code,error_summary,started_at,finished_at FROM coding_runtime_attempts WHERE attempt_id=?`, id).Scan(&a.AttemptID, &a.TaskID, &a.AttemptNo, &a.LeaseOwner, &lease, &status, &policy, &side, &before, &after, &a.ErrorCode, &a.ErrorSummary, &started, &finished)
+	err := q.QueryRow(`SELECT attempt_id,task_id,attempt_no,lease_owner,lease_until,status,policy_json,side_effect_state,workspace_before_json,workspace_after_json,error_code,error_summary,started_at,finished_at,version,evidence_digest FROM coding_runtime_attempts WHERE attempt_id=?`, id).Scan(&a.AttemptID, &a.TaskID, &a.AttemptNo, &a.LeaseOwner, &lease, &status, &policy, &side, &before, &after, &a.ErrorCode, &a.ErrorSummary, &started, &finished, &a.Version, &a.EvidenceDigest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

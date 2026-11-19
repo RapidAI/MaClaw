@@ -111,7 +111,7 @@ func TestSQLiteStoreLeaseAndTerminalOwnership(t *testing.T) {
 	if _, err := store.FinishAttempt(attempt.AttemptID, "other", FinishInput{Status: TaskFailed}, now); !errors.Is(err, ErrLeaseOwnerMismatch) {
 		t.Fatalf("owner error=%v", err)
 	}
-	finished, err := store.FinishAttempt(attempt.AttemptID, "owner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}, now)
+	finished, err := store.FinishAttempt(attempt.AttemptID, "owner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestSQLiteStoreListActiveTaskStatusesByProjectRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, now); err != nil {
+	if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, now); err != nil {
 		t.Fatal(err)
 	}
 	// A blocked run on another ref surfaces under its own status.
@@ -522,7 +522,7 @@ func TestSQLiteStoreListActiveTaskStatusesByProjectRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.FinishAttempt(childDoneAttempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, now.Add(time.Second)); err != nil {
+	if _, err := store.FinishAttempt(childDoneAttempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved, ExpectedVersion: childDoneAttempt.Version, EvidenceDigest: "sha256:done"}, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	active, err = store.ListActiveTaskStatusesByProjectRef()
@@ -566,7 +566,7 @@ func TestSQLiteStoreListActiveTaskStatusesByProjectRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.FinishAttempt(laterAttempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, now.Add(time.Second)); err != nil {
+	if _, err := store.FinishAttempt(laterAttempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved, ExpectedVersion: laterAttempt.Version, EvidenceDigest: "sha256:done"}, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// A child that fails after the parent finished shares the ref and must not
@@ -836,7 +836,7 @@ func TestSQLiteStoreListRecoveryCandidatesExcludesEndedTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, now.Add(3*time.Second)); err != nil {
+	if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, now.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -882,7 +882,7 @@ func TestSQLiteStoreListActiveTaskStatusesSuppressesStaleInterrupted(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, at); err != nil {
+		if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1482,7 +1482,7 @@ func TestSQLiteInterruptAbandonedRunsKeepsWaitingParentHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.FinishAttempt(childAttempt.AttemptID, "gui:local", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}, started.Add(30*time.Second)); err != nil {
+	if _, err := store.FinishAttempt(childAttempt.AttemptID, "gui:local", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed, ExpectedVersion: childAttempt.Version, EvidenceDigest: "sha256:done"}, started.Add(30*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// The process died after the child finished but before the review

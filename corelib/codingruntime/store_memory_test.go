@@ -163,7 +163,7 @@ func TestMemoryStoreFinishAndEventsAreLeaseOwned(t *testing.T) {
 	if first.Sequence != 1 || second.Sequence != 2 {
 		t.Fatalf("sequence = %d, %d", first.Sequence, second.Sequence)
 	}
-	finished, err := store.FinishAttempt(attempt.AttemptID, "owner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}, now)
+	finished, err := store.FinishAttempt(attempt.AttemptID, "owner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}

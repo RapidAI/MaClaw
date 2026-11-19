@@ -786,7 +786,11 @@ func desktopBlockedByPerson(scope agentruntime.Scope) error {
 func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	command := desktopArg(args, "command")
-	if !desktopbot.SideEffect(action, command) {
+	// cap_mcp calls an arbitrary MCP tool and may carry a real side effect, so
+	// it shares the desktop step journal with send/install/push instead of a
+	// separate write path.
+	journaled := desktopbot.SideEffect(action, command) || action == "cap_mcp"
+	if !journaled {
 		return operateDesktopBody(ctx, scope, args)
 	}
 	steps := currentDesktopSteps()
@@ -799,9 +803,10 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	// The first attempt still enters the body, so an install, git push, or
 	// compose up still asks. A key that already succeeded returns here.
 	step := desktopbot.Step{
-		RunID: scope.RunID,
-		Tool:  action,
-		Key:   desktopStepKey(scope.RunID, agentruntime.ToolCallID(ctx)),
+		RunID:     scope.RunID,
+		Tool:      action,
+		Key:       desktopStepKey(scope.RunID, agentruntime.ToolCallID(ctx)),
+		Journaled: action == "cap_mcp",
 	}
 	text, _, err := steps.RunDesktopStep(step, command, func() (string, error) {
 		return operateDesktopBody(ctx, scope, args)

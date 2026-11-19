@@ -7,6 +7,7 @@ package codingruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -55,6 +56,15 @@ var (
 	// ErrSemanticAnchorConflict means a second registration tried to alter the
 	// semantic lineage already attached to a runtime task/attempt.
 	ErrSemanticAnchorConflict = errors.New("coding runtime semantic anchor conflict")
+	// ErrCompletionEvidenceMissing means FinishAttempt was asked to record a
+	// completed status without verified evidence. Honest completion requires a
+	// bounded evidence hash (and a CAS token), so an unverified success is
+	// refused at the ledger boundary rather than written.
+	ErrCompletionEvidenceMissing = errors.New("coding runtime completion requires an evidence digest")
+	// ErrAttemptVersionConflict means the expected-version CAS token did not
+	// match the stored row, so a stale writer was refused instead of
+	// overwriting a newer terminal record.
+	ErrAttemptVersionConflict = errors.New("coding runtime attempt version conflict")
 )
 
 // TaskStatus is the durable state of a stable logical task. A task can have
@@ -168,6 +178,16 @@ type Attempt struct {
 	WorkspaceAfter  *WorkspaceProbe
 	ErrorCode       string
 	ErrorSummary    string
+	// Version is the optimistic-concurrency token for this attempt row. It
+	// starts at 1 when the attempt is created and increments on every
+	// FinishAttempt write. FinishAttempt's CAS uses it so a stale executor
+	// cannot overwrite a newer terminal record.
+	Version         uint64
+	// EvidenceDigest is the completion evidence hash persisted beside the
+	// terminal record. A completed attempt must carry a non-empty digest;
+	// non-completed attempts may leave it empty. The ledger stores the hash,
+	// never the model explanation or raw tool output.
+	EvidenceDigest  string
 	StartedAt       time.Time
 	FinishedAt      time.Time
 }
@@ -207,6 +227,16 @@ type FinishInput struct {
 	WorkspaceAfter  *WorkspaceProbe
 	ErrorCode       string
 	ErrorSummary    string
+	// ExpectedVersion is the CAS token: the write succeeds only when the
+	// stored attempt still carries this version. A caller that never read the
+	// attempt must leave it 0 and rely on the running+lease-owner guard.
+	// Completing a task requires a non-zero ExpectedVersion, so a stale
+	// executor that lost its lease cannot stamp a newer terminal record.
+	ExpectedVersion uint64
+	// EvidenceDigest is the completion evidence hash. It is mandatory when
+	// Status is TaskCompleted: a completion without verified evidence must be
+	// refused, not recorded. For other terminal states it may be empty.
+	EvidenceDigest  string
 }
 
 func boundedLedgerText(value string, limit int) string {
@@ -225,7 +255,29 @@ func normalizeTaskForLedger(task Task) Task {
 func normalizeFinishInputForLedger(input FinishInput) FinishInput {
 	input.ErrorCode = boundedLedgerText(input.ErrorCode, maxErrorCodeRunes)
 	input.ErrorSummary = boundedLedgerText(input.ErrorSummary, maxErrorSummaryRunes)
+	input.EvidenceDigest = boundedLedgerText(input.EvidenceDigest, maxPayloadDigestRunes)
 	return input
+}
+
+// validateFinishInputForLedger enforces honest-completion invariants shared by
+// every Store implementation. A completed attempt must carry a bounded
+// evidence digest and a non-zero CAS token; a completion must never be marked
+// with an unknown side-effect state. Other terminal states are allowed to
+// leave the digest empty.
+func validateFinishInputForLedger(input FinishInput) error {
+	if input.Status != TaskCompleted {
+		return nil
+	}
+	if input.SideEffectState == SideEffectUncertain {
+		return fmt.Errorf("%w: completed attempt cannot report uncertain side effects", ErrInvalidTransition)
+	}
+	if strings.TrimSpace(input.EvidenceDigest) == "" {
+		return ErrCompletionEvidenceMissing
+	}
+	if input.ExpectedVersion == 0 {
+		return ErrCompletionEvidenceMissing
+	}
+	return nil
 }
 
 func normalizeEventForLedger(eventType, payloadDigest string) (string, string) {

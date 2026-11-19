@@ -204,6 +204,48 @@ func TestDesktopBotDurableCases(t *testing.T) {
 			t.Fatalf("empty = %+v err=%v", empty, err)
 		}
 	})
+
+	t.Run("unknown_not_replayed_after_crash", func(t *testing.T) {
+		db, path := openDurableDB(t)
+		// One committed step both creates the journal table and proves a good
+		// row survives the crash simulation.
+		if _, _, err := db.RunDesktopStep(desktopbot.Step{RunID: "run-crash", Number: 1, Tool: "email", Key: "run-crash:done-1"}, "", func() (string, error) {
+			return "已发送", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// Simulate a crashed attempt: a prepared row (done=0) committed before
+		// run(), then the process died before it could commit or fail.
+		raw, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec(`INSERT INTO desktop_step_journal(idempotency_key, run_id, step_no, tool, result, done) VALUES(?,?,?,?,?,0)`,
+			"run-crash:mail-1", "run-crash", 1, "email", ""); err != nil {
+			raw.Close()
+			t.Fatal(err)
+		}
+		raw.Close()
+		// A fresh process reconciles the abandoned prepared row to unknown and
+		// must not replay the side effect.
+		other, err := NewSQLiteStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = other.Close() })
+		ran := 0
+		_, _, err = other.RunDesktopStep(desktopbot.Step{RunID: "run-crash", Tool: "email", Key: "run-crash:mail-1"}, "", func() (string, error) {
+			ran++
+			return "再次发送", nil
+		})
+		if !errors.Is(err, desktopbot.ErrStepOutcomeUnknown) {
+			t.Fatalf("err=%v want ErrStepOutcomeUnknown, ran=%d", err, ran)
+		}
+		if ran != 0 {
+			t.Fatalf("unknown effect was replayed, ran=%d", ran)
+		}
+		_ = db
+	})
 }
 
 func openDurableDB(t *testing.T) (*SQLiteStore, string) {

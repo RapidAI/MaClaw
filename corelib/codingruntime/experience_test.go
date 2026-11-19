@@ -20,7 +20,7 @@ func TestExperienceEvidenceDigestBindsMaterialLedgerEvents(t *testing.T) {
 	if _, err := store.AppendEvent(attempt.AttemptID, "runner", "verification", "sha256:verification", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.FinishAttempt(attempt.AttemptID, "runner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectNone}, now); err != nil {
+	if _, err := store.FinishAttempt(attempt.AttemptID, "runner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectNone, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, now); err != nil {
 		t.Fatal(err)
 	}
 	digest, err := ExperienceEvidenceDigest(store, task, attempt)
@@ -45,7 +45,7 @@ func TestExperienceEvidenceDigestRejectsLifecycleAndUnknownEvents(t *testing.T) 
 			if _, err := store.AppendEvent(attempt.AttemptID, "runner", eventType, "sha256:event", now); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.FinishAttempt(attempt.AttemptID, "runner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectNone}, now); err != nil {
+			if _, err := store.FinishAttempt(attempt.AttemptID, "runner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectNone, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, now); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := ExperienceEvidenceDigest(store, task, attempt); err == nil || !strings.Contains(err.Error(), "no material execution evidence") {
@@ -114,7 +114,7 @@ func TestVerifyExperienceProvenanceRejectsMismatchedAttemptOrDigest(t *testing.T
 	if _, err := store.AppendEvent(attempt.AttemptID, "owner", "verification", "sha256:verified", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.FinishAttempt(attempt.AttemptID, "owner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}, now); err != nil {
+	if _, err := store.FinishAttempt(attempt.AttemptID, "owner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, now); err != nil {
 		t.Fatal(err)
 	}
 	provenance, err := ResolveExperienceProvenance(store, task.TaskID)

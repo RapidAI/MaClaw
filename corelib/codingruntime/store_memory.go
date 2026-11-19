@@ -353,7 +353,7 @@ func (s *MemoryStore) startAttemptLocked(taskID, leaseOwner string, leaseFor tim
 			return nil, ErrLeaseHeld
 		}
 	}
-	attempt := &Attempt{AttemptID: uuid.NewString(), TaskID: taskID, AttemptNo: maxNo + 1, LeaseOwner: leaseOwner, LeaseUntil: now.Add(leaseFor), Status: TaskRunning, Policy: policy, SideEffectState: SideEffectNone, StartedAt: now}
+	attempt := &Attempt{AttemptID: uuid.NewString(), TaskID: taskID, AttemptNo: maxNo + 1, LeaseOwner: leaseOwner, LeaseUntil: now.Add(leaseFor), Status: TaskRunning, Policy: policy, SideEffectState: SideEffectNone, Version: 1, StartedAt: now}
 	s.attempts[attempt.AttemptID] = attempt
 	task.Status, task.UpdatedAt = TaskRunning, now
 	return cloneAttempt(attempt), nil
@@ -458,9 +458,17 @@ func (s *MemoryStore) FinishAttempt(attemptID, leaseOwner string, input FinishIn
 	if attempt.LeaseOwner != leaseOwner {
 		return nil, ErrLeaseOwnerMismatch
 	}
+	if err := validateFinishInputForLedger(input); err != nil {
+		return nil, err
+	}
+	if input.ExpectedVersion != 0 && attempt.Version != input.ExpectedVersion {
+		return nil, ErrAttemptVersionConflict
+	}
 	attempt.Status, attempt.SideEffectState = input.Status, input.SideEffectState
 	attempt.WorkspaceAfter, attempt.ErrorCode, attempt.ErrorSummary, attempt.FinishedAt = cloneProbe(input.WorkspaceAfter), input.ErrorCode, input.ErrorSummary, now
 	attempt.LeaseUntil = time.Time{}
+	attempt.Version++
+	attempt.EvidenceDigest = input.EvidenceDigest
 	task := s.tasks[attempt.TaskID]
 	task.Status, task.UpdatedAt = input.Status, now
 	return cloneAttempt(attempt), nil

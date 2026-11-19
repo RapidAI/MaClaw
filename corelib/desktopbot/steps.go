@@ -13,6 +13,12 @@ import (
 // /usr/local.
 var ErrJournalOnVM = errors.New("desktop step journal is server state and is not stored on a virtual machine volume")
 
+// ErrStepOutcomeUnknown means the journal holds a step whose side effect may
+// already have run but whose result was never committed. The step is not
+// replayed: replaying could send a second mail, push, or charge. A caller
+// surfaces this as needs-reconciliation, never as a retryable failure.
+var ErrStepOutcomeUnknown = errors.New("desktop step outcome is unknown and is not replayed")
+
 // Step is one completed side effect. The fields are the shape of one future
 // Temporal step result: step number, tool, idempotency key, result, and
 // whether it is done. This commit does not install Temporal.
@@ -23,6 +29,10 @@ type Step struct {
 	Key    string
 	Result string
 	Done   bool
+	// Journaled forces the step into the durable journal even when
+	// SideEffect(tool, command) is false. A generic bridge such as cap_mcp can
+	// dial a side effect the classifier cannot see, so the caller marks it.
+	Journaled bool
 }
 
 // ResumePlan is where a crashed round continues.

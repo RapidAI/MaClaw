@@ -350,7 +350,7 @@ func TestMemoryStoreWriterAdmissionSerializesUnknownAndAllowsGuardedDisjoint(t *
 	if _, err := store.StartAttempt(secondTask.TaskID, "two", time.Minute, PolicySnapshot{}, now); !errors.Is(err, ErrWriterConflict) {
 		t.Fatalf("unknown writer err=%v, want writer conflict", err)
 	}
-	if _, err := store.FinishAttempt(unknown.AttemptID, "one", FinishInput{Status: TaskCompleted}, now); err != nil {
+	if _, err := store.FinishAttempt(unknown.AttemptID, "one", FinishInput{Status: TaskCompleted, ExpectedVersion: unknown.Version, EvidenceDigest: "sha256:done"}, now); err != nil {
 		t.Fatal(err)
 	}
 
