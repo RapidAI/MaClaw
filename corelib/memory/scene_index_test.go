@@ -38,6 +38,22 @@ func TestBuildSceneIndexGroupsSourcesAndArtifacts(t *testing.T) {
 	}
 }
 
+func TestBuildSceneIndexSkipsTaskManagementIdentities(t *testing.T) {
+	now := time.Now()
+	entries := []Entry{
+		{ID: "task", Title: "My Task", Content: "My Task", Category: CategoryTaskArtifact, Tags: []string{"task_management", "/home/user/app"}, SourceType: "task_identity", UpdatedAt: now},
+		{ID: "doc", Title: "Design", Content: "# Design\nUse SQLite", Category: CategoryTaskArtifact, Tags: []string{"workflow", "/home/user/app"}, SourceType: "workflow_output_ref", SourceURL: "/home/user/app/memory_refs/design.md", UpdatedAt: now.Add(-time.Minute)},
+	}
+
+	scenes := BuildSceneIndex(entries, 10)
+	if len(scenes) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(scenes))
+	}
+	if len(scenes[0].RecentArtifacts) != 1 || scenes[0].RecentArtifacts[0].Title != "Design" {
+		t.Fatalf("task management identity leaked into artifacts: %#v", scenes[0].RecentArtifacts)
+	}
+}
+
 func TestStoreSceneIndex(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {

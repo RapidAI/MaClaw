@@ -93,7 +93,7 @@ func BuildSceneIndex(entries []Entry, limit int) []SceneRecord {
 			acc.sources[e.SourceURL] = true
 			acc.rec.SourceURLs = append(acc.rec.SourceURLs, e.SourceURL)
 		}
-		if e.Category == CategoryTaskArtifact || MapToCanonical(e.Category) == CategoryTaskArtifact {
+		if (e.Category == CategoryTaskArtifact || MapToCanonical(e.Category) == CategoryTaskArtifact) && !IsDurableTaskManagementEntry(&e) {
 			acc.rec.RecentArtifacts = append(acc.rec.RecentArtifacts, SceneArtifact{
 				Title:      sceneEntryTitle(e),
 				Category:   e.Category,

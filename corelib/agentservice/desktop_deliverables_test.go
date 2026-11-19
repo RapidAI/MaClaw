@@ -130,6 +130,43 @@ func TestDeliverableExtractionRetriesOnceThenSucceeds(t *testing.T) {
 	}
 }
 
+func TestDeliverableExtractionRepairReasksOnMalformedOutput(t *testing.T) {
+	var calls int32
+	var retryUser string
+	items, failed, cause := runDeliverableExtraction(t, "run-repair", func(_ context.Context, _ corelib.MaclawLLMConfig, _ *http.Client, messages []interface{}) (*llm.Response, error) {
+		n := atomic.AddInt32(&calls, 1)
+		user := ""
+		if len(messages) > 1 {
+			if m, ok := messages[1].(map[string]interface{}); ok {
+				user, _ = m["content"].(string)
+			}
+		}
+		if n == 1 {
+			// First read produces output the parser rejects (non-JSON).
+			return &llm.Response{Choices: []llm.Choice{{Message: llm.Message{Content: "sure, here is the list"}}}}, nil
+		}
+		retryUser = user
+		return &llm.Response{Choices: []llm.Choice{{Message: llm.Message{Content: `{"items":[{"kind":"file","text":"报告"}]}`}}}}, nil
+	})
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("attempts = %d, want 2 (one bounded repair)", got)
+	}
+	if failed {
+		t.Fatalf("grounded repair recovered but recorded failed; cause=%q", cause)
+	}
+	if len(items) != 1 || items[0].Kind != "file" {
+		t.Fatalf("items = %#v", items)
+	}
+	// The retry must be a corrective prompt grounded on the malformed output,
+	// not the identical request re-sent.
+	if !strings.Contains(retryUser, "sure, here is the list") {
+		t.Fatalf("repair prompt did not carry prior malformed output: %q", retryUser)
+	}
+	if !strings.Contains(retryUser, "重新输出") {
+		t.Fatalf("repair prompt is not corrective: %q", retryUser)
+	}
+}
+
 func TestDeliverableExtractionStillFailedKeepsConcreteCause(t *testing.T) {
 	var calls int32
 	_, failed, cause := runDeliverableExtraction(t, "run-retry-fail", func(context.Context, corelib.MaclawLLMConfig, *http.Client, []interface{}) (*llm.Response, error) {

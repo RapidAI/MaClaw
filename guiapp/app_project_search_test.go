@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -500,6 +501,132 @@ func TestListTasksOnlyShowsExplicitTaskManagementRecords(t *testing.T) {
 	if paths[filepath.Join(app.GetDataDir(), "tasks", "auto")] {
 		t.Fatalf("ListTasks included automatic sediment path")
 	}
+}
+
+// The CategoryTaskArtifact row written on task creation is the task's
+// identity/sidebar record, not a delivered artifact. It must stay classified
+// as a durable task-management entry so scene-index consumers (for example the
+// phone remote-control detail view) can filter it out of RecentArtifacts and
+// never offer it as a downloadable file.
+func TestCreateTaskRecordWritesDurableIdentityEntry(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+
+	created := app.CreateTask("Identity row task", "")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+
+	var identity *memory.Entry
+	for _, e := range app.memoryStore.List(memory.CategoryTaskArtifact, "") {
+		e := e
+		if e.SourceURL == filepath.Join(created.ProjectPath, "task.md") ||
+			strings.Contains(strings.ToLower(e.SourceURL), strings.ToLower(created.ProjectPath)) {
+			identity = &e
+			break
+		}
+	}
+	if identity == nil {
+		t.Fatalf("no task artifact row for %q; entries=%#v", created.ProjectPath, app.memoryStore.List(memory.CategoryTaskArtifact, ""))
+	}
+	if memory.MapToCanonical(identity.Category) != memory.CategoryTaskArtifact {
+		t.Fatalf("identity category=%q, want task artifact", identity.Category)
+	}
+	if identity.SourceType != "manual" {
+		t.Fatalf("identity SourceType=%q, want manual", identity.SourceType)
+	}
+	if !memory.IsDurableTaskManagementEntry(identity) {
+		t.Fatalf("identity row not durable task-management; tags=%v", identity.Tags)
+	}
+	// The SourceURL still points at the task's own task.md, which is precisely
+	// why downstream artifact lists must drop it instead of surfacing it as a
+	// file the phone can download.
+	if !strings.HasSuffix(strings.ReplaceAll(identity.SourceURL, "\\", "/"), "/task.md") {
+		t.Fatalf("identity SourceURL=%q, want .../task.md", identity.SourceURL)
+	}
+}
+
+// Regression: a brand-new empty task must not surface its identity/sidebar row
+// as a downloadable artifact on the phone remote-control detail view. The
+// scene RecentArtifacts and the remote detail's Artifacts both come out empty;
+// a genuine workflow_output_ref file that exists on disk is still listed.
+func TestRemoteControlTaskDetailFiltersNonDownloadableArtifacts(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+
+	created := app.CreateTask("Artifact filter task", "")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+
+	// (1) Fresh task: the identity row is filtered out of the scene's
+	// RecentArtifacts, so the snapshot exposes none.
+	snap := app.remoteControlTaskSnapshot(created.ProjectPath)
+	if len(snap.RecentArtifacts) != 0 {
+		t.Fatalf("fresh task RecentArtifacts=%+v, want empty", snap.RecentArtifacts)
+	}
+
+	// (2) The remote detail view returns a zero-length Artifacts list (and a
+	// non-nil empty slice, never a fake identity record).
+	detail, err := app.remoteControlTaskDetail(mustRemoteControlTaskDetailBody(t, created.ProjectPath))
+	if err != nil {
+		t.Fatalf("remoteControlTaskDetail: %v", err)
+	}
+	if len(detail.Artifacts) != 0 {
+		t.Fatalf("fresh task detail Artifacts=%+v, want empty", detail.Artifacts)
+	}
+	if detail.Artifacts == nil {
+		t.Fatal("detail Artifacts is nil, want non-nil empty slice")
+	}
+
+	// (3) A real workflow_output_ref whose SourceURL points at an existing
+	// regular file is still surfaced and survives the remote-detail filter.
+	outFile := filepath.Join(t.TempDir(), "report.txt")
+	if err := os.WriteFile(outFile, []byte("delivered output"), 0o644); err != nil {
+		t.Fatalf("write artifact file: %v", err)
+	}
+	now := time.Now()
+	if err := app.memoryStore.Save(memory.Entry{
+		Title:      "Delivered report",
+		Content:    "Wrote the report file.",
+		Category:   memory.CategoryTaskArtifact,
+		SourceType: "workflow_output_ref",
+		SourceURL:  outFile,
+		Boundary:   &memory.MemoryBoundary{ProjectPath: created.ProjectPath},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("Save artifact entry: %v", err)
+	}
+	if err := app.memoryStore.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	detail, err = app.remoteControlTaskDetail(mustRemoteControlTaskDetailBody(t, created.ProjectPath))
+	if err != nil {
+		t.Fatalf("remoteControlTaskDetail after artifact: %v", err)
+	}
+	if len(detail.Artifacts) != 1 {
+		t.Fatalf("detail Artifacts=%+v, want exactly the real file", detail.Artifacts)
+	}
+	got := detail.Artifacts[0]
+	if got.SourceType != "workflow_output_ref" {
+		t.Fatalf("artifact SourceType=%q, want workflow_output_ref", got.SourceType)
+	}
+	if got.SourceURL != outFile {
+		t.Fatalf("artifact SourceURL=%q, want %q", got.SourceURL, outFile)
+	}
+}
+
+// mustRemoteControlTaskDetailBody builds the {"project_path": ...} request the
+// remote control handler unmarshals for the task-detail operation.
+func mustRemoteControlTaskDetailBody(t *testing.T, projectPath string) json.RawMessage {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"project_path": projectPath})
+	if err != nil {
+		t.Fatalf("marshal detail body: %v", err)
+	}
+	return body
 }
 
 func TestSearchTasksCollapsesDuplicateCloudWorkspaceRows(t *testing.T) {

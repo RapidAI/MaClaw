@@ -122,12 +122,14 @@ func (c *coreAgentCallbacks) startDesktopDeliverables() {
 	cfg, client, text := c.llmCfg, c.httpClient, desktopDeliverableRequestText(c)
 	go func() {
 		defer close(st.done)
-		// A transient model/parse blip must not permanently strand the run
-		// as unverified, but a still-failed retry is recorded failed — the
-		// retry can repair the read, it cannot invent a checklist.
-		items, err := agent.ExtractDesktopDeliverableContract(context.Background(), cfg, client, text)
+		// One bounded correction, not a second guess on the same prompt: when
+		// the first read left a malformed answer, repair re-asks grounded on
+		// that output; a transport blip re-issues the request once. A still
+		// failing correction stays failed — it repairs the read, never
+		// invents a checklist.
+		items, raw, err := agent.ExtractDesktopDeliverableContractRaw(context.Background(), cfg, client, text)
 		if err != nil {
-			items, err = agent.ExtractDesktopDeliverableContract(context.Background(), cfg, client, text)
+			items, err = agent.RepairDesktopDeliverableContract(context.Background(), cfg, client, text, raw)
 		}
 		RecordDesktopDeliverableExtraction(c.runID, items, err)
 		if err != nil {

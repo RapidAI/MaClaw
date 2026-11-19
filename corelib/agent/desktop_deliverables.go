@@ -70,23 +70,81 @@ func ExtractDesktopDeliverableContract(ctx context.Context, cfg corelib.MaclawLL
 	if userText == "" {
 		return nil, nil
 	}
+	messages := []interface{}{
+		map[string]interface{}{"role": "system", "content": desktopDeliverablesSystem},
+		map[string]interface{}{"role": "user", "content": clipDesktopOutcome(userText, 1500)},
+	}
+	items, _, err := desktopDeliverableContractFromMessages(ctx, cfg, httpClient, messages)
+	return items, err
+}
+
+// ExtractDesktopDeliverableContractRaw is ExtractDesktopDeliverableContract
+// that also returns the raw model text. Callers that may run one bounded
+// correction need the malformed output to ground the retry on.
+func ExtractDesktopDeliverableContractRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, httpClient *http.Client, userText string) ([]DesktopDeliverable, string, error) {
+	userText = strings.TrimSpace(userText)
+	if userText == "" {
+		return nil, "", nil
+	}
+	messages := []interface{}{
+		map[string]interface{}{"role": "system", "content": desktopDeliverablesSystem},
+		map[string]interface{}{"role": "user", "content": clipDesktopOutcome(userText, 1500)},
+	}
+	return desktopDeliverableContractFromMessages(ctx, cfg, httpClient, messages)
+}
+
+// desktopDeliverableContractFromMessages runs one model call and parses the
+// checklist, returning the raw model text beside the items so a corrective
+// retry can be grounded on what the model actually emitted. raw is empty on a
+// transport error or an empty completion.
+func desktopDeliverableContractFromMessages(ctx context.Context, cfg corelib.MaclawLLMConfig, httpClient *http.Client, messages []interface{}) (items []DesktopDeliverable, raw string, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
-	messages := []interface{}{
-		map[string]interface{}{"role": "system", "content": desktopDeliverablesSystem},
-		map[string]interface{}{"role": "user", "content": clipDesktopOutcome(userText, 1500)},
-	}
 	resp, err := CompleteDesktopOutcome(ctx, cfg, httpClient, messages)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if resp == nil || len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("deliverables extraction returned nothing")
+		return nil, "", fmt.Errorf("deliverables extraction returned nothing")
 	}
-	return ParseDesktopDeliverableContract(resp.Choices[0].Message.Content)
+	raw = resp.Choices[0].Message.Content
+	parsed, err := ParseDesktopDeliverableContract(raw)
+	if err != nil {
+		return nil, raw, err
+	}
+	return parsed, raw, nil
+}
+
+// RepairDesktopDeliverableContract is the single bounded correction after a
+// first extraction failed. It does not re-ask the identical prompt: when the
+// model already produced output that failed to parse, it asks the model to
+// re-emit that same answer strictly as the contract JSON — a grounded repair,
+// not another guess. When there is no prior output to repair (transport error
+// or an empty completion) it re-issues the original request once; the bound
+// still holds because the caller invokes this at most once per turn.
+func RepairDesktopDeliverableContract(ctx context.Context, cfg corelib.MaclawLLMConfig, httpClient *http.Client, userText string, priorRaw string) ([]DesktopDeliverable, error) {
+	userText = strings.TrimSpace(userText)
+	if userText == "" {
+		return nil, nil
+	}
+	priorRaw = strings.TrimSpace(priorRaw)
+	var user string
+	if priorRaw != "" {
+		user = "你上一次对这条交付物抽取的回答不是可用的 JSON：" + clipDesktopOutcome(priorRaw, 800) +
+			"。请把同一份交付物清单只按规定的 JSON 结构重新输出，不要解释、不要改动清单内容。原始要求：" +
+			clipDesktopOutcome(userText, 1500)
+	} else {
+		user = clipDesktopOutcome(userText, 1500)
+	}
+	messages := []interface{}{
+		map[string]interface{}{"role": "system", "content": desktopDeliverablesSystem},
+		map[string]interface{}{"role": "user", "content": user},
+	}
+	items, _, err := desktopDeliverableContractFromMessages(ctx, cfg, httpClient, messages)
+	return items, err
 }
 
 // ParseDesktopDeliverables reads {"items":[...]} from a model reply.

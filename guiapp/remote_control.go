@@ -426,9 +426,21 @@ func (a *App) remoteControlTaskDetail(body json.RawMessage) (RemoteControlTaskDe
 		messages[i].ReasoningContent = trimRemoteControlText(messages[i].ReasoningContent, 2000)
 	}
 	artifacts := append([]ProjectSearchArtifact(nil), task.RecentArtifacts...)
+	// 手机端只能拉取 fetch_file 投递过的普通文件；去掉缺失或非文件的产出物。
+	downloadable := artifacts[:0]
 	for i := range artifacts {
 		artifacts[i].Preview = trimRemoteControlText(artifacts[i].Preview, 500)
+		src := strings.TrimSpace(artifacts[i].SourceURL)
+		if src == "" {
+			continue
+		}
+		info, err := os.Stat(src)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		downloadable = append(downloadable, artifacts[i])
 	}
+	artifacts = downloadable
 	if artifacts == nil {
 		artifacts = []ProjectSearchArtifact{}
 	}
