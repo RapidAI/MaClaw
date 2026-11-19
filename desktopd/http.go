@@ -133,9 +133,11 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, session)
 	})
-	// POST /v1/desktops/view returns the noVNC page of a screen that is
+	// POST /v1/desktops/view returns the typed picture of a screen that is
 	// already running. It never starts, restores, or refreshes last_activity.
-	// An empty novnc_url means the screen is not up.
+	// desktop_state is running, asleep, display_stopped, or unavailable.
+	// unavailable is a failed read and still answers 200: an empty novnc_url
+	// alone is a stopped screen, and the two must not be confused.
 	mux.HandleFunc("POST /v1/desktops/view", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")

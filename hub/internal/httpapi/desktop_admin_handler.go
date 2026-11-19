@@ -111,6 +111,15 @@ func (c botDesktopControl) BotDesktopUse(tenantID, userID string) (time.Time, st
 	return c.pool.BotGUIUse(tenantID, userID)
 }
 
+// DesktopViewState is the typed picture (botmgmt.DesktopViewState). It never
+// starts or pins the desktop. A failed read stays an error, not "running".
+func (c botDesktopControl) DesktopViewState(ctx context.Context, tenantID, userID string) (string, string, error) {
+	if c.pool == nil {
+		return "", "", desktoppool.ErrDesktopViewUnavailable
+	}
+	return c.pool.DesktopViewState(ctx, tenantID, userID)
+}
+
 // PeekDesktopView is the already-running noVNC page for this desktop user
 // (botmgmt.DesktopViewPeek). It never starts or pins the desktop.
 func (c botDesktopControl) PeekDesktopView(ctx context.Context, tenantID, userID string) (string, error) {

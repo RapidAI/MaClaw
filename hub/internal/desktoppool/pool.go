@@ -805,6 +805,7 @@ func (p *Pool) PeekDesktopView(ctx context.Context, tenantID, userID string) (st
 	}
 	var out struct {
 		Novnc string `json:"novnc_url"`
+		State string `json:"desktop_state"`
 	}
 	body := map[string]string{
 		"tenant_id": store.NormalizeTenantID(tenantID),
@@ -819,8 +820,21 @@ func (p *Pool) PeekDesktopView(ctx context.Context, tenantID, userID string) (st
 		}
 		return "", err
 	}
-	return nodeEndpoint(server, out.Novnc), nil
+	switch strings.TrimSpace(out.State) {
+	case "unavailable":
+		// HTTP 200 with an empty page is also how a stopped screen answers.
+		// unavailable is a failed read, so it must not look like "down".
+		return "", ErrDesktopViewUnavailable
+	case "asleep", "display_stopped":
+		return "", nil
+	default:
+		return nodeEndpoint(server, out.Novnc), nil
+	}
 }
+
+// ErrDesktopViewUnavailable is a view read that failed. It is not an asleep
+// or stopped screen, and it must not start the desktop.
+var ErrDesktopViewUnavailable = errors.New("desktop view is unavailable")
 
 // NudgeDesktopView asks the desktop service to turn a running screen's
 // picture back on. It never starts a stopped screen. An older desktopd

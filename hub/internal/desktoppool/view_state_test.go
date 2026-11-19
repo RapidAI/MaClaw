@@ -2,11 +2,47 @@ package desktoppool
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestPeekKeepsUnavailableDistinctFromDown(t *testing.T) {
+	var n int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		n++
+		if n <= 2 {
+			_, _ = w.Write([]byte(`{"novnc_url":"http://hub/stale/vnc.html","desktop_state":"unavailable"}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"ok":false,"message":"docker inspect failed"}`))
+	}))
+	defer server.Close()
+	pool := New(&memSettings{}, memDir{})
+	view, err := pool.CreateServer(context.Background(), "tenant-a", Server{
+		Name: "srv", BaseURL: server.URL, AccessToken: "tok", Memory: "3g", CPUs: "1.5", ShmSize: "1g",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.CreateAssignment(context.Background(), "tenant-a", Assignment{Scope: ScopeUser, TargetID: "alice", ServerID: view.ID}); err != nil {
+		t.Fatal(err)
+	}
+	state, url, err := pool.DesktopViewState(context.Background(), "tenant-a", "alice")
+	if err != nil || state != "unavailable" || url != "" {
+		t.Fatalf("state=%q url=%q err=%v", state, url, err)
+	}
+	if _, err := pool.PeekDesktopView(context.Background(), "tenant-a", "alice"); !errors.Is(err, ErrDesktopViewUnavailable) {
+		t.Fatalf("peek treated unavailable as down: %v", err)
+	}
+	if _, err := pool.PeekDesktopView(context.Background(), "tenant-a", "alice"); err == nil || errors.Is(err, ErrDesktopViewUnavailable) {
+		t.Fatalf("a transport failure was classified as unavailable or down: %v", err)
+	}
+}
 
 func TestDesktopViewStateReadsTheTypedPicture(t *testing.T) {
 	answers := []string{
