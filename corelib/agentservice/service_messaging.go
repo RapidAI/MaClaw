@@ -359,6 +359,12 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			run.Metadata = map[string]string{}
 		}
 		run.Metadata["restart_notice"] = restartNoticeContinue
+		// The continuation sentence is an engine line. The task title stays
+		// the original request, filled from that message when this run is listed.
+		if strings.TrimSpace(run.Metadata[botTaskMetaKey]) == restartNoticeContinue {
+			delete(run.Metadata, botTaskMetaKey)
+		}
+		stampBotRunIdentity(&run, in.Metadata, "")
 		userMsg = Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Attachments: attachments, Metadata: cloneMap(in.Metadata), CreatedAt: now}
 		if err := s.store.SaveMessage(userMsg); err != nil {
 			return nil, nil, err
@@ -390,6 +396,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			run.Metadata["run_span_id"] = runSpanID
 			ctx = agentruntime.WithRunSpanID(ctx, runSpanID)
 		}
+		stampBotRunIdentity(&run, in.Metadata, content)
 		admissionEvent = runTerminalEventFor(run, "run.started", map[string]any{"session_id": sess.ID, "message_id": userMsg.ID})
 		admissionEventCommitted, err = s.saveRunAdmissionWithEvents(userMsg, run, []RunEvent{admissionEvent})
 		if err != nil {
@@ -655,6 +662,12 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		}
 		return m
 	}
+	if RunReceiptInFlight(run.ID) {
+		if run.Metadata == nil {
+			run.Metadata = map[string]string{}
+		}
+		run.Metadata[ReceiptPendingKey] = "1"
+	}
 	terminalEvents := make([]RunEvent, 0, 3)
 	if run.WaitingForUser {
 		terminalEvents = append(terminalEvents, runTerminalEventFor(run, "ask_user", withOutcome(map[string]any{"response_source": run.ResponseSource})))
@@ -763,8 +776,11 @@ func (s *Service) PostMessageAsync(ctx context.Context, p Principal, instanceID,
 			saved := run
 			admittedRun = &saved
 		}
+		if in.FinishExecution != nil {
+			MarkRunReceiptInFlight(run.ID)
+		}
 		select {
-		case runCh <- run:
+		case runCh <- freezeRun(run):
 		default:
 		}
 	}

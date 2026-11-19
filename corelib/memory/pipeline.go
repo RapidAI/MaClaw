@@ -190,6 +190,7 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 	// Step 2: Compress (dedup + LLM compress).
 	if p.compressor != nil && p.autoCompress.Load() && ctx.Err() == nil {
 		cr, err := p.compressor.Compress(ctx)
+		p.compressor.recordRun(cr, err)
 		if err == nil {
 			result.Compress = cr
 		} else if errors.Is(err, ErrLLMCallBudgetExhausted) {

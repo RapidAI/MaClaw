@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestInstallZipBytesRejectsOversizeArchive(t *testing.T) {
@@ -264,7 +265,55 @@ func TestInstallMarketZipDoesNotOverwriteLocalPackWithSameID(t *testing.T) {
 	}
 }
 
+func TestMarketInstalledPackInfo(t *testing.T) {
+	user := t.TempDir()
+	reg := NewRegistry(user, nil)
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	// Absent before any install.
+	if _, _, ok := reg.MarketInstalledPackInfo("shared-pet"); ok {
+		t.Fatal("uninstalled pack must not report a market version")
+	}
+	// A locally installed pack with the same manifest ID is not a market copy.
+	if _, err := reg.InstallZipBytes(testPetPackArchiveVersion(t, "shared-pet", "Local", "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := reg.MarketInstalledPackInfo("shared-pet"); ok {
+		t.Fatal("local pack must not report a market version")
+	}
+	if reg.IsPackMarketInstalled("shared-pet") {
+		t.Fatal("local pack reported as market-installed")
+	}
+	// Market install reports the on-disk manifest version and install time.
+	beforeInstall := time.Now()
+	if _, err := reg.InstallMarketZipBytes(testPetPackArchiveVersion(t, "market-pet", "Market", "1.2.3")); err != nil {
+		t.Fatal(err)
+	}
+	v, installedAt, ok := reg.MarketInstalledPackInfo("market-pet")
+	if !ok || v != "1.2.3" {
+		t.Fatalf("version=%q ok=%v, want 1.2.3", v, ok)
+	}
+	if installedAt.IsZero() || installedAt.Before(beforeInstall.Add(-time.Second)) || installedAt.After(time.Now().Add(time.Second)) {
+		t.Fatalf("installedAt=%v out of expected window", installedAt)
+	}
+	if !reg.IsPackMarketInstalled("market-pet") {
+		t.Fatal("market pack not reported as installed")
+	}
+	// A market re-install (the update path) reports the new version.
+	if _, err := reg.InstallMarketZipBytes(testPetPackArchiveVersion(t, "market-pet", "Market", "2.0.0")); err != nil {
+		t.Fatalf("market update install: %v", err)
+	}
+	if v, _, ok := reg.MarketInstalledPackInfo("market-pet"); !ok || v != "2.0.0" {
+		t.Fatalf("version=%q ok=%v after update, want 2.0.0", v, ok)
+	}
+}
+
 func testPetPackArchive(t *testing.T, id, name string) []byte {
+	return testPetPackArchiveVersion(t, id, name, "1.0.0")
+}
+
+func testPetPackArchiveVersion(t *testing.T, id, name, version string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -272,7 +321,7 @@ func testPetPackArchive(t *testing.T, id, name string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Write([]byte("schema_version: 1\nid: " + id + "\nname: " + name + "\nversion: 1.0.0\nrenderer: native-raster\nassets:\n  native:\n    idle: native/idle.png\n")); err != nil {
+	if _, err := w.Write([]byte("schema_version: 1\nid: " + id + "\nname: " + name + "\nversion: " + version + "\nrenderer: native-raster\nassets:\n  native:\n    idle: native/idle.png\n")); err != nil {
 		t.Fatal(err)
 	}
 	w, err = zw.Create(id + "/native/idle.png")

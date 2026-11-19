@@ -544,7 +544,7 @@ func (h *IMMessageHandler) releaseStoppedGoalForUserContinue(msg IMUserMessage, 
 		return
 	}
 	switch strings.TrimSpace(msg.Platform) {
-	case "goal-continuation", unattendedWorkflowPlatform, sessionRoundContinuationPlatform:
+	case "goal-continuation", unattendedWorkflowPlatform, sessionRoundContinuationPlatform, githubRepoMaintPlatform:
 		return
 	}
 	if isSessionRoundContinuation(msg.Text) || isGoalSystemContinuation(msg.Text) {
@@ -1776,7 +1776,7 @@ func buildGoalPlanCorrectionPrompt(g *goal.Goal) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("[系统续接][plan] 上一轮没有把分解写入目标。本轮只补交规划，不要实现，不要问用户。\n\n目标：%s\n\n", objective))
 	b.WriteString("立刻调用 goal(action=\"plan\", understanding=\"...\", steps=[{\"title\":\"...\",\"detail\":\"...\"}], acceptance_criteria=[\"...\"]).\n")
-	b.WriteString("步骤和验收标准都必须非空。不要修改文件，不要运行实现，不要调用 complete。")
+	b.WriteString("steps 必须是对象数组本身，不要把它写成 JSON 字符串。步骤和验收标准都必须非空。不要修改文件，不要运行实现，不要调用 complete。")
 	return b.String()
 }
 
@@ -1805,7 +1805,7 @@ func buildGoalPlanPrompt(g *goal.Goal) string {
 	b.WriteString("1. 用你自己的话复述任务，确认你理解要交付的结果。\n")
 	b.WriteString("2. 把任务分解成有序、可独立执行的步骤。\n")
 	b.WriteString("3. 写出可以核对的验收标准。\n")
-	b.WriteString("4. 调用 goal(action=\"plan\", understanding=\"...\", steps=[{\"title\":\"...\",\"detail\":\"...\"}], acceptance_criteria=[\"...\"]).\n\n")
+	b.WriteString("4. 调用 goal(action=\"plan\", understanding=\"...\", steps=[{\"title\":\"...\",\"detail\":\"...\"}], acceptance_criteria=[\"...\"]). steps 传对象数组本身，不要写成 JSON 字符串。\n\n")
 	b.WriteString("禁止修改文件、运行实现或调用 complete。步骤或验收标准为空时不要调用 plan。")
 	return b.String()
 }
@@ -2258,9 +2258,39 @@ func goalTerminalNotice(g *goal.Goal) (text string, asError bool) {
 			reason = "目标失败"
 		}
 		return reason, true
+	case goal.StatusComplete:
+		return goalCompletionReport(g, g.Summary), false
 	default:
 		return "", false
 	}
+}
+
+// goalCompletionReport is the closeout shared by the goal_complete tool
+// result and the transcript notice: what the goal did plus what the run cost.
+func goalCompletionReport(g *goal.Goal, summary string) string {
+	report := goal.FormatCompletionReport(g, summary)
+	if g == nil {
+		return report
+	}
+	if g.TokenBudget > 0 {
+		report += fmt.Sprintf("\nToken 使用: %d / %d", g.TokensUsed, g.TokenBudget)
+	}
+	report += fmt.Sprintf("\n总轮次: %d | 耗时: %ds", g.TurnsUsed, g.TimeUsedSeconds)
+	return report
+}
+
+// goalFailureReport is the closeout the goal_fail tool result and the
+// transcript notice share.
+func goalFailureReport(g *goal.Goal, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "目标失败"
+	}
+	if g == nil {
+		return "目标失败\n原因: " + reason
+	}
+	return fmt.Sprintf("目标失败\n目标: %s\n原因: %s\nToken 使用: %d | 总轮次: %d",
+		g.Objective, reason, g.TokensUsed, g.TurnsUsed)
 }
 
 func newGoalNoticeEvent(userID, text string, asError bool) AIContinuationEvent {
@@ -2357,8 +2387,9 @@ func goalClockHoldSeconds(g *goal.Goal) int64 {
 }
 
 // emitGoalCleared tells the chat bar this session no longer has a goal.
-// The transcript checklist is left as it was: an empty record does not
-// replace that card.
+// The frontend retires the transcript checklist card on this event: the
+// floating checklist reads that card, and a goal that no longer exists must
+// not keep floating.
 func (e *GoalContinuationEngine) emitGoalCleared(userID string) {
 	if e == nil || e.app == nil {
 		return

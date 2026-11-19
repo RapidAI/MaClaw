@@ -35,6 +35,35 @@ func TestDesktopOutcomePlanAndHandoffSkipTheCheck(t *testing.T) {
 	}
 }
 
+// A bot with no computer can never produce a desktop result, so the check
+// must not run for it at all. Before the gate, its every finish was sent
+// back with "继续在这个桌面上改" — a desktop that does not exist — and a
+// greeting got answered with the nudge's own wording.
+func TestDesktopOutcomeSkipsABotWithNoComputer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a bot with no computer must not reach the checker")
+	}))
+	defer server.Close()
+	for _, meta := range []map[string]string{
+		{"bot_phase": "execute", "bot_desktop": desktop.BotDesktopModeNone},
+		{"bot_phase": "execute"},
+	} {
+		cb := &coreAgentCallbacks{
+			llmCfg:          corelib.MaclawLLMConfig{URL: server.URL, Model: "judge", Key: "k"},
+			httpClient:      server.Client(),
+			messageMetadata: meta,
+		}
+		if meta["bot_desktop"] == "" {
+			cb.instance.Metadata = map[string]string{"hub_bot_desktop": desktop.BotDesktopModeNone}
+		}
+		for i := 0; i < desktopOutcomeContinueMax+2; i++ {
+			if decision := cb.ReviewDesktopOutcome("你好", "你好！有什么可以帮你的？", nil, nil); decision != (agent.DesktopOutcomeDecision{}) {
+				t.Fatalf("no-desktop decision=%+v", decision)
+			}
+		}
+	}
+}
+
 func TestDesktopOutcomeWithoutDesktopWorkContinuesTwice(t *testing.T) {
 	cb := &coreAgentCallbacks{messageMetadata: map[string]string{"bot_phase": "execute"}}
 	first := cb.ReviewDesktopOutcome("做个贪吃蛇", "已经完成", nil, nil)

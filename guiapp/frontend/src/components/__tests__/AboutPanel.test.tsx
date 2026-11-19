@@ -612,10 +612,10 @@ describe('AboutPanel', () => {
         expect(expiresLabel.textContent?.length || 0).toBeGreaterThan('Expires at '.length);
     });
 
-    it('hides mobile auth QR action when registered account has no phone', () => {
+    it('shows mobile auth QR action for registered accounts without a phone', () => {
         render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
 
-        expect(screen.queryByText('Mobile Auth QR')).toBeNull();
+        expect(screen.getByText('Mobile Auth QR')).toBeTruthy();
     });
 
     it('hydrates missing registered phone from logged-in hub profile before public probe', async () => {

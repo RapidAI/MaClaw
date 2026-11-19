@@ -108,10 +108,21 @@ func TestCreateMobileAuthDesktopQRSessionUsesHubAuthSessionEndpoint(t *testing.T
 	}
 }
 
-func TestCreateMobileAuthDesktopQRSessionRequiresBoundPhone(t *testing.T) {
+func TestCreateMobileAuthDesktopQRSessionWorksWithoutBoundPhone(t *testing.T) {
+	var seenAuth string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile/auth/desktop-qr-sessions" {
+			t.Fatalf("path = %s, want mobile auth QR session endpoint", r.URL.Path)
+		}
+		seenAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"created","session_id":"maqr_email","expires_at":"2026-07-05T12:00:00Z","qr_payload":"{\"v\":2,\"type\":\"maclaw_mobile_desktop_authorization\",\"session_id\":\"maqr_email\",\"hub_url\":\"https://tenant-a.maclaw.top\"}"}`))
+	}))
+	defer hub.Close()
+
 	app := &App{testHomeDir: t.TempDir()}
 	if err := app.SaveConfig(corelib.AppConfig{
-		RemoteHubURL:       "https://hub.example.com",
+		RemoteHubURL:       hub.URL + "/",
 		RemoteViewerToken:  "viewer-token",
 		RemoteMachineID:    "m_123",
 		RemoteMachineToken: "mt_123",
@@ -120,24 +131,16 @@ func TestCreateMobileAuthDesktopQRSessionRequiresBoundPhone(t *testing.T) {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	_, err := app.CreateMobileAuthDesktopQRSession()
-	if err == nil || !strings.Contains(err.Error(), "requires a bound phone number") {
-		t.Fatalf("error = %v, want bound phone requirement", err)
+	session, err := app.CreateMobileAuthDesktopQRSession()
+	if err != nil {
+		t.Fatalf("CreateMobileAuthDesktopQRSession without a bound phone: %v", err)
 	}
-}
 
-func TestMobileAuthBoundPhoneDigitsAcceptsMobileOrPhoneEmail(t *testing.T) {
-	if got := mobileAuthBoundPhoneDigits("199-0000-1111", ""); got != "19900001111" {
-		t.Fatalf("RemoteMobile digits = %q", got)
+	if seenAuth != "Bearer viewer-token" {
+		t.Fatalf("Authorization = %q, want viewer bearer token", seenAuth)
 	}
-	if got := mobileAuthBoundPhoneDigits("", "phone:19900001111"); got != "19900001111" {
-		t.Fatalf("phone email digits = %q", got)
-	}
-	if got := mobileAuthBoundPhoneDigits("", "dev@example.com"); got != "" {
-		t.Fatalf("email-only = %q, want empty", got)
-	}
-	if got := mobileAuthBoundPhoneDigits("123", ""); got != "" {
-		t.Fatalf("too short = %q, want empty", got)
+	if session.SessionID != "maqr_email" || !strings.Contains(session.QRPayload, "maclaw_mobile_desktop_authorization") {
+		t.Fatalf("session = %#v, want mobile auth QR session payload", session)
 	}
 }
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { Z } from "../ui/zIndex";
 import { DeleteSession, GetSessionCount, GetSessionFullText, ListSessionHistory, SearchSessionHistory } from "../../../wailsjs/go/main/App";
-import { intlLocale } from "../../i18n";
+import { formatMemoryDate } from "./memoryDate";
 import { colors, radius } from "./styles";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 
@@ -202,7 +202,7 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
                                     </div>
                                     {snippet ? <div style={snippetStyle}>{renderSnippet(snippet)}</div> : (!topic && <div style={{ fontSize: "0.72rem", color: colors.textMuted, fontStyle: "italic" }}>{t("(no topic)", "(\u65e0\u4e3b\u9898)")}</div>)}
                                     <div style={{ fontSize: "0.64rem", color: colors.textMuted, marginTop: 3, textAlign: "left" }}>
-                                        {fmtDate(ts, lang)}
+                                        {formatMemoryDate(ts, lang)}
                                         {textLen > 0 && <> {" \u00b7 "}{textLen > 1000 ? `${(textLen / 1000).toFixed(1)}K` : textLen} {t("chars", "\u5b57\u7b26")}</>}
                                     </div>
                                 </div>
@@ -257,7 +257,7 @@ function SessionViewerModal({ t, lang, viewSession, fullText, loading, onClose, 
                             <button onClick={onClose} style={neutralBtnStyle}>X</button>
                         </div>
                     </div>
-                    <div style={{ fontSize: "0.66rem", color: colors.textMuted, marginTop: 4 }}>{fmtDate(viewSession.timestamp, lang)} {"\u00b7"} ID: {viewSession.id}</div>
+                    <div style={{ fontSize: "0.66rem", color: colors.textMuted, marginTop: 4 }}>{formatMemoryDate(viewSession.timestamp, lang)} {"\u00b7"} ID: {viewSession.id}</div>
                 </div>
                 <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px" }}>
                     {loading ? <div style={{ fontSize: "0.76rem", color: colors.textMuted, padding: "20px 0", textAlign: "center" }}>{t("Loading...", "\u52a0\u8f7d\u4e2d...")}</div> : <pre style={preStyle}>{fullText || t("(empty)", "(\u7a7a)")}</pre>}
@@ -287,12 +287,6 @@ function ModalOverlay({ onClose, children }: { onClose: () => void; children: Re
             </div>
         </div>
     );
-}
-
-function fmtDate(s: string, lang: string): string {
-    if (!s) return "-";
-    const locale = intlLocale(lang);
-    try { return new Date(s).toLocaleString(locale); } catch { return s; }
 }
 
 const inputStyle: CSSProperties = { width: "100%", padding: "6px 10px", fontSize: "0.78rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, color: colors.text, boxSizing: "border-box" };

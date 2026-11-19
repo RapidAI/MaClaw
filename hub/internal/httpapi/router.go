@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/edgelink"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/localrelay"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -24,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hub/internal/digitalasset"
 	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
+	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 	"github.com/RapidAI/CodeClaw/hub/internal/expert"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
@@ -33,6 +36,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/notification"
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/repomaint"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	skillpkg "github.com/RapidAI/CodeClaw/hub/internal/skill"
@@ -136,6 +140,7 @@ func NewRouter(
 	if stopper, ok := tenantIMRuntimeReloader.(TenantIMRuntimeStopper); ok {
 		tenantIMRuntimeStopper = stopper
 	}
+	connectionStopper := newTenantConnectionStopper(deviceSvc, gateway, chatNotifier)
 	mux := http.NewServeMux()
 	ConfigureMobileLLMAuthorizationPersistence(system)
 	requireAdmin := func(h http.HandlerFunc) http.HandlerFunc {
@@ -310,9 +315,9 @@ func NewRouter(
 		mux.HandleFunc("POST /api/admin/tenants", requireGlobalAdmin(AdminTenantCreateWithPlatformCallbackHandler(system, tenantRepo, admins, adminAudit, centerSvc)))
 		mux.HandleFunc("GET /api/admin/tenants/{tenantId}", requireAdmin(AdminTenantDetailHandler(tenantRepo)))
 		mux.HandleFunc("PATCH /api/admin/tenants/{tenantId}/domains", requireAdmin(AdminTenantDomainsUpdateWithPlatformCallbackHandler(system, tenantRepo, adminAudit)))
-		mux.HandleFunc("PATCH /api/admin/tenants/{tenantId}/status", requireGlobalAdmin(AdminTenantStatusUpdateWithPlatformCallbackHandler(system, adminAudit, tenantRepo, tenantIMRuntimeStopper)))
-		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/merge", requireGlobalAdmin(AdminTenantMergeHandler(hubDB, tenantRepo, adminAudit, tenantIMRuntimeStopper)))
-		mux.HandleFunc("DELETE /api/admin/tenants/{tenantId}", requireGlobalAdmin(AdminTenantDeleteWithPlatformCallbackHandler(system, adminAudit, admins, hubDB, centerSvc, tenantRepo, tenantIMRuntimeStopper)))
+		mux.HandleFunc("PATCH /api/admin/tenants/{tenantId}/status", requireGlobalAdmin(AdminTenantStatusUpdateWithPlatformCallbackHandler(system, adminAudit, tenantRepo, tenantIMRuntimeStopper, connectionStopper)))
+		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/merge", requireGlobalAdmin(AdminTenantMergeHandler(hubDB, tenantRepo, adminAudit, tenantIMRuntimeStopper, connectionStopper)))
+		mux.HandleFunc("DELETE /api/admin/tenants/{tenantId}", requireGlobalAdmin(AdminTenantDeleteWithPlatformCallbackHandler(system, adminAudit, admins, hubDB, centerSvc, tenantRepo, tenantIMRuntimeStopper, connectionStopper)))
 		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/admins", requireAdmin(AdminTenantAdminCreateHandler(tenantRepo, admins, adminAudit, centerSvc)))
 		// Semantic tool routing (mobile core agent): owner-only dynamic capability
 		// contract publication for observed MCP/Skill bindings, aligned with the
@@ -414,11 +419,13 @@ func NewRouter(
 	}
 	mux.HandleFunc("GET /api/admin/bots/settings", requireTenantAdmin(GetBotSettingsAdminHandler(botSvc)))
 	mux.HandleFunc("PUT /api/admin/bots/settings", requireTenantAdmin(PutBotSettingsAdminHandler(botSvc, adminAudit)))
+	mux.HandleFunc("PATCH /api/admin/bots/settings", requireTenantAdmin(PatchBotSettingsAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("PUT /api/admin/bots/llm", requireTenantAdmin(PutBotLLMSettingsAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("POST /api/admin/bots/llm/models", requireTenantAdmin(PostBotLLMModelsAdminHandler(botSvc)))
 	mux.HandleFunc("POST /api/admin/bots/llm/vision", requireTenantAdmin(PostBotLLMVisionAdminHandler(botSvc)))
 	mux.HandleFunc("POST /api/admin/bots/connection/test", requireTenantAdmin(TestBotConnectionAdminHandler(botSvc)))
 	mux.HandleFunc("POST /api/admin/bots/grants", requireTenantAdmin(PostBotGrantAdminHandler(botSvc, adminAudit)))
+	mux.HandleFunc("PATCH /api/admin/bots/grants/{id}", requireTenantAdmin(PatchBotGrantAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("PUT /api/admin/bots/{id}/desktop-mode", requireTenantAdmin(PutBotDesktopModeAdminHandler(botSvc)))
 	mux.HandleFunc("DELETE /api/admin/bots/grants/{id}", requireTenantAdmin(DeleteBotGrantAdminHandler(botSvc, adminAudit)))
 	var desktopDirectory desktoppool.Directory
@@ -428,12 +435,79 @@ func NewRouter(
 		botSvc.Directory = directory
 	}
 	desktopPool := desktoppool.New(system, desktopDirectory)
+	desktopPool.Home = func(ctx context.Context, tenantID, ownerID, botID string) (string, bool) {
+		if botSvc == nil {
+			return "", false
+		}
+		return botSvc.DesktopComputerNode(ctx, tenantID, ownerID, botID)
+	}
 	botSvc.Desktop = botDesktopControl{pool: desktopPool}
+	// A computer request needs a real desktop behind it: an assigned cloud
+	// server, or a LAN node picked by the caller (validated in the handler).
+	// With neither the create is refused so the client offers a
+	// no-desktop bot instead of silently landing on nothing.
+	botSvc.CloudDesktopAssigned = func(ctx context.Context, tenantID, userID string, departments []string) error {
+		_, err := desktopPool.CloudServerFor(ctx, tenantID, userID, departments)
+		if errors.Is(err, desktoppool.ErrNotAssigned) {
+			return botmgmt.ErrCloudDesktopUnassigned
+		}
+		return err
+	}
+	botSvc.LanDesktopAvailable = func(ctx context.Context, tenantID, nodeID string) bool {
+		if edgeRegistry == nil {
+			return false
+		}
+		node, err := edgeRegistry.Lookup(ctx, nodeID)
+		return err == nil && node.HasSrv && !edgeTenantMismatch(node.TenantID, tenantID)
+	}
+	if edgenode.Enabled() {
+		edgeRegistry = edgenode.NewRegistry(system)
+		edgeBroker = edgenode.NewBroker(edgeRegistry)
+		desktopPool.Nodes = func(ctx context.Context, tenantID, nodeID, target string) *http.Client {
+			if edgeBroker == nil {
+				return nil
+			}
+			return edgeBroker.Client(tenantID, nodeID, target)
+		}
+		mux.HandleFunc("GET /api/admin/bots/nodes", requireTenantAdmin(GetEdgeNodesAdminHandler(edgeRegistry, edgeBroker)))
+		mux.HandleFunc("GET /api/admin/platform/edge-nodes", requireGlobalAdmin(GetEdgeNodesPlatformHandler(edgeRegistry, edgeBroker)))
+		mux.HandleFunc("GET /api/admin/platform/tenants/{tenantId}/edge-policy", requireGlobalAdmin(GetEdgePolicyPlatformHandler(edgeRegistry)))
+		mux.HandleFunc("PUT /api/admin/platform/tenants/{tenantId}/edge-policy", requireGlobalAdmin(PutEdgePolicyPlatformHandler(edgeRegistry)))
+		mux.HandleFunc("DELETE /api/admin/bots/nodes/{id}", requireTenantAdmin(DeleteEdgeNodeAdminHandler(edgeRegistry, edgeBroker, desktopPool, botSvc)))
+		mux.HandleFunc("POST /api/admin/bots/nodes/codes", requireTenantAdmin(PostEdgeCodeAdminHandler(edgeRegistry)))
+		mux.HandleFunc("POST /api/admin/bots/nodes/{id}/code", requireTenantAdmin(PostEdgeRotateCodeAdminHandler(edgeRegistry)))
+		mux.HandleFunc("POST /api/admin/bots/nodes/{id}/settings", requireTenantAdmin(PostEdgeNodeSettingsAdminHandler(edgeRegistry, desktopPool, botSvc)))
+		mux.HandleFunc("POST /api/v1/edge/enroll", PostEdgeEnrollHandler(edgeRegistry, desktopPool, botSvc))
+		mux.HandleFunc("POST /api/v1/edge/capacity", PostEdgeCapacityHandler(desktopPool, edgeRegistry))
+		mux.HandleFunc("POST /api/v1/edge/resources", PostEdgeResourcesHandler(desktopPool, edgeRegistry))
+		mux.HandleFunc("POST /api/v1/edge/direct-base", PostEdgeDirectBaseHandler(edgeRegistry))
+		botSvc.NodeHTTP = func(nodeID string) *http.Client {
+			if edgeBroker == nil || edgeRegistry == nil {
+				return nil
+			}
+			node, err := edgeRegistry.Lookup(context.Background(), nodeID)
+			if err != nil {
+				return nil
+			}
+			return edgeBroker.Client(node.TenantID, node.ID, edgelink.TargetSrv)
+		}
+		edgeBroker.OnAttach = func(tenantID, nodeID string) {
+			botSvc.ReleaseNodeQueue(tenantID, nodeID)
+		}
+		mux.HandleFunc("GET /api/v1/edge/link", GetEdgeLinkHandler(edgeRegistry, edgeBroker, botSvc))
+		mux.HandleFunc(edgeDesktopRelayPrefix+"{node}/{rest...}", EdgeDesktopRelayHandler(edgeRegistry, edgeBroker))
+		mux.HandleFunc(edgeCDPPrefix+"{ticket}/{rest...}", EdgeCDPRelayHandler(edgeRegistry, edgeBroker))
+		mux.HandleFunc("GET /api/v1/edge/viewer/{id}", EdgeViewerConfirmHandler(edgeRegistry))
+		viewerStillOpen = func(tenantID, userID string) bool {
+			return botSvc != nil && botSvc.DesktopViewURL(tenantID, userID) != ""
+		}
+		botSvc.NodeTransport = edgeBroker.TransportForHost
+	}
 	mux.HandleFunc("GET /api/admin/desktop-services", requireTenantAdmin(GetDesktopServicesAdminHandler(desktopPool, platformUsers, botSvc)))
 	mux.HandleFunc("POST /api/admin/desktop-services", requireTenantAdmin(PostDesktopServiceAdminHandler(desktopPool)))
 	mux.HandleFunc("PATCH /api/admin/desktop-services/{id}", requireTenantAdmin(PatchDesktopServiceAdminHandler(desktopPool)))
 	mux.HandleFunc("DELETE /api/admin/desktop-services/{id}", requireTenantAdmin(DeleteDesktopServiceAdminHandler(desktopPool)))
-	mux.HandleFunc("POST /api/admin/desktop-services/assignments", requireTenantAdmin(PostDesktopAssignmentAdminHandler(desktopPool)))
+	mux.HandleFunc("POST /api/admin/desktop-services/assignments", requireTenantAdmin(PostDesktopAssignmentAdminHandler(desktopPool, botSvc)))
 	mux.HandleFunc("DELETE /api/admin/desktop-services/assignments/{id}", requireTenantAdmin(DeleteDesktopAssignmentAdminHandler(desktopPool)))
 	mux.HandleFunc("POST /api/admin/desktop-services/desktops", requireTenantAdmin(PostDesktopCreateAdminHandler(desktopPool, botSvc)))
 	mux.HandleFunc("POST /api/admin/desktop-services/desktops/stop", requireTenantAdmin(PostDesktopStopAdminHandler(desktopPool, botSvc)))
@@ -498,7 +572,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/bots/{id}/cross", PostBotCrossHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/cross-notes/{noteID}/start", PostBotCrossStartHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/cross-notes/{noteID}/run", PostBotCrossRunHandler(botSvc, identity))
-	mux.HandleFunc("POST /api/v1/bots", PostBotUserHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots", PostBotUserHandler(botSvc, desktopPool, edgeRegistry, identity))
 	mux.HandleFunc("PATCH /api/v1/bots/{id}", PatchBotUserHandler(botSvc, identity))
 	mux.HandleFunc("PUT /api/v1/bots/{id}/appearance", PutBotAppearanceHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/assignments", BotAssignmentsHandler(botSvc, identity))
@@ -527,11 +601,14 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/bots/{id}/runs/{runID}", GetBotRunHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/tasks", GetBotTasksHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/runs/active", GetBotActiveRunsHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/schedules", GetBotSchedulesHandler(botSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/bots/{id}/schedules/{taskID}", DeleteBotScheduleHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/ack", PostBotRunAckHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/secret-fill", PostBotSecretFillHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/desktop", GetBotDesktopHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop", PostBotDesktopWatchHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop/handback", PostBotDesktopHandBackHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/desktop/control", PostBotDesktopControlHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/demo/start", PostBotDemoStartHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/demo/narrate", PostBotDemoNarrateHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/demo/stop", PostBotDemoStopHandler(botSvc, identity))
@@ -543,8 +620,19 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/v1/bots/{id}/desktop-mode", PutBotDesktopModeUserHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/llm", GetBotLLMHandler(botSvc, identity))
 	mux.HandleFunc("PUT /api/v1/bots/llm", PutBotLLMHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/capabilities", GetBotCapabilitiesHandler(botSvc, identity))
+	mux.HandleFunc("PUT /api/v1/bots/capabilities", PutBotCapabilitiesHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/desktop-proxy-mode", GetUserDesktopProxyModeHandler(desktopPool, identity))
 	mux.HandleFunc("PUT /api/v1/bots/desktop-proxy-mode", PutUserDesktopProxyModeHandler(desktopPool, identity))
+	if edgenode.Enabled() {
+		mux.HandleFunc("GET /api/v1/bots/desktop-node", GetSelfDesktopNodesHandler(desktopPool, edgeRegistry, edgeBroker, identity))
+		mux.HandleFunc("POST /api/v1/bots/desktop-node/code", PostSelfDesktopCodeHandler(edgeRegistry, identity))
+		mux.HandleFunc("PUT /api/v1/bots/desktop-node/cloud", PutCloudDesktopHandler(desktopPool, edgeRegistry, edgeBroker, botSvc, identity))
+		mux.HandleFunc("PUT /api/v1/bots/desktop-node/{server_id}/active", PutSelfDesktopActiveHandler(desktopPool, edgeRegistry, edgeBroker, botSvc, identity))
+		// Not under /api/v1/bots/{id}/...: that shape overlaps
+		// DELETE /api/v1/bots/{id}/preference and Go's mux panics at startup.
+		mux.HandleFunc("DELETE /api/v1/self-desktop-nodes/{server_id}", DeleteSelfDesktopNodeHandler(desktopPool, edgeRegistry, edgeBroker, identity))
+	}
 	var computerViews desktopViewForgetter
 	if botSvc != nil {
 		computerViews = botSvc
@@ -627,6 +715,7 @@ func NewRouter(
 		DB:                       hubDB,
 		RouteDeleter:             centerSvc,
 		GroupDiscussionSvc:       groupDiscussionSvc,
+		Connections:              connectionStopper,
 		KnowledgeSharePackageDir: knowledgeSharePackageDir,
 		KnowledgeSyncDir:         knowledgeSyncPackageDir,
 		WelcomeSyncDir:           welcomeSyncPackageDir,
@@ -809,6 +898,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationHandler(identity))
 	mux.HandleFunc("DELETE /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationRevokeHandler(identity))
 	mux.HandleFunc("POST /api/mobile/auth/desktop-qr-sessions", MobileDesktopAuthQRSessionHandler(identity))
+	mux.HandleFunc("POST /api/mobile/auth/desktop-qr-sessions/redeem", MobileDesktopAuthQRRedeemHandler(identity))
 	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
 	mux.HandleFunc("GET /api/mobile/jobs", MobileJobsHandler(identity))
 	// Hub SSH credential vault (hub_exec path).
@@ -1481,6 +1571,7 @@ func NewRouter(
 		// Client routes (machine auth)
 		machineAuth := requireMachineAuth(identity)
 		mux.HandleFunc("GET /api/v1/notifications/unread", machineAuth(notifHandler.HandleUnread))
+		mux.HandleFunc("GET /api/v1/notifications/pinned", machineAuth(notifHandler.HandlePinned))
 		mux.HandleFunc("POST /api/v1/notifications/{id}/read", machineAuth(notifHandler.HandleMarkRead))
 		mux.HandleFunc("POST /api/v1/notifications/read-all", machineAuth(notifHandler.HandleMarkAllRead))
 
@@ -1527,5 +1618,32 @@ func NewRouter(
 	registerStaticRoutes(mux, "./web/approval_workflow", "/approval_workflow")
 	registerStaticRoutes(mux, "./web/user-ranking", "/user-ranking")
 	registerHomeStaticRoutes(mux, "./web/home", "/")
+	registerBotnodeDoc(mux)
+	registerSelfDesktopdDoc(mux)
+	registerHubInstallDoc(mux)
+
+	// GitHub repo maintenance: public HMAC webhook plus machine-authenticated
+	// rule and delivery routes. Offline rows stay in SQLite. The online hook
+	// uses SendToOnlineMachine and does not touch the short pending queue.
+	if hubDB != nil {
+		var repoMaintSender repomaint.OnlineSender
+		if deviceSvc != nil {
+			repoMaintSender = deviceSvc
+		}
+		repoMaintSvc, err := repomaint.Open(hubDB, repoMaintSender)
+		if err != nil {
+			log.Printf("[github-repo-maint] schema init failed: %v", err)
+		} else {
+			var repoMaintAuth repomaint.MachineAuthenticator
+			if identity != nil {
+				repoMaintAuth = identity
+			}
+			repoMaintSvc.Register(mux, repoMaintAuth)
+			if deviceSvc != nil {
+				deviceSvc.SetOnlineHook(repoMaintSvc.PushPending)
+			}
+			go repoMaintSvc.StartSweeper()
+		}
+	}
 	return mux
 }

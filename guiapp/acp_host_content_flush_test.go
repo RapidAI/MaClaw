@@ -58,6 +58,40 @@ func TestACPAgentMessageChunkShape(t *testing.T) {
 	}
 }
 
+func TestMCPStoredRunDeltaSkipsRejectMarker(t *testing.T) {
+	if got := mcpStoredRunDelta("\x02"); got != "" {
+		t.Fatalf("reject stored %q", got)
+	}
+	if got := mcpStoredRunDelta("\x02kept"); got != "" {
+		t.Fatalf("prefixed reject stored %q", got)
+	}
+	if got := mcpStoredRunDelta("\x01think"); got != "" {
+		t.Fatalf("reasoning stored %q", got)
+	}
+	if got := mcpStoredRunDelta("answer"); got != "answer" {
+		t.Fatalf("content stored %q", got)
+	}
+}
+
+func TestRouteACPStreamTokenKeepsRejectMarkerOffTheClientChunk(t *testing.T) {
+	mirror, message, thought := routeACPStreamToken("\x02")
+	if thought || message != "" || mirror != "\x02" {
+		t.Fatalf("reject mirror=%q message=%q thought=%v", mirror, message, thought)
+	}
+	mirror, message, thought = routeACPStreamToken("\x02ke\x01pt")
+	if thought || message != "" || mirror != "\x02kept" {
+		t.Fatalf("prefixed reject mirror=%q message=%q thought=%v", mirror, message, thought)
+	}
+	mirror, message, thought = routeACPStreamToken("\x01The\x01 user")
+	if !thought || message != "The user" || mirror != "\x01The user" {
+		t.Fatalf("reasoning mirror=%q message=%q thought=%v", mirror, message, thought)
+	}
+	mirror, message, thought = routeACPStreamToken("desktop\x01d")
+	if thought || message != "desktopd" || mirror != "desktopd" {
+		t.Fatalf("content mirror=%q message=%q thought=%v", mirror, message, thought)
+	}
+}
+
 func TestVisibleACPStreamDeltaRemovesControlCharacters(t *testing.T) {
 	if got := visibleACPStreamDelta("visible\x00 text\nnext\u0085"); got != "visible text\nnext" {
 		t.Fatalf("visible delta = %q", got)

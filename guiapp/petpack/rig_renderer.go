@@ -11,10 +11,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
-// RigRenderer owns decoded texture assets for one resolved v2 pack. It is
-// immutable after construction and therefore safe to share with a render loop.
+// RigRenderer owns decoded texture assets for one resolved pack. Textures and
+// bone layout stay fixed, so a render loop can share the renderer. Adornment
+// visibility is the one snapshot the host replaces when a rearing stage changes.
 type RigRenderer struct {
 	rig          *Rig
 	textures     map[string]*image.NRGBA
@@ -23,6 +25,9 @@ type RigRenderer struct {
 	boneIndex    map[string]int
 	clips        map[string]*RigClip
 	fallbackClip *RigClip
+	// adornments is nil when the pack declares no props. owned never changes.
+	// visible is replaced as a whole; the maps are not mutated in place.
+	adornments atomic.Pointer[adornmentView]
 	// multiHead is true when the pack uses expression-head paper-doll slots
 	// (head_*.png / h_idle…). Join aids only activate for these packs unless
 	// rig.join.auto is forced on/off.
@@ -128,7 +133,70 @@ func NewRigRenderer(resolved *ResolvedPack) (*RigRenderer, error) {
 			break
 		}
 	}
+	if owned := adornmentSlotSet(resolved.Manifest); len(owned) > 0 {
+		rr.adornments.Store(&adornmentView{owned: owned, visible: map[string]bool{}})
+	}
 	return rr, nil
+}
+
+// adornmentView is one published set of prop slots. A slot in owned stays
+// hidden until a rearing stage lists it in visible.
+type adornmentView struct {
+	owned   map[string]bool
+	visible map[string]bool
+}
+
+func adornmentSlotSet(m *PetPackManifest) map[string]bool {
+	if m == nil {
+		return nil
+	}
+	var owned map[string]bool
+	for _, item := range m.Adornments {
+		for _, slot := range item.Slots {
+			if owned == nil {
+				owned = make(map[string]bool)
+			}
+			owned[slot] = true
+		}
+	}
+	return owned
+}
+
+// SetVisibleAdornmentSlots shows the prop slots a rearing stage is wearing.
+// Slots the pack did not declare as adornments are unchanged. An empty list
+// hides every prop. The call replaces the snapshot; it does not edit textures.
+func (r *RigRenderer) SetVisibleAdornmentSlots(slots []string) {
+	if r == nil {
+		return
+	}
+	cur := r.adornments.Load()
+	if cur == nil || len(cur.owned) == 0 {
+		return
+	}
+	if adornmentVisibleMatches(cur, slots) {
+		return
+	}
+	visible := make(map[string]bool)
+	for _, name := range slots {
+		if cur.owned[name] {
+			visible[name] = true
+		}
+	}
+	r.adornments.Store(&adornmentView{owned: cur.owned, visible: visible})
+}
+
+func adornmentVisibleMatches(cur *adornmentView, slots []string) bool {
+	n := 0
+	for _, name := range slots {
+		if !cur.owned[name] {
+			continue
+		}
+		if !cur.visible[name] {
+			return false
+		}
+		n++
+	}
+	return n == len(cur.visible)
 }
 
 func detectMultiHeadPack(slots []RigSlot) bool {
@@ -420,6 +488,21 @@ type CharacterRenderer struct {
 	previousAt      int64
 	previousElapsed int64
 	idleSinceMS     int64
+	// layerSince is the first time each expression, gaze, and secondary clip
+	// was shown. Body enter, loop, and exit restart startedMS; these layers
+	// must keep their own phase or the eyes and braids snap back to frame 0.
+	layerSince map[string]int64
+	// soundClip / soundLoops remember which body clip already played its cue,
+	// including how many loop wraps have sounded. Expression layers do not.
+	soundClip  string
+	soundLoops int
+	// heldExpression and heldGaze replace the state's face while the host
+	// is holding a companionship feeling. They are not a new performer state.
+	// heldMood is the same hold, applied to idle selection. Empty means the
+	// pack's own face and mood.
+	heldExpression string
+	heldGaze       string
+	heldMood       string
 }
 
 func NewCharacterRenderer(resolved *ResolvedPack) (*CharacterRenderer, error) {
@@ -449,6 +532,46 @@ func NewCharacterRenderer(resolved *ResolvedPack) (*CharacterRenderer, error) {
 	return &CharacterRenderer{rig: rigRenderer, director: NewPerformanceDirector(performer, rigRenderer.rig, seed)}, nil
 }
 
+// SetCompanionFeel holds a face and an idle mood for as long as the host
+// asks. A clip the pack did not author is ignored, and an unknown mood is
+// cleared. The body one-shot still ends on its own; this only keeps the
+// face and the quieter idle. Changed reports whether the hold moved.
+func (r *CharacterRenderer) SetCompanionFeel(expression, gaze, mood string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if expression != "" && (r.rig == nil || r.rig.Clip(expression) == nil) {
+		expression = ""
+	}
+	if gaze != "" && (r.rig == nil || r.rig.Clip(gaze) == nil) {
+		gaze = ""
+	}
+	if mood != "" && !allowedPerformerMoods[mood] {
+		mood = ""
+	}
+	if expression == r.heldExpression && gaze == r.heldGaze && mood == r.heldMood {
+		return false
+	}
+	r.heldExpression = expression
+	r.heldGaze = gaze
+	r.heldMood = mood
+	if r.director != nil {
+		r.director.SetPinnedMood(mood)
+	}
+	return true
+}
+
+// SetVisibleAdornmentSlots forwards the rearing prop set to the rig. Props
+// stay hidden until a stage lists them.
+func (r *CharacterRenderer) SetVisibleAdornmentSlots(slots []string) {
+	if r == nil || r.rig == nil {
+		return
+	}
+	r.rig.SetVisibleAdornmentSlots(slots)
+}
+
 // RenderState selects a behavior only when a semantic state starts or its
 // selected behavior expires, avoiding per-frame randomization and mechanical
 // repetition. Four declared layers are composed in stable order.
@@ -466,18 +589,24 @@ func (r *CharacterRenderer) RenderState(state PetRuntimeState, nowMS int64, size
 		// exit is playing. Keep the pending target intact on later timer frames;
 		// otherwise RenderState would repeatedly cancel the exit and restart it.
 		if r.state != state || r.step.Body == "" {
+			// A task reminder is a one-shot on top of the pose that arrives
+			// with it. Replacing the clip here dropped the gesture on the
+			// next frame. Keep it until it finishes, then enter the new state.
+			holdingReaction := r.step.Body != "" && r.step.Loop == "" && r.step.Exit == "" && !r.exiting && r.step.DurationMS > 0 && nowMS-r.startedMS < int64(r.step.DurationMS)
 			r.state = state
-			target := r.director.SelectState(state, nowMS)
-			if r.exiting {
-				// Preserve the exit already on screen, but let a newer semantic
-				// state retarget where it lands instead of using stale intent.
-				copy := target
-				r.pending = &copy
-			} else if !target.isZero() {
-				r.pending = nil
-				r.pendingAfterLoop = false
-				r.pendingSinceMS = 0
-				r.transitionToLocked(target, nowMS)
+			if !holdingReaction {
+				target := r.director.SelectState(state, nowMS)
+				if r.exiting {
+					// Preserve the exit already on screen, but let a newer semantic
+					// state retarget where it lands instead of using stale intent.
+					copy := target
+					r.pending = &copy
+				} else if !target.isZero() {
+					r.pending = nil
+					r.pendingAfterLoop = false
+					r.pendingSinceMS = 0
+					r.transitionToLocked(target, nowMS)
+				}
 			}
 		}
 		if state == StateIdle && !wasIdle {
@@ -497,7 +626,7 @@ func (r *CharacterRenderer) RenderState(state PetRuntimeState, nowMS int64, size
 	// Its duration is measured from this frame, so do not immediately advance
 	// the newly installed step through the rest of the state machine.
 	if r.step.Body != "" && r.startedMS == nowMS && !r.exiting {
-		step, started, previous, previousAt, previousElapsed := r.step, r.startedMS, r.previous, r.previousAt, r.previousElapsed
+		step, started, previous, previousAt, previousElapsed := r.snapshotStepLocked()
 		r.mu.Unlock()
 		return r.renderPerformanceStep(step, started, previous, previousAt, previousElapsed, nowMS, size)
 	}
@@ -525,33 +654,163 @@ func (r *CharacterRenderer) RenderState(state PetRuntimeState, nowMS int64, size
 		// One-shot event reactions settle back into the current semantic state
 		// instead of leaving their final pose on screen indefinitely.
 		r.transitionToLocked(r.director.SelectState(state, nowMS), nowMS)
-	} else if r.looping && state == StateIdle && r.step.DwellMS > 0 && nowMS-r.startedMS >= int64(r.step.DwellMS) {
-		// Idle behavior dwell time is intentionally non-uniform. Once the loop has
-		// settled, request a new weighted behavior; cooldown/repeat rules decide it.
+	} else if r.looping && state == StateIdle && r.step.DwellMS > 0 && nowMS-r.startedMS >= int64(r.step.DwellMS) && r.idleLoopReadyToExit(nowMS) {
+		// Dwell is a minimum. Exit clips are authored from the loop's rest pose,
+		// so leave on the next seam instead of starting that exit from mid-cycle.
 		r.transitionToLocked(r.director.SelectState(state, nowMS), nowMS)
 	}
 	if state == StateIdle && r.idleSinceMS > 0 && nowMS-r.idleSinceMS >= 20000 && r.pending == nil && !r.exiting && r.canFinishCurrentStep(nowMS) {
 		r.triggerEventLocked("long_idle", nowMS)
 		r.idleSinceMS = nowMS
 	}
-	step, started, previous, previousAt, previousElapsed := r.step, r.startedMS, r.previous, r.previousAt, r.previousElapsed
+	step, started, previous, previousAt, previousElapsed := r.snapshotStepLocked()
 	r.mu.Unlock()
 	return r.renderPerformanceStep(step, started, previous, previousAt, previousElapsed, nowMS, size)
 }
 
+// snapshotStepLocked copies the step that will be drawn and applies the
+// companionship face. Caller holds r.mu. The stored step keeps the state's
+// own expression, so clearing the hold on the next frame restores it.
+func (r *CharacterRenderer) snapshotStepLocked() (PerformanceStep, int64, PerformanceStep, int64, int64) {
+	step := r.step
+	previous := r.previous
+	if r.heldExpression != "" {
+		step.Expression = r.heldExpression
+		previous.Expression = r.heldExpression
+	}
+	if r.heldGaze != "" {
+		step.Gaze = r.heldGaze
+		previous.Gaze = r.heldGaze
+	}
+	return step, r.startedMS, previous, r.previousAt, r.previousElapsed
+}
+
+// Clip returns the validated clip pointer for a body-track name.
+func (r *RigRenderer) Clip(name string) *RigClip {
+	if r == nil {
+		return nil
+	}
+	return r.clips[name]
+}
+
+// DesktopTravelDesignPerMS is the active body clip's locomotion in design
+// pixels per millisecond. X is right and Y is down. A zero vector means the
+// action stays in place. The host uses the length as speed and chooses
+// horizontal, vertical, and diagonal headings.
+//
+// Only the idle pose wanders. Thinking, listening, speaking, done, and alert
+// stay where they are, even when a pack authored travel on that clip.
+func (r *CharacterRenderer) DesktopTravelDesignPerMS(nowMS int64) (vx, vy float64) {
+	if r == nil || r.rig == nil {
+		return 0, 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_ = nowMS
+	if r.state != StateIdle {
+		return 0, 0
+	}
+	clip := r.rig.Clip(r.step.Body)
+	if clip == nil || clip.DurationMS < 1 || (clip.TravelX == 0 && clip.TravelY == 0) {
+		return 0, 0
+	}
+	d := float64(clip.DurationMS)
+	return clip.TravelX / d, clip.TravelY / d
+}
+
+// TakeActionSound reports the body clip's cue the first time that clip starts,
+// and again on each wrap when the clip sets sound_loop. Calling it consumes
+// the edge, so a muted frame still advances the latch.
+func (r *CharacterRenderer) TakeActionSound(nowMS int64) (cue string, tones []RigTone) {
+	if r == nil || r.rig == nil {
+		return "", nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	name := r.step.Body
+	clip := r.rig.Clip(name)
+	loops := 0
+	if clip != nil && r.looping && clip.SoundLoop && clip.DurationMS > 0 {
+		elapsed := nowMS - r.startedMS
+		if elapsed > 0 {
+			loops = int(elapsed / int64(clip.DurationMS))
+		}
+	}
+	if clip == nil || (clip.Cue == "" && len(clip.Sound) == 0) {
+		if r.soundClip != name {
+			r.soundClip = name
+			r.soundLoops = 0
+		}
+		return "", nil
+	}
+	if name == r.soundClip {
+		if !clip.SoundLoop || loops <= r.soundLoops {
+			r.soundLoops = loops
+			return "", nil
+		}
+		r.soundLoops = loops
+		return clip.Cue, append([]RigTone(nil), clip.Sound...)
+	}
+	r.soundClip = name
+	r.soundLoops = loops
+	return clip.Cue, append([]RigTone(nil), clip.Sound...)
+}
+
 func (r *CharacterRenderer) renderPerformanceStep(step PerformanceStep, started int64, previous PerformanceStep, previousAt, previousElapsed, nowMS int64, size int) *image.NRGBA {
-	elapsed := int(nowMS - started)
-	clips := performanceStepClips(r.rig, step)
-	current := r.rig.RenderClips(clips, elapsed, size)
+	current := r.renderStepFrame(step, int(nowMS-started), nowMS, size)
 	if current == nil || previous.Body == "" || step.CrossfadeMS < 1 || nowMS-previousAt >= int64(step.CrossfadeMS) {
 		return current
 	}
-	previousClips := performanceStepClips(r.rig, previous)
-	old := r.rig.RenderClips(previousClips, int(previousElapsed+nowMS-previousAt), size)
+	old := r.renderStepFrame(previous, int(previousElapsed+nowMS-previousAt), nowMS, size)
 	if old == nil {
 		return current
 	}
 	return blendRigFrames(old, current, float64(nowMS-previousAt)/float64(step.CrossfadeMS))
+}
+
+// renderStepFrame samples the body on the phase clock and the expression,
+// gaze, and secondary clips on the clocks started the first time each clip
+// was shown. A body-only reaction leaves those clocks untouched.
+func (r *CharacterRenderer) renderStepFrame(step PerformanceStep, bodyElapsed int, nowMS int64, size int) *image.NRGBA {
+	if r == nil || r.rig == nil {
+		return nil
+	}
+	names := performanceStepClips(r.rig, step)
+	clips := make([]*RigClip, 0, len(names))
+	times := make([]int, 0, len(names))
+	for _, name := range names {
+		clip := r.rig.clips[name]
+		if clip == nil {
+			continue
+		}
+		elapsed := bodyElapsed
+		if name != step.Body {
+			elapsed = r.layerElapsed(name, nowMS)
+		}
+		clips = append(clips, clip)
+		times = append(times, rigClipTime(clip, elapsed))
+	}
+	return r.rig.renderClipsTimed(clips, times, size)
+}
+
+// layerElapsed is the time since this layer clip was first shown. Later body
+// phases and reactions that omit the clip do not move the mark.
+func (r *CharacterRenderer) layerElapsed(name string, nowMS int64) int {
+	if name == "" {
+		return 0
+	}
+	if r.layerSince == nil {
+		r.layerSince = make(map[string]int64)
+	}
+	since, ok := r.layerSince[name]
+	if !ok {
+		r.layerSince[name] = nowMS
+		return 0
+	}
+	if nowMS <= since {
+		return 0
+	}
+	return int(nowMS - since)
 }
 
 // performanceStepClips lists body + layer clips that actually carry tracks.
@@ -634,6 +893,66 @@ func blendRigFrames(previous, current *image.NRGBA, progress float64) *image.NRG
 		}
 	}
 	return out
+}
+
+// EventCue reports the cue bound to a host event without starting it.
+func (r *CharacterRenderer) EventCue(event string) (string, bool) {
+	if r == nil || r.director == nil {
+		return "", false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.director.EventCue(event)
+}
+
+// TriggerClip plays one authored body clip as a one-shot. An unknown clip
+// returns false and leaves the current performance alone. This does not add
+// a host event: the performer vocabulary stays fixed, and the host chooses
+// the clip for a gesture it already classified.
+func (r *CharacterRenderer) TriggerClip(clip string, nowMS int64) bool {
+	if r == nil || r.rig == nil || clip == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	body := r.rig.Clip(clip)
+	if body == nil || body.DurationMS < 1 {
+		return false
+	}
+	if r.state == "" {
+		r.state = StateIdle
+	}
+	step := PerformanceStep{
+		Body:       clip,
+		Interrupt:  "soft",
+		DurationMS: body.DurationMS,
+	}
+	if r.director != nil && r.director.performer != nil {
+		step.CrossfadeMS = r.director.performer.Rules.CrossfadeMS
+	}
+	if r.director != nil && r.director.currentMood != "" {
+		step.Mood = r.director.currentMood
+	}
+	r.pending = nil
+	r.pendingAfterLoop = false
+	r.pendingSinceMS = 0
+	// A host event queued before the first pose is replayed by the next
+	// RenderState. This clip is the newer instruction, so that event must
+	// not replace it on the following frame.
+	r.deferredEvent = ""
+	r.transitionToLockedWithoutExit(step, nowMS)
+	return true
+}
+
+// PlayingBody is the body clip on screen. The drag hold uses it so a long
+// pick-up is not restarted on every frame.
+func (r *CharacterRenderer) PlayingBody() string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.step.Body
 }
 
 // TriggerEvent starts one validated short reaction. It is intentionally a
@@ -744,6 +1063,20 @@ func (r *CharacterRenderer) setPrevious(step PerformanceStep, elapsedMS, nowMS i
 	r.previous, r.previousAt, r.previousElapsed = step, nowMS, elapsedMS
 }
 
+// idleLoopReadyToExit reports that the looping idle body is on the pose its
+// exit was authored from. A missed seam does not wait through a second cycle.
+func (r *CharacterRenderer) idleLoopReadyToExit(nowMS int64) bool {
+	if r == nil || r.canFinishCurrentStep(nowMS) {
+		return true
+	}
+	clip := r.rig.clips[r.step.Body]
+	if clip == nil || clip.DurationMS < 1 {
+		return true
+	}
+	sinceDwell := nowMS - r.startedMS - int64(r.step.DwellMS)
+	return sinceDwell >= int64(clip.DurationMS)
+}
+
 func (r *CharacterRenderer) canFinishCurrentStep(nowMS int64) bool {
 	if r == nil || r.step.Body == "" {
 		return true
@@ -824,10 +1157,7 @@ func (r *RigRenderer) renderClip(clip *RigClip, elapsedMS, size int) *image.NRGB
 }
 
 func (r *RigRenderer) renderClips(clips []*RigClip, elapsedMS, size int) *image.NRGBA {
-	if r == nil || r.rig == nil || size <= 0 {
-		return nil
-	}
-	if len(clips) == 0 {
+	if r == nil || r.rig == nil || size <= 0 || len(clips) == 0 {
 		return nil
 	}
 	times := make([]int, len(clips))
@@ -836,6 +1166,18 @@ func (r *RigRenderer) renderClips(clips []*RigClip, elapsedMS, size int) *image.
 			return nil
 		}
 		times[i] = rigClipTime(clip, elapsedMS)
+	}
+	return r.renderClipsTimed(clips, times, size)
+}
+
+func (r *RigRenderer) renderClipsTimed(clips []*RigClip, times []int, size int) *image.NRGBA {
+	if r == nil || r.rig == nil || size <= 0 || len(clips) == 0 || len(times) != len(clips) {
+		return nil
+	}
+	for _, clip := range clips {
+		if clip == nil {
+			return nil
+		}
 	}
 
 	// Optional per-state head bone offset (from join.state_head_offset).
@@ -870,6 +1212,9 @@ func (r *RigRenderer) renderClips(clips []*RigClip, elapsedMS, size int) *image.
 	for _, slot := range r.slots {
 		bone, ok := r.boneIndex[slot.Bone]
 		if !ok {
+			continue
+		}
+		if view := r.adornments.Load(); view != nil && view.owned[slot.Name] && !view.visible[slot.Name] {
 			continue
 		}
 		texture := r.textures[safeRel(slot.Texture)]

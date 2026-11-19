@@ -1,13 +1,8 @@
 package guiapp
 
 import (
-	"encoding/json"
-	"errors"
 	"log"
-	"os"
 	"strings"
-
-	"github.com/RapidAI/CodeClaw/corelib/configfile"
 )
 
 type conversationViewArchiveDocument struct {
@@ -24,82 +19,66 @@ func (a *App) readAIAssistantUIArchiveLocked() []interface{} {
 	if a == nil {
 		return []interface{}{}
 	}
-	data, err := os.ReadFile(a.aiAssistantUIArchivePath())
+	db, err := a.aiAssistantUIStateDBLocked()
 	if err != nil {
 		return []interface{}{}
 	}
-	var document conversationViewArchiveDocument
-	if json.Unmarshal(data, &document) != nil || len(document.Messages) == 0 {
+	messages, err := loadAIAssistantUIMessageRows(db, aiAssistantUIArchiveLocation)
+	if err != nil {
 		return []interface{}{}
 	}
-	return document.Messages
+	return mapsToAny(messages)
 }
 
 func (a *App) readAIAssistantUIMessagesLocked() []map[string]interface{} {
 	if a == nil {
 		return nil
 	}
-	data, err := os.ReadFile(a.aiAssistantUIStatePath())
+	state, err := a.loadAIAssistantUIStateLocked()
 	if err != nil {
-		return nil
-	}
-	var state AIAssistantUIState
-	if json.Unmarshal(data, &state) != nil {
 		return nil
 	}
 	return state.Messages
 }
 
 func (a *App) writeAIAssistantUIArchiveLocked(messages []interface{}) error {
-	path := a.aiAssistantUIArchivePath()
-	if len(messages) == 0 {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		return nil
+	db, err := a.aiAssistantUIStateDBLocked()
+	if err != nil {
+		return err
 	}
-	count := conversationViewLocalCount(messages)
-	return configfile.AtomicWriteJSON(path, conversationViewArchiveDocument{Messages: messages, Count: &count})
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := writeAIAssistantUIArchiveTx(tx, messages); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // readAIAssistantUIArchiveCountLocked reports the archived local-message
-// count without deserializing every message when the file carries the count
-// metadata stamped at write time. Archives written before the metadata
-// existed fall back to the old full read + count, so legacy files keep
-// reporting the same number instead of 0.
+// count directly from the indexed archive rows without decoding message bodies.
 func (a *App) readAIAssistantUIArchiveCountLocked() int {
 	if a == nil {
 		return 0
 	}
-	data, err := os.ReadFile(a.aiAssistantUIArchivePath())
+	db, err := a.aiAssistantUIStateDBLocked()
 	if err != nil {
 		return 0
 	}
-	// RawMessage skips per-message decoding: one contiguous copy instead of
-	// hundreds of map allocations, which is where the full unmarshal spent
-	// its time.
-	var header struct {
-		Count    *int            `json:"count"`
-		Messages json.RawMessage `json:"messages"`
-	}
-	if json.Unmarshal(data, &header) != nil || len(header.Messages) == 0 {
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM ai_assistant_ui_messages WHERE location=? AND is_local=1`, aiAssistantUIArchiveLocation).Scan(&count); err != nil {
 		return 0
 	}
-	if header.Count != nil {
-		return *header.Count
-	}
-	var document conversationViewArchiveDocument
-	if json.Unmarshal(data, &document) != nil {
-		return 0
-	}
-	return conversationViewLocalCount(document.Messages)
+	return count
 }
 
-// windowAIAssistantUIStateLocked keeps the hot tail in the UI state and the
-// older turns in the archive file. includeDisk merges the previous hot file
+// windowAIAssistantUIStateLocked keeps the hot tail in the UI state table and
+// older turns in the archive table. includeDisk merges the previous hot rows
 // so a client that only saved the tail cannot drop the archive.
-// The caller holds aiAssistantUIStateMu. Archive is written here. The hot
-// state file is written here only when includeDisk is false and the loaded
+// The caller holds aiAssistantUIStateMu. Archive rows are written here. Hot
+// rows are written here only when includeDisk is false and the loaded
 // transcript was longer than the hot tail.
 func (a *App) windowAIAssistantUIStateLocked(state *AIAssistantUIState, includeDisk bool) error {
 	if a == nil || state == nil {
@@ -126,9 +105,9 @@ func (a *App) windowAIAssistantUIStateLocked(state *AIAssistantUIState, includeD
 	if includeDisk {
 		return nil
 	}
-	path := a.aiAssistantUIStatePath()
+	path := a.aiAssistantUIStateDBPath()
 	state.StoragePath = ""
-	if err := configfile.AtomicWriteJSON(path, state); err != nil {
+	if err := a.saveAIAssistantUIStateLocked(*state); err != nil {
 		return err
 	}
 	log.Printf("[paths] ai_assistant_ui_state windowed path=%q hot=%d archived=%d", path, len(hot), len(earlierAny))

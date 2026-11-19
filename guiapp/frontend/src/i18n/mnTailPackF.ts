@@ -257,6 +257,7 @@ export const mnTailPackF: Record<string, string> = {
     "current": "Одоогийн",
     "Select provider or model": "Үйлчилгээ үзүүлэгч эсвэл загвар сонгох",
     "Models (loading…)": "Загварууд (ачаалж байна…)",
+    "Add custom model": "Өөрийн загвар нэмэх",
     "LLM Settings...": "LLM тохиргоо...",
     "Limited": "Хязгаар",
     "cache": "кэш",

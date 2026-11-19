@@ -141,6 +141,10 @@ describe("codingStepStatusLabel", () => {
         expect(codingStepStatusLabel("zh-Hans", "running")).toBe("进行中");
         expect(codingStepStatusLabel("zh-Hans", "verify_failed")).toBe("失败");
         expect(codingStepStatusLabel("zh-Hans", "pending")).toBe("待确认");
+        expect(codingStepStatusLabel("zh-Hans", "waiting_review")).toBe("等待审阅");
+        expect(codingStepStatusLabel("zh-Hans", "interrupted")).toBe("已中断");
+        expect(codingStepStatusLabel("en", "interrupted")).toBe("Interrupted");
+        expect(codingStepStatusLabel("en", "waiting_review")).toBe("Waiting for review");
         expect(codingStepStatusLabel("en", "completed")).toBe("Completed");
     });
 });

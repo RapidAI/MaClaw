@@ -435,6 +435,44 @@ func sqliteDeleteRuns(ctx context.Context, q sqlq, where string, args []any, ses
 	return nil
 }
 
+func sqliteReviseMessage(ctx context.Context, q sqlq, v Message) error {
+	payload, err := json.Marshal(freezeMessage(v))
+	if err != nil {
+		return err
+	}
+	res, err := q.ExecContext(ctx, `UPDATE as_messages SET v=? WHERE session_id=? AND id=?`, payload, v.SessionID, v.ID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sqliteSaveMessage(ctx, q, v)
+	}
+	return nil
+}
+
+// ReviseMessage replaces the stored JSON of one message. The row id stays,
+// so a later read and a reopened store see the receipt from finish.
+func (s *SQLiteStore) ReviseMessage(v Message) error {
+	return s.write(func(ctx context.Context, q sqlq) error {
+		return sqliteReviseMessage(ctx, q, v)
+	}, func(m *MemoryStore) error { return m.ReviseMessage(v) })
+}
+
+// ReviseRunReceipt writes the assistant message and the run in one
+// transaction. A reader cannot see the new message beside the old run.
+func (s *SQLiteStore) ReviseRunReceipt(msg Message, run Run) error {
+	return s.write(func(ctx context.Context, q sqlq) error {
+		if err := sqliteReviseMessage(ctx, q, msg); err != nil {
+			return err
+		}
+		return sqliteSaveRun(ctx, q, run)
+	}, func(m *MemoryStore) error { return m.ReviseRunReceipt(msg, run) })
+}
+
 func (s *SQLiteStore) SaveMessage(v Message) error {
 	return s.write(func(ctx context.Context, q sqlq) error {
 		return sqliteSaveMessage(ctx, q, v)
@@ -452,7 +490,8 @@ func sqliteSaveMessage(ctx context.Context, q sqlq, v Message) error {
 			return ErrAlreadyExists
 		}
 	}
-	payload, err := json.Marshal(v)
+	frozen := freezeMessage(v)
+	payload, err := json.Marshal(frozen)
 	if err != nil {
 		return err
 	}
@@ -548,11 +587,12 @@ func (s *SQLiteStore) SaveRun(v Run) error {
 }
 
 func sqliteSaveRun(ctx context.Context, q sqlq, v Run) error {
-	payload, err := json.Marshal(v)
+	frozen := freezeRun(v)
+	payload, err := json.Marshal(frozen)
 	if err != nil {
 		return err
 	}
-	_, err = q.ExecContext(ctx, `INSERT OR REPLACE INTO as_runs(k, tenant_id, user_id, instance_id, session_id, user_message_id, v) VALUES(?,?,?,?,?,?,?)`, v.ID, v.TenantID, v.UserID, v.InstanceID, v.SessionID, v.UserMessageID, payload)
+	_, err = q.ExecContext(ctx, `INSERT OR REPLACE INTO as_runs(k, tenant_id, user_id, instance_id, session_id, user_message_id, v) VALUES(?,?,?,?,?,?,?)`, frozen.ID, frozen.TenantID, frozen.UserID, frozen.InstanceID, frozen.SessionID, frozen.UserMessageID, payload)
 	return err
 }
 

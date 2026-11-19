@@ -75,6 +75,27 @@ func TestSanitizeVisibleChatTextKeepsAssembledLeadingSentinel(t *testing.T) {
 	}
 }
 
+func TestSplitVisibleStreamDeltaDropsInteriorSentinels(t *testing.T) {
+	marker, body := SplitVisibleStreamDelta("\x01The\x01 user\x01 wants desktop\x01d and Ma\x01Cl")
+	if marker != "\x01" || body != "The user wants desktopd and MaCl" {
+		t.Fatalf("reasoning marker=%q body=%q", marker, body)
+	}
+	marker, body = SplitVisibleStreamDelta("The\x01 user\x01Ma\x01Cl")
+	if marker != "" || body != "The userMaCl" {
+		t.Fatalf("content marker=%q body=%q", marker, body)
+	}
+	marker, body = SplitVisibleStreamDelta("\x02draft")
+	if marker != "\x02" || body != "draft" {
+		t.Fatalf("reject marker=%q body=%q", marker, body)
+	}
+	if marker, body = SplitVisibleStreamDelta("plain"); marker != "" || body != "plain" {
+		t.Fatalf("plain marker=%q body=%q", marker, body)
+	}
+	if marker, body = SplitVisibleStreamDelta("\x01"); marker != "\x01" || body != "" {
+		t.Fatalf("sentinel only marker=%q body=%q", marker, body)
+	}
+}
+
 func TestFirstVisibleChatText(t *testing.T) {
 	if got := FirstVisibleChatText("\x01", "hello"); got != "hello" {
 		t.Fatalf("fallback = %q", got)

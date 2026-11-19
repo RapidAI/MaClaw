@@ -52,6 +52,10 @@ type PrincipalLLMInput struct {
 	Protocol string                  `json:"protocol"`
 	WireAPI  string                  `json:"wire_api"`
 	Roles    *PrincipalLLMRolesInput `json:"roles,omitempty"`
+	// LocalRoles is the four-stage model for bots on a desktop the user
+	// installed. It is independent of Mode: default and custom only choose
+	// what cloud bots run. Empty leaves a previously saved local choice.
+	LocalRoles *PrincipalLLMRolesInput `json:"local_roles,omitempty"`
 }
 
 // PrincipalLLMRoleInput is one role in a custom save. Unused is grounder-only.
@@ -102,6 +106,9 @@ type PrincipalLLMView struct {
 	// an official foreground has no provider an older dialog can select, so
 	// Mode is default in that case while Choice stays custom.
 	Choice string `json:"choice,omitempty"`
+	// LocalRoles is what a locally installed desktop runs. It is present
+	// once saved, including when Mode is default.
+	LocalRoles *PrincipalLLMRolesView `json:"local_roles,omitempty"`
 	// Warning reports that the choice was stored but could not be written to
 	// MaClawSrv yet, so it still applies on the owner's next bot open.
 	Warning string `json:"warning,omitempty"`
@@ -226,12 +233,28 @@ func (s *Service) pushPrincipalLLM(ctx context.Context, tenantID, hubUserID stri
 	if err != nil {
 		return err
 	}
-	if findPrincipal(rec.Principals, hubUserID) == nil {
-		// Nothing has ever been written for this owner, so there is no MaClaw
-		// config to restore or replace. Their first bot open applies it.
-		return nil
+	// The public srv gets the cloud choice. Each installed node srv gets the
+	// four-stage choice, including a node-only account that has no cloud user.
+	// A destination whose stamp is already current is left alone: rewriting it
+	// clears capability contracts on that machine. A failed push does not mark
+	// the stamp, so the next save tries that destination again.
+	var pushErr error
+	if findPrincipal(rec.Principals, hubUserID) != nil {
+		pushErr = s.writeBotOwnerLLM(ctx, tenantID, rec, hubUserID, false)
 	}
-	return s.writeBotOwnerLLM(ctx, tenantID, rec, hubUserID, true)
+	for _, link := range rec.NodeLinks {
+		if findPrincipal(link.Principals, hubUserID) == nil {
+			continue
+		}
+		view, ok := nodeView(rec, link.NodeID)
+		if !ok {
+			continue
+		}
+		if err := s.writeBotOwnerLLM(ctx, tenantID, view, hubUserID, false); err != nil && pushErr == nil {
+			pushErr = err
+		}
+	}
+	return pushErr
 }
 
 // normalizeCustomProvider validates one provider role against the tenant list.

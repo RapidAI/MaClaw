@@ -292,7 +292,7 @@ func TestResolveLLMRoleModeSelectsOneSource(t *testing.T) {
 	}
 
 	// Default ignores the pin and uses the service (here, the administrator pin).
-	cfg.MaclawBotLLMMode = corelib.MaclawBotLLMModeDefault
+	cfg.MaclawGoLLMMode = corelib.MaclawGoLLMModeDefault
 	service, err := ResolveLLMRole(cfg, LLMRoleBackground)
 	if err != nil || service.ProviderName != "Claude" || service.Model != "claude-sonnet" {
 		t.Fatalf("default mode = %+v err=%v", service, err)
@@ -302,7 +302,7 @@ func TestResolveLLMRoleModeSelectsOneSource(t *testing.T) {
 	}
 
 	// Custom ignores the administrator pin and reads only the profile pin.
-	cfg.MaclawBotLLMMode = corelib.MaclawBotLLMModeCustom
+	cfg.MaclawGoLLMMode = corelib.MaclawGoLLMModeCustom
 	custom, err := ResolveLLMRole(cfg, LLMRoleBackground)
 	if err != nil || custom.Model != "deepseek-reasoner" || custom.Key != "sk-ds" {
 		t.Fatalf("custom mode = %+v err=%v", custom, err)

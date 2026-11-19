@@ -28,3 +28,23 @@ func TestMemoryToolThemesIsRecallOnlyAllowed(t *testing.T) {
 		t.Fatal("save should not be allowed in recall-only contexts")
 	}
 }
+
+func TestMemoryToolActionReturnsRecalledData(t *testing.T) {
+	recalled := []memoryToolAction{
+		memoryToolActionRecall, memoryToolActionThemes, memoryToolActionScenes,
+		memoryToolActionTrace, memoryToolActionCandidates, memoryToolActionDerived,
+		memoryToolActionList, memoryToolActionSummary,
+	}
+	for _, a := range recalled {
+		if !memoryToolActionReturnsRecalledData(a) {
+			t.Fatalf("%s output is recalled data and must be fenced", a)
+		}
+	}
+	// Mutation actions return host write acknowledgements — fencing them would
+	// label a host-issued confirmation as untrusted store content.
+	for _, a := range []memoryToolAction{memoryToolActionSave, memoryToolActionDelete, memoryToolActionDerivedSurgery} {
+		if memoryToolActionReturnsRecalledData(a) {
+			t.Fatalf("%s is a mutation; its confirmation must not be fenced", a)
+		}
+	}
+}

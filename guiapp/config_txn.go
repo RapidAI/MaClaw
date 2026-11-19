@@ -291,6 +291,9 @@ func (a *App) mutateConfigMaybe(patchFn func(cfg *corelib.AppConfig) bool, opts 
 	}
 	sanitizeCodingToolSelection(&cfg)
 	normalizeConfigTimeouts(&cfg)
+	// Every write path retires a saved clawmate id. PatchConfigFields already
+	// sanitizes pet fields; this covers the in-process PatchConfig mutator.
+	sanitizePetConfig(&cfg)
 	path, err := a.getConfigPath()
 	if err != nil {
 		a.unlockConfigAbort(current)

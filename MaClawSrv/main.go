@@ -16,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/logx"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -68,6 +69,10 @@ func runServer(ctx context.Context) error {
 	}
 	if err := configureServiceLogging(dataRoot); err != nil {
 		return fmt.Errorf("configure logging: %w", err)
+	}
+	warnDesktopdMemoryConfig()
+	if err := desktopbot.BindSpecFile(filepath.Join(dataRoot, "desktop-bot-specs.json")); err != nil {
+		srvLog().Warn("desktop bot spec file", slog.String("error", err.Error()))
 	}
 
 	executor, err := buildCoreAgentExecutorFromEnv()
@@ -216,6 +221,7 @@ func runServer(ctx context.Context) error {
 	// so profile CRUD/rotation hot-refreshes cached per-user managers.
 	server.SetDatabaseProfileRuntime(executor, executor.DatabaseSecretResolver)
 	server.SetMailboxSecretDir(filepath.Join(dataRoot, "mailbox-secrets"), executor)
+	desktopRepoAuthDir = filepath.Join(dataRoot, "desktop-repo-auth")
 	// Route database tool audit events into the central tenant audit chain
 	// (replaces the per-user JSONL fallback inside the executor).
 	wireDatabaseAuditSink(svc, executor)
@@ -261,6 +267,12 @@ func runServer(ctx context.Context) error {
 	// not exist before initScheduler returns. Reconcile inside init still
 	// finishes before the clock fires.
 	schMgr := initScheduler(dataRoot, svc, executor)
+	svc.ResumeExecutionHooks = func(p agentservice.Principal, inst agentservice.Instance, ask string) (func(context.Context) context.Context, func(context.Context, *agentservice.Run, *agentservice.Message, error)) {
+		return desktopResumeExecutionHooks(svc, p, inst, ask)
+	}
+	svc.ResumeHold = func(run agentservice.Run) func() {
+		return holdResumedDesktopSchedule(svc, run)
+	}
 	svc.ResumeInterruptedRuns(context.Background())
 	if schMgr != nil {
 		defer func() {

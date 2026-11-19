@@ -433,7 +433,15 @@ func writeSkillYAMLForEntry(skillDir string, entry *corelib.NLSkillEntry) error 
 	if err != nil {
 		return err
 	}
-	return fileutil.AtomicWriteFile(yamlPath, data, 0o644)
+	if err := fileutil.AtomicWriteFile(yamlPath, data, 0o644); err != nil {
+		return err
+	}
+	// The definition changed through a sanctioned path — re-attest the pin so
+	// the next load-time integrity check does not quarantine this skill.
+	if err := cskill.RepinPackageManifestIfPresent(skillDir); err != nil {
+		log.Printf("[skill-lifecycle] repin integrity manifest for %s failed: %v", skillDir, err)
+	}
+	return nil
 }
 
 func validateSkillYAMLWritePath(yamlPath string) error {

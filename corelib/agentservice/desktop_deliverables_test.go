@@ -31,10 +31,44 @@ func TestDesktopDeliverablesNoteShownOnceWhenReady(t *testing.T) {
 	}
 }
 
+func TestScheduleTurnDoesNotAskTheChecklistToProveTheInterval(t *testing.T) {
+	c := &coreAgentCallbacks{
+		messageMetadata: map[string]string{"bot_origin": "schedule", "bot_phase": "execute"},
+		userText:        "每五分钟查询北京的天气并生成PDF发给我",
+	}
+	got := desktopDeliverableRequestText(c)
+	if !strings.Contains(got, "不要把「每几分钟」") || !strings.Contains(got, "生成PDF发给我") {
+		t.Fatalf("text = %q", got)
+	}
+	resumed := desktopDeliverableRequestText(&coreAgentCallbacks{
+		messageMetadata: map[string]string{
+			"bot_origin":     "schedule",
+			"bot_phase":      "execute",
+			"restart_resume": "1",
+			"task_request":   "每五分钟查询北京的天气并生成PDF发给我",
+		},
+		userText: restartNoticeContinue,
+	})
+	if !strings.Contains(resumed, "生成PDF发给我") || strings.Contains(resumed, restartNoticeContinue) {
+		t.Fatalf("resumed = %q", resumed)
+	}
+	plain := desktopDeliverableRequestText(&coreAgentCallbacks{userText: "生成PDF发给我"})
+	if strings.Contains(plain, "定时器") {
+		t.Fatalf("plain = %q", plain)
+	}
+}
+
 func TestDesktopDeliverablesOnlyForExecuteDesktopTurns(t *testing.T) {
-	c := &coreAgentCallbacks{messageMetadata: map[string]string{"bot_phase": "plan"}, userText: "截屏发我"}
-	c.startDesktopDeliverables()
-	if c.deliverables != nil {
-		t.Fatal("plan phase got a checklist")
+	plan := &coreAgentCallbacks{messageMetadata: map[string]string{"bot_phase": "plan"}, userText: "截屏发我"}
+	if plan.desktopDeliverablesApply() {
+		t.Fatal("plan phase reads deliverables")
+	}
+	none := &coreAgentCallbacks{messageMetadata: map[string]string{"bot_phase": "execute", "bot_desktop": "none"}, userText: "做一份PDF"}
+	if !none.desktopDeliverablesApply() {
+		t.Fatal("execute without a computer skipped the checklist")
+	}
+	wake := &coreAgentCallbacks{messageMetadata: map[string]string{"bot_phase": "execute", "bot_wake": "1"}, userText: "继续"}
+	if !wake.desktopDeliverablesApply() {
+		t.Fatal("execute wake skipped the checklist")
 	}
 }

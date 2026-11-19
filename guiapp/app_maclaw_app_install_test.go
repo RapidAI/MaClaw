@@ -3840,3 +3840,81 @@ func TestMaclawAppSerializableResolvedDepsIncludesAppIDs(t *testing.T) {
 		t.Fatalf("resolved dependency should carry app_ids for selected installs: %#v", resolved[0])
 	}
 }
+
+func TestMaclawAppInstallRegistryMigratesLegacyJSONAndReorders(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	legacy := maclawAppInstallRegistry{
+		Schema: "maclaw.app.installs.v1", UpdatedAt: "2026-01-01T00:00:00Z",
+		Installs: []maclawAppInstallRecord{{
+			AppID: "expense", AppName: "Expense", Kind: "tool_app", Source: "market", InstalledAt: "2026-01-01T00:00:00Z",
+			Package:            map[string]any{"app": map[string]any{"name": "Expense"}},
+			Dependencies:       []maclawAppInstallPlanDependency{{ID: "expense-skill", Required: true}},
+			HasMissingRequired: true, HasBlockingDependency: true, Message: "legacy",
+		}},
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := app.maclawAppInstallRegistryPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := app.readMaclawAppInstallRegistry()
+	if err != nil || len(registry.Installs) != 1 {
+		t.Fatalf("legacy import = %#v, %v", registry, err)
+	}
+	if got := registry.Installs[0]; got.Package["app"].(map[string]any)["name"] != "Expense" || len(got.Dependencies) != 1 || !got.HasBlockingDependency {
+		t.Fatalf("legacy install record changed: %#v", got)
+	}
+	db, err := app.maclawAppInstallDBOpen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fieldPath := sqliteMapFieldPath(sqliteMapFieldPath("", "package"), "app")
+	fieldPath = sqliteMapFieldPath(fieldPath, "name")
+	var name string
+	if err := db.QueryRow(`SELECT value_text FROM app_install_fields WHERE app_id='expense' AND field_path=?`, fieldPath).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "Expense" {
+		t.Fatalf("nested package name = %q", name)
+	}
+	var jsonColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%payload%' OR sql LIKE '%_json%'`).Scan(&jsonColumns); err != nil {
+		t.Fatal(err)
+	}
+	if jsonColumns != 0 {
+		t.Fatalf("install schema contains JSON document columns: %d", jsonColumns)
+	}
+	registry.Installs = append(registry.Installs,
+		maclawAppInstallRecord{AppID: "second", AppName: "Second"},
+		maclawAppInstallRecord{AppID: "third", AppName: "Third"},
+		maclawAppInstallRecord{AppID: "fourth", AppName: "Fourth"},
+	)
+	registry.Installs[0], registry.Installs[1] = registry.Installs[1], registry.Installs[0]
+	if err := app.writeMaclawAppInstallRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	registry, err = app.readMaclawAppInstallRegistry()
+	if err != nil || len(registry.Installs) != 4 ||
+		registry.Installs[0].AppID != "second" || registry.Installs[1].AppID != "expense" ||
+		registry.Installs[2].AppID != "third" || registry.Installs[3].AppID != "fourth" {
+		t.Fatalf("partially reordered installs = %#v, %v", registry.Installs, err)
+	}
+	registry.Installs = nil
+	if err := app.writeMaclawAppInstallRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
+	app.closeMaclawAppInstallDB()
+	registry, err = app.readMaclawAppInstallRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registry.Installs) != 0 {
+		t.Fatalf("legacy JSON resurrected cleared installs: %#v", registry.Installs)
+	}
+}

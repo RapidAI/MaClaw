@@ -76,6 +76,24 @@ type ConversationWrite struct {
 	Data  json.RawMessage `json:"data"`
 }
 
+// ConversationAssignment is the sequence a write landed on. CreatedSeq is the
+// first write of that message and does not move when the message is edited,
+// so every GUI of this person can show the same order.
+type ConversationAssignment struct {
+	BotID      string `json:"bot_id"`
+	ID         string `json:"id"`
+	Seq        int64  `json:"seq"`
+	CreatedSeq int64  `json:"created_seq"`
+}
+
+// ConversationSave is the result of one write. Assigned lists each message
+// the call touched, including one whose text did not change, so the writer
+// learns the sequence it should display.
+type ConversationSave struct {
+	Head     int64                    `json:"head"`
+	Assigned []ConversationAssignment `json:"assigned,omitempty"`
+}
+
 // ConversationPage answers one read. Head is the newest seq; a client whose
 // cursor is past Head (a Hub that lost its journal) starts over from 0.
 type ConversationPage struct {
@@ -142,7 +160,35 @@ func (s *Service) convLogLocked(ctx context.Context, h *convHub, tenantID, userI
 	}
 	lg.stored = lg.head
 	lg.loaded = true
+	// Rows written before display numbers existed have no created_seq. Stamp
+	// the seq they already hold so a later edit cannot move them, and so a
+	// GUI that just came online can sort the history it reads.
+	if stampConvCreatedSeq(lg) {
+		_ = s.convPersistLocked(ctx, tenantID, userID, lg)
+	}
 	return lg, nil
+}
+
+// convDisplaySeq is the order a chat line keeps. CreatedSeq is that number
+// once it has been stamped; older rows still use the seq they were stored with.
+func convDisplaySeq(e ConversationEntry) int64 {
+	if e.CreatedSeq > 0 {
+		return e.CreatedSeq
+	}
+	return e.Seq
+}
+
+func stampConvCreatedSeq(lg *convLog) bool {
+	changed := false
+	for i := range lg.entries {
+		e := &lg.entries[i]
+		if e.Kind != convKindMessage || e.CreatedSeq > 0 || e.Seq <= 0 {
+			continue
+		}
+		e.CreatedSeq = e.Seq
+		changed = true
+	}
+	return changed
 }
 
 func (s *Service) convPersistLocked(ctx context.Context, tenantID, userID string, lg *convLog) error {
@@ -250,57 +296,88 @@ func convSameData(a, b json.RawMessage) bool {
 }
 
 // pruneConvLocked drops entries older than the window and keeps the newest
-// convPerBotKeep messages and convPerBotState run/activity entries of each bot.
+// convPerBotKeep messages (by display sequence, not by last edit) and
+// convPerBotState run/activity entries of each bot.
 func pruneConvLocked(lg *convLog, now time.Time) {
-	perBot := map[string]int{}
-	keep := make([]ConversationEntry, 0, len(lg.entries))
-	for i := len(lg.entries) - 1; i >= 0; i-- {
-		e := lg.entries[i]
+	type ranked struct {
+		e ConversationEntry
+		i int
+	}
+	groups := map[string][]ranked{}
+	var order []string
+	for i, e := range lg.entries {
 		if at, err := time.Parse(time.RFC3339Nano, e.At); err == nil && now.Sub(at) > convMaxAge {
 			continue
 		}
-		// Run and activity entries are live state: a few per bot are enough,
-		// and they must not push chat lines out of the window.
-		limit, bucket := convPerBotKeep, e.BotID
+		key := e.BotID
 		if e.Kind != convKindMessage {
-			limit, bucket = convPerBotState, e.BotID+"\x00state"
+			key = e.BotID + "\x00state"
 		}
-		perBot[bucket]++
-		if perBot[bucket] > limit {
-			continue
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
 		}
-		keep = append(keep, e)
+		groups[key] = append(groups[key], ranked{e: e, i: i})
 	}
-	for i, j := 0, len(keep)-1; i < j; i, j = i+1, j-1 {
-		keep[i], keep[j] = keep[j], keep[i]
+	keep := make([]ranked, 0, len(lg.entries))
+	for _, key := range order {
+		items := groups[key]
+		limit := convPerBotKeep
+		if strings.Contains(key, "\x00state") {
+			limit = convPerBotState
+		}
+		if len(items) > limit {
+			sort.SliceStable(items, func(a, b int) bool {
+				da, db := convDisplaySeq(items[a].e), convDisplaySeq(items[b].e)
+				if da != db {
+					return da > db
+				}
+				return items[a].i > items[b].i
+			})
+			items = items[:limit]
+		}
+		keep = append(keep, items...)
 	}
-	lg.entries = keep
+	sort.SliceStable(keep, func(a, b int) bool { return keep[a].i < keep[b].i })
+	out := make([]ConversationEntry, 0, len(keep))
+	for _, item := range keep {
+		out = append(out, item.e)
+	}
+	lg.entries = out
 }
 
 // WriteConversation upserts a client's entries. An entry identical to the
 // stored one takes no new seq, so a client resending its whole transcript
 // after a restart is a no-op. It returns the person's head after the writes.
 func (s *Service) WriteConversation(ctx context.Context, tenantID, userID, origin string, writes []ConversationWrite) (int64, error) {
+	saved, err := s.SaveConversation(ctx, tenantID, userID, origin, writes)
+	return saved.Head, err
+}
+
+// SaveConversation is WriteConversation plus the sequence of each message,
+// so the writing GUI can place its own bubble without waiting for another
+// client to echo it.
+func (s *Service) SaveConversation(ctx context.Context, tenantID, userID, origin string, writes []ConversationWrite) (ConversationSave, error) {
 	if s == nil {
-		return 0, ErrSettingsUnavailable
+		return ConversationSave{}, ErrSettingsUnavailable
 	}
 	userID = strings.TrimSpace(userID)
 	if len(writes) == 0 {
-		return s.conversationHead(ctx, tenantID, userID)
+		head, err := s.conversationHead(ctx, tenantID, userID)
+		return ConversationSave{Head: head}, err
 	}
 	if len(writes) > convBatchMax {
-		return 0, fmt.Errorf("%w: too many entries", ErrInvalidInput)
+		return ConversationSave{}, fmt.Errorf("%w: too many entries", ErrInvalidInput)
 	}
 	rec, err := s.loadForUser(ctx, tenantID, userID)
 	if err != nil {
-		return 0, err
+		return ConversationSave{}, err
 	}
 	for i := range writes {
 		if err := validConvWrite(&writes[i]); err != nil {
-			return 0, err
+			return ConversationSave{}, err
 		}
 		if !s.ownedBot(&rec, userID, writes[i].BotID) {
-			return 0, ErrNotFound
+			return ConversationSave{}, ErrNotFound
 		}
 	}
 	origin = convOrigin(origin)
@@ -309,10 +386,11 @@ func (s *Service) WriteConversation(ctx context.Context, tenantID, userID, origi
 	defer h.mu.Unlock()
 	lg, err := s.convLogLocked(ctx, h, tenantID, userID)
 	if err != nil {
-		return 0, err
+		return ConversationSave{}, err
 	}
 	now := s.now().UTC()
 	changed, durable := false, false
+	assigned := make([]ConversationAssignment, 0, len(writes))
 	for _, w := range writes {
 		at := -1
 		for i := range lg.entries {
@@ -327,23 +405,29 @@ func (s *Service) WriteConversation(ctx context.Context, tenantID, userID, origi
 			}
 			merged, ok := mergeConvPatch(lg.entries[at].Data, w.Data)
 			if !ok {
+				assigned = noteConvAssignment(assigned, lg.entries[at])
 				continue
 			}
 			e := lg.entries[at]
 			lg.head++
 			e.Seq, e.Data, e.At, e.By = lg.head, merged, now.Format(time.RFC3339Nano), origin
 			lg.entries = append(append(lg.entries[:at:at], lg.entries[at+1:]...), e)
+			assigned = noteConvAssignment(assigned, e)
 			changed = true
 			durable = durable || e.Kind != convKindActivity
 			continue
 		}
 		if at >= 0 && convSameData(lg.entries[at].Data, w.Data) {
+			assigned = noteConvAssignment(assigned, lg.entries[at])
 			continue
 		}
 		lg.head++
 		e := ConversationEntry{Seq: lg.head, CreatedSeq: lg.head, BotID: w.BotID, ID: w.ID, Kind: w.Kind, Origin: origin, By: origin, Data: w.Data, At: now.Format(time.RFC3339Nano)}
 		if at >= 0 {
 			prev := lg.entries[at]
+			if prev.CreatedSeq <= 0 && prev.Seq > 0 {
+				prev.CreatedSeq = prev.Seq
+			}
 			e.CreatedSeq = prev.CreatedSeq
 			// The writer of a message stays its origin, so that client does
 			// not take its own message back as someone else's.
@@ -353,21 +437,36 @@ func (s *Service) WriteConversation(ctx context.Context, tenantID, userID, origi
 			lg.entries = append(lg.entries[:at:at], lg.entries[at+1:]...)
 		}
 		lg.entries = append(lg.entries, e)
+		assigned = noteConvAssignment(assigned, e)
 		changed = true
 		durable = durable || e.Kind != convKindActivity
 	}
+	saved := ConversationSave{Head: lg.head, Assigned: assigned}
 	if !changed {
-		return lg.head, nil
+		return saved, nil
 	}
 	pruneConvLocked(lg, now)
 	if durable || lg.head-lg.stored >= convHeadGap/2 {
 		if err := s.convPersistLocked(ctx, tenantID, userID, lg); err != nil {
-			return 0, err
+			return ConversationSave{}, err
 		}
 	}
 	close(lg.wake)
 	lg.wake = make(chan struct{})
-	return lg.head, nil
+	return saved, nil
+}
+
+// noteConvAssignment records a message's display sequence. Run and activity
+// entries are live state, not chat lines, so they get no number.
+func noteConvAssignment(out []ConversationAssignment, e ConversationEntry) []ConversationAssignment {
+	if e.Kind != convKindMessage {
+		return out
+	}
+	created := e.CreatedSeq
+	if created <= 0 {
+		created = e.Seq
+	}
+	return append(out, ConversationAssignment{BotID: e.BotID, ID: e.ID, Seq: e.Seq, CreatedSeq: created})
 }
 
 func (s *Service) conversationHead(ctx context.Context, tenantID, userID string) (int64, error) {
@@ -431,6 +530,9 @@ func (s *Service) ReadConversation(ctx context.Context, tenantID, userID, botID 
 			// Keep only bots this user still owns; a deleted bot's lines stop.
 			if !s.ownedBot(&rec, userID, e.BotID) {
 				continue
+			}
+			if e.Kind == convKindMessage && e.CreatedSeq <= 0 {
+				e.CreatedSeq = e.Seq
 			}
 			page.Entries = append(page.Entries, e)
 		}

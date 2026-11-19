@@ -194,11 +194,21 @@ func (s *Service) ListAssignments(ctx context.Context, tenantID, userID string) 
 	if s == nil {
 		return nil, ErrSettingsUnavailable
 	}
-	rec, err := s.loadForUser(ctx, tenantID, strings.TrimSpace(userID))
+	userID = strings.TrimSpace(userID)
+	rec, err := s.loadForUser(ctx, tenantID, userID)
 	if err != nil {
 		return nil, err
 	}
-	return assignmentsOf(pruneCrossNotes(rec.CrossNotes, s.now()), strings.TrimSpace(userID)), nil
+	all := assignmentsOf(pruneCrossNotes(rec.CrossNotes, s.now()), userID)
+	out := make([]Assignment, 0, len(all))
+	for _, a := range all {
+		// The task's bot id is gone. The display name of a new bot is not that id.
+		if id := strings.TrimSpace(a.TargetBot); id != "" && !participantOwned(rec, userID, id) {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 // ListAssignmentsForInstance is ListAssignments for a server-side bot run.

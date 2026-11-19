@@ -691,16 +691,6 @@ func createHiddenCmd(name string, args ...string) *exec.Cmd {
 	return exec.Command(name, args...)
 }
 
-// isWindowsTerminalAvailable returns false on macOS (Windows Terminal is Windows-only)
-func (a *App) isWindowsTerminalAvailable() bool {
-	return false
-}
-
-// IsWindowsTerminalAvailable is exported for frontend to check availability
-func (a *App) IsWindowsTerminalAvailable() bool {
-	return false
-}
-
 // findSh locates a Unix shell. On macOS, /bin/sh is always available.
 func (a *App) findSh() (string, error) {
 	return "/bin/sh", nil

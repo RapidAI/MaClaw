@@ -57,5 +57,30 @@ func CaptureInlineSecrets(text string) (string, map[string]string) {
 		prefix := match[:strings.Index(match, parts[1])]
 		return prefix + name + "=" + SecretSavedMark + name + "，在环境变量里，不要再索要，不要打印）"
 	})
+	redacted, found = captureGitLabHost(redacted, found)
+	return redacted, found
+}
+
+var gitlabHostRe = regexp.MustCompile(`(?i)(?:^|[\s,，;；(（])(GITLAB_HOST)(\s*[:：=]\s*)(https://[^\s,，;；。、）)]+)`)
+
+// captureGitLabHost saves a self-hosted GitLab origin the person typed.
+// The token patterns do not match this name. Only an https URL is kept.
+func captureGitLabHost(text string, found map[string]string) (string, map[string]string) {
+	if found == nil {
+		found = map[string]string{}
+	}
+	redacted := gitlabHostRe.ReplaceAllStringFunc(text, func(match string) string {
+		parts := gitlabHostRe.FindStringSubmatch(match)
+		if len(parts) < 4 {
+			return match
+		}
+		value := strings.TrimRight(parts[3], `"'“”‘’`)
+		if value == "" || strings.Contains(value, "（已保存") {
+			return match
+		}
+		found["GITLAB_HOST"] = value
+		prefix := match[:strings.Index(match, parts[1])]
+		return prefix + "GITLAB_HOST=" + SecretSavedMark + "GITLAB_HOST，在环境变量里，不要再索要，不要打印）"
+	})
 	return redacted, found
 }

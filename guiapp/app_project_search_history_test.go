@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -251,6 +252,65 @@ func TestMergeConversationSnapshotsKeepsRepeatedText(t *testing.T) {
 	}
 }
 
+func TestMergeConversationSnapshotsKeepsProcessList(t *testing.T) {
+	olderList := []interface{}{map[string]interface{}{"id": "search-old", "kind": "progress"}}
+	newerList := []interface{}{map[string]interface{}{"id": "search-new", "kind": "progress"}}
+	merged := mergeConversationSnapshots(
+		[]interface{}{
+			map[string]interface{}{"id": "a", "role": "assistant", "content": "结论", "codingTimeline": olderList},
+			map[string]interface{}{"id": "b", "role": "assistant", "content": "第二轮", "codingTimeline": olderList},
+		},
+		[]interface{}{
+			map[string]interface{}{"id": "b", "role": "assistant", "content": "第二轮"},
+			map[string]interface{}{"id": "c", "role": "user", "content": "再问"},
+			map[string]interface{}{"id": "a", "role": "assistant", "content": "结论", "codingTimeline": newerList},
+		},
+	)
+	byID := map[string]string{}
+	for _, raw := range merged {
+		byID[conversationMessageID(raw)] = firstCodingTimelineID(raw)
+	}
+	if byID["b"] != "search-old" || byID["a"] != "search-new" || byID["c"] != "" {
+		t.Fatalf("process lists = %#v, want the dropped list restored and the newer list kept", byID)
+	}
+}
+
+func TestSaveProjectTabConversationKeepsArchivedProcessList(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	timeline := []interface{}{map[string]interface{}{"id": "search-1", "kind": "progress"}}
+	conversation := make([]interface{}, 0, 45)
+	for i := 0; i < 45; i++ {
+		message := map[string]interface{}{
+			"id":      fmt.Sprintf("p%d", i),
+			"role":    "user",
+			"content": fmt.Sprintf("turn %d", i),
+		}
+		if i == 0 {
+			message["role"] = "assistant"
+			message["codingTimeline"] = timeline
+		}
+		conversation = append(conversation, message)
+	}
+	app.SaveProjectTabConversation("tab-timeline", conversation)
+	again := make([]interface{}, len(conversation))
+	for i, raw := range conversation {
+		message := raw.(map[string]interface{})
+		next := make(map[string]interface{}, len(message))
+		for key, value := range message {
+			if key == "codingTimeline" {
+				continue
+			}
+			next[key] = value
+		}
+		again[i] = next
+	}
+	app.SaveProjectTabConversation("tab-timeline", again)
+	archive := app.LoadProjectTabConversationArchive("tab-timeline")
+	if len(archive) == 0 || firstCodingTimelineID(archive[0]) != "search-1" {
+		t.Fatalf("archive = %#v, want the process list on the folded turn", archive)
+	}
+}
+
 func TestSaveProjectTabConversationMergesUnflushedArchiveTurns(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	saved := app.CreateRecentTask("Paper with an unflushed tail")
@@ -379,6 +439,161 @@ func TestClearProjectHistoryPreventsStaleTabSnapshotSave(t *testing.T) {
 	if history := app.LoadProjectConversationHistory(saved.ProjectPath); len(history) != 0 {
 		t.Fatalf("history after clear race = %+v, want no restored turns", history)
 	}
+}
+
+func TestPreserveCodingProcessRows(t *testing.T) {
+	first := []interface{}{map[string]interface{}{"id": "search-1", "kind": "progress"}}
+	second := []interface{}{map[string]interface{}{"id": "search-2", "kind": "progress"}}
+	stored := []interface{}{
+		map[string]interface{}{"id": "user-1", "role": "user", "content": "本程序现在支持哪些指令集"},
+		map[string]interface{}{"id": "assistant-1", "role": "assistant", "content": "结论：支持 AVX512", "codingTimeline": first},
+		map[string]interface{}{"id": "user-2", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "assistant-2", "role": "assistant", "content": "第二轮", "codingTimeline": second},
+	}
+
+	tail := []interface{}{
+		map[string]interface{}{"id": "restored-0", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "restored-1", "role": "assistant", "content": "第二轮"},
+	}
+	got, changed := preserveCodingProcessRows(stored, tail)
+	if !changed || firstCodingTimelineID(got[1]) != "search-2" {
+		t.Fatalf("hot tail process list = %q changed=%v, want search-2", firstCodingTimelineID(got[1]), changed)
+	}
+
+	fresh := []interface{}{
+		map[string]interface{}{"id": "new-user", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "new-assistant", "role": "assistant", "content": "第二轮"},
+	}
+	if _, changed := preserveCodingProcessRows(stored, fresh); changed {
+		t.Fatal("same words with a new id are a different turn")
+	}
+
+	sameID := []interface{}{
+		map[string]interface{}{"id": "assistant-1", "role": "assistant", "content": "结论：支持 AVX512"},
+	}
+	got, changed = preserveCodingProcessRows(stored, sameID)
+	if !changed || firstCodingTimelineID(got[0]) != "search-1" {
+		t.Fatalf("same id process list = %q changed=%v, want search-1", firstCodingTimelineID(got[0]), changed)
+	}
+
+	updated := []interface{}{
+		map[string]interface{}{"id": "assistant-1", "role": "assistant", "content": "结论：支持 AVX512", "codingTimeline": second},
+	}
+	got, changed = preserveCodingProcessRows(stored, updated)
+	if changed || firstCodingTimelineID(got[0]) != "search-2" {
+		t.Fatalf("newer process list = %q changed=%v, want search-2 left in place", firstCodingTimelineID(got[0]), changed)
+	}
+
+	// "继续" plus a different answer is a new turn. The old process list stays put.
+	partial := []interface{}{
+		map[string]interface{}{"id": "restored-0", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "restored-1", "role": "assistant", "content": "完全不同的新答案"},
+	}
+	if got, changed = preserveCodingProcessRows(stored, partial); changed || firstCodingTimelineID(got[1]) != "" {
+		t.Fatalf("partial overlap copied a process list: %#v changed=%v", got[1], changed)
+	}
+
+	// The same pair occurs twice. The full match is the later one.
+	repeated := []interface{}{
+		map[string]interface{}{"id": "user-a", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "assistant-a", "role": "assistant", "content": "旧答案", "codingTimeline": first},
+		map[string]interface{}{"id": "user-b", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "assistant-b", "role": "assistant", "content": "新答案", "codingTimeline": second},
+	}
+	again := []interface{}{
+		map[string]interface{}{"id": "restored-0", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "restored-1", "role": "assistant", "content": "新答案"},
+	}
+	got, changed = preserveCodingProcessRows(repeated, again)
+	if !changed || firstCodingTimelineID(got[1]) != "search-2" {
+		t.Fatalf("repeated pair = %q changed=%v, want the later process list", firstCodingTimelineID(got[1]), changed)
+	}
+
+	// One line that exists twice has no unique turn to attach to.
+	ambiguous := []interface{}{
+		map[string]interface{}{"id": "restored-0", "role": "assistant", "content": "好的"},
+	}
+	twoOk := []interface{}{
+		map[string]interface{}{"id": "a1", "role": "assistant", "content": "好的", "codingTimeline": first},
+		map[string]interface{}{"id": "u1", "role": "user", "content": "下一句"},
+		map[string]interface{}{"id": "a2", "role": "assistant", "content": "好的", "codingTimeline": second},
+	}
+	if got, changed = preserveCodingProcessRows(twoOk, ambiguous); changed || firstCodingTimelineID(got[0]) != "" {
+		t.Fatalf("ambiguous line copied a process list: %#v changed=%v", got[0], changed)
+	}
+
+	onlySecond := []interface{}{
+		map[string]interface{}{"id": "restored-0", "role": "assistant", "content": "第二轮"},
+	}
+	got, changed = preserveCodingProcessRows(stored, onlySecond)
+	if !changed || firstCodingTimelineID(got[0]) != "search-2" {
+		t.Fatalf("unique line = %q changed=%v, want search-2", firstCodingTimelineID(got[0]), changed)
+	}
+
+	plain := []interface{}{
+		map[string]interface{}{"id": "user-1", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "assistant-1", "role": "assistant", "content": "第二轮"},
+	}
+	if _, changed = preserveCodingProcessRows(plain, tail); changed {
+		t.Fatal("a transcript with no process list was rewritten")
+	}
+}
+
+func TestSaveProjectTabConversationKeepsCodingProcessRows(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	timeline := []interface{}{map[string]interface{}{"id": "search-1", "kind": "progress"}}
+	app.SaveProjectTabConversation("proj-process", []interface{}{
+		map[string]interface{}{"id": "user-1", "role": "user", "content": "本程序现在支持哪些指令集"},
+		map[string]interface{}{"id": "assistant-1", "role": "assistant", "content": "结论：支持 AVX512", "codingTimeline": timeline},
+	})
+	app.SaveProjectTabConversation("proj-process", []interface{}{
+		map[string]interface{}{"id": "restored-0", "role": "user", "content": "本程序现在支持哪些指令集"},
+		map[string]interface{}{"id": "restored-1", "role": "assistant", "content": "结论：支持 AVX512", "reasoning": "先把各段思考拼在一起"},
+		map[string]interface{}{"id": "restored-2", "role": "user", "content": "再问一句"},
+	})
+	session, err := app.ensureProjectTabSessionPersist().LoadSession("proj-process")
+	if err != nil || session == nil {
+		t.Fatalf("LoadSession: %v %v", session, err)
+	}
+	if len(session.Conversation) != 3 {
+		t.Fatalf("conversation = %+v, want the projection plus the later turn", session.Conversation)
+	}
+	if conversationMessageID(session.Conversation[1]) != "restored-1" || firstCodingTimelineID(session.Conversation[1]) != "search-1" {
+		t.Fatalf("assistant = %#v, want the restored id and the stored process list", session.Conversation[1])
+	}
+	if got := conversationContentList(session.Conversation); len(got) != 3 || got[2] != "再问一句" {
+		t.Fatalf("contents = %#v", got)
+	}
+
+	app.SaveProjectTabConversation("proj-process-new", []interface{}{
+		map[string]interface{}{"id": "user-1", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "assistant-1", "role": "assistant", "content": "第二轮", "codingTimeline": timeline},
+	})
+	app.SaveProjectTabConversation("proj-process-new", []interface{}{
+		map[string]interface{}{"id": "other-user", "role": "user", "content": "继续"},
+		map[string]interface{}{"id": "other-assistant", "role": "assistant", "content": "第二轮"},
+	})
+	replaced, err := app.ensureProjectTabSessionPersist().LoadSession("proj-process-new")
+	if err != nil || replaced == nil {
+		t.Fatalf("LoadSession new turn: %v %v", replaced, err)
+	}
+	if firstCodingTimelineID(replaced.Conversation[1]) != "" {
+		t.Fatalf("new turn inherited a process list: %#v", replaced.Conversation[1])
+	}
+}
+
+func firstCodingTimelineID(raw interface{}) string {
+	timeline := codingTimelineValue(raw)
+	items, _ := timeline.([]interface{})
+	if len(items) == 0 {
+		return ""
+	}
+	item, _ := items[0].(map[string]interface{})
+	if item == nil {
+		return ""
+	}
+	id, _ := item["id"].(string)
+	return id
 }
 
 func TestSaveProjectTabConversationRejectsSnapshotOlderThanClearFence(t *testing.T) {

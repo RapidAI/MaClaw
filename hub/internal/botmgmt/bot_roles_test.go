@@ -1,6 +1,7 @@
 package botmgmt
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -32,10 +33,37 @@ func TestWatcherReportsToRouterNotPerson(t *testing.T) {
 }
 
 func TestRouterWordsAttentionFromWorkerDetail(t *testing.T) {
-	if got := routerWordFinding(watchFinding{Reason: "attention", Detail: "请扫码登录"}); got != "请扫码登录" {
+	if got := routerWordFinding(watchFinding{Reason: "attention", Detail: "请扫码登录"}, false); got != "请扫码登录" {
 		t.Fatal(got)
 	}
-	if routerWordFinding(watchFinding{Reason: "x"}) != "" {
+	if routerWordFinding(watchFinding{Reason: "x"}, false) != "" {
 		t.Fatal("unknown reason must stay quiet")
+	}
+}
+
+// A watcher fact about a computerless bot never points at a screen.
+func TestRouterWordsOffTheDesktopForNoDesktopBots(t *testing.T) {
+	cases := []struct {
+		reason  string
+		detail  string
+		want    string
+		wantAlt string
+	}{
+		{"no_receipt", "", "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。", ""},
+		{"attention", "", "这件需要你看一眼。", ""},
+		{"attention", "请扫码登录", "请扫码登录", ""},
+		{"failed", "", "这件我没做成，中途出了问题。你说一声我再试一次。", ""},
+	}
+	for _, tc := range cases {
+		got := routerWordFinding(watchFinding{Reason: tc.reason, Detail: tc.detail}, true)
+		if got != tc.want && got != tc.wantAlt {
+			t.Fatalf("%s: %q", tc.reason, got)
+		}
+		if strings.Contains(got, "桌面") {
+			t.Fatalf("%s names a desktop: %q", tc.reason, got)
+		}
+	}
+	if got := routerWordFinding(watchFinding{Reason: "no_receipt"}, false); strings.Contains(got, "做完了") || strings.Contains(got, "桌面") {
+		t.Fatalf("a missing result was called done: %q", got)
 	}
 }

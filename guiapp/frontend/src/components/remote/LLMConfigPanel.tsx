@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
-import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProfiles, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartOpenCodeZenLogin, TestAndSaveMaclawLLMProviders } from '../../../wailsjs/go/main/App';
+import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveMaclawLLMProfiles, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartOpenCodeZenLogin, TestAndSaveMaclawLLMProviders } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isLocalImportProvider, isProviderTestCancelMessage, labelStyle, listProviderModelsForShare, nextProviderModelChoices, probeProviderModelForShare, providerModelChoices, quickFillModelCatalog, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
-import { cancelNamedProviderOAuth, completeDevinPastedToken, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
+import { cancelNamedProviderOAuth, completeDevinPastedToken, promptKimiCodeDeviceLogin, runCodeGenSSOLogin, runProviderOAuthLogin } from "./providerOAuth";
 import { isKimiCodeProvider, isLobsterAIProvider, isQoderProvider, isTraeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
 import { presetProviderDisplayName } from "./presetProviderLabel";
 import { localizeModelNote } from "../../config/providerCatalog";
 import { useDialog } from "../CustomDialog";
 import { KNOWN_USER_AGENTS, withLiveAgentType } from "./userAgent";
 import { useCustomUserAgentField } from "./useCustomUserAgentField";
+import { useProviderDialogDeepLink } from "./useProviderDialogDeepLink";
 import { ProviderModelCombobox } from "./ProviderModelCombobox";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { MobileQRCodeDialog } from "./MobileQRCodeDialog";
@@ -24,6 +25,7 @@ import { LLMConfigProviderLimitsFields } from "./LLMConfigProviderLimitsFields";
 import { LLMConfigDialogFooter } from "./LLMConfigDialogFooter";
 import { LLMMaxIterationsCard, LLMSubAgentConcurrencyCard, LLMThinkingModeCard, type ThinkingLevel } from "./LLMPanelTuningCards";
 import { LLMConfigApiKeyFields } from "./LLMConfigApiKeyFields";
+import { LLMConfigCodeGenSSOFields } from "./LLMConfigCodeGenSSOFields";
 import { LLMConfigOAuthFields } from "./LLMConfigOAuthFields";
 import { LLMConfigHubOfficialCard } from "./LLMConfigHubOfficialCard";
 import { hubCapabilityModelOptions } from "../../utils/capabilityModelLabel";
@@ -36,9 +38,11 @@ interface Props {
     onStatusChange?: (online: boolean, configured: boolean) => void;
     onProviderChanged?: () => void;
     onRequestIdentityVerification?: () => void;
+    /** Increments when a deep link (agent model menu) requests provider management. */
+    autoOpenProviderDialogSeq?: number;
 }
 
-export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequestIdentityVerification }: Props) {
+export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequestIdentityVerification, autoOpenProviderDialogSeq = 0 }: Props) {
     const { showAlert, showConfirm, showPrompt } = useDialog();
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
@@ -255,6 +259,37 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         }
     }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, refreshProviderList, showPrompt]);
 
+    // CodeGen enterprise SSO uses the cancellable local callback flow.
+    const handleCodeGenSSOLogin = useCallback(async () => {
+        const ssoAttempt = ++oauthAttemptRef.current;
+        setOauthBusy(true);
+        setDlgTestResult(null);
+        try {
+            const info = await runCodeGenSSOLogin();
+            if (ssoAttempt !== oauthAttemptRef.current) return;
+            const fresh = await refreshProviderList();
+            if (ssoAttempt !== oauthAttemptRef.current) return;
+            const cgIdx = fresh ? fresh.findIndex((p: LLMProvider) => p.name === "CodeGen") : -1;
+            const cgProvider = cgIdx >= 0 ? fresh?.[cgIdx] : undefined;
+            const verified = !!cgProvider?.connection_test_passed;
+            if (cgIdx >= 0) setDlgSelectedIdx(cgIdx);
+            setDlgDirty(!verified);
+            setDlgTested(verified);
+            onStatusChange?.(true, true);
+            onProviderChanged?.();
+            const savedModels = (cgProvider?.models || []).map(id => ({ id, name: id }));
+            setCodegenModels(savedModels);
+            setDlgTestResult(verified
+                ? { ok: true, msg: info?.message || t("SSO login successful", "SSO 认证成功") }
+                : { ok: true, retryable: true, msg: t("SSO authenticated, but the model connection is not verified. Click Test & Save to retry.", "SSO 已认证，但模型连接尚未验证。请点击“检测并保存”重试。") });
+        } catch (e) {
+            if (ssoAttempt !== oauthAttemptRef.current) return;
+            setDlgTestResult({ ok: false, msg: String(e) });
+        } finally {
+            if (ssoAttempt === oauthAttemptRef.current) setOauthBusy(false);
+        }
+    }, [t, onStatusChange, onProviderChanged, refreshProviderList]);
+
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
         setProviderListLoading(true);
@@ -430,6 +465,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         void loadProviders();
         onProviderChanged?.();
     }, [loadProviders, onProviderChanged]);
+
+    useProviderDialogDeepLink(autoOpenProviderDialogSeq, providerListReady, openDialog);
 
     const handleImportExternalAgents = useCallback(async () => {
         if (importingAgentsRef.current) return;
@@ -619,8 +656,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
     // pretending the assistant is unconfigured.
     const currentIsLocalImport = !!providers.find(p => p.name === currentName && isLocalImportProvider(p));
     const dlgNeedsOAuthLogin = !!dlgProvider &&
-        (dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso") &&
-        !dlgProvider.key;
+        dlgProvider.auth_type === "oauth" && !dlgProvider.key;
 
     // --- Token Bank share helpers (§7.1) ---------------------------------
     // Implementations live in LLMConfigPanelShared so this file stays under its
@@ -652,7 +688,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         setProviderModels([]);
         setProviderModelListOpen(false);
         try {
-            const models = await FetchProviderModels(fetchUrl, fetchKey, fetchProtocol, fetchAgent);
+            const fetchArgs: [string, string, string, string, string?] = [
+                fetchUrl,
+                fetchKey,
+                fetchProtocol,
+                fetchAgent,
+            ];
+            if (isQoderProvider(dlgProvider.name)) fetchArgs.push(dlgProvider.name);
+            const models = await FetchProviderModels(...fetchArgs);
             if (fetchSeq !== fetchModelsSeqRef.current) return;
             setProviderModels(models || []);
             const ids = (models || []).map(item => String(item?.id || "").trim()).filter(Boolean);
@@ -661,6 +704,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                     const copy = [...prev];
                     const current = copy[dlgSelectedIdx];
                     if (!current) return prev;
+                    if (isQoderProvider(current.name)) {
+                        copy[dlgSelectedIdx] = { ...current, models: ids };
+                        return copy;
+                    }
                     const merged: string[] = [];
                     const seen = new Set<string>();
                     const add = (value: string) => {
@@ -934,8 +981,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                     savingProviders as corelib.MaclawLLMProvider[], saveName, saveName,
                 );
                 const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
+                let savedModel = String(sp.model || "");
                 try {
-                    await refreshProviderList();
+                    const fresh = await refreshProviderList();
+                    const saved = fresh?.find(provider => provider.name === saveName);
+                    if (saved?.model) savedModel = String(saved.model);
                 } catch {
                     // Test & Save already persisted the authoritative result.
                 }
@@ -953,7 +1003,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                             ? t("Vision support: enabled", "图片理解：支持")
                             : t("Vision support: disabled", "图片理解：不支持")}`,
                 });
-                await finishTestedProviderSave(saveName, String(sp.model || ""));
+                await finishTestedProviderSave(saveName, savedModel);
                 return;
             } catch (e) {
                 setDlgTestResult({ ok: false, msg: String(e) });
@@ -997,15 +1047,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
 				saveName,
 			);
 			const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
-			if (sp.auth_type === "sso" && sp.model) {
-				await SaveCodeGenModelChoice(sp.model, sp.model).catch(() => {});
-			}
-
             // Refresh the provider snapshot from the backend so all persisted
             // fields (including connection_test_passed and capability data)
             // are reflected before model assignments refresh.
+            let savedModel = String(sp.model || "");
             try {
-                if (!await refreshProviderList()) {
+                const fresh = await refreshProviderList();
+                const saved = fresh?.find(provider => provider.name === saveName);
+                if (saved?.model) savedModel = String(saved.model);
+                if (!fresh) {
                     setDlgProviders(savingProviders);
                     setProviders(savingProviders.map((p: LLMProvider) => ({ ...p })));
                 }
@@ -1033,7 +1083,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
             // The connection is saved. Offer to point the agent at this provider;
             // declining keeps the previous auto-close. Agreeing closes at once so
             // model assignment can take focus.
-            await finishTestedProviderSave(saveName, String(sp.model || ""));
+            await finishTestedProviderSave(saveName, savedModel);
             return;
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });
@@ -1493,7 +1543,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                     )}
                                 </div>
 
-                                {/* Auth: OAuth login button / no-key hint / API Key input */}
+                                {/* Auth: OAuth login button / SSO login button / API Key input */}
                                 {!dlgProvider.import_source && (dlgProvider.auth_type === "oauth" ? (
                                     <LLMConfigOAuthFields
                                         provider={dlgProvider}
@@ -1522,6 +1572,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                             onProviderChanged?.();
                                             setDlgTestResult({ ok: true, msg: msg || t("Devin login successful", "Devin 登录成功") });
                                         }}
+                                    />
+                                ) : dlgProvider.auth_type === "sso" ? (
+                                    <LLMConfigCodeGenSSOFields
+                                        provider={dlgProvider}
+                                        busy={oauthBusy}
+                                        t={t}
+                                        onLogin={() => { void handleCodeGenSSOLogin(); }}
+                                        onCancel={() => cancelActiveOAuth(dlgProvider.name)}
                                     />
                                 ) : (
                                     <LLMConfigApiKeyFields
@@ -1568,6 +1626,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                 hubAlreadySynced={hubSelectionAlreadySynced}
                                 hubModelDirty={hubModelDirty}
                                 needsOAuthLogin={dlgNeedsOAuthLogin}
+                                needsSSOLogin={dlgProvider?.auth_type === "sso" && !dlgProvider.key}
                                 oauthBusy={oauthBusy}
                                 saving={dlgSaving}
                                 t={t}

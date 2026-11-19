@@ -13,9 +13,10 @@ import (
 //
 // Source "desktop" is a run this Hub admitted and still follows. Source
 // "server" is a run MaClawSrv still records as running that this Hub does not
-// follow, which is usually a run whose process ended (a restart) without
-// closing the record. Status "queued" is an admission still being posted: it
-// has no run id yet and is cancelled through the admit-cancel path.
+// follow, usually a timer the host started itself. A process restart marks
+// leftover running rows interrupted, so a row that is still running is live
+// work and is not flagged stale. Status "queued" is an admission still being
+// posted: it has no run id yet and is cancelled through the admit-cancel path.
 type ActiveDesktopRun struct {
 	RunID          string     `json:"run_id"`
 	BotID          string     `json:"bot_id"`
@@ -105,7 +106,7 @@ func (s *Service) ActiveDesktopRuns(ctx context.Context, tenantID, userID, botID
 	s.mu.Unlock()
 
 	if instanceID != "" {
-		if rows, err := s.srvRunningRuns(ctx, tenantID, userID, instanceID); err == nil {
+		if rows, err := s.srvRunningRuns(ctx, tenantID, userID, instanceID, rec.Bots[index].NodeID); err == nil {
 			for _, run := range rows {
 				id := strings.TrimSpace(run.ID)
 				if id == "" {
@@ -115,6 +116,12 @@ func (s *Service) ActiveDesktopRuns(ctx context.Context, tenantID, userID, botID
 					for i := range items {
 						if items[i].RunID == id {
 							items[i].WaitingForUser = run.WaitingForUser
+							if items[i].Task == "" {
+								items[i].Task = strings.TrimSpace(run.Metadata["bot_task"])
+							}
+							if items[i].Phase == "" {
+								items[i].Phase = strings.TrimSpace(run.Metadata["bot_phase"])
+							}
 							if items[i].StartedAt == nil && !run.StartedAt.IsZero() {
 								t := run.StartedAt
 								items[i].StartedAt = &t
@@ -123,14 +130,17 @@ func (s *Service) ActiveDesktopRuns(ctx context.Context, tenantID, userID, botID
 					}
 					continue
 				}
+				if owner := strings.TrimSpace(run.Metadata["bot_id"]); owner != "" && owner != botID {
+					continue
+				}
 				row := ActiveDesktopRun{
 					RunID:          id,
 					BotID:          botID,
 					Source:         "server",
 					Status:         "running",
-					WaitingForUser: run.WaitingForUser,
+					Task:           strings.TrimSpace(run.Metadata["bot_task"]),
 					Phase:          strings.TrimSpace(run.Metadata["bot_phase"]),
-					Stale:          !run.WaitingForUser,
+					WaitingForUser: run.WaitingForUser,
 				}
 				if !run.StartedAt.IsZero() {
 					t := run.StartedAt
@@ -157,10 +167,10 @@ func (s *Service) ActiveDesktopRuns(ctx context.Context, tenantID, userID, botID
 	return items, nil
 }
 
-func (s *Service) srvRunningRuns(ctx context.Context, tenantID, userID, instanceID string) ([]srvRunRow, error) {
+func (s *Service) srvRunningRuns(ctx context.Context, tenantID, userID, instanceID, nodeID string) ([]srvRunRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, nodeID)
 	if err != nil {
 		return nil, err
 	}

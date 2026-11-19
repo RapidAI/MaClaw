@@ -9,6 +9,7 @@ import { changedPreviewFilePath, cloneCodePreviewState, initialState as initialC
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { assistantMessageHasVisibleBody, reasoningTrailMarkdownOptions, renderMessage } from "./aiAssistantMarkdown";
+import { ChatBubblesProvider } from "./ChatBubbleFrame";
 import {
     formatRecordingCompletionDisplay,
     formatRecordingCompletionMessage,
@@ -42,7 +43,9 @@ import { useContinueEditTaskResultDraft } from "./useContinueEditTaskResultDraft
 import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
-import { RemoteAssistantActivity } from "./RemoteAssistantActivity";
+import { RemoteAssistantActivity, RemoteCodingPlanChecklist } from "./RemoteAssistantActivity";
+import { isViewerReducerEnabled, viewerOwnsRaw } from "./viewerReducerFlag";
+import { legacyFromViewerEvent, parseViewerEvent } from "./reduceViewerEvent";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
 import { chatTaskInSession, codingStepsAllPassed, executionSecondaryChromeStyle, formatTaskCreatedAt, handleTaskExecutionHeaderDoubleClick, openChatWorkForSession, resolveTaskExecutionStatus } from "./assistantTaskExecutionChrome";
@@ -99,12 +102,14 @@ import { codingLiveHeaderProgress, codingTimelineForDisplay, progressMessagesFor
 import { codingTimelineOwnedProgressTexts, compactCodingAgentProgressMessages, latestCodingToolTrailAt, retainAssistantProgressText } from "./compactCodingAgentProgressMessages";
 import { CodingAgentPreviewFocusContext } from "./CodingAgentProgressStatus";
 import { CodingAgentProcessTimeline } from "./CodingAgentProcessTimeline";
+import { GoalStageCommand, withGoalStageCommand } from "./goalStageCommand";
+import { goalStageProcessLive } from "./goalStagePresentation";
 import { GoalChecklistOverlay } from "./GoalChecklistOverlay";
 
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, goalChecklistOverlayBodyFromText, latestHostGoalChecklistText, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, isHostGoalChecklistText, logAIPanelDiagnostic, rewriteHostGoalChecklistBody, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionForProjectTask, expertSessionKey, expertTaskSessionKey, goalChecklistMessageId, goalChecklistOverlayBodyFromText, goalTerminalSessionKeysNext, latestHostGoalChecklistText, projectTabOwnsExpertQueue, formatGoalChecklistFromRecord, isACPAssistantSessionKey, isExpertSessionKey, isVisibleHostGoalChecklist, logAIPanelDiagnostic, rewriteHostGoalChecklistBody, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sessionKeyListHas, sessionKeysMatch, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, useTranscriptLiveWork, filterLiveProjectTranscriptMessages, visibleProjectTranscript, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
 import { expertTabId } from "./expertTypes";
 import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
@@ -113,7 +118,7 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListPendingScopeApprovals, ListWorkflowTemplateSummaries, LoadConfig, LoadProjectTabConversation, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
-import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepIsFailed, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingSharedExecutionStatus, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
@@ -125,6 +130,7 @@ import { useProjectTaskActivateEvent } from "./useProjectTaskActivateEvent";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
+import { callAgentBrowserClose, callAgentBrowserConfirm, callAgentBrowserFinish, callAgentBrowserInput, callAgentBrowserSetControl, callAgentBrowserSubmitSecret, mergeAgentBrowserStage, type AgentBrowserStageState } from "./AgentBrowserStage";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
 import { GoalQuickBar } from "./GoalQuickBar";
 import { ChatTaskTray } from "./ChatTaskTray";
@@ -204,7 +210,7 @@ const noopAssistantMessagesSubscribe = () => () => {};
 const getEmptyAssistantMessages = () => emptyAssistantMessages;
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, chatFontFamily = "system", codingFontFamily = "system", themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayName, brandDisplayNameCN } = props;
+    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, chatFontFamily = "system", codingFontFamily = "system", chatBubblesEnabled = true, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onAddCustomModel, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayName, brandDisplayNameCN } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -285,6 +291,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     remoteReconnectRef.current = remoteReconnect;
     /** Pure coding session plan editor (local + remote). */
     const [codingSessionPlan, setCodingSessionPlan] = useState("");
+    /** Sessions whose goal the backend reported complete/cleared: the checklist float retires. */
+    const [goalTerminalSessions, setGoalTerminalSessions] = useState<Set<string>>(() => new Set());
     const [codingExecutionPlan, setCodingExecutionPlan] = useState("");
     const [codingRequirementRestatement, setCodingRequirementRestatement] = useState("");
     const [codingPlanMode, setCodingPlanMode] = useState<"auto" | "approve" | "off">("auto");
@@ -293,7 +301,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [codingPendingPlanEditing, setCodingPendingPlanEditing] = useState(false);
     const [codingPendingPlanDraft, setCodingPendingPlanDraft] = useState("");
     const [codingPendingPlanSaving, setCodingPendingPlanSaving] = useState(false);
-    const [codingStepStatuses, setCodingStepStatuses] = useState<Array<{ index: number; title?: string; status: string; summary?: string; verify_cmd?: string; verify_ok?: boolean }>>([]);
+    const [codingStepStatuses, setCodingStepStatuses] = useState<Array<{ index: number; title?: string; status: string; summary?: string; verify_cmd?: string; verify_ok?: boolean; blocked_by?: string[]; block_reason?: string; child_task_id?: string }>>([]);
+    const [codingExecutionStatus, setCodingExecutionStatus] = useState("");
     const [codingSessionCost, setCodingSessionCost] = useState("");
     const [codingWorktreeMode, setCodingWorktreeMode] = useState<"auto" | "always" | "off">("auto");
     const [codingRouteInfo, setCodingRouteInfo] = useState("");
@@ -861,7 +870,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const pending = (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
         if (pending && typeof pending.catch === "function") pending.catch(() => {});
     }, []);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, hydrateClosedExpertTabHistory, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, setLatexRelativePath, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError, landedTranscriptEpoch, adoptBackendTranscript, backendTranscriptGeneration, loadProjectMemoryFallback } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, waitForProjectTabSession, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, hydrateClosedExpertTabHistory, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, setLatexRelativePath, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError, landedTranscriptEpoch, adoptBackendTranscript, backendTranscriptGeneration, loadProjectMemoryFallback } = useAITabManager();
     const { requested: workbenchHomeRequested, dismiss: dismissWorkbenchHome } = useWorkbenchLandingMode(startOnWorkbenchHome, activeTab.id, activeTab.type);
     cloudTreeRefreshTabIdRef.current = activeTab.id;
     visibleCodingProjectRef.current = visibleCodingProject(activeTab);
@@ -884,6 +893,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setCodingExecutionPlan("");
                 setCodingSessionPlan("");
                 setCodingStepStatuses([]);
+                setCodingExecutionStatus("");
                 setCodingPendingApproval(false);
                 setCodingPendingPlanEditing(false);
                 setCodingPendingPlanDraft("");
@@ -976,6 +986,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         const off = EventsOn("goal-state-changed", (payload: any) => {
             syncGoalChecklistRef.current(payload);
+            // The live goal status retires the float outright on complete/clear
+            // (goalTerminalSessionKeysNext) — the transcript card can lag the
+            // record while the coding turn streams.
+            setGoalTerminalSessions(prev => goalTerminalSessionKeysNext(prev, payload?.user_id, payload?.status) || prev);
             if (!pureCodingTabRef.current) return;
             // Normalize path separators (Go may emit Windows `\`, FE uses `/`).
             const goalUser = normalizeAssistantSessionKey(String(payload?.user_id || ""));
@@ -1016,6 +1030,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingPlanDialogue(false);
             codingStepsClockRef.current = { seq: 0, unix: 0, started: false };
             setCodingStepStatuses([]);
+            setCodingExecutionStatus("");
             setCodingSessionCost("");
             setCodingWorktreeMode("auto");
             setCodingRouteInfo("");
@@ -1092,6 +1107,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setCodingPendingPlanEditing(false);
                 }
                 setCodingStepStatuses(incomingSteps);
+                setCodingExecutionStatus(codingSharedExecutionStatus(st));
             }
             {
                 const inTok = Number(st.session_input_tokens) || 0;
@@ -1371,7 +1387,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingPendingApproval(pending);
             if (!pending) setCodingPendingPlanEditing(false);
         };
-        const off = EventsOn("coding-workbench-steps", (payload: any) => {
+        const onWorkbench = (payload: any) => {
+            if (viewerOwnsRaw(payload)) return;
             if (!pureCodingTabRef.current || isCodingWorkbenchHydrationSuppressed(projectPath)) return;
             // Render points the checklist at the new task before this listener
             // is replaced. A snapshot for the task we just left must not land.
@@ -1393,6 +1410,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (Array.isArray(payload?.step_statuses) || Array.isArray(payload?.stepStatuses)) {
                 if (isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
                 if (!applySteps(payload?.step_statuses ?? payload?.stepStatuses, payload?.steps_revision ?? payload?.stepsRevision)) return;
+                setCodingExecutionStatus(codingSharedExecutionStatus(payload));
                 codingWorkbenchStepsGenRef.current += 1;
                 applyPendingApproval(payload);
                 if (Object.prototype.hasOwnProperty.call(payload, "plan_dialogue") || Object.prototype.hasOwnProperty.call(payload, "planDialogue")) {
@@ -1419,13 +1437,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (checklistOwnerAtPoll !== codingChecklistOwnerRef.current) return;
                 if (stepsGen !== codingWorkbenchStepsGenRef.current) return;
                 if (!applySteps(st.step_statuses, st.steps_revision)) return;
+                setCodingExecutionStatus(codingSharedExecutionStatus(st));
                 codingWorkbenchStepsGenRef.current += 1;
                 applyPendingApproval(st);
                 setCodingExecutionPlan(String(st.execution_plan || "").trim());
                 setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
             });
+        };
+        const off = EventsOn("coding-workbench-steps", onWorkbench);
+        const offViewer = EventsOn("viewer-event", (payload: unknown) => {
+            if (!isViewerReducerEnabled()) return;
+            const event = parseViewerEvent(payload);
+            if (!event) return;
+            const legacy = legacyFromViewerEvent(event);
+            if (!legacy || legacy.kind !== "workbench") return;
+            onWorkbench(legacy.payload);
         });
-        return () => { if (typeof off === "function") off(); };
+        return () => {
+            if (typeof off === "function") off();
+            if (typeof offViewer === "function") offViewer();
+        };
     }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type]);
     // After a pure-coding turn finishes, refresh session/execution plan (auto-plan is written mid-turn).
     useEffect(() => {
@@ -1459,6 +1490,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         setCodingPendingPlanEditing(false);
                     }
                     setCodingStepStatuses(incomingSteps);
+                    setCodingExecutionStatus(codingSharedExecutionStatus(st));
                 }
                 {
                     const inTok = Number(st.session_input_tokens) || 0;
@@ -1816,6 +1848,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
             setCodingPendingApproval(!!st?.pending_approval);
             setCodingStepStatuses(incomingSteps);
+            setCodingExecutionStatus(codingSharedExecutionStatus(st));
             setCodingExecutionPlan(String(st?.execution_plan || "").trim());
             setCodingRequirementRestatement(String(st?.requirement_restatement || "").trim());
         } catch {
@@ -1829,6 +1862,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
                 setCodingPendingApproval(!!st?.pending_approval);
                 setCodingStepStatuses(incomingSteps);
+                setCodingExecutionStatus(codingSharedExecutionStatus(st));
             } catch { /* ignore */ }
         }
     }, [activeTab?.agentMode, activeTab?.id, activeTab?.projectPath, activeTab?.remoteNeedsReconnect, activeTab?.type, codingPendingPlanEditing, codingPendingPlanDraft, remoteReconnect.needsReconnect, remoteReconnectStatusPath]);
@@ -1849,6 +1883,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const incomingSteps = codingWorkbenchStepsFromPayload(st?.step_statuses);
             if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
             setCodingStepStatuses(incomingSteps);
+            setCodingExecutionStatus(codingSharedExecutionStatus(st));
             setCodingPendingApproval(!!st?.pending_approval);
         } catch { /* keep editor open */ }
         finally { setCodingPendingPlanSaving(false); }
@@ -2190,6 +2225,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setCodingPendingPlanEditing(false);
                 }
                 setCodingStepStatuses(incomingSteps);
+                setCodingExecutionStatus(codingSharedExecutionStatus(st));
             }
         } catch { /* ignore */ }
     }, [activeTab?.projectPath, activeTab?.type]);
@@ -2509,6 +2545,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setCodingPendingPlanDraft("");
         codingStepsClockRef.current = { seq: 0, unix: 0, started: false };
         setCodingStepStatuses([]);
+        setCodingExecutionStatus("");
     }, []);
     const projectStreamHistoryRef = useRef<{ tabId: string; messages: ChatMessage[] } | null>(null);
     const activeSessionStreamingRef = useRef(false);
@@ -2849,9 +2886,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
     }, []);
     syncGoalChecklistRef.current = (payload: unknown) => {
-        const content = formatGoalChecklistFromRecord(payload as Parameters<typeof formatGoalChecklistFromRecord>[0]);
+        const record = payload as Parameters<typeof formatGoalChecklistFromRecord>[0];
         const goalUser = normalizeAssistantSessionKey(String((payload as { user_id?: string } | null)?.user_id || ""));
-        if (!content || !goalUser) return;
+        if (!goalUser) return;
+        // A deleted goal (goal-cleared) retires its checklist card: the float
+        // reads that card, and a goal that no longer exists must not keep
+        // floating. Completion keeps the card; the float hides on its body.
+        const cleared = String((record as { status?: string } | null)?.status || "").trim().toLowerCase() === "cleared";
+        const content = cleared ? "" : formatGoalChecklistFromRecord(record);
+        if (!content && !cleared) return;
         const tabs = getTabs().filter(tab => (tab.type === "project" && tab.projectPath) || (tab.type === "expert" && tab.expertId));
         for (const tab of tabs) {
             const sessionKey = tab.type === "expert"
@@ -2860,6 +2903,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (normalizeAssistantSessionKey(sessionKey) !== goalUser) continue;
             const existingState = getTabState(tab.id);
             const history = (Array.isArray(existingState?.history) ? existingState.history : []) as ChatMessage[];
+            if (cleared) {
+                const cardId = goalChecklistMessageId(goalUser);
+                if (!history.some(message => message.id === cardId)) continue;
+                const nextHistory = history.filter(message => message.id !== cardId);
+                saveTabState(tab.id, { ...existingState, history: nextHistory });
+                if (activeTabIdRef.current === tab.id) {
+                    if (projectStreamHistoryRef.current?.tabId === tab.id) projectStreamHistoryRef.current = { tabId: tab.id, messages: nextHistory };
+                    setProjectTabMessages(nextHistory);
+                }
+                continue;
+            }
             const active = activeTabIdRef.current === tab.id;
             const nextHistory = nextGoalChecklistHistory({
                 history,
@@ -3429,6 +3483,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const remoteSafety = typeof options === "object" ? options.remoteSafety : undefined;
         const remoteNeedsReconnect = typeof options === "object" ? options.remoteNeedsReconnect : undefined;
         const startedAt = performance.now();
+        // ACP mirrors stay on their external session. Any other session key
+        // is the task owner, so the chip must read again after registration
+        // publishes the task's working directory.
+        const refreshOnSessionReady = prepareMode === "new-agent" || (sessionKey !== "" && !isACPAssistantSessionKey(sessionKey));
         const scheduleNewAgentReady = (readyTab: { id: string; projectPath?: string }, delayMs: number, reason: string, options?: { skipInitialOpenCheck?: boolean }) => {
             const isStillOpen = () => getTabs().some(openTab => openTab.id === readyTab.id && openTab.type === "project" && openTab.projectPath === readyTab.projectPath);
             if (!options?.skipInitialOpenCheck && !isStillOpen()) return;
@@ -3451,12 +3509,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             openIntent, ...(typeof options === "object" && options.focus === false ? { focus: false } : {}),
             cloudWorkspaceId: cloudWorkspaceId || undefined,
             fileWorkspaceId: fileWorkspaceId || undefined,
-            ...(prepareMode === "new-agent" ? {
+            ...(refreshOnSessionReady ? {
                 onSessionReady: (readyTab: { id: string; projectPath?: string }) => {
                     setProjectTabSessionReadyRevisions(previous => ({
                         ...previous,
                         [readyTab.id]: (previous[readyTab.id] || 0) + 1,
                     }));
+                    if (prepareMode !== "new-agent") return;
                     const minimumVisibleMs = Math.max(0, 120 - (performance.now() - startedAt));
                     scheduleNewAgentReady(readyTab, minimumVisibleMs, "session-ready");
                 },
@@ -3486,6 +3545,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 			restore = (async () => {
 				try {
 					const transcriptGeneration = backendTranscriptGeneration(tab.id);
+					// A copied task seeds its visual transcript, including the
+					// coding process list, inside CreateProjectTabSession.
+					// Reading before that write sees an empty file and falls
+					// through to conversation memory. Memory only has the
+					// concatenated reasoning, so the tool rows disappear and
+					// the slim copy is saved back over the seed.
+					// The tracker resolves on failure as well; it does not reject.
+					await waitForProjectTabSession(tab.id);
+					if (clearedProjectTabIdsRef.current.has(tab.id)
+						|| (projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0) !== hydrationGeneration
+						|| !getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && openTab.projectPath === tab.projectPath)) return;
 					let session: unknown = null;
 					try {
 						session = await LoadProjectTabConversation(tab.id);
@@ -3584,7 +3654,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             })();
         }
         return tab;
-    }, [adoptBackendTranscript, backendTranscriptGeneration, createProjectTab, finishProjectTabPreparing, getTabs, hasProjectTab, loadProjectContext, getTabState, loadProjectMemoryFallback, paintTranscriptIfViewEmpty, saveTabState, setProjectTabPreparing]);
+    }, [adoptBackendTranscript, backendTranscriptGeneration, createProjectTab, finishProjectTabPreparing, getTabs, hasProjectTab, loadProjectContext, getTabState, loadProjectMemoryFallback, paintTranscriptIfViewEmpty, saveTabState, setProjectTabPreparing, waitForProjectTabSession]);
 
     // Mode B: VS Code programming agent → open/activate matching project tab so
     // acp- foreground rounds land in the same workspace session as the agent.
@@ -3626,6 +3696,50 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => {
             if (typeof off === "function") off();
             else EventsOff("acp-mode-b-message");
+        };
+    }, [activateTab, createProjectTabWithContext]);
+
+    // MCP host: open the task tab for a task this GUI is running for another tool.
+    // Chat stays a conversation tab. Only coding_dev asks for the programming agent.
+    useEffect(() => {
+        const off = EventsOn("mcp-host-message", (payload: unknown) => {
+            let data: any = payload;
+            try {
+                if (typeof payload === "string") data = JSON.parse(payload);
+            } catch {
+                return;
+            }
+            if (!data || data.role !== "user") return;
+            const projectPath = normalizeProjectSessionPath(String(data.project_path || data.projectPath || ""));
+            if (!projectPath) return;
+            const sessionKey = String(data.session_key || data.sessionKey || "").trim();
+            if (!sessionKey) return;
+            const title = String(data.name || "").trim() || "MCP";
+            const mode = String(data.mode || "");
+            void (async () => {
+                try {
+                    const tab = createProjectTabWithContext(projectPath, title, {
+                        prepareMode: "restore-context",
+                        sessionKey,
+                        ...(mode === "coding_dev" ? { agentMode: "coding_dev" as const } : {}),
+                    });
+                    if (tab?.id) activateTab(tab.id);
+                    setActiveSessionKey(sessionKey);
+                    logAIPanelDiagnostic({
+                        event: "mcp_host_open_project",
+                        projectPath,
+                        sessionKey,
+                        requestId: String(data.request_id || ""),
+                        tabId: tab?.id || "",
+                    });
+                } catch (error) {
+                    console.error("[task_management] open MCP assistant tab failed:", error);
+                }
+            })();
+        });
+        return () => {
+            if (typeof off === "function") off();
+            else EventsOff("mcp-host-message");
         };
     }, [activateTab, createProjectTabWithContext]);
 
@@ -4577,7 +4691,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         setCodingConflictPeak((prev) => Math.max(prev, codingConflictCount));
     }, [codingConflictCount]);
-    const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView || showCodingConflictPanel;
+    const [browserStage, setBrowserStage] = useState<AgentBrowserStageState | null>(null);
+    const showBrowserPreview = !!browserStage?.open;
+    useEffect(() => {
+        const off = EventsOn("agent-browser-stage", (payload: unknown) => {
+            setBrowserStage((prev) => mergeAgentBrowserStage(prev, (payload && typeof payload === "object") ? payload as Partial<AgentBrowserStageState> : null));
+        });
+        return () => { if (typeof off === "function") off(); };
+    }, []);
+    const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView || showCodingConflictPanel || showBrowserPreview;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     // Keep the preview overlay mounted after the first open so it can slide back
     // out instead of vanishing the moment the last preview surface closes.
@@ -4907,9 +5029,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Start / Skip / Reject stay up only while every step is still unstarted.
     // The checklist applies the same rule to its own buttons.
     const codingPlanGateOpen = codingPendingApproval && codingPlanAwaitingStart(codingChecklistSteps);
-    // A finished checklist is not pinned over the composer, even if the approval
-    // flag is stale. A failed row is not finished, so that card stays.
-    const codingChecklistRetired = !codingPlanGateOpen && codingChecklistSteps.length > 0 && codingChecklistAllDone(codingChecklistSteps);
+    // While a goal command owns the session, the goal quick bar hosts the
+    // changed-files chip in its right half; the plan checklist drops its copy.
+    const [goalQuickBarVisible, setGoalQuickBarVisible] = useState(false);
     const { workspace: remoteWorkspace, label: remoteWorkspaceLabel } = resolveRemoteWorkspaceDisplay({ isRemoteCodingDev: isRemoteCodingDevEnvironment, isLive: remoteReconnectStatusPath === activeRemoteProjectPath, liveHost: remoteReconnect.host, liveWorkDir: remoteReconnect.workDir, livePort: remoteReconnect.port, tabHost: activeTab.remoteHost, tags: activeTaskExecutionSnapshot.task?.tags });
     const activeTaskSnapshotRunning = useMemo(() => executionSnapshotRawIsRunning(activeTaskExecutionSnapshot.raw), [activeTaskExecutionSnapshot]);
     const hasExplicitStreamingSessionList = Array.isArray(rawStreamingSessionKeys);
@@ -5482,6 +5604,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 reasoning: message.reasoning || '',
                 localFilePaths: localFilePaths.length ? localFilePaths : undefined,
                 remoteFileFetch: localFilePaths.length ? remoteFileFetch : undefined,
+                fields: message.fields,
+                confirmation: message.confirmation ? { id: message.confirmation.id, summary: message.confirmation.summary || message.content || '' } : undefined,
+                actions: message.actions?.map(action => ({ label: action.label, command: action.command, style: 'primary' as const })),
                 timestamp: index + 1,
             };
         });
@@ -5518,6 +5643,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             );
         });
     }, [lang, remoteChat?.live, remoteTranscript, t]);
+    const remoteRenderedProgress = useMemo(() => {
+        const parts = (remoteChat?.live?.parts || []).filter(part => part.kind === "progress" && part.text);
+        if (!remoteChat || parts.length === 0) return null;
+        return parts.map((part, index) => (
+            <Fragment key={`remote-progress-${remoteChat.grantId}-${part.seq || index}`}>
+                {renderMessage({
+                    id: `remote-progress-${remoteChat.grantId}-${part.seq || index}`,
+                    role: "progress",
+                    content: part.text,
+                    timestamp: index + 1,
+                }, () => undefined, t, false, "", lang, false)}
+            </Fragment>
+        ));
+    }, [lang, remoteChat, t]);
     const remoteEmptyContent = useMemo(() => {
         if (!remoteChat) return undefined;
         if (remoteChat.loading) {
@@ -5618,10 +5757,27 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pendingUnfinishedStatus,
         turnIncomplete: assistantTurnIncomplete,
         openChatWork,
-    }), [activeProjectPreparing, activeTaskExecutionSnapshot, assistantTurnIncomplete, cancelPending, codingStepStatuses, displayMessages.length, liveWorkActive, openChatWork, pendingUnfinishedStatus, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
+        executionStatus: codingExecutionStatus,
+    }), [activeProjectPreparing, activeTaskExecutionSnapshot, assistantTurnIncomplete, cancelPending, codingExecutionStatus, codingStepStatuses, displayMessages.length, liveWorkActive, openChatWork, pendingUnfinishedStatus, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
     // One flag for the checklist, the chip, and the execution timeline. A
     // stored running step is only the cursor once this is false.
     const taskExecutionLive = taskExecutionStatus.tone === "running";
+    // A finished checklist is not pinned over the composer, even if the approval
+    // flag is stale. A finished session gets the same treatment: once the turn
+    // lands on completed/cancelled, a leftover pending or running cursor — or a
+    // lone restatement — has nothing left to report, so the bar folds away
+    // instead of pinning a stale summary over the next prompt. A failed row is
+    // not a close: that card stays so the failure can be read, and an
+    // awaiting-start plan keeps its gate.
+    // failed and waiting_review are the shared projection. A dependency skip
+    // is still status skipped, so the all-skipped close must not hide it.
+    const codingProjectionOpen = codingExecutionStatus === "failed" || codingExecutionStatus === "waiting_review";
+    const codingChecklistRetired = !codingPlanGateOpen
+        && !codingProjectionOpen
+        && !codingChecklistSteps.some((step) => codingStepIsFailed(String(step?.status || "")))
+        && (codingChecklistAllDone(codingChecklistSteps)
+            || ((taskExecutionStatus.tone === "completed" || taskExecutionStatus.tone === "cancelled")
+                && (codingChecklistSteps.length > 0 || !!codingRequirementRestatement)));
     // Report the live running signal so the sidebar task stats can merge it with
     // the durable snapshot (a pure agent loop run leaves no running snapshot).
     useEffect(() => {
@@ -5692,7 +5848,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const lastRenderedProgressMessage = compactProgressMessages.at(-1);
     const progressActivityKey = lastRenderedProgressMessage?.id || "";
     const wizardScrollSuspendRef = useRef(false);
-    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: remoteChat ? `remote:${remoteChat.grantId}:${remoteChat.projectPath}` : activeTab.id, hasConversation: remoteChat ? remoteTranscript.length > 0 : hasConversation, messages: remoteChat ? remoteTranscript : displayMessages, ready: remoteChat ? true : ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
+    const { clearScrolledUp, handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrolledUp, scrollToBottom, unreadTail, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: remoteChat ? `remote:${remoteChat.grantId}:${remoteChat.projectPath}` : activeTab.id, hasConversation: remoteChat ? remoteTranscript.length > 0 : hasConversation, messages: remoteChat ? remoteTranscript : displayMessages, ready: remoteChat ? true : ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
     useEffect(() => {
         if (activeTab.type !== "project") return;
         const previous = latestProjectCloseSnapshotRef.current;
@@ -5875,7 +6031,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setComposeAction(null);
         // Immediate slash commands (/help, /memory, …) are handled before the agent
         // loop on the backend — always send now, never park them behind the busy queue.
-        userScrolledUpRef.current = false;
+        clearScrolledUp();
         try {
             const sent = await sendMessageForTab(command);
             if (sent !== false) recordPrompt(command);
@@ -5883,7 +6039,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             fireSlashInFlightRef.current = false;
             requestAnimationFrame(() => inputRef.current?.focus());
         }
-    }, [activeSessionKey, addEntry, codingTaskReadyForIntents, ready, recordPrompt, sendMessageForTab]);
+    }, [activeSessionKey, addEntry, clearScrolledUp, codingTaskReadyForIntents, ready, recordPrompt, sendMessageForTab]);
     const handleClearInput = useCallback(() => {
         if (remoteAssistantActive()) {
             setRemoteDraft("");
@@ -5940,7 +6096,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         sendInFlightRef.current = true;
         clearComposerDraft({ clearAttachments: true });
-        userScrolledUpRef.current = false;
+        clearScrolledUp();
         try {
             const sent = await sendMessageForTab(trimmed);
             if (sent !== false) {
@@ -5964,6 +6120,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         submitLocked,
         addEntry,
         clearComposerDraft,
+        clearScrolledUp,
         sendMessageForTab,
         recordPrompt,
         handleWelcomePromptSelect,
@@ -6103,7 +6260,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             sendInFlightRef.current = true;
             setComposeAction(null);
             clearDraft({ clearAttachments: true });
-            userScrolledUpRef.current = false;
+            clearScrolledUp();
             try {
                 const sent = await sendMessageForTab(installText);
                 if (sent !== false) recordPrompt(installText);
@@ -6182,7 +6339,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         ];
         sendInFlightRef.current = true;
         clearDraft({ clearAttachments: true });
-        userScrolledUpRef.current = false;
+        clearScrolledUp();
         try {
             const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(asPPTModelText(text), allFilePaths) : asPPTModelText(text);
             const sent = await sendMessageForTab(outgoing, {
@@ -6197,7 +6354,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.expertId, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, clearScrolledUp, activeTab.expertId, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
 
     // --- New-task wizard (TaskConfigBar) wiring ---
     // Draft state, expert/workflow loading and the send orchestration live in
@@ -6725,6 +6882,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
         reasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
     }
+    // The floating checklist overlay owns the 目标清单 card while mounted;
+    // keep the mount condition in one place so the transcript card and the
+    // float never paint at the same time.
+    const goalChecklistFloatActive = !showWelcomeView && !wizardScreen && !projectSearch.open && ready && !!goalChecklistOverlayText && !goalTerminalSessions.has(normalizeAssistantSessionKey(activeSessionKey));
     const renderedOtherMessages = useMemo(() => {
         const cache = msgRenderCacheRef.current;
         // Cap cache size to prevent unbounded growth across long sessions.
@@ -6739,9 +6900,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const coveredOther = coveredOtherNodesRef.current;
         if (taskConfigWiring.wizardOverlay && coveredOther && coveredOther.length > 0) return coveredOther;
         const coveredNodes = transcriptMessages.map((msg: ChatMessage, idx: number) => {
-            // The floating GoalChecklistOverlay owns the 目标清单 card; the
-            // transcript row stays in history but out of the scroll feed.
-            if (msg.kind === "goalChecklist" || (msg.role === "user" && isHostGoalChecklistText(msg.content || ""))) return null;
+            // The floating GoalChecklistOverlay owns the 目标清单 card while
+            // it is mounted. Once it retires (goal finished/cleared or the
+            // view is covered), the normal path renders it inline —
+            // renderMessage turns both the system row and legacy host user
+            // rows into the same checklist card — so the goal's final state
+            // stays in the scroll feed instead of vanishing with the float.
+            // isVisibleHostGoalChecklist is the same predicate the collapse
+            // uses to own these rows.
+            if (goalChecklistFloatActive && isVisibleHostGoalChecklist(msg)) {
+                return null;
+            }
             const isLast = idx === lastAssistantIdx;
             // Settled rows keep their object across token flushes. The live assistant follows the round.
             const settled = cache.get(msg.id);
@@ -6793,6 +6962,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (!replyCached || replyCached.contentKey !== replyKey) cache.set(replyCacheId, { contentKey: replyKey, node: reply });
                 const timelineNode = (
                     <Fragment key={msg.id}>
+                        <GoalStageCommand text={msg.goalStageCommand} />
                         <CodingAgentProcessTimeline
                             items={codingTimeline}
                             theme={t}
@@ -6801,7 +6971,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             openThoughtIndex={openThoughtIndex}
                             liveLabel={shownLiveLabel}
                             liveObject={liveReasoningObject}
-                            live={messageOwnsLive}
+                            live={goalStageProcessLive(messageOwnsLive, liveWorkStreaming, activeSessionHasWork, msg.goalStageSettled)}
                         />
                         {reply}
                     </Fragment>
@@ -6822,7 +6992,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const reasoningFingerprint = liveStreamingTail
                 ? liveTextFingerprint(msg.reasoning, streamTextRevision(msg.id))
                 : (msg.reasoning ?? '');
-            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content, streamTextRevision(msg.id)) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText, streamTextRevision(msg.id)) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${replyCardFingerprint(msg)}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && liveWorkStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
+            const contentKey = `${liveStreamingTail ? liveTextFingerprint(msg.content, streamTextRevision(msg.id)) : (msg.content ?? '__undefined__')}|${msg.kind ?? ''}|${reasoningFingerprint}|${fieldKey}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${liveStreamingTail ? liveTextFingerprint(msg.resultText, streamTextRevision(msg.id)) : (msg.resultText ?? '')}|${msg.resultStatus ?? ''}|${replyCardFingerprint(msg)}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${messageOwnsLive && liveWorkStreaming ? 1 : 0}|${shownLiveLabel ?? ''}|${liveObjectForMessage ?? ''}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}|${msg.goalStageCommand ?? ''}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -6859,6 +7029,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 }
                 node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, messageOwnsLive && liveWorkStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, shownLiveLabel, liveObjectForMessage, isLast && activeSessionHasWork, isLatexExpertId(activeTab.expertId));
             }
+            node = withGoalStageCommand(msg.id, msg.goalStageCommand, node);
             cache.set(msg.id, { contentKey, node, message: isLast ? undefined : msg });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
             if (branchPoint) {
@@ -6895,7 +7066,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         if (coveredNodes.length > 0) coveredOtherNodesRef.current = coveredNodes;
         return coveredNodes;
-    }, [transcriptMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, liveWorkStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
+    }, [transcriptMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, liveWorkStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, goalChecklistFloatActive, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
     // Only rows already on the live assistant's timeline leave the feed.
     // A previous answer's timeline must not hide the next continuation.
     const renderedProgressMessages = useMemo(() => {
@@ -7647,6 +7818,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ) : null}
                     </div>
                 </div>
+                <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
                 <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar mc-task-execution" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment && !remoteChat ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, ...assistantMessageFontStyle(isPureCodingEnvironment && !remoteChat ? "coding" : "conversation", isPureCodingEnvironment && !remoteChat ? codingFontFamily : chatFontFamily), whiteSpace: "normal", overflowWrap: "break-word", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
                     {remoteChat ? null : conversationArchive.banner}
                     {remoteChat ? null : conversationArchive.dialog}
@@ -7654,10 +7826,47 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         <ExpertTabEmptyBanner activeTab={activeTab} lang={lang} theme={t} />
                     ) : null}
                     {remoteChat || !showPureCodingEmptyState ? null : pureCodingEmptyContent}
+                    <ChatBubblesProvider enabled={chatBubblesEnabled !== false}>
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
-                    <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? null : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat ? <RemoteAssistantActivity session={remoteChat} lang={lang} theme={t} /> : (hideWorkingTrail ? null : codingWorkingTrail)} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
+                    <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? remoteRenderedProgress : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat ? <RemoteAssistantActivity session={remoteChat} lang={lang} theme={t} /> : (hideWorkingTrail ? null : codingWorkingTrail)} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
+                    </ChatBubblesProvider>
                     <div ref={outputEndRef} />
+                </div>
+                {scrolledUp ? (
+                    <button
+                        type="button"
+                        data-testid="ai-scroll-latest"
+                        onClick={() => scrollToBottom("auto", true, 2)}
+                        style={{
+                            position: "absolute",
+                            bottom: 14,
+                            left: "50%",
+                            transform: "translateX(-50%)",
+                            zIndex: 30,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                            padding: "5px 14px",
+                            borderRadius: 999,
+                            border: `1px solid ${t.fieldBorder}`,
+                            background: t.fieldBg,
+                            color: t.text,
+                            boxShadow: t.isDark
+                                ? "0 4px 14px rgba(0,0,0,0.4)"
+                                : "0 4px 14px rgba(15,23,42,0.14)",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: 600,
+                            lineHeight: 1.4,
+                            whiteSpace: "nowrap",
+                        }}
+                    >
+                        {unreadTail
+                            ? localizeText(lang, "↓ New messages", "↓ 有新消息", "↓ 有新消息")
+                            : localizeText(lang, "↓ Back to latest", "↓ 回到最新", "↓ 回到最新")}
+                    </button>
+                ) : null}
                 </div></div>)}
                 {wizardScreen ? newTaskWelcome : null}
                 {activeProjectPreparing && !remoteChat && <ProjectPreparingBanner prepareMode={activeProjectPrepareMode} isRemoteCodingDev={isRemoteCodingDevEnvironment} isRemoteMaintenance={isRemoteMaintenanceEnvironment} isCodingDev={isCodingDevEnvironment} lang={lang} theme={t} />}
@@ -7691,19 +7900,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         onDismiss={handleWelcomeTemplateOfferDismiss}
                     />
                 )}
-                {!showWelcomeView && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || codingTurnFiles.files.length > 0) && (
+                {/* The files clause mirrors hideFileChanges: while the goal bar
+                    hosts the chip, files alone must not mount an empty section.
+                    A retired checklist still mounts for that chip but stripped
+                    to it — the finished steps do not come back with it. */}
+                {!showWelcomeView && remoteChat ? <RemoteCodingPlanChecklist session={remoteChat} lang={lang} theme={t} /> : null}
+                {!showWelcomeView && !remoteChat && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || (codingTurnFiles.files.length > 0 && !goalQuickBarVisible)) && (
                     <CodingAgentPlanChecklist
                         lang={lang}
                         theme={t}
                         chrome={codingBannerChrome}
-                        steps={codingChecklistSteps}
+                        steps={codingChecklistRetired ? [] : codingChecklistSteps}
                         fileChanges={codingTurnFiles.files}
-                        understanding={codingRequirementRestatement}
-                        pendingApproval={codingPendingApproval}
+                        understanding={codingChecklistRetired ? "" : codingRequirementRestatement}
+                        pendingApproval={!codingChecklistRetired && codingPendingApproval}
                         ready={codingTaskReadyForIntents}
                         executionLive={taskExecutionLive}
                         executionStatusLabel={taskExecutionStatus.label}
                         onOpenFile={codingPreviewAllowed ? focusCodeFile : undefined}
+                        hideFileChanges={goalQuickBarVisible}
                         onApprove={() => { void handleCodingPlanGate("approve"); }}
                         onSkip={() => { void handleCodingPlanGate("skip"); }}
                         onReject={() => { void handleCodingPlanGate("reject"); }}
@@ -7715,8 +7930,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {!showWelcomeView && !remoteChat && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && !remoteChat && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
                 {!showWelcomeView && !remoteChat && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => chatTaskInSession(task.sessionKey, activeSessionKey))} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
-                {!showWelcomeView && !remoteChat && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} />}
-                {!showWelcomeView && !wizardScreen && !projectSearch.open && ready && goalChecklistOverlayText ? (
+                {!showWelcomeView && !remoteChat && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} fileChanges={isPureCodingEnvironment ? codingTurnFiles.files : undefined} fileChangesChrome={codingBannerChrome} onOpenFile={codingPreviewAllowed ? focusCodeFile : undefined} onVisibilityChange={setGoalQuickBarVisible} />}
+                {goalChecklistFloatActive ? (
                     <GoalChecklistOverlay
                         lang={lang}
                         theme={t}
@@ -7726,7 +7941,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     />
                 ) : null}
                 {!showWelcomeView && !wizardScreen && remoteChat && (!remoteChat.canSend || !!remoteChat.error) ? <div data-testid={remoteChat.canSend ? "ai-remote-error" : "ai-remote-readonly"} role="alert" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: remoteChat.error ? "var(--theme-danger, #b42318)" : "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}>{remoteChat.canSend ? null : <span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀")}</span>}<span style={{ fontWeight: 500 }}>{remoteChat.error || (remoteChat.offline ? localizeText(lang, "This computer is offline. You cannot operate it from here.", "对方离线，暂时不能操作。", "對方離線，暫時不能操作。") : localizeText(lang, "This remote task is read-only", "此远控任务为只读", "此遠控任務為唯讀"))}</span></div> : !showWelcomeView && !wizardScreen && cloudShareReadOnly ? <div data-testid="ai-cloud-share-readonly" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}><span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, "Read-only", "只读", "唯讀")}</span><span style={{ fontWeight: 500 }}>{localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")}</span><button type="button" data-testid="ai-cloud-share-copy-local" onClick={() => { const source = String(activeTab?.projectPath || "").trim(); if (source) window.dispatchEvent(new CustomEvent("maclaw:copy-read-share-as-local", { detail: { projectPath: source } })); }} style={{ marginLeft: "auto", border: 0, background: "transparent", color: "inherit", font: "inherit", fontWeight: 600, cursor: "pointer", padding: 0 }}>{localizeText(lang, "Copy as local task", "复制为本地任务", "複製為本機任務")}</button></div> : null}
-                {!showWelcomeView && !wizardScreen && <AssistantInputStack active={panelActive} browseFile={remoteChat ? () => undefined : browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={cloudShareReadOnly || remoteChat ? () => undefined : handleVoiceClick} handleVoicePointerDown={cloudShareReadOnly || remoteChat ? () => undefined : handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive || cloudShareReadOnly || (!!remoteChat && !remoteChat.canSend)} inputRef={inputRef} inputValue={composerValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={remoteChat ? [] : pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment && !remoteChat} placeholderText={placeholderText} queue={remoteChat ? [] : queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={remoteChat ? [] : selectedFilePaths} setPendingAttachments={remoteChat ? () => undefined : setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} theme={t} themeMode={themeMode} toolbarEndContent={remoteChat ? null : <AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={!remoteChat && (activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
+                {!showWelcomeView && !wizardScreen && <AssistantInputStack active={panelActive} browseFile={remoteChat ? () => undefined : browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={cloudShareReadOnly || remoteChat ? () => undefined : handleVoiceClick} handleVoicePointerDown={cloudShareReadOnly || remoteChat ? () => undefined : handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive || cloudShareReadOnly || (!!remoteChat && !remoteChat.canSend)} inputRef={inputRef} inputValue={composerValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={remoteChat ? [] : pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment && !remoteChat} placeholderText={placeholderText} queue={remoteChat ? [] : queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={remoteChat ? [] : selectedFilePaths} setPendingAttachments={remoteChat ? () => undefined : setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} theme={t} themeMode={themeMode} toolbarEndContent={remoteChat ? null : <AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} onAddCustomModel={onAddCustomModel} chipTestId="composer-model-chip" />} trailingToolbarContent={!remoteChat && (activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
                     // Working-directory chip inside the composer toolbar, after the
                     // permission-mode button: the primary entry for viewing/changing
                     // where this session operates.
@@ -7798,6 +8013,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         showCodePreview={showCodePreview}
                         showAgentView={showAgentView}
                         showWorkflowPreview={showWorkflowPreview}
+                        showBrowserPreview={showBrowserPreview}
+                        browserStage={browserStage}
+                        onBrowserSetHold={callAgentBrowserSetControl}
+                        onBrowserInput={callAgentBrowserInput}
+                        onBrowserConfirm={callAgentBrowserConfirm}
+                        onBrowserSecret={callAgentBrowserSubmitSecret}
+                        onBrowserFinish={callAgentBrowserFinish}
+                        onCloseBrowser={() => {
+                            setBrowserStage((prev) => (prev ? { ...prev, open: false } : prev));
+                            callAgentBrowserClose();
+                        }}
                         showConflict={showCodingConflictPanel}
                         conflictCount={codingConflictCount}
                         onCloseConflict={closeCodingConflictSidePanel}
@@ -7864,7 +8090,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             <ComputerUseOperatorPanel lang={lang} />
             </div>
             {/* Full-bleed footer under content-row (chat|preview). Always mounted so welcome/guide and VE/group tabs keep the same chrome as normal chat. */}
-            <AssistantQuickSettingsBar active={panelActive} hidden={projectSearch.open} lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} onLanguageChange={onLanguageChange} statusSlot={statusSlot} hideModelChip={showChatUI && !showWelcomeView} />
+            <AssistantQuickSettingsBar active={panelActive} hidden={projectSearch.open} lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} onAddCustomModel={onAddCustomModel} onLanguageChange={onLanguageChange} statusSlot={statusSlot} hideModelChip={showChatUI && !showWelcomeView} />
             </div>
         </div>
         </MarkdownImagePreviewProvider>

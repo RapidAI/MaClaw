@@ -8,7 +8,7 @@ import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIden
 import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
-import { archiveExpertTranscriptForProject, expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
+import { archiveExpertTranscriptForProject, expertSessionKey, isACPAssistantSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { mergeProjectRoundHistory, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
 import { hasRestorableProjectConversation, loadRestoredProjectConversationHistory } from "./assistantPreviewState";
 import { splitConversationView } from "./conversationViewWindow";
@@ -1585,19 +1585,25 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // create after close so a late close cannot archive a reopened task.
         const pendingClose = pendingProjectTabCloseByIDRef.current.get(tabId);
         const register = () => {
-            // ACP already owns an isolated server-side session. Do not register
-            // its UI mirror as a path-owned project session, which would
-            // recreate path-based shared history/cancellation state.
-            if (sessionKey) {
+            // ACP owns an isolated session. Registering that mirror as a
+            // path-owned project session would share its history and
+            // cancellation with the task. A path-owned key is the task
+            // itself: the MCP host uses desktop-user:<task>. Registration
+            // publishes that task's working_dir tag, which is the directory
+            // the header reads.
+            if (isACPAssistantSessionKey(sessionKey)) {
                 options?.onSessionReady?.(newTab);
                 return Promise.resolve();
             }
             return CreateProjectTabSession(tabId, projectPath).then((notice) => {
                 if (!isEmptyProjectTabSessionNotice(notice)) options?.onSessionReady?.(newTab);
-                return undefined;
+                // The tracker treats an empty notice as a failed registration.
+                // Dropping it here made that failure look successful, so the
+                // next open never tried again.
+                return notice;
             });
         };
-        trackProjectTabSessionReady(tabId, pendingClose ? pendingClose.then(() => register(), () => register()) : register());
+        trackProjectTabSessionReady(tabId, pendingClose ? pendingClose.catch(() => {}).then<unknown>(() => register()) : register());
 
         // Add tab and auto-activate
         updateTabState(() => ({

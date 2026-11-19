@@ -1997,6 +1997,10 @@ func scanSkillDirInternal(root string, filterPlatform bool) []corelib.NLSkillEnt
 			continue
 		}
 		skillDir := filepath.Join(root, entry.Name())
+		if err := VerifySkillIntegrityForLoad(skillDir); err != nil {
+			log.Printf("[skill-scanner] skip %s: package integrity check failed: %v (re-install the skill or remove %s to load it)", skillDir, err, PackageManifestFileName)
+			continue
+		}
 		parsed, defPath, err := loadSkillFromDir(skillDir, entry.Name())
 		if err != nil {
 			// A failed install leaves a directory that holds only the scan

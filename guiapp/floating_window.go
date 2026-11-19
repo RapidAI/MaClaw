@@ -41,6 +41,10 @@ type floatingWindow interface {
 	// the window. Called when only sound-related config changes.
 	UpdateSoundConfig(soundEnabled bool, preset string)
 
+	// UpdatePositionLock pins or releases autonomous screen travel without
+	// rebuilding the window. The pose keeps playing either way.
+	UpdatePositionLock(locked bool)
+
 	// UpdateMotionConfig updates motion/quiet/reduced-motion and active skin/variant
 	// without full window recreation when possible.
 	UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string)

@@ -40,6 +40,19 @@ func (s *Service) ensureOwnerToken(ctx context.Context, tenantID string, rec *re
 	if owner == "" {
 		return s.sharedBearer(ctx, *rec), nil
 	}
+	if nodeID := ownerNodeID(*rec, owner); nodeID != "" {
+		return s.ensureNodeOwnerToken(ctx, tenantID, rec, owner, nodeID)
+	}
+	return s.ensurePublicOwnerToken(ctx, tenantID, rec, owner)
+}
+
+// ensurePublicOwnerToken is the public MaClawSrv bearer. It does not follow
+// a pin onto a node, so a bot created on the cloud computer stays there.
+func (s *Service) ensurePublicOwnerToken(ctx context.Context, tenantID string, rec *record, owner string) (string, error) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return s.sharedBearer(ctx, *rec), nil
+	}
 	if strings.TrimSpace(rec.AdminSecret) == "" {
 		return "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
 	}
@@ -63,6 +76,24 @@ func (s *Service) ensureOwnerToken(ctx context.Context, tenantID string, rec *re
 // the path of every bot message, and only a first-time provisioning has to
 // mutate the record under the lock.
 func (s *Service) ownerToken(ctx context.Context, tenantID, owner string) (record, string, error) {
+	owner = strings.TrimSpace(owner)
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return record{}, "", err
+	}
+	if owner == "" {
+		return rec, s.sharedBearer(ctx, rec), nil
+	}
+	if nodeID := ownerNodeID(rec, owner); nodeID != "" {
+		return s.finishNodeOwnerToken(ctx, tenantID, owner, nodeID)
+	}
+	return s.ownerTokenPublic(ctx, tenantID, owner)
+}
+
+// ownerTokenPublic is the bearer for the tenant's public MaClawSrv. It does
+// not follow an owner pin. A bot created on the cloud computer keeps that
+// srv even after the owner is later pinned to a local node.
+func (s *Service) ownerTokenPublic(ctx context.Context, tenantID, owner string) (record, string, error) {
 	owner = strings.TrimSpace(owner)
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {

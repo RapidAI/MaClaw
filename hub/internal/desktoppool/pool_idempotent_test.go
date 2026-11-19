@@ -115,6 +115,23 @@ func TestDesktopPoolCallWorthRetry(t *testing.T) {
 	if desktopPoolCallWorthRetry(upstream.NewStatusError(ErrService, http.StatusNotFound, []byte(`{}`))) {
 		t.Fatal("a 404 is an answer the service meant")
 	}
+	if desktopPoolCallWorthRetry(errServiceProbe("node is offline")) || desktopPoolCallWorthRetry(errServiceProbe("edge node is offline")) {
+		t.Fatal("a dead tunnel will not answer a second time")
+	}
+}
+
+func TestOfflineNodeSessionIsNotRetried(t *testing.T) {
+	hits := 0
+	pool := &Pool{Nodes: func(context.Context, string, string, string) *http.Client {
+		hits++
+		return nil
+	}}
+	err := pool.callIdempotent(context.Background(), Server{
+		NodeID: "dn_lab", TenantID: "tenant-a", BaseURL: "http://desktopd.dn_lab.node.invalid",
+	}, http.MethodPost, "/v1/desktops/session", map[string]string{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "node is offline") || hits != 1 {
+		t.Fatalf("err=%v hits=%d", err, hits)
+	}
 }
 
 func errServiceProbe(message string) error {

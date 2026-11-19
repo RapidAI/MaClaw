@@ -214,7 +214,7 @@ func postFileCompanionShareFigure(target, viewer, grant, token, name string, dat
 	}
 	fileCompanionShareAuthorize(req, viewer, grant)
 	req.Header.Set("Content-Type", "application/octet-stream")
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := hubHTTPClientWithTimeout(60 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return errors.New("暂时无法连接云端")

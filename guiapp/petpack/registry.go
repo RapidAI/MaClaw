@@ -158,8 +158,8 @@ func (r *Registry) scanUnlocked() error {
 			}
 			m.Scope = ScopeBundled
 			m.Dir = filepath.ToSlash(filepath.Dir(path))
-			// Historical bundled skins are kept in the source tree only as legacy
-			// assets. They are not exposed as official 2.0 choices.
+			// Only the current official character is scanned. Retired bundled
+			// skins, including the old crab, are not loadable characters.
 			if m.ID != DefaultPackID {
 				return nil
 			}
@@ -273,7 +273,7 @@ func (r *Registry) annotateStatus(m *PetPackManifest, fsys fs.FS, root string) e
 	// This matches Pet Store publication and prevents an invalid custom variant
 	// from sitting unnoticed until a later client version exposes it.
 	for _, rigAssets := range SkeletonRigAssets(m) {
-		if err := validateRigAssets(fsys, root, rigAssets); err != nil {
+		if err := validateRigAssets(fsys, root, m, rigAssets); err != nil {
 			return err
 		}
 	}
@@ -383,7 +383,7 @@ func validateCharacterDefinitionAssets(fsys fs.FS, root string, assets *PetPackC
 	return nil
 }
 
-func validateRigAssets(fsys fs.FS, root string, rigAssets *PetPackRigAssets) error {
+func validateRigAssets(fsys fs.FS, root string, manifest *PetPackManifest, rigAssets *PetPackRigAssets) error {
 	if rigAssets == nil {
 		return fmt.Errorf("native-skeleton missing rig assets")
 	}
@@ -404,6 +404,9 @@ func validateRigAssets(fsys fs.FS, root string, rigAssets *PetPackRigAssets) err
 		return fmt.Errorf("invalid rig definition: %w", err)
 	}
 	if err := ValidateRig(&rig, rigAssets); err != nil {
+		return err
+	}
+	if err := ValidateAdornmentSlots(manifest, &rig); err != nil {
 		return err
 	}
 	textureFS := fsys
@@ -509,10 +512,15 @@ func (r *Registry) List() []PackInfo {
 		}
 	}
 	rest := make([]string, 0, len(r.packs))
-	for id := range r.packs {
-		if !seen[id] {
-			rest = append(rest, id)
+	for id, m := range r.packs {
+		if seen[id] {
+			continue
 		}
+		// A retired bundled sample can still Resolve, but it is not a skin card.
+		if m != nil && m.Scope == ScopeBundled && !IsOfficialPackID(id) {
+			continue
+		}
+		rest = append(rest, id)
 	}
 	sort.Strings(rest)
 	for _, id := range rest {
@@ -524,7 +532,7 @@ func (r *Registry) List() []PackInfo {
 func packInfoFrom(m *PetPackManifest) PackInfo {
 	variants := make([]string, 0, len(m.Variants))
 	for _, v := range m.Variants {
-		if v.ID != "" {
+		if v.ID != "" && VariantSelectable(v) {
 			variants = append(variants, v.ID)
 		}
 	}

@@ -1,10 +1,12 @@
 package guiapp
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,20 +64,23 @@ func TestRecordAndListMaclawAppRunHistory(t *testing.T) {
 		t.Fatalf("expected updated message for run-1, got %q", list[1].Message)
 	}
 
-	path := filepath.Join(app.GetDataDir(), "app_run_history.json")
-	data, err := os.ReadFile(path)
+	db, err := app.maclawAppRunHistoryDBOpen()
 	if err != nil {
-		t.Fatalf("read durable file: %v", err)
+		t.Fatal(err)
 	}
-	var store maclawAppRunHistoryStore
-	if err := json.Unmarshal(data, &store); err != nil {
-		t.Fatalf("decode durable file: %v", err)
+	var rows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM app_run_history WHERE app_id='app-invoice'`).Scan(&rows); err != nil {
+		t.Fatal(err)
 	}
-	if store.Schema != maclawAppRunHistorySchema {
-		t.Fatalf("schema = %q", store.Schema)
+	if rows != 2 {
+		t.Fatalf("database row count = %d", rows)
 	}
-	if len(store.ByApp["app-invoice"]) != 2 {
-		t.Fatalf("store by_app size = %d", len(store.ByApp["app-invoice"]))
+	var jsonColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%payload%' OR sql LIKE '%_json%'`).Scan(&jsonColumns); err != nil {
+		t.Fatal(err)
+	}
+	if jsonColumns != 0 {
+		t.Fatalf("run history schema still contains JSON document columns: %d", jsonColumns)
 	}
 }
 
@@ -136,6 +141,18 @@ func TestRecordMaclawAppRunHistoryMergesDuplicateRunID(t *testing.T) {
 	}
 	if !got.GovernanceRecorded || got.SkillName != "paper_pdf_translator" {
 		t.Fatalf("governance provenance should be preserved: %+v", got)
+	}
+	db, err := app.maclawAppRunHistoryDBOpen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fieldPath := sqliteMapFieldPath(sqliteMapFieldPath("", "ResultPayload"), "content")
+	var content string
+	if err := db.QueryRow(`SELECT value_text FROM app_run_history_fields WHERE run_id='run-1' AND field_path=?`, fieldPath).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if content != "ok" {
+		t.Fatalf("nested result content = %q", content)
 	}
 }
 
@@ -358,5 +375,128 @@ func TestListAllMaclawAppRunHistory(t *testing.T) {
 	}
 	if all[0].RunID != "a-2" {
 		t.Fatalf("expected newest a-2 first, got %q", all[0].RunID)
+	}
+}
+
+func TestMaclawAppRunHistoryMigratesLegacyJSONOnce(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	legacy := maclawAppRunHistoryStore{
+		Schema:    maclawAppRunHistorySchema,
+		UpdatedAt: "2026-07-15T10:00:00Z",
+		ByApp: map[string][]maclawAppRunHistoryEntry{
+			"legacy-app": {{RunID: "legacy-run", AppID: "legacy-app", Status: "done", At: "2026-07-15T10:00:00Z", ResultPayload: map[string]any{"content": "legacy"}}},
+		},
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := app.maclawAppRunHistoryPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	list, err := app.ListMaclawAppRunHistory("legacy-app", 10)
+	if err != nil || len(list) != 1 || list[0].ResultPayload["content"] != "legacy" {
+		t.Fatalf("legacy import = %#v, %v", list, err)
+	}
+	cleared, err := app.ClearMaclawAppRunHistory("legacy-app")
+	if err != nil || !cleared {
+		t.Fatalf("clear = %v, %v", cleared, err)
+	}
+	app.closeMaclawAppRunHistoryDB()
+	list, err = app.ListMaclawAppRunHistory("legacy-app", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("legacy JSON resurrected cleared run history: %#v", list)
+	}
+}
+
+func TestMaclawAppRunHistorySQLiteEnforcesRetentionLimits(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	for index := 0; index < maclawAppRunHistoryPerAppLimit+1; index++ {
+		if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{
+			RunID: fmt.Sprintf("run-%03d", index), AppID: "busy-app", Status: "done", At: fmt.Sprintf("%03d", index),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := app.ListMaclawAppRunHistory("busy-app", maclawAppRunHistoryPerAppLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != maclawAppRunHistoryPerAppLimit || list[0].RunID != "run-050" {
+		t.Fatalf("per-app retention = %d, newest %#v", len(list), list[0])
+	}
+	for index := 0; index <= maclawAppRunHistoryAppLimit; index++ {
+		appID := fmt.Sprintf("app-%03d", index)
+		if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{
+			RunID: "run-" + appID, AppID: appID, Status: "done", At: fmt.Sprintf("%03d", index),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := app.maclawAppRunHistoryDBOpen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var apps int
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT app_id) FROM app_run_history`).Scan(&apps); err != nil {
+		t.Fatal(err)
+	}
+	if apps != maclawAppRunHistoryAppLimit {
+		t.Fatalf("app count = %d, want %d", apps, maclawAppRunHistoryAppLimit)
+	}
+	oldest, err := app.ListMaclawAppRunHistory("app-000", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(oldest) != 0 {
+		t.Fatalf("oldest app was not pruned: %#v", oldest)
+	}
+}
+
+type recordingRunHistoryQueryer struct {
+	db         *sql.DB
+	fieldQuery string
+	fieldArgs  []interface{}
+}
+
+func (q *recordingRunHistoryQueryer) Query(query string, args ...any) (*sql.Rows, error) {
+	if strings.Contains(query, "FROM app_run_history_fields") {
+		q.fieldQuery = query
+		q.fieldArgs = append([]interface{}(nil), args...)
+	}
+	return q.db.Query(query, args...)
+}
+
+func TestMaclawAppRunHistoryLoadsFieldsOnlyForSelectedPage(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	for _, entry := range []maclawAppRunHistoryEntry{
+		{RunID: "old-run", AppID: "app", Status: "done", At: "001", ResultPayload: map[string]any{"value": "old"}},
+		{RunID: "new-run", AppID: "app", Status: "done", At: "002", ResultPayload: map[string]any{"value": "new"}},
+	} {
+		if _, err := app.RecordMaclawAppRunHistory(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := app.maclawAppRunHistoryDBOpen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryer := &recordingRunHistoryQueryer{db: db}
+	entries, err := loadMaclawAppRunHistoryEntries(queryer, "", nil, ` ORDER BY at DESC LIMIT 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].RunID != "new-run" {
+		t.Fatalf("selected page = %#v", entries)
+	}
+	if len(queryer.fieldArgs) != 1 || queryer.fieldArgs[0] != "new-run" {
+		t.Fatalf("field query read unselected runs: query=%q args=%#v", queryer.fieldQuery, queryer.fieldArgs)
 	}
 }

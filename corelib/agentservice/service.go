@@ -108,6 +108,20 @@ type Service struct {
 	// capability metadata after an assistant response is produced.
 	AssistantMessageMetadataHook func(ctx context.Context, p Principal, inst Instance, sess Session, run Run, msg Message, cfg corelib.AppConfig) map[string]string
 
+	// ResumeExecutionHooks supplies the desktop reply slot for a run continued
+	// after a process restart. That continuation is not an HTTP turn, so
+	// without this hook the turn has nowhere to attach a screenshot or a
+	// delivered file. ask is the person's original message, not the restart
+	// notice, so a request for a picture is still a request for a picture.
+	ResumeExecutionHooks func(p Principal, inst Instance, ask string) (
+		func(context.Context) context.Context,
+		func(context.Context, *Run, *Message, error),
+	)
+	// ResumeHold is taken before a restarted turn is admitted and released
+	// when that turn finishes. The scheduler lease ended with the cancelled
+	// executor, so without this hold the next interval starts a second turn.
+	ResumeHold func(run Run) (release func())
+
 	runMu       sync.Mutex
 	runningRuns map[string]context.CancelFunc
 	draining    atomic.Bool
@@ -678,6 +692,20 @@ func cloneMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// freezeRun detaches metadata before a run is handed to another goroutine
+// or stored. The caller must still be the only writer of the source map.
+// Later writes stay on the caller's map and do not race a reader of the
+// frozen copy.
+func freezeRun(run Run) Run {
+	run.Metadata = cloneMap(run.Metadata)
+	return run
+}
+
+func freezeMessage(msg Message) Message {
+	msg.Metadata = cloneMap(msg.Metadata)
+	return msg
 }
 func defaultString(v, fallback string) string {
 	if strings.TrimSpace(v) == "" {

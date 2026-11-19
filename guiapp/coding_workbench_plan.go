@@ -77,6 +77,9 @@ func approvedCodingPlanDecision() codingRequestDecision {
 // normalizeCodingRequestDecision validates a propagated decision and enforces
 // the invariant that only implementation work may have a planning boundary.
 func normalizeCodingRequestDecision(decision codingRequestDecision) (codingRequestDecision, bool) {
+	// The schema tokens are lowercase. A padded or capitalized token is the
+	// same decision. Dropping it would publish the implementation echo.
+	decision.Kind = codingRequestKind(strings.ToLower(strings.TrimSpace(string(decision.Kind))))
 	switch decision.Kind {
 	case codingRequestInquiry:
 		decision.NeedsPlan = false
@@ -132,11 +135,10 @@ func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingR
 	if h == nil || h.client == nil || strings.TrimSpace(userText) == "" {
 		return fallback
 	}
-	// Rewrite / multi-step asks already have a local plan floor. Waiting on the
-	// classifier here only delays the first user-visible restatement.
-	if codingRequestLooksModeratelyComplex(userText) {
-		return fallback
-	}
+	// A marker such as 图形界面 or 重写 also appears in questions. Do not skip
+	// the classifier and force an implementation plan from those words.
+	// applyCodingRequestPlanFloor still raises NeedsPlan when the judgment
+	// itself is implementation.
 	cfg := h.getCodingLightweightLLMConfig()
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		cfg = h.getCodingLLMConfig()
@@ -235,21 +237,184 @@ func codingRequestLooksModeratelyComplex(userText string) bool {
 	return false
 }
 
+// parseCodingRequestDecision reads the classifier document. A strict
+// unmarshal into codingRequestDecision drops the decision when a weak
+// model writes null, a stringly bool, or 0/1, or echoes the schema and
+// then the real object. The host would then publish the implementation
+// echo. This keeps the decision the model returned. It does not read the
+// user's words, and it does not treat any other word as true.
 func parseCodingRequestDecision(raw string) (codingRequestDecision, bool) {
-	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "\uFEFF"))
 	if raw == "" {
 		return codingRequestDecision{}, false
 	}
-	if i := strings.Index(raw, "{"); i >= 0 {
-		if j := strings.LastIndex(raw, "}"); j > i {
-			raw = raw[i : j+1]
+	if span, ok := codingDecisionBraceSpan(raw); ok {
+		decision, parsed, valid := decodeCodingRequestDecisionDocument(span)
+		if parsed {
+			// One JSON document is the decision. A nested object must not
+			// replace a kind this document already stated.
+			if !valid {
+				return codingRequestDecision{}, false
+			}
+			return decision, true
 		}
 	}
-	var decision codingRequestDecision
-	if err := json.Unmarshal([]byte(raw), &decision); err != nil {
+	// The first-to-last span is not one document. Keep the last object
+	// that normalizes, so a leading schema echo does not hide the answer
+	// and a trailing echo does not erase it.
+	var last codingRequestDecision
+	found := false
+	for _, obj := range codingDecisionJSONObjects(raw) {
+		decision, parsed, valid := decodeCodingRequestDecisionDocument(obj)
+		if parsed && valid {
+			last = decision
+			found = true
+		}
+	}
+	if !found {
 		return codingRequestDecision{}, false
 	}
-	return normalizeCodingRequestDecision(decision)
+	return last, true
+}
+
+// codingRequestDecisionDocument leaves needs_plan and acceptance raw.
+// Unmarshaling those fields straight into bool and string rejects null,
+// "true", and 1, and that rejection used to discard the whole document.
+type codingRequestDecisionDocument struct {
+	Kind       string          `json:"kind"`
+	NeedsPlan  json.RawMessage `json:"needs_plan"`
+	Acceptance json.RawMessage `json:"acceptance"`
+}
+
+// decodeCodingRequestDecisionDocument reports whether raw is one JSON
+// document and whether that document is a known decision. A comma sitting
+// immediately before } or ] is still that document; encoding/json rejects
+// it and the host would otherwise publish the implementation echo.
+func decodeCodingRequestDecisionDocument(raw string) (decision codingRequestDecision, parsed bool, valid bool) {
+	decision, parsed, valid = decodeCodingRequestDecisionObject(raw)
+	if parsed {
+		return decision, parsed, valid
+	}
+	relaxed := relaxTrailingCommas(raw)
+	if relaxed == raw {
+		return codingRequestDecision{}, false, false
+	}
+	return decodeCodingRequestDecisionObject(relaxed)
+}
+
+func decodeCodingRequestDecisionObject(raw string) (decision codingRequestDecision, parsed bool, valid bool) {
+	var doc codingRequestDecisionDocument
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return codingRequestDecision{}, false, false
+	}
+	decision, valid = normalizeCodingRequestDecision(codingRequestDecision{
+		Kind:       codingRequestKind(doc.Kind),
+		NeedsPlan:  codingDecisionBool(doc.NeedsPlan),
+		Acceptance: codingOperationalAcceptance(codingDecisionString(doc.Acceptance)),
+	})
+	return decision, true, valid
+}
+
+// codingDecisionBool accepts a JSON bool, the numbers 0 and 1, and the
+// strings true/false/0/1 in either case. Anything else, including null
+// and words such as yes, stays false so a bad plan flag cannot widen
+// the turn. Inquiry and operational still force the flag off later.
+func codingDecisionBool(raw json.RawMessage) bool {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return false
+	}
+	var flag bool
+	if err := json.Unmarshal([]byte(text), &flag); err == nil {
+		return flag
+	}
+	var number float64
+	if err := json.Unmarshal([]byte(text), &number); err == nil {
+		return number == 1
+	}
+	var word string
+	if err := json.Unmarshal([]byte(text), &word); err == nil {
+		switch strings.ToLower(strings.TrimSpace(word)) {
+		case "true", "1":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// codingDecisionString accepts a JSON string. Null, a missing field, and
+// any other JSON type are empty. Operational empty stays launch.
+func codingDecisionString(raw json.RawMessage) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ""
+	}
+	var word string
+	if err := json.Unmarshal([]byte(text), &word); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(word)
+}
+
+func codingDecisionBraceSpan(raw string) (string, bool) {
+	i := strings.Index(raw, "{")
+	if i < 0 {
+		return "", false
+	}
+	j := strings.LastIndex(raw, "}")
+	if j <= i {
+		return "", false
+	}
+	return raw[i : j+1], true
+}
+
+// codingDecisionJSONObjects returns every balanced object. Braces inside
+// strings are not objects. A schema echo and the real answer are separate
+// objects when the model writes both.
+func codingDecisionJSONObjects(raw string) []string {
+	var out []string
+	depth := 0
+	start := -1
+	inString := false
+	escape := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && start >= 0 {
+				out = append(out, raw[start:i+1])
+				start = -1
+			}
+		}
+	}
+	return out
 }
 
 // codingRequestNeedsPlanFallback is intentionally structural. It is used only
@@ -2248,7 +2413,7 @@ func peelCodingContinueTrailingParticles(rest string) string {
 
 func codingPlanStepWasStarted(status string) bool {
 	switch strings.TrimSpace(status) {
-	case codingStepPassed, codingStepFailed, codingStepVerifyFail, codingStepSkipped, codingStepRunning:
+	case codingStepPassed, codingStepFailed, codingStepVerifyFail, codingStepSkipped, codingStepRunning, codingStepInterrupted, mcpStepWaiting:
 		return true
 	default:
 		return false
@@ -2257,6 +2422,138 @@ func codingPlanStepWasStarted(status string) bool {
 
 func codingPlanStepNeedsResume(status string) bool {
 	return strings.TrimSpace(status) != codingStepPassed
+}
+
+// codingPlanStepIsReviewHandoff is a child-result review, not a step 继续 can
+// rerun. The stored row is waiting_review after the plan step is recorded. A
+// row mirrored from the runner status is only skipped, and the handoff
+// sentence is what still identifies it.
+func codingPlanStepIsReviewHandoff(st codingWorkbenchStepStatus) bool {
+	status := strings.TrimSpace(st.Status)
+	// A passed or failed row keeps that result. Leftover handoff text in
+	// its note is not a second review, and it must not hide the failure.
+	if status == mcpStepWaiting {
+		return true
+	}
+	if status != codingStepSkipped && status != "" {
+		return false
+	}
+	return mcpSkipIsReviewHandoff(st.Summary)
+}
+
+// codingReviewHoldSteps is the checklist 继续 reports when it does not start
+// another executor. The child already admitted stays on the step, including a
+// bounded result recorded on an earlier round.
+func codingReviewHoldSteps(steps []codingWorkbenchStepStatus, known []v2.ChildTaskView) []CodingStepOutcome {
+	snap := codingWorkbenchStepsSnapshot(steps)
+	byID := make(map[string]v2.ChildTaskView, len(known))
+	for _, child := range known {
+		if id := strings.TrimSpace(child.TaskID); id != "" {
+			byID[id] = child
+		}
+	}
+	out := make([]CodingStepOutcome, 0, len(snap))
+	for _, st := range snap {
+		if st.Index <= 0 && strings.TrimSpace(st.Title) == "" && strings.TrimSpace(st.Status) == "" {
+			continue
+		}
+		id := ""
+		if st.Index > 0 {
+			id = fmt.Sprintf("T%d", st.Index)
+		}
+		var children []v2.ChildTaskView
+		if childID := strings.TrimSpace(st.ChildTaskID); childID != "" {
+			if child, ok := byID[childID]; ok {
+				children = []v2.ChildTaskView{child}
+			} else {
+				children = []v2.ChildTaskView{{TaskID: childID}}
+			}
+		}
+		out = append(out, CodingStepOutcome{
+			ID:       id,
+			Title:    st.Title,
+			Status:   st.Status,
+			Error:    st.Summary,
+			Children: children,
+		})
+	}
+	return out
+}
+
+func (h *IMMessageHandler) codingChildReviewHoldResponse(userID string) *IMAgentResponse {
+	mem := stickyCodingWorkbenchMemory{}
+	if h != nil {
+		mem = h.getStickyCodingWorkbenchMemory(userID)
+	}
+	var known []v2.ChildTaskView
+	if h != nil && h.app != nil {
+		known = h.app.mcpKnownChildren(projectPathFromSessionOwnerID(userID))
+	}
+	return &IMAgentResponse{
+		Text:        mcpReviewHandoffErrorText,
+		CodingSteps: codingReviewHoldSteps(codingDisplayedRoundSteps(mem.StepStatuses, mem.DisplayedStepRound), known),
+	}
+}
+
+// codingResumeKeptOutcomes is the checklist a resumed round reports.
+// The round only executed the steps 继续 was allowed to rerun. A new MCP
+// run starts empty, so finishing with only that subset marks the task
+// complete while the review handoff is still open. Passed rows stay on the
+// earlier round. The handoff, the skips waiting on it, and any other
+// unfinished row this round did not run stay on this result.
+func codingResumeKeptOutcomes(executed []v2.TaskRunResult, steps []codingWorkbenchStepStatus, known []v2.ChildTaskView) []CodingStepOutcome {
+	out := codingStepsFromResults(executed)
+	have := make(map[string]bool, len(out))
+	for _, step := range out {
+		if id := strings.TrimSpace(step.ID); id != "" {
+			have[id] = true
+		}
+	}
+	for _, step := range codingReviewHoldSteps(steps, known) {
+		id := strings.TrimSpace(step.ID)
+		if id == "" || have[id] {
+			continue
+		}
+		if !codingResumeStepStillBlocks(step) {
+			continue
+		}
+		out = append(out, step)
+		have[id] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func codingResumeStepStillBlocks(step CodingStepOutcome) bool {
+	if codingPlanStepIsReviewHandoff(codingWorkbenchStepStatus{Status: step.Status, Summary: step.Error}) {
+		return true
+	}
+	if mcpSkipWaitsOnPrior(step.Error) {
+		return true
+	}
+	switch strings.TrimSpace(step.Status) {
+	case codingStepFailed, codingStepVerifyFail, mcpStepUnfinished, codingStepRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *IMMessageHandler) setCodingResumeStepOutcomes(resp *IMAgentResponse, resume bool, reported []v2.TaskRunResult, steps []codingWorkbenchStepStatus, userID string) {
+	if resp == nil {
+		return
+	}
+	if !resume {
+		setCodingStepOutcomes(resp, reported)
+		return
+	}
+	var known []v2.ChildTaskView
+	if h != nil && h.app != nil {
+		known = h.app.mcpKnownChildren(projectPathFromSessionOwnerID(userID))
+	}
+	resp.CodingSteps = codingResumeKeptOutcomes(reported, steps, known)
 }
 
 // codingWorkbenchShouldResumeIncompletePlan reports whether this utterance
@@ -2280,17 +2577,35 @@ func selectIncompleteCodingPlanTasks(userText string, mem stickyCodingWorkbenchM
 	// continue that stops before the runner marks a step running looks like
 	// an approval that never started, and the next continue deletes the list.
 	started := mem.PlanRunStarted
-	incomplete := make(map[int]codingWorkbenchStepStatus)
+	handoffOpen := false
 	for _, st := range mem.StepStatuses {
 		if codingPlanStepWasStarted(st.Status) {
 			started = true
 		}
-		if codingPlanStepNeedsResume(st.Status) {
-			incomplete[st.Index] = st
+		if codingPlanStepIsReviewHandoff(st) {
+			handoffOpen = true
 		}
 	}
-	if !started || len(incomplete) == 0 {
+	incomplete := make(map[int]codingWorkbenchStepStatus)
+	for _, st := range mem.StepStatuses {
+		// The review command is the only resume for a child handoff.
+		// Reopening that row to pending lets a later pass mark the task
+		// complete while the child result is still unreviewed.
+		if codingPlanStepIsReviewHandoff(st) || !codingPlanStepNeedsResume(st.Status) {
+			continue
+		}
+		// A dependency skip behind the review stays skipped. A dependency
+		// skip behind a real failure is still part of that retry.
+		if handoffOpen && mcpSkipWaitsOnPrior(st.Summary) {
+			continue
+		}
+		incomplete[st.Index] = st
+	}
+	if !started || (len(incomplete) == 0 && !handoffOpen) {
 		return nil, false
+	}
+	if len(incomplete) == 0 {
+		return nil, true
 	}
 	parsed := parseCodingWorkbenchPlan(mem.ExecutionPlan)
 	byIndex := make(map[int]*v2.TaskItem, len(parsed))
@@ -2335,6 +2650,51 @@ func selectIncompleteCodingPlanTasks(userText string, mem stickyCodingWorkbenchM
 		return selected[i].Index < selected[j].Index
 	})
 	return codingPlanTasksForResume(selected), true
+}
+
+// codingPlanSelectNamedSteps returns only the named failed or unfinished
+// steps. Passed steps stay as they are and are not part of the next run.
+func codingPlanSelectNamedSteps(mem stickyCodingWorkbenchMemory, rawIDs []string) ([]*v2.TaskItem, error) {
+	ids, err := mcpNormalizeStepIDs(rawIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(mem.StepStatuses) == 0 {
+		return nil, fmt.Errorf("还没有可续跑的编码检查点")
+	}
+	byIndex := make(map[int]codingWorkbenchStepStatus, len(mem.StepStatuses))
+	open := false
+	for _, st := range mem.StepStatuses {
+		if st.Index > 0 {
+			byIndex[st.Index] = st
+		}
+		if mcpClassifyOpen(st.Status, st.Summary) {
+			open = true
+		}
+	}
+	selected := make([]*v2.TaskItem, 0, len(ids))
+	for _, id := range ids {
+		n, _, ok := parseCodingStepID(id)
+		if !ok {
+			return nil, fmt.Errorf("步骤编号无法识别：%s", id)
+		}
+		st, found := byIndex[n]
+		if !found {
+			return nil, fmt.Errorf("没有步骤 %s", id)
+		}
+		classified, retryable := mcpNamedStepRetryable(st.Status, st.Summary, open)
+		if classified == mcpStepPassed {
+			return nil, fmt.Errorf("%s 已经通过，不会重跑", id)
+		}
+		if !retryable {
+			return nil, fmt.Errorf("%s 不能单独重试", id)
+		}
+		selected = append(selected, taskFromCodingStepStatus(st))
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("要指定要重试的步骤")
+	}
+	return codingPlanTasksForResume(selected), nil
 }
 
 func taskFromCodingStepStatus(st codingWorkbenchStepStatus) *v2.TaskItem {
@@ -2410,6 +2770,7 @@ func (h *IMMessageHandler) reopenIncompleteCodingPlanSteps(userID string, mem st
 			stored.StepStatuses[i].VerifyCmd = ""
 			stored.StepStatuses[i].VerifyOK = nil
 			stored.StepStatuses[i].UpdatedUnix = now
+			stored.StepStatuses[i].Round = stored.DisplayedStepRound
 		}
 	})
 	h.emitCodingWorkbenchStepsUpdate(userID)
@@ -2831,6 +3192,21 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	onToken func(string),
 ) (tasks []*v2.TaskItem, planMarkdown string, planned bool) {
 	userText = strings.TrimSpace(userText)
+	// Take the directed ids before an empty turn becomes "执行编程任务".
+	// Only the retry command owns those ids. Any other resolve must leave them.
+	if ids := h.takeDirectedRetryForCommand(userID, userText); len(ids) > 0 {
+		selected, selErr := codingPlanSelectNamedSteps(sessionMem, ids)
+		if selErr != nil {
+			h.noteCodingExecRetryError(userID, selErr.Error())
+			return nil, "", false
+		}
+		log.Printf("[coding-plan] directed step resume user=%s steps=%d", userID, len(selected))
+		h.reopenIncompleteCodingPlanSteps(userID, sessionMem, selected)
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("继续指定步骤：%d 步", len(selected)))
+		}
+		return selected, strings.TrimSpace(sessionMem.ExecutionPlan), true
+	}
 	if userText == "" {
 		userText = "执行编程任务"
 	}
@@ -2894,6 +3270,13 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	// single-task turn would wipe that checklist and start requirement
 	// understanding over.
 	if execute, ok := selectIncompleteCodingPlanTasks(userText, sessionMem); ok {
+		if len(execute) == 0 {
+			// The plan is open only because a child review has not finished.
+			// An empty execute list must not fall through to a new single task:
+			// that path clears the checklist and can report the task complete.
+			log.Printf("[coding-plan] continue stays on child review user=%s", userID)
+			return nil, strings.TrimSpace(sessionMem.ExecutionPlan), true
+		}
 		log.Printf("[coding-plan] resume incomplete plan user=%s steps=%d", userID, len(execute))
 		if md := codingChecklistResumePlanMarkdown(requestText, sessionMem); md != "" {
 			sessionMem.ExecutionPlan = md
@@ -2941,11 +3324,6 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	if userPlan := extractUserProvidedCodingPlan(requestText); len(userPlan) >= codingWorkbenchPlanMinTasks {
 		tasks = userPlan
 		log.Printf("[coding-plan] using user-provided steps user=%s steps=%d", userID, len(tasks))
-	} else if codingRestatementFallbackIsSpecific(requestText, sessionMem) {
-		// Rewrite follow-ups already have a host restatement. Do not wait on a
-		// planner LLM that usually falls back to the same two-step plan.
-		tasks = defaultModerateCodingPlan(requestText, sessionMem.RequirementRestatement)
-		log.Printf("[coding-plan] host rewrite plan user=%s steps=%d", userID, len(tasks))
 	} else {
 		if onProgress != nil {
 			onProgress("复杂编程任务：正在自动规划步骤…")

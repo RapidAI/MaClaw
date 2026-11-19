@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	screenDimUser32      = syscall.NewLazyDLL("user32.dll")
-	procGetLastInputInfo = screenDimUser32.NewProc("GetLastInputInfo")
-	procSendMessageW     = screenDimUser32.NewProc("SendMessageW")
+	screenDimUser32               = syscall.NewLazyDLL("user32.dll")
+	procGetLastInputInfo          = screenDimUser32.NewProc("GetLastInputInfo")
+	procScreenDimSendMessageW     = screenDimUser32.NewProc("SendMessageW")
 )
 
 func init() {
@@ -55,7 +55,7 @@ func dimDisplayWindows() {
 		scMonitorpower = 0xF170
 		monitorOff     = 2
 	)
-	procSendMessageW.Call(
+	procScreenDimSendMessageW.Call(
 		uintptr(hwndBroadcast),
 		uintptr(wmSyscommand),
 		uintptr(scMonitorpower),

@@ -13,7 +13,10 @@ type Expert struct {
 	// OptimizedFromID 记录"专家优化"血缘：非空表示本专家提炼自该来源专家的会话。
 	OptimizedFromID string `json:"optimized_from_id,omitempty"`
 	// About 是"关于"自由文本（作者、版权、备注等）。
-	About     string `json:"about,omitempty"`
+	About string `json:"about,omitempty"`
+	// Category 是专家分享时选择的市场分类名（HubCenter 分类体系的原文）。
+	// 仅用于桌面专家库分类筛选展示；名称不在 HubCenter 分类列表中时按"其它"处理。
+	Category  string `json:"category,omitempty"`
 	CreatedAt string `json:"created_at"` // RFC3339
 	UpdatedAt string `json:"updated_at"` // RFC3339
 }
@@ -30,6 +33,7 @@ type CreateInput struct {
 	Skills          []string `json:"skills"`
 	OptimizedFromID string   `json:"optimized_from_id,omitempty"`
 	About           string   `json:"about,omitempty"`
+	Category        string   `json:"category,omitempty"`
 	UpdatedAt       string   `json:"updated_at,omitempty"`
 }
 

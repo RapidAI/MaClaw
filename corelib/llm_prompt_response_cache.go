@@ -25,6 +25,10 @@ type LLMPromptResponseCache struct {
 	inflight map[string]*llmPromptResponseCacheFlight
 	hits     int64
 	misses   int64
+	// waiterHook, when set, runs after a caller attaches to an existing
+	// flight and before it waits. Production leaves it nil. Tests use it
+	// to release the leader only once the second caller is on that flight.
+	waiterHook func()
 	// lastMaintainUnix gates opportunistic background maintenance.
 	lastMaintainUnix int64
 }
@@ -246,7 +250,11 @@ func (c *LLMPromptResponseCache) DoSingleflightWithSharedStore(ctx context.Conte
 	if flight := c.inflight[key]; flight != nil {
 		wait := time.Duration(cfg.SingleflightWaitTimeoutMS) * time.Millisecond
 		done := flight.done
+		hook := c.waiterHook
 		c.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
 		select {
 		case <-done:
 			return append([]byte(nil), flight.body...), true, flight.stored, flight.err

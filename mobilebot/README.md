@@ -1,4 +1,4 @@
-# MobileBot
+# MaclawGo
 
 桌面 Bot（MaClaw / CodeClaw desktop bot）的手机客户端，Flutter 实现
 （Android / iOS）。功能对齐桌面 GUI 的 `DesktopBotWorkspace`：创建和配置
@@ -28,7 +28,8 @@ Bot、与 Bot 聊天、查看工作状态、查看并操作 Bot 的电脑画面�
 | BotEditDialog / 电脑模式 / BotStyleDialog | Bot 设置页：改名、简介、外观（桌面同款 10 色 × 6 形状）、`desktop_mode`（共享/独立）、人格与记忆（style soul/memory）、删除 |
 | BotLLMSettingsDialog | `我的` → 模型设置：默认/自定义提供方（name/url/key/model/protocol/wire_api），展示各角色当前生效配置 |
 | 额度显示 | `我的` → Bot 额度卡：`GET /bots/credits`，用量进度或不限量 |
-| 登录 / 多账号 | 邮箱验证码或手机验证码登录；多账号并存、一键切换、退出/移除账号；token 过期（401/403）自动跳转重新验证，账号保留可一键恢复 |
+| 登录 / 多账号 | 邮箱验证码或手机验证码登录；多账号并存、一键切换、退出/移除账号；token 过期（401/凭证显式拒绝）自动跳转重新验证，账号保留可一键恢复 |
+| TaskMachineBar 远程控制 | `远控` tab：远程机下拉选择（grants 桶=我能控制，在线点+权限档位）→ 任务列表/详情轮询；可操作档开放发消息/停止/重命名/置顶/新建任务（含 list_dirs 远程目录选择），仅查看档自动隐藏；产出物经 fetch_file base64 回传 → 本地保存 → 系统分享。管理面：我的设备配对（账号级控制方）、邀请他人（view/operate）、收到的邀请可代绑自己的电脑接受/拒绝/忽略、我发出的邀请可取消、我的电脑被远控时可结束 |
 
 ## 架构
 
@@ -46,6 +47,7 @@ lib/
     bots/                  /api/v1/bots 全部调用、模型、列表/聊天/设置/电脑画面
     status/                runs/active、tasks、pending deliveries 聚合
     account/               账号卡、切换、移除、退出
+    remote/                /api/remote-control/*：授权状态、机器选择、远程任务、产出物下载
 ```
 
 登录链路（与 `mobile/maclaw_mobile` 相同的官方 Hub 发现流程）：
@@ -56,7 +58,7 @@ lib/
    `POST {hub}/api/mobile/auth/phone/send-code`；
 3. `POST {hub}/api/enroll/email/verify-and-start` 或
    `POST {hub}/api/mobile/auth/phone/verify-and-start`
-   （携带 `machine_name=MobileBot`、`platform=mobile`、持久 `client_id`）→
+   （携带 `machine_name=MaclawGo`、`platform=mobile`、持久 `client_id`）→
    `access_token`/`viewer_token`、`machine_id`、`machine_token`。
    `status=pending` 表示待管理员审批。
 
@@ -75,11 +77,37 @@ lib/
 cd mobilebot
 flutter pub get
 flutter analyze
-flutter test                  :: 模型解析 + 控制器单测（fake BotApi）+ 列表/聊天页 widget 冒烟测试（43 例）
+flutter test                  :: 模型解析 + 控制器单测（fake BotApi）+ 列表/聊天/设置页 widget 冒烟测试（60 例）
 flutter build apk --debug     :: 或 flutter run
 ```
 
 已验证：`flutter analyze` 零告警；`flutter test` 全过；`flutter build apk --debug` 通过。
+
+## HarmonyOS NEXT（纯血鸿蒙）
+
+代码已做 ohos 平台适配（`lib/core/platform.dart`）：`Platform.operatingSystem
+== 'ohos'` 检测，自更新（无侧载，走 AppGallery）、语音输入/录音
+（`record`/`speech_to_text` 无 ohos 移植）在该平台自动隐藏，其余功能同源。
+
+出包流程（需要独立工具链，非本仓库 CI 范围）：
+
+```bat
+:: 1. 安装 OpenHarmony Flutter SDK（3.41 分支）+ DevEco Studio/HarmonyOS SDK
+git clone -b br_3.41 https://gitee.com/openharmony-sig/flutter_flutter.git
+
+:: 2. 用该 SDK 的 flutter 生成 ohos 工程壳（一次性，产出 ohos/ 目录）
+flutter create --platforms ohos .
+
+:: 3. 打开 pubspec.yaml 顶部「HarmonyOS NEXT」注释块中的 dependency_overrides
+::    （webview/mobile_scanner/存储等插件的 ohos 移植版），再 pub get
+
+:: 4. 构建 hap（arm64 真机）
+flutter build hap --release --target-platform ohos-arm64
+```
+
+分发与更新：HarmonyOS NEXT 无下载包装机通道——hap 需经 AppGallery
+Connect 签名上架；「检查更新」在 ohos 上自动隐藏，版本更新由应用市场承担。
+签名使用 AppGallery Connect 签发的 .p12 + .cer（与 Android keystore 不同体系）。
 
 ## 范围说明
 

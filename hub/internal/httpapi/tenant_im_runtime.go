@@ -21,11 +21,12 @@ func firstTenantIMRuntimeReloader(items []TenantIMRuntimeReloader) TenantIMRunti
 	return items[0]
 }
 
-func firstTenantIMRuntimeStopper(items []TenantIMRuntimeStopper) TenantIMRuntimeStopper {
+func firstTenantIMRuntimeStopper(items []any) TenantIMRuntimeStopper {
 	if len(items) == 0 {
 		return nil
 	}
-	return items[0]
+	stopper, _ := items[0].(TenantIMRuntimeStopper)
+	return stopper
 }
 
 func reloadTenantIMRuntime(ctx context.Context, reloader TenantIMRuntimeReloader, tenantID, platform string) error {

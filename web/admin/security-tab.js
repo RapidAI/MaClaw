@@ -35,6 +35,7 @@
         userDirectoryCache: null,
         llmServiceCache: null,
         capabilityCache: null,
+        botViewCache: null,
         lastCapabilityCompliance: null,
         currentPolicyExport: null,
         currentModelServiceExport: null,
@@ -75,11 +76,12 @@
   }
 
   function getCurrentLang() {
-    if (typeof currentLang !== 'undefined' && (currentLang === 'zh' || currentLang === 'en')) return currentLang;
-    if (global.currentLang === 'zh' || global.currentLang === 'en') return global.currentLang;
+    if (global.hubAdminLang) return global.hubAdminLang();
+    if (typeof currentLang !== 'undefined' && (currentLang === 'zh' || currentLang === 'en' || currentLang === 'mn')) return currentLang;
+    if (global.currentLang === 'zh' || global.currentLang === 'en' || global.currentLang === 'mn') return global.currentLang;
     try {
       var saved = global.localStorage && global.localStorage.getItem('maclaw_admin_lang');
-      if (saved === 'zh' || saved === 'en') return saved;
+      if (saved === 'zh' || saved === 'en' || saved === 'mn') return saved;
     } catch (_) {}
     return (global.document && global.document.documentElement && global.document.documentElement.lang === 'zh-CN') ? 'zh' : 'en';
   }
@@ -89,6 +91,7 @@
   }
 
   function text(zh, en) {
+    if (global.hubLine) return global.hubLine('SECURITY_INLINE', zh, en);
     return isZh() ? zh : en;
   }
 
@@ -398,6 +401,15 @@
     searchMembers: { zh: '\u641c\u7d22\u6210\u5458\u90ae\u7bb1', en: 'Search member email' },
     modelRoutes: { zh: '\u53ef\u7528\u6a21\u578b', en: 'Available Models' },
     defaultModel: { zh: '\u9ed8\u8ba4\u6a21\u578b', en: 'Default Model' },
+    roleModels: { zh: '\u89d2\u8272\u6a21\u578b', en: 'Role models' },
+    roleForeground: { zh: '\u524d\u53f0', en: 'Foreground' },
+    roleBackground: { zh: '\u540e\u53f0', en: 'Background' },
+    roleComputerUse: { zh: '\u7535\u8111\u64cd\u4f5c', en: 'Computer use' },
+    roleForegroundHint: { zh: '\u89c4\u5212\u4e0e\u5bf9\u8bdd', en: 'Planning and chat' },
+    roleBackgroundHint: { zh: '\u5de5\u4f5c\u5faa\u73af', en: 'Worker loops' },
+    roleComputerUseHint: { zh: '\u622a\u56fe\u4e0e\u70b9\u51fb\u5faa\u73af', en: 'Screenshot and click loop' },
+    roleModelFollowDefault: { zh: '\u8ddf\u968f\u79df\u6237\u9ed8\u8ba4', en: 'Follow tenant default' },
+    roleModelPinHint: { zh: '\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u79df\u6237\u9ed8\u8ba4\u3002\u9ed8\u8ba4\u662f auto\uff1b\u53ea\u6709\u4e00\u4e2a\u6a21\u578b\u65f6\u4e09\u4e2a\u89d2\u8272\u90fd\u7528\u5b83\u3002', en: 'Empty follows the tenant default. That default is auto, or the only configured model.' },
     inactiveReasons: { zh: '\u672a\u6fc0\u6d3b\u539f\u56e0', en: 'Inactive Reasons' },
     credits: { zh: '\u79ef\u5206', en: 'Credits' },
     creditsRemaining: { zh: '\u5269\u4f59\u79ef\u5206', en: 'Remaining Credits' },
@@ -501,10 +513,23 @@
     snapshotCopied: { zh: '\u5df2\u590d\u5236\u5feb\u7167\u5b57\u6bb5', en: 'Snapshot field copied' },
     snapshotCopyFailed: { zh: '\u590d\u5236\u5931\u8d25: ', en: 'Copy failed: ' },
     snapshotRegistryCount: { zh: '\u5171 {count} \u6761\u5bfc\u51fa\u8bb0\u5f55', en: '{count} export records' },
-    snapshotIdShort: { zh: '\u5feb\u7167 ID: {id}', en: 'Snapshot ID: {id}' }
+    snapshotIdShort: { zh: '\u5feb\u7167 ID: {id}', en: 'Snapshot ID: {id}' },
+    botQuotaTitle: { zh: 'Bot \u7535\u8111\u6570\u9650\u989d', en: 'Bot desktop quota' },
+    botQuotaHint: { zh: '\u8be5\u8303\u56f4\u5185\u6bcf\u4e2a\u7528\u6237\u53ef\u62e5\u6709\u7684\u5e26\u7535\u8111 bot \u4e0a\u9650\uff1b\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u4e0a\u4e00\u7ea7', en: 'Max desktop bots per user in this scope; blank inherits the next level' },
+    botQuotaDefaultTitle: { zh: 'Bot \u9ed8\u8ba4\u7535\u8111\u6570', en: 'Default bot desktops' },
+    botQuotaDefaultHint: { zh: '\u5404\u5c42\u90fd\u6ca1\u586b\u9650\u989d\u65f6\u7528\u5b83\u515c\u5e95\uff1b\u7559\u7a7a\u8868\u793a\u4e0d\u9650', en: 'Fallback when every level is blank; empty means unlimited' },
+    botQuotaEffective: { zh: '\u5f53\u524d\u751f\u6548\uff1a{v}', en: 'Effective: {v}' },
+    botQuotaUnlimited: { zh: '\u4e0d\u9650', en: 'Unlimited' },
+    botQuotaInherit: { zh: '\u8ddf\u968f\u4e0a\u7ea7', en: 'Inherit' },
+    botQuotaNoGrant: { zh: '\u672a\u5728 Bot \u5f00\u901a\u8303\u56f4\uff1b\u4fdd\u5b58\u9650\u989d\u4f1a\u540c\u65f6\u5f00\u901a Bot', en: 'Not in bot access; saving a cap also enables bots' },
+    botQuotaNoUser: { zh: '\u627e\u4e0d\u5230\u8be5\u7528\u6237\u7684\u8d26\u53f7 ID\uff0c\u65e0\u6cd5\u8bbe\u7f6e\u9650\u989d', en: 'No account id found for this user; cannot set a quota' },
+    botQuotaBad: { zh: '\u8bf7\u586b\u5199\u4e0d\u5c0f\u4e8e 0 \u7684\u6574\u6570\uff0c\u6216\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u4e0a\u4e00\u7ea7', en: 'Enter a whole number, or leave blank to inherit' },
+    botQuotaSaved: { zh: 'Bot \u9650\u989d\u5df2\u4fdd\u5b58', en: 'Bot quota saved' },
+    botQuotaSaveFailed: { zh: 'Bot \u9650\u989d\u4fdd\u5b58\u5931\u8d25: ', en: 'Save bot quota failed: ' }
   };
 
   function st(key, vars) {
+    if (global.hubEntry) return global.hubEntry('SECURITY', SECURITY_I18N, key, vars);
     var entry = SECURITY_I18N[key];
     var value = entry ? (isZh() ? entry.zh : entry.en) : key;
     if (!vars) return value;
@@ -541,6 +566,7 @@
     return String(value || '')
       .replace(/\\/g, '\\\\')
       .replace(/'/g, "\\'")
+      .replace(/"/g, '\\x22')
       .replace(/\r/g, '\\r')
       .replace(/\n/g, '\\n')
       .replace(/</g, '\\x3c')
@@ -1478,6 +1504,113 @@
     return null;
   }
 
+  /* The bot quota card reads the bot settings grants, same store the Bot
+     tab edits. The fetch is cached per tab visit and dropped after a save. */
+  async function loadBotView() {
+    var sec = state();
+    if (sec.botViewCache) return sec.botViewCache;
+    var view = await api('/api/admin/bots/settings').catch(function() { return null; });
+    sec.botViewCache = view;
+    return view;
+  }
+
+  function botGrantFor(view, scope, targetId) {
+    var grants = view && Array.isArray(view.grants) ? view.grants : [];
+    var want = String(targetId || '');
+    for (var i = 0; i < grants.length; i += 1) {
+      if (grants[i].scope === scope && String(grants[i].target_id || '') === want) return grants[i];
+    }
+    return null;
+  }
+
+  /* Mirrors desktopBotLimit in hub/internal/botmgmt: the user grant first,
+     department grants nearest to root, the global grant, then the tenant
+     default. A blank level inherits; all blank is unlimited. */
+  function botQuotaCascade(view, userId, deptChainNearestFirst) {
+    var grants = view && Array.isArray(view.grants) ? view.grants : [];
+    var i, item;
+    userId = String(userId || '');
+    if (userId) {
+      for (i = 0; i < grants.length; i += 1) {
+        item = grants[i];
+        if (item.scope === 'user' && String(item.target_id || '') === userId && item.desktop_bot_limit != null) return item.desktop_bot_limit;
+      }
+    }
+    var chain = Array.isArray(deptChainNearestFirst) ? deptChainNearestFirst : [];
+    for (var g = 0; g < chain.length; g += 1) {
+      for (i = 0; i < grants.length; i += 1) {
+        item = grants[i];
+        if (item.scope === 'department' && String(item.target_id || '') === String(chain[g]) && item.desktop_bot_limit != null) return item.desktop_bot_limit;
+      }
+    }
+    for (i = 0; i < grants.length; i += 1) {
+      item = grants[i];
+      if (item.scope === 'global' && item.desktop_bot_limit != null) return item.desktop_bot_limit;
+    }
+    var def = view && view.default_desktop_bot_limit;
+    return def == null ? null : def;
+  }
+
+  function renderBotQuotaCard(scope, targetId, view, deptChainNearestFirst) {
+    if (!view) return '';
+    if (scope !== 'default' && !targetId) {
+      return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-title">' + escapeHtml(st('botQuotaTitle')) + '</div><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('botQuotaNoUser')) + '</div></div>';
+    }
+    var isDefault = scope === 'default';
+    var grant = isDefault ? null : botGrantFor(view, scope, targetId);
+    var own = '';
+    if (isDefault) own = view.default_desktop_bot_limit == null ? '' : String(view.default_desktop_bot_limit);
+    else if (grant && grant.desktop_bot_limit != null) own = String(grant.desktop_bot_limit);
+    var effective;
+    if (isDefault) effective = view.default_desktop_bot_limit;
+    else effective = botQuotaCascade(view, scope === 'user' ? targetId : '', deptChainNearestFirst || []);
+    var effLabel = effective == null ? st('botQuotaUnlimited') : String(effective);
+    var note = '';
+    if (!isDefault && !grant) note = '<div class="item-meta" style="margin-top:6px;color:#b45309">' + escapeHtml(st('botQuotaNoGrant')) + '</div>';
+    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(isDefault ? st('botQuotaDefaultTitle') : st('botQuotaTitle')) + '</div><div class="item-meta">' + escapeHtml(isDefault ? st('botQuotaDefaultHint') : st('botQuotaHint')) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end"><button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecBotQuota(\'' + escapeJsString(scope) + '\',\'' + escapeJsString(targetId) + '\')">' + escapeHtml(st('save')) + '</button></div></div>'
+      + '<div style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><input id="secBotQuotaInput" type="number" min="0" step="1" inputmode="numeric" value="' + escapeHtml(own) + '" placeholder="' + escapeHtml(isDefault ? st('botQuotaUnlimited') : st('botQuotaInherit')) + '" style="width:96px;height:32px;padding:0 8px"><span class="item-meta">' + escapeHtml(st('botQuotaEffective', { v: effLabel })) + '</span></div>'
+      + note + '</div>';
+  }
+
+  global.saveSecBotQuota = async function saveSecBotQuota(scope, targetId) {
+    var input = document.getElementById('secBotQuotaInput');
+    var raw = String(input && input.value || '').trim();
+    var limit = null;
+    if (raw !== '') {
+      if (!/^\d+$/.test(raw)) {
+        showToast(st('botQuotaBad'), 'error');
+        return;
+      }
+      limit = Number(raw);
+    }
+    var sec = state();
+    try {
+      if (scope === 'default') {
+        await api('/api/admin/bots/settings', { method: 'PATCH', body: JSON.stringify({ default_desktop_bot_limit: limit }) });
+      } else {
+        var grant = botGrantFor(sec.botViewCache, scope, targetId);
+        if (grant) {
+          await api('/api/admin/bots/grants/' + encodeURIComponent(grant.id), { method: 'PATCH', body: JSON.stringify({ desktop_bot_limit: limit }) });
+        } else {
+          /* No grant yet: only a typed cap creates one, which also enables
+             bots for this target — the card says so up front. */
+          if (limit == null) {
+            showToast(st('botQuotaNoGrant'), 'info');
+            return;
+          }
+          await api('/api/admin/bots/grants', { method: 'POST', body: JSON.stringify({ scope: scope, target_id: targetId, desktop_bot_limit: limit }) });
+        }
+      }
+      sec.botViewCache = null;
+      showToast(st('botQuotaSaved'), 'success');
+      if (sec.selectedObjectType === 'user' && sec.selectedUserEmail) global.selectSecUser(sec.selectedUserEmail);
+      else if (sec.selectedObjectType === 'group' && sec.selectedGroupId) global.loadSecGroupPolicy(sec.selectedGroupId);
+      else global.selectSecGlobal();
+    } catch (err) {
+      showToast(st('botQuotaSaveFailed') + err.message, 'error');
+    }
+  };
+
   function userDirectoryBoolLabel(value) {
     return value ? st('enabled') : st('disabled');
   }
@@ -1666,6 +1799,48 @@
     }
   };
 
+  function secModelNames(cache) {
+    var names = [];
+    var seen = {};
+    ((cache && cache.model_service_groups) || []).forEach(function(group) {
+      (group.models || []).forEach(function(model) {
+        var name = String(model && model.name || '').trim();
+        var key = name.toLowerCase();
+        if (!name || seen[key]) return;
+        seen[key] = true;
+        names.push(name);
+      });
+    });
+    return names;
+  }
+  function secRoleSelect(id, label, hint, selected, cache) {
+    var current = String(selected || '').trim();
+    var names = secModelNames(cache);
+    var options = '<option value="">' + escapeHtml(st('roleModelFollowDefault')) + '</option>';
+    options += '<option value="auto"' + (current.toLowerCase() === 'auto' ? ' selected' : '') + '>auto</option>';
+    names.forEach(function(name) {
+      options += '<option value="' + escapeHtml(name) + '"' + (name === current ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
+    });
+    if (current && current.toLowerCase() !== 'auto' && names.indexOf(current) < 0) {
+      options += '<option value="' + escapeHtml(current) + '" selected>' + escapeHtml(current) + '</option>';
+    }
+    return '<div><label for="' + id + '">' + escapeHtml(label) + '</label><select id="' + id + '">' + options + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(hint) + '</div></div>';
+  }
+  function secRolesNonEmpty(roles) {
+    roles = roles || {};
+    return !!(String(roles.foreground || '').trim() || String(roles.background || '').trim() || String(roles.computer_use || '').trim());
+  }
+  function readSecUserModelRoles(previous) {
+    var fg = document.getElementById('secUserRoleForeground');
+    var bg = document.getElementById('secUserRoleBackground');
+    var cu = document.getElementById('secUserRoleComputerUse');
+    if (!fg && !bg && !cu) return (previous && previous.model_roles) || {};
+    var roles = {};
+    if (fg && String(fg.value || '').trim()) roles.foreground = String(fg.value).trim();
+    if (bg && String(bg.value || '').trim()) roles.background = String(bg.value).trim();
+    if (cu && String(cu.value || '').trim()) roles.computer_use = String(cu.value).trim();
+    return roles;
+  }
   global.saveSecUserModelService = async function saveSecUserModelService() {
     var sec = state();
     var email = sec.selectedUserEmail;
@@ -1673,8 +1848,15 @@
     var select = document.getElementById('secUserModelServiceSelect');
     var selected = selectedOptions(select);
     var cache = await loadLLMServiceCache();
+    var previous = (cache.user_bindings || []).find(function(binding) { return normalizeEmailKey(binding.email) === normalizeEmailKey(email); });
+    var roles = readSecUserModelRoles(previous);
     cache.user_bindings = (cache.user_bindings || []).filter(function(binding) { return normalizeEmailKey(binding.email) !== normalizeEmailKey(email); });
-    if (selected.length) cache.user_bindings.push({ email: email, service_group_ids: selected });
+    if (selected.length || secRolesNonEmpty(roles)) {
+      var next = { email: email, service_group_ids: selected };
+      if (previous && previous.user_id) next.user_id = previous.user_id;
+      if (secRolesNonEmpty(roles)) next.model_roles = roles;
+      cache.user_bindings.push(next);
+    }
     try {
       await saveLLMServiceCache(cache);
       showToast(st('policySaved'), 'success');
@@ -1753,8 +1935,16 @@
     var source = selected.length ? st('sourceUserBinding') : ((diag && diag.matched_group_bindings && diag.matched_group_bindings.length) ? st('sourceGroupBinding') : (globalIds.length ? st('sourceGlobalBinding') : st('sourceGlobalFallback')));
     var models = (status.available_models || []).join(', ') || '-';
     var inactive = (status.inactive_reasons || []).join(', ');
+    var bindingRoles = binding && binding.model_roles || {};
+    var effectiveRoles = status.role_models || {};
+    var effectiveRoleText = st('roleForeground') + ': ' + (effectiveRoles.foreground || 'auto') + ' · ' + st('roleBackground') + ': ' + (effectiveRoles.background || 'auto') + ' · ' + st('roleComputerUse') + ': ' + (effectiveRoles.computer_use || 'auto');
+    var roleEditors = '<div style="margin-top:12px"><label>' + escapeHtml(st('roleModels')) + '</label><div class="item-meta" style="margin-top:4px">' + escapeHtml(effectiveRoleText) + '</div><div class="grid3" style="margin-top:10px">'
+      + secRoleSelect('secUserRoleForeground', st('roleForeground'), st('roleForegroundHint'), bindingRoles.foreground, cache)
+      + secRoleSelect('secUserRoleBackground', st('roleBackground'), st('roleBackgroundHint'), bindingRoles.background, cache)
+      + secRoleSelect('secUserRoleComputerUse', st('roleComputerUse'), st('roleComputerUseHint'), bindingRoles.computer_use, cache)
+      + '</div><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('roleModelPinHint')) + '</div></div>';
     setCurrentModelServiceExport({ object_type: 'user', user_email: email, source: source, effective_service_group_ids: ids, effective_service_groups: serviceGroupDetails(ids, cache), direct_service_group_ids: selected, global_service_group_ids: globalIds, default_new_user_service_group_ids: defaultIds, diagnostic: diag || null, service_status: status, exported_at: new Date().toISOString() });
-    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecUserModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px"><label>' + escapeHtml(st('modelServiceEffective')) + '</label><div style="margin-top:4px">' + serviceGroupChips(ids, cache) + '</div></div><div style="margin-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label>' + escapeHtml(st('modelServiceDirectOverride')) + '</label>' + renderClearModelServiceButton('secUserModelServiceSelect') + '</div><select id="secUserModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('modelServiceInheritHint')) + '</div></div><div class="grid2" style="margin-top:10px"><div><label>' + escapeHtml(st('modelRoutes')) + '</label><div class="item-meta">' + escapeHtml(models) + '</div></div><div><label>' + escapeHtml(st('defaultModel')) + '</label><div class="item-meta mono">' + escapeHtml(status.default_model || 'auto') + '</div></div></div>' + renderUserModelServiceUsage(status) + renderUserModelServiceEvidence(diag, cache) + (inactive ? '<div class="hint" style="margin-top:8px">' + escapeHtml(st('inactiveReasons') + ': ' + inactive) + '</div>' : '') + '</div>';
+    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecUserModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px"><label>' + escapeHtml(st('modelServiceEffective')) + '</label><div style="margin-top:4px">' + serviceGroupChips(ids, cache) + '</div></div><div style="margin-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label>' + escapeHtml(st('modelServiceDirectOverride')) + '</label>' + renderClearModelServiceButton('secUserModelServiceSelect') + '</div><select id="secUserModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('modelServiceInheritHint')) + '</div></div><div class="grid2" style="margin-top:10px"><div><label>' + escapeHtml(st('modelRoutes')) + '</label><div class="item-meta">' + escapeHtml(models) + '</div></div><div><label>' + escapeHtml(st('defaultModel')) + '</label><div class="item-meta mono">' + escapeHtml(status.default_model || 'auto') + '</div></div></div>' + roleEditors + renderUserModelServiceUsage(status) + renderUserModelServiceEvidence(diag, cache) + (inactive ? '<div class="hint" style="margin-top:8px">' + escapeHtml(st('inactiveReasons') + ': ' + inactive) + '</div>' : '') + '</div>';
   }
 
   function machineDisplayName(item) {
@@ -4916,14 +5106,15 @@
       var results = await Promise.all([
         loadLLMServiceCache(),
         loadCapabilityCache(),
-        rootId ? api('/api/admin/security/groups/' + encodeURIComponent(rootId) + '/policy').catch(function() { return null; }) : Promise.resolve(null)
+        rootId ? api('/api/admin/security/groups/' + encodeURIComponent(rootId) + '/policy').catch(function() { return null; }) : Promise.resolve(null),
+        loadBotView()
       ]);
       var defaultGroup = defaultGroupLabel();
       setCurrentOverviewSnapshot({ object_type: 'global', object_id: rootId || 'global', object_name: st('enterpriseTitle'), default_group: defaultGroup, default_group_id: state().defaultGroupId || '', exported_at: new Date().toISOString() });
       var overview = '<div class="item" style="padding:12px;margin-bottom:10px"><div class="item-title">' + escapeHtml(st('objectOverview')) + '</div><div class="grid2" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('globalObject')) + '</label><strong style="font-size:18px">' + escapeHtml(st('enterpriseTitle')) + '</strong><span>' + escapeHtml(st('globalObjectDesc')) + '</span></div><div class="metric"><label>' + escapeHtml(st('defaultGroup')) + '</label><strong style="font-size:18px">' + escapeHtml(defaultGroup) + '</strong><span>' + escapeHtml(st('defaultGroup')) + '</span></div></div></div>';
       if (results[2]) setCurrentPolicyExport({ object_type: 'global', group_id: rootId, items: results[2].items || {}, exported_at: new Date().toISOString() });
       var globalPolicy = results[2] ? '<div class="item" style="padding:12px;margin-bottom:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('globalSecurityPolicy')) + '</div><div class="item-meta">' + escapeHtml(st('groupIdPrefix') + rootId) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderPolicyExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecGlobalPolicy(\'' + escapeJsString(rootId) + '\')">' + escapeHtml(st('save')) + '</button></div></div>' + renderPolicySourceSummary(results[2].items || {}) + '<div style="margin-top:8px">' + renderPolicyRows(results[2].items || {}, true) + '</div></div>' : '';
-      if (panel) panel.innerHTML = overview + globalPolicy + renderModelServiceForGlobal(results[0]) + renderCapabilityPackagesFor('global', '', results[1]) + renderObjectAuditSection();
+      if (panel) panel.innerHTML = overview + globalPolicy + renderModelServiceForGlobal(results[0]) + renderBotQuotaCard('default', '', results[3]) + renderCapabilityPackagesFor('global', '', results[1]) + renderObjectAuditSection();
     } catch (err) {
       if (panel) panel.innerHTML = errorHint(err.message);
     }
@@ -4934,7 +5125,7 @@
     if (!panel) return;
     try {
       var view = await api('/api/admin/security/groups/' + encodeURIComponent(groupId) + '/policy');
-      var results = await Promise.all([loadLLMServiceCache(), loadCapabilityCache(), loadGroupEffectiveCapabilityPolicies(groupId)]);
+      var results = await Promise.all([loadLLMServiceCache(), loadCapabilityCache(), loadGroupEffectiveCapabilityPolicies(groupId), loadBotView()]);
       var serviceCache = results[0];
       var capabilityCache = results[1];
       if (capabilityCache && results[2] && Array.isArray(results[2].items)) capabilityCache.effectivePolicies = results[2].items;
@@ -4946,7 +5137,7 @@
       var overview = '<div class="item" style="padding:12px;margin-bottom:10px"><div class="item-title">' + escapeHtml(st('objectOverview')) + '</div><div class="grid3" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('selectedDepartment')) + '</label><strong style="font-size:18px">' + escapeHtml(group.name || '-') + '</strong><span class="mono">' + escapeHtml(group.id || '-') + '</span></div><div class="metric"><label>' + escapeHtml(st('memberCount')) + '</label><strong>' + String(Number((state().membersCache || []).length || group.member_count || 0)) + '</strong><span>' + escapeHtml(st('members')) + '</span></div><div class="metric"><label>' + escapeHtml(st('childGroupCount')) + '</label><strong>' + String((group.children || []).length) + '</strong><span>' + escapeHtml(st('groupTree')) + '</span></div></div><div class="metric" style="margin-top:10px"><label>' + escapeHtml(st('orgPath')) + '</label><strong style="font-size:14px;word-break:break-word">' + escapeHtml(groupPath) + '</strong><span class="mono">' + escapeHtml(selectedGroupChainIds(groupId).join(' / ') || '-') + '</span></div></div>';
       setCurrentPolicyExport({ object_type: 'group', group_id: groupId, group_name: group.name || groupId, group_path: groupPath, group_path_ids: selectedGroupChainIds(groupId), items: view.items || {}, exported_at: new Date().toISOString() });
       var policy = '<div class="item" style="padding:12px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('effectivePolicy')) + '</div><div class="item-meta">' + escapeHtml(st('policyPrefix') + (group.name || groupId)) + '</div></div>' + renderPolicyExportButton() + '</div>' + renderPolicySourceSummary(view.items || {}) + '<div style="margin-top:8px">' + renderPolicyRows(view.items || {}, true) + '</div></div>';
-      panel.innerHTML = overview + policy + renderModelServiceForGroup(groupId, serviceCache) + renderCapabilityPackagesFor('group', groupId, capabilityCache) + renderObjectAuditSection();
+      panel.innerHTML = overview + policy + renderModelServiceForGroup(groupId, serviceCache) + renderBotQuotaCard('department', groupId, results[3], selectedGroupChainIds(groupId).slice().reverse()) + renderCapabilityPackagesFor('group', groupId, capabilityCache) + renderObjectAuditSection();
     } catch (err) {
       panel.innerHTML = errorHint(err.message);
     }
@@ -5184,7 +5375,8 @@
         loadUserCapabilityInventory(email),
         loadUserEffectiveCapabilityPolicies(email),
         loadUserCapabilityCompliance(email),
-        api('/api/admin/debug/machines?email=' + encodeURIComponent(email)).catch(function() { return { machines: [] }; })
+        api('/api/admin/debug/machines?email=' + encodeURIComponent(email)).catch(function() { return { machines: [] }; }),
+        loadBotView()
       ]);
       var policyResponse = results[0] || {};
       var policy = policyResponse.policy || {};
@@ -5218,7 +5410,9 @@
       var overview = '<div class="item" style="padding:12px;margin-bottom:10px"><div class="item-title">' + escapeHtml(st('objectOverview')) + '</div><div class="grid3" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('selectedUser')) + '</label><strong style="font-size:18px">' + escapeHtml(email) + '</strong><span>' + escapeHtml(st('status')) + ': ' + escapeHtml(statusText) + '</span></div><div class="metric"><label>' + escapeHtml(st('userSN')) + '</label><strong style="font-size:18px">' + escapeHtml(userEntry && userEntry.sn || '-') + '</strong><span>' + escapeHtml(st('enrollmentStatus')) + ': ' + escapeHtml(enrollText) + '</span></div><div class="metric"><label>' + escapeHtml(st('serviceAccess')) + '</label><strong style="font-size:18px">' + escapeHtml(serviceText) + '</strong><span>' + escapeHtml(st('smartRoute')) + ': ' + escapeHtml(userDirectoryBoolLabel(userEntry && userEntry.smart_route)) + '</span></div></div><div class="grid2" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('selectedDepartment')) + '</label><strong style="font-size:18px">' + escapeHtml(userGroupName) + '</strong><span class="mono">' + escapeHtml(userOrgPath) + ' | ' + escapeHtml(userOrgIds) + '</span></div><div class="metric"><label>' + escapeHtml(st('defaultModel')) + '</label><strong style="font-size:18px">' + escapeHtml(defaultModel) + '</strong><span>' + escapeHtml(st('modelRoutes')) + ': ' + String(modelCount) + '</span></div></div></div>';
       setCurrentPolicyExport({ object_type: 'user', user_email: email, group_id: policyGroupId, group_path: policyResponse.group_path || [], policy: policy, items: items, machines: userMachines, exported_at: new Date().toISOString() });
       var policyHtml = '<div class="item" style="padding:12px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('effectivePolicy')) + '</div><div class="item-meta">' + escapeHtml(st('policyPrefix') + email) + '</div></div>' + renderPolicyExportButton() + '</div>' + renderPolicySourceSummary(items) + '<div style="margin-top:8px">' + renderPolicyRows(items, false) + '</div></div>';
-      if (panel) panel.innerHTML = overview + policyHtml + renderModelServiceForUser(email, cache, diag) + renderCapabilityPackagesFor('user', email, capabilityCache) + renderUserDeviceSummary(userMachines) + renderObjectAuditSection();
+      var botUserChain = (policyResponse.group_path || []).map(function(item) { return item && item.id || ''; }).filter(Boolean).reverse();
+      if (!botUserChain.length && policyGroupId) botUserChain = selectedGroupChainIds(policyGroupId).slice().reverse();
+      if (panel) panel.innerHTML = overview + policyHtml + renderModelServiceForUser(email, cache, diag) + renderBotQuotaCard('user', userEntry && userEntry.id || '', results[9], botUserChain) + renderCapabilityPackagesFor('user', email, capabilityCache) + renderUserDeviceSummary(userMachines) + renderObjectAuditSection();
     } catch (err) {
       if (panel) panel.innerHTML = errorHint(err.message);
     }

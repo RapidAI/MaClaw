@@ -18,9 +18,10 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -175,8 +176,13 @@ type petStorePublicPack struct {
 	PurchaseCount int64  `json:"purchase_count"`
 	SalesAmount   int64  `json:"sales_amount"`
 	CreatedAt     string `json:"created_at"`
-	// PreviewDataURL is a small, sanitized JPEG thumbnail made from the pack's
-	// own raster assets. It lets buyers recognize the pet without exposing the
+	// UpdatedAt records the last republish. Installed clients do not treat it
+	// as a version: the same source pack id is newer only when Version is a
+	// higher version number.
+	UpdatedAt string `json:"updated_at"`
+	// PreviewDataURL is a small, sanitized thumbnail made from the pack's own
+	// raster assets. Transparent margins are trimmed so the character fills
+	// the frame. It lets buyers recognize the pet without exposing the
 	// installable archive or an asset download URL.
 	PreviewDataURL string `json:"preview_data_url,omitempty"`
 }
@@ -229,7 +235,7 @@ func publicPetStorePack(p *petStorePack) petStorePublicPack {
 	if p == nil {
 		return petStorePublicPack{}
 	}
-	return petStorePublicPack{ID: p.ID, SourcePackID: p.SourcePackID, Name: p.Name, Description: p.Description, Version: p.Version, Price: p.Price, PackageSize: p.PackageSize, DownloadCount: p.DownloadCount, PurchaseCount: p.PurchaseCount, SalesAmount: p.SalesAmount, CreatedAt: p.CreatedAt, PreviewDataURL: petStorePackPreviewDataURL(p.ZipPath)}
+	return petStorePublicPack{ID: p.ID, SourcePackID: p.SourcePackID, Name: p.Name, Description: p.Description, Version: p.Version, Price: p.Price, PackageSize: p.PackageSize, DownloadCount: p.DownloadCount, PurchaseCount: p.PurchaseCount, SalesAmount: p.SalesAmount, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt, PreviewDataURL: petStorePackPreviewDataURL(p.ZipPath)}
 }
 
 // petStorePackPreviewDataURL selects the first valid raster asset from a
@@ -283,30 +289,167 @@ func petStorePackPreviewDataURL(zipPath string) string {
 		if bounds.Dx() <= 0 || bounds.Dy() <= 0 || int64(bounds.Dx())*int64(bounds.Dy()) > 16_000_000 {
 			continue
 		}
-		// Keep the original aspect ratio. Most pet assets have transparent
-		// margins, so compose them onto a neutral background before JPEG encoding
-		// rather than turning those pixels black or stretching the character.
-		thumbBounds := image.Rect(0, 0, 192, 112)
-		thumb := image.NewRGBA(thumbBounds)
-		for y := thumbBounds.Min.Y; y < thumbBounds.Max.Y; y++ {
-			for x := thumbBounds.Min.X; x < thumbBounds.Max.X; x++ {
-				thumb.SetRGBA(x, y, color.RGBA{R: 241, G: 245, B: 249, A: 255})
-			}
-		}
-		scale := min(float64(thumbBounds.Dx())/float64(bounds.Dx()), float64(thumbBounds.Dy())/float64(bounds.Dy()))
-		width, height := max(1, int(float64(bounds.Dx())*scale)), max(1, int(float64(bounds.Dy())*scale))
-		destination := image.Rect((thumbBounds.Dx()-width)/2, (thumbBounds.Dy()-height)/2, (thumbBounds.Dx()-width)/2+width, (thumbBounds.Dy()-height)/2+height)
-		xdraw.CatmullRom.Scale(thumb, destination, img, bounds, xdraw.Over, nil)
-		var out bytes.Buffer
-		if jpeg.Encode(&out, thumb, &jpeg.Options{Quality: 76}) != nil || out.Len() == 0 || out.Len() > 48<<10 {
+		dataURL, ok := petStorePreviewDataURLFromImage(img)
+		if !ok {
 			continue
 		}
-		dataURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(out.Bytes())
 		petStorePreviewCacheStore(zipPath, petStorePreviewCacheEntry{modTime: info.ModTime(), size: info.Size(), dataURL: dataURL})
 		return dataURL
 	}
 	petStorePreviewCacheStore(zipPath, petStorePreviewCacheEntry{modTime: info.ModTime(), size: info.Size()})
 	return ""
+}
+
+const (
+	// petStorePreviewSide is the listing thumbnail. A square leaves room for a
+	// full-body pet; the old 192×112 strip scaled tall canvases down until the
+	// character was a sliver along the bottom edge.
+	petStorePreviewSide     = 256
+	petStorePreviewMaxBytes = 48 << 10
+)
+
+// petStorePreviewDataURLFromImage trims transparent margins and fits the
+// remaining character into a square with padding, so the listing shows the
+// whole pet instead of a landscape crop of the source canvas. PNG keeps the
+// transparency; a JPEG on a neutral plate is only the fallback when the PNG
+// would exceed the listing size cap.
+func petStorePreviewDataURLFromImage(img image.Image) (string, bool) {
+	if img == nil {
+		return "", false
+	}
+	content := petStorePreviewContentBounds(img)
+	for _, side := range []int{petStorePreviewSide, 192} {
+		thumb := petStoreRenderPreview(img, content, side, true)
+		var out bytes.Buffer
+		if png.Encode(&out, thumb) != nil {
+			continue
+		}
+		if out.Len() > 0 && out.Len() <= petStorePreviewMaxBytes {
+			return "data:image/png;base64," + base64.StdEncoding.EncodeToString(out.Bytes()), true
+		}
+	}
+	thumb := petStoreRenderPreview(img, content, 192, false)
+	var out bytes.Buffer
+	if jpeg.Encode(&out, thumb, &jpeg.Options{Quality: 76}) != nil || out.Len() == 0 || out.Len() > petStorePreviewMaxBytes {
+		return "", false
+	}
+	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(out.Bytes()), true
+}
+
+// petStorePreviewContentBounds is the opaque subject. Pet frames usually stand
+// at the bottom of a tall transparent canvas; fitting that whole canvas into
+// the card leaves the character tiny and cut off.
+func petStorePreviewContentBounds(img image.Image) image.Rectangle {
+	b := img.Bounds()
+	if b.Empty() {
+		return b
+	}
+	switch img.(type) {
+	case *image.YCbCr, *image.Gray, *image.CMYK:
+		return b
+	}
+	minX, minY := b.Max.X, b.Max.Y
+	maxX, maxY := b.Min.X-1, b.Min.Y-1
+	note := func(x, y int) {
+		if x < minX {
+			minX = x
+		}
+		if y < minY {
+			minY = y
+		}
+		if x > maxX {
+			maxX = x
+		}
+		if y > maxY {
+			maxY = y
+		}
+	}
+	switch src := img.(type) {
+	case *image.NRGBA:
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			row := (y-src.Rect.Min.Y)*src.Stride + (b.Min.X-src.Rect.Min.X)*4
+			for x := b.Min.X; x < b.Max.X; x++ {
+				if src.Pix[row+3] > 16 {
+					note(x, y)
+				}
+				row += 4
+			}
+		}
+	case *image.RGBA:
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			row := (y-src.Rect.Min.Y)*src.Stride + (b.Min.X-src.Rect.Min.X)*4
+			for x := b.Min.X; x < b.Max.X; x++ {
+				if src.Pix[row+3] > 16 {
+					note(x, y)
+				}
+				row += 4
+			}
+		}
+	default:
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				if _, _, _, a := img.At(x, y).RGBA(); a > 0x1000 {
+					note(x, y)
+				}
+			}
+		}
+	}
+	if maxX < minX || maxY < minY {
+		return b
+	}
+	return image.Rect(minX, minY, maxX+1, maxY+1)
+}
+
+// petStoreRenderPreview draws content into a square. Padding keeps ears, feet,
+// and outlines off the card edge. transparent is false only for the JPEG
+// fallback, which has to composite onto a plate.
+func petStoreRenderPreview(src image.Image, content image.Rectangle, side int, transparent bool) *image.RGBA {
+	if side < 16 {
+		side = 16
+	}
+	if content.Empty() {
+		content = src.Bounds()
+	}
+	pad := side / 12
+	if pad < 8 {
+		pad = 8
+	}
+	if pad*2 >= side {
+		pad = side / 8
+	}
+	inner := side - pad*2
+	thumb := image.NewRGBA(image.Rect(0, 0, side, side))
+	if !transparent {
+		plate := color.RGBA{R: 241, G: 245, B: 249, A: 255}
+		for i := 0; i < len(thumb.Pix); i += 4 {
+			thumb.Pix[i] = plate.R
+			thumb.Pix[i+1] = plate.G
+			thumb.Pix[i+2] = plate.B
+			thumb.Pix[i+3] = 255
+		}
+	}
+	scale := math.Min(float64(inner)/float64(content.Dx()), float64(inner)/float64(content.Dy()))
+	if scale <= 0 || math.IsNaN(scale) || math.IsInf(scale, 0) {
+		return thumb
+	}
+	w := int(math.Round(float64(content.Dx()) * scale))
+	h := int(math.Round(float64(content.Dy()) * scale))
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	if w > inner {
+		w = inner
+	}
+	if h > inner {
+		h = inner
+	}
+	x0 := (side - w) / 2
+	y0 := (side - h) / 2
+	xdraw.CatmullRom.Scale(thumb, image.Rect(x0, y0, x0+w, y0+h), src, content, xdraw.Over, nil)
+	return thumb
 }
 
 // petStorePreviewCandidatePaths follows the same preference as the desktop
@@ -746,7 +889,7 @@ func (h *SkillMarketHandlers) ApplyPetStoreSnapshot(ctx context.Context, raw jso
 			if int64(len(data)) != p.PackageSize {
 				return fmt.Errorf("pet store archive size mismatch for %s", p.ID)
 			}
-			archiveSourcePackID, err := petStoreArchiveSourcePackID(data)
+			archiveSourcePackID, _, err := petStoreArchiveSourcePackID(data)
 			if err != nil {
 				return fmt.Errorf("validate pet store archive %s: %w", p.ID, err)
 			}
@@ -927,19 +1070,20 @@ func petStoreUniqueID(prefix string) string {
 }
 
 // petStoreArchiveSourcePackID validates the archive and returns the stable ID
-// declared by its own manifest. The caller must compare it with the submitted
-// source_pack_id: trusting a form field alone would let an archive impersonate
-// an unrelated market pack.
-func petStoreArchiveSourcePackID(data []byte) (string, error) {
+// and normalized manifest version declared by its own pet-pack.yaml. The
+// caller must compare the ID with the submitted source_pack_id: trusting a
+// form field alone would let an archive impersonate an unrelated market pack.
+// An empty version means the manifest did not declare one.
+func petStoreArchiveSourcePackID(data []byte) (string, string, error) {
 	if len(data) == 0 || len(data) > petStoreMaxArchiveBytes {
-		return "", fmt.Errorf("pet pack archive must be between 1 byte and %d bytes", petStoreMaxArchiveBytes)
+		return "", "", fmt.Errorf("pet pack archive must be between 1 byte and %d bytes", petStoreMaxArchiveBytes)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return "", fmt.Errorf("invalid zip: %w", err)
+		return "", "", fmt.Errorf("invalid zip: %w", err)
 	}
 	if len(zr.File) == 0 || len(zr.File) > petStoreMaxFiles {
-		return "", fmt.Errorf("pet pack must contain 1-%d files", petStoreMaxFiles)
+		return "", "", fmt.Errorf("pet pack must contain 1-%d files", petStoreMaxFiles)
 	}
 	allowed := map[string]bool{".png": true, ".webp": true, ".svg": true, ".yaml": true, ".yml": true, ".json": true, ".txt": true, ".md": true}
 	var total int64
@@ -951,76 +1095,196 @@ func petStoreArchiveSourcePackID(data []byte) (string, error) {
 		}
 		name := filepath.ToSlash(f.Name)
 		if len(name) > 180 || strings.HasPrefix(name, "/") || strings.Contains(name, "..") || strings.Contains(name, ":") {
-			return "", fmt.Errorf("unsafe archive path")
+			return "", "", fmt.Errorf("unsafe archive path")
 		}
 		clean := filepath.ToSlash(filepath.Clean(name))
 		if clean == "." || strings.HasPrefix(clean, "../") || seenPaths[clean] {
-			return "", fmt.Errorf("duplicate or unsafe archive path")
+			return "", "", fmt.Errorf("duplicate or unsafe archive path")
 		}
 		seenPaths[clean] = true
 		name = clean
 		if !allowed[strings.ToLower(filepath.Ext(name))] {
-			return "", fmt.Errorf("unsupported file type in pet pack")
+			return "", "", fmt.Errorf("unsupported file type in pet pack")
 		}
 		if f.UncompressedSize64 > petStoreMaxFileBytes {
-			return "", fmt.Errorf("a pet pack file exceeds %d bytes", petStoreMaxFileBytes)
+			return "", "", fmt.Errorf("a pet pack file exceeds %d bytes", petStoreMaxFileBytes)
 		}
 		total += int64(f.UncompressedSize64)
 		if total > petStoreMaxUnpacked {
-			return "", fmt.Errorf("pet pack exceeds %d bytes when unpacked", petStoreMaxUnpacked)
+			return "", "", fmt.Errorf("pet pack exceeds %d bytes when unpacked", petStoreMaxUnpacked)
 		}
 		base := strings.ToLower(filepath.Base(name))
 		if base == "pet-pack.yaml" || base == "pet-pack.yml" {
 			if manifestData != nil {
-				return "", fmt.Errorf("pet pack must contain exactly one manifest")
+				return "", "", fmt.Errorf("pet pack must contain exactly one manifest")
 			}
 			rc, err := f.Open()
 			if err != nil {
-				return "", fmt.Errorf("read pet pack manifest: %w", err)
+				return "", "", fmt.Errorf("read pet pack manifest: %w", err)
 			}
 			manifestData, err = io.ReadAll(io.LimitReader(rc, petStoreMaxFileBytes+1))
 			closeErr := rc.Close()
 			if err != nil {
-				return "", fmt.Errorf("read pet pack manifest: %w", err)
+				return "", "", fmt.Errorf("read pet pack manifest: %w", err)
 			}
 			if closeErr != nil {
-				return "", fmt.Errorf("close pet pack manifest: %w", closeErr)
+				return "", "", fmt.Errorf("close pet pack manifest: %w", closeErr)
 			}
 			if int64(len(manifestData)) > petStoreMaxFileBytes {
-				return "", fmt.Errorf("pet pack manifest exceeds %d bytes", petStoreMaxFileBytes)
+				return "", "", fmt.Errorf("pet pack manifest exceeds %d bytes", petStoreMaxFileBytes)
 			}
 		}
 	}
 	if manifestData == nil {
-		return "", fmt.Errorf("pet pack is missing pet-pack.yaml")
+		return "", "", fmt.Errorf("pet pack is missing pet-pack.yaml")
 	}
 	var manifest petpack.PetPackManifest
 	if err := yaml.Unmarshal(manifestData, &manifest); err != nil {
-		return "", fmt.Errorf("invalid pet pack manifest: %w", err)
+		return "", "", fmt.Errorf("invalid pet pack manifest: %w", err)
 	}
 	if err := petpack.ValidateManifest(&manifest); err != nil {
-		return "", fmt.Errorf("invalid pet pack manifest: %w", err)
+		return "", "", fmt.Errorf("invalid pet pack manifest: %w", err)
 	}
 	if renderer, idlePath := petpack.DefaultPresentation(&manifest); renderer != petpack.RendererProcedural {
 		if err := petStoreValidateStaticFrameArchive(zr, idlePath); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 	for _, rigAssets := range petpack.SkeletonRigAssets(&manifest) {
-		if err := petStoreValidateRigArchive(zr, rigAssets); err != nil {
-			return "", err
+		if err := petStoreValidateRigArchive(zr, &manifest, rigAssets); err != nil {
+			return "", "", err
 		}
 	}
 	for _, presentation := range petpack.CharacterPresentations(&manifest) {
 		if err := petStoreValidateCharacterArchive(zr, presentation.Character, presentation.Rig); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 	manifest.ID = strings.TrimSpace(manifest.ID)
 	if !petStoreSourcePackIDPattern.MatchString(manifest.ID) {
-		return "", fmt.Errorf("invalid pet pack manifest id")
+		return "", "", fmt.Errorf("invalid pet pack manifest id")
 	}
-	return manifest.ID, nil
+	return manifest.ID, petpack.NormalizePackVersion(manifest.Version), nil
+}
+
+// petStoreEnsureArchiveVersion writes version into the stored pet-pack.yaml
+// so a buyer install carries the version the listing publishes. A matching
+// manifest version is returned unchanged. A different version, including an
+// empty version line, replaces the root version key instead of adding a
+// second one.
+func petStoreEnsureArchiveVersion(data []byte, version string) ([]byte, error) {
+	version = petpack.NormalizePackVersion(version)
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, err
+	}
+	type zipEntry struct {
+		name string
+		body []byte
+	}
+	entries := make([]zipEntry, 0, len(zr.File))
+	changed := false
+	for _, f := range zr.File {
+		if f == nil || strings.HasSuffix(f.Name, "/") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(rc, petStoreMaxFileBytes+1))
+		closeErr := rc.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		base := strings.ToLower(filepath.Base(f.Name))
+		if base == "pet-pack.yaml" || base == "pet-pack.yml" {
+			next, didChange, err := petStoreYAMLWithVersion(body, version)
+			if err != nil {
+				return nil, err
+			}
+			if didChange {
+				body = next
+				changed = true
+			}
+		}
+		entries = append(entries, zipEntry{name: f.Name, body: body})
+	}
+	if !changed {
+		return data, nil
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, entry := range entries {
+		w, err := zw.Create(entry.name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := w.Write(entry.body); err != nil {
+			return nil, err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func petStoreYAMLWithVersion(manifest []byte, version string) ([]byte, bool, error) {
+	var parsed petpack.PetPackManifest
+	if err := yaml.Unmarshal(manifest, &parsed); err != nil {
+		return nil, false, fmt.Errorf("invalid pet pack manifest: %w", err)
+	}
+	if petpack.NormalizePackVersion(parsed.Version) == version {
+		return manifest, false, nil
+	}
+	text := string(manifest)
+	crlf := strings.Contains(text, "\r\n")
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	// Replace the root version line. A column-0 key is the document version;
+	// a nested id or version stays untouched. A repeated root line is dropped.
+	replaced := false
+	out := make([]string, 0, len(lines)+1)
+	for _, line := range lines {
+		if strings.HasPrefix(line, "version:") {
+			if !replaced {
+				out = append(out, "version: "+version)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	if !replaced {
+		inserted := false
+		withVersion := make([]string, 0, len(out)+1)
+		for _, line := range out {
+			withVersion = append(withVersion, line)
+			if !inserted && strings.HasPrefix(line, "id:") {
+				withVersion = append(withVersion, "version: "+version)
+				inserted = true
+			}
+		}
+		if !inserted {
+			withVersion = append([]string{"version: " + version}, withVersion...)
+		}
+		out = withVersion
+	}
+	next := strings.Join(out, "\n")
+	if crlf {
+		next = strings.ReplaceAll(next, "\n", "\r\n")
+	}
+	// A flow-style manifest has no column-0 version line. Prepending one
+	// makes a document yaml.v3 cannot read. Refuse that instead of storing
+	// an archive whose installed version would not match the listing.
+	var check petpack.PetPackManifest
+	if err := yaml.Unmarshal([]byte(next), &check); err != nil || petpack.NormalizePackVersion(check.Version) != version {
+		return nil, false, fmt.Errorf("could not store version in pet-pack.yaml")
+	}
+	return []byte(next), true, nil
 }
 
 func petStoreValidateStaticFrameArchive(zr *zip.Reader, path string) error {
@@ -1049,7 +1313,7 @@ func petStoreValidateStaticFrameArchive(zr *zip.Reader, path string) error {
 	return fmt.Errorf("native idle fallback is missing: %s", path)
 }
 
-func petStoreValidateRigArchive(zr *zip.Reader, assets *petpack.PetPackRigAssets) error {
+func petStoreValidateRigArchive(zr *zip.Reader, manifest *petpack.PetPackManifest, assets *petpack.PetPackRigAssets) error {
 	if zr == nil || assets == nil {
 		return fmt.Errorf("native-skeleton pack is missing rig assets")
 	}
@@ -1084,6 +1348,9 @@ func petStoreValidateRigArchive(zr *zip.Reader, assets *petpack.PetPackRigAssets
 		return fmt.Errorf("invalid pet-rig definition: %w", err)
 	}
 	if err := petpack.ValidateRig(&rig, assets); err != nil {
+		return fmt.Errorf("invalid pet-rig definition: %w", err)
+	}
+	if err := petpack.ValidateAdornmentSlots(manifest, &rig); err != nil {
 		return fmt.Errorf("invalid pet-rig definition: %w", err)
 	}
 	textureData := make(map[string][]byte, len(assets.Textures))
@@ -1593,6 +1860,18 @@ func (h *SkillMarketHandlers) GetPetStorePack(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, publicPetStorePack(p))
 }
 
+// SubmitPetStorePack publishes a pet-pack archive as a market listing. A
+// version number is required: the form field, or pet-pack.yaml when the form
+// omits it. An empty version is rejected and is not filled in as 1.0.0. When
+// the creator already has an active or paused listing for the same stable
+// source_pack_id, the submission is a version upgrade: the archive and its
+// descriptive fields are replaced on that listing (200 + updated:true), while
+// its ID, status, counters, buyer entitlements, and created_at are preserved.
+// The submitted version replaces the manifest version in the stored archive.
+// The same version may be published again. A strictly older version of an
+// active or paused listing is rejected. The same source pack ID accepts an
+// updated version only from that owner. A different account is rejected with
+// 409, including after withdrawal or deletion.
 func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.Request) {
 	h.ensurePetStoreSchema()
 	userID, email, err := h.petStoreUser(r)
@@ -1607,9 +1886,13 @@ func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	desc := strings.TrimSpace(r.FormValue("description"))
-	version := strings.TrimSpace(r.FormValue("version"))
-	if version == "" {
-		version = "1.0.0"
+	// A non-empty form version must already be a version number. An empty
+	// field is filled from pet-pack.yaml after the archive is read, never
+	// with a default such as 1.0.0.
+	version := petpack.NormalizePackVersion(r.FormValue("version"))
+	if strings.TrimSpace(r.FormValue("version")) != "" && !petpack.ValidPackVersion(version) {
+		smError(w, http.StatusBadRequest, "version is required")
+		return
 	}
 	price, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("price")), 10, 64)
 	if err != nil || price < 0 || price > 999999 {
@@ -1625,7 +1908,7 @@ func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.
 		smError(w, http.StatusBadRequest, "invalid source pet pack id")
 		return
 	}
-	if name == "" || len([]rune(name)) > 60 || len([]rune(desc)) > 1000 || len([]rune(version)) > 80 {
+	if name == "" || len([]rune(name)) > 60 || len([]rune(desc)) > 1000 {
 		smError(w, http.StatusBadRequest, "name or description is too long")
 		return
 	}
@@ -1640,7 +1923,7 @@ func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.
 		smError(w, http.StatusBadRequest, "cannot read pet pack")
 		return
 	}
-	archiveSourcePackID, err := petStoreArchiveSourcePackID(data)
+	archiveSourcePackID, archiveVersion, err := petStoreArchiveSourcePackID(data)
 	if err != nil {
 		smError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1650,6 +1933,27 @@ func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.
 	} else if archiveSourcePackID != sourcePackID {
 		smError(w, http.StatusBadRequest, "source pet pack id does not match pet-pack.yaml")
 		return
+	}
+	if version == "" {
+		version = archiveVersion
+	}
+	if !petpack.ValidPackVersion(version) {
+		smError(w, http.StatusBadRequest, "version is required")
+		return
+	}
+	// Buyers install the stored archive. When the manifest version differs,
+	// rewrite that root key so the desktop compares the published version.
+	// A match skips the second zip walk and keeps the identical-archive path.
+	if archiveVersion != version {
+		data, err = petStoreEnsureArchiveVersion(data, version)
+		if err != nil {
+			smError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(data) == 0 || len(data) > petStoreMaxArchiveBytes {
+			smError(w, http.StatusBadRequest, fmt.Sprintf("pet pack archive must be between 1 byte and %d bytes", petStoreMaxArchiveBytes))
+			return
+		}
 	}
 	{
 		var foreignListingID string
@@ -1662,60 +1966,112 @@ func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.
 			smError(w, http.StatusConflict, "this pet pack ID is already published by another creator")
 			return
 		}
-		var retainedListings int
-		if err := h.store.ReadDB().QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sm_pet_store_packs WHERE owner_user_id=? AND source_pack_id=? AND status IN ('active','paused')`, userID, sourcePackID).Scan(&retainedListings); err != nil {
-			smError(w, http.StatusInternalServerError, "check existing pet pack listing: "+err.Error())
-			return
-		}
-		if retainedListings > 0 {
-			smError(w, http.StatusConflict, "this local pet pack is already listed or paused; unlist it before publishing again")
-			return
-		}
 	}
 	if err := os.MkdirAll(h.petStoreDir(), 0o755); err != nil {
 		smError(w, http.StatusInternalServerError, "create pet store directory: "+err.Error())
 		return
 	}
-	id := "pet_" + petStoreUniqueID("pack")
-	zipPath := filepath.Join(h.petStoreDir(), id+".zip")
-	if err := writePetStoreArchiveAtomic(zipPath, data); err != nil {
-		smError(w, http.StatusInternalServerError, "save pet pack: "+err.Error())
+	now := petStoreNow()
+	// Re-submitting an already listed source_pack_id is a version upgrade of
+	// that listing, not a conflict: the package and its descriptive fields are
+	// replaced in place so the listing keeps its stable ID, counters, buyer
+	// entitlements, and created_at. A paused listing is updated the same way —
+	// it stays hidden until an administrator resumes it, and the new package
+	// gives the moderator the corrected build to review. All claim checks are
+	// repeated inside one IMMEDIATE transaction: a withdrawn listing retains
+	// its creator's identity claim, and a competing creator must not win by
+	// racing the earlier read.
+	tx, err := h.store.BeginImmediate(r.Context())
+	if err != nil {
+		smError(w, http.StatusInternalServerError, "create listing: "+err.Error())
 		return
 	}
-	archiveCommitted := false
-	defer func() {
-		if archiveCommitted {
-			return
-		}
-		_ = os.Remove(zipPath)
-	}()
-	now := petStoreNow()
-	p := &petStorePack{ID: id, OwnerID: userID, OwnerEmail: email, SourcePackID: sourcePackID, Name: name, Description: desc, Version: version, Price: price, Status: "active", ZipPath: zipPath, PackageSize: int64(len(data)), CreatedAt: now, UpdatedAt: now}
-	// The lightweight checks above give a quick conflict response before writing
-	// the archive. Repeat them inside one IMMEDIATE transaction immediately
-	// before insertion: a withdrawn listing retains its creator's identity claim,
-	// and a competing creator must not win by racing the earlier read.
-	tx, err := h.store.BeginImmediate(r.Context())
+	defer tx.Rollback()
+	var foreignListingID string
+	err = tx.QueryRowContext(r.Context(), `SELECT id FROM sm_pet_store_packs WHERE source_pack_id=? AND owner_user_id<>? ORDER BY updated_at DESC, id ASC LIMIT 1`, sourcePackID, userID).Scan(&foreignListingID)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	if err == nil && foreignListingID != "" {
+		err = fmt.Errorf("pet store source pack ID claimed")
+	}
+	var updateID, updateZipPath, publishedVersion string
 	if err == nil {
-		defer tx.Rollback()
-		var foreignListingID string
-		err = tx.QueryRowContext(r.Context(), `SELECT id FROM sm_pet_store_packs WHERE source_pack_id=? AND owner_user_id<>? ORDER BY updated_at DESC, id ASC LIMIT 1`, sourcePackID, userID).Scan(&foreignListingID)
+		err = tx.QueryRowContext(r.Context(), `SELECT id, zip_path, version FROM sm_pet_store_packs WHERE owner_user_id=? AND source_pack_id=? AND status IN ('active','paused') ORDER BY updated_at DESC, id ASC LIMIT 1`, userID, sourcePackID).Scan(&updateID, &updateZipPath, &publishedVersion)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = nil
+			updateID = ""
 		}
-		if err == nil && foreignListingID != "" {
-			err = fmt.Errorf("pet store source pack ID claimed")
+	}
+	isUpdate := err == nil && updateID != ""
+	if isUpdate && petpack.ComparePackVersions(version, publishedVersion) < 0 {
+		smError(w, http.StatusBadRequest, "version is older than the published version")
+		return
+	}
+	var p *petStorePack
+	var zipPath string
+	var oldArchive []byte
+	oldArchiveExists := false
+	archiveWritten := false
+	committed := false
+	defer func() {
+		if committed || !archiveWritten {
+			return
+		}
+		// The transaction rolled back, so keep the package file aligned with the
+		// row: restore a replaced archive, or remove a brand-new one.
+		if oldArchiveExists {
+			_ = writePetStoreArchiveAtomic(zipPath, oldArchive)
+		} else {
+			_ = os.Remove(zipPath)
+		}
+	}()
+	if err == nil {
+		if isUpdate {
+			zipPath = strings.TrimSpace(updateZipPath)
+			if zipPath == "" {
+				err = fmt.Errorf("listed pet pack has no archive path")
+			}
+		} else {
+			p = &petStorePack{ID: "pet_" + petStoreUniqueID("pack"), OwnerID: userID, OwnerEmail: email, SourcePackID: sourcePackID, Name: name, Description: desc, Version: version, Price: price, Status: "active", ZipPath: "", PackageSize: int64(len(data)), CreatedAt: now, UpdatedAt: now}
+			zipPath = filepath.Join(h.petStoreDir(), p.ID+".zip")
+			p.ZipPath = zipPath
+		}
+	}
+	if err == nil && isUpdate {
+		var readErr error
+		oldArchive, readErr = os.ReadFile(zipPath)
+		switch {
+		case readErr == nil:
+			oldArchiveExists = true
+		case errors.Is(readErr, os.ErrNotExist):
+		default:
+			err = fmt.Errorf("read existing pet pack archive: %w", readErr)
 		}
 	}
 	if err == nil {
-		var retainedListings int
-		err = tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM sm_pet_store_packs WHERE owner_user_id=? AND source_pack_id=? AND status IN ('active','paused')`, userID, sourcePackID).Scan(&retainedListings)
-		if err == nil && retainedListings > 0 {
-			err = fmt.Errorf("pet store source pack already listed")
+		// A re-published archive that is byte-identical to the stored one is not
+		// rewritten: a redundant replace still bumps the file modtime, which
+		// drops the preview thumbnail cache entry and widens the window where a
+		// download reads a package newer than its listing row.
+		if isUpdate && oldArchiveExists && bytes.Equal(oldArchive, data) {
+			archiveWritten = false
+		} else {
+			err = writePetStoreArchiveAtomic(zipPath, data)
+			archiveWritten = err == nil
 		}
 	}
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO sm_pet_store_packs (`+petStorePackColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)`, p.ID, p.OwnerID, p.OwnerEmail, p.SourcePackID, p.Name, p.Description, p.Version, p.Price, p.Status, p.ZipPath, p.PackageSize, p.CreatedAt, p.UpdatedAt)
+		if isUpdate {
+			// The row is locked by this transaction, so the listing cannot lose
+			// or change its claim while the package file is being replaced.
+			_, err = tx.ExecContext(r.Context(), `UPDATE sm_pet_store_packs SET name=?, description=?, version=?, price=?, package_size=?, owner_email=?, updated_at=? WHERE id=?`, name, desc, version, price, int64(len(data)), email, now, updateID)
+			if err == nil {
+				p, err = scanPetStorePack(tx.QueryRowContext(r.Context(), `SELECT `+petStorePackColumns+` FROM sm_pet_store_packs WHERE id=?`, updateID))
+			}
+		} else {
+			_, err = tx.ExecContext(r.Context(), `INSERT INTO sm_pet_store_packs (`+petStorePackColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)`, p.ID, p.OwnerID, p.OwnerEmail, p.SourcePackID, p.Name, p.Description, p.Version, p.Price, p.Status, p.ZipPath, p.PackageSize, p.CreatedAt, p.UpdatedAt)
+		}
 	}
 	if err == nil {
 		err = tx.Commit()
@@ -1725,19 +2081,25 @@ func (h *SkillMarketHandlers) SubmitPetStorePack(w http.ResponseWriter, r *http.
 			smError(w, http.StatusConflict, "this pet pack ID is already published by another creator")
 			return
 		}
-		if strings.Contains(strings.ToLower(err.Error()), "already listed") {
-			smError(w, http.StatusConflict, "this local pet pack is already listed or paused; unlist it before publishing again")
-			return
-		}
 		if strings.Contains(strings.ToLower(err.Error()), "unique constraint") {
 			smError(w, http.StatusConflict, "this pet pack ID is already published by another creator")
 			return
 		}
-		smError(w, http.StatusInternalServerError, "create listing: "+err.Error())
+		smError(w, http.StatusInternalServerError, "save pet pack listing: "+err.Error())
 		return
 	}
-	archiveCommitted = true
-	writeJSON(w, http.StatusCreated, p)
+	committed = true
+	if isUpdate {
+		writeJSON(w, http.StatusOK, struct {
+			*petStorePack
+			// Updated tells market clients the submission refreshed an existing
+			// listing instead of creating a new one, so the UI can report the
+			// correct outcome.
+			Updated bool `json:"updated"`
+		}{petStorePack: p, Updated: true})
+	} else {
+		writeJSON(w, http.StatusCreated, p)
+	}
 	h.emitPetStoreSync(r.Context(), p.ID)
 }
 

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -62,6 +63,11 @@ func FetchToFolder(ctx context.Context, fetch Fetcher, folder string, spec Fetch
 	if spec.Size < 0 || strings.TrimSpace(spec.URL) == "" {
 		return "", &Err{Code: CodeInvalid, Message: "the download link is missing"}
 	}
+	if spec.Size == 0 {
+		// Do not open the partial file first. A missing size used to truncate
+		// and delete the bytes a real download was resuming.
+		return fetchEmpty(ctx, fetch, folder, spec)
+	}
 	name := SafeName(spec.Name)
 	if name == "" {
 		name = "file"
@@ -82,7 +88,7 @@ func FetchToFolder(ctx context.Context, fetch Fetcher, folder string, spec Fetch
 	url := spec.URL
 	refreshed := false
 	var lastErr error
-	for attempt := 0; done < spec.Size || (spec.Size == 0 && attempt == 0); attempt++ {
+	for attempt := 0; done < spec.Size; attempt++ {
 		if attempt >= fetchAttempts {
 			break
 		}
@@ -154,9 +160,6 @@ func FetchToFolder(ctx context.Context, fetch Fetcher, folder string, spec Fetch
 		if progress != nil {
 			progress(done)
 		}
-		if spec.Size == 0 {
-			break
-		}
 	}
 	if done != spec.Size {
 		f.Close()
@@ -196,6 +199,77 @@ func FetchToFolder(ctx context.Context, fetch Fetcher, folder string, spec Fetch
 	if err := os.Rename(part, final); err != nil {
 		os.Remove(final)
 		return "", &Err{Code: CodeFailed, Message: err.Error()}
+	}
+	return final, nil
+}
+
+// fetchEmpty stores a file whose declared size is zero. A body with bytes is
+// refused before any partial file is opened, so a resume already on disk
+// stays intact.
+func fetchEmpty(ctx context.Context, fetch Fetcher, folder string, spec FetchSpec) (string, error) {
+	url := spec.URL
+	refreshed := false
+	for {
+		resp, err := fetch(ctx, url, 0)
+		if err != nil {
+			return "", &Err{Code: CodeFailed, Message: err.Error()}
+		}
+		code := resp.StatusCode
+		if code == http.StatusUnauthorized || code == http.StatusForbidden || code == http.StatusGone {
+			resp.Body.Close()
+			if spec.Refresh != nil && !refreshed {
+				refreshed = true
+				if next, rerr := spec.Refresh(ctx); rerr == nil && strings.TrimSpace(next) != "" {
+					url = next
+					continue
+				}
+			}
+			if code == http.StatusGone {
+				return "", &Err{Code: CodeExpired, Message: "the file is no longer kept on the server (it expired); ask the bot to send it again"}
+			}
+			return "", &Err{Code: CodeDenied, Message: fmt.Sprintf("%v (HTTP %d)", ErrFetchAuth, code)}
+		}
+		if code == http.StatusNotFound {
+			resp.Body.Close()
+			return "", &Err{Code: CodeNotFound, Message: "the file is not on the server any more; ask the bot to send it again"}
+		}
+		if code != http.StatusOK && code != http.StatusNoContent {
+			resp.Body.Close()
+			return "", &Err{Code: CodeFailed, Message: fmt.Sprintf("HTTP %d", code)}
+		}
+		var peek [1]byte
+		var n int
+		var rerr error
+		if resp.Body != nil {
+			n, rerr = resp.Body.Read(peek[:])
+			resp.Body.Close()
+		}
+		if n > 0 {
+			return "", &Err{Code: CodeInvalid, Message: "the download was missing a file size"}
+		}
+		if rerr != nil && !errors.Is(rerr, io.EOF) {
+			return "", &Err{Code: CodeFailed, Message: rerr.Error()}
+		}
+		break
+	}
+	name := SafeName(spec.Name)
+	if name == "" {
+		name = "file"
+	}
+	f, final, err := CreateUnique(folder, name)
+	if err != nil {
+		return "", &Err{Code: CodeFailed, Message: err.Error()}
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(final)
+		return "", &Err{Code: CodeFailed, Message: err.Error()}
+	}
+	if want := askedSHA(spec); want != "" {
+		sum := sha256.Sum256(nil)
+		if hex.EncodeToString(sum[:]) != want {
+			os.Remove(final)
+			return "", &Err{Code: CodeFailed, Message: "the downloaded file did not match the server's checksum and was discarded; try again"}
+		}
 	}
 	return final, nil
 }
@@ -244,7 +318,10 @@ func HTTPFetcher(client *http.Client, base string, header func(*http.Request)) F
 
 // SaveDelivered downloads a file a bot delivered in chat into that bot's
 // own folder on this computer (the person's chat, so no question is asked).
-// Concurrent calls for one file share the download.
+// The chat message is already that file, so the save does not report a
+// transfer. A second save of the same stored file into the same folder,
+// including one that asks for a different name, waits for that download
+// and gets the same path.
 func (a *Agent) SaveDelivered(ctx context.Context, botID, botName, runID string, spec FetchSpec) (string, error) {
 	s := a.settings()
 	folder := s.BotFolder(botName, botID)
@@ -258,31 +335,262 @@ func (a *Agent) SaveDelivered(ctx context.Context, botID, botName, runID string,
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		return "", &Err{Code: CodeFailed, Message: err.Error()}
 	}
-	return a.fetchInto(ctx, folder, botID, botName, runID, "", spec)
+	return a.fetchInto(ctx, folder, botID, botName, runID, "", spec, fetchQuiet)
 }
 
-func (a *Agent) fetchInto(ctx context.Context, folder, botID, botName, runID, remote string, spec FetchSpec) (string, error) {
+// fetchShown reports progress to the person's computer. fetchQuiet is a
+// chat attachment being stored so the message can open it: that save is not
+// a transfer and must not grow a download chip.
+type fetchVisibility bool
+
+const (
+	fetchQuiet fetchVisibility = false
+	fetchShown fetchVisibility = true
+)
+
+// fetchFlight is one download of one partial file. The map is process-wide:
+// a chat save and a relay transfer can run on different Agent values and
+// must still share the partial file instead of writing it together.
+type fetchFlight struct {
+	done    chan struct{}
+	path    string
+	err     error
+	waiters int
+	size    int64
+	sha     string
+	eventID string
+}
+
+var fetchFlights struct {
+	sync.Mutex
+	m map[string]*fetchFlight
+}
+
+func fetchFlightKey(folder string, spec FetchSpec) string {
+	return filepath.Join(filepath.Clean(folder), partName(spec))
+}
+
+func askedSHA(spec FetchSpec) string {
+	return strings.ToLower(strings.TrimSpace(spec.SHA256))
+}
+
+func shaMismatch(want, have string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	have = strings.ToLower(strings.TrimSpace(have))
+	return want != "" && have != "" && want != have
+}
+
+func (a *Agent) fetchInto(ctx context.Context, folder, botID, botName, runID, remote string, spec FetchSpec, visibility fetchVisibility) (string, error) {
 	if spec.Refresh == nil && spec.Ref != "" && a.RefreshLink != nil {
 		ref := spec.Ref
 		spec.Refresh = func(ctx context.Context) (string, error) { return a.RefreshLink(ctx, ref) }
 	}
-	l := a.keyLock("fetch|" + firstNonEmpty(spec.Ref, spec.URL))
-	l.Lock()
-	defer l.Unlock()
-	ev := TransferEvent{ID: firstNonEmpty(spec.Ref, newID()), BotID: botID, BotName: botName, RunID: runID, Direction: "to_local", Name: SafeName(spec.Name), Remote: remote, Size: spec.Size, State: "running"}
-	a.notify(ev)
+	key := fetchFlightKey(folder, spec)
+	for {
+		fetchFlights.Lock()
+		if fetchFlights.m == nil {
+			fetchFlights.m = map[string]*fetchFlight{}
+		}
+		flight := fetchFlights.m[key]
+		if flight == nil {
+			flight = &fetchFlight{done: make(chan struct{}), size: spec.Size, sha: askedSHA(spec)}
+			if visibility == fetchShown {
+				flight.eventID = firstNonEmpty(spec.Ref, newID())
+			}
+			fetchFlights.m[key] = flight
+			fetchFlights.Unlock()
+			return a.leadFetch(ctx, key, flight, folder, botID, botName, runID, remote, spec, visibility)
+		}
+		select {
+		case <-flight.done:
+			path, ferr, sha, size := flight.path, flight.err, flight.sha, flight.size
+			fetchFlights.Unlock()
+			if ferr == nil {
+				use, sum, cerr := classifyCached(path, spec, size, sha)
+				if cerr != nil {
+					return "", cerr
+				}
+				if use {
+					rememberFlightSHA(flight, sum)
+					return path, nil
+				}
+			}
+			fetchFlights.Lock()
+			if fetchFlights.m[key] == flight {
+				delete(fetchFlights.m, key)
+			}
+			fetchFlights.Unlock()
+		default:
+			flight.waiters++
+			sha, size, eventID := flight.sha, flight.size, flight.eventID
+			fetchFlights.Unlock()
+			path, err := waitFetch(ctx, flight)
+			if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+				return "", &Err{Code: CodeFailed, Message: "the download was stopped; it resumes next time"}
+			}
+			// The leader's own cancel must not fail a caller that is still
+			// waiting. The partial file is still there; this caller resumes it.
+			if err != nil && ctx.Err() == nil && downloadStopped(err) {
+				continue
+			}
+			if err == nil {
+				use, sum, cerr := classifyCached(path, spec, size, sha)
+				if cerr != nil {
+					err = cerr
+					path = ""
+				} else if !use {
+					continue
+				} else {
+					rememberFlightSHA(flight, sum)
+				}
+			}
+			// The leader publishes the chip while bytes are moving. A quiet
+			// leader does not, so an explicit transfer that joined it reports
+			// the outcome once.
+			if visibility == fetchShown && eventID == "" {
+				a.reportFetch("", botID, botName, runID, remote, spec, path, err)
+			}
+			return path, err
+		}
+	}
+}
+
+func (a *Agent) leadFetch(ctx context.Context, key string, flight *fetchFlight, folder, botID, botName, runID, remote string, spec FetchSpec, visibility fetchVisibility) (path string, err error) {
+	finished := false
+	defer func() {
+		if finished {
+			return
+		}
+		if flight.err == nil {
+			flight.err = &Err{Code: CodeFailed, Message: "the download failed"}
+		}
+		select {
+		case <-flight.done:
+		default:
+			close(flight.done)
+		}
+		fetchFlights.Lock()
+		if fetchFlights.m[key] == flight {
+			delete(fetchFlights.m, key)
+		}
+		fetchFlights.Unlock()
+	}()
+	path, err = a.downloadFetch(ctx, folder, botID, botName, runID, remote, spec, flight.eventID, visibility)
+	flight.path, flight.err = path, err
+	finished = true
+	close(flight.done)
+	if err != nil {
+		fetchFlights.Lock()
+		if fetchFlights.m[key] == flight {
+			delete(fetchFlights.m, key)
+		}
+		fetchFlights.Unlock()
+	}
+	return path, err
+}
+
+func downloadStopped(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "the download was stopped")
+}
+
+// classifyCached says whether path can answer spec. A checksum or a size
+// that belongs to a different completed save is an error and leaves that
+// save in place. A missing file, or a file that is not the size that was
+// saved, is not usable and the caller downloads again.
+func classifyCached(path string, spec FetchSpec, savedSize int64, savedSHA string) (use bool, sum string, err error) {
+	info, statErr := os.Stat(path)
+	if statErr != nil || info.IsDir() {
+		return false, "", nil
+	}
+	if spec.Size > 0 && info.Size() != spec.Size {
+		if savedSize > 0 && info.Size() == savedSize {
+			return false, "", &Err{Code: CodeFailed, Message: "the saved file is a different size than was asked for"}
+		}
+		return false, "", nil
+	}
+	if shaMismatch(spec.SHA256, savedSHA) {
+		return false, "", &Err{Code: CodeFailed, Message: "the saved file does not match the checksum that was asked for"}
+	}
+	asked := askedSHA(spec)
+	if asked != "" && savedSHA == "" {
+		got, herr := fileSHA256(path)
+		if herr != nil {
+			return false, "", &Err{Code: CodeFailed, Message: herr.Error()}
+		}
+		if got != asked {
+			return false, "", &Err{Code: CodeFailed, Message: "the saved file does not match the checksum that was asked for"}
+		}
+		return true, got, nil
+	}
+	return true, "", nil
+}
+
+func rememberFlightSHA(flight *fetchFlight, sum string) {
+	if flight == nil || sum == "" {
+		return
+	}
+	fetchFlights.Lock()
+	if flight.sha == "" {
+		flight.sha = sum
+	}
+	fetchFlights.Unlock()
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func waitFetch(ctx context.Context, flight *fetchFlight) (string, error) {
+	select {
+	case <-flight.done:
+		return flight.path, flight.err
+	case <-ctx.Done():
+		select {
+		case <-flight.done:
+			return flight.path, flight.err
+		default:
+			return "", ctx.Err()
+		}
+	}
+}
+
+func (a *Agent) downloadFetch(ctx context.Context, folder, botID, botName, runID, remote string, spec FetchSpec, eventID string, visibility fetchVisibility) (string, error) {
+	if visibility != fetchShown {
+		return FetchToFolder(ctx, a.Fetch, folder, spec, nil)
+	}
+	ev := TransferEvent{ID: firstNonEmpty(eventID, spec.Ref, newID()), BotID: botID, BotName: botName, RunID: runID, Direction: "to_local", Name: SafeName(spec.Name), Remote: remote, Size: spec.Size, State: "running"}
+	send := func() { a.notify(ev) }
+	send()
 	path, err := FetchToFolder(ctx, a.Fetch, folder, spec, func(done int64) {
 		ev.Done = done
-		a.notify(ev)
+		send()
 	})
 	if err != nil {
 		ev.State, ev.Error = "failed", err.Error()
-		a.notify(ev)
-		return "", err
+	} else {
+		ev.State, ev.Done, ev.LocalPath, ev.Name = "done", spec.Size, path, filepath.Base(path)
 	}
-	ev.State, ev.Done, ev.LocalPath, ev.Name = "done", spec.Size, path, filepath.Base(path)
+	send()
+	return path, err
+}
+
+func (a *Agent) reportFetch(eventID, botID, botName, runID, remote string, spec FetchSpec, path string, err error) {
+	ev := TransferEvent{ID: firstNonEmpty(eventID, spec.Ref, newID()), BotID: botID, BotName: botName, RunID: runID, Direction: "to_local", Name: SafeName(spec.Name), Remote: remote, Size: spec.Size}
+	if err != nil {
+		ev.State, ev.Error = "failed", err.Error()
+	} else {
+		ev.State, ev.Done, ev.LocalPath, ev.Name = "done", spec.Size, path, filepath.Base(path)
+	}
 	a.notify(ev)
-	return path, nil
 }
 
 // fetch answers OpFetch: approve the folder like a write, answer, download,
@@ -317,7 +625,7 @@ func (a *Agent) fetch(ctx context.Context, stream net.Conn, s Settings, req Requ
 	}
 	// The download belongs to the computer now: it goes on even when Hub
 	// stops waiting for the answer.
-	path, err := a.fetchInto(context.WithoutCancel(ctx), d.Resolved, req.BotID, req.BotName, req.RunID, req.Remote, FetchSpec{URL: req.URL, Ref: req.Ref, Name: name, Size: req.Size, SHA256: req.SHA256})
+	path, err := a.fetchInto(context.WithoutCancel(ctx), d.Resolved, req.BotID, req.BotName, req.RunID, req.Remote, FetchSpec{URL: req.URL, Ref: req.Ref, Name: name, Size: req.Size, SHA256: req.SHA256}, fetchShown)
 	if err != nil {
 		respondErr(stream, err)
 		return nil

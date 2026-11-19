@@ -16,29 +16,28 @@ class ApiClient {
   final void Function()? onAuthRejected;
 
   ApiClient(this.account, {this.onAuthRejected})
-      : dio = hubDio(account.hubUrl)
-          ..interceptors.add(
-            InterceptorsWrapper(
-              onRequest: (options, handler) {
-                if (account.token.isNotEmpty) {
-                  options.headers['Authorization'] = 'Bearer ${account.token}';
-                }
-                handler.next(options);
-              },
-            ),
-          );
+    : dio = hubDio(account.hubUrl)
+        ..interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              if (account.token.isNotEmpty) {
+                options.headers['Authorization'] = 'Bearer ${account.token}';
+              }
+              handler.next(options);
+            },
+          ),
+        );
 
   Options opts({
     Duration? receiveTimeout,
     Duration? sendTimeout,
     Map<String, dynamic>? headers,
-  }) =>
-      Options(
-        headers: headers,
-        receiveTimeout: receiveTimeout,
-        sendTimeout: sendTimeout,
-        validateStatus: (code) => code != null && code < 500,
-      );
+  }) => Options(
+    headers: headers,
+    receiveTimeout: receiveTimeout,
+    sendTimeout: sendTimeout,
+    validateStatus: (code) => code != null && code < 500,
+  );
 
   Future<Map<String, dynamic>> guard(
     Future<Response<Map<String, dynamic>>> Function() call,
@@ -73,7 +72,33 @@ class ApiClient {
     try {
       final response = await fn();
       final status = response.statusCode ?? 0;
-      if (status == 401) onAuthRejected?.call();
+      if (status == 401) {
+        onAuthRejected?.call();
+      } else {
+        final data = response.data;
+        var code = '';
+        if (data != null) {
+          final rawError = data['error'];
+          if (rawError is String) {
+            code = rawError;
+          } else if (rawError is Map) {
+            // A gateway/proxy answer nests the failure — same shape
+            // hubExceptionFrom tolerates.
+            code =
+                (rawError['code'] ??
+                        rawError['name'] ??
+                        rawError['error'] ??
+                        '')
+                    .toString();
+          }
+          if (code.isEmpty) {
+            code = (data['code'] ?? '').toString().trim();
+          }
+        }
+        if (code == 'UNAUTHORIZED' || code == 'MACHINE_UNAUTHORIZED') {
+          onAuthRejected?.call();
+        }
+      }
       return response;
     } on DioException catch (error) {
       final mapped = hubExceptionFrom(error);

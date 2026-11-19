@@ -131,6 +131,11 @@ func foregroundWindowTitle() string {
 	return windowText(hwnd)
 }
 
+func foregroundWindowID() uint64 {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	return uint64(hwnd)
+}
+
 type winRect struct {
 	Left, Top, Right, Bottom int32
 }
@@ -177,16 +182,28 @@ func namedWindowBounds(titleSubstring string) (WindowBounds, bool) {
 
 // windowTitleAtPoint resolves the top-level window owning screen point (x,y)
 // and returns its title ("" when none).
-func windowTitleAtPoint(x, y int) string {
+func rootWindowAtPoint(x, y int) uintptr {
 	// POINT by value: two int32 packed into one uintptr on x64.
 	hwnd, _, _ := procWindowFromPoint.Call(uintptr(uint32(x)) | uintptr(uint32(y))<<32)
 	if hwnd == 0 {
-		return ""
+		return 0
 	}
 	if root, _, _ := procGetAncestor.Call(hwnd, 2 /*GA_ROOT*/); root != 0 {
 		hwnd = root
 	}
+	return hwnd
+}
+
+func windowTitleAtPoint(x, y int) string {
+	hwnd := rootWindowAtPoint(x, y)
+	if hwnd == 0 {
+		return ""
+	}
 	return windowText(hwnd)
+}
+
+func windowIDAtPoint(x, y int) uint64 {
+	return uint64(rootWindowAtPoint(x, y))
 }
 
 func windowText(hwnd uintptr) string {

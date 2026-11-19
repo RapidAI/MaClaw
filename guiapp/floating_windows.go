@@ -43,14 +43,17 @@ const (
 	csHredraw = 0x0002
 	csVredraw = 0x0001
 
-	wmDestroy     = 0x0002
-	wmClose       = 0x0010
-	wmLbuttondown = 0x0201
-	wmLbuttonup   = 0x0202
-	wmMousemove   = 0x0200
-	wmRbuttonup   = 0x0205
-	wmNchittest   = 0x0084
-	wmTimer       = 0x0113
+	wmDestroy        = 0x0002
+	wmClose          = 0x0010
+	wmLbuttondown    = 0x0201
+	wmLbuttonup      = 0x0202
+	wmMousemove      = 0x0200
+	wmMouseleave     = 0x02A3
+	wmCapturechanged = 0x0215
+	wmPetPresence    = 0x8000 + 31
+	wmRbuttonup      = 0x0205
+	wmNchittest      = 0x0084
+	wmTimer          = 0x0113
 
 	smCxscreenFloat = 0
 	smCyscreenFloat = 1
@@ -74,6 +77,7 @@ const (
 	menuIdQuit        = 1003
 	menuIdOpenMain    = 1004
 	menuIdOpenPetChat = 1005
+	menuIdPin         = 1006
 
 	// Timer ID for halo animation
 	timerIdHalo = 1
@@ -99,6 +103,7 @@ var (
 	procSetCapture            = floatUser32.NewProc("SetCapture")
 	procReleaseCapture        = floatUser32.NewProc("ReleaseCapture")
 	procGetCursorPos          = floatUser32.NewProc("GetCursorPos")
+	procGetDoubleClickTime    = floatUser32.NewProc("GetDoubleClickTime")
 	procCreatePopupMenu       = floatUser32.NewProc("CreatePopupMenu")
 	procAppendMenuW           = floatUser32.NewProc("AppendMenuW")
 	procTrackPopupMenu        = floatUser32.NewProc("TrackPopupMenu")
@@ -111,6 +116,9 @@ var (
 	procSetTimer              = floatUser32.NewProc("SetTimer")
 	procKillTimer             = floatUser32.NewProc("KillTimer")
 	procPostMessageW          = floatUser32.NewProc("PostMessageW")
+	procSendMessageW          = floatUser32.NewProc("SendMessageW")
+	procGetWindowRect         = floatUser32.NewProc("GetWindowRect")
+	procTrackMouseEvent       = floatUser32.NewProc("TrackMouseEvent")
 	procSystemParametersInfoW = floatUser32.NewProc("SystemParametersInfoW")
 
 	procBeep             = floatKernel32.NewProc("Beep")
@@ -202,7 +210,12 @@ type windowsFloatingWindow struct {
 	windowStartX int
 	windowStartY int
 	dragMoved    bool
-	lastHoverAt  time.Time
+	// releasingCapture is set only while button-up calls ReleaseCapture.
+	// That call reenters WM_CAPTURECHANGED on this thread; it is not a stolen grab.
+	releasingCapture bool
+	// lastHoverAt is guarded by mu. Button-up and the message loop write it,
+	// and the click clip starts on the gesture goroutine, after the double-click wait.
+	lastHoverAt time.Time
 
 	// Halo animation
 	haloPhase        float64 // 0..2*pi, advances each timer tick
@@ -219,6 +232,10 @@ type windowsFloatingWindow struct {
 	petInteractionMode      string
 	petSkin                 string
 	petVariant              string
+	petRearingVariant       string
+	petRearingAdornments    []string
+	dutySuppressCue         string
+	dutySuppressUntil       time.Time
 	petSoundPreset          string
 	petReducedMotion        bool
 	petRuntimeState         string
@@ -226,7 +243,14 @@ type windowsFloatingWindow struct {
 	petStateChangedAt       time.Time
 	petAnimationStartedAt   time.Time
 	petStateDeadline        time.Time
-	packFrameCache          *petpack.FrameCache
+	// petOverlay is a timed SetPetRuntimeState, such as voice transcription
+	// or a short permission alert, sitting on the duty pose. petBaseState
+	// and petBaseDeadline are that pose. The overlay gives it back. It does
+	// not end a work sentence or start the absence wait.
+	petOverlay      bool
+	petBaseState    string
+	petBaseDeadline time.Time
+	packFrameCache  *petpack.FrameCache
 	// rigRenderers hold immutable decoded skeleton assets. A failed renderer is
 	// remembered per selection so a malformed third-party pack cannot trigger
 	// disk/JSON work on every 20fps tick; native frames remain the fallback.
@@ -237,11 +261,51 @@ type windowsFloatingWindow struct {
 	packPitch               float64
 	petMotionAmplitude      float64
 	petLastRenderedState    string
-	// petLastInteractionAt records the last user interaction (click/drag/hover)
-	// or runtime state change. petLongIdleFired latches the long_idle character
-	// event so it fires once per idle period and rearms on new activity.
+	// petLastInteractionAt is when this wait started. A click, a drag, or a
+	// task pose moves it. A hover does not. A work sentence or a
+	// listening, thinking, speaking, done, or alert pose holds it at now,
+	// so that time is not time she was left. A settle pose starts the wait
+	// at its deadline, including when that deadline is noticed late. A
+	// timed overlay gives the duty pose back and does not start the wait.
+	// petMissTier is the complaint already shown for this wait.
 	petLastInteractionAt time.Time
-	petLongIdleFired     bool
+	petMissTier          int
+	// The face held while the complaint sentence is up. Cleared with it.
+	petMissExpression string
+	petMissGaze       string
+	petMissMood       string
+	// testPetMissPublish runs immediately before that face is written to the
+	// renderer. The window lock is held. Production leaves it nil.
+	testPetMissPublish func()
+	// Desktop travel. A clip's travel vector is a speed; the heading cycles
+	// through horizontal, vertical, and diagonal directions and bounces at
+	// the work-area edges. Remainders keep sub-pixel steps.
+	petRoam     petpack.DesktopRoam
+	petTravelAt time.Time
+	petFaceLeft bool
+	// petPositionLocked stops autonomous screen travel. Clips still play,
+	// and the user can still drag the window.
+	petPositionLocked bool
+	// presenceLine is the one sentence shown while the pointer is over her.
+	// dutyLine is the work sentence. missLine is the complaint for being left.
+	// Work wins. Both empty means there is nothing to say.
+	presenceLine    string
+	dutyLine        string
+	missLine        string
+	petPointerOver  bool
+	petLeaveArmed   bool
+	presenceTip     uintptr
+	presenceAdded   bool
+	presenceActive  bool
+	presenceShown   string
+	presenceUTF16   []uint16
+	presenceBroken  bool
+	presenceTracked bool
+	presenceTrackX  int
+	presenceTrackY  int
+	presenceBubbleW int
+	presenceBubbleH int
+	actionSoundGen  uint64
 	// Increments for every motion update so an older, slower registry lookup
 	// cannot overwrite a newer setting snapshot.
 	motionConfigRevision uint64
@@ -310,6 +374,13 @@ func currentGlobalFloatingWindow() *windowsFloatingWindow {
 }
 
 func init() {
+	petClickIntervalFn = func() time.Duration {
+		ms, _, _ := procGetDoubleClickTime.Call()
+		if ms < 1 {
+			return 500 * time.Millisecond
+		}
+		return time.Duration(ms) * time.Millisecond
+	}
 	// Use SPI_GETWORKAREA to get the usable desktop area (excludes taskbar,
 	// and returns DPI-scaled logical pixels - not physical pixels).
 	// This fixes the issue where GetSystemMetrics returns 3840 on a 4K display
@@ -333,6 +404,7 @@ func init() {
 		}
 		return h
 	}
+	petWorkAreaAt = petMonitorWorkArea
 }
 
 // floatingWindow interface
@@ -349,10 +421,11 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	petEnabled := false
 	petMotionEnabled := true
 	petMotionSound := true
+	petPositionLocked := false
 	petQuietMode := false
 	petReducedMotion := false
 	petInteractionMode := "balanced"
-	petSkin := "clawmate"
+	petSkin := petpack.DefaultPackID
 	petVariant := petpack.VariantDefault
 	petSoundPreset := "classic"
 	packPitch := 1.0
@@ -364,6 +437,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 			petReducedMotion = cfg.PetReducedMotion
 			petMotionEnabled = isPetMotionEnabled(cfg)
 			petMotionSound = petMotionSoundEnabled(cfg)
+			petPositionLocked = cfg.PetPositionLocked
 			petSoundPreset = petMotionSoundPreset(cfg)
 			if cfg.PetInteractionMode != "" {
 				petInteractionMode = cfg.PetInteractionMode
@@ -399,6 +473,9 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	if err != nil {
 		return fmt.Errorf("renderFloatingBase: %w", err)
 	}
+	// The first frame is drawn inside this call, before Show's rearing sync.
+	// Seed the saved stage first so a reared pet does not flash bare.
+	rearingSlots := w.app.copyPetRearingAdornmentSlots(petSkin)
 
 	w.mu.Lock()
 	w.baseImg = base
@@ -408,6 +485,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petMotionEnabled = petMotionEnabled && !petReducedMotion
 	w.petMotionSoundRequested = petMotionSound
 	w.petMotionSound = petMotionSound && !petReducedMotion && !petQuietMode
+	w.petPositionLocked = petPositionLocked
 	w.lastPetSoundBucket = 0
 	w.lastPetSoundAt = time.Time{}
 	w.petQuietMode = petQuietMode
@@ -415,6 +493,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petInteractionMode = petInteractionMode
 	w.petSkin = petSkin
 	w.petVariant = petVariant
+	w.petRearingAdornments = rearingSlots
 	w.petMotionAmplitude = petMotionAmplitude
 	w.petSoundPreset = petSoundPreset
 	w.packPitch = packPitch
@@ -425,7 +504,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petAnimationStartedAt = w.petStateChangedAt
 	w.petStateDeadline = time.Time{}
 	w.petLastInteractionAt = w.petStateChangedAt
-	w.petLongIdleFired = false
+	w.petMissTier = 0
 	w.packFrameCache = petpack.NewFrameCache()
 	w.rigRenderers = make(map[string]*petpack.RigRenderer)
 	w.rigRendererFailed = make(map[string]bool)
@@ -437,15 +516,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.renderDirty = true
 	w.stopCh = make(chan struct{})
 
-	w.distMap = make([]float64, sz*sz)
-	cx, cy := float64(sz)/2, float64(sz)/2
-	for py := 0; py < sz; py++ {
-		for px := 0; px < sz; px++ {
-			dx := float64(px) - cx + 0.5
-			dy := float64(py) - cy + 0.5
-			w.distMap[py*sz+px] = math.Sqrt(dx*dx + dy*dy)
-		}
-	}
+	w.distMap = floatingDistanceMap(sz)
 	setGlobalFloatingWindow(w)
 	w.mu.Unlock()
 
@@ -508,10 +579,14 @@ func (w *windowsFloatingWindow) Show() {
 func (w *windowsFloatingWindow) Hide() {
 	w.mu.Lock()
 	hwnd := w.hwnd
+	w.petPointerOver = false
+	w.petLeaveArmed = false
 	w.mu.Unlock()
 	if hwnd == 0 {
 		return
 	}
+	// Hide runs off the window thread. The tooltip is updated there.
+	procPostMessageW.Call(hwnd, wmPetPresence, 0, 0)
 	procShowWindowFloat.Call(hwnd, uintptr(swHide))
 }
 
@@ -560,6 +635,20 @@ func (w *windowsFloatingWindow) Destroy() {
 	}
 }
 
+// PetOrigin is the origin the window is actually using. Patrol and roaming
+// update it without going through the manager's saved position.
+func (w *windowsFloatingWindow) PetOrigin() (int, int, bool) {
+	if w == nil {
+		return 0, 0, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.created || w.hwnd == 0 {
+		return 0, 0, false
+	}
+	return w.windowStartX, w.windowStartY, true
+}
+
 func (w *windowsFloatingWindow) MoveTo(x, y int) {
 	w.mu.Lock()
 	hwnd := w.hwnd
@@ -568,7 +657,7 @@ func (w *windowsFloatingWindow) MoveTo(x, y int) {
 		return
 	}
 	sz := w.currentSize()
-	procMoveWindowProc.Call(hwnd, uintptr(x), uintptr(y), uintptr(sz), uintptr(sz), 1)
+	movePetWindow(hwnd, x, y, sz)
 	w.mu.Lock()
 	w.windowStartX = x
 	w.windowStartY = y
@@ -604,6 +693,12 @@ func (w *windowsFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset stri
 		amplitude := resolvePetMotionAmplitude(skin, interactionMode, quiet, reducedMotion, motionEnabled, effectiveSoundEnabled)
 		w.applyPetMotionAmplitude(revision, amplitude)
 	}
+}
+
+func (w *windowsFloatingWindow) UpdatePositionLock(locked bool) {
+	w.mu.Lock()
+	w.petPositionLocked = locked
+	w.mu.Unlock()
 }
 
 func (w *windowsFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
@@ -697,43 +792,464 @@ func resolvePetMotionAmplitude(skin, interactionMode string, quiet, reducedMotio
 	return 0.85
 }
 
+// SetPetTimedCover shows a timed pose over the live task, not over whatever
+// pose is currently on screen. Transcription replaces a finished listening
+// pose; when the cover ends, the task returns, or she is idle if the task
+// has already ended. Caller is the floating manager.
+func (w *windowsFloatingWindow) SetPetTimedCover(state string, ttlMs int, base string, baseTTLMs int, line string) {
+	if w == nil {
+		return
+	}
+	if ttlMs <= 0 {
+		w.SetPetRuntimeState(state, ttlMs)
+		return
+	}
+	st := string(petpack.NormalizeState(state))
+	baseState := string(petpack.NormalizeState(base))
+	w.mu.Lock()
+	w.petOverlay = false
+	w.petBaseState = ""
+	w.petBaseDeadline = time.Time{}
+	w.setPetRuntimeStateLocked(baseState, baseTTLMs)
+	w.petBaseState = w.petRuntimeState
+	w.petBaseDeadline = w.petStateDeadline
+	w.petOverlay = true
+	w.setPetRuntimeStateLocked(st, ttlMs)
+	w.dutyLine = line
+	changed := w.notePetInteractionLocked()
+	hwnd := w.hwnd
+	w.mu.Unlock()
+	w.publishPetInteraction(changed, hwnd)
+}
+
 func (w *windowsFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
 	st := string(petpack.NormalizeState(state))
 	w.mu.Lock()
-	previous := w.petRuntimeState
+	// A positive TTL is an overlay. The duty pose underneath is still the
+	// pose, and a second overlay must not save itself as that pose.
+	if ttlMs > 0 {
+		if !w.petOverlay {
+			base := w.petRuntimeState
+			if base == "" {
+				base = string(petpack.StateIdle)
+			}
+			w.petBaseState = base
+			w.petBaseDeadline = w.petStateDeadline
+			w.petOverlay = true
+		}
+	} else {
+		w.petOverlay = false
+		w.petBaseState = ""
+		w.petBaseDeadline = time.Time{}
+	}
 	w.setPetRuntimeStateLocked(st, ttlMs)
-	// A state push counts as activity: it rearms the long-idle event latch.
-	w.notePetInteractionLocked()
-	// Keep cached state frames warm; the renderer crossfades only briefly when
-	// the state changes, then reuses the current frame.
+	// A task pose or other explicit state ends the complaint.
+	changed := w.notePetInteractionLocked()
+	hwnd := w.hwnd
 	w.mu.Unlock()
-	if previous != st {
-		switch st {
-		case string(petpack.StateThinking):
-			w.triggerCharacterEvent("task_started")
-		case string(petpack.StateDone):
-			w.triggerCharacterEvent("task_done")
-		case string(petpack.StateAlert):
-			w.triggerCharacterEvent("task_failed")
+	w.publishPetInteraction(changed, hwnd)
+}
+
+func (w *windowsFloatingWindow) ApplyPetDuty(state string, ttlMs int, event, cue string) {
+	if w == nil {
+		return
+	}
+	st := string(petpack.NormalizeState(state))
+	w.mu.Lock()
+	// Duty replaces an overlay. The new pose is the one a later overlay saves.
+	w.petOverlay = false
+	w.petBaseState = ""
+	w.petBaseDeadline = time.Time{}
+	w.setPetRuntimeStateLocked(st, ttlMs)
+	changed := w.notePetInteractionLocked()
+	skin := w.petSkin
+	variant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
+	pitch := w.packPitch
+	app := w.app
+	sound := w.petMotionSoundRequested
+	quiet := w.petQuietMode
+	reduced := w.petReducedMotion
+	hwnd := w.hwnd
+	w.mu.Unlock()
+	// Publish before the duty gesture, so that gesture is not drawn on the leftover face.
+	w.publishPetInteraction(changed, hwnd)
+	allowed := dutyCueAllowed(app, sound, quiet, reduced)
+	play := cue
+	if event != "" {
+		w.triggerCharacterEvent(event)
+		if renderer := w.characterRenderer(skin, variant); renderer != nil {
+			if boundCue, bound := renderer.EventCue(event); bound {
+				play = boundCue
+			}
+		}
+	}
+	if play == "" || !allowed {
+		w.rememberDutyCue(play)
+		return
+	}
+	w.rememberDutyCue(play)
+	w.playDutyCue(play, pitch)
+}
+
+func (w *windowsFloatingWindow) rememberDutyCue(cue string) {
+	if w == nil || cue == "" {
+		return
+	}
+	w.mu.Lock()
+	w.dutySuppressCue = cue
+	w.dutySuppressUntil = time.Now().Add(2 * time.Second)
+	w.mu.Unlock()
+}
+
+func (w *windowsFloatingWindow) ApplyPetRearing(variant string, windowSize int, cue string, adornments []string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	sameVariant := variant == w.petRearingVariant
+	resized := windowSize > 0 && windowSize != w.size
+	sameAdorn := sameAdornmentSlots(adornments, w.petRearingAdornments)
+	if sameVariant && !resized && cue == "" && sameAdorn {
+		w.mu.Unlock()
+		return
+	}
+	slots := append([]string(nil), adornments...)
+	hwnd := w.hwnd
+	x, y := w.windowStartX, w.windowStartY
+	petEnabled := w.petEnabled
+	skin := w.petSkin
+	userVariant := w.petVariant
+	state := w.petRuntimeState
+	pitch := w.packPitch
+	app := w.app
+	sound := w.petMotionSoundRequested
+	quiet := w.petQuietMode
+	reduced := w.petReducedMotion
+	w.mu.Unlock()
+	// The halo indexes one distance per pixel of the current window. Publish
+	// the new map with the new size, or the next frame reads off the end.
+	var nextMap []float64
+	var nextBase *image.NRGBA
+	if resized {
+		nextMap = floatingDistanceMap(windowSize)
+		if base, err := renderFloatingBase(windowSize, petEnabled, skin, userVariant, state); err == nil {
+			nextBase = base
+		}
+	}
+	w.mu.Lock()
+	w.petRearingVariant = variant
+	w.petRearingAdornments = slots
+	if !sameAdorn {
+		w.applyAdornmentSlotsLocked(slots)
+		w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
+		w.petNativeFrameAvailable = nil
+		w.petNativeFrameLoading = nil
+	}
+	if resized && windowSize != w.size {
+		w.size = windowSize
+		w.distMap = nextMap
+		if nextBase != nil {
+			w.baseImg = nextBase
+		}
+	}
+	if !sameVariant || resized || !sameAdorn {
+		w.renderDirty = true
+	}
+	w.mu.Unlock()
+	allowed := dutyCueAllowed(app, sound, quiet, reduced)
+	if resized && hwnd != 0 {
+		movePetWindow(hwnd, x, y, windowSize)
+	}
+	if cue != "" {
+		w.rememberDutyCue(cue)
+		if allowed {
+			w.playDutyCue(cue, pitch)
 		}
 	}
 }
 
-// petLongIdleThreshold is the idle dwell after which the long_idle character
-// event fires once, until the next interaction or state change rearms it.
-const petLongIdleThreshold = 5 * time.Minute
-
-// notePetInteraction records activity that resets the long-idle clock and
-// rearms the long_idle event latch.
-func (w *windowsFloatingWindow) notePetInteraction() {
+func (w *windowsFloatingWindow) playDutyCue(cue string, packPitch float64) {
+	resolved := petpack.ResolveActionSound(cue, nil)
+	if w == nil || len(resolved) == 0 {
+		return
+	}
+	pitch := packPitch
+	if pitch <= 0 {
+		pitch = 1
+	}
+	if pitch < 0.8 {
+		pitch = 0.8
+	}
+	if pitch > 1.25 {
+		pitch = 1.25
+	}
 	w.mu.Lock()
-	w.notePetInteractionLocked()
+	w.actionSoundGen++
+	gen := w.actionSoundGen
+	app := w.app
+	w.mu.Unlock()
+	go func() {
+		for index, tone := range resolved {
+			w.mu.Lock()
+			currentGen := w.actionSoundGen == gen
+			sound := w.petMotionSoundRequested
+			quiet := w.petQuietMode
+			reduced := w.petReducedMotion
+			w.mu.Unlock()
+			if !currentGen || !dutyCueAllowed(app, sound, quiet, reduced) {
+				return
+			}
+			frequency := petpack.ClampActionToneHz(float64(tone.Hz) * pitch)
+			procBeep.Call(uintptr(frequency), uintptr(tone.Ms))
+			if index+1 < len(resolved) {
+				time.Sleep(8 * time.Millisecond)
+			}
+		}
+	}()
+}
+
+// petHoverCooldown is how long a pointer visit waits before another hover.
+// A click or drag release arms the same clock: hover is a soft interrupt and
+// would otherwise replace the click clip on the next pixel of hand jitter.
+const petHoverCooldown = 5 * time.Second
+
+func (w *windowsFloatingWindow) finishPetDrag() {
+	if w == nil {
+		return
+	}
+	// Button-up arms this too. A grab stolen mid-drag never reaches that arm,
+	// and drag_end is a soft reaction the next move would replace.
+	w.armPetPointerHover(time.Now())
+	w.triggerCharacterEvent("drag_end")
+	var pt point
+	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	finalX := w.windowStartX + int(pt.X-w.dragStartX)
+	finalY := w.windowStartY + int(pt.Y-w.dragStartY)
+	w.mu.Lock()
+	w.windowStartX = finalX
+	w.windowStartY = finalY
+	// The drop is a new place. The next patrol starts at the nearest point
+	// of that place instead of the spot she was walking before the grab.
+	w.petRoam.EdgeOn = false
+	w.mu.Unlock()
+	app := w.app
+	go func() {
+		if app == nil {
+			return
+		}
+		if fa := app.existingFloatingAssistant(); fa != nil {
+			fa.UpdatePosition(finalX, finalY)
+		}
+	}()
+}
+
+func (w *windowsFloatingWindow) armPetPointerHover(now time.Time) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.lastHoverAt = now
 	w.mu.Unlock()
 }
 
-func (w *windowsFloatingWindow) notePetInteractionLocked() {
+func (w *windowsFloatingWindow) petHoverDue(now time.Time) bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.lastHoverAt.IsZero() && now.Sub(w.lastHoverAt) < petHoverCooldown {
+		return false
+	}
+	w.lastHoverAt = now
+	return true
+}
+
+// notePetInteraction records a click, a drag, or a task pose. That ends the
+// complaint. A hover does not: the sentence is what the hover is there to read.
+func (w *windowsFloatingWindow) notePetInteraction() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	changed := w.notePetInteractionLocked()
+	hwnd := w.hwnd
+	w.mu.Unlock()
+	w.publishPetInteraction(changed, hwnd)
+}
+
+// notePetInteractionLocked ends the complaint on the window only. The
+// renderer keeps its own copy of the face. The caller publishes with
+// publishPetInteraction after releasing w.mu. That lock is not reentrant.
+func (w *windowsFloatingWindow) notePetInteractionLocked() bool {
 	w.petLastInteractionAt = time.Now()
-	w.petLongIdleFired = false
+	w.petMissTier = 0
+	w.missLine = ""
+	w.clearPetMissFeelLocked()
+	before := w.presenceLine
+	w.refreshPresenceLocked()
+	return w.presenceLine != before
+}
+
+func (w *windowsFloatingWindow) clearPetMissFeelLocked() {
+	w.petMissExpression = ""
+	w.petMissGaze = ""
+	w.petMissMood = ""
+}
+
+func (w *windowsFloatingWindow) refreshPresenceLocked() {
+	w.presenceLine = petShownPresence(w.dutyLine, w.missLine)
+}
+
+// advancePetMiss raises or lowers the complaint to match how long she has
+// been left and how long she has been reared. The pose plays only when the
+// intensity increases. A pack without that clip uses the long_idle event.
+// Time spent on a task or a companion pose is not time she was left.
+func (w *windowsFloatingWindow) advancePetMiss(away time.Duration, motion bool) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	if w.finishPetMissHoldLocked() {
+		return
+	}
+	app := w.app
+	skin := w.petSkin
+	tier := w.petMissTier
+	if !w.petLastInteractionAt.IsZero() {
+		away = time.Since(w.petLastInteractionAt)
+	}
+	w.mu.Unlock()
+	// The common frames are still inside the first five minutes. Do not take
+	// the rearing lock, or open the database, on those ticks.
+	if tier == 0 && away < petMissAfter {
+		return
+	}
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	loaded := int64(0)
+	var stages []petpack.PetPackRearingStage
+	if app != nil {
+		loaded = app.petRearingLoadedMS(skin)
+	}
+	if reg := petpack.EnsureGlobal(); reg != nil {
+		if manifest, ok := reg.Get(skin); ok && manifest != nil {
+			stages = manifest.Rearing.Stages
+		}
+	}
+	bond := petMissBondLevel(loaded, stages)
+	w.mu.Lock()
+	// A task can start while the rearing read is in flight. That pose holds
+	// the wait; the away time read above must not be committed over it.
+	if w.finishPetMissHoldLocked() {
+		return
+	}
+	if !w.petLastInteractionAt.IsZero() {
+		away = time.Since(w.petLastInteractionAt)
+	}
+	intensity := petMissIntensity(away, bond)
+	line := petMissLine(intensity, bond)
+	if intensity == w.petMissTier && line == w.missLine {
+		w.mu.Unlock()
+		return
+	}
+	play := motion && intensity > w.petMissTier
+	clip := petMissClip(intensity)
+	expr, gaze, mood := petMissFeel(intensity)
+	w.petMissTier = intensity
+	w.missLine = line
+	w.petMissExpression = expr
+	w.petMissGaze = gaze
+	w.petMissMood = mood
+	w.refreshPresenceLocked()
+	hwnd := w.hwnd
+	w.mu.Unlock()
+	if hwnd != 0 {
+		procPostMessageW.Call(hwnd, wmPetPresence, 0, 0)
+	}
+	w.pushPetMissFeel()
+	if !play {
+		return
+	}
+	if clip == "" || !w.triggerCharacterClip(clip) {
+		w.triggerCharacterEvent("long_idle")
+	}
+}
+
+// finishPetMissHoldLocked stops the wait while she is occupied and drops a
+// complaint that work or a companion pose has replaced. The caller holds
+// w.mu. It unlocks before posting. False means she is still waiting and the
+// caller still holds the lock.
+func (w *windowsFloatingWindow) finishPetMissHoldLocked() bool {
+	if !petMissOccupied(w.dutyLine, w.petRuntimeState) {
+		return false
+	}
+	w.petLastInteractionAt = time.Now()
+	changed := false
+	feel := w.petMissExpression != "" || w.petMissGaze != "" || w.petMissMood != ""
+	if w.petMissTier != 0 || w.missLine != "" || feel {
+		w.petMissTier = 0
+		w.missLine = ""
+		w.clearPetMissFeelLocked()
+		before := w.presenceLine
+		w.refreshPresenceLocked()
+		changed = w.presenceLine != before
+	}
+	hwnd := w.hwnd
+	w.mu.Unlock()
+	if changed && hwnd != 0 {
+		procPostMessageW.Call(hwnd, wmPetPresence, 0, 0)
+	}
+	if feel {
+		w.pushPetMissFeel()
+	}
+	return true
+}
+
+// publishPetInteraction tells the tooltip and the renderer that the
+// complaint changed. Call it after Unlock. Pushing while w.mu is held
+// deadlocks, and skipping the push leaves the old face on the next pose.
+func (w *windowsFloatingWindow) publishPetInteraction(presenceChanged bool, hwnd uintptr) {
+	if w == nil {
+		return
+	}
+	if presenceChanged && hwnd != 0 {
+		procPostMessageW.Call(hwnd, wmPetPresence, 0, 0)
+	}
+	w.pushPetMissFeel()
+}
+
+// pushPetMissFeel copies the held face onto the live renderer. A renderer
+// that does not exist yet picks the same fields up when it is created.
+// The window lock stays held across the write. Releasing it first lets an
+// older sample land after a newer clear, and the pout then stays up until
+// the next complaint tier.
+func (w *windowsFloatingWindow) pushPetMissFeel() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	expr, gaze, mood := w.petMissExpression, w.petMissGaze, w.petMissMood
+	skin := w.petSkin
+	variant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	var renderer *petpack.CharacterRenderer
+	if w.characterRenderers != nil {
+		renderer = w.characterRenderers[skin+"\x00"+variant]
+	}
+	if renderer == nil {
+		return
+	}
+	if w.testPetMissPublish != nil {
+		w.testPetMissPublish()
+	}
+	if renderer.SetCompanionFeel(expr, gaze, mood) {
+		w.renderDirty = true
+	}
 }
 
 // triggerCharacterEvent forwards only a fixed, local interaction vocabulary
@@ -745,7 +1261,7 @@ func (w *windowsFloatingWindow) triggerCharacterEvent(event string) {
 	}
 	w.mu.Lock()
 	skin := w.petSkin
-	variant := petpack.ResolveVariantForRuntime(w.petVariant)
+	variant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
 	state := w.petRuntimeState
 	if skin == "" {
 		skin = petpack.DefaultPackID
@@ -771,6 +1287,82 @@ func (w *windowsFloatingWindow) triggerCharacterEvent(event string) {
 	}
 }
 
+// petDragBraceClip is the picked-up pose. The paint loop holds it for the
+// whole drag and does not restart it while it is already playing.
+const petDragBraceClip = "react_drag_brace"
+
+func (w *windowsFloatingWindow) holdPetDragBrace(skin, variant string) {
+	if w == nil {
+		return
+	}
+	renderer := w.ensureCharacterRenderer(skin, variant)
+	if renderer == nil || renderer.PlayingBody() == petDragBraceClip {
+		return
+	}
+	if renderer.TriggerClip(petDragBraceClip, time.Now().UnixMilli()) {
+		w.mu.Lock()
+		w.renderDirty = true
+		w.mu.Unlock()
+	}
+}
+
+// triggerCharacterClip plays one chosen body clip. A missing clip is ignored.
+func (w *windowsFloatingWindow) triggerCharacterClip(clip string) bool {
+	if w == nil || clip == "" {
+		return false
+	}
+	w.mu.Lock()
+	skin := w.petSkin
+	variant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
+	quiet := w.petQuietMode
+	reduced := w.petReducedMotion
+	motion := w.petMotionEnabled && !quiet && !reduced
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	renderer := w.characterRenderers[skin+"\x00"+variant]
+	w.mu.Unlock()
+	if !motion {
+		return false
+	}
+	if renderer == nil {
+		// Creating the renderer must not play the idle pose. RenderState
+		// would start that clip and its cue, then the click clip would follow.
+		renderer = w.ensureCharacterRenderer(skin, variant)
+	}
+	if renderer != nil && renderer.TriggerClip(clip, time.Now().UnixMilli()) {
+		w.mu.Lock()
+		w.renderDirty = true
+		w.mu.Unlock()
+		// The button-up clock covers the double-click wait, which can be as
+		// long as the user's double-click setting. This clip starts after that
+		// wait, so it needs its own window or the next hover replaces it.
+		w.armPetPointerHover(time.Now())
+		return true
+	}
+	return false
+}
+
+// PetClickLook reports the skin and whether a click may animate. Quiet mode
+// and reduced motion stay still.
+func (w *windowsFloatingWindow) PetClickLook() (string, bool) {
+	if w == nil {
+		return petpack.DefaultPackID, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	skin := w.petSkin
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	return skin, w.petMotionEnabled && !w.petQuietMode && !w.petReducedMotion
+}
+
+// PlayPetClickClip starts the gesture clip when motion is allowed.
+func (w *windowsFloatingWindow) PlayPetClickClip(clip string) {
+	w.triggerCharacterClip(clip)
+}
+
 func (w *windowsFloatingWindow) setPetRuntimeStateLocked(state string, ttlMs int) {
 	if state != w.petRuntimeState {
 		w.petPreviousState = w.petRuntimeState
@@ -792,11 +1384,60 @@ func (w *windowsFloatingWindow) setPetRuntimeStateLocked(state string, ttlMs int
 	}
 }
 
+// expirePetPoseLocked ends a timed pose once its deadline has passed.
+// An overlay returns the duty pose it covered. A settle pose returns to
+// idle, drops its sentence, and starts the wait at that deadline when the
+// deadline is later than the last click or task. Time after the pose ended
+// still counts if the loop notices late. A click that landed after the
+// deadline stays the start. Caller holds w.mu. The bool is whether the
+// hover sentence changed.
+func (w *windowsFloatingWindow) expirePetPoseLocked(now time.Time) bool {
+	if w.petStateDeadline.IsZero() || !now.After(w.petStateDeadline) {
+		return false
+	}
+	ended := w.petStateDeadline
+	if w.petOverlay {
+		w.petOverlay = false
+		base := w.petBaseState
+		baseDeadline := w.petBaseDeadline
+		w.petBaseState = ""
+		w.petBaseDeadline = time.Time{}
+		if base == "" {
+			base = string(petpack.StateIdle)
+		}
+		w.startPetWaitAtLocked(ended)
+		if baseDeadline.IsZero() || !now.After(baseDeadline) {
+			w.setPetRuntimeStateLocked(base, 0)
+			if !baseDeadline.IsZero() {
+				w.petStateDeadline = baseDeadline
+			}
+			before := w.presenceLine
+			w.refreshPresenceLocked()
+			return w.presenceLine != before
+		}
+		ended = baseDeadline
+	}
+	w.setPetRuntimeStateLocked(string(petpack.StateIdle), 0)
+	w.dutyLine = ""
+	w.startPetWaitAtLocked(ended)
+	before := w.presenceLine
+	w.refreshPresenceLocked()
+	return w.presenceLine != before
+}
+
+// startPetWaitAtLocked moves the absence start to a pose deadline when the
+// last click or task is older than that deadline. A newer click stays.
+func (w *windowsFloatingWindow) startPetWaitAtLocked(ended time.Time) {
+	if !ended.IsZero() && w.petLastInteractionAt.Before(ended) {
+		w.petLastInteractionAt = ended
+	}
+}
+
 func (w *windowsFloatingWindow) CurrentPetRuntimeState() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.petStateDeadline.IsZero() && time.Now().After(w.petStateDeadline) {
-		w.setPetRuntimeStateLocked(string(petpack.StateIdle), 0)
+	if w.expirePetPoseLocked(time.Now()) && w.hwnd != 0 {
+		procPostMessageW.Call(w.hwnd, wmPetPresence, 0, 0)
 	}
 	if w.petRuntimeState == "" {
 		return string(petpack.StateIdle)
@@ -815,7 +1456,7 @@ func (w *windowsFloatingWindow) PetPackRuntimeLevel(declared string) (string, st
 	quiet := w.petQuietMode
 	reduced := w.petReducedMotion
 	motionEnabled := w.petMotionEnabled
-	key := w.petSkin + "\x00" + petpack.ResolveVariantForRuntime(w.petVariant)
+	key := w.petSkin + "\x00" + petAppearanceVariant(w.petVariant, w.petRearingVariant)
 	characterFailed := w.characterRendererFailed[key]
 	rigFailed := w.rigRendererFailed[key]
 	w.mu.Unlock()
@@ -871,6 +1512,7 @@ func (w *windowsFloatingWindow) messageLoop() {
 	}
 
 	// Clean up: destroy the window on this thread.
+	w.destroyPetPresence()
 	w.mu.Lock()
 	hwnd := w.hwnd
 	w.mu.Unlock()
@@ -882,15 +1524,35 @@ func (w *windowsFloatingWindow) messageLoop() {
 
 // Circular logo rendering with glow
 
-func normalizeFloatingNativeSize(sz int) int {
+// normalizeFloatingNativeSize clamps the Win32 pet window to the host pet
+// range plus the 16px frame. The previous 136 cap was an old default plus
+// that frame, so Create stored a small window and rearing resized it after.
+// floatingDistanceMap is one distance from the center per pixel. renderFrame
+// indexes it with the same side length it captured under the window lock.
+func floatingDistanceMap(sz int) []float64 {
 	if sz <= 0 {
-		return 72
+		return nil
 	}
-	if sz < 72 {
-		return 72
+	distMap := make([]float64, sz*sz)
+	cx, cy := float64(sz)/2, float64(sz)/2
+	for py := 0; py < sz; py++ {
+		for px := 0; px < sz; px++ {
+			dx := float64(px) - cx + 0.5
+			dy := float64(py) - cy + 0.5
+			distMap[py*sz+px] = math.Sqrt(dx*dx + dy*dy)
+		}
 	}
-	if sz > 136 {
-		return 136
+	return distMap
+}
+
+func normalizeFloatingNativeSize(sz int) int {
+	minWindow := minPetSize + 16
+	maxWindow := maxPetSize + 16
+	if sz < minWindow {
+		return minWindow
+	}
+	if sz > maxWindow {
+		return maxWindow
 	}
 	return sz
 }
@@ -899,7 +1561,7 @@ func (w *windowsFloatingWindow) currentSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.size <= 0 {
-		return 72
+		return minPetSize + 16
 	}
 	return w.size
 }
@@ -1327,7 +1989,7 @@ func petFacePoseForPhase(phase float64, interactionMode string) petFacePose {
 
 func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, variant, state, interactionMode string, phase float64) *image.NRGBA {
 	if skin == "" {
-		skin = "clawmate"
+		skin = petpack.DefaultPackID
 	}
 	variant = petpack.VariantDefault
 	if state == "" {
@@ -1467,6 +2129,19 @@ func (w *windowsFloatingWindow) hasActiveCharacterRenderer(skin, variant string)
 // validated during registry scanning and is loaded once per selected pack.
 // Any issue falls through to the v2 skeleton and static fallback paths.
 func (w *windowsFloatingWindow) renderCharacterPackFrame(sz int, skin, variant, state string) *image.NRGBA {
+	renderer := w.ensureCharacterRenderer(skin, variant)
+	if renderer == nil {
+		return nil
+	}
+	return renderer.RenderState(petpack.NormalizeState(state), petCharacterFrameNow(), sz)
+}
+
+// ensureCharacterRenderer loads the v3 performer without painting. Painting
+// here would start the idle clip just to obtain a renderer.
+func (w *windowsFloatingWindow) ensureCharacterRenderer(skin, variant string) *petpack.CharacterRenderer {
+	if w == nil {
+		return nil
+	}
 	if skin == "" {
 		skin = petpack.DefaultPackID
 	}
@@ -1478,38 +2153,63 @@ func (w *windowsFloatingWindow) renderCharacterPackFrame(sz int, skin, variant, 
 	if failed {
 		return nil
 	}
-	if renderer == nil {
-		reg := petpack.EnsureGlobal()
-		if reg == nil {
-			return nil
-		}
-		resolved, err := reg.Resolve(skin, variant)
-		if err != nil || resolved == nil || resolved.Renderer != petpack.RendererCharacter {
-			return nil
-		}
-		renderer, err = petpack.NewCharacterRenderer(resolved)
-		w.mu.Lock()
-		// The maps are normally allocated in Create, but a window that only
-		// receives state pushes (never shown) must not panic on a nil map.
-		if w.characterRenderers == nil {
-			w.characterRenderers = make(map[string]*petpack.CharacterRenderer)
-		}
-		if w.characterRendererFailed == nil {
-			w.characterRendererFailed = make(map[string]bool)
-		}
-		if err != nil || renderer == nil {
-			w.characterRendererFailed[key] = true
-			w.mu.Unlock()
-			return nil
-		}
-		if existing := w.characterRenderers[key]; existing != nil {
-			renderer = existing
-		} else {
-			w.characterRenderers[key] = renderer
-		}
-		w.mu.Unlock()
+	if renderer != nil {
+		return renderer
 	}
-	return renderer.RenderState(petpack.NormalizeState(state), time.Now().UnixMilli(), sz)
+	reg := petpack.EnsureGlobal()
+	if reg == nil {
+		return nil
+	}
+	resolved, err := reg.Resolve(skin, variant)
+	if err != nil || resolved == nil || resolved.Renderer != petpack.RendererCharacter {
+		return nil
+	}
+	renderer, err = petpack.NewCharacterRenderer(resolved)
+	w.mu.Lock()
+	// The maps are normally allocated in Create, but a window that only
+	// receives state pushes (never shown) must not panic on a nil map.
+	if w.characterRenderers == nil {
+		w.characterRenderers = make(map[string]*petpack.CharacterRenderer)
+	}
+	if w.characterRendererFailed == nil {
+		w.characterRendererFailed = make(map[string]bool)
+	}
+	if err != nil || renderer == nil {
+		w.characterRendererFailed[key] = true
+		w.mu.Unlock()
+		return nil
+	}
+	fresh := false
+	if existing := w.characterRenderers[key]; existing != nil {
+		renderer = existing
+	} else {
+		renderer.SetVisibleAdornmentSlots(w.petRearingAdornments)
+		w.characterRenderers[key] = renderer
+		fresh = true
+	}
+	w.mu.Unlock()
+	if fresh {
+		w.pushPetMissFeel()
+	}
+	return renderer
+}
+
+// petCharacterFrameNow is the clock for one character frame. Production uses
+// the wall clock. A test that compares two frames pins it so the body pose
+// does not change between them.
+var petCharacterFrameNow = func() int64 { return time.Now().UnixMilli() }
+
+func (w *windowsFloatingWindow) applyAdornmentSlotsLocked(slots []string) {
+	for _, renderer := range w.characterRenderers {
+		if renderer != nil {
+			renderer.SetVisibleAdornmentSlots(slots)
+		}
+	}
+	for _, renderer := range w.rigRenderers {
+		if renderer != nil {
+			renderer.SetVisibleAdornmentSlots(slots)
+		}
+	}
 }
 
 // cachedStaticPetFrame is the accessibility path: reduced motion and quiet
@@ -1570,6 +2270,7 @@ func (w *windowsFloatingWindow) renderSkeletonPackFrame(sz int, skin, variant, s
 		if existing := w.rigRenderers[key]; existing != nil {
 			renderer = existing
 		} else {
+			renderer.SetVisibleAdornmentSlots(w.petRearingAdornments)
 			w.rigRenderers[key] = renderer
 		}
 		w.mu.Unlock()
@@ -1635,6 +2336,167 @@ func (w *windowsFloatingWindow) evictPetFrameCacheCycleLocked(incoming petFrameC
 	}
 }
 
+func (w *windowsFloatingWindow) characterRenderer(skin, variant string) *petpack.CharacterRenderer {
+	if w == nil {
+		return nil
+	}
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	variant = petpack.ResolveVariantForRuntime(variant)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.characterRenderers == nil {
+		return nil
+	}
+	return w.characterRenderers[skin+"\x00"+variant]
+}
+
+func (w *windowsFloatingWindow) petFacesLeft() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.petFaceLeft
+}
+
+// petMainWindowEdge reports the visible main window that is not covering its
+// monitor, and the work area she must stay inside while walking that edge.
+// A nil hook, a hidden window, and fullscreen leave the pet roaming.
+var petMainWindowEdge = mainWindowPatrolRect
+
+// movePetWindow moves the pet. Coordinates go through screenPositionParams
+// so a display left of the primary keeps its negative origin.
+func movePetWindow(hwnd uintptr, x, y, sz int) {
+	if hwnd == 0 || sz <= 0 {
+		return
+	}
+	px, py := screenPositionParams(x, y)
+	procMoveWindowProc.Call(hwnd, px, py, uintptr(sz), uintptr(sz), 1)
+}
+
+// stepPetLocomotion applies one clip's travel vector to the floating window.
+// vx and vy are design-canvas pixels per millisecond. While the main window
+// is showing and is not fullscreen, the same speed walks back and forth on
+// that window's outer edge. Otherwise the host keeps the speed and changes
+// heading, so the same walk can go across, up, down, or on a diagonal. A
+// pinned pet keeps the clock and drops the speed, so the pose can keep
+// walking in place and unlocking does not jump. The window mutex is not
+// held across MoveWindow.
+func (w *windowsFloatingWindow) stepPetLocomotion(vx, vy float64, sz int) {
+	if w == nil || sz <= 0 {
+		return
+	}
+	now := time.Now()
+	w.mu.Lock()
+	dt := now.Sub(w.petTravelAt)
+	if w.petTravelAt.IsZero() {
+		dt = 0
+	}
+	w.petTravelAt = now
+	vx, vy = petScreenTravelVelocity(vx, vy, w.petPositionLocked)
+	// A still pose, a pin, and a non-idle duty have nothing to ask the window.
+	// Looking it up here enumerated every top-level window on each paint
+	// while the main window was hidden, and a zero speed must not clear the
+	// patrol memory either.
+	speed := math.Hypot(vx, vy)
+	if speed == 0 || math.IsNaN(speed) {
+		w.petRoam.RemX, w.petRoam.RemY = 0, 0
+		w.mu.Unlock()
+		return
+	}
+	state := w.petRoam
+	state.FaceLeft = w.petFaceLeft
+	x := w.windowStartX
+	y := w.windowStartY
+	hwnd := w.hwnd
+	w.mu.Unlock()
+	if hwnd == 0 {
+		return
+	}
+	var edge, windowWork petpack.WindowRect
+	edgeOK := false
+	if petMainWindowEdge != nil {
+		edge, windowWork, edgeOK = petMainWindowEdge(hwnd)
+	}
+	// A hidden or fullscreen window leaves her where she is. The box is the
+	// monitor under her, not the primary size measured from the origin.
+	petWork := petpack.WindowRect{}
+	if !edgeOK || windowWork.Right <= windowWork.Left || windowWork.Bottom <= windowWork.Top {
+		if area, ok := petMonitorWorkArea(x, y, sz); ok {
+			petWork = area
+		}
+	}
+	minX, maxX, minY, maxY := petTravelBounds(getScreenWidth(), getScreenHeight(), sz, windowWork, petWork, edgeOK)
+	next, nx, ny := petpack.StepPetTravel(state, vx, vy, float64(sz)/256, dt, x, y, sz, minX, maxX, minY, maxY, now, edge, edgeOK)
+	w.mu.Lock()
+	w.petRoam = next
+	w.petFaceLeft = next.FaceLeft
+	w.mu.Unlock()
+	if nx == x && ny == y {
+		return
+	}
+	movePetWindow(hwnd, nx, ny, sz)
+	w.mu.Lock()
+	w.windowStartX = nx
+	w.windowStartY = ny
+	follow := w.petPointerOver && w.presenceLine != ""
+	w.mu.Unlock()
+	if follow {
+		w.syncPetPresence()
+	}
+}
+
+func (w *windowsFloatingWindow) playActionSound(cue string, tones []petpack.RigTone, packPitch float64) {
+	resolved := petpack.ResolveActionSound(cue, tones)
+	if len(resolved) == 0 || w == nil {
+		return
+	}
+	pitch := packPitch
+	if pitch <= 0 {
+		pitch = 1
+	}
+	pitch = math.Max(0.8, math.Min(pitch, 1.25))
+	w.mu.Lock()
+	w.actionSoundGen++
+	gen := w.actionSoundGen
+	w.mu.Unlock()
+	go func() {
+		for index, tone := range resolved {
+			w.mu.Lock()
+			current := w.actionSoundGen == gen && actionSoundAllowed(w.petMotionSound, w.petQuietMode, w.petReducedMotion, w.petRuntimeState, cue)
+			w.mu.Unlock()
+			if !current {
+				return
+			}
+			frequency := petpack.ClampActionToneHz(float64(tone.Hz) * pitch)
+			procBeep.Call(uintptr(frequency), uintptr(tone.Ms))
+			if index+1 < len(resolved) {
+				time.Sleep(8 * time.Millisecond)
+			}
+		}
+	}()
+}
+
+func mirrorPetFrame(src *image.NRGBA) *image.NRGBA {
+	if src == nil {
+		return nil
+	}
+	bounds := src.Bounds()
+	dst := image.NewNRGBA(bounds)
+	width := bounds.Dx()
+	height := bounds.Dy()
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			si := src.PixOffset(bounds.Min.X+x, bounds.Min.Y+y)
+			di := dst.PixOffset(bounds.Min.X+width-1-x, bounds.Min.Y+y)
+			copy(dst.Pix[di:di+4], src.Pix[si:si+4])
+		}
+	}
+	return dst
+}
+
 func (w *windowsFloatingWindow) playPetMotionSound(interactionMode, skin, preset string, packPitch float64, generation uint64) {
 	go func() {
 		if interactionMode == "quiet" {
@@ -1695,11 +2557,9 @@ func (w *windowsFloatingWindow) playPetMotionSound(interactionMode, skin, preset
 // and pushes it to the layered window via UpdateLayeredWindow.
 func (w *windowsFloatingWindow) renderFrame() {
 	w.mu.Lock()
-	// Expire runtime state TTL back to idle through the same transition path as
-	// an explicit state update, so the old image is available for crossfade.
-	if !w.petStateDeadline.IsZero() && time.Now().After(w.petStateDeadline) {
-		w.setPetRuntimeStateLocked(string(petpack.StateIdle), 0)
-	}
+	// Expire a timed pose. An overlay returns the duty pose under it. A settle
+	// pose returns to idle, and its sentence leaves with it.
+	clearPresence := w.expirePetPoseLocked(time.Now())
 	hwnd := w.hwnd
 	base := w.baseImg
 	phase := w.haloPhase
@@ -1707,6 +2567,8 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petEnabled := w.petEnabled
 	petMotionEnabled := w.petMotionEnabled
 	petMotionSound := w.petMotionSound
+	petDragging := w.dragging
+	petDragMoved := w.dragMoved
 	playPetSound := false
 	if hwnd != 0 && base != nil && distMap != nil && w.petEnabled && w.petMotionEnabled && petMotionSoundHeard(petMotionSound, w.petQuietMode, w.petReducedMotion, w.petRuntimeState) {
 		bucket := int(math.Floor(w.haloPhase/(2*math.Pi)*4)) % 4
@@ -1723,7 +2585,9 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petReducedMotion := w.petReducedMotion
 	petInteractionMode := w.petInteractionMode
 	petSkin := w.petSkin
-	petVariant := w.petVariant
+	petVariant := petAppearanceVariant(w.petVariant, w.petRearingVariant)
+	dutySuppressCue := w.dutySuppressCue
+	dutySuppressUntil := w.dutySuppressUntil
 	petPreviousState := w.petPreviousState
 	petStateChangedAt := w.petStateChangedAt
 	petMotionAmplitude := w.petMotionAmplitude
@@ -1744,38 +2608,56 @@ func (w *windowsFloatingWindow) renderFrame() {
 		w.renderDirty = true
 	}
 	staticOnly := petReducedMotion || !petMotionEnabled || petQuietMode
-	// Fire the long_idle character event once per idle period. The static
-	// accessibility paths (quiet / reduced-motion / motion off) never fire it;
-	// any interaction or state change rearms the latch via notePetInteraction.
-	longIdleDue := false
-	if petEnabled && !staticOnly && !w.petLongIdleFired && !w.petLastInteractionAt.IsZero() && time.Since(w.petLastInteractionAt) >= petLongIdleThreshold {
-		w.petLongIdleFired = true
-		longIdleDue = true
+	// The complaint uses the time since the last click, drag, or task. Quiet
+	// and reduced motion still get the sentence. They do not play the pose.
+	missAway := time.Duration(0)
+	missReady := petEnabled && !w.petLastInteractionAt.IsZero()
+	if missReady {
+		missAway = time.Since(w.petLastInteractionAt)
 	}
 	// When no pet is visible, the frame is just the static fallback/logo; avoid
 	// allocating and uploading an identical layered bitmap every timer tick.
-	// (longIdleDue implies petEnabled && !staticOnly, so it cannot be set here.)
 	if (staticOnly || !petEnabled) && !w.renderDirty {
 		w.mu.Unlock()
+		if clearPresence {
+			w.syncPetPresence()
+		}
+		if missReady {
+			w.advancePetMiss(missAway, false)
+		}
 		return
 	}
+	sz := w.size
+	if sz <= 0 {
+		sz = minPetSize + 16
+	}
+	if len(w.distMap) != sz*sz {
+		w.distMap = floatingDistanceMap(sz)
+	}
+	distMap = w.distMap
+	base = w.baseImg
 	w.renderDirty = false
 	w.petLastRenderedState = petState
 	w.mu.Unlock()
-	if longIdleDue {
-		w.triggerCharacterEvent("long_idle")
+	if clearPresence {
+		w.syncPetPresence()
 	}
-	if playPetSound && !petReducedMotion {
-		w.playPetMotionSound(petInteractionMode, petSkin, petSoundPreset, packPitch, soundGeneration)
+	if missReady {
+		w.advancePetMiss(missAway, petEnabled && !staticOnly)
 	}
 
 	if hwnd == 0 || base == nil || distMap == nil {
 		return
 	}
 
-	sz := w.currentSize()
 	frame := image.NewNRGBA(image.Rect(0, 0, sz, sz))
 	if petEnabled {
+		// The brace clip is long, and a task cue can still replace it. Put the
+		// picked-up pose back only when it is no longer the body, so a frame
+		// does not restart the lift from the ground.
+		if petDragging && petDragMoved && !staticOnly {
+			w.holdPetDragBrace(petSkin, petVariant)
+		}
 		petScale := 1.0
 		petXOffset := 0.0
 		petYOffset := 0.0
@@ -1832,6 +2714,27 @@ func (w *windowsFloatingWindow) renderFrame() {
 		stateScale, stateXOffset, stateYOffset := 1.0, 0.0, 0.0
 		if !nativeCharacter {
 			stateScale, stateXOffset, stateYOffset = petStateTransitionPose(petState, stateTransition, sz, petMotionAmplitude)
+			if playPetSound && !petReducedMotion {
+				w.playPetMotionSound(petInteractionMode, petSkin, petSoundPreset, packPitch, soundGeneration)
+			}
+		} else if !staticOnly {
+			// Authored clips own both the pose and the cue. The legacy halo beep
+			// would stack a second, unrelated tone on every action.
+			if renderer := w.characterRenderer(petSkin, petVariant); renderer != nil {
+				nowMS := time.Now().UnixMilli()
+				if !petDragging {
+					vx, vy := renderer.DesktopTravelDesignPerMS(nowMS)
+					w.stepPetLocomotion(vx, vy, sz)
+				}
+				cue, tones := renderer.TakeActionSound(nowMS)
+				suppressed := cue != "" && cue == dutySuppressCue && time.Now().Before(dutySuppressUntil)
+				if !suppressed && actionSoundAllowed(petMotionSound, petQuietMode, petReducedMotion, petState, cue) && (cue != "" || len(tones) > 0) {
+					w.playActionSound(cue, tones, packPitch)
+				}
+				if w.petFacesLeft() && petFrame != nil {
+					petFrame = mirrorPetFrame(petFrame)
+				}
+			}
 		}
 		renderAnimatedPetFrame(frame, petFrame, previousPetFrame, petScale*stateScale, petXOffset+stateXOffset, petYOffset+stateYOffset, stateTransition)
 	} else {
@@ -2071,7 +2974,13 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		w.dragMoved = false
 		w.dragStartX = pt.X
 		w.dragStartY = pt.Y
+		// SetCapture cancels leave tracking and can post WM_MOUSELEAVE for
+		// that cancellation before it returns. dragging is already set, so
+		// that notice does not end the visit. The request itself is dead.
 		procSetCapture.Call(hwnd)
+		w.mu.Lock()
+		w.petLeaveArmed = false
+		w.mu.Unlock()
 		w.notePetInteraction()
 		return 0
 
@@ -2080,14 +2989,21 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			break
 		}
 		if !w.dragging {
-			// Acknowledge a visitor once, not once per moved pixel. This timestamp
-			// is owned by the message loop and carries no cursor coordinates.
-			now := time.Now()
-			if w.lastHoverAt.IsZero() || now.Sub(w.lastHoverAt) >= 5*time.Second {
-				w.lastHoverAt = now
-				w.notePetInteraction()
+			// Acknowledge a visitor once, not once per moved pixel. The glance
+			// plays the peek. It does not end a complaint already on screen.
+			if w.petHoverDue(time.Now()) {
 				w.triggerCharacterEvent("hover")
+				// The rearing save writes sqlite. Keep that off this thread.
+				// The same clock that blocks a second hover also blocks a
+				// second tick, and the tick is not a click.
+				if app := w.app; app != nil {
+					go app.creditDesktopPetHover()
+				}
 			}
+			// The sentence is not the peek. It stays up for the whole visit
+			// and does not reset the hover clock or add rearing credit.
+			w.armPetPointerLeave(hwnd)
+			w.syncPetPresence()
 			return 0
 		}
 		var pt point
@@ -2095,9 +3011,10 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		dx := pt.X - w.dragStartX
 		dy := pt.Y - w.dragStartY
 		if !w.dragMoved {
-			if abs32(dx) > 5 || abs32(dy) > 5 {
+			if petPointerPastDrag(int(dx), int(dy)) {
 				w.dragMoved = true
 				w.triggerCharacterEvent("drag_start")
+				w.dismissPetPresence()
 			} else {
 				return 0
 			}
@@ -2105,40 +3022,86 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		newX := w.windowStartX + int(dx)
 		newY := w.windowStartY + int(dy)
 		sz := w.currentSize()
-		procMoveWindowProc.Call(hwnd, uintptr(newX), uintptr(newY), uintptr(sz), uintptr(sz), 1)
+		movePetWindow(hwnd, newX, newY, sz)
+		return 0
+
+	case wmMouseleave:
+		if w != nil {
+			// A leave during the grab is the capture cancelling tracking,
+			// not the cursor leaving. The visit is hit-tested on release.
+			endVisit := petPresenceOnLeave(w.dragging)
+			w.mu.Lock()
+			w.petLeaveArmed = false
+			if endVisit {
+				w.petPointerOver = false
+			}
+			w.mu.Unlock()
+			if endVisit {
+				w.syncPetPresence()
+			}
+		}
+		return 0
+
+	case wmPetPresence:
+		if w != nil {
+			w.syncPetPresence()
+		}
+		return 0
+
+	case wmCapturechanged:
+		if w == nil {
+			break
+		}
+		// ReleaseCapture on button-up posts this before the click is recorded.
+		// Only a grab taken by someone else ends the press, and it is never a click.
+		keepDragging, keepMoved, endDrag := petPointerCaptureChange(w.dragging, w.dragMoved, w.releasingCapture)
+		w.dragging = keepDragging
+		w.dragMoved = keepMoved
+		if endDrag {
+			w.finishPetDrag()
+		}
+		// This window's own ReleaseCapture is reentrant and still owns the
+		// press. Button-up hit-tests after the click is recorded. A grab
+		// taken by someone else never gets that button-up.
+		if !keepDragging {
+			w.settlePetPointer(hwnd)
+		}
 		return 0
 
 	case wmLbuttonup:
 		if w == nil {
 			break
 		}
+		w.releasingCapture = true
 		procReleaseCapture.Call()
+		w.releasingCapture = false
 		if !w.dragging {
 			break
 		}
 		w.dragging = false
+		// Arm hover before the click clip starts. The clip waits out the
+		// double-click interval, and a soft hover in that window replaces it.
+		w.armPetPointerHover(time.Now())
 		w.notePetInteraction()
 		if !w.dragMoved {
-			w.triggerCharacterEvent("click")
-			go func() {
-				if w.app != nil {
-					w.app.onFloatingButtonClicked()
-				}
-			}()
+			// Wait out the double-click interval before choosing 单击, 双击, or
+			// 多击. The single-click window side effect waits with that choice.
+			app := w.app
+			now := time.Now()
+			var class petClickClass
+			var epoch uint64
+			if app != nil {
+				class, epoch = app.recordDesktopPetClick(now)
+			}
+			if class != petClickNone {
+				go app.finishDesktopPetClick(class, epoch)
+			}
 		} else {
-			w.triggerCharacterEvent("drag_end")
-			var pt point
-			procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
-			finalX := w.windowStartX + int(pt.X-w.dragStartX)
-			finalY := w.windowStartY + int(pt.Y-w.dragStartY)
-			w.windowStartX = finalX
-			w.windowStartY = finalY
-			go func() {
-				if fa := w.app.existingFloatingAssistant(); fa != nil {
-					fa.UpdatePosition(finalX, finalY)
-				}
-			}()
+			w.finishPetDrag()
 		}
+		// Capture cancelled leave tracking for this press. Ask again when
+		// the cursor is still on her; hide the sentence when it is not.
+		w.settlePetPointer(hwnd)
 		return 0
 
 	case wmRbuttonup:
@@ -2154,13 +3117,19 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 
 		// "音效关闭" — checkable menu item
 		soundOffText, _ := syscall.UTF16PtrFromString("\u97f3\u6548\u5173\u95ed")
+		pinText, _ := syscall.UTF16PtrFromString("\u5b9a\u4f4f")
 		soundFlags := uintptr(mfString)
+		pinFlags := uintptr(mfString)
 		w.mu.Lock()
 		if !w.petMotionSound {
 			soundFlags |= mfChecked
 		}
+		if w.petPositionLocked {
+			pinFlags |= mfChecked
+		}
 		w.mu.Unlock()
 		procAppendMenuW.Call(hMenu, soundFlags, uintptr(menuIdSoundOff), uintptr(unsafe.Pointer(soundOffText)))
+		procAppendMenuW.Call(hMenu, pinFlags, uintptr(menuIdPin), uintptr(unsafe.Pointer(pinText)))
 
 		// Separator
 		procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
@@ -2194,6 +3163,17 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				// which updates w.petMotionSound without rebuilding the window.
 				_, _ = w.app.PatchConfigFields(map[string]interface{}{"pet_motion_sound_enabled": newEnabled})
 			}()
+		case menuIdPin:
+			if w.app == nil {
+				break
+			}
+			// Flip on this thread before any config lock. The next frame
+			// stops or resumes, and the next menu shows this checkmark.
+			w.mu.Lock()
+			next := !w.petPositionLocked
+			w.petPositionLocked = next
+			w.mu.Unlock()
+			w.app.persistPetPositionLockFromMenu(next)
 		case menuIdOpenMain:
 			go func() {
 				if w.app != nil {
@@ -2228,6 +3208,9 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		return 0
 
 	case wmClose:
+		if w != nil {
+			w.destroyPetPresence()
+		}
 		procKillTimer.Call(hwnd, timerIdHalo)
 		procDestroyWindowProc.Call(hwnd)
 		return 0
@@ -2301,11 +3284,12 @@ func createFloatingWin32Window(x, y, w, h int) (uintptr, error) {
 	exStyle := wsExTopmost | wsExLayered | wsExToolwindow
 	style := wsPopup | wsVisible
 
+	px, py := screenPositionParams(x, y)
 	hwnd, _, err := procCreateWindowExW.Call(
 		uintptr(exStyle),
 		uintptr(unsafe.Pointer(className)),
 		0, uintptr(style),
-		uintptr(x), uintptr(y),
+		px, py,
 		uintptr(w), uintptr(h),
 		0, 0, hInstance, 0,
 	)

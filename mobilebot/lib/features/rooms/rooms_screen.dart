@@ -5,6 +5,9 @@ import 'package:intl/intl.dart';
 
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
+import '../../core/chat_ui.dart' show ChatComposer;
+import '../../core/locale.dart';
+import '../../core/ui_kit.dart';
 import '../status/status_screen.dart' show shareInboxFile;
 
 final _roomsProvider = FutureProvider.autoDispose<List<BotRoom>>((ref) async {
@@ -23,14 +26,21 @@ class RoomsScreen extends ConsumerWidget {
     final data = ref.watch(_roomsProvider);
     final bots = ref.watch(botsProvider).bots;
     return Scaffold(
-      appBar: AppBar(title: const Text('Bot 房间')),
+      appBar: AppBar(title: Text(context.S.stBotRooms)),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openEditor(context, ref, bots, null),
         icon: const Icon(Icons.add),
-        label: const Text('新建房间'),
+        label: Text(context.S.roomNew),
       ),
       body: RefreshIndicator(
-        onRefresh: () async => ref.invalidate(_roomsProvider),
+        onRefresh: () async {
+          ref.invalidate(_roomsProvider);
+          try {
+            await ref.read(_roomsProvider.future);
+          } on Object {
+            // Error state renders via data.when(error:).
+          }
+        },
         child: data.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (error, _) => ListView(
@@ -44,10 +54,11 @@ class RoomsScreen extends ConsumerWidget {
               return ListView(
                 children: [
                   const SizedBox(height: 140),
-                  Icon(Icons.groups_outlined,
-                      size: 56, color: Colors.grey.shade400),
-                  const SizedBox(height: 16),
-                  const Center(child: Text('还没有房间\n建一个让你和几个 Bot 群聊', textAlign: TextAlign.center)),
+                  EmptyState(
+                    icon: Icons.groups_outlined,
+                    title: context.S.roomEmptyTitle,
+                    hint: context.S.roomEmptyHint,
+                  ),
                 ],
               );
             }
@@ -63,28 +74,33 @@ class RoomsScreen extends ConsumerWidget {
                 return Card(
                   child: ListTile(
                     leading: CircleAvatar(
-                      child: Text(room.name.isEmpty
-                          ? '房'
-                          : room.name.characters.first),
+                      child: Text(
+                        room.name.isEmpty
+                            ? context.S.roomInitial
+                            : room.name.characters.first,
+                      ),
                     ),
                     title: Text(
-                      room.name.isEmpty ? '未命名房间' : room.name,
+                      room.name.isEmpty ? context.S.roomUnnamed : room.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(
-                      memberNames.isEmpty ? '还没有成员' : memberNames,
+                      memberNames.isEmpty
+                          ? context.S.roomNoMembers
+                          : memberNames,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     trailing: IconButton(
                       icon: const Icon(Icons.tune),
-                      tooltip: '编辑房间',
-                      onPressed: () =>
-                          _openEditor(context, ref, bots, room),
+                      tooltip: context.S.roomEdit,
+                      onPressed: () => _openEditor(context, ref, bots, room),
                     ),
-                    onTap: () =>
-                        context.push('/rooms/${room.id}', extra: room),
+                    onTap: () => context.push(
+                      '/rooms/${Uri.encodeComponent(room.id)}',
+                      extra: room,
+                    ),
                   ),
                 );
               },
@@ -95,8 +111,12 @@ class RoomsScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _openEditor(BuildContext context, WidgetRef ref,
-      List<Bot> bots, BotRoom? room) async {
+  Future<void> _openEditor(
+    BuildContext context,
+    WidgetRef ref,
+    List<Bot> bots,
+    BotRoom? room,
+  ) async {
     final changed = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -139,8 +159,8 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
 
   String _attentionOf(String botId) =>
       _attention[botId] == 'mentions' || _attention[botId] == 'off'
-          ? _attention[botId]!
-          : 'all';
+      ? _attention[botId]!
+      : 'all';
 
   Future<void> _save() async {
     final api = ref.read(botApiProvider);
@@ -151,23 +171,45 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
         id: widget.room?.id ?? '',
         name: _nameCtrl.text.trim(),
         members: _members.toList(),
-        attention: {
-          for (final id in _members) id: _attentionOf(id),
-        },
+        attention: {for (final id in _members) id: _attentionOf(id)},
       );
       if (mounted) Navigator.of(context).pop(true);
     } on Object catch (error) {
       if (mounted) {
         setState(() => _saving = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     }
   }
 
   Future<void> _delete() async {
+    final S = context.S;
     final api = ref.read(botApiProvider);
     if (api == null || widget.room == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(S.roomDeleteTitle),
+        content: Text(
+          S.roomDeleteBody(
+            widget.room!.name.isEmpty ? S.roomUnnamed : widget.room!.name,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(S.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(S.roomDelete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
     setState(() => _saving = true);
     try {
       await api.deleteRoom(widget.room!.id);
@@ -175,8 +217,9 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
     } on Object catch (error) {
       if (mounted) {
         setState(() => _saving = false);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     }
   }
@@ -184,6 +227,7 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final S = context.S;
     return Padding(
       padding: EdgeInsets.only(
         left: 16,
@@ -195,18 +239,20 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(widget.room == null ? '新建房间' : '编辑房间',
-              style: theme.textTheme.titleMedium),
+          Text(
+            widget.room == null ? S.roomNew : S.roomEdit,
+            style: theme.textTheme.titleMedium,
+          ),
           const SizedBox(height: 12),
           TextField(
             controller: _nameCtrl,
-            decoration: const InputDecoration(
-              labelText: '房间名',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: S.roomNameLabel,
+              border: const OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
-          Text('成员', style: theme.textTheme.titleSmall),
+          Text(S.roomMembers, style: theme.textTheme.titleSmall),
           Flexible(
             child: ListView(
               shrinkWrap: true,
@@ -229,14 +275,19 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
                         ? DropdownButton<String>(
                             value: _attentionOf(bot.id),
                             underline: const SizedBox.shrink(),
-                            items: const [
+                            items: [
                               DropdownMenuItem(
-                                  value: 'all', child: Text('全部')),
+                                value: 'all',
+                                child: Text(S.roomAttnAll),
+                              ),
                               DropdownMenuItem(
-                                  value: 'mentions',
-                                  child: Text('仅@提及')),
+                                value: 'mentions',
+                                child: Text(S.roomAttnMentions),
+                              ),
                               DropdownMenuItem(
-                                  value: 'off', child: Text('不听')),
+                                value: 'off',
+                                child: Text(S.roomAttnOff),
+                              ),
                             ],
                             onChanged: (v) =>
                                 setState(() => _attention[bot.id] = v!),
@@ -252,9 +303,10 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
               if (widget.room != null)
                 TextButton(
                   onPressed: _saving ? null : _delete,
-                  child: Text('删除',
-                      style:
-                          TextStyle(color: theme.colorScheme.error)),
+                  child: Text(
+                    S.roomDelete,
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
                 ),
               const Spacer(),
               FilledButton(
@@ -263,9 +315,9 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
                     ? const SizedBox(
                         width: 16,
                         height: 16,
-                        child:
-                            CircularProgressIndicator(strokeWidth: 2))
-                    : Text(widget.room == null ? '创建' : '保存'),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(widget.room == null ? S.botsCreateAction : S.save),
               ),
             ],
           ),
@@ -299,6 +351,7 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
   }
 
   Future<void> _send() async {
+    final S = context.S;
     final api = ref.read(botApiProvider);
     final text = _inputCtrl.text.trim();
     if (api == null || text.isEmpty || _sending) return;
@@ -307,19 +360,42 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
       final woken = await api.postRoomMessage(widget.room.id, text);
       _inputCtrl.clear();
       ref.invalidate(_roomSaidProvider(widget.room.id));
+      // Land on the just-sent bubble instead of leaving the scroll where it
+      // was — matches every chat client's post-send convention.
+      try {
+        await ref.read(_roomSaidProvider(widget.room.id).future);
+      } on Object {
+        // Error state renders via data.when(error:).
+      }
+      if (mounted && _scrollCtrl.hasClients) {
+        _scrollCtrl.animateTo(
+          _scrollCtrl.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+      }
       if (mounted && woken.isNotEmpty) {
         final bots = ref.read(botsProvider).bots;
         final names = [
           for (final id in woken)
             bots.where((b) => b.id == id).firstOrNull?.title ?? id,
         ].join('、');
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('已唤醒：$names')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(S.roomWoken(names))));
+        // Woken bots answer asynchronously — without a stream the first
+        // replies only show on a manual pull, so poll a few times.
+        for (final delay in const [4, 12, 30]) {
+          Future.delayed(Duration(seconds: delay), () {
+            if (mounted) ref.invalidate(_roomSaidProvider(widget.room.id));
+          });
+        }
       }
     } on Object catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(failureMessage(error))));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -329,17 +405,21 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
   @override
   Widget build(BuildContext context) {
     final bots = ref.watch(botsProvider).bots;
+    final S = context.S;
     return Scaffold(
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.room.name.isEmpty ? '房间' : widget.room.name),
+            Text(
+              widget.room.name.isEmpty ? S.roomDefaultName : widget.room.name,
+            ),
             Text(
               widget.room.members
-                  .map((id) =>
-                      bots.where((b) => b.id == id).firstOrNull?.title ??
-                      id)
+                  .map(
+                    (id) =>
+                        bots.where((b) => b.id == id).firstOrNull?.title ?? id,
+                  )
                   .join('、'),
               style: Theme.of(context).textTheme.bodySmall,
               maxLines: 1,
@@ -350,45 +430,19 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
       ),
       body: Column(
         children: [
-          Expanded(child: _RoomTranscript(
-            room: widget.room,
-            bots: bots,
-            scrollCtrl: _scrollCtrl,
-          )),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _inputCtrl,
-                      minLines: 1,
-                      maxLines: 4,
-                      decoration: InputDecoration(
-                        hintText: '在房间里说话，@Bot名 可点名',
-                        filled: true,
-                        fillColor: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHighest,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 10),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(22),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton.filled(
-                    onPressed: _sending ? null : _send,
-                    icon: const Icon(Icons.send),
-                  ),
-                ],
-              ),
+          Expanded(
+            child: _RoomTranscript(
+              room: widget.room,
+              bots: bots,
+              scrollCtrl: _scrollCtrl,
             ),
+          ),
+          ChatComposer(
+            controller: _inputCtrl,
+            hint: S.roomComposerHint,
+            sending: _sending,
+            onSend: _send,
+            onSubmitted: (_) => _send(),
           ),
         ],
       ),
@@ -398,10 +452,10 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
 
 final _roomSaidProvider = FutureProvider.autoDispose
     .family<List<SaidNote>, String>((ref, roomId) async {
-  final api = ref.watch(botApiProvider);
-  if (api == null) return const [];
-  return api.said(room: roomId);
-});
+      final api = ref.watch(botApiProvider);
+      if (api == null) return const [];
+      return api.said(room: roomId);
+    });
 
 class _RoomTranscript extends ConsumerWidget {
   final BotRoom room;
@@ -417,19 +471,47 @@ class _RoomTranscript extends ConsumerWidget {
   String _botName(String id) =>
       bots.where((b) => b.id == id).firstOrNull?.title ?? id;
 
+  Future<void> _refresh(WidgetRef ref) async {
+    ref.invalidate(_roomSaidProvider(room.id));
+    try {
+      await ref.read(_roomSaidProvider(room.id).future);
+    } on Object {
+      // Error state renders via data.when(error:).
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    return ref.watch(_roomSaidProvider(room.id)).when(
+    return ref
+        .watch(_roomSaidProvider(room.id))
+        .when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (error, _) => Center(child: Text(failureMessage(error))),
+          error: (error, _) => RefreshIndicator(
+            onRefresh: () => _refresh(ref),
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                const SizedBox(height: 140),
+                Center(child: Text(failureMessage(error))),
+              ],
+            ),
+          ),
           data: (notes) {
             if (notes.isEmpty) {
-              return const Center(child: Text('在房间里说点什么，Bot 们会听到'));
+              return RefreshIndicator(
+                onRefresh: () => _refresh(ref),
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  children: [
+                    const SizedBox(height: 160),
+                    Center(child: Text(context.S.roomEmptyTranscript)),
+                  ],
+                ),
+              );
             }
             return RefreshIndicator(
-              onRefresh: () async =>
-                  ref.invalidate(_roomSaidProvider(room.id)),
+              onRefresh: () => _refresh(ref),
               child: ListView.builder(
                 controller: scrollCtrl,
                 padding: const EdgeInsets.all(12),
@@ -443,12 +525,13 @@ class _RoomTranscript extends ConsumerWidget {
                         : Alignment.centerLeft,
                     child: Container(
                       constraints: BoxConstraints(
-                        maxWidth:
-                            MediaQuery.of(context).size.width * 0.82,
+                        maxWidth: MediaQuery.of(context).size.width * 0.82,
                       ),
                       margin: const EdgeInsets.only(bottom: 8),
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: mine
                             ? theme.colorScheme.primary
@@ -460,17 +543,15 @@ class _RoomTranscript extends ConsumerWidget {
                         children: [
                           if (!mine)
                             Padding(
-                              padding:
-                                  const EdgeInsets.only(bottom: 2),
+                              padding: const EdgeInsets.only(bottom: 2),
                               child: Text(
                                 _botName(note.from),
-                                style: theme.textTheme.labelSmall
-                                    ?.copyWith(
-                                        color: theme
-                                            .colorScheme.primary),
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.primary,
+                                ),
                               ),
                             ),
-                          Text(
+                          LinkifiedText(
                             note.text,
                             style: TextStyle(
                               color: mine
@@ -478,6 +559,16 @@ class _RoomTranscript extends ConsumerWidget {
                                   : theme.colorScheme.onSurface,
                               height: 1.35,
                             ),
+                            linkStyle: mine
+                                ? TextStyle(
+                                    color: theme.colorScheme.onPrimary,
+                                    height: 1.35,
+                                    fontWeight: FontWeight.w600,
+                                    decoration: TextDecoration.underline,
+                                    decorationColor:
+                                        theme.colorScheme.onPrimary,
+                                  )
+                                : null,
                           ),
                           if (note.files.isNotEmpty)
                             Wrap(
@@ -486,31 +577,38 @@ class _RoomTranscript extends ConsumerWidget {
                                 for (final name in note.files)
                                   ActionChip(
                                     avatar: const Icon(
-                                        Icons.attach_file,
-                                        size: 14),
-                                    label: Text(name,
-                                        maxLines: 1,
-                                        overflow:
-                                            TextOverflow.ellipsis),
+                                      Icons.attach_file,
+                                      size: 14,
+                                    ),
+                                    label: Text(
+                                      name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                     onPressed: () => shareInboxFile(
-                                        ref, note.from, note.id, name),
+                                      context,
+                                      ref,
+                                      note.from,
+                                      note.id,
+                                      name,
+                                    ),
                                   ),
                               ],
                             ),
                           if (note.createdAt != null)
                             Padding(
-                              padding:
-                                  const EdgeInsets.only(top: 2),
+                              padding: const EdgeInsets.only(top: 2),
                               child: Text(
-                                DateFormat('MM-dd HH:mm').format(
-                                    note.createdAt!.toLocal()),
+                                DateFormat(
+                                  'MM-dd HH:mm',
+                                ).format(note.createdAt!.toLocal()),
                                 style: TextStyle(
-                                  fontSize: 10,
+                                  fontSize: 10.5,
                                   color: mine
-                                      ? theme.colorScheme.onPrimary
-                                          .withValues(alpha: 0.7)
-                                      : theme.colorScheme
-                                          .onSurfaceVariant,
+                                      ? theme.colorScheme.onPrimary.withValues(
+                                          alpha: 0.7,
+                                        )
+                                      : theme.colorScheme.onSurfaceVariant,
                                 ),
                               ),
                             ),

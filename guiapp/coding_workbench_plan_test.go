@@ -191,6 +191,99 @@ func TestParseCodingRequestDecision(t *testing.T) {
 	if !ok || decision.Acceptance != "" {
 		t.Fatalf("inquiry must drop acceptance, got %#v", decision)
 	}
+	decision, ok = parseCodingRequestDecision("{\"kind\":\" Inquiry \",\"needs_plan\":true}")
+	if !ok || decision.Kind != codingRequestInquiry || decision.NeedsPlan {
+		t.Fatalf("padded inquiry kind = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"IMPLEMENTATION","needs_plan":false}`)
+	if !ok || decision.Kind != codingRequestImplementation || decision.NeedsPlan {
+		t.Fatalf("capitalized implementation kind = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"inquiry","needs_plan":false,"acceptance":null}`)
+	if !ok || decision.Kind != codingRequestInquiry || decision.NeedsPlan || decision.Acceptance != "" {
+		t.Fatalf("null acceptance must keep inquiry, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"inquiry","needs_plan":null}`)
+	if !ok || decision.Kind != codingRequestInquiry || decision.NeedsPlan {
+		t.Fatalf("null needs_plan must keep inquiry, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"implementation","needs_plan":"true"}`)
+	if !ok || decision.Kind != codingRequestImplementation || !decision.NeedsPlan {
+		t.Fatalf("stringly true needs_plan = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"implementation","needs_plan":"True"}`)
+	if !ok || !decision.NeedsPlan {
+		t.Fatalf("capitalized stringly true needs_plan = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"implementation","needs_plan":"false"}`)
+	if !ok || decision.NeedsPlan {
+		t.Fatalf("stringly false needs_plan = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"implementation","needs_plan":"yes"}`)
+	if !ok || decision.Kind != codingRequestImplementation || decision.NeedsPlan {
+		t.Fatalf("needs_plan word must stay false, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"implementation","needs_plan":1}`)
+	if !ok || !decision.NeedsPlan {
+		t.Fatalf("numeric needs_plan 1 = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"implementation","needs_plan":0}`)
+	if !ok || decision.NeedsPlan {
+		t.Fatalf("numeric needs_plan 0 = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"implementation","needs_plan":2}`)
+	if !ok || decision.NeedsPlan {
+		t.Fatalf("numeric needs_plan 2 must stay false, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"operational","needs_plan":"true","acceptance":null}`)
+	if !ok || decision.Kind != codingRequestOperational || decision.NeedsPlan || decision.Acceptance != codingOperationalAcceptanceLaunch {
+		t.Fatalf("null acceptance operational = %#v %v", decision, ok)
+	}
+	if _, ok = parseCodingRequestDecision(`{"kind":"unknown","needs_plan":null}`); ok {
+		t.Fatal("unknown kind with null needs_plan must be rejected")
+	}
+	if _, ok = parseCodingRequestDecision(`{"kind":"inquiry|operational|implementation","needs_plan":false}`); ok {
+		t.Fatal("schema kind token must be rejected")
+	}
+	decision, ok = parseCodingRequestDecision("\uFEFF" + `{"kind":"inquiry","needs_plan":false,"acceptance":null}`)
+	if !ok || decision.Kind != codingRequestInquiry {
+		t.Fatalf("BOM inquiry = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision("```json\n{\"kind\":\"inquiry\",\"needs_plan\":\"false\",\"acceptance\":null}\n```")
+	if !ok || decision.Kind != codingRequestInquiry || decision.NeedsPlan || decision.Acceptance != "" {
+		t.Fatalf("fenced stringly inquiry = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision("Schema: {\"kind\":\"inquiry|operational|implementation\",\"needs_plan\":true|false,\"acceptance\":\"launch|command\"}\n{\"kind\":\"inquiry\",\"needs_plan\":false,\"acceptance\":null}")
+	if !ok || decision.Kind != codingRequestInquiry || decision.Acceptance != "" {
+		t.Fatalf("schema echo must not hide the later inquiry, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision("{\"kind\":\"implementation\",\"needs_plan\":false}\n{\"kind\":\"inquiry\",\"needs_plan\":false}")
+	if !ok || decision.Kind != codingRequestInquiry {
+		t.Fatalf("last valid object must win, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision("{\"kind\":\"inquiry\",\"needs_plan\":false}\n{\"kind\":\"inquiry|operational|implementation\",\"needs_plan\":false}")
+	if !ok || decision.Kind != codingRequestInquiry {
+		t.Fatalf("trailing schema echo must not erase inquiry, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"implementation","needs_plan":false,"note":{"kind":"inquiry","needs_plan":true}}`)
+	if !ok || decision.Kind != codingRequestImplementation || decision.NeedsPlan {
+		t.Fatalf("nested object must not replace the document kind, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision("{\"kind\":\"inquiry\",\"needs_plan\":\"false\",\"acceptance\":null,}")
+	if !ok || decision.Kind != codingRequestInquiry || decision.NeedsPlan || decision.Acceptance != "" {
+		t.Fatalf("trailing comma must keep inquiry, got %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision("{\"kind\":\"implementation\",\"needs_plan\":true,}")
+	if !ok || decision.Kind != codingRequestImplementation || !decision.NeedsPlan {
+		t.Fatalf("trailing comma implementation = %#v %v", decision, ok)
+	}
+	decision, ok = parseCodingRequestDecision(`{"kind":"inquiry","needs_plan":false,"note":"keep, } this"}`)
+	if !ok || decision.Kind != codingRequestInquiry {
+		t.Fatalf("comma inside a string must stay inquiry, got %#v %v", decision, ok)
+	}
+	if _, ok = parseCodingRequestDecision(`{"kind":"unknown","needs_plan":false,}`); ok {
+		t.Fatal("trailing comma must not accept an unknown kind")
+	}
 }
 
 func TestResolveCodingWorkbenchTasksWithDecisionKeepsSimpleImplementationDirectInApproveMode(t *testing.T) {
@@ -2311,6 +2404,17 @@ func TestEmitCodingAgentUserProgressDropsBoardBanners(t *testing.T) {
 	}
 }
 
+func TestWrapCodingAgentReasoningTokenPassesRejectMarker(t *testing.T) {
+	var got []string
+	wrapped := wrapCodingAgentReasoningToken(func(s string) { got = append(got, s) })
+	wrapped("forecast")
+	wrapped("\x02")
+	wrapped("\x02kept")
+	if len(got) != 3 || got[0] != "\x01forecast" || got[1] != "\x02" || got[2] != "\x02kept" {
+		t.Fatalf("wrapped = %#v", got)
+	}
+}
+
 func TestWrapCodingAgentReasoningTokenPrefixesThinking(t *testing.T) {
 	var got []string
 	wrapped := wrapCodingAgentReasoningToken(func(s string) { got = append(got, s) })
@@ -2792,7 +2896,7 @@ func TestGoalContinuationIsNotAUserCodingPlan(t *testing.T) {
 	var streamed string
 	got := h.publishCodingRequestUnderstanding(userID, text, stickyCodingWorkbenchMemory{
 		SessionPlan: "实现一个图形界面版支持中文显示的愤怒的小鸟游戏，需要有物理效果，有声音，画面精致",
-	}, func(s string) { streamed += s })
+	}, codingRequestDecision{}, func(s string) { streamed += s })
 	if got != "" || strings.Contains(streamed, "改成图形界面版本") {
 		t.Fatalf("continuation was restated as a GUI port: %q streamed=%q", got, streamed)
 	}

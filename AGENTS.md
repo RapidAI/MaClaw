@@ -166,6 +166,28 @@
   loop still owns the session; an orphan-lock denial leaves it false so the
   parked goal turn is restored.
 
+## Semantic route authority (guiapp)
+
+- Route revisions fence per lineage (root+session+principal): a newer
+  `PublishSurface` on the same lineage supersedes every earlier revision,
+  and a superseded revision never becomes current again. Per-call
+  `coordinator.Admit`/`executor.Execute` check `routeRevisionIsCurrent` —
+  `route_revision_superseded`/`route_revision_cancelled` at that point
+  means THIS surface is dead forever, most often because a concurrent turn
+  on the same lineage took over.
+- `sharedAgentLoopCallbacks.semanticRouteAuthorityLossResult` is the
+  single funnel for those errors: a dead managed surface calls
+  `loopCtx.Cancel()` (the loop exits via `ShouldStop`) and returns a
+  terminal "[system] 授权已被取代…本轮执行终止" text — NOT a
+  `[system rejected]` tool failure. Do NOT return fencing errors as
+  retryable tool results: the 2026-11 ssh deployment turn retried a dead
+  route ~10 times, tripped the consecutive-same-tool "改用其他方式"
+  guidance, and detoured around governed ssh with a local paramiko script.
+- A discovered-MCP sidecar is exempt: it lives on a `…:mcp-sidecar`
+  session (own lineage), so its death only drops the sidecar
+  (`semanticSurfaceIsMCPSidecar` matches pointer identity AND the session
+  suffix — the suffix catches a sidecar dropped concurrently mid-call).
+
 ## Assistant chat event protocol (guiapp)
 
 - The panel renders assistant output only into an `ActiveRound` keyed by
@@ -182,6 +204,76 @@
   non-matching session becomes an offscreen live round adopted when its tab
   is opened. `display_text` is the user-row text (external origins use a
   `〔…〕` prefix, e.g. `〔远控〕`, `〔VS Code / ACP〕`).
+- The coding plan checklist bar (`CodingAgentPlanChecklist`, the "步骤" strip
+  above the composer) retires — unmounts, or strips to the files chip — when
+  `taskExecutionStatus.tone` lands on `completed`/`cancelled`, not just when
+  every step passes: a finished turn must not leave a stale pending/running
+  cursor or a lone 需求理解 hover target over the composer. Exceptions that
+  keep it mounted: `codingPlanGateOpen` (awaiting Start/Skip/Reject), any
+  `codingStepIsFailed` row, and non-terminal tones (paused/interrupted keep
+  resume context). The bar itself is centered at 45% column width
+  (`100-pet-store-mc.css` overrides the shared inset rule) so the pointer can
+  pass the edges without opening the step-list popover; `.capc-popover` is
+  `width:100%` of that bar.
+- The 需求理解 line (`fallbackCodingRequestRestatementFor` in
+  `coding_workbench_intent.go`) must NAME the work, not describe the process.
+  The sentence follows `codingRequestDecision.Kind` from the whole-request
+  classifier (`resolveCodingRequestDecision`). Kind and acceptance tokens
+  are matched with surrounding space removed and case folded
+  (`normalizeCodingRequestDecision`), so a capitalized token stays the
+  decision the model returned. `parseCodingRequestDecision` still counts
+  that decision when needs_plan or acceptance is null, a string, or 0/1,
+  when a comma sits immediately before } or ], and when the model echoes
+  the schema the last valid object is the decision. The host does not scan the
+  wording for 哪些/什么/吗/怎么/改成/介绍/完/好/图形界面 or any other marker;
+  those lists misclassify other questions. A short implementation edit
+  (≤48 runes) still echoes itself via `codingDescribeNewAsk`
+  ("这次<ask>，其它先不动"). Inquiry uses `codingDescribeQuestion`
+  ("对照当前实现，回答「q」，这一步只读不改文件"); a session that already
+  wrote files drops 不改文件 ("对照现有实现，回答「q」。"). An operational
+  launch (acceptance empty or launch, not command) says
+  "运行当前已有程序并确认它能正常工作，这一步不改源代码。"
+  With a work name that becomes
+  "在「name」里，运行当前已有程序并确认它能正常工作，这一步不改源代码。"
+  A continue cue (`codingWorkbenchContinueCue`) wins before kind, so 继续
+  stays a resume. When the classifier is down the decision is
+  implementation, so the sentence is the edit echo and is not invented as
+  a read-only answer from the words. `codingRequestLooksModeratelyComplex`
+  only raises NeedsPlan after the judgment is already implementation, or
+  inside that no-model fallback; it must not skip the classifier.
+  Publish runs on the classifier decision and before
+  `applyCodingSessionImplementationPosture`, so a written-session inquiry
+  keeps the answer sentence while write tools can still be restored.
+  Inquiry and an operational launch keep the host sentence
+  (`codingRequestUnderstandingKeepsHostFallback`); a second model must not
+  overwrite 不改文件 / 不改源代码. A work name that is the same sentence
+  as the ask is skipped (`codingRequestWorkName`), including a title whose
+  only difference is a short comma note. The next candidate is used: the
+  previous summary, then the project identity. A readme line that is not a
+  short title does not hide a later CMake name, a single source stem, or a
+  unique binary. A stored line that contains a sentence boundary
+  (。！？.!?；;…, including a mark with more words after it) is not a
+  title, so it does not hide the project name. A dot inside an identifier
+  such as snake.cpp or v1.2 still counts. The readme walk skips a sentence
+  and can use a later short title; other prose does not hide the CMake
+  name. A project() in a comment, or a ${variable} name, is not the
+  project name. A task titled with the user's command
+  is not repeated as 在「同一句话」里, and that title does not hide the
+  project name. A longer
+  implementation ask leads with its first requirement via
+  `codingRequestHeadline` ("先处理「<head>」，其余要求一并处理") — the
+  headline peels leading discourse openers ("太好了！", "帮我，") and
+  sub-2-rune fragments, cuts at the first sentence boundary, only accepts a
+  comma clause ≥6 runes as the head, and resolves numbered breakdowns the
+  same way the session-goal echo does (`codingRequirementGoalCut`): the
+  goal before （1） is the requirement, a bare list names its items
+  ("改A、改B" — first item in full when titles exceed the 16-rune cap),
+  and any remainder past the head keeps `more` so "其余要求一并处理"
+  acknowledges it. The generic process filler
+  ("先看清当前项目里相关的实现和约束…") survives only for inputs with no
+  nameable ask — punctuation-only text or a bare continue with nothing
+  stored. The lightweight-LLM refinement (`llmCodingRequestRestatement`)
+  still replaces the fallback when the host sentence is not locked.
 
 ## Remote-control ops (guiapp ↔ hub)
 
@@ -198,6 +290,74 @@
   working dir) returns `{path,parent,home,default_dir,roots,dirs,truncated}`
   for the new-task wizard's remote directory browser
   (`RemoteDirPickerPopover` → `draft.machine.workDir`; operate-grants only).
+
+## SSH session recovery (guiapp)
+
+- The three SSH exec surfaces have DIFFERENT recovery contracts by design:
+  - Semantic trusted SSH (`executeTrustedBoundSSH`, chat agent): self-heals.
+    A dead bound session is re-dialed BEFORE the command is written
+    (`trustedSSHRecoverableBoundSession` finds the single session the
+    principal opened even after it died; `ReconnectByID` + a
+    `trustedSSHReconnectSettle` banner wait), and writes go through
+    `WriteInputChecked` (idle probe + write-failure reconnect). A mid-wait
+    `outcome_unobserved` calls `recoverTrustedSSHSession`: dead PTY →
+    `ReconnectByID`; live shell that ignored Ctrl+C → `Kill` + handle
+    `Close` first (a plain reconnect keeps a live PTY) so a fresh shell
+    replaces it, then annotates the error with the pre-disconnect output
+    tail and "先核对远端状态再重试". The error keeps the
+    `outcome_unobserved`/`disconnected` tokens so upstream
+    `[system unknown]` classification is unchanged.
+  - Legacy/skill sshExec (`h.sshExec`, `sshtool.SSHExec`,
+    `SkillExecutor.sshExec`): already self-heals the same way
+    (ReconnectByID on terminal status + WriteInputChecked + 3-strike
+    CheckShellResponsive).
+  - Remote coding (`sshExecRuntimeBoundContext`, `sshExecChannelResult`,
+    `newGUIRemoteWorkspaceProber`): deliberately NEVER reconnects — the
+    session is bound to a frozen verified target identity, and a lost
+    session must interrupt the attempt and go through
+    `PrepareCodingRuntimeRecovery`/`ConfirmCodingRuntimeRecovery` review.
+    Do not "fix" it to auto-reconnect.
+- Liveness verdicts come in two strengths; pick by caller intent:
+  - Optimistic: `IsAlive`/`TransportFailed`/`sshSituationSessionAlive` —
+    an in-flight probe still counts as bound. For catalog/binding reads.
+  - Strict: `TransportLive`/`ClientTransportLive`/`sshClientTransportLive`
+    require a positive keepalive answer inside `sshProbeWait` (5s). Used at
+    every commit point: `AttachOpenSession` reuse, `trustedSSHSessionWritable`
+    (pre-write gate), `WriteInputChecked` idle probe and post-write check,
+    the SFTP borrow in `callWithSessionClient`, `Kill`/`Interrupt`/`Close`
+    gates, and recovery verification.
+- Stall bounds (half-open transports): `crypto/ssh` holds globalSentMu for
+  the whole global request, so one unanswered keepalive serializes every
+  later request on that client — `NewSession`, `Signal`, channel `Close`
+  all queue behind it until the pool keepalive kills the conn (up to
+  ~30-60s). The bounds:
+  - `reconnectSession` POSITIVELY probes the old client before reuse;
+    anything else closes the client first — which unblocks all queued
+    writes — and dials via `pool.Reconnect`. `ObservedTransportFailure`
+    alone is not enough: it only records FINISHED probe failures.
+  - `WaitForOutputContext` bails early to `SessionError` once
+    `ObservedTransportFailure` latches, and `finishDeadline` only sends
+    `Interrupt` when `TransportLive` answered (the write would otherwise
+    park behind the stuck request).
+  - `recoverTrustedSSHSession` only sends `Kill` when `TransportLive()`
+    answered; otherwise it closes the client before the channel so the
+    close itself does not park. A failed recovery `RemoveSession`s the
+    binding so the next call plans a fresh connect.
+  - `callWithSessionClient` (SFTP) probes the borrowed client; a dead
+    session-bound conn goes through `reconnectSession`, a detached dead
+    pool entry through `pool.Reconnect`.
+- `SSHSessionManager.reconnectSession` covers every death mode:
+  transport-dead → `pool.Reconnect`, exited shell on a live connection →
+  `AcquireResolved` reuses the pooled client, undetected half-open → the
+  `ptySession.Start` failure redials once. It clears `PreviewLines`/
+  `droppedLines`, so callers detect the reset by PTY HANDLE IDENTITY
+  (`session.PTY() != handleBefore` → resample the baseline), not by
+  line-count comparison: a reset buffer can regrow to the same count.
+- The `ssh` tool reuses one session per host:user:port. `force_new` is in
+  the tool schema for an unresponsive reused session; the "复用已有 SSH
+  会话" result also names the close/force_new escape.
+- SFTP copies have their own one-shot link-loss retry
+  (`callWithSessionClient`); SFTP status errors are never link loss.
 
 ## Model memory lifecycle
 
@@ -298,6 +458,46 @@
   are silently absent from read-only surfaces (the earlier ordering bug had
   local inquiry agents fall back to `rg`/`Get-Content` on `knowledge.db-wal`).
 
+## Read-only coding children: auto review/resume (guiapp)
+
+- `spawn_coding_agent` read-only children (explorer/reviewer) run detached:
+  `AdmitReadOnlyChildren` seals the parent Attempt `waiting_child` and releases
+  its lease; `runAdmitted*ReadOnlyChild` executes on a ledger-detached context
+  (`guiAdmittedChildExecutions`), so normal parent completion can never cancel
+  them. `PrepareParentContinuation` is read-only and only succeeds once every
+  child result is durable and the parent task is re-queued.
+- A delivered handoff auto-resumes the main task — no manual 「审阅子任务结果」
+  click: each child-done hook calls `autoResumeCodingChildReviewIfReady`
+  (per-user `codingAutoChildReviewLocks` mutex; gates: usable checkpoint,
+  pending handoff for that parentTaskID, `hasActiveLoopForUser` false, ALL
+  targets ready) then `runAutoCodingChildReview` starts the fresh parent
+  Attempt on its own `LoopContext` + AI background session (user can
+  interrupt). `finalizeCodingImplementation` chains the same review when the
+  run finishes after all children already delivered.
+- `cp.AutoReviewHops` (persisted, cap `codingAutoChildReviewMaxHops` = 3)
+  bounds spawn→review→spawn chains; past it only the manual action remains.
+- Lineage fence: detached reviews write the checkpoint OUTSIDE the owner turn
+  window, so `cp.reviewEpoch`/`reviewBaseStamp` (in-memory only, `json:"-"`,
+  stripped on load) guard `storeCodingExecCheckpoint` — a write whose stored
+  checkpoint is newer than the lineage base AND belongs to a different
+  lineage is dropped (foreign turns win); a MISSING stored entry counts as
+  "cleared after base" and is also dropped (a live child implies the base was
+  in memory). ALL checkpoint stores and `clearCodingExecCheckpoint`'s Delete
+  share `codingExecCheckpointEpochMu` — the fence only works because foreign
+  writes cannot slip between a lineage's compare and its Store.
+  `codingExecCheckpointLineageCurrent` aborts superseded reviews before
+  spending a parent Attempt. Epoch 0 keeps every foreground writer
+  unconditional.
+- `emitCodingChildReviewChat` pushes the review response as an
+  `AIContinuationEvent` notice into the coding chat, mirroring
+  `emitCodingPlanReviewChat`. For IM-originated coding turns the detached
+  child hook also carries `trustedLoopDeliveryTarget(parent.loopCtx)` through
+  to `deliverCodingChildReviewToIM`, which converts the trusted destination
+  via `trustedDestinationToSchedulerTarget` + `codingChildReviewIMChannel`
+  (lansenger/telegram/weixin/qq scopes) and pushes through
+  `deliverIMTextForBot` — desktop scopes and unmapped channels skip silently.
+
+
 ## WebView renderer OOM (frontend stream hot path)
 
 - 2026-… incident: WebView2 renderer grew 773MB→3.5GB over ~15min of a coding
@@ -319,9 +519,370 @@
   flushes re-render the panel only — never add `messages` back to
   `panelState`/`useState` or App re-renders per flush again.
 
+## MCP host LAN access (guiapp)
+
+- The tools-page MCP server is loopback-only by default. `mcp_host_lan_enabled`
+  (corelib `McpHostLanEnabled`, nil = off) widens the bind to `0.0.0.0`
+  (`listenMCP(preferredPort, lan)` — the wildcard bind makes `127.0.0.1`
+  reachable too, so there is only ever ONE listener; do not add a second one
+  on another port). `PatchConfigFields` restarts the host through the
+  existing `mcpHostChanged` channel.
+- Two request gates flip together with `h.lanAllowed` (`newMCPHTTPLAN`):
+  `mcpRemoteIsLoopback` stops rejecting non-loopback clients, and
+  `mcpOriginAllowed(origin, lanAllowed)` additionally accepts private-IP
+  origins — public hostnames stay rejected in BOTH modes (DNS-rebinding
+  guard). The Bearer key is mandatory for loopback and LAN callers alike;
+  do not add a loopback auth bypass.
+- The status payload carries `lanEnabled` from CONFIG in both
+  `GetMCPHostStatus` and `mcpStatusWhileEnabled` — NOT from the host
+  snapshot: a nil host (listener never started) must not flip the panel's
+  LAN switch back to Off after a `GenerateMCPHostAPIKey` response.
+  `lanURL`/`lanHTTPConfig` are built per status fetch from
+  `mcpLANAddressFn()` (UDP-dial primary private IPv4, interface-enum
+  fallback, injectable for tests), so a DHCP address change needs no
+  listener restart. `~/.maclaw/mcp/endpoint.json` stays loopback-only for
+  local discovery; the LAN URL exists only in the UI payload.
+
+## MCP host access log (guiapp)
+
+- `mcpAccessStore` (`guiapp/mcp_access_log.go`) records remote TASK
+  INITIATIONS only: `create_task` (local + remote-coding paths) and
+  `send_command` (recovery confirms included). The send record fires inside
+  `mcpStartPrompt`'s `bind` — i.e. only after `mcpCommitRun` succeeds, so a
+  send that never starts a run stays unlogged. Read-only tools, 401/403
+  rejections, and claim replays (`mcpReplayRequest`) are never recorded.
+- Client identity rides the REQUEST CONTEXT: `ServeHTTP` stashes
+  `mcpClientInfo` (IP from `RemoteAddr` — no X-Forwarded-For, the listener
+  is direct — plus the key MASKED by `mcpMaskKey`, which is idempotent)
+  right after the Bearer check. `recordMCPAccess` re-masks at entry: never
+  store the full key, the JSONL (`~/.maclaw/logs/mcp_host_access.jsonl`)
+  is a user-shareable file. A context WITHOUT client info (tests calling
+  the task methods directly) is a NO-OP, not an error.
+- Storage: in-memory ring capped at `mcpAccessEntryLimit` (200) + JSONL
+  append; past `mcpAccessFileMaxBytes` (1MB) the file is rewritten from the
+  ring, and a FAILED rewrite falls back to a plain append instead of
+  dropping the entry. All file ops happen under the store mutex (the MCP
+  host is the single writer). Partial/corrupt lines are skipped on load.
+- Panel bindings: `GetMCPAccessLog` (newest first; keys `time/ip/apiKey/
+  action/task/projectPath`) and `ClearMCPAccessLog` (memory + file delete).
+  The MCPServerPanel access-log card is ALWAYS rendered (history can be
+  reviewed/cleared while the server is off) and live-refreshes via
+  `mcp-host-message`; keep the `EventsOn` unsubscribe in the effect cleanup.
+- Panel test mocks must return a FRESH array per `GetMCPAccessLog` call —
+  the backend builds a new slice every call, and a same-reference resolve
+  lets React's `Object.is` bail out of the re-render (this bit the panel
+  test once).
+
+## Goal plan arg encodings (corelib/goal)
+
+- `goal.ParseSteps` tolerates the encodings weak models emit for
+  `goal(action="plan")`: an array whose elements are JSON strings
+  (`["[{...}]"]` — the whole doc as one element), a JSON document as a bare
+  string (optionally ```-fenced, BOM-prefixed, or double-encoded), a single
+  step object, a `{"steps": [...]}` wrapper, and a map element whose `title`
+  is itself a document. `stepsDecodeCandidates` also completes a truncated
+  document — a missing `]`/`}` and a trailing partial element cut to the
+  last complete object (seen live: a weak model's over-long one-line array
+  lost its closer). A bare string that is not itself a document splits on
+  newlines and each LINE gets element-level decoding (a JSON-document line
+  expands, a plain line stays a title); elements inside an array never
+  split — one element is one step. Anything else falls back to the old
+  title behavior; a doc that yields no titled steps still errors so the
+  corrective plan turn fires. Depth is capped at `stepsJSONDepth`.
+- Rows written before this could store the JSON document as a single step's
+  `title` (plan collapsed to one step; marking it done finished the goal
+  early — the 目标清单 card showed raw JSON). `Store.loadAll` runs
+  `repairEncodedStepTitles`: a decoded title expands back into real steps,
+  the first keeps the parent's status/result/detail (the work actually
+  reported), the rest become pending, and the fix is persisted via
+  `updateGoalText`.
+- `g.Steps` has exactly one writer: `Store.SavePlan`, always fed by
+  `ParseSteps` (GUI `im_tool_goal.go`, TUI `corelib/agent/tool_goal.go`,
+  computeruse, desktopmcp). The plan/execute prompts and the goal tool
+  schema both tell the model to pass the array itself, never a JSON string.
+
 ## Logs
 
 - `~/.maclaw/logs/maclaw.log` — shared by main app, companion, and quit relays.
   `[file-companion]` = companion-side; `[exit-lifecycle]` = shutdown lifecycle;
   `[boot]` = early startup markers.
 - `~/.maclaw/logs/pet-companion.log`, `registration.log` for those subsystems.
+
+## mobilebot (Flutter client)
+
+- `mobilebot/` is the active MaclawGo phone client (login → bots → chat →
+  remote desktop → remote control → account). `mobile/maclaw_mobile/` is
+  DEPRECATED — its CI workflow was removed with it.
+- Flutter pin lives in `mobilebot/.fvmrc` (single source — both workflows
+  read it). Java 17. Verify loop: `flutter pub get`, `dart analyze lib test`
+  (must stay 0 issues), `flutter test`, `flutter build apk --debug`.
+  Release signing needs `android/key.properties` + a keystore in
+  `android/app/` (gitignored); without them the release build silently falls
+  back to debug signing.
+- Defensive parsing: every Hub JSON field goes through `lib/core/json_safe.dart`
+  (`syncText`/`syncList`/`syncInt`/`syncTextAny`…). `bot_models.dart`
+  re-exports it so existing imports keep working. Never read `json['x']`
+  directly in model factories.
+- Remote control (`features/remote/`): phone is an ACCOUNT-LEVEL controller —
+  no `X-Machine-Id` header, so Hub `controller_machine_id=''` and
+  `controllerIdentity` in `hub/internal/remotecontrol/service.go` resolves the
+  account itself. Selector reads `state.grants` (I control), `controlled` is
+  the reverse bucket (who controls my machines), `invites` incoming /
+  `pending` outgoing. Accepting an invite on mobile must bind a desktop via
+  `?machine_id=`. Ops ride `POST /grants/{id}/op` `{op, body}` — op names and
+  view/operate tiers are whitelisted hub-side; a new op needs the desktop
+  `executeRemoteControl` case AND the hub whitelist (see "Remote-control ops"
+  above).
+- Remote-task live viewer (`viewer_reducer.dart` ↔ desktop
+  `reduceViewerEvent.ts` ↔ Go contract reference `viewer_reduce.go`, all
+  locked to the same JSON vectors in
+  `guiapp/testdata/viewer_contract_vectors.json`): the viewer feed replays
+  EVERY progress publish, so ALL THREE reducers keep the desktop chat's
+  sticky tail row — a repeated delivery of the same running step dedups
+  against the TIMELINE TAIL by phase+task+title (coding rows; run_id
+  excluded, mirroring the compat text) or exact text (taskless rows), and
+  each caps the timeline at 160 like `VIEWER_TIMELINE_KEPT`. Without this
+  one running step paints a row per publish ("running · 实现…" ×N in
+  `_LiveRound`'s notes and the desktop remote mirror). The relay also
+  collapses: `relayRemoteStreamEvent` drops a progress whose wire text
+  equals the session's previous one (`viewerProgressTail`) BEFORE
+  `publishViewerEvent` — cursors stay contiguous (allocated per publish,
+  never skipped) and OLD phone builds, which have no reducer dedup, stop
+  stacking without an app update. Heartbeats/control lanes pass through;
+  queue-overflow tests must fill with DISTINCT texts. Known parse drift,
+  kept: legacy-text phases go through the desktop's
+  `CODING_AGENT_KNOWN_PHASES` whitelist ("done" → ''), the phone keeps the
+  raw word; shared vectors must use phases both sides represent
+  identically ("completed", not "done") — coding-map rows skip
+  normalization on BOTH sides. Adding a vector means updating all THREE
+  reducers at once — the Go one is embed-golden
+  (`TestReduceViewerEventMatchesGolden`) and fails the build first when a
+  consumer implementation drifts.
+- Login-wall handoff ask → takeover card (`_TakeoverCard` in
+  `bot_chat_screen.dart`; gate `isDesktopHandoffAsk` in `bot_models.dart`):
+  a desktop-bot ask that is really a handoff (`attention_reason`/`novnc_url`
+  on the same message, ask still pending) must NOT render `_AskCard`'s
+  answer field — the person acts on the computer, not in chat. The card
+  shows `attentionReasonLabel(reason)` (never the raw enum; unknown reasons
+  fall back to themselves for forward-compat); an ask with option chips
+  (choice/confirm) or a secret field is NEVER a takeover card —
+  `isDesktopHandoffAsk` excludes it so the chips/obscured input stay
+  usable. Plus the screenshot MaClawSrv
+  attached + 「接管」→ `/bot/<id>/desktop?takeover=1` which auto-claims the
+  keyboard once the first watch reports a controllable desktop (one attempt,
+  no 45s retry nag). Server side: `finishDesktopActionPhase` sets
+  `AskUserRequest.Takeover` (marker field, display hint "请在电脑上完成，
+  或点「接管」继续。" replaces 请直接输入您的回复) and
+  `desktopAttachHandoffShot` (http_agent.go, after `takeDesktopTurn` in all
+  THREE reply paths) captures one screen via the round wake and appends it
+  when the reply has no image yet — `ensureDesktopPictureDelivered` skips
+  `awaiting_user` by design, so this is the only picture source for a
+  handoff reply. The `_HandoffBanner` is suppressed while the takeover card
+  is up (same reason twice); it still renders for replies without a pending
+  ask. `BotDesktopScreen` is fullscreen landscape: no AppBar, no watch row —
+  back/takeover/menu are semi-transparent overlays on the letterbox sides,
+  the attention reason is an `IgnorePointer` pill on top, and the page runs
+  `SystemUiMode.immersiveSticky` (restore `edgeToEdge` + portrait on
+  dispose). Keep the `_noComputer` AppBar scaffold.
+- CI: `.github/workflows/mobilebot.yml` (PR/push checks + debug APK artifact);
+  `.github/workflows/main.yml` `build-android` job ships signed
+  `MaclawGo.apk` into tagged Releases — needs secrets
+  `MOBILEBOT_KEYSTORE_BASE64` / `_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`.
+- Hub deploy: `.cursor/rules/deploy-hub-binaries.mdc` — cross-compile
+  `GOOS=linux go build -o build/deploy/maclaw-hub ./hub/cmd/hub`, then
+  backup→overwrite→`start.sh` on `hub.mypapers.top` (root, password auth —
+  the password is never stored; ask the user). Compiled deploy binaries under
+  `build/deploy/` are gitignored.
+- HarmonyOS NEXT: code is ohos-ready via `lib/core/platform.dart`
+  (`Platform.operatingSystem == 'ohos'` gates sideload update + voice input —
+  `record`/`speech_to_text`/`open_filex` have no ohos ports). Building the
+  .hap needs the OpenHarmony Flutter SDK (`flutter create --platforms ohos .`)
+  + uncommenting the dependency_overrides block at the top of
+  `mobilebot/pubspec.yaml`; see `mobilebot/README.md`「HarmonyOS NEXT」.
+  Updates on ohos go through AppGallery, not the R2 self-updater.
+
+## mobilebot: voice input, bot media, update signing, l10n
+
+- Voice input on Android was dead on EVERY Android 11+ device: the manifest
+  lacked the `<queries>` intent for `android.speech.RecognitionService`, so
+  package visibility filtered out the recognizer and `speech_to_text`
+  `initialize()` always failed → every mic tap fell to the ~330 MB local
+  SenseVoice download. The manifest needs that queries intent plus the
+  bluetooth permissions the plugin requests (`BLUETOOTH_CONNECT` runtime on
+  S+; `BLUETOOTH`/`BLUETOOTH_ADMIN` maxSdkVersion 30 for pre-S headsets).
+- Dictation locale: never hardcode `zh_CN` — `pickAsrLocale(available)`
+  (`core/voice_engine.dart`) picks zh-CN → any zh-* → null (recognizer
+  default); a hardcoded unsupported locale dies with
+  language-not-supported before a single word is heard. Plugin side, a
+  null `localeId` omits `EXTRA_LANGUAGE` entirely = device default.
+- Dictation text lands in `onResult`, NOT in `onStatus`: recognized words
+  go straight into the composer per callback (bot chat `_toggleListening`,
+  assistant `_dictate`; snapshot the composer as the prefix right before
+  `listen`). Some OEM recognizers deliver results without ever firing the
+  terminal `'done'`/`'notListening'` status — gating the landing on status
+  left the assistant composer stuck at 聆听中 with nothing on screen.
+  `onStatus` only resets `_listening`; a `listen()` throw resets it too.
+  Voice-assistant mode (`_voiceListen`) has the same trap on the SEND side:
+  auto-send/relisten funnels through `_handleVoiceTurnEnd`, called from
+  BOTH the terminal status and `onResult(finalResult)` — `_listening`
+  makes it idempotent, so a recognizer that never fires the status still
+  sends, and a status after a final result cannot double-fire into a
+  spurious relisten.
+- Bot reply media never travels in the journal: the projection strips
+  bytes, the desktop saves delivered files on ITS OWN disk (only
+  unsavable ones keep attachment ids), and Hub's `ReplyFile` carries no
+  attachment id. So on the phone: `_settleReply` PATCHES media into the
+  bubble the desktop's journal projection already landed (per-field —
+  never clobber a restored list with an empty one), `_keepEarlierSeq`
+  keeps the local media over the projection echo of our own line, and
+  `_restoreSyncedMedia` PROBES idless assistant bubbles within
+  `mediaRestoreWindow` (48h) — explicit `attachmentIds` still refetch
+  unconditionally regardless of age. Without these, attachments vanish
+  after an app restart and on a phone watching a desktop-sent turn.
+- Update signature check (`MainActivity.kt` `apkSignatureMatches`):
+  `false` = REAL mismatch (the OS would fail the install with
+  INSTALL_FAILED_UPDATE_INCOMPATIBLE); `null` = undeterminable —
+  unparsable archive, different applicationId, or EMPTY cert set
+  (`signingInfo` is null for archives on Android 9/10, and v2-only APKs
+  expose no legacy `signatures` pre-P; AGP disables v1 when minSdk ≥ 24).
+  Treating the empty set as a mismatch blocked every legitimate same-key
+  update on those devices. Dart side: `null` → let the system installer
+  decide; `false` → the sheet shows uninstall-first guidance plus a
+  browser download-page entry (`updOpenDownloadPage`).
+- l10n: `app_en.arb` is fully translated; `app_zh_Hant.arb` is OpenCC s2t
+  of the zh template (regenerate with s2t when new keys land);
+  `app_mn.arb` is STILL the zh placeholder — needs a native speaker
+  before the mn locale ships. Tests that pump `MaclawGoApp` and assert
+  zh text MUST override `initialLanguageProvider` with `zhHans`: the test
+  host resolves en_US, and the translated en bundle no longer hides
+  behind placeholder Chinese (see bot_route_scope_test).
+- Commit set when landing the l10n migration: `l10n.yaml`, `lib/l10n/`
+  (the four ARBs; `gen/` is gitignored), and the untracked
+  `lib/core/locale.dart`/`chat_ui.dart`/`ui_kit.dart` must ride along with
+  the `generate: true` pubspec — a pubspec without the ARBs makes CI's
+  `flutter pub get` fail on the missing template. `flutter pub get`
+  DOES regenerate `gen/` (verified), so the workflow needs no extra step.
+- Known follow-ups beyond the 48h probe: (1) thread the attachment id
+  through Hub's `ReplyFile` (`replyAttachment.item_id` →
+  `attachment_id`) — MaClawSrv's `MessageAttachment.ItemID` is only set
+  for Hub file-store deliveries, so the mobile's already-ready
+  `BotReplyFile.attachmentId` parse + unconditional `attachmentIds`
+  refetch would then cover old media indefinitely; (2) large deliverables
+  (>700 KB base64 cap) still never reach the phone — that needs a mobile
+  download path over Hub's bot file store, not just an id; (3) the
+  `_voiceNames` in voice_settings_sheet are zh proper names, kept
+  untranslated on purpose pending a locale decision.
+
+## Bot 电脑数限额 (hub botmgmt)
+
+- `Grant.DesktopBotLimit` caps how many desktop bots a user may own. It
+  resolves as a CASCADE (`desktopBotLimit` in
+  `hub/internal/botmgmt/bot_desktop_quota.go`): user grant → department
+  grants nearest→root → global grant → `record.DefaultDesktopBotLimit`
+  (tenant default). A blank (nil) limit INHERITS the next level — it is not
+  "unlimited"; unlimited only when every level is blank. Zero still means
+  "no desktop bots".
+- Tenant default: `PATCH /api/admin/bots/settings`
+  `{"default_desktop_bot_limit": n|null}` (field required, null clears);
+  stored on the record, returned in `SettingsView`. Grant cap stays
+  `PATCH /api/admin/bots/grants/{id}` `{"desktop_bot_limit": …}`; both parse
+  through `optionalLimitPatch` (absent ≠ null).
+- Admin UI: bot tab access card has the global-grant cap row plus the new
+  "默认电脑数" row; grant rows in the list AND granted nodes in the org
+  tree carry the cap input (`data-grant-limit` + `saveGrantLimit`; the org
+  click walker returns early on INPUT/`bot-grant-limit` so typing can't
+  collapse the node). Security tab (企业管理) shows a "Bot 电脑数限额" card
+  on department/user detail and "Bot 默认电脑数" on the global panel —
+  `loadBotView`/`botQuotaCascade`/`saveSecBotQuota` mirror the Go cascade;
+  `results[2]` in `selectSecGlobal` stays the policy fetch, `loadBotView`
+  is appended last (index shifts there bit once).
+- Saving a quota for a target with no grant POSTs a grant — that ALSO
+  enables bots for it (the card warns). `desktopQuotaAllows` /
+  `MarkDesktopOver` / `DesktopQuotaForUser` all read the same resolved
+  limit, so the default shows up in the clients' `desktop_quota` payload
+  unchanged.
+
+## Hub admin web (hub/web/admin)
+
+- `node hub/web/admin/validate-admin-modules.js` enforces that runtime JS
+  files stay ASCII: write CJK in `copy`/dicts as literal `\uXXXX` escapes
+  inside the JS strings (see `desktop-tab.js`). Watch quoting — emitting a
+  literal backslash-u through tool calls may need `\u` escaping or a node
+  one-liner instead of the edit tool.
+- Per-module unit tests are plain node scripts:
+  `node hub/web/admin/desktop-tab.test.js`, `node hub/web/admin/bot-tab.test.js`.
+  `check-admin.ps1` runs the validator plus
+  `go test ./hub/internal/httpapi ./hub/internal/im ./hub/internal/llmservice`.
+- Known pre-existing validator failures (not to be "fixed" blindly):
+  `bot-tab.js` has a `→` char and `index.html` has `tenantEdge*` i18n
+  complaints on HEAD.
+- `desktop-tab.js` Bot-node list (`GET /api/admin/bots/nodes`): each node
+  carries `owner_user_id` (self-registered personal node; resolve to the
+  account via `botOrgChoices().users`) and `issued_by` (admin username from
+  `IssueCodeBy`, or the user id for `IssueOwnedCode`; kept across secret
+  rotation). `Broker.ApplyLive` also fills `LastSeen` from the live map —
+  `last_seen` is in-memory only, not persisted to the tenant file.
+
+## HubCenter node visibility authority (hubcenter)
+
+- `hub_instances.visibility` has two writers: the hub itself (every
+  heartbeat/re-registration reports its own `hub_visibility`) and the
+  HubCenter admin (`POST /api/admin/hubs/{id}/visibility`). A reported
+  value used to win unconditionally, silently reverting admin edits.
+- `hub_instances.visibility_locked` is the arbiter: the admin UPDATE sets
+  it atomically; `applyReportedVisibility` (hubs/service.go) ignores
+  reports while locked and clears the lock once the hub reports the same
+  value (convergence — the hub then owns the field again). Empty reported
+  visibility is a no-op, never normalized to "private".
+- `hubRepo.UpdateRegistration` and the `ON CONFLICT DO UPDATE` in
+  `ReplaceConflictingHubInstance` both write the pair under the same CASE
+  guard on the live row, so a full-row write or replica built from a
+  pre-admin snapshot cannot clobber the lock — do not "simplify" them
+  back to literal SETs. A replica that carries the converged state still
+  applies (ELSE branch), so peer locks/convergences replicate normally.
+- `hub_instances.visibility_locked_by` records which admin set the lock
+  (username from `AdminFromContext`, fallback email then "admin").
+  `normalizeHubRegistrationPolicyFields` enforces the invariant
+  `locked=false -> locked_by=""`, so convergence clears the name too.
+- Downlink: the heartbeat response AND the re-registration result both
+  carry `visibility_lock` (`Service.HubVisibilityAuthority` →
+  `{visibility, locked, locked_by}`, always a fresh row read so the value
+  is the post-guard truth, not the in-memory snapshot). The hub stores it
+  on `registrationRecord.VisibilityLock`, exposes it via
+  `RegistrationState`, and its Center tab shows "已被 Hub Center 管理员
+  {by} 接管" plus the effective value (center-tab.js `renderCenterStatus`,
+  element `#visibilityLockHero` — keep that JS ASCII, CJK via \u escapes).
+  A response without the field (older Hub Center) clears the display.
+- To change a node's visibility from the hub side, set it on the hub's own
+  admin console (writes `system_settings.hub_visibility`); the next
+  heartbeat converges HubCenter and clears the lock.
+
+## Pinned messages 置顶消息 (hub + hubcenter + guiapp)
+
+- A notification can carry `pinned` / `pinned_forever` / `link_url` / `button_text`
+  (button defaults to 查看详情 server-side when pinned and empty; link must be
+  http(s), ≤500 runes; button label ≤20 runes). The fields persist through the
+  HubCenter→Hub cascade as plain JSON struct fields, so both sides' structs and
+  stores must stay in lockstep (hub `admin_notifications`, hubcenter
+  `hc_notifications`; additive ALTER TABLE migrations live in the best-effort
+  loop of each InitSchema).
+- Client pull is `GET /api/v1/notifications/pinned` (machine auth): the ONE
+  newest published `pinned_forever` row first, then the latest 3 regular pinned
+  rows, audience-filtered like unread but WITHOUT the read-join — a pinned
+  message shows regardless of read state until revoked/expired. Read tracking
+  does not apply to the banner.
+- guiapp: `pinnedCache` + `PullPinnedNotifications`/`GetPinnedNotifications`
+  (notification_binding.go) publish `notification:pinned`; the pull rides WS
+  reconnect (next to PullUnreadNotifications) and re-fires on any WS
+  `notification.push` with `pinned` or a revoke.
+- Frontend: `PinnedMessageBanner` (components/layout) floats fixed-positioned
+  above `.mc-workbench-status-row` (anchor = statusRowRef; fixed because the
+  sidebar scroll wrapper clips absolute overlays — same as the status/devices
+  popovers, which sit at z-index 99999 above the banner's 60). Dots + arrows
+  page the slides; the X is hover-revealed ONLY (CSS opacity) and dismisses
+  ALL visible ids for the SESSION (`sessionDismissedIds` in
+  usePinnedNotifications.ts, in-memory: restart shows the banner again, a
+  newly-published id still pops).
+- Admin forms: hub `notification-tab.js` (CJK via \uXXXX escapes) and hubcenter
+  `notification-admin.js` both gate the pinned extras (永久置顶/链接/按钮名)
+  behind the 置顶 checkbox; the list/detail views badge pinned rows.

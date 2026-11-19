@@ -317,8 +317,9 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 	if _, err = desktop.BashArgs(containerName(spec.TenantID, spec.UserID), command); err != nil {
 		return "", err
 	}
-	// needsScreen opens the bot screen and is the only way this bash gets
-	// DISPLAY. A command that omits it does not open a screen.
+	// needsScreen opens the bot screen and is the only way this bash gets a
+	// new DISPLAY. Otherwise inherit a screen open_screen already started,
+	// and stay headless when none is up.
 	display := ""
 	if spec.BotID != "" && needsScreen {
 		got, openErr := s.specDisplay(ctx, spec, "")
@@ -326,6 +327,10 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 			return "", openErr
 		}
 		display = got
+	} else if spec.BotID != "" {
+		if got, err := s.readBotDisplay(ctx, spec); err == nil {
+			display = got
+		}
 	}
 	sentinel := ""
 	if spec.BotID != "" && !needsScreen {
@@ -382,7 +387,10 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 	}
 	s.noteToolUse(spec, container, onDesktop)
 	text := desktop.ProgramOutput(output, exitCode, false)
-	if sentinel != "" && container != "" && s.sentinelConnected(ctx, container, sentinel) {
+	// A successful command may probe DISPLAY. That connection is not a
+	// request for a screen. screen_required is a failed command that also
+	// connected to the sentinel.
+	if sentinel != "" && container != "" && exitCode != 0 && s.sentinelConnected(ctx, container, sentinel) {
 		return text, &desktopbot.ScreenRequiredError{Output: text}
 	}
 	return text, nil

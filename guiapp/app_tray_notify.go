@@ -213,6 +213,11 @@ func trayResponseIsCompletion(resp *IMAgentResponse) bool {
 	if strings.TrimSpace(resp.Error) != "" || trayResponseWaitsForReply(resp) || trayResponseNeedsConfirm(resp) {
 		return false
 	}
+	if _, desktop := desktopBotTraySentence(resp); desktop {
+		// A desktop run is complete only when the server measured done.
+		// A missing or unknown outcome is not a finished task.
+		return desktopTaskOutcomeOf(resp.TaskOutcome) == "done"
+	}
 	if desktopTaskOutcomeNotDone(resp.TaskOutcome) {
 		// The run ended, its task did not (measured on the server).
 		return false
@@ -654,7 +659,10 @@ func (a *App) shouldTrayNotify() bool {
 	if IsMainWindowVisible != nil && !IsMainWindowVisible() {
 		return true
 	}
-	if a != nil && a.ctx != nil {
+	// WindowIsMinimised log.Fatals on any context that is not the Wails
+	// lifecycle context, which aborts the process with no --- FAIL line.
+	// A headless test (and a nil window) is simply not a minimised window.
+	if a != nil && a.ctx != nil && a.ctx.Value("frontend") != nil {
 		return runtime.WindowIsMinimised(a.ctx)
 	}
 	return false

@@ -24,8 +24,31 @@ describe('useTextCompositionGuard', () => {
 
         result.current.onCompositionStart();
 
+        // Real hosts always mark composing keydowns (isComposing / keyCode 229).
+        expect(result.current.shouldIgnoreKeyDown(keyEvent('Enter', { isComposing: true }))).toBe(true);
+        expect(result.current.shouldIgnoreKeyDown(keyEvent('ArrowUp', { keyCode: 229 }))).toBe(true);
+    });
+
+    it('recovers when the host drops compositionend and a plain keydown arrives', () => {
+        const { result } = renderHook(() => useTextCompositionGuard());
+
+        result.current.onCompositionStart();
+
+        // No compositionend: an unmarked Enter is the ambiguous commit-Enter,
+        // swallowed like the post-compositionend grace window. The guard then
+        // un-sticks so later keys are processed normally.
         expect(result.current.shouldIgnoreKeyDown(keyEvent('Enter'))).toBe(true);
-        expect(result.current.shouldIgnoreKeyDown(keyEvent('ArrowUp'))).toBe(true);
+        expect(result.current.shouldIgnoreKeyDown(keyEvent('Enter'))).toBe(false);
+        expect(result.current.shouldIgnoreKeyDown(keyEvent('ArrowUp'))).toBe(false);
+    });
+
+    it('recovers when the host drops compositionend and a plain non-Enter keydown arrives', () => {
+        const { result } = renderHook(() => useTextCompositionGuard());
+
+        result.current.onCompositionStart();
+
+        expect(result.current.shouldIgnoreKeyDown(keyEvent('a'))).toBe(false);
+        expect(result.current.shouldIgnoreKeyDown(keyEvent('ArrowUp'))).toBe(false);
     });
 
     it('ignores platform-level IME keydown markers', () => {

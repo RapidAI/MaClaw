@@ -23,10 +23,11 @@ func TestDesktopTaskOutcomeDecidesCompletion(t *testing.T) {
 		{"not_submitted", "not_submitted", false},
 		{"unconfirmed", "unconfirmed", false},
 		{"awaiting_user", "awaiting_user", false},
+		{"unverified", "unverified", false},
 		{"running", "running", false},
-		{"ordinary question", "", true},
-		{"older hub", "", true},
-		{"unknown value", "mostly", true},
+		{"ordinary question", "", false},
+		{"older hub", "", false},
+		{"unknown value", "mostly", false},
 	}
 	t.Cleanup(func() {
 		desktopBotExchangeOverride = nil

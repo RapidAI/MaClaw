@@ -427,21 +427,52 @@ var desktopApprovalDialogAvailable = func(app *App) bool {
 	return app != nil && app.hasWailsEventsContext()
 }
 
+// desktopCommitTurnPlatform is a turn the desktop task tab owns. Goal and
+// session-round continuations keep running that same tab; their platform
+// string is not "desktop". The composer tier and the approval dialog still
+// belong to the tab. An IM channel, a scheduled turn, and an unattended
+// workflow keep the ask card.
+func desktopCommitTurnPlatform(platform string) bool {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case desktopPlatform, "goal-continuation", sessionRoundContinuationPlatform:
+		return true
+	default:
+		return false
+	}
+}
+
+// usesDesktopCommitSurface reports that this turn may use the task tab's
+// approval dialog and 完全控制 tier. A desktop-platform turn keeps today's
+// rule. A continuation does so only for a desktop principal, so an IM user's
+// goal wave cannot pop the panel dialog or inherit the global full-access
+// switch.
+func (c *sharedAgentLoopCallbacks) usesDesktopCommitSurface() bool {
+	if c == nil || !desktopCommitTurnPlatform(c.platform) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(c.platform), desktopPlatform) {
+		return true
+	}
+	return trustedDesktopPrincipal(c.userID)
+}
+
 // ResolveCommitAsk answers a human-class call in the tool call that was
 // blocked, exactly like the coding hosts. The person's allow runs this call
 // with the arguments the model already supplied; nothing is deferred to a
 // later model turn. The ask_user card cannot do that: it pauses the loop, the
 // resumed turn re-plans, and the approved tool name may no longer be on the
-// surface. A turn with no desktop dialog (IM, scheduled, headless) keeps the
-// card by returning false.
+// surface. A goal continuation that took the card left send_file unexecuted:
+// the user answered 本任务内允许, and the next model turn delegated instead of
+// repeating the call. A turn with no desktop dialog (IM, scheduled, headless)
+// keeps the card by returning false.
 func (c *sharedAgentLoopCallbacks) ResolveCommitAsk(toolName, fingerprint, subject string) (agent.CommitDecision, bool) {
 	if c == nil || c.handler == nil || c.handler.app == nil || c.loopCtx == nil {
 		return "", false
 	}
-	// Only the desktop chat tab owns the panel dialog. A VE group executor, an
-	// IM channel, or a scheduled turn has its own surface (or none) and keeps
-	// the ask card.
-	if !strings.EqualFold(strings.TrimSpace(c.platform), desktopPlatform) {
+	// The desktop task tab owns the panel dialog, including its goal and
+	// session-round continuations. A VE group executor, an IM channel, or a
+	// scheduled turn has its own surface (or none) and keeps the ask card.
+	if !c.usesDesktopCommitSurface() {
 		return "", false
 	}
 	if c.handler.unattendedTurn(c.userID) {
@@ -472,8 +503,8 @@ func (c *sharedAgentLoopCallbacks) CommitFullControlGranted() bool {
 	}
 	// The tier is a desktop composer choice. An IM turn has no tab to read, and
 	// the app-wide coding full-access switch is not an approval for its
-	// outbound sends.
-	if !strings.EqualFold(strings.TrimSpace(c.platform), desktopPlatform) {
+	// outbound sends. A goal continuation of this tab is the same choice.
+	if !c.usesDesktopCommitSurface() {
 		return false
 	}
 	return codingTaskFullControlGranted(c.handler, c.userID)

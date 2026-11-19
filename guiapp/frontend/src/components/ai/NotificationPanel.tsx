@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { IconBell } from "./WorkbenchIcons";
-import { companionHostTransferToken } from "./AssistantTitleBarNotifications.companionShare";
+import { companionHostTransferToken, isCompanionGroupDigestNotice } from "./AssistantTitleBarNotifications.companionShare";
 import { NotificationDetail } from "./NotificationDetail";
 import type { AdminNotification as SharedNotification } from "./useNotifications";
 import { localizeText } from "../../i18n";
@@ -33,6 +33,8 @@ export interface NotificationPanelProps {
     groupInviteListError?: string;
     groupInviteError?: string;
     onShareOpen?: (token: string) => void;
+    /** Opens the companion's 文档管理 for a group join digest's 确认. */
+    onDigestOpen?: () => void;
     shareOpenBusy?: boolean;
     shareOpenError?: string;
     onHostTransfer?: (token: string, decision: "accept" | "decline") => void;
@@ -170,7 +172,7 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
         : stripMarkdownPreview(notification.content || "");
     const hasDistinctPreview = Boolean(contentPreview) && contentPreview !== titleText;
     const hasMoreToRead = titleText.length > 28 || hasDistinctPreview;
-    const needsDecision = Boolean(notification.groupInviteId) || Boolean(companionHostTransferToken(notification)) || notification.source === "remote_control_invite" || notification.source === "remote_control_notice";
+    const needsDecision = Boolean(notification.groupInviteId) || Boolean(companionHostTransferToken(notification)) || isCompanionGroupDigestNotice(notification) || notification.source === "remote_control_invite" || notification.source === "remote_control_notice";
 
     return (
         <div
@@ -245,6 +247,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     groupInviteListError = "",
     groupInviteError = "",
     onShareOpen,
+    onDigestOpen,
     shareOpenBusy = false,
     shareOpenError = "",
     onHostTransfer,
@@ -409,6 +412,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     groupInviteActionError={selectedNotification.groupInviteId ? groupInviteActionError : ""}
                     groupInviteError={selectedNotification.groupInviteId ? groupInviteError : ""}
                     onShareOpen={onShareOpen}
+                    onDigestOpen={onDigestOpen}
                     shareOpenBusy={shareOpenBusy}
                     shareOpenError={shareOpenError}
                     onHostTransfer={onHostTransfer}

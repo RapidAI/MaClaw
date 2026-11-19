@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,10 +14,12 @@ import (
 	"image/jpeg"
 	"image/png"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,9 +46,9 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check", "finish"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "cap_list", "cap_skill", "cap_mcp", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "open_screen", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check", "finish"}
 
-var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check", "finish"}
+var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "cap_list", "cap_skill", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check", "finish"}
 
 func desktopActionAllowed(action string) bool {
 	for _, allowed := range desktopExecuteActions {
@@ -98,6 +102,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) stay in that same script. " +
 			"The script must not read cookies, storage, or passwords, and it must not type into a password or card field. " +
 			"Pass name as kebab-case, such as save-draft, to keep a script that worked. action=skill_list shows saved scripts. action=skill_run with that name runs one again without another probe. " +
+			"action=cap_list shows the MCP servers and skills turned on for every bot of this user. action=cap_skill name= reads one skill; follow that text. action=cap_mcp calls one MCP tool (mcp_server, mcp_tool, mcp_arguments). Leave mcp_tool empty to list that server's tools. An http server is called from here. A stdio server runs in this cloud desktop from the command and env saved for this account, so the person's own computer can be off. " +
 			"action=task_run remains for a short ref sequence. Do not click the browser window with pixels. " +
 			"A probe with no filter that finds no element ref includes one desktop image so you can see the page. If a filter matches nothing, probe again without it. The next web step is still an element ref, not a pixel click. " +
 			"For other applications, action=app_open with program starts that program in a window on this desktop. xfce4-terminal is already installed. xterm is another terminal when it is installed. app_open is not a shell. The new window does not use the Chinese input method, so ASCII typed into it is literal. Then action=app_list, then action=app_run with steps focus, type, key, or click. One type step can contain several lines. The terminal is a shell, so write the source as a heredoc in that step and compile on the next line. app_run focus only activates a window that is already open. exit status 1 from focus means that window is not open; start it with app_open. " +
@@ -105,7 +110,9 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"action=file_read, file_write, file_edit, and file_list use a path inside this container. Each run has its own project folder (named in the first file or bash result): bash starts there and a relative path such as a.c resolves there. Keep code, logs and temporary files in it; the Desktop and the home folder are the person's, so write there only when the person asked for that place (user_location=true). action=bash runs one command in this container and returns its output. Set needs_screen true for a GUI or X program: that opens the screen and gives the command DISPLAY. Omit it otherwise. A result whose code is screen_required means the command tried to connect to X: retry that same command with needs_screen true. A one-off script is file_write, then bash. " +
 			"A job expected to run for minutes or more (training, a remote compile, a large download, anything started with nohup or background=true) must be started in the background: action=bash with background=true (or the same command you would have waited on). That starts it detached, stores its status, and a watcher polls pid, logs and metrics on a timer; this turn then ends. Do not block this run waiting for it to finish. Progress, stalls, failures and completion are sent to this chat with evidence from the last poll. action=job_status (optional job_id=) and job_list look at that state without waiting. " +
 			"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
-			"action=screenshot returns an image of the whole desktop; its pixel coordinates are the ones app_run click uses. " +
+			"When the person asks you to develop, fix a bug, or ship, use the repo tool. Read the issue, clone, reproduce with desktop bash, then action=branch, edit, run the project's tests, commit, and action=pr (it pushes that branch and opens the pull or merge request; an open request for that branch is kept). Then action=runs with ref set to that branch. A failed run uses action=run_log, then fix, commit, and action=push onto the same branch. action=request reads that pull or merge request: whether it can merge, and the review comments. Address those comments, commit, and push. If it is behind or conflicting, action=sync fetches the base branch and merges it here without pushing; conflict markers stay in the files, so edit them, commit, and push. When it can merge and the person wants it on the default branch, action=merge. action=diff is the change. Package with the project's own command, then action=release with asset set to that file (up to 64MB). Do not browse github.com or gitlab.com yourself. If this bot is not authorized, action=connect and send the person that link. They approve the organizations and the listed scopes on that page. Then action=repos, they choose repositories, and action=grant saves the choice. Do not ask them to paste a token. A self-hosted GitLab still uses the saved GITLAB_HOST. push, pr, merge, dispatch, and release wait for 确认. To keep watching issues, call bot_schedule with an instruction that lists issues and continues the same loop. " +
+			"The screen stays off until action=open_screen. Call open_screen only when this task needs a visible desktop: a browser, a screenshot, a window, or clicking and typing on screen. Do not call it for ssh, training, compiling, files, or any command that only needs a shell. One open_screen is enough for the task. A screen step before that fails and tells you to call it. " +
+			"action=screenshot returns an image of the whole desktop as it is now and does not open or raise the browser; its pixel coordinates are the ones app_run click uses. A game or other SDL/OpenGL window is black from import -window or xwd; set window to that window's id or title and the shot raises it and crops the composited screen. " +
 			desktopScreenVisionPrompt(desktopTurnSeesImages(request)) +
 			"To put that image on the desktop, set name to one file name ending in .png. The file is written to /home/desktop/Desktop and the result says Saved with that path. Without name, nothing is written. Do not invent a file path. " +
 			"After an app_run that clicks, types, or sends a key, the result includes one fresh unscaled desktop image. app_run click uses those pixels. " +
@@ -117,16 +124,16 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"Batch mode (DEFAULT for any multi-step browser/form flow on every site): observe once (one probe or one script that reads the page), then ONE action=batch whose plan is the whole sequence as desktop steps, e.g. [{action:script,script:fill title},{action:rich_fill,text:BODY},{action:script,script:set topics},{action:script,script:click 发布}], then ONE read-back script on the result page. batch runs the steps in order through the same guards, stops at the first failure and reports each step; only then fix the failed step alone. " +
 			"An article or post body is always written in paragraphs (blank line between paragraphs, a heading per section), never one block of text. For a rich-text editor body on any site use ONE action=rich_fill with the full text (replace=true to overwrite); it focuses the page's main editor itself (ref, or x,y in SCREEN pixels, only for a different editor), raises the browser, pastes with a real Ctrl+V and reads back what the field now holds (len, has=yes/no). For a title use rich_fill with selector=<title input>. Once title and body read back has=yes, the next step is the submit/publish click, not more fills or probes. Coordinates a page script reports are viewport/CSS pixels, not screen pixels: click page elements by ref, never by script coordinates. " +
 			"action=clipboard_set then a paste step (or app_run paste{text}) inserts long or Chinese text without the input method. clipboard_get reads it. window_list, window (activate, maximize, minimize, restore, move, resize, close), screen_info, and wait (for screen change or a window) manage windows. " +
-			"action=screenshot accepts region (zoom), format jpeg/webp, quality, and cursor. Full screenshots always come at one fixed size, so coordinates keep the same scale from shot to shot. " +
+			"action=screenshot accepts region (zoom), window (id or title; composited crop, not the X pixmap), format jpeg/webp, quality, and cursor. Full screenshots always come at one fixed size, so coordinates keep the same scale from shot to shot. " +
 			"navigate to another site keeps the current tab and opens the target in its own tab (or switches to a tab already on that site); do not retry a navigate that was refused, and do not detour through redirect links. " +
 			desktopAXFirstPrompt() +
 			"Rich-text editors (Zhihu, WeChat, Xiaohongshu, Draft.js/ProseMirror boxes): script- or DOM-set text and synthetic paste are often ignored. Click inside the editor first, put the text on the clipboard with clipboard_set, then paste with a real key event (app_run steps [click{x,y}, key{key:\"ctrl+v\"}] or paste{text}), then check that the text shows and that the publish (发布) button is enabled. If the same method fails twice, switch to another method instead of retrying it. " +
-			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back. Ask for a takeover only when the current page itself shows a login form, QR code, captcha or verification; a control you cannot find is usually under a site popup or overlay, so press Escape or click its close/我知道了 and probe again. Typing # or @ (hashtags, topics, mentions) opens a dropdown that covers buttons: choose the entry from it or press Escape / click a blank area before locating the next button. After a hand back or a slow step, never navigate to or reload the page you were filling: probe the current page and continue from what is already there. " +
+			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not type it and do not try to get past it. Stop and tell the person what to do on this desktop; the keyboard is handed to them, and you resume when they are done. Do not tell them to press 交还. A control you cannot find is usually under a site popup or overlay, so press Escape or click its close/我知道了 and probe again. Typing # or @ (hashtags, topics, mentions) opens a dropdown that covers buttons: choose the entry from it or press Escape / click a blank area before locating the next button. After a hand back or a slow step, never navigate to or reload the page you were filling: probe the current page and continue from what is already there. " +
 			"action=notify_main with kind and message tells the account's main bot (or target, another bot) something mid-task: a milestone (progress), a question, being blocked, a file ready (artifact, with paths), or done. It does not end your turn and does not wait for an answer; keep working. Use it sparingly: at most a few per task, never to acknowledge. action=check_inbox reads new messages other bots left for you on Hub (answers to your question, new instructions); messages that arrived before this turn are already in the instructions. action=delegate with target (a teammate bot's name) and message hands a task to that bot (main bot only); Hub starts it and its result comes back to your mailbox. A delegate or notify_main message is an internal brief between bots, never shown raw to the person: make it detailed and self-contained (goal, context, the specifics it needs, what counts as done, what to report back). To have a teammate talk to the person, brief it on what to get across; it speaks to them in its own voice." + desktopAssignmentToolHint(),
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":             map[string]any{"type": "string", "description": "probe, speculate (safe precheck only: check_login/check_posted/prepare_draft/snapshot_page; stays quiet when nothing useful; never publish/pay/delete), script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash in this run's own scratch folder ($TMPDIR when set, else /tmp), open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
+				"action":             map[string]any{"type": "string", "description": "probe, speculate (safe precheck only: check_login/check_posted/prepare_draft/snapshot_page; stays quiet when nothing useful; never publish/pay/delete), script, upload, skill_list, skill_run, cap_list, cap_skill, cap_mcp, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, open_screen (start this bot's visible screen only when the task needs a browser, screenshot, window, or clicks; never for ssh, training, compile, or shell-only work), computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash in this run's own scratch folder ($TMPDIR when set, else /tmp), open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
 				"kind":               map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
 				"message":            map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
 				"target":             map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id. A partial name or number works (\"5\" or \"5号\" finds \"Bot 5\", \"写作\" finds \"写作助手\"); if several bots fit, or none, the error lists the names: ask the person which one."},
@@ -158,6 +165,8 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"program":            map[string]any{"type": "string", "description": "Program for action=app_open. One name or an absolute path, such as xfce4-terminal. Not a shell and not a browser."},
 				"args":               map[string]any{"type": "array", "description": "Arguments for action=app_open. Not a shell command.", "items": map[string]any{"type": "string"}},
 				"packages":           map[string]any{"type": "array", "description": "Debian package names for action=install, such as libreoffice", "items": map[string]any{"type": "string"}},
+				"item_id":            map[string]any{"type": "string", "description": "action=deliver, publish, or finish: the checklist item id this call satisfies. action=finish may instead pass item_ids. The same bytes or the same post cannot satisfy a second item."},
+				"item_ids":           map[string]any{"type": "array", "description": "action=finish: checklist item ids of kind text that this sentence satisfies. Each id once.", "items": map[string]any{"type": "string"}},
 				"name":               map[string]any{"type": "string", "description": "Download name for action=deliver. Any ordinary file name. When path is empty, the chat receives the text in content under this name. action=screenshot: ends in .png and is written to /home/desktop/Desktop. action=script stores the script under a kebab-case name, such as save-draft, when it succeeds. action=skill_run runs that saved script."},
 				"content":            map[string]any{"type": "string", "description": "Text for action=deliver when path is empty, or the full file text for action=file_write. A file already on the desktop uses path."},
 				"url":                map[string]any{"type": "string", "description": "URL for navigate"},
@@ -211,7 +220,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"cursor":             map[string]any{"type": "boolean", "description": "Draw the mouse pointer on the screenshot."},
 				"marks":              map[string]any{"type": "boolean", "description": "app_probe or screenshot: draw numbered boxes of the last app_probe elements."},
 				"region":             map[string]any{"type": "array", "description": "action=screenshot zoom: [x0,y0,x1,y1] in pixels of the last full screenshot.", "items": map[string]any{"type": "number"}},
-				"window":             map[string]any{"type": "string", "description": "app_probe: focused (default), all, or part of a window title."},
+				"window":             map[string]any{"type": "string", "description": "action=screenshot: X window id (0x1a2b) or plain title. Raises that window and crops the composited screen. Do not use import -window or xwd for an SDL/OpenGL window; those read an empty pixmap and come back black. action=app_probe: focused (default), all, or part of a window title."},
 				"max_nodes":          map[string]any{"type": "integer", "description": "app_probe: most elements to list (default 120, at most 400)."},
 				"do":                 map[string]any{"type": "string", "description": "action=window: activate, maximize, minimize, restore, move, resize, move_resize, or close."},
 				"window_id":          map[string]any{"type": "string", "description": "action=window: id from window_list. title also selects a window."},
@@ -222,6 +231,9 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"height":             map[string]any{"type": "number", "description": "action=window resize: height in screenshot pixels."},
 				"for":                map[string]any{"type": "string", "description": "action=wait: change (the screen changes) or window (a window with title appears; gone=true waits for it to close)."},
 				"timeout":            map[string]any{"type": "number", "description": "action=wait: seconds, at most 60."},
+				"mcp_server":         map[string]any{"type": "string", "description": "action=cap_mcp: MCP id from cap_list."},
+				"mcp_tool":           map[string]any{"type": "string", "description": "action=cap_mcp: tool name on that server. Empty lists the tools."},
+				"mcp_arguments":      map[string]any{"type": "object", "description": "action=cap_mcp: arguments object for that tool."},
 			},
 			"required": []string{"action"},
 		},
@@ -254,6 +266,8 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 		desktopWatchdogStopByUser(scope.RunID)
 		return "", errWatchdogStop
 	}
+	// The screen is not opened here. The model calls action=open_screen when
+	// the task needs a visible desktop. Shell, files, and training do not.
 	warn, stop := desktopWatchdogBefore(scope, action, args)
 	if stop != nil {
 		return "", stop
@@ -320,6 +334,13 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	scope, cloud, err := desktopScopeForTurn(request)
 	if err != nil {
 		return "", err
+	}
+	noteDesktopRunStart(scope.RunID)
+	if strings.TrimSpace(desktopMessageMeta(request)["bot_origin"]) == "schedule" {
+		ctx = context.WithValue(ctx, desktopScheduleTurnKey{}, true)
+	}
+	if dir := desktopTurnDataDir(request); dir != "" {
+		ctx = context.WithValue(ctx, desktopDataDirKey{}, dir)
 	}
 	// The person's "done" in the chat is the hand-back (desktop_handback_turn.go).
 	desktopHandBackOnDoneTurn(ctx, request, scope)
@@ -430,7 +451,7 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	if npErr == nil {
 		npErr = desktopAfterPublishCheck(desktopOwner(scope), actionName, args)
 	}
-	desktopNoteTaskSpec(scope.RunID, desktopMessageText(request))
+	desktopNoteTaskSpec(scope.RunID, desktopTaskRequestText(request))
 	desktopSeedEarlierPosts(request, scope)
 	if npErr == nil {
 		npErr = desktopDriftCheck(desktopOwner(scope), actionName, args, desktopMessageText(request))
@@ -493,20 +514,10 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 				err = fmt.Errorf("%w (the connection was reset and the desktop session requested again; it still fails, so this is the infrastructure)", err)
 			}
 		}
-		if err != nil && ctx.Err() == nil && desktopColdStart(err) && desktopScreenLeaseNeeded(actionName, args) {
-			// Exactly one retry. The screen was still closed. Open it and
-			// run this step once more. This is not an outage.
-			first := err
-			if openErr := ensureBotScreen(ctx, scope, true); openErr != nil {
-				err = fmt.Errorf("%s: this bot's screen did not open (%v). Retry this same step once; do not switch method", desktopbot.CodeBotScreenClosed, openErr)
-			} else {
-				out, err = operateDesktopWithTimeout(opCtx, scope, opArgs)
-				if err == nil {
-					out = "(this bot's screen was not open; it was opened and this step ran again)\n" + out
-				} else if desktopColdStart(err) {
-					err = fmt.Errorf("%s: this bot's screen is still not open after one open. Retry this same step once; do not switch method (%w)", desktopbot.CodeBotScreenClosed, first)
-				}
-			}
+		if err != nil && ctx.Err() == nil && desktopColdStart(err) {
+			// The screen stays closed until the model calls open_screen.
+			// Opening it here would start a display for a shell-only task.
+			err = desktopOpenScreenFirst(err)
 		}
 		if err != nil && ctx.Err() == nil && desktopOutageAllowed(desktopOwner(scope), actionName, err) {
 			// The call never reached the desktop (Hub restarting, or this
@@ -634,14 +645,16 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 			"The current user has one cloud desktop through the desktop tool. " +
 			"This turn only inspects it. " +
 			"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. Do not use ask_user for permission to proceed in this phase. " +
-			"Use only probe, screenshot, app_list, file_read, file_list, or skill_list. That limit is this turn only. " +
+			"Use only probe, screenshot, app_list, file_read, file_list, skill_list, cap_list, or cap_skill. That limit is this turn only. " +
 			"action=skill_list shows browser scripts already saved. This turn does not run them. " +
+			"action=cap_list and action=cap_skill read this account's MCP servers and skills. action=cap_mcp with only mcp_server lists tools. Calling a tool waits until execute. " +
 			"Judge whether this turn already finished the request. A finished look or screenshot is the result: say it is done, and do not leave an arrangement. " +
 			"If work remains, the reply is one arrangement. Do not ask the user to choose a method, reply with a number, grant a permission, or carry out the work. The confirm control is the approval. " +
 			"Installing software belongs in the arrangement: name the Debian packages. This turn does not run apt-get. " +
 			"Starting a program belongs in the arrangement. This turn does not start it. " +
 			"file_read and file_list read files in this container. Writing a file or running a command belongs in the arrangement. This turn does not write it or run it. " +
 			"A machine outside this desktop uses the ssh tool. This turn may list its sessions. Connecting or running a command there belongs in the arrangement. This turn does not connect or run it. " +
+			"GitHub and GitLab use the repo tool. This turn may call whoami, issues, issue, status, diff, log, runs, run_log, request, connect, repos, and grant. Cloning, branching, committing, pushing, updating a branch from its base, opening a pull request, merging, dispatching CI, and releasing belong in the arrangement. " +
 			"A document the user asked for belongs in that arrangement. This turn does not create the file. After confirmation the chat receives the file, or that turn reports the failure. " +
 			"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
 			"The user message is the task order for this turn. Follow it. " +
@@ -649,10 +662,12 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 			desktopScreenVisionPrompt(desktopTurnSeesImages(request)) +
 			"app_list, probe, and screenshot also list every open browser page, including tabs behind that window. probe reads only the attached page. " +
 			"If the page needs a password, phone number, or verification code, the arrangement says this chat will ask for it. A cookie notice is accepted while carrying out the work. Only a QR-code login, a captcha, or a payment confirmation is finished by the person on this computer. Describe that and stop. Do not keep looking. " +
-			"This user's bots share this desktop. Other users have separate desktops.", nil
+			"This user's bots share this desktop. Other users have separate desktops. " +
+			desktopCapabilityPrompt(request), nil
 	}
 	prompt := "The current user has one cloud desktop through the desktop tool. " +
-		"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. "
+		"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. " +
+		desktopCapabilityPrompt(request)
 	if scope, _, err := desktopScopeForTurn(request); err == nil {
 		prompt += desktopUnwatchedJobsPrompt(scope)
 		prompt += desktopExperienceText(scope, "")
@@ -684,10 +699,12 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 		"web_search and web_fetch use this desktop's network. A site the user may have signed into stays in this desktop browser, because those two tools do not see that login. " +
 		"Files and commands use action=file_read, file_write, file_edit, file_list, and action=bash inside this container. " +
 		"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
+		"When the person asks you to develop, fix a bug, or ship, use the repo tool. Read the issue, clone, reproduce with desktop bash, then action=branch, edit, run the project's tests, commit, and action=pr (it pushes that branch and opens the pull or merge request; an open request for that branch is kept). Then action=runs with ref set to that branch. A failed run uses action=run_log, then fix, commit, and action=push onto the same branch. action=request reads that pull or merge request: whether it can merge, and the review comments. Address those comments, commit, and push. If it is behind or conflicting, action=sync fetches the base branch and merges it here without pushing; conflict markers stay in the files, so edit them, commit, and push. When it can merge and the person wants it on the default branch, action=merge. action=diff is the change. Package with the project's own command, then action=release with asset set to that file (up to 64MB). Do not browse github.com or gitlab.com yourself. If this bot is not authorized, action=connect and send the person that link. They approve the organizations and the listed scopes on that page. Then action=repos, they choose repositories, and action=grant saves the choice. Do not ask them to paste a token. A self-hosted GitLab still uses the saved GITLAB_HOST. push, pr, merge, dispatch, and release wait for 确认. To keep watching issues, call bot_schedule with an instruction that lists issues and continues the same loop. " +
+		"The screen stays off until action=open_screen. Call open_screen only when this task needs a visible desktop: a browser, a screenshot, a window, or clicking and typing on screen. Do not call it for ssh, training, compiling, files, or any command that only needs a shell. One open_screen is enough for the task. A screen step before that fails and tells you to call it. " +
 		"This user's bots are different instances of the same MaClawSrv user, and those instances share this desktop. Other users have separate desktops. " +
 		"Web pages: probe once. When the controls are listed, one action=script clicks, types, selects, presses, and scrolls them, including a cookie accept button. Do not probe again between those steps. name on that script keeps it. skill_list then skill_run repeats a saved script without another probe. A password, phone number, or verification code is requested in this chat and then filled in. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. Navigate only to another page of this site. Do not pixel-click the browser. " +
 		"A probe with no filter that finds no element ref includes one desktop image so you can see the page. If a filter matches nothing, probe again without it. The next web step is still an element ref, not a pixel click. " +
-		"Other apps: action=app_open with program starts a window. xfce4-terminal is already installed. app_open is not a shell. That window does not use the Chinese input method, so ASCII typed into it is literal. app_run focus only activates a window that is already open; exit status 1 means that window is not open. One type step can contain several lines. The terminal is a shell, so a line break runs that line. Write the source as a heredoc in that step, then compile on the next line. Then app_list and one app_run. After click, type, or key, that result includes one fresh desktop image. app_run click uses those pixels. " + desktopScreenVisionClickPrompt(desktopTurnSeesImages(request)) + desktopScreenCheckPrompt(desktopTurnSeesImages(request)) + "Use screenshot when app_list is not enough, or to check a result before any input. " +
+		"Other apps: action=app_open with program starts a window. xfce4-terminal is already installed. app_open is not a shell. That window does not use the Chinese input method, so ASCII typed into it is literal. app_run focus only activates a window that is already open; exit status 1 means that window is not open. One type step can contain several lines. The terminal is a shell, so a line break runs that line. Write the source as a heredoc in that step, then compile on the next line. Then app_list and one app_run. After click, type, or key, that result includes one fresh desktop image. app_run click uses those pixels. " + desktopScreenVisionClickPrompt(desktopTurnSeesImages(request)) + desktopScreenCheckPrompt(desktopTurnSeesImages(request)) + "Use screenshot when app_list is not enough, or to check a result before any input. screenshot shows the desktop as it is and does not open or raise the browser. For one application window set window to its id or title; import -window and xwd are black for SDL and OpenGL. " +
 		"To put a screenshot on the desktop, action=screenshot with name set to one .png file name. The result line Saved is the file that was written under /home/desktop/Desktop. If the result says the screenshot was not written, the desktop folder has no new file. Do not invent a path. " +
 		desktopDocumentPrompt +
 		"To install software, action=install with packages set to Debian package names. That runs apt-get update and apt-get install -y in this desktop container. " +
@@ -713,9 +730,9 @@ const desktopDocumentPrompt = "Office documents (Word, report, illustrated docum
 
 func srvDesktopRuntimeModules() []agentruntime.Module {
 	if !desktopAvailable() {
-		return nil
+		return []agentruntime.Module{botPDFModule{}}
 	}
-	return []agentruntime.Module{desktopRuntimeModule{}, localRelayModule{}}
+	return []agentruntime.Module{desktopRuntimeModule{}, localRelayModule{}, botPDFModule{}}
 }
 
 func desktopCDPAddr() string {
@@ -827,6 +844,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if !desktopActionAllowed(action) {
 		return "", desktopUnknownActionError(action)
 	}
+	if action == "cap_list" || action == "cap_skill" || action == "cap_mcp" {
+		return desktopCapability(ctx, scope, action, args)
+	}
 	// Deliver attaches one file to this chat. A path reads that file from the
 	// desktop. A name and content build the file here. A login in progress
 	// must not turn "send me the file" into another question.
@@ -878,6 +898,10 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			return "", fmt.Errorf("%s", desktopbot.PlanPhaseNextStep)
 		}
 	}
+	if action == "open_screen" {
+		defer beginDesktopActivity(scope.RunID, "正在打开屏幕")()
+		return openDesktopScreen(ctx, scope)
+	}
 	if action == "script" {
 		if desktopArg(args, "script") == "" {
 			return "", fmt.Errorf("desktop script requires script")
@@ -905,6 +929,14 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if action == "job_list" {
 		return desktopLongJobList(scope), nil
 	}
+	if action == "bash" {
+		// import -window <id> and xwd -id read an empty pixmap for SDL and
+		// OpenGL (snake task: a 214-byte black PNG). The screenshot action
+		// raises that window and crops the composited root.
+		if err := desktopRefuseWindowPixmap(desktopArg(args, "command")); err != nil {
+			return "", err
+		}
+	}
 	if action == "bash" && !desktopLongJobInternal(ctx) && desktopLongJobShouldStart(args) {
 		ctx = withDesktopBashSecrets(ctx, desktopBashSecretNames(args))
 		defer beginDesktopActivity(scope.RunID, "正在后台启动任务")()
@@ -915,7 +947,12 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		}
 		return out, err
 	}
-	if action == "bash" && desktopBashNeedsScreen(args) {
+	if action == "bash" && (desktopBashNeedsScreen(args) || desktopBashLaunchesGUI(desktopArg(args, "command"))) {
+		if !desktopBashNeedsScreen(args) {
+			if err := desktopBotMustOpenScreen(scope, action, args); err != nil {
+				return "", err
+			}
+		}
 		return operateDesktopBashGUI(ctx, scope, args)
 	}
 	if action == "proxy_mode" {
@@ -1016,6 +1053,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			}
 		}
 		return runDesktopHubTool(ctx, scope, action, args)
+	}
+	if err := desktopBotMustOpenScreen(scope, action, args); err != nil {
+		return "", err
 	}
 	endpoint, err := ensureDesktopRound(ctx, scope, userKey, true)
 	if err != nil {
@@ -1137,24 +1177,31 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			log.Printf("[desktop-guard] refused publish_needs_confirmation (coordinate click on %q)", label)
 			return "", fmt.Errorf("%s (That point is the %q button.)", desktopPublishRefusal, label)
 		}
+		// The page already needs the person. Do not click or type it.
+		if held, heldText, heldErr := desktopHoldForPage(ctx, scope, attached); held {
+			return heldText, heldErr
+		}
 		if action == "computer" || !desktopAppStepsLegacy(scope, args["steps"]) {
 			text, stepErr := operateDesktopSteps(ctx, scope, endpoint.Display, action, args, stepsArg, beforeInsert, browserRaises)
 			text, stepErr = desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, stepErr)
-			return desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, stepErr)
+			text, stepErr = desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, stepErr)
+			return desktopFinishObserved(ctx, scope, verifySession(), text, stepErr)
 		}
 		text, appErr := desktopAppRun(ctx, scope, endpoint.Display, action, args, beforeInsert, browserRaises)
 		if appErr != nil || !appStepsIncludeInput(args["steps"]) {
-			return text, appErr
+			return desktopFinishObserved(ctx, scope, verifySession(), text, appErr)
 		}
 		setDesktopActivity(scope.RunID, "正在看屏幕")
 		text, appErr = desktopAppRunWithShot(ctx, scope, endpoint.Display, text)
 		text, appErr = desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, appErr)
-		return desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, appErr)
+		text, appErr = desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, appErr)
+		return desktopFinishObserved(ctx, scope, verifySession(), text, appErr)
 	}
 	if action == "screenshot" {
-		// The shot is the whole display. A network-error window left in front
-		// is what gets captured, even when the loaded page is open behind it.
-		// A login resume already raises that page. A normal screenshot did not.
+		// The shot is the display as it is. Raising the browser here used to
+		// cover a game or document with Chromium (snake task, 2026-11-14).
+		// Only a network-error document that is the focused page is raised,
+		// so the loaded page behind that error is what gets captured.
 		name := strings.TrimSpace(desktopArg(args, "name"))
 		if name != "" {
 			if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
@@ -1165,11 +1212,19 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			}
 		}
 		defer beginDesktopActivity(scope.RunID, "正在看屏幕")()
-		session, _ := desktopOpenBrowser(binding, scope, userKey, endpoint.CDP)
+		// Do not call desktopOpenBrowser here. That attaches with
+		// StartSharedDesktopSession, which activates the current tab and
+		// raises Chromium. After a process restart the binding is empty, so
+		// the first screenshot of a resumed game would cover the window it
+		// is supposed to show. A session already attached by a browser step
+		// may still uncover a page sitting behind a network-error document.
+		session := desktopShotBrowser(binding, endpoint.CDP)
 		attached := ""
+		pageAddr := ""
 		if session != nil {
-			_ = desktopFocusVisiblePage(session)
+			_ = desktopRaisePageBehindError(session)
 			attached = session.TargetID
+			pageAddr = endpoint.CDP
 		}
 		frame, base := desktopFrameFor(scope).get()
 		opts, _, optErr := computeruse.ShotOptionsFromArgs(args, frame, base)
@@ -1180,16 +1235,19 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		// The accessibility list is read before the capture so the screen
 		// YOLO gate knows how many elements it already has.
 		axBlock, shotCtx := "", ctx
-		if name == "" && opts.Region.Empty() {
+		// A window crop is not the focused window yet; listing that window's
+		// elements would describe whatever is in front before the raise.
+		if name == "" && opts.Region.Empty() && opts.Window == "" {
 			axBlock = desktopAXFirstElements(ctx, scope, endpoint.Display)
 			shotCtx = withDesktopVisionHints(ctx, desktopVisionHints{AXCount: desktopAXElementCount(axBlock)})
 		}
-		shot, _, shotErr := desktopCaptureShot(shotCtx, scope, endpoint.Display, name, opts, opts.Region.Empty())
+		shot, _, shotErr := desktopCaptureShot(shotCtx, scope, endpoint.Display, name, opts, opts.Region.Empty() && opts.Window == "")
 		if shotErr != nil {
 			return "", shotErr
 		}
 		shot = axBlock + shot
-		return withDesktopPages(shot, nil, endpoint.CDP, attached)
+		shot, shotErr = withDesktopPages(shot, nil, pageAddr, attached)
+		return desktopFinishObserved(ctx, scope, session, shot, shotErr)
 	}
 
 	session, err := desktopBrowserSession(binding, scope, userKey, endpoint.CDP)
@@ -1230,6 +1288,20 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		desktopNoteActivityPage(scope.RunID, desktopArg(args, "url"))
 	} else {
 		desktopNoteActivityPage(scope.RunID, session.CurrentURL())
+	}
+	// A page that already needs the person is not clicked or typed. Opening
+	// another site is allowed. Opening another page of this same site is
+	// not: that is how a sign-in page gets abandoned without the person.
+	if action == "navigate" {
+		if desktopSameSite(session.CurrentURL(), desktopArg(args, "url")) {
+			if held, heldText, heldErr := desktopHoldForPage(ctx, scope, session); held {
+				return heldText, heldErr
+			}
+		}
+	} else if desktopNeedsClearPage(action) {
+		if held, heldText, heldErr := desktopHoldForPage(ctx, scope, session); held {
+			return heldText, heldErr
+		}
 	}
 	var text string
 	switch action {
@@ -1284,15 +1356,17 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		if err != nil && desktopScriptErrIsNavigation(err) {
 			// The page navigated (e.g. after a submit) while the script ran.
 			// That is a page change, not a failure: report where it went so
-			// the model does not retry or wait (RUN33).
+			// the model does not retry or wait (RUN33). A sign-in page
+			// still hands the desktop over instead of telling the model to
+			// read it and continue.
 			pages, _ := withDesktopPages("", nil, endpoint.CDP, session.TargetID)
-			return "script ended because the page navigated (a submit or link took effect). Do not rerun it; read the new page.\n" + strings.TrimSpace(pages), nil
+			return desktopFinishObserved(ctx, scope, session, "script ended because the page navigated (a submit or link took effect). Do not rerun it; read the new page.\n"+strings.TrimSpace(pages), nil)
 		}
 		if scriptErr := err; scriptErr != nil {
 			// A script that threw did not do its job; withDesktopPages would
 			// turn it into an ok result with a page list.
 			pages, _ := withDesktopPages("", nil, endpoint.CDP, session.TargetID)
-			return "", fmt.Errorf("page script failed: %s\n%s", desktopStepClip(scriptErr.Error(), 300), strings.TrimSpace(pages))
+			return desktopFinishObserved(ctx, scope, session, "", fmt.Errorf("page script failed: %s\n%s", desktopStepClip(scriptErr.Error(), 300), strings.TrimSpace(pages)))
 		}
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
 	case "upload":
@@ -1354,22 +1428,12 @@ func finishDesktopActionPhase(scope agentruntime.Scope, text string, err error, 
 	if phase != "execute" {
 		return text, err
 	}
-	if reason == "login_wall" || reason == "mfa" {
-		if desktopUnattended(scope.InstanceID) {
-			return strings.TrimSpace(text + "\n这次是自动任务，没有人在对话里填写密码、手机号或验证码。"), fmt.Errorf("desktop needs a person")
-		}
-		question := "请输入这个网站要求的密码或手机号。提交后会填进当前输入框，并继续这次操作。"
-		name := desktopFillSecretName(reason, text)
-		if reason == "mfa" {
-			question = "请输入验证码。提交后会填进当前输入框，并继续这次操作。"
-		}
-		desktopFocusCredential(scope, reason)
-		return agent.AskUserResultMarker(&agent.AskUserRequest{
-			Question:   question,
-			InputType:  "secret_fill",
-			SecretName: name,
-		}), nil
-	}
+	// Remember the page even when nobody is here to take the keyboard, so a
+	// later computer batch does not type the password or the code.
+	noteDesktopPageNeed(scope, "page flags: "+reason)
+	// A login wall, a verification code, a QR code, a captcha, or a payment
+	// is the person's step on this desktop. The bot does not collect the
+	// password or the code and type it.
 	if desktopUnattended(scope.InstanceID) {
 		return strings.TrimSpace(text + "\n这次是自动任务，没有人在桌面旁完成登录或验证。"), fmt.Errorf("desktop needs a person")
 	}
@@ -1383,85 +1447,158 @@ func finishDesktopActionPhase(scope agentruntime.Scope, text string, err error, 
 	return agent.AskUserResultMarker(&agent.AskUserRequest{
 		Question:  question,
 		InputType: "text",
+		Takeover:  true,
 	}), nil
 }
 
-var desktopPageURLPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
-
-func desktopFillSecretName(reason, text string) string {
-	base := "SITE_LOGIN"
-	if reason == "mfa" {
-		base = "SITE_CODE"
+// desktopReadPageFlags reads the attached page. Tests replace it.
+var desktopReadPageFlags = func(session *browser.BrowserAgentSession) (browser.BrowserPageFlags, error) {
+	if session == nil {
+		return browser.BrowserPageFlags{}, fmt.Errorf("no page")
 	}
-	host := desktopTextHost(text)
+	return session.PeekPageFlags()
+}
+
+// desktopNeedsClearPage is an action that changes the current page. Probe
+// and shop_readback only look. Navigate is decided separately: another
+// site may be opened, this site may not.
+func desktopNeedsClearPage(action string) bool {
+	switch action {
+	case "click", "type", "press", "script", "skill_run", "task_run", "upload", "publish":
+		return true
+	default:
+		return false
+	}
+}
+
+// desktopSameSite reports whether target stays on the page's site. An empty
+// address stays: it is not a request to leave. accounts.google.com and
+// google.com are one site; a sign-in host is not a way off the login page.
+func desktopSameSite(currentURL, targetURL string) bool {
+	current := desktopSiteRoot(desktopURLHost(currentURL))
+	target := desktopSiteRoot(desktopURLHost(targetURL))
+	if current == "" || target == "" {
+		return true
+	}
+	return current == target
+}
+
+// desktopMultiPartSuffix is a public suffix that needs one more label
+// (amazon.co.uk, not co.uk).
+var desktopMultiPartSuffix = map[string]bool{
+	"co.uk": true, "org.uk": true, "ac.uk": true,
+	"com.cn": true, "net.cn": true, "org.cn": true,
+	"com.au": true, "co.jp": true, "com.hk": true, "com.tw": true,
+	"com.sg": true, "co.kr": true, "com.br": true, "co.nz": true,
+	"co.in": true, "com.mx": true,
+}
+
+func desktopSiteRoot(host string) string {
+	host = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(host)), "www.")
 	if host == "" {
-		return base
-	}
-	var b strings.Builder
-	b.WriteString(base)
-	b.WriteByte('_')
-	prevUnderscore := false
-	for _, r := range strings.ToUpper(host) {
-		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			prevUnderscore = false
-			continue
-		}
-		if prevUnderscore {
-			continue
-		}
-		b.WriteByte('_')
-		prevUnderscore = true
-	}
-	name := strings.Trim(b.String(), "_")
-	if len(name) > 64 {
-		name = strings.Trim(name[:64], "_")
-	}
-	if !agent.ValidSecretName(name) {
-		return base
-	}
-	return name
-}
-
-func desktopTextHost(text string) string {
-	// The open-tab list is appended after the action. Its last address is
-	// some other tab, and the saved login must stay with this page.
-	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "- attached ") {
-			if host := desktopHostFromURLs(line); host != "" {
-				return host
-			}
-		}
-	}
-	if index := strings.Index(text, "\nOpen browser pages"); index >= 0 {
-		text = text[:index]
-	}
-	return desktopHostFromURLs(text)
-}
-
-func desktopHostFromURLs(text string) string {
-	matches := desktopPageURLPattern.FindAllString(text, -1)
-	if len(matches) == 0 {
 		return ""
 	}
-	raw := strings.TrimRight(matches[len(matches)-1], ".,);]")
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) < 2 {
+		return host
+	}
+	suffix := parts[len(parts)-2] + "." + parts[len(parts)-1]
+	if desktopMultiPartSuffix[suffix] && len(parts) >= 3 {
+		return parts[len(parts)-3] + "." + suffix
+	}
+	return suffix
+}
+
+func desktopURLHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return ""
 	}
-	return normalizeDesktopSiteHost(parsed.Hostname())
+	return parsed.Hostname()
 }
 
-func desktopFocusCredential(scope agentruntime.Scope, reason string) {
-	session := desktopLiveSession(scope)
+// desktopHoldForPage stops a computer or app step before it clicks or types
+// a page that already needs the person. A page that no longer does clears
+// the earlier stop, so the next step can run.
+func desktopHoldForPage(ctx context.Context, scope agentruntime.Scope, session *browser.BrowserAgentSession) (bool, string, error) {
+	if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
+		return false, "", nil
+	}
 	if session == nil {
-		return
+		return false, "", nil
 	}
-	kind := "password"
-	if reason == "mfa" {
-		kind = "code"
+	flags, err := desktopReadPageFlags(session)
+	if err != nil {
+		return false, "", nil
 	}
-	_ = session.FocusCredential(kind)
+	text := appendDesktopPageFlags("page", map[string]interface{}{"page_flags": flags})
+	if desktopAttentionReason(text) == "" {
+		noteDesktopPageNeed(scope, "page flags: none")
+		return false, "", nil
+	}
+	out, outErr := finishDesktopActionPhase(scope, text, nil, "execute")
+	return true, out, outErr
+}
+
+// desktopFinishObserved applies the same person-gate to a screenshot or a
+// computer batch, whose own result does not carry page flags.
+func desktopFinishObserved(ctx context.Context, scope agentruntime.Scope, session *browser.BrowserAgentSession, text string, err error) (string, error) {
+	phase := "execute"
+	if value, keyed := desktopPhase(ctx); keyed {
+		phase = value
+	}
+	if session != nil && !strings.Contains(desktopAttentionText(text), "page flags:") && !strings.Contains(desktopAttentionText(text), browser.LoginWallMarker) {
+		if flags, peekErr := desktopReadPageFlags(session); peekErr == nil {
+			// The screenshot is appended after the observation. A flag line
+			// after it is invisible: the person-gate ignores screen text.
+			text = desktopInsertBeforeVision(text, desktopFlagLine(flags))
+		}
+	}
+	return finishDesktopActionPhase(scope, text, err, phase)
+}
+
+func desktopFlagLine(flags browser.BrowserPageFlags) string {
+	noted := appendDesktopPageFlags("observed", map[string]interface{}{"page_flags": flags})
+	index := strings.Index(noted, "page flags:")
+	if index < 0 {
+		return ""
+	}
+	return noted[index:]
+}
+
+// desktopInsertBeforeVision puts a page-flag line where the person-gate
+// reads it: before screen_vision and before the screenshot image.
+func desktopInsertBeforeVision(text, line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return text
+	}
+	cut := len(text)
+	for _, mark := range []string{"\nscreen_vision:", "\x00[maclaw-model-image "} {
+		if index := strings.Index(text, mark); index >= 0 && index < cut {
+			cut = index
+		}
+	}
+	if cut == 0 || strings.HasPrefix(text, "screen_vision:") || strings.HasPrefix(text, "\x00[maclaw-model-image ") {
+		if text == "" {
+			return line
+		}
+		return line + "\n" + text
+	}
+	if cut == len(text) {
+		return text + "\n" + line
+	}
+	return text[:cut] + "\n" + line + text[cut:]
 }
 
 func desktopNeedsPerson(text string) bool {
@@ -1526,13 +1663,21 @@ func desktopAttentionReason(text string) string {
 		return "captcha_widget"
 	}
 	flags := desktopPageFlagsLine(text)
-	if flags == "" {
-		return ""
-	}
-	for _, name := range []string{"captcha_widget", "login_qr", "payment_confirm", "login_wall", "mfa"} {
-		if strings.Contains(flags, name) {
-			return name
+	if flags != "" {
+		for _, name := range []string{"captcha_widget", "login_qr", "payment_confirm", "login_wall", "mfa"} {
+			if strings.Contains(flags, name) {
+				return name
+			}
 		}
+	}
+	// Navigate names a sign-in URL even when the first screen has no
+	// password field yet (Amazon "Sign in or create account"). A blank
+	// page uses the same marker and is not a login.
+	if strings.Contains(text, browser.LoginWallMarker+" captcha") {
+		return "captcha_widget"
+	}
+	if strings.Contains(text, browser.LoginWallMarker+" login_url") || strings.Contains(text, browser.LoginWallMarker+" login_form") {
+		return "login_wall"
 	}
 	return ""
 }
@@ -1563,6 +1708,23 @@ func desktopPageFlagsLine(text string) string {
 }
 
 type desktopPhaseKey struct{}
+
+type desktopScheduleTurnKey struct{}
+type desktopDataDirKey struct{}
+
+func desktopTurnDataDir(request agentruntime.TurnRequest) string {
+	switch input := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		return strings.TrimSpace(input.DataDir)
+	case *agentservice.ExecuteRequest:
+		if input == nil {
+			return ""
+		}
+		return strings.TrimSpace(input.DataDir)
+	default:
+		return ""
+	}
+}
 
 type desktopInsideBatchKey struct{}
 
@@ -1649,6 +1811,9 @@ func desktopReplyCard(request agentruntime.TurnRequest) string {
 // desktopTurnUsesContainer is a bot turn. A digital-employee turn has neither
 // hub_bot nor bot_phase, and keeps the host filesystem, shell, and network.
 func desktopTurnUsesContainer(request agentruntime.TurnRequest) bool {
+	if desktopTurnHasNoDesktop(request) {
+		return false
+	}
 	switch botPhaseFromTurn(request) {
 	case "plan", "execute":
 		return true
@@ -1661,6 +1826,25 @@ func desktopTurnUsesContainer(request agentruntime.TurnRequest) bool {
 	default:
 		return false
 	}
+}
+
+// desktopTurnHasNoDesktop is a bot created without a cloud desktop.
+// Hub marks the turn (bot_desktop) and the instance (hub_bot_desktop).
+func desktopTurnHasNoDesktop(request agentruntime.TurnRequest) bool {
+	if strings.TrimSpace(desktopMessageMeta(request)["bot_desktop"]) == desktop.BotDesktopModeNone {
+		return true
+	}
+	inst, ok := turnInstance(request)
+	return ok && strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
+}
+
+// desktopPostHasNoDesktop is the same check at the HTTP layer, where the
+// message metadata and the instance record are the two markers Hub wrote.
+func desktopPostHasNoDesktop(msgMeta, instMeta map[string]string) bool {
+	if strings.TrimSpace(msgMeta["bot_desktop"]) == desktop.BotDesktopModeNone {
+		return true
+	}
+	return strings.TrimSpace(instMeta["hub_bot_desktop"]) == desktop.BotDesktopModeNone
 }
 
 func desktopMessageMeta(request agentruntime.TurnRequest) map[string]string {
@@ -2122,11 +2306,22 @@ func desktopAppBrowserRaises(binding *desktopBinding, scope agentruntime.Scope, 
 	return pending
 }
 
-// desktopOpenBrowser and desktopFocusVisiblePage are replaced by tests.
-// Production reattaches to the shared browser, then raises the page the
-// person can use so a screenshot does not show a network-error window.
+// desktopOpenBrowser, desktopFocusVisiblePage, and desktopRaisePageBehindError
+// are replaced by tests. Production reattaches to the shared browser.
+// A screenshot raises a page only when a network-error document is focused,
+// and only on a browser session that is already attached.
 var desktopOpenBrowser = desktopBrowserSession
 var desktopFocusVisiblePage = browser.FocusDesktopAfterPerson
+var desktopRaisePageBehindError = browser.RaisePageBehindNetworkError
+
+// desktopShotBrowser is the browser a previous step already attached.
+// Screenshot uses this and does not open a session of its own.
+func desktopShotBrowser(binding *desktopBinding, addr string) *browser.BrowserAgentSession {
+	if binding == nil || binding.session == nil || binding.addr != addr || !desktopSessionConnected(binding.session) {
+		return nil
+	}
+	return binding.session
+}
 
 // desktopKeepLoggedInDocument is replaced by tests. Production marks the
 // browser so the continuation does not open a new document.
@@ -2597,6 +2792,13 @@ func desktopKeepTail(text string) string {
 	}
 	if strings.Contains(text, "handoff=captcha") {
 		kept = append(kept, "handoff=captcha")
+	}
+	if index := strings.LastIndex(text, browser.LoginWallMarker); index >= 0 {
+		line := text[index:]
+		if end := strings.IndexByte(line, '\n'); end >= 0 {
+			line = line[:end]
+		}
+		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
 }
@@ -3690,26 +3892,133 @@ func desktopShotName(mime string) string {
 }
 
 func deliverDesktopDocument(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+	itemID := desktopArg(args, "item_id")
 	if filePath := desktopArg(args, "path"); filePath != "" {
-		return deliverDesktopPath(ctx, scope, filePath, desktopArg(args, "name"))
+		return deliverDesktopPath(ctx, scope, filePath, desktopArg(args, "name"), itemID)
 	}
 	name, mime, raw, err := desktopDocument(desktopArg(args, "name"), desktopArg(args, "content"))
 	if err != nil {
 		return "", err
 	}
-	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
-		return desktopSayFile(ctx, scope, name, raw)
+	return deliverHeldBytes(ctx, scope, name, mime, raw, itemID)
+}
+
+// deliverHeldBytes sends bytes that are already in hand. A timer firing has
+// no reply slot and uses its own message. A turn continued after a restart
+// does have a slot, and that path used to skip the identical-bytes check, so
+// the resumed weather turn handed over the same PDF again.
+func deliverHeldBytes(ctx context.Context, scope agentruntime.Scope, name, mime string, raw []byte, itemID string) (string, error) {
+	if desktopShotSlotFrom(ctx) == nil {
+		return deliverFileOnItsOwn(ctx, scope, name, raw, itemID)
 	}
-	if err := noteDesktopFile(ctx, name, mime, raw); err != nil {
+	if err := desktopRefuseRepeatScheduleFile(ctx, scope, name, raw); err != nil {
 		return "", err
 	}
-	return desktopDelivered(name, len(raw)), nil
+	var text string
+	var err error
+	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
+		text, err = desktopSayFile(ctx, scope, name, raw)
+		if err == nil {
+			desktopNoteFileClaim(scope.RunID, itemID, raw)
+		}
+	} else if err = noteDesktopFileItem(ctx, name, mime, raw, itemID); err != nil {
+		return "", err
+	} else {
+		text = desktopDelivered(name, len(raw))
+	}
+	if err != nil {
+		return "", err
+	}
+	desktopNoteScheduleDelivered(ctx, scope, name, raw)
+	return text, nil
 }
 
 // deliverDesktopPath attaches the file that is already on the desktop.
 // The bytes are that file, including a pdf. The download name is its base
 // name unless name is set.
-func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath, name string) (string, error) {
+// A schedule firing was delivering the PDF left by the previous slot
+// (Bot 4, 14:39: bash only announced the scratch folder, then deliver
+// sent the same 43KB 北京天气报告.pdf). Two minutes covers clock skew
+// between this process and the container. A file this run writes is newer.
+const desktopScheduleFileSkew = 2 * time.Minute
+
+var desktopRunStarted sync.Map // run id -> time.Time
+
+func noteDesktopRunStart(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	if _, ok := desktopRunStarted.Load(runID); ok {
+		return
+	}
+	desktopRunStarted.LoadOrStore(runID, time.Now())
+	n := 0
+	desktopRunStarted.Range(func(_, _ any) bool {
+		n++
+		return n < 4096
+	})
+	if n >= 4096 {
+		desktopRunStarted = sync.Map{}
+		desktopRunStarted.Store(runID, time.Now())
+	}
+}
+
+func desktopRunStartedAt(runID string) time.Time {
+	v, ok := desktopRunStarted.Load(strings.TrimSpace(runID))
+	if !ok {
+		return time.Time{}
+	}
+	t, _ := v.(time.Time)
+	return t
+}
+
+func desktopScheduleFileIsStale(fileMTime, runStart time.Time) bool {
+	if fileMTime.IsZero() || runStart.IsZero() {
+		return false
+	}
+	return fileMTime.Before(runStart.Add(-desktopScheduleFileSkew))
+}
+
+func desktopFileMTime(ctx context.Context, scope agentruntime.Scope, resolved string) (time.Time, error) {
+	text, err := desktopContainerBash(ctx, scope, "stat -c %Y "+bashSingleQuote(resolved))
+	if err != nil {
+		return time.Time{}, err
+	}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return time.Time{}, fmt.Errorf("stat returned nothing")
+	}
+	sec, err := strconv.ParseInt(fields[len(fields)-1], 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(sec, 0), nil
+}
+
+func desktopRefuseStaleScheduleFile(ctx context.Context, scope agentruntime.Scope, resolved string) error {
+	if !desktopScheduleTurn(ctx) {
+		return nil
+	}
+	mtime, err := desktopFileMTime(ctx, scope, resolved)
+	if err != nil {
+		return nil
+	}
+	if !desktopScheduleFileIsStale(mtime, desktopRunStartedAt(scope.RunID)) {
+		return nil
+	}
+	return fmt.Errorf("这份文件在这一轮开始之前就在了，不是这一轮生成的。先查询并重新生成，再交付。不要把上一轮的文件再发一次")
+}
+
+func desktopScheduleTurn(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(desktopScheduleTurnKey{}).(bool)
+	return v
+}
+
+func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath, name, itemID string) (string, error) {
 	resolved, err := desktop.ContainerPath(filePath)
 	if err != nil {
 		return "", fmt.Errorf("desktop deliver rejected the path: %w", err)
@@ -3721,11 +4030,17 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 	if err != nil {
 		return "", err
 	}
+	if err := desktopRefuseStaleScheduleFile(ctx, scope, resolved); err != nil {
+		return "", err
+	}
 	encoded, err := desktopContainerFile(ctx, scope, "file_bytes", map[string]any{"path": resolved})
 	if err != nil {
 		if strings.Contains(err.Error(), "file is too large") {
 			// The desktop service refuses a file over the reply's inline
 			// budget; it goes as its own message instead.
+			if desktopShotSlotFrom(ctx) == nil {
+				return deliverLargeOnItsOwn(ctx, scope, resolved, name)
+			}
 			return deliverDesktopLarge(ctx, scope, resolved, name)
 		}
 		return "", err
@@ -3733,6 +4048,9 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 	raw, err := desktop.DecodeFileBytes(encoded)
 	if err != nil {
 		if strings.Contains(err.Error(), "too large") {
+			if desktopShotSlotFrom(ctx) == nil {
+				return deliverLargeOnItsOwn(ctx, scope, resolved, name)
+			}
 			return deliverDesktopLarge(ctx, scope, resolved, name)
 		}
 		if strings.Contains(err.Error(), "empty") {
@@ -3740,13 +4058,183 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 		}
 		return "", fmt.Errorf("desktop file could not be read")
 	}
-	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
-		return desktopSayFile(ctx, scope, name, raw)
+	return deliverHeldBytes(ctx, scope, name, desktopDeliverMIME(name), raw, itemID)
+}
+
+// deliverLargeOnItsOwn sends a file the reply cannot carry, when the bytes
+// were not already read. The result never tells the model to hand out the
+// cloud path.
+func deliverLargeOnItsOwn(ctx context.Context, scope agentruntime.Scope, resolved, name string) (string, error) {
+	text, err := deliverDesktopLarge(ctx, scope, resolved, name)
+	if err != nil {
+		return "", deliverOwnError(err)
 	}
-	if err := noteDesktopFile(ctx, name, desktopDeliverMIME(name), raw); err != nil {
+	return deliverOwnText(text), nil
+}
+
+// deliverFileOnItsOwn sends bytes the reply itself cannot carry. The bytes
+// already read are what is sent: the container file is not read again. The
+// person's app saves the file in this bot's folder. The cloud path is not
+// what they open.
+func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name string, raw []byte, itemID string) (string, error) {
+	if err := desktopRefuseRepeatScheduleFile(ctx, scope, name, raw); err != nil {
 		return "", err
 	}
-	return desktopDelivered(name, len(raw)), nil
+	ref, err := desktopSayUploadBytes(ctx, scope, name, desktopDeliverMIME(name), raw)
+	if err == nil {
+		text, sayErr := desktopSayFileRef(ctx, scope, name, ref, int64(len(raw)))
+		if sayErr != nil {
+			return "", deliverOwnError(sayErr)
+		}
+		desktopNoteScheduleDelivered(ctx, scope, name, raw)
+		desktopNoteFileClaim(scope.RunID, itemID, raw)
+		return deliverOwnText(text), nil
+	}
+	if !saidFileFitsInbox(name, desktopDeliverMIME(name), len(raw)) {
+		return "", deliverOwnError(fmt.Errorf("desktop document (%d bytes) could not be sent: %v. Do not shrink it", len(raw), err))
+	}
+	if _, sayErr := desktopSayFile(ctx, scope, name, raw); sayErr != nil {
+		return "", deliverOwnError(sayErr)
+	}
+	desktopNoteScheduleDelivered(ctx, scope, name, raw)
+	desktopNoteFileClaim(scope.RunID, itemID, raw)
+	return deliverOwnText(fmt.Sprintf("Delivered %s (%d bytes) as its own chat message. The person's MaClaw app has the file. Say that it was sent as a separate message.", name, len(raw))), nil
+}
+
+// A schedule firing was handing the person the same PDF again. Touching the
+// file makes its mtime look new, and the bytes were the copy already saved
+// on their computer (Bot 4, 14:59, after the mtime check was live).
+var (
+	desktopScheduleDeliverMu     sync.Mutex
+	desktopScheduleDelivered     = map[string]string{}
+	desktopScheduleDeliverLoaded bool
+	desktopScheduleDeliverFile   string
+	desktopScheduleDeliverPath   = func() string { return filepath.Join(corelib.MaclawDataDir(), "schedule-delivered.json") }
+)
+
+func desktopScheduleDeliverFilePath(ctx context.Context) string {
+	if ctx != nil {
+		if dir, _ := ctx.Value(desktopDataDirKey{}).(string); strings.TrimSpace(dir) != "" {
+			return filepath.Join(strings.TrimSpace(dir), "schedule-delivered.json")
+		}
+	}
+	return desktopScheduleDeliverPath()
+}
+
+func desktopScheduleDeliverKey(scope agentruntime.Scope, name string) string {
+	who := strings.TrimSpace(scope.UserID)
+	if who == "" {
+		who = strings.TrimSpace(scope.InstanceID)
+	}
+	return who + "\n" + path.Base(strings.TrimSpace(name))
+}
+
+func desktopScheduleDeliverSHA(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func desktopScheduleDeliverLoadLocked(file string) {
+	if desktopScheduleDeliverLoaded && desktopScheduleDeliverFile == file {
+		return
+	}
+	desktopScheduleDeliverLoaded = true
+	desktopScheduleDeliverFile = file
+	desktopScheduleDelivered = map[string]string{}
+	raw, err := os.ReadFile(file)
+	if err != nil || len(raw) == 0 {
+		return
+	}
+	_ = json.Unmarshal(raw, &desktopScheduleDelivered)
+	if desktopScheduleDelivered == nil {
+		desktopScheduleDelivered = map[string]string{}
+	}
+}
+
+func desktopScheduleDeliverFlushLocked(file string) {
+	if len(desktopScheduleDelivered) > 512 {
+		n := 0
+		for k := range desktopScheduleDelivered {
+			delete(desktopScheduleDelivered, k)
+			n++
+			if n >= 128 {
+				break
+			}
+		}
+	}
+	raw, err := json.Marshal(desktopScheduleDelivered)
+	if err != nil {
+		log.Printf("[desktop-schedule] remember deliver: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		log.Printf("[desktop-schedule] remember deliver: %v", err)
+		return
+	}
+	tmp := file + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		log.Printf("[desktop-schedule] remember deliver: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, file); err != nil {
+		log.Printf("[desktop-schedule] remember deliver: %v", err)
+	}
+}
+
+func desktopRefuseRepeatScheduleFile(ctx context.Context, scope agentruntime.Scope, name string, raw []byte) error {
+	if !desktopScheduleTurn(ctx) || len(raw) == 0 || strings.TrimSpace(name) == "" {
+		return nil
+	}
+	key := desktopScheduleDeliverKey(scope, name)
+	sum := desktopScheduleDeliverSHA(raw)
+	desktopScheduleDeliverMu.Lock()
+	desktopScheduleDeliverLoadLocked(desktopScheduleDeliverFilePath(ctx))
+	prev := desktopScheduleDelivered[key]
+	desktopScheduleDeliverMu.Unlock()
+	if prev == "" || prev != sum {
+		return nil
+	}
+	return fmt.Errorf("这份文件和上一轮交给这个人的是同一份，不是这一轮新生成的。先查询并重新生成，再交付。不要把上一轮的文件再发一次")
+}
+
+func desktopNoteScheduleDelivered(ctx context.Context, scope agentruntime.Scope, name string, raw []byte) {
+	if !desktopScheduleTurn(ctx) || len(raw) == 0 || strings.TrimSpace(name) == "" {
+		return
+	}
+	key := desktopScheduleDeliverKey(scope, name)
+	sum := desktopScheduleDeliverSHA(raw)
+	file := desktopScheduleDeliverFilePath(ctx)
+	desktopScheduleDeliverMu.Lock()
+	desktopScheduleDeliverLoadLocked(file)
+	desktopScheduleDelivered[key] = sum
+	desktopScheduleDeliverFlushLocked(file)
+	desktopScheduleDeliverMu.Unlock()
+}
+
+// deliverOwnText is the tool result for a file sent on its own. The cloud
+// path is not a file the person can open.
+func deliverOwnText(text string) string {
+	if strings.Contains(text, "cloud path") {
+		return text
+	}
+	return strings.TrimRight(text, ". ") + ". Do not give the cloud path as the file to open."
+}
+
+// deliverOwnError drops the instruction to paste the computer's path. That
+// path is on the bot's computer; the chat cannot open it.
+func deliverOwnError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.NewReplacer(
+		"Tell the person its path on the computer in your final reply", "Do not give the cloud path as the file to open",
+		"tell the person its path on the computer in your final reply", "do not give the cloud path as the file to open",
+		"tell the person the file's path on the computer and its size in your final reply", "do not give the cloud path as the file to open",
+	).Replace(err.Error())
+	if !strings.Contains(msg, "cloud path") {
+		msg = strings.TrimRight(msg, ". ") + ". Do not give the cloud path as the file to open"
+	}
+	return errors.New(msg)
 }
 
 func desktopDelivered(name string, size int) string {
@@ -3754,6 +4242,10 @@ func desktopDelivered(name string, size int) string {
 }
 
 func noteDesktopFile(ctx context.Context, name, mime string, raw []byte) error {
+	return noteDesktopFileItem(ctx, name, mime, raw, "")
+}
+
+func noteDesktopFileItem(ctx context.Context, name, mime string, raw []byte, itemID string) error {
 	slot := desktopShotSlotFrom(ctx)
 	if slot == nil {
 		// A turn the server started itself (a background-job check or
@@ -3780,6 +4272,8 @@ func noteDesktopFile(ctx context.Context, name, mime string, raw []byte) error {
 		MimeType: mime,
 		Data:     encoded,
 		Size:     int64(len(raw)),
+		Delivery: agent.AttachmentDeliveryFile,
+		ItemID:   strings.TrimSpace(itemID),
 	}
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
@@ -3841,6 +4335,9 @@ func attachDesktopShot(msg *agentservice.Message, slot *desktopShotSlot) int {
 	if !ok || msg == nil || shot.Data == "" {
 		return 0
 	}
+	// A working screenshot is display only. It is not delivery-tool evidence
+	// and cannot settle the task, whatever the request text says.
+	shot.Delivery = ""
 	next := make([]agent.MessageAttachment, len(msg.Attachments)+1)
 	copy(next, msg.Attachments)
 	next[len(msg.Attachments)] = shot
@@ -4286,6 +4783,21 @@ func desktopPlanSummary(out string) string {
 		out = string(r[:300]) + "…"
 	}
 	return out
+}
+
+// desktopTaskRequestText is the person's ask. After a restart the current
+// message is the engine sentence; the original ask is on task_request.
+func desktopTaskRequestText(request agentruntime.TurnRequest) string {
+	cur := desktopMessageText(request)
+	if desktopTaskSpecOf(cur).namesASite() {
+		return cur
+	}
+	if meta := desktopMessageMeta(request); meta != nil {
+		if t := strings.TrimSpace(meta["task_request"]); desktopTaskSpecOf(t).namesASite() {
+			return t
+		}
+	}
+	return cur
 }
 
 func desktopMessageText(request agentruntime.TurnRequest) string {

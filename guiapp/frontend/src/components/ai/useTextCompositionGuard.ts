@@ -38,8 +38,16 @@ export function useTextCompositionGuard() {
             if (isIMEKey && (event.key === "Enter" || event.key === "Process")) {
                 consumePendingCommitEnter();
             }
-            if (activeRef.current || isIMEKey) {
+            if (isIMEKey) {
                 return true;
+            }
+            if (activeRef.current) {
+                // A non-IME key while "composing" means the host dropped
+                // compositionend — reset rather than swallow keys forever.
+                // An unmarked Enter here is the same ambiguous commit-Enter
+                // the post-compositionend grace window exists for.
+                activeRef.current = false;
+                return event.key === "Enter";
             }
             return event.key === "Enter" && consumePendingCommitEnter();
         },

@@ -194,6 +194,9 @@ func TestNormalizeResourcesUsesContainerDefaults(t *testing.T) {
 	if _, err := NormalizeResources("bad image", "4g", "2", "1g"); err == nil {
 		t.Fatal("invalid image was accepted")
 	}
+	if _, err := NormalizeResources("", "4", "2", "1g"); err == nil {
+		t.Fatal("memory without a unit was accepted")
+	}
 }
 
 func TestParseEnsureReadsSupervisorLine(t *testing.T) {

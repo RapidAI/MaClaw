@@ -112,7 +112,7 @@ func TestApplyExpectSuccessClearsUnchanged(t *testing.T) {
 
 func TestPlaybookMentionsObserveLoop(t *testing.T) {
 	p := Playbook()
-	for _, marker := range []string{"observe", "session_id", "hover", "expect=", "computer_*", "captcha_widget"} {
+	for _, marker := range []string{"observe", "session_id", "hover", "expect=", "computer_*", "captcha_widget", "submit_secret", "request_takeover"} {
 		if !strings.Contains(p, marker) {
 			t.Fatalf("playbook missing %q", marker)
 		}

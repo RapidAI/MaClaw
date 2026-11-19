@@ -1824,8 +1824,66 @@ func TestUpdateHubVisibilityHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get hub: %v", err)
 	}
-	if hub == nil || hub.Visibility != "shared" {
-		t.Fatalf("expected shared visibility, got %+v", hub)
+	if hub == nil || hub.Visibility != "shared" || !hub.VisibilityLocked || hub.VisibilityLockedBy != "admin" {
+		t.Fatalf("expected locked shared visibility by admin, got %+v", hub)
+	}
+}
+
+func TestHeartbeatResponseReportsVisibilityLock(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+	ctx := context.Background()
+
+	registerResult, err := svc.hubs.RegisterHub(ctx, hubs.RegisterHubRequest{
+		OwnerEmail:     "owner@example.com",
+		Name:           "Lock Hub",
+		BaseURL:        "https://lock.example.com",
+		Visibility:     "private",
+		EnrollmentMode: "open",
+	})
+	if err != nil {
+		t.Fatalf("register hub: %v", err)
+	}
+	if err := svc.hubs.ConfirmHubRegistrationByAdmin(ctx, registerResult.HubID); err != nil {
+		t.Fatalf("confirm hub: %v", err)
+	}
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+registerResult.HubID+"/visibility", map[string]any{
+		"visibility": "shared",
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("visibility update status=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	heartbeat := func(visibility string) map[string]any {
+		r := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+registerResult.HubID+"/heartbeat", map[string]any{
+			"hub_secret": registerResult.HubSecret,
+			"visibility": visibility,
+			"base_url":   "https://lock.example.com",
+		}, "")
+		if r.Code != http.StatusOK {
+			t.Fatalf("heartbeat %q status=%d body=%s", visibility, r.Code, r.Body.String())
+		}
+		var body struct {
+			VisibilityLock *hubs.HubVisibilityAuthority `json:"visibility_lock"`
+		}
+		if err := json.Unmarshal(r.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode heartbeat response: %v", err)
+		}
+		return map[string]any{"lock": body.VisibilityLock}
+	}
+
+	// Locked: the private report is rejected and the response tells the hub
+	// who holds the override plus the effective value.
+	lock := heartbeat("private")["lock"].(*hubs.HubVisibilityAuthority)
+	if lock == nil || !lock.Locked || lock.LockedBy != "admin" || lock.Visibility != "shared" {
+		t.Fatalf("expected locked shared by admin, got %+v", lock)
+	}
+
+	// Converged: a matching report clears the lock end to end.
+	lock = heartbeat("shared")["lock"].(*hubs.HubVisibilityAuthority)
+	if lock == nil || lock.Locked || lock.LockedBy != "" || lock.Visibility != "shared" {
+		t.Fatalf("expected converged unlocked state, got %+v", lock)
 	}
 }
 

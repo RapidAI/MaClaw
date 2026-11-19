@@ -249,10 +249,15 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
                 {deviceInfo && (
                     <div className="im-settings-card" style={{ marginTop: 8, padding: 12 }}>
                         <p className="im-settings-description">
-                            {t(lang,
-                                'Open the page below and enter this code to authorize MaClaw:',
-                                '打开下面的页面，输入此验证码完成授权：',
-                                '打開下面的頁面，輸入此驗證碼完成授權：')}
+                            {connection?.custom_client_id
+                                ? t(lang,
+                                    'Open the page below and enter this code to authorize:',
+                                    '打开下面的页面，输入此验证码完成授权：',
+                                    '打開下面的頁面，輸入此驗證碼完成授權：')
+                                : t(lang,
+                                    'Open the page below and enter this code. The built-in login is shown as GitHub CLI:',
+                                    '打开下面的页面，输入此验证码。内置登录的授权页名称是 GitHub CLI：',
+                                    '打開下面的頁面，輸入此驗證碼。內建登入的授權頁名稱是 GitHub CLI：')}
                         </p>
                         <p style={{ fontSize: 22, fontWeight: 700, letterSpacing: 2, margin: '8px 0' }}>{deviceInfo.user_code}</p>
                         <p className="im-settings-description">
@@ -368,9 +373,9 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
                     <>
                         <p className="im-settings-description">
                             {t(lang,
-                                'OAuth Client ID. Leave empty to use the built-in GitHub OAuth app; paste your own OAuth App client ID to customize the authorization page. Device flow must be enabled on the app.',
-                                'OAuth Client ID。留空使用内置 GitHub OAuth 应用；粘贴你自己注册的 OAuth App 的 Client ID 可自定义授权页（该应用需开启 Device Flow）。',
-                                'OAuth Client ID。留空使用內建 GitHub OAuth 應用；貼上你自己註冊的 OAuth App 的 Client ID 可自訂授權頁（該應用需開啟 Device Flow）。')}
+                                'OAuth Client ID. Leave empty to use the built-in GitHub OAuth app (the authorization page is shown as GitHub CLI); paste your own OAuth App client ID to customize the authorization page. Device flow must be enabled on the app.',
+                                'OAuth Client ID。留空使用内置 GitHub OAuth 应用（授权页显示为 GitHub CLI）；粘贴你自己注册的 OAuth App 的 Client ID 可自定义授权页（该应用需开启 Device Flow）。',
+                                'OAuth Client ID。留空使用內建 GitHub OAuth 應用（授權頁顯示為 GitHub CLI）；貼上你自己註冊的 OAuth App 的 Client ID 可自訂授權頁（該應用需開啟 Device Flow）。')}
                         </p>
                         <div className="im-settings-toolbar" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
                             <input
@@ -378,7 +383,7 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
                                 type="text"
                                 value={clientIdDraft}
                                 onChange={(event) => setClientIdDraft(event.target.value)}
-                                placeholder="Iv1.xxxxxxxxxxxxxxxx"
+                                placeholder="0123456789abcdef0123"
                             />
                         </div>
                         <div className="im-settings-toolbar">

@@ -43,6 +43,8 @@ type Props = {
     /** An atomic profile update is in flight; keep the picker non-interactive. */
     profileSavePending?: boolean;
     onOpenLLMSettings?: () => void;
+    /** Trailing action in the provider list; opens LLM provider management. */
+    onAddCustomModel?: () => void;
     onLanguageChange?: (lang: string) => void;
     /** Shell status cluster (inline AppStatusMessageBar); right side of this row. */
     statusSlot?: ReactNode;
@@ -66,7 +68,7 @@ function langShortLabel(lang: string): string {
     return "中";
 }
 
-export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeProfile = "assistant", codingInheritsAssistant = false, providerSelectionPending = false, profileSavePending = false, onOpenLLMSettings, onLanguageChange, statusSlot, hidden = false, hideModelChip = false }: Props) {
+export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeProfile = "assistant", codingInheritsAssistant = false, providerSelectionPending = false, profileSavePending = false, onOpenLLMSettings, onAddCustomModel, onLanguageChange, statusSlot, hidden = false, hideModelChip = false }: Props) {
     const tr = useCallback(
         (en: string, zh: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant),
         [lang]
@@ -209,6 +211,7 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
                     providerSelectionPending={providerSelectionPending}
                     profileSavePending={profileSavePending}
                     onOpenLLMSettings={onOpenLLMSettings}
+                    onAddCustomModel={onAddCustomModel}
                 />
             )}
             <button type="button" data-testid="qs-tts-toggle" role="switch" aria-checked={!!ttsEnabled} onClick={onToggleTts} style={{ ...chipStyle(!!ttsEnabled), position: "relative" }} title={ttsEnabled ? tr("Voice readback ON - click to disable", "语音播报已开启，点击关闭", "語音播報已開啟，點擊關閉") : tr("Voice readback OFF - click to enable", "语音播报已关闭，点击开启", "語音播報已關閉，點擊開啟")} aria-label={ttsEnabled ? tr("Voice readback ON - click to disable", "语音播报已开启，点击关闭", "語音播報已開啟，點擊關閉") : tr("Voice readback OFF - click to enable", "语音播报已关闭，点击开启", "語音播報已關閉，點擊開啟")}>

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
@@ -149,5 +150,54 @@ func TestD98DeliveredFilesShareOneBudget(t *testing.T) {
 	}
 	if err := noteDesktopFile(ctx, "b.pdf", "application/pdf", big); err == nil || !strings.Contains(err.Error(), "together with") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A reply that hands the desktop to a person (a login wall, a payment) takes
+// one picture of the wall itself: the phone renders it with a takeover
+// button instead of an answer field.
+func TestD98HandoffShotRidesOnTheReply(t *testing.T) {
+	d98Round(t, "run_d98f", ":44")
+	captured := 0
+	d98Capture(t, func(c context.Context, _ agentruntime.Scope, _ string) (string, error) {
+		captured++
+		noteDesktopShot(c, "image/png", d98TinyPNG)
+		return "ok", nil
+	})
+	msg := &agentservice.Message{Content: "这一步需要你在当前桌面的浏览器里完成登录或验证。"}
+	if n := desktopAttachHandoffShot(msg, "run_d98f"); n != 1 || len(msg.Attachments) != 1 || msg.Attachments[0].MimeType != "image/png" {
+		t.Fatalf("attached %d: %+v", n, msg.Attachments)
+	}
+	if captured != 1 {
+		t.Fatalf("captured %d times", captured)
+	}
+	// A reply that already carries its picture must not gain a second one.
+	if n := desktopAttachHandoffShot(msg, "run_d98f"); n != 0 || len(msg.Attachments) != 1 {
+		t.Fatalf("re-attached %d: %+v", n, msg.Attachments)
+	}
+}
+
+func TestD98HandoffShotSkipsWhenReplyHasAnImage(t *testing.T) {
+	d98Round(t, "run_d98g", ":44")
+	d98Capture(t, func(context.Context, agentruntime.Scope, string) (string, error) {
+		t.Fatal("captured although the reply already carries a picture")
+		return "", nil
+	})
+	msg := &agentservice.Message{Attachments: []agent.MessageAttachment{
+		{Type: "image", MimeType: "image/jpeg", Data: d98TinyPNG},
+	}}
+	if n := desktopAttachHandoffShot(msg, "run_d98g"); n != 0 || len(msg.Attachments) != 1 {
+		t.Fatalf("attached %d: %+v", n, msg.Attachments)
+	}
+}
+
+func TestD98HandoffShotNeedsARound(t *testing.T) {
+	d98Capture(t, func(context.Context, agentruntime.Scope, string) (string, error) {
+		t.Fatal("captured without a desktop round")
+		return "", nil
+	})
+	msg := &agentservice.Message{Content: "需要登录"}
+	if n := desktopAttachHandoffShot(msg, "run_d98_missing"); n != 0 || len(msg.Attachments) != 0 {
+		t.Fatalf("attached %d: %+v", n, msg.Attachments)
 	}
 }

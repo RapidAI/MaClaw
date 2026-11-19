@@ -3,13 +3,17 @@ package httpapi
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 )
 
@@ -514,4 +518,298 @@ func TestKnowledgeSyncMigratesLegacyEmailCaseDirectory(t *testing.T) {
 	if downloadRec.Code != http.StatusOK || downloadRec.Body.String() != string(payload) {
 		t.Fatalf("download = %d body=%s", downloadRec.Code, downloadRec.Body.String())
 	}
+}
+
+func writeKnowledgeSyncCaseDir(t *testing.T, dir, packageID, body string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	payload := []byte(body)
+	meta, err := json.Marshal(knowledgeSyncMeta{
+		OwnerUserEmail:      "Case.Legacy@example.com",
+		TenantID:            "tenant_case",
+		PackageID:           packageID,
+		PackageVersion:      1,
+		CompressedSizeBytes: int64(len(payload)),
+		StoredSizeBytes:     int64(len(payload)),
+		CreatedAt:           time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:           time.Now().UTC().Format(time.RFC3339),
+		ServiceStatus:       "normal",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.mksync"), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdoptKnowledgeSyncEmailCaseDirDoesNotClobberOrCrossUsers(t *testing.T) {
+	const want = "case.legacy@example.com"
+	principal := &auth.ViewerPrincipal{TenantID: "tenant_case", UserID: "user-case", Email: want}
+
+	t.Run("existing canonical meta is not replaced", func(t *testing.T) {
+		base := t.TempDir()
+		canonical := filepath.Join(base, "_email", want)
+		writeKnowledgeSyncCaseDir(t, canonical, "canonical-id", "canonical-body")
+		variant := filepath.Join(base, "_email", "Case.Legacy@example.com")
+		writeKnowledgeSyncCaseDir(t, variant, "variant-id", "variant-body")
+
+		meta, path, err := loadKnowledgeSyncMeta(base, principal)
+		if err != nil || meta == nil || meta.PackageID != "canonical-id" || path == "" {
+			t.Fatalf("meta = %#v path %q", meta, path)
+		}
+		got, err := os.ReadFile(filepath.Join(canonical, "package.mksync"))
+		if err != nil || string(got) != "canonical-body" {
+			t.Fatalf("canonical package = %q err=%v", got, err)
+		}
+		if _, err := os.Stat(filepath.Join(variant, "package.mksync")); err != nil {
+			t.Fatalf("variant was removed: %v", err)
+		}
+	})
+
+	t.Run("incomplete canonical path is not overwritten", func(t *testing.T) {
+		base := t.TempDir()
+		canonical := filepath.Join(base, "_email", want)
+		if err := os.MkdirAll(canonical, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(canonical, "note.txt"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		variant := filepath.Join(base, "_email", "CASE.LEGACY@example.com")
+		writeKnowledgeSyncCaseDir(t, variant, "variant-id", "variant-body")
+
+		if meta, _, err := loadKnowledgeSyncMeta(base, principal); err != nil || meta != nil {
+			t.Fatalf("incomplete canonical was replaced: %#v", meta)
+		}
+		note, err := os.ReadFile(filepath.Join(canonical, "note.txt"))
+		if err != nil || string(note) != "keep" {
+			t.Fatalf("note = %q err=%v", note, err)
+		}
+		body, err := os.ReadFile(filepath.Join(variant, "package.mksync"))
+		if err != nil || string(body) != "variant-body" {
+			t.Fatalf("variant package = %q err=%v", body, err)
+		}
+	})
+
+	t.Run("a file at the canonical path is not replaced", func(t *testing.T) {
+		base := t.TempDir()
+		canonical := filepath.Join(base, "_email", want)
+		if err := os.MkdirAll(filepath.Join(base, "_email"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(canonical, []byte("file-blocks-rename"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		variant := filepath.Join(base, "_email", "Case.Legacy@example.com")
+		writeKnowledgeSyncCaseDir(t, variant, "variant-id", "variant-body")
+		outside := filepath.Join(base, "Case.Legacy@example.com")
+		writeKnowledgeSyncCaseDir(t, outside, "escape-id", "escape-body")
+
+		meta, _, err := loadKnowledgeSyncMeta(base, principal)
+		if err != nil || meta != nil {
+			t.Fatalf("file canonical was adopted: meta=%#v err=%v", meta, err)
+		}
+		blocked, err := os.ReadFile(canonical)
+		if err != nil || string(blocked) != "file-blocks-rename" {
+			t.Fatalf("canonical file = %q err=%v", blocked, err)
+		}
+		body, err := os.ReadFile(filepath.Join(variant, "package.mksync"))
+		if err != nil || string(body) != "variant-body" {
+			t.Fatalf("variant package = %q err=%v", body, err)
+		}
+		escaped, err := os.ReadFile(filepath.Join(outside, "package.mksync"))
+		if err != nil || string(escaped) != "escape-body" {
+			t.Fatalf("outside package = %q err=%v", escaped, err)
+		}
+	})
+
+	t.Run("an empty canonical directory blocks migration", func(t *testing.T) {
+		base := t.TempDir()
+		canonical := filepath.Join(base, "_email", want)
+		if err := os.MkdirAll(canonical, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		variant := filepath.Join(base, "_email", "Case.Legacy@example.com")
+		writeKnowledgeSyncCaseDir(t, variant, "variant-id", "variant-body")
+
+		meta, path, err := loadKnowledgeSyncMeta(base, principal)
+		if err != nil || meta != nil || path != "" {
+			t.Fatalf("empty canonical promoted the variant: meta=%#v path=%q err=%v", meta, path, err)
+		}
+		entries, err := os.ReadDir(canonical)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("empty canonical = %v err=%v", entries, err)
+		}
+		body, err := os.ReadFile(filepath.Join(variant, "package.mksync"))
+		if err != nil || string(body) != "variant-body" {
+			t.Fatalf("variant package = %q err=%v", body, err)
+		}
+	})
+
+	t.Run("two case variants are not migrated", func(t *testing.T) {
+		base := t.TempDir()
+		first := filepath.Join(base, "_email", "Case.Legacy@example.com")
+		second := filepath.Join(base, "_email", "CASE.LEGACY@example.com")
+		writeKnowledgeSyncCaseDir(t, first, "first-id", "first-body")
+		writeKnowledgeSyncCaseDir(t, second, "second-id", "second-body")
+		canonical := filepath.Join(base, "_email", want)
+
+		meta, path, err := loadKnowledgeSyncMeta(base, principal)
+		if !errors.Is(err, errKnowledgeSyncEmailCaseConflict) || meta != nil || path != "" {
+			t.Fatalf("meta=%#v path=%q err=%v", meta, path, err)
+		}
+		if _, err := os.Lstat(canonical); !os.IsNotExist(err) {
+			t.Fatalf("canonical was created: %v", err)
+		}
+		for _, dir := range []string{first, second} {
+			body, err := os.ReadFile(filepath.Join(dir, "package.mksync"))
+			if err != nil {
+				t.Fatalf("%s moved: %v", dir, err)
+			}
+			if dir == first && string(body) != "first-body" || dir == second && string(body) != "second-body" {
+				t.Fatalf("%s payload changed to %q", dir, body)
+			}
+		}
+	})
+
+	t.Run("other users and paths outside _email are not moved", func(t *testing.T) {
+		base := t.TempDir()
+		variant := filepath.Join(base, "_email", "Case.Legacy@example.com")
+		writeKnowledgeSyncCaseDir(t, variant, "variant-id", "variant-body")
+		other := filepath.Join(base, "_email", "other.user@example.com")
+		writeKnowledgeSyncCaseDir(t, other, "other-id", "other-body")
+		prefix := filepath.Join(base, "_email", "case.legacy@example.com.extra")
+		writeKnowledgeSyncCaseDir(t, prefix, "prefix-id", "prefix-body")
+		outside := filepath.Join(base, "tenant_case", "Case.Legacy@example.com")
+		writeKnowledgeSyncCaseDir(t, outside, "outside-id", "outside-body")
+		link := filepath.Join(base, "_email", "CaSe.LeGaCy@example.com")
+		if err := os.Symlink(other, link); err != nil {
+			t.Fatal(err)
+		}
+
+		meta, _, err := loadKnowledgeSyncMeta(base, principal)
+		if err != nil || meta == nil || meta.PackageID != "variant-id" {
+			t.Fatalf("meta = %#v", meta)
+		}
+		for _, dir := range []string{other, prefix, outside} {
+			body, err := os.ReadFile(filepath.Join(dir, "package.mksync"))
+			if err != nil {
+				t.Fatalf("%s was moved: %v", dir, err)
+			}
+			if _, err := os.Stat(dir); err != nil {
+				t.Fatalf("%s missing: %v", dir, err)
+			}
+			_ = body
+		}
+		if target, err := os.Readlink(link); err != nil || target != other {
+			t.Fatalf("symlink = %q err=%v", target, err)
+		}
+		otherBody, err := os.ReadFile(filepath.Join(other, "package.mksync"))
+		if err != nil || string(otherBody) != "other-body" {
+			t.Fatalf("other user package = %q err=%v", otherBody, err)
+		}
+	})
+}
+
+func TestKnowledgeSyncStatusAndDownloadReportEmailCaseConflict(t *testing.T) {
+	_, identity, syncDir := newKnowledgeShareHandlerTestDeps(t)
+	token := issueViewerTokenForTenant(t, identity, "tenant_case", "Case.Legacy@example.com")
+	writeKnowledgeSyncCaseDir(t, filepath.Join(syncDir, "_email", "Case.Legacy@example.com"), "first-id", "first-body")
+	writeKnowledgeSyncCaseDir(t, filepath.Join(syncDir, "_email", "CASE.LEGACY@example.com"), "second-id", "second-body")
+
+	statusRec := doKnowledgeShareJSON(t, KnowledgeSyncStatusHandler(identity, syncDir), http.MethodGet, "/api/knowledge/sync/status", token, nil)
+	if statusRec.Code != http.StatusConflict || !strings.Contains(statusRec.Body.String(), knowledgeSyncEmailCaseConflictCode) {
+		t.Fatalf("status = %d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	downloadRec := doKnowledgeShareJSON(t, DownloadKnowledgeSyncPackageHandler(identity, syncDir), http.MethodGet, "/api/knowledge/sync/package", token, nil)
+	if downloadRec.Code != http.StatusConflict || !strings.Contains(downloadRec.Body.String(), knowledgeSyncEmailCaseConflictCode) {
+		t.Fatalf("download = %d body=%s", downloadRec.Code, downloadRec.Body.String())
+	}
+	uploadRec := doKnowledgeShareJSON(t, UploadKnowledgeSyncPackageHandler(identity, syncDir), http.MethodPut, "/api/knowledge/sync/package", token, map[string]any{
+		"package_id":            "should-not-land",
+		"package_version":       1,
+		"compressed_size_bytes": 4,
+		"payload_base64":        base64.StdEncoding.EncodeToString([]byte("nope")),
+	})
+	if uploadRec.Code != http.StatusConflict || !strings.Contains(uploadRec.Body.String(), knowledgeSyncEmailCaseConflictCode) {
+		t.Fatalf("upload = %d body=%s", uploadRec.Code, uploadRec.Body.String())
+	}
+	if _, err := os.Lstat(filepath.Join(syncDir, "_email", "case.legacy@example.com")); !os.IsNotExist(err) {
+		t.Fatalf("conflict created a canonical directory: %v", err)
+	}
+	for _, name := range []string{"Case.Legacy@example.com", "CASE.LEGACY@example.com"} {
+		if _, err := os.Stat(filepath.Join(syncDir, "_email", name, "package.mksync")); err != nil {
+			t.Fatalf("%s was moved: %v", name, err)
+		}
+	}
+}
+
+func TestAdoptKnowledgeSyncEmailCaseDirRace(t *testing.T) {
+	principal := &auth.ViewerPrincipal{TenantID: "tenant_case", UserID: "user-case", Email: "case.legacy@example.com"}
+
+	t.Run("ambiguous candidates never promote a canonical directory", func(t *testing.T) {
+		base := t.TempDir()
+		first := filepath.Join(base, "_email", "Case.Legacy@example.com")
+		second := filepath.Join(base, "_email", "CASE.LEGACY@example.com")
+		writeKnowledgeSyncCaseDir(t, first, "first-id", "first-body")
+		writeKnowledgeSyncCaseDir(t, second, "second-id", "second-body")
+		var wg sync.WaitGroup
+		errs := make(chan error, 16)
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _, err := loadKnowledgeSyncMeta(base, principal)
+				errs <- err
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if !errors.Is(err, errKnowledgeSyncEmailCaseConflict) {
+				t.Fatalf("err = %v", err)
+			}
+		}
+		if _, err := os.Lstat(filepath.Join(base, "_email", principal.Email)); !os.IsNotExist(err) {
+			t.Fatalf("race created canonical: %v", err)
+		}
+		for _, dir := range []string{first, second} {
+			if _, err := os.Stat(filepath.Join(dir, "package.mksync")); err != nil {
+				t.Fatalf("%s moved during the race: %v", dir, err)
+			}
+		}
+	})
+
+	t.Run("one candidate is renamed by exactly one caller", func(t *testing.T) {
+		base := t.TempDir()
+		variant := filepath.Join(base, "_email", "Case.Legacy@example.com")
+		writeKnowledgeSyncCaseDir(t, variant, "only-id", "only-body")
+		var wg sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _, _ = loadKnowledgeSyncMeta(base, principal)
+			}()
+		}
+		wg.Wait()
+		canonical := filepath.Join(base, "_email", principal.Email)
+		body, err := os.ReadFile(filepath.Join(canonical, "package.mksync"))
+		if err != nil || string(body) != "only-body" {
+			t.Fatalf("canonical package = %q err=%v", body, err)
+		}
+		if _, err := os.Lstat(variant); !os.IsNotExist(err) {
+			t.Fatalf("variant still present: %v", err)
+		}
+		entries, err := os.ReadDir(filepath.Join(base, "_email"))
+		if err != nil || len(entries) != 1 || entries[0].Name() != principal.Email {
+			t.Fatalf("email dir = %v err=%v", entries, err)
+		}
+	})
 }

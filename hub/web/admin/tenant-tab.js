@@ -10,6 +10,7 @@
   var tenantAdminCreateBusy = false;
   var tenantMergeBusy = {};
   var tenantDomainSaveBusy = {};
+  var tenantDeleteBusy = false;
   var tenantListPage = 1;
   var tenantListPageSize = 10;
   var TENANT_I18N = {
@@ -82,12 +83,27 @@
     pageInfo: { zh: '\u7b2c {page}/{pages} \u9875\uff0c\u5171 {total} \u4e2a\u79df\u6237', en: 'Page {page}/{pages}, {total} tenants' },
     mergeTenant: { zh: '\u5408\u5e76', en: 'Merge' },
     mergeDryRun: { zh: '\u9884\u68c0', en: 'Preview' },
-    mergeChooseTarget: { zh: '\u8bf7\u9009\u62e9\u8981\u5408\u5e76\u5230\u7684\u76ee\u6807\u79df\u6237\u3002', en: 'Choose target tenant to merge into.' },
-    mergeConfirm: { zh: '\u786e\u8ba4\u5c06\u79df\u6237 {source} \u7684\u6570\u636e\u5408\u5e76\u5230 {target} \u5417\uff1f\u5408\u5e76\u540e\u6e90\u79df\u6237\u4f1a\u88ab\u6807\u8bb0\u5220\u9664\u3002', en: 'Merge tenant {source} into {target}? The source tenant will be marked deleted after merge.' },
-    mergeConfirmDefault: { zh: '\u786e\u8ba4\u5c06\u9ed8\u8ba4\u79df\u6237 {source} \u7684\u6570\u636e\u5408\u5e76\u5230 {target} \u5417\uff1f\u9ed8\u8ba4\u79df\u6237\u4e0d\u4f1a\u88ab\u5220\u9664\uff0c\u4f46\u6570\u636e\u4f1a\u8fc1\u79fb\u5230\u76ee\u6807\u79df\u6237\u3002', en: 'Merge default tenant {source} into {target}? Default tenant will not be deleted, but its data will move to the target tenant.' },
     mergeDone: { zh: '\u79df\u6237\u5408\u5e76\u5b8c\u6210\uff1a\u79fb\u52a8 {moved} \u6761\uff0c\u7cfb\u7edf\u8bbe\u7f6e\u5408\u5e76 {merged} \u9879\u3002', en: 'Tenant merge done: moved {moved} rows and merged {merged} system settings.' },
-    mergePreviewDone: { zh: '\u9884\u68c0\u5b8c\u6210\uff1a\u5c06\u79fb\u52a8 {moved} \u6761\uff0c\u7cfb\u7edf\u8bbe\u7f6e\u5408\u5e76 {merged} \u9879\u3002', en: 'Preview done: would move {moved} rows and merge {merged} system settings.' },
     mergeFailed: { zh: '\u79df\u6237\u5408\u5e76\u5931\u8d25: {error}', en: 'Tenant merge failed: {error}' },
+    mergeDialogTitle: { zh: '\u5408\u5e76\u79df\u6237', en: 'Merge Tenant' },
+    mergeSource: { zh: '\u6e90\u79df\u6237\uff08\u6570\u636e\u5c06\u88ab\u79fb\u51fa\uff09', en: 'Source tenant (data moves out)' },
+    mergeTarget: { zh: '\u5408\u5e76\u5230\u76ee\u6807\u79df\u6237', en: 'Merge into target' },
+    mergeWarnDelete: { zh: '\u26a0 \u5408\u5e76\u540e\u6e90\u79df\u6237\u4f1a\u88ab\u6807\u8bb0\u4e3a\u5df2\u5220\u9664\uff0c\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\u3002', en: '\u26a0 The source tenant is marked deleted after merge. This cannot be undone.' },
+    mergeWarnKeepDefault: { zh: '\u26a0 \u9ed8\u8ba4\u79df\u6237\u672c\u8eab\u4e0d\u4f1a\u88ab\u5220\u9664\uff0c\u4f46\u5176\u4e2d\u7684\u6570\u636e\u4f1a\u5e76\u5165\u76ee\u6807\u79df\u6237\u3002', en: '\u26a0 The default tenant itself stays, but its data moves into the target tenant.' },
+    mergeNeedPreview: { zh: '\u8bf7\u5148\u8fd0\u884c\u9884\u68c0\uff0c\u786e\u8ba4\u8fc1\u79fb\u660e\u7ec6\u540e\u518d\u5408\u5e76\u3002', en: 'Run a preview first to review what will move before merging.' },
+    mergeConfirmBtn: { zh: '\u786e\u8ba4\u5408\u5e76', en: 'Confirm Merge' },
+    mergeBusy: { zh: '\u5904\u7406\u4e2d\u2026', en: 'Working\u2026' },
+    mergeClose: { zh: '\u5173\u95ed', en: 'Close' },
+    mergeNoTargets: { zh: '\u6ca1\u6709\u53ef\u5408\u5e76\u7684\u76ee\u6807\u79df\u6237\u3002', en: 'No eligible target tenants.' },
+    mergeColTable: { zh: '\u6570\u636e\u8868', en: 'Table' },
+    mergeColSource: { zh: '\u6e90\u884c\u6570', en: 'Source' },
+    mergeColMoved: { zh: '\u79fb\u52a8', en: 'Moved' },
+    mergeColMerged: { zh: '\u5408\u5e76', en: 'Merged' },
+    mergeNoData: { zh: '\u6ca1\u6709\u9700\u8981\u5408\u5e76\u7684\u6570\u636e\u3002', en: 'Nothing to merge.' },
+    mergeMovedStat: { zh: '\u5171\u79fb\u52a8 {moved} \u884c', en: '{moved} rows moved' },
+    mergeMergedStat: { zh: '\u5408\u5e76 {merged} \u9879\u8bbe\u7f6e', en: '{merged} settings merged' },
+    mergeResultPreviewTitle: { zh: '\u9884\u68c0\u7ed3\u679c\uff08\u672a\u5b9e\u9645\u6267\u884c\uff09', en: 'Preview (not applied)' },
+    mergeResultDoneTitle: { zh: '\u5408\u5e76\u5b8c\u6210', en: 'Merge complete' },
     deactivate: { zh: '\u505c\u7528', en: 'Deactivate' },
     reactivate: { zh: '\u542f\u7528', en: 'Reactivate' },
     deleteTenant: { zh: '\u5220\u9664', en: 'Delete' },
@@ -96,6 +112,7 @@
     deleteConfirm: { zh: '\u2757 \u786e\u8ba4\u5220\u9664\u79df\u6237 {tenant} \u5417\uff1f\u6b64\u64cd\u4f5c\u5c06\u6c38\u4e45\u5220\u9664\u8be5\u79df\u6237\u7684\u6240\u6709\u6570\u636e\uff0c\u4e0d\u53ef\u6062\u590d\uff01', en: '\u2757 Permanently delete tenant {tenant}? This will remove ALL tenant data and cannot be undone!' },
     statusUpdated: { zh: '\u79df\u6237\u72b6\u6001\u5df2\u66f4\u65b0\u3002', en: 'Tenant status updated.' },
     statusUpdateFailed: { zh: '\u66f4\u65b0\u79df\u6237\u72b6\u6001\u5931\u8d25: {error}', en: 'Update tenant status failed: {error}' },
+    deleting: { zh: '\u6b63\u5728\u5220\u9664\u79df\u6237\u2026', en: 'Deleting tenant\u2026' },
     deletedDone: { zh: '\u79df\u6237\u5df2\u5220\u9664\u3002', en: 'Tenant deleted.' },
     deleteFailed: { zh: '\u5220\u9664\u79df\u6237\u5931\u8d25: {error}', en: 'Delete tenant failed: {error}' }
   };
@@ -250,8 +267,7 @@
     var statusKey = nextStatus === 'active' ? 'reactivate' : 'deactivate';
     var confirmKey = nextStatus === 'active' ? 'reactivateConfirm' : 'deactivateConfirm';
     var escAttr = function(s) { return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
-    var actions = '<button class="btn-secondary" type="button" onclick="' + escAttr('previewTenantMerge(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')') + '">' + esc(tt('mergeDryRun')) + '</button>'
-      + '<button class="btn-secondary" type="button" onclick="' + escAttr('mergeTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')') + '">' + esc(tt('mergeTenant')) + '</button>';
+    var actions = '<button class="btn-secondary" type="button" onclick="' + escAttr('openTenantMergeDialog(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')') + '">' + esc(tt('mergeTenant')) + '</button>';
     if (!isDefaultTenantID(item.id)) {
       actions += '<button class="btn-ghost" type="button" onclick="' + escAttr('updateTenantStatus(' + JSON.stringify(item.id) + ',' + JSON.stringify(nextStatus) + ',' + JSON.stringify(label) + ',' + JSON.stringify(confirmKey) + ')') + '">' + esc(tt(statusKey)) + '</button>'
         + '<button class="btn-danger" type="button" onclick="' + escAttr('deleteTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')') + '">' + esc(tt('deleteTenant')) + '</button>';
@@ -265,16 +281,6 @@
     return (tenantCache || []).filter(function(item) {
       return item && item.id && item.id !== sourceID && !isReservedTenantID(item.id) && tenantIsActive(item);
     });
-  }
-
-  async function chooseTenantMergeTarget(sourceID) {
-    var options = tenantMergeTargetOptions(sourceID);
-    if (!options.length) return '';
-    var title = tt('mergeChooseTarget');
-    var selectOptions = options.map(function(item) { return { label: tenantOptionLabel(item), value: item.id }; });
-    var index = await showTenantSelectDialog(title, '', selectOptions);
-    if (index < 0 || index >= options.length) return '';
-    return options[index].id;
   }
 
   function tenantMergeTotals(result) {
@@ -486,6 +492,7 @@
       }
       // Render immediately so user sees the tenant list without delay.
       renderTenants(tenantCache);
+      if (typeof global.loadTenantEdgePolicy === 'function') global.loadTenantEdgePolicy();
       // Then fetch authorization data in background and re-render.
       if (!isTenantAdminProfile(profile)) {
         enrichTenantCacheWithAuthorization().then(function() {
@@ -775,59 +782,17 @@
     });
   }
 
-  function showTenantSelectDialog(title, message, options) {
-    return new Promise(function(resolve) {
-      var overlayId = 'tenantSelectDialogOverlay';
-      var existing = global.document.getElementById(overlayId);
-      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
-      var overlay = global.document.createElement('div');
-      overlay.id = overlayId;
-      overlay.className = 'session-modal-overlay show';
-      overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
-      var cancelText = tl('\u53d6\u6d88', 'Cancel');
-      var confirmText = tl('\u786e\u5b9a', 'OK');
-      var optionsHtml = options.map(function(item, index) {
-        return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer"><input type="radio" name="tenantSelectOption" value="' + index + '"' + (index === 0 ? ' checked' : '') + '><span>' + esc(item.label) + '</span></label>';
-      }).join('');
-      overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="tenantSelectDialogTitle" style="width:min(420px,100%);max-height:80vh;overflow:visible;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">'
-        + '<div class="item-title" id="tenantSelectDialogTitle" style="margin-bottom:8px">' + esc(title) + '</div>'
-        + (message ? '<div class="item-meta" style="margin-bottom:12px">' + esc(message) + '</div>' : '')
-        + '<div style="max-height:240px;overflow-y:auto;margin-bottom:12px;padding:4px 0">' + optionsHtml + '</div>'
-        + '<div class="actions" style="justify-content:flex-end;gap:8px">'
-        + '<button type="button" class="btn-ghost" id="tenantSelectCancelBtn">' + esc(cancelText) + '</button>'
-        + '<button type="button" class="btn-primary" id="tenantSelectOkBtn">' + esc(confirmText) + '</button>'
-        + '</div></div>';
-      var done = function(value) { if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay); resolve(value); };
-      global.document.body.appendChild(overlay);
-      if (global.AdminUI && typeof global.AdminUI.bindModalOverlayDismiss === 'function') {
-        global.AdminUI.bindModalOverlayDismiss(overlay, function() { done(-1); });
-      } else {
-        overlay.onclick = function(event) { if (event && event.target === overlay) done(-1); };
-      }
-      var cancel = overlay.querySelector('#tenantSelectCancelBtn');
-      var ok = overlay.querySelector('#tenantSelectOkBtn');
-      if (cancel) cancel.addEventListener('click', function() { done(-1); });
-      if (ok) ok.addEventListener('click', function() {
-        var checked = overlay.querySelector('input[name="tenantSelectOption"]:checked');
-        done(checked ? Number(checked.value) : -1);
-      });
-      overlay.addEventListener('keydown', function(event) {
-        if (event.key === 'Escape') { event.preventDefault(); done(-1); }
-        if (event.key === 'Enter') { event.preventDefault(); if (ok) ok.click(); }
-      });
-    });
-  }
-
   async function deleteTenant(tenantID, label) {
-    if (!tenantID) return;
+    if (!tenantID || tenantDeleteBusy) return;
     var displayName = label || tenantID;
     var password = await showDeleteTenantDialog(tenantID, displayName);
     if (!password) return;
+    tenantDeleteBusy = true;
+    setTenantOutput(tt('deleting'), 'info');
+    var deleted = false;
     try {
       await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID), { method: 'DELETE', body: JSON.stringify({ password: password }) });
-      await loadTenants();
-      await loadLoginTenants();
-      setTenantOutput(tt('deletedDone'), 'success');
+      deleted = true;
     } catch (err) {
       var errMsg = err.message || String(err);
       if (errMsg.indexOf('PASSWORD_INCORRECT') >= 0 || errMsg.indexOf('password') >= 0) {
@@ -836,35 +801,152 @@
         setTenantOutput(tt('deleteFailed', { error: errMsg }), 'error');
       }
     }
+    // Always reload: a slow DELETE can outlive the request (proxy/timeout) while
+    // the server still completes the deletion, so refresh regardless of outcome.
+    try { await loadTenants(); } catch (_) {}
+    try { await loadLoginTenants(); } catch (_) {}
+    tenantDeleteBusy = false;
+    if (deleted) setTenantOutput(tt('deletedDone'), 'success');
   }
 
-  async function runTenantMerge(tenantID, label, dryRun) {
-    if (!tenantID || tenantMergeBusy[tenantID]) return;
-    var targetID = await chooseTenantMergeTarget(tenantID);
-    if (!targetID) return;
-    var target = (tenantCache || []).filter(function(item) { return item && item.id === targetID; })[0] || { id: targetID };
-    var confirmKey = isDefaultTenantID(tenantID) ? 'mergeConfirmDefault' : 'mergeConfirm';
-    if (!dryRun && !(await showTenantConfirmDialog(tt(confirmKey, { source: label || tenantID, target: tenantLabel(target) || targetID }), { title: tl('\u5408\u5e76\u79df\u6237', 'Merge Tenant'), danger: true }))) return;
-    tenantMergeBusy[tenantID] = true;
-    try {
-      var data = await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID) + '/merge', { method: 'POST', body: JSON.stringify({ target_tenant_id: targetID, dry_run: !!dryRun, delete_source: true }) });
-      var totals = tenantMergeTotals(data && data.result || {});
-      if (dryRun) {
-        setTenantOutput(tt('mergePreviewDone', totals), 'info');
-      } else {
-        await loadTenants();
-        await loadLoginTenants();
-        setTenantOutput(tt('mergeDone', totals), 'success');
-      }
-    } catch (err) {
-      setTenantOutput(tt('mergeFailed', { error: err.message || err }), 'error');
-    } finally {
-      delete tenantMergeBusy[tenantID];
+  function tenantMergeTableRows(result) {
+    var tables = result && result.tables || {};
+    var rows = Object.keys(tables).map(function(name) {
+      var t = tables[name] || {};
+      return { name: name, source: Number(t.source_rows) || 0, moved: Number(t.moved_rows) || 0, merged: Number(t.merged_rows) || 0 };
+    });
+    var st = result && result.system_settings || {};
+    rows.push({ name: 'system_settings', source: Number(st.source_keys) || 0, moved: Number(st.moved_keys) || 0, merged: Number(st.merged_keys) || 0 });
+    rows.sort(function(a, b) {
+      var dz = (b.moved + b.merged) - (a.moved + a.merged);
+      if (dz !== 0) return dz;
+      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+    });
+    return rows;
+  }
+
+  function tenantMergeResultHtml(result, title) {
+    var rows = tenantMergeTableRows(result).filter(function(r) { return r.source + r.moved + r.merged > 0; });
+    var totals = tenantMergeTotals(result);
+    var warnings = result && Array.isArray(result.warnings) ? result.warnings : [];
+    var html = '<div class="tenant-merge-result">'
+      + '<div class="tenant-merge-result-title">' + esc(title) + '</div>'
+      + '<div class="tenant-merge-stats"><span class="badge ok">' + esc(tt('mergeMovedStat', totals)) + '</span><span class="badge info">' + esc(tt('mergeMergedStat', totals)) + '</span></div>';
+    if (rows.length) {
+      html += '<table class="tenant-merge-table"><thead><tr><th>' + esc(tt('mergeColTable')) + '</th><th>' + esc(tt('mergeColSource')) + '</th><th>' + esc(tt('mergeColMoved')) + '</th><th>' + esc(tt('mergeColMerged')) + '</th></tr></thead><tbody>'
+        + rows.map(function(r) { return '<tr><td class="mono">' + esc(r.name) + '</td><td>' + r.source + '</td><td>' + r.moved + '</td><td>' + r.merged + '</td></tr>'; }).join('')
+        + '</tbody></table>';
+    } else {
+      html += '<div class="hint">' + esc(tt('mergeNoData')) + '</div>';
     }
+    if (warnings.length) html += '<div class="tenant-merge-warnings">' + warnings.map(function(w) { return '<div>' + esc(w) + '</div>'; }).join('') + '</div>';
+    return html + '</div>';
   }
 
-  function previewTenantMerge(tenantID, label) { runTenantMerge(tenantID, label, true); }
-  function mergeTenant(tenantID, label) { runTenantMerge(tenantID, label, false); }
+  function showTenantMergeDialog(sourceID, displayName) {
+    return new Promise(function(resolve) {
+      var overlayId = 'tenantMergeDialogOverlay';
+      var existing = global.document.getElementById(overlayId);
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      var overlay = global.document.createElement('div');
+      overlay.id = overlayId;
+      overlay.className = 'session-modal-overlay show';
+      overlay.style.cssText = 'z-index:9999;background:rgba(15,23,42,.42);padding:18px';
+      var targets = tenantMergeTargetOptions(sourceID);
+      var warnText = isDefaultTenantID(sourceID) ? tt('mergeWarnKeepDefault') : tt('mergeWarnDelete');
+      var optionsHtml = targets.map(function(item) { return '<option value="' + esc(item.id) + '">' + esc(tenantOptionLabel(item)) + '</option>'; }).join('');
+      var cancelText = tl('\u53d6\u6d88', 'Cancel');
+      overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="tenantMergeDialogTitle" style="width:min(560px,100%);max-height:86vh;overflow-y:auto;border:1px solid var(--border,#d8dee9);border-radius:12px;padding:16px;box-shadow:0 18px 60px rgba(15,23,42,.22)">'
+        + '<div class="item-title" id="tenantMergeDialogTitle" style="margin-bottom:12px;color:var(--danger,#e53935)">' + esc(tt('mergeDialogTitle')) + '</div>'
+        + '<div class="tenant-merge-flow">'
+        + '<div class="tenant-merge-node"><span>' + esc(tt('mergeSource')) + '</span><b>' + esc(displayName) + '</b><code>' + esc(sourceID) + '</code></div>'
+        + '<div class="tenant-merge-arrow" aria-hidden="true">&#8595;</div>'
+        + '<div class="tenant-merge-node"><span>' + esc(tt('mergeTarget')) + '</span><select id="tenantMergeTargetSelect"' + (targets.length ? '' : ' disabled') + '>' + optionsHtml + '</select></div>'
+        + '</div>'
+        + '<div class="tenant-merge-warn">' + esc(warnText) + '</div>'
+        + (targets.length ? '' : '<div class="hint" style="margin-bottom:12px">' + esc(tt('mergeNoTargets')) + '</div>')
+        + '<div id="tenantMergeResult"></div>'
+        + '<div class="hint" id="tenantMergeHint" style="margin-bottom:8px">' + esc(targets.length ? tt('mergeNeedPreview') : '') + '</div>'
+        + '<div class="actions" style="justify-content:flex-end;gap:8px">'
+        + '<button type="button" class="btn-ghost" id="tenantMergeCancelBtn">' + esc(cancelText) + '</button>'
+        + '<button type="button" class="btn-secondary" id="tenantMergePreviewBtn"' + (targets.length ? '' : ' disabled') + '>' + esc(tt('mergeDryRun')) + '</button>'
+        + '<button type="button" class="btn-danger" id="tenantMergeConfirmBtn" disabled>' + esc(tt('mergeConfirmBtn')) + '</button>'
+        + '</div></div>';
+      var busy = false;
+      var merged = false;
+      var previewedTarget = '';
+      var done = function(value) { if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay); resolve(value); };
+      global.document.body.appendChild(overlay);
+      if (global.AdminUI && typeof global.AdminUI.bindModalOverlayDismiss === 'function') {
+        global.AdminUI.bindModalOverlayDismiss(overlay, function() { if (!busy) done(null); });
+      } else {
+        overlay.onclick = function(event) { if (event && event.target === overlay && !busy) done(null); };
+      }
+      var select = overlay.querySelector('#tenantMergeTargetSelect');
+      var result = overlay.querySelector('#tenantMergeResult');
+      var hint = overlay.querySelector('#tenantMergeHint');
+      var cancel = overlay.querySelector('#tenantMergeCancelBtn');
+      var preview = overlay.querySelector('#tenantMergePreviewBtn');
+      var confirm = overlay.querySelector('#tenantMergeConfirmBtn');
+      function syncConfirm() {
+        if (confirm) confirm.disabled = busy || merged || !previewedTarget || !select || select.value !== previewedTarget;
+        if (preview) preview.disabled = busy || merged || !targets.length;
+      }
+      function setBusy(on, btn) {
+        busy = on;
+        if (cancel) cancel.disabled = on;
+        if (select) select.disabled = on || merged || !targets.length;
+        if (btn) btn.textContent = on ? tt('mergeBusy') : (btn === confirm ? tt('mergeConfirmBtn') : tt('mergeDryRun'));
+        syncConfirm();
+      }
+      syncConfirm();
+      if (select && typeof select.focus === 'function') select.focus();
+      if (select) select.addEventListener('change', function() { previewedTarget = ''; if (result) result.innerHTML = ''; syncConfirm(); });
+      if (cancel) cancel.addEventListener('click', function() { if (!busy) done(merged); });
+      if (preview) preview.addEventListener('click', async function() {
+        if (busy || merged || !select || !select.value) return;
+        setBusy(true, preview);
+        try {
+          var data = await global.api('/api/admin/tenants/' + encodeURIComponent(sourceID) + '/merge', { method: 'POST', body: JSON.stringify({ target_tenant_id: select.value, dry_run: true, delete_source: true }) });
+          previewedTarget = select.value;
+          if (result) result.innerHTML = tenantMergeResultHtml(data && data.result || {}, tt('mergeResultPreviewTitle'));
+        } catch (err) {
+          previewedTarget = '';
+          if (result) result.innerHTML = '<div class="tenant-merge-warn">' + esc(err.message || String(err)) + '</div>';
+        }
+        setBusy(false, preview);
+      });
+      if (confirm) confirm.addEventListener('click', async function() {
+        if (busy || merged || !select || !select.value || select.value !== previewedTarget) return;
+        setBusy(true, confirm);
+        try {
+          var data = await global.api('/api/admin/tenants/' + encodeURIComponent(sourceID) + '/merge', { method: 'POST', body: JSON.stringify({ target_tenant_id: select.value, dry_run: false, delete_source: true }) });
+          merged = true;
+          if (result) result.innerHTML = tenantMergeResultHtml(data && data.result || {}, tt('mergeResultDoneTitle'));
+          if (hint) hint.style.display = 'none';
+          if (cancel) cancel.textContent = tt('mergeClose');
+          setTenantOutput(tt('mergeDone', tenantMergeTotals(data && data.result || {})), 'success');
+          try { await loadTenants(); } catch (_) {}
+          try { await loadLoginTenants(); } catch (_) {}
+        } catch (err) {
+          if (result) result.innerHTML = '<div class="tenant-merge-warn">' + esc(err.message || String(err)) + '</div>';
+          try { await loadTenants(); } catch (_) {}
+          try { await loadLoginTenants(); } catch (_) {}
+        }
+        setBusy(false, confirm);
+      });
+      overlay.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape') { event.preventDefault(); if (!busy) done(merged); }
+      });
+    });
+  }
+
+  async function openTenantMergeDialog(tenantID, label) {
+    if (!tenantID || tenantMergeBusy[tenantID]) return;
+    tenantMergeBusy[tenantID] = true;
+    try { await showTenantMergeDialog(tenantID, label || tenantID); }
+    finally { delete tenantMergeBusy[tenantID]; }
+  }
 
   function isTenantAdminProfile(profile) {
     return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
@@ -1007,8 +1089,8 @@
   global.createTenantAdmin = createTenantAdmin;
   global.saveTenantDomains = saveTenantDomains;
   global.setTenantListPage = setTenantListPage;
-  global.previewTenantMerge = previewTenantMerge;
-  global.mergeTenant = mergeTenant;
+  global.openTenantMergeDialog = openTenantMergeDialog;
+  global.mergeTenant = openTenantMergeDialog;
   global.updateTenantStatus = updateTenantStatus;
   global.deleteTenant = deleteTenant;
   applyAdminScopeUI();

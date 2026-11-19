@@ -8,6 +8,19 @@ import (
 	"testing"
 )
 
+func TestPixelRefusalStopsALoginPage(t *testing.T) {
+	step := []Step{{Kind: "click", ID: 12}}
+	if err := PixelRefusal("gedit", "", step); err != nil {
+		t.Fatal(err)
+	}
+	if err := PixelRefusal("gedit", "login_wall", step); err == nil {
+		t.Fatal("a login page accepted a click")
+	}
+	if err := PixelRefusal("gedit", "mfa", step); err == nil {
+		t.Fatal("a verification page accepted a click")
+	}
+}
+
 func TestDesktopBotStructureCases(t *testing.T) {
 	for _, id := range []string{"browser_no_pixel", "dialog_probe_first", "captcha_handoff"} {
 		t.Run(id, func(t *testing.T) {

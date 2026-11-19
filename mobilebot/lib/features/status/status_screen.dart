@@ -11,7 +11,10 @@ import 'package:share_plus/share_plus.dart';
 import '../bots/bot_api.dart';
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
-import '../bots/widgets.dart';
+import '../../core/locale.dart';
+import '../../l10n/gen/app_localizations.dart';
+import '../../core/ui_kit.dart';
+import '../bots/widgets.dart' show runStatusColor;
 
 /// Per-bot work status — 对应 GUI 任务 tab：进行中的 run + 最近任务状态。
 class BotStatusScreen extends ConsumerWidget {
@@ -23,12 +26,18 @@ class BotStatusScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final api = ref.watch(botApiProvider);
     return Scaffold(
-      appBar: AppBar(title: Text('${bot.title} · 任务状态')),
+      appBar: AppBar(title: Text(context.S.botStatusTitle(bot.title))),
       body: api == null
-          ? const Center(child: Text('未登录'))
+          ? Center(child: Text(context.S.notSignedIn))
           : RefreshIndicator(
-              onRefresh: () async =>
-                  ref.invalidate(_botStatusProvider(bot.id)),
+              onRefresh: () async {
+                ref.invalidate(_botStatusProvider(bot.id));
+                try {
+                  await ref.read(_botStatusProvider(bot.id).future);
+                } on Object {
+                  // Error state renders via data.when(error:).
+                }
+              },
               child: _BotStatusBody(bot: bot, api: api),
             ),
     );
@@ -36,16 +45,18 @@ class BotStatusScreen extends ConsumerWidget {
 }
 
 final _botStatusProvider = FutureProvider.autoDispose
-    .family<({List<ActiveRun> runs, List<DesktopTaskStatus> tasks}), String>(
-        (ref, botId) async {
-  final api = ref.watch(botApiProvider);
-  if (api == null) {
-    return (runs: const <ActiveRun>[], tasks: const <DesktopTaskStatus>[]);
-  }
-  final runs = await api.activeRuns(botId);
-  final tasks = await api.taskStatuses(botId);
-  return (runs: runs, tasks: tasks);
-});
+    .family<({List<ActiveRun> runs, List<DesktopTaskStatus> tasks}), String>((
+      ref,
+      botId,
+    ) async {
+      final api = ref.watch(botApiProvider);
+      if (api == null) {
+        return (runs: const <ActiveRun>[], tasks: const <DesktopTaskStatus>[]);
+      }
+      final runsFuture = api.activeRuns(botId);
+      final tasksFuture = api.taskStatuses(botId);
+      return (runs: await runsFuture, tasks: await tasksFuture);
+    });
 
 class _BotStatusBody extends ConsumerWidget {
   final Bot bot;
@@ -57,24 +68,29 @@ class _BotStatusBody extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final data = ref.watch(_botStatusProvider(bot.id));
     return data.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
+      loading: () => const SkeletonList(itemCount: 3),
       error: (error, _) => ListView(
         children: [
           const SizedBox(height: 120),
-          Center(child: Text(failureMessage(error))),
+          EmptyState(
+            icon: Icons.cloud_off,
+            title: failureMessage(error),
+            action: FilledButton.tonal(
+              onPressed: () => ref.invalidate(_botStatusProvider(bot.id)),
+              child: Text(context.S.retry),
+            ),
+          ),
         ],
       ),
       data: (status) => ListView(
         padding: const EdgeInsets.all(12),
         children: [
-          _SectionTitle('进行中（${status.runs.length}）'),
-          if (status.runs.isEmpty)
-            const _EmptyHint('没有正在运行的任务'),
-          for (final run in status.runs)
-            _ActiveRunCard(bot: bot, run: run),
+          SectionHeader(title: context.S.stRunningCount(status.runs.length)),
+          if (status.runs.isEmpty) _MutedHint(context.S.stNoRunningTasks),
+          for (final run in status.runs) _ActiveRunCard(bot: bot, run: run),
           const SizedBox(height: 20),
-          _SectionTitle('最近任务（${status.tasks.length}）'),
-          if (status.tasks.isEmpty) const _EmptyHint('暂无任务记录'),
+          SectionHeader(title: context.S.stRecentCount(status.tasks.length)),
+          if (status.tasks.isEmpty) _MutedHint(context.S.stNoTaskHistory),
           for (final task in status.tasks) _TaskStatusCard(task: task),
         ],
       ),
@@ -82,32 +98,20 @@ class _BotStatusBody extends ConsumerWidget {
   }
 }
 
-class _SectionTitle extends StatelessWidget {
+/// Inline muted hint — the light placeholder for sections that need one
+/// sentence, not the full EmptyState treatment.
+class _MutedHint extends StatelessWidget {
   final String text;
 
-  const _SectionTitle(this.text);
+  const _MutedHint(this.text);
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 8, top: 4),
-        child: Text(text, style: Theme.of(context).textTheme.titleSmall),
-      );
-}
-
-class _EmptyHint extends StatelessWidget {
-  final String text;
-
-  const _EmptyHint(this.text);
-
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        child: Center(
-          child: Text(text,
-              style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant)),
-        ),
-      );
+    padding: const EdgeInsets.symmetric(vertical: 12),
+    child: Center(
+      child: Text(text, style: Theme.of(context).textTheme.bodySmall),
+    ),
+  );
 }
 
 class _ActiveRunCard extends ConsumerWidget {
@@ -137,7 +141,7 @@ class _ActiveRunCard extends ConsumerWidget {
                   ),
                 ),
                 StateChip(
-                  label: run.paused ? '已暂停' : run.status,
+                  label: run.paused ? context.S.stPaused : run.status,
                   color: color,
                 ),
               ],
@@ -145,28 +149,38 @@ class _ActiveRunCard extends ConsumerWidget {
             if (run.step.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
-                child: Text('当前：${run.step}',
-                    style: theme.textTheme.bodySmall),
+                child: Text(
+                  context.S.stCurrent(run.step),
+                  style: theme.textTheme.bodySmall,
+                ),
               ),
             if (run.nextStep.isNotEmpty)
-              Text('下一步：${run.nextStep}',
-                  style: theme.textTheme.bodySmall),
+              Text(
+                context.S.stNext(run.nextStep),
+                style: theme.textTheme.bodySmall,
+              ),
             if (run.startedAt != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
-                  '开始于 ${DateFormat('MM-dd HH:mm').format(run.startedAt!.toLocal())}',
+                  context.S.stStartedAt(
+                    DateFormat('MM-dd HH:mm').format(run.startedAt!.toLocal()),
+                  ),
                   style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant),
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             if (run.waitingForUser)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
-                child: Text('等待你的操作',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.tertiary,
-                        fontWeight: FontWeight.w600)),
+                child: Text(
+                  context.S.stWaitingForYou,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.tertiary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             const SizedBox(height: 8),
             Row(
@@ -174,18 +188,20 @@ class _ActiveRunCard extends ConsumerWidget {
               children: [
                 if (run.paused)
                   TextButton(
-                    onPressed: () => _act(ref, 'resume'),
-                    child: const Text('继续'),
+                    onPressed: () => _act(context, ref, 'resume'),
+                    child: Text(context.S.resume),
                   )
                 else
                   TextButton(
-                    onPressed: () => _act(ref, 'pause'),
-                    child: const Text('暂停'),
+                    onPressed: () => _act(context, ref, 'pause'),
+                    child: Text(context.S.pause),
                   ),
                 TextButton(
-                  onPressed: () => _act(ref, 'cancel'),
-                  child: Text('停止',
-                      style: TextStyle(color: theme.colorScheme.error)),
+                  onPressed: () => _confirmCancel(context, ref),
+                  child: Text(
+                    context.S.stop,
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
                 ),
               ],
             ),
@@ -195,7 +211,34 @@ class _ActiveRunCard extends ConsumerWidget {
     );
   }
 
-  Future<void> _act(WidgetRef ref, String op) async {
+  /// Stopping a run kills work in progress on the bot's computer — confirm
+  /// first, same as the remote task screen does.
+  Future<void> _confirmCancel(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(context.S.stStopRunTitle),
+        content: Text(
+          context.S.stStopRunBody(run.task.isNotEmpty ? run.task : run.runId),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(context.S.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(context.S.stop),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && context.mounted) {
+      await _act(context, ref, 'cancel');
+    }
+  }
+
+  Future<void> _act(BuildContext context, WidgetRef ref, String op) async {
     final api = ref.read(botApiProvider);
     if (api == null) return;
     try {
@@ -208,8 +251,12 @@ class _ActiveRunCard extends ConsumerWidget {
           await api.cancelRun(bot.id, run.runId);
       }
       ref.invalidate(_botStatusProvider(bot.id));
-    } on Object {
-      // 状态页会在下次刷新时反映真实结果
+    } on Object catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
+      }
     }
   }
 }
@@ -247,8 +294,10 @@ class _TaskStatusCard extends StatelessWidget {
             if (task.whereWeAre.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
-                child: Text('进展：${task.whereWeAre}',
-                    style: theme.textTheme.bodySmall),
+                child: Text(
+                  context.S.stProgress(task.whereWeAre),
+                  style: theme.textTheme.bodySmall,
+                ),
               ),
             if (task.text.isNotEmpty)
               Padding(
@@ -258,15 +307,20 @@ class _TaskStatusCard extends StatelessWidget {
             if (task.error.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text('错误：${task.error}',
-                    style: theme.textTheme.bodySmall
-                        ?.copyWith(color: theme.colorScheme.error)),
+                child: Text(
+                  context.S.stError(task.error),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
               ),
             if (task.openProblems.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text('遗留：${task.openProblems}',
-                    style: theme.textTheme.bodySmall),
+                child: Text(
+                  context.S.stLeftover(task.openProblems),
+                  style: theme.textTheme.bodySmall,
+                ),
               ),
           ],
         ),
@@ -291,10 +345,10 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
     final bots = ref.watch(botsProvider).bots;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('工作状态'),
+        title: Text(context.S.stTitle),
         actions: [
           IconButton(
-            tooltip: 'Bot 房间',
+            tooltip: context.S.stBotRooms,
             icon: const Icon(Icons.groups_outlined),
             onPressed: () => context.push('/rooms'),
           ),
@@ -304,25 +358,39 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: SegmentedButton<int>(
-              segments: const [
-                ButtonSegment(value: 0, label: Text('任务')),
-                ButtonSegment(value: 1, label: Text('动态')),
-              ],
-              selected: {_segment},
-              onSelectionChanged: (v) => setState(() => _segment = v.first),
+            child: SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<int>(
+                segments: [
+                  ButtonSegment(
+                    value: 0,
+                    label: Text(context.S.stSegmentTasks),
+                  ),
+                  ButtonSegment(value: 1, label: Text(context.S.stSegmentFeed)),
+                ],
+                selected: {_segment},
+                onSelectionChanged: (v) => setState(() => _segment = v.first),
+              ),
             ),
           ),
           Expanded(
             child: RefreshIndicator(
               onRefresh: () async {
-                if (_segment == 0) {
-                  ref.invalidate(_globalStatusProvider);
-                  await ref.read(botsProvider.notifier).refresh();
-                } else {
-                  ref.invalidate(_feedProvider);
-                  ref.invalidate(_saidProvider);
-                  ref.invalidate(_assignmentsProvider);
+                try {
+                  if (_segment == 0) {
+                    ref.invalidate(_globalStatusProvider);
+                    await Future.wait([
+                      ref.read(_globalStatusProvider.future),
+                      ref.read(botsProvider.notifier).refresh(),
+                    ]);
+                  } else {
+                    ref.invalidate(_feedProvider);
+                    ref.invalidate(_saidProvider);
+                    ref.invalidate(_assignmentsProvider);
+                    await ref.read(_feedProvider.future);
+                  }
+                } on Object {
+                  // Error state renders via data.when(error:).
                 }
               },
               child: _segment == 0
@@ -336,8 +404,7 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
   }
 }
 
-final _feedProvider =
-    FutureProvider.autoDispose<List<FeedNote>>((ref) async {
+final _feedProvider = FutureProvider.autoDispose<List<FeedNote>>((ref) async {
   final api = ref.watch(botApiProvider);
   if (api == null) return const [];
   final items = await api.feed(all: true);
@@ -353,8 +420,7 @@ final _feedProvider =
   return items;
 });
 
-final _saidProvider =
-    FutureProvider.autoDispose<List<SaidNote>>((ref) async {
+final _saidProvider = FutureProvider.autoDispose<List<SaidNote>>((ref) async {
   final api = ref.watch(botApiProvider);
   if (api == null) return const [];
   try {
@@ -364,8 +430,9 @@ final _saidProvider =
   }
 });
 
-final _assignmentsProvider =
-    FutureProvider.autoDispose<List<BotAssignment>>((ref) async {
+final _assignmentsProvider = FutureProvider.autoDispose<List<BotAssignment>>((
+  ref,
+) async {
   final api = ref.watch(botApiProvider);
   if (api == null) return const [];
   try {
@@ -377,20 +444,42 @@ final _assignmentsProvider =
 
 /// Download a file a bot attached to a feed/mail note and hand it to the
 /// system share sheet (`GET /bots/{id}/inbox/{noteID}/files/{name}`).
+/// Failures surface as a snackbar instead of an unhandled async error.
 Future<void> shareInboxFile(
-    WidgetRef ref, String botId, String noteId, String name) async {
+  BuildContext context,
+  WidgetRef ref,
+  String botId,
+  String noteId,
+  String name,
+) async {
   final api = ref.read(botApiProvider);
   if (api == null) return;
-  final file = await api.inboxFile(botId, noteId, name);
-  if (file.data.isEmpty) return;
-  final bytes = base64Decode(file.data);
-  final dir = await getTemporaryDirectory();
-  final safe = file.displayName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-  final path = '${dir.path}${Platform.pathSeparator}$safe';
-  await File(path).writeAsBytes(bytes, flush: true);
-  await SharePlus.instance.share(ShareParams(
-    files: [XFile(path, mimeType: file.mime.isNotEmpty ? file.mime : null)],
-  ));
+  try {
+    final file = await api.inboxFile(botId, noteId, name);
+    if (file.data.isEmpty || !context.mounted) return;
+    final bytes = base64Decode(file.data);
+    final dir = await getTemporaryDirectory();
+    // Keep the requested artifact name (extension included): a server-side
+    // empty name would otherwise save an extensionless "文件" the system
+    // share sheet cannot open.
+    final rawName = file.name.trim().isNotEmpty ? file.name.trim() : name;
+    final safe = rawName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final path = '${dir.path}${Platform.pathSeparator}$safe';
+    await File(path).writeAsBytes(bytes, flush: true);
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(path, mimeType: file.mime.isNotEmpty ? file.mime : null)],
+      ),
+    );
+  } on Object catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(context.S.stDownloadFailed(failureMessage(error))),
+        ),
+      );
+    }
+  }
 }
 
 class _FeedBody extends ConsumerWidget {
@@ -398,23 +487,23 @@ class _FeedBody extends ConsumerWidget {
 
   const _FeedBody({required this.bots});
 
-  String _botName(String id) {
+  String _botName(String id, AppLocalizations S) {
     for (final bot in bots) {
       if (bot.id == id) return bot.title;
     }
-    return id.isEmpty ? '系统' : id;
+    return id.isEmpty ? S.stSystemName : id;
   }
 
-  String _kindLabel(FeedNote note) {
-    if (note.kind == 'delegate') return '委托';
+  String _kindLabel(FeedNote note, AppLocalizations S) {
+    if (note.kind == 'delegate') return S.stKindDelegate;
     return switch (note.topic) {
-      'done' => '完成',
-      'blocked' => '受阻',
-      'progress' => '进展',
-      'question' => '提问',
-      'artifact' => '产物',
-      'reply' => '回复',
-      _ => note.kind.isNotEmpty ? note.kind : '动态',
+      'done' => S.stKindDone,
+      'blocked' => S.stKindBlocked,
+      'progress' => S.stKindProgress,
+      'question' => S.stKindQuestion,
+      'artifact' => S.stKindArtifact,
+      'reply' => S.stKindReply,
+      _ => note.kind.isNotEmpty ? note.kind : S.stKindDefault,
     };
   }
 
@@ -425,68 +514,71 @@ class _FeedBody extends ConsumerWidget {
         ref.watch(_assignmentsProvider).value ?? const <BotAssignment>[];
     final said = ref.watch(_saidProvider).value ?? const <SaidNote>[];
     return data.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
+      loading: () => const SkeletonList(itemCount: 4),
       error: (error, _) => ListView(
         children: [
           const SizedBox(height: 120),
-          Center(child: Text(failureMessage(error))),
+          EmptyState(
+            icon: Icons.cloud_off,
+            title: failureMessage(error),
+            action: FilledButton.tonal(
+              onPressed: () => ref.invalidate(_feedProvider),
+              child: Text(context.S.retry),
+            ),
+          ),
         ],
       ),
       data: (notes) {
         final feedIds = {for (final n in notes) n.id};
         final direct = [
-          for (final s in said) if (!feedIds.contains(s.id)) s,
+          for (final s in said)
+            if (!feedIds.contains(s.id)) s,
         ];
         if (notes.isEmpty && assignments.isEmpty && direct.isEmpty) {
           return ListView(
             children: [
               const SizedBox(height: 140),
-              Icon(Icons.forum_outlined,
-                  size: 56, color: Colors.grey.shade400),
-              const SizedBox(height: 16),
-              const Center(child: Text('还没有 Bot 之间的动态')),
+              EmptyState(
+                icon: Icons.forum_outlined,
+                title: context.S.stEmptyFeed,
+              ),
             ],
           );
         }
         final theme = Theme.of(context);
+        final S = context.S;
         final openAssignments = [
           for (final a in assignments)
             if (a.state != 'completed' && a.state != 'failed') a,
         ];
         final saidCount = direct.isEmpty ? 0 : direct.length + 1;
-        final assignCount =
-            openAssignments.isEmpty ? 0 : openAssignments.length + 1;
+        final assignCount = openAssignments.isEmpty
+            ? 0
+            : openAssignments.length + 1;
         return ListView.builder(
           padding: const EdgeInsets.all(12),
           itemCount: notes.length + saidCount + assignCount,
           itemBuilder: (context, index) {
             if (direct.isNotEmpty) {
               if (index == 0) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text('Bot 对你说',
-                      style: theme.textTheme.titleSmall),
-                );
+                return SectionHeader(title: context.S.stSaidHeader);
               }
               if (index <= direct.length) {
                 return _SaidCard(
                   note: direct[direct.length - index],
-                  botName: _botName,
+                  botName: (id) => _botName(id, S),
                 );
               }
               index -= saidCount;
             }
             if (openAssignments.isNotEmpty) {
               if (index == 0) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text('协作任务', style: theme.textTheme.titleSmall),
-                );
+                return SectionHeader(title: context.S.stCollabHeader);
               }
               if (index <= openAssignments.length) {
                 return _AssignmentCard(
                   assignment: openAssignments[index - 1],
-                  botName: _botName,
+                  botName: (id) => _botName(id, S),
                 );
               }
               index -= assignCount;
@@ -496,8 +588,7 @@ class _FeedBody extends ConsumerWidget {
               child: ListTile(
                 leading: CircleAvatar(
                   radius: 16,
-                  backgroundColor:
-                      theme.colorScheme.secondaryContainer,
+                  backgroundColor: theme.colorScheme.secondaryContainer,
                   child: Icon(
                     note.kind == 'delegate'
                         ? Icons.send_outlined
@@ -507,16 +598,20 @@ class _FeedBody extends ConsumerWidget {
                   ),
                 ),
                 title: Text(
-                  '${_botName(note.from)} → ${_botName(note.target)}',
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(fontWeight: FontWeight.w600),
+                  '${_botName(note.from, S)} → ${_botName(note.target, S)}',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (note.text.isNotEmpty)
-                      Text(note.text,
-                          maxLines: 3, overflow: TextOverflow.ellipsis),
+                      LinkifiedText(
+                        note.text,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     if (note.artifacts.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
@@ -526,26 +621,32 @@ class _FeedBody extends ConsumerWidget {
                           children: [
                             for (final name in note.artifacts)
                               ActionChip(
-                                avatar:
-                                    const Icon(Icons.attach_file, size: 14),
-                                label: Text(name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis),
+                                avatar: const Icon(Icons.attach_file, size: 14),
+                                label: Text(
+                                  name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
                                 onPressed: () => shareInboxFile(
-                                    ref, note.target, note.id, name),
+                                  context,
+                                  ref,
+                                  note.target,
+                                  note.id,
+                                  name,
+                                ),
                               ),
                           ],
                         ),
                       ),
                     Text(
                       [
-                        _kindLabel(note),
+                        _kindLabel(note, S),
                         if (note.at != null)
-                          DateFormat('MM-dd HH:mm')
-                              .format(note.at!.toLocal()),
+                          DateFormat('MM-dd HH:mm').format(note.at!.toLocal()),
                       ].join(' · '),
                       style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant),
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ),
@@ -561,17 +662,18 @@ class _FeedBody extends ConsumerWidget {
                           } on Object catch (error) {
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                      content:
-                                          Text(failureMessage(error))));
+                                SnackBar(content: Text(failureMessage(error))),
+                              );
                             }
                           }
                         },
-                        child: const Text('启动'),
+                        child: Text(context.S.start),
                       )
                     : null,
                 onTap: note.target.isNotEmpty
-                    ? () => context.push('/bot/${note.target}')
+                    ? () => context.push(
+                        '/bot/${Uri.encodeComponent(note.target)}',
+                      )
                     : null,
               ),
             );
@@ -597,16 +699,26 @@ class _SaidCard extends ConsumerWidget {
         leading: CircleAvatar(
           radius: 16,
           backgroundColor: theme.colorScheme.tertiaryContainer,
-          child: Icon(Icons.record_voice_over_outlined,
-              size: 16, color: theme.colorScheme.onTertiaryContainer),
+          child: Icon(
+            Icons.record_voice_over_outlined,
+            size: 16,
+            color: theme.colorScheme.onTertiaryContainer,
+          ),
         ),
-        title: Text(botName(note.from),
-            style: theme.textTheme.bodyMedium
-                ?.copyWith(fontWeight: FontWeight.w600)),
+        title: Text(
+          botName(note.from),
+          style: theme.textTheme.bodyMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(note.text, maxLines: 3, overflow: TextOverflow.ellipsis),
+            LinkifiedText(
+              note.text,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
             if (note.files.isNotEmpty)
               Wrap(
                 spacing: 6,
@@ -614,10 +726,18 @@ class _SaidCard extends ConsumerWidget {
                   for (final name in note.files)
                     ActionChip(
                       avatar: const Icon(Icons.attach_file, size: 14),
-                      label: Text(name,
-                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                      label: Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                       onPressed: () => shareInboxFile(
-                          ref, note.from, note.id, name),
+                        context,
+                        ref,
+                        note.from,
+                        note.id,
+                        name,
+                      ),
                     ),
                 ],
               ),
@@ -625,13 +745,14 @@ class _SaidCard extends ConsumerWidget {
               Text(
                 DateFormat('MM-dd HH:mm').format(note.createdAt!.toLocal()),
                 style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant),
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
           ],
         ),
         isThreeLine: true,
         onTap: note.from.isNotEmpty
-            ? () => context.push('/bot/${note.from}')
+            ? () => context.push('/bot/${Uri.encodeComponent(note.from)}')
             : null,
       ),
     );
@@ -645,18 +766,18 @@ class _AssignmentCard extends StatelessWidget {
 
   const _AssignmentCard({required this.assignment, required this.botName});
 
-  String _stateLabel(String state) => switch (state) {
-        'queued' => '排队中',
-        'running' => '进行中',
-        'held' => '已挂起',
-        'waiting_human' => '等待人工',
-        'blocked' => '受阻',
-        'completed' => '已完成',
-        'failed' => '失败',
-        'accepted' => '已验收',
-        'returned' => '已退回',
-        _ => state,
-      };
+  String _stateLabel(String state, AppLocalizations S) => switch (state) {
+    'queued' => S.stStateQueued,
+    'running' => S.stStateRunning,
+    'held' => S.stStateHeld,
+    'waiting_human' => S.stStateWaitingHuman,
+    'blocked' => S.stStateBlocked,
+    'completed' => S.stStateCompleted,
+    'failed' => S.stStateFailed,
+    'accepted' => S.stStateAccepted,
+    'returned' => S.stStateReturned,
+    _ => state,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -667,13 +788,17 @@ class _AssignmentCard extends StatelessWidget {
         leading: CircleAvatar(
           radius: 16,
           backgroundColor: theme.colorScheme.primaryContainer,
-          child: Icon(Icons.assignment_outlined,
-              size: 16, color: theme.colorScheme.onPrimaryContainer),
+          child: Icon(
+            Icons.assignment_outlined,
+            size: 16,
+            color: theme.colorScheme.onPrimaryContainer,
+          ),
         ),
         title: Text(
           '${botName(a.ownerBot)} → ${botName(a.targetBot)}',
-          style: theme.textTheme.bodyMedium
-              ?.copyWith(fontWeight: FontWeight.w600),
+          style: theme.textTheme.bodyMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -681,71 +806,91 @@ class _AssignmentCard extends StatelessWidget {
             if (a.task.isNotEmpty)
               Text(a.task, maxLines: 2, overflow: TextOverflow.ellipsis),
             if (a.openQuestion.isNotEmpty)
-              Text('问题：${a.openQuestion}',
-                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              Text(
+                context.S.stQuestion(a.openQuestion),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             Text(
               [
-                _stateLabel(a.state),
+                _stateLabel(a.state, context.S),
                 if (a.createdAt != null)
                   DateFormat('MM-dd HH:mm').format(a.createdAt!.toLocal()),
               ].join(' · '),
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
         isThreeLine: true,
         onTap: a.targetBot.isNotEmpty
-            ? () => context.push('/bot/${a.targetBot}')
+            ? () => context.push('/bot/${Uri.encodeComponent(a.targetBot)}')
             : null,
       ),
     );
   }
 }
 
-final _globalStatusProvider = FutureProvider.autoDispose<
-    ({List<ActiveRun> runs, List<PendingDelivery> deliveries})>((ref) async {
-  final api = ref.watch(botApiProvider);
-  final bots = ref.watch(botsProvider).bots;
-  if (api == null) {
-    return (
-      runs: const <ActiveRun>[],
-      deliveries: const <PendingDelivery>[],
-    );
-  }
-  final runs = <ActiveRun>[];
-  for (final bot in bots) {
-    try {
-      runs.addAll(await api.activeRuns(bot.id));
-    } on Object {
-      // One failing bot must not hide the others.
-    }
-  }
-  final deliveries = await api.pendingDeliveries();
-  return (runs: runs, deliveries: deliveries);
-});
+final _globalStatusProvider =
+    FutureProvider.autoDispose<
+      ({List<ActiveRun> runs, List<PendingDelivery> deliveries})
+    >((ref) async {
+      final api = ref.watch(botApiProvider);
+      final bots = ref.watch(botsProvider).bots;
+      if (api == null) {
+        return (
+          runs: const <ActiveRun>[],
+          deliveries: const <PendingDelivery>[],
+        );
+      }
+      // Fan out across bots in parallel — a serial loop makes the page
+      // wait on N round trips even though the runs are independent. One
+      // failing bot (or a pending-pull outage) must not hide the rest.
+      final runListsFuture = Future.wait([
+        for (final bot in bots)
+          api.activeRuns(bot.id).onError((_, _) => const <ActiveRun>[]),
+      ]);
+      final deliveriesFuture = api.pendingDeliveries().onError(
+        (_, _) => const <PendingDelivery>[],
+      );
+      final runLists = await runListsFuture;
+      final deliveries = await deliveriesFuture;
+      return (
+        runs: [for (final list in runLists) ...list],
+        deliveries: deliveries,
+      );
+    });
 
 class _GlobalStatusBody extends ConsumerWidget {
   final List<Bot> bots;
 
   const _GlobalStatusBody({required this.bots});
 
-  String _botName(String id) {
+  String _botName(String id, AppLocalizations S) {
     for (final bot in bots) {
       if (bot.id == id) return bot.title;
     }
-    return id;
+    return id.isEmpty ? S.stSystemName : id;
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final data = ref.watch(_globalStatusProvider);
+    final S = context.S;
     return data.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
+      loading: () => const SkeletonList(itemCount: 4),
       error: (error, _) => ListView(
         children: [
           const SizedBox(height: 120),
-          Center(child: Text(failureMessage(error))),
+          EmptyState(
+            icon: Icons.cloud_off,
+            title: failureMessage(error),
+            action: FilledButton.tonal(
+              onPressed: () => ref.invalidate(_globalStatusProvider),
+              child: Text(context.S.retry),
+            ),
+          ),
         ],
       ),
       data: (status) {
@@ -753,17 +898,17 @@ class _GlobalStatusBody extends ConsumerWidget {
           return ListView(
             children: [
               const SizedBox(height: 140),
-              Icon(Icons.check_circle_outline,
-                  size: 56, color: Colors.grey.shade400),
-              const SizedBox(height: 16),
-              const Center(child: Text('一切安静，没有进行中的任务')),
+              EmptyState(
+                icon: Icons.check_circle_outline,
+                title: context.S.stAllQuiet,
+              ),
             ],
           );
         }
         return ListView(
           padding: const EdgeInsets.all(12),
           children: [
-            _SectionTitle('进行中（${status.runs.length}）'),
+            SectionHeader(title: context.S.stRunningCount(status.runs.length)),
             for (final run in status.runs)
               Card(
                 child: ListTile(
@@ -771,8 +916,9 @@ class _GlobalStatusBody extends ConsumerWidget {
                     width: 18,
                     height: 18,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: runStatusColor(run.status)),
+                      strokeWidth: 2,
+                      color: runStatusColor(run.status),
+                    ),
                   ),
                   title: Text(
                     run.task.isNotEmpty ? run.task : run.runId,
@@ -780,33 +926,41 @@ class _GlobalStatusBody extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${_botName(run.botId)} · ${run.step.isNotEmpty ? run.step : run.status}',
+                    '${_botName(run.botId, S)} · ${run.step.isNotEmpty ? run.step : run.status}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => context.push('/bot/${run.botId}/status'),
+                  onTap: () => context.push(
+                    '/bot/${Uri.encodeComponent(run.botId)}/status',
+                  ),
                 ),
               ),
             const SizedBox(height: 20),
-            _SectionTitle('待查看结果（${status.deliveries.length}）'),
+            SectionHeader(
+              title: context.S.stDeliveriesCount(status.deliveries.length),
+            ),
             for (final delivery in status.deliveries)
               Card(
                 child: ListTile(
-                  leading: Icon(Icons.mark_chat_unread_outlined,
-                      color: runStatusColor(delivery.status)),
+                  leading: Icon(
+                    Icons.mark_chat_unread_outlined,
+                    color: runStatusColor(delivery.status),
+                  ),
                   title: Text(
                     delivery.task.isNotEmpty ? delivery.task : delivery.runId,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${_botName(delivery.botId)} · ${delivery.reply.text.isNotEmpty ? delivery.reply.text : delivery.status}',
+                    '${_botName(delivery.botId, S)} · ${delivery.reply.text.isNotEmpty ? delivery.reply.text : delivery.status}',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => context.push('/bot/${delivery.botId}'),
+                  onTap: () => context.push(
+                    '/bot/${Uri.encodeComponent(delivery.botId)}',
+                  ),
                 ),
               ),
           ],

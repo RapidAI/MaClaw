@@ -12,7 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
-func TestBotBashDoesNotOpenAMissingScreen(t *testing.T) {
+func TestBotBashLeavesAMissingScreenClosed(t *testing.T) {
 	bot := desktop.BotDesktopUser("alice", "bot_a")
 	var mu sync.Mutex
 	ensured := 0
@@ -103,6 +103,25 @@ func TestNeedsScreenOpensAndSetsDisplay(t *testing.T) {
 	req := commandPayload(t, shells[0])
 	if req.Display != ":21" {
 		t.Fatalf("display=%q", req.Display)
+	}
+}
+
+func TestSuccessfulDisplayProbeIsNotScreenRequired(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	svc := &Service{
+		Run: func(_ context.Context, args ...string) (string, error) {
+			if strings.Contains(strings.Join(args, " "), " sentinel ") {
+				return `{"x_client":true}`, nil
+			}
+			return "", nil
+		},
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			return "DISPLAY=:80\n", 0, nil
+		},
+	}
+	text, err := svc.Bash(context.Background(), "tenant", bot, "echo $DISPLAY")
+	if err != nil || !strings.Contains(text, "DISPLAY=:80") {
+		t.Fatalf("a successful probe must not ask for a screen: text=%q err=%v", text, err)
 	}
 }
 

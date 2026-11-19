@@ -398,6 +398,26 @@ func TestAppConfigDefaultTrueBoolRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAppConfigShowAITraceEntryDefaultsOff(t *testing.T) {
+	if AppConfigDefaults().ShowAITraceEntry {
+		t.Fatal("ShowAITraceEntry = true, want off for a new install")
+	}
+	var missing AppConfig
+	if err := json.Unmarshal([]byte(`{}`), &missing); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if missing.ShowAITraceEntry {
+		t.Fatal("missing show_ai_trace_entry should stay off")
+	}
+	var disabled AppConfig
+	if err := json.Unmarshal([]byte(`{"show_ai_trace_entry":false}`), &disabled); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if disabled.ShowAITraceEntry {
+		t.Fatal("explicit false show_ai_trace_entry should stay off")
+	}
+}
+
 func TestAppConfigGossipAutoPublishDefault(t *testing.T) {
 	var cfg AppConfig
 	if err := json.Unmarshal([]byte(`{}`), &cfg); err != nil {

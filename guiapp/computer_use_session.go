@@ -118,6 +118,7 @@ func cuSessionLocked() *computeruse.Session {
 	globalComputerUse.sessionUsed[owner] = time.Now()
 	evictComputerUseSessionsLocked(owner)
 	sess.SetWindowResolver(accessibility.WindowTitleAtPoint)
+	sess.SetWindowIDResolver(accessibility.WindowIDAtPoint)
 	if computerUseTargetAppsFn != nil {
 		if apps, ok := computerUseTargetAppsFn(); ok {
 			sess.SetTargetApps(apps)

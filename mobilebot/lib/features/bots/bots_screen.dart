@@ -1,9 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'bot_models.dart';
 import 'bots_controller.dart';
+import '../../core/locale.dart';
+import '../../core/ui_kit.dart';
 import 'widgets.dart';
 
 /// Bot 列表页 — 对应桌面 GUI 的 bot 侧栏。
@@ -15,7 +20,7 @@ class BotsScreen extends ConsumerWidget {
     final state = ref.watch(botsProvider);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('我的 Bot'),
+        title: Text(context.S.botsTitle),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -26,7 +31,7 @@ class BotsScreen extends ConsumerWidget {
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showCreateSheet(context, ref),
         icon: const Icon(Icons.add),
-        label: const Text('新建 Bot'),
+        label: Text(context.S.botsCreate),
       ),
       body: RefreshIndicator(
         onRefresh: () => ref.read(botsProvider.notifier).refresh(),
@@ -37,24 +42,17 @@ class BotsScreen extends ConsumerWidget {
 
   Widget _buildBody(BuildContext context, WidgetRef ref, BotsState state) {
     if (state.loading && state.bots.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return const SkeletonList(itemCount: 5);
     }
     if (!state.access.enabled) {
       return ListView(
         children: [
           const SizedBox(height: 120),
-          Icon(Icons.block, size: 56, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                state.access.message.isNotEmpty
-                    ? state.access.message
-                    : '当前账号未开通 Bot 功能',
-                textAlign: TextAlign.center,
-              ),
-            ),
+          EmptyState(
+            icon: Icons.block,
+            title: state.access.message.isNotEmpty
+                ? state.access.message
+                : context.S.botsAccessDisabled,
           ),
         ],
       );
@@ -63,14 +61,12 @@ class BotsScreen extends ConsumerWidget {
       return ListView(
         children: [
           const SizedBox(height: 120),
-          Icon(Icons.cloud_off, size: 56, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          Center(child: Text(state.error)),
-          const SizedBox(height: 12),
-          Center(
-            child: FilledButton.tonal(
+          EmptyState(
+            icon: Icons.cloud_off,
+            title: state.error,
+            action: FilledButton.tonal(
               onPressed: () => ref.read(botsProvider.notifier).refresh(),
-              child: const Text('重试'),
+              child: Text(context.S.botsRetry),
             ),
           ),
         ],
@@ -80,10 +76,11 @@ class BotsScreen extends ConsumerWidget {
       return ListView(
         children: [
           const SizedBox(height: 140),
-          Icon(Icons.smart_toy_outlined,
-              size: 64, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          const Center(child: Text('还没有 Bot，点击右下角创建一个')),
+          EmptyState(
+            icon: Icons.smart_toy_outlined,
+            title: context.S.botsEmptyTitle,
+            hint: context.S.botsEmptyHint,
+          ),
         ],
       );
     }
@@ -93,7 +90,7 @@ class BotsScreen extends ConsumerWidget {
       separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
         final bot = state.bots[index];
-        return _BotCard(bot: bot);
+        return _BotCard(bot: bot, index: index);
       },
     );
   }
@@ -106,86 +103,116 @@ class BotsScreen extends ConsumerWidget {
       builder: (context) => const CreateBotSheet(),
     );
     if (created != null && context.mounted) {
-      context.push('/bot/${created.id}');
+      context.push('/bot/${Uri.encodeComponent(created.id)}');
     }
   }
 }
 
 class _BotCard extends ConsumerWidget {
   final Bot bot;
+  final int index;
 
-  const _BotCard({required this.bot});
+  const _BotCard({required this.bot, this.index = 0});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: () => context.push('/bot/${bot.id}'),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              BotAvatar(bot: bot, radius: 24),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () => context.push('/bot/${Uri.encodeComponent(bot.id)}'),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                children: [
+                  BotAvatar(bot: bot, radius: 24),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Flexible(
-                          child: Text(bot.title,
-                              style: theme.textTheme.titleMedium,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                        ),
-                        if (bot.primary)
-                          Container(
-                            margin: const EdgeInsets.only(left: 6),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 5, vertical: 1),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primaryContainer,
-                              borderRadius: BorderRadius.circular(4),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                bot.title,
+                                style: theme.textTheme.titleMedium,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
-                            child: Text('主',
-                                style: theme.textTheme.labelSmall?.copyWith(
-                                    color: theme
-                                        .colorScheme.onPrimaryContainer)),
+                            if (bot.primary)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 6),
+                                child: AppBadge(
+                                  label: context.S.botsPrimaryMark,
+                                  color: theme.colorScheme.primary,
+                                  icon: Icons.star_rounded,
+                                ),
+                              ),
+                            Padding(
+                              padding: const EdgeInsets.only(left: 6),
+                              child: AppBadge(
+                                label: desktopModeMark(
+                                  bot.desktopMode,
+                                  context.S,
+                                ),
+                                color: botHasComputer(bot.desktopMode)
+                                    ? theme.colorScheme.primary
+                                    : theme.colorScheme.onSurfaceVariant,
+                                icon: botHasComputer(bot.desktopMode)
+                                    ? Icons.computer_rounded
+                                    : null,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (bot.description.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              bot.description,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                       ],
                     ),
-                    if (bot.description.isNotEmpty)
-                      Text(
-                        bot.description,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              Column(
-                children: [
-                  IconButton(
-                    tooltip: '电脑画面',
-                    icon: const Icon(Icons.desktop_windows_outlined),
-                    onPressed: () => context.push('/bot/${bot.id}/desktop'),
                   ),
-                  Icon(Icons.chevron_right,
-                      color: theme.colorScheme.onSurfaceVariant),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (botHasComputer(bot.desktopMode))
+                        IconButton(
+                          tooltip: context.S.botsDesktopTooltip,
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.desktop_windows_outlined),
+                          onPressed: () => context.push(
+                            '/bot/${Uri.encodeComponent(bot.id)}/desktop',
+                          ),
+                        ),
+                      Icon(
+                        Icons.chevron_right,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ],
+                  ),
                 ],
               ),
-            ],
+            ),
           ),
-        ),
-      ),
-    );
+        )
+        .animate(delay: (index * 45).ms)
+        .fadeIn(duration: 260.ms)
+        .slideY(
+          begin: 0.03,
+          end: 0,
+          duration: 260.ms,
+          curve: Curves.easeOutCubic,
+        );
   }
 }
 
@@ -204,6 +231,19 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
   String _error = '';
   String _color = botColors[0];
   String _shape = 'blob';
+  bool _needsComputer = true;
+
+  @override
+  void initState() {
+    super.initState();
+    // Refresh so the computer switch locks against the live grant, not the
+    // quota cached by the last list fetch (mirrors the desktop dialog, which
+    // re-reads the quota when it opens).
+    unawaited(
+      Future.microtask(() => ref.read(botsProvider.notifier).refresh()),
+    );
+    _nameCtrl.addListener(() => setState(() {}));
+  }
 
   @override
   void dispose() {
@@ -215,30 +255,38 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
+    final quota = ref.watch(botsProvider).quota;
+    final locked = quota.exhausted || quota.computerMissing;
+    final needsComputer = locked ? false : _needsComputer;
+    final taken = botNameTaken(_nameCtrl.text, ref.watch(botsProvider).bots);
+    final quotaLabel = quota.label(context.S);
+    return SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottom),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('新建 Bot', style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            context.S.botsCreate,
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
           const SizedBox(height: 16),
           TextField(
             controller: _nameCtrl,
             autofocus: true,
-            decoration: const InputDecoration(
-              labelText: '名称',
-              hintText: '给 Bot 起个名字',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: context.S.botsNameLabel,
+              hintText: context.S.botsNameHint,
+              border: const OutlineInputBorder(),
             ),
             maxLength: 40,
           ),
           TextField(
             controller: _descCtrl,
-            decoration: const InputDecoration(
-              labelText: '简介（可选）',
-              hintText: '这个 Bot 帮你做什么',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: context.S.botsDescLabel,
+              hintText: context.S.botsDescHint,
+              border: const OutlineInputBorder(),
             ),
             maxLines: 2,
           ),
@@ -260,15 +308,17 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
                         shape: BoxShape.circle,
                         border: _color == hex
                             ? Border.all(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface,
-                                width: 2)
+                                color: Theme.of(context).colorScheme.onSurface,
+                                width: 2,
+                              )
                             : null,
                       ),
                       child: _color == hex
-                          ? const Icon(Icons.check,
-                              color: Colors.white, size: 14)
+                          ? const Icon(
+                              Icons.check,
+                              color: Colors.white,
+                              size: 14,
+                            )
                           : null,
                     ),
                   ),
@@ -276,33 +326,55 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
             ),
           ),
           const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(context.S.botsNeedsComputer),
+            subtitle: quota.computerMissing
+                ? Text(context.S.botsNoComputerQuota)
+                : (quotaLabel.isEmpty ? null : Text(quotaLabel)),
+            value: needsComputer,
+            onChanged: locked || _saving
+                ? null
+                : (value) => setState(() => _needsComputer = value),
+          ),
           Wrap(
             spacing: 6,
             children: [
               for (final shape in botShapes)
                 ChoiceChip(
-                  label: Text(botShapeLabel(shape),
-                      style: const TextStyle(fontSize: 12)),
+                  label: Text(botShapeLabel(shape, context.S)),
                   visualDensity: VisualDensity.compact,
                   selected: _shape == shape,
                   onSelected: (_) => setState(() => _shape = shape),
                 ),
             ],
           ),
+          if (taken)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                context.S.botsNameTaken,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
           if (_error.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
-              child: Text(_error,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              child: Text(
+                _error,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ),
           const SizedBox(height: 8),
           FilledButton(
-            onPressed: _saving ? null : _create,
+            onPressed: _saving || taken ? null : _create,
             child: _saving
                 ? const SizedBox(
-                    width: 20, height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('创建'),
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Text(context.S.botsCreateAction),
           ),
         ],
       ),
@@ -312,7 +384,7 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
   Future<void> _create() async {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty) {
-      setState(() => _error = '请输入名称');
+      setState(() => _error = context.S.botsNameRequired);
       return;
     }
     setState(() {
@@ -322,8 +394,16 @@ class _CreateBotSheetState extends ConsumerState<CreateBotSheet> {
     try {
       final bot = await ref
           .read(botsProvider.notifier)
-          .create(name, _descCtrl.text.trim(),
-              color: _color, shape: _shape);
+          .create(
+            name,
+            _descCtrl.text.trim(),
+            color: _color,
+            shape: _shape,
+            needsComputer:
+                _needsComputer &&
+                !ref.read(botsProvider).quota.exhausted &&
+                !ref.read(botsProvider).quota.computerMissing,
+          );
       if (mounted) Navigator.of(context).pop(bot);
     } on Object catch (error) {
       if (mounted) {

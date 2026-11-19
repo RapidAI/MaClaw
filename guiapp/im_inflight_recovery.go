@@ -41,7 +41,7 @@ func isInFlightRecoverySlot(slot *agent.UnfinishedTaskSlot) bool {
 // genuinely new topic is still handled downstream by the unified task-context
 // classifier.
 func applyAppExitAutoResumeDecision(msg IMUserMessage, trimmed string, slot *agent.UnfinishedTaskSlot, decision explicitTaskSlotDecision) explicitTaskSlotDecision {
-	if slot == nil || !slot.Source.IsAppExit() || !unfinishedSlotNeedsDecision(slot) || msg.IsBackground {
+	if slot == nil || !slot.Source.IsAppExit() || !unfinishedSlotNeedsDecision(slot) || msg.IsBackground || repoMaintHostTurn(trimmed, msg.Platform) {
 		return decision
 	}
 	if decision.ResumeSlotID != "" || decision.StartNewTask || decision.DismissSlotID != "" || isSlotActionCommand(trimmed) {

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -117,17 +118,27 @@ type Service struct {
 	previewDBMu        sync.Mutex
 	previewDBLastWrite map[string]time.Time
 
-	// deltaDebounce tracks pending debounce timers per session. Multiple
-	// preview deltas arriving within deltaDebounceInterval are merged into
-	// a single emit to reduce WebSocket broadcast frequency.
-	deltaDebounceMu     sync.Mutex
-	deltaDebounceBuf    map[string]*SessionPreviewDelta // session_id -> merged delta
-	deltaDebounceTimers map[string]*time.Timer          // session_id -> flush timer
+	// deltaDebounce merges follow-up preview lines into the open window.
+	// The first line of a quiet window is emitted immediately. Later lines
+	// share that window and do not restart it, so a steady stream still
+	// publishes instead of waiting for a gap. deltaDebounceFlushing is set
+	// only while a merged batch is being emitted, so a line that arrives
+	// mid-emit joins the next window instead of publishing ahead of it.
+	deltaDebounceMu       sync.Mutex
+	deltaDebounceCond     *sync.Cond
+	deltaDebounceBuf      map[string]*SessionPreviewDelta // session_id -> merged follow-ups
+	deltaDebounceTimers   map[string]*time.Timer          // session_id -> flush timer
+	deltaDebounceFlushing map[string]bool
+	deltaDebounceClosing  map[string]bool // session_id -> close is emitting the tail
 }
 
-// deltaDebounceInterval is the window within which consecutive preview deltas
-// for the same session are merged before being emitted to listeners.
-const deltaDebounceInterval = 150 * time.Millisecond
+// deltaDebounceInterval is the viewer merge window for session.preview_delta.
+// It is the same length as the desktop preview burst (guiapp
+// previewBurstInterval). Both start when the first line of a quiet session
+// is published, and neither is restarted by later lines, so the two holds
+// overlap. A longer window here waits out a second period after the desktop
+// frame has already left. Tests may widen it; the production value stays 16ms.
+var deltaDebounceInterval = 16 * time.Millisecond
 
 // previewDBWriteInterval is the minimum interval between DB writes for
 // preview text of the same session. Viewers receive real-time updates via
@@ -159,14 +170,17 @@ const staleSessionTTL = 5 * time.Minute
 
 func NewService(cache *ShardedCache, sessions store.SessionRepository) *Service {
 	svc := &Service{
-		cache:               cache,
-		sessions:            sessions,
-		listeners:           map[int]Listener{},
-		stopReap:            make(chan struct{}),
-		previewDBLastWrite:  make(map[string]time.Time),
-		deltaDebounceBuf:    make(map[string]*SessionPreviewDelta),
-		deltaDebounceTimers: make(map[string]*time.Timer),
+		cache:                 cache,
+		sessions:              sessions,
+		listeners:             map[int]Listener{},
+		stopReap:              make(chan struct{}),
+		previewDBLastWrite:    make(map[string]time.Time),
+		deltaDebounceBuf:      make(map[string]*SessionPreviewDelta),
+		deltaDebounceTimers:   make(map[string]*time.Timer),
+		deltaDebounceFlushing: make(map[string]bool),
+		deltaDebounceClosing:  make(map[string]bool),
 	}
+	svc.deltaDebounceCond = sync.NewCond(&svc.deltaDebounceMu)
 	go svc.reapLoop()
 	return svc
 }
@@ -356,50 +370,145 @@ func (s *Service) OnSessionPreviewDelta(ctx context.Context, machineID, userID, 
 
 		if shouldWriteDB {
 			if err := s.sessions.UpdatePreview(ctx, sessionID, previewSnapshot, outputSeq, now); err != nil {
-				return err
+				// The cache already has the line. A persist failure must not
+				// skip the broadcast, and must not keep the throttle stamp:
+				// the next delta retries. Returning the error here also
+				// tears down the machine websocket.
+				s.previewDBMu.Lock()
+				if s.previewDBLastWrite[sessionID].Equal(now) {
+					if lastWrite.IsZero() {
+						delete(s.previewDBLastWrite, sessionID)
+					} else {
+						s.previewDBLastWrite[sessionID] = lastWrite
+					}
+				}
+				s.previewDBMu.Unlock()
+				log.Printf("[session] preview persist failed session_id=%s: %v", sessionID, err)
 			}
 		}
 	}
 
-	// Debounce: merge consecutive deltas within deltaDebounceInterval before
-	// emitting to listeners. This reduces WebSocket broadcast frequency for
-	// high-throughput sessions (e.g. streaming build output).
-	s.deltaDebounceMu.Lock()
-	existing := s.deltaDebounceBuf[sessionID]
-	if existing == nil {
-		merged := delta
-		s.deltaDebounceBuf[sessionID] = &merged
-	} else {
-		existing.AppendLines = append(existing.AppendLines, delta.AppendLines...)
-		existing.OutputSeq = delta.OutputSeq
-		existing.UpdatedAt = delta.UpdatedAt
+	// An empty append still updated the cache above. It must not open or
+	// restart a broadcast window.
+	if len(delta.AppendLines) == 0 {
+		return nil
 	}
-	// Reset or start the debounce timer.
-	if t, ok := s.deltaDebounceTimers[sessionID]; ok {
-		t.Stop()
+
+	// Publish the first line of a quiet window now. Follow-ups merge until
+	// that window ends. Do not restart the timer: the desktop already sends
+	// about once per interval, and resetting here held session.preview_delta
+	// until the tool paused.
+	s.deltaDebounceMu.Lock()
+	_, armed := s.deltaDebounceTimers[sessionID]
+	pending := s.deltaDebounceBuf[sessionID] != nil
+	flushing := s.deltaDebounceFlushing[sessionID]
+	closing := s.deltaDebounceClosing[sessionID]
+	var lead *SessionPreviewDelta
+	if !armed && !pending && !flushing && !closing {
+		s.armPreviewDebounceLocked(sessionID, machineID, userID)
+		cloned := clonePreviewDelta(delta)
+		lead = &cloned
+	} else {
+		s.mergePreviewDeltaLocked(sessionID, delta)
+		// A flush already in flight, or a close emitting its tail, owns the
+		// order. Arming now would let this line pass that batch. The flush
+		// arms the next window when it finishes and finds lines waiting;
+		// close drains the buffer itself.
+		if !flushing && !closing {
+			if _, ok := s.deltaDebounceTimers[sessionID]; !ok {
+				s.armPreviewDebounceLocked(sessionID, machineID, userID)
+			}
+		}
+	}
+	s.deltaDebounceMu.Unlock()
+	if lead != nil {
+		s.emitPreviewDelta(sessionID, machineID, userID, lead)
+	}
+	return nil
+}
+
+func (s *Service) armPreviewDebounceLocked(sessionID, machineID, userID string) {
+	if _, ok := s.deltaDebounceTimers[sessionID]; ok {
+		return
 	}
 	s.deltaDebounceTimers[sessionID] = time.AfterFunc(deltaDebounceInterval, func() {
 		s.flushDebouncedDelta(sessionID, machineID, userID)
 	})
-	s.deltaDebounceMu.Unlock()
-
-	return nil
 }
 
-// flushDebouncedDelta emits the merged preview delta for a session and clears
-// the debounce buffer.
+func (s *Service) mergePreviewDeltaLocked(sessionID string, delta SessionPreviewDelta) {
+	cloned := clonePreviewDelta(delta)
+	existing := s.deltaDebounceBuf[sessionID]
+	if existing == nil {
+		s.deltaDebounceBuf[sessionID] = &cloned
+		return
+	}
+	existing.AppendLines = append(existing.AppendLines, cloned.AppendLines...)
+	existing.OutputSeq = cloned.OutputSeq
+	existing.UpdatedAt = cloned.UpdatedAt
+}
+
+func clonePreviewDelta(delta SessionPreviewDelta) SessionPreviewDelta {
+	if len(delta.AppendLines) > 0 {
+		delta.AppendLines = append([]string(nil), delta.AppendLines...)
+	}
+	return delta
+}
+
+func appendPreviewDelta(base, extra *SessionPreviewDelta) *SessionPreviewDelta {
+	if extra == nil || len(extra.AppendLines) == 0 {
+		return base
+	}
+	cloned := clonePreviewDelta(*extra)
+	if base == nil || len(base.AppendLines) == 0 {
+		return &cloned
+	}
+	cloned.AppendLines = append(append([]string(nil), base.AppendLines...), cloned.AppendLines...)
+	return &cloned
+}
+
+// flushDebouncedDelta emits the merged follow-up preview lines for a session.
 func (s *Service) flushDebouncedDelta(sessionID, machineID, userID string) {
-	tenantID := s.eventTenantID(sessionID, context.Background())
 	s.deltaDebounceMu.Lock()
 	merged := s.deltaDebounceBuf[sessionID]
 	delete(s.deltaDebounceBuf, sessionID)
 	delete(s.deltaDebounceTimers, sessionID)
-	s.deltaDebounceMu.Unlock()
-
 	if merged == nil || len(merged.AppendLines) == 0 {
+		s.deltaDebounceMu.Unlock()
 		return
 	}
-	s.emit(Event{Type: "session.preview_delta", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, PreviewDelta: merged})
+	// Keep the quiet window closed until emit returns. A line that arrives
+	// now merges into the next window instead of publishing first.
+	s.deltaDebounceFlushing[sessionID] = true
+	s.deltaDebounceMu.Unlock()
+
+	defer s.finishPreviewFlush(sessionID, machineID, userID)
+	s.emitPreviewDelta(sessionID, machineID, userID, merged)
+}
+
+// finishPreviewFlush clears the in-flight mark and wakes a close that is
+// waiting for this batch. A panic in a listener must still clear the mark,
+// or later lines for the session stay buffered with no timer.
+func (s *Service) finishPreviewFlush(sessionID, machineID, userID string) {
+	s.deltaDebounceMu.Lock()
+	defer s.deltaDebounceMu.Unlock()
+	s.deltaDebounceFlushing[sessionID] = false
+	if s.deltaDebounceBuf[sessionID] == nil {
+		delete(s.deltaDebounceFlushing, sessionID)
+	} else if !s.deltaDebounceClosing[sessionID] {
+		if _, armed := s.deltaDebounceTimers[sessionID]; !armed {
+			s.armPreviewDebounceLocked(sessionID, machineID, userID)
+		}
+	}
+	s.deltaDebounceCond.Broadcast()
+}
+
+func (s *Service) emitPreviewDelta(sessionID, machineID, userID string, delta *SessionPreviewDelta) {
+	if delta == nil || len(delta.AppendLines) == 0 {
+		return
+	}
+	tenantID := s.eventTenantID(sessionID, context.Background())
+	s.emit(Event{Type: "session.preview_delta", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, PreviewDelta: delta})
 }
 
 func (s *Service) OnSessionImportantEvent(ctx context.Context, machineID, userID, sessionID string, event ImportantEvent) error {
@@ -448,37 +557,69 @@ func (s *Service) OnSessionClosed(ctx context.Context, machineID, userID, sessio
 		outputSeq = entry.Preview.OutputSeq
 	})
 
+	var closeErr error
 	if s.sessions != nil {
 		// Flush any throttled preview data to DB before closing
 		if len(previewLines) > 0 {
 			_ = s.sessions.UpdatePreview(ctx, sessionID, strings.Join(previewLines, "\n"), outputSeq, endedAt)
 		}
-		if err := s.sessions.Close(ctx, sessionID, exitCode, endedAt, status); err != nil {
-			return err
-		}
+		closeErr = s.sessions.Close(ctx, sessionID, exitCode, endedAt, status)
 	}
 
-	// Clean up throttle tracking
+	// Clean up throttle tracking. Viewer delivery still runs when the row
+	// update failed: the desktop already stopped the session.
 	s.previewDBMu.Lock()
 	delete(s.previewDBLastWrite, sessionID)
 	s.previewDBMu.Unlock()
 
 	// Flush any pending debounced delta before emitting the close event,
-	// so listeners see the final output before the session ends.
+	// so listeners see the final output before the session ends. An emit
+	// already in flight has to finish first. Lines that arrive while that
+	// tail is being sent stay buffered until it returns, then go out before
+	// session.closed.
 	s.deltaDebounceMu.Lock()
-	pendingDelta := s.deltaDebounceBuf[sessionID]
-	delete(s.deltaDebounceBuf, sessionID)
-	if t, ok := s.deltaDebounceTimers[sessionID]; ok {
-		t.Stop()
-		delete(s.deltaDebounceTimers, sessionID)
+	if s.deltaDebounceClosing == nil {
+		s.deltaDebounceClosing = make(map[string]bool)
+	}
+	s.deltaDebounceClosing[sessionID] = true
+	var pendingDelta *SessionPreviewDelta
+	for {
+		if extra := s.deltaDebounceBuf[sessionID]; extra != nil && len(extra.AppendLines) > 0 {
+			pendingDelta = appendPreviewDelta(pendingDelta, extra)
+			delete(s.deltaDebounceBuf, sessionID)
+		}
+		if t, ok := s.deltaDebounceTimers[sessionID]; ok {
+			t.Stop()
+			delete(s.deltaDebounceTimers, sessionID)
+		}
+		if s.deltaDebounceFlushing[sessionID] {
+			s.deltaDebounceCond.Wait()
+			continue
+		}
+		if pendingDelta != nil && len(pendingDelta.AppendLines) > 0 {
+			batch := pendingDelta
+			pendingDelta = nil
+			s.deltaDebounceMu.Unlock()
+			s.emit(Event{Type: "session.preview_delta", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, PreviewDelta: batch})
+			s.deltaDebounceMu.Lock()
+			continue
+		}
+		break
 	}
 	s.deltaDebounceMu.Unlock()
-	if pendingDelta != nil && len(pendingDelta.AppendLines) > 0 {
-		s.emit(Event{Type: "session.preview_delta", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, PreviewDelta: pendingDelta})
-	}
 
 	s.emit(Event{Type: "session.closed", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, Payload: payload})
-	return nil
+
+	s.deltaDebounceMu.Lock()
+	delete(s.deltaDebounceClosing, sessionID)
+	if extra := s.deltaDebounceBuf[sessionID]; extra != nil && len(extra.AppendLines) > 0 {
+		delete(s.deltaDebounceBuf, sessionID)
+		s.deltaDebounceMu.Unlock()
+		s.emit(Event{Type: "session.preview_delta", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, PreviewDelta: extra})
+	} else {
+		s.deltaDebounceMu.Unlock()
+	}
+	return closeErr
 }
 
 // OnSessionImage dispatches a session.image event to listeners. The image

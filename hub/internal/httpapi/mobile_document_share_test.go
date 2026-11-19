@@ -437,6 +437,86 @@ func TestCompanionDocumentShareUpdateChangesAudienceAndExpiry(t *testing.T) {
 	}
 }
 
+func TestCompanionDocumentShareUpdateRevokesOldPrivateAccess(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "rotate-owner@example.com")
+	readerToken, _ := issueViewerToken(t, identity, "rotate-reader@example.com")
+	created := postCompanionShareAs(t, identity, ownerToken, "public", "", "0", "", "rotate.pdf", []byte("%PDF-rotate"))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	token := companionShareTokenFrom(t, created)
+	importShare := func(identityToken, password, grant string) *httptest.ResponseRecorder {
+		body := `{}`
+		if password != "" {
+			body = `{"password":` + strconv.Quote(password) + `}`
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/import", strings.NewReader(body))
+		req.SetPathValue("token", token)
+		if identityToken != "" {
+			req.Header.Set("Authorization", "Bearer "+identityToken)
+		}
+		if grant != "" {
+			req.Header.Set(companionReaderGrantHeader, grant)
+		}
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareImportHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+	patch := func(password string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/shares/"+token, strings.NewReader(`{"visibility":"private","password":`+strconv.Quote(password)+`}`))
+		req.SetPathValue("token", token)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareUpdateHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := importShare(readerToken, "", ""); rec.Code != http.StatusOK {
+		t.Fatalf("account import: %d %s", rec.Code, rec.Body.String())
+	}
+	guest := importShare("", "", "")
+	guestGrant := guest.Header().Get(companionReaderGrantHeader)
+	if guest.Code != http.StatusOK || !companionReaderGrantPattern.MatchString(guestGrant) {
+		t.Fatalf("guest import: %d grant=%q %s", guest.Code, guestGrant, guest.Body.String())
+	}
+
+	if rec := patch("first-secret"); rec.Code != http.StatusOK {
+		t.Fatalf("make private: %d %s", rec.Code, rec.Body.String())
+	}
+	share, _ := companionShareByToken(token)
+	if len(share.Importers) != 0 || len(share.Guests) != 0 {
+		t.Fatalf("old credentials survived public to private: %#v", share)
+	}
+	if rec := importShare(readerToken, "", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old account import bypassed new password: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := importShare("", "", guestGrant); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old guest grant bypassed new password: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := importShare(readerToken, "first-secret", ""); rec.Code != http.StatusOK {
+		t.Fatalf("account reimport: %d %s", rec.Code, rec.Body.String())
+	}
+	guest = importShare("", "first-secret", guestGrant)
+	newGuestGrant := guest.Header().Get(companionReaderGrantHeader)
+	if guest.Code != http.StatusOK || !companionReaderGrantPattern.MatchString(newGuestGrant) {
+		t.Fatalf("guest reimport: %d grant=%q %s", guest.Code, newGuestGrant, guest.Body.String())
+	}
+
+	if rec := patch("replacement-secret"); rec.Code != http.StatusOK {
+		t.Fatalf("rotate password: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := importShare(readerToken, "first-secret", ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("old account password still worked: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := importShare("", "first-secret", newGuestGrant); rec.Code != http.StatusForbidden {
+		t.Fatalf("old guest password still worked: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := importShare(readerToken, "replacement-secret", ""); rec.Code != http.StatusOK {
+		t.Fatalf("replacement password: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func postCompanionShareWithFields(t *testing.T, identity *auth.IdentityService, identityToken, visibility, password, target, days, filename, contentHash string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer

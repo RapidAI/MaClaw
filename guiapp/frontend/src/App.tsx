@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatBubblesEnabled, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess, GetCurrentLanguage, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
@@ -21,6 +21,7 @@ import type { SessionTab } from './components/remote/sessionTabs';
 import { startVisibleInterval } from './utils/visibleInterval';
 import { useStartupPerfProbe, reportInteractiveAfterPaint } from './components/startup/useStartupPerfProbe';
 import { defaultModelForQuickProvider } from './components/ai/assistantQuickModelMenu';
+import { setViewerReducerEnabled } from './components/ai/viewerReducerFlag';
 import { useAudioDevices } from './components/ai/useAudioDevices';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
@@ -159,6 +160,7 @@ import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
 import { getAssistantDarkScheme, readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
 import { getAssistantLightScheme, readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
 import { chatFontFamilySaveQueue, chatFontSizeSaveQueue, clampChatFontSize, codingFontFamilySaveQueue, decideConfigChatFontSize, decideConfigFontFamily, normalizeAssistantFontId, serialNewestHasStarted, snapshotConfirmsDraft } from './components/ai/assistantFonts';
+import { chatBubblesEchoClearsDraft, chatBubblesFromRead, chatBubblesSaveQueue } from './components/ai/chatBubblesSetting';
 import { useAIAssistant, emitDesktopPetState } from './components/ai/useAIAssistant';
 import { START_VOICE_INPUT_EVENT } from './components/ai/useVoiceInput';
 import { useDialog } from './components/CustomDialog';
@@ -168,7 +170,8 @@ import { restoreCloudWorkspaceTasksShared } from './utils/cloudWorkspaceTaskRest
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider, sidebarEditorUsageProfile, sidebarTurnUsageProfile, sumSidebarProfileUsage, sumSidebarProviderProfiles } from './utils/sidebarProviderSelection';
-import { buildSidebarModelOptions } from './utils/sidebarModelOptions';
+import { buildSidebarModelOptions, replaceCachedModelsWithLiveCatalog } from './utils/sidebarModelOptions';
+import { isQoderProvider } from './components/remote/providerLogos';
 import { capabilityBandName, hubOfficialModelAliases, multipliersFromModelItems } from './utils/capabilityModelLabel';
 
 const EMPTY_MODEL_MULTIPLIERS: Record<string, number> = {};
@@ -182,7 +185,7 @@ import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, localizeModelNote, type ProviderEndpoint } from './config/providerCatalog';
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, resolveSettingsTabId, type SettingsTabId, type SettingsTabVisibility } from './config/settingsTabs';
-import { OPEN_SETTINGS_EVENT } from './utils/settingsNavigation';
+import { OPEN_SETTINGS_EVENT, openLLMProviderManagement, type OpenSettingsDetail } from './utils/settingsNavigation';
 import { grantSolo, settingsNavIsSolo, type SoloSettingsTab } from './utils/settingsSolo';
 import { OPEN_FILE_LIBRARY_EVENT } from './utils/fileLibraryNavigation';
 import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNavigation';
@@ -348,7 +351,27 @@ function App() {
     // paint and dominated ~/.maclaw logs (10k+ lines in one session).
     useEffect(() => {
         logStartupTrace('app-render-begin');
-    }, []);    // Bind before the pull. A result that finished while this GUI was offline
+    }, []);
+    // The task panel reduces viewer-event only when the desktop says so.
+    // A missing binding (unit tests) leaves the flag off so raw events still paint.
+    useEffect(() => {
+        const fn = (window as unknown as { go?: { main?: { App?: { ViewerReducerEnabled?: () => unknown } } } }).go?.main?.App?.ViewerReducerEnabled;
+        if (typeof fn !== 'function') return;
+        try {
+            const result = fn();
+            const apply = (on: unknown) => {
+                if (on === true) setViewerReducerEnabled(true);
+            };
+            if (result && typeof (result as Promise<unknown>).then === 'function') {
+                void (result as Promise<unknown>).then(apply).catch(() => undefined);
+            } else {
+                apply(result);
+            }
+        } catch {
+            // vitest has no Wails binding
+        }
+    }, []);
+    // Bind before the pull. A result that finished while this GUI was offline
     // is written into the bot transcript even if the Bots page is not the one
     // on screen, and the same pull when the page opens is a no-op once acked.
     useEffect(() => {
@@ -737,6 +760,7 @@ function App() {
     const [chatFontSize, setChatFontSize] = useState<number>(14);
     const [chatFontFamily, setChatFontFamily] = useState<string>("system");
     const [codingFontFamily, setCodingFontFamily] = useState<string>("system");
+    const [chatBubblesEnabled, setChatBubblesEnabled] = useState(true);
     // Startup hydration reads are tagged with these counters. A user choice or a
     // config-changed payload bumps the matching counter so an earlier read cannot
     // overwrite that newer value. The config-load retry closes the loading shell
@@ -751,6 +775,8 @@ function App() {
     const chatFontSizeDraftRef = useRef<number | null>(null);
     const chatFontFamilyDraftRef = useRef<string | null>(null);
     const codingFontFamilyDraftRef = useRef<string | null>(null);
+    const chatBubblesEpochRef = useRef(0);
+    const chatBubblesDraftRef = useRef<boolean | null>(null);
     const selectChatFontSize = useCallback((value: number | ((current: number) => number)) => {
         assistantFontEpochRef.current.size += 1;
         setChatFontSize(value);
@@ -764,6 +790,10 @@ function App() {
         assistantFontEpochRef.current.coding += 1;
         assistantFontShownRef.current.coding = fontId;
         setCodingFontFamily(fontId);
+    }, []);
+    const selectChatBubblesEnabled = useCallback((enabled: boolean) => {
+        chatBubblesEpochRef.current += 1;
+        setChatBubblesEnabled(enabled);
     }, []);
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
     const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
@@ -979,6 +1009,10 @@ function App() {
     }, [requestOnboarding]);
 
     const [creditGiftLaunch, setCreditGiftLaunch] = useState<{ code: string; seq: number }>({ code: '', seq: 0 });
+    // Increments on every provider-management deep link (agent model menu "add
+    // custom model", bot model settings "添加服务商") so the LLM settings panel
+    // auto-opens provider management (0 = no pending request).
+    const [llmProviderDialogAutoOpenSeq, setLLMProviderDialogAutoOpenSeq] = useState(0);
     useEffect(() => {
         const applyGift = (payload: any) => {
             const code = String(payload?.code || payload?.Code || '').trim();
@@ -1250,11 +1284,14 @@ function App() {
     }, []);
     useEffect(() => {
         const openSettings = (e: Event) => {
-            const detail = (e as CustomEvent<{ tab?: string; hideSettingsNav?: boolean }>).detail;
+            const detail = (e as CustomEvent<Partial<OpenSettingsDetail>>).detail;
             const tab = resolveSettingsTabId(detail?.tab, settingsTabVisibility);
             setNavTabNow('settings');
             selectSettingsTab(tab);
             setSettingsNavSoloTab(grantSolo(tab, detail?.hideSettingsNav === true));
+            if (detail?.autoOpenProviderDialog === true) {
+                setLLMProviderDialogAutoOpenSeq(seq => seq + 1);
+            }
         };
         window.addEventListener(OPEN_SETTINGS_EVENT, openSettings);
         return () => window.removeEventListener(OPEN_SETTINGS_EVENT, openSettings);
@@ -1810,7 +1847,6 @@ function App() {
     // happening instead of leaving the user on a "download complete" screen.
     const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
     const isWindows = /window/i.test(navigator.userAgent);
-    const [hasWindowsTerminal, setHasWindowsTerminal] = useState(false);
     const [lang, setLang] = useState("en");
     useEffect(() => {
         document.documentElement.lang = htmlLang(lang);
@@ -2308,17 +2344,6 @@ function App() {
             setBrandInfoLoaded(true);
         });
 
-        // Detect OS from backend for Windows Terminal check
-        callBackend(() => GetSystemInfo()).then(info => {
-            if (info.os === "windows") {
-                callBackend(() => IsWindowsTerminalAvailable()).then(available => {
-                    setHasWindowsTerminal(available);
-                }).catch(() => {
-                    setHasWindowsTerminal(false);
-                });
-            }
-        }).catch(() => {});
-
         // Environment Check Logic
         const logHandler = (msg: string) => {
             setEnvLogs(prev => [...prev, msg]);
@@ -2579,7 +2604,11 @@ function App() {
             chat: assistantFontEpochRef.current.chat,
             coding: assistantFontEpochRef.current.coding,
         };
-        const applyStartupAssistantFonts = (loaded: { chat_font_size?: number; chat_font_family?: string; coding_font_family?: string } | null | undefined) => {
+        // Same tag as the font reads, including the retry below. A choice or a
+        // config echo while this load is in flight moves the epoch, and the
+        // recovered snapshot must not turn the switch back.
+        const bubbleHydrationEpoch = chatBubblesEpochRef.current;
+        const applyStartupAssistantFonts = (loaded: { chat_font_size?: number; chat_font_family?: string; coding_font_family?: string; chat_bubbles_enabled?: boolean } | null | undefined) => {
             // The retry closes the shell without waiting for GetChatFontSize.
             // Apply the size already on this config, clamped the same way as
             // GetChatFontSize, so the transcript does not stay at 14 until that read returns.
@@ -2614,6 +2643,20 @@ function App() {
                 assistantFontShownRef.current.coding = normalized;
                 setCodingFontFamily(normalized);
             }).catch(() => {});
+            if (chatBubblesEpochRef.current === bubbleHydrationEpoch) {
+                const startupBubbles = chatBubblesFromRead(loaded?.chat_bubbles_enabled, chatBubblesDraftRef.current, bubbleHydrationEpoch, chatBubblesEpochRef.current);
+                if (startupBubbles) {
+                    if (chatBubblesEchoClearsDraft(startupBubbles.enabled, chatBubblesDraftRef.current, serialNewestHasStarted(chatBubblesSaveQueue))) {
+                        chatBubblesDraftRef.current = null;
+                    }
+                    setChatBubblesEnabled(startupBubbles.enabled);
+                }
+                callBackend(() => GetChatBubblesEnabled()).then((on) => {
+                    if (chatBubblesEpochRef.current !== bubbleHydrationEpoch) return;
+                    if (chatBubblesDraftRef.current != null) return;
+                    setChatBubblesEnabled(on !== false);
+                }).catch(() => {});
+            }
         };
 
         // Config Logic — LoadConfigForUI omits NLSkills (skills come from ListNLSkills).
@@ -2723,7 +2766,7 @@ function App() {
         });
 
         // Listen for external config changes (e.g. from Tray)
-        const applyConfigChange = (cfg: corelib.AppConfig) => {
+        const applyConfigChange = (cfg: corelib.AppConfig, bubbleEpochAtRead?: number) => {
             setConfig(cfg);
             // Prefer the payload's zoom field to avoid an extra backend round-trip.
             if (typeof cfg.ui_zoom_factor === 'number') {
@@ -2799,6 +2842,18 @@ function App() {
                     setCodingFontFamily(id);
                 }).catch(() => {});
             }
+            // A payload is the write that just landed. A reload is tagged when
+            // the read started, so an older LoadConfig cannot turn the switch
+            // back after this echo has already cleared the draft.
+            const bubbleEpoch = bubbleEpochAtRead ?? chatBubblesEpochRef.current;
+            const bubbles = chatBubblesFromRead(cfg.chat_bubbles_enabled, chatBubblesDraftRef.current, bubbleEpoch, chatBubblesEpochRef.current);
+            if (bubbles) {
+                if (chatBubblesEchoClearsDraft(bubbles.enabled, chatBubblesDraftRef.current, serialNewestHasStarted(chatBubblesSaveQueue))) {
+                    chatBubblesDraftRef.current = null;
+                }
+                chatBubblesEpochRef.current += 1;
+                setChatBubblesEnabled(bubbles.enabled);
+            }
             const tool = normalizeToolTab(cfg.active_tool);
             setActiveTool(tool);
             const toolCfg = (cfg as any)[tool];
@@ -2814,7 +2869,10 @@ function App() {
                 applyConfigChange(cfg);
                 return;
             }
-            void callBackend(() => LoadConfigForUI()).then(applyConfigChange).catch((err) => {
+            const bubbleEpoch = chatBubblesEpochRef.current;
+            void callBackend(() => LoadConfigForUI()).then((loaded) => {
+                applyConfigChange(loaded, bubbleEpoch);
+            }).catch((err) => {
                 console.warn('Failed to reload config after config event:', err);
             });
         };
@@ -2900,31 +2958,24 @@ function App() {
         };
     }, [brandInfoLoaded]);
 
-    // Poll MaClaw LLM status every 60 seconds.
-    // Also re-ping immediately when the user navigates to/from the LLM settings
-    // tab (settingsTab changes), which covers the "just saved config" scenario.
+    // One startup ping for the onboarding gate and the initial status dot.
+    // The recurring probe lives in the profile-health poll below so the same
+    // assistant endpoint is not probed twice per cycle.
     useEffect(() => {
-        const pingLLM = () => {
-            callBackend(() => PingMaclawLLM()).then((s: any) => {
-                setMaclawLLMOnline(!!s.online);
-                setMaclawLLMConfigured(!!s.configured);
-                if (!maclawLLMFirstPingDone.current) {
-                    maclawLLMFirstPingDone.current = true;
-                    setMaclawLLMStartupPing({ online: !!s.online });
-                }
-            }).catch(() => {
-                setMaclawLLMOnline(false);
-                if (!maclawLLMFirstPingDone.current) {
-                    maclawLLMFirstPingDone.current = true;
-                    setMaclawLLMStartupPing({ online: false });
-                }
-            });
-        };
-        pingLLM();
-        // Status poll only: pause while the window is hidden (a fresh ping
-        // still fires the moment the app becomes visible again).
-        const stopPing = startVisibleInterval(pingLLM, 60000);
-        return () => stopPing();
+        callBackend(() => PingMaclawLLM()).then((s: any) => {
+            setMaclawLLMOnline(!!s.online);
+            setMaclawLLMConfigured(!!s.configured);
+            if (!maclawLLMFirstPingDone.current) {
+                maclawLLMFirstPingDone.current = true;
+                setMaclawLLMStartupPing({ online: !!s.online });
+            }
+        }).catch(() => {
+            setMaclawLLMOnline(false);
+            if (!maclawLLMFirstPingDone.current) {
+                maclawLLMFirstPingDone.current = true;
+                setMaclawLLMStartupPing({ online: false });
+            }
+        });
     }, []);
 
     // Open the LLM step only after config and the first ping both exist.
@@ -4206,6 +4257,15 @@ function App() {
                 && healthSeq === llmProfileHealthRefreshSeqRef.current
                 && panelSeq === llmProfilePanelSeqRef.current) {
                 setLLMProfilePanelState(next);
+                // This is the only periodic upstream probe, so the status
+                // dot and the provider quick-switch gate derive their
+                // online/configured flags from the assistant result instead
+                // of a second ping.
+                const assistant = next.assistant;
+                if (assistant) {
+                    setMaclawLLMOnline(String(assistant.health || '') === 'configured');
+                    setMaclawLLMConfigured(!!assistant.configured);
+                }
             }
             return next;
         }).catch(() => null);
@@ -4218,7 +4278,7 @@ function App() {
         const off = safeEventsOn('llm-profiles-changed', () => {
             // Save/provider events invalidate backend probe records. Refresh
             // both the selection and health now instead of showing the safe
-            // interim "unverified" state until the next 60-second poll.
+            // interim "unverified" state until the next periodic poll.
             // The server snapshot does not include the live model catalog, so
             // reload that after the snapshot is applied.
             void refreshLLMProfilePanelState().then((next) => {
@@ -4245,9 +4305,11 @@ function App() {
     }, [refreshLLMProfileHealth, refreshLLMProfilePanelState]);
 
     // Profile health is intentionally refreshed through its own dual-profile
-    // API. The legacy assistant-only ping below remains for onboarding only.
+    // API. The legacy assistant-only ping above remains for onboarding only.
+    // 10 minutes, not 60 seconds: a fixed metronome probe is exactly the
+    // traffic pattern upstream providers flag as abnormal.
     useEffect(() => {
-        const stopHealth = startVisibleInterval(() => { void refreshLLMProfileHealth(); }, 60000);
+        const stopHealth = startVisibleInterval(() => { void refreshLLMProfileHealth(); }, 10 * 60 * 1000);
         return () => {
             llmProfileHealthRefreshSeqRef.current += 1;
             stopHealth();
@@ -4620,7 +4682,11 @@ function App() {
             let fetched: string[] = [];
             if (url && (key || isManagedAuth || isHub)) {
                 try {
-                    const items = await callBackend(() => FetchProviderModels(url, key, protocol, agentType)) as Array<{ id?: string; name?: string }>;
+                    const items = await callBackend(() => {
+                        const fetchArgs: [string, string, string, string, string?] = [url, key, protocol, agentType];
+                        if (isQoderProvider(currentName)) fetchArgs.push(currentName);
+                        return FetchProviderModels(...fetchArgs);
+                    }) as Array<{ id?: string; name?: string }>;
                     if (seq !== sidebarModelsSeqRef.current) return;
                     fetched = (items || []).map((m) => String(m?.id || m?.name || '').trim()).filter(Boolean);
                 } catch {
@@ -4630,11 +4696,14 @@ function App() {
             }
 
             if (seq !== sidebarModelsSeqRef.current) return;
-            const options = buildSidebarModelOptions({
+            const catalogInput = {
                 configuredModel: configured,
                 cachedModels: cached,
                 fetchedModels: fetched,
-            });
+            };
+            const options = isQoderProvider(currentName)
+                ? replaceCachedModelsWithLiveCatalog(catalogInput)
+                : buildSidebarModelOptions(catalogInput);
             setSidebarCurrentModel(configured);
             setSidebarModelOptions(options);
         } catch {
@@ -4741,12 +4810,15 @@ function App() {
         // Official model names are the four aliases. A live catalog must not
         // swap them for whatever upstream ids the hub advertised this request.
         if (quickProfileProvider?.isHubService) return hubOfficialModelAliases();
-        return buildSidebarModelOptions({
+        const catalogInput = {
             configuredModel: quickModel,
             cachedModels: quickProfileProvider?.models,
             fetchedModels: quickFetchedModelsByProvider[selectedQuickProviderID],
-        });
-    }, [quickFetchedModelsByProvider, quickModel, quickProfileProvider?.isHubService, quickProfileProvider?.models, selectedQuickProviderID]);
+        };
+        return isQoderProvider(quickProfileProvider?.name)
+            ? replaceCachedModelsWithLiveCatalog(catalogInput)
+            : buildSidebarModelOptions(catalogInput);
+    }, [quickFetchedModelsByProvider, quickModel, quickProfileProvider?.isHubService, quickProfileProvider?.models, quickProfileProvider?.name, selectedQuickProviderID]);
     const quickModelMultipliers = quickModelMultipliersByProvider[selectedQuickProviderID] ?? EMPTY_MODEL_MULTIPLIERS;
     const quickProfileProviders = useMemo((): SidebarLLMProviderSummary[] => {
         const providers = (llmProfilePanelState?.providers || []).map((provider: any) => ({
@@ -6223,6 +6295,7 @@ ${instruction}`;
                             chatFontSize={chatFontSize}
                             chatFontFamily={chatFontFamily}
                             codingFontFamily={codingFontFamily}
+                            chatBubblesEnabled={chatBubblesEnabled}
                             themeMode={aiThemeMode}
                             darkSchemeId={aiDarkSchemeId}
                             lightSchemeId={aiLightSchemeId}
@@ -6267,6 +6340,7 @@ ${instruction}`;
                             activeExecutionProfile={quickWriteProfile}
                             codingInheritsAssistant={activeProfileSummary?.inherit_assistant === true}
                             onOpenLLMSettings={openLLMSettingsPage}
+                            onAddCustomModel={openLLMProviderManagement}
                             onActiveExecutionProfileChange={setActiveExecutionProfile}
                             onLanguageChange={applyLanguage}
                             tasks={taskItems}
@@ -6334,7 +6408,6 @@ ${instruction}`;
                             config={config}
                             setConfig={setConfig}
                             onLanguageChange={handleLangChange}
-                            hasWindowsTerminal={hasWindowsTerminal}
                             envCheckInterval={envCheckInterval}
                             setEnvCheckInterval={setEnvCheckInterval}
                             isWindows={isWindows}
@@ -6345,6 +6418,7 @@ ${instruction}`;
                             showToastMessage={showToastMessage}
                             tokenBankClaimCode={creditGiftLaunch.code}
                             tokenBankClaimSeq={creditGiftLaunch.seq}
+                            llmProviderDialogAutoOpenSeq={llmProviderDialogAutoOpenSeq}
                             memoryTraceFocus={memoryTraceFocus}
                             imSubTab={imSubTab}
                             setImSubTab={setImSubTab}
@@ -6416,6 +6490,9 @@ ${instruction}`;
                             setDarkSchemeId={handleAIDarkSchemeChange}
                             lightSchemeId={aiLightSchemeId}
                             setLightSchemeId={handleAILightSchemeChange}
+                            chatBubblesEnabled={chatBubblesEnabled}
+                            setChatBubblesEnabled={selectChatBubblesEnabled}
+                            chatBubblesDraftRef={chatBubblesDraftRef}
                         />
                 ) : (
                 <Suspense

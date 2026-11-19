@@ -3,6 +3,7 @@ package guiapp
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -121,5 +122,24 @@ func TestDesktopMemoryMutationsRejectBotScope(t *testing.T) {
 	}
 	if visible := app.ListMemories("", ""); len(visible) != 0 {
 		t.Fatalf("bot memory leaked into shared list: %+v", visible)
+	}
+}
+
+func TestBotMemoryProjectionIncludesExpiry(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	invalidAt := time.Now().Add(-time.Hour)
+	owner := "desktop-user:bot:bot_x"
+	store.SetEntries([]memory.Entry{{ID: "expired", Content: "expired bot memory", Category: memory.CategoryUserFact, OwnerID: owner, Boundary: &memory.MemoryBoundary{OwnerID: owner}, InvalidAt: &invalidAt}})
+	app := &App{memoryStore: store, testHomeDir: t.TempDir()}
+	entries, err := app.ListBotMemories("bot_x", "", "")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries=%+v err=%v", entries, err)
+	}
+	if entries[0].InvalidAt == "" {
+		t.Fatalf("expiry missing from bot projection: %+v", entries[0])
 	}
 }

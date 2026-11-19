@@ -100,6 +100,8 @@ export function statusRowText(assignments: Assignment[], bots: BotRef[], max = 3
     const zh = isChineseLang(lang);
     for (const a of assignments) {
         if (!ACTIVE.has(a.state) || seen.has(a.target_bot)) continue;
+        // A deleted bot's id is not a name. Skip it once the live list is known.
+        if (bots.length > 0 && !bots.some(bot => bot.id === a.target_bot)) continue;
         seen.add(a.target_bot);
         if (parts.length >= max) continue;
         const name = botName(bots, a.target_bot, lang);
@@ -164,18 +166,28 @@ export function humanPrompt(a: Assignment, bots: BotRef[], lang = 'zh-Hans'): { 
 }
 
 /**
- * Messages to show in one bot's chat: its own direct messages. The main bot's
- * chat also shows what a bot without a chat of its own said; a bot that has
- * its own chat (ownChats) is heard only there (11-11 20:36: Bot 2's progress
- * note showed in Bot 2's chat and again in Bot 1's, the main bot).
+ * Messages to show in one bot's chat, matched by bot id. "Bot 1" / "Bot 2"
+ * are display names only. The main bot's chat also shows what a still-live
+ * bot without a chat of its own said; a bot that has its own chat (ownChats)
+ * is heard only there (11-11 20:36). A deleted id is not that case, even
+ * when a new bot reused the same display name (2026-11-14).
  */
-export function saidForChat(items: SaidItem[], botId: string, isPrimary: boolean, sinceMs = 0, ownChats?: string[]): SaidItem[] {
+export function saidForChat(items: SaidItem[], botId: string, isPrimary: boolean, sinceMs = 0, ownChats?: string[], liveBots?: string[]): SaidItem[] {
     // The inline block renders below the transcript, so only what was said
     // after the chat's latest message belongs there. 10-31: a 10-28 15:26
     // 「今天适合喝乌龙茶…」 say stayed pinned under every newer reply.
+    // liveBots is the ids that still exist. Omitted keeps the older rule.
     const own = new Set(ownChats || []);
-    return items.filter(i => i.kind === 'say' && i.target === 'human' && (i.from === botId || (isPrimary && !own.has(i.from)))
+    const live = liveBots ? new Set(liveBots) : null;
+    return items.filter(i => i.kind === 'say' && i.target === 'human' && hearsSay(i.from, botId, isPrimary, own, live)
         && (!sinceMs || Date.parse(String(i.created_at || '')) > sinceMs));
+}
+
+function hearsSay(from: string, botId: string, isPrimary: boolean, own: Set<string>, live: Set<string> | null): boolean {
+    if (from === botId) return true;
+    if (!isPrimary) return false;
+    if (live && !live.has(from)) return false;
+    return !own.has(from);
 }
 
 /** Time a GUI message id (m-<base36 ms>-…) was made, or 0. */
@@ -188,6 +200,53 @@ export function messageIdTime(id: string | undefined): number {
 /** Lower bound for inline says: the latest message, and never older than 12 h. */
 export function saidSince(messageIds: string[], now = Date.now()): number {
     return Math.max(now - 12 * 3600 * 1000, ...messageIds.map(messageIdTime));
+}
+
+export type PlacedSays = { after: Map<string, SaidItem[]>; trailing: SaidItem[] };
+
+// routineReask is a timer asking the person to decide something again
+// ("说一声我就固定下来"). The chat already has their answer.
+function routineReask(text: string): boolean {
+    return /说一声|你要[\s\S]{0,24}的话/.test(String(text || ''));
+}
+
+/**
+ * placeChatSays keeps a say where it was said. Ones older than the latest
+ * bubble sit after the bubble that was already on screen; only a newer say
+ * stays under the transcript. A newer say that asks the person to choose
+ * again is left out — they already answered in the chat.
+ */
+export function placeChatSays(items: SaidItem[], botId: string, isPrimary: boolean, messages: Array<{ id: string; role: string; content?: string }>, ownChats?: string[], liveBots?: string[]): PlacedSays {
+    const after = new Map<string, SaidItem[]>();
+    const trailing: SaidItem[] = [];
+    const mine = saidForChat(items, botId, isPrimary, 0, ownChats, liveBots)
+        .slice()
+        .sort((a, b) => Date.parse(String(a.created_at || '')) - Date.parse(String(b.created_at || '')));
+    const anchors = messages
+        .map(message => ({ id: message.id, t: messageIdTime(message.id) }))
+        .filter(message => message.t > 0);
+    const latest = anchors.reduce((max, message) => Math.max(max, message.t), 0);
+    const answered = messages.some(message => message.role === 'user' && String(message.content || '').trim() !== '');
+    for (const say of mine) {
+        const at = Date.parse(String(say.created_at || ''));
+        if (!at || at > latest) {
+            if (answered && routineReask(say.text)) continue;
+            trailing.push(say);
+            continue;
+        }
+        let anchor = anchors[0]?.id || '';
+        for (const message of anchors) {
+            if (message.t <= at) anchor = message.id;
+        }
+        if (!anchor) {
+            trailing.push(say);
+            continue;
+        }
+        const list = after.get(anchor) || [];
+        list.push(say);
+        after.set(anchor, list);
+    }
+    return { after, trailing };
 }
 
 /** Bots that spoke in a room after the person's last message. */
@@ -227,22 +286,57 @@ export function attentionOf(room: Room, bot: BotRef): Attention {
 
 export const ATTENTION_LABEL: Record<Attention, string> = { all: '每条都听', mentions: '被@才听', off: '不听' };
 
+export type RunScopedLine = { text: string; runId: string; closed?: Record<string, true> };
+
+function rememberClosed(closed: Record<string, true> | undefined, runId: string): Record<string, true> {
+    const next: Record<string, true> = { ...(closed || {}) };
+    if (runId) next[runId] = true;
+    const keys = Object.keys(next);
+    while (keys.length > 8) {
+        const oldest = keys.shift();
+        if (oldest) delete next[oldest];
+    }
+    return next;
+}
+
+/**
+ * applyRunScopedText keeps one visible line per bot and remembers runs that
+ * already closed. A late or out-of-order line from a closed run cannot take
+ * the slot back, and a second live run cannot replace the run that holds it.
+ */
+export function applyRunScopedText<T extends RunScopedLine>(
+    prev: Record<string, T>,
+    botId: string,
+    runId: string,
+    line: string,
+    build: (text: string, runId: string, closed: Record<string, true> | undefined, current: T | undefined) => T,
+): Record<string, T> {
+    if (!botId) return prev;
+    const current = prev[botId];
+    const closed = current?.closed;
+    if (!line) {
+        if (!current) return prev;
+        if (runId && current.runId && current.runId !== runId) {
+            if (closed?.[runId]) return prev;
+            return { ...prev, [botId]: { ...current, closed: rememberClosed(closed, runId) } };
+        }
+        if (!current.text && !current.runId) return prev;
+        return { ...prev, [botId]: build('', '', rememberClosed(closed, current.runId || runId), current) };
+    }
+    if (runId && closed?.[runId]) return prev;
+    if (current?.text && current.runId && runId && current.runId !== runId) return prev;
+    if (current?.text === line && current.runId === runId) return prev;
+    return { ...prev, [botId]: build(line, runId, closed, current) };
+}
+
 /**
  * applyBotStatusLine keeps one live status line per bot. An empty line from
  * a run clears only that run's line, so a finished run cannot wipe a newer
- * run's status.
+ * run's status. A line that arrives after that clear, or from a different
+ * live run, does not take the slot.
  */
-export function applyBotStatusLine(prev: Record<string, { text: string; runId: string }>, botId: string, runId: string, line: string): Record<string, { text: string; runId: string }> {
-    const current = prev[botId];
-    if (!line) {
-        if (!current) return prev;
-        if (runId && current.runId && current.runId !== runId) return prev;
-        const next = { ...prev };
-        delete next[botId];
-        return next;
-    }
-    if (current && current.text === line && current.runId === runId) return prev;
-    return { ...prev, [botId]: { text: line, runId } };
+export function applyBotStatusLine(prev: Record<string, RunScopedLine>, botId: string, runId: string, line: string): Record<string, RunScopedLine> {
+    return applyRunScopedText(prev, botId, runId, line, (text, id, closed) => ({ text, runId: id, closed }));
 }
 
 /** A wake label older than this is stale: the row falls back. */

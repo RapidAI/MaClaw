@@ -162,6 +162,18 @@ func loadCodingAgentResume(userID, projectPath string) codingAgentResume {
 	return codingAgentResume{History: history, Snapshots: snaps, Memo: disk.Memo}
 }
 
+// codingAgentResumeForTurn loads the transcript a user coding call continues.
+// An automatic repository-maintenance delivery is a new event in the same
+// task. It must not replay the user's agent transcript, and it must not
+// store this event's handoff over the transcript the user's next turn
+// resumes. Nested and horizon turns stay off the root transcript.
+func codingAgentResumeForTurn(loopCtx *LoopContext, nestDepth int, horizon bool, userID, projectPath string) (codingAgentResume, bool) {
+	if nestDepth != 0 || horizon || !codingTurnAllowsUserPlan(loopCtx) {
+		return codingAgentResume{}, false
+	}
+	return loadCodingAgentResume(userID, projectPath), true
+}
+
 // codingModelHistory is the transcript passed into codingagent.Run.
 // Flag coding/all retires that replay. Nested and horizon turns never load
 // a resume, so their history is already empty.

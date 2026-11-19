@@ -15,11 +15,12 @@ import (
 // pull). It is announced once per notification id while this process runs.
 
 const (
-	companionShareNotificationSource  = "companion_share"
-	companionHostTransferSource       = "companion_host_transfer"
-	companionHostTransferNoticeSource = "companion_host_transfer_notice"
-	companionShareAnnounceTTL         = 24 * time.Hour
-	companionShareAnnounceMapMax      = 4096
+	companionShareNotificationSource       = "companion_share"
+	companionHostTransferSource            = "companion_host_transfer"
+	companionHostTransferNoticeSource      = "companion_host_transfer_notice"
+	companionGroupDigestNotificationSource = "companion_group_digest"
+	companionShareAnnounceTTL              = 24 * time.Hour
+	companionShareAnnounceMapMax           = 4096
 )
 
 var companionShareAnnounce = struct {
@@ -38,6 +39,12 @@ func isCompanionHostTransferNotification(source string) bool {
 	default:
 		return false
 	}
+}
+
+// isCompanionGroupDigestNotification marks the merged "N 份文档可阅读" notice
+// a new reading-group member gets for shares that predate their join.
+func isCompanionGroupDigestNotification(source string) bool {
+	return strings.TrimSpace(source) == companionGroupDigestNotificationSource
 }
 
 // announceCompanionShareNotification raises one system notification. It
@@ -88,7 +95,7 @@ func (a *App) announceCompanionShareNotification(notificationID, title, content 
 func (a *App) announceCompanionShareNotices(items []ClientNotification) {
 	shown := 0
 	for _, item := range items {
-		if item.IsRead || !isCompanionShareNotification(item.Source) {
+		if item.IsRead || (!isCompanionShareNotification(item.Source) && !isCompanionGroupDigestNotification(item.Source)) {
 			continue
 		}
 		if a.announceCompanionShareNotification(item.ID, item.Title, item.Content) {

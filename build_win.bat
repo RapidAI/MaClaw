@@ -123,19 +123,7 @@ echo [Step 5b/14] Refreshing VS Code extension VSIX (best-effort)...
 
 REM -- Build Go Binaries --
 echo [Step 6/14] Compiling GUI binaries...
-REM -- Kill stale processes and clean locked Go temp dirs to prevent "Access is denied" errors --
-REM Also kill the arch-suffixed portable copies and the UIA sidecar: they share the same
-REM dist filenames as build outputs, so a running instance locks the output file and the
-REM link/csc step fails (sidecar failure is only a warning, but the GUI copies break the build).
-taskkill /F /IM %APP_NAME%.exe 2>nul
-taskkill /F /IM %APP_NAME%_amd64.exe 2>nul
-taskkill /F /IM %APP_NAME%_arm64.exe 2>nul
-taskkill /F /IM maclaw-tui.exe 2>nul
-taskkill /F /IM maclaw-cli.exe 2>nul
-taskkill /F /IM maclaw-tool.exe 2>nul
-taskkill /F /IM maclawsrv.exe 2>nul
-taskkill /F /IM maclaw-data-srv.exe 2>nul
-taskkill /F /IM maclaw-uia-sidecar.exe 2>nul
+REM -- Clean locked Go temp dirs to prevent "Access is denied" errors --
 "%POWERSHELL_EXE%" -NoProfile -Command "Get-ChildItem $env:TEMP -Filter 'go-build*' -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-2) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
 set "GOOS=windows"
 set "GOARCH=amd64"
@@ -469,7 +457,7 @@ if !errorlevel! equ 0 exit /b 0
 set "GO_BUILD_ERROR=!errorlevel!"
 if !GO_BUILD_ATTEMPT! geq 8 exit /b !GO_BUILD_ERROR!
 echo [WARN] go build failed with exit code !GO_BUILD_ERROR!, retrying...
-"%POWERSHELL_EXE%" -NoProfile -Command "Get-Process go,compile,link,gcc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; Get-ChildItem $env:TEMP -Filter 'go-build*' -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-1) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
+"%POWERSHELL_EXE%" -NoProfile -Command "Start-Sleep -Milliseconds 500; Get-ChildItem $env:TEMP -Filter 'go-build*' -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-1) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
 set /a GO_BUILD_ATTEMPT+=1
 goto :go_build_retry
 
@@ -481,7 +469,7 @@ if !errorlevel! equ 0 exit /b 0
 set "GO_BUILD_ERROR=!errorlevel!"
 if !GO_BUILD_ATTEMPT! geq 8 exit /b !GO_BUILD_ERROR!
 echo [WARN] datasrv go build failed with exit code !GO_BUILD_ERROR!, retrying...
-"%POWERSHELL_EXE%" -NoProfile -Command "Get-Process go,compile,link,gcc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; Get-ChildItem $env:TEMP -Filter 'go-build*' -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-1) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
+"%POWERSHELL_EXE%" -NoProfile -Command "Start-Sleep -Milliseconds 500; Get-ChildItem $env:TEMP -Filter 'go-build*' -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-1) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
 set /a GO_BUILD_ATTEMPT+=1
 goto :go_build_datasrv_retry
 

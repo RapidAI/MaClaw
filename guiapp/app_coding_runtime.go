@@ -832,7 +832,12 @@ func (a *App) attachDesktopCodingIngressForTurn(msg *IMUserMessage) string {
 		return ""
 	}
 	workspaceDir := ""
-	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+	if dir, active, blocked := a.repoMaintGuardForOwner(msg.UserID); active {
+		if blocked {
+			return ""
+		}
+		workspaceDir = dir
+	} else if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
 		workspaceDir = a.codingWorkbenchLocalExecDirOrDesktop(projectPath)
 	}
 	// startNewTask is always false: an in-process turn continues the owner's

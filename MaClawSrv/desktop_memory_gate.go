@@ -118,6 +118,25 @@ func desktopdClientFromEnv() *desktopHubClient {
 	return &desktopHubClient{baseURL: base, token: token, http: &http.Client{Timeout: 15 * time.Second}}
 }
 
+// warnDesktopdMemoryConfig says whether the direct desktopd memory read is
+// configured. It never prints a URL or a token. A missing pair means the
+// gauge still uses Hub, which an older Hub does not answer.
+func warnDesktopdMemoryConfig() {
+	baseSet := strings.TrimSpace(os.Getenv(desktopdURLEnv)) != "" || strings.TrimSpace(os.Getenv(desktopdURLLegacyEnv)) != ""
+	tokenSet := strings.TrimSpace(os.Getenv(desktopdTokenEnv)) != "" || strings.TrimSpace(os.Getenv(desktopdTokenLegacyEnv)) != ""
+	if baseSet && tokenSet {
+		log.Printf("[desktop-memory] direct desktopd memory read is configured")
+		return
+	}
+	missing := "MACLAW_DESKTOPD_URL and MACLAW_DESKTOPD_TOKEN"
+	if baseSet {
+		missing = "MACLAW_DESKTOPD_TOKEN"
+	} else if tokenSet {
+		missing = "MACLAW_DESKTOPD_URL"
+	}
+	log.Printf("[desktop-memory] %s is not set; memory reads stay on Hub and a Hub without /desktop-services/memory is treated as no pressure until both are set", missing)
+}
+
 func memoryReadPolicy() string {
 	raw := strings.TrimSpace(os.Getenv(memoryReadPolicyEnv))
 	switch raw {

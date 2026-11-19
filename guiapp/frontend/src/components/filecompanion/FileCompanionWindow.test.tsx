@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import FileCompanionWindow, {
     clampCompanionChatWidth,
     clampCompanionTabScroll,
@@ -70,6 +70,15 @@ const exportChatPdf = vi.fn();
 const exportChatCloud = vi.fn();
 const exportWebChatCloud = vi.fn();
 const showItemInFolder = vi.fn();
+// Delayed export mocks schedule a real timer and then return. The timer must
+// be cleared before the next test, or a late resolve calls ShowItemInFolder
+// on this shared mock during a later assertion.
+const pendingExportTimers: ReturnType<typeof setTimeout>[] = [];
+function exportPathLater(path: string, delayMs: number) {
+    return new Promise<string>((resolve) => {
+        pendingExportTimers.push(setTimeout(() => resolve(path), delayMs));
+    });
+}
 const exportTex = vi.fn();
 const exportChatTex = vi.fn();
 const exportWebPdf = vi.fn();
@@ -318,6 +327,10 @@ function doc(path: string, extra: Record<string, unknown> = {}) {
     const name = path.split(/[/\\]/).pop() || path;
     return { path, name, editable: false, readOnly: true, canExport: true, content: "", loadedHash: "h", sessionId: name, size: 12, error: "", ...extra };
 }
+
+afterEach(() => {
+    for (const timer of pendingExportTimers.splice(0)) clearTimeout(timer);
+});
 
 beforeEach(() => {
     setCompanionUiLang("zh-Hans");
@@ -2547,6 +2560,27 @@ describe("FileCompanionWindow", () => {
         expect(await screen.findByText("这份文档已经以相同的范围分享过了，请先删除原分享，或修改原分享")).toBeTruthy();
     });
 
+    it("ignores a second share click while the first request is pending", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        let finish: (value: { url: string; name: string; visibility: string; permanent: boolean }) => void = () => undefined;
+        shareDocument.mockImplementation(() => new Promise<{ url: string; name: string; visibility: string; permanent: boolean }>((resolve) => { finish = resolve; }));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-share-open"));
+        await screen.findByTestId("file-companion-share-dialog");
+        const button = screen.getByTestId("file-companion-library-share");
+        fireEvent.click(button);
+        fireEvent.click(button);
+        expect(shareDocument).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            finish({ url: "https://hub.example/share", name: "a.md", visibility: "public", permanent: true });
+            await Promise.resolve();
+        });
+        await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    });
+
     it("offers sharing again after the previous share expired", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
         open.mockImplementation(async (path: string) => doc(path));
@@ -3814,6 +3848,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-share-group"));
         await waitFor(() => expect(screen.getByTestId("file-companion-share-group-pick").querySelectorAll("option").length).toBeGreaterThan(1));
         fireEvent.change(screen.getByTestId("file-companion-share-group-pick"), { target: { value: groupID } });
+        expect(screen.getByTestId("file-companion-share-audience-summary").textContent).toContain("已接受邀请的成员");
         fireEvent.click(screen.getByTestId("file-companion-library-share"));
         await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "group", "", groupID, JSON.stringify({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] }), 0));
         await waitFor(() => expect(screen.getByTestId("file-companion-library-share").textContent).toBe("分享到云端"));
@@ -3919,18 +3954,27 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId(`file-companion-group-${groupID}`);
         const detail = screen.getByTestId("file-companion-groups");
         expect(detail.textContent).toContain("reader@example.com");
-        expect(detail.textContent).toContain("待确认");
+        expect(detail.textContent).toContain("等待接受邀请");
+        expect(detail.textContent).toContain("成员管理");
+        fireEvent.click(screen.getByTestId(`file-companion-group-resend-${groupID}-reader@example.com`));
+        await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(groupID, "reader@example.com"));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-resend-${groupID}-reader@example.com`).hasAttribute("disabled")).toBe(false));
         fireEvent.change(screen.getByTestId("file-companion-group-name"), { target: { value: "新组" } });
         fireEvent.click(screen.getByTestId("file-companion-group-create"));
         await waitFor(() => expect(createGroup).toHaveBeenCalledWith("新组"));
-        await waitFor(() => expect(screen.getByTestId("file-companion-group-create").hasAttribute("disabled")).toBe(false));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-contact-${groupID}`).hasAttribute("disabled")).toBe(false));
         fireEvent.change(screen.getByTestId(`file-companion-group-contact-${groupID}`), { target: { value: "13800138000" } });
         fireEvent.click(screen.getByTestId(`file-companion-group-add-${groupID}`));
         await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(groupID, "13800138000"));
-        await waitFor(() => expect(screen.getByTestId("file-companion-group-create").hasAttribute("disabled")).toBe(false));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-contact-${groupID}`).hasAttribute("disabled")).toBe(false));
+        expect(screen.getByTestId(`file-companion-group-save-${groupID}`).hasAttribute("disabled")).toBe(true);
         fireEvent.click(screen.getByTestId(`file-companion-group-remove-${groupID}-reader@example.com`));
+        fireEvent.click(screen.getByTestId(`file-companion-group-remove-cancel-${groupID}-reader@example.com`));
+        expect(removeGroupMember).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId(`file-companion-group-remove-${groupID}-reader@example.com`));
+        fireEvent.click(screen.getByTestId(`file-companion-group-remove-confirm-${groupID}-reader@example.com`));
         await waitFor(() => expect(removeGroupMember).toHaveBeenCalledWith(groupID, "reader@example.com"));
-        await waitFor(() => expect(screen.getByTestId(`file-companion-group-save-${groupID}`).hasAttribute("disabled")).toBe(false));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-contact-${groupID}`).hasAttribute("disabled")).toBe(false));
         fireEvent.change(screen.getByTestId(`file-companion-group-rename-${groupID}`), { target: { value: "   " } });
         fireEvent.click(screen.getByTestId(`file-companion-group-save-${groupID}`));
         expect(updateGroup).not.toHaveBeenCalled();
@@ -4009,6 +4053,37 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(await screen.findByTestId(`file-companion-group-dissolve-confirm-${groupID}`));
         await waitFor(() => expect(deleteGroup).toHaveBeenCalledTimes(1));
         await waitFor(() => expect(screen.queryByTestId(`file-companion-group-${groupID}`)).toBeNull());
+    });
+
+    it("does not merge an older group list over a newly created group", async () => {
+        const oldID = "cg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const newID = "cg_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const oldGroup = { id: oldID, name: "旧列表里的群组", owner: "me@example.com", admin: true, members: [] };
+        const newGroup = { id: newID, name: "刚创建的群组", owner: "me@example.com", admin: true, members: [] };
+        let resolveInitial: (value: Record<string, unknown>[]) => void = () => undefined;
+        let resolveAfterCreate: (value: Record<string, unknown>[]) => void = () => undefined;
+        listGroups
+            .mockImplementationOnce(() => new Promise<Record<string, unknown>[]>((resolve) => { resolveInitial = resolve; }))
+            .mockImplementationOnce(() => new Promise<Record<string, unknown>[]>((resolve) => { resolveAfterCreate = resolve; }));
+        createGroup.mockResolvedValue(newGroup);
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        fireEvent.click(screen.getByTestId("file-companion-groups-open"));
+        fireEvent.change(await screen.findByTestId("file-companion-group-name"), { target: { value: "刚创建的群组" } });
+        fireEvent.click(screen.getByTestId("file-companion-group-create"));
+        await waitFor(() => expect(createGroup).toHaveBeenCalledWith("刚创建的群组"));
+        await act(async () => {
+            resolveAfterCreate([newGroup]);
+            await Promise.resolve();
+        });
+        await screen.findByTestId(`file-companion-group-${newID}`);
+        await act(async () => {
+            resolveInitial([oldGroup]);
+            await Promise.resolve();
+        });
+        expect(screen.queryByTestId(`file-companion-group-${oldID}`)).toBeNull();
+        expect(screen.getByTestId(`file-companion-group-${newID}`)).toBeTruthy();
     });
 
     it("closes the management screens and popups on Escape without leaving fullscreen", async () => {
@@ -8595,9 +8670,7 @@ describe("FileCompanionWindow", () => {
     // disabled, the reader sees a control that answers nothing, which reads as
     // broken rather than busy.
     it("shows an in-flight export instead of a button that answers nothing", async () => {
-        exportChatPdf.mockImplementation(() => new Promise<string>((resolve) => {
-            setTimeout(() => resolve("C:/out/a-伴读对话.pdf"), 150);
-        }));
+        exportChatPdf.mockImplementation(() => exportPathLater("C:/out/a-伴读对话.pdf", 150));
         boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
         open.mockImplementation(async (path: string) => doc(path, {
             messages: [
@@ -8635,9 +8708,7 @@ describe("FileCompanionWindow", () => {
     // with an equivalent lookup leaves it passing, so treat it as a guard
     // against the wiring changing, not against every way it could.
     it("keeps a running export bound to its own file when tabs change", async () => {
-        exportChatPdf.mockImplementation(() => new Promise<string>((resolve) => {
-            setTimeout(() => resolve("C:/out/a-伴读对话.pdf"), 150);
-        }));
+        exportChatPdf.mockImplementation(() => exportPathLater("C:/out/a-伴读对话.pdf", 150));
         // Distinct content per file, so an export that picked up the wrong
         // document is caught in what it wrote, not only in which path it sent.
         boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });

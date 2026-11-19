@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 )
 
 // A bot's waiting messages. The GUI used to keep this queue. Hub keeps it
@@ -56,6 +57,9 @@ type desktopQueueItem struct {
 	Surface string `json:"surface,omitempty"`
 	// Outcome is the sentence once a memory wait has given up.
 	Outcome string `json:"outcome,omitempty"`
+	// NoteIDs are the mailbox notes one hub-started turn covers. A wake
+	// can claim several; the client message id only names the first.
+	NoteIDs []string `json:"note_ids,omitempty"`
 	// Delivered means the give-up was shown. A second listing skips it.
 	Delivered bool `json:"delivered,omitempty"`
 }
@@ -126,6 +130,33 @@ func (s *Service) drainAllDesktopQueues() {
 	s.mu.Unlock()
 	for _, j := range jobs {
 		s.drainDesktopQueue(j.tenant, j.user, j.bot)
+	}
+}
+
+// ReleaseNodeQueue sends messages that were waiting on this node as soon as
+// its tunnel is back. Bots on another node stay queued.
+func (s *Service) ReleaseNodeQueue(tenantID, nodeID string) {
+	if s == nil {
+		return
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return
+	}
+	rec, err := s.load(context.Background(), tenantID)
+	if err != nil {
+		return
+	}
+	kicked := map[string]bool{}
+	for _, bot := range rec.Bots {
+		if strings.TrimSpace(bot.NodeID) != nodeID || strings.TrimSpace(bot.OwnerUserID) == "" {
+			continue
+		}
+		s.drainDesktopQueue(tenantID, bot.OwnerUserID, bot.ID)
+		if !kicked[bot.OwnerUserID] {
+			kicked[bot.OwnerUserID] = true
+			s.kickDispatch(tenantID, bot.OwnerUserID)
+		}
 	}
 }
 
@@ -229,6 +260,9 @@ func (s *Service) DesktopQueueStatus(tenantID, userID, botID, clientMessageID st
 		}
 		return DesktopQueueView{State: state, RunID: item.RunID, Held: item.Held || state == "held", Position: pos, Outcome: item.Outcome}
 	}
+	if item := s.desktopStarting[desktopStartingKey(tenantID, userID, botID, clientMessageID)]; item != nil {
+		return DesktopQueueView{State: "running", RunID: item.RunID}
+	}
 	if runID, done := s.queueAdmitLocked(tenantID, userID, botID, clientMessageID); runID != "" {
 		state := "running"
 		if done {
@@ -275,15 +309,32 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 	s.queueDraining[key] = true
 	s.mu.Unlock()
 	s.expireMemoryQueue(tenantID, userID, botID)
+	s.expireNodeQueue(tenantID, userID, botID)
+	noneBot := false
+	nodeID := ""
+	if rec, err := s.load(context.Background(), tenantID); err == nil {
+		if i := indexOf(rec.Bots, botID); i >= 0 {
+			noneBot = botNone(rec.Bots[i])
+			nodeID = rec.Bots[i].NodeID
+		}
+	}
 	defer func() {
 		s.mu.Lock()
 		delete(s.queueDraining, key)
 		s.mu.Unlock()
 	}()
 	for {
-		if s.desktopMemoryPressured(context.Background(), tenantID, userID) {
-			s.noteQueueBlockedByMemory(tenantID, userID, botID)
-			return
+		// A bot with no desktop does not use the container, so a full
+		// desktop must not keep its parked messages waiting.
+		if !noneBot {
+			pressed, memErr := s.desktopMemoryState(desktoppool.WithComputer(context.Background(), nodeID), tenantID, userID)
+			if nodeSessionMissing(memErr) {
+				return
+			}
+			if pressed {
+				s.noteQueueBlockedByMemory(tenantID, userID, botID)
+				return
+			}
 		}
 		item := s.popDesktopQueue(tenantID, userID, botID)
 		if item == nil {
@@ -293,7 +344,9 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 			if err == ErrDesktopMemory {
 				s.markItemMemoryWait(item)
 			}
-			if err == ErrDesktopBusy || err == ErrDesktopMemory {
+			// A message waiting on a node stays queued when the srv record is
+			// gone. Dropping it would leave the person with no answer.
+			if turnBusy(err) || err == ErrDesktopMemory || nodeLinkOffline(err) || nodeWaitKept(item, err) {
 				s.pushFrontDesktopQueue(tenantID, userID, botID, item)
 			}
 			return
@@ -301,8 +354,56 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 	}
 }
 
-// expireMemoryQueue marks memory-parked messages that have waited out the
+// nodeWaitKept keeps a message that was parked for a node when the srv
+// record disappeared. Any other error still drops the item.
+func nodeWaitKept(item *desktopQueueItem, err error) bool {
+	if item == nil || item.WaitKind != desktopQueueWaitNode || err == nil {
+		return false
+	}
+	return errors.Is(err, ErrSrv) && strings.Contains(err.Error(), "还没有 srv")
+}
+
+// expireNodeQueue marks node-parked messages that have waited out the
 // ceiling. They stay in the queue as gave_up so a poll can read the outcome.
+func (s *Service) expireNodeQueue(tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	key := desktopQueueKey(tenantID, userID, botID)
+	s.mu.Lock()
+	changed := false
+	now := s.now()
+	var stalled []desktopQueueItem
+	for _, item := range s.desktopQueues[key] {
+		if item == nil || item.WaitKind != desktopQueueWaitNode {
+			continue
+		}
+		if item.State != "" && item.State != "queued" && item.State != "held" {
+			continue
+		}
+		start := item.EnqueuedAt
+		if !item.WaitSince.IsZero() {
+			start = item.WaitSince
+		}
+		if now.Sub(start) < nodeOfflineQueueMax {
+			continue
+		}
+		item.State = "gave_up"
+		item.Outcome = nodeOfflineOutcome
+		changed = true
+		if id := strings.TrimSpace(item.ClientMessageID); strings.HasPrefix(id, "xdel-") || strings.HasPrefix(id, "xwake-") {
+			stalled = append(stalled, *item)
+		}
+	}
+	if changed {
+		s.persistDesktopState(tenantID)
+	}
+	s.mu.Unlock()
+	for _, item := range stalled {
+		s.finishHubStartedNodeWait(tenantID, userID, botID, item.ClientMessageID, item.NoteIDs)
+	}
+}
+
 func (s *Service) expireMemoryQueue(tenantID, userID, botID string) {
 	if s == nil {
 		return
@@ -427,6 +528,10 @@ func (s *Service) ackMemoryGiveUpLocked(tenantID, userID, botID, runID string) b
 	return false
 }
 
+func desktopStartingKey(tenantID, userID, botID, clientMessageID string) string {
+	return desktopQueueKey(tenantID, userID, botID) + "" + strings.TrimSpace(clientMessageID)
+}
+
 func (s *Service) popDesktopQueue(tenantID, userID, botID string) *desktopQueueItem {
 	key := desktopQueueKey(tenantID, userID, botID)
 	keyboard := s.personHasBotKeyboard(tenantID, userID, botID)
@@ -435,7 +540,11 @@ func (s *Service) popDesktopQueue(tenantID, userID, botID string) *desktopQueueI
 	s.dropExpiredQueueLocked(key)
 	items := s.desktopQueues[key]
 	var item *desktopQueueItem
+	passed := 0
 	for len(items) > 0 {
+		if passed > len(items) {
+			break
+		}
 		head := items[0]
 		items = items[1:]
 		if head == nil || head.State == "running" || head.State == "done" {
@@ -443,6 +552,7 @@ func (s *Service) popDesktopQueue(tenantID, userID, botID string) *desktopQueueI
 		}
 		if head.State == "gave_up" {
 			items = append(items, head)
+			passed++
 			continue
 		}
 		if runID, _ := s.queueAdmitLocked(tenantID, userID, botID, head.ClientMessageID); runID != "" {
@@ -464,6 +574,12 @@ func (s *Service) popDesktopQueue(tenantID, userID, botID string) *desktopQueueI
 	}
 	s.desktopQueues[key] = items
 	if item != nil {
+		// Visible before this lock drops. Otherwise a continuation join can
+		// observe the item gone and the run not started, and post a second one.
+		if s.desktopStarting == nil {
+			s.desktopStarting = map[string]*desktopQueueItem{}
+		}
+		s.desktopStarting[desktopStartingKey(tenantID, userID, botID, item.ClientMessageID)] = item
 		s.persistDesktopState(tenantID)
 	}
 	return item
@@ -483,10 +599,91 @@ func (s *Service) pushFrontDesktopQueue(tenantID, userID, botID string, item *de
 	s.persistDesktopState(tenantID)
 }
 
+func (s *Service) parkOfflineNodeMessage(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession string) (BotAdmission, bool) {
+	// A delegate or a mailbox wake uses an xdel-/xwake- key. Those turns wait
+	// on the same node queue as a person's message; the dispatch claim stays
+	// until the queue actually starts the run.
+	if !admit || strings.TrimSpace(nodeID) == "" || desktopReplay(ctx) || desktopQueueSuppressed(ctx) {
+		return BotAdmission{}, false
+	}
+	pos, err := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
+		ClientMessageID: clientMessageID,
+		Content:         content,
+		Phase:           phase,
+		ContinueSession: continueSession,
+		Kind:            "new",
+		Instruction:     content,
+		Ack:             nodeOfflineAck,
+		WaitKind:        desktopQueueWaitNode,
+		WaitSince:       s.now(),
+		Secrets:         desktopSecretBag(ctx),
+		NoteIDs:         dispatchNotes(ctx),
+	})
+	if err != nil {
+		return BotAdmission{}, false
+	}
+	return BotAdmission{
+		Accepted: true, Queued: true, Position: pos, Ack: nodeOfflineAck,
+		Kind: "new", ClientMessageID: clientMessageID,
+	}, true
+}
+
+// nodeOfflineAdmission parks a message when the node dropped during admit.
+// parked is true only when the message is now in the queue.
+// A recognized drop that is not parked — a replay, a synchronous send, or a
+// turn the queue will not take — returns ErrNodeOffline so the person sees
+// the same sentence.
+func (s *Service) nodeOfflineAdmission(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession string, err error) (BotAdmission, error, bool) {
+	if err == nil || strings.TrimSpace(nodeID) == "" || !nodeLinkOffline(err) {
+		return BotAdmission{}, nil, false
+	}
+	if !desktopReplay(ctx) {
+		if parked, ok := s.parkOfflineNodeMessage(ctx, admit, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession); ok {
+			return parked, nil, true
+		}
+	}
+	return BotAdmission{}, ErrNodeOffline, false
+}
+
+// failAdmit ends a desktop send that stopped before the message was posted.
+// A parked tunnel drop returns the queue ack. Any other tunnel drop gives
+// the keyboard back and returns ErrNodeOffline. A replay keeps the same
+// queue item and does not touch the keyboard.
+func (s *Service) failAdmit(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID string, opened bool, cause error) (BotAdmission, error, bool) {
+	if cause == nil {
+		return BotAdmission{}, nil, false
+	}
+	admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession, cause)
+	if parked {
+		return admission, nil, true
+	}
+	if offlineErr != nil && desktopReplay(ctx) {
+		return BotAdmission{}, offlineErr, true
+	}
+	s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
+	s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
+	if offlineErr != nil {
+		return BotAdmission{}, offlineErr, true
+	}
+	return BotAdmission{}, cause, true
+}
+
 func (s *Service) dispatchQueuedItem(tenantID, userID, botID string, item *desktopQueueItem) error {
 	if item == nil {
 		return nil
 	}
+	startKey := desktopStartingKey(tenantID, userID, botID, item.ClientMessageID)
+	s.mu.Lock()
+	if s.desktopStarting == nil {
+		s.desktopStarting = map[string]*desktopQueueItem{}
+	}
+	s.desktopStarting[startKey] = item
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.desktopStarting, startKey)
+		s.mu.Unlock()
+	}()
 	kind := strings.TrimSpace(item.Kind)
 	if kind == "" {
 		kind = "new"
@@ -536,10 +733,82 @@ func (s *Service) dispatchQueuedItem(tenantID, userID, botID string, item *deskt
 	if err != nil {
 		return err
 	}
+	if !admission.Queued {
+		s.noteDesktopContinueRunning(tenantID, userID, botID, item.ClientMessageID)
+	}
 	s.finishQueued(tenantID, userID, botID, item, "running", admission.RunID)
 	if strings.HasPrefix(item.ClientMessageID, "xdel-") {
 		noteID := strings.TrimPrefix(item.ClientMessageID, "xdel-")
 		s.markDelegateRun(tenantID, userID, botID, noteID, firstNonEmptyString(admission.RunID, item.ClientMessageID))
+	}
+	if strings.HasPrefix(item.ClientMessageID, "xwake-") {
+		// A node wait refunded its slot while it sat in the queue. Count
+		// it now, when the turn starts. A busy-desktop wake already took
+		// its slot at pick time.
+		if item.WaitKind == desktopQueueWaitNode {
+			s.takeWake(tenantID, userID, botID)
+		}
+		if runID := strings.TrimSpace(admission.RunID); runID != "" {
+			s.markWakeRun(tenantID, userID, queueNoteIDs(item), runID)
+		}
+	}
+	return nil
+}
+
+// finishHubStartedNodeWait closes a delegate or a mailbox wake that waited
+// out the tunnel. The delegate is reported once, so the main bot hears it.
+// Every note in a wake loses its claim, so the tunnel coming back can start
+// that wake again.
+func (s *Service) finishHubStartedNodeWait(tenantID, userID, botID, clientID string, noteIDs []string) {
+	ids := noteIDs
+	if len(ids) == 0 {
+		ids = queueNoteIDs(&desktopQueueItem{ClientMessageID: clientID})
+	}
+	switch {
+	case strings.HasPrefix(clientID, "xdel-"):
+		noteID := ""
+		if len(ids) > 0 {
+			noteID = ids[0]
+		}
+		runID := s.markDelegateRun(tenantID, userID, botID, noteID, clientID)
+		s.reportDelegateRunEnd(tenantID, userID, botID, runID, "failed", Reply{Text: nodeOfflineOutcome}, ErrNodeOffline)
+	case strings.HasPrefix(clientID, "xwake-"):
+		s.undoDispatchMark(tenantID, userID, dispatchJob{kind: "wake", noteIDs: ids})
+	}
+}
+
+type dispatchNotesKey struct{}
+
+func withDispatchNotes(ctx context.Context, ids []string) context.Context {
+	if ctx == nil || len(ids) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, dispatchNotesKey{}, append([]string(nil), ids...))
+}
+
+func dispatchNotes(ctx context.Context) []string {
+	if ctx == nil {
+		return nil
+	}
+	ids, _ := ctx.Value(dispatchNotesKey{}).([]string)
+	if len(ids) == 0 {
+		return nil
+	}
+	return append([]string(nil), ids...)
+}
+
+func queueNoteIDs(item *desktopQueueItem) []string {
+	if item == nil {
+		return nil
+	}
+	if len(item.NoteIDs) > 0 {
+		return append([]string(nil), item.NoteIDs...)
+	}
+	id := strings.TrimSpace(item.ClientMessageID)
+	for _, prefix := range []string{"xdel-", "xwake-"} {
+		if strings.HasPrefix(id, prefix) {
+			return []string{strings.TrimPrefix(id, prefix)}
+		}
 	}
 	return nil
 }
@@ -582,6 +851,16 @@ func (s *Service) runStillLive(tenantID, userID, botID, runID string) bool {
 
 func (s *Service) personHasBotKeyboard(tenantID, userID, botID string) bool {
 	if s == nil {
+		return false
+	}
+	// A bot with no computer does not keep the keyboard. A pin left from
+	// before that rule is dropped here, so the owner's desktop is not stuck.
+	if s.botSkipsDesktop(tenantID, botID) {
+		if rec, err := s.load(context.Background(), tenantID); err == nil {
+			if i := indexOf(rec.Bots, botID); i >= 0 {
+				s.dropDesktopHoldOwnedBy(tenantID, desktopUserForBot(userID, rec.Bots[i]), botID)
+			}
+		}
 		return false
 	}
 	dUser := strings.TrimSpace(userID)

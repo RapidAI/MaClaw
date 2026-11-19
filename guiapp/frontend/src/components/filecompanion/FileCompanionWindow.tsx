@@ -45,6 +45,7 @@ import {
     GetBrandInfo,
     GetCurrentLanguage,
     GetFileCompanionBoot,
+    FileCompanionTakeLibraryView,
     FileCompanionTakePlaces,
     ListFileCompanionLibrary,
     SetFileCompanionOpenSet,
@@ -3938,6 +3939,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setPaperNoticeCode(code);
             setOpenMenu(false);
         };
+        // A group join digest's 确认 (and `open-file --library` on a running
+        // window) asks for the 文档管理 screen instead of a document.
+        const onView = (payload: unknown) => {
+            const raw = Array.isArray(payload) ? payload[0] : payload;
+            if (String(raw ?? "") !== "library") return;
+            setView("library");
+            setOpenMenu(false);
+        };
+        runtime?.EventsOn?.("file-companion:view", onView);
         runtime?.EventsOn?.("file-companion:open", onOpen);
         runtime?.EventsOn?.("file-companion:place", onPlace);
         runtime?.EventsOn?.("file-companion:show", onShow);
@@ -4086,7 +4096,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             // Ready returns paths queued after the boot read. Applying them
             // here, before the empty check, keeps the open panel from covering
             // a file the event would only deliver later.
-            const finishBoot = async (suppressOpen: boolean) => {
+            const finishBoot = async (suppressOpen: boolean, libraryBoot = false) => {
                 const delivered = readyPaths(await Promise.resolve(FileCompanionUIReady()).catch(() => undefined));
                 for (const path of delivered) {
                     if (cancelled) return;
@@ -4094,9 +4104,18 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 }
                 if (cancelled) return;
                 requestPlace(readyPaths(await Promise.resolve(FileCompanionTakePlaces()).catch(() => undefined)));
+                // A --library that landed after the boot read but before this
+                // point rides neither the boot payload nor the view event.
+                const pendingLibrary = await Promise.resolve(FileCompanionTakeLibraryView()).catch(() => false);
+                if (cancelled) return;
+                const showLibrary = libraryBoot || pendingLibrary === true;
+                if (showLibrary) {
+                    setView("library");
+                    setOpenMenu(false);
+                }
                 bootSettledRef.current = true;
                 setBootSettled(true);
-                if (!suppressOpen) askIfEmpty();
+                if (!suppressOpen && !showLibrary) askIfEmpty();
             };
             try {
                 const boot = await bootPromise;
@@ -4104,6 +4123,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 // A notice is a failed browser add. It does not open the 打开
                 // panel and it does not resume the previous session.
                 const notice = bootNotice(boot as { notice?: unknown; Notice?: unknown });
+                const libraryBoot = Boolean((boot as { library?: unknown; Library?: unknown }).library ?? (boot as { Library?: unknown }).Library);
                 const suppressOpen = companionPaperNotice(getCompanionUiLang(), notice) !== "";
                 if (suppressOpen) {
                     setPaperNoticeCode(notice);
@@ -4123,7 +4143,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     await openPath(path, false);
                 }
                 if (cancelled) return;
-                await finishBoot(suppressOpen);
+                await finishBoot(suppressOpen, libraryBoot);
             } catch {
                 if (cancelled) return;
                 await finishBoot(false);
@@ -4131,6 +4151,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         })();
         return () => {
             cancelled = true;
+            runtime?.EventsOff?.("file-companion:view");
             runtime?.EventsOff?.("file-companion:open");
             runtime?.EventsOff?.("file-companion:place");
             runtime?.EventsOff?.("file-companion:show");
@@ -4719,6 +4740,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     }, [activeTab?.messages, discussionReplies]);
     const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom } = useAssistantOutputScroll({
         activityKey: active,
+        conversationKey: active,
         hasConversation: companionMessages.length > 0,
         messages: companionMessages,
         ready: true,

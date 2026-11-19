@@ -29,6 +29,54 @@ func TestWindowTitlesMatch(t *testing.T) {
 	}
 }
 
+func TestSameControlWindowDoesNotMergeSameApp(t *testing.T) {
+	if !sameControlWindow("", "收件箱 - Google Chrome") {
+		t.Fatal("empty stays unknown")
+	}
+	if !sameControlWindow("记事本", "无标题 - 记事本") {
+		t.Fatal("a bare app name still matches that app's window")
+	}
+	if !sameControlWindow("订单", "订单 - Google Chrome") {
+		t.Fatal("a bare document name still matches its full title")
+	}
+	if !sameControlWindow("订单 - Google Chrome", "订单 — Google Chrome") {
+		t.Fatal("the same document and app still match across separators")
+	}
+	if sameControlWindow("订单 - Google Chrome", "收件箱 - Google Chrome") {
+		t.Fatal("two chrome windows must not match")
+	}
+	if sameControlWindow("Chrome", "订单 - Google Chrome") {
+		t.Fatal("a short token must not match a longer app suffix")
+	}
+	if sameControlWindow("微信", "微信开发者工具") {
+		t.Fatal("wechat must not match wechat devtools")
+	}
+	if sameControlWindow("hello.txt - Notepad", "Untitled - Notepad") {
+		t.Fatal("two documents of one app must not match")
+	}
+	if !WindowTitlesMatch("hello.txt - Notepad", "Untitled - Notepad") {
+		t.Fatal("app-family matching must stay on WindowTitlesMatch")
+	}
+}
+
+func TestSameDocumentWindowIgnoresUnreadCount(t *testing.T) {
+	if !sameDocumentWindow("收件箱 (1) - Google Chrome", "收件箱 (2) - Google Chrome") {
+		t.Fatal("an unread count is still the same document")
+	}
+	if !sameDocumentWindow("收件箱 (1) - Gmail - Google Chrome", "收件箱 (2) - Gmail - Google Chrome") {
+		t.Fatal("a count before the product name is still the same document")
+	}
+	if sameDocumentWindow("搜索 - Google Chrome", "订单 - Google Chrome") {
+		t.Fatal("a new page is a different document")
+	}
+	if !sameDocumentWindow("记事本", "无标题 - 记事本") {
+		t.Fatal("a bare app name is still that window's document")
+	}
+	if sameDocumentWindow("订单 - Google Chrome", "收件箱 - Google Chrome") {
+		t.Fatal("two chrome documents must not match")
+	}
+}
+
 func TestBestWindowTitleDisambiguatesApps(t *testing.T) {
 	cases := []struct {
 		hint   string

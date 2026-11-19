@@ -159,6 +159,14 @@ time.sleep(0.3)
 watch.close()
 watch.write("tok")
 print("hit " + str(sup.read_sentinel("tok").get("x_client")))
+num = watch.number
+sock_path = "/tmp/.X11-unix/X%d" % num
+open(sock_path, "w").close()
+__import__("os").makedirs(sup.SENTINEL_DIR, exist_ok=True)
+open(sup.SENTINEL_DIR + "/display-%d.pid" % num, "w").write("999999")
+again = sup.SentinelDisplay()
+print("reclaim " + str(again.number == num))
+again.close()
 `)
 		for _, want := range []string{
 			"home /home/desktop/Desktop/a.c",
@@ -177,6 +185,7 @@ print("hit " + str(sup.read_sentinel("tok").get("x_client")))
 			"parent 1",
 			"registry 0",
 			"hit True",
+			"reclaim True",
 		} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("supervisor missing %q\n%s", want, out)

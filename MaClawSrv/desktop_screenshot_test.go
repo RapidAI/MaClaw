@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -90,28 +92,36 @@ func TestDesktopPagesStayVisibleWhenTheAttachedTabTimesOut(t *testing.T) {
 	}
 }
 
-func TestScreenshotRaisesTheLoadedPageWithoutAResume(t *testing.T) {
+func TestScreenshotDoesNotRaiseTheBrowser(t *testing.T) {
 	shot := desktopTestPNG(t, 8, 8, false)
 	scope := agentruntime.Scope{TenantID: "tenant-shot-raise", UserID: "alice", InstanceID: "shot-raise"}
 	previousSession := desktopRemoteSession
 	previousShot := desktopRemoteScreenshot
 	previousOpen := desktopOpenBrowser
 	previousFocus := desktopFocusVisiblePage
+	previousRaise := desktopRaisePageBehindError
 	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
 		return desktopEndpoint{CDP: "http://10.0.0.8:19020", Display: ":20"}, nil
 	}
 	desktopRemoteScreenshot = func(context.Context, string, string, string) ([]byte, error) {
 		return shot, nil
 	}
-	raised := 0
+	focused := 0
+	checked := 0
+	opened := 0
 	desktopOpenBrowser = func(*desktopBinding, agentruntime.Scope, string, string) (*browser.BrowserAgentSession, error) {
+		opened++
 		return &browser.BrowserAgentSession{}, nil
 	}
-	desktopFocusVisiblePage = func(sess *browser.BrowserAgentSession) error {
+	desktopFocusVisiblePage = func(*browser.BrowserAgentSession) error {
+		focused++
+		return nil
+	}
+	desktopRaisePageBehindError = func(sess *browser.BrowserAgentSession) error {
 		if sess == nil {
-			t.Fatal("screenshot raised a nil browser")
+			t.Fatal("screenshot checked a nil browser")
 		}
-		raised++
+		checked++
 		return nil
 	}
 	t.Cleanup(func() {
@@ -119,12 +129,36 @@ func TestScreenshotRaisesTheLoadedPageWithoutAResume(t *testing.T) {
 		desktopRemoteScreenshot = previousShot
 		desktopOpenBrowser = previousOpen
 		desktopFocusVisiblePage = previousFocus
+		desktopRaisePageBehindError = previousRaise
 	})
 
 	out, err := operateDesktop(context.Background(), scope, map[string]any{"action": "screenshot"})
 	text, images := agentruntime.ExtractModelImages(out)
-	if err != nil || raised != 1 || !strings.Contains(text, "8x8") || len(images) != 1 {
-		t.Fatalf("raised=%d text=%q images=%d err=%v", raised, text, len(images), err)
+	if err != nil || focused != 0 || checked != 0 || opened != 0 || !strings.Contains(text, "8x8") || len(images) != 1 {
+		t.Fatalf("cold shot focused=%d checked=%d opened=%d text=%q images=%d err=%v", focused, checked, opened, text, len(images), err)
+	}
+
+	key := mustDesktopUserKey(t, scope.TenantID, scope.UserID)
+	binding := desktopBindingFor(key)
+	binding.mu.Lock()
+	binding.session = &browser.BrowserAgentSession{TargetID: "tab-keep"}
+	binding.addr = "http://10.0.0.8:19020"
+	binding.mu.Unlock()
+	previousConnected := desktopSessionConnected
+	desktopSessionConnected = func(sess *browser.BrowserAgentSession) bool {
+		return sess != nil && sess.TargetID == "tab-keep"
+	}
+	t.Cleanup(func() {
+		desktopSessionConnected = previousConnected
+		binding.mu.Lock()
+		binding.session = nil
+		binding.addr = ""
+		binding.mu.Unlock()
+	})
+	out, err = operateDesktop(context.Background(), scope, map[string]any{"action": "screenshot"})
+	text, images = agentruntime.ExtractModelImages(out)
+	if err != nil || focused != 0 || checked != 1 || opened != 0 || !strings.Contains(text, "8x8") || len(images) != 1 {
+		t.Fatalf("attached shot focused=%d checked=%d opened=%d text=%q images=%d err=%v", focused, checked, opened, text, len(images), err)
 	}
 }
 
@@ -312,6 +346,33 @@ func TestHubClientFetchesTheScreenshot(t *testing.T) {
 	if path != "/api/v1/desktop-services/screenshot" || auth != "Bearer hub-token" || user != "alice" {
 		t.Fatalf("path=%q auth=%q user=%q", path, auth, user)
 	}
+}
+
+func TestHubClientReadsASameNodeScreenshotLocally(t *testing.T) {
+	shot := desktopTestPNG(t, 8, 6, false)
+	var localAuth string
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string]any{"mime": "image/png", "image_base64": base64.StdEncoding.EncodeToString(shot)})
+	}))
+	defer local.Close()
+	var hubBodies int
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubBodies++
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket"})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	data, err := client.Screenshot(context.Background(), "tenant", "alice", ":20")
+	if err != nil || !bytes.Equal(data, shot) {
+		t.Fatalf("err=%v", err)
+	}
+	if hubBodies != 1 {
+		t.Fatalf("hub saw %d bodies; the png should stay on the local desktopd", hubBodies)
+	}
+	if localAuth != "" {
+		t.Fatalf("local desktopd saw a hub bearer: %q", localAuth)
+	}
 	var savedName string
 	saveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in map[string]string
@@ -331,6 +392,212 @@ func TestHubClientFetchesTheScreenshot(t *testing.T) {
 	data, saved, err = saver.screenshot(context.Background(), "tenant", "alice", ":20", "other.png")
 	if err != nil || saved != "" || !bytes.Equal(data, shot) {
 		t.Fatalf("mismatched path saved=%q err=%v", saved, err)
+	}
+}
+
+func TestHubClientSendsTheWindow(t *testing.T) {
+	shot := desktopTestPNG(t, 8, 6, false)
+	var window string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		window, _ = in["window"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"mime": "image/png", "image_base64": base64.StdEncoding.EncodeToString(shot),
+			"screen_width": 8, "screen_height": 6, "image_width": 8, "image_height": 6,
+			"scale": 1, "region": map[string]int{"x": 0, "y": 0, "width": 8, "height": 6},
+		})
+	}))
+	defer srv.Close()
+	client := &desktopHubClient{baseURL: srv.URL, token: "hub-token", http: srv.Client()}
+	got, _, err := client.screenshotWith(context.Background(), "tenant", "alice", ":20", "", desktop.ShotOptions{Window: "NEON SERPENT"})
+	if err != nil || window != "NEON SERPENT" || got.ImageWidth != 8 {
+		t.Fatalf("window=%q shot=%+v err=%v", window, got, err)
+	}
+}
+
+func TestHubClientReadsAnOptionedScreenshotLocally(t *testing.T) {
+	shot := desktopTestPNG(t, 8, 6, false)
+	var window, localAuth string
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localAuth = r.Header.Get("Authorization")
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		window, _ = in["window"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"mime": "image/png", "image_base64": base64.StdEncoding.EncodeToString(shot),
+			"screen_width": 16, "screen_height": 12, "image_width": 8, "image_height": 6,
+			"scale": 0.5, "region": map[string]int{"x": 0, "y": 0, "width": 16, "height": 12},
+		})
+	}))
+	defer local.Close()
+	var hubBodies int
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubBodies++
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket"})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	got, _, err := client.screenshotWith(context.Background(), "tenant", "alice", ":20", "", desktop.ShotOptions{Window: "NEON SERPENT"})
+	if err != nil || window != "NEON SERPENT" || got.ScreenWidth != 16 || got.Scale != 0.5 || got.ImageWidth != 8 {
+		t.Fatalf("window=%q shot=%+v err=%v", window, got, err)
+	}
+	if hubBodies != 1 || localAuth != "" {
+		t.Fatalf("hub bodies=%d local auth=%q", hubBodies, localAuth)
+	}
+}
+
+func TestDirectReadIgnoresTheHubProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("http_proxy", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("local request carried %q", r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "notes"})
+	}))
+	defer local.Close()
+	client := &desktopHubClient{http: &http.Client{Timeout: 2 * time.Second}}
+	var out struct {
+		Output string `json:"output"`
+	}
+	if err := client.postDirect(context.Background(), local.URL+"/v1/desktops/local/ticket", map[string]any{"action": "read"}, &out, 1<<20); err != nil || out.Output != "notes" {
+		t.Fatalf("out=%q err=%v", out.Output, err)
+	}
+}
+
+func TestDirectReadFallsBackThroughHub(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer local.Close()
+	var sawSkip bool
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Maclaw-Skip-Local") == "1" {
+			sawSkip = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"output": "from-hub"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket", "output": ""})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	out, err := client.postDesktopTool(context.Background(), desktopToolCall{
+		RunID: "run-1", ToolCallID: "call-1", Tenant: "tenant-a", User: "alice",
+		Action: "file_read", Args: map[string]any{"path": "/home/desktop/a.txt"},
+	})
+	if err != nil || out.Text != "from-hub" || !sawSkip {
+		t.Fatalf("out=%+v skip=%v err=%v", out, sawSkip, err)
+	}
+}
+
+func TestDirectContainerErrorDoesNotRunTwice(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "file is missing", http.StatusBadGateway)
+	}))
+	defer local.Close()
+	hubCalls := 0
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubCalls++
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket", "output": ""})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	_, err := client.postDesktopTool(context.Background(), desktopToolCall{
+		RunID: "run-1", ToolCallID: "call-1", Tenant: "tenant-a", User: "alice",
+		Action: "file_read", Args: map[string]any{"path": "/home/desktop/a.txt"},
+	})
+	if err == nil || hubCalls != 1 {
+		t.Fatalf("err=%v hubCalls=%d", err, hubCalls)
+	}
+}
+
+func TestDirectDialDoesNotWaitOutTheHubCall(t *testing.T) {
+	start := time.Now()
+	client := &desktopHubClient{}
+	err := client.postDirect(context.Background(), "http://192.0.2.1:18081/v1/desktops/local/ticket", map[string]any{"action": "read"}, nil, 1<<20)
+	if err == nil || time.Since(start) > 8*time.Second {
+		t.Fatalf("err=%v waited=%s", err, time.Since(start))
+	}
+}
+
+func TestHubToolFileReadStaysOnTheNode(t *testing.T) {
+	var localAction, localAuth string
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localAuth = r.Header.Get("Authorization")
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		localAction, _ = in["action"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "notes"})
+	}))
+	defer local.Close()
+	var hubBodies int
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubBodies++
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket", "output": ""})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	out, err := client.postDesktopTool(context.Background(), desktopToolCall{
+		RunID: "run-1", ToolCallID: "call-1", Tenant: "tenant-a", User: "alice",
+		Action: "file_read", Args: map[string]any{"path": "/home/desktop/a.txt"},
+	})
+	if err != nil || out.Text != "notes" || localAction != "read" || localAuth != "" || hubBodies != 1 {
+		t.Fatalf("out=%+v action=%q auth=%q hub=%d err=%v", out, localAction, localAuth, hubBodies, err)
+	}
+}
+
+func TestLargeFileWriteStaysOffTheHubBody(t *testing.T) {
+	marker := "FILEBODY-" + strings.Repeat("x", localFileProbeBytes)
+	var sawMarker bool
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		text, _ := in["content"].(string)
+		sawMarker = strings.Contains(text, "FILEBODY-")
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "wrote"})
+	}))
+	defer local.Close()
+	var hubBodies []string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		hubBodies = append(hubBodies, string(raw))
+		if r.Header.Get("X-Maclaw-Local-Probe") != "1" {
+			t.Errorf("hub saw the write before a probe")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"direct_url": local.URL + "/v1/desktops/local/ticket"})
+	}))
+	defer hub.Close()
+	client := &desktopHubClient{baseURL: hub.URL, token: "hub-token", http: hub.Client()}
+	got, err := client.File(context.Background(), "tenant-a", "alice", "write", "/home/desktop/a.txt", marker, "", "")
+	if err != nil || got != "wrote" || !sawMarker || len(hubBodies) != 1 || strings.Contains(hubBodies[0], "FILEBODY-") {
+		t.Fatalf("got=%q marker=%v hub=%d err=%v", got, sawMarker, len(hubBodies), err)
+	}
+
+	publicBodies := 0
+	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicBodies++
+		raw, _ := io.ReadAll(r.Body)
+		if publicBodies == 1 {
+			if r.Header.Get("X-Maclaw-Local-Probe") != "1" || strings.Contains(string(raw), "FILEBODY-") {
+				t.Errorf("first request carried the file: %s", raw)
+			}
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"LOCAL_UNAVAILABLE","message":"local desktop path is not available"}`))
+			return
+		}
+		if r.Header.Get("X-Maclaw-Skip-Local") != "1" || !strings.Contains(string(raw), "FILEBODY-") {
+			t.Errorf("second request did not carry the file")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"output": "stored"})
+	}))
+	defer public.Close()
+	publicClient := &desktopHubClient{baseURL: public.URL, token: "hub-token", http: public.Client()}
+	got, err = publicClient.File(context.Background(), "tenant-a", "alice", "write", "/home/desktop/a.txt", marker, "", "")
+	if err != nil || got != "stored" || publicBodies != 2 {
+		t.Fatalf("public got=%q bodies=%d err=%v", got, publicBodies, err)
 	}
 }
 

@@ -182,7 +182,7 @@ func (a *App) installManagedIndustryExpert(item managedIndustryExpertRecord, acq
 			return
 		}
 	}
-	result, err := a.InstallExpertMarketListingWithExpectedHash(item.ListingID, item.PackageHash)
+	result, err := a.InstallExpertMarketListingWithExpectedHash(item.ListingID, item.PackageHash, "")
 	if err != nil || result == nil || strings.TrimSpace(result.Expert.ID) == "" {
 		managedIndustryInstallFailures.Store(installKey, struct{}{})
 		return
@@ -263,7 +263,7 @@ func (a *App) PurchaseAndInstallManagedIndustryExpert(assetID, listingID string)
 	if _, err := a.PurchaseExpertMarketListing(listingID); err != nil {
 		return err
 	}
-	result, err := a.InstallExpertMarketListingWithExpectedHash(listingID, item.PackageHash)
+	result, err := a.InstallExpertMarketListingWithExpectedHash(listingID, item.PackageHash, "")
 	if err != nil {
 		return err
 	}

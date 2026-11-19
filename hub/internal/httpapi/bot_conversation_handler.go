@@ -15,9 +15,10 @@ import (
 // GET ?after=<seq>&bot_id=&limit=&wait=<seconds> lists this person's synced
 // conversation entries changed after the cursor; wait holds the request
 // (at most 25s) until something changes. POST {client_id, entries:[...]}
-// upserts this client's entries. Every GUI of the same person reads the same
-// journal, so a message, acknowledgement, reply, card answer or run state
-// written by one is shown by the others.
+// upserts this client's entries and returns each message's created_seq.
+// Every GUI of the same person reads the same journal and shows messages in
+// that sequence, so a message, acknowledgement, reply, card answer or run
+// state written by one is shown by the others in the same order.
 func BotConversationHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
@@ -36,12 +37,12 @@ func BotConversationHandler(svc *botmgmt.Service, identity botAuthenticator) htt
 				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "invalid conversation write")
 				return
 			}
-			head, err := svc.WriteConversation(r.Context(), principal.TenantID, principal.UserID, in.ClientID, in.Entries)
+			saved, err := svc.SaveConversation(r.Context(), principal.TenantID, principal.UserID, in.ClientID, in.Entries)
 			if err != nil {
 				writeBotUserError(w, r, principal, err, "")
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"head": head})
+			writeJSON(w, http.StatusOK, saved)
 			return
 		}
 		q := r.URL.Query()

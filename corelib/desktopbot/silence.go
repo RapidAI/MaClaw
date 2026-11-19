@@ -9,9 +9,32 @@ const WorthSayingPrompt = "只在两种情况下主动调用 send_to_user：需�
 	"其它进度只写入 PROGRESS.md。不要为单个工具步骤发消息。\n" +
 	"每一轮结束前先问：这值得告诉这个人吗？值得，就 send_to_user 到该去的那个表面。不值得，就什么都不发。"
 
+// WorthSayingPromptNoDesktop is the same rule for a bot with no computer.
+// Its surface has no send_to_user tool and no PROGRESS.md file system —
+// the reply it writes is the text the person sees — so the pinned text
+// must not name a tool or a file that does not exist (bot_69ee2c14:
+// a finish call it cannot make burns an iteration every turn).
+const WorthSayingPromptNoDesktop = "只在两种情况下主动回复：需要这个人做决定，或者整件事做完。\n" +
+	"不要为单个工具步骤写进度汇报。\n" +
+	"每一轮结束前先问：这值得告诉这个人吗？值得，就把它写进回复。不值得，就什么都不写。"
+
 // RoutineQuietPrompt is the last message of a schedule, background, or event
 // turn. It is not part of the pinned system segment.
 const RoutineQuietPrompt = "这一轮是例行检查，没有人在等回复。有变化、失败、或需要这个人做决定，就调用 send_to_user，channel 指明该去的那个表面。没有变化就结束，不要调用 send_to_user，也不要写「无变化」「no change」或「(无输出)」。"
+
+// RoutineQuietPromptNoDesktop is the same rule for a turn whose surface has
+// no send_to_user tool — a computerless bot, or a plain scheduled task. The
+// reply the run writes is what reaches the person, so the text asks for a
+// reply, not a call to a tool that does not exist.
+const RoutineQuietPromptNoDesktop = "这一轮是例行检查，没有人在等回复。有变化、失败、或需要这个人做决定，就把它写进回复，回复会发到该去的表面。没有变化就结束，不要写「无变化」「no change」或「(无输出)」。"
+
+// RoutineQuietPromptFor returns the quiet-turn text matching the surface.
+func RoutineQuietPromptFor(noDesktop bool) string {
+	if noDesktop {
+		return RoutineQuietPromptNoDesktop
+	}
+	return RoutineQuietPrompt
+}
 
 // SteerOnIt is the short acknowledgement when a person changes work that is
 // already going. English is SteerOnItEN. The sentence does not restate the plan.
@@ -39,16 +62,48 @@ func NotContent(text string) bool {
 	}
 }
 
+// RecurringWorkPrompt tells the bot to register work that should happen
+// again. The judgment is the bot's, from the work and the conversation.
+// It is pinned with the system segment for the whole conversation.
+const RecurringWorkPrompt = "一件事若要反复做，调用 bot_schedule 登记成定时任务。一次就能做完的事不要登记。\n" +
+	"判断来自当前这件事和已经说过的话，不限于这句话写了周期。搜索、查看、汇报、清理，以及其它要隔一段时间再做的事，都一样。\n" +
+	"name 是这条定时任务的稳定名字。同一个名字是同一条，instruction 写成以后每一轮要做的整件事。另一件反复的事用另一个名字。\n" +
+	"周期写 interval_minutes。钟点要同时写 hour 和 minute。没写的时间沿用这条任务已有的值。新建时必须给出周期，或同时给出 hour 和 minute。对方没说隔多久，就按这件事该隔多久选一个，并在回复里说明选了多久。\n" +
+	"登记之后，这一轮对方要你现在做的仍然做。定时任务负责以后的轮次。到点的那一轮不要再次登记同一条，除非工作或周期变了。取消用 action=cancel 并给出 name。列出用 action=list。"
+
 // PinWorthSaying appends the stable interruption rule once.
 func PinWorthSaying(prompt string) string {
-	if strings.Contains(prompt, WorthSayingPrompt) {
+	return PinWorthSayingFor(prompt, false)
+}
+
+// PinWorthSayingFor pins the worth-saying rule whose surface matches the
+// bot: a computerless bot gets the reply-only text, not the send_to_user
+// tool it does not have.
+func PinWorthSayingFor(prompt string, noDesktop bool) string {
+	text := WorthSayingPrompt
+	if noDesktop {
+		text = WorthSayingPromptNoDesktop
+	}
+	if strings.Contains(prompt, text) {
 		return prompt
 	}
 	prompt = strings.TrimRight(prompt, "\n")
 	if prompt == "" {
-		return WorthSayingPrompt
+		return text
 	}
-	return prompt + "\n\n" + WorthSayingPrompt
+	return prompt + "\n\n" + text
+}
+
+// PinRecurringWork appends the timer rule once.
+func PinRecurringWork(prompt string) string {
+	if strings.Contains(prompt, RecurringWorkPrompt) {
+		return prompt
+	}
+	prompt = strings.TrimRight(prompt, "\n")
+	if prompt == "" {
+		return RecurringWorkPrompt
+	}
+	return prompt + "\n\n" + RecurringWorkPrompt
 }
 
 // SpeakInput is one finished round, before any surface is chosen.

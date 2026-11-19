@@ -8,6 +8,8 @@ export type DesktopComputerState = {
     restart_allowed: boolean;
     reset_allowed: boolean;
     active_runs: number;
+    /** True when this desktop is a desktopd the user installed. */
+    intranet?: boolean;
 };
 
 export type BotComputerSettingsLabels = {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
@@ -65,6 +66,15 @@ type SystemSettingsRepository interface {
 	Get(ctx context.Context, key string) (string, error)
 }
 
+// VisibilityLockInfo mirrors the authority payload Hub Center returns in the
+// heartbeat response: while an admin override is active at Hub Center, the
+// hub can show who manages its effective visibility.
+type VisibilityLockInfo struct {
+	Locked     bool   `json:"locked"`
+	LockedBy   string `json:"locked_by,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
+}
+
 type RegistrationState struct {
 	Enabled                       bool                                             `json:"enabled"`
 	BaseURL                       string                                           `json:"base_url"`
@@ -92,6 +102,7 @@ type RegistrationState struct {
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
 	AllowExternalProviders        bool                                             `json:"allow_external_providers"`
 	Authorizations                map[string]json.RawMessage                       `json:"authorizations,omitempty"`
+	VisibilityLock                *VisibilityLockInfo                              `json:"visibility_lock,omitempty"`
 }
 
 type registrationRecord struct {
@@ -108,6 +119,7 @@ type registrationRecord struct {
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
 	AllowExternalProviders        bool                                             `json:"allow_external_providers"`
 	Authorizations                map[string]json.RawMessage                       `json:"authorizations,omitempty"`
+	VisibilityLock                *VisibilityLockInfo                              `json:"visibility_lock,omitempty"`
 }
 
 type centerQualityProbe struct {
@@ -139,10 +151,11 @@ type registerHubRequest struct {
 }
 
 type registerHubResponse struct {
-	HubID               string `json:"hub_id"`
-	HubSecret           string `json:"hub_secret"`
-	PendingConfirmation bool   `json:"pending_confirmation"`
-	Message             string `json:"message"`
+	HubID               string              `json:"hub_id"`
+	HubSecret           string              `json:"hub_secret"`
+	PendingConfirmation bool                `json:"pending_confirmation"`
+	Message             string              `json:"message"`
+	VisibilityLock      *VisibilityLockInfo `json:"visibility_lock"`
 }
 
 type deviceCredentialBackupRequest struct {
@@ -335,9 +348,11 @@ func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service 
 	return &Service{
 		cfg:      cfg,
 		settings: settings,
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		client: func() *http.Client {
+			client := remote.NewHubHTTPClient()
+			client.Timeout = 15 * time.Second
+			return client
+		}(),
 		usageBackfills: centerUserUsageBackfillSyncs,
 	}
 }
@@ -540,6 +555,7 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 		DigitalEmployeeAuthorizations: registrationDigitalEmployeeAuthorizationsForStatus(record),
 		AllowExternalProviders:        record.AllowExternalProviders,
 		Authorizations:                cloneAuthorizationPayloads(record.Authorizations),
+		VisibilityLock:                record.VisibilityLock,
 	}, nil
 }
 func (s *Service) SetBaseURL(ctx context.Context, baseURL string) (*RegistrationState, error) {
@@ -782,6 +798,7 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 			LastError:           registerResp.Message,
 			LastBaseURL:         baseURL,
 			LastRegisteredAt:    time.Now().Unix(),
+			VisibilityLock:      registerResp.VisibilityLock,
 		}
 		if err := s.saveRegistration(ctx, record); err != nil {
 			return nil, err
@@ -815,8 +832,21 @@ func (s *Service) StartBackgroundSync() {
 		if ownerErr == nil && ownerEmail == "" {
 			ownerEmail = s.cfg.Center.OwnerEmail
 		}
-		if ownerErr == nil && strings.TrimSpace(ownerEmail) != "" {
-			if _, err := s.Register(ctx, ownerEmail); err == nil {
+		switch {
+		case ownerErr != nil:
+			log.Printf("[center] register on startup: %v", ownerErr)
+		case strings.TrimSpace(ownerEmail) == "":
+			err := errors.New("admin email is required for hub registration")
+			_ = s.updateRegistrationError(ctx, err.Error())
+			log.Printf("[center] register on startup: %v", err)
+		default:
+			if _, err := s.Register(ctx, ownerEmail); err != nil {
+				// Early failures (empty center URL, bad public URL) return
+				// before Register stores last_error. The install probe reads
+				// that field and must not restart a process that cannot succeed.
+				_ = s.updateRegistrationError(ctx, err.Error())
+				log.Printf("[center] register on startup: %v", err)
+			} else {
 				return
 			}
 		}
@@ -2725,6 +2755,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 				DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations"`
 				AllowExternalProviders        *bool                                            `json:"allow_external_providers"`
 				Authorizations                map[string]json.RawMessage                       `json:"authorizations"`
+				VisibilityLock                *VisibilityLockInfo                              `json:"visibility_lock"`
 			}
 			_ = json.Unmarshal(body, &okResp)
 			if okResp.AllowExternalProviders != nil {
@@ -2741,6 +2772,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			}
 			mergeTenantDigitalEmployeeAuthorizations(&record, okResp.DigitalEmployeeAuthorizations)
 			mergeAuthorizationPayloads(&record, okResp.Authorizations)
+			record.VisibilityLock = okResp.VisibilityLock
 
 			// Diagnostic: log what authorizations were received from HubCenter heartbeat
 			{

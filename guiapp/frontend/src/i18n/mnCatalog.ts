@@ -551,7 +551,6 @@ export const mnCatalog: Record<string, string> = {
     installing: "Суулгаж байна...",
     installNotImplemented: "Суулгах функц хараахан хэрэгжээгүй.",
     pauseEnvCheck: "Орчны шалгалтыг алгасах",
-    useWindowsTerminal: "Windows Terminal ашиглах",
     envCheckIntervalPrefix: "Тутамд",
     envCheckIntervalSuffix: "хоногт орчныг шалгахыг сануулна",
     envCheckDueTitle: "Орчин шалгах сануулга",

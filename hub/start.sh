@@ -10,6 +10,24 @@ if [ -f "$APP_DIR/desktop-api.env" ]; then
   set +a
 fi
 
+# Intranet bot nodes. deploy_all writes edge.env. An empty value turns the
+# routes on. HUB_EDGE_NODES=off in that file closes them. A bad line must not
+# stop this script: systemd restarts the unit forever if start fails.
+if [ -f "$APP_DIR/edge.env" ]; then
+  set +e
+  set -a
+  . "$APP_DIR/edge.env"
+  edge_env_status=$?
+  set +a
+  set -e
+  if [ "$edge_env_status" -ne 0 ]; then
+    echo "warning: $APP_DIR/edge.env exited $edge_env_status" >&2
+  fi
+fi
+if [ -z "${HUB_EDGE_NODES:-}" ]; then
+  export HUB_EDGE_NODES=on
+fi
+
 BIN_NAME="maclaw-hub"
 CONFIG_PATH="$APP_DIR/configs/config.yaml"
 EXAMPLE_CONFIG_PATH="$APP_DIR/configs/config.example.yaml"

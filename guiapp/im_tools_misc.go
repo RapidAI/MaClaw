@@ -2216,7 +2216,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	if anchored && taskAnchorBlocksMemoryRead(anchor, action, stringVal(args, "_user_text")) {
 		return "[system rejected] 当前任务已绑定目标。请先完成当前任务；只有用户在本轮明确要求使用长期记忆时，才能召回或浏览记忆。"
 	}
-	return corememory.HandleTool(h.currentMemoryStore(), args, corememory.ToolOptions{
+	out := corememory.HandleTool(h.currentMemoryStore(), args, corememory.ToolOptions{
 		ProjectPath:  projectPath,
 		ContextHint:  h.buildMemoryContextHintForUser(ownerID),
 		OwnerID:      ownerID,
@@ -2237,6 +2237,10 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			}
 		},
 	})
+	if memoryToolActionReturnsRecalledData(action) {
+		out = corememory.WrapUntrustedRecall("memory", out)
+	}
+	return out
 }
 
 func (h *IMMessageHandler) isLansengerGroupMemoryOwner(ownerID string) bool {

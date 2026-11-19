@@ -43,6 +43,20 @@ func ProxyBindingReleaseHandler(cfg *ProxyConfig) http.HandlerFunc {
 		hubID := strings.TrimSpace(r.Header.Get("X-Hub-ID"))
 		released := 0
 		if cfg != nil && cfg.ReleaseBinding != nil {
+			if cfg.VerifyHubSecret == nil || hubID == "" {
+				writeJSONError(w, http.StatusUnauthorized, "hub authentication required")
+				return
+			}
+			authz := strings.TrimSpace(r.Header.Get("Authorization"))
+			if !strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+				writeJSONError(w, http.StatusUnauthorized, "hub authentication required")
+				return
+			}
+			rawSecret := strings.TrimSpace(authz[len("Bearer "):])
+			if rawSecret == "" || cfg.VerifyHubSecret(r.Context(), hubID, rawSecret) != nil {
+				writeJSONError(w, http.StatusUnauthorized, "hub authentication required")
+				return
+			}
 			n, err := cfg.ReleaseBinding(r.Context(), hubID, nodeID)
 			if err != nil {
 				log.Printf("[llm-proxy] release bindings failed hub=%s node=%s: %v", hubID, nodeID, err)

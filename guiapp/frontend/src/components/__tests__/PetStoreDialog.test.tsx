@@ -15,10 +15,11 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetPetStoreAccount: vi.fn().mockResolvedValue({ credits: 25, user: { email: 'reader@example.test' }, uploads: [], purchases: [] }),
     GetPetStoreCreatorReport: vi.fn().mockResolvedValue({ paid_summary: { sales_amount: 0, sales_count: 0, paid_pack_count: 0 }, previous_paid_summary: { sales_amount: 0, sales_count: 0 }, paid_packs: [], free_download_packs: [] }),
     GetPetStoreRankings: vi.fn().mockResolvedValue({ creators: [], downloads: [], sales: [] }),
+    GetPetStoreInstalledPackDetails: vi.fn().mockResolvedValue({}),
     InstallPetStorePack: vi.fn().mockResolvedValue('pet-one'),
     IsPetStorePackInstalled: vi.fn().mockResolvedValue(false),
     ListPetStorePacks: vi.fn().mockResolvedValue({ packs: [{ id: 'pet-one', source_pack_id: 'pet-one-source', name: 'Pet One', description: 'A test pet.', price: 3, download_count: 0, sales_amount: 0 }], total_pages: 1 }),
-    PurchasePetStorePack: vi.fn().mockResolvedValue(undefined),
+    PurchasePetStorePack: vi.fn().mockResolvedValue({}),
     WithdrawPetStorePack: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -40,7 +41,9 @@ describe('PetStoreDialog', () => {
         vi.mocked(AppAPI.GetPetStoreRankings).mockResolvedValue({ creators: [], downloads: [], sales: [] });
         vi.mocked(AppAPI.InstallPetStorePack).mockResolvedValue('pet-one');
         vi.mocked(AppAPI.IsPetStorePackInstalled).mockResolvedValue(false);
+        vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({});
         vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [pack], total_pages: 1 });
+        vi.mocked(AppAPI.PurchasePetStorePack).mockResolvedValue({});
     });
     afterEach(() => cleanup());
 
@@ -75,13 +78,14 @@ describe('PetStoreDialog', () => {
         expect(onClose).not.toHaveBeenCalled();
     });
 
-    it('localizes the duplicate-purchase error in the Pet Store', async () => {
-        vi.mocked(AppAPI.PurchasePetStorePack).mockRejectedValue(new Error('Pet Store request failed: you already own this pet pack'));
+    it('localizes the purchase error when getting a pack fails', async () => {
+        vi.mocked(AppAPI.PurchasePetStorePack).mockRejectedValue(new Error('Pet Store request failed: status 410: pet pack has been removed'));
         renderStore('zh-Hans');
         await waitFor(() => expect(screen.getByRole('button', { name: '获取' })).toBeTruthy());
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: '获取' })); });
         await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '确认购买' }).querySelector('.modal-footer button:last-child')!); });
-        await waitFor(() => expect(screen.getByRole('dialog', { name: '购买失败' }).textContent).toContain('您已拥有此宠物包，无需重复获取。'));
+        await waitFor(() => expect(screen.getByRole('dialog', { name: '购买失败' }).textContent).toContain('该宠物包已被作者移除，无法安装。'));
+        expect(AppAPI.InstallPetStorePack).not.toHaveBeenCalled();
     });
 
     it('keeps keyboard navigation within the visible account tabs', async () => {
@@ -140,11 +144,11 @@ describe('PetStoreDialog', () => {
 
     it('does not repeat native installation checks when account data refreshes without new packs', async () => {
         renderStore();
-        await waitFor(() => expect(AppAPI.IsPetStorePackInstalled).toHaveBeenCalledWith('pet-one-source'));
-        expect(AppAPI.IsPetStorePackInstalled).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(AppAPI.GetPetStoreInstalledPackDetails).toHaveBeenCalledWith(['pet-one-source']));
+        expect(AppAPI.GetPetStoreInstalledPackDetails).toHaveBeenCalledTimes(1);
         await act(async () => { fireEvent.click(accountButton()); });
         await waitFor(() => expect(AppAPI.GetPetStoreAccount).toHaveBeenCalledTimes(2));
-        expect(AppAPI.IsPetStorePackInstalled).toHaveBeenCalledTimes(1);
+        expect(AppAPI.GetPetStoreInstalledPackDetails).toHaveBeenCalledTimes(1);
     });
 
     it('reuses installation checks for packs that appear on another result page', async () => {
@@ -155,11 +159,11 @@ describe('PetStoreDialog', () => {
             total_pages: 2,
         }));
         renderStore();
-        await waitFor(() => expect(AppAPI.IsPetStorePackInstalled).toHaveBeenCalledWith('pet-one-source'));
+        await waitFor(() => expect(AppAPI.GetPetStoreInstalledPackDetails).toHaveBeenCalledWith(['pet-one-source']));
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Next' })); });
         await waitFor(() => expect(screen.getByText('Pet Two')).toBeTruthy());
-        expect(AppAPI.IsPetStorePackInstalled).toHaveBeenCalledTimes(2);
-        expect(AppAPI.IsPetStorePackInstalled).toHaveBeenCalledWith('pet-two-source');
+        expect(AppAPI.GetPetStoreInstalledPackDetails).toHaveBeenCalledTimes(2);
+        expect(AppAPI.GetPetStoreInstalledPackDetails).toHaveBeenLastCalledWith(['pet-two-source']);
     });
 
     it('does not render deleted listings in My uploads when older account data includes them', async () => {
@@ -174,10 +178,11 @@ describe('PetStoreDialog', () => {
         await act(async () => { fireEvent.click(accountButton()); });
         expect(await screen.findByText('Visible upload')).toBeTruthy();
         expect(screen.queryByText('Deleted upload')).toBeNull();
-        expect(AppAPI.IsPetStorePackInstalled).not.toHaveBeenCalledWith('upload-deleted-source');
+        const probedIDs = vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mock.calls.flatMap((call) => call[0]);
+        expect(probedIDs).not.toContain('upload-deleted-source');
         // Withdrawn purchases stay downloadable for buyers, so their native
         // installation state is probed like any installable pack.
-        expect(AppAPI.IsPetStorePackInstalled).toHaveBeenCalledWith('purchase-withdrawn-source');
+        expect(probedIDs).toContain('purchase-withdrawn-source');
     });
 
     it('recognizes a re-issued listing as owned by its stable source ID', async () => {
@@ -222,6 +227,158 @@ describe('PetStoreDialog', () => {
         await waitFor(() => expect(screen.getByText('登录后查看创作者报表')).toBeTruthy());
         expect(screen.queryByRole('alert')).toBeNull();
         expect(screen.queryByText('please sign in to HubCenter before using the Pet Store')).toBeNull();
+    });
+
+    it('marks a pack installed after InstallPetStorePack resolves', async () => {
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({
+            ...account,
+            purchases: [{ pack: { id: 'pet-one', source_pack_id: 'pet-one-source', name: 'Pet One', status: 'active' } }],
+        });
+        renderStore();
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Install' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Install' })); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: 'Installed' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: 'Installed' }).querySelector('.modal-footer button')!); });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Installed' })).toBeTruthy());
+        expect(AppAPI.InstallPetStorePack).toHaveBeenCalledWith('pet-one');
+    });
+
+    it('keeps a legacy listing installed when its source_pack_id is empty', async () => {
+        const legacyPack = { id: 'pet-legacy', name: 'Legacy Pet', price: 0, download_count: 0, sales_amount: 0 };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [legacyPack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({
+            ...account,
+            purchases: [{ pack: { id: 'pet-legacy', name: 'Legacy Pet', status: 'active' } }],
+        });
+        renderStore();
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Install' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Install' })); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: 'Installed' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: 'Installed' }).querySelector('.modal-footer button')!); });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Installed' })).toBeTruthy());
+        expect(AppAPI.InstallPetStorePack).toHaveBeenCalledWith('pet-legacy');
+    });
+
+    it('gets and installs a pack in one step', async () => {
+        renderStore('zh-Hans');
+        await waitFor(() => expect(screen.getByRole('button', { name: '获取' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '获取' })); });
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '确认购买' }).querySelector('.modal-footer button:last-child')!); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: '安装完成' })).toBeTruthy());
+        expect(AppAPI.PurchasePetStorePack).toHaveBeenCalledWith('pet-one');
+        expect(AppAPI.InstallPetStorePack).toHaveBeenCalledWith('pet-one');
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '安装完成' }).querySelector('.modal-footer button')!); });
+        await waitFor(() => expect(screen.getByRole('button', { name: '已安装' })).toBeTruthy());
+    });
+
+    it('still installs in one step when HubCenter reports the pack already owned', async () => {
+        vi.mocked(AppAPI.PurchasePetStorePack).mockRejectedValue(new Error('Pet Store request failed: you already own this pet pack'));
+        renderStore('zh-Hans');
+        await waitFor(() => expect(screen.getByRole('button', { name: '获取' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '获取' })); });
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '确认购买' }).querySelector('.modal-footer button:last-child')!); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: '安装完成' })).toBeTruthy());
+        expect(AppAPI.InstallPetStorePack).toHaveBeenCalledWith('pet-one');
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '安装完成' }).querySelector('.modal-footer button')!); });
+        await waitFor(() => expect(screen.getByRole('button', { name: '已安装' })).toBeTruthy());
+    });
+
+    it('offers Update when the listing version is newer than the installed pack', async () => {
+        const updatedPack = { ...pack, version: '2.0.0' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [updatedPack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({
+            ...account,
+            purchases: [{ pack: { ...updatedPack, status: 'active' } }],
+        });
+        vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({ 'pet-one-source': { version: '1.0.0', installed_at: 1700000000 } });
+        renderStore('zh-Hans');
+        const updateButton = await screen.findByRole('button', { name: '更新' });
+        await act(async () => { fireEvent.click(updateButton); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: '安装完成' })).toBeTruthy());
+        expect(AppAPI.InstallPetStorePack).toHaveBeenCalledWith('pet-one');
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '安装完成' }).querySelector('.modal-footer button')!); });
+        // The just-installed copy carries the listing version: back to 已安装.
+        await waitFor(() => expect(screen.getByRole('button', { name: '已安装' })).toBeTruthy());
+        expect(screen.queryByRole('button', { name: '更新' })).toBeNull();
+    });
+
+    it('keeps the card on 已安装 when the installed version matches the listing', async () => {
+        const currentPack = { ...pack, version: '1.0.0' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [currentPack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({
+            ...account,
+            purchases: [{ pack: { ...currentPack, status: 'active' } }],
+        });
+        vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({ 'pet-one-source': { version: '1.0.0', installed_at: 1700000000 } });
+        renderStore('zh-Hans');
+        const installedButton = await screen.findByRole('button', { name: '已安装' });
+        expect(installedButton).toBeTruthy();
+        expect(screen.queryByRole('button', { name: '更新' })).toBeNull();
+    });
+
+    it('stays on disabled 已安装 when the same version is republished later', async () => {
+        const republishedPack = { ...pack, version: '1.0.0', updated_at: '2026-11-15T00:00:00Z' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [republishedPack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({
+            ...account,
+            purchases: [{ pack: { ...republishedPack, status: 'active' } }],
+        });
+        vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({ 'pet-one-source': { version: '1.0.0', installed_at: 1700000000 } });
+        renderStore('zh-Hans');
+        const installedButton = await screen.findByRole('button', { name: '已安装' });
+        expect((installedButton as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByRole('button', { name: '更新' })).toBeNull();
+        expect(AppAPI.InstallPetStorePack).not.toHaveBeenCalled();
+    });
+
+    it('stays on 已安装 when the listing timestamp is older than the install', async () => {
+        const olderPack = { ...pack, version: '1.0.0', updated_at: '2023-01-01T00:00:00Z' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [olderPack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({ 'pet-one-source': { version: '1.0.0', installed_at: 1700000000 } });
+        renderStore('zh-Hans');
+        const installedButton = await screen.findByRole('button', { name: '已安装' });
+        expect((installedButton as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByRole('button', { name: '更新' })).toBeNull();
+    });
+
+    it('stays on disabled 已安装 when only the archive bytes changed', async () => {
+        const republishedPack = { ...pack, version: '1.0.0', updated_at: '2023-01-01T00:00:00Z', content_hash: 'server-hash' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [republishedPack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({ 'pet-one-source': { version: '1.0.0', installed_at: 1700000000, content_hash: 'installed-hash' } });
+        renderStore('zh-Hans');
+        const installedButton = await screen.findByRole('button', { name: '已安装' });
+        expect((installedButton as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByRole('button', { name: '更新' })).toBeNull();
+    });
+
+    it('reads PascalCase install details and compares the version number', async () => {
+        const samePack = { ...pack, version: 'v1.0.0', updated_at: '2026-11-15T00:00:00Z' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [samePack], total_pages: 1 });
+        vi.mocked(AppAPI.GetPetStoreInstalledPackDetails).mockResolvedValue({
+            'pet-one-source': { Version: 'v1.0.0', InstalledAt: Date.parse('2026-11-01T00:00:00Z') },
+        });
+        const view = renderStore('zh-Hans');
+        const installedButton = await screen.findByRole('button', { name: '已安装' });
+        expect((installedButton as HTMLButtonElement).disabled).toBe(true);
+
+        const updatedPack = { ...pack, version: 'v1.1.0' };
+        vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [updatedPack], total_pages: 1 });
+        view.unmount();
+        renderStore('zh-Hans');
+        const updateButton = await screen.findByRole('button', { name: '更新' });
+        expect((updateButton as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('leaves the card on Install when the purchase succeeds but the install fails', async () => {
+        vi.mocked(AppAPI.InstallPetStorePack).mockRejectedValue(new Error('Pet Store request failed: status 410: pet pack has been removed'));
+        renderStore('zh-Hans');
+        await waitFor(() => expect(screen.getByRole('button', { name: '获取' })).toBeTruthy());
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '获取' })); });
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '确认购买' }).querySelector('.modal-footer button:last-child')!); });
+        await waitFor(() => expect(screen.getByRole('dialog', { name: '安装失败' }).textContent).toContain('该宠物包已被作者移除，无法安装。'));
+        await act(async () => { fireEvent.click(screen.getByRole('dialog', { name: '安装失败' }).querySelector('.modal-footer button')!); });
+        await waitFor(() => expect(screen.getByRole('button', { name: '安装' })).toBeTruthy());
+        expect(screen.queryByRole('button', { name: '获取' })).toBeNull();
     });
 
     it('shows the report sign-in prompt in English', async () => {

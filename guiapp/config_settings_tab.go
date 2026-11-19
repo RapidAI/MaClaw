@@ -33,7 +33,6 @@ var settingsTabFieldKeys = map[string][]string{
 		"show_hub_ranking",
 		"tray_task_completion_notify",
 		"pause_env_check",
-		"use_windows_terminal",
 		"show_ai_trace_entry",
 		"env_check_interval",
 		"office_read_engine",
@@ -57,6 +56,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"chat_font_size",
 		"chat_font_family",
 		"coding_font_family",
+		"chat_bubbles_enabled",
 	},
 	"pet": {
 		"pet_enabled",

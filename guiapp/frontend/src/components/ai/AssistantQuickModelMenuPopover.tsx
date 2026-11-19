@@ -1,5 +1,6 @@
 /**
- * Fixed-position model/provider picker popover for AssistantQuickSettingsBar.
+ * Fixed-position model/provider picker popover for the assistant model chip
+ * (composer toolbar and quick-settings bar, both via AssistantQuickModelSwitcher).
  * Portaled to document.body so parent overflow cannot clip it.
  */
 import {
@@ -31,7 +32,8 @@ const MENU_MAX_WIDTH = 300;
 
 type MenuAction =
     | { kind: "provider"; id: string }
-    | { kind: "model"; id: string };
+    | { kind: "model"; id: string }
+    | { kind: "add-custom" };
 
 export type AssistantQuickModelMenuPopoverProps = {
     open: boolean;
@@ -43,6 +45,9 @@ export type AssistantQuickModelMenuPopoverProps = {
     loadingModelsLabel: string;
     emptyModelsLabel: string;
     loadingModelsHint: string;
+    /** Trailing action under the provider list; opens LLM provider management. */
+    addCustomModelLabel?: string;
+    onAddCustomModel?: () => void;
     currentProvider: SidebarLLMProviderSummary | null;
     switchableProviders: SidebarLLMProviderSummary[];
     showProviders: boolean;
@@ -78,10 +83,12 @@ function buildActions(
     switchableProviders: SidebarLLMProviderSummary[],
     showModels: boolean,
     modelList: string[],
+    showAddCustom: boolean,
 ): MenuAction[] {
     const next: MenuAction[] = [];
     if (showProviders) {
         for (const p of switchableProviders) next.push({ kind: "provider", id: String(p.id || p.name).trim() });
+        if (showAddCustom) next.push({ kind: "add-custom" });
     }
     if (showModels) {
         for (const m of modelList) next.push({ kind: "model", id: m });
@@ -99,6 +106,8 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
     loadingModelsLabel,
     emptyModelsLabel,
     loadingModelsHint,
+    addCustomModelLabel,
+    onAddCustomModel,
     currentProvider,
     switchableProviders,
     showProviders,
@@ -127,9 +136,14 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
         () => (showCapabilityDefaults ? orderCapabilityModels(modelList) : modelList),
         [modelList, showCapabilityDefaults],
     );
+    const showAddCustom = showProviders && !!addCustomModelLabel && !!onAddCustomModel;
+    // The add-custom entry sits after the switchable providers, so model rows
+    // offset by it too — keep keyboard highlight and DOM rows in one numbering.
+    const addCustomIndex = switchableProviders.length;
+    const providerActionCount = showProviders ? switchableProviders.length + (showAddCustom ? 1 : 0) : 0;
     const actions = useMemo(
-        () => buildActions(showProviders, switchableProviders, showModels, orderedModelList),
-        [showProviders, switchableProviders, showModels, orderedModelList],
+        () => buildActions(showProviders, switchableProviders, showModels, orderedModelList, showAddCustom),
+        [showProviders, switchableProviders, showModels, orderedModelList, showAddCustom],
     );
     const actionsRef = useRef(actions);
     actionsRef.current = actions;
@@ -236,8 +250,9 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
         const action = actionsRef.current[index];
         if (!action) return;
         if (action.kind === "provider") onSelectProvider(action.id);
-        else onSelectModel(action.id);
-    }, [onSelectProvider, onSelectModel]);
+        else if (action.kind === "model") onSelectModel(action.id);
+        else onAddCustomModel?.();
+    }, [onAddCustomModel, onSelectProvider, onSelectModel]);
 
     const onKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
         const list = actionsRef.current;
@@ -400,6 +415,26 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                             </button>
                         );
                     })}
+                    {showAddCustom && (
+                        <button
+                            type="button"
+                            role="option"
+                            aria-selected={false}
+                            data-qs-option-index={addCustomIndex}
+                            data-testid="qs-model-menu-add-custom"
+                            id={`${listId}-opt-${addCustomIndex}`}
+                            style={itemStyle({ active: false, focused: addCustomIndex === activeIndex, interactive: true })}
+                            title={addCustomModelLabel}
+                            onMouseEnter={() => {
+                                skipScrollRef.current = true;
+                                setActive(addCustomIndex);
+                            }}
+                            onClick={() => onAddCustomModel?.()}
+                        >
+                            <span aria-hidden="true" style={checkColStyle}>＋</span>
+                            <span style={{ ...labelStyleBase, opacity: 0.85 }}>{addCustomModelLabel}</span>
+                        </button>
+                    )}
                 </>
             )}
             {showModels && (
@@ -409,7 +444,7 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                         {modelsLoading ? loadingModelsLabel : modelsLabel}
                     </div>
                     {orderedModelList.map((modelId, modelIdx) => {
-                        const index = (showProviders ? switchableProviders.length : 0) + modelIdx;
+                        const index = providerActionCount + modelIdx;
                         const active = modelIdsEqual(modelId, currentModel)
                             || (capabilityBandName(modelId) !== '' && capabilityBandName(modelId) === capabilityBandName(String(currentModel || '')));
                         const focused = index === activeIndex;

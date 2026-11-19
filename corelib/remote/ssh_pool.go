@@ -7,13 +7,15 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sync/singleflight"
 )
 
 // SSHPool 管理到多台远程主机的 SSH 连接复用。
 // 同一 hostID 的连接会被缓存，避免重复握手。
 type SSHPool struct {
-	mu    sync.Mutex
-	conns map[string]*poolEntry
+	mu        sync.Mutex
+	conns     map[string]*poolEntry
+	dialGroup singleflight.Group
 }
 
 type poolEntry struct {
@@ -105,18 +107,41 @@ func (p *SSHPool) acquireCaptured(cfg SSHHostConfig) (*ssh.Client, SSHHostConfig
 func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	cfg.Defaults()
 	hostID := sshPoolKey(cfg)
-
-	// 已被会话或传输引用的连接直接复用。
-	// 对它做 keepalive 探测并在超时后 Close，会拆掉交互会话正在用的那条连接。
-	// 断连交给连接池的 keepalive。
-	p.mu.Lock()
-	entry, found := p.conns[hostID]
-	if found && entry.client != nil && entry.refCount > 0 {
-		entry.refCount++
-		client := entry.client
-		p.mu.Unlock()
+	if client := p.acquireReferenced(hostID); client != nil {
 		return client, nil
 	}
+	value, err, _ := p.dialGroup.Do(hostID, func() (any, error) {
+		if client := p.acquireReferenced(hostID); client != nil {
+			return client, nil
+		}
+		return p.acquireUncached(cfg, hostID)
+	})
+	if err != nil {
+		return nil, err
+	}
+	client := value.(*ssh.Client)
+	p.mu.Lock()
+	if entry, ok := p.conns[hostID]; ok && entry.client == client {
+		entry.refCount++
+	}
+	p.mu.Unlock()
+	return client, nil
+}
+
+func (p *SSHPool) acquireReferenced(hostID string) *ssh.Client {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entry, ok := p.conns[hostID]
+	if !ok || entry.client == nil || entry.refCount <= 0 {
+		return nil
+	}
+	entry.refCount++
+	return entry.client
+}
+
+func (p *SSHPool) acquireUncached(cfg SSHHostConfig, hostID string) (*ssh.Client, error) {
+	p.mu.Lock()
+	entry, found := p.conns[hostID]
 	var candidate *ssh.Client
 	if found && entry.client != nil {
 		candidate = entry.client
@@ -126,22 +151,14 @@ func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	// 池里没有仍被引用的连接时，才在锁外探测。
 	// 半开 TCP 上 SendRequest 可能阻塞 30-120 秒，必须限制等待时间。
 	if candidate != nil {
-		// 这条连接已经没有引用。探测没在时限内成功就丢掉它再拨号：
-		// 未完成的 keepalive 占着连接锁，新会话挂上去会一直等。
-		// 仍被会话引用的连接在上面直接复用，不会进到这里。
-		ok, finished, _, _ := awaitSSHProbe(candidate, sshProbeWait)
-		alive := finished && ok
-		if alive {
+		if sshClientTransportLive(candidate) {
 			p.mu.Lock()
-			if e, ok := p.conns[hostID]; ok && e.client == candidate {
-				e.refCount++
-				p.mu.Unlock()
+			current := p.conns[hostID]
+			p.mu.Unlock()
+			if current != nil && current.client == candidate {
 				return candidate, nil
 			}
-			p.mu.Unlock()
-			// entry 已被替换，走新建流程
 		} else {
-			// 空闲连接这次没有探测成功，丢掉再拨新的。
 			p.mu.Lock()
 			if e, ok := p.conns[hostID]; ok && e.client == candidate {
 				delete(p.conns, hostID)
@@ -151,17 +168,12 @@ func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 		}
 	}
 
-	// 新建连接（在锁外）
 	client, err := dialSSH(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("ssh dial %s: %w", cfg.SSHHostID(), err)
 	}
-
 	p.mu.Lock()
-	// 再次检查是否有并发创建的连接
 	if e, ok := p.conns[hostID]; ok {
-		// 别人先建好了，关掉我们的，用已有的
-		e.refCount++
 		p.mu.Unlock()
 		_ = client.Close()
 		return e.client, nil
@@ -170,13 +182,10 @@ func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 		client:    client,
 		hostID:    cfg.SSHHostID(),
 		createdAt: time.Now(),
-		refCount:  1,
+		refCount:  0,
 	}
 	p.mu.Unlock()
-
-	// 启动心跳
 	go p.keepalive(hostID, client, cfg.KeepaliveInterval)
-
 	return client, nil
 }
 

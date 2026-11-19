@@ -171,6 +171,12 @@ func (h *NotificationHandlers) handleServiceError(w http.ResponseWriter, err err
 		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
 	case errors.Is(err, notification.ErrAudienceIDsRequired):
 		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+	case errors.Is(err, notification.ErrLinkURLInvalid):
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+	case errors.Is(err, notification.ErrLinkURLTooLong):
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+	case errors.Is(err, notification.ErrButtonTextTooLong):
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 	}

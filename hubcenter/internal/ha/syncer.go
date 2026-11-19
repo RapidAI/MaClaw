@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
@@ -78,30 +78,40 @@ type Syncer struct {
 // Client.Timeout both fire deterministically and a dead connection fails
 // fast instead of hanging the syncer goroutine (beginPeerSync then blocks
 // that peer silently until the goroutine returns).
+type haTransportError struct{ err error }
+
+func (e haTransportError) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, e.err
+}
+
 func newHAHTTPClient(timeout time.Duration) *http.Client {
+	tlsConfig, err := remote.HubTLSConfig()
+	if err != nil {
+		return &http.Client{Timeout: timeout, Transport: haTransportError{err: err}}
+	}
+	tlsConfig.NextProtos = []string{"http/1.1"}
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          8,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		// Independent cap on waiting for response headers: covers the
+		// "request sent, peer never answers" half-open case.
+		ResponseHeaderTimeout: 60 * time.Second,
+		TLSClientConfig:       tlsConfig,
+		// Pin ALPN to http/1.1 to avoid the wedged-h2 failure mode above.
+		ForceAttemptHTTP2: false,
+	}
 	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          8,
-			MaxIdleConnsPerHost:   2,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   15 * time.Second,
-			ExpectContinueTimeout: time.Second,
-			// Independent cap on waiting for response headers: covers the
-			// "request sent, peer never answers" half-open case.
-			ResponseHeaderTimeout: 60 * time.Second,
-			// Pin ALPN to http/1.1: with a custom TLSClientConfig and
-			// ForceAttemptHTTP2 unset, Go would otherwise still offer h2.
-			TLSClientConfig: &tls.Config{
-				NextProtos: []string{"http/1.1"},
-			},
-			ForceAttemptHTTP2: false,
-		},
+		Timeout:       timeout,
+		Transport:     remote.NewHubTransport(transport),
+		CheckRedirect: remote.SameOriginRedirect,
 	}
 }
 

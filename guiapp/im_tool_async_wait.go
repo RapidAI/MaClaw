@@ -51,6 +51,9 @@ func (h *IMMessageHandler) toolBashBackground(command, workDir, taskRole string)
 }
 
 func (h *IMMessageHandler) toolBashBackgroundForOwner(command, workDir, taskRole, ownerID string) string {
+	if err := repoMaintRejectShell(h, ownerID, workDir, command); err != nil {
+		return err.Error()
+	}
 	mgr := h.ensureLocalBgTaskMgr()
 	if workDir != "" {
 		workDir = resolvePath(workDir)

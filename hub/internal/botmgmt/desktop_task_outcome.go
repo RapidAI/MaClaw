@@ -11,18 +11,48 @@ import (
 // (corelib/agentservice TaskOutcome*). The run status stays "succeeded" for
 // a run whose execution ended normally, so a "succeeded" run is only a
 // finished run: every place here that tells the person or another bot that
-// the work is done reads the outcome first. An older MaClawSrv sends no
-// outcome; those runs keep the behaviour they had (status and reply only).
+// the work is done reads the outcome first. A finished run with no outcome,
+// or an outcome this Hub does not know, is unverified. It is not done.
 const desktopTaskOutcomeKey = "task_outcome"
 
+const desktopUnverifiedSentence = "这件还不能确认已经完成，请以实际结果为准。"
+
 // desktopTaskOutcome returns a known outcome or "" (an unknown value is
-// treated as absent, never as a status).
+// treated as absent, never as done).
 func desktopTaskOutcome(v string) string {
 	switch v = strings.TrimSpace(v); v {
-	case "done", "partial", "blocked", "not_submitted", "unconfirmed", "awaiting_user", "running":
+	case "done", "partial", "blocked", "not_submitted", "unconfirmed", "unverified", "awaiting_user", "running":
 		return v
 	}
 	return ""
+}
+
+// desktopAsking is a turn that stopped to ask the person something.
+func desktopAsking(meta map[string]string) bool {
+	if meta == nil {
+		return false
+	}
+	return strings.TrimSpace(meta["ask_user_question"]) != "" ||
+		strings.TrimSpace(meta["ask_user_secret_name"]) != "" ||
+		strings.TrimSpace(meta["send_to_user_kind"]) == "ask" ||
+		strings.TrimSpace(meta["response_source"]) == "ask_user" ||
+		desktopTaskChoiceLine(meta["ask_user_options_json"]) != ""
+}
+
+// desktopSettleOutcome is the outcome a finished run presents. Missing and
+// unknown values are unverified, except a turn that is waiting on a question.
+func desktopSettleOutcome(meta map[string]string) string {
+	raw := ""
+	if meta != nil {
+		raw = meta[desktopTaskOutcomeKey]
+	}
+	if o := desktopTaskOutcome(raw); o != "" {
+		return o
+	}
+	if desktopAsking(meta) {
+		return ""
+	}
+	return "unverified"
 }
 
 // desktopOutcomeNotDone: the run finished but its task did not.
@@ -58,6 +88,7 @@ func desktopOutcomeStatusLine(outcome string, hant, en bool) string {
 		"blocked":       {"没有做成，已经停下。", "沒有做成，已經停下。", "It could not be done; the bot stopped."},
 		"not_submitted": {"还没有提交，内容没有发出去。", "還沒有提交，內容沒有發出去。", "It was not submitted; nothing went out."},
 		"unconfirmed":   {"提交了，但没能确认结果，请以页面上的实际状态为准。", "提交了，但沒能確認結果，請以頁面上的實際狀態為準。", "It was submitted, but the result could not be confirmed; check the page."},
+		"unverified":    {desktopUnverifiedSentence, "這件還不能確認已經完成，請以實際結果為準。", "This is not confirmed finished; check the actual result."},
 		"awaiting_user": {"还没做完，在等你回复。", "還沒做完，在等你回覆。", "Not finished; it is waiting for your answer."},
 		"running":       {"后台任务还在跑，我会定时查看进度并告诉你。", "後台任務還在跑，我會定時查看進度並告訴你。", "A background job is still running; I will check in and tell you."},
 	}[desktopTaskOutcome(outcome)]

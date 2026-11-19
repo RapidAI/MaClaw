@@ -202,6 +202,30 @@ func TestSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save error: %v", err)
 	}
+	if _, err := os.Stat(fp); !os.IsNotExist(err) {
+		t.Fatalf("Save rewrote the legacy JSON file: %v", err)
+	}
+	var toolPreference string
+	if err := m.store.db.QueryRow(`SELECT value FROM user_profile_dimensions WHERE name='tool_preferences'`).Scan(&toolPreference); err != nil {
+		t.Fatal(err)
+	}
+	if toolPreference != "vim" {
+		t.Fatalf("tool preference column = %q", toolPreference)
+	}
+	var observation string
+	if err := m.store.db.QueryRow(`SELECT observation FROM user_profile_evidence WHERE dimension_name='tool_preferences'`).Scan(&observation); err != nil {
+		t.Fatal(err)
+	}
+	if observation != "uses vim" {
+		t.Fatalf("evidence observation = %q", observation)
+	}
+	var jsonColumns int
+	if err := m.store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%payload%' OR sql LIKE '%_json%'`).Scan(&jsonColumns); err != nil {
+		t.Fatal(err)
+	}
+	if jsonColumns != 0 {
+		t.Fatalf("user model schema contains JSON document columns: %d", jsonColumns)
+	}
 
 	// Load from same file
 	m2, err := NewModel(fp)
@@ -212,6 +236,9 @@ func TestSaveAndLoad(t *testing.T) {
 	p := m2.GetProfile()
 	if p.ToolPreferences.Value != "vim" {
 		t.Errorf("expected 'vim', got %q", p.ToolPreferences.Value)
+	}
+	if len(p.ToolPreferences.Evidence) != 1 || p.ToolPreferences.Evidence[0].Observation != "uses vim" {
+		t.Errorf("expected persisted tool evidence, got %#v", p.ToolPreferences.Evidence)
 	}
 	if p.CommunicationStyle.Value != "verbose" {
 		t.Errorf("expected 'verbose', got %q", p.CommunicationStyle.Value)
@@ -294,4 +321,34 @@ func containsSubstr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestUserModelDoesNotReimportLegacyJSONAfterReset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model.json")
+	content := `{"communication_style":{"value":"concise","confidence":0.8,"evidence":[],"user_confirmed":false}}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model, err := NewModel(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := model.ResetDimension("communication_style"); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewModel(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	if got := reloaded.GetProfile().CommunicationStyle.Value; got != "" {
+		t.Fatalf("legacy JSON resurrected reset dimension: %q", got)
+	}
 }

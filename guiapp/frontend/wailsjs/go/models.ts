@@ -2300,7 +2300,6 @@ export namespace corelib {
 	    default_proxy_scope_maclaw?: boolean;
 	    default_proxy_scope_coding_tools?: boolean;
 	    default_proxy_scope_agent?: boolean;
-	    use_windows_terminal: boolean;
 	    remote_enabled: boolean;
 	    remote_hub_id?: string;
 	    remote_hub_url: string;
@@ -2321,6 +2320,7 @@ export namespace corelib {
 	    remote_heartbeat_sec: number;
 	    remote_nickname?: string;
 	    remote_client_id: string;
+	    remote_device_connect_enabled?: boolean;
 	    github_client_id?: string;
 	    default_launch_mode: string;
 	    maclaw_llm_url: string;
@@ -2390,6 +2390,7 @@ export namespace corelib {
 	    show_workflow_entry?: boolean;
 	    show_utilities_entry?: boolean;
 	    survey_enabled?: boolean;
+	    recent_task_count?: number;
 	    show_assistant_entry: boolean;
 	    show_hub_ranking?: boolean;
 	    tray_task_completion_notify?: boolean;
@@ -2488,6 +2489,8 @@ export namespace corelib {
 	    acp_host_enabled?: boolean;
 	    acp_host_port?: number;
 	    acp_host_mirror_ui?: boolean;
+	    mcp_host_enabled?: boolean;
+	    mcp_host_port?: number;
 	    im_progress_nudge_enabled?: boolean;
 	    extra_tool_configs?: Record<string, ToolConfig>;
 	    ui_mode?: string;
@@ -2525,6 +2528,7 @@ export namespace corelib {
 	    chat_font_size?: number;
 	    chat_font_family?: string;
 	    coding_font_family?: string;
+	    chat_bubbles_enabled?: boolean;
 	    ssh_hosts?: SSHHostEntry[];
 	    knowledge_skill_token_budget: number;
 	    knowledge_vision_llm?: KnowledgeVisionLLMConfig;
@@ -2604,7 +2608,6 @@ export namespace corelib {
 	        this.default_proxy_scope_maclaw = source["default_proxy_scope_maclaw"];
 	        this.default_proxy_scope_coding_tools = source["default_proxy_scope_coding_tools"];
 	        this.default_proxy_scope_agent = source["default_proxy_scope_agent"];
-	        this.use_windows_terminal = source["use_windows_terminal"];
 	        this.remote_enabled = source["remote_enabled"];
 	        this.remote_hub_id = source["remote_hub_id"];
 	        this.remote_hub_url = source["remote_hub_url"];
@@ -2625,6 +2628,7 @@ export namespace corelib {
 	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
 	        this.remote_nickname = source["remote_nickname"];
 	        this.remote_client_id = source["remote_client_id"];
+	        this.remote_device_connect_enabled = source["remote_device_connect_enabled"];
 	        this.github_client_id = source["github_client_id"];
 	        this.default_launch_mode = source["default_launch_mode"];
 	        this.maclaw_llm_url = source["maclaw_llm_url"];
@@ -2694,6 +2698,7 @@ export namespace corelib {
 	        this.show_workflow_entry = source["show_workflow_entry"];
 	        this.show_utilities_entry = source["show_utilities_entry"];
 	        this.survey_enabled = source["survey_enabled"];
+	        this.recent_task_count = source["recent_task_count"];
 	        this.show_assistant_entry = source["show_assistant_entry"];
 	        this.show_hub_ranking = source["show_hub_ranking"];
 	        this.tray_task_completion_notify = source["tray_task_completion_notify"];
@@ -2792,6 +2797,8 @@ export namespace corelib {
 	        this.acp_host_enabled = source["acp_host_enabled"];
 	        this.acp_host_port = source["acp_host_port"];
 	        this.acp_host_mirror_ui = source["acp_host_mirror_ui"];
+	        this.mcp_host_enabled = source["mcp_host_enabled"];
+	        this.mcp_host_port = source["mcp_host_port"];
 	        this.im_progress_nudge_enabled = source["im_progress_nudge_enabled"];
 	        this.extra_tool_configs = this.convertValues(source["extra_tool_configs"], ToolConfig, true);
 	        this.ui_mode = source["ui_mode"];
@@ -2829,6 +2836,7 @@ export namespace corelib {
 	        this.chat_font_size = source["chat_font_size"];
 	        this.chat_font_family = source["chat_font_family"];
 	        this.coding_font_family = source["coding_font_family"];
+	        this.chat_bubbles_enabled = source["chat_bubbles_enabled"];
 	        this.ssh_hosts = this.convertValues(source["ssh_hosts"], SSHHostEntry);
 	        this.knowledge_skill_token_budget = source["knowledge_skill_token_budget"];
 	        this.knowledge_vision_llm = this.convertValues(source["knowledge_vision_llm"], KnowledgeVisionLLMConfig);
@@ -9290,6 +9298,9 @@ export namespace main {
 	    verify_cmd?: string;
 	    verify_ok?: boolean;
 	    updated_unix?: number;
+	    blocked_by?: string[];
+	    block_reason?: string;
+	    child_task_id?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new codingWorkbenchStepStatus(source);
@@ -9304,6 +9315,9 @@ export namespace main {
 	        this.verify_cmd = source["verify_cmd"];
 	        this.verify_ok = source["verify_ok"];
 	        this.updated_unix = source["updated_unix"];
+	        this.blocked_by = source["blocked_by"];
+	        this.block_reason = source["block_reason"];
+	        this.child_task_id = source["child_task_id"];
 	    }
 	}
 	export class CodingWorkbenchStatus {
@@ -9322,6 +9336,8 @@ export namespace main {
 	    plan_dialogue?: boolean;
 	    step_statuses?: codingWorkbenchStepStatus[];
     steps_revision?: number;
+	    execution_status?: string;
+	    stop?: { class?: string; source?: string; reason?: string; at?: string; step_id?: string };
 	    project_instruction_sources?: string[];
 	    checkpoint_label?: string;
 	    session_input_tokens?: number;
@@ -9381,6 +9397,9 @@ export namespace main {
 	        this.pending_approval = source["pending_approval"];
 	        this.plan_dialogue = source["plan_dialogue"];
 	        this.step_statuses = this.convertValues(source["step_statuses"], codingWorkbenchStepStatus);
+	        this.steps_revision = source["steps_revision"];
+	        this.execution_status = source["execution_status"];
+	        this.stop = source["stop"];
 	        this.project_instruction_sources = source["project_instruction_sources"];
 	        this.checkpoint_label = source["checkpoint_label"];
 	        this.session_input_tokens = source["session_input_tokens"];
@@ -11074,6 +11093,44 @@ export namespace main {
 	        this.path = source["path"];
 	        this.skill_count = source["skill_count"];
 	        this.error = source["error"];
+	    }
+	}
+	export class GitHubRepoMaintRule {
+	    id: string;
+	    repo_url: string;
+	    owner: string;
+	    repo: string;
+	    ghost_dir: string;
+	    enabled: boolean;
+	    push_branch: string;
+	    commands: {[key: string]: string};
+	    enabled_kinds: {[key: string]: boolean};
+	    hook_ready: boolean;
+	    auth_blocked: boolean;
+	    last_error: string;
+	    queue_depth: number;
+	    intake_ready: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new GitHubRepoMaintRule(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.repo_url = source["repo_url"];
+	        this.owner = source["owner"];
+	        this.repo = source["repo"];
+	        this.ghost_dir = source["ghost_dir"];
+	        this.enabled = source["enabled"];
+	        this.push_branch = source["push_branch"];
+	        this.commands = source["commands"];
+	        this.enabled_kinds = source["enabled_kinds"];
+	        this.hook_ready = source["hook_ready"];
+	        this.auth_blocked = source["auth_blocked"];
+	        this.last_error = source["last_error"];
+	        this.queue_depth = source["queue_depth"];
+	        this.intake_ready = source["intake_ready"];
 	    }
 	}
 	export class GitHubCloneResult {

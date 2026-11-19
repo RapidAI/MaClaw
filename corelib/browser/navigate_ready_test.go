@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoginWallURL(t *testing.T) {
-	for _, u := range []string{"https://www.zhihu.com/signin?next=%2Fwrite", "https://passport.example.com/x", "https://a.com/account/unhuman?type=captcha"} {
+	for _, u := range []string{"https://www.zhihu.com/signin?next=%2Fwrite", "https://www.amazon.com/ap/signin", "https://passport.example.com/x", "https://a.com/account/unhuman?type=captcha"} {
 		if loginWallURL(u) == "" {
 			t.Fatalf("%s should be a wall", u)
 		}
@@ -30,5 +30,16 @@ func TestNavReadyNote(t *testing.T) {
 	ok := NavReadyReport{State: PageReadyState{URL: "https://x.com/", ReadyState: "complete", Interactive: 12}, Ready: true}
 	if strings.Contains(ok.Note(), LoginWallMarker) {
 		t.Fatal("ready page is not a wall")
+	}
+	login := NavReadyReport{State: PageReadyState{URL: "https://passport.jd.com/login"}, Wall: "login_form"}
+	note := login.Note()
+	if !strings.Contains(note, "submit_secret") || strings.Contains(note, "take over") {
+		t.Fatalf("sign-in note = %q", note)
+	}
+	if reason, take := wallHandsPageOver("captcha"); !take || reason != "captcha" {
+		t.Fatalf("captcha handoff %q %v", reason, take)
+	}
+	if _, take := wallHandsPageOver("login_form"); take {
+		t.Fatal("a sign-in form must stay with submit_secret")
 	}
 }

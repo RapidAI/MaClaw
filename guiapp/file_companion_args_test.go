@@ -119,6 +119,10 @@ func TestClassifyDesktopLaunchDoesNotStealKnownSubcommands(t *testing.T) {
 	if err := os.WriteFile(initFile, []byte("not a subcommand file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	mcpFile := filepath.Join(dir, "mcp")
+	if err := os.WriteFile(mcpFile, []byte("not a subcommand file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +142,8 @@ func TestClassifyDesktopLaunchDoesNotStealKnownSubcommands(t *testing.T) {
 		{"MaClaw", "generate-android-pwa-shell"},
 		{"MaClaw", "maclaw://onboarding?referral_handoff=1"},
 		{"MaClaw", "init", initFile},
+		{"MaClaw", "mcp"},
+		{"MaClaw", "mcp", mcpFile},
 	}
 	for _, args := range cases {
 		got := classifyDesktopLaunchForOS(args, "darwin")
@@ -220,6 +226,41 @@ func TestClassifyDesktopLaunchOpenFileQuitIsARelay(t *testing.T) {
 	plain := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file"}, "windows")
 	if plain.Quit {
 		t.Fatalf("empty open-file = %#v", plain)
+	}
+}
+
+func TestClassifyDesktopLaunchOpenFileLibraryIsAViewRequest(t *testing.T) {
+	for _, args := range [][]string{
+		{"MaClaw", "open-file", "--library"},
+		{"MaClaw", "open-file", "-library"},
+		{"MaClaw", "open-file", "--library", "--library"},
+	} {
+		got := classifyDesktopLaunchForOS(args, "windows")
+		if got.Mode != desktopLaunchFileCompanion || got.LockID != fileCompanionLockID() || !got.Library {
+			t.Fatalf("%q = %#v, want a file-companion library launch", args, got)
+		}
+		if len(got.Paths) != 0 {
+			t.Fatalf("%q paths = %#v, library launch carries no documents", args, got.Paths)
+		}
+	}
+
+	// A token mixed with real paths is a document launch, not a view request.
+	mixed := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "--library", "notes.md"}, "windows")
+	if mixed.Library || len(mixed.Paths) != 2 || mixed.Paths[0] != "--library" {
+		t.Fatalf("mixed library+doc = %#v", mixed)
+	}
+
+	// Bare "library" stays a relative filename; only dashed tokens switch.
+	bare := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "library"}, "windows")
+	if bare.Library || len(bare.Paths) != 1 || bare.Paths[0] != "library" {
+		t.Fatalf("bare library file = %#v", bare)
+	}
+
+	// companion-paper-open's tokens are all documents to place; --library
+	// stays one of them.
+	paper := classifyDesktopLaunchForOS([]string{"MaClaw", companionPaperOpenArg, "--library"}, "windows")
+	if paper.Library || len(paper.Paths) != 1 || paper.Paths[0] != "--library" {
+		t.Fatalf("paper-open --library = %#v", paper)
 	}
 }
 

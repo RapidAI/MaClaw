@@ -70,9 +70,11 @@ func (s *Service) peekDesktopRouteState(tenantID, userID, botID, clientMessageID
 
 // routeDesktopMessage asks MaClawSrv where a message with no explicit hint
 // goes. An empty route means "no decision": the claim falls back as before.
-func (s *Service) routeDesktopMessage(ctx context.Context, tenantID, userID string, rec *record, token *string, instanceID, botID, content, sticky string) desktopRoute {
+// A tunnel that is already offline is returned so the message can queue
+// before any later read.
+func (s *Service) routeDesktopMessage(ctx context.Context, tenantID, userID string, rec *record, token *string, instanceID, botID, content, sticky string, noDesktop bool) (desktopRoute, error) {
 	if s == nil || rec == nil || token == nil || strings.TrimSpace(instanceID) == "" {
-		return desktopRoute{}
+		return desktopRoute{}, nil
 	}
 	budget := desktopRouteBudget
 	// Routing never takes more than a quarter of a shortened command wait.
@@ -87,20 +89,24 @@ func (s *Service) routeDesktopMessage(ctx context.Context, tenantID, userID stri
 		"bot_id":         botID,
 		"content":        content,
 		"sticky_session": sticky,
+		"no_desktop":     noDesktop,
 	}, &out)
 	if err != nil {
 		traceBot(botID, "route", err, "timeout", traceYes(rctx.Err() != nil))
-		if sticky != "" {
-			return desktopRoute{Session: sticky, Via: "sticky"}
+		if nodeLinkOffline(err) {
+			return desktopRoute{}, err
 		}
-		return desktopRoute{}
+		if sticky != "" {
+			return desktopRoute{Session: sticky, Via: "sticky"}, nil
+		}
+		return desktopRoute{}, nil
 	}
 	out.Session = strings.TrimSpace(out.Session)
 	if out.Session != "" && !desktopSessionBelongsToBot(botID, out.Session) {
-		return desktopRoute{}
+		return desktopRoute{}, nil
 	}
 	traceBot(botID, "route", nil, "via", out.Via, "thread", traceYes(desktopSessionIsThread(botID, out.Session)))
-	return out
+	return out, nil
 }
 
 // routedFor is what the client is told about the choice: only when the

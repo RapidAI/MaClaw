@@ -645,7 +645,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 		}
 		if !h.authorizeSensitiveQuery(ctx, sessionID, query) {
 			h.SendStreamChunk(sessionID, "\u4eba\u7c7b\u5458\u5de5\u672a\u6388\u6743\u63d0\u4f9b\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\uff0c\u5df2\u62d2\u7edd\u3002")
-			h.SendStreamEnd(sessionID)
+			h.SendStreamEnd(sessionID, "")
 			return nil
 		}
 	}
@@ -661,6 +661,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	// IMPORTANT: onToken does not call Hub per token. Local paints coalesce to
 	// about one frame, and Hub sync flushes every 80ms or 2KB.
 	var streamingStarted int32
+	var streamedText strings.Builder
 	senderID := h.getLocalAgentID() // cache once — avoid per-token config lock
 
 	// Both paints copy the token and return. A slow Hub upload or a busy UI
@@ -684,6 +685,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 			default:
 			}
 		}
+		streamedText.WriteString(delta)
 		hubPending.add(delta)
 		localPending.add(delta)
 	}
@@ -699,12 +701,15 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	// Assembled text must be tofu-sanitized, not treated as a single stream
 	// token — a leading U+0001 would otherwise drop the reply.
 	fullResponse = textutil.SanitizeVisibleChatText(fullResponse)
+	// The loop returns the settled answer without repeating it through OnToken.
+	// The viewer folds that ending onto the opening it already painted.
+	endContent := textutil.StreamEndContent(streamedText.String(), fullResponse)
 	sendFallback := !streamed && err == nil && ctxErr == nil && strings.TrimSpace(fullResponse) != ""
 	if sendFallback {
 		h.emitStreamChunkLocal(sessionID, fullResponse)
 	}
 	if streamed || (err == nil && ctxErr == nil) {
-		h.emitStreamEndLocal(sessionID)
+		h.emitStreamEndLocal(sessionID, endContent)
 	}
 
 	hubPending.close()
@@ -713,7 +718,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 		h.SendStreamChunk(sessionID, fullResponse)
 	}
 	if streamed || (err == nil && ctxErr == nil) {
-		h.SendStreamEnd(sessionID)
+		h.SendStreamEnd(sessionID, endContent)
 	}
 	if err != nil {
 		return err
@@ -1315,6 +1320,21 @@ func buildVEConversationHistoryFromMessages(messages []a2a.Message, localID stri
 			stream.WriteString(chunk)
 			continue
 		case a2a.MessageStreamEnd:
+			// stream_end is the settled answer. The chunks are only the
+			// opening the loop already painted. A restored session has no
+			// in-memory final, so dropping this leaves the next turn with
+			// the opening alone.
+			if streamFrom != "" && fromID != "" && !veGroupParticipantIdentityMatches(streamFrom, fromID) {
+				flushStream()
+			}
+			if msg.Content != "" {
+				if streamFrom == "" {
+					streamFrom = fromID
+				}
+				folded := textutil.ProjectAnswerSlices(stream.String(), msg.Content)
+				stream.Reset()
+				stream.WriteString(folded)
+			}
 			flushStream()
 			continue
 		default:
@@ -1455,10 +1475,10 @@ func (h *VEMessageHandler) SendStreamChunk(sessionID, chunk string) {
 
 // SendStreamEnd signals the end of a streaming response.
 // Constructed as a GroupDiscussionMessage with kind=stream_end.
-func (h *VEMessageHandler) SendStreamEnd(sessionID string) {
+func (h *VEMessageHandler) SendStreamEnd(sessionID, content string) {
 	h.sendMessage(sessionID, a2a.GroupDiscussionMessage{
 		Kind:    a2a.MessageStreamEnd,
-		Content: "",
+		Content: content,
 	})
 }
 
@@ -1582,14 +1602,14 @@ func sanitizeVEActivityName(name string) string {
 }
 
 // emitStreamEndLocal sends a ve:stream_end event directly to the local frontend.
-func (h *VEMessageHandler) emitStreamEndLocal(sessionID string) {
+func (h *VEMessageHandler) emitStreamEndLocal(sessionID, content string) {
 	if h.app == nil || h.app.ctx == nil {
 		return
 	}
 	senderID := h.getLocalAgentID()
 	h.app.emitEvent("ve:stream_end", map[string]any{
 		"session_id":  sessionID,
-		"content":     "",
+		"content":     content,
 		"chunk":       "",
 		"sender_name": "本机AI",
 		"sender_id":   senderID,
@@ -1631,6 +1651,11 @@ func (h *VEMessageHandler) syncLocalStream(sessionID, senderID string, pending *
 	})
 }
 
+// drainPendingStream paints the first buffered text immediately, then holds a
+// short open buffer until interval elapses or the buffer reaches maxBytes.
+// Close flushes whatever is left. Later tokens must not restart the timer: a
+// one-token-at-a-time model would otherwise never reach the interval, and an
+// unarmed timer is not itself a reason to flush.
 func drainPendingStream(pending *pendingStreamText, interval time.Duration, maxBytes int, flush func(string)) {
 	if pending == nil || flush == nil {
 		return
@@ -1659,29 +1684,39 @@ func drainPendingStream(pending *pendingStreamText, interval time.Duration, maxB
 		}
 		armed = false
 	}
+	defer disarm()
 	for {
+		timerFired := false
 		select {
 		case <-pending.wake:
 		case <-timer.C:
 			armed = false
+			timerFired = true
 		}
-		minBytes := maxBytes
-		if !sent || !armed {
-			minBytes = 1
-		}
-		chunk, closed := pending.take(minBytes)
-		if chunk != "" {
-			flush(chunk)
-			sent = true
-			disarm()
-		}
-		if closed {
-			tail, _ := pending.take(1)
-			if tail != "" {
-				flush(tail)
+		for {
+			minBytes := maxBytes
+			if !sent || timerFired {
+				minBytes = 1
 			}
-			disarm()
-			return
+			timerFired = false
+			chunk, closed := pending.take(minBytes)
+			if chunk != "" {
+				flush(chunk)
+				sent = true
+				disarm()
+			}
+			if closed {
+				tail, _ := pending.take(1)
+				if tail != "" {
+					flush(tail)
+				}
+				return
+			}
+			// Bytes that landed during flush already met the cap. Their wake
+			// may have been the one just consumed, so do not wait the interval.
+			if pending.len() < maxBytes {
+				break
+			}
 		}
 		if pending.len() > 0 && !armed {
 			timer.Reset(interval)

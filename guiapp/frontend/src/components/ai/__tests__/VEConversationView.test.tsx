@@ -2013,6 +2013,57 @@ describe("VEConversationView", () => {
             expect(msgList.textContent).toContain("Complete response");
         });
 
+        it("folds a settled ending onto the streamed opening once", async () => {
+            renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+            const shared = "重叠".repeat(40);
+            const opening = "甲".repeat(40) + shared;
+            const rest = "乙".repeat(20) + "结尾";
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: opening });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", content: shared + rest });
+            });
+            const text = screen.getByTestId("ve-message-list").textContent || "";
+            expect(text).toContain(rest);
+            expect(text).not.toContain(`${shared}${shared}`);
+            expect(text).not.toContain("…");
+        });
+
+        it("keeps a gap when the streamed opening and the settled ending do not meet", async () => {
+            renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+            const opening = "甲".repeat(40);
+            const ending = "乙".repeat(40) + "结尾";
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: opening });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", content: ending });
+            });
+            const text = screen.getByTestId("ve-message-list").textContent || "";
+            expect(text).toContain(opening);
+            expect(text).toContain("…");
+            expect(text).toContain(ending);
+        });
+
+        it("does not show the answer twice when the stream keeps a trailing newline", async () => {
+            renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+            const body = `${"甲".repeat(40)}答案`;
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: `${body}\n` });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1", content: body });
+            });
+            const text = screen.getByTestId("ve-message-list").textContent || "";
+            expect(text).toContain(body);
+            expect(text).not.toContain("…");
+            expect(text.split(body).length - 1).toBe(1);
+        });
+
         it("surfaces MaClawSrv error details carried by stream_end", async () => {
             renderConversation();
             await act(async () => { await vi.runAllTimersAsync(); });

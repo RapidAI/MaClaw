@@ -13,7 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
-func TestBashDoesNotOpenABotScreen(t *testing.T) {
+func TestBashDoesNotOpenTheBotScreen(t *testing.T) {
 	req := d97Env(t)
 	var opens atomic.Int32
 	openBotScreen = func(context.Context, agentruntime.Scope) error {
@@ -32,39 +32,40 @@ func TestBashDoesNotOpenABotScreen(t *testing.T) {
 	if calls != 1 || opens.Load() != 0 {
 		t.Fatalf("calls=%d opens=%d, a shell must not open a screen", calls, opens.Load())
 	}
+	if desktopOutageWasSeen(req.Scope.RunID) {
+		t.Fatal("a shell step was an outage")
+	}
 }
 
-func TestGUIActionOpensTheBotScreen(t *testing.T) {
+func TestOpenScreenActionOpensTheBotScreen(t *testing.T) {
 	req := d97Env(t)
 	var opens atomic.Int32
 	openBotScreen = func(context.Context, agentruntime.Scope) error {
 		opens.Add(1)
 		return nil
 	}
-	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
-		return "clicked", nil
-	}
-	out, err := invoke(t, req, map[string]any{"action": "click", "x": 1, "y": 2})
-	if err != nil || !strings.Contains(out, "clicked") {
+	operateDesktopFunc = operateDesktop
+	out, err := invoke(t, req, map[string]any{"action": "open_screen"})
+	if err != nil || !strings.Contains(out, "Screen is open") {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 	if opens.Load() != 1 {
-		t.Fatalf("opens=%d, a click must open the screen", opens.Load())
+		t.Fatalf("opens=%d", opens.Load())
+	}
+	if !botScreenAlready(req.Scope.RunID) {
+		t.Fatal("open_screen did not mark this run's screen")
 	}
 	resetBotScreens()
 	req.Scope.RunID = req.Scope.RunID + "-gui"
+	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+		return "opened", nil
+	}
 	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "xdg-open /tmp/a.pdf", "needs_screen": true})
-	if err != nil || !strings.Contains(out, "clicked") {
+	if err != nil || !strings.Contains(out, "opened") {
 		t.Fatalf("gui bash out=%q err=%v", out, err)
 	}
 	if opens.Load() != 2 {
 		t.Fatalf("opens=%d, needs_screen must open the screen", opens.Load())
-	}
-	resetBotScreens()
-	req.Scope.RunID = req.Scope.RunID + "-plain"
-	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "firefox"})
-	if err != nil || opens.Load() != 2 {
-		t.Fatalf("plain bash out=%q err=%v opens=%d", out, err, opens.Load())
 	}
 }
 
@@ -101,6 +102,32 @@ func TestScreenOpenWaitsOutTheMemoryGate(t *testing.T) {
 	}
 	if opens.Load() != 0 {
 		t.Fatalf("opens=%d, the screen opened before the memory gate", opens.Load())
+	}
+}
+
+func TestBashWindowPixmapDoesNotRun(t *testing.T) {
+	req := d97Env(t)
+	operateDesktopFunc = operateDesktop
+	_, err := invoke(t, req, map[string]any{"action": "bash", "command": "import -window 0x1a2b snake.png"})
+	if err == nil || !strings.Contains(err.Error(), "action=screenshot") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestScreenshotBeforeOpenScreenIsRefused(t *testing.T) {
+	req := d97Env(t)
+	opens := 0
+	openBotScreen = func(context.Context, agentruntime.Scope) error {
+		opens++
+		return nil
+	}
+	operateDesktopFunc = operateDesktop
+	_, err := invoke(t, req, map[string]any{"action": "screenshot"})
+	if err == nil || !strings.Contains(err.Error(), "action=open_screen") || !strings.Contains(err.Error(), "BOT_SCREEN_CLOSED") {
+		t.Fatalf("err=%v", err)
+	}
+	if opens != 0 {
+		t.Fatalf("opens=%d", opens)
 	}
 }
 
@@ -178,7 +205,7 @@ func TestClosedScreenIsNotAnOutageAnd4xxDoesNotWait(t *testing.T) {
 	}
 }
 
-func TestBotScreenClosedRetriesExactlyOnce(t *testing.T) {
+func TestClosedScreenDoesNotOpenItself(t *testing.T) {
 	req := d97Env(t)
 	opens := 0
 	openBotScreen = func(context.Context, agentruntime.Scope) error {
@@ -190,11 +217,11 @@ func TestBotScreenClosedRetriesExactlyOnce(t *testing.T) {
 		calls++
 		return "", errors.New("BOT_SCREEN_CLOSED: this bot's desktop is not open yet")
 	}
-	_, err := invoke(t, req, map[string]any{"action": "click", "x": 1, "y": 2})
-	if err == nil || !strings.Contains(err.Error(), "still not open") || !strings.Contains(err.Error(), "BOT_SCREEN_CLOSED") {
+	_, err := invoke(t, req, map[string]any{"action": "bash", "command": "echo hi"})
+	if err == nil || !strings.Contains(err.Error(), "action=open_screen") || !strings.Contains(err.Error(), "BOT_SCREEN_CLOSED") {
 		t.Fatalf("err=%v", err)
 	}
-	if calls != 2 || opens != 2 {
+	if calls != 1 || opens != 0 {
 		t.Fatalf("calls=%d opens=%d", calls, opens)
 	}
 	if desktopOutageWasSeen(req.Scope.RunID) {

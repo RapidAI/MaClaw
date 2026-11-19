@@ -45,6 +45,9 @@ func FormatRecallEntriesForPrompt(entries []Entry, opts RecallEntriesPromptOptio
 	}
 	writePromptLine(opts.Header)
 	writePromptLine(opts.Intro)
+	b.WriteString("[untrusted memory]\n")
+	b.WriteString(RecallFenceHeader)
+	b.WriteByte('\n')
 	for i, entry := range entries {
 		line := FormatRecallEntryForPrompt(entry, maxRunes)
 		if opts.SourceNumbering {
@@ -53,6 +56,8 @@ func FormatRecallEntriesForPrompt(entries []Entry, opts RecallEntriesPromptOptio
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
+	b.WriteString(DesktopMemoryFenceClose)
+	b.WriteByte('\n')
 	writePromptLine(opts.Footer)
 	if opts.SourceNumbering && len(entries) > 0 {
 		b.WriteString("（如果你的回答使用了上述记忆信息，请在末尾用 来源：[MX] 标注使用了哪些条目。）\n")
@@ -80,6 +85,9 @@ func FormatExperienceCandidatesForPrompt(candidates []lifecycle.Candidate, opts 
 	}
 	writePromptLine(opts.Header)
 	writePromptLine(opts.Intro)
+	b.WriteString("[untrusted memory]\n")
+	b.WriteString(RecallFenceHeader)
+	b.WriteByte('\n')
 	for i, candidate := range candidates {
 		line := FormatExperienceCandidateForPrompt(candidate, maxRunes)
 		if opts.SourceNumbering {
@@ -88,6 +96,8 @@ func FormatExperienceCandidatesForPrompt(candidates []lifecycle.Candidate, opts 
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
+	b.WriteString(DesktopMemoryFenceClose)
+	b.WriteByte('\n')
 	writePromptLine(opts.Footer)
 	if opts.SourceNumbering && len(candidates) > 0 {
 		b.WriteString("（如果你的回答使用了上述记忆信息，请在末尾用 来源：[MX] 标注使用了哪些条目。）\n")

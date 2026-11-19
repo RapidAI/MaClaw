@@ -342,6 +342,22 @@ func TestDiscoverTargetsSendsGateToken(t *testing.T) {
 	}
 }
 
+func TestCDPSocketKeepsTheTicketPath(t *testing.T) {
+	endpoint := "https://hub.example/api/v1/desktop-cdp/abc"
+	already := "wss://hub.example/api/v1/desktop-cdp/abc/devtools/page/1"
+	if got := cdpSocketOnEndpoint(endpoint, already); got != already {
+		t.Fatalf("ticket path doubled: %s", got)
+	}
+	fresh := cdpSocketOnEndpoint(endpoint, "ws://127.0.0.1:9222/devtools/page/1")
+	want := "wss://hub.example/api/v1/desktop-cdp/abc/devtools/page/1"
+	if fresh != want {
+		t.Fatalf("fresh %s", fresh)
+	}
+	if host := cdpChromeHost(fresh); host != "" {
+		t.Fatalf("ticket host rewritten to %s", host)
+	}
+}
+
 func TestCDPSocketKeepsTheTunnelPath(t *testing.T) {
 	endpoint := "https://desktop:tok@dockerd.example/v1/desktops/tunnel/abcdef0123456789/cdp"
 	got := cdpSocketOnEndpoint(endpoint, "ws://127.0.0.1:9222/devtools/page/1")
@@ -369,6 +385,8 @@ func TestCDPChromeHost(t *testing.T) {
 		{"http://desktop:tok@dockerd.example", "127.0.0.1:80"},
 		{"https://desktop:tok@dockerd.example/v1/desktops/tunnel/abcdef0123456789/cdp/json/version", ""},
 		{"wss://desktop:tok@dockerd.example/v1/desktops/tunnel/abcdef0123456789/cdp/devtools/page/1", ""},
+		{"https://hub.example/api/v1/desktop-cdp/abc/json/version", ""},
+		{"wss://hub.example/api/v1/desktop-cdp/abc/devtools/page/1", ""},
 	}
 	for _, tc := range cases {
 		if got := cdpChromeHost(tc.in); got != tc.want {

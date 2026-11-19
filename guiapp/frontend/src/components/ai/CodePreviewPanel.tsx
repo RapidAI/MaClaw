@@ -2111,10 +2111,14 @@ export function CodePreviewPanel({
                 >
                     {showWebPreview && activeFile && webTarget ? (
                         <WebPreviewBrowser
-                            key={`${webTarget.kind}:${webTarget.kind === 'remote' ? webTarget.url : webTarget.path}:${activeFile.updatedAt || 0}:${activeFile.content.length}${activeFile.previewRevision ? `:${activeFile.previewRevision}` : ''}`}
+                            // The key stays the page identity only. Putting the
+                            // content revision here remounted the iframe on every
+                            // agent write and dropped its keyboard focus.
+                            key={`${webTarget.kind}:${webTarget.kind === 'remote' ? webTarget.url : webTarget.path}`}
                             absPath={webTarget.kind === 'file' ? webTarget.path : undefined}
                             content={webTarget.kind === 'file' ? activeFile.content : undefined}
                             url={webTarget.kind === 'remote' ? webTarget.url : undefined}
+                            refreshSignal={`${activeFile.updatedAt || 0}:${(activeFile.content || '').length}${activeFile.previewRevision ? `:${activeFile.previewRevision}` : ''}`}
                             theme={theme}
                             lang={lang}
                         />

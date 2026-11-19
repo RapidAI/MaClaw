@@ -191,6 +191,7 @@ type Service struct {
 	mu            sync.Mutex
 	waiters       map[string]waiter
 	activateMu    sync.Mutex
+	streamMu      sync.Mutex
 	streamBuckets map[string]*streamBucket
 }
 
@@ -278,7 +279,7 @@ func (s *Service) GrantSameAccount(ctx context.Context, tenantID, userID, contro
 	if err != nil {
 		return Grant{}, err
 	}
-	controller, err := s.requireOwnMachine(ctx, userID, controllerMachineID)
+	controller, err := s.controllerIdentity(ctx, userID, controllerMachineID)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -360,7 +361,7 @@ func (s *Service) Invite(ctx context.Context, tenantID, userID, controllerMachin
 	if err != nil {
 		return Grant{}, err
 	}
-	controller, err := s.requireOwnMachine(ctx, userID, controllerMachineID)
+	controller, err := s.controllerIdentity(ctx, userID, controllerMachineID)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -646,9 +647,14 @@ func (s *Service) Snapshot(ctx context.Context, tenantID, userID, machineID stri
 				Status:      StatusPending,
 				FromMachine: grant.ControllerMachineName,
 			})
-		case grant.TargetUserID == userID && grant.Status == StatusActive && grant.TargetMachineID == machineID:
+		case grant.TargetUserID == userID && grant.Status == StatusActive && (grant.TargetMachineID == machineID || machineID == ""):
+			// A viewer without a machine id (mobile app) sees every desktop of
+			// the account currently being controlled, so it can end sessions
+			// the same way any of the account's desktops could.
 			state.Controlled = append(state.Controlled, GrantView{
 				ID:          grant.ID,
+				MachineID:   grant.TargetMachineID,
+				MachineName: grant.TargetMachineName,
 				Permission:  grant.Permission,
 				Status:      StatusActive,
 				SameAccount: grant.SameAccount,
@@ -719,6 +725,7 @@ func (s *Service) StreamGrant(ctx context.Context, grantID, fromMachineID string
 	}
 	grant, err := s.load(ctx, grantID)
 	if err != nil || grant.TargetMachineID != strings.TrimSpace(fromMachineID) || grant.Status != StatusActive {
+		s.dropStreamBucket(grantID)
 		return Grant{}, ErrNotFound
 	}
 	return grant, nil
@@ -736,8 +743,8 @@ func (s *Service) AllowStream(grantID string) bool {
 	const ratePerSec = 30.0
 	const burst = 60.0
 	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
 	if s.streamBuckets == nil {
 		s.streamBuckets = map[string]*streamBucket{}
 	}
@@ -756,6 +763,15 @@ func (s *Service) AllowStream(grantID string) bool {
 	}
 	b.tokens--
 	return true
+}
+
+func (s *Service) dropStreamBucket(grantID string) {
+	if s == nil {
+		return
+	}
+	s.streamMu.Lock()
+	delete(s.streamBuckets, strings.TrimSpace(grantID))
+	s.streamMu.Unlock()
 }
 
 type streamBucket struct {
@@ -847,6 +863,22 @@ func (s *Service) requireOwnMachine(ctx context.Context, userID, machineID strin
 		return Machine{}, invalid("请先登录这台电脑")
 	}
 	return machine, nil
+}
+
+// accountControllerName labels a controller that is the account itself — a
+// signed-in viewer session without a desktop (the mobile app). The grant's
+// ControllerMachineID stays empty; every downstream check compares
+// ControllerMachineID == caller machineID, so "" matches only sessions that
+// likewise present no machine identity.
+const accountControllerName = "移动设备"
+
+// controllerIdentity resolves who starts a grant: the named desktop when one
+// is given, or the account itself when the caller has no machine (mobile).
+func (s *Service) controllerIdentity(ctx context.Context, userID, controllerMachineID string) (Machine, error) {
+	if strings.TrimSpace(controllerMachineID) == "" {
+		return Machine{Name: accountControllerName}, nil
+	}
+	return s.requireOwnMachine(ctx, userID, controllerMachineID)
 }
 
 func (s *Service) pendingForTarget(ctx context.Context, _ string, userID, grantID string) (Grant, error) {
@@ -1193,6 +1225,9 @@ func (s *Service) updateExpected(ctx context.Context, grant Grant, expectedStatu
 		return false, err
 	}
 	changed, err := res.RowsAffected()
+	if err == nil && changed == 1 && grant.Status != StatusActive {
+		s.dropStreamBucket(grant.ID)
+	}
 	return changed == 1, err
 }
 

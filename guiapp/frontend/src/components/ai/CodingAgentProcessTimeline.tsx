@@ -167,7 +167,10 @@ function CodingAgentProcessSummaryBar({
 
 /**
  * Flat coding-process list: a collapsible count line, then thought and tool rows.
- * The list starts open. Collapse state stays in this component.
+ * Rows stay open while `live` is true (this turn is still streaming or busy).
+ * An idle turn folds, including one whose answer body is still empty. The
+ * count line stays, and a click opens the rows again. A later live edge
+ * follows the turn; a click holds until that edge.
  */
 export function CodingAgentProcessTimeline({
     items,
@@ -189,24 +192,33 @@ export function CodingAgentProcessTimeline({
     /** True while this assistant turn is still in flight. */
     live?: boolean;
 }): React.ReactElement {
-    const [open, setOpen] = React.useState(true);
+    const [open, setOpen] = React.useState(live);
+    const [seenLive, setSeenLive] = React.useState(live);
+    // Follow the turn in this render. Waiting for the restart would build
+    // every row once on the way down, then throw that tree away.
+    let shown = open;
+    if (live !== seenLive) {
+        setSeenLive(live);
+        setOpen(live);
+        shown = live;
+    }
     const visibility = useCodingProcessTimelineVisibility(items);
     // The sheen string is the thinking label only while this thought is the
     // current activity. "正在调用工具" and a dropped label are not thinking.
     const thoughtLive = lastThinkingIndex >= 0
         && liveLabel === localizeText(lang, "Thinking", "正在思考", "正在思考");
     return (
-        <div data-testid="coding-agent-interleaved-timeline" data-process-open={open ? "true" : "false"}>
+        <div data-testid="coding-agent-interleaved-timeline" data-process-open={shown ? "true" : "false"}>
             <CodingAgentProcessSummaryBar
                 items={items}
                 hiddenDiffUpdates={visibility.hidden}
                 lang={lang}
                 live={live}
                 thoughtLive={thoughtLive}
-                open={open}
+                open={shown}
                 onToggle={() => setOpen((value) => !value)}
             />
-            {open ? items.map((item, index) => {
+            {shown ? items.map((item, index) => {
                 if (visibility.hidden.has(index)) return null;
                 const checkNote = visibility.notes.get(index);
                 if (checkNote) {

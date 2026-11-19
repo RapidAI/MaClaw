@@ -99,8 +99,8 @@ function testEnglishLastLogin() {
     last_login_app_version: '8.1.0.12464',
     last_login_at: '2026-10-28T10:00:00Z'
   })]);
-  assertIncludes(html, 'Last login: Windows \u00b7 8.1.0.12464', 'English card shows the client platform and version');
-  assertIncludes(html, 'Last login: Windows \u00b7 8.1.0.12464 |', 'the login timestamp stays available in the tooltip');
+  assertIncludes(html, 'Last login: PC \u00b7 Windows 8.1.0.12464', 'English card shows the client platform and version');
+  assertIncludes(html, 'Last login: PC \u00b7 Windows 8.1.0.12464 |', 'the login timestamp stays available in the tooltip');
 }
 
 function testChineseLastLogin() {
@@ -108,7 +108,7 @@ function testChineseLastLogin() {
     last_login_platform: 'mac',
     last_login_app_version: '8.1.0.12464'
   })]);
-  assertIncludes(html, '\u6700\u540e\u767b\u5f55: macOS \u00b7 8.1.0.12464', 'Chinese card localizes the label and platform');
+  assertIncludes(html, '\u6700\u540e\u767b\u5f55: \u7535\u8111\u7aef \u00b7 macOS 8.1.0.12464', 'Chinese card localizes the label and platform');
 }
 
 function testMissingLastLogin() {
@@ -124,13 +124,39 @@ function testPlatformFallbacks() {
   var mobile = renderGovernance('en', [boundUser({ last_login_platform: 'mobile' })]);
   assertIncludes(mobile, 'Last login: Mobile', 'mobile clients show the platform without a version');
   var customPlatform = renderGovernance('en', [boundUser({ last_login_platform: 'linux-arm64' })]);
-  assertIncludes(customPlatform, 'Last login: linux-arm64', 'custom platforms are shown verbatim');
+  assertIncludes(customPlatform, 'Last login: PC \u00b7 Linux', 'linux-derived platforms still group under PC');
   var versionOnly = renderGovernance('en', [boundUser({ last_login_app_version: '9.9.9' })]);
   assertIncludes(versionOnly, 'Last login: 9.9.9', 'a version without a platform is still shown');
   var unknownPlatform = renderGovernance('en', [boundUser({ last_login_platform: 'unknown', last_login_app_version: '1.0.0' })]);
-  assertIncludes(unknownPlatform, 'Last login: Unknown platform \u00b7 1.0.0', 'the server default platform is localized');
+  assertIncludes(unknownPlatform, 'Last login: Unknown platform 1.0.0', 'the server default platform is localized');
   var blank = renderGovernance('en', [boundUser({ last_login_platform: '   ', last_login_app_version: '2.0.0' })]);
   assertIncludes(blank, 'Last login: 2.0.0', 'whitespace-only platforms are ignored');
+}
+
+function testLoginClientsGrouping() {
+  var html = renderGovernance('en', [boundUser({
+    login_clients: [
+      { platform: 'windows', app_version: '8.1.0.12464', last_login_at: '2026-10-28T10:00:00Z' },
+      { platform: 'mac', app_version: '8.0.0.100' },
+      { platform: 'android', app_version: '1.0.0' }
+    ],
+    last_login_platform: 'windows',
+    last_login_app_version: '8.1.0.12464',
+    last_login_at: '2026-10-28T10:00:00Z'
+  })]);
+  assertIncludes(html, 'Last login: PC \u00b7 Windows 8.1.0.12464 / macOS 8.0.0.100 | Mobile \u00b7 Android 1.0.0', 'per-platform clients split PC and mobile');
+  var harmony = renderGovernance('en', [boundUser({
+    login_clients: [{ platform: 'harmonyos', app_version: '2.0.0' }]
+  })]);
+  assertIncludes(harmony, 'Mobile \u00b7 HarmonyOS 2.0.0', 'HarmonyOS shows under the mobile group');
+  var zh = renderGovernance('zh', [boundUser({
+    login_clients: [{ platform: 'ios', app_version: '1.2.0' }]
+  })]);
+  assertIncludes(zh, '\u79fb\u52a8\u7aef \u00b7 iOS 1.2.0', 'mobile group label localizes');
+  var genericMobile = renderGovernance('en', [boundUser({
+    login_clients: [{ platform: 'mobile', app_version: '1.0.0' }]
+  })]);
+  assertIncludes(genericMobile, 'Mobile \u00b7 1.0.0', 'the generic mobile platform shows just its version');
 }
 
 function testEscaping() {
@@ -148,6 +174,7 @@ Promise.resolve()
   .then(testChineseLastLogin)
   .then(testMissingLastLogin)
   .then(testPlatformFallbacks)
+  .then(testLoginClientsGrouping)
   .then(testEscaping)
   .then(function() {
     console.log('governance-tab tests: ' + passed + ' passed, ' + failed + ' failed');
