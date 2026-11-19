@@ -230,18 +230,50 @@ func TestWatchFollowSaysTheStructuredSummaryNotTheLog(t *testing.T) {
 		t.Fatalf("a reply with no structured finish was replaced: %q", kept)
 	}
 
+	svc, store, p, inst := longJobOwnerService(t)
+	prevSvc := desktopLongJobService
+	t.Cleanup(func() { desktopLongJobService = prevSvc })
+	desktopLongJobService = svc
+	session, err := svc.CreateSession(context.Background(), p, inst.ID, agentservice.CreateSessionInput{Title: "watch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := session.ID
+	if err := store.SaveMessage(agentservice.Message{
+		ID: "msg_struct", SessionID: sessionID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: inst.ID,
+		Role: agentservice.MessageRoleAssistant, Content: raw, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := time.Now()
+	if err := store.SaveRun(agentservice.Run{
+		ID: runID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: inst.ID, SessionID: sessionID,
+		AssistantMessageID: "msg_struct", Status: agentservice.RunStatusSucceeded,
+		StartedAt: done.Add(-time.Minute), CompletedAt: &done,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, reply, err := desktopLongJobRunGetter(context.Background(), p, inst.ID, sessionID, runID)
+	if err != nil || status != agentservice.RunStatusSucceeded {
+		t.Fatalf("getter %s %v", status, err)
+	}
+	for _, bad := range []string{"BEST_VAL", "下面是最后的输出", "epoch log"} {
+		if strings.Contains(reply, bad) {
+			t.Fatalf("the watch getter returned the process log %q in %q", bad, reply)
+		}
+	}
+	if !strings.Contains(reply, "做成了") {
+		t.Fatalf("getter reply %q", reply)
+	}
 	var sent []map[string]any
-	oldSay, oldGet := desktopLongJobSayFunc, desktopLongJobRunGetter
-	t.Cleanup(func() { desktopLongJobSayFunc, desktopLongJobRunGetter = oldSay, oldGet })
+	oldSay := desktopLongJobSayFunc
+	t.Cleanup(func() { desktopLongJobSayFunc = oldSay })
 	desktopLongJobSayFunc = func(_ context.Context, body map[string]any) error {
 		sent = append(sent, body)
 		return nil
 	}
-	desktopLongJobRunGetter = func(context.Context, agentservice.Principal, string, string, string) (agentservice.RunStatus, string, error) {
-		return agentservice.RunStatusSucceeded, desktopLongJobDeliveredOutcome(runID, agentservice.Message{Content: raw}), nil
-	}
-	watch := &desktopLongJob{ID: "job_wstruct", InstanceID: "inst_s", SessionID: "sess", UserID: "u", TenantID: "t"}
-	desktopLongJobFollowRun(context.Background(), agentservice.Principal{}, watch, runID, longJobResume)
+	watch := &desktopLongJob{ID: "job_wstruct", InstanceID: inst.ID, SessionID: sessionID, UserID: p.UserID, TenantID: p.TenantID}
+	desktopLongJobFollowRun(context.Background(), p, watch, runID, longJobResume)
 	if len(sent) != 1 {
 		t.Fatalf("sent %v", sent)
 	}
