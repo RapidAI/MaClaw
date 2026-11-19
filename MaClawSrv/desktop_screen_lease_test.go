@@ -92,8 +92,11 @@ func TestScreenLeaseClassifiesSteps(t *testing.T) {
 			t.Errorf("%s does not need the screen", a)
 		}
 	}
-	if !desktopScreenLeaseNeeded("bash", map[string]any{"command": "libreoffice report.odt &"}) && desktopBashLaunchesGUI("libreoffice report.odt &") {
-		t.Error("a bash that opens a GUI program needs the screen")
+	if desktopScreenLeaseNeeded("bash", map[string]any{"command": "libreoffice report.odt &"}) {
+		t.Error("the command text does not open a screen")
+	}
+	if !desktopScreenLeaseNeeded("bash", map[string]any{"command": "echo hi", "needs_screen": true}) {
+		t.Error("needs_screen opens the screen")
 	}
 }
 

@@ -84,12 +84,17 @@ func (c *desktopHubClient) Session(ctx context.Context, tenantID, userID string)
 
 // Memory reads the desktop container's used and limit bytes from Hub.
 // Hub reads them from desktopd. This does not start the desktop.
+// The memory gate prefers desktopd and uses this route only as a fallback.
 func (c *desktopHubClient) Memory(ctx context.Context, tenantID, userID string) (int64, int64, error) {
+	return c.memoryAt(ctx, "/api/v1/desktop-services/memory", tenantID, userID)
+}
+
+func (c *desktopHubClient) memoryAt(ctx context.Context, path, tenantID, userID string) (int64, int64, error) {
 	var out struct {
 		Used  int64 `json:"used_bytes"`
 		Limit int64 `json:"limit_bytes"`
 	}
-	if err := c.post(ctx, "/api/v1/desktop-services/memory", map[string]string{
+	if err := c.post(ctx, path, map[string]string{
 		"tenant_id": tenantID,
 		"user_id":   userID,
 	}, &out); err != nil {
@@ -273,6 +278,8 @@ func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, f
 	return out.Output, nil
 }
 
+type desktopNeedsScreenKey struct{}
+
 // localProbeContinue is a probe that learned the bytes cannot stay local.
 // A missing file on an older Hub is the same: the write itself still goes.
 func localProbeContinue(err error) bool {
@@ -287,15 +294,21 @@ func localProbeContinue(err error) bool {
 }
 
 func (c *desktopHubClient) Bash(ctx context.Context, tenantID, userID, command string) (string, error) {
+	needs, _ := ctx.Value(desktopNeedsScreenKey{}).(bool)
 	var out struct {
 		Output string `json:"output"`
+		Code   string `json:"code"`
 	}
 	if err := c.post(ctx, "/api/v1/desktop-services/bash", map[string]any{
-		"tenant_id": tenantID,
-		"user_id":   userID,
-		"command":   command,
+		"tenant_id":    tenantID,
+		"user_id":      userID,
+		"command":      command,
+		"needs_screen": needs,
 	}, &out); err != nil {
 		return "", err
+	}
+	if out.Code == desktopbot.CodeScreenRequired {
+		return "", &desktopbot.ScreenRequiredError{Output: out.Output}
 	}
 	return out.Output, nil
 }
@@ -408,6 +421,28 @@ func (e *desktopAPIError) Error() string {
 		return e.Msg
 	}
 	return e.Code
+}
+
+// desktopUnreachableError is a transport failure. Callers classify it by
+// type. The text stays the sentence older logs already print.
+type desktopUnreachableError struct {
+	cause error
+}
+
+func (e *desktopUnreachableError) Error() string {
+	if e == nil || e.cause == nil {
+		return "desktop service is unreachable"
+	}
+	return "desktop service is unreachable: " + e.cause.Error()
+}
+
+func (e *desktopUnreachableError) Unwrap() error { return e.cause }
+
+// desktopInvalidBodyError is a 2xx body that is not the expected JSON.
+type desktopInvalidBodyError struct{}
+
+func (desktopInvalidBodyError) Error() string {
+	return "desktop service returned invalid status"
 }
 
 // desktopHubNotFound reports a Hub 404 whose code is NOT_FOUND. That status
@@ -609,7 +644,7 @@ func (c *desktopHubClient) postLimitHeaders(ctx context.Context, path string, bo
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("desktop service is unreachable: %s", err.Error())
+		return &desktopUnreachableError{cause: err}
 	}
 	defer resp.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
@@ -618,7 +653,7 @@ func (c *desktopHubClient) postLimitHeaders(ctx context.Context, path string, bo
 	}
 	if dest != nil && len(bytes.TrimSpace(payload)) > 0 {
 		if err := json.Unmarshal(payload, dest); err != nil {
-			return fmt.Errorf("desktop service returned invalid status")
+			return desktopInvalidBodyError{}
 		}
 	}
 	return nil

@@ -22,9 +22,6 @@ func TestBashDoesNotOpenTheBotScreen(t *testing.T) {
 	}
 	calls := 0
 	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
-		if desktopArg(args, "action") != "bash" {
-			return "ok", nil
-		}
 		calls++
 		return "bash ok", nil
 	}
@@ -33,7 +30,7 @@ func TestBashDoesNotOpenTheBotScreen(t *testing.T) {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 	if calls != 1 || opens.Load() != 0 {
-		t.Fatalf("calls=%d opens=%d", calls, opens.Load())
+		t.Fatalf("calls=%d opens=%d, a shell must not open a screen", calls, opens.Load())
 	}
 	if desktopOutageWasSeen(req.Scope.RunID) {
 		t.Fatal("a shell step was an outage")
@@ -57,6 +54,54 @@ func TestOpenScreenActionOpensTheBotScreen(t *testing.T) {
 	}
 	if !botScreenAlready(req.Scope.RunID) {
 		t.Fatal("open_screen did not mark this run's screen")
+	}
+	resetBotScreens()
+	req.Scope.RunID = req.Scope.RunID + "-gui"
+	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+		return "opened", nil
+	}
+	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "xdg-open /tmp/a.pdf", "needs_screen": true})
+	if err != nil || !strings.Contains(out, "opened") {
+		t.Fatalf("gui bash out=%q err=%v", out, err)
+	}
+	if opens.Load() != 2 {
+		t.Fatalf("opens=%d, needs_screen must open the screen", opens.Load())
+	}
+}
+
+func TestScreenOpenWaitsOutTheMemoryGate(t *testing.T) {
+	req := d97Env(t)
+	prev := desktopMemoryPressured
+	prevWait := desktopMemoryRecheck
+	prevMax := desktopMemoryWaitMax
+	prevLease := desktopScreenLeaseOn
+	t.Cleanup(func() {
+		desktopMemoryPressured = prev
+		desktopMemoryRecheck = prevWait
+		desktopMemoryWaitMax = prevMax
+		desktopScreenLeaseOn = prevLease
+	})
+	desktopScreenLeaseOn = true
+	desktopMemoryRecheck = time.Millisecond
+	desktopMemoryWaitMax = 5 * time.Millisecond
+	desktopMemoryPressured = func(context.Context, string, string) (bool, string, error) {
+		return true, desktopMemoryWaitLine, nil
+	}
+	var opens atomic.Int32
+	openBotScreen = func(context.Context, agentruntime.Scope) error {
+		opens.Add(1)
+		return nil
+	}
+	operateDesktopFunc = func(context.Context, agentruntime.Scope, map[string]any) (string, error) {
+		return "", errors.New("ran while memory was full")
+	}
+	_, err := invoke(t, req, map[string]any{"action": "click", "x": 1, "y": 2})
+	var admit *desktop.MemoryAdmission
+	if !errors.As(err, &admit) || admit.Kind() != desktop.AdmissionMemoryBusy {
+		t.Fatalf("err=%v", err)
+	}
+	if opens.Load() != 0 {
+		t.Fatalf("opens=%d, the screen opened before the memory gate", opens.Load())
 	}
 }
 

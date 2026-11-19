@@ -70,6 +70,7 @@ func runServer(ctx context.Context) error {
 	if err := configureServiceLogging(dataRoot); err != nil {
 		return fmt.Errorf("configure logging: %w", err)
 	}
+	warnDesktopdMemoryConfig()
 	if err := desktopbot.BindSpecFile(filepath.Join(dataRoot, "desktop-bot-specs.json")); err != nil {
 		srvLog().Warn("desktop bot spec file", slog.String("error", err.Error()))
 	}

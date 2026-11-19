@@ -647,6 +647,9 @@ def main(argv):
         return run_file(argv)
     if len(argv) >= 2 and argv[1] == "command":
         return run_command(argv)
+    if len(argv) == 3 and argv[1] == "sentinel":
+        print(json.dumps(read_sentinel(argv[2])))
+        return 0
     if len(argv) == 2 and argv[1] == "boot":
         print(json.dumps(boot_restore(), sort_keys=True))
         return 0
@@ -2089,7 +2092,149 @@ def command_plan(req):
             raise ValueError("command is invalid")
         argv = ["sh", "-c", script]
         env["DISPLAY"] = display
-    return {"op": op, "argv": argv, "env": env, "cwd": cwd}
+    token = req.get("sentinel") if op == "shell" else ""
+    if not isinstance(token, str):
+        token = ""
+    return {"op": op, "argv": argv, "env": env, "cwd": cwd, "sentinel": token}
+
+
+SENTINEL_DIR = "/tmp/maclaw-sentinel"
+SENTINEL_DISPLAYS = range(80, 90)
+
+
+class SentinelDisplay:
+    """A display number whose socket only records that an X client connected.
+
+    It does not speak X. needs_screen is false, so the shell gets this
+    display instead of a real one. A connection is the screen_required signal.
+    """
+
+    def __init__(self):
+        self.hit = False
+        self.number = None
+        self.sock = None
+        self.stop = False
+        self.thread = None
+        os.makedirs("/tmp/.X11-unix", exist_ok=True)
+        os.makedirs(SENTINEL_DIR, exist_ok=True)
+        for number in SENTINEL_DISPLAYS:
+            if not self._claim(number):
+                continue
+            break
+        if self.number is None:
+            print("sentinel displays X80-X89 are all in use", file=sys.stderr)
+
+    def _owner_path(self, number):
+        return os.path.join(SENTINEL_DIR, "display-%d.pid" % number)
+
+    def _stale(self, number):
+        """A leftover socket whose owner is gone. A live owner is kept."""
+        try:
+            with open(self._owner_path(number), encoding="utf-8") as handle:
+                pid = int((handle.read() or "0").strip() or "0")
+        except (OSError, ValueError):
+            return True
+        if pid <= 0:
+            return True
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        return False
+
+    def _claim(self, number):
+        path = "/tmp/.X11-unix/X%d" % number
+        if os.path.exists(path) and not self._stale(number):
+            return False
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(path)
+        except OSError:
+            sock.close()
+            return False
+        sock.listen(8)
+        try:
+            with open(self._owner_path(number), "w", encoding="utf-8") as handle:
+                handle.write(str(os.getpid()))
+        except OSError:
+            sock.close()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return False
+        self.number = number
+        self.sock = sock
+        self.thread = threading.Thread(target=self._accept, daemon=True)
+        self.thread.start()
+        return True
+
+    @property
+    def display(self):
+        if self.number is None:
+            return ""
+        return ":%d" % self.number
+
+    def _accept(self):
+        self.sock.settimeout(0.2)
+        while not self.stop:
+            try:
+                conn, _ = self.sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            self.hit = True
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def close(self):
+        self.stop = True
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        if self.thread is not None:
+            self.thread.join(timeout=1)
+        if self.number is not None:
+            try:
+                os.unlink("/tmp/.X11-unix/X%d" % self.number)
+            except OSError:
+                pass
+            try:
+                os.unlink(self._owner_path(self.number))
+            except OSError:
+                pass
+
+    def write(self, token):
+        os.makedirs(SENTINEL_DIR, exist_ok=True)
+        safe = "".join(ch for ch in token if ch.isalnum())
+        if not safe:
+            return
+        with open(os.path.join(SENTINEL_DIR, safe), "w", encoding="utf-8") as handle:
+            json.dump({"x_client": self.hit}, handle)
+
+
+def read_sentinel(token):
+    safe = "".join(ch for ch in str(token) if ch.isalnum())
+    path = os.path.join(SENTINEL_DIR, safe)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {"x_client": False}
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    return {"x_client": bool(data.get("x_client"))}
 
 
 def run_command(argv):
@@ -2122,7 +2267,20 @@ def run_command(argv):
         return 0
     child = os.environ.copy()
     child.update(plan["env"])
-    proc = subprocess.run(plan["argv"], cwd=plan["cwd"], env=child)
+    sentinel = None
+    token = plan.get("sentinel") or ""
+    # An explicit display is the screen the caller opened. The sentinel
+    # replaces DISPLAY only when the shell has none.
+    if token and not child.get("DISPLAY"):
+        sentinel = SentinelDisplay()
+        if sentinel.display:
+            child["DISPLAY"] = sentinel.display
+    try:
+        proc = subprocess.run(plan["argv"], cwd=plan["cwd"], env=child)
+    finally:
+        if sentinel is not None:
+            sentinel.close()
+            sentinel.write(token)
     return proc.returncode
 
 

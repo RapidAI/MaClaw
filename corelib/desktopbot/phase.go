@@ -20,7 +20,32 @@ const (
 	// is not open yet. The container may already be running. It is not an
 	// outage: open the screen and retry the same step once.
 	CodeBotScreenClosed = "BOT_SCREEN_CLOSED"
+	// CodeScreenRequired is a bash that tried to open an X display while
+	// needs_screen was false. The model retries that command with
+	// needs_screen true.
+	CodeScreenRequired = "screen_required"
 )
+
+// ErrScreenRequired is the sentinel for a bash that failed to connect to X.
+var ErrScreenRequired = errors.New(CodeScreenRequired)
+
+// ScreenRequiredError is that bash. Output is the command's own result.
+// The sentence tells the model how to retry. Callers use errors.Is.
+type ScreenRequiredError struct {
+	Output string
+}
+
+func (e *ScreenRequiredError) Error() string {
+	const sentence = "screen_required: this command tried to connect to X and had no display. Retry the same bash with needs_screen true."
+	if e == nil || strings.TrimSpace(e.Output) == "" {
+		return sentence
+	}
+	return strings.TrimSpace(e.Output) + "\n" + sentence
+}
+
+func (e *ScreenRequiredError) Unwrap() error { return ErrScreenRequired }
+
+func (e *ScreenRequiredError) Code() string { return CodeScreenRequired }
 
 // AsleepError is a coded refusal to exec a stopped desktop container.
 type AsleepError struct{}

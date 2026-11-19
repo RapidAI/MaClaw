@@ -107,7 +107,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"A probe with no filter that finds no element ref includes one desktop image so you can see the page. If a filter matches nothing, probe again without it. The next web step is still an element ref, not a pixel click. " +
 			"For other applications, action=app_open with program starts that program in a window on this desktop. xfce4-terminal is already installed. xterm is another terminal when it is installed. app_open is not a shell. The new window does not use the Chinese input method, so ASCII typed into it is literal. Then action=app_list, then action=app_run with steps focus, type, key, or click. One type step can contain several lines. The terminal is a shell, so write the source as a heredoc in that step and compile on the next line. app_run focus only activates a window that is already open. exit status 1 from focus means that window is not open; start it with app_open. " +
 			"action=install with packages installs those Debian packages in this desktop container. " +
-			"action=file_read, file_write, file_edit, and file_list use a path inside this container. Each run has its own project folder (named in the first file or bash result): bash starts there and a relative path such as a.c resolves there. Keep code, logs and temporary files in it; the Desktop and the home folder are the person's, so write there only when the person asked for that place (user_location=true). action=bash runs one command in this container and returns its output. A one-off script is file_write, then bash. " +
+			"action=file_read, file_write, file_edit, and file_list use a path inside this container. Each run has its own project folder (named in the first file or bash result): bash starts there and a relative path such as a.c resolves there. Keep code, logs and temporary files in it; the Desktop and the home folder are the person's, so write there only when the person asked for that place (user_location=true). action=bash runs one command in this container and returns its output. Set needs_screen true for a GUI or X program: that opens the screen and gives the command DISPLAY. Omit it otherwise. A result whose code is screen_required means the command tried to connect to X: retry that same command with needs_screen true. A one-off script is file_write, then bash. " +
 			"A job expected to run for minutes or more (training, a remote compile, a large download, anything started with nohup or background=true) must be started in the background: action=bash with background=true (or the same command you would have waited on). That starts it detached, stores its status, and a watcher polls pid, logs and metrics on a timer; this turn then ends. Do not block this run waiting for it to finish. Progress, stalls, failures and completion are sent to this chat with evidence from the last poll. action=job_status (optional job_id=) and job_list look at that state without waiting. " +
 			"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
 			"When the person asks you to develop, fix a bug, or ship, use the repo tool. Read the issue, clone, reproduce with desktop bash, then action=branch, edit, run the project's tests, commit, and action=pr (it pushes that branch and opens the pull or merge request; an open request for that branch is kept). Then action=runs with ref set to that branch. A failed run uses action=run_log, then fix, commit, and action=push onto the same branch. action=request reads that pull or merge request: whether it can merge, and the review comments. Address those comments, commit, and push. If it is behind or conflicting, action=sync fetches the base branch and merges it here without pushing; conflict markers stay in the files, so edit them, commit, and push. When it can merge and the person wants it on the default branch, action=merge. action=diff is the change. Package with the project's own command, then action=release with asset set to that file (up to 64MB). Do not browse github.com or gitlab.com yourself. If this bot is not authorized, action=connect and send the person that link. They approve the organizations and the listed scopes on that page. Then action=repos, they choose repositories, and action=grant saves the choice. Do not ask them to paste a token. A self-hosted GitLab still uses the saved GITLAB_HOST. push, pr, merge, dispatch, and release wait for 确认. To keep watching issues, call bot_schedule with an instruction that lists issues and continues the same loop. " +
@@ -154,6 +154,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"old_string":         map[string]any{"type": "string", "description": "Exact passage file_edit replaces. It must occur once."},
 				"new_string":         map[string]any{"type": "string", "description": "Replacement text for file_edit."},
 				"command":            map[string]any{"type": "string", "description": "Command for action=bash. It runs in this container and the result is its output. A minutes-long job uses background=true so this turn does not wait."},
+				"needs_screen":       map[string]any{"type": "boolean", "description": "action=bash: set true for a GUI or X program. When true, the bot screen is opened and this command gets DISPLAY. When false or omitted, no screen is opened. A result of screen_required means the command tried to connect to X: retry the same command with needs_screen true."},
 				"background":         map[string]any{"type": "boolean", "description": "action=bash: start the command detached and let the watcher poll it. Use this for training, a compile, a download, or any job expected to run minutes or more."},
 				"keep_running":       map[string]any{"type": "boolean", "description": "action=bash: true only when the started process is itself the result the person asked to leave running (a game, a demo, a local server, the app window). It starts detached, is not watched, and the task can finish once that is delivered. Default false: training, builds, downloads and any other job whose end is the result stay watched."},
 				"secrets":            map[string]any{"type": "array", "description": "action=bash: environment names this command needs, such as SSH_PASSWORD. Only these are injected, then unset. Omit to inject none. A background or keep_running job gets them only when they are listed here.", "items": map[string]any{"type": "string"}},
@@ -276,9 +277,20 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 	// screen has it (desktop_screen_lease.go); other steps never wait.
 	// A new lease also waits while the container is over the memory line.
 	// The run that already holds the screen keeps going.
+	// Shell, ssh and training (bash that does not start a window) do not
+	// open a desktop. Opening a screen happens only after the memory gate,
+	// and only for an action that draws on the screen.
 	screenKey := desktopScreenKey(scope)
-	if desktopScreenLeaseEnabled() && desktopScreenLeaseNeeded(action, args) && !desktopScreenLeases.heldBy(screenKey, scope.RunID) {
+	needsScreen := desktopScreenLeaseNeeded(action, args)
+	if desktopScreenLeaseEnabled() && needsScreen && !desktopScreenLeases.heldBy(screenKey, scope.RunID) {
 		if err := waitDesktopMemory(ctx, scope.TenantID, scope.UserID, scope.RunID); err != nil {
+			return "", err
+		}
+	}
+	if needsScreen {
+		if err := ensureBotScreen(ctx, scope, false); err != nil {
+			desktopWatchdogAfter(scope, err)
+			desktopWatchdogResult(scope, action, args, "", err)
 			return "", err
 		}
 	}
@@ -936,10 +948,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		}
 		return out, err
 	}
-	if action == "bash" && desktopBashLaunchesGUI(desktopArg(args, "command")) {
-		if err := desktopBotMustOpenScreen(scope, action, args); err != nil {
-			return "", err
-		}
+	if action == "bash" && desktopBashNeedsScreen(args) {
 		return operateDesktopBashGUI(ctx, scope, args)
 	}
 	if action == "proxy_mode" {

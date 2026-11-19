@@ -171,6 +171,23 @@ print("link-symlink " + str(sup.run_file(["py", "file", "link", link.as_posix(),
 print("link-kept " + str(sup.run_file(["py", "file", "link", (work / "ok.txt").as_posix(), "10"])))
 print("parent " + ("1" if (tmp / "desk" / "sub" / "a.c").is_file() else "0"))
 print("registry " + ("1" if (sup.ROOT / "registry.json").exists() else "0"))
+watch = sup.SentinelDisplay()
+client = __import__("socket").socket(__import__("socket").AF_UNIX, __import__("socket").SOCK_STREAM)
+client.connect("/tmp/.X11-unix/X%d" % watch.number)
+client.close()
+import time
+time.sleep(0.3)
+watch.close()
+watch.write("tok")
+print("hit " + str(sup.read_sentinel("tok").get("x_client")))
+num = watch.number
+sock_path = "/tmp/.X11-unix/X%d" % num
+open(sock_path, "w").close()
+__import__("os").makedirs(sup.SENTINEL_DIR, exist_ok=True)
+open(sup.SENTINEL_DIR + "/display-%d.pid" % num, "w").write("999999")
+again = sup.SentinelDisplay()
+print("reclaim " + str(again.number == num))
+again.close()
 `)
 		for _, want := range []string{
 			"home /home/desktop/Desktop/a.c",
@@ -195,6 +212,8 @@ print("registry " + ("1" if (sup.ROOT / "registry.json").exists() else "0"))
 			"link-tmp 2",
 			"link-symlink 2",
 			"link-kept 0",
+			"hit True",
+			"reclaim True",
 		} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("supervisor missing %q\n%s", want, out)
