@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -183,6 +187,32 @@ func TestVersionAndHealthExposeMemoryGate(t *testing.T) {
 	}
 	if body["status"] != "ok" || body["memory_gate"] != memoryGateDegraded || body["memory_gate_reason"] != memoryReasonUnsupported {
 		t.Fatalf("health %#v", body)
+	}
+}
+
+func TestDesktopdMemoryConfigWarnsWithoutPrintingSecrets(t *testing.T) {
+	secretURL := "http://desktopd.internal:9999/secret-path"
+	secretToken := "token-should-never-appear"
+	t.Setenv(desktopdURLEnv, secretURL)
+	t.Setenv(desktopdTokenEnv, "")
+	t.Setenv(desktopdURLLegacyEnv, "")
+	t.Setenv(desktopdTokenLegacyEnv, "")
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	warnDesktopdMemoryConfig()
+	text := buf.String()
+	if strings.Contains(text, secretURL) || strings.Contains(text, "9999") || strings.Contains(text, secretToken) {
+		t.Fatalf("warning leaked config: %s", text)
+	}
+	if !strings.Contains(text, "MACLAW_DESKTOPD_TOKEN is not set") {
+		t.Fatalf("warning %s", text)
+	}
+	buf.Reset()
+	t.Setenv(desktopdURLEnv, "")
+	warnDesktopdMemoryConfig()
+	if !strings.Contains(buf.String(), "MACLAW_DESKTOPD_URL and MACLAW_DESKTOPD_TOKEN") {
+		t.Fatalf("both missing %s", buf.String())
 	}
 }
 
