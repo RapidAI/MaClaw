@@ -110,6 +110,35 @@ func TestSemanticRemoteHostSchemaCueFollowsListedFields(t *testing.T) {
 	}
 }
 
+func TestSemanticBrowserAndDesktopSchemaCueFollowsThePublishedEnum(t *testing.T) {
+	enum := func(names ...string) map[string]interface{} {
+		return map[string]interface{}{
+			"properties": map[string]interface{}{
+				"action": map[string]interface{}{"type": "string", "enum": names},
+			},
+		}
+	}
+	browserFloor := semanticBrowserAndDesktopSchemaCue(CapabilityBrowserControlWeb, enum("navigate", "snapshot"))
+	if browserFloor != "" {
+		t.Fatalf("host browser floor grew a handoff cue: %q", browserFloor)
+	}
+	browserGUI := semanticBrowserAndDesktopSchemaCue(CapabilityBrowserControlWeb, enum("navigate", "snapshot", "submit_secret"))
+	if !strings.Contains(browserGUI, "submit_secret") || !strings.Contains(browserGUI, "request_takeover") || !strings.Contains(browserGUI, "confirm_order") {
+		t.Fatalf("browser cue = %q", browserGUI)
+	}
+	desktopFloor := semanticBrowserAndDesktopSchemaCue(CapabilityComputerControlDesktop, enum("observe", "click", "done"))
+	if desktopFloor != "" {
+		t.Fatalf("host desktop floor grew a type cue: %q", desktopFloor)
+	}
+	desktopGUI := semanticBrowserAndDesktopSchemaCue(CapabilityComputerControlDesktop, enum("observe", "click", "type", "key", "done"))
+	if !strings.Contains(desktopGUI, "type") || !strings.Contains(desktopGUI, "password") {
+		t.Fatalf("desktop cue = %q", desktopGUI)
+	}
+	if got := semanticBrowserAndDesktopSchemaCue(CapabilityFSReadLocal, enum("submit_secret", "type")); got != "" {
+		t.Fatalf("other capability cue=%q", got)
+	}
+}
+
 func TestCatalogRendererRemoteHostCueFollowsSchema(t *testing.T) {
 	var remote CapabilityDescriptor
 	for _, descriptor := range BuiltinCapabilityOntology() {

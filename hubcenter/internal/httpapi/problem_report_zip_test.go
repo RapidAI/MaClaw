@@ -17,7 +17,7 @@ import (
 )
 
 func TestIsSafeProblemReportZIPEntryName(t *testing.T) {
-	for _, name := range []string{"logs/app.log", "trajectories/run.json", "logs/../logs/app.log", "logs\\app.log"} {
+	for _, name := range []string{"logs/app.log", "trajectories/run.json", "logs/../logs/app.log", "logs\\app.log", "screen_shot.png", "bugreports.txt"} {
 		if !isSafeProblemReportZIPEntryName(name) {
 			t.Fatalf("expected safe ZIP entry %q", name)
 		}

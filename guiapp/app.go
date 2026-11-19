@@ -146,6 +146,13 @@ type App struct {
 	// permanent application setting.
 	pendingBugReportUploadMu sync.Mutex
 	pendingBugReportUpload   *pendingBugReportUpload
+	// guiBugReportShot is the temp path of the main-window PNG captured before
+	// the report dialog opens. That path is the token returned to the dialog.
+	// Discard removes the file only while this field is still that path, so a
+	// close that loses the race with the next capture cannot delete the new
+	// picture. It is not config: the picture is only for the next send.
+	guiBugReportShotMu sync.Mutex
+	guiBugReportShot   string
 	// bugReportUploadMu serializes archive creation and retry uploads. Without
 	// this, a second submission could remove the first pending archive while a
 	// retry is still streaming it to HubCenter.
@@ -698,6 +705,12 @@ type App struct {
 	// Pinned (置顶) messages shown by the sidebar floating banner. Replaced
 	// wholesale by PullPinnedNotifications; see notification_binding.go.
 	pinnedNotifs *pinnedCache
+	// pinnedPullMu serializes PullPinnedNotifications end to end (fetch →
+	// replace → publish). Reconnect, a pinned push, and a revoke can each
+	// fire a pull concurrently; without the lock a stale fetch could finish
+	// last and its publish would win, leaving the banner stale until the
+	// next event. With it, completion order == publish order.
+	pinnedPullMu sync.Mutex
 
 	// permissionSnapshotOnce builds the dual-eval permission snapshot at most
 	// once per App (docs/design/tool-routing-improvement-plan-zh.md Phase 1,
@@ -3023,6 +3036,9 @@ func (a *App) startup(ctx context.Context) {
 			strings.TrimSpace(effectiveWD) != "", strings.TrimSpace(skillTemp) != "", time.Since(startupBegin))
 		writeWorkdirReadySidecar(config.WorkingDirectory, effectiveWD, skillTemp)
 		a.logStoragePaths("startup.config_loaded", &config)
+		// First launch of the local day starts a fresh diagnostic window, the
+		// same directory clear as the problem-report reset.
+		a.maybeClearDiagnosticsForNewDay(time.Now())
 		a.applyConfiguredProxies(config)
 		// a.syncToCodeBuddySettings(config, ")
 		a.applyConfigLanguageIfUnchanged(config.Language, languageSeq)
@@ -9771,6 +9787,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ComputerUseEnabled = &v
+		case "coding_interactive_acceptance":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.CodingInteractiveAcceptance = &v
 		case "computer_use_target_apps":
 			// Accept []interface{} of strings or a comma/semicolon-separated string.
 			var apps []string
@@ -13028,6 +13050,10 @@ func fullDataURLFromImageBytes(data []byte) (string, error) {
 // The SkillMarket session is derived from the current Hub principal. The local
 // archive is retained for a retry if the request fails.
 func (a *App) SubmitBugReport(osVersion, description string, screenshots []string) (map[string]interface{}, error) {
+	return a.submitBugReport(osVersion, description, screenshots, nil)
+}
+
+func (a *App) submitBugReport(osVersion, description string, screenshots []string, roots []bugReportRootFile) (map[string]interface{}, error) {
 	a.bugReportUploadMu.Lock()
 	defer a.bugReportUploadMu.Unlock()
 	osVersion, description = strings.TrimSpace(osVersion), strings.TrimSpace(description)
@@ -13126,6 +13152,12 @@ func (a *App) SubmitBugReport(osVersion, description string, screenshots []strin
 		}); err != nil && !os.IsNotExist(err) && !os.IsPermission(err) {
 			return nil, err
 		}
+	}
+	for _, entry := range roots {
+		if err := writeBugReportZipRoot(zw, entry.name, entry.data); err != nil {
+			return nil, err
+		}
+		includedFiles++
 	}
 	if includedFiles == 0 {
 		return nil, fmt.Errorf("no diagnostic files found; enable problem reporting and reproduce the issue before submitting")

@@ -140,6 +140,38 @@
   margin-left: 2px;
   --wails-draggable: no-drag;
 }
+.mc-task-execution-actions .task-bug-report-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 36px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.mc-task-execution-actions .task-bug-report-btn svg { display: block; }
+.mc-task-execution-actions .task-bug-report-btn:disabled { cursor: progress; opacity: 0.72; }
+.gui-bug-report-dialog { width: min(480px, 92vw); }
+.gui-bug-report-dialog .problem-report-dialog__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.gui-bug-report-dialog label { display: block; color: var(--theme-text-secondary); font-size: 13px; }
+.gui-bug-report-dialog textarea {
+  width: 100%;
+  min-height: 128px;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface);
+  color: var(--theme-text-primary);
+  font: inherit;
+  line-height: 1.5;
+  resize: vertical;
+}
+.gui-bug-report-dialog textarea:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
 .mc-task-execution-actions .task-window-btn {
   display: inline-flex;
   align-items: center;

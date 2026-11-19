@@ -36,6 +36,17 @@ func TestCheckoutCardFromPageUsesPayableTotal(t *testing.T) {
 	}
 }
 
+func TestPayableMarkerIndexPrefersTheLaterPayableTotal(t *testing.T) {
+	text := strings.Repeat("甲", 100) + "合计 ¥8.00" + strings.Repeat("乙", 500) + "应付总额 ¥9.98 含运费" + strings.Repeat("丙", 900)
+	at := PayableMarkerIndex(text)
+	if at < 0 || !strings.HasPrefix(text[at:], "应付总额") {
+		t.Fatalf("marker at %d in %q", at, text[max(0, at):min(len(text), at+12)])
+	}
+	if payableAmount(text) != "9.98" {
+		t.Fatalf("amount %q", payableAmount(text))
+	}
+}
+
 func TestParseCheckoutAmountPrefersPayableThenLast(t *testing.T) {
 	payable := sanitizeCheckoutCard(CheckoutCard{Amount: "到手价 ¥11.74 应付总额 ¥9.98"})
 	if payable.Amount != "9.98" {

@@ -48,6 +48,9 @@ const (
 	// already authenticated, including ProxyJump. The adapter writes the
 	// local file itself. session_id and a second host are not accepted.
 	reasonBoundSessionFileCopy = "remote_path and local_path name one copy through the already-bound SSH session, including ProxyJump. The adapter writes the local file itself and does not accept session_id or another host."
+	// confirm_order names the ship-to line already on the page. The card shows
+	// that text. The adapter does not open it as a path or a network endpoint.
+	reasonReviewedCardText = "confirm_order address is the ship-to line shown on the card, not a host path or network endpoint"
 )
 
 // managedSchemaGateBaseline maps an adapter to the crossings that were reviewed
@@ -159,6 +162,12 @@ var managedSchemaGateBaseline = map[string]map[string]string{
 		"inbound.host":  reasonCapabilityTargetURL,
 		"outbound.host": reasonCapabilityTargetURL,
 	},
+	// The desktop browser adapter navigates by URL and shows the ship-to line
+	// on the payment card. The session is host-bound. A secret is not a field.
+	semanticTrustedBrowserAdapter: {
+		"url":     reasonCapabilityTargetURL,
+		"address": reasonReviewedCardText,
+	},
 }
 
 // managedCallSurfaceSchemas returns every model-facing invocation schema the
@@ -168,6 +177,10 @@ func managedCallSurfaceSchemas(t *testing.T) map[string]map[string]interface{} {
 	t.Helper()
 	registry := NewToolRegistry()
 	h := &IMMessageHandler{registry: registry}
+	// Publish the desktop browser and computer-use adapters so a new field on
+	// those schemas is reviewed here. The seams do not launch a browser.
+	h.semanticTrustedBrowser = func(string, string, string) (string, error) { return "ok", nil }
+	h.semanticTrustedComputerUse = func(string, string) (string, error) { return "ok", nil }
 	registerBuiltinTools(registry, h)
 	schemas := make(map[string]map[string]interface{})
 	for _, channel := range []string{"desktop", "lansenger"} {
@@ -303,6 +316,7 @@ func TestManagedSchemaGateLegacySurfaceDoesNotGrow(t *testing.T) {
 		reasonWorkspaceConfinedLocation: true,
 		reasonCapabilityTargetURL:       true,
 		reasonBoundSessionFileCopy:      true,
+		reasonReviewedCardText:          true,
 	}
 	legacy, readOnly := 0, 0
 	for _, reviewed := range managedSchemaGateBaseline {

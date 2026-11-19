@@ -2,13 +2,16 @@ package skillmarket
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
-const problemReportColumns = "id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, diagnostics_path, screenshot_paths, origin_url, archived_at, created_at, updated_at"
+const problemReportColumns = "id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, diagnostics_path, screenshot_paths, origin_url, archived_at, created_at, updated_at, public_download_token"
 
 func (s *Store) CreateProblemReport(ctx context.Context, report *ProblemReport) error {
 	paths, err := json.Marshal(report.ScreenshotPaths)
@@ -20,7 +23,7 @@ func (s *Store) CreateProblemReport(ctx context.Context, report *ProblemReport) 
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO sm_problem_reports (`+problemReportColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, report.ID, report.ReporterUserID, report.ReporterContact, report.OSVersion, report.GUIVersion, report.Description, report.Status, report.AdminNote, report.DiagnosticsPath, string(paths), report.OriginURL, fmtTime(report.ArchivedAt), fmtTime(report.CreatedAt), fmtTime(report.UpdatedAt))
+	_, err = tx.ExecContext(ctx, `INSERT INTO sm_problem_reports (`+problemReportColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, report.ID, report.ReporterUserID, report.ReporterContact, report.OSVersion, report.GUIVersion, report.Description, report.Status, report.AdminNote, report.DiagnosticsPath, string(paths), report.OriginURL, fmtTime(report.ArchivedAt), fmtTime(report.CreatedAt), fmtTime(report.UpdatedAt), report.PublicDownloadToken)
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `DELETE FROM sm_problem_report_tombstones WHERE id = ?`, report.ID)
 	}
@@ -35,6 +38,53 @@ func (s *Store) CreateProblemReport(ctx context.Context, report *ProblemReport) 
 
 func (s *Store) GetProblemReport(ctx context.Context, id string) (*ProblemReport, error) {
 	return scanProblemReport(s.readDB.QueryRowContext(ctx, `SELECT `+problemReportColumns+` FROM sm_problem_reports WHERE id = ?`, id))
+}
+
+// NewProblemReportDownloadToken is the unguessable path segment for the public ZIP URL.
+func NewProblemReportDownloadToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+// GetProblemReportByDownloadToken finds the report that owns a public ZIP link.
+func (s *Store) GetProblemReportByDownloadToken(ctx context.Context, token string) (*ProblemReport, error) {
+	token = strings.TrimSpace(token)
+	if len(token) != 64 {
+		return nil, ErrNotFound
+	}
+	return scanProblemReport(s.readDB.QueryRowContext(ctx, `SELECT `+problemReportColumns+` FROM sm_problem_reports WHERE public_download_token = ?`, token))
+}
+
+// EnsureProblemReportDownloadToken assigns a public token to a report that
+// was stored before the link existed. A second caller keeps the winner.
+func (s *Store) EnsureProblemReportDownloadToken(ctx context.Context, id string) (string, error) {
+	current, err := s.GetProblemReport(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if token := strings.TrimSpace(current.PublicDownloadToken); len(token) == 64 {
+		return token, nil
+	}
+	token, err := NewProblemReportDownloadToken()
+	if err != nil {
+		return "", err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sm_problem_reports SET public_download_token=? WHERE id=? AND public_download_token=''`, token, id)
+	if err != nil {
+		return "", err
+	}
+	if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected == 0 {
+		again, againErr := s.GetProblemReport(ctx, id)
+		if againErr != nil {
+			return "", againErr
+		}
+		return strings.TrimSpace(again.PublicDownloadToken), nil
+	}
+	s.emitSync(ctx)
+	return token, nil
 }
 
 func (s *Store) ListProblemReports(ctx context.Context, reporterUserID, status string, offset, limit int) ([]ProblemReport, int, error) {
@@ -116,7 +166,7 @@ type problemReportScanner interface{ Scan(...any) error }
 func scanProblemReport(row problemReportScanner) (*ProblemReport, error) {
 	var item ProblemReport
 	var screenshots, archivedAt, createdAt, updatedAt string
-	err := row.Scan(&item.ID, &item.ReporterUserID, &item.ReporterContact, &item.OSVersion, &item.GUIVersion, &item.Description, &item.Status, &item.AdminNote, &item.DiagnosticsPath, &screenshots, &item.OriginURL, &archivedAt, &createdAt, &updatedAt)
+	err := row.Scan(&item.ID, &item.ReporterUserID, &item.ReporterContact, &item.OSVersion, &item.GUIVersion, &item.Description, &item.Status, &item.AdminNote, &item.DiagnosticsPath, &screenshots, &item.OriginURL, &archivedAt, &createdAt, &updatedAt, &item.PublicDownloadToken)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound

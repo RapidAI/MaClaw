@@ -34,7 +34,8 @@ export type AssistantLiveActivityKind =
     | "asr"
     | "opening"
     | "delegating"
-    | "waiting_for_writer";
+    | "waiting_for_writer"
+    | "verifying_ui";
 
 const TOOL_KIND_BY_NAME: Record<string, AssistantLiveActivityKind> = {
     bash: "running_command",
@@ -213,6 +214,8 @@ export function assistantLiveActivityLabel(kind: AssistantLiveActivityKind, lang
             return localizeText(lang, "Delegating", "正在委派任务", "正在委派任務");
         case "waiting_for_writer":
             return localizeText(lang, "Waiting for the directory", "正在等待目录写入", "正在等待目錄寫入");
+        case "verifying_ui":
+            return localizeText(lang, "Verifying the interface", "正在验证界面", "正在驗證界面");
         case "calling_tool":
         default:
             return localizeText(lang, "Calling tools", "正在调用工具", "正在呼叫工具");
@@ -477,6 +480,9 @@ export function resolveAssistantLiveActivity(opts: {
     // so the header must not fall through to "contacting the model".
     if ((opts.codingProgress?.phase || "").trim().toLowerCase() === "waiting_writer") {
         return "waiting_for_writer";
+    }
+    if ((opts.codingProgress?.phase || "").trim().toLowerCase() === "verifying_ui") {
+        return "verifying_ui";
     }
     const latestText = latestProgressText(opts.progressMessages);
     if (isInFlightToolProgressText(latestText)) {

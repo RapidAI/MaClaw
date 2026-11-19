@@ -86,6 +86,12 @@ func SetBrowserStageNotifier(fn func(BrowserStageNotice)) {
 	stageNotifyMu.Unlock()
 }
 
+// NotifyStage emits the existing agent-browser-stage notice. Acceptance
+// calls it so a person can see the isolated page and stop it.
+func NotifyStage(n BrowserStageNotice) {
+	notifyBrowserStage(n)
+}
+
 func notifyBrowserStage(n BrowserStageNotice) {
 	stageNotifyMu.Lock()
 	fn := stageNotifyFn

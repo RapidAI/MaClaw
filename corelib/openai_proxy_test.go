@@ -2254,6 +2254,100 @@ func TestOpenAIToAnthropicUsesToolBudgetWhenMaxTokensMissing(t *testing.T) {
 	}
 }
 
+func TestOpenAIToAnthropicPassesDeepSeekThinkingBack(t *testing.T) {
+	req := openaiToAnthropic(map[string]interface{}{
+		"model": "deepseek-v4-flash",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "read the file"},
+			map[string]interface{}{
+				"role":              "assistant",
+				"content":           "",
+				"reasoning_content": "Check the migration notes first.",
+				"thought_signature": "sig-1",
+				"tool_calls": []interface{}{map[string]interface{}{
+					"id":   "call_1",
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      "read_file",
+						"arguments": `{"path":"README.md"}`,
+					},
+				}},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": "34 tables"},
+			map[string]interface{}{"role": "assistant", "content": "Noted.", "reasoning_content": ""},
+		},
+		"tools": []interface{}{map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":       "read_file",
+				"parameters": map[string]interface{}{"type": "object"},
+			},
+		}},
+	}, "deepseek/deepseek-v4-flash")
+
+	messages := req["messages"].([]interface{})
+	if len(messages) != 4 {
+		t.Fatalf("messages = %d, want 4", len(messages))
+	}
+	first := messages[1].(map[string]interface{})["content"].([]interface{})
+	thinking := first[0].(map[string]interface{})
+	if thinking["type"] != "thinking" || thinking["thinking"] != "Check the migration notes first." || thinking["signature"] != "sig-1" {
+		t.Fatalf("first thinking block = %#v", thinking)
+	}
+	if _, ok := thinking["thinking"].(string); !ok {
+		t.Fatal("thinking field missing")
+	}
+	toolUse := first[len(first)-1].(map[string]interface{})
+	if toolUse["type"] != "tool_use" || toolUse["name"] != "read_file" {
+		t.Fatalf("tool_use = %#v", toolUse)
+	}
+	second := messages[3].(map[string]interface{})["content"].([]interface{})
+	empty := second[0].(map[string]interface{})
+	if empty["type"] != "thinking" || empty["thinking"] != "" {
+		t.Fatalf("empty thinking replay = %#v", empty)
+	}
+	if _, ok := messages[1].(map[string]interface{})["reasoning_content"]; ok {
+		t.Fatal("anthropic message kept reasoning_content")
+	}
+}
+
+func TestOpenAIToAnthropicDoesNotInventThinkingForClaude(t *testing.T) {
+	req := openaiToAnthropic(map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{
+				"role":              "assistant",
+				"content":           "done",
+				"reasoning_content": "hidden",
+			},
+		},
+	}, "claude-sonnet-4-20250514")
+	blocks := req["messages"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
+	if len(blocks) != 1 || blocks[0].(map[string]interface{})["type"] != "text" {
+		t.Fatalf("claude blocks = %#v, want text only", blocks)
+	}
+}
+
+func TestAnthropicToOpenAIKeepsThinkingForReplay(t *testing.T) {
+	result := anthropicToOpenAI(map[string]interface{}{
+		"id":          "msg_think",
+		"stop_reason": "tool_use",
+		"content": []interface{}{
+			map[string]interface{}{"type": "thinking", "thinking": "Look at the table count.", "signature": "sig-1"},
+			map[string]interface{}{"type": "tool_use", "id": "call_1", "name": "read_file", "input": map[string]interface{}{"path": "README.md"}},
+		},
+	}, "deepseek-v4-flash")
+	message := result["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})
+	if message["reasoning_content"] != "Look at the table count." {
+		t.Fatalf("reasoning_content = %#v", message["reasoning_content"])
+	}
+	if message["thought_signature"] != "sig-1" {
+		t.Fatalf("thought_signature = %#v", message["thought_signature"])
+	}
+	if message["content"] != "" {
+		t.Fatalf("content = %#v, want thinking kept out of the reply", message["content"])
+	}
+}
+
 func TestOpenAIToAnthropicKeepsJSONThinkingBudget(t *testing.T) {
 	tests := []struct {
 		name   string

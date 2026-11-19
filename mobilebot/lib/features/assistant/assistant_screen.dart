@@ -120,7 +120,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final text = _inputCtrl.text.trim();
     if (api == null || _busy) return;
     if (text.isEmpty && _docDraftId.isEmpty) return;
-    final query = text.isEmpty ? '请阅读并总结这个附件。' : text;
+    final query = text.isEmpty ? S.assistantAttachQuery : text;
     final docId = _docDraftId;
     final docName = _docName;
     _inputCtrl.clear();

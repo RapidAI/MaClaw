@@ -92,6 +92,20 @@ describe('assistantLiveActivity', () => {
         expect(resolveAssistantLiveActivity({
             streaming: false,
             busy: true,
+            codingProgress: {
+                event: 'assistant_note',
+                phase: 'verifying_ui',
+                detail: '正在验证界面：tetris.exe',
+            },
+        })).toBe('verifying_ui');
+        expect(resolveAssistantLiveActivity({
+            streaming: false,
+            busy: true,
+            codingProgress: { event: 'tool_started', phase: 'verifying_ui', detail: 'read_file' },
+        })).toBe('reading_file');
+        expect(resolveAssistantLiveActivity({
+            streaming: false,
+            busy: true,
             codingProgress: { event: 'assistant_note', phase: 'running', detail: 'looking at the parser' },
         })).toBe('accessing_model');
         expect(resolveAssistantLiveActivity({
@@ -290,6 +304,10 @@ describe('assistantLiveActivity', () => {
         expect(assistantLiveActivityLabel('waiting_for_writer', 'zh-Hant')).toBe('正在等待目錄寫入');
         expect(assistantLiveActivityLabel('waiting_for_writer', 'en')).toBe('Waiting for the directory');
         expect(assistantLiveActivityObject('waiting_for_writer', 'zh-Hans', { providerName: 'CodeGen', modelId: 'vendor/deepseek-v4-flash' })).toBe('');
+        expect(assistantLiveActivityLabel('verifying_ui', 'zh-Hans')).toBe('正在验证界面');
+        expect(assistantLiveActivityLabel('verifying_ui', 'zh-Hant')).toBe('正在驗證界面');
+        expect(assistantLiveActivityLabel('verifying_ui', 'en')).toBe('Verifying the interface');
+        expect(assistantLiveActivityObject('verifying_ui', 'zh-Hans')).toBe('');
         expect(assistantLiveActivityLabel('analyzing', 'zh-Hans')).toBe('正在分析任务');
         expect(assistantLiveActivityLabel('syncing_context', 'zh-Hans')).toBe('正在同步上下文');
         expect(assistantLiveActivityLabel('searching_web', 'zh-Hans')).toBe('正在搜索网络');

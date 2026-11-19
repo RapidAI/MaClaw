@@ -35,25 +35,26 @@ var (
 )
 
 const (
-	mouseEventLeftDown  = 0x0002
-	mouseEventLeftUp    = 0x0004
-	mouseEventRightDown = 0x0008
-	mouseEventRightUp   = 0x0010
-	mouseEventWheel     = 0x0800
-	mouseEventHWheel    = 0x01000
-	inputMouse          = 0
-	inputKeyboard       = 1
-	keyeventfKeyUp      = 0x0002
-	keyeventfUnicode    = 0x0004
-	keyeventfScancode   = 0x0008
-	smCXScreen          = 0
-	smCYScreen          = 1
-	smXVirtualScreen    = 76
-	smYVirtualScreen    = 77
-	smCXVirtualScreen   = 78
-	smCYVirtualScreen   = 79
-	cfUnicodeText       = 13
-	gmemMoveable        = 0x0002
+	mouseEventLeftDown   = 0x0002
+	mouseEventLeftUp     = 0x0004
+	mouseEventRightDown  = 0x0008
+	mouseEventRightUp    = 0x0010
+	mouseEventWheel      = 0x0800
+	mouseEventHWheel     = 0x01000
+	inputMouse           = 0
+	inputKeyboard        = 1
+	keyeventfExtendedKey = 0x0001
+	keyeventfKeyUp       = 0x0002
+	keyeventfUnicode     = 0x0004
+	keyeventfScancode    = 0x0008
+	smCXScreen           = 0
+	smCYScreen           = 1
+	smXVirtualScreen     = 76
+	smYVirtualScreen     = 77
+	smCXVirtualScreen    = 78
+	smCYVirtualScreen    = 79
+	cfUnicodeText        = 13
+	gmemMoveable         = 0x0002
 )
 
 // winInput matches the Windows INPUT structure (amd64 size 40).
@@ -246,30 +247,77 @@ func resolveVK(key string) (byte, error) {
 	return 0, fmt.Errorf("unknown key: %q", key)
 }
 
-func (w *windowsInputSimulator) KeyCombo(keys ...string) error {
+// keyNeedsExtendedFlag reports virtual keys whose down and up events must
+// carry KEYEVENTF_EXTENDEDKEY. Arrow keys and the navigation cluster are in
+// that set. A plain Vk without the flag is a numpad key on many layouts.
+func keyNeedsExtendedFlag(vk byte) bool {
+	switch vk {
+	case 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E:
+		return true
+	default:
+		return false
+	}
+}
+
+// KeyComboInputs builds the press and release records for a chord.
+// It does not call SendInput. Arrow keys and the navigation cluster set
+// KEYEVENTF_EXTENDEDKEY on both the press and the release.
+func KeyComboInputs(keys ...string) ([]winInput, error) {
 	if len(keys) == 0 {
-		return nil
+		return nil, nil
 	}
 	vks := make([]byte, 0, len(keys))
 	for _, k := range keys {
 		vk, err := resolveVK(k)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		vks = append(vks, vk)
 	}
 	inputs := make([]winInput, 0, len(vks)*2)
 	for _, vk := range vks {
+		var flags uint32
+		if keyNeedsExtendedFlag(vk) {
+			flags = keyeventfExtendedKey
+		}
 		inputs = append(inputs, winInput{
 			Type: inputKeyboard,
-			Ki:   winKeybdInput{Vk: uint16(vk)},
+			Ki:   winKeybdInput{Vk: uint16(vk), Flags: flags},
 		})
 	}
 	for i := len(vks) - 1; i >= 0; i-- {
+		var flags uint32 = keyeventfKeyUp
+		if keyNeedsExtendedFlag(vks[i]) {
+			flags |= keyeventfExtendedKey
+		}
 		inputs = append(inputs, winInput{
 			Type: inputKeyboard,
-			Ki:   winKeybdInput{Vk: uint16(vks[i]), Flags: keyeventfKeyUp},
+			Ki:   winKeybdInput{Vk: uint16(vks[i]), Flags: flags},
 		})
+	}
+	return inputs, nil
+}
+
+// KeyComboFlagWords returns the KEYBDINPUT.Flags of each record
+// KeyComboInputs builds. It does not call SendInput. Callers outside this
+// package cannot read the unexported INPUT layout, so acceptance tests use
+// these words to check KEYEVENTF_EXTENDEDKEY.
+func KeyComboFlagWords(keys ...string) ([]uint32, error) {
+	inputs, err := KeyComboInputs(keys...)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uint32, len(inputs))
+	for i, in := range inputs {
+		out[i] = in.Ki.Flags
+	}
+	return out, nil
+}
+
+func (w *windowsInputSimulator) KeyCombo(keys ...string) error {
+	inputs, err := KeyComboInputs(keys...)
+	if err != nil || len(inputs) == 0 {
+		return err
 	}
 	return sendInputs(inputs)
 }

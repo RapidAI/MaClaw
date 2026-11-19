@@ -144,11 +144,14 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 	// whenever the host is servable: a live session, a discoverable CDP
 	// runtime, or an installed Chrome/Edge the managed launcher can start (a
 	// restart with no runtime yet is recoverable, not infeasible — publishing
-	// only on "already alive" is the 2026-10-10 catalog-refusal incident). A
-	// confident turn on a host with no browser at all HostRejects as unmet
-	// rather than falling back to this legacy tool. Only the merged entry is
-	// annotated; the individual browser_* handlers are internal dispatch
-	// targets, never separate catalog providers.
+	// only on "already alive" is the 2026-10-10 catalog-refusal incident). On
+	// the desktop it navigates, reads, clicks, and types, and it runs
+	// submit_secret, request_takeover, and confirm_order on the principal's
+	// session. The model does not pass session_id or the secret. A confident
+	// turn on a host with no browser at all HostRejects as unmet rather than
+	// falling back to this legacy tool. Only the merged entry is annotated;
+	// the individual browser_* handlers are internal dispatch targets, never
+	// separate catalog providers.
 	annotateSemanticTool(registry, MergedBrowserToolName, []tool.CapabilityProvision{{
 		Capability: tool.CapabilityBrowserControlWeb, Quality: 1,
 	}}, []tool.EffectClass{tool.EffectExternalEffect})

@@ -11,7 +11,9 @@ enum AppLanguage { system, zhHans, zhHant, english, mongolian }
 
 /// Loaded from disk in main() and injected as an override so the first frame
 /// already carries the saved choice.
-final initialLanguageProvider = Provider<AppLanguage>((_) => AppLanguage.system);
+final initialLanguageProvider = Provider<AppLanguage>(
+  (_) => AppLanguage.system,
+);
 
 class AppLanguageController extends Notifier<AppLanguage> {
   static const _prefsKey = 'mobilebot.locale';
@@ -36,7 +38,10 @@ final appLanguageProvider =
 Locale? localeFor(AppLanguage language) => switch (language) {
   AppLanguage.system => null,
   AppLanguage.zhHans => const Locale('zh'),
-  AppLanguage.zhHant => const Locale.fromSubtags(languageCode: 'zh', scriptCode: 'Hant'),
+  AppLanguage.zhHant => const Locale.fromSubtags(
+    languageCode: 'zh',
+    scriptCode: 'Hant',
+  ),
   AppLanguage.english => const Locale('en'),
   AppLanguage.mongolian => const Locale('mn'),
 };
@@ -81,3 +86,15 @@ String languageDisplayName(AppLanguage language) => switch (language) {
 extension L10n on BuildContext {
   AppLocalizations get S => AppLocalizations.of(this);
 }
+
+/// Locale snapshot kept current by the app shell (`MaclawGoApp`'s
+/// `localeResolutionCallback`). Non-widget code — controllers, API and error
+/// mappers, pure helpers like `plainTextForSpeech` — has no BuildContext, so
+/// its localized fallback text resolves through [sharedL10n]. Defaults to zh
+/// (the product's base language), which keeps pure-function unit tests and
+/// pre-first-frame behavior byte-identical to the old hardcoded zh strings.
+Locale _sharedLocale = const Locale('zh');
+
+void updateSharedL10nLocale(Locale locale) => _sharedLocale = locale;
+
+AppLocalizations get sharedL10n => lookupAppLocalizations(_sharedLocale);

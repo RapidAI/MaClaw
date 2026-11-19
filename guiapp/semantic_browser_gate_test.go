@@ -1,9 +1,11 @@
 package guiapp
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -83,11 +85,11 @@ func TestTrustedBrowserActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
 		t.Fatalf("action must publish a non-empty enum, got %#v", action["enum"])
 	}
 	for _, name := range enum {
-		if !tool.BrowserControlActionAllowed(name) {
+		if !semanticBrowserActionAllowed(name) {
 			t.Fatalf("schema advertises action %q but the execution check refuses it", name)
 		}
 	}
-	for _, name := range tool.BrowserControlActions() {
+	for _, name := range semanticBrowserActions() {
 		advertised := false
 		for _, candidate := range enum {
 			if candidate == name {
@@ -99,10 +101,20 @@ func TestTrustedBrowserActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
 			t.Fatalf("execution check accepts action %q but the schema never shows it", name)
 		}
 	}
+	for _, floor := range tool.BrowserControlActions() {
+		if !semanticBrowserActionAllowed(floor) {
+			t.Fatalf("desktop browser set dropped the shared action %q", floor)
+		}
+	}
+	for _, handoff := range []string{"submit_secret", "request_takeover", "confirm_order"} {
+		if !semanticBrowserActionAllowed(handoff) {
+			t.Fatalf("desktop browser set is missing %s", handoff)
+		}
+	}
 	// The guess that failed in production must still be refused at the
 	// boundary: the enum is not the boundary, this check is.
 	for _, guessed := range []string{"open", "goto", "visit", ""} {
-		_, _, err := semanticTrustedBrowserArgsAllowed(map[string]interface{}{"action": guessed})
+		_, err := semanticTrustedBrowserArgsAllowed(map[string]interface{}{"action": guessed})
 		if err == nil || !strings.Contains(err.Error(), "trusted_browser_action_rejected") {
 			t.Fatalf("action %q = %v, want trusted_browser_action_rejected", guessed, err)
 		}
@@ -110,7 +122,7 @@ func TestTrustedBrowserActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
 		// browser surface answers the same guess with "unknown browser action
 		// ... (supported: navigate, ...)"; rejecting the guess with less than
 		// that is what turned one silent failure into a dead-end turn.
-		for _, valid := range tool.BrowserControlActions() {
+		for _, valid := range semanticBrowserActions() {
 			if !strings.Contains(err.Error(), valid) {
 				t.Fatalf("refusal for %q = %v does not mention the valid name %q", guessed, err, valid)
 			}
@@ -118,16 +130,199 @@ func TestTrustedBrowserActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
 	}
 	// An action that takes a url must not be accepted without one. The schema
 	// says url is optional, so this is the only place the pairing is held.
-	for _, name := range enum {
-		if !tool.BrowserControlNeedsURL(name) {
-			continue
+	if _, err := semanticTrustedBrowserArgsAllowed(map[string]interface{}{"action": "navigate"}); err == nil ||
+		!strings.Contains(err.Error(), "trusted_browser_url_required") {
+		t.Fatalf("navigate without url = %v, want trusted_browser_url_required", err)
+	}
+}
+
+func TestTrustedBrowserSchemaKeepsTheSecretOffTheCall(t *testing.T) {
+	schema := semanticTrustedBrowserInvocationSchema()
+	properties, _ := schema["properties"].(map[string]interface{})
+	for _, leaked := range []string{"password", "secret", "code", "pin", "cookie", "session_id", "selector"} {
+		if _, ok := properties[leaked]; ok {
+			t.Fatalf("browser schema leaked %s", leaked)
 		}
-		if _, _, err := semanticTrustedBrowserArgsAllowed(map[string]interface{}{"action": name}); err == nil ||
-			!strings.Contains(err.Error(), "trusted_browser_url_required") {
-			t.Fatalf("%s without url = %v, want trusted_browser_url_required", name, err)
+	}
+	secret := "998877"
+	_, err := semanticTrustedBrowserArgsAllowed(map[string]interface{}{
+		"action":   "submit_secret",
+		"method":   "otp",
+		"ref":      "e3",
+		"password": secret,
+	})
+	if err == nil || !strings.Contains(err.Error(), "trusted_browser_secret_rejected") {
+		t.Fatalf("secret field = %v, want trusted_browser_secret_rejected", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("refusal echoed the secret: %v", err)
+	}
+	if _, err := semanticTrustedBrowserArgsAllowed(map[string]interface{}{
+		"action": "submit_secret",
+		"method": "password",
+		"ref":    "e3",
+	}); err != nil {
+		t.Fatalf("submit_secret with method and ref = %v", err)
+	}
+}
+
+func TestTrustedBrowserBlockedClickKeepsTheCardInstruction(t *testing.T) {
+	_, err := finishTrustedBrowserAction("click", &browser.BrowserActionResult{
+		Status:  "blocked",
+		Display: "调用 browser(action=\"confirm_order\", item, shop, address, amount)",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "trusted_browser_action_refused") || !strings.Contains(err.Error(), "confirm_order") {
+		t.Fatalf("blocked click = %v", err)
+	}
+}
+
+func TestTrustedBrowserObservationNamesRefsAndHidesTheSecret(t *testing.T) {
+	text := trustedBrowserObservationText(&browser.BrowserObservation{
+		Display: "probed page 登录",
+		Snapshot: browser.BrowserSnapshot{
+			PageFlags: browser.BrowserPageFlags{LoginWall: true},
+			Refs: []browser.BrowserElementRef{
+				{Ref: "@e1", Role: "textbox", InputType: "tel", Name: "手机号"},
+				{Ref: "@e2", Role: "textbox", InputType: "password", Name: "密码", Value: "998877"},
+			},
+			PageTextExcerpt: "应付 ¥9.98",
+		},
+	})
+	for _, want := range []string{"@e1", "@e2", "input=password", "commit=secret", "submit_secret", "应付 ¥9.98"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("observation missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "998877") {
+		t.Fatalf("observation echoed the secret: %s", text)
+	}
+}
+
+func TestTrustedBrowserObservationKeepsThePayableTotalAndThePayButton(t *testing.T) {
+	body := strings.Repeat("导航 ", 500) + "应付总额 ¥9.98 含运费"
+	refs := make([]browser.BrowserElementRef, 100)
+	for i := range refs {
+		refs[i] = browser.BrowserElementRef{Ref: fmt.Sprintf("@e%d", i+1), Visible: true, InViewport: true}
+	}
+	refs[99] = browser.BrowserElementRef{Ref: "@e100", Role: "button", Name: "确认支付", Visible: true, InViewport: true}
+	text := trustedBrowserObservationText(&browser.BrowserObservation{
+		Display: "probed page 结算",
+		Snapshot: browser.BrowserSnapshot{
+			PageFlags:       browser.BrowserPageFlags{PaymentConfirm: true},
+			PageTextExcerpt: body,
+			Refs:            refs,
+		},
+	})
+	for _, want := range []string{"应付总额 ¥9.98", "@e100", "确认支付", "commit=pay", "confirm_order"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("observation missing %q: %s", want, text)
 		}
 	}
 }
+
+func TestTrustedBrowserObservationSurvivesModelPreview(t *testing.T) {
+	excerpt := "管理收货地址" + strings.Repeat("甲", 400) + "雪碧500ml" + strings.Repeat("甲", 400) + "收货地址北京市海淀区上地十街10号" + strings.Repeat("乙", 800) + "应付总额 ¥9.98 含运费" + strings.Repeat("丙", 500)
+	refs := make([]browser.BrowserElementRef, 90)
+	for i := range refs {
+		refs[i] = browser.BrowserElementRef{
+			Ref:        fmt.Sprintf("@e%d", i+1),
+			Role:       "link",
+			Name:       strings.Repeat("导航", 20),
+			Visible:    true,
+			InViewport: true,
+		}
+	}
+	refs[len(refs)-1] = browser.BrowserElementRef{
+		Ref: "@e90", Role: "button", Name: "确认支付", Visible: true, InViewport: true,
+	}
+	text := trustedBrowserObservationText(&browser.BrowserObservation{
+		Display: "probed page 结算",
+		Snapshot: browser.BrowserSnapshot{
+			PageFlags:       browser.BrowserPageFlags{PaymentConfirm: true},
+			PageTextExcerpt: excerpt,
+			Refs:            refs,
+		},
+	})
+	if len(text) <= 4096 {
+		t.Fatalf("observation must exceed the model preview, len=%d", len(text))
+	}
+	projection, err := agent.ProjectToolResult("browser", "owner", text)
+	if err != nil && projection.Preview == "" {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"雪碧500ml", "收货地址北京市海淀区上地十街10号", "应付总额 ¥9.98", "@e90", "commit=pay", "确认支付", "confirm_order"} {
+		if !strings.Contains(projection.Preview, want) {
+			t.Fatalf("model preview missing %q:\n%s", want, projection.Preview)
+		}
+	}
+	streetAt := strings.Index(projection.Preview, "上地十街10号")
+	headerAt := strings.Index(projection.Preview, "管理收货地址")
+	if streetAt < 0 || (headerAt >= 0 && headerAt < streetAt) {
+		t.Fatalf("header precedes the ship-to line:\n%s", projection.Preview)
+	}
+	payAt := strings.Index(projection.Preview, "@e90")
+	pageAt := strings.Index(projection.Preview, "page_text:\n")
+	hintAt := strings.Index(projection.Preview, "confirm_order")
+	navAt := strings.Index(projection.Preview, "@e1 ")
+	if payAt < 0 || pageAt < 0 || hintAt < 0 || navAt < 0 || payAt > pageAt || hintAt > navAt {
+		t.Fatalf("pay %d page %d hint %d nav %d\n%s", payAt, pageAt, hintAt, navAt, projection.Preview)
+	}
+}
+
+func TestTrustedBrowserPageExcerptPrefersThePayableTotal(t *testing.T) {
+	body := "收货地址北京海淀" + strings.Repeat("甲", 200) + "合计 ¥8.00" + strings.Repeat("乙", 2000) + "应付总额 ¥9.98 含运费" + strings.Repeat("丙", 4000) + "页脚版权"
+	got := trustedBrowserPageExcerpt(body)
+	for _, want := range []string{"收货地址北京海淀", "合计 ¥8.00", "应付总额 ¥9.98"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("excerpt missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "页脚版权") {
+		t.Fatalf("excerpt replaced the page with the footer: %s", got)
+	}
+}
+
+func TestTrustedBrowserPageExcerptKeepsAddressBelowTheOldCap(t *testing.T) {
+	body := strings.Repeat("导航", 800) + "收货地址北京海淀上地" + strings.Repeat("乙", 4000) + "应付总额 ¥9.98 含运费" + strings.Repeat("丙", 2000) + "页脚版权"
+	got := trustedBrowserPageExcerpt(body)
+	for _, want := range []string{"收货地址北京海淀上地", "应付总额 ¥9.98"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("excerpt missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "页脚版权") {
+		t.Fatalf("excerpt replaced the page with the footer: %s", got)
+	}
+}
+
+func TestTrustedBrowserPageExcerptKeepsTheArticlePrefix(t *testing.T) {
+	body := "商品详情" + strings.Repeat("正", 6000) + "页脚版权"
+	got := trustedBrowserPageExcerpt(body)
+	if !strings.HasPrefix(got, "商品详情") || strings.Contains(got, "页脚版权") || !strings.Contains(got, "正") {
+		t.Fatalf("excerpt = %s", got)
+	}
+}
+
+func TestTrustedBrowserNavigateStillSaysToProbe(t *testing.T) {
+	text, err := finishTrustedBrowserAction("navigate", &browser.BrowserActionResult{
+		Status:  "ok",
+		Display: "opened https://probe.example.com/item",
+	}, nil)
+	if err != nil || !strings.Contains(text, "opened https://probe.example.com/item") || !strings.Contains(text, "先 probe") {
+		t.Fatalf("navigate result = %q err=%v", text, err)
+	}
+}
+
+func TestTrustedBrowserClickTellsTheModelToProbe(t *testing.T) {
+	text, err := finishTrustedBrowserAction("click", &browser.BrowserActionResult{
+		Status:  "ok",
+		Display: "clicked @e1",
+	}, nil)
+	if err != nil || !strings.Contains(text, "clicked @e1") || !strings.Contains(text, "probe") {
+		t.Fatalf("click result = %q err=%v", text, err)
+	}
+}
+
 // bootstrap ladder: the launcher seam bypasses the production connect-user /
 // managed-persistent attempts, and a seam that yields nothing surfaces as
 // unavailable. The stub records which path ran so the bootstrap contract can

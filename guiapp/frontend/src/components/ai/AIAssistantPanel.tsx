@@ -106,6 +106,7 @@ import { GoalStageCommand, withGoalStageCommand } from "./goalStageCommand";
 import { goalStageProcessLive } from "./goalStagePresentation";
 import { GoalChecklistOverlay } from "./GoalChecklistOverlay";
 
+import { BugReportButton } from "./BugReportButton";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
@@ -7806,7 +7807,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         </> : startupWarmup ? null : <>
                         {skillRecordingHere ? <button className="task-skill-pause-btn" data-testid="skill-recording-pause-btn" type="button" onClick={handleToggleSkillRecording} disabled={skillRecordingBusy} aria-busy={skillRecordingBusy} aria-label={localizeText(lang, "Pause skill recording", "暂停 Skill 录制", "暫停 Skill 錄製")} title={localizeText(lang, `Pause skill recording (${skillRecordingCount} steps)`, `暂停 Skill 录制（已记录 ${skillRecordingCount} 步）`, `暫停 Skill 錄製（已記錄 ${skillRecordingCount} 步）`)}><span className="aiti-recording-dot" aria-hidden="true" /><span className="task-skill-pause-label">{localizeText(lang, "Pause", "暂停", "暫停")}</span></button> : null}
                         <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
-                        <button className="task-pause-btn" data-action="cancel" type="button" onClick={handleCancel} disabled={!inputVisualBusy || cancelPending} aria-busy={cancelPending} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
+                        <BugReportButton lang={lang} />
                         <button className="task-share-btn" data-testid="task-share-btn" type="button" onClick={() => { void shareCurrentTask(); }} aria-label={localizeText(lang, "Share task", "分享任务", "分享任務")}>{localizeText(lang, "Share", "分享", "分享")}</button>
                         <TaskMoreActions lang={lang} onSave={openSaveTaskDialog} onClear={clearActiveHistory} onCopyTitle={() => { const titleText = String(assistantTaskTitle(activeTab, lang, taskListProp) || deriveTaskNameFromMessages()).trim(); if (titleText && typeof navigator !== "undefined" && navigator.clipboard?.writeText) return navigator.clipboard.writeText(titleText); }} onPreview={codingPreviewAllowed ? handleOpenPreviewPanel : undefined} onRecordSkill={skillRecordingHere ? undefined : handleToggleSkillRecording} recordSkillDisabled={skillRecordingElsewhere} recordSkillPending={!skillRecordingHere && (skillRecordingBusy || skillRecordingAwaitingDecision)} />
                         </>}

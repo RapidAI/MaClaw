@@ -2599,6 +2599,73 @@ func TestOpenAICompatForwardTextContentHandlesTypedSDKBlocks(t *testing.T) {
 		t.Fatalf("text content = %q, want %q", got, "alpha\nbeta")
 	}
 }
+func TestSanitizeOpenAICompatForwardBodyKeepsDeepSeekReasoningContent(t *testing.T) {
+	deepseek := map[string]interface{}{
+		"model": "deepseek-v4-flash",
+		"messages": []interface{}{
+			map[string]interface{}{
+				"role":              "assistant",
+				"content":           "ok",
+				"reasoning_content": "count the tables",
+				"thought_signature": "sig-openai",
+			},
+		},
+	}
+	sanitizeOpenAICompatForwardBody(
+		MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		deepseek,
+	)
+	assistant := deepseek["messages"].([]interface{})[0].(map[string]interface{})
+	if assistant["reasoning_content"] != "count the tables" {
+		t.Fatalf("deepseek reasoning_content = %#v", assistant["reasoning_content"])
+	}
+	if _, ok := assistant["thought_signature"]; ok {
+		t.Fatalf("openai forward kept thought_signature: %#v", assistant)
+	}
+
+	placeholder := map[string]interface{}{
+		"model": "deepseek-v4-flash",
+		"messages": []interface{}{
+			map[string]interface{}{
+				"role":              "assistant",
+				"reasoning_content": "",
+				"content": []interface{}{
+					map[string]interface{}{"type": "thinking", "thinking": "Count the tables."},
+					map[string]interface{}{"type": "text", "text": "noted"},
+				},
+			},
+		},
+	}
+	sanitizeOpenAICompatForwardBody(
+		MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		placeholder,
+	)
+	assistant = placeholder["messages"].([]interface{})[0].(map[string]interface{})
+	if assistant["reasoning_content"] != "Count the tables." {
+		t.Fatalf("empty reasoning hid thinking text: %#v", assistant["reasoning_content"])
+	}
+	encoded, _ := json.Marshal(assistant["content"])
+	if strings.Contains(string(encoded), "thinking") {
+		t.Fatalf("openai forward kept a thinking block: %s", encoded)
+	}
+
+	other := map[string]interface{}{
+		"model": "gpt-4.1",
+		"messages": []interface{}{
+			map[string]interface{}{
+				"role":              "assistant",
+				"content":           "ok",
+				"reasoning_content": "hidden",
+			},
+		},
+	}
+	sanitizeOpenAICompatForwardBody(MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-4.1"}, other)
+	assistant = other["messages"].([]interface{})[0].(map[string]interface{})
+	if _, ok := assistant["reasoning_content"]; ok {
+		t.Fatalf("non-deepseek kept reasoning_content: %#v", assistant)
+	}
+}
+
 func TestSanitizeOpenAICompatForwardBodyHonorsExplicitDeepSeekThinkingOff(t *testing.T) {
 	body := map[string]interface{}{
 		"model": "deepseek-reasoner",

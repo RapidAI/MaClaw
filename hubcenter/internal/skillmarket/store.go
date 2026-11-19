@@ -97,11 +97,14 @@ func (s *Store) migrate() error {
 			os_version TEXT NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
 			admin_note TEXT NOT NULL DEFAULT '', diagnostics_path TEXT NOT NULL DEFAULT '',
 			screenshot_paths TEXT NOT NULL DEFAULT '[]', archived_at TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL, updated_at TEXT NOT NULL, origin_url TEXT NOT NULL DEFAULT '', gui_version TEXT NOT NULL DEFAULT ''
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL, origin_url TEXT NOT NULL DEFAULT '', gui_version TEXT NOT NULL DEFAULT '',
+			public_download_token TEXT NOT NULL DEFAULT ''
 		);`,
 		`ALTER TABLE sm_problem_reports ADD COLUMN origin_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sm_problem_reports ADD COLUMN gui_version TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sm_problem_reports ADD COLUMN public_download_token TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_problem_reports_user ON sm_problem_reports(reporter_user_id, created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_sm_problem_reports_download_token ON sm_problem_reports(public_download_token);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_problem_reports_status ON sm_problem_reports(status, created_at DESC);`,
 		`CREATE TABLE IF NOT EXISTS sm_problem_report_tombstones (
 			id TEXT PRIMARY KEY, deleted_at TEXT NOT NULL

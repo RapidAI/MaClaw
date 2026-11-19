@@ -15,7 +15,7 @@ interface CodingAgentProgressTheme {
 /** Clicking a Read/Edit/Write path focuses the existing code preview. */
 export const CodingAgentPreviewFocusContext = React.createContext<((path: string) => void) | undefined>(undefined);
 
-export const CODING_AGENT_KNOWN_PHASES = ["starting", "running", "completed", "failed", "retrying", "skipped", "result", "waiting_writer"] as const;
+export const CODING_AGENT_KNOWN_PHASES = ["starting", "running", "completed", "failed", "retrying", "skipped", "result", "waiting_writer", "verifying_ui"] as const;
 export type CodingAgentKnownPhase = (typeof CODING_AGENT_KNOWN_PHASES)[number];
 export type CodingAgentStatusPhase = CodingAgentKnownPhase | "unknown";
 export type CodingAgentStatusTone = { accent: string; bg: string; border: string };
@@ -147,7 +147,7 @@ export interface CodingAgentTurnSnapshot {
 
 export type CodingAgentStatusVariant = "chat-progress" | "title-bar" | "sidebar" | "status-bar";
 
-const CODING_AGENT_PHASE_LABELS: Record<CodingAgentStatusPhase, { en: string; zh: string }> = {
+const CODING_AGENT_PHASE_LABELS: Record<CodingAgentStatusPhase, { en: string; zh: string; zhHant?: string }> = {
     starting: { en: "Starting", zh: "\u542f\u52a8\u4e2d" },
     running: { en: "Running", zh: "\u6267\u884c\u4e2d" },
     completed: { en: "Completed", zh: "\u5df2\u5b8c\u6210" },
@@ -156,6 +156,7 @@ const CODING_AGENT_PHASE_LABELS: Record<CodingAgentStatusPhase, { en: string; zh
     skipped: { en: "Skipped", zh: "\u5df2\u8df3\u8fc7" },
     result: { en: "Result", zh: "\u7ed3\u679c" },
     waiting_writer: { en: "Waiting", zh: "\u7b49\u5f85\u5199\u5165" },
+    verifying_ui: { en: "Verifying the interface", zh: "\u6b63\u5728\u9a8c\u8bc1\u754c\u9762", zhHant: "\u6b63\u5728\u9a57\u8b49\u754c\u9762" },
     unknown: { en: "Status", zh: "\u72b6\u6001" },
 };
 
@@ -168,6 +169,7 @@ const CODING_AGENT_PHASE_TONES: Record<CodingAgentStatusPhase, CodingAgentStatus
     skipped: slateTone,
     result: successTone,
     waiting_writer: runningTone,
+    verifying_ui: runningTone,
     unknown: runningTone,
 };
 
@@ -334,7 +336,7 @@ function codingAgentShellPreviewPath(progress: CodingAgentProgress): string | un
 }
 
 export function isCodingAgentActivePhase(phase: string): boolean {
-    return ["starting", "running", "retrying", "waiting_writer", "unknown"].includes(normalizeCodingAgentPhase(phase));
+    return ["starting", "running", "retrying", "waiting_writer", "verifying_ui", "unknown"].includes(normalizeCodingAgentPhase(phase));
 }
 
 export function isCodingAgentTerminalPhase(phase: string): boolean {
@@ -666,7 +668,7 @@ export function parseCodingAgentEventProgress(content: string): CodingAgentProgr
 
 export function codingAgentStatusLabel(phase: string, lang: string): string {
     const labels = CODING_AGENT_PHASE_LABELS[normalizeCodingAgentPhase(phase)];
-    return tailText(lang, labels.en, labels.zh);
+    return tailText(lang, labels.en, labels.zh, labels.zhHant);
 }
 
 export function codingAgentStatusTone(phase: string): CodingAgentStatusTone {

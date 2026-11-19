@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // StructuredPreview builds a tool-aware compact preview within limit bytes.
@@ -17,6 +18,12 @@ func StructuredPreview(toolName, content string, limit int) string {
 	}
 	if content == "" {
 		return ""
+	}
+	// Reshape a browser observation even when it fits. The ship-to line and
+	// the payable total have to lead the excerpt; a later cut then keeps the
+	// page prefix behind them instead of discarding it for the ref list.
+	if browserObservation(toolName, content) {
+		return previewBrowserObservation(content, limit)
 	}
 	if len(content) <= limit {
 		return content
@@ -349,6 +356,433 @@ func previewToolsSearch(s string, limit int) string {
 		return utf8Prefix(out, limit)
 	}
 	return out
+}
+
+// browserPayableMarkers matches browser.payableMarkers. The first hit of the
+// highest marker that carries a non-zero amount is the payable total.
+var browserPayableMarkers = []string{"应付总额", "应付金额", "实付款", "实付", "应付", "订单总额", "合计", "总计"}
+
+// browserAddressMarkers matches the ship-to labels the probe excerpt appends.
+var browserAddressMarkers = []string{"收货地址", "默认地址", "配送至", "送至"}
+
+func browserObservation(toolName, content string) bool {
+	tool := strings.ToLower(strings.TrimSpace(toolName))
+	return strings.HasPrefix(tool, "browser") && strings.Contains(content, "page_text:\n")
+}
+
+// previewBrowserObservation puts the ship-to line and the payable total ahead
+// of the page, then keeps that page from the front. confirm_order copies the
+// item from the prefix; replacing the prefix with a short lead drops it.
+func previewBrowserObservation(s string, limit int) string {
+	if limit <= 0 {
+		limit = 4096
+	}
+	preamble, excerpt, hint, ok := splitBrowserPageText(s)
+	if !ok {
+		if len(s) <= limit {
+			return s
+		}
+		return previewHeadTail(s, limit, 0.45, 0.55)
+	}
+	display, refLines, note := browserRefLines(preamble)
+	address, payable := browserPinnedFacts(excerpt)
+	if address == "" && payable == "" && len(s) <= limit {
+		return s
+	}
+	body := browserPageBody(excerpt, address, payable)
+	full := renderBrowserObservation(display, body, hint, refLines, note)
+	if len(full) <= limit {
+		return full
+	}
+	// Moving the ship-to line still has to fit. A page that already fits
+	// keeps its tail; cutting it here would drop text the model could read.
+	if len(s) <= limit {
+		return s
+	}
+	return fitBrowserObservation(display, body, hint, refLines, note, limit)
+}
+
+// browserPageBody moves the ship-to neighborhood and the payable total to the
+// front of the excerpt. Copying them in front made every probe longer, so a
+// page that already fit either lost its tail or had to stay in document order
+// with the header ahead of the street. Overlapping neighborhoods move as one
+// span: extracting either window alone cuts the other, and the amount splits.
+// Disjoint windows are cut by their original offsets. Searching again after
+// the first move can find the other window inside the text just relocated.
+func browserPageBody(excerpt, address, payable string) string {
+	if excerpt == "" {
+		return excerpt
+	}
+	a0, a1, aok := substringSpan(excerpt, address)
+	p0, p1, pok := substringSpan(excerpt, payable)
+	if aok && pok && spansOverlap(a0, a1, p0, p1) {
+		start, end := a0, a1
+		if p0 < start {
+			start = p0
+		}
+		if p1 > end {
+			end = p1
+		}
+		return moveSpanToFront(excerpt, start, end)
+	}
+	var spans []struct{ start, end int }
+	var lead strings.Builder
+	if aok {
+		spans = append(spans, struct{ start, end int }{a0, a1})
+		lead.WriteString(excerpt[a0:a1])
+	}
+	if pok {
+		spans = append(spans, struct{ start, end int }{p0, p1})
+		if lead.Len() > 0 {
+			lead.WriteString("…")
+		}
+		lead.WriteString(excerpt[p0:p1])
+	}
+	if lead.Len() == 0 || strings.HasPrefix(excerpt, lead.String()) {
+		return excerpt
+	}
+	rest := exciseSpans(excerpt, spans)
+	if rest == "" {
+		return lead.String()
+	}
+	return lead.String() + "…" + rest
+}
+
+func substringSpan(s, part string) (start, end int, ok bool) {
+	if part == "" || s == "" {
+		return 0, 0, false
+	}
+	start = strings.Index(s, part)
+	if start < 0 {
+		return 0, 0, false
+	}
+	return start, start + len(part), true
+}
+
+func spansOverlap(a0, a1, b0, b1 int) bool {
+	return a0 < b1 && b0 < a1
+}
+
+func exciseSpans(s string, spans []struct{ start, end int }) string {
+	ordered := append([]struct{ start, end int }(nil), spans...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].start < ordered[j].start })
+	var b strings.Builder
+	at := 0
+	for _, sp := range ordered {
+		if sp.start < at || sp.end > len(s) || sp.start >= sp.end {
+			continue
+		}
+		b.WriteString(s[at:sp.start])
+		at = sp.end
+	}
+	b.WriteString(s[at:])
+	return b.String()
+}
+
+func moveSpanToFront(s string, start, end int) string {
+	if start <= 0 || end > len(s) || start >= end {
+		return s
+	}
+	window := s[start:end]
+	rest := s[:start] + s[end:]
+	if rest == "" {
+		return window
+	}
+	return window + "…" + rest
+}
+
+func renderBrowserObservation(display, body, hint string, refs []string, refNote string) string {
+	var b strings.Builder
+	if display != "" {
+		b.WriteString(display)
+		b.WriteByte('\n')
+	}
+	// The top-ranked ref leads. pay and secret refs that follow it stay
+	// there too: a password field and 确认支付 are both click targets.
+	// The page hint sits with the page. The remaining refs follow it, so
+	// a long nav list cannot push the street, the product, or the
+	// confirm_order instruction out of the prefix.
+	lead, tail := splitObservationRefs(refs)
+	if len(lead) > 0 {
+		b.WriteString("refs:\n")
+		b.WriteString(strings.Join(lead, "\n"))
+		b.WriteByte('\n')
+	}
+	b.WriteString("page_text:\n")
+	b.WriteString(body)
+	if hint != "" {
+		b.WriteByte('\n')
+		b.WriteString(hint)
+	}
+	if len(tail) > 0 {
+		b.WriteString("\nrefs:\n")
+		b.WriteString(strings.Join(tail, "\n"))
+	}
+	if note := strings.TrimSpace(refNote); note != "" {
+		b.WriteByte('\n')
+		b.WriteString(note)
+	}
+	return b.String()
+}
+
+// splitObservationRefs keeps the top-ranked ref, then every following
+// commit=pay or commit=secret ref, ahead of the page. Ranking already
+// places those controls first. A nav link ends the prefix.
+func splitObservationRefs(refs []string) (lead, tail []string) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	n := 1
+	for n < len(refs) && refLineIsCommit(refs[n]) {
+		n++
+	}
+	return refs[:n], refs[n:]
+}
+
+func refLineIsCommit(line string) bool {
+	return strings.Contains(line, "commit=pay") || strings.Contains(line, "commit=secret")
+}
+
+// fitBrowserObservation keeps the front of the page. Facts were written at
+// the front of body, and the product title sits in the prefix behind them.
+// Ranked refs start with the pay control, so the sample grows from the head.
+func fitBrowserObservation(display, body, hint string, refLines []string, refNote string, limit int) string {
+	total := len(refLines)
+	var kept []string
+	if total > 0 {
+		kept = refLines[:1]
+	}
+	noteFor := func(n int) string {
+		if n < total {
+			if strings.TrimSpace(refNote) != "" {
+				return strings.TrimSpace(refNote)
+			}
+			return "refs truncated; probe again with query"
+		}
+		return strings.TrimSpace(refNote)
+	}
+	fixed := renderBrowserObservation(display, "", hint, kept, noteFor(len(kept)))
+	budget := limit - len(fixed)
+	if budget < 0 {
+		budget = 0
+	}
+	fitted := utf8Prefix(body, budget)
+	out := renderBrowserObservation(display, fitted, hint, kept, noteFor(len(kept)))
+	for len(kept) < total {
+		next := refLines[:len(kept)+1]
+		candidate := renderBrowserObservation(display, fitted, hint, next, noteFor(len(next)))
+		if len(candidate) > limit {
+			break
+		}
+		kept = next
+		out = candidate
+	}
+	for len(out) > limit && fitted != "" {
+		nextLen := len(fitted) * 3 / 4
+		if nextLen >= len(fitted) {
+			nextLen = len(fitted) - 1
+		}
+		fitted = utf8Prefix(fitted, nextLen)
+		out = renderBrowserObservation(display, fitted, hint, kept, noteFor(len(kept)))
+	}
+	if len(out) > limit {
+		return utf8Prefix(out, limit)
+	}
+	return out
+}
+
+func splitBrowserPageText(s string) (preamble, excerpt, hint string, ok bool) {
+	const mark = "page_text:\n"
+	at := strings.LastIndex(s, mark)
+	if at < 0 {
+		return "", "", "", false
+	}
+	preamble = s[:at]
+	rest := s[at+len(mark):]
+	if nl := strings.Index(rest, "\n"); nl >= 0 {
+		excerpt = rest[:nl]
+		hint = strings.TrimSpace(rest[nl+1:])
+	} else {
+		excerpt = rest
+	}
+	if strings.TrimSpace(excerpt) == "" {
+		return "", "", "", false
+	}
+	return preamble, excerpt, hint, true
+}
+
+func browserRefLines(preamble string) (display string, lines []string, note string) {
+	var displayLines []string
+	seenRefs := false
+	for _, line := range strings.Split(preamble, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			continue
+		}
+		switch {
+		case trim == "refs:":
+			seenRefs = true
+		case strings.HasPrefix(trim, "@e"):
+			seenRefs = true
+			lines = append(lines, trim)
+		case strings.HasPrefix(trim, "refs truncated"):
+			note = trim
+		case !seenRefs:
+			displayLines = append(displayLines, trim)
+		}
+	}
+	return strings.Join(displayLines, "\n"), lines, note
+}
+
+func browserPinnedFacts(excerpt string) (address, payable string) {
+	return bestAddressWindow(excerpt), payableWindow(excerpt)
+}
+
+func bestAddressWindow(s string) string {
+	bestScore := -1 << 30
+	bestAt := -1
+	bestRank := len(browserAddressMarkers)
+	for rank, marker := range browserAddressMarkers {
+		from := 0
+		for from < len(s) {
+			rel := strings.Index(s[from:], marker)
+			if rel < 0 {
+				break
+			}
+			at := from + rel
+			from = at + len(marker)
+			if addressHitInsideLonger(s, at, marker) {
+				continue
+			}
+			score := addressSubstance(s, at, marker)
+			if score > bestScore || (score == bestScore && rank < bestRank) || (score == bestScore && rank == bestRank && at > bestAt) {
+				bestScore = score
+				bestAt = at
+				bestRank = rank
+			}
+		}
+	}
+	if bestAt < 0 {
+		return ""
+	}
+	return markerNeighborhood(s, bestAt)
+}
+
+func addressHitInsideLonger(s string, at int, marker string) bool {
+	if marker != "送至" {
+		return false
+	}
+	const longer = "配送至"
+	gap := len(longer) - len(marker)
+	if at < gap {
+		return false
+	}
+	return strings.HasPrefix(s[at-gap:], longer)
+}
+
+func addressSubstance(s string, byteAt int, marker string) int {
+	rest := []rune(s[byteAt+len(marker):])
+	if len(rest) > 48 {
+		rest = rest[:48]
+	}
+	score := 0
+	digits := 0
+	for _, r := range rest {
+		switch r {
+		case '省', '市', '区', '县', '镇', '乡', '村', '路', '街', '道', '号', '楼', '室', '栋', '弄', '巷':
+			score += 3
+		default:
+			if r >= '0' && r <= '9' {
+				digits++
+			}
+		}
+	}
+	// A door number adds a little. An 11-digit hotline after 送至 must not
+	// outrank a street that names a district and a road.
+	if score > 0 && digits > 0 {
+		if digits > 4 {
+			digits = 4
+		}
+		score += digits * 2
+	}
+	if precededBy(s, byteAt, "管理") {
+		score -= 15
+	}
+	return score
+}
+
+func precededBy(s string, byteAt int, word string) bool {
+	if byteAt < len(word) {
+		return false
+	}
+	return s[byteAt-len(word):byteAt] == word
+}
+
+func payableWindow(s string) string {
+	bestAt := -1
+	bestRank := len(browserPayableMarkers)
+	for rank, marker := range browserPayableMarkers {
+		idx := strings.Index(s, marker)
+		if idx < 0 || rank >= bestRank {
+			continue
+		}
+		window := s[idx:]
+		if rs := []rune(window); len(rs) > 80 {
+			window = string(rs[:80])
+		}
+		if firstAmountIsNonZero(window) {
+			bestAt = idx
+			bestRank = rank
+		}
+	}
+	if bestAt < 0 {
+		for _, marker := range browserPayableMarkers {
+			if idx := strings.Index(s, marker); idx >= 0 {
+				bestAt = idx
+				break
+			}
+		}
+	}
+	if bestAt < 0 {
+		return ""
+	}
+	return markerNeighborhood(s, bestAt)
+}
+
+func firstAmountIsNonZero(window string) bool {
+	rs := []rune(window)
+	i := 0
+	for i < len(rs) && (rs[i] < '0' || rs[i] > '9') {
+		i++
+	}
+	if i >= len(rs) {
+		return false
+	}
+	nonzero := false
+	for i < len(rs) && ((rs[i] >= '0' && rs[i] <= '9') || rs[i] == ',' || rs[i] == '.') {
+		if rs[i] >= '1' && rs[i] <= '9' {
+			nonzero = true
+		}
+		i++
+	}
+	return nonzero
+}
+
+func markerNeighborhood(s string, byteAt int) string {
+	if byteAt < 0 || byteAt > len(s) {
+		return ""
+	}
+	runeAt := utf8.RuneCountInString(s[:byteAt])
+	runes := []rune(s)
+	start := runeAt - 40
+	if start < 0 {
+		start = 0
+	}
+	end := runeAt + 160
+	if end > len(runes) {
+		end = len(runes)
+	}
+	return string(runes[start:end])
 }
 
 func isComputerObserveElementLine(trim string) bool {

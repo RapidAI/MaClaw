@@ -19,6 +19,8 @@ import 'package:archive/archive.dart';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'locale.dart';
+
 class VoiceAssets {
   static const kokoroFile = 'kokoro-v1_0.koro';
   static const voicesZipFile = 'kokoro_82m_selected_voices_koro_v2.zip';
@@ -150,8 +152,10 @@ class VoiceAssets {
         kokoroFile,
         kp,
         hubBase: hubBase,
-        onProgress: (r, t) =>
-            onProgress?.call('下载 Kokoro 模型', t > 0 ? r / t * 0.9 : 0),
+        onProgress: (r, t) => onProgress?.call(
+          sharedL10n.voiceStageDownloadKokoro,
+          t > 0 ? r / t * 0.9 : 0,
+        ),
       );
     }
     final vd = Directory(await voiceDir());
@@ -163,12 +167,12 @@ class VoiceAssets {
       }
     }
     if (missing) {
-      onProgress?.call('下载音色包', 0.9);
+      onProgress?.call(sharedL10n.voiceStageDownloadVoices, 0.9);
       final zp = await voicesZipPath();
       if (!_nonEmpty(zp)) {
         await _download(voicesZipFile, zp, hubBase: hubBase);
       }
-      onProgress?.call('解压音色包', 0.95);
+      onProgress?.call(sharedL10n.voiceStageUnpackVoices, 0.95);
       if (!vd.existsSync()) vd.createSync(recursive: true);
       final Archive zip;
       try {
@@ -186,7 +190,7 @@ class VoiceAssets {
         File('${vd.path}/$name').writeAsBytesSync(entry.content as List<int>);
       }
     }
-    onProgress?.call('就绪', 1);
+    onProgress?.call(sharedL10n.voiceStageReady, 1);
   }
 
   /// One deduplicated ensure for everything — concurrent callers (the
@@ -220,16 +224,18 @@ class VoiceAssets {
   }) async {
     final ap = await asrPath();
     if (_nonEmpty(ap)) {
-      onProgress?.call('就绪', 1);
+      onProgress?.call(sharedL10n.voiceStageReady, 1);
       return;
     }
     await _download(
       asrFile,
       ap,
       hubBase: hubBase,
-      onProgress: (r, t) =>
-          onProgress?.call('下载 SenseVoice 模型', t > 0 ? r / t : 0),
+      onProgress: (r, t) => onProgress?.call(
+        sharedL10n.voiceStageDownloadSenseVoice,
+        t > 0 ? r / t : 0,
+      ),
     );
-    onProgress?.call('就绪', 1);
+    onProgress?.call(sharedL10n.voiceStageReady, 1);
   }
 }

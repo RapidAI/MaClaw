@@ -749,13 +749,52 @@
   update on those devices. Dart side: `null` → let the system installer
   decide; `false` → the sheet shows uninstall-first guidance plus a
   browser download-page entry (`updOpenDownloadPage`).
+- 2026-11-19 online-update signature incident: every release through
+  V8.2.0.12689 shipped DEBUG-signed. `MOBILEBOT_KEYSTORE_BASE64` held
+  non-base64 text, and the "Write Android signing config" step degrades
+  to `::warning:: … falls back to debug signing` + exit 0 when the base64
+  decode fails — with `REQUIRE_MOBILEBOT_RELEASE_SIGNING` (a repo
+  VARIABLE, keep it `true`) unset, the tag build published anyway. Each
+  runner VM auto-generates a FRESH `~/.android/debug.keystore` (not
+  covered by the gradle cache), so consecutive debug-signed releases have
+  mutually incompatible certs and in-app updates always fail with
+  INSTALL_FAILED_UPDATE_INCOMPATIBLE. The secret value must be ONE
+  continuous base64 line of `mobilebot-upload.jks` (PKCS12, alias
+  `mobilebot`) — no certutil `-----BEGIN CERTIFICATE-----` wrappers, no
+  `data:` prefix (whitespace is stripped by the step, anything else breaks
+  decode). Verify a released APK with
+  `apksigner verify --print-certs MaclawGo.apk`: the real key is
+  `CN=MobileBot, OU=Mobile, O=MaClaw, C=CN`, SHA-256
+  `DE:32:3A:AF:72:CE:0B:98:9A:9F:0B:6E:66:50:4F:ED:81:28:DA:D1:A8:FB:C2:6C:9C:27:3C:25:B2:F0:35:B3`;
+  `CN=Android Debug` on a release asset means the fallback fired. The
+  first release signed with the real key requires a ONE-TIME uninstall on
+  every already-installed device; from then on updates install over each
+  other normally.
 - l10n: `app_en.arb` is fully translated; `app_zh_Hant.arb` is OpenCC s2t
   of the zh template (regenerate with s2t when new keys land);
-  `app_mn.arb` is STILL the zh placeholder — needs a native speaker
-  before the mn locale ships. Tests that pump `MaclawGoApp` and assert
-  zh text MUST override `initialLanguageProvider` with `zhHans`: the test
-  host resolves en_US, and the translated en bundle no longer hides
-  behind placeholder Chinese (see bot_route_scope_test).
+  `app_mn.arb` is fully translated to CYRILLIC Mongolian (all 515 value
+  keys, 2026-11-19 — machine-translation quality; have a native speaker
+  proofread before marketing mn as polished). Tests that pump `MaclawGoApp`
+  and assert zh text MUST override `initialLanguageProvider` with `zhHans`:
+  the test host resolves en_US, and the translated en bundle no longer
+  hides behind placeholder Chinese (see bot_route_scope_test).
+- l10n rule for NEW strings: never hardcode zh in Dart. Widget code uses
+  `context.S`; non-widget code (controllers, API/error mappers, pure
+  helpers) uses `sharedL10n` (locale.dart) — a locale snapshot synced by
+  `MaclawGoApp`'s `localeResolutionCallback` via `updateSharedL10nLocale`,
+  defaulting to zh so pure-function unit tests and pre-first-frame
+  behavior stay byte-identical. When a new key replaces a previously
+  hardcoded zh fallback, the zh template value must match the old string
+  BYTE-FOR-BYTE (see `wakeTimeout` vs `dtWakeTimeout` — near-duplicates
+  stay separate keys instead of reusing one and silently changing zh
+  wording). Strings that stay zh on purpose: `_voiceNames` (pending a
+  locale decision), `botConfirmTaskText` (engine instruction to the
+  zh-speaking desktop bot AND compared by string equality against persisted
+  journal history in `bot_chat_screen` — localizing it would silently break
+  that match across app versions), QR FormatException messages (caught and
+  remapped to `S.qrInvalid`, never surfaced), server-text matchers
+  (`desktop_wake_text` node_offline sentence, `remote_task_screen` 失败
+  status check), and CJK character regexes.
 - Commit set when landing the l10n migration: `l10n.yaml`, `lib/l10n/`
   (the four ARBs; `gen/` is gitignored), and the untracked
   `lib/core/locale.dart`/`chat_ui.dart`/`ui_kit.dart` must ride along with
@@ -886,3 +925,11 @@
 - Admin forms: hub `notification-tab.js` (CJK via \uXXXX escapes) and hubcenter
   `notification-admin.js` both gate the pinned extras (永久置顶/链接/按钮名)
   behind the 置顶 checkbox; the list/detail views badge pinned rows.
+- `PullPinnedNotifications` is serialized end to end by `App.pinnedPullMu`:
+  reconnect (×2 sites), a pinned WS push, and a revoke can each fire a pull,
+  and without the lock a stale fetch finishing last would publish last and
+  freeze the banner on an outdated list until the next event.
+- Known bound: hub expiry (`CheckExpired` → status flip) does NOT push, so a
+  pinned card whose expire_at passed lingers until the next pull (reconnect /
+  any pinned push / revoke). Same reconnect-pull contract as unread notices;
+  a revoke always pushes, so admin removal is immediate.
