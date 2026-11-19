@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
@@ -288,5 +289,114 @@ func TestWatchFollowSaysTheStructuredSummaryNotTheLog(t *testing.T) {
 	}
 	if !strings.Contains(text, "做成了") {
 		t.Fatalf("follow text %q", text)
+	}
+}
+
+func TestWatchFollowUsesTheLauncherFinishAfterReceiptCleanup(t *testing.T) {
+	dir := t.TempDir()
+	prevBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(dir)
+	prevPath := desktopLongJobPath
+	desktopLongJobPath = func() string { return filepath.Join(dir, "jobs.json") }
+	desktopLongJobResetForTest()
+	t.Cleanup(func() {
+		corelib.SetMaclawBaseDir(prevBase)
+		desktopLongJobPath = prevPath
+		desktopLongJobResetForTest()
+	})
+	const launcher = "run_launcher"
+	const watchRun = "run_watch"
+	if launcher == watchRun {
+		t.Fatal("the watch run must not be the launcher")
+	}
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[launcher] = true
+	desktopRecStateMu.Unlock()
+	t.Cleanup(func() {
+		desktopRecoveryEndRun(launcher)
+		desktopRecoveryEndRun(watchRun)
+	})
+	metric := 0.91
+	job := &desktopLongJob{
+		ID: "job_launcher", SourceRun: launcher, Status: "done",
+		RoundMetric: &metric, RoundMetricName: "F1",
+	}
+	if err := desktopLongJobSave(job); err != nil {
+		t.Fatal(err)
+	}
+	raw := "下面是最后的输出\nBEST_VAL_METRICS {\"f1\": 0.1}\n" + strings.Repeat("epoch log\n", 8)
+	meta := desktopTaskOutcomeMetadata(launcher, agentservice.Message{Content: raw})
+	sentence := meta["send_to_user"]
+	if !strings.Contains(sentence, "做成了") || !strings.Contains(sentence, "F1") || !strings.Contains(sentence, "0.91") {
+		t.Fatalf("completion hook did not store the measured finish: %#v", meta)
+	}
+	for _, bad := range []string{"BEST_VAL", "下面是最后的输出", "epoch log"} {
+		if strings.Contains(sentence, bad) {
+			t.Fatalf("stored finish contains the training log %q in %q", bad, sentence)
+		}
+	}
+	desktopRecoveryEndRun(launcher)
+	desktopRecStateMu.Lock()
+	_, stepsLeft := desktopRecRunSteps[launcher]
+	desktopRecStateMu.Unlock()
+	if stepsLeft {
+		t.Fatal("receipt cleanup left the ephemeral steps in place")
+	}
+	if again := desktopLongJobDeliveredOutcome(launcher, agentservice.Message{Content: raw}); again != sentence {
+		t.Fatalf("after cleanup the stored finish was recomputed into %q", again)
+	}
+
+	svc, store, p, inst := longJobOwnerService(t)
+	prevSvc := desktopLongJobService
+	t.Cleanup(func() { desktopLongJobService = prevSvc })
+	desktopLongJobService = svc
+	session, err := svc.CreateSession(context.Background(), p, inst.ID, agentservice.CreateSessionInput{Title: "watch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMessage(agentservice.Message{
+		ID: "msg_watch", SessionID: session.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: inst.ID,
+		Role: agentservice.MessageRoleAssistant, Content: raw, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := time.Now()
+	if err := store.SaveRun(agentservice.Run{
+		ID: watchRun, TenantID: p.TenantID, UserID: p.UserID, InstanceID: inst.ID, SessionID: session.ID,
+		AssistantMessageID: "msg_watch", Status: agentservice.RunStatusSucceeded,
+		StartedAt: done.Add(-time.Minute), CompletedAt: &done,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	saved := desktopLongJobGet(job.ID)
+	if saved == nil || saved.SourceRun != launcher {
+		t.Fatalf("source run %+v", saved)
+	}
+	saved.InstanceID, saved.SessionID, saved.UserID, saved.TenantID = inst.ID, session.ID, p.UserID, p.TenantID
+	if err := desktopLongJobSave(saved); err != nil {
+		t.Fatal(err)
+	}
+	var sent []map[string]any
+	oldSay := desktopLongJobSayFunc
+	t.Cleanup(func() { desktopLongJobSayFunc = oldSay })
+	desktopLongJobSayFunc = func(_ context.Context, body map[string]any) error {
+		sent = append(sent, body)
+		return nil
+	}
+	desktopLongJobFollowRun(context.Background(), p, saved, watchRun, longJobResume)
+	if len(sent) != 1 {
+		t.Fatalf("sent %v", sent)
+	}
+	text, _ := sent[0]["text"].(string)
+	if sent[0]["message_kind"] != desktopMsgOutcome {
+		t.Fatalf("kind %v", sent[0])
+	}
+	if !strings.Contains(text, "做成了") || !strings.Contains(text, "F1") || !strings.Contains(text, "0.91") {
+		t.Fatalf("follow text %q", text)
+	}
+	for _, bad := range []string{"BEST_VAL", "下面是最后的输出", "epoch log"} {
+		if strings.Contains(text, bad) {
+			t.Fatalf("follow posted the training log %q in %q", bad, text)
+		}
 	}
 }

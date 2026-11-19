@@ -376,6 +376,47 @@ func desktopRunFinishRecordPath(runID string) string {
 	return filepath.Join(corelib.MaclawDataDir(), "run-outcomes", runID+".json")
 }
 
+// desktopLoadStoredRunFinish reads the finish desktopTaskOutcomeMetadata
+// wrote at completion. Recovery state is gone by the time a watcher posts,
+// so the sentence has to come from this file.
+func desktopLoadStoredRunFinish(runID string) (desktopRunFinish, bool) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return desktopRunFinish{}, false
+	}
+	raw, err := os.ReadFile(desktopRunFinishRecordPath(runID))
+	if err != nil {
+		return desktopRunFinish{}, false
+	}
+	var rec struct {
+		Status     string   `json:"status"`
+		Results    []string `json:"results"`
+		Blocker    string   `json:"blocker"`
+		Unblock    []string `json:"unblock_conditions"`
+		Next       string   `json:"next_action"`
+		Remediated bool     `json:"self_remediated"`
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil || strings.TrimSpace(rec.Status) == "" {
+		return desktopRunFinish{}, false
+	}
+	return desktopRunFinish{
+		Status: rec.Status, Results: rec.Results, Blocker: rec.Blocker,
+		Unblock: rec.Unblock, Next: rec.Next, Remediated: rec.Remediated,
+	}, true
+}
+
+func desktopStoredFinishSentence(runID string) (string, bool) {
+	fin, ok := desktopLoadStoredRunFinish(runID)
+	if !ok {
+		return "", false
+	}
+	sentence := strings.TrimSpace(fin.Sentence())
+	if sentence == "" {
+		return "", false
+	}
+	return sentence, true
+}
+
 // desktopRunContinueSend starts the follow-up that removes a blocker the bot
 // can fix. Tests replace it. An error leaves the run's own outcome message
 // in place.

@@ -258,6 +258,23 @@ func TestSayKeepsTheSpeechKind(t *testing.T) {
 	if err != nil || plain.MessageKind != "" {
 		t.Fatalf("untagged say %+v %v", plain, err)
 	}
+	outcome, err := svc.SayFilesKindFromInstance(ctx, "tenant-a", "alice", "inst_a", "", "做成了。\nF1 0.91", "k-outcome-kind", nil, "outcome")
+	if err != nil || outcome.MessageKind != "outcome" {
+		t.Fatalf("outcome note %+v %v", outcome, err)
+	}
+	said, err = svc.ListSaid(ctx, "tenant-a", "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcomeKept bool
+	for _, n := range said {
+		if n.ID == outcome.ID && n.MessageKind == "outcome" {
+			outcomeKept = true
+		}
+	}
+	if !outcomeKept {
+		t.Fatalf("outcome kind was not persisted: %+v", said)
+	}
 }
 
 func TestSayFilesFromInstanceCarriesReadableFiles(t *testing.T) {
