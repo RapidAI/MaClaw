@@ -720,6 +720,7 @@ const desktopDocumentPrompt = "Office documents (Word, report, illustrated docum
 	"To check a downloaded picture, use ImageMagick identify (installed); older desktops may lack file and xxd. " +
 	"Save it under /home/desktop/Desktop with a fixed name, insert pictures with their file paths (add_picture), and print the saved path and size in the same step. " +
 	"If that step fails, fix the error it printed and run it again; do not rewrite the whole script for each small change. " +
+	"For a PDF, prefer the bot_generate_pdf tool when it is offered: it renders Markdown straight to the page and never adds a cover. If you build a PDF on the desktop instead, do not put a page break, a blank paragraph, or an empty first section before the body text, and a LibreOffice export must not start on a title page. After exporting, run pdftotext -f 1 -l 1 on the file and confirm the first page has text; if it is blank, fix the document and regenerate it, because a PDF that opens on an empty page is refused at deliver. " +
 	"Do not type the document into the LibreOffice window key by key, and do not drive its Save As dialog. " +
 	"Before reporting, app_open with program libreoffice and the saved path so the front window shows the finished document: the result check compares your report with that screen, and a run whose screen still shows an older page is sent back. " +
 	"deliver attaches a file of any size up to 8 MB as it is, so insert pictures at a readable size (about 1600 px wide is plenty) and never shrink a finished document just to deliver it. " +
@@ -3921,6 +3922,9 @@ func deliverDesktopDocument(ctx context.Context, scope agentruntime.Scope, args 
 // does have a slot, and that path used to skip the identical-bytes check, so
 // the resumed weather turn handed over the same PDF again.
 func deliverHeldBytes(ctx context.Context, scope agentruntime.Scope, name, mime string, raw []byte, itemID string) (string, error) {
+	if err := desktopRefuseBlankPDF(name, raw); err != nil {
+		return "", err
+	}
 	if desktopShotSlotFrom(ctx) == nil {
 		return deliverFileOnItsOwn(ctx, scope, name, raw, itemID)
 	}

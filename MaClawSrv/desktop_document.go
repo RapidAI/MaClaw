@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
@@ -176,4 +177,26 @@ func desktopDocumentXML(content string) string {
 	}
 	body.WriteString(`<w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>`)
 	return body.String()
+}
+
+// desktopRefuseBlankPDF rejects a delivered PDF whose first page carries no
+// text. A LibreOffice headless export inserts a blank cover when the source
+// opened on a title/empty page; the person then opens a file that starts on
+// an empty sheet. Only a name ending in .pdf is checked; other types, and a
+// file we cannot parse as a PDF, pass through (a non-PDF body returns no
+// text and no error from PDFPageBody).
+func desktopRefuseBlankPDF(name string, raw []byte) error {
+	if !strings.HasSuffix(strings.ToLower(name), ".pdf") || len(raw) == 0 {
+		return nil
+	}
+	body, err := agent.PDFPageBody(raw, 0)
+	if err != nil {
+		// A file we cannot read is not declared blank: the existing empty/too-
+		// large checks already catch the real failures.
+		return nil
+	}
+	if strings.TrimSpace(body) == "" {
+		return fmt.Errorf("refused: blank_first_page — the PDF %s starts on an empty page, so it is not delivered. Regenerate it without a cover page, a leading page break, or an empty first paragraph (prefer bot_generate_pdf, which renders Markdown straight to the page), then deliver again", name)
+	}
+	return nil
 }

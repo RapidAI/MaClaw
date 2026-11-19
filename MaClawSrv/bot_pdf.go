@@ -86,6 +86,9 @@ func (m botPDFModule) InvokeTool(ctx context.Context, request agentruntime.TurnR
 	if len(pdf) == 0 {
 		return "", fmt.Errorf("PDF generator returned no data")
 	}
+	if err := desktopRefuseBlankPDF(name, pdf); err != nil {
+		return "", err
+	}
 	if ctx != nil && ctx.Err() != nil {
 		return "", ctx.Err()
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,10 @@ type receiptTurn struct {
 	samePost  bool
 	partial   bool
 	textIDs   []string
+	// extractFailCause, when set, records a failed deliverable extraction
+	// carrying this exact cause — used to pin that a private-looking error
+	// string must not reach the person-facing sentence.
+	extractFailCause string
 }
 
 type receiptExecutor struct {
@@ -63,6 +68,9 @@ func (e *receiptExecutor) Execute(ctx context.Context, req agentservice.ExecuteR
 		noteDesktopOutputSlots(req.RunID, e.turn.slots)
 	} else if e.turn.contract != nil {
 		noteDesktopOutputContract(req.RunID, e.turn.contract)
+	}
+	if e.turn.extractFailCause != "" {
+		agentservice.RecordDesktopDeliverableExtraction(req.RunID, nil, errors.New(e.turn.extractFailCause))
 	}
 	if e.turn.shot && !noteDesktopShot(ctx, "image/png", "aGVsbG8=") {
 		return nil, context.Canceled
@@ -433,6 +441,37 @@ func TestPlanFileIsNotDelivery(t *testing.T) {
 		view.server.Close()
 	})
 	assertReceipt(t, view.message, view.run, agentservice.TaskOutcomeUnverified, "不能确认", "", true)
+}
+
+// A real file was delivered but the deliverable contract read failed. The run
+// must stay unverified (the file alone is not proof) and the concrete cause —
+// which may carry a local path or token from the transport/model error — must
+// not be echoed into the person-facing sentence.
+func TestVerifiedArtifactFailedExtractionCauseDoesNotLeak(t *testing.T) {
+	// A cause shaped like a transport/model error carrying a private path
+	// and a token. The exact private substrings must never reach the user.
+	secretPath := `C:\Users\alice\secrets\api_key.txt`
+	token := "sk-live-9f8e7d6c5b4a"
+	cause := `read ` + secretPath + ` for contract: Post "https://llm.internal/v1/chat/completions": token=` + token + ` unexpected EOF`
+	view := runReceiptTurn(t, t.TempDir(), receiptTurn{
+		content:          "做一份报告",
+		file:             true,
+		fileName:         "report.pdf",
+		extractFailCause: cause,
+	})
+	t.Cleanup(func() {
+		_ = view.svc.Close()
+		view.server.Close()
+	})
+	// The delivered artifact does not rescue a failed extraction: stays unverified.
+	assertReceipt(t, view.message, view.run, agentservice.TaskOutcomeUnverified, "不能确认", "", true)
+
+	visible := view.message.Content + "\n" + view.message.Metadata["send_to_user"]
+	for _, priv := range []string{secretPath, token} {
+		if strings.Contains(visible, priv) {
+			t.Fatalf("private cause %q leaked into user-visible text: %q", priv, visible)
+		}
+	}
 }
 
 func TestTextItemsNeedExplicitIDs(t *testing.T) {

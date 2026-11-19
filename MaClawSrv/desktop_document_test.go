@@ -199,3 +199,23 @@ func TestDeliverReadsTheDesktopFile(t *testing.T) {
 		t.Fatalf("large file attached %d", n)
 	}
 }
+
+// TestDesktopDocumentPromptBarsABlankFirstPage pins the document-generation
+// guidance: PDFs should go through bot_generate_pdf, the body must not open on
+// a cover/blank page, the export is checked with pdftotext, and a blank first
+// page is refused at deliver.
+func TestDesktopDocumentPromptBarsABlankFirstPage(t *testing.T) {
+	for _, want := range []string{
+		"prefer the bot_generate_pdf tool",
+		"never adds a cover",
+		"do not put a page break",
+		"empty first section",
+		"pdftotext -f 1 -l 1",
+		"first page has text",
+		"refused at deliver",
+	} {
+		if !strings.Contains(desktopDocumentPrompt, want) {
+			t.Fatalf("desktopDocumentPrompt lacks %q", want)
+		}
+	}
+}
