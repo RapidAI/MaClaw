@@ -7,6 +7,18 @@ export type BotPathSource = {
     guiPaths?: readonly string[];
 };
 
+// guiPathsFromMessages is every path this GUI saved for the open chat.
+// The log-level chip provider uses it so a card outside one message still
+// opens a saved file on this machine.
+export function guiPathsFromMessages(messages: readonly { localPaths?: readonly string[]; shotPaths?: readonly string[] }[]): string[] {
+    const out: string[] = [];
+    for (const message of messages) {
+        if (message.localPaths) out.push(...message.localPaths);
+        if (message.shotPaths) out.push(...message.shotPaths);
+    }
+    return out;
+}
+
 // resolveDesktopPath is the same resolution as the desktop ContainerPath:
 // ~/ and a relative path start at the desktop home. A backslash, a colon,
 // or a newline is not a container path.

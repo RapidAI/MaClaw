@@ -175,7 +175,7 @@ import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from '
 import { desktopBotCorrectAttachClaim } from './desktopBotDelivery';
 import { activeRunsOccupy, botBusyPhase, reattachStalePending } from './desktopBotBusy';
 import { BotChipContext, BotMessageBody, botMessageIsStructured, splitBotBeats } from './botMessageBody';
-import { classifyBotPath } from './desktopPathOrigin';
+import { classifyBotPath, guiPathsFromMessages } from './desktopPathOrigin';
 import { DesktopPictureMissing } from './DesktopPictureMissing';
 import { BotFeedLine, botFeedLineInternal, botFeedLineOf } from './botFeedLine';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
@@ -7494,7 +7494,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             data-testid="desktop-bot-log"
                             onScroll={onLogScroll}
                         >
-                            <BotChipContext.Provider value={{ openLink: botChipOpenLink, openPath: (event, path) => { void openBotFile(event, path, selected.id); }, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => classifyBotPath(path) }}>
+                            <BotChipContext.Provider value={{ openLink: botChipOpenLink, openPath: (event, path) => { void openBotFile(event, path, selected.id); }, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => classifyBotPath(path, { guiPaths: guiPathsFromMessages(messages) }) }}>
                             <div ref={logBodyRef} className="desktop-bot-chat__log-body">
                             {messages.length === 0 ? (
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>

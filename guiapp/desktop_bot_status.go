@@ -282,9 +282,6 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	if len(ids) > 0 {
 		payload["desktop_attachment_ids"] = ids
 	}
-	if len(shotPaths) > 0 {
-		payload["desktop_shot_paths"] = shotPaths
-	}
 	if o := desktopTaskOutcomeOf(item.Reply.TaskOutcome); o != "" {
 		payload["task_outcome"] = o
 	}

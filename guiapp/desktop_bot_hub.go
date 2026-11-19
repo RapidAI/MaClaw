@@ -2786,6 +2786,41 @@ func localizeDesktopPaths(text string, local []string) string {
 	})
 }
 
+// stageDesktopPictures keeps each PNG or JPEG in memory under its attachment
+// id and returns those ids. The chat fetches them. Bytes are not written
+// to disk and are not put on the event. A non-picture file id is included
+// so the person can still be told the file exists.
+func stageDesktopPictures(botID string, images []DesktopBotImage, files []DesktopBotFile) []string {
+	botID = strings.TrimSpace(botID)
+	var ids []string
+	seen := map[string]bool{}
+	keep := func(mime, data, id string) {
+		mime = desktopPictureMIME(mime)
+		data = strings.TrimSpace(data)
+		if mime == "" || !desktopBotImageData(data) {
+			if id = strings.TrimSpace(id); id != "" && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+			return
+		}
+		id = desktopPictureID(id, data)
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		desktopAttachmentCache.Store(botID+"\x00"+id, cachedDesktopPicture{mime: mime, data: data, at: time.Now()})
+		ids = append(ids, id)
+	}
+	for _, image := range images {
+		keep(image.MIME, image.Data, image.AttachmentID)
+	}
+	for _, file := range files {
+		keep(file.MIME, file.Data, file.AttachmentID)
+	}
+	return ids
+}
+
 const (
 	desktopBotFileTTL = 14 * 24 * time.Hour
 	desktopBotFileCap = 32 << 20
