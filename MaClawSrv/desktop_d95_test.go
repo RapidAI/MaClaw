@@ -210,10 +210,49 @@ func TestDesktopD95EvidencePartialAcrossSites(t *testing.T) {
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u-d95-part", InstanceID: "i", RunID: run}
 	desktopNoteTaskSpec(run, multiSiteReq)
 	defer desktopTaskSpecs.Delete(run)
-	desktopObservePublishEvidence(scope, "probe", "https://mp.csdn.net/mp_blog/creation/success/42")
+	if got := desktopObservePublishEvidence(scope, "probe", "https://mp.csdn.net/mp_blog/creation/success/42"); got != "" {
+		t.Fatalf("console page stored as the public link: %q", got)
+	}
+	if got := desktopObservePublishEvidence(scope, "probe", "https://mp.csdn.net/mp_blog/creation/success/42 https://blog.csdn.net/daniel/article/details/42"); got != "https://blog.csdn.net/daniel/article/details/42" {
+		t.Fatalf("public link %q", got)
+	}
 	outcome, why := desktopReconcileOutcome(run, "", "")
 	if outcome != agentservice.TaskOutcomePartial || !strings.Contains(why, "csdn") || !strings.Contains(why, "zhihu") {
 		t.Fatalf("outcome %q %q", outcome, why)
+	}
+}
+
+// Bot 2 run_5d1e7700 (2026-11-14): a Zhihu article URL in a step transcript
+// became "已确认发布" even though publish never left the closed screen.
+func TestZhihuArticleMentionIsNotThisRunsPost(t *testing.T) {
+	d95Ledger(t)
+	run := "run-zhihu-mention"
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-zhihu-mention", InstanceID: "i", RunID: run}
+	desktopNoteTaskSpec(run, "发到知乎")
+	defer desktopTaskSpecs.Delete(run)
+	profiles := desktopEvidenceProfiles(run)
+	if len(profiles) != 1 || profiles[0].ID != "zhihu" || profiles[0].SuccessURL == "" {
+		t.Fatalf("zhihu profile %+v", profiles)
+	}
+	article := "https://zhuanlan.zhihu.com/p/2096778682895540557"
+	if got := desktopObservePublishEvidence(scope, "bash", "fetched "+article); got != "" {
+		t.Fatalf("article link before submit counted as published: %q", got)
+	}
+	if _, why := desktopReconcileOutcome(run, agentservice.TaskOutcomePartial, "screen closed"); strings.Contains(why, "2096778682895540557") {
+		t.Fatalf("outcome evidence %q", why)
+	}
+	desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) { r.State = browser.PublishSubmitted })
+	defer desktopPublishRecordTake(run)
+	if got := desktopObservePublishEvidence(scope, "probe", article); got != "" {
+		t.Fatalf("submit with no id adopted an article: %q", got)
+	}
+	other := "https://zhuanlan.zhihu.com/p/111"
+	desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) { r.PostID = "2096778682895540557" })
+	if got := desktopObservePublishEvidence(scope, "bash", "also saw "+other); got != "" {
+		t.Fatalf("different article adopted: %q", got)
+	}
+	if got := desktopObservePublishEvidence(scope, "probe", article); got != article {
+		t.Fatalf("matching id: %q", got)
 	}
 }
 

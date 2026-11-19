@@ -31,13 +31,15 @@ Page actions:
 - hover, press, dialog: open menus, send keys, accept/dismiss JS alerts
 - select, scroll, back, refresh, set_files (select/scroll/set_files accept ref)
 - extract, wait
-- Optional expect= url_contains:… / text:… / ref_appears:@eN / dialog. Required on a lone submit/publish click or navigate. Not required when that submit is the last task_run step; the batch stops and returns the page. Links/tabs do not need expect. If page flags include captcha_widget, ask the user; after they continue, probe first. login_wall and MFA/OTP are not automatic stops.
+- Optional expect= url_contains:… / text:… / ref_appears:@eN / dialog. Required on a lone submit/publish click or navigate. Not required when that submit is the last task_run step; the batch stops and returns the page. Links/tabs do not need expect. If page flags include captcha_widget, or the page is a QR sign-in or a passkey, call request_takeover and probe after the person finishes.
+- submit_secret: password, otp, or authenticator. Pass method and ref from probe. submission is fill, enter, or click; click also needs submit_ref. Never pass the secret. The person types it on the preview card.
+- request_takeover: captcha, qr, passkey, or a step the person must do on the page. reason is optional.
 
 Batch:
 - script: one page script after probe. click("保存") or click("button.primary") clicks. type("#q", "weather") types. select("状态", "完成") chooses an option. press("Enter"), scroll(600), and waitFor("下一步", 3000) stay in that same script. Optional name, kebab-case such as save-draft, stores a script that finishes. skill_list shows saved scripts. skill_run repeats one on the same site without another probe. The script must not read cookies, storage, or passwords, and must not type into a password or card field.
 - task_run, task_status, task_verify, list_flows; task_run runs a short ref sequence in one call, skips a full observe between steps, and returns one snapshot at the end. It stops early on navigate, submit, dialog, a URL change, a same-URL view change, or an unchanged submit. Do not observe again before the next batch; probe. Type steps support focused editable input after click, plus params.content_format="markdown" or top-level content_format="markdown"
 
-All page actions require session_id. First call browser(action="session_start") or browser(action="connect"). Same-page work is probe once, then one script. task_run remains for a short ref sequence. A single click or type still observes. Use persistent for normal work; isolated is clean debug only. Browser process lifetime is managed by the app, not by tool calls. eval, click_at, and screenshots are not part of the stable path. action=script is the sandboxed batch.`
+All page actions require session_id. First call browser(action="session_start") or browser(action="connect"). Same-page work is probe once, then one script. task_run remains for a short ref sequence. A single click or type still observes. Use persistent for normal work; isolated is clean debug only. Browser process lifetime is managed by the app, not by tool calls. eval, click_at, and screenshots are not part of the stable path. action=script is the sandboxed batch. The page stays in the MaClaw preview, not a separate window. Before paying, call browser(action="confirm_order", item, shop, address, amount) and wait; do not click pay and do not write the confirmation yourself. A password or one-time code uses submit_secret. Captcha, QR sign-in, and passkeys use request_takeover. Do not ask for the secret in chat. After the person finishes, probe before the next action.`
 
 var mergedBrowserInputSchema = map[string]interface{}{
 	"action":         map[string]string{"type": "string", "description": "Action name"},
@@ -74,6 +76,17 @@ var mergedBrowserInputSchema = map[string]interface{}{
 	"allow_popup":      map[string]string{"type": "boolean", "description": "session_start: allow new tabs, default false"},
 	"allow_download":   map[string]string{"type": "boolean", "description": "session_start: allow downloads, default false"},
 	"allow_upload":     map[string]string{"type": "boolean", "description": "session_start: allow set_files, default false"},
+	"item":             map[string]string{"type": "string", "description": "confirm_order: goods the person should review, such as name and quantity"},
+	"shop":             map[string]string{"type": "string", "description": "confirm_order: shop name"},
+	"address":          map[string]string{"type": "string", "description": "confirm_order: ship-to address already on the page"},
+	"amount":           map[string]string{"type": "string", "description": "confirm_order: payable total including shipping, such as 9.98"},
+	"detail":           map[string]string{"type": "string", "description": "confirm_order: short non-secret note, such as shipping time. Never a password."},
+	"snapshot_id":     map[string]string{"type": "string", "description": "Snapshot id from probe. submit_secret uses it to find ref."},
+	"method":          map[string]string{"type": "string", "description": "submit_secret: password, otp, or authenticator. Never put the secret in this field."},
+	"digits":          map[string]string{"type": "number", "description": "submit_secret: code length from 4 to 12. Omit it for a password, or when the page does not show a length."},
+	"submission":      map[string]string{"type": "string", "description": "submit_secret: fill (default), enter, or click. click also needs submit_ref."},
+	"submit_ref":      map[string]string{"type": "string", "description": "submit_secret: the login, continue, or verify button when submission is click."},
+	"reason":          map[string]string{"type": "string", "description": "request_takeover: captcha, qr, passkey, or login."},
 }
 
 func dispatchMergedBrowser(registry *ToolRegistry, args map[string]interface{}) string {
@@ -84,6 +97,15 @@ func dispatchMergedBrowser(registry *ToolRegistry, args map[string]interface{}) 
 	actionText = strings.TrimSpace(actionText)
 	if actionText == "" {
 		return "missing browser action; call browser(action=\"session_start\") first"
+	}
+	if strings.EqualFold(actionText, "confirm_order") {
+		return presentBrowserConfirmOrder(args)
+	}
+	if strings.EqualFold(actionText, "submit_secret") {
+		return presentBrowserSubmitSecret(args)
+	}
+	if strings.EqualFold(actionText, "request_takeover") {
+		return presentBrowserTakeover(args)
 	}
 
 	action := normalizeBrowserToolAction(actionText)

@@ -76,6 +76,10 @@ if not defined REMOTE_PASS (
   set "PAUSE_ON_EXIT=1"
 )
 
+rem Intranet node routes exist only when the Hub process has this set.
+rem deploy_all writes /data/soft/hub/edge.env and the start scripts load it.
+if not defined HUB_EDGE_NODES set "HUB_EDGE_NODES=on"
+
 "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_PATH%" %PS_ARGS%
 set "EXIT_CODE=%ERRORLEVEL%"
 
@@ -89,6 +93,8 @@ exit /b %EXIT_CODE%
 :usage
 echo Usage:
 echo   deploy_all.cmd [full^|hubcenter-only^|hub-only] [--no-check] [--clean-hubcenter-db] [--brand rapidai^|tigerclaw] [--skip-targets hc-3,hubs2.maclaw.top,hub2.maclaw.top]
+echo.
+echo   HUB_EDGE_NODES defaults to on for this deploy. Set HUB_EDGE_NODES=off to leave the intranet node routes unregistered.
 echo.
 echo   --clean-hubcenter-db  Backup and rebuild remote HubCenter SQLite DB without ha_sync_ops/ha_applied_ops.
 exit /b 0

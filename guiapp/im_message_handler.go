@@ -94,7 +94,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// until this message is known to take the session. Skip host self-messages.
 	// A session-round wave is the same kind of host message: it must not
 	// cancel the timer that just started it.
-	if msg.Platform != "goal-continuation" && msg.Platform != unattendedWorkflowPlatform && msg.Platform != sessionRoundContinuationPlatform {
+	if msg.Platform != "goal-continuation" && msg.Platform != unattendedWorkflowPlatform && msg.Platform != sessionRoundContinuationPlatform && msg.Platform != githubRepoMaintPlatform {
 		h.noteInboundUserMessageForGoal(msg, trimmed)
 		h.cancelSessionRoundContinuation(msg.UserID)
 	}

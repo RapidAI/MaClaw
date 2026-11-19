@@ -4,6 +4,7 @@ import { localizeHubServiceReason, mnApproxAfter, mnDurationUnit } from "../../u
 import { normalizeLang } from "../../i18n/langSelect";
 import { mergeHubCreditGrants } from "../../utils/hubCredits";
 import { FetchProviderModels } from "../../../wailsjs/go/main/App";
+import { isQoderProvider } from "./providerLogos";
 import { effectiveAgentType } from "./userAgent";
 import { xaiGrokChatModelIds } from "../../config/providerCatalog";
 
@@ -413,12 +414,14 @@ export type ProviderProbeOutcome = { ok: boolean; latencyMs?: number; error?: st
  * shareable rather than showing "no models found".
  */
 export async function listProviderModelsForShare(provider: LLMProvider): Promise<string[]> {
-    const models = await FetchProviderModels(
+    const fetchArgs: [string, string, string, string, string?] = [
         provider.url || "",
         provider.key || "",
         provider.protocol || "openai",
         effectiveAgentType(provider),
-    );
+    ];
+    if (isQoderProvider(provider.name)) fetchArgs.push(provider.name);
+    const models = await FetchProviderModels(...fetchArgs);
     const ids = (models || [])
         .map((item: { id?: string } | null) => String(item?.id || "").trim())
         .filter(Boolean);

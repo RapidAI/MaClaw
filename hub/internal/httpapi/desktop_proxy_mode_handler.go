@@ -11,7 +11,7 @@ import (
 // writeProxyModeError maps desktop proxy mode errors; the rest go through
 // writeDesktopError.
 func writeProxyModeError(w http.ResponseWriter, err error) {
-	if errors.Is(err, desktoppool.ErrProxyModeLocked) {
+	if errors.Is(err, desktoppool.ErrProxyModeLocked) || errors.Is(err, desktoppool.ErrIntranetProxyDirect) {
 		writeError(w, http.StatusForbidden, "DESKTOP_PROXY_MODE_LOCKED", err.Error())
 		return
 	}

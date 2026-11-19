@@ -22,6 +22,15 @@ func TestDesktopScreenshotHandlerPassesOptionsAndGeometry(t *testing.T) {
 			return
 		}
 		_ = json.NewDecoder(r.Body).Decode(&got)
+		if got["window"] != nil {
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("X-Desktop-Screen-Size", "8x6")
+			w.Header().Set("X-Desktop-Image-Size", "8x6")
+			w.Header().Set("X-Desktop-Shot-Region", "0,0,8,6")
+			w.Header().Set("X-Desktop-Shot-Scale", "1.000000")
+			_, _ = w.Write([]byte("\x89PNG\r\n\x1a\nwindow"))
+			return
+		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("X-Desktop-Screen-Size", "1280x800")
 		w.Header().Set("X-Desktop-Image-Size", "1024x640")
@@ -45,6 +54,13 @@ func TestDesktopScreenshotHandlerPassesOptionsAndGeometry(t *testing.T) {
 	}
 	if got["max_width"] != float64(1024) || got["format"] != "jpeg" || got["quality"] != float64(80) {
 		t.Fatalf("docker saw %v", got)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/desktop-services/screenshot", strings.NewReader(`{"tenant_id":"tenant-a","user_id":"alice","window":"NEON SERPENT"}`))
+	req.Header.Set("Authorization", "Bearer desktop-api-token")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || got["window"] != "NEON SERPENT" {
+		t.Fatalf("status=%d docker saw %v", w.Code, got)
 	}
 }
 

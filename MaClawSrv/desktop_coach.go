@@ -484,6 +484,13 @@ func desktopVerifiedResult(p *desktopProgress, out string) bool {
 	if u == "" || desktopEditURLRe.MatchString(strings.SplitN(u, "?", 2)[0]) {
 		return false
 	}
+	// The editor still shows the text that was filled. CSDN's markdown
+	// editor is https://editor.csdn.net/md/ — the path is /md/, so a path
+	// check does not see it, and the reply then says that URL is the post.
+	// A creator console is never the public article.
+	if browser.PublicPostURL(u) == "" || browser.PublishURLIsBareOrigin(u) {
+		return false
+	}
 	if p.writeURL != "" && strings.SplitN(u, "#", 2)[0] == strings.SplitN(p.writeURL, "#", 2)[0] {
 		return false
 	}

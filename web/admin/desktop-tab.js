@@ -44,6 +44,7 @@
       userEmpty: '\u8fd8\u6ca1\u6709\u53ef\u68c0\u67e5\u7684\u7528\u6237\u3002\u5148\u5728\u5f00\u901a\u8303\u56f4\u91cc\u6388\u6743\uff0c\u5e76\u5728\u4e0a\u65b9\u5206\u914d Docker \u670d\u52a1',
       server: 'Docker \u670d\u52a1',
       assign: '\u4fdd\u5b58\u5206\u914d',
+      relayDelay: '\u8fd9\u4e2a\u7ec4\u5408\u5ef6\u8fdf\u8f83\u9ad8',
       desktop: '\u68c0\u67e5\u684c\u9762',
       desktopHint: '\u6309\u8fd9\u4e2a\u7528\u6237\u7684\u5206\u914d\u62c9\u8d77\u6216\u505c\u6b62\u684c\u9762\u3002\u53ea\u5217\u51fa\u5f00\u901a\u8303\u56f4\u91cc\u5df2\u6388\u6743\u3001\u4e14\u5df2\u5206\u914d Docker \u670d\u52a1\u7684\u7528\u6237\u3002',
       userId: '\u7528\u6237',
@@ -56,6 +57,7 @@
       viewNewTab: '\u65b0\u7a97\u53e3\u6253\u5f00',
       viewHold: '\u5173\u95ed\u6b64\u7a97\u53e3\u4e0d\u4f1a\u505c\u6b62\u684c\u9762\uff1a\u684c\u9762\u4f1a\u4fdd\u6301\u8fd0\u884c 30 \u5206\u949f\uff0c\u4e5f\u53ef\u4ee5\u76f4\u63a5\u70b9\u300c\u505c\u6b62\u684c\u9762\u300d\u3002',
       remove: '\u5220\u9664',
+      nodeRotate: '\u8f6e\u6362\u5bc6\u94a5',
       empty: '\u8fd8\u6ca1\u6709 Docker \u670d\u52a1\u3002',
       saved: '\u5df2\u4fdd\u5b58',
       started: '\u5df2\u8bf7\u6c42\u521b\u5efa\u684c\u9762',
@@ -72,7 +74,34 @@
       assignedDelete: '\u5148\u53d6\u6d88\u5206\u914d\uff0c\u518d\u5220\u9664\u8fd9\u4e2a\u670d\u52a1',
       alreadyAssigned: '\u8fd9\u4e2a\u8303\u56f4\u5df2\u7ecf\u5206\u914d\u8fc7\u4e86',
       notAssigned: '\u8fd9\u4e2a\u7528\u6237\u8fd8\u6ca1\u6709\u5206\u914d\u5230 Docker \u670d\u52a1',
-      failed: '\u64cd\u4f5c\u5931\u8d25'
+      failed: '\u64cd\u4f5c\u5931\u8d25',
+      nodeDoc: '\u5185\u7f51\u8282\u70b9\u4e0d\u8981\u586b\u4e0a\u9762\u7684\u5730\u5740\u3002\u628a\u8fd9\u4efd\u8bf4\u660e\u4ea4\u7ed9\u5185\u7f51\u673a\u5668\u4e0a\u7684 agent\uff1a',
+      nodeName: '\u5185\u7f51\u8282\u70b9\u540d\u79f0',
+      needNodeName: '\u8bf7\u586b\u5199\u8282\u70b9\u540d\u79f0',
+      nodeCode: '\u751f\u6210\u5185\u7f51\u6ce8\u518c\u7801',
+      nodeCodeReady: '\u628a\u6ce8\u518c\u7801\u4ea4\u7ed9\u5185\u7f51 agent\uff0c3 \u5c0f\u65f6\u5185\u6709\u6548\uff0c\u53ea\u80fd\u7528\u4e00\u6b21\uff1a',
+      nodesTitle: 'Bot \u8282\u70b9',
+      nodesHint: '\u516c\u7f51\u8282\u70b9\u7528\u4e0b\u9762\u7684\u670d\u52a1\u5730\u5740\u6dfb\u52a0\u3002\u5185\u7f51\u8282\u70b9\u53ea\u53d1\u6ce8\u518c\u7801\u3002',
+      nodeEmpty: '\u8fd8\u6ca1\u6709\u5185\u7f51\u8282\u70b9\u3002',
+      nodeOnline: '\u5728\u7ebf',
+      nodeOffline: '\u79bb\u7ebf',
+      nodeDesktop: 'desktopd',
+      nodeSrv: 'srv',
+      nodeVersion: '\u7248\u672c',
+      nodePersonal: '\u4e2a\u4eba',
+      nodeOwner: '\u6ce8\u518c\u8d26\u53f7',
+      nodeIssuer: '\u53d1\u7801\u7ba1\u7406\u5458',
+      nodeRegisteredAt: '\u6ce8\u518c\u65f6\u95f4',
+      nodeLastSeen: '\u6700\u8fd1\u5728\u7ebf',
+      nodeDirect: '\u76f4\u8fde',
+      confirmDeleteNode: '\u5220\u9664\u8fd9\u4e2a Bot \u8282\u70b9\uff1f',
+      nodeSettings: '\u8bbe\u7f6e',
+      nodeOwnerScope: '\u4f7f\u7528\u8303\u56f4',
+      nodeOwnerShared: '\u5171\u4eab\uff08\u5206\u914d\u7ed9\u4efb\u4f55\u5e10\u6237\uff09',
+      nodeOwnerExclusive: '\u72ec\u4eab',
+      serverShared: '\u5171\u7528',
+      serverPersonal: '\u72ec\u4eab',
+      exclusiveAssign: '\u8be5\u670d\u52a1\u662f\u72ec\u4eab\u684c\u9762\uff0c\u53ea\u80fd\u5206\u914d\u7ed9\u5b83\u7684\u5e10\u53f7\uff0c\u6216\u5728\u8282\u70b9\u8bbe\u7f6e\u91cc\u6539\u4e3a\u5171\u4eab'
     },
     en: {
       servers: 'Docker services',
@@ -104,6 +133,7 @@
       userEmpty: 'No one to check yet. Enable a user or department under Who can use bots, and assign a Docker service above',
       server: 'Docker service',
       assign: 'Save assignment',
+      relayDelay: 'This pairing goes through the Hub, so it is slower',
       desktop: 'Check a desktop',
       desktopHint: 'Starts or stops a desktop using the service assigned to this user. Only users enabled under Who can use bots who also have a Docker service are listed.',
       userId: 'User',
@@ -116,6 +146,7 @@
       viewNewTab: 'Open in new tab',
       viewHold: 'Closing this window does not stop the desktop. It stays up for 30 minutes, or until you press Stop desktop.',
       remove: 'Delete',
+      nodeRotate: 'New secret',
       empty: 'No Docker services yet.',
       saved: 'Saved',
       started: 'Create request sent',
@@ -132,11 +163,45 @@
       assignedDelete: 'Remove its assignments before deleting this service',
       alreadyAssigned: 'This scope already has an assignment',
       notAssigned: 'No Docker service is assigned to this user',
-      failed: 'Request failed'
+      failed: 'Request failed',
+      nodeDoc: 'An intranet node does not use the address above. Give this page to the agent on that machine:',
+      nodeName: 'Intranet node name',
+      needNodeName: 'Enter a node name',
+      nodeCode: 'Issue an intranet code',
+      nodeCodeReady: 'Give this code to the intranet agent. It works once, for 3 hours:',
+      nodesTitle: 'Bot nodes',
+      nodesHint: 'Add a public node with the service address below. An intranet node only gets a code. Give that code to the agent; do not type it into a service URL.',
+      nodeEmpty: 'No intranet nodes yet.',
+      nodeOnline: 'Online',
+      nodeOffline: 'Offline',
+      nodeDesktop: 'desktopd',
+      nodeSrv: 'srv',
+      nodeVersion: 'Version',
+      nodePersonal: 'Personal',
+      nodeOwner: 'Registered by',
+      nodeIssuer: 'Code issued by',
+      nodeRegisteredAt: 'Registered',
+      nodeLastSeen: 'Last seen',
+      nodeDirect: 'Direct',
+      confirmDeleteNode: 'Delete this Bot node? Cancel its assignment first.',
+      nodeSettings: 'Settings',
+      nodeOwnerScope: 'Who can use it',
+      nodeOwnerShared: 'Shared — assigned accounts',
+      nodeOwnerExclusive: 'Personal',
+      serverShared: 'Shared',
+      serverPersonal: 'Personal',
+      exclusiveAssign: 'This service is exclusive to one account - assign it to that account, or share the node first.'
     }
   };
 
-  function text() { return copy[global.currentLang === 'zh' ? 'zh' : 'en']; }
+  function text() {
+    var lang = global.hubAdminLang ? global.hubAdminLang() : (global.currentLang === 'zh' ? 'zh' : 'en');
+    if (lang === 'mn') {
+      var mn = global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.DESKTOP;
+      return Object.assign({}, copy.en, mn || {});
+    }
+    return copy[lang] || copy.en;
+  }
   function byID(id) { return document.getElementById(id); }
   function host() { return byID('botDesktopHost'); }
   function api(path, opts) {
@@ -151,9 +216,10 @@
   }
   function messageOf(err) {
     var raw = err && err.message ? err.message : '';
-    if (raw.indexOf('server is still assigned') !== -1) return text().assignedDelete;
+    if (raw.indexOf('server is still assigned') !== -1 || raw.indexOf('cancel the assignment') !== -1) return text().assignedDelete;
     if (raw.indexOf('assignment already exists') !== -1) return text().alreadyAssigned;
     if (raw.indexOf('no docker service is assigned') !== -1) return text().notAssigned;
+    if (raw.indexOf('exclusive to') !== -1) return text().exclusiveAssign;
     if (raw.indexOf('memory is invalid') !== -1 || raw.indexOf('image is invalid') !== -1 || raw.indexOf('cpus is invalid') !== -1 || raw.indexOf('shm_size is invalid') !== -1) return text().badResources;
     if (raw.indexOf('base_url is invalid') !== -1) return text().badUrl;
     if (raw.indexOf('vnc') !== -1) return text().viewMissing;
@@ -171,6 +237,20 @@
     var t = text();
     setLabel('desktopServersTitle', t.servers);
     setLabel('desktopHint', t.hint);
+    setLabel('desktopNodesTitle', t.nodesTitle);
+    setLabel('desktopNodesHint', t.nodesHint);
+    setLabel('desktopNodeDocLabel', t.nodeDoc);
+    setLabel('desktopNodeNameLabel', t.nodeName);
+    setLabel('desktopNodeCode', t.nodeCode);
+    setLabel('desktopNodeEditNameLabel', t.nodeName);
+    setLabel('desktopNodeEditOwnerLabel', t.nodeOwnerScope);
+    setLabel('desktopNodeEditSave', t.saveEdit);
+    setLabel('desktopNodeEditCancel', t.cancel);
+    var nodeDoc = byID('desktopNodeDoc');
+    if (nodeDoc && global.location) {
+      nodeDoc.href = global.location.origin + '/docs/botnode';
+      nodeDoc.textContent = nodeDoc.href;
+    }
     setLabel('desktopNameLabel', t.name);
     setLabel('desktopUrlLabel', t.url);
     setLabel('desktopTokenLabel', t.token);
@@ -201,6 +281,7 @@
     }
     fillTargets();
     render(panel._view || { servers: [], assignments: [] });
+    if (panel._nodes) renderNodes(panel._nodes);
     applyVncI18n();
   }
 
@@ -209,11 +290,27 @@
     if (!panel || panel.dataset.ready === '1') return;
     panel.dataset.ready = '1';
     panel.innerHTML = ''
-      + '<section><h3 id="desktopServersTitle"></h3><p id="desktopHint"></p>'
-      + '<label id="desktopNameLabel" for="desktopName"></label><input id="desktopName" maxlength="80" autocomplete="off">'
-      + '<label id="desktopUrlLabel" for="desktopUrl"></label><input id="desktopUrl" placeholder="http://docker-host:18081" autocomplete="off" spellcheck="false">'
-      + '<label id="desktopTokenLabel" for="desktopToken"></label><input id="desktopToken" type="password" autocomplete="new-password">'
-      + '<p id="desktopTokenHint"></p>'
+      + '<section id="desktopNodeBox" class="item bot-section" hidden>'
+      + '<div class="item-head">' + (global.botSecIcon ? global.botSecIcon('nodes') : '') + '<div><h3 class="item-title" id="desktopNodesTitle"></h3><p class="item-meta" id="desktopNodesHint"></p></div></div>'
+      + '<p class="bot-hint"><span id="desktopNodeDocLabel"></span> <a id="desktopNodeDoc" href="/docs/botnode" target="_blank" rel="noopener">/docs/botnode</a></p>'
+      + '<div class="bot-field"><label id="desktopNodeNameLabel" for="desktopNodeName"></label>'
+      + '<div class="bot-node-enroll"><input id="desktopNodeName" maxlength="80" autocomplete="off">'
+      + '<button type="button" class="btn-secondary" id="desktopNodeCode"></button></div></div>'
+      + '<p class="bot-hint" id="desktopNodeCodeOut" hidden></p>'
+      + '<div id="desktopNodeSettings" class="bot-form" hidden>'
+      + '<div class="bot-field"><label id="desktopNodeEditNameLabel" for="desktopNodeEditName"></label><input id="desktopNodeEditName" maxlength="80" autocomplete="off"></div>'
+      + '<div class="bot-field"><label id="desktopNodeEditOwnerLabel" for="desktopNodeEditOwner"></label><select id="desktopNodeEditOwner"></select></div>'
+      + '<div class="bot-actions"><button type="button" class="btn-primary" id="desktopNodeEditSave"></button>'
+      + '<button type="button" class="btn-secondary" id="desktopNodeEditCancel"></button></div></div>'
+      + '<div id="desktopNodeList"></div></section>'
+      + '<section class="item bot-section">'
+      + '<div class="item-head">' + (global.botSecIcon ? global.botSecIcon('services') : '') + '<div><h3 class="item-title" id="desktopServersTitle"></h3><p class="item-meta" id="desktopHint"></p></div></div>'
+      + '<div class="bot-form">'
+      + '<div class="bot-field"><label id="desktopNameLabel" for="desktopName"></label><input id="desktopName" maxlength="80" autocomplete="off"></div>'
+      + '<div class="bot-field"><label id="desktopUrlLabel" for="desktopUrl"></label><input id="desktopUrl" placeholder="http://docker-host:18081" autocomplete="off" spellcheck="false"></div>'
+      + '<div class="bot-field bot-field-wide"><label id="desktopTokenLabel" for="desktopToken"></label><input id="desktopToken" type="password" autocomplete="new-password">'
+      + '<p class="bot-field-note" id="desktopTokenHint"></p></div>'
+      + '</div>'
       + '<div class="bot-fields">'
       + '<div><label id="desktopImageLabel" for="desktopImage"></label><input id="desktopImage" autocomplete="off"></div>'
       + '<div><label id="desktopMemoryLabel" for="desktopMemory"></label><input id="desktopMemory" autocomplete="off"></div>'
@@ -223,22 +320,35 @@
       + '<div class="bot-actions"><button type="button" class="btn-primary" id="desktopAdd"></button>'
       + '<button type="button" class="btn-secondary" id="desktopCancel" hidden></button></div>'
       + '<div id="desktopServerList"></div></section>'
-      + '<section><h3 id="desktopAssignTitle"></h3><p id="desktopAssignHint"></p>'
-      + '<label id="desktopScopeLabel" for="desktopScope"></label><select id="desktopScope"><option value="global"></option><option value="department"></option><option value="user"></option></select>'
-      + '<label id="desktopTargetLabel" for="desktopTarget"></label><select id="desktopTarget"></select>'
-      + '<label id="desktopServerLabel" for="desktopServer"></label><select id="desktopServer"></select>'
+      + '<section class="item bot-section">'
+      + '<div class="item-head">' + (global.botSecIcon ? global.botSecIcon('assign') : '') + '<div><h3 class="item-title" id="desktopAssignTitle"></h3><p class="item-meta" id="desktopAssignHint"></p></div></div>'
+      + '<div class="bot-form bot-form-3">'
+      + '<div class="bot-field"><label id="desktopScopeLabel" for="desktopScope"></label><select id="desktopScope"><option value="global"></option><option value="department"></option><option value="user"></option></select></div>'
+      + '<div class="bot-field"><label id="desktopTargetLabel" for="desktopTarget"></label><select id="desktopTarget"></select></div>'
+      + '<div class="bot-field"><label id="desktopServerLabel" for="desktopServer"></label><select id="desktopServer"></select></div>'
+      + '</div>'
+      + '<p class="bot-hint" id="desktopRelayHint"></p>'
       + '<div class="bot-actions"><button type="button" class="btn-primary" id="desktopAssign"></button></div><div id="desktopAssignList"></div></section>'
-      + '<section><h3 id="desktopRunTitle"></h3><p id="desktopRunHint"></p>'
-      + '<label id="desktopUserLabel" for="desktopUser"></label><select id="desktopUser"></select>'
+      + '<section class="item bot-section">'
+      + '<div class="item-head">' + (global.botSecIcon ? global.botSecIcon('run') : '') + '<div><h3 class="item-title" id="desktopRunTitle"></h3><p class="item-meta" id="desktopRunHint"></p></div></div>'
+      + '<div class="bot-form"><div class="bot-field"><label id="desktopUserLabel" for="desktopUser"></label><select id="desktopUser"></select></div></div>'
       + '<div class="bot-actions"><button type="button" class="btn-secondary" id="desktopStart"></button><button type="button" class="btn-secondary" id="desktopStop"></button><button type="button" class="btn-secondary" id="desktopView"></button></div><p id="desktopRunStatus"></p></section>';
     byID('desktopImage').value = defaults.image;
     byID('desktopMemory').value = defaults.memory;
     byID('desktopCpus').value = defaults.cpus;
     byID('desktopShm').value = defaults.shm;
     byID('desktopAdd').addEventListener('click', saveServer);
+    byID('desktopNodeCode').addEventListener('click', issueNodeCode);
+    byID('desktopNodeList').addEventListener('click', onNodeListClick);
+    byID('desktopNodeEditSave').addEventListener('click', saveNodeSettings);
+    byID('desktopNodeEditCancel').addEventListener('click', closeNodeSettings);
     byID('desktopCancel').addEventListener('click', function () { clearForm(); });
     byID('desktopAssign').addEventListener('click', addAssignment);
-    byID('desktopScope').addEventListener('change', fillTargets);
+    byID('desktopServer').addEventListener('change', relayHint);
+    byID('desktopScope').addEventListener('change', function () {
+      fillTargets();
+      relayHint();
+    });
     byID('desktopStart').addEventListener('click', function () { runDesktop(true); });
     byID('desktopStop').addEventListener('click', function () { runDesktop(false); });
     byID('desktopView').addEventListener('click', viewDesktop);
@@ -281,10 +391,30 @@
     if (panel && panel._view) renderAssignments(panel._view);
   }
 
+  function sameStoredUrl(raw, stored) {
+    return String(raw || '').trim().replace(/\/+$/, '') === String(stored || '').trim().replace(/\/+$/, '');
+  }
+
+  // A node's own address is filled in when that service is edited. A new
+  // service, or a different virtual host typed over it, is still rejected.
+  function keepsNodeUrl(raw) {
+    if (!editingId) return false;
+    var panel = host();
+    var servers = (panel && panel._view && panel._view.servers) || [];
+    for (var i = 0; i < servers.length; i++) {
+      var server = servers[i];
+      if (!server || server.id !== editingId || !server.node_id) continue;
+      return sameStoredUrl(raw, server.base_url);
+    }
+    return false;
+  }
+
   function validServiceUrl(value) {
     var raw = String(value || '').trim();
     var parsed;
     try { parsed = new URL(raw); } catch (err) { return false; }
+    var host = String(parsed.hostname || '').toLowerCase().replace(/\.+$/, '');
+    if ((host === 'node.invalid' || host.endsWith('.node.invalid')) && !keepsNodeUrl(raw)) return false;
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.host && !parsed.username && !parsed.password;
   }
 
@@ -347,8 +477,166 @@
 
   function load() {
     mount();
-    return api('/api/admin/desktop-services').then(function (view) {
+    var services = api('/api/admin/desktop-services').then(function (view) {
       render(view || { servers: [], assignments: [] });
+    }).catch(function (err) { showToast(messageOf(err), 'error'); });
+    return Promise.all([services, loadNodes()]);
+  }
+
+  function showNodeBox(on) {
+    var box = byID('desktopNodeBox');
+    if (box) box.hidden = !on;
+  }
+
+  function loadNodes() {
+    return api('/api/admin/bots/nodes').then(function (view) {
+      showNodeBox(true);
+      renderNodes(view || {});
+      relayHint();
+    }, function () {
+      showNodeBox(false);
+    });
+  }
+
+  function nodeTime(value) {
+    var t = new Date(value);
+    if (isNaN(t.getTime()) || t.getFullYear() < 2000) return '';
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate()) + ' ' + pad(t.getHours()) + ':' + pad(t.getMinutes());
+  }
+
+  // A personally registered node names its owner by user id. The org list
+  // turns that into the account (email or phone) the admin recognizes.
+  function nodeOwnerLabel(node, users) {
+    var id = String(node && node.owner_user_id || '').trim();
+    if (!id) return '';
+    for (var i = 0; i < users.length; i += 1) {
+      if (users[i] && users[i].id === id) return String(users[i].label || id);
+    }
+    return id;
+  }
+
+  function renderNodes(view) {
+    var panel = host();
+    if (panel) panel._nodes = view || { nodes: [] };
+    var list = byID('desktopNodeList');
+    if (!list) return;
+    var nodes = Array.isArray(view && view.nodes) ? view.nodes : [];
+    var t = text();
+    if (!nodes.length) {
+      list.innerHTML = '<p class="bot-empty">' + escapeHtml(t.nodeEmpty) + '</p>';
+      return;
+    }
+    var users = orgChoices().users || [];
+    list.innerHTML = '<div class="bot-node-list">' + nodes.map(function (node) {
+      node = node || {};
+      var online = !!node.online;
+      var tags = [];
+      if (node.owner_user_id) tags.push('<span class="bot-node-tag bot-node-tag-own">' + escapeHtml(t.nodePersonal) + '</span>');
+      if (node.has_desktopd) tags.push('<span class="bot-node-tag">' + escapeHtml(t.nodeDesktop) + '</span>');
+      if (node.has_srv) tags.push('<span class="bot-node-tag">' + escapeHtml(t.nodeSrv) + '</span>');
+      if (node.version) tags.push('<span class="bot-node-tag bot-node-tag-dim">' + escapeHtml(t.nodeVersion + ' ' + node.version) + '</span>');
+      var owner = nodeOwnerLabel(node, users);
+      var sub = [];
+      if (owner) sub.push('<span>' + escapeHtml(t.nodeOwner) + ' <strong>' + escapeHtml(owner) + '</strong></span>');
+      else if (node.issued_by) sub.push('<span>' + escapeHtml(t.nodeIssuer) + ' <strong>' + escapeHtml(node.issued_by) + '</strong></span>');
+      var created = nodeTime(node.created_at);
+      if (created) sub.push('<span>' + escapeHtml(t.nodeRegisteredAt) + ' ' + escapeHtml(created) + '</span>');
+      var seen = nodeTime(node.last_seen);
+      if (seen) sub.push('<span>' + escapeHtml(t.nodeLastSeen) + ' ' + escapeHtml(seen) + '</span>');
+      if (node.direct_base) sub.push('<span>' + escapeHtml(t.nodeDirect) + ' ' + escapeHtml(node.direct_base) + '</span>');
+      var letter = String(node.name || node.id || '?').trim().charAt(0).toUpperCase() || '?';
+      return '<div class="bot-node-row"' + (online ? ' data-online="1"' : '') + '>'
+        + '<span class="bot-node-avatar" aria-hidden="true">' + escapeHtml(letter) + '</span>'
+        + '<div class="bot-node-main"><div class="bot-node-title">'
+        + '<span class="bot-node-name" title="' + escapeHtml(node.id || '') + '">' + escapeHtml(node.name || node.id) + '</span>'
+        + '<span class="bot-node-state' + (online ? ' bot-node-state-on' : '') + '">' + escapeHtml(online ? t.nodeOnline : t.nodeOffline) + '</span>'
+        + tags.join('')
+        + '</div>'
+        + (sub.length ? '<div class="bot-node-sub">' + sub.join('<span class="bot-node-sep">\u00b7</span>') + '</div>' : '')
+        + '</div>'
+        + '<div class="bot-actions">'
+        + '<button type="button" class="btn-ghost" data-node-settings="' + escapeHtml(node.id) + '">' + escapeHtml(t.nodeSettings) + '</button>'
+        + '<button type="button" class="btn-ghost" data-node-rotate="' + escapeHtml(node.id) + '">' + escapeHtml(t.nodeRotate) + '</button>'
+        + '<button type="button" class="btn-danger" data-node-delete="' + escapeHtml(node.id) + '">' + escapeHtml(t.remove) + '</button></div></div>';
+    }).join('') + '</div>';
+  }
+
+  var editingNodeID = null;
+
+  function openNodeSettings(id) {
+    var nodes = (host() && host()._nodes && host()._nodes.nodes) || [];
+    var node = null;
+    for (var i = 0; i < nodes.length; i += 1) {
+      if (nodes[i] && nodes[i].id === id) node = nodes[i];
+    }
+    var box = byID('desktopNodeSettings');
+    var name = byID('desktopNodeEditName');
+    var owner = byID('desktopNodeEditOwner');
+    if (!node || !box || !name || !owner) return;
+    editingNodeID = id;
+    box.hidden = false;
+    name.value = node.name || '';
+    var t = text();
+    var users = orgChoices().users || [];
+    owner.innerHTML = '<option value="">' + escapeHtml(t.nodeOwnerShared) + '</option>'
+      + users.map(function (u) {
+        return '<option value="' + escapeHtml(u.id) + '">' + escapeHtml(t.nodeOwnerExclusive + ' ' + (u.label || u.id)) + '</option>';
+      }).join('');
+    owner.value = String(node.owner_user_id || '');
+    if (node.owner_user_id && owner.value !== node.owner_user_id) {
+      owner.innerHTML += '<option value="' + escapeHtml(node.owner_user_id) + '">' + escapeHtml(t.nodeOwnerExclusive + ' ' + node.owner_user_id) + '</option>';
+      owner.value = node.owner_user_id;
+    }
+  }
+
+  function closeNodeSettings() {
+    editingNodeID = null;
+    var box = byID('desktopNodeSettings');
+    if (box) box.hidden = true;
+  }
+
+  function saveNodeSettings() {
+    var id = editingNodeID;
+    if (!id) return;
+    var name = String(byID('desktopNodeEditName').value || '').trim();
+    if (!name) {
+      showToast(text().needNodeName, 'error');
+      return;
+    }
+    var owner = byID('desktopNodeEditOwner').value;
+    api('/api/admin/bots/nodes/' + encodeURIComponent(id) + '/settings', {
+      method: 'POST',
+      body: JSON.stringify({ name: name, owner_user_id: owner })
+    }).then(function () {
+      closeNodeSettings();
+      return load();
+    }).catch(function (err) { showToast(messageOf(err), 'error'); });
+  }
+
+  function onNodeListClick(event) {
+    var button = event && event.target;
+    var settings = button && button.getAttribute && button.getAttribute('data-node-settings');
+    if (settings) {
+      openNodeSettings(settings);
+      return;
+    }
+    var rotate = button && button.getAttribute && button.getAttribute('data-node-rotate');
+    if (rotate) {
+      api('/api/admin/bots/nodes/' + encodeURIComponent(rotate) + '/code', { method: 'POST', body: '{}' }).then(function (out) {
+        var el = byID('desktopNodeCodeOut');
+        if (!el) return;
+        el.hidden = false;
+        el.innerHTML = escapeHtml(text().nodeCodeReady) + ' <code>' + escapeHtml(out && out.code ? out.code : '') + '</code>';
+      }).catch(function (err) { showToast(messageOf(err), 'error'); });
+      return;
+    }
+    var id = button && button.getAttribute && button.getAttribute('data-node-delete');
+    if (!id) return;
+    var ask = global.confirm;
+    if (typeof ask === 'function' && !ask(text().confirmDeleteNode)) return;
+    api('/api/admin/bots/nodes/' + encodeURIComponent(id), { method: 'DELETE' }).then(function () {
+      return loadNodes();
     }).catch(function (err) { showToast(messageOf(err), 'error'); });
   }
 
@@ -376,10 +664,16 @@
     if (list) {
       var assignedIds = {};
       (view.assignments || []).forEach(function (item) { if (item && item.server_id) assignedIds[item.server_id] = true; });
+      var orgUsers = orgChoices().users || [];
       list.innerHTML = servers.length ? servers.map(function (server) {
         var token = server.token_set ? text().tokenSet : text().tokenMissing;
         var inUse = !!assignedIds[server.id];
-        return '<div class="bot-row"><div><strong>' + escapeHtml(server.name) + '</strong><div>' + escapeHtml(server.base_url) + '</div>'
+        var ownTag = server.owner_user_id
+          ? text().serverPersonal + ' ' + nodeOwnerLabel(server, orgUsers)
+          : text().serverShared;
+        return '<div class="bot-row"><div><strong>' + escapeHtml(server.name) + '</strong>'
+          + ' <span class="bot-node-tag' + (server.owner_user_id ? ' bot-node-tag-own' : '') + '">' + escapeHtml(ownTag) + '</span>'
+          + '<div>' + escapeHtml(server.base_url) + '</div>'
           + '<small>' + escapeHtml(server.image) + ' / ' + escapeHtml(server.memory) + ' / ' + escapeHtml(server.cpus) + ' CPU / shm ' + escapeHtml(server.shm_size) + ' / ' + escapeHtml(token) + '</small></div>'
           + '<div class="bot-actions"><button type="button" class="btn-secondary" data-desktop-edit="' + escapeHtml(server.id) + '">' + escapeHtml(text().edit) + '</button>'
           + '<button type="button" class="btn-danger" data-desktop-delete="' + escapeHtml(server.id) + '"'
@@ -399,8 +693,38 @@
         return '<option value="' + escapeHtml(server.id) + '">' + escapeHtml(server.name) + '</option>';
       }).join('');
       if (selected) select.value = selected;
+      if (!select.value && servers[0]) select.value = servers[0].id;
     }
     renderAssignments(view);
+    relayHint();
+  }
+
+  function relayHint() {
+    var hint = byID('desktopRelayHint');
+    if (!hint) return;
+    var panel = host();
+    var view = (panel && panel._view) || {};
+    var nodes = (panel && panel._nodes && panel._nodes.nodes) || [];
+    var selected = byID('desktopServer') && byID('desktopServer').value;
+    var server = null;
+    (view.servers || []).forEach(function (item) {
+      if (item && item.id === selected) server = item;
+    });
+    if (!server || !server.node_id) {
+      hint.textContent = '';
+      return;
+    }
+    // Only a user assignment moves that user's bots onto the node's srv.
+    // Everyone and department assignments keep the public connection, so
+    // the desktop and the bots stay on different networks.
+    var scope = byID('desktopScope') && byID('desktopScope').value;
+    var local = false;
+    if (scope === 'user') {
+      nodes.forEach(function (node) {
+        if (node && node.id === server.node_id && node.has_srv) local = true;
+      });
+    }
+    hint.textContent = local ? '' : text().relayDelay;
   }
 
   function renderAssignments(view) {
@@ -429,6 +753,27 @@
       cpus: byID('desktopCpus').value.trim(),
       shm_size: byID('desktopShm').value.trim()
     };
+  }
+
+  function issueNodeCode() {
+    var name = byID('desktopNodeName').value.trim();
+    if (!name) {
+      showToast(text().needNodeName, 'error');
+      byID('desktopNodeName').focus();
+      return;
+    }
+    var button = byID('desktopNodeCode');
+    if (button) button.disabled = true;
+    api('/api/admin/bots/nodes/codes', { method: 'POST', body: JSON.stringify({ name: name }) }).then(function (out) {
+      var el = byID('desktopNodeCodeOut');
+      if (!el) return;
+      el.hidden = false;
+      el.innerHTML = escapeHtml(text().nodeCodeReady) + ' <code>' + escapeHtml(out && out.code ? out.code : '') + '</code>';
+    }).catch(function (err) {
+      showToast(messageOf(err), 'error');
+    }).then(function () {
+      if (button) button.disabled = false;
+    });
   }
 
   function saveServer() {
@@ -490,12 +835,10 @@
 
   function validResources(body) {
     if (body.image && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}$/.test(body.image)) return false;
-    if (body.memory && !/^[1-9][0-9]{0,6}([kmg]i?b?)?$/i.test(body.memory)) return false;
-    if (body.shm_size && !/^[1-9][0-9]{0,6}([kmg]i?b?)?$/i.test(body.shm_size)) return false;
-    if (body.cpus) {
-      var cpus = Number(body.cpus);
-      if (!isFinite(cpus) || cpus <= 0 || cpus > 64) return false;
-    }
+    if (!/^[1-9][0-9]{0,6}[kmg]i?b?$/i.test(body.memory || '')) return false;
+    if (!/^[1-9][0-9]{0,6}[kmg]i?b?$/i.test(body.shm_size || '')) return false;
+    var cpus = Number(body.cpus);
+    if (!body.cpus || !isFinite(cpus) || cpus <= 0 || cpus > 64) return false;
     return true;
   }
 

@@ -16,6 +16,7 @@ import {
     hasWizardSeedContent,
     withExpert,
     withMachine,
+    withMachineWorkDir,
     withLatexTemplate,
     withLocalWorkspace,
     withRemoteWorkspace,
@@ -1173,5 +1174,109 @@ describe('machine (位置) chip', () => {
         expect(draft.workflowTemplateId).toBeNull();
         expect(draft.workspace.kind).toBe('local');
         expect(draft.runWindow?.mode).toBe('immediate');
+    });
+
+    it('withMachineWorkDir sets and clears the remote working directory', () => {
+        const draft = withMachine(defaultTaskDraft(), { grantId: 'gb', machineName: 'B机' });
+        const withDir = withMachineWorkDir(draft, '  D:/remote/repo  ');
+        expect(withDir.machine?.workDir).toBe('D:/remote/repo');
+        expect(withMachineWorkDir(withDir, '  ').machine?.workDir).toBeUndefined();
+        // no machine target → no-op
+        expect(withMachineWorkDir(defaultTaskDraft(), 'D:/x').machine).toBeNull();
+    });
+
+    it('re-picking the same machine keeps its chosen workDir; another machine does not', () => {
+        const draft = withMachineWorkDir(
+            withMachine(defaultTaskDraft(), { grantId: 'gb', machineName: 'B机' }),
+            'D:/remote/repo',
+        );
+        const reselected = withMachine(draft, { grantId: 'gb', machineName: 'B机' });
+        expect(reselected.machine?.workDir).toBe('D:/remote/repo');
+        const switched = withMachine(draft, { grantId: 'gc', machineName: 'C机' });
+        expect(switched.machine?.workDir).toBeUndefined();
+    });
+});
+
+describe('remote working directory (远控目录) picker', () => {
+    const machines: RemoteMachineOption[] = [
+        { grantId: 'gb', machineName: 'B机', online: true, operate: true },
+    ];
+    const listing = {
+        path: 'D:/work',
+        parent: 'D:/',
+        home: 'C:/Users/b',
+        default_dir: 'D:/work',
+        roots: ['C:\\', 'D:\\'],
+        dirs: [{ name: 'repo', path: 'D:/work/repo' }, { name: 'docs', path: 'D:/work/docs' }],
+    };
+
+    it('workspace chip opens the remote dir browser instead of staying locked', async () => {
+        const onListRemoteDirs = vi.fn(async () => listing);
+        renderStatefulBar(withMachine(defaultTaskDraft(), { grantId: 'gb', machineName: 'B机' }), {
+            variant: 'bare', defaultExpanded: true, remoteMachines: machines, onListRemoteDirs,
+        });
+        expect(screen.getByTestId('task-config-chip-workspace-value').textContent).toBe('对方电脑默认');
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        await screen.findByTestId('task-config-popover-remote-dir');
+        // local workspace picker must not render for a machine target
+        expect(screen.queryByTestId('task-config-popover-workspace')).toBeNull();
+        await waitFor(() => expect(screen.getByTestId('remote-dir-repo')).toBeTruthy());
+        expect(onListRemoteDirs).toHaveBeenCalledWith('gb', '');
+        // descend into a subdirectory
+        fireEvent.click(screen.getByTestId('remote-dir-repo'));
+        await waitFor(() => expect(onListRemoteDirs).toHaveBeenCalledWith('gb', 'D:/work/repo'));
+    });
+
+    it('selecting a browsed folder puts it on the chip; 默认 clears it', async () => {
+        const onListRemoteDirs = vi.fn(async () => listing);
+        renderStatefulBar(withMachine(defaultTaskDraft(), { grantId: 'gb', machineName: 'B机' }), {
+            variant: 'bare', defaultExpanded: true, remoteMachines: machines, onListRemoteDirs,
+        });
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        await screen.findByTestId('remote-dir-use-current');
+        fireEvent.click(screen.getByTestId('remote-dir-use-current'));
+        await waitFor(() => {
+            expect(screen.getByTestId('task-config-chip-workspace-value').textContent).toBe('D:/work');
+        });
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(await screen.findByTestId('remote-dir-default'));
+        await waitFor(() => {
+            expect(screen.getByTestId('task-config-chip-workspace-value').textContent).toBe('对方电脑默认');
+        });
+    });
+
+    it('typed path navigates and a list error stays visible', async () => {
+        const onListRemoteDirs = vi.fn(async (_grantId: string, path: string) => {
+            if (path === 'D:/missing') throw new Error('没有找到这个目录');
+            return listing;
+        });
+        renderStatefulBar(withMachine(defaultTaskDraft(), { grantId: 'gb', machineName: 'B机' }), {
+            variant: 'bare', defaultExpanded: true, remoteMachines: machines, onListRemoteDirs,
+        });
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        await screen.findByTestId('remote-dir-use-current');
+        const input = screen.getByTestId('remote-dir-path-input');
+        fireEvent.change(input, { target: { value: 'D:/missing' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await screen.findByTestId('remote-dir-error');
+        expect(onListRemoteDirs).toHaveBeenCalledWith('gb', 'D:/missing');
+    });
+
+    it('the manual row selects a typed path directly (new folder not yet on disk)', async () => {
+        const onListRemoteDirs = vi.fn(async () => listing);
+        renderStatefulBar(withMachine(defaultTaskDraft(), { grantId: 'gb', machineName: 'B机' }), {
+            variant: 'bare', defaultExpanded: true, remoteMachines: machines, onListRemoteDirs,
+        });
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        await screen.findByTestId('remote-dir-use-current');
+        const input = screen.getByTestId('remote-dir-path-input');
+        fireEvent.change(input, { target: { value: 'D:/work/newproj' } });
+        // Manual row appears only while the typed path differs from the browsed one.
+        const manual = await screen.findByTestId('remote-dir-manual');
+        expect(onListRemoteDirs).not.toHaveBeenCalledWith('gb', 'D:/work/newproj');
+        fireEvent.click(manual);
+        await waitFor(() => {
+            expect(screen.getByTestId('task-config-chip-workspace-value').textContent).toBe('D:/work/newproj');
+        });
     });
 });

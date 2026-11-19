@@ -2257,9 +2257,10 @@ func (a *App) QueryExperienceTraceDetails(req ExperienceTraceDetailQuery) Experi
 	}
 	snapshot := buildExperienceLearningSnapshotWithTraceLimit(a.usageTracker, a.memoryStore, 0, skills)
 	details := append([]ExperienceTraceDetail(nil), snapshot.TraceDetails...)
-	a.ensureSessionStore()
-	if a.sessionSearchStore != nil {
-		if summaries, err := a.sessionSearchStore.ListRecent(experienceSnapshotSessionTraceLimit); err == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store != nil {
+		if summaries, err := store.ListRecent(experienceSnapshotSessionTraceLimit); err == nil {
 			details = append(details, buildExperienceSessionTraceDetails(summaries)...)
 			prioritizeExperienceTraceDetails(details)
 		}

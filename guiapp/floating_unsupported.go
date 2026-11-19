@@ -13,12 +13,13 @@ import (
 // CGO_ENABLED=0). The real GTK/Cocoa/Win32 implementations remain in the
 // OS-specific files and are unchanged.
 type unsupportedFloatingWindow struct {
-	app     *App
-	created bool
-	mu      sync.Mutex
-	runtime string
-	skin    string
-	variant string
+	app            *App
+	created        bool
+	mu             sync.Mutex
+	runtime        string
+	skin           string
+	variant        string
+	rearingVariant string
 }
 
 func newFloatingWindow(app *App) floatingWindow {
@@ -52,6 +53,8 @@ func (w *unsupportedFloatingWindow) IsCreated() bool {
 
 func (w *unsupportedFloatingWindow) UpdateSoundConfig(bool, string) {}
 
+func (w *unsupportedFloatingWindow) UpdatePositionLock(bool) {}
+
 func (w *unsupportedFloatingWindow) UpdateMotionConfig(_, _, _ bool, _, skin, variant string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -69,6 +72,19 @@ func (w *unsupportedFloatingWindow) SetPetRuntimeState(state string, _ int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.runtime = string(petpack.NormalizeState(state))
+}
+
+func (w *unsupportedFloatingWindow) ApplyPetDuty(state string, ttlMs int, _, _ string) {
+	w.SetPetRuntimeState(state, ttlMs)
+}
+
+func (w *unsupportedFloatingWindow) ApplyPetRearing(variant string, _ int, _ string, _ []string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.rearingVariant = variant
+	w.mu.Unlock()
 }
 
 func (w *unsupportedFloatingWindow) CurrentPetRuntimeState() string {

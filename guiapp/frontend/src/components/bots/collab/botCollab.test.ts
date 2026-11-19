@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { answeredSinceLast, applyBotStatusLine, shownDesktopBotActivity, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
+import { answeredSinceLast, applyBotStatusLine, applyRunScopedText, shownDesktopBotActivity, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, placeChatSays, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
 
 const bots = [{ id: 'm', title: '主管', primary: true }, { id: 'a', title: '小A' }, { id: 'b', title: '小B' }, { id: 'c', title: '小C' }, { id: 'd', title: '小D' }];
 const asg = (id: string, target: string, state: string, extra: Partial<Assignment> = {}): Assignment =>
@@ -11,6 +11,7 @@ describe('botCollab helpers', () => {
         const row = statusRowText([asg('1', 'a', 'progress', { last_report: '查资料' }), asg('2', 'b', 'running'), asg('3', 'c', 'queued'), asg('4', 'd', 'progress'), asg('5', 'a', 'completed')], bots);
         expect(row).toBe('小A 正在做：查资料；小B 在想：写一篇文章；小C 排队中：写一篇文章；还有 1 个机器人在忙');
         expect(statusRowText([asg('1', 'a', 'completed')], bots)).toBe('');
+        expect(statusRowText([asg('9', 'bot_ef9689c26eda5fa', 'running', { last_report: '训练' })], bots)).toBe('');
     });
     it('labels states in Chinese and prompts the person', () => {
         expect(stateLabel('needs_login')).not.toBe('needs_login');
@@ -25,6 +26,11 @@ describe('botCollab helpers', () => {
         // A bot with its own chat is heard only there, not again in the main bot's.
         expect(saidForChat(items, 'm', true, 0, ['m', 'a']).map(i => i.id)).toEqual(['2']);
         expect(saidForChat(items, 'a', false, 0, ['m', 'a']).map(i => i.id)).toEqual(['1']);
+        // Display name is not identity. bot_new may also be titled "Bot 1";
+        // the deleted id's line stays out of its chat.
+        const mixed = [said('1', 'a'), said('old', 'bot_ef9689c26eda5fa'), said('mine', 'bot_new')];
+        expect(saidForChat(mixed, 'bot_new', true, 0, ['bot_new', 'a'], ['bot_new', 'a']).map(i => i.id)).toEqual(['mine']);
+        expect(saidForChat(mixed, 'bot_new', false, 0, ['bot_new', 'a'], ['bot_new', 'a']).map(i => i.id)).toEqual(['mine']);
     });
     it('finds who answered after the last human message', () => {
         expect(answeredSinceLast([said('1', 'a'), said('2', 'human', 'room'), said('3', 'b'), said('4', 'a')])).toEqual(['b', 'a']);
@@ -58,6 +64,32 @@ describe('inline says only after the latest message', () => {
     });
 });
 
+describe('placeChatSays', () => {
+    it('keeps an earlier weather report where it was said and drops a later reask', () => {
+        const ackAt = Date.parse('2026-11-14T08:20:00Z');
+        const userAt = Date.parse('2026-11-14T08:25:00Z');
+        const weatherAt = '2026-11-14T08:22:00Z';
+        const againAt = '2026-11-14T08:31:00Z';
+        const messages = [
+            { id: `m-${ackAt.toString(36)}-ack`, role: 'assistant', content: '好的，我会定时向你报告天气情况。' },
+            { id: `m-${userAt.toString(36)}-u`, role: 'user', content: '北京，下次再生成pdf文件' },
+        ];
+        const items = [
+            { id: 'w', kind: 'say', target: 'human', from: 'b', text: '北京晴 12℃', created_at: weatherAt },
+            { id: 'q', kind: 'say', target: 'human', from: 'b', text: '这轮的天气：北京晴 12℃，上海阴有小雨 19℃。你要报自己城市的话，说一声我就固定下来。', created_at: againAt },
+        ] as SaidItem[];
+        const placed = placeChatSays(items, 'b', false, messages);
+        expect(placed.after.get(messages[0].id)?.map(item => item.id)).toEqual(['w']);
+        expect(placed.trailing).toEqual([]);
+    });
+    it('does not pin a deleted bot id under a new bot', () => {
+        const items = [{ id: 'old', kind: 'say', target: 'human', from: 'bot_ef9689c26eda5fa', text: '训练报告', created_at: '2026-11-14T00:17:00Z' }] as SaidItem[];
+        const placed = placeChatSays(items, 'bot_new', true, [], ['bot_new'], ['bot_new']);
+        expect(placed.trailing).toEqual([]);
+        expect(placed.after.size).toBe(0);
+    });
+});
+
 describe('live step in the header', () => {
     it('shows each busy bot with its current step', () => {
         const row = statusRowText([], bots, 3, 'zh-Hans', [{ bot: 'a', phase: 'execute', task: '正在登录 CSDN' }, { bot: 'b', phase: 'execute', task: '正在发布 小红书' }]);
@@ -70,9 +102,29 @@ describe('applyBotStatusLine', () => {
         let st = applyBotStatusLine({}, 'a', 'run_1', '单号 run_1 · 第 3 步');
         st = applyBotStatusLine(st, 'b', 'run_2', '单号 run_2 · 后台任务运行中，下次查看 21:40');
         expect(st.a.text).toBe('单号 run_1 · 第 3 步');
-        expect(applyBotStatusLine(st, 'a', 'run_old', '')).toBe(st);
-        expect(applyBotStatusLine(st, 'a', 'run_1', '').a).toBeUndefined();
+        const ignored = applyBotStatusLine(st, 'a', 'run_old', '');
+        expect(ignored.a.text).toBe(st.a.text);
+        expect(ignored.a.runId).toBe('run_1');
+        expect(applyBotStatusLine(ignored, 'a', 'run_old', '单号 run_old').a.runId).toBe('run_1');
+        const cleared = applyBotStatusLine(st, 'a', 'run_1', '');
+        expect(cleared.a.text).toBe('');
+        expect(applyBotStatusLine(cleared, 'a', 'run_1', 'late').a.text).toBe('');
+        const next = applyBotStatusLine(cleared, 'a', 'run_2', '单号 run_2 · 第 1 步');
+        expect(next.a.runId).toBe('run_2');
+        expect(applyBotStatusLine(next, 'a', 'run_1', 'late again').a.runId).toBe('run_2');
         expect(applyBotStatusLine(st, 'a', 'run_1', '').b.text).toContain('下次查看');
+    });
+
+    it('does not let an out-of-order activity replace the run that holds the row', () => {
+        let st = applyRunScopedText({} as Record<string, { text: string; runId: string; at?: number; closed?: Record<string, true> }>, 'a', 'run_live', '正在发布', (text, runId, closed) => ({ text, runId, closed, at: 2 }));
+        st = applyRunScopedText(st, 'a', 'run_old', '正在点击', (text, runId, closed, current) => ({ text, runId, closed, at: current?.at }));
+        expect(st.a.text).toBe('正在发布');
+        st = applyRunScopedText(st, 'a', 'run_live', '', (text, runId, closed, current) => ({ text, runId, closed, at: current?.at }));
+        st = applyRunScopedText(st, 'a', 'run_live', '正在点击', (text, runId, closed, current) => ({ text, runId, closed, at: current?.at }));
+        expect(st.a.text).toBe('');
+        st = applyRunScopedText(st, 'a', 'run_next', '正在读取', (text, runId, closed) => ({ text, runId, closed, at: 3 }));
+        expect(st.a.runId).toBe('run_next');
+        expect(st.a.text).toBe('正在读取');
     });
 });
 

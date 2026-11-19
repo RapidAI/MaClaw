@@ -261,9 +261,12 @@ type App struct {
 	toolInstallLocks                   map[string]bool // Track which tools are currently being installed
 	toolLockMutex                      sync.Mutex      // Mutex for toolInstallLocks map
 	remoteSessions                     *RemoteSessionManager
-	remoteInfraMu                      sync.RWMutex // publishes remote infrastructure pointers after initialization
+	remoteInfraMu                      sync.RWMutex         // publishes remote infrastructure pointers after initialization
 	remoteWatches                      *remoteWatchRegistry // remote-control live mirror watches; nil until first watch_task op
-	remoteActivationBackgroundDisabled bool         // test-only: skip post-activation background connect
+	viewerSubMu                        sync.Mutex
+	viewerSubs                         []func(viewerEvent)
+	testEmit                           func(name string, data ...interface{})
+	remoteActivationBackgroundDisabled bool // test-only: skip post-activation background connect
 	browserSessions                    *BrowserAgentManager
 	powerStateMutex                    sync.Mutex
 	powerStateProcess                  *exec.Cmd
@@ -372,25 +375,29 @@ type App struct {
 	devinLogin               *devinLoginFlow             // in-progress Devin account login
 	devinSaveMu              sync.Mutex                  // serializes Devin credential writes
 	// Smart session components
-	memoryStore          *memory.Store
-	memoryStoreMu        sync.RWMutex
-	memRuntime           atomic.Pointer[memoryRuntimeState]
-	memRuntimeGeneration atomic.Uint64
-	sceneIndexCacheMu    sync.Mutex
-	sceneIndexCacheGen   uint64
-	sceneIndexCacheLimit int
-	sceneIndexCache      []memory.SceneRecord
-	sceneIndexCacheAt    time.Time
-	answerCacheMu        sync.Mutex
-	answerCache          *answerCacheStore
-	configManager        *ConfigManager
-	templateManager      *remote.SessionTemplateManager
-	contextResolver      *SessionContextResolver
-	sessionPrecheck      *SessionPrecheck
-	conversationArchiver *ConversationArchiver
-	sessionCheckpointer  *SessionCheckpointer
-	startupFeedback      *SessionStartupFeedback
-	imHandler            *IMMessageHandler
+	memoryStore           *memory.Store
+	memoryStoreMu         sync.RWMutex
+	memRuntime            atomic.Pointer[memoryRuntimeState]
+	memRuntimeGeneration  atomic.Uint64
+	sceneIndexCacheMu     sync.Mutex
+	sceneIndexCacheGen    uint64
+	sceneIndexCacheLimit  int
+	sceneIndexCache       []memory.SceneRecord
+	sceneIndexCacheAt     time.Time
+	answerCacheMu         sync.Mutex
+	answerCache           *answerCacheStore
+	aiAssistantUIStateDB  *aiAssistantUIStateDatabase
+	maclawAppRunHistoryDB *maclawAppRunHistoryDatabase
+	maclawAppApprovalDB   *maclawAppApprovalDatabase
+	maclawAppInstallDB    *maclawAppInstallDatabase
+	configManager         *ConfigManager
+	templateManager       *remote.SessionTemplateManager
+	contextResolver       *SessionContextResolver
+	sessionPrecheck       *SessionPrecheck
+	conversationArchiver  *ConversationArchiver
+	sessionCheckpointer   *SessionCheckpointer
+	startupFeedback       *SessionStartupFeedback
+	imHandler             *IMMessageHandler
 	// arxivSearchMu guards the one in-memory expansion for the companion
 	// search dialog. A later page of the same goal reuses it, so the model
 	// is not called again.
@@ -466,27 +473,58 @@ type App struct {
 	buddyMu sync.Mutex
 	// buddyCfgWrite serializes buddy.json updates. A device sound report must
 	// not save a stale enabled=true over an uncheck that just released the port.
-	buddyCfgWrite       sync.Mutex
-	buddyRunner         *service.Runner
-	buddyCancel         context.CancelFunc
-	buddyDone           chan struct{}
-	buddyCfg            buddyConfig
-	buddyLastSnapshot   string
-	buddyLastPushAt     time.Time
-	qqBotGateway        *qqBotGatewayManager
-	telegramGateway     *telegramGatewayManager
-	slackGateway        *slackGatewayManager
-	messengerGateway    *messengerGatewayManager
-	weixinGateway       *weixinGatewayManager
-	lansengerGateway    *lansengerGatewayManager
-	lansengerGateways   *lansengerGatewayRegistry
-	localStartMenu      *localStartMenuService
-	localStartMenuMu    sync.Mutex
-	lansengerWatch      *lansengerWatchService
-	lansengerWatchOnce  sync.Once
-	thirdPartyGateway   *thirdPartyGatewayManager
-	acpHost             *acpHost // Mode B: loopback ACP for VS Code programming agent
-	acpHostMu           sync.Mutex
+	buddyCfgWrite     sync.Mutex
+	buddyRunner       *service.Runner
+	buddyCancel       context.CancelFunc
+	buddyDone         chan struct{}
+	buddyCfg          buddyConfig
+	buddyLastSnapshot string
+	buddyLastPushAt   time.Time
+	// Last resolved ambient weather snapshot. Hardware re-attaches and the
+	// periodic loop reuse it while it sits inside the device expiry window
+	// instead of re-running the weather pipeline. ambientResolveMu
+	// serializes the resolve itself so a loop tick colliding with a device
+	// attach cannot double-spend a search + LLM request.
+	ambientWeatherMu   sync.Mutex
+	ambientWeather     deviceAmbientWeather
+	ambientWeatherAt   time.Time
+	ambientResolveMu   sync.Mutex
+	qqBotGateway       *qqBotGatewayManager
+	telegramGateway    *telegramGatewayManager
+	slackGateway       *slackGatewayManager
+	messengerGateway   *messengerGatewayManager
+	weixinGateway      *weixinGatewayManager
+	lansengerGateway   *lansengerGatewayManager
+	lansengerGateways  *lansengerGatewayRegistry
+	localStartMenu     *localStartMenuService
+	localStartMenuMu   sync.Mutex
+	lansengerWatch     *lansengerWatchService
+	lansengerWatchOnce sync.Once
+	thirdPartyGateway  *thirdPartyGatewayManager
+	acpHost            *acpHost // Mode B: loopback ACP for VS Code programming agent
+	acpHostMu          sync.Mutex
+	mcpHost            *mcpHost // Inbound MCP: other tools create and read tasks on this GUI
+	mcpHostMu          sync.Mutex
+	mcpHostSyncMu      sync.Mutex
+	mcpRunsMu          sync.Mutex
+	mcpRuns            map[string]*mcpRunRecord
+	// mcpRunArchive keeps replaced rounds so get_task and read_log can ask
+	// for one run_id. The live map only holds the current round.
+	mcpRunArchive map[string][]*mcpRunRecord
+	// mcpChildPending holds a child result that landed before the run listed
+	// that child. Admission and finish apply it. Capped at mcpChildPendingLimit.
+	mcpChildPending map[string]mcpChildView
+	// mcpTurnHeld is the follow-up that may install the next run. It closes
+	// the gap where two sends both still see needs_confirmation.
+	mcpTurnHeld         map[string]uint64
+	mcpTurnSeq          map[string]uint64
+	mcpAccess           mcpAccessStore
+	mcpPinsMu           sync.Mutex
+	mcpPins             map[string]mcpModelPin
+	mcpReqMu            sync.Mutex
+	mcpReqs             map[string]*mcpClientRequest
+	mcpReqOrder         []string
+	mcpConfirmIDs       map[string]string
 	imGatewaySyncMu     sync.Mutex
 	passthroughRegistry *PassthroughRegistry
 	// configMu serializes writers (load/mutate/publish). Hot-path readers do NOT
@@ -561,6 +599,15 @@ type App struct {
 	deepCrawlMode              string                         // active deep crawl owner: crawl or preview
 	floatingAssistant          *FloatingAssistantManager
 	floatingAssistantMu        sync.Mutex
+	petDuty                    petDutyState
+	petRearing                 petRearingState
+	petClickMu                 sync.Mutex
+	petClickBurst              petClickBurst
+	petClickTimer              *time.Timer
+	petClickGen                uint64
+	petClickEpoch              atomic.Uint64
+	petClickClosed             bool
+	petClickExit               bool
 	agentViewEmissionSeq       atomic.Int64
 	agentViewOpenMu            sync.Mutex
 	agentViewOpen              map[string]agentViewOpenRecord // view_id → open revision/schema
@@ -570,8 +617,8 @@ type App struct {
 	imAuditStoreMu sync.Once
 
 	// Session search store (FTS5 full-text search across historical conversations).
-	sessionSearchStore *session.Store
-	sessionStoreMu     sync.Once
+	sessionSearchStore   *session.Store
+	sessionSearchStoreMu sync.RWMutex
 
 	// User model (dialectic user modeling with confidence-scored dimensions).
 	userModel   *user.Model
@@ -647,6 +694,10 @@ type App struct {
 
 	// Notification cache: in-memory LRU cache of up to 10 unread notifications.
 	notifCache *notificationCache
+
+	// Pinned (置顶) messages shown by the sidebar floating banner. Replaced
+	// wholesale by PullPinnedNotifications; see notification_binding.go.
+	pinnedNotifs *pinnedCache
 
 	// permissionSnapshotOnce builds the dual-eval permission snapshot at most
 	// once per App (docs/design/tool-routing-improvement-plan-zh.md Phase 1,
@@ -748,6 +799,7 @@ func NewApp() *App {
 		hubCenterCache:    remote.NewHubCenterSelectionCache(60 * time.Second),
 		toolVersionCache:  NewToolVersionCache(),
 		notifCache:        newNotificationCache(),
+		pinnedNotifs:      &pinnedCache{},
 	}
 	// The legacy direct-search chain (embedded hub mobile search, provider
 	// paths) selects browser fallback engines under the same persisted
@@ -1648,6 +1700,11 @@ func (a *App) ensureScheduledTaskManager() {
 		a.scheduledTaskManager.SetOnChange(func() {
 			a.emitEvent("scheduled-tasks-changed")
 		})
+		// Bot timers belong on the server clock. Copies saved into this
+		// manager showed up under 计划任务 and counted a run every tick.
+		if n := dropLocalDesktopBotScheduleRows(a.scheduledTaskManager); n > 0 {
+			log.Printf("[desktop-bot-schedule] removed %d bot timer(s) from the local schedule; the server clock owns them", n)
+		}
 		// Start the scheduler immediately with a local executor that doesn't
 		// depend on Hub connectivity. This ensures scheduled tasks fire even
 		// for desktop-only users who never connect to Hub.
@@ -2862,6 +2919,7 @@ func (a *App) startup(ctx context.Context) {
 	startupBegin := time.Now()
 	log.Printf("[startup] begin")
 	bootLog("App.startup ctx_nil=%v", ctx == nil)
+	a.ensureRepoMaintWorker()
 	// Start the runtime sampler before any heavy work so the first sample
 	// captures the WebView processes created alongside this window.
 	startPerfSampler()
@@ -2870,6 +2928,10 @@ func (a *App) startup(ctx context.Context) {
 	applyMemoryLimit()
 	startIdleMemoryReleaser()
 	a.ctx = ctx
+	// Managed browser pages stay in the assistant preview. This must run
+	// before any browser session so the first launch is already windowless.
+	a.installAgentBrowserStage()
+	a.installDesktopHandoff()
 	// `MaClaw.exe --quit` only reaches OnStartup when no running instance was
 	// there to receive the handoff. The user asked for an exit, so do not open
 	// a window just because there was nothing to quit.
@@ -3049,6 +3111,7 @@ func (a *App) startup(ctx context.Context) {
 			// Defer slightly so hub/IM handler warmup can begin first.
 			time.Sleep(2 * time.Second)
 			a.ensureACPHost()
+			a.ensureMCPHost()
 		}()
 		// CodeGen SSO token validation on startup (qianxin brand only).
 		// Claude/QAgent Code now uses CodeGen's remote Anthropic-compatible
@@ -3386,12 +3449,44 @@ func (a *App) SetCodingFontFamily(id string) error {
 	return err
 }
 
+func chatBubblesEnabled(cfg corelib.AppConfig) bool {
+	if cfg.ChatBubblesEnabled == nil {
+		return true
+	}
+	return *cfg.ChatBubblesEnabled
+}
+
+// GetChatBubblesEnabled reports whether assistant conversations draw message
+// bubbles. A missing value stays on. A failed load is an error: callers must
+// not treat that failure as the stored default, or a switch already taken
+// from a config payload flips back on.
+func (a *App) GetChatBubblesEnabled() (bool, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return false, err
+	}
+	return chatBubblesEnabled(cfg), nil
+}
+
+// SetChatBubblesEnabled persists the assistant conversation bubble frame.
+func (a *App) SetChatBubblesEnabled(enabled bool) error {
+	_, err := a.PatchConfigFields(map[string]interface{}{"chat_bubbles_enabled": enabled})
+	return err
+}
+
 // prepareProcessExit runs before the quit deadline. The companion quit
 // relay goes first so that process exits in parallel with the session
 // flush: TerminateProcess does not take children with it, and the companion
 // owns no tray icon — without the relay a tray quit left a window-less
 // companion process behind.
 func (a *App) prepareProcessExit() {
+	// Before the flush budget. Tray, --quit, and restart never call the pet
+	// menu, and the patrol origin lives only on the native window until
+	// something copies it. The pet-menu quit already did that and destroyed
+	// the window, so this second call does not write again.
+	a.persistLivePetOriginForExit()
+	a.sealDesktopPetClick()
+	a.flushPetRearingForExit()
 	a.signalFileCompanionQuit()
 	a.persistSessionsForShutdown()
 }
@@ -3434,7 +3529,13 @@ func (a *App) persistSessionsForShutdown() {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	// Wails can reach OnShutdown without requestAppQuit (the main window's
+	// own close). The pet window is still alive here. requestAppQuit already
+	// wrote this in prepareProcessExit; a second call writes only if she
+	// moved again while shutdown was starting.
+	a.persistLivePetOriginForExit()
 	a.stopLocalRelay()
+	a.stopMCPHost()
 	// Retire the companion on every shutdown path, including Wails-initiated
 	// quits that bypass requestAppQuit. The relay fires once per process.
 	a.signalFileCompanionQuit()
@@ -3480,6 +3581,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if confirmationStore != nil {
 		confirmationStore.stop()
 	}
+	a.saveAndCloseUserModel("shutdown")
 	if a.memoryMaintenance != nil {
 		a.memoryMaintenance.Stop()
 	} else {
@@ -3542,14 +3644,32 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.auditLog != nil {
 		a.auditLog.Close()
 	}
-	if a.sessionSearchStore != nil {
-		_ = a.sessionSearchStore.Close()
-		a.sessionSearchStore = nil
-	}
+	a.closeSessionStore()
 	if a.projectTabSessionPersist != nil {
 		_ = a.projectTabSessionPersist.Close()
 		a.projectTabSessionPersist = nil
 	}
+	if a.taskOrchestrator2 != nil {
+		a.taskOrchestrator2.Close()
+		a.taskOrchestrator2 = nil
+	}
+	a.closeRunWindowManager()
+	aiAssistantUIStateMu.Lock()
+	a.closeAIAssistantUIStateDBLocked()
+	aiAssistantUIStateMu.Unlock()
+	maclawAppRunHistoryMu.Lock()
+	a.closeMaclawAppRunHistoryDB()
+	maclawAppRunHistoryMu.Unlock()
+	maclawAppApprovalDBMu.Lock()
+	a.closeMaclawAppApprovalDB()
+	maclawAppApprovalDBMu.Unlock()
+	maclawAppInstallDBMu.Lock()
+	a.closeMaclawAppInstallDB()
+	maclawAppInstallDBMu.Unlock()
+	agentViewSchemaPersistentStore.Lock()
+	closeAgentViewSchemaStoreLocked()
+	agentViewSchemaPersistentStore.Unlock()
+	closePendingReplyDiskStores()
 	a.stopSemanticEffectReceiptWorker()
 	a.closeHopJITPersistence()
 	a.closeSemanticInvocationStore()
@@ -4551,9 +4671,22 @@ func (a *App) sessionSearchDBPath() string {
 	return filepath.Join(a.GetDataDir(), "session_search.db")
 }
 
-// userModelPath returns the path to the user model JSON file.
+// userModelPath returns the legacy JSON path used to locate the user model store.
 func (a *App) userModelPath() string {
 	return filepath.Join(a.GetDataDir(), "user_model.json")
+}
+
+func (a *App) saveAndCloseUserModel(stage string) {
+	if a == nil || a.userModel == nil {
+		return
+	}
+	if err := a.userModel.Save(); err != nil {
+		log.Printf("[lifecycle] stage=%s user model save failed: %v", stage, err)
+	}
+	if err := a.userModel.Close(); err != nil {
+		log.Printf("[lifecycle] stage=%s user model close failed: %v", stage, err)
+	}
+	a.userModel = nil
 }
 
 // GetTempDir returns the temporary directory for maclaw.
@@ -5699,7 +5832,7 @@ func (a *App) logStoragePaths(stage string, config *corelib.AppConfig) {
 	dataDir := a.GetDataDir()
 	conversationPath := filepath.Join(dataDir, "ai_assistant_conversation.json")
 	confirmationPath := filepath.Join(dataDir, "ai_assistant_confirmation.json")
-	uiStatePath := filepath.Join(dataDir, "ai_assistant_ui_state.json")
+	uiStatePath := filepath.Join(dataDir, "ai_assistant_ui_state.db")
 	log.Printf("[paths] stage=%s cwd=%q exe=%q home=%q config_path=%q base_dir=%q data_dir=%q ai_conversation=%q ai_confirmation=%q ai_ui_state=%q configured_data_dir=%q configured_working_dir=%q",
 		stage, cwd, exe, home, configPath, baseDir, dataDir, conversationPath, confirmationPath, uiStatePath, configuredDataDir, configuredWorkingDir)
 }
@@ -6629,6 +6762,21 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 	if answerCache != nil {
 		answerCache.close()
 	}
+	aiAssistantUIStateMu.Lock()
+	a.closeAIAssistantUIStateDBLocked()
+	aiAssistantUIStateMu.Unlock()
+	maclawAppRunHistoryMu.Lock()
+	a.closeMaclawAppRunHistoryDB()
+	maclawAppRunHistoryMu.Unlock()
+	maclawAppApprovalDBMu.Lock()
+	a.closeMaclawAppApprovalDB()
+	maclawAppApprovalDBMu.Unlock()
+	maclawAppInstallDBMu.Lock()
+	a.closeMaclawAppInstallDB()
+	maclawAppInstallDBMu.Unlock()
+	agentViewSchemaPersistentStore.Lock()
+	closeAgentViewSchemaStoreLocked()
+	agentViewSchemaPersistentStore.Unlock()
 	a.conversationMemoryMu.Lock()
 	conversationMemory := a.aiConversationMemory
 	a.aiConversationMemory = nil
@@ -6650,11 +6798,7 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		_ = a.auditLog.Close()
 		a.auditLog = nil
 	}
-	if a.sessionSearchStore != nil {
-		_ = a.sessionSearchStore.Close()
-		a.sessionSearchStore = nil
-	}
-	a.sessionStoreMu = sync.Once{}
+	a.closeSessionStore()
 	if a.imAuditStore != nil {
 		_ = a.imAuditStore.Close()
 		a.imAuditStore = nil
@@ -6666,12 +6810,7 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		a.codingKnowledgeStore = nil
 		codingKnowledgeStoreMu.Unlock()
 	}
-	if a.userModel != nil {
-		if err := a.userModel.Save(); err != nil {
-			log.Printf("[config] data_dir_change: user model save failed: %v", err)
-		}
-		a.userModel = nil
-	}
+	a.saveAndCloseUserModel("data_dir_change")
 	a.userModelMu = sync.Once{}
 	a.evidenceCollector = nil
 	a.evidenceCollectorMu = sync.Once{}
@@ -6680,8 +6819,15 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		_ = a.projectTabSessionPersist.Close()
 		a.projectTabSessionPersist = nil
 	}
+	if a.taskOrchestrator2 != nil {
+		a.taskOrchestrator2.Close()
+		a.taskOrchestrator2 = nil
+	}
+	a.closeRunWindowManager()
+	closePendingReplyDiskStores()
 	retiredRuntime := a.detachMemoryRuntime()
 	for handler := range a.sharedMemoryStoreHandlers() {
+		handler.resetPendingReplyStoreForDataDirChange()
 		handler.cancelAllBackgroundLLM("data_dir_change")
 	}
 	if a.memoryMaintenance != nil {
@@ -7020,6 +7166,27 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	}
 	incoming.WorkingDirectory = ondisk.WorkingDirectory
 
+	// The desktop pet menu owns this flag. A settings snapshot does not know
+	// the field until the generated frontend model includes it, and a full
+	// save would otherwise clear a pin the user just turned on.
+	if incoming.PetPositionLocked != ondisk.PetPositionLocked {
+		restored = append(restored, "pet_position_locked")
+	}
+	incoming.PetPositionLocked = ondisk.PetPositionLocked
+
+	// Drag, border patrol, hide, and exit write the origin from the live
+	// window. The settings form still has the coordinates from when it was
+	// opened, and a missing JSON field decodes as zero, so a full save would
+	// put her back on the old screen. A backup restore skips this function.
+	if incoming.FloatingBtnX != ondisk.FloatingBtnX ||
+		incoming.FloatingBtnY != ondisk.FloatingBtnY ||
+		incoming.FloatingBtnPositionSet != ondisk.FloatingBtnPositionSet {
+		restored = append(restored, "floating_btn_position")
+	}
+	incoming.FloatingBtnX = ondisk.FloatingBtnX
+	incoming.FloatingBtnY = ondisk.FloatingBtnY
+	incoming.FloatingBtnPositionSet = ondisk.FloatingBtnPositionSet
+
 	if len(restored) > 0 {
 		log.Printf("[config] SaveConfig:preserved_backend_fields=%v", restored)
 	}
@@ -7141,6 +7308,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	floatingChanged := floatingAppearanceChanged(oldConfig, config)
 	motionChanged := floatingMotionChanged(oldConfig, config)
 	soundChanged := floatingSoundChanged(oldConfig, config)
+	positionLockChanged := floatingPositionLockChanged(oldConfig, config)
 	devicePetChanged := !oldConfigLoaded || devicePetProfileChanged(oldConfig, config)
 	buddyPetChanged := !oldConfigLoaded || buddyPetAssetChanged(oldConfig, config)
 	hardwareCustomPetsDisabled := oldConfig.HardwareAllowCustomPets && !config.HardwareAllowCustomPets
@@ -7150,6 +7318,12 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	hubClient := (*RemoteHubClient)(nil)
 	if a.remoteSessions != nil {
 		hubClient = a.remoteSessions.hubClient
+	}
+	if positionLockChanged {
+		// Still holding configMu. A backup restore becomes the newest pin
+		// before a menu patch waiting on this lock is allowed to store the
+		// click it captured earlier.
+		rememberPetPositionLock(config.PetPositionLocked)
 	}
 	// Unified epilogue: publish cache → unlock → post-unlock drains → disk write.
 	// See config_txn.go protocol.
@@ -7192,7 +7366,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 			}
 		}(config)
 	}
-	if !floatingChanged && (soundChanged || motionChanged) {
+	if !floatingChanged && (soundChanged || motionChanged || positionLockChanged) {
 		go func(cfg corelib.AppConfig) {
 			if fa := a.existingFloatingAssistant(); fa != nil {
 				// Keep the requested sound preference current before recalculating
@@ -7202,6 +7376,9 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 				}
 				if motionChanged {
 					fa.UpdateMotionConfig(cfg)
+				}
+				if positionLockChanged {
+					applyPetPositionLock(fa, cfg.PetPositionLocked)
 				}
 			}
 		}(config)
@@ -8388,6 +8565,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	policyModeChanged := false
 	imGatewayChanged := false
 	acpHostChanged := false
+	mcpHostChanged := false
 	petChanged := false
 
 	for key, value := range patch {
@@ -8442,6 +8620,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteEnabled = v
+		case "remote_device_connect_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.RemoteDeviceConnectEnabled = &v
 		case "remote_hub_id":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -8984,6 +9168,30 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.SetAcpHostMirrorUI(v)
 			// no restart required
+		case "mcp_host_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetMcpHostEnabled(v)
+			mcpHostChanged = true
+		case "mcp_host_port":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 || v > 65535 {
+				return corelib.AppConfig{}, fmt.Errorf("mcp_host_port must be between 0 and 65535 (0 = try 18790)")
+			}
+			cfg.McpHostPort = v
+			mcpHostChanged = true
+		case "mcp_host_lan_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetMcpHostLanEnabled(v)
+			mcpHostChanged = true
 		case "default_proxy_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -9059,12 +9267,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.EnvCheckDone = v
-		case "use_windows_terminal":
-			v, err := boolField(key, value)
-			if err != nil {
-				return corelib.AppConfig{}, err
-			}
-			cfg.UseWindowsTerminal = v
 		case "show_ai_trace_entry":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -9095,6 +9297,18 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SurveyEnabled = &v
+		case "recent_task_count":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > 50 {
+				v = 50
+			}
+			cfg.RecentTaskCount = &v
 		case "show_coding_tool_entry":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -9478,6 +9692,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.CodingFontFamily = normalizeFontFamilyID(v, codingFontFamilyIDs)
+		case "chat_bubbles_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.ChatBubblesEnabled = &v
 		case "env_check_interval":
 			v, err := intField(key, value)
 			if err != nil {
@@ -9649,6 +9869,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.TTSVoiceID = normalizeTTSVoiceID(v)
+		case "bot_voice_readback_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.BotVoiceReadback = v
 		case "maclaw_agent_max_iterations":
 			v, err := intField(key, value)
 			if err != nil {
@@ -9824,6 +10050,19 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.PetReducedMotion = v
 			petChanged = true
+		case "pet_position_locked":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			// The menu published this click before taking configMu. A newer
+			// click or a backup restore may have published since. Leave the
+			// loaded value alone so this write cannot replace it.
+			if !petPositionLockWriteCurrent() {
+				break
+			}
+			cfg.PetPositionLocked = v
+			petChanged = true
 		case "pet_figurative_upgrade_prompt_pending":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -9888,6 +10127,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	floatingChanged := petChanged && floatingAppearanceChanged(current, cfg)
 	motionChanged := petChanged && floatingMotionChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
+	positionLockChanged := petChanged && floatingPositionLockChanged(current, cfg)
 	devicePetChanged := devicePetProfileChanged(current, cfg)
 	buddyPetChanged := buddyPetAssetChanged(current, cfg)
 	hardwareCustomPetsDisabled := current.HardwareAllowCustomPets && !cfg.HardwareAllowCustomPets
@@ -9971,6 +10211,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	if acpHostChanged && a.ctx != nil {
 		go a.syncACPHostFromConfig()
 	}
+	if mcpHostChanged && a.ctx != nil {
+		go a.syncMCPHostFromConfig()
+	}
 	if floatingChanged {
 		go func(cfg corelib.AppConfig) {
 			if cfg.PetEnabled {
@@ -9984,7 +10227,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 		}(cfg)
 	}
-	if !floatingChanged && (soundChanged || motionChanged) {
+	if !floatingChanged && (soundChanged || motionChanged || positionLockChanged) {
 		go func(cfg corelib.AppConfig) {
 			if fa := a.existingFloatingAssistant(); fa != nil {
 				if soundChanged {
@@ -9992,6 +10235,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				}
 				if motionChanged {
 					fa.UpdateMotionConfig(cfg)
+				}
+				if positionLockChanged {
+					applyPetPositionLock(fa, cfg.PetPositionLocked)
 				}
 			}
 		}(cfg)
@@ -11756,6 +12002,9 @@ func (a *App) hasWailsEventsContext() bool {
 // calls runtime.EventsEmit unless the lifecycle context is present, so
 // headless/test code cannot kill the process via log.Fatalf.
 func (a *App) emitEvent(name string, data ...interface{}) {
+	if a != nil && a.testEmit != nil {
+		a.testEmit(name, data...)
+	}
 	if a != nil && name == "env-check-done" {
 		a.frontendEnvCheckDone.Store(true)
 		bootLog("emit env-check-done reactReady=%v", a.frontendReactReady.Load())
@@ -13347,13 +13596,32 @@ func (a *App) ShowItemInFolder(path string) error {
 }
 
 func (a *App) OpenFileOrShowInFolder(path string) error {
+	return a.openShownFile(path, "")
+}
+
+// OpenBotFile opens a path from one bot's chat. A path on that bot's
+// computer opens the copy this app saved for the same bot.
+func (a *App) OpenBotFile(botID, path string) error {
+	return a.openShownFile(path, botID)
+}
+
+func (a *App) openShownFile(path, botID string) error {
 	path, err := a.normalizeOpenPathForApp(path)
 	if err != nil {
 		return err
 	}
 	if _, err := os.Stat(path); err != nil {
-		log.Printf("[app-open-file] path unavailable path=%q err=%v", path, err)
-		return err
+		// Only a path on the bot's computer may open a file this app saved.
+		// A missing local path stays missing.
+		if cloudDesktopOpenPath(path) {
+			if local := deliveredFileForOpen(botID, path); local != "" {
+				path = local
+			}
+		}
+		if _, statErr := os.Stat(path); statErr != nil {
+			log.Printf("[app-open-file] path unavailable path=%q err=%v", path, err)
+			return err
+		}
 	}
 	if err := startSystemOpen(path); err != nil {
 		log.Printf("[app-open-file] system open failed path=%q err=%v; falling back to reveal", path, err)

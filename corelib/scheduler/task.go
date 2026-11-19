@@ -106,6 +106,12 @@ type Manager struct {
 	// runningTasks tracks in-flight executor goroutines so they can be
 	// cancelled on Stop(). Key is task ID, value is the cancel function.
 	runningTasks map[string]context.CancelFunc
+	// externalHold is a lease that is not an executor goroutine. A schedule
+	// turn continued after a restart runs outside fireByID, so the next slot
+	// would start a second turn on the same file. The token makes a late
+	// release a no-op after a newer hold replaced it.
+	externalHold map[string]uint64
+	holdSeq      uint64
 
 	// eligible, when set, is the only rows the clock may start. Nil means
 	// every due row. TriggerNow is not filtered: an operator can still run
@@ -149,6 +155,7 @@ func NewManagerFromStore(store TaskStore) (*Manager, error) {
 		store:        store,
 		stopCh:       make(chan struct{}),
 		runningTasks: make(map[string]context.CancelFunc),
+		externalHold: make(map[string]uint64),
 	}
 	if err := m.load(); err != nil {
 		return nil, err
@@ -483,6 +490,10 @@ func (m *Manager) fireByID(id string, executor TaskExecutor, now time.Time) {
 				m.mu.Unlock()
 				return
 			}
+			if _, held := m.externalHold[id]; held {
+				m.mu.Unlock()
+				return
+			}
 			if t.NextRunAt == nil || endDatePassed(t.EndDate, now) {
 				m.mu.Unlock()
 				return
@@ -670,6 +681,66 @@ func (m *Manager) List() []ScheduledTask {
 		out[i] = cp
 	}
 	return out
+}
+
+// Running reports an executor that has claimed this id and has not finished.
+func (m *Manager) Running(id string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id = strings.TrimSpace(id)
+	if _, ok := m.runningTasks[id]; ok {
+		return true
+	}
+	_, held := m.externalHold[id]
+	return held
+}
+
+// Hold keeps the clock from starting this id until release. A resumed
+// schedule turn is not the executor that fireByID registered, and the next
+// interval would otherwise start while that turn is still writing. Unknown
+// ids and ids that already have a lease are refused. release is safe to call
+// twice; a newer hold is left in place.
+func (m *Manager) Hold(id string) (release func(), ok bool) {
+	if m == nil {
+		return nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id = strings.TrimSpace(id)
+	if id == "" || m.getLocked(id) == nil {
+		return nil, false
+	}
+	if _, running := m.runningTasks[id]; running {
+		return nil, false
+	}
+	if _, held := m.externalHold[id]; held {
+		return nil, false
+	}
+	if m.externalHold == nil {
+		m.externalHold = map[string]uint64{}
+	}
+	m.holdSeq++
+	token := m.holdSeq
+	m.externalHold[id] = token
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.externalHold[id] == token {
+			delete(m.externalHold, id)
+		}
+	}, true
+}
+
+func (m *Manager) getLocked(id string) *ScheduledTask {
+	for i := range m.tasks {
+		if m.tasks[i].ID == id {
+			return &m.tasks[i]
+		}
+	}
+	return nil
 }
 
 // Get returns a task by ID, or nil if not found.
@@ -875,7 +946,11 @@ func (m *Manager) writeTask(id string, args map[string]interface{}, status strin
 			return m.removeSaved(i, id)
 		}
 		if next.Status == "active" {
-			next.NextRunAt = m.calcNext(&next, now)
+			// The next fire follows the clock. Rewriting the order leaves a
+			// future slot where it is; a new period or an empty slot is calculated.
+			if scheduleClockChanged(prev, next) || next.NextRunAt == nil {
+				next.NextRunAt = m.calcNext(&next, now)
+			}
 		}
 		m.tasks[i] = next
 		if err := m.save(); err != nil {
@@ -890,6 +965,81 @@ func (m *Manager) writeTask(id string, args map[string]interface{}, status strin
 		return nil
 	}
 	return fmt.Errorf("scheduler: task %q not found", id)
+}
+
+// ClearDeliveryWarning removes a stored push failure from this row. The run
+// text before that note stays. A missing row or a result with no note is a no-op.
+func (m *Manager) ClearDeliveryWarning(id string) error {
+	if m == nil {
+		return fmt.Errorf("scheduler: task %q not found", id)
+	}
+	id = strings.TrimSpace(id)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.tasks {
+		if m.tasks[i].ID != id {
+			continue
+		}
+		if !HasDeliveryWarning(m.tasks[i].LastResult) {
+			return nil
+		}
+		prev := m.tasks[i]
+		m.tasks[i].LastResult = StripDeliveryWarning(m.tasks[i].LastResult)
+		if err := m.save(); err != nil {
+			m.tasks[i] = prev
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("scheduler: task %q not found", id)
+}
+
+// BindDesktopBot fills a timer that was stored without a bot. A row that
+// already names a bot is left as it is.
+func (m *Manager) BindDesktopBot(id, botID, owner string) error {
+	id = strings.TrimSpace(id)
+	botID = strings.TrimSpace(botID)
+	owner = strings.TrimSpace(owner)
+	if id == "" || botID == "" {
+		return fmt.Errorf("scheduler: desktop bot id is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.tasks {
+		if m.tasks[i].ID != id {
+			continue
+		}
+		if strings.TrimSpace(m.tasks[i].DesktopBotID) != "" {
+			return nil
+		}
+		prev := m.tasks[i]
+		m.tasks[i].DesktopBotID = botID
+		if strings.TrimSpace(m.tasks[i].DesktopBotOwner) == "" && owner != "" {
+			m.tasks[i].DesktopBotOwner = owner
+		}
+		if strings.TrimSpace(m.tasks[i].TaskType) == "" {
+			m.tasks[i].TaskType = TaskTypeReminder
+		}
+		if err := m.save(); err != nil {
+			m.tasks[i] = prev
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("scheduler: task %q not found", id)
+}
+
+// scheduleClockChanged reports a patch that moves when the task runs.
+// The order text and the name do not.
+func scheduleClockChanged(prev, next ScheduledTask) bool {
+	return prev.IntervalMinutes != next.IntervalMinutes ||
+		prev.Hour != next.Hour ||
+		prev.Minute != next.Minute ||
+		prev.DayOfWeek != next.DayOfWeek ||
+		prev.DayOfMonth != next.DayOfMonth ||
+		prev.StartDate != next.StartDate ||
+		prev.EndDate != next.EndDate ||
+		prev.Status != next.Status
 }
 
 // ---------------------------------------------------------------------------
@@ -920,6 +1070,10 @@ func (m *Manager) TriggerNow(id string) error {
 		return fmt.Errorf("task %s is not active (status=%s)", id, taskCopy.Status)
 	}
 	if _, running := m.runningTasks[id]; running {
+		m.mu.Unlock()
+		return fmt.Errorf("task %s is already running", id)
+	}
+	if _, held := m.externalHold[id]; held {
 		m.mu.Unlock()
 		return fmt.Errorf("task %s is already running", id)
 	}

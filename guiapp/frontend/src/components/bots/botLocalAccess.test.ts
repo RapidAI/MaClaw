@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, mergeTransfer, type BotLocalTransfer } from './botLocalAccess';
+import { formatBytes, localPermission, mergeTransfer, type BotLocalTransfer } from './botLocalAccess';
 
 const ev = (id: string, bot = 'b1', done = 0): BotLocalTransfer => ({ id, bot_id: bot, direction: 'to_local', done, state: 'running' });
+
+describe('local permission', () => {
+    it('asks unless the saved value is full', () => {
+        expect(localPermission(undefined)).toBe('ask');
+        expect(localPermission('')).toBe('ask');
+        expect(localPermission('ask')).toBe('ask');
+        expect(localPermission('full')).toBe('full');
+        expect(localPermission(' FULL ')).toBe('full');
+    });
+});
 
 describe('local relay transfers', () => {
     it('keeps the newest event per id', () => {

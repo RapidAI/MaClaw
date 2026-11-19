@@ -932,6 +932,69 @@ func TestMacLawSrvDiscussionContextCoalescesSharedStreamHistory(t *testing.T) {
 	}
 }
 
+func TestMacLawSrvDiscussionContextFoldsTheSettledEndingOntoTheOpening(t *testing.T) {
+	shared := strings.Repeat("重叠", 40)
+	opening := strings.Repeat("甲", 20) + shared
+	rest := strings.Repeat("乙", 20)
+	messages := []corea2a.Message{
+		{ID: "m1", FromID: "ve_employee_1", Kind: corea2a.MessageStreamChunk, Content: opening},
+		{ID: "m2", FromID: "ve_employee_1", Kind: corea2a.MessageStreamEnd, Content: shared + rest},
+		{ID: "m3", FromID: "ve_employee_1", Kind: corea2a.MessageStreamChunk, Content: "Hello"},
+		{ID: "m4", FromID: "ve_employee_1", Kind: corea2a.MessageStreamEnd, Content: " world"},
+		{ID: "m5", FromID: "ve_employee_1", Kind: corea2a.MessageStreamChunk, Content: "已经写到这里"},
+		{ID: "m6", FromID: "ve_employee_1", Kind: corea2a.MessageStreamEnd, Content: "[系统提示] 失败"},
+	}
+	got := strings.Join(macLawSrvDiscussionRecentContext(messages, corea2a.GroupDiscussionMessage{}), "\n")
+	if !strings.Contains(got, opening+rest) || strings.Contains(got, shared+shared) {
+		t.Fatalf("settled ending was not folded once: %q", got)
+	}
+	if !strings.Contains(got, "Hello world") || strings.Contains(got, "Helloworld") {
+		t.Fatalf("short stream fragment = %q", got)
+	}
+	if !strings.Contains(got, "已经写到这里\n\n[系统提示] 失败") {
+		t.Fatalf("notice was glued onto the answer: %q", got)
+	}
+}
+
+func TestMacLawSrvDiscussionContextKeepsTheSettledTail(t *testing.T) {
+	opening := strings.Repeat("甲", 1300)
+	ending := strings.Repeat("乙", 40)
+	messages := []corea2a.Message{
+		{ID: "m1", FromID: "ve_employee_1", Kind: corea2a.MessageStreamChunk, Content: opening},
+		{ID: "m2", FromID: "ve_employee_1", Kind: corea2a.MessageStreamEnd, Content: ending},
+		{ID: "m3", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: opening + "请看开头"},
+		{ID: "m4", FromID: "ve_employee_1", Kind: corea2a.MessageAnswer, Content: opening + "结论在末尾"},
+	}
+	got := strings.Join(macLawSrvDiscussionRecentContext(messages, corea2a.GroupDiscussionMessage{}), "\n")
+	if !strings.Contains(got, ending) {
+		t.Fatalf("stream ending was clipped off the folded answer: %q", got)
+	}
+	if !strings.Contains(got, "结论在末尾") {
+		t.Fatalf("persisted answer should keep its ending: %q", got)
+	}
+	if strings.Contains(got, "请看开头") {
+		t.Fatalf("a request should keep its start, got %q", got)
+	}
+}
+
+func TestMacLawSrvDiscussionContextSummaryKeepsSettledEnding(t *testing.T) {
+	opening := strings.Repeat("甲", 500)
+	ending := strings.Repeat("乙", 24)
+	lines := groupDiscussionSummaryMessageLines([]corea2a.Message{
+		{FromID: "anna", Kind: corea2a.MessageStreamChunk, Content: opening},
+		{FromID: "anna", Kind: corea2a.MessageStreamEnd, Content: ending},
+		{FromID: "anna", Kind: corea2a.MessageStreamChunk, Content: "Hello"},
+		{FromID: "anna", Kind: corea2a.MessageStreamEnd},
+	})
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, ending) {
+		t.Fatalf("summary dropped the settled ending: %q", got)
+	}
+	if !strings.Contains(got, "[anna] Hello") {
+		t.Fatalf("empty stream_end should still coalesce chunks: %q", got)
+	}
+}
+
 func TestMacLawSrvDiscussionRecentContextKeepsMentionedMessagesVisible(t *testing.T) {
 	messages := []corea2a.Message{
 		{ID: "m1", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "@Anna summarize contract", ToIDs: []string{"ve_employee_1"}},

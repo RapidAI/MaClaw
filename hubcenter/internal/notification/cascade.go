@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // CascadeRequest is the payload sent to a Hub's /api/v1/notifications/cascade endpoint.
@@ -31,11 +33,11 @@ type CascadeService struct {
 
 // NewCascadeService creates a CascadeService with a 30-second timeout HTTP client.
 func NewCascadeService(store Store) *CascadeService {
+	client := remote.NewHubHTTPClient()
+	client.Timeout = 30 * time.Second
 	return &CascadeService{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		store: store,
+		httpClient: client,
+		store:      store,
 	}
 }
 

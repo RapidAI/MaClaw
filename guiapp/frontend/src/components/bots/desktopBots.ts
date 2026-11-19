@@ -9,6 +9,10 @@ export interface DesktopBot {
     createdAt: number;
     // Copied from the hub list. This client does not recompute it from CreatedAt.
     primary?: boolean;
+    // shared, isolated, or none. Missing means the shared computer.
+    desktopMode?: string;
+    // Local computer this bot uses. Empty is the cloud computer.
+    nodeId?: string;
 }
 
 export type BotPhase = 'plan' | 'execute';
@@ -503,6 +507,10 @@ export interface InProgressBotTask {
     phase?: BotPhase;
     status: BotTaskProgress;
     startedAt: number;
+    // local marks an install or update run by this GUI, not a cloud bot turn.
+    // localKind is that job's stage: deploying, upgrading, or registering.
+    local?: boolean;
+    localKind?: 'deploying' | 'upgrading' | 'registering';
 }
 
 // Turns this process admitted. The bots page can unmount while Go is still
@@ -932,6 +940,10 @@ export interface DesktopBotMessage {
     // bubble is shown only; this client never sends or recovers it.
     syncSeq?: number;
     syncOrigin?: string;
+    // Hub's display sequence for this bubble, including one this client
+    // wrote. The chat is shown in this order. It stays off the journal body
+    // (syncSeq already means "another client's bubble").
+    orderSeq?: number;
 }
 
 export interface DesktopBotNoticeBot {

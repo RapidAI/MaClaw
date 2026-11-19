@@ -466,6 +466,41 @@ func (a *App) IsPetStorePackInstalled(sourcePackID string) bool {
 	return reg != nil && reg.IsPackMarketInstalled(sourcePackID)
 }
 
+// PetStoreInstalledPack describes a market-installed copy on this machine.
+type PetStoreInstalledPack struct {
+	Version string `json:"version"`
+	// InstalledAt is the local install time in unix seconds. The update button
+	// does not use it: new vs old is the source pack id plus Version.
+	InstalledAt int64 `json:"installed_at"`
+}
+
+// GetPetStoreInstalledPackDetails returns the installed manifest versions and
+// local install times of the given source pack IDs, keyed by source pack ID.
+// Only market-installed copies count — the same rule as
+// IsPetStorePackInstalled — so a locally authored pack that happens to share
+// the manifest ID never poses as an updatable market install.
+func (a *App) GetPetStoreInstalledPackDetails(sourcePackIDs []string) map[string]PetStoreInstalledPack {
+	details := make(map[string]PetStoreInstalledPack)
+	reg := petpack.EnsureGlobal()
+	if reg == nil {
+		return details
+	}
+	for _, sourcePackID := range sourcePackIDs {
+		sourcePackID = strings.TrimSpace(sourcePackID)
+		if !petpack.IsValidPackID(sourcePackID) {
+			continue
+		}
+		if version, installedAt, ok := reg.MarketInstalledPackInfo(sourcePackID); ok {
+			var installedUnix int64
+			if !installedAt.IsZero() {
+				installedUnix = installedAt.Unix()
+			}
+			details[sourcePackID] = PetStoreInstalledPack{Version: version, InstalledAt: installedUnix}
+		}
+	}
+	return details
+}
+
 func (a *App) PurchasePetStorePack(id string) (map[string]interface{}, error) {
 	data, err := a.petStoreRequest(http.MethodPost, "/api/v1/pet-store/packs/"+url.PathEscape(strings.TrimSpace(id))+"/purchase", nil, "")
 	if err != nil {
@@ -531,6 +566,10 @@ func (a *App) InstallPetStorePack(id string) (string, error) {
 func (a *App) SubmitPetStorePack(zipPath, name, description, version string, price int64, sourcePackID string) (map[string]interface{}, error) {
 	if price < 0 || price > 999999 {
 		return nil, errString("price must be 0-999999 credits")
+	}
+	version = petpack.NormalizePackVersion(version)
+	if !petpack.ValidPackVersion(version) {
+		return nil, errString("version is required")
 	}
 	sourcePackID = strings.TrimSpace(sourcePackID)
 	if !petpack.IsValidPackID(sourcePackID) {
@@ -671,6 +710,79 @@ func (a *App) InstallPetPackZip(zipPath string) (string, error) {
 		fa.InvalidatePetPackAssets()
 	}
 	return id, nil
+}
+
+// DSHPetImport is the settings-page result of converting one sprite folder.
+// Warnings keep the converter's stable tokens. Dropped is the number of atlas
+// cells that were not copied into the pack.
+type DSHPetImport struct {
+	ID       string   `json:"id"`
+	Warnings []string `json:"warnings"`
+	Dropped  int      `json:"dropped"`
+}
+
+// ImportDSHPetFolder converts a local DeepSeek Harness sprite folder into a
+// user pet pack and installs it. An empty dir opens the directory dialog.
+// Cancel returns an empty ID and a nil error. Ordinary zip installs stay on
+// InstallPetPackZip and are still marked created.
+func (a *App) ImportDSHPetFolder(dir string) (DSHPetImport, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		if a == nil || a.ctx == nil {
+			return DSHPetImport{}, nil
+		}
+		selected, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+			Title: "Import DeepSeek sprite folder",
+		})
+		if err != nil || strings.TrimSpace(selected) == "" {
+			return DSHPetImport{}, nil
+		}
+		dir = selected
+	}
+	tmp, err := os.CreateTemp("", "maclaw-dsh-*.zip")
+	if err != nil {
+		return DSHPetImport{}, err
+	}
+	zipPath := tmp.Name()
+	defer os.Remove(zipPath)
+	if err := tmp.Close(); err != nil {
+		return DSHPetImport{}, err
+	}
+	report, err := petpack.ConvertDSHPet(petpack.DSHConvertRequest{InputDir: dir, ZipPath: zipPath})
+	if err != nil {
+		if report.RejectedReason != "" {
+			return DSHPetImport{}, fmt.Errorf("无法转换这只宠物：%s", report.RejectedReason)
+		}
+		if report.ValidatorError != "" {
+			return DSHPetImport{}, fmt.Errorf("转换器生成的包没有通过校验：%s", report.ValidatorError)
+		}
+		return DSHPetImport{}, err
+	}
+	reg := petpack.EnsureGlobal()
+	if reg == nil {
+		return DSHPetImport{}, errPetRegistryUnavailable
+	}
+	id, err := reg.InstallZip(zipPath)
+	if err != nil {
+		return DSHPetImport{}, err
+	}
+	if err := reg.SetPackSource(id, petpack.SourceImported); err != nil {
+		_ = reg.Uninstall(id)
+		return DSHPetImport{}, fmt.Errorf("mark pet pack source: %w", err)
+	}
+	if a != nil && a.ctx != nil {
+		a.emitEvent("pet:packs-changed", map[string]any{"id": id, "action": "install"})
+	}
+	if a != nil {
+		if fa := a.existingFloatingAssistant(); fa != nil {
+			fa.InvalidatePetPackAssets()
+		}
+	}
+	warnings := report.Warnings
+	if warnings == nil {
+		warnings = []string{}
+	}
+	return DSHPetImport{ID: id, Warnings: warnings, Dropped: len(report.DroppedFrames)}, nil
 }
 
 // UninstallPetPack removes a user-installed pack by id (not bundled-only official).

@@ -25,10 +25,25 @@ export function useTTSReadback(audioOutputDeviceId?: string) {
     const ttsEnabledRef = useRef(false);
     const ttsAudioQueueRef = useRef<string[]>([]);
     const ttsAudioPlayingRef = useRef(false);
+    const ttsEnabledRecheckRef = useRef(false);
     const meterRefs = useRef(createLevelMeterRefs());
 
     useEffect(() => { ttsEnabledRef.current = ttsEnabled; }, [ttsEnabled]);
     useEffect(() => { GetTTSEnabled().then(v => setTtsEnabledState(!!v)).catch(() => {}); }, []);
+
+    // PatchConfigFields emits config-changed/config-updated for every save, so
+    // TTS toggles from other surfaces (bot voice tab, remote settings, tray)
+    // refresh this flag without a remount — the panel stays mounted for the
+    // app's lifetime, and a stale flag would drop or wrongly play audio.
+    useEffect(() => {
+        const reload = () => { void GetTTSEnabled().then(v => setTtsEnabledState(!!v)).catch(() => {}); };
+        const offChanged = EventsOn('config-changed', reload);
+        const offUpdated = EventsOn('config-updated', reload);
+        return () => {
+            if (typeof offChanged === 'function') offChanged();
+            if (typeof offUpdated === 'function') offUpdated();
+        };
+    }, []);
 
     const setTtsEnabled = useCallback((next: boolean) => {
         setTtsEnabledState(next);
@@ -78,9 +93,25 @@ export function useTTSReadback(audioOutputDeviceId?: string) {
 
     useEffect(() => {
         const handler = (b64wav: string) => {
-            if (!ttsEnabledRef.current) return;
-            ttsAudioQueueRef.current.push(b64wav);
-            playNextTTSAudio();
+            if (ttsEnabledRef.current) {
+                ttsAudioQueueRef.current.push(b64wav);
+                playNextTTSAudio();
+                return;
+            }
+            // TTS can be switched on by another surface after this hook
+            // mounted (bot voice tab, remote settings) — the assistant panel
+            // stays mounted for the app's lifetime, so its once-loaded flag
+            // would drop every event. Re-check the backend once before
+            // dropping, and play the audio if the switch is now on.
+            if (ttsEnabledRecheckRef.current) return;
+            ttsEnabledRecheckRef.current = true;
+            void GetTTSEnabled().then(on => {
+                if (!on) return;
+                ttsEnabledRef.current = true;
+                setTtsEnabledState(true);
+                ttsAudioQueueRef.current.push(b64wav);
+                playNextTTSAudio();
+            }).catch(() => {}).finally(() => { ttsEnabledRecheckRef.current = false; });
         };
         EventsOn("tts:audio", handler);
         return () => { EventsOff("tts:audio"); };

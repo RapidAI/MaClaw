@@ -161,11 +161,14 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 	}
 	tool.RecordDiscoverToolCall(true)
 
-	onSurface := map[string]bool{}
-	if loopCtx != nil {
-		if names := loopCtx.exposedToolNameSet(); names != nil {
-			onSurface = names
-		}
+	// One locked read for every reporting input: the rendered surface, the
+	// recorded grants, the last build's contract, and the unlanded ledger.
+	// Grants recorded below are covered by `activated`, so a snapshot taken
+	// before activation loses nothing.
+	snap := loopCtx.surfaceGrantSnapshot()
+	onSurface := snap.exposed
+	if onSurface == nil {
+		onSurface = map[string]bool{}
 	}
 
 	activated := make(map[string]bool)
@@ -222,9 +225,18 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d matching tools:\n", len(ranked)))
+	// Report each grant through the last surface build's contract and the
+	// rendered result itself: a hard market-search round holds non-skill
+	// grants, a guided surface refuses suppressed names, a light profile
+	// refuses forbidden tools, and any other fence (workflow, expert,
+	// group, direct mode, plan phase) shows up as an unlanded grant. A name
+	// that cannot land must not be promised for the next request.
+	grantContract := snap.contract
+	recordedGrants := snap.recorded
 	anyGranted := false
 	anyOnSurface := false
 	anyBlocked := false
+	anyDeferred := false
 	anyLegacy := false
 	for i, item := range ranked {
 		if mcp, ok := mcpMatches[item.name]; ok {
@@ -248,21 +260,40 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		if runes := []rune(desc); len(runes) > 120 {
 			desc = string(runes[:120]) + "..."
 		}
-		blocked := h.surfaceNameRejected(item.name)
+		verdict := grantContract.verdict(item.name)
+		// A name re-discovered while its recorded grant is still pending keeps
+		// the same promise — activated covers only this call's new grants.
+		promised := activated[item.name] || recordedGrants[item.name]
+		deferred := promised && !onSurface[item.name] && verdict == surfaceGrantHoldForSearch
+		blocked := h.surfaceNameRejected(item.name) || verdict == surfaceGrantRefuse ||
+			(promised && !deferred && snap.unlanded[item.name])
 		if blocked {
 			anyBlocked = true
 		}
 		if onSurface[item.name] {
 			anyOnSurface = true
 		}
-		if activated[item.name] && !onSurface[item.name] && !blocked {
+		if deferred {
+			anyDeferred = true
+		} else if promised && !onSurface[item.name] && !blocked {
 			anyGranted = true
 		}
-		b.WriteString(discoverToolStatusLine(i+1, item.name, desc, onSurface[item.name], activated[item.name], blocked))
+		b.WriteString(discoverToolStatusLine(i+1, item.name, desc, onSurface[item.name], promised && !deferred && !blocked, blocked, deferred))
+	}
+	// Compose the footer from whichever outcomes actually occurred so a mixed
+	// result explains every status it lists instead of only the first.
+	var footers []string
+	if anyGranted {
+		footers = append(footers, "Granted names will be on the next model request in this turn; call them then")
+	}
+	if anyDeferred {
+		footers = append(footers, "held names join the surface after this turn's required skill search runs")
 	}
 	switch {
-	case anyGranted:
-		b.WriteString("\nGranted names will be on the next model request in this turn. Call them then; do not rediscover the same name.")
+	case len(footers) > 1:
+		b.WriteString("\n" + strings.Join(footers, "; ") + ". Do not rediscover either.")
+	case len(footers) == 1:
+		b.WriteString("\n" + footers[0] + ". Do not rediscover the same name.")
 	case anyOnSurface:
 		b.WriteString("\nA listed name is already on this turn's tool surface. Call it directly; do not keep calling discover_tool for the same name.")
 	case anyBlocked:
@@ -272,6 +303,9 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		// for a legacy name the host did not grant. MCP-only results use the
 		// bind footer below.
 		b.WriteString("\nThe matched name is not in the current tool list yet. If it stays unmatched after this search, use another listed tool; do not keep calling discover_tool for the same name.")
+	}
+	if anyBlocked && (anyGranted || anyDeferred) {
+		b.WriteString(" Blocked names cannot be added this turn; use another listed tool.")
 	}
 	if len(mcpBound) > 0 {
 		b.WriteString("\n" + discoveredMCPBoundSentence)
@@ -491,10 +525,6 @@ func finalizeDiscoveryRanking(mentioned map[string]bool, ranked []discoveredTool
 	return out
 }
 
-func (h *IMMessageHandler) grantDiscoveredConditionalTool(ownerID, name string) bool {
-	return h.grantDiscoveredSurfaceTool(ownerID, name)
-}
-
 func (h *IMMessageHandler) grantDiscoveredSurfaceTool(ownerID, name string) bool {
 	name = strings.TrimSpace(name)
 	if h == nil || name == "" || h.surfaceNameRejected(name) {
@@ -522,8 +552,103 @@ func (h *IMMessageHandler) surfaceNameRejected(name string) bool {
 	return len(h.filterPolicyRejectedSurfaceTools(probe)) == 0
 }
 
-func applyLoopDiscoveredConditionalTools(tools, baseTools, allTools []map[string]interface{}, ctx *LoopContext) ([]map[string]interface{}, []map[string]interface{}) {
-	discovered := ctx.discoveredConditionalToolNames()
+// surfaceGrantContract describes which discovery grants one surface build
+// may land. The zero value is permissive: with no recorded contract every
+// grant lands. Both the build-time grant list and discover_tool's status
+// lines consult it, so what the surface promises and what it delivers come
+// from one predicate.
+type surfaceGrantContract struct {
+	searchRequired bool
+	guided         bool
+	profile        ExecutionProfile
+}
+
+type surfaceGrantVerdict int
+
+const (
+	surfaceGrantLand surfaceGrantVerdict = iota
+	surfaceGrantHoldForSearch
+	surfaceGrantRefuse
+)
+
+func surfaceGrantContractForPhase(ctx *LoopContext, phase agentLoopPhase) surfaceGrantContract {
+	return surfaceGrantContract{
+		searchRequired: shouldRestrictToSkillSearch(phase),
+		guided:         phase.SkillMode == skillPreferenceAgentGuided,
+		profile:        executionProfileFromLoop(ctx),
+	}
+}
+
+func (c surfaceGrantContract) verdict(name string) surfaceGrantVerdict {
+	// The guided reseal drops suppressed names outright, and a light profile
+	// must not regain a forbidden tool through a petition — both refuse,
+	// ahead of the search hold, because a grant that can never land is not
+	// "held", it is denied.
+	if c.guided && agentGuidedSuppressedToolNames[name] {
+		return surfaceGrantRefuse
+	}
+	if !grantAllowedByExecutionProfile(name, c.profile) {
+		return surfaceGrantRefuse
+	}
+	if c.searchRequired {
+		if isSkillSearchToolName(name) || isSkillProgressToolName(name) {
+			return surfaceGrantLand
+		}
+		return surfaceGrantHoldForSearch
+	}
+	return surfaceGrantLand
+}
+
+// grantAllowedByExecutionProfile mirrors filterToolsForExecutionProfile at
+// name granularity: a light surface must not regain a tool its contract
+// forbids just because the model petitioned it through discover_tool. The
+// inference table is the same source explicit metadata is generated from,
+// so a name-level check stays faithful — and fails closed toward refusal
+// for a registered tool carrying a bespoke contract.
+func grantAllowedByExecutionProfile(name string, profile ExecutionProfile) bool {
+	if !profile.IsLight() && !isLightPromptProfile(profile.PromptProfile) {
+		return true
+	}
+	filterProfile := profile
+	if !filterProfile.IsLight() {
+		filterProfile = softLightExecutionProfile(filterProfile)
+	}
+	contract := inferredExecutionContract(name)
+	return contractAllowedForLight(contract) && contractMatchesExecutionProfile(contract, filterProfile)
+}
+
+// discoveryGrantNameSetForPhase is the set form of
+// discoveryGrantNamesForPhase for keep-set filters. A keep-set built from
+// the raw grant list protects names the contract refused — under a light
+// profile a forbidden grant would pierce the skill-preference strip and
+// land on a surface that has no profile filter downstream.
+func discoveryGrantNameSetForPhase(ctx *LoopContext, phase agentLoopPhase) map[string]bool {
+	names := discoveryGrantNamesForPhase(ctx, phase)
+	if len(names) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
+}
+
+// discoveryGrantNamesForPhase returns the loop-scoped discover_tool grants
+// the current surface contract may land.
+func discoveryGrantNamesForPhase(ctx *LoopContext, phase agentLoopPhase) []string {
+	grants := ctx.discoveredConditionalToolNames()
+	contract := surfaceGrantContractForPhase(ctx, phase)
+	out := make([]string, 0, len(grants))
+	for _, name := range grants {
+		if contract.verdict(name) == surfaceGrantLand {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func applyLoopDiscoveredConditionalTools(tools, baseTools, allTools []map[string]interface{}, discovered []string) ([]map[string]interface{}, []map[string]interface{}) {
 	if len(discovered) == 0 {
 		return tools, baseTools
 	}
@@ -573,12 +698,14 @@ func discoveryPublishedDescription(name, desc string) string {
 	return desc
 }
 
-func discoverToolStatusLine(index int, name, desc string, onSurface, activated, blocked bool) string {
+func discoverToolStatusLine(index int, name, desc string, onSurface, activated, blocked, deferred bool) string {
 	switch {
 	case blocked:
 		return fmt.Sprintf("%d. **%s** (blocked by host policy — do not rediscover) - %s\n", index, name, desc)
 	case onSurface:
 		return fmt.Sprintf("%d. **%s** (already in this turn's tools — call it now) - %s\n", index, name, desc)
+	case deferred:
+		return fmt.Sprintf("%d. **%s** (held until this turn's required skill search runs — do not rediscover) - %s\n", index, name, desc)
 	case activated:
 		return fmt.Sprintf("%d. **%s** (granted for the next request) - %s\n", index, name, desc)
 	default:

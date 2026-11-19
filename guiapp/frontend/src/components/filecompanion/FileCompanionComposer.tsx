@@ -3,6 +3,7 @@ import { cs, setCompanionUiLang } from "../../i18n/mnCompanion";
 import { InputHistoryAutocomplete } from "../ai/InputHistoryAutocomplete";
 import { useCompanionAppearance } from "./useCompanionAppearance";
 import { useAssistantInputHistory } from "../ai/useAssistantInputHistory";
+import { useBufferedComposerValue } from "../ai/useBufferedComposerValue";
 import { useInputHistoryAutocomplete } from "../ai/useInputHistoryAutocomplete";
 import { useTextCompositionGuard } from "../ai/useTextCompositionGuard";
 import { isHistoryResetCommandText } from "../ai/composeAction";
@@ -26,7 +27,6 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const pathRef = useRef(path);
     const textComposition = useTextCompositionGuard();
-    const [isComposing, setIsComposing] = useState(false);
     const [history, setHistory] = useState<string[]>(() => fileCompanionInputHistory());
     const listboxDomId = useId();
     const historyListboxId = `file-companion-input-history-${listboxDomId}`;
@@ -57,6 +57,11 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
         submittedPrompts: history,
     });
 
+    const buffered = useBufferedComposerValue(value, useCallback((next: string) => {
+        rememberHistoryEdit(next);
+        onChange(next);
+    }, [onChange, rememberHistoryEdit]));
+
     // pathRef stays on the file this walk belongs to until the effect below
     // restores that file's draft. Updating it during render would point the
     // restore at the file just opened.
@@ -77,11 +82,11 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
     }, [onChange, rememberHistoryEdit]);
 
     const autocomplete = useInputHistoryAutocomplete({
-        inputValue: value,
+        inputValue: buffered.value,
         submittedPrompts: history,
         applyInputValue: applyAutocompleteValue,
         inputRef,
-        disabled: isComposing || busy,
+        disabled: buffered.isComposing || busy,
     });
 
     const commitTyped = (text: string) => {
@@ -162,7 +167,7 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
                 open={autocomplete.open}
                 matches={autocomplete.matches}
                 selectedIndex={autocomplete.selectedIndex}
-                prefix={value}
+                prefix={buffered.value}
                 listboxId={historyListboxId}
                 onSelectIndex={autocomplete.setSelectedIndex}
                 onAccept={autocomplete.accept}
@@ -179,18 +184,15 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
                     aria-expanded={autocomplete.open}
                     aria-controls={autocomplete.open ? historyListboxId : undefined}
                     aria-activedescendant={autocomplete.open ? `${historyListboxId}-option-${autocomplete.selectedIndex}` : undefined}
-                    value={value}
+                    value={buffered.value}
                     placeholder={cs("输入问题，Enter 发送")}
-                    onChange={(event) => {
-                        rememberHistoryEdit(event.target.value);
-                        onChange(event.target.value);
-                    }}
-                    onCompositionStart={() => {
-                        setIsComposing(true);
+                    onChange={buffered.onChange}
+                    onCompositionStart={(event) => {
+                        buffered.onCompositionStart(event);
                         textComposition.onCompositionStart();
                     }}
-                    onCompositionEnd={() => {
-                        setIsComposing(false);
+                    onCompositionEnd={(event) => {
+                        buffered.onCompositionEnd(event);
                         textComposition.onCompositionEnd();
                     }}
                     onKeyDown={onKeyDown}

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -43,7 +44,13 @@ var ErrDigitalEmployeeYearsRequired = errors.New("digital employee authorization
 var ErrDigitalEmployeeTenantRequired = errors.New("tenant id is required for digital employee authorization")
 var ErrDigitalEmployeeAuthorizationStoreUnavailable = errors.New("digital employee authorization store is unavailable")
 
-var skillMarketAuthHTTPClient = &http.Client{Timeout: 10 * time.Second}
+func newHubsHTTPClient(timeout time.Duration) *http.Client {
+	client := remote.NewHubHTTPClient()
+	client.Timeout = timeout
+	return client
+}
+
+var skillMarketAuthHTTPClient = newHubsHTTPClient(10 * time.Second)
 
 const hubConfirmationPrefix = "hub_registration_confirm:"
 const (
@@ -200,10 +207,11 @@ type RegisterHubRequest struct {
 }
 
 type RegisterHubResult struct {
-	HubID               string `json:"hub_id"`
-	HubSecret           string `json:"hub_secret"`
-	PendingConfirmation bool   `json:"pending_confirmation"`
-	Message             string `json:"message,omitempty"`
+	HubID               string                  `json:"hub_id"`
+	HubSecret           string                  `json:"hub_secret"`
+	PendingConfirmation bool                    `json:"pending_confirmation"`
+	Message             string                  `json:"message,omitempty"`
+	VisibilityLock      *HubVisibilityAuthority `json:"visibility_lock,omitempty"`
 }
 
 type HeartbeatHubUpdate struct {
@@ -384,7 +392,7 @@ func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, rou
 		settings:               settings,
 		mailer:                 mailer,
 		publicBaseURL:          strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
-		client:                 &http.Client{Timeout: 30 * time.Second},
+		client:                 newHubsHTTPClient(30 * time.Second),
 		heartbeatWriteInterval: 5 * time.Minute,
 	}
 }
@@ -886,7 +894,7 @@ func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubIn
 	existing.BaseURL = normalizeHubBaseURL(req.BaseURL)
 	existing.Host = normalizeHubHost(req.Host)
 	existing.Port = req.Port
-	existing.Visibility = visibility
+	applyReportedVisibility(existing, visibility)
 	existing.EnrollmentMode = normalizeEnrollmentMode(req.EnrollmentMode)
 	existing.CorporateEmailDomain = corporateEmailDomain
 	if req.AcceptPublicSignup != nil {
@@ -918,10 +926,11 @@ func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubIn
 	}
 	s.refreshRoutesForce(ctx)
 
+	visibilityLock, _ := s.HubVisibilityAuthority(ctx, existing.ID)
 	if alreadyConfirmed {
-		return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: false, Message: "Hub re-registered successfully, already confirmed"}, nil
+		return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: false, Message: "Hub re-registered successfully, already confirmed", VisibilityLock: visibilityLock}, nil
 	}
-	return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: true, Message: "Hub registration confirmation sent"}, nil
+	return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: true, Message: "Hub registration confirmation sent", VisibilityLock: visibilityLock}, nil
 }
 
 func capabilitiesWithCorporateEmailDomains(capabilities map[string]any, domains []string, single string) map[string]any {
@@ -1079,7 +1088,6 @@ func (s *Service) registerHeartbeatHub(ctx context.Context, hubID, rawSecret str
 		if len(corporateEmailDomains) > 0 {
 			corporateEmailDomain = corporateEmailDomains[0]
 		}
-		visibility := normalizeVisibility(update.Visibility)
 		acceptPublicSignup := hub.AcceptPublicSignup
 		if update.AcceptPublicSignup != nil {
 			acceptPublicSignup = *update.AcceptPublicSignup
@@ -1087,7 +1095,7 @@ func (s *Service) registerHeartbeatHub(ctx context.Context, hubID, rawSecret str
 		hub.BaseURL = strings.TrimRight(strings.TrimSpace(update.BaseURL), "/")
 		hub.Host = strings.TrimSpace(update.Host)
 		hub.Port = update.Port
-		hub.Visibility = visibility
+		applyReportedVisibility(hub, update.Visibility)
 		hub.EnrollmentMode = normalizeEnrollmentMode(update.EnrollmentMode)
 		hub.CorporateEmailDomain = corporateEmailDomain
 		hub.AcceptPublicSignup = acceptPublicSignup
@@ -2552,7 +2560,7 @@ func hubSupportsDirectUserMigration(hub *store.HubInstance) bool {
 
 func (s *Service) callHubUserMigration(ctx context.Context, hub *store.HubInstance, path string, payload remoteUserMigrationRequest, out any) error {
 	if s.client == nil {
-		s.client = &http.Client{Timeout: 30 * time.Second}
+		s.client = newHubsHTTPClient(30 * time.Second)
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -2993,11 +3001,36 @@ func tenantDigitalEmployeeAuthorizationsKey(hubID string) string {
 	return systemKeyTenantDigitalEmployeeAuthorizations + ":" + strings.TrimSpace(hubID)
 }
 
-func (s *Service) UpdateVisibility(ctx context.Context, hubID, visibility string) error {
+// HubVisibilityAuthority is the effective visibility plus, while an admin
+// override is active, who set it. It is sent to hubs in the heartbeat
+// response so a hub can show that Hub Center manages its visibility.
+type HubVisibilityAuthority struct {
+	Visibility string `json:"visibility"`
+	Locked     bool   `json:"locked"`
+	LockedBy   string `json:"locked_by,omitempty"`
+}
+
+func (s *Service) HubVisibilityAuthority(ctx context.Context, hubID string) (*HubVisibilityAuthority, error) {
+	hub, err := s.hubs.GetByID(ctx, strings.TrimSpace(hubID))
+	if err != nil || hub == nil {
+		return nil, err
+	}
+	out := &HubVisibilityAuthority{Visibility: hub.Visibility, Locked: hub.VisibilityLocked}
+	if hub.VisibilityLocked {
+		out.LockedBy = hub.VisibilityLockedBy
+	}
+	return out, nil
+}
+
+func (s *Service) UpdateVisibility(ctx context.Context, hubID, visibility, lockedBy string) error {
 	if strings.TrimSpace(hubID) == "" {
 		return errors.New("hub id is required")
 	}
-	if err := s.hubs.UpdateVisibility(ctx, strings.TrimSpace(hubID), normalizeVisibility(visibility), time.Now()); err != nil {
+	lockedBy = strings.TrimSpace(lockedBy)
+	if lockedBy == "" {
+		lockedBy = "admin"
+	}
+	if err := s.hubs.UpdateVisibility(ctx, strings.TrimSpace(hubID), normalizeVisibility(visibility), lockedBy, time.Now()); err != nil {
 		return err
 	}
 	if err := s.recordHubByID(ctx, hubID); err != nil {
@@ -4693,6 +4726,26 @@ func normalizeVisibility(v string) string {
 	}
 }
 
+// applyReportedVisibility folds a hub-reported visibility (heartbeat or
+// re-registration) into the stored row. An admin-set visibility stays
+// authoritative while VisibilityLocked is set; once the hub reports the same
+// value the override has converged, so the lock clears and the hub owns the
+// field again.
+func applyReportedVisibility(hub *store.HubInstance, reported string) {
+	if hub == nil || strings.TrimSpace(reported) == "" {
+		return
+	}
+	reported = normalizeVisibility(reported)
+	if hub.VisibilityLocked {
+		if normalizeVisibility(hub.Visibility) == reported {
+			hub.VisibilityLocked = false
+			hub.VisibilityLockedBy = ""
+		}
+		return
+	}
+	hub.Visibility = reported
+}
+
 func normalizeCorporateEmailDomain(v string) string {
 	v = strings.TrimSpace(strings.ToLower(v))
 	v = strings.TrimPrefix(v, "@")
@@ -5170,7 +5223,7 @@ func (s *Service) AdminVerifyEmailRoute(ctx context.Context, email string) (*Adm
 // or (false, err) if the Hub is unreachable or doesn't support this endpoint.
 func (s *Service) probeHubUserExists(ctx context.Context, hub *store.HubInstance, email, tenantID string) (bool, error) {
 	if s.client == nil {
-		s.client = &http.Client{Timeout: 10 * time.Second}
+		s.client = newHubsHTTPClient(10 * time.Second)
 	}
 	baseURL := strings.TrimRight(strings.TrimSpace(hub.BaseURL), "/")
 	payload := map[string]string{"email": email}

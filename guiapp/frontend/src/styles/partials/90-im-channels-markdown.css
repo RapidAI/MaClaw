@@ -3826,12 +3826,24 @@
 /* CodingAgentPlanChecklist.tsx — summary bar; the T1/T2 list floats on hover. */
 .capc-checklist { position: relative; padding: 6px 10px; border-radius: 12px; box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.45; }
 .capc-checklist.capc-open { z-index: 6; }
-.capc-bar { display: flex; align-items: stretch; gap: 8px; min-width: 0; }
-.capc-hover { flex: 1 1 auto; min-width: 0; }
+/* The changed-files chip (CodingAgentFileChanges) owns its open state, so the
+   host bar cannot carry a class for it. Lift whichever bar shows the open
+   file list so the popover paints above the composer below. */
+.capc-checklist:has(.capc-files.capc-open),
+.mc-goal-quick-bar:has(.capc-files.capc-open) { z-index: 6; }
+/* Center the readout in the 45% bar. The summary does not grow, so a wide
+   column cannot leave a hole between the current step and the files chip. */
+.capc-bar { display: flex; align-items: stretch; justify-content: center; gap: 8px; min-width: 0; }
+.capc-hover { flex: 0 1 auto; min-width: 0; }
 .capc-files { flex: 0 0 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }
+/* Only the steps bar yields width to the summary. The goal bar hosts the
+   same chip as a direct child and must keep flex: 0 0 auto. */
+.capc-bar > .capc-files { flex-shrink: 1; }
 .capc-bar > .capc-files:first-child { margin-left: auto; }
 .capc-hover + .capc-files { border-left: 1px solid color-mix(in srgb, var(--theme-border, #d8dee8) 70%, transparent); padding-left: 8px; }
-.capc-files-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; border: 0; margin: 0; padding: 2px 4px; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
+/* Clip the diff stat inside the button. The chip can shrink below that stat,
+   and the popover is a sibling, so hidden here does not crop the file list. */
+.capc-files-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; overflow: hidden; border: 0; margin: 0; padding: 2px 4px; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
 .capc-files-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
 .capc-files:hover .capc-files-toggle,
 .capc-files-toggle:focus-visible { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
@@ -3848,13 +3860,18 @@
 .capc-file-stat { display: inline-flex; align-items: baseline; gap: 6px; flex-shrink: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
 .capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
 .capc-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
-.capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 2px 4px; margin: 0; overflow: hidden; border-radius: 8px; transition: background-color 0.15s ease; }
+/* The count and the current step are one readout. space-between pulled
+   them apart once the summary was wider than that text. */
+.capc-head { display: flex; align-items: center; justify-content: flex-start; gap: 8px; min-width: 0; padding: 2px 4px; margin: 0; overflow: hidden; border-radius: 8px; transition: background-color 0.15s ease; }
 .capc-hover:hover .capc-head,
 .capc-toggle:focus-visible .capc-head { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
-.capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; font-weight: 600; }
-.capc-title svg { flex-shrink: 0; }
-.capc-progress { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.capc-track { width: 48px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
+/* CJK in a shrinkable flex item stacks to one character per line unless the
+   label is its own nowrap item. The track shortens before the status. */
+.capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; font-weight: 600; }
+.capc-title svg, .capc-title-label { flex-shrink: 0; }
+.capc-title-label { white-space: nowrap; }
+.capc-progress { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; min-width: 0; flex: 0 1 auto; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.capc-track { flex: 0 1 48px; width: 48px; min-width: 0; max-width: 48px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
 .capc-fill { display: block; height: 100%; border-radius: 999px; transition: width 0.25s ease; }
 .capc-head-end { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap; }
 .capc-current { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; }
@@ -3863,9 +3880,9 @@
 .capc-hover.capc-open .capc-chevron,
 .capc-files.capc-open .capc-chevron { transform: rotate(180deg); }
 /* The list floats above the summary and overlaps the bar's top padding, so
-   the pointer can move onto the list without crossing a dead gap. The
-   checklist already spans the coding chat column, so 50% is half that area. */
-.capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 50%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
+   the pointer can move onto the list without crossing a dead gap. The bar
+   itself is the middle 45% of the column, so the list fills it. */
+.capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 100%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
 .capc-hover.capc-open .capc-popover { pointer-events: auto; visibility: visible; }
 /* border-box keeps the padding and border inside the height cap.
    content-box lets a full list stick about 18px into the task header. */
@@ -3942,6 +3959,9 @@
 /* Rotates the svg root: view-box keeps the origin at the glyph center (the
    capc variant spins a <g> sized by its own fill-box). */
 .gkc-spin { transform-box: view-box; transform-origin: center; animation: capc-spin 0.9s linear infinite; }
+
+/* One goal stage's assignment. It stays when that stage's process list folds. */
+.goal-stage-command { margin: 12px 0 2px; color: var(--theme-text-primary, #24364e); font-size: 14px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
 
 /* CodingAgentProgressStatus.tsx */
 .caps-file-head { font-weight: 600; flex: 1; min-width: 0; }

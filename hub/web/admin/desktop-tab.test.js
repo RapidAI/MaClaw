@@ -109,7 +109,24 @@ function createHarness(options) {
         if (child.id) elements[child.id] = child;
         return child;
       },
-      querySelectorAll: function () { return []; },
+      querySelectorAll: function (selector) {
+        this._queries = this._queries || {};
+        if (this._queries[selector]) return this._queries[selector];
+        const name = /^\[([A-Za-z0-9_-]+)\]$/.exec(String(selector || ''));
+        if (!name) return [];
+        const attr = name[1];
+        const re = new RegExp(attr + '="([^"]*)"', 'g');
+        const html = this._html || '';
+        const out = [];
+        let match;
+        while ((match = re.exec(html))) {
+          const button = createElement('button');
+          button.setAttribute(attr, match[1]);
+          out.push(button);
+        }
+        this._queries[selector] = out;
+        return out;
+      },
       focus: function () {}
     };
     Object.defineProperty(el, 'innerHTML', {
@@ -117,6 +134,7 @@ function createHarness(options) {
       get: function () { return this._html || ''; },
       set: function (html) {
         this._html = String(html || '');
+        this._queries = {};
         this.childNodes = [];
         registerIds(this._html, this);
       }
@@ -153,12 +171,22 @@ function createHarness(options) {
     calls.push({ path: url, body: request && request.body, method: request && request.method });
     if (url === '/api/admin/desktop-services') {
       return Promise.resolve({
-        servers: [{ id: 's1', name: 'dockerd-a', base_url: 'http://docker-host:18081', token_set: true, image: 'maclaw-gui:1', memory: '2500m', cpus: '1.5', shm_size: '512m' }],
+        servers: opts.servers || [{ id: 's1', name: 'dockerd-a', base_url: 'http://docker-host:18081', token_set: true, image: 'maclaw-gui:1', memory: '2500m', cpus: '1.5', shm_size: '512m' }],
         assignments: [{ id: 'a1', scope: 'global', target_id: '', server_id: 's1' }],
         users: opts.viewUsers === undefined
           ? [{ id: 'u_alice', label: 'alice@example.com' }, { id: 'u_bob', label: 'bob@example.com' }]
           : opts.viewUsers
       });
+    }
+    if (url === '/api/admin/bots/nodes') {
+      if (!opts.nodes) return Promise.reject(new Error('edge disabled'));
+      return Promise.resolve({ nodes: opts.nodes });
+    }
+    if (url.indexOf('/api/admin/bots/nodes/') === 0 && (url.slice(-6) === '/share' || url.slice(-9) === '/settings') && request && request.method === 'POST') {
+      return Promise.resolve({ updated: 'n1' });
+    }
+    if (url.indexOf('/api/admin/bots/nodes/') === 0 && request && request.method === 'DELETE') {
+      return Promise.resolve({ deleted: true });
     }
     if (url === '/api/admin/desktop-services/desktops/view') {
       if (opts.viewError) return Promise.reject(new Error(opts.viewError));
@@ -226,6 +254,122 @@ function createHarness(options) {
     pickUser: pickUser,
     releaseView: function (value) { releaseView(value); }
   };
+}
+
+async function testRelayHintShowsWhenTheDesktopIsOnAnotherNode() {
+  console.log('  Test: assigning a desktop on another node warns about delay');
+  const harness = createHarness({
+    servers: [{ id: 's-node', name: 'lab', base_url: 'http://desktopd.n1.node.invalid', node_id: 'n1', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' }],
+    nodes: [{ id: 'n1', name: 'lab', has_desktopd: true, has_srv: false }]
+  });
+  harness.mount();
+  await harness.load();
+  assertIncludes(harness.elements.desktopRelayHint.textContent, '\u5ef6\u8fdf\u8f83\u9ad8', 'cross-node assignment warns');
+
+  const local = createHarness({
+    servers: [{ id: 's-node', name: 'lab', base_url: 'http://desktopd.n1.node.invalid', node_id: 'n1', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' }],
+    nodes: [{ id: 'n1', name: 'lab', has_desktopd: true, has_srv: true }]
+  });
+  local.mount();
+  await local.load();
+  assertIncludes(local.elements.desktopRelayHint.textContent, '\u5ef6\u8fdf\u8f83\u9ad8', 'everyone still crosses networks');
+  local.elements.desktopScope.value = 'user';
+  local.fire(local.elements.desktopScope, 'change');
+  assertEqual(local.elements.desktopRelayHint.textContent, '', 'a user follows that node srv');
+  local.elements.desktopScope.value = 'department';
+  local.fire(local.elements.desktopScope, 'change');
+  assertIncludes(local.elements.desktopRelayHint.textContent, '\u5ef6\u8fdf\u8f83\u9ad8', 'a department stays on the public connection');
+}
+
+async function testEditingANodeKeepsItsVirtualAddress() {
+  console.log('  Test: editing a node service keeps its virtual address');
+  const harness = createHarness({
+    servers: [{ id: 's-node', name: 'lab', base_url: 'http://desktopd.n1.node.invalid', node_id: 'n1', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' }]
+  });
+  harness.mount();
+  await harness.load();
+  const edit = harness.elements.desktopServerList.querySelectorAll('[data-desktop-edit]')[0];
+  harness.fire(edit, 'click');
+  harness.elements.desktopMemory.value = '4g';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  const saved = harness.calls.filter(function (call) { return call.method === 'PATCH' && call.path === '/api/admin/desktop-services/s-node'; });
+  assertEqual(saved.length, 1, 'a resource change is saved');
+  const body = JSON.parse(saved[0].body);
+  assertEqual(body.base_url, 'http://desktopd.n1.node.invalid', 'the node address stays');
+  assertEqual(body.memory, '4g', 'the new memory is sent');
+  const beforeUnit = harness.calls.length;
+  harness.elements.desktopMemory.value = '4';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  assertEqual(harness.calls.length, beforeUnit, 'memory without a unit is not saved');
+  const unitToast = harness.toasts[harness.toasts.length - 1];
+  assertEqual(unitToast && unitToast.kind, 'error', 'a bare memory value is rejected');
+  assertIncludes(unitToast && unitToast.msg, '\u5185\u5b58', 'the operator is told to check the size');
+  const beforeEmpty = harness.calls.length;
+  harness.elements.desktopMemory.value = '';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  assertEqual(harness.calls.length, beforeEmpty, 'empty memory is not saved');
+
+  const before = harness.calls.length;
+  harness.elements.desktopUrl.value = 'http://desktopd.other.node.invalid';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  assertEqual(harness.calls.length, before, 'a different virtual host is not saved');
+  harness.fire(harness.elements.desktopCancel, 'click');
+  harness.elements.desktopName.value = 'public';
+  harness.elements.desktopUrl.value = 'http://desktopd.abc.NODE.INVALID';
+  harness.elements.desktopToken.value = 'secret';
+  harness.fire(harness.elements.desktopAdd, 'click');
+  await flush();
+  assertEqual(harness.calls.length, before, 'a new service cannot use a virtual host');
+}
+
+async function testIntranetNodesStayHiddenUntilTheFeatureIsOn() {
+  console.log('  Test: the intranet node block stays hidden when edge nodes are off');
+  const harness = createHarness();
+  harness.mount();
+  await harness.load();
+  assertEqual(harness.elements.desktopNodeBox.hidden, true, 'intranet block is hidden');
+}
+
+async function testIntranetNodeListShowsStatusCapabilityAndVersion() {
+  console.log('  Test: an intranet node shows status, capability, and version');
+  const harness = createHarness({
+    nodes: [{ id: 'n1', name: 'lab', online: true, has_desktopd: true, has_srv: false, version: 'v9' }]
+  });
+  harness.mount();
+  await harness.load();
+  assertEqual(harness.elements.desktopNodeBox.hidden, false, 'intranet block is shown');
+  const html = harness.elements.desktopNodeList.innerHTML;
+  assertIncludes(html, 'lab', 'the node name is listed');
+  assertIncludes(html, '\u5728\u7ebf', 'online status is listed');
+  assertIncludes(html, 'desktopd', 'desktopd capability is listed');
+  assertIncludes(html, 'v9', 'version is listed');
+  assertIncludes(html, 'data-node-delete="n1"', 'delete is offered');
+  assertIncludes(html, 'data-node-rotate="n1"', 'a new secret can be issued');
+}
+
+async function testIntranetNodeNamesTheRegistrant() {
+  console.log('  Test: a node names the account that registered it');
+  const harness = createHarness({
+    nodes: [
+      { id: 'n1', name: 'lab', online: true, has_desktopd: true, owner_user_id: 'u_alice' },
+      { id: 'n2', name: 'ops', online: false, has_srv: true, issued_by: 'root-admin' },
+      { id: 'n3', name: 'legacy', online: false, has_srv: true }
+    ]
+  });
+  harness.mount();
+  await harness.load();
+  const html = harness.elements.desktopNodeList.innerHTML;
+  assertIncludes(html, 'Alice', 'an owned node resolves the owner to the org account label');
+  assertIncludes(html, 'root-admin', 'an admin-issued node names the issuing admin');
+  assertIncludes(html, '注册账号', 'the registrant is labelled');
+  assertIncludes(html, '发码管理员', 'the issuer is labelled');
+  assertIncludes(html, '个人', 'an owned node carries the personal tag');
+  const legacyRow = html.slice(html.indexOf('legacy'));
+  assert(legacyRow.indexOf('注册账号') === -1, 'a node without a registrant shows no account line');
 }
 
 async function testUserListCarriesOnlyAuthorizedUsers() {
@@ -404,7 +548,49 @@ async function testSwitchingUserOpensThatDesktop() {
   assertEqual(harness.elements.desktopVncTitle.textContent, 'VNC \u67e5\u770b \u00b7 Bob', 'the viewer names the new user');
 }
 
+async function testNodeSettingsEditsNameAndOwnership() {
+  console.log('  Test: node settings edits the name and shared vs personal owner');
+  const harness = createHarness({
+    servers: [
+      { id: 's1', name: 'lab', base_url: 'http://desktopd.n1.node.invalid', node_id: 'n1', owner_user_id: 'u_alice', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' },
+      { id: 's2', name: 'cloud', base_url: 'http://cloud.example', token_set: true, image: 'maclaw-gui:1', memory: '3g', cpus: '1.5', shm_size: '1g' }
+    ],
+    nodes: [{ id: 'n1', name: 'lab', online: true, has_desktopd: true, owner_user_id: 'u_alice' }]
+  });
+  harness.mount();
+  await harness.load();
+  const html = harness.elements.desktopNodeList.innerHTML;
+  assertIncludes(html, 'data-node-settings="n1"', 'a node offers the settings button');
+  const serverHtml = harness.elements.desktopServerList.innerHTML;
+  assertIncludes(serverHtml, '独享', 'a personal service is marked');
+  assertIncludes(serverHtml, 'Alice', 'the owner resolves to the org label');
+  assertIncludes(serverHtml, '共用', 'a shared service is marked');
+  const settings = harness.elements.desktopNodeList.querySelectorAll('[data-node-settings]')[0];
+  harness.fire(harness.elements.desktopNodeList, 'click', { target: settings });
+  assertEqual(harness.elements.desktopNodeSettings.hidden, false, 'the settings form opens');
+  assertEqual(harness.elements.desktopNodeEditName.value, 'lab', 'the name is prefilled');
+  const ownerHtml = harness.elements.desktopNodeEditOwner.innerHTML;
+  assertIncludes(ownerHtml, 'u_alice', 'the owner select offers the org user');
+  assertIncludes(ownerHtml, 'value=""', 'the owner select offers shared');
+  assertEqual(harness.elements.desktopNodeEditOwner.value, 'u_alice', 'the current owner is selected');
+  harness.elements.desktopNodeEditName.value = 'lab-west';
+  harness.elements.desktopNodeEditOwner.value = '';
+  harness.fire(harness.elements.desktopNodeEditSave, 'click');
+  await flush();
+  const call = harness.calls.filter(function (c) { return c.path === '/api/admin/bots/nodes/n1/settings'; })[0];
+  assert(!!call, 'the settings request is sent');
+  assertEqual(call && call.method, 'POST', 'the settings save is a POST');
+  assertEqual(call && call.body, JSON.stringify({ name: 'lab-west', owner_user_id: '' }), 'name and shared owner are posted');
+  assertEqual(harness.elements.desktopNodeSettings.hidden, true, 'the form closes after saving');
+}
+
 Promise.resolve()
+  .then(testRelayHintShowsWhenTheDesktopIsOnAnotherNode)
+  .then(testEditingANodeKeepsItsVirtualAddress)
+  .then(testIntranetNodesStayHiddenUntilTheFeatureIsOn)
+  .then(testIntranetNodeListShowsStatusCapabilityAndVersion)
+  .then(testIntranetNodeNamesTheRegistrant)
+  .then(testNodeSettingsEditsNameAndOwnership)
   .then(testUserListCarriesOnlyAuthorizedUsers)
   .then(testUserListEmptyShowsTheAssignmentHint)
   .then(testViewButtonFollowsStopButton)

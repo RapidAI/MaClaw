@@ -59,29 +59,27 @@ type AppConfig struct {
 	EnvCheckInterval int    `json:"env_check_interval"`
 	LastEnvCheckTime string `json:"last_env_check_time"`
 	// Proxy settings (global default)
-	DefaultProxyEnabled          bool   `json:"default_proxy_enabled"`
-	DefaultProxyProtocol         string `json:"default_proxy_protocol,omitempty"` // "http", "https", "socks5"
-	DefaultProxyHost             string `json:"default_proxy_host"`
-	DefaultProxyPort             string `json:"default_proxy_port"`
-	DefaultProxyUsername         string `json:"default_proxy_username"`
-	DefaultProxyPassword         string `json:"default_proxy_password"`
-	DefaultProxyBypass           string `json:"default_proxy_bypass,omitempty"`             // semicolon-separated bypass list
-	DefaultProxyScopeMaclaw      bool   `json:"default_proxy_scope_maclaw,omitempty"`       // MacClaw LLM
-	DefaultProxyScopeCodingTools bool   `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
-	DefaultProxyScopeAgent       bool   `json:"default_proxy_scope_agent,omitempty"`        // web_search / web_fetch
-	// Terminal settings (Windows only)
-	UseWindowsTerminal  bool     `json:"use_windows_terminal"`
-	RemoteEnabled       bool     `json:"remote_enabled"`
-	RemoteHubID         string   `json:"remote_hub_id,omitempty"`
-	RemoteHubURL        string   `json:"remote_hub_url"`
-	RemoteHubCenterURL  string   `json:"remote_hubcenter_url"`
-	RemoteHubCenterURLs []string `json:"remote_hubcenter_urls,omitempty"`
-	RemoteEmail         string   `json:"remote_email"`
-	RemoteMobile        string   `json:"remote_mobile"`
-	RemoteSN            string   `json:"remote_sn"`
-	RemoteUserID        string   `json:"remote_user_id"`
-	RemoteTenantID      string   `json:"remote_tenant_id,omitempty"`
-	RemoteTenantName    string   `json:"remote_tenant_name,omitempty"`
+	DefaultProxyEnabled          bool     `json:"default_proxy_enabled"`
+	DefaultProxyProtocol         string   `json:"default_proxy_protocol,omitempty"` // "http", "https", "socks5"
+	DefaultProxyHost             string   `json:"default_proxy_host"`
+	DefaultProxyPort             string   `json:"default_proxy_port"`
+	DefaultProxyUsername         string   `json:"default_proxy_username"`
+	DefaultProxyPassword         string   `json:"default_proxy_password"`
+	DefaultProxyBypass           string   `json:"default_proxy_bypass,omitempty"`             // semicolon-separated bypass list
+	DefaultProxyScopeMaclaw      bool     `json:"default_proxy_scope_maclaw,omitempty"`       // MacClaw LLM
+	DefaultProxyScopeCodingTools bool     `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
+	DefaultProxyScopeAgent       bool     `json:"default_proxy_scope_agent,omitempty"`        // web_search / web_fetch
+	RemoteEnabled                bool     `json:"remote_enabled"`
+	RemoteHubID                  string   `json:"remote_hub_id,omitempty"`
+	RemoteHubURL                 string   `json:"remote_hub_url"`
+	RemoteHubCenterURL           string   `json:"remote_hubcenter_url"`
+	RemoteHubCenterURLs          []string `json:"remote_hubcenter_urls,omitempty"`
+	RemoteEmail                  string   `json:"remote_email"`
+	RemoteMobile                 string   `json:"remote_mobile"`
+	RemoteSN                     string   `json:"remote_sn"`
+	RemoteUserID                 string   `json:"remote_user_id"`
+	RemoteTenantID               string   `json:"remote_tenant_id,omitempty"`
+	RemoteTenantName             string   `json:"remote_tenant_name,omitempty"`
 	// CloudWorkspaceCacheEncryption keeps writer caches encrypted while they
 	// are not mounted for task execution. The zero value is deliberately
 	// disabled for backwards compatibility.
@@ -98,6 +96,11 @@ type AppConfig struct {
 	RemoteHeartbeatSec        int    `json:"remote_heartbeat_sec"`
 	RemoteNickname            string `json:"remote_nickname,omitempty"`
 	RemoteClientID            string `json:"remote_client_id"`
+	// RemoteDeviceConnectEnabled gates inbound control from same-account
+	// devices (remote-control ops, remote sessions, mobile worker tasks).
+	// Nil means enabled — the switch predates the field, so an unset value
+	// must keep the previous behavior.
+	RemoteDeviceConnectEnabled *bool `json:"remote_device_connect_enabled,omitempty"`
 	// GitHubClientID overrides the built-in OAuth client_id for the GitHub
 	// connection (设置 → GitHub). Empty uses the bundled device-flow app.
 	GitHubClientID    string `json:"github_client_id,omitempty"`
@@ -125,16 +128,16 @@ type AppConfig struct {
 	// wrote for this MaClawSrv user. It carries no credentials; a pin names a
 	// provider already listed in maclaw_llm_providers (or the official hub-llm
 	// row). Empty or inherit follows MaclawLLMCurrentProvider.
-	// Read only when MaclawBotLLMMode is default (or empty, for a config Hub
+	// Read only when MaclawGoLLMMode is default (or empty, for a config Hub
 	// has not rewritten yet).
 	MaclawHubBotRoles MaclawHubBotRoles `json:"maclaw_hub_bot_roles,omitempty"`
-	// MaclawBotLLMMode is the one switch for how this MaClawSrv user picks a
+	// MaclawGoLLMMode is the one switch for how this MaClawSrv user picks a
 	// model per bot role. "custom" uses an explicit maclaw_llm_profiles pin
 	// when one is stored and otherwise the service. "default" reads
 	// MaclawHubBotRoles and the current provider. Empty keeps the older
 	// combined precedence so a config Hub has not rewritten still behaves as
 	// it did.
-	MaclawBotLLMMode string `json:"maclaw_bot_llm_mode,omitempty"`
+	MaclawGoLLMMode string `json:"maclaw_bot_llm_mode,omitempty"`
 	// DesktopBotLLMAccounts is per Hub user on this desktop: the migration
 	// marker and the last bot-model view (no credentials). MaClawSrv ignores it.
 	DesktopBotLLMAccounts map[string]DesktopBotLLMAccount `json:"desktop_bot_llm_accounts,omitempty"`
@@ -166,6 +169,10 @@ type AppConfig struct {
 	// MCP Server registry
 	MCPServers      []MCPServerEntry      `json:"mcp_servers,omitempty"`
 	LocalMCPServers []LocalMCPServerEntry `json:"local_mcp_servers,omitempty"`
+	// DesktopBotCapabilities is the MCP servers and skills every desktop bot
+	// of this account may use. Hub writes it. The GUI does not edit this
+	// copy; it edits the Hub record, which pushes here. Stdio env is absent.
+	DesktopBotCapabilities json.RawMessage `json:"desktop_bot_capabilities,omitempty"`
 	// NL Skills
 	NLSkills          []NLSkillEntry  `json:"nl_skills,omitempty"`
 	SkillHubURLs      []SkillHubEntry `json:"skill_hub_urls,omitempty"`
@@ -238,13 +245,18 @@ type AppConfig struct {
 	TrustedSkillPackageKeyFingerprints []string                       `json:"trusted_skill_package_key_fingerprints,omitempty"`
 	CapabilityMarketPolicy             CapabilityMarketPolicy         `json:"capability_market_policy,omitempty"`
 	MaclawDebugToolCalls               bool                           `json:"maclaw_debug_tool_calls,omitempty"`
+	// ShowAITraceEntry shows the Trace / run-details entry on assistant
+	// messages. Off is the install default; do not seed it in AppConfigDefaults.
 	ShowAITraceEntry                   bool                           `json:"show_ai_trace_entry,omitempty"`
 	// ShowAppEntry controls the MaClaw Apps sidebar entry. Nil means on
 	// (same default-on contract as show_workflow_entry / show_utilities_entry).
-	ShowAppEntry         *bool  `json:"show_app_entry,omitempty"`
-	ShowWorkflowEntry    *bool  `json:"show_workflow_entry,omitempty"`
-	ShowUtilitiesEntry   *bool  `json:"show_utilities_entry,omitempty"`
-	SurveyEnabled        *bool  `json:"survey_enabled,omitempty"`
+	ShowAppEntry       *bool `json:"show_app_entry,omitempty"`
+	ShowWorkflowEntry  *bool `json:"show_workflow_entry,omitempty"`
+	ShowUtilitiesEntry *bool `json:"show_utilities_entry,omitempty"`
+	SurveyEnabled      *bool `json:"survey_enabled,omitempty"`
+	// RecentTaskCount caps the sidebar "最近任务" band. Nil uses the frontend
+	// default (5); an explicit 0 hides the band.
+	RecentTaskCount      *int   `json:"recent_task_count,omitempty"`
 	ShowAssistantEntry   bool   `json:"show_assistant_entry"`
 	ShowHubRanking       *bool  `json:"show_hub_ranking,omitempty"`
 	PetEnabled           bool   `json:"pet_enabled,omitempty"`
@@ -272,6 +284,10 @@ type AppConfig struct {
 	PetFigurativeUpgradePromptPending bool `json:"pet_figurative_upgrade_prompt_pending,omitempty"`
 	// PetReducedMotion forces static frames and disables halo/SFX (explicit setting).
 	PetReducedMotion bool `json:"pet_reduced_motion,omitempty"`
+	// PetPositionLocked pins the desktop pet. In-place animation continues and
+	// the user can still drag it. False, the zero value, roams freely.
+	// The right-click menu writes it. A full settings save must not clear it.
+	PetPositionLocked bool `json:"pet_position_locked,omitempty"`
 	// PetAmbientCity is the city used by GUI background weather lookup for
 	// hardware pets. Empty means auto-detect from the desktop's public network.
 	PetAmbientCity         string `json:"pet_ambient_city,omitempty"`
@@ -416,6 +432,14 @@ type AppConfig struct {
 	// AcpHostMirrorUI: when true (default), Mode B token/progress also emits
 	// AI assistant Wails events so the GUI chat surface can mirror activity.
 	AcpHostMirrorUI *bool `json:"acp_host_mirror_ui,omitempty"`
+	// MCP host: this GUI is an inbound MCP server so other tools can create
+	// and read tasks. Nil or false means off. The listener starts only after
+	// the user turns it on. Port 0 tries 18790, then an ephemeral port.
+	// LanEnabled opts in to a wildcard bind so LAN clients can reach the same
+	// endpoint; the API key stays mandatory for every caller.
+	McpHostEnabled    *bool `json:"mcp_host_enabled,omitempty"`
+	McpHostPort       int   `json:"mcp_host_port,omitempty"`
+	McpHostLanEnabled *bool `json:"mcp_host_lan_enabled,omitempty"`
 	// IMProgressNudgeEnabled controls whether IM channels show intermediate
 	// progress/nudge messages. Nil means default true. When false, only the
 	// first progress message and the final result are sent to the user.
@@ -545,6 +569,9 @@ type AppConfig struct {
 	// include a voice summary version (语音摘要). Only affects IM channels
 	// (飞书/企微/QQ/钉钉), not the desktop panel.
 	TTSAutoVoiceSummary bool `json:"tts_auto_voice_summary,omitempty"`
+	// BotVoiceReadback reads a settled desktop-bot reply aloud on this
+	// computer when TTS is enabled. Toggled in the bot settings voice tab.
+	BotVoiceReadback bool `json:"bot_voice_readback_enabled,omitempty"`
 	// Audio device selection — stores the deviceId from navigator.mediaDevices.
 	// Empty string = system default device.
 	AudioInputDeviceID  string `json:"audio_input_device_id,omitempty"`
@@ -562,6 +589,10 @@ type AppConfig struct {
 	// Programming-assistant font id. Empty or "system" keeps the current UI face.
 	// Ids are the coding catalog in assistantFonts.ts. Independent from ChatFontFamily.
 	CodingFontFamily string `json:"coding_font_family,omitempty"`
+	// ChatBubblesEnabled draws the frame around messages in the assistant
+	// conversation. Nil means on. An explicit false hides that frame and
+	// leaves the message text.
+	ChatBubblesEnabled *bool `json:"chat_bubbles_enabled,omitempty"`
 	// SSH host presets.
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
 	// Knowledge Skill token budget.
@@ -891,12 +922,12 @@ const (
 	MaclawHubBotRoleInherit = "inherit"
 	MaclawHubBotRolePin     = "pin"
 	MaclawHubBotRoleUnused  = "unused"
-	// MaclawBotLLMModeDefault means the service (Hub route or an administrator
+	// MaclawGoLLMModeDefault means the service (Hub route or an administrator
 	// role assignment) chooses every bot role.
-	MaclawBotLLMModeDefault = "default"
-	// MaclawBotLLMModeCustom means the owner's per-role pins are the only
+	MaclawGoLLMModeDefault = "default"
+	// MaclawGoLLMModeCustom means the owner's per-role pins are the only
 	// source for bot role models. A role left unset still follows the service.
-	MaclawBotLLMModeCustom = "custom"
+	MaclawGoLLMModeCustom = "custom"
 )
 
 // DesktopBotLLMAccount is one Hub user's cached bot-model view on the desktop.
@@ -1232,6 +1263,12 @@ func NormalizeSubAgentConcurrency(n int) int {
 // Default true when the field has never been set (nil).
 func (c AppConfig) IsShowAppEntryEnabled() bool {
 	return c.ShowAppEntry == nil || *c.ShowAppEntry
+}
+
+// IsRemoteDeviceConnectEnabled reports whether this machine accepts remote
+// control from same-account devices. Defaults to true when never set (nil).
+func (c AppConfig) IsRemoteDeviceConnectEnabled() bool {
+	return c.RemoteDeviceConnectEnabled == nil || *c.RemoteDeviceConnectEnabled
 }
 
 // DatabaseToolIsEnabled is the master kill switch for the shared database
@@ -1722,7 +1759,6 @@ func AppConfigDefaults() AppConfig {
 		FileOutboundEnabled:      true,
 		ImageOutboundEnabled:     true,
 		CheckUpdateOnStartup:     true,
-		UseWindowsTerminal:       true,
 		VectorSearchEnabled:      true,
 		// OfficeRead is the default text extractor for every supported Office
 		// format. The legacy engine and the per-format allowlist remain available
@@ -1741,6 +1777,7 @@ func AppConfigDefaults() AppConfig {
 		ASRVoiceCorrectionEnabled:  true,
 		TTSEnabled:                 true,
 		ScreenParsingEnabled:       boolPtrValue(true),
+		ChatBubblesEnabled:         boolPtrValue(true),
 		ComputerUseEnabled:         boolPtrValue(true),
 		IMProgressNudgeEnabled:     boolPtrValue(true),
 		KnowledgeAutoRecallEnabled: boolPtrValue(true),
@@ -1758,7 +1795,7 @@ func AppConfigDefaults() AppConfig {
 		// UnmarshalJSON uses these defaults for absent keys; seeding figurative
 		// would silently upgrade every legacy install. First-run calls
 		// ApplyNewInstallPetDefaults instead (K18).
-		PetSkin:              "clawmate",
+		PetSkin:              "ragdoll",
 		GroupDiscussion:      defaultGroupDiscussionConfig(),
 		LLMPromptCache:       DefaultLLMPromptCacheConfig(),
 		AnswerCache:          DefaultAnswerCacheConfig(),
@@ -1790,8 +1827,8 @@ func ApplyNewInstallPetDefaults(cfg *AppConfig) {
 	if cfg == nil {
 		return
 	}
-	if strings.TrimSpace(cfg.PetSkin) == "" {
-		cfg.PetSkin = "clawmate"
+	if strings.TrimSpace(cfg.PetSkin) == "" || strings.TrimSpace(cfg.PetSkin) == "clawmate" {
+		cfg.PetSkin = "ragdoll"
 	}
 	// AppConfigDefaults seeds UnmarshalJSON as well. Set this only on new-install
 	// creation paths so an explicit persisted false is never changed to true.
@@ -2312,6 +2349,43 @@ func (c *AppConfig) PreferredAcpHostPort() int {
 		return 0
 	}
 	return c.AcpHostPort
+}
+
+// IsMcpHostEnabled reports whether the inbound MCP server should listen.
+// Unlike ACP, nil means off: the server stays down until the user turns it on.
+func (c *AppConfig) IsMcpHostEnabled() bool {
+	if c == nil || c.McpHostEnabled == nil {
+		return false
+	}
+	return *c.McpHostEnabled
+}
+
+// SetMcpHostEnabled sets the McpHostEnabled pointer field.
+func (c *AppConfig) SetMcpHostEnabled(v bool) {
+	c.McpHostEnabled = &v
+}
+
+// IsMcpHostLanEnabled reports whether the MCP host may bind a non-loopback
+// (wildcard) listener so LAN clients can connect. Nil means off.
+func (c *AppConfig) IsMcpHostLanEnabled() bool {
+	if c == nil || c.McpHostLanEnabled == nil {
+		return false
+	}
+	return *c.McpHostLanEnabled
+}
+
+// SetMcpHostLanEnabled sets the McpHostLanEnabled pointer field.
+func (c *AppConfig) SetMcpHostLanEnabled(v bool) {
+	c.McpHostLanEnabled = &v
+}
+
+// PreferredMcpHostPort returns the configured MCP port.
+// 0 means try 18790 and then an ephemeral port.
+func (c *AppConfig) PreferredMcpHostPort() int {
+	if c == nil || c.McpHostPort < 0 || c.McpHostPort > 65535 {
+		return 0
+	}
+	return c.McpHostPort
 }
 
 // HubCenterBaseURLs returns HubCenter seed URLs using the unique enrollment

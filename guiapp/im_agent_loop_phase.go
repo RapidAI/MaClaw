@@ -65,6 +65,26 @@ func enterRecoverPhase(phase *agentLoopPhase, reason agentRecoverReason, prompt 
 
 func (h *IMMessageHandler) initialAgentLoopPhase(userText string, ctx *LoopContext) agentLoopPhase {
 	phase := agentLoopPhase{Stage: agentStageOrient, SkillMode: skillPreferenceNone}
+	platform := ""
+	if ctx != nil {
+		platform = ctx.Platform
+	}
+	// Host-authored continuation waves (goal, session-round, unattended
+	// workflow) embed engine instructions and step text, not user speech. A
+	// lexical skill hint inside that embedded text would strip the execution
+	// tools the phase contract requires — the same reason the workflow agent
+	// loop below returns early.
+	if imHostAuthoredTurnPlatform(platform) || goalContinuationTurn(userText, platform) || sessionRoundTurn(userText, platform) {
+		return phase
+	}
+	// A loop-evolved release on this ctx means the turn's forced skill
+	// preference was already discharged (a required market search ran, or a
+	// skill tool failed). The request-boundary recompute in
+	// BuildToolsForModelRequest must not silently re-force it.
+	if ctx != nil && ctx.skillPreferenceWasReleased() {
+		phase.SkillMode = skillPreferenceFallbackAllowed
+		return phase
+	}
 	// Picker paths and host notes are not the user's request. A file named
 	// weather-report.jpg would otherwise trip "report"/"pdf" skill hints.
 	userText = semanticUserIntentText(userText)

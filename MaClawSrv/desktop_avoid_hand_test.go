@@ -42,8 +42,10 @@ func TestPublishPlanPhases(t *testing.T) {
 		ok   bool
 	}{
 		{phaseResearch, "screenshot", nil, false},
+		{phaseResearch, "open_screen", nil, true},
 		{phaseResearch, "probe", nil, true},
 		{phaseResearch, "bash", nil, true},
+		{phaseCompose, "open_screen", nil, true},
 		{phaseCompose, "upload", nil, false},
 		{phaseCompose, "rich_fill", nil, false},
 		{phaseCompose, "app_run", nil, false},

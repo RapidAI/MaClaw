@@ -21,9 +21,12 @@ function startedLabel(ms: number): string {
     return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function phaseLabel(phase: InProgressBotTask["phase"], localizeText: Props["localizeText"]): string {
-    if (phase === "execute") return localizeText("Execute", "执行", "執行");
-    if (phase === "plan") return localizeText("Arrange", "安排", "安排");
+function phaseLabel(task: InProgressBotTask, localizeText: Props["localizeText"]): string {
+    if (task.localKind === "upgrading") return localizeText("Update", "更新", "更新");
+    if (task.localKind === "registering") return localizeText("Register", "注册", "註冊");
+    if (task.localKind === "deploying") return localizeText("Install", "部署", "部署");
+    if (task.phase === "execute") return localizeText("Execute", "执行", "執行");
+    if (task.phase === "plan") return localizeText("Arrange", "安排", "安排");
     return "—";
 }
 
@@ -41,9 +44,9 @@ export function BotTasksPanel({ tasks, names, localizeText }: Props) {
             </div>
             <div style={{ marginTop: 3, marginBottom: 8, color: colors.textSecondary, fontSize: "0.72rem", lineHeight: 1.45 }}>
                 {localizeText(
-                    "Tasks this account's bots are still working on. A finished turn leaves this list.",
-                    "当前账号的 Bot 还在处理的任务。做完后会从这里消失。",
-                    "目前帳號的 Bot 還在處理的任務。做完後會從這裡消失。",
+                    "Tasks this account's bots are still working on, plus desktop installs and updates on this computer. Those rows are marked (Local management). A finished task leaves this list.",
+                    "当前账号的 Bot 还在处理的任务，以及这台电脑上的安装和更新。安装和更新标成（本地管理）。做完后会从这里消失。",
+                    "目前帳號的 Bot 還在處理的任務，以及這台電腦上的安裝和更新。安裝和更新標成（本地管理）。做完後會從這裡消失。",
                 )}
             </div>
             <div style={remoteTableContainerStyle}>
@@ -66,7 +69,9 @@ export function BotTasksPanel({ tasks, names, localizeText }: Props) {
                             </tr>
                         ) : tasks.map((task) => {
                             const status = statusLabel(task.status, localizeText);
-                            const title = names[task.botId] || task.botId;
+                            const title = task.local
+                                ? localizeText("(Local management)", "（本地管理）", "（本地管理）")
+                                : (names[task.botId] || task.botId);
                             const text = task.text || "—";
                             return (
                                 <tr key={`${task.botId}:${task.id}`} style={{ borderTop: `1px solid ${colors.border}` }}>
@@ -78,7 +83,7 @@ export function BotTasksPanel({ tasks, names, localizeText }: Props) {
                                             {text}
                                         </div>
                                     </td>
-                                    <td style={remoteTableCellStyle}>{phaseLabel(task.phase, localizeText)}</td>
+                                    <td style={remoteTableCellStyle}>{phaseLabel(task, localizeText)}</td>
                                     <td style={remoteTableCellStyle}>{startedLabel(task.startedAt)}</td>
                                     <td style={{ ...remoteTableCellStyle, color: status.color, fontWeight: 700 }}>{status.text}</td>
                                 </tr>

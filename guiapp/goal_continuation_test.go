@@ -1256,6 +1256,16 @@ func TestGoalContinuationTurnErrorAndMissingPlanFail(t *testing.T) {
 		t.Fatalf("failure notice = %+v", notice)
 	}
 
+	// A completed goal produces the closeout report, not silence.
+	done := &goal.Goal{
+		Objective: "ship it", Status: goal.StatusComplete, Summary: "baseline frozen",
+		TurnsUsed: 3, TimeUsedSeconds: 42,
+	}
+	doneText, doneErr := goalTerminalNotice(done)
+	if doneErr || !strings.Contains(doneText, "目标已完成") || !strings.Contains(doneText, "baseline frozen") || !strings.Contains(doneText, "总轮次") {
+		t.Fatalf("completion notice = %q asError=%v", doneText, doneErr)
+	}
+
 	notices = nil
 	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Text: "还是没有"}, "goal-continuation")
 	got = store.Get(userID)

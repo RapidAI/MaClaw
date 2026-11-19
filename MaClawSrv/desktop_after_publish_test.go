@@ -29,10 +29,10 @@ func TestAfterVerifiedPublishStopsTheHunt(t *testing.T) {
 }
 
 func TestPostURLForListedID(t *testing.T) {
-	if got := desktopPostURLFor(browser.PublishSpec{VerifyURL: "https://creator.xiaohongshu.com/new/note-manager"}, "6adbf6450000000024036add"); got != "https://www.xiaohongshu.com/explore/6adbf6450000000024036add" {
+	if got := desktopPostURLFor(browser.PublishSpec{VerifyURL: "https://creator.xiaohongshu.com/new/note-manager"}, "6adbf6450000000024036add", ""); got != "https://www.xiaohongshu.com/explore/6adbf6450000000024036add" {
 		t.Fatal(got)
 	}
-	if desktopPostURLFor(browser.PublishSpec{VerifyURL: "https://example.com/list"}, "1") != "" {
+	if desktopPostURLFor(browser.PublishSpec{VerifyURL: "https://example.com/list"}, "1", "") != "" {
 		t.Fatal("unknown host must give no link")
 	}
 }
@@ -56,6 +56,25 @@ func TestReplyIsTheTemplateFromTheRecord(t *testing.T) {
 		t.Fatal(got)
 	}
 	if got := desktopReplyWithLink("run-none", "你好"); got != "你好" {
+		t.Fatal(got)
+	}
+}
+
+func TestEditorPageIsNotAPublishedArticle(t *testing.T) {
+	editor := &desktopProgress{publishTried: true, filled: []string{"论文综述"}, lastURL: "https://editor.csdn.net/md/", writeURL: "https://zhuanlan.zhihu.com/write"}
+	if desktopVerifiedResult(editor, "论文综述") {
+		t.Fatal("csdn editor counted as the article")
+	}
+	console := &desktopProgress{publishTried: true, filled: []string{"论文综述"}, lastURL: "https://creator.xiaohongshu.com/publish/publish?published=true", writeURL: "https://creator.xiaohongshu.com/publish/publish"}
+	if desktopVerifiedResult(console, "论文综述") {
+		t.Fatal("xiaohongshu creator page counted as the note")
+	}
+	article := &desktopProgress{publishTried: true, filled: []string{"论文综述"}, lastURL: "https://zhuanlan.zhihu.com/p/2097265154266227495", writeURL: "https://zhuanlan.zhihu.com/write"}
+	if !desktopVerifiedResult(article, "论文综述") {
+		t.Fatal("zhihu article was not verified")
+	}
+	desktopRecordVerifiedPage(agentruntime.Scope{RunID: "run-ed"}, "https://editor.csdn.net/md/")
+	if got := desktopReplyWithLink("run-ed", "还在编辑器里"); got != "还在编辑器里" {
 		t.Fatal(got)
 	}
 }

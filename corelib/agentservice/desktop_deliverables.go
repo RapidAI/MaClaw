@@ -28,7 +28,19 @@ type desktopDeliverablesState struct {
 // checklist still being read.
 var desktopDeliverablesWait = 20 * time.Second
 
-var desktopDeliverablesExtract = agent.ExtractDesktopDeliverables
+// RememberDesktopOutputContract records the parsed checklist. failed means
+// the model response could not be read; that is not an empty checklist.
+// MaClawSrv installs it.
+var RememberDesktopOutputContract func(runID string, items []agent.DesktopDeliverable, failed bool)
+
+// RecordDesktopDeliverableExtraction stores one extraction result. A parse
+// or model error is recorded as failed so the receipt stays unverified.
+func RecordDesktopDeliverableExtraction(runID string, items []agent.DesktopDeliverable, extractErr error) {
+	if RememberDesktopOutputContract == nil {
+		return
+	}
+	RememberDesktopOutputContract(runID, items, extractErr != nil)
+}
 
 // MACLAW_DESKTOP_DELIVERABLES=0 turns the checklist off.
 func desktopDeliverablesEnabled() bool {
@@ -36,14 +48,60 @@ func desktopDeliverablesEnabled() bool {
 }
 
 func (c *coreAgentCallbacks) desktopDeliverablesApply() bool {
-	if c == nil || !desktopDeliverablesEnabled() || !c.botUsesContainer() {
+	if c == nil || !desktopDeliverablesEnabled() {
 		return false
 	}
-	if strings.TrimSpace(c.messageMetadata["bot_phase"]) != "execute" || strings.TrimSpace(c.messageMetadata["bot_wake"]) == "1" {
+	// A plan describes the work. It does not deliver the outputs. Execute
+	// does, with or without a computer, including a mailbox wake.
+	if strings.TrimSpace(c.messageMetadata["bot_phase"]) != "execute" {
 		return false
 	}
 	return strings.TrimSpace(c.userText) != ""
 }
+
+// desktopDeliverableRequestText is the request the checklist is read from.
+// A timer firing's order still says "every five minutes". That interval is
+// the clock's job. Read as a standard, it kept one weather turn going after
+// the PDF was already delivered, because one file cannot prove the cadence.
+// desktopAskedText is the person's order. A resumed turn's visible text is
+// the restart sentence, so the checklist was empty and the outcome check
+// accepted another copy of the PDF (Bot 4, 15:24).
+func desktopAskedText(c *coreAgentCallbacks, userText string) string {
+	text := strings.TrimSpace(userText)
+	if c == nil || c.messageMetadata == nil {
+		return text
+	}
+	resumed := text == restartNoticeContinue || strings.TrimSpace(c.messageMetadata["restart_resume"]) == "1"
+	if !resumed {
+		return text
+	}
+	if ask := strings.TrimSpace(c.messageMetadata["task_request"]); ask != "" {
+		return ask
+	}
+	if ask := strings.TrimSpace(c.messageMetadata["bot_task"]); ask != "" {
+		return ask
+	}
+	return text
+}
+
+func desktopOutcomeAsk(c *coreAgentCallbacks, userText string) string {
+	text := desktopAskedText(c, userText)
+	if c == nil || c.messageMetadata == nil || strings.TrimSpace(c.messageMetadata["bot_origin"]) != "schedule" {
+		return text
+	}
+	return "这是定时器已经到点的一轮。周期由定时器负责，不要把「每几分钟」或重复次数写成这一轮的标准。这一轮只交付这一次要求交给这个人的东西。\n" + text
+}
+
+func desktopDeliverableRequestText(c *coreAgentCallbacks) string {
+	if c == nil {
+		return ""
+	}
+	return desktopOutcomeAsk(c, c.userText)
+}
+
+// BeginDesktopDeliverableExtraction is set by MaClawSrv. The receipt waits
+// for that extraction instead of treating a lone file as completion.
+var BeginDesktopDeliverableExtraction func(runID string)
 
 // startDesktopDeliverables reads the explicit deliverables of this turn.
 func (c *coreAgentCallbacks) startDesktopDeliverables() {
@@ -52,18 +110,32 @@ func (c *coreAgentCallbacks) startDesktopDeliverables() {
 	}
 	st := &desktopDeliverablesState{done: make(chan struct{})}
 	c.deliverables = st
-	cfg, client, text := c.llmCfg, c.httpClient, c.userText
+	if BeginDesktopDeliverableExtraction != nil {
+		BeginDesktopDeliverableExtraction(c.runID)
+	}
+	cfg, client, text := c.llmCfg, c.httpClient, desktopDeliverableRequestText(c)
 	go func() {
 		defer close(st.done)
-		items, err := desktopDeliverablesExtract(context.Background(), cfg, client, text)
+		items, err := agent.ExtractDesktopDeliverableContract(context.Background(), cfg, client, text)
+		RecordDesktopDeliverableExtraction(c.runID, items, err)
 		if err != nil {
 			log.Printf("[desktop-deliverables] extract_err=%v", err)
 			return
 		}
+		lines := make([]string, 0, len(items))
+		for _, item := range items {
+			line := strings.TrimSpace(item.Text)
+			if item.ID != "" {
+				line = item.ID + " " + item.Kind + " " + line
+			}
+			if strings.TrimSpace(line) != "" {
+				lines = append(lines, strings.TrimSpace(line))
+			}
+		}
 		st.mu.Lock()
-		st.items = items
+		st.items = lines
 		st.mu.Unlock()
-		log.Printf("[desktop-deliverables] items=%d %q", len(items), strings.Join(items, " | "))
+		log.Printf("[desktop-deliverables] items=%d", len(items))
 	}()
 }
 

@@ -19,19 +19,21 @@ const armSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: strin
 const listSchedules = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Array<{ id: string; name: string; action: string; interval_minutes: number; hour: number; minute: number; day_of_week: number; next_run_at?: string; status?: string }>));
 const deleteSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _taskId?: string) => undefined));
 const wakeBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean } | undefined> => ({ novnc_url: '', user_control: false })));
-const watchBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string } | undefined> => ({ novnc_url: '', user_control: false })));
+const watchBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string; input_granted?: boolean } | undefined> => ({ novnc_url: '', user_control: false })));
+const setDesktopControl = vi.hoisted(() => vi.fn(async (_botId?: string, _hold?: boolean) => ({ input_granted: true })));
 const getScreen = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode: string }> => ({ novnc_url: '', user_control: false, desktop_mode: 'shared' })));
 const hubLink = vi.hoisted(() => vi.fn(async () => ({ state: 'connected' }) as Record<string, unknown> | null));
-const handBack = vi.hoisted(() => vi.fn(async (_botId?: string) => ({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' })));
+const handBack = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<{ handed_back: boolean; accepted?: boolean; run_id?: string; status?: string; client_message_id?: string; joined?: boolean; reply?: { text: string; send_to_user?: string } }> => ({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' })));
 const setDesktopMode = vi.hoisted(() => vi.fn(async (_botId?: string, mode?: string) => mode || 'shared'));
 const desktopAdmin = vi.hoisted(() => vi.fn(async () => false));
 const releaseWatch = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number) => undefined));
 const saveSecret = vi.hoisted(() => vi.fn(async (_name?: string, _value?: string) => undefined));
 const recallSecret = vi.hoisted(() => vi.fn(async (_name?: string) => false));
 const fillSecret = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: string) => ({ filled: 'SITE_PASSWORD' })));
-type HubDesktopBot = { id: string; title: string; description: string; instance_id: string; created_at?: string; primary?: boolean; color?: string; shape?: string };
+type HubDesktopBot = { id: string; title: string; description: string; instance_id: string; created_at?: string; primary?: boolean; color?: string; shape?: string; desktop_mode?: string; node_id?: string };
 const listBots = vi.hoisted(() => vi.fn(async (): Promise<HubDesktopBot[]> => []));
-const createBot = vi.hoisted(() => vi.fn(async (name: string, description: string): Promise<HubDesktopBot> => ({ id: 'bot_1', title: name, description, instance_id: '' })));
+const listDesktopNodes = vi.hoisted(() => vi.fn(async () => ({ enabled: false, nodes: [] as Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; active?: boolean; node_id?: string; with_srv?: boolean }> })));
+const createBot = vi.hoisted(() => vi.fn(async (name: string, description: string, _nodeID?: string): Promise<HubDesktopBot> => ({ id: 'bot_1', title: name, description, instance_id: '' })));
 const setAppearance = vi.hoisted(() => vi.fn(async (_botId?: string, _color?: string, _shape?: string): Promise<{ color?: string; shape?: string }> => ({})));
 const renameBot = vi.hoisted(() => vi.fn(async (_id: string, _name: string, _description: string) => undefined));
 const deleteBot = vi.hoisted(() => vi.fn(async (_id: string) => undefined));
@@ -76,6 +78,7 @@ const claimCross = vi.hoisted(() => vi.fn(async (_botId?: string, _noteId?: stri
 const armCross = vi.hoisted(() => vi.fn(async (_botId?: string, _noteId?: string) => undefined));
 // 跟进路由（1b132e0d 起）：默认没有接管者，走正常发送链；测试可覆写。
 const routeFollowUp = vi.hoisted(() => vi.fn(async (_botId?: string, _content?: string): Promise<{ routed: boolean; to_bot?: string; ask?: string } | null> => null));
+const writeAck = vi.hoisted(() => vi.fn(async (_ctx?: { kind?: string }): Promise<string> => ''));
 const responseListeners = vi.hoisted(() => ({
     list: [] as Array<(payload: unknown) => void>,
     byEvent: {} as Record<string, (payload: unknown) => void>,
@@ -118,6 +121,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ListDesktopBotActiveRuns: (botId: string) => listTaskRuns(botId),
     DeleteDesktopBotSchedule: (botId: string, taskId: string) => deleteSchedule(botId, taskId),
     WatchDesktopBot: (arg: string, epoch?: number) => watchBot(arg, epoch),
+    SetDesktopBotControl: (botId: string, hold: boolean) => setDesktopControl(botId, hold),
     WakeDesktopBot: (arg: string, epoch?: number) => wakeBot(arg, epoch),
     ReleaseDesktopBotWatch: (arg: string, epoch?: number) => releaseWatch(arg, epoch),
     GetDesktopBotScreen: (botId: string) => getScreen(botId),
@@ -131,7 +135,9 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     RecallBotSecret: (name: string) => recallSecret(name),
     FillBotSecret: (botId: string, name: string) => fillSecret(botId, name),
     ListDesktopBots: () => listBots(),
+    GetDesktopBotQuota: async () => ({ limit: null, used: 0 }),
     CreateDesktopBot: (name: string, description: string) => createBot(name, description),
+    CreateDesktopBotWithComputer: (name: string, description: string, _color?: string, _shape?: string, _needs?: boolean, nodeID?: string) => createBot(name, description, nodeID),
     SetDesktopBotAppearance: (botId: string, color: string, shape: string) => setAppearance(botId, color, shape),
     GetDesktopBotStyle: vi.fn(),
     SaveDesktopBotStyle: vi.fn(),
@@ -151,6 +157,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     LoadConfig: () => loadConfig(),
     SaveDesktopBotLLM: (input: BotLLMIn) => saveBotLLM(input),
     GetMaclawLLMProviders: () => listProviders(),
+    ListDesktopNodes: () => listDesktopNodes(),
     FetchProviderModels: (...args: unknown[]) => fetchProviderModels(...(args as [string, string, string, string])),
     PersistDesktopBotPreference: (botId: string, persona: string) => persistPreference(botId, persona),
     QueryDesktopBotTaskStatus: (botId: string, hint: string, lang: string) => queryTaskStatus(botId, hint, lang),
@@ -161,7 +168,9 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
     // stopped/idle/pause come back empty here so the minimal lines are checked.
-    WriteDesktopBotAck: (ctx?: { kind?: string }) => Promise.resolve(ctx?.kind === 'stopping' ? '还在收尾，停稳了告诉你。' : ['stopped', 'idle', 'pause', 'queued', 'stop_failed', 'continuing', 'status_notice', 'error', 'interrupted'].includes(ctx?.kind || '') ? '' : "好，这就去办。"),
+    // A first-reply accept hangs unless a test says otherwise: the server's
+    // sentence is the reply, and a stock line must not land ahead of it.
+    WriteDesktopBotAck: (ctx?: { kind?: string }) => writeAck(ctx),
     AppendDesktopBotSupplement: (botId: string, runId: string, instruction: string) => appendSupplement(botId, runId, instruction),
     GetDesktopBotSupplements: (botId: string, runId: string) => getSupplements(botId, runId),
     SetDesktopBotPrimary: (id: string) => setPrimary(id),
@@ -180,6 +189,23 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     RestartDesktopComputer: async () => ({ busy: false }),
     LogFrontendDiagnostic: async () => undefined,
     UploadDesktopBotMaterialChunk: async (_botId: string, _uploadId: string, _name: string, _offset: number, total: number) => ({ received: total, done: true, path: '~/素材/bot_1/demo.png' }),
+    // Voice input (composer mic) and the voice settings tab. ASR reports not
+    // ready so the mic button stays inert; readback is a no-op.
+    DiarizeAndTranscribeAudioBase64: async () => [],
+    TranscribeAudioBase64: async () => '',
+    IsASRReady: async () => false,
+    SpeakPlainText: async () => undefined,
+    SpeakDesktopBotReply: async () => undefined,
+    NormalizeVoiceCommand: async () => ({}),
+    CorrectASRText: async (text: string) => text,
+    SetDesktopPetState: async () => undefined,
+    NotifyDesktopPetMicBusy: async () => undefined,
+    GetTTSEnabled: async () => false,
+    SetTTSEnabled: async () => undefined,
+    GetTTSVoiceID: async () => 'zf_xiaoyi',
+    SetTTSVoiceID: async () => undefined,
+    SynthesizeTTSPreview: async () => 'data:audio/wav;base64,',
+    PatchConfigFields: async (patch: Record<string, unknown>) => patch,
 }));
 
 const browserOpenURL = vi.hoisted(() => vi.fn());
@@ -286,6 +312,12 @@ beforeEach(() => {
     armCross.mockResolvedValue(undefined);
     routeFollowUp.mockReset();
     routeFollowUp.mockResolvedValue(null);
+    writeAck.mockReset();
+    writeAck.mockImplementation(async (ctx?: { kind?: string }) => {
+        if (ctx?.kind === 'stopping') return '还在收尾，停稳了告诉你。';
+        if (['stopped', 'idle', 'pause', 'queued', 'stop_failed', 'continuing', 'status_notice', 'error', 'interrupted'].includes(ctx?.kind || '')) return '';
+        return new Promise<string>(() => undefined);
+    });
     understandTask.mockReset();
     classifyWorkStop.mockReset();
     classifyWorkStop.mockResolvedValue('unknown');
@@ -302,6 +334,8 @@ beforeEach(() => {
         if (passedThrough(text, phase)) return { told: text.trim(), instruction: text.trim() };
         return { told: `表述:${text}`, instruction: `指令:${phase}:${text}:${earlier.join('|')}`, pace: 'direct' };
     });
+    setDesktopControl.mockReset();
+    setDesktopControl.mockResolvedValue({ input_granted: true });
     watchBot.mockReset();
     liveWatchView.current = { novnc_url: '', user_control: false };
     watchBot.mockImplementation(() => Promise.resolve({ ...liveWatchView.current }));
@@ -341,6 +375,8 @@ beforeEach(() => {
     evaluateSupplement.mockResolvedValue(null);
     appendSupplement.mockReset();
     appendSupplement.mockResolvedValue(null);
+    listDesktopNodes.mockReset();
+    listDesktopNodes.mockResolvedValue({ enabled: false, nodes: [] });
     createBot.mockReset();
     createBot.mockImplementation(async (name: string, description: string) => ({ id: 'bot_1', title: name, description, instance_id: '' }));
     renameBot.mockReset();
@@ -657,6 +693,27 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-take-computer')).toBeNull();
     });
 
+    it('stays view-only when another device already holds this bot screen', async () => {
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [{
+                    id: 'm-qr',
+                    role: 'assistant',
+                    content: '缺少用户扫描二维码登录小红书，笔记尚未发布。',
+                }],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        setDesktopControl.mockResolvedValue({ input_granted: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-take-computer'));
+        expect(await screen.findByTestId('desktop-bot-control-held')).toBeTruthy();
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('watch'));
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+    });
+
     it('shows a line drawing of a sleeping computer (no screen, no viewer chrome) when the desktop is asleep', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
         watchBot.mockResolvedValue({ novnc_url: '', user_control: false });
@@ -933,8 +990,10 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-ops').textContent || '').not.toContain('正在操作桌面');
         fireEvent.click(open);
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0');
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        await waitFor(() => {
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0');
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        });
     });
 
     it('keeps a takeover when another bot starts using its own desktop', async () => {
@@ -961,7 +1020,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         fireEvent.click(await screen.findByTestId('desktop-bot-takeover'));
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live'));
 
         openRow('bot_1');
         fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
@@ -1403,6 +1462,218 @@ describe('DesktopBotWorkspace', () => {
         });
         expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+    });
+
+    it('lets the person drag a captcha while this bot is still marked operating', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        getDesktopBusy.mockResolvedValue({ seq: 4, marks: [{ owner_id: 'alice', bot_id: 'bot_1', count: 1 }] });
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({
+            novnc_url: liveDesktop,
+            user_control: true,
+            attention_reason: 'captcha_widget',
+            input_granted: true,
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        await waitFor(() => {
+            const frame = screen.getByTestId('desktop-bot-handoff');
+            expect(frame.getAttribute('src') || '').toContain('view_only=0');
+            expect(frame.getAttribute('data-input')).toBe('live');
+        });
+        expect(screen.queryByTestId('desktop-bot-screen-shield')).toBeNull();
+        expect(screen.getByTestId('desktop-bot-return-control').textContent).toBe('验证完成，继续');
+        expect(screen.getByTestId('desktop-bot-stage').textContent).toContain('拖动滑块');
+        expect(screen.queryByText('captcha_widget')).toBeNull();
+    });
+
+    it('returns a captcha once, and the same reason does not open another task', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({
+            novnc_url: liveDesktop,
+            user_control: true,
+            attention_reason: 'captcha_widget',
+            input_granted: true,
+        });
+        let sends = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            sends += 1;
+            return { request_id: sends === 1 ? 'desktop-bot-captcha' : `desktop-bot-captcha${sends}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开小红书' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        await act(async () => {
+            responseListeners.byEvent['ai-assistant-response']?.({
+                request_id: 'desktop-bot-captcha',
+                session_key: 'alice:bot_1',
+                text: 'captcha_widget',
+                send_to_user: 'captcha_widget',
+                desktop_handoff_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect((await screen.findAllByText(/拖动滑块/)).length).toBeGreaterThan(0);
+        expect(screen.queryByText('captcha_widget')).toBeNull();
+        const button = await screen.findByTestId('desktop-bot-return-control');
+        fireEvent.click(button);
+        fireEvent.click(button);
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(sendTask.mock.calls.filter(call => String(call[1]).includes('沿用这个登录状态'))).toHaveLength(1);
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-captcha',
+                session_key: 'alice:bot_1',
+                novnc_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        await screen.findByTestId('desktop-bot-handoff');
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-handback')).toBeNull();
+        expect(sendTask).toHaveBeenCalledTimes(2);
+
+        // The continuation just started, and the picture still shows the
+        // captcha the person finished. The button stays away; another click
+        // would only be told the handoff is already continuing.
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-captcha2')).toBe(true));
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-captcha2',
+                session_key: 'alice:bot_1',
+                novnc_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        expect(sendTask).toHaveBeenCalledTimes(2);
+
+        // The continuation's first picture already has the keyboard back and
+        // no reason. The button stays away so the next captcha frame cannot
+        // open a second task.
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-captcha2',
+                session_key: 'alice:bot_1',
+                novnc_url: liveDesktop,
+                desktop_user_control: false,
+                attention_reason: '',
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        expect(sendTask).toHaveBeenCalledTimes(2);
+
+        // The continuation itself meets the captcha again. Same reason code,
+        // but a turn started after the return: a new handoff, not the old one.
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-captcha2')).toBe(true));
+        await act(async () => {
+            responseListeners.byEvent['ai-assistant-response']?.({
+                request_id: 'desktop-bot-captcha2',
+                session_key: 'alice:bot_1',
+                text: '又出了验证码，麻烦再拖一下。',
+                send_to_user: '又出了验证码，麻烦再拖一下。',
+                desktop_handoff_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-return-control'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
+    });
+
+    it('opens the button when the continuation ends on the captcha code, and keeps it shut for the leftover picture', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({
+            novnc_url: liveDesktop,
+            user_control: true,
+            attention_reason: 'captcha_widget',
+            input_granted: true,
+        });
+        let sends = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            sends += 1;
+            return { request_id: sends === 1 ? 'desktop-bot-code' : 'desktop-bot-code2', deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开小红书' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        await act(async () => {
+            responseListeners.byEvent['ai-assistant-response']?.({
+                request_id: 'desktop-bot-code',
+                session_key: 'alice:bot_1',
+                text: 'captcha_widget',
+                send_to_user: 'captcha_widget',
+                desktop_handoff_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        fireEvent.click(await screen.findByTestId('desktop-bot-return-control'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-code2')).toBe(true));
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-code2',
+                session_key: 'alice:bot_1',
+                novnc_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        await act(async () => {
+            responseListeners.byEvent['ai-assistant-response']?.({
+                request_id: 'desktop-bot-code2',
+                session_key: 'alice:bot_1',
+                text: 'captcha_widget',
+                send_to_user: 'captcha_widget',
+                desktop_handoff_url: liveDesktop,
+                desktop_user_control: true,
+                attention_reason: 'captcha_widget',
+            });
+        });
+        expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
+        expect(screen.queryByText('captcha_widget')).toBeNull();
+    });
+
+    it('does not take the keyboard back when a watch that started before the claim says it is free', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        const pendingWatches: Array<(view: { novnc_url: string; user_control: boolean; input_granted: boolean }) => void> = [];
+        watchBot.mockImplementation(() => new Promise(resolve => { pendingWatches.push(resolve); }));
+        const grants: Array<(view: { input_granted: boolean }) => void> = [];
+        setDesktopControl.mockImplementation((_botId?: string, hold?: boolean) => {
+            if (!hold) return Promise.resolve({ input_granted: false });
+            return new Promise(resolve => { grants.push(resolve); });
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-takeover'));
+        await waitFor(() => expect(grants.length).toBeGreaterThan(0));
+        await act(async () => { grants.forEach(release => release({ input_granted: true })); });
+        await act(async () => {
+            pendingWatches.forEach(release => release({ novnc_url: liveDesktop, user_control: false, input_granted: false }));
+        });
+        const frame = await screen.findByTestId('desktop-bot-handoff');
+        expect(frame.getAttribute('src') || '').toContain('view_only=0');
+        expect(frame.getAttribute('data-input')).toBe('live');
+        expect(screen.queryByTestId('desktop-bot-screen-shield')).toBeNull();
     });
 
     it('keeps the login picture when a later job fails to send', async () => {
@@ -1941,12 +2212,20 @@ describe('DesktopBotWorkspace', () => {
         expect(full.getAttribute('alt')).toBe('');
         expect(screen.getByTestId('desktop-bot-shot-preview-close')).toBe(document.activeElement);
         fireEvent.keyDown(document, { key: 'Tab' });
+        expect(full).toBe(document.activeElement);
+        fireEvent.keyDown(document, { key: 'Tab' });
         expect(screen.getByTestId('desktop-bot-shot-preview-close')).toBe(document.activeElement);
         fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
         expect(screen.getByTestId('desktop-bot-command')).not.toBe(document.activeElement);
         fireEvent.mouseDown(full);
         fireEvent.click(full);
         expect(screen.getByTestId('desktop-bot-shot-preview')).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-shot-preview').className).toContain('is-zoomed');
+        expect(full.className).toContain('is-zoomed');
+        expect(full.getAttribute('aria-label')).toBe('适合窗口');
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.getByTestId('desktop-bot-shot-preview')).toBeTruthy();
+        expect(full.className).not.toContain('is-zoomed');
 
         fireEvent.click(screen.getByTestId('desktop-bot-shot-preview-close'));
         await waitFor(() => expect(screen.queryByTestId('desktop-bot-shot-preview')).toBeNull());
@@ -2089,8 +2368,11 @@ describe('DesktopBotWorkspace', () => {
                 { name: '自我描述.docx', mime: docx, data: 'd29yZA==' },
             ],
         });
-        expect(await screen.findByTestId('desktop-bot-file')).toBeTruthy();
-        expect(screen.getByText('下载 自我描述.docx')).toBeTruthy();
+        expect(await screen.findByText('产出物')).toBeTruthy();
+        expect(screen.getByText('自我描述.docx')).toBeTruthy();
+        expect(screen.getByText('查看文档')).toBeTruthy();
+        expect(screen.getByText('预览')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-file')).toBeNull();
         expect(screen.queryByText('下载 ../secret.docx')).toBeNull();
     });
 
@@ -2116,9 +2398,41 @@ describe('DesktopBotWorkspace', () => {
                 { name: '北京天气.pdf', mime: 'application/pdf', data: 'd29yZA==' },
             ],
         });
-        expect(await screen.findByTestId('desktop-bot-file')).toBeTruthy();
-        expect(screen.getByText('下载 北京天气.pdf')).toBeTruthy();
+        expect(await screen.findByText('产出物')).toBeTruthy();
+        expect(screen.getByText('北京天气.pdf')).toBeTruthy();
+        expect(screen.getByText('查看文档')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-file')).toBeNull();
         expect(screen.queryByText('下载 ../secret.pdf')).toBeNull();
+    });
+
+    it('lists a saved document on the artifacts tab and opens it', async () => {
+        const docPath = 'C:\\Users\\alice\\MaClaw\\bot-files\\北京天气.pdf';
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'desktop-bot-artifacts',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 1'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '把天气 PDF 发给我' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('把天气 PDF 发给我')).toBeTruthy();
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-artifacts',
+            session_key: 'alice:bot_1',
+            text: '天气文件已放好',
+            send_to_user: '天气文件已放好',
+            local_file_paths: [docPath],
+        });
+        expect(await screen.findByText('北京天气.pdf')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-tab-artifacts'));
+        const table = await screen.findByTestId('desktop-bot-artifact-table');
+        expect(table.textContent).toContain('名称');
+        expect(table.textContent).toContain('北京天气.pdf');
+        fireEvent.click(screen.getByTestId('desktop-bot-artifact-row'));
+        expect(openFile).toHaveBeenCalledWith(docPath);
     });
 
     it('clears the busy row whichever path delivers the final reply', async () => {
@@ -2243,9 +2557,12 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
         expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
-        const loginSrc = (await screen.findByTestId('desktop-bot-handoff')).getAttribute('src') || '';
-        expect(loginSrc).toContain('view_only=0');
-        expect(loginSrc).not.toContain('view_only=1');
+        await screen.findByTestId('desktop-bot-handoff');
+        await waitFor(() => {
+            const loginSrc = screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '';
+            expect(loginSrc).toContain('view_only=0');
+            expect(loginSrc).not.toContain('view_only=1');
+        });
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-user');
     });
 
@@ -2884,9 +3201,12 @@ describe('DesktopBotWorkspace', () => {
             novnc_url: liveDesktop,
             user_control: true,
         });
-        const loginSrc = (await screen.findByTestId('desktop-bot-handoff')).getAttribute('src') || '';
-        expect(loginSrc).toContain('view_only=0');
-        expect(loginSrc).not.toContain('view_only=1');
+        await screen.findByTestId('desktop-bot-handoff');
+        await waitFor(() => {
+            const loginSrc = screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '';
+            expect(loginSrc).toContain('view_only=0');
+            expect(loginSrc).not.toContain('view_only=1');
+        });
         expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-stage').textContent).toContain('请在这个桌面的浏览器里完成登录或验证');
         // The person has not taken over, so the screen bar must not offer a
@@ -2989,6 +3309,102 @@ describe('DesktopBotWorkspace', () => {
         expect(details.textContent).not.toContain(formatCreated(Date.parse(listedAt)));
     });
 
+    it('names the computer in bot details, and the machine for a local one', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_cloud', title: '云端助手', description: '', instance_id: 'inst_c' },
+            { id: 'bot_local', title: '实验室', description: '', instance_id: 'inst_l', node_id: 'dn_lab' },
+            { id: 'bot_none', title: '无电脑', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        listDesktopNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [{ id: 'n1', name: 'lab', mode: 'ssh', host: '192.168.1.49', user: 'znsoft', status: 'ready', node_id: 'dn_lab', with_srv: true }],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        const openDetails = async (botId: string) => {
+            const row = await screen.findByTestId('desktop-bot-' + botId);
+            fireEvent.click(row.querySelector('button.desktop-bot-workspace__open') as HTMLButtonElement);
+            fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+            fireEvent.click(await screen.findByTestId('desktop-bot-tab-details'));
+            return screen.findByTestId('desktop-bot-computer-place');
+        };
+        expect((await openDetails('bot_cloud')).textContent).toBe('云端');
+        expect((await openDetails('bot_local')).textContent).toBe('本地 · znsoft@192.168.1.49');
+        expect((await openDetails('bot_none')).textContent).toBe('无电脑');
+    });
+
+    it('does not ask Hub for the screen of a bot with no computer', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_cloud', title: '云端助手', description: '', instance_id: 'inst_c' },
+            { id: 'bot_none', title: '无电脑', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('云端助手'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        await waitFor(() => expect(getScreen).toHaveBeenCalledWith('bot_cloud'));
+        expect(getScreen).not.toHaveBeenCalledWith('bot_none');
+        expect(watchBot).not.toHaveBeenCalledWith('bot_none', expect.anything());
+        expect(screen.queryByTestId('desktop-screen-bot-bot_none')).toBeNull();
+        fireEvent.click(screen.getByTestId('desktop-bot-bot_none').querySelector('button.desktop-bot-workspace__open') as HTMLButtonElement);
+        await act(async () => { await Promise.resolve(); });
+        expect(watchBot).not.toHaveBeenCalledWith('bot_none', expect.anything());
+        expect(screen.queryByTestId('desktop-bot-tab-computer')).toBeNull();
+    });
+
+    it('does not offer to take over the computer of a bot that has none', async () => {
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_none: [{
+                    id: 'm-qr',
+                    role: 'assistant',
+                    content: '缺少用户扫描二维码登录小红书，笔记尚未发布。',
+                    userControl: true,
+                    attentionReason: 'login',
+                }],
+            },
+        }));
+        listBots.mockResolvedValue([
+            { id: 'bot_none', title: '值班', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        expect(await screen.findByText('缺少用户扫描二维码登录小红书，笔记尚未发布。')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-take-computer')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-tab-computer')).toBeNull();
+    });
+
+    it('does not open the desktop when a no-computer bot reports a handoff', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_none', title: '值班', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-report']?.({
+                session_key: 'alice:bot_none',
+                novnc_url: 'http://hub.example/vnc.html',
+                user_control: true,
+                attention_reason: 'login',
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-handoff-notice')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-panel')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-tab-computer')).toBeNull();
+    });
+
+    it('does not offer a file attach for a bot that has no computer', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '有电脑', description: '', instance_id: 'inst_1', desktop_mode: 'shared' },
+            { id: 'bot_none', title: '值班', description: '', instance_id: 'inst_n', desktop_mode: 'none' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('有电脑'));
+        expect(await screen.findByTestId('desktop-bot-attach')).toBeTruthy();
+        fireEvent.click(screen.getByText('值班'));
+        expect(screen.queryByTestId('desktop-bot-attach')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-attach-input')).toBeNull();
+    });
+
 
     it('sends a stored look again when the first copy does not stick', async () => {
         saveBotAppearance('alice', 'bot_1', { color: '#2563eb', shape: 'cloud' });
@@ -3065,6 +3481,46 @@ describe('DesktopBotWorkspace', () => {
         const avatar = view.container.querySelector('.desktop-bot-workspace__avatar');
         expect(avatar?.getAttribute('data-color')).toBe('#16a34a');
         expect(avatar?.getAttribute('data-shape')).toBe('leaf');
+    });
+
+    it('offers each local server when creating a bot and sends the one that was picked', async () => {
+        listBots.mockResolvedValue([]);
+        listDesktopNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [
+                { id: 'n1', name: 'lab', mode: 'ssh', host: '192.168.1.49', user: 'znsoft', status: 'ready', active: true, node_id: 'dn_a', with_srv: true },
+                { id: 'n2', name: 'spare', mode: 'ssh', host: '192.168.1.50', user: 'znsoft', status: 'ready', active: false, node_id: 'dn_b', with_srv: true },
+                { id: 'n3', name: 'desktop-only', mode: 'ssh', host: '192.168.1.51', user: 'znsoft', status: 'ready', active: false, node_id: 'dn_c', with_srv: false },
+            ],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('bot-create-server-dn_a')).toBeTruthy();
+        expect(screen.queryByTestId('bot-create-server-dn_c')).toBeNull();
+        expect((screen.getByTestId('bot-create-server-dn_a') as HTMLInputElement).checked).toBe(true);
+        fireEvent.click(screen.getByTestId('bot-create-server-dn_b'));
+        fireEvent.click(screen.getByTestId('bot-edit-save'));
+        await waitFor(() => expect(createBot).toHaveBeenCalled());
+        expect(createBot.mock.calls.at(-1)?.[2]).toBe('dn_b');
+    });
+
+    it('defaults to the cloud computer when the desktop in use cannot host a bot', async () => {
+        listBots.mockResolvedValue([]);
+        listDesktopNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [
+                { id: 'n3', name: 'desktop-only', mode: 'ssh', host: '192.168.1.51', user: 'znsoft', status: 'ready', active: true, node_id: 'dn_c', with_srv: false },
+                { id: 'n2', name: 'spare', mode: 'ssh', host: '192.168.1.50', user: 'znsoft', status: 'ready', active: false, node_id: 'dn_b', with_srv: true },
+            ],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('bot-create-place-cloud')).toBeTruthy();
+        expect(screen.queryByTestId('bot-create-server-dn_c')).toBeNull();
+        expect(screen.queryByTestId('bot-create-server-dn_b')).toBeNull();
+        expect((screen.getByTestId('bot-create-place-cloud') as HTMLInputElement).checked).toBe(true);
+        fireEvent.click(screen.getByTestId('bot-create-place-local'));
+        expect(screen.getByTestId('bot-create-local-only').textContent).toBe('znsoft@192.168.1.50');
     });
 
     it('sends a new bot look that the hub list has not returned, then the color chosen while that copy is out', async () => {
@@ -3354,7 +3810,11 @@ describe('DesktopBotWorkspace', () => {
         expect(css).toMatch(/\.desktop-bot-chat__shot\s*\{[^}]*max-width:\s*100%/);
         expect(css).toMatch(/\.desktop-bot-shot-preview\s*\{[^}]*position:\s*fixed/);
         expect(css).toMatch(/\.desktop-bot-shot-preview\s*\{[^}]*inset:\s*0/);
-        expect(css).toMatch(/\.desktop-bot-shot-preview__close\s*\{[^}]*position:\s*absolute/);
+        expect(css).toMatch(/\.desktop-bot-shot-preview__close\s*\{[^}]*position:\s*fixed/);
+        expect(css).toMatch(/\.desktop-bot-shot-preview__image\s*\{[^}]*cursor:\s*zoom-in/);
+        expect(css).toMatch(/\.desktop-bot-shot-preview__image\.is-zoomed\s*\{[^}]*cursor:\s*zoom-out/);
+        expect(css).toMatch(/\.desktop-bot-shot-preview\.is-zoomed\s*\{[^}]*align-items:\s*flex-start/);
+        expect(css).toMatch(/\.desktop-bot-chat__shot\s*\{[^}]*max-height:\s*360px/);
         expect(css).toMatch(/\.desktop-bot-chat__entry--assistant:has\(\.desktop-bot-chat__shot\)\s*\{[^}]*width:\s*100%/);
         expect(css).toMatch(/\.desktop-bot-chat \.desktop-bot-chat__body li > p,[\s\S]*?\{[^}]*margin-top:\s*4px/);
         expect(css).toMatch(/\.desktop-bot-chat \.desktop-bot-chat__pre code\s*\{[^}]*background:\s*transparent/);
@@ -4385,6 +4845,51 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByText('桌面没有交还给 bot。')).toBeNull();
     });
 
+    it('shows a joined hand-back as one line, with no bubble waiting on a run it does not own', async () => {
+        const joinedLine = '好，刚才的交还已经在接着做了，这次不再另开一件。';
+        handBack.mockResolvedValue({
+            handed_back: true, accepted: true, joined: true, client_message_id: 'bot-turn-9',
+            reply: { text: joinedLine, send_to_user: joinedLine },
+        });
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: 'Bot B', description: '自己的桌面', instance_id: 'inst_2' },
+        ]);
+        const mine = 'http://hub.example/api/v1/desktop-handoff/mine/vnc.html?autoconnect=1';
+        const isolated = 'http://hub.example/api/v1/desktop-handoff/bot-b/vnc.html?autoconnect=1';
+        watchBot.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_2' ? isolated : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_2' ? 'isolated' : 'shared',
+        }));
+        getScreen.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_2' ? isolated : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_2' ? 'isolated' : 'shared',
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        await waitFor(() => expect(getScreen).toHaveBeenCalledWith('bot_2'));
+        fireEvent.click(screen.getByTestId('desktop-screen-bot-bot_2'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-login',
+                session_key: 'alice:bot_2',
+                novnc_url: isolated,
+                desktop_handoff: true,
+                attention_reason: '请登录 Google',
+            });
+        });
+        fireEvent.click(await screen.findByTestId('desktop-bot-handoff-notice'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-handback'));
+        await waitFor(() => expect(handBack).toHaveBeenCalledWith('bot_2'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_2').some(item => item.content === joinedLine)).toBe(true));
+        const stored = messagesForBot('alice', 'bot_2');
+        expect(stored.some(item => item.requestId === 'bot-turn-9')).toBe(false);
+        expect(stored.some(item => item.role === 'assistant' && item.pending)).toBe(false);
+    });
+
     it('keeps the chat and composer on the left and opens the profile from the identity chip', async () => {
         const listedAt = '2024-01-15T00:30:00Z';
         listBots.mockResolvedValue([
@@ -4442,7 +4947,8 @@ describe('DesktopBotWorkspace', () => {
         expect(panel.querySelector('.desktop-bot-panel__avatar')?.getAttribute('data-shape')).toBeTruthy();
         expect(panel.querySelector('.desktop-bot-panel__avatar')?.className).toContain('desktop-bot-panel__avatar');
         expect(panel.textContent).toContain('远程电脑上的7x24小时数字助理。');
-        expect(screen.getAllByRole('tab')).toHaveLength(4);
+        expect(screen.getAllByRole('tab')).toHaveLength(5);
+        expect(screen.getByRole('tab', { name: '产出物' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: '任务' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: '定时任务' })).toBeTruthy();
         expect(screen.queryByRole('tab', { name: '资料库' })).toBeNull();
@@ -4546,6 +5052,7 @@ describe('the page forwards words and renders the server decision', () => {
         expect(await screen.findByText('打开示例网站')).toBeTruthy();
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-ack', kind: 'new', ack: '我去打开示例网站。', queued: false, held: false });
         expect(await screen.findByText('我去打开示例网站。')).toBeTruthy();
+        expect(screen.queryByText('好，我先做着。')).toBeNull();
         result({ request_id: 'desktop-bot-ack', session_key: 'alice:bot_1', text: '网站开好了', send_to_user: '网站开好了' });
         expect(await screen.findByText('网站开好了')).toBeTruthy();
     });
@@ -4570,6 +5077,15 @@ describe('the page forwards words and renders the server decision', () => {
         await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '再开一个', ''));
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-q', kind: 'new', ack: '先记着。', queued: true, held: false });
         expect(await screen.findByText('先记着。')).toBeTruthy();
+        expect(screen.queryByText('好，这个等手上的做完我就做。')).toBeNull();
+    });
+
+    it('shows the parked fallback only when a queued message has no sentence', async () => {
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-q0', deferred: true, session_key: 'alice:bot_1' });
+        await openDuty();
+        await typeAndSend('再开一个');
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '再开一个', ''));
+        intake({ bot_id: 'bot_1', request_id: 'desktop-bot-q0', kind: 'new', ack: '', queued: true, held: false });
         expect(await screen.findByText('好，这个等手上的做完我就做。')).toBeTruthy();
     });
 
@@ -4580,7 +5096,7 @@ describe('the page forwards words and renders the server decision', () => {
         await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '下一件', ''));
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-h', kind: 'new', ack: '等你交还。', queued: true, held: true });
         expect(await screen.findByText('等你交还。')).toBeTruthy();
-        expect(await screen.findByText('好，这个等手上的做完我就做。')).toBeTruthy();
+        expect(screen.queryByText('好，这个等手上的做完我就做。')).toBeNull();
         expect(cancelRun).not.toHaveBeenCalled();
     });
 
@@ -4670,12 +5186,23 @@ describe('the page forwards words and renders the server decision', () => {
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
     });
 
-    it('shows one neutral line when the server sends no ack in time', async () => {
+    it('shows one neutral line only when the model writes nothing', async () => {
+        writeAck.mockResolvedValue('');
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-late', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('打开示例网站');
         await waitFor(() => expect(sendTask).toHaveBeenCalled());
-        expect(await screen.findByText('好，我先做着。', {}, { timeout: 4000 })).toBeTruthy();
+        expect(await screen.findByText('好，我先做着。')).toBeTruthy();
+        expect(screen.getAllByText('好，我先做着。')).toHaveLength(1);
+    });
+
+    it('shows the model sentence and not the stock line ahead of it', async () => {
+        writeAck.mockResolvedValue('我去打开示例网站，打开了告诉你。');
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-model', deferred: true, session_key: 'alice:bot_1' });
+        await openDuty();
+        await typeAndSend('打开示例网站');
+        expect(await screen.findByText('我去打开示例网站，打开了告诉你。')).toBeTruthy();
+        expect(screen.queryByText('好，我先做着。')).toBeNull();
     });
 
     it('shows the server route on the line and undoes it as a new matter', async () => {

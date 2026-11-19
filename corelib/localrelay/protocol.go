@@ -8,8 +8,8 @@
 // stream per request. Each stream starts with a JSON request line from Hub and
 // a JSON response line from the GUI; read, write and dial streams then carry
 // raw bytes. The GUI enforces the folder and network policy and asks the
-// person before anything new, so Hub and MaClawSrv never decide what may be
-// touched on that computer.
+// person before anything new, unless they chose full access in Bot settings.
+// Hub and MaClawSrv never decide what may be touched on that computer.
 package localrelay
 
 import (
@@ -42,6 +42,9 @@ const (
 	// OpFetch: the computer downloads a file from Hub's file store (URL)
 	// into a folder, with resume. One answer after approval, one when done.
 	OpFetch = "fetch"
+	// OpMCP runs one tool on a stdio MCP server configured on this computer.
+	// The result text comes back on Response.Text. Env stays on the computer.
+	OpMCP = "mcp"
 )
 
 // Error codes in Response.Code. The bot tool turns them into plain sentences.
@@ -85,6 +88,10 @@ type Request struct {
 	URL    string `json:"url,omitempty"`
 	Ref    string `json:"ref,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
+	// Server, Tool and Args are one stdio MCP call (OpMCP). Args is a JSON object.
+	Server string `json:"server,omitempty"`
+	Tool   string `json:"tool,omitempty"`
+	Args   string `json:"args,omitempty"`
 }
 
 // Entry is one row of a folder listing.
@@ -106,6 +113,8 @@ type Summary struct {
 	OS             string  `json:"os,omitempty"`
 	// TunnelIdleMinutes closes an unused tunnel after this long.
 	TunnelIdleMinutes int `json:"tunnel_idle_minutes,omitempty"`
+	// Permission is ask or full. Empty means an older app that still asks.
+	Permission string `json:"permission,omitempty"`
 }
 
 // Response is the GUI's answer line.
@@ -122,6 +131,8 @@ type Response struct {
 	Summary   *Summary `json:"summary,omitempty"`
 	// State is "running" when Hub stopped waiting for a fetch that goes on.
 	State string `json:"state,omitempty"`
+	// Text is the MCP tool result (OpMCP).
+	Text string `json:"text,omitempty"`
 }
 
 // Err is a Response failure carried as a Go error.

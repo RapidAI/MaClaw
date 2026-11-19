@@ -19,6 +19,7 @@ import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { CODING_TASK_COMMAND_MAX_LEN, type PureCodingAgentMode } from "./codingTaskMode";
 import { TaskConfigBar, type CloudWorkspaceOption, type ExpertOption, type RemoteMachineOption, type WorkflowOption } from "./task-config/TaskConfigBar";
+import type { RemoteDirListing } from "./task-config/RemoteDirPickerPopover";
 import type { TaskDraft } from "./task-config/taskDraft";
 import type { LatexTemplate } from "../../utils/latexTemplates";
 import {
@@ -491,6 +492,8 @@ export interface WelcomeTaskConfig {
     defaultExpanded?: boolean;
     /** 远控被控机器候选；非空时配置条显示「位置」chip（本机/远程·机器名）。 */
     remoteMachines?: RemoteMachineOption[];
+    /** 浏览对方电脑上的目录（remote_control list_dirs）。 */
+    onListRemoteDirs?: (grantId: string, path: string) => Promise<RemoteDirListing>;
 }
 
 export function AssistantWelcomeView({
@@ -1690,6 +1693,7 @@ export function AssistantWelcomeView({
                             onOpenMarket={taskConfig.onOpenMarket}
                             defaultExpanded={taskConfig.defaultExpanded}
                             remoteMachines={taskConfig.remoteMachines}
+                            onListRemoteDirs={taskConfig.onListRemoteDirs}
                             variant="bare"
                         />
                     </div>

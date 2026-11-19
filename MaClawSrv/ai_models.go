@@ -397,14 +397,18 @@ func (s *HTTPServer) defaultConfigForAIModels(ctx context.Context) corelib.AppCo
 func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p agentservice.Principal, inst agentservice.Instance, sess agentservice.Session, run agentservice.Run, msg agentservice.Message, cfg corelib.AppConfig) map[string]string {
 	_ = ctx
 	_ = p
-	_ = inst
 	_ = sess
 	// What the task really reached, measured by the desktop goal ledger
 	// (the run's status stays "succeeded" when its execution ended normally).
 	// A check goal a later step reopened is measured again first, while
 	// the round's desktop is still bound, so the outcome is measured.
 	desktopRecRecheckAtEnd(ctx, run.ID)
-	out := desktopTaskOutcomeMetadata(run.ID, msg)
+	var out map[string]string
+	if desktopPostHasNoDesktop(run.Metadata, inst.Metadata) {
+		out = noDesktopTaskOutcomeMetadata(msg)
+	} else {
+		out = desktopTaskOutcomeMetadata(run.ID, msg)
+	}
 	sentence, haveSentence := desktopFinishSentence(run.ID)
 	desktopClearFinish(run.ID)
 	if haveSentence && sentence != "" && (out == nil || out["outcome_status"] == "") {

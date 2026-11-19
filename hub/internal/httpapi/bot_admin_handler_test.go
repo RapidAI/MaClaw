@@ -34,7 +34,7 @@ func TestBotSettingsHandlerHidesToken(t *testing.T) {
 	}
 }
 
-func TestBotAccessIsClosedByDefault(t *testing.T) {
+func TestBotAccessIsOpenByDefault(t *testing.T) {
 	svc := botmgmt.NewService(&botSettingsMem{})
 	authn := fakeVEMachineAuth{token: "machine-token", principals: map[string]*auth.MachinePrincipal{
 		"machine-1": {TenantID: "tenant-a", UserID: "alice", MachineID: "machine-1"},
@@ -44,7 +44,24 @@ func TestBotAccessIsClosedByDefault(t *testing.T) {
 	req.Header.Set("X-Machine-ID", "machine-1")
 	rec := httptest.NewRecorder()
 	GetBotAccessHandler(svc, authn).ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) || !strings.Contains(rec.Body.String(), "服务器没有开通bot功能") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":true`) || strings.Contains(rec.Body.String(), "服务器没有开通bot功能") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBotAccessStaysClosedForUngrantedUser(t *testing.T) {
+	mem := &botSettingsMem{}
+	mem.value = `{"grants":[{"id":"g","scope":"user","target_id":"zoe"}]}`
+	svc := botmgmt.NewService(mem)
+	authn := fakeVEMachineAuth{token: "machine-token", principals: map[string]*auth.MachinePrincipal{
+		"machine-1": {TenantID: "tenant-a", UserID: "alice", MachineID: "machine-1"},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/bots/access", nil)
+	req.Header.Set("Authorization", "Bearer machine-token")
+	req.Header.Set("X-Machine-ID", "machine-1")
+	rec := httptest.NewRecorder()
+	GetBotAccessHandler(svc, authn).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -79,6 +96,53 @@ func (m *botAuditMem) List(context.Context, store.AdminAuditLogFilter) ([]*store
 	return m.logs, nil
 }
 
+func TestAdminDesktopModeWarnsWhenTheGrantIsPassed(t *testing.T) {
+	mem := &botSettingsMem{}
+	mem.value = `{"bots":[{"id":"plain","name":"plain","owner_user_id":"alice","desktop_mode":"none"}],"grants":[{"id":"g","scope":"user","target_id":"alice","desktop_bot_limit":0}]}`
+	svc := botmgmt.NewService(mem)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/bots/plain/desktop-mode", strings.NewReader(`{"desktop_mode":"shared"}`))
+	req.SetPathValue("id", "plain")
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant-a"}))
+	rec := httptest.NewRecorder()
+	PutBotDesktopModeAdminHandler(svc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"desktop_mode":"shared"`) || !strings.Contains(rec.Body.String(), "已经超过额度") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPut, "/api/admin/bots/plain/desktop-mode", strings.NewReader(`{"desktop_mode":"none"}`))
+	req.SetPathValue("id", "plain")
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant-a"}))
+	rec = httptest.NewRecorder()
+	PutBotDesktopModeAdminHandler(svc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "warning") {
+		t.Fatalf("none status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBotSettingsSaveKeepsTheOverQuotaMark(t *testing.T) {
+	mem := &botSettingsMem{}
+	mem.value = `{"bots":[{"id":"a","name":"one","owner_user_id":"alice","desktop_mode":"shared","desktop_over":true},{"id":"b","name":"two","owner_user_id":"alice","desktop_mode":"isolated"},{"id":"c","name":"plain","owner_user_id":"alice","desktop_mode":"none","desktop_over":true}],"grants":[{"id":"g","scope":"user","target_id":"alice","desktop_bot_limit":1}]}`
+	svc := botmgmt.NewService(mem)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/bots/settings", strings.NewReader(`{"base_url":"https://maclawsrv.example"}`))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant-a"}))
+	rec := httptest.NewRecorder()
+	PutBotSettingsAdminHandler(svc, &botAuditMem{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		Bots []botmgmt.Bot `json:"bots"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Bots) != 3 || !view.Bots[0].DesktopOver || !view.Bots[1].DesktopOver || view.Bots[2].DesktopOver {
+		t.Fatalf("response bots = %+v", view.Bots)
+	}
+	if strings.Contains(mem.value, "desktop_over") {
+		t.Fatalf("stored record kept the mark: %s", mem.value)
+	}
+}
+
 func TestBotSettingsSaveIsAuditedWithoutSecrets(t *testing.T) {
 	svc := botmgmt.NewService(&botSettingsMem{})
 	audit := &botAuditMem{}
@@ -102,6 +166,40 @@ func TestBotSettingsSaveIsAuditedWithoutSecrets(t *testing.T) {
 	}
 	if !strings.Contains(entry.PayloadJSON, `"token_set":true`) || !strings.Contains(entry.PayloadJSON, `"admin_secret_set":true`) {
 		t.Fatalf("audit payload = %s", entry.PayloadJSON)
+	}
+}
+
+func TestBotSettingsPatchSetsTheDefaultDesktopLimit(t *testing.T) {
+	mem := &botSettingsMem{}
+	svc := botmgmt.NewService(mem)
+	audit := &botAuditMem{}
+	patch := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, "/api/admin/bots/settings", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "admin-1", Scope: "tenant", TenantID: "tenant-a"}))
+		rec := httptest.NewRecorder()
+		PatchBotSettingsAdminHandler(svc, audit).ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := patch(`{"default_desktop_bot_limit":3}`); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"default_desktop_bot_limit":3`) {
+		t.Fatalf("set status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(mem.value, `"default_desktop_bot_limit":3`) {
+		t.Fatalf("stored record = %s", mem.value)
+	}
+	if rec := patch(`{"default_desktop_bot_limit":null}`); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "default_desktop_bot_limit") {
+		t.Fatalf("clear status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(mem.value, "default_desktop_bot_limit") {
+		t.Fatalf("stored record kept the field: %s", mem.value)
+	}
+	if rec := patch(`{}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing field status=%d", rec.Code)
+	}
+	if rec := patch(`{"default_desktop_bot_limit":-1}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative status=%d", rec.Code)
+	}
+	if len(audit.logs) != 2 || audit.logs[0].Action != "bot.settings.update" {
+		t.Fatalf("audit = %+v", audit.logs)
 	}
 }
 
@@ -225,6 +323,25 @@ func TestAdminBotErrorShowsUpstreamStatusButUserErrorDoesNot(t *testing.T) {
 		!strings.Contains(busy.Body.String(), "这台云桌面还有一件在做。") ||
 		!strings.Contains(busy.Body.String(), "turn-1") {
 		t.Fatalf("busy status=%d body=%s", busy.Code, busy.Body.String())
+	}
+
+	turn := httptest.NewRecorder()
+	writeBotUserError(turn, req, &auth.MachinePrincipal{TenantID: "t_demo", UserID: "u_demo"}, botmgmt.ErrNoDesktopTurn, "turn-2")
+	if turn.Code != http.StatusConflict ||
+		!strings.Contains(turn.Body.String(), "BOT_TURN_BUSY") ||
+		!strings.Contains(turn.Body.String(), "这个 bot 还在回答上一条。") ||
+		strings.Contains(turn.Body.String(), "DESKTOP_BUSY") ||
+		strings.Contains(turn.Body.String(), "这台云桌面还有一件在做。") {
+		t.Fatalf("no-desktop turn status=%d body=%s", turn.Code, turn.Body.String())
+	}
+
+	offline := httptest.NewRecorder()
+	writeBotUserError(offline, req, &auth.MachinePrincipal{TenantID: "t_demo", UserID: "u_demo"}, botmgmt.ErrNodeOffline, "")
+	if offline.Code != http.StatusBadGateway ||
+		!strings.Contains(offline.Body.String(), "NODE_OFFLINE") ||
+		!strings.Contains(offline.Body.String(), "这台内网电脑暂时连不上") ||
+		strings.Contains(offline.Body.String(), "MACLAWSRV_REQUEST_FAILED") {
+		t.Fatalf("offline status=%d body=%s", offline.Code, offline.Body.String())
 	}
 
 	task := httptest.NewRecorder()

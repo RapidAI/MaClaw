@@ -2361,11 +2361,21 @@ func mergeTagsReplacePrefixed(existing, desired []string, dropPrefixes []string)
 	return out
 }
 
+// upsertWorkingDirectoryContentLine updates or appends "Working directory: …"
+// without wiping the rest of task.md / artifact content.
+func upsertWorkingDirectoryContentLine(content, workDir string) string {
+	return upsertLabeledContentLine(content, "Working directory:", workDir)
+}
+
 // upsertRemoteWorkDirContentLine updates or appends "Remote work directory: …"
 // without wiping the rest of task.md / artifact content.
 func upsertRemoteWorkDirContentLine(content, workDir string) string {
+	return upsertLabeledContentLine(content, "Remote work directory:", workDir)
+}
+
+func upsertLabeledContentLine(content, prefix, workDir string) string {
 	workDir = strings.TrimSpace(workDir)
-	const prefix = "Remote work directory:"
+	prefix = strings.TrimSpace(prefix)
 	if content == "" {
 		if workDir == "" {
 			return ""
@@ -2985,6 +2995,9 @@ type CodingWorkbenchStatus struct {
 	PlanDialogue bool `json:"plan_dialogue,omitempty"`
 	// StepStatuses is live Todo status for the active plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// ExecutionStatus and Stop are the same projection MCP get_task returns.
+	ExecutionStatus string       `json:"execution_status,omitempty"`
+	Stop            *mcpStopView `json:"stop,omitempty"`
 	// StepsRevision matches the live event's steps_revision. A status read
 	// that started from an older snapshot must not repaint the gate.
 	StepsRevision int64 `json:"steps_revision,omitempty"`
@@ -3111,7 +3124,8 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 	if len(mem.StepStatuses) > 0 {
 		// Project notes at the exit boundary, like the live event does: a legacy
 		// row must not hand the checklist a report body.
-		st.StepStatuses = codingWorkbenchStepsSnapshot(mem.StepStatuses)
+		st.StepStatuses = codingDisplayedRoundSteps(codingWorkbenchStepsSnapshot(mem.StepStatuses), mem.DisplayedStepRound)
+		st.ExecutionStatus, st.Stop = mcpExecutionFromWorkbench(st.StepStatuses)
 	}
 	st.StepsRevision = mem.StepsEmitSeq
 	if len(mem.ProjectInstructionSources) > 0 {
@@ -4575,7 +4589,14 @@ func (a *App) liveWorkingDirForCodingOwner(ownerID string) string {
 	dir := a.EffectiveWorkingDirForOwner(ownerID)
 	identity := projectPathFromSessionOwnerID(ownerID)
 	if isLocalCodingIdentityOrSandbox(identity, dir) {
-		dir = a.EffectiveDesktopWorkingDir()
+		// A checkout that fell back into the task folder is not a work root.
+		// The directory named on the task stays that directory. Only a coding
+		// task that never named one inherits the desktop directory.
+		if tagged := a.codingTaskTaggedWorkRoot(identity); tagged != "" {
+			dir = tagged
+		} else {
+			dir = a.EffectiveDesktopWorkingDir()
+		}
 	}
 	if isLocalCodingIdentityOrSandbox(identity, dir) {
 		return ""
@@ -6204,6 +6225,76 @@ func (a *App) stagedTaskTranscriptForNewTab(persist *ProjectTabSessionPersist, p
 	return session
 }
 
+// stagedCodingTranscript is the visual copy staged for a forked task: the
+// scroll-back archive plus the hot tail. Conversation memory is not a
+// substitute; it only has concatenated reasoning.
+func (a *App) stagedCodingTranscript(persist *ProjectTabSessionPersist, projectPath string) []interface{} {
+	if a == nil || persist == nil || !a.projectHasStagedTaskTranscript(projectPath) {
+		return nil
+	}
+	seed := a.stagedTaskTranscriptForNewTab(persist, projectPath)
+	var hot []interface{}
+	if seed != nil {
+		hot = seed.Conversation
+	}
+	archive, err := persist.LoadConversationViewArchive(taskCopyArchiveTabID(projectPath))
+	if err != nil || len(archive) == 0 {
+		return hot
+	}
+	if len(hot) == 0 {
+		return archive
+	}
+	return mergeConversationSnapshots(archive, hot)
+}
+
+// restoreStagedCodingProcessRows puts the copied task's tool rows back onto
+// a tab session that lost them. The staged transcript is the visual copy.
+// Turns added after the copy stay. An empty conversation is a clear and is
+// left empty, including its scroll-back archive.
+func (a *App) restoreStagedCodingProcessRows(persist *ProjectTabSessionPersist, session *TabSessionData, projectPath string) bool {
+	if a == nil || persist == nil || session == nil || len(session.Conversation) == 0 {
+		return false
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		projectPath = normalizeProjectSessionPath(session.ProjectPath)
+	}
+	full := a.stagedCodingTranscript(persist, projectPath)
+	if len(full) == 0 {
+		return false
+	}
+	next, restored := preserveCodingProcessRows(full, session.Conversation)
+	if restored {
+		session.Conversation = next
+	}
+	// The archive write stands on its own. Returning it as a session change
+	// would rewrite the hot tail and bump its activity time.
+	a.healTabCodingProcessArchive(persist, session.TabID, full)
+	return restored
+}
+
+// healTabCodingProcessArchive fills tool rows on the scroll-back turns.
+// The staged snapshot keeps its own archive and is not rewritten here.
+func (a *App) healTabCodingProcessArchive(persist *ProjectTabSessionPersist, tabID string, stored []interface{}) bool {
+	tabID = strings.TrimSpace(tabID)
+	if persist == nil || tabID == "" || len(stored) == 0 || strings.HasPrefix(tabID, "task-copy-") {
+		return false
+	}
+	archive, err := persist.LoadConversationViewArchive(tabID)
+	if err != nil || len(archive) == 0 {
+		return false
+	}
+	next, restored := preserveCodingProcessRows(stored, archive)
+	if !restored {
+		return false
+	}
+	if err := persist.SaveConversationViewArchive(tabID, next); err != nil {
+		log.Printf("[coding-process] restore archived rows tab=%s err=%v", tabID, err)
+		return false
+	}
+	return true
+}
+
 // taskCopyArchiveTabID is the staged transcript id for a forked task.
 func taskCopyArchiveTabID(projectPath string) string {
 	return expertTaskArchiveTabIDWithPrefix(projectPath, "task-copy-")
@@ -7652,15 +7743,23 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 	existing, err := persist.LoadSession(tabID)
 	if err == nil && existing != nil {
 		adopted := adoptCloudWorkspaceSessionSnapshot(persist, existing, projectPath)
-		if a.seedCloudWorkspaceTabWorkingDir(existing, projectPath) || adopted {
+		seeded := a.seedCloudWorkspaceTabWorkingDir(existing, projectPath)
+		// A coding task's working_dir tag is the execution directory. The
+		// session file is a cache of that tag; a stale cache is rewritten
+		// before it is published. A chat session keeps its own directory.
+		aligned := a.alignCodingSessionWorkingDir(existing, projectPath)
+		if seeded || adopted || aligned {
 			if saveErr := persist.SaveSession(existing); saveErr != nil {
 				log.Printf("[CreateProjectTabSession] restore sidecar session failed: %v", saveErr)
 				return ""
 			}
 		}
+		if aligned {
+			// The in-memory override is the same cache. Drop it so the bind
+			// publishes the directory just written to the session file.
+			a.tabWorkingDirOverrides.Delete(tabID)
+		}
 		dropCloudWorkspaceRestoreSnapshot(persist, tabID, projectPath)
-		// An existing session owns its tab-local override. Restore it before the
-		// tab can render or dispatch a message.
 		a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
 		a.upsertProjectTabIndexEntry(persist, tabID, projectPath, time.Now())
 		return fmt.Sprintf("已恢复项目会话：%s", projectName)
@@ -8317,13 +8416,29 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 			return nil
 		}
 	}
-	// Commit the durable source of truth before publishing the in-memory value.
-	// If the write fails, returning an error must leave this tab's active tools
-	// on its previous directory rather than creating a hidden transient override.
+	// The session file is a cache of the task's working_dir tag. Write the cache
+	// first. A failure here has not touched the task record, so the previous
+	// directory stays in effect. The tag is written only after the cache lands,
+	// and it is flushed after this lock is released.
+	previousTag := ""
+	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		previousTag = normalizeProjectSessionPath(a.recentTaskWorkingDir(projectPath))
+	}
+	previousSession := normalizeProjectSessionPath(a.assistantTabWorkingDir(tabID))
 	if err := a.persistAssistantTabWorkingDir(tabID, projectPath, newDir); err != nil {
 		a.tabWorkingDirMu.Unlock()
 		log.Printf("[SetTabWorkingDir] tab=%s persist dir=%q failed: %v", tabID, newDir, err)
 		return err
+	}
+	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		if err := a.writeTaskWorkingDir(projectPath, newDir); err != nil {
+			if restoreErr := a.persistAssistantTabWorkingDir(tabID, projectPath, previousSession); restoreErr != nil {
+				log.Printf("[SetTabWorkingDir] restore session tab=%s dir=%q err=%v", tabID, previousSession, restoreErr)
+			}
+			a.tabWorkingDirMu.Unlock()
+			log.Printf("[SetTabWorkingDir] persist task working dir tab=%s project=%q err=%v", tabID, projectPath, err)
+			return err
+		}
 	}
 	// Tools resolve by owner while the UI and persistence resolve by tab ID, so
 	// publish both mappings as soon as the durable update has succeeded.
@@ -8331,10 +8446,37 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	a.assistantSessionWorkingDirs.Store(ownerID, newDir)
 	a.syncActiveWorkflowWorkingDir(ownerID, newDir)
 	a.tabWorkingDirMu.Unlock()
-	if projectPath != "" {
+	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		// Flush outside the tab lock. A failed flush rolls the record and the
+		// cache back so the error still means the previous directory.
+		if err := a.flushTaskWorkingDir(); err != nil {
+			a.tabWorkingDirMu.Lock()
+			if previousTag != "" {
+				if restoreErr := a.writeTaskWorkingDir(projectPath, previousTag); restoreErr != nil {
+					log.Printf("[SetTabWorkingDir] restore task dir tab=%s project=%q err=%v", tabID, projectPath, restoreErr)
+				}
+			}
+			if restoreErr := a.persistAssistantTabWorkingDir(tabID, projectPath, previousSession); restoreErr != nil {
+				log.Printf("[SetTabWorkingDir] restore session tab=%s dir=%q err=%v", tabID, previousSession, restoreErr)
+			} else if previousSession != "" {
+				a.tabWorkingDirOverrides.Store(tabID, previousSession)
+				a.assistantSessionWorkingDirs.Store(ownerID, previousSession)
+				a.syncActiveWorkflowWorkingDir(ownerID, previousSession)
+			} else {
+				a.tabWorkingDirOverrides.Delete(tabID)
+				a.assistantSessionWorkingDirs.Delete(ownerID)
+			}
+			a.tabWorkingDirMu.Unlock()
+			_ = a.flushTaskWorkingDir()
+			log.Printf("[SetTabWorkingDir] flush task working dir tab=%s project=%q err=%v", tabID, projectPath, err)
+			return err
+		}
+	} else if projectPath != "" {
 		if err := a.persistTaskWorkingDir(projectPath, newDir); err != nil {
 			log.Printf("[SetTabWorkingDir] persist task working dir tab=%s project=%q err=%v", tabID, projectPath, err)
 		}
+	}
+	if projectPath != "" {
 		a.syncCodingWorkbenchWorkingDir(projectPath, newDir)
 	}
 	log.Printf("[SetTabWorkingDir] tab=%s owner=%q dir=%q", tabID, ownerID, newDir)
@@ -8774,13 +8916,56 @@ func (a *App) bindAssistantTabWorkingDir(tabID, ownerID string) {
 	a.bindAssistantTabWorkingDirLocked(tabID, ownerID)
 }
 
+// rewriteCodingSessionCacheLocked stores the coding task's working_dir tag
+// into the session file. Callers hold tabWorkingDirMu. A missing file is left
+// for CreateProjectTabSession to seed. A save error is logged: the in-memory
+// bind still names the record.
+func (a *App) rewriteCodingSessionCacheLocked(tabID, dir string) {
+	if a == nil {
+		return
+	}
+	tabID = strings.TrimSpace(tabID)
+	dir = normalizeProjectSessionPath(dir)
+	if tabID == "" || dir == "" {
+		return
+	}
+	persist := a.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil {
+		if err != nil {
+			log.Printf("[bindAssistantTabWorkingDir] load session tab=%s err=%v", tabID, err)
+		}
+		return
+	}
+	if normalizeProjectSessionPath(session.WorkingDir) == dir {
+		return
+	}
+	session.WorkingDir = dir
+	if err := persist.SaveSession(session); err != nil {
+		log.Printf("[bindAssistantTabWorkingDir] repair session tab=%s dir=%q err=%v", tabID, dir, err)
+	}
+}
+
 // bindAssistantTabWorkingDirLocked is bindAssistantTabWorkingDir's internal
 // form for callers that already hold tabWorkingDirMu.
 func (a *App) bindAssistantTabWorkingDirLocked(tabID, ownerID string) {
 	dir := a.assistantTabWorkingDir(tabID)
-	if cloudDir := a.cloudWorkspaceExecutionDir(projectPathFromSessionOwnerID(ownerID)); cloudDir != "" {
+	projectPath := projectPathFromSessionOwnerID(ownerID)
+	if cloudDir := a.cloudWorkspaceExecutionDir(projectPath); cloudDir != "" {
 		if dir == "" || !cloudWorkspacePathInsideRoot(cloudDir, dir) {
 			dir = cloudDir
+		}
+	}
+	// The working_dir tag is the coding task's execution directory. The
+	// session file and the in-memory override are copies of it. GetTabWorkingDir
+	// calls this on every chip refresh, and a restored tab does not pass
+	// through CreateProjectTabSession, so this publish rewrites the file
+	// before the owner bind. Horizon and in-flight stamps read that bind.
+	// An expert keeps the directory its chip chose.
+	if expertIDFromUserID(ownerID) == "" {
+		if tagged := a.codingTaskTaggedWorkRoot(projectPath); tagged != "" {
+			dir = tagged
+			a.rewriteCodingSessionCacheLocked(tabID, tagged)
 		}
 	}
 	if dir != "" {
@@ -8882,6 +9067,12 @@ func (a *App) BoundWorkingDirForOwner(ownerID string) string {
 // The claimed directory stays on the task record; execution uses a private
 // checkout until that earlier session leaves.
 func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
+	if dir, active, blocked := a.repoMaintGuardForOwner(ownerID); active {
+		if blocked {
+			return ""
+		}
+		return dir
+	}
 	projectPath := projectPathFromSessionOwnerID(ownerID)
 	return a.exclusiveWorkRoot(projectPath, a.effectiveWorkingDirUnisolated(ownerID))
 }
@@ -8893,10 +9084,16 @@ func (a *App) effectiveWorkingDirUnisolated(ownerID string) string {
 		cloudDir = a.cloudWorkspaceExecutionDir(projectPath)
 	}
 	if dir := a.BoundWorkingDirForOwner(ownerID); dir != "" {
-		if cloudDir == "" || cloudWorkspacePathInsideRoot(cloudDir, dir) {
-			return dir
+		if cloudDir != "" && !cloudWorkspacePathInsideRoot(cloudDir, dir) {
+			return cloudDir
 		}
-		return cloudDir
+		// The working_dir tag is the task's execution directory. The owner
+		// bind is a cache of that tag, or the inherited directory when the
+		// task never named one. A cache must not replace the named directory.
+		if tagged := a.codingTaskTaggedWorkRoot(projectPath); tagged != "" {
+			return tagged
+		}
+		return dir
 	}
 	if cloudDir != "" {
 		return cloudDir
@@ -8970,8 +9167,63 @@ func (a *App) GetTabWorkingDir(tabID string) map[string]interface{} {
 	}
 }
 
+// alignCodingSessionWorkingDir copies the coding task's working_dir tag onto
+// the session cache. A chat or expert record has no coding tag, so its
+// session directory stays where the tab left it.
+func (a *App) alignCodingSessionWorkingDir(session *TabSessionData, projectPath string) bool {
+	if a == nil || session == nil {
+		return false
+	}
+	dir := normalizeProjectSessionPath(a.codingTaskTaggedWorkRoot(projectPath))
+	if dir == "" || normalizeProjectSessionPath(session.WorkingDir) == dir {
+		return false
+	}
+	session.WorkingDir = dir
+	return true
+}
+
+// projectTurnExecutionDir is the directory a project-tab turn prepares.
+// A local coding task uses the directory on its record. A session cache does
+// not replace that directory. Chat and expert turns keep the cache, then the
+// record, and still give a shared tree to the earlier live session.
+func (a *App) projectTurnExecutionDir(userID, projectPath, expertID string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if strings.TrimSpace(expertID) == "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		return a.EffectiveWorkingDirForOwner(userID)
+	}
+	executionProjectPath := a.BoundWorkingDirForOwner(userID)
+	if strings.TrimSpace(expertID) != "" && isProcessDefaultWorkspacePath(executionProjectPath) {
+		executionProjectPath = ""
+	}
+	if strings.TrimSpace(executionProjectPath) == "" {
+		executionProjectPath = a.recentTaskExecutionProjectPath(projectPath)
+	}
+	if strings.TrimSpace(executionProjectPath) == "" {
+		return a.EffectiveWorkingDirForOwner(userID)
+	}
+	return a.exclusiveWorkRoot(projectPath, executionProjectPath)
+}
+
 // persistTaskWorkingDir updates the persistent workingDir tag for a task.
 func (a *App) persistTaskWorkingDir(projectPath, newDir string) error {
+	if err := a.writeTaskWorkingDir(projectPath, newDir); err != nil {
+		return err
+	}
+	return a.flushTaskWorkingDir()
+}
+
+func (a *App) flushTaskWorkingDir() error {
+	if a == nil || a.memoryStore == nil {
+		return fmt.Errorf("memory store unavailable")
+	}
+	return a.memoryStore.Flush()
+}
+
+// writeTaskWorkingDir stores the execution directory on the task artifact.
+// The project index is only a projection of that artifact: ReplacePrefixedTags
+// alone is wiped by the next index rebuild. The task.md line is the same
+// directory, so recovery names it too. Caller flushes.
+func (a *App) writeTaskWorkingDir(projectPath, newDir string) error {
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store unavailable")
@@ -8980,7 +9232,9 @@ func (a *App) persistTaskWorkingDir(projectPath, newDir string) error {
 	if pi == nil {
 		return fmt.Errorf("project index unavailable")
 	}
-	if rec := pi.Get(projectPath); rec == nil {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	rec := pi.Get(projectPath)
+	if rec == nil {
 		return fmt.Errorf("project record not found for %s", projectPath)
 	}
 	newDir = normalizeRecentTaskWorkingDir(newDir)
@@ -8990,18 +9244,119 @@ func (a *App) persistTaskWorkingDir(projectPath, newDir string) error {
 	if a.projectPathIsLocalCodingWorkbench(projectPath) && isLocalCodingIdentityOrSandbox(projectPath, newDir) {
 		return fmt.Errorf("coding work root cannot be the task identity directory")
 	}
-	if a.recentTaskWorkingDir(projectPath) == newDir {
-		return nil
-	}
 	newTag := recentTaskWorkingDirTag(newDir)
 	if newTag == "" {
 		return fmt.Errorf("invalid working directory %s", newDir)
 	}
-	// ReplacePrefixedTags is the project-index write path. UpsertTaskArtifact
-	// merges tags and would keep the previous working_dir: value first.
+	taskFile := filepath.Join(projectPath, "task.md")
+	content := ""
+	if data, err := os.ReadFile(taskFile); err == nil {
+		content = string(data)
+	}
+	title := strings.TrimSpace(rec.Name)
+	fileDir := workingDirectoryContentLine(content)
+	if strings.TrimSpace(content) == "" {
+		if title == "" {
+			title = "task"
+		}
+		content = fmt.Sprintf("# %s\n\nCreated from task management.\n", title)
+	}
+	content = upsertWorkingDirectoryContentLine(content, newDir)
+	existing := a.taskArtifactForProject(projectPath)
+	if a.recentTaskWorkingDir(projectPath) == newDir && taskArtifactHasWorkingDir(existing, newDir) && fileDir == newDir {
+		return nil
+	}
+	identity := taskArtifactIdentityTags(existing.Tags, projectPath)
+	desired := append(append([]string{}, identity...), newTag)
+	if title == "" {
+		title = strings.TrimSpace(existing.Title)
+	}
+	if _, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+		Title:            title,
+		Content:          content,
+		Tags:             desired,
+		IdentityTagCount: len(identity),
+		SourceURL:        taskFile,
+		SourceType:       "manual",
+		MergeExistingTags: func(existingTags, desiredTags []string) []string {
+			return mergeTagsReplacePrefixed(existingTags, desiredTags, []string{recentTaskWorkingDirTagPrefix})
+		},
+	}); err != nil {
+		return err
+	}
+	// The artifact accepted the directory. A file error is logged: the record
+	// is the authority, and the line is rewritten on the next change.
+	if err := os.WriteFile(taskFile, []byte(content), 0o644); err != nil {
+		log.Printf("[project_search] working directory task.md write failed project=%q err=%v", projectPath, err)
+	}
+	// IndexEntry only merge-appends tags. Replace the prefix so a reader does
+	// not keep the previous directory until the scheduled rebuild lands.
 	pi.ReplacePrefixedTags(projectPath, []string{recentTaskWorkingDirTagPrefix}, []string{newTag})
 	a.emitProjectIndexChanged(projectPath)
-	return a.memoryStore.Flush()
+	return nil
+}
+
+func (a *App) taskArtifactForProject(projectPath string) memory.Entry {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || a.memoryStore == nil || projectPath == "" {
+		return memory.Entry{}
+	}
+	var fallback memory.Entry
+	for _, entry := range a.memoryStore.List(memory.CategoryTaskArtifact, "") {
+		if !entryHasAllTaskIdentity(entry.Tags, projectPath) {
+			continue
+		}
+		source := strings.TrimSpace(entry.SourceURL)
+		if strings.EqualFold(filepath.Base(source), "task.md") && normalizeProjectSessionPath(filepath.Dir(source)) == projectPath {
+			return entry
+		}
+		if fallback.ID == "" {
+			fallback = entry
+		}
+	}
+	return fallback
+}
+
+func entryHasAllTaskIdentity(tags []string, projectPath string) bool {
+	hasManual := false
+	hasRecent := false
+	hasPath := false
+	for _, tag := range tags {
+		switch strings.TrimSpace(tag) {
+		case taskLegacyManualTag:
+			hasManual = true
+		case taskLegacyRecentTag:
+			hasRecent = true
+		default:
+			if normalizeProjectSessionPath(tag) == projectPath {
+				hasPath = true
+			}
+		}
+	}
+	return hasManual && hasRecent && hasPath
+}
+
+func taskArtifactIdentityTags(existing []string, projectPath string) []string {
+	if len(existing) >= 3 && existing[0] == taskLegacyManualTag && existing[1] == taskLegacyRecentTag && normalizeProjectSessionPath(existing[2]) == projectPath {
+		return append([]string{}, existing[:3]...)
+	}
+	return []string{taskLegacyManualTag, taskLegacyRecentTag, projectPath}
+}
+
+func taskArtifactHasWorkingDir(entry memory.Entry, dir string) bool {
+	if strings.TrimSpace(entry.ID) == "" {
+		return false
+	}
+	return normalizeProjectSessionPath(recentTaskWorkingDirFromTags(entry.Tags)) == normalizeProjectSessionPath(dir)
+}
+
+func workingDirectoryContentLine(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(line), "Working directory:"); ok {
+			return normalizeRecentTaskWorkingDir(strings.TrimSpace(value))
+		}
+	}
+	return ""
 }
 
 // resolveProjectPathForTab resolves the project path backing a project tab:
@@ -9238,7 +9593,31 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 			log.Printf("[SaveProjectTabConversation] ignored stale tab=%s clear_at=%d", tabID, session.ConversationClearedAt)
 			return
 		}
-		session.Conversation = conversation
+		// The tab session is the visual transcript. A restored projection
+		// keeps the words and drops codingTimeline; writing it through
+		// replaces the process list. Put those rows back on the same turn.
+		// The current file may only still have the hot tail, so a copied
+		// task also consults the staged transcript before the window fold
+		// writes the older turns back out.
+		next, kept := preserveCodingProcessRows(session.Conversation, conversation)
+		session.Conversation = next
+		if strings.TrimSpace(session.ProjectPath) == "" {
+			session.ProjectPath = projectPathFromConversation(conversation)
+		}
+		if full := a.stagedCodingTranscript(persist, session.ProjectPath); len(full) > 0 {
+			var also bool
+			next, also = preserveCodingProcessRows(full, session.Conversation)
+			if also {
+				session.Conversation = next
+				kept = true
+			}
+			if a.healTabCodingProcessArchive(persist, tabID, full) {
+				kept = true
+			}
+		}
+		if kept {
+			log.Printf("[SaveProjectTabConversation] kept coding process rows tab=%s", tabID)
+		}
 	}
 	// A stashed expert transcript is rewritten onto the paper's session key.
 	// Record that path so reopening the paper finds this copy, not only an
@@ -9348,12 +9727,20 @@ func mergeConversationSnapshots(older, newer []interface{}) []interface{} {
 			newerLoose[key] = struct{}{}
 		}
 	}
+	// The newer snapshot replaces the same id, but a restored projection
+	// drops codingTimeline. The process list still belongs to that turn.
+	timelines := map[string]interface{}{}
 	merged := make([]interface{}, 0, len(older)+len(newer))
 	for _, raw := range older {
 		// Same words with different ids are different turns. Only an id-less
 		// copy is folded into a message the UI already has.
 		if id := conversationMessageID(raw); id != "" {
 			if _, ok := newerIDs[id]; ok {
+				if _, recorded := timelines[id]; !recorded {
+					if timeline := codingTimelineValue(raw); timeline != nil {
+						timelines[id] = timeline
+					}
+				}
 				continue
 			}
 			merged = append(merged, raw)
@@ -9366,10 +9753,29 @@ func mergeConversationSnapshots(older, newer []interface{}) []interface{} {
 		}
 		merged = append(merged, raw)
 	}
-	return append(merged, newer...)
+	merged = append(merged, newer...)
+	if len(timelines) == 0 {
+		return merged
+	}
+	for i, raw := range merged {
+		id := conversationMessageID(raw)
+		if id == "" || codingTimelineValue(raw) != nil {
+			continue
+		}
+		timeline, ok := timelines[id]
+		if !ok {
+			continue
+		}
+		merged[i] = messageWithCodingTimeline(raw, timeline)
+	}
+	return merged
 }
 
 func conversationMessageID(raw interface{}) string {
+	if msg, ok := raw.(map[string]interface{}); ok {
+		id, _ := msg["id"].(string)
+		return strings.TrimSpace(id)
+	}
 	entry, ok := conversationMessageFields(raw)
 	if !ok {
 		return ""
@@ -9403,6 +9809,257 @@ func conversationMessageFields(raw interface{}) (struct {
 		return entry, false
 	}
 	return entry, true
+}
+
+// codingTurn is one user or assistant message used to line a lossy snapshot
+// up with the transcript that still has the process list.
+type codingTurn struct {
+	index   int
+	role    string
+	content string
+	raw     interface{}
+}
+
+// preserveCodingProcessRows copies codingTimeline onto incoming messages that
+// lost it. The same message id is the same turn. A restored-* id is the
+// memory projection of a turn, matched by role and text. The match has to
+// consume every incoming turn or reach the end of the stored transcript, so
+// a shared opening line is not the same turn. Any other id is a different
+// turn, even when the words match. An incoming process list is kept as the
+// newer one.
+func preserveCodingProcessRows(stored, incoming []interface{}) ([]interface{}, bool) {
+	if len(stored) == 0 || len(incoming) == 0 || !conversationHasCodingTimeline(stored) {
+		return incoming, false
+	}
+	out := append([]interface{}(nil), incoming...)
+	changed := false
+	byID := make(map[string]interface{}, len(stored))
+	for _, raw := range stored {
+		id := conversationMessageID(raw)
+		if id == "" || isRestoredConversationID(id) {
+			continue
+		}
+		if _, exists := byID[id]; !exists {
+			byID[id] = raw
+		}
+	}
+	for i, raw := range out {
+		id := conversationMessageID(raw)
+		if id == "" || isRestoredConversationID(id) || codingTimelineValue(raw) != nil {
+			continue
+		}
+		prev, ok := byID[id]
+		if !ok {
+			continue
+		}
+		timeline := codingTimelineValue(prev)
+		if timeline == nil {
+			continue
+		}
+		out[i] = messageWithCodingTimeline(raw, timeline)
+		changed = true
+	}
+	storedTurns := codingTurns(stored)
+	incomingTurns := codingTurns(out)
+	offset, count := alignCodingTurns(storedTurns, incomingTurns)
+	for i := 0; i < count; i++ {
+		inc := incomingTurns[i]
+		if codingTimelineValue(out[inc.index]) != nil {
+			continue
+		}
+		id := conversationMessageID(out[inc.index])
+		if id != "" && !isRestoredConversationID(id) {
+			continue
+		}
+		timeline := codingTimelineValue(storedTurns[offset+i].raw)
+		if timeline == nil {
+			continue
+		}
+		out[inc.index] = messageWithCodingTimeline(out[inc.index], timeline)
+		changed = true
+	}
+	if !changed {
+		return incoming, false
+	}
+	return out, true
+}
+
+func isRestoredConversationID(id string) bool {
+	return strings.HasPrefix(strings.TrimSpace(id), "restored-")
+}
+
+func codingTurns(conversation []interface{}) []codingTurn {
+	turns := make([]codingTurn, 0, len(conversation))
+	for i, raw := range conversation {
+		role, content, ok := conversationRoleAndContent(raw)
+		if !ok || (role != "user" && role != "assistant") {
+			continue
+		}
+		turns = append(turns, codingTurn{index: i, role: role, content: content, raw: raw})
+	}
+	return turns
+}
+
+// alignCodingTurns lines incoming up with stored. A run counts only when it
+// uses every incoming turn or reaches the end of stored. The longest run
+// wins, then the rightmost start. One repeated line that matches more than
+// one stored turn stays unmatched: either process list could be the wrong one.
+func alignCodingTurns(stored, incoming []codingTurn) (offset, count int) {
+	if len(stored) == 0 || len(incoming) == 0 {
+		return 0, 0
+	}
+	bestOff, bestN, ties := 0, 0, 0
+	for start := 0; start < len(stored); start++ {
+		n := 0
+		for n < len(incoming) && start+n < len(stored) &&
+			stored[start+n].role == incoming[n].role &&
+			stored[start+n].content == incoming[n].content {
+			n++
+		}
+		if n == 0 || (n != len(incoming) && start+n != len(stored)) {
+			continue
+		}
+		if n > bestN {
+			bestOff, bestN, ties = start, n, 1
+			continue
+		}
+		if n == bestN {
+			ties++
+			if start > bestOff {
+				bestOff = start
+			}
+		}
+	}
+	if bestN == 0 || (bestN == 1 && ties > 1) {
+		return 0, 0
+	}
+	return bestOff, bestN
+}
+
+func conversationHasCodingTimeline(conversation []interface{}) bool {
+	for _, raw := range conversation {
+		if codingTimelineValue(raw) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func conversationRoleAndContent(raw interface{}) (role, content string, ok bool) {
+	if msg, isMap := raw.(map[string]interface{}); isMap {
+		role, _ = msg["role"].(string)
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role == "" {
+			return "", "", false
+		}
+		// The map already holds the fields. Marshaling the whole message
+		// would copy its process list on every snapshot save.
+		return role, strings.TrimSpace(stringifyProjectConversationContent(msg["content"])), true
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return "", "", false
+	}
+	var entry struct {
+		Role    string      `json:"role"`
+		Content interface{} `json:"content"`
+	}
+	if json.Unmarshal(data, &entry) != nil {
+		return "", "", false
+	}
+	role = strings.ToLower(strings.TrimSpace(entry.Role))
+	content = strings.TrimSpace(stringifyProjectConversationContent(entry.Content))
+	if role == "" {
+		return "", "", false
+	}
+	return role, content, true
+}
+
+func codingTimelineValue(raw interface{}) interface{} {
+	if msg, ok := raw.(map[string]interface{}); ok {
+		return nonEmptyCodingTimeline(msg["codingTimeline"])
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var entry struct {
+		CodingTimeline json.RawMessage `json:"codingTimeline"`
+	}
+	if json.Unmarshal(data, &entry) != nil || strings.TrimSpace(string(entry.CodingTimeline)) == "" {
+		return nil
+	}
+	var decoded interface{}
+	if json.Unmarshal(entry.CodingTimeline, &decoded) != nil {
+		return nil
+	}
+	return nonEmptyCodingTimeline(decoded)
+}
+
+func nonEmptyCodingTimeline(value interface{}) interface{} {
+	switch timeline := value.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		if len(timeline) == 0 {
+			return nil
+		}
+		return timeline
+	default:
+		data, err := json.Marshal(timeline)
+		if err != nil {
+			return nil
+		}
+		trimmed := strings.TrimSpace(string(data))
+		if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+			return nil
+		}
+		var decoded interface{}
+		if json.Unmarshal(data, &decoded) != nil {
+			return nil
+		}
+		items, ok := decoded.([]interface{})
+		if !ok || len(items) == 0 {
+			return nil
+		}
+		return items
+	}
+}
+
+func messageWithCodingTimeline(raw, timeline interface{}) interface{} {
+	cloned := cloneJSONValue(timeline)
+	switch msg := raw.(type) {
+	case map[string]interface{}:
+		next := make(map[string]interface{}, len(msg)+1)
+		for key, value := range msg {
+			next[key] = value
+		}
+		next["codingTimeline"] = cloned
+		return next
+	default:
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return raw
+		}
+		var generic map[string]interface{}
+		if json.Unmarshal(data, &generic) != nil {
+			return raw
+		}
+		generic["codingTimeline"] = cloned
+		return generic
+	}
+}
+
+func cloneJSONValue(value interface{}) interface{} {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var cloned interface{}
+	if json.Unmarshal(data, &cloned) != nil {
+		return value
+	}
+	return cloned
 }
 
 // tabConversationPassesClearFence rejects snapshots created before the most
@@ -9452,13 +10109,34 @@ func (a *App) LoadProjectTabConversation(tabID string) []interface{} {
 	}
 	persist := a.ensureProjectTabSessionPersist()
 	session, err := persist.LoadSession(tabID)
-	if err != nil || session == nil {
+	if err != nil || session == nil || len(session.Conversation) == 0 {
 		return nil
 	}
-	if len(session.Conversation) == 0 {
+	// Ordinary transcripts stay off the session lifecycle lock. Only a copied
+	// or forked task can still be missing its process list, and that repair
+	// writes the same file a debounced snapshot replaces. Opening the memory
+	// store is startup's job. A nil store reports no staged transcript, so
+	// this load returns the file as stored and a later open can still repair it.
+	if !a.projectHasStagedTaskTranscript(session.ProjectPath) {
+		return a.finishProjectTabConversationLoad(persist, tabID, session, false)
+	}
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+	session, err = persist.LoadSession(tabID)
+	if err != nil || session == nil || len(session.Conversation) == 0 {
 		return nil
 	}
+	healed := a.restoreStagedCodingProcessRows(persist, session, session.ProjectPath)
+	return a.finishProjectTabConversationLoad(persist, tabID, session, healed)
+}
+
+func (a *App) finishProjectTabConversationLoad(persist *ProjectTabSessionPersist, tabID string, session *TabSessionData, healed bool) []interface{} {
 	if len(session.Conversation) <= conversationViewHotMessages {
+		if healed {
+			if err := persist.SaveSession(session); err != nil {
+				log.Printf("[LoadProjectTabConversation] restore coding process rows tab=%s err=%v", tabID, err)
+			}
+		}
 		return session.Conversation
 	}
 	hot := foldProjectTabConversationWindow(persist, tabID, session.Conversation)

@@ -70,7 +70,7 @@ func (s *Service) routerReceiveFinding(f watchFinding) {
 		}
 	}
 	s.router.mu.Unlock()
-	text := routerWordFinding(f)
+	text := routerWordFinding(f, s.botDesktopNone(context.Background(), f.TenantID, f.BotID))
 	if text == "" {
 		return // nothing worth the person's attention
 	}
@@ -85,18 +85,42 @@ func (s *Service) routerReceiveFinding(f watchFinding) {
 	}
 }
 
-// routerWordFinding turns a watcher fact into the router's own line.
-func routerWordFinding(f watchFinding) string {
+// botDesktopNone reports whether this bot was created without a computer.
+// A miss means "unknown", and unknown stays on the desktop wording that
+// desktop bots still need.
+func (s *Service) botDesktopNone(ctx context.Context, tenantID, botID string) bool {
+	if s == nil {
+		return false
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return false
+	}
+	i := indexOf(rec.Bots, strings.TrimSpace(botID))
+	return i >= 0 && botNone(rec.Bots[i])
+}
+
+// routerWordFinding turns a watcher fact into the router's own line. A bot
+// with no computer gets the same facts worded off a surface it never had.
+func routerWordFinding(f watchFinding, noDesktop bool) string {
 	switch f.Reason {
 	case "stalled":
 		// The watcher only sees that the run's status has not changed; it
 		// does not stop the run, so it must not say it stopped.
 		return "这件还在进行，但已经有一阵没看到新的进展。我没有停下它；如果确实卡住，会停下并告诉你卡在哪、还剩什么。"
 	case "no_receipt":
-		return "这件做完了，桌面上就是结果，你看一眼。"
+		// The run ended with nothing delivered. That is not a success,
+		// whether or not this bot has a computer.
+		return "这件没做完：结束时没有交回可核对的结果，我没有把它算作完成。"
 	case "attention":
+		if noDesktop {
+			return firstNonEmptyString(strings.TrimSpace(f.Detail), "这件需要你看一眼。")
+		}
 		return firstNonEmptyString(strings.TrimSpace(f.Detail), "这件需要你看一眼，我在桌面等你。")
 	case "failed":
+		if noDesktop {
+			return "这件我没做成，中途出了问题。你说一声我再试一次。"
+		}
 		return "这件我没做成，中途出了问题，我停在当前页面，没有重复提交任何东西。你说一声我再试一次。"
 	}
 	return ""

@@ -2,10 +2,8 @@ package guiapp
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -89,6 +87,8 @@ type runWindowManager struct {
 	tasks     []RunWindowTask
 	stopCh    chan struct{}
 	startOnce sync.Once
+	closeOnce sync.Once
+	store     *runWindowStore
 	onChange  func()
 	// pauseRun lets the in-flight request or subtask finish, then pauses.
 	// accepted is false when no loop is running yet.
@@ -116,7 +116,13 @@ func newRunWindowManager(path string) (*runWindowManager, error) {
 		tasks:  []RunWindowTask{},
 		stopCh: make(chan struct{}),
 	}
+	store, err := openRunWindowStore(abs)
+	if err != nil {
+		return nil, err
+	}
+	m.store = store
 	if err := m.load(); err != nil {
+		_ = store.db.Close()
 		return nil, err
 	}
 	return m, nil
@@ -1217,41 +1223,50 @@ func cloneRunWindowTask(task RunWindowTask) RunWindowTask {
 }
 
 func (m *runWindowManager) load() error {
-	data, err := os.ReadFile(m.path)
+	if m.store == nil || m.store.db == nil {
+		return fmt.Errorf("运行时段任务数据库不可用")
+	}
+	tasks, err := loadRunWindowTasks(m.store.db)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return nil
-	}
-	var tasks []RunWindowTask
-	if err := json.Unmarshal(data, &tasks); err != nil {
 		return fmt.Errorf("读取运行时段任务失败: %w", err)
-	}
-	if tasks == nil {
-		tasks = []RunWindowTask{}
 	}
 	m.tasks = tasks
 	return nil
 }
 
 func (m *runWindowManager) saveLocked() error {
-	dir := filepath.Dir(m.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	if m.store == nil || m.store.db == nil {
+		return fmt.Errorf("运行时段任务数据库不可用")
 	}
-	data, err := json.MarshalIndent(m.tasks, "", "  ")
-	if err != nil {
-		return err
+	return saveRunWindowTasks(m.store.db, m.tasks)
+}
+
+func (m *runWindowManager) Close() {
+	if m == nil {
+		return
 	}
-	tmp := m.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
+	m.closeOnce.Do(func() {
+		close(m.stopCh)
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.store != nil && m.store.db != nil {
+			_ = m.store.db.Close()
+			m.store.db = nil
+		}
+	})
+}
+
+func (a *App) closeRunWindowManager() {
+	if a == nil {
+		return
 	}
-	return os.Rename(tmp, m.path)
+	a.runWindowManagerMu.Lock()
+	manager := a.runWindowManager
+	a.runWindowManager = nil
+	a.runWindowManagerMu.Unlock()
+	if manager != nil {
+		manager.Close()
+	}
 }
 
 func newRunWindowID() string {

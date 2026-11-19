@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const packSourceMarkerName = ".maclaw-pet-source"
@@ -72,11 +73,27 @@ func (r *Registry) IsPackCreatorOwned(id string) bool {
 // the Pet Store. These packs retain a local marker so they cannot be relisted
 // by the buyer even when the archive carries the same manifest ID.
 func (r *Registry) IsPackMarketInstalled(id string) bool {
+	_, _, ok := r.MarketInstalledPackInfo(id)
+	return ok
+}
+
+// MarketInstalledPackInfo returns the installed manifest version and the
+// local install time when the local copy was installed through the Pet Store.
+// The install time is the provenance marker's mtime. The desktop decides
+// 更新 from this version and the pack id: a higher listing version for the
+// same id is newer, and the same version stays installed.
+func (r *Registry) MarketInstalledPackInfo(id string) (version string, installedAt time.Time, ok bool) {
 	if r == nil {
-		return false
+		return "", time.Time{}, false
 	}
 	r.mu.RLock()
 	m := r.packs[strings.TrimSpace(id)]
 	r.mu.RUnlock()
-	return m != nil && m.Scope == ScopeUser && strings.TrimSpace(m.Dir) != "" && packSourceForDir(m.Dir) == SourceMarket
+	if m == nil || m.Scope != ScopeUser || strings.TrimSpace(m.Dir) == "" || packSourceForDir(m.Dir) != SourceMarket {
+		return "", time.Time{}, false
+	}
+	if st, err := os.Stat(filepath.Join(m.Dir, packSourceMarkerName)); err == nil {
+		installedAt = st.ModTime()
+	}
+	return m.Version, installedAt, true
 }

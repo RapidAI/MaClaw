@@ -151,6 +151,52 @@ func TestSameAccountGrantIsImmediateAndNotifiesTarget(t *testing.T) {
 	}
 }
 
+func TestSameAccountGrantFromAccountSessionControlsMachine(t *testing.T) {
+	svc, machines, sender, _ := testService(t)
+	ctx := context.Background()
+	// A viewer without a machine id (mobile app) pairs itself with one of the
+	// account's desktops: the controller is the account, so '' rides the grant.
+	grant, err := svc.GrantSameAccount(ctx, "tenant", "user-a", "", "mac-b", PermOperate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.ControllerMachineID != "" || grant.ControllerMachineName != accountControllerName {
+		t.Fatalf("grant = %+v", grant)
+	}
+	state, err := svc.Snapshot(ctx, "tenant", "user-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Grants) != 1 || state.Grants[0].MachineName != "家里" {
+		t.Fatalf("account-session tabs = %+v", state.Grants)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := svc.Exec(ctx, "tenant", "user-a", "", grant.ID, OpListTasks, nil); err != nil {
+			t.Errorf("account exec: %v", err)
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	var msg map[string]any
+	for msg == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("exec was not sent")
+		}
+		time.Sleep(10 * time.Millisecond)
+		if first := sender.first(); first != nil {
+			msg = first.(map[string]any)
+		}
+	}
+	svc.Complete("mac-b", msg["request_id"].(string), json.RawMessage(`{"body":{}}`))
+	<-done
+	// A desktop must not borrow the account-level grant.
+	machines.online["mac-b"] = true
+	if _, err := svc.Exec(ctx, "tenant", "user-a", "mac-a", grant.ID, OpListTasks, nil); err == nil {
+		t.Fatal("a desktop session must not reuse the account grant")
+	}
+}
+
 func TestSnapshotUsesCurrentMachineNameAndLivePresence(t *testing.T) {
 	svc, machines, _, _ := testService(t)
 	ctx := context.Background()
@@ -476,6 +522,21 @@ func TestFetchFileOpPermissions(t *testing.T) {
 	}
 	if allowedOp("delete_file") {
 		t.Fatal("unknown op must stay rejected")
+	}
+}
+
+func TestListDirsOpRequiresOperate(t *testing.T) {
+	// list_dirs enumerates the controlled filesystem for the new-task
+	// directory picker. It reads only, but it stays an operate op — a view
+	// grant must not browse directories it has no business creating in.
+	if !allowedOp(OpListDirs) {
+		t.Fatal("list_dirs must be a known op")
+	}
+	if permissionAllows(PermView, OpListDirs) {
+		t.Fatal("list_dirs must reject view grants")
+	}
+	if !permissionAllows(PermOperate, OpListDirs) {
+		t.Fatal("list_dirs must be allowed for operate grants")
 	}
 }
 

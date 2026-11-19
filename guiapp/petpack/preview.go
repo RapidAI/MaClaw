@@ -1,10 +1,8 @@
 package petpack
 
 import (
-	"bytes"
 	"fmt"
 	"image"
-	"image/png"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -168,17 +166,6 @@ func expressionClipForState(rr *RigRenderer, state PetRuntimeState) string {
 		}
 	}
 	return ""
-}
-
-func encodePNG(img image.Image) ([]byte, error) {
-	if img == nil {
-		return nil, fmt.Errorf("nil image")
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
 
 func (r *Registry) getManifest(packID string) (*PetPackManifest, error) {

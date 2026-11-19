@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +27,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -71,9 +74,9 @@ type desktopBotRelayResult struct {
 	RunError string
 	// TaskOutcome is MaClawSrv's measured task outcome relayed by Hub
 	// ("done", "partial", "blocked", "not_submitted", "unconfirmed",
-	// "awaiting_user", "running"; empty from an older Hub or MaClawSrv).
-	// Anything but "done" means the task is not finished, whatever the run
-	// status says. "running" is a handed-off job the watcher still owns.
+	// "unverified", "awaiting_user", "running"). Empty from an older Hub
+	// or MaClawSrv is not done. "running" is a handed-off job the watcher
+	// still owns.
 	TaskOutcome string
 	// Session is the srv conversation Hub admitted this turn into.
 	Session string
@@ -221,13 +224,20 @@ type DesktopBotInfo struct {
 	// older or the bot has no saved look; the GUI then falls back locally.
 	Color string `json:"color,omitempty"`
 	Shape string `json:"shape,omitempty"`
+	// DesktopMode is shared, isolated, or none. Empty from an older Hub
+	// means shared.
+	DesktopMode string `json:"desktop_mode,omitempty"`
+	// NodeID is the local computer this bot uses. Empty is the cloud computer.
+	NodeID string `json:"node_id,omitempty"`
 }
 
 // DesktopBotWatch is one watch poll result: the live noVNC page for this
 // user's desktop and whether a bot handed that keyboard to the person.
 type DesktopBotWatch struct {
 	NovncURL        string `json:"novnc_url"`
+	DirectURL       string `json:"direct_url,omitempty"`
 	UserControl     bool   `json:"user_control"`
+	InputGranted    bool   `json:"input_granted"`
 	AttentionReason string `json:"attention_reason,omitempty"`
 	DesktopMode     string `json:"desktop_mode,omitempty"`
 }
@@ -236,7 +246,9 @@ type DesktopBotWatch struct {
 // all return the owner's display; an isolated bot returns its own.
 type DesktopBotScreen struct {
 	NovncURL        string `json:"novnc_url"`
+	DirectURL       string `json:"direct_url,omitempty"`
 	UserControl     bool   `json:"user_control"`
+	InputGranted    bool   `json:"input_granted"`
 	AttentionReason string `json:"attention_reason,omitempty"`
 	DesktopMode     string `json:"desktop_mode"`
 }
@@ -250,6 +262,13 @@ type DesktopBotHandBack struct {
 	RunID           string `json:"run_id,omitempty"`
 	Status          string `json:"status,omitempty"`
 	ClientMessageID string `json:"client_message_id,omitempty"`
+	// Joined: another post already continues this handoff and owns its
+	// reply; Reply is Hub's one line for this press.
+	Joined bool `json:"joined,omitempty"`
+	Reply  *struct {
+		Text       string `json:"text"`
+		SendToUser string `json:"send_to_user,omitempty"`
+	} `json:"reply,omitempty"`
 }
 
 // WatchDesktopBot polls the live desktop for the Bot page. The GUI calls it
@@ -273,7 +292,9 @@ func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*Deskto
 	}
 	var out struct {
 		NovncURL        string `json:"novnc_url"`
+		DirectURL       string `json:"direct_url"`
 		UserControl     bool   `json:"user_control"`
+		InputGranted    bool   `json:"input_granted"`
 		AttentionReason string `json:"attention_reason"`
 		DesktopMode     string `json:"desktop_mode"`
 	}
@@ -295,10 +316,20 @@ func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*Deskto
 	}
 	return &DesktopBotWatch{
 		NovncURL:        a.absoluteHubPath(out.NovncURL),
+		DirectURL:       absoluteDirect(a, out.DirectURL),
 		UserControl:     out.UserControl,
+		InputGranted:    out.InputGranted,
 		AttentionReason: strings.TrimSpace(out.AttentionReason),
 		DesktopMode:     desktopModeLabel(out.DesktopMode),
 	}, nil
+}
+
+func absoluteDirect(a *App, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.Contains(raw, "://") {
+		return raw
+	}
+	return a.absoluteHubPath(raw)
 }
 
 // GetDesktopBotScreen reads GET /api/v1/bots/{id}/desktop. The picture is that
@@ -311,7 +342,9 @@ func (a *App) GetDesktopBotScreen(botID string) (*DesktopBotScreen, error) {
 	}
 	var out struct {
 		NovncURL        string `json:"novnc_url"`
+		DirectURL       string `json:"direct_url"`
 		UserControl     bool   `json:"user_control"`
+		InputGranted    bool   `json:"input_granted"`
 		AttentionReason string `json:"attention_reason"`
 		DesktopMode     string `json:"desktop_mode"`
 	}
@@ -321,10 +354,32 @@ func (a *App) GetDesktopBotScreen(botID string) (*DesktopBotScreen, error) {
 	}
 	return &DesktopBotScreen{
 		NovncURL:        a.absoluteHubPath(out.NovncURL),
+		DirectURL:       absoluteDirect(a, out.DirectURL),
 		UserControl:     out.UserControl,
+		InputGranted:    out.InputGranted,
 		AttentionReason: strings.TrimSpace(out.AttentionReason),
 		DesktopMode:     desktopModeLabel(out.DesktopMode),
 	}, nil
+}
+
+// DesktopBotControl is the reply from POST /api/v1/bots/{id}/desktop/control.
+type DesktopBotControl struct {
+	InputGranted bool `json:"input_granted"`
+}
+
+// SetDesktopBotControl claims or releases this machine's keyboard on the bot's
+// screen. Another machine that already holds that screen is refused.
+func (a *App) SetDesktopBotControl(botID string, hold bool) (*DesktopBotControl, error) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil, fmt.Errorf("bot id is required")
+	}
+	var out DesktopBotControl
+	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop/control", map[string]any{"hold": hold}, &out, 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // HandBackDesktopBot ends the person's takeover of this bot's display and
@@ -344,7 +399,7 @@ func (a *App) HandBackDesktopBot(botID string) (*DesktopBotHandBack, error) {
 }
 
 // SetDesktopBotDesktopMode switches one bot between the owner's desktop and
-// its own display. Hub only accepts this from a tenant admin.
+// its own display. The owner calls this; another account's bot is not found.
 func (a *App) SetDesktopBotDesktopMode(botID, mode string) (string, error) {
 	botID = strings.TrimSpace(botID)
 	mode = strings.ToLower(strings.TrimSpace(mode))
@@ -358,7 +413,7 @@ func (a *App) SetDesktopBotDesktopMode(botID, mode string) (string, error) {
 		ID   string `json:"id"`
 		Mode string `json:"desktop_mode"`
 	}
-	err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/admin/bots/"+url.PathEscape(botID)+"/desktop-mode", map[string]string{
+	err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop-mode", map[string]string{
 		"desktop_mode": mode,
 	}, &out, 20*time.Second)
 	if err != nil {
@@ -388,10 +443,14 @@ func (a *App) DesktopBotDesktopAdmin() (bool, error) {
 }
 
 func desktopModeLabel(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), "isolated") {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "isolated":
 		return "isolated"
+	case "none":
+		return "none"
+	default:
+		return "shared"
 	}
-	return "shared"
 }
 
 // ReleaseDesktopBotWatch drops the watch hold for the Bot page that just hid.
@@ -416,6 +475,9 @@ type hubBot struct {
 	Primary     bool   `json:"primary,omitempty"`
 	Color       string `json:"color,omitempty"`
 	Shape       string `json:"shape,omitempty"`
+	DesktopMode string `json:"desktop_mode,omitempty"`
+	// NodeID is the local computer this bot uses. Empty is the cloud computer.
+	NodeID string `json:"node_id,omitempty"`
 }
 
 func (a *App) DesktopBotAccess() (*DesktopBotAccess, error) {
@@ -447,6 +509,27 @@ func (a *App) ListDesktopBots() ([]DesktopBotInfo, error) {
 	return items, nil
 }
 
+// DesktopBotQuota is the owner's desktop-bot grant. A nil Limit is unlimited.
+// CloudDesktop reports whether the account has an assigned cloud computer;
+// nil means an older hub that does not send the field, treated as available.
+type DesktopBotQuota struct {
+	Limit        *int  `json:"limit"`
+	Used         int   `json:"used"`
+	CloudDesktop *bool `json:"cloud_desktop"`
+}
+
+// GetDesktopBotQuota reads the same list the bots come from, and returns only
+// the quota the create dialog shows as 已用 x / y.
+func (a *App) GetDesktopBotQuota() (*DesktopBotQuota, error) {
+	var out struct {
+		Quota DesktopBotQuota `json:"desktop_quota"`
+	}
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots", nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	return &out.Quota, nil
+}
+
 // desktopBotSettingsBody carries name/description plus the badge look when set.
 // An older Hub ignores the extra fields.
 func desktopBotSettingsBody(name, description, color, shape string) map[string]string {
@@ -461,13 +544,42 @@ func desktopBotSettingsBody(name, description, color, shape string) map[string]s
 }
 
 func (a *App) CreateDesktopBot(name, description, color, shape string) (*DesktopBotInfo, error) {
+	return a.createDesktopBot(name, description, color, shape, true, "", false)
+}
+
+// desktopBotCreateBody is the create payload. desktop is a bool, so it cannot
+// ride in the string map used for rename. nodeID is sent only when this bot
+// needs a computer and the dialog picked a server; empty then means the
+// cloud computer. A bot without a computer does not pick a server.
+func desktopBotCreateBody(name, description, color, shape string, needsComputer bool, nodeID string, chooseNode bool) map[string]any {
+	body := map[string]any{"name": name, "description": description, "desktop": needsComputer}
+	if c := strings.TrimSpace(color); c != "" {
+		body["color"] = c
+	}
+	if sh := strings.TrimSpace(shape); sh != "" {
+		body["shape"] = sh
+	}
+	if chooseNode && needsComputer {
+		body["node_id"] = strings.TrimSpace(nodeID)
+	}
+	return body
+}
+
+func (a *App) createDesktopBot(name, description, color, shape string, needsComputer bool, nodeID string, chooseNode bool) (*DesktopBotInfo, error) {
 	var bot hubBot
-	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots", desktopBotSettingsBody(name, description, color, shape), &bot, 30*time.Second)
+	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots", desktopBotCreateBody(name, description, color, shape, needsComputer, nodeID, chooseNode), &bot, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	info := desktopBotInfo(bot)
 	return &info, nil
+}
+
+// CreateDesktopBotWithComputer creates a bot that uses a computer when
+// needsComputer is true, and a no-computer bot when it is false. nodeID
+// picks one of the caller's local servers. Empty is the cloud computer.
+func (a *App) CreateDesktopBotWithComputer(name, description, color, shape string, needsComputer bool, nodeID string) (*DesktopBotInfo, error) {
+	return a.createDesktopBot(name, description, color, shape, needsComputer, nodeID, true)
 }
 
 // RenameDesktopBot updates name/description and, when given, the badge look.
@@ -512,8 +624,9 @@ func (a *App) DeleteDesktopBot(botID string) error {
 // credential into the frontend bundle or the chat transcript.
 //
 // Name, URL and Model mirror the foreground role so older code that still
-// reads one provider keeps working. Roles is the choice itself when Mode is
-// custom; it is absent in default mode.
+// reads one provider keeps working. Roles is the cloud choice when Mode is
+// custom; it is absent in default mode. LocalRoles is the four-stage model a
+// locally installed desktop runs, and it stays set in either mode.
 type DesktopBotLLM struct {
 	Mode          string              `json:"mode"`
 	Name          string              `json:"name,omitempty"`
@@ -521,6 +634,7 @@ type DesktopBotLLM struct {
 	Model         string              `json:"model,omitempty"`
 	KeySet        bool                `json:"key_set"`
 	Roles         *DesktopBotLLMRoles `json:"roles,omitempty"`
+	LocalRoles    *DesktopBotLLMRoles `json:"local_roles,omitempty"`
 	Stored        bool                `json:"stored"`
 	Choice        string              `json:"choice,omitempty"`
 	Effective     *DesktopBotLLMRoles `json:"effective,omitempty"`
@@ -554,14 +668,15 @@ type DesktopBotLLMRoles struct {
 // "custom" without Roles is the older single-provider body. A blank Key keeps
 // the key already stored for that role's provider when the name is unchanged.
 type DesktopBotLLMInput struct {
-	Mode     string                   `json:"mode"`
-	Name     string                   `json:"name,omitempty"`
-	URL      string                   `json:"url,omitempty"`
-	Key      string                   `json:"key,omitempty"`
-	Model    string                   `json:"model,omitempty"`
-	Protocol string                   `json:"protocol,omitempty"`
-	WireAPI  string                   `json:"wire_api,omitempty"`
-	Roles    *DesktopBotLLMRolesInput `json:"roles,omitempty"`
+	Mode       string                   `json:"mode"`
+	Name       string                   `json:"name,omitempty"`
+	URL        string                   `json:"url,omitempty"`
+	Key        string                   `json:"key,omitempty"`
+	Model      string                   `json:"model,omitempty"`
+	Protocol   string                   `json:"protocol,omitempty"`
+	WireAPI    string                   `json:"wire_api,omitempty"`
+	Roles      *DesktopBotLLMRolesInput `json:"roles,omitempty"`
+	LocalRoles *DesktopBotLLMRolesInput `json:"local_roles,omitempty"`
 }
 
 // DesktopBotLLMRoleInput is one role in a custom save.
@@ -696,6 +811,9 @@ type DesktopProxyMode struct {
 	Locked        bool   `json:"locked"`
 	Applied       bool   `json:"applied"`
 	Warning       string `json:"warning,omitempty"`
+	// Intranet means the desktop is one the user installed. Its traffic
+	// leaves from that machine, so the cloud proxy choices do not apply.
+	Intranet bool `json:"intranet,omitempty"`
 }
 
 // GetDesktopProxyMode reads this user's desktop network mode from Hub.
@@ -724,12 +842,17 @@ func (a *App) SaveDesktopProxyMode(mode string) (*DesktopProxyMode, error) {
 }
 
 // DesktopComputerInfo drives the Settings dialog's "电脑" tab.
-// ActiveRuns counts bot turns this client has in flight on the shared
-// computer (waiting-for-answer runs are over and not counted).
+// ActiveRuns counts bot turns this client has in flight on the computer
+// that restart and reset will touch. A cloud bot's task does not count
+// while the tab is the local machine, and the other way around.
+// Waiting-for-answer runs are over and are not counted.
 type DesktopComputerInfo struct {
 	RestartAllowed bool `json:"restart_allowed"`
 	ResetAllowed   bool `json:"reset_allowed"`
 	ActiveRuns     int  `json:"active_runs"`
+	// Intranet is true when this desktop is a desktopd the user installed
+	// from these settings. It is their machine, not the cloud computer.
+	Intranet bool `json:"intranet"`
 }
 
 // DesktopComputerResult is one restart or reset. Busy means the server
@@ -755,13 +878,81 @@ func countActiveDesktopRuns() int {
 	return n
 }
 
-// GetDesktopComputer reads what this user may do with their cloud computer.
+// desktopComputerNode is the computer the settings tab will restart.
+// An empty id is the cloud computer. known is false when the local
+// machine cannot be named, so the caller counts every in-flight run
+// instead of warning about the wrong bots.
+func (a *App) desktopComputerNode(intranet bool) (string, bool) {
+	if !intranet {
+		return "", true
+	}
+	if a == nil {
+		return "", false
+	}
+	view, err := a.ListDesktopNodes()
+	if err != nil || view == nil {
+		return "", false
+	}
+	for _, node := range view.Nodes {
+		if !node.Active {
+			continue
+		}
+		if id := strings.TrimSpace(node.NodeID); id != "" {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// desktopRunsOnThisComputer counts live turns whose bot uses computerNode.
+// An empty computerNode is the cloud computer. A bot missing from botNode
+// is left out: its computer is not known, so it is not this restart.
+func desktopRunsOnThisComputer(runs map[string]*ActiveDesktopRun, botNode map[string]string, computerNode string) int {
+	computerNode = strings.TrimSpace(computerNode)
+	n := 0
+	for _, run := range runs {
+		if run == nil || run.WaitingForUser {
+			continue
+		}
+		node, ok := botNode[strings.TrimSpace(run.BotID)]
+		if !ok || strings.TrimSpace(node) != computerNode {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// countRunsOnThisComputer is the restart warning for the computer the
+// settings tab is showing. When that computer or the bot list cannot be
+// read, every in-flight run is counted so a busy computer is not shown as idle.
+func (a *App) countRunsOnThisComputer(intranet bool) int {
+	computerNode, known := a.desktopComputerNode(intranet)
+	if !known {
+		return countActiveDesktopRuns()
+	}
+	bots, err := a.ListDesktopBots()
+	if err != nil {
+		return countActiveDesktopRuns()
+	}
+	nodes := make(map[string]string, len(bots))
+	for _, bot := range bots {
+		nodes[strings.TrimSpace(bot.ID)] = strings.TrimSpace(bot.NodeID)
+	}
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	return desktopRunsOnThisComputer(activeDesktopRuns, nodes, computerNode)
+}
+
+// GetDesktopComputer reads what this user may do with the computer their
+// settings tab restarts: the installed machine when one is active, otherwise
+// the cloud computer.
 func (a *App) GetDesktopComputer() (*DesktopComputerInfo, error) {
 	var out DesktopComputerInfo
 	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/desktop-computer", nil, &out, 20*time.Second); err != nil {
 		return nil, err
 	}
-	out.ActiveRuns = countActiveDesktopRuns()
+	out.ActiveRuns = a.countRunsOnThisComputer(out.Intranet)
 	return &out, nil
 }
 
@@ -1434,11 +1625,15 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		if visible.Bubble && !visible.Failed {
 			resp.SendToUser = visible.Sentence
 		}
-		// The bytes stay on the server attachment or the computer volume.
-		// This event carries the id. The next open fetches it.
-		// The bytes stay in this process, keyed by attachment id. The event
-		// carries the id. The chat fetches the bytes when it paints.
-		resp.DesktopAttachmentIDs = stageDesktopPictures(botID, result.Images, result.Files)
+		// Pictures and documents are saved on this machine. The bubble shows
+		// those local paths. A file that could not be saved stays an id.
+		shots, local, ids := landDesktopBotMedia(botID, result.Images, result.Files)
+		saved := append(append([]string{}, shots...), local...)
+		resp.Text = localizeDesktopPaths(resp.Text, saved)
+		resp.SendToUser = localizeDesktopPaths(resp.SendToUser, saved)
+		resp.DesktopShotPaths = shots
+		resp.LocalFilePaths = local
+		resp.DesktopAttachmentIDs = ids
 		resp.DesktopUserControl = result.UserControl
 		resp.DesktopAttentionReason = strings.TrimSpace(result.AttentionReason)
 		resp.AskUserInputType = strings.TrimSpace(result.AskUserInputType)
@@ -1762,6 +1957,7 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		Queued          bool                    `json:"queued"`
 		Held            bool                    `json:"held"`
 		Position        int                     `json:"position"`
+		Instruction     string                  `json:"instruction"`
 		Schedule        *desktopBotWireSchedule `json:"schedule"`
 	}
 	body := map[string]any{"content": text, "client_message_id": requestID}
@@ -1875,19 +2071,12 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		return desktopBotRelayResult{}, err
 	}
 	a.emitDesktopBotIntake(botID, requestID, out.Kind, out.Ack, out.Queued, out.Held, strings.TrimSpace(out.RunID))
-	if strings.EqualFold(out.Kind, "schedule") && out.Schedule != nil {
-		day := -1
-		if out.Schedule.DayOfWeek != nil {
-			day = *out.Schedule.DayOfWeek
-		}
-		hour, minute := 0, 0
-		if out.Schedule.Hour != nil {
-			hour = *out.Schedule.Hour
-		}
-		if out.Schedule.Minute != nil {
-			minute = *out.Schedule.Minute
-		}
-		if _, armErr := a.ArmDesktopBotSchedule(botID, out.Schedule.Name, out.Schedule.Mode, text, out.Schedule.IntervalMinutes, hour, minute, day); armErr != nil {
+	// The server clock already stored this timer. Copying it into the local
+	// scheduled-task list is what showed weather_report under 计划任务 and
+	// kept counting runs on this computer. A cancel still clears a copy
+	// that an older build left behind.
+	if strings.EqualFold(out.Kind, "schedule") && out.Schedule != nil && strings.EqualFold(strings.TrimSpace(out.Schedule.Mode), "cancel") {
+		if _, armErr := a.ArmDesktopBotSchedule(botID, out.Schedule.Name, "cancel", "", 0, 0, 0, -1); armErr != nil && !strings.Contains(armErr.Error(), "no desktop bot schedule matched") {
 			botlog.Write(botID, "gui.schedule", armErr)
 		}
 	}
@@ -1972,6 +2161,32 @@ func desktopBotNotReached(err error) bool {
 
 func desktopGatewayStatus(status int) bool {
 	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+// desktopHubMissingRouteError is Hub's own router answering for a path this
+// binary does not serve. The body is the plain "404 page not found" text, not
+// a JSON error from an API that exists.
+type desktopHubMissingRouteError struct{}
+
+func (desktopHubMissingRouteError) Error() string { return "Hub 没有这个接口" }
+
+func desktopHubStatusError(status int, payload []byte) error {
+	var failure struct {
+		Message string `json:"message"`
+	}
+	jsonErr := json.Unmarshal(payload, &failure)
+	if msg := strings.TrimSpace(failure.Message); msg != "" {
+		return fmt.Errorf("%s", msg)
+	}
+	if jsonErr != nil && desktopGatewayStatus(status) {
+		// A proxy in front of Hub answered for it (a restarting Hub):
+		// Hub never wrote this body.
+		return desktopHubNotReachedError{}
+	}
+	if status == http.StatusNotFound {
+		return desktopHubMissingRouteError{}
+	}
+	return fmt.Errorf("MaClawSrv 不可达")
 }
 
 // desktopDialFailed: the connection itself failed (refused, no route, name
@@ -2383,7 +2598,8 @@ func desktopBotImageData(data string) bool {
 }
 
 func cleanDesktopBotFiles(files []DesktopBotFile) []DesktopBotFile {
-	const maxFile = 200_000
+	maxFile := desktop.FileDeliverBase64Max
+	var kept []DesktopBotFile
 	for i := len(files) - 1; i >= 0; i-- {
 		name := strings.TrimSpace(files[i].Name)
 		if !desktopBotDeliverName(name) {
@@ -2397,13 +2613,35 @@ func cleanDesktopBotFiles(files []DesktopBotFile) []DesktopBotFile {
 		if data == "" || len(data) > maxFile || !desktopBotImageDataSized(data, maxFile) {
 			continue
 		}
-		return []DesktopBotFile{{Name: name, MIME: mime, Data: data}}
+		kept = append(kept, DesktopBotFile{Name: name, MIME: mime, Data: data, AttachmentID: strings.TrimSpace(files[i].AttachmentID)})
+		if len(kept) == 8 {
+			break
+		}
 	}
-	return nil
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	return kept
 }
 
 func desktopBotDeliverName(name string) bool {
 	if name == "" || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") || strings.HasPrefix(name, ".") || len([]rune(name)) > 80 {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// desktopMailFileNameMax matches Hub mailFileName. A stored mail file can be
+// 120 runes. The 80-rune chat-delivery check would refuse to write it.
+const desktopMailFileNameMax = 120
+
+func desktopDeliverNameWithin(name string, maxRunes int) bool {
+	if name == "" || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") || strings.HasPrefix(name, ".") || len([]rune(name)) > maxRunes {
 		return false
 	}
 	for _, r := range name {
@@ -2480,6 +2718,81 @@ func desktopPictureID(id, data string) string {
 	}
 	sum := sha256.Sum256([]byte(data))
 	return "img-" + hex.EncodeToString(sum[:8])
+}
+
+// landDesktopBotMedia saves pictures and documents under this machine's
+// bot-files directory. The chat shows those paths. Anything that could not
+// be written stays an in-memory id.
+func landDesktopBotMedia(botID string, images []DesktopBotImage, files []DesktopBotFile) (shots, local, ids []string) {
+	images = cleanDesktopBotImages(images)
+	files = cleanDesktopBotFiles(files)
+	seenPic := map[string]bool{}
+	for _, image := range images {
+		seenPic[image.Data] = true
+	}
+	docs := make([]DesktopBotFile, 0, len(files))
+	for _, file := range files {
+		mime := desktopPictureMIME(file.MIME)
+		if mime != "" && desktopBotImageData(file.Data) {
+			if !seenPic[file.Data] {
+				seenPic[file.Data] = true
+				images = append(images, DesktopBotImage{MIME: mime, Data: file.Data})
+			}
+			continue
+		}
+		docs = append(docs, file)
+	}
+	files = docs
+	pictureFiles := make([]DesktopBotFile, 0, len(images))
+	for i, image := range images {
+		ext := ".png"
+		if strings.Contains(strings.ToLower(image.MIME), "jpeg") {
+			ext = ".jpg"
+		}
+		name := "screenshot" + ext
+		if i > 0 {
+			name = fmt.Sprintf("screenshot-%d%s", i+1, ext)
+		}
+		pictureFiles = append(pictureFiles, DesktopBotFile{Name: name, MIME: image.MIME, Data: image.Data})
+	}
+	shots, leftPics := storeDesktopBotFiles(botID, pictureFiles)
+	local, leftFiles := storeDesktopBotFiles(botID, files)
+	if len(leftPics) == 0 && len(leftFiles) == 0 {
+		return shots, local, nil
+	}
+	leftImages := make([]DesktopBotImage, 0, len(leftPics))
+	for _, file := range leftPics {
+		leftImages = append(leftImages, DesktopBotImage{MIME: file.MIME, Data: file.Data})
+	}
+	return shots, local, stageDesktopPictures(botID, leftImages, leftFiles)
+}
+
+// cloudDesktopPath matches a path on the bot's computer. The bubble rewrites
+// it to the file saved on this machine.
+var cloudDesktopPath = regexp.MustCompile(`(?:~/|/(?:Users|home|tmp|var|opt|data|workspace|Volumes|private|mnt|srv)/)[^\s` + "`" + `"'<>，。；、）】]+`)
+
+func localizeDesktopPaths(text string, local []string) string {
+	if strings.TrimSpace(text) == "" || len(local) == 0 {
+		return text
+	}
+	byBase := map[string]string{}
+	for _, item := range local {
+		base := filepath.Base(item)
+		if base == "" || base == "." || base == string(filepath.Separator) {
+			continue
+		}
+		byBase[base] = item
+	}
+	if len(byBase) == 0 {
+		return text
+	}
+	return cloudDesktopPath.ReplaceAllStringFunc(text, func(match string) string {
+		trimmed := strings.TrimRight(match, ".,;:)]}")
+		if saved, ok := byBase[path.Base(trimmed)]; ok {
+			return saved + match[len(trimmed):]
+		}
+		return match
+	})
 }
 
 // stageDesktopPictures keeps each PNG or JPEG in memory under its attachment
@@ -2583,15 +2896,16 @@ func abandonDesktopSurface() {
 	}
 }
 
+// desktopSaidPictureMax is the largest picture the chat still shows inline.
+// A mail file is at most 8 MB; anything larger stays a chip.
+const desktopSaidPictureMax = 8 << 20
+
 // ReadDesktopBotShot returns one screenshot saved for a bot bubble.
-// The path has to stay under this machine's bot-files directory.
+// The path is either a shot this app stored under bot-files, or a file
+// it downloaded from the shared store into the bot's folder.
 func (a *App) ReadDesktopBotShot(path string) (*DesktopBotImage, error) {
 	abs, err := filepath.Abs(filepath.Clean(strings.TrimSpace(path)))
-	if err != nil {
-		return nil, fmt.Errorf("screenshot is not on this machine")
-	}
-	root, err := filepath.Abs(filepath.Join(corelib.MaclawDataDir(), "bot-files"))
-	if err != nil || !desktopBotPathInside(root, abs) {
+	if err != nil || !desktopShotPathAllowed(abs) {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
 	mime := ""
@@ -2600,11 +2914,15 @@ func (a *App) ReadDesktopBotShot(path string) (*DesktopBotImage, error) {
 		mime = "image/png"
 	case ".jpg", ".jpeg":
 		mime = "image/jpeg"
+	case ".gif":
+		mime = "image/gif"
+	case ".webp":
+		mime = "image/webp"
 	default:
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
 	info, err := os.Stat(abs)
-	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > 1_000_000 {
+	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > desktopSaidPictureMax {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
 	raw, err := os.ReadFile(abs)
@@ -2612,6 +2930,33 @@ func (a *App) ReadDesktopBotShot(path string) (*DesktopBotImage, error) {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
 	return &DesktopBotImage{MIME: mime, Data: base64.StdEncoding.EncodeToString(raw)}, nil
+}
+
+// desktopShotPathAllowed is a picture this app itself saved. A shot from
+// the run lives under bot-files. A file said to the person is downloaded
+// from the shared store and recorded in the delivery index; that recorded
+// path is the copy this machine shows.
+func desktopShotPathAllowed(abs string) bool {
+	root, err := filepath.Abs(filepath.Join(corelib.MaclawDataDir(), "bot-files"))
+	if err == nil && desktopBotPathInside(root, abs) {
+		return true
+	}
+	return deliveredPathRecorded(abs)
+}
+
+func deliveredPathRecorded(abs string) bool {
+	botFilesMu.Lock()
+	defer botFilesMu.Unlock()
+	for _, p := range botFilesIndex() {
+		got, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(got, abs) {
+			return true
+		}
+	}
+	return false
 }
 
 func desktopBotPathInside(root, path string) bool {
@@ -2652,6 +2997,137 @@ func storeDesktopBotFiles(botID string, files []DesktopBotFile) (paths []string,
 		paths = append(paths, abs)
 	}
 	return paths, left
+}
+
+// SaveDesktopBotDeliveredFile writes a document the chat is holding (a small
+// Hub file, or one that could not be saved when the reply arrived) into this
+// bot's folder and returns that path. The same bytes are written once: a
+// second click opens the copy already on disk instead of leaving another
+// file beside it.
+func (a *App) SaveDesktopBotDeliveredFile(botID, name, mime, data string) (string, error) {
+	name = strings.TrimSpace(name)
+	if !desktopBotDeliverName(name) {
+		return "", fmt.Errorf("文件名无效")
+	}
+	data = strings.TrimSpace(data)
+	if !desktopBotImageDataSized(data, desktop.FileDeliverBase64Max) {
+		return "", fmt.Errorf("文件内容无效")
+	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil || len(raw) == 0 {
+		return "", fmt.Errorf("文件内容无效")
+	}
+	sum := sha256.Sum256(raw)
+	ref := "inline:" + strings.TrimSpace(botID) + ":" + name + ":" + hex.EncodeToString(sum[:])
+	if p := botFileSavedPath(ref); p != "" {
+		rememberDeliveryName(botID, name, p)
+		return p, nil
+	}
+	// The index can be missing while the file is still at its own name.
+	// Reuse those bytes instead of writing name-150405.pdf beside them.
+	if id := safeDesktopBotDir(botID); id != "" {
+		dest := filepath.Join(corelib.MaclawDataDir(), "bot-files", id, name)
+		// A different-sized file cannot be the same bytes. Skip the read so a
+		// large file already sitting at this name is not loaded just to compare.
+		info, statErr := os.Stat(dest)
+		if statErr == nil && info.Mode().IsRegular() && info.Size() == int64(len(raw)) {
+			if existing, readErr := os.ReadFile(dest); readErr == nil && bytes.Equal(existing, raw) {
+				if abs, absErr := filepath.Abs(dest); absErr == nil {
+					dest = abs
+				}
+				botFilesRemember(ref, dest)
+				// These bytes were already delivered. Do not steal the name
+				// from a newer, different file.
+				rememberDeliveryName(botID, name, dest)
+				return dest, nil
+			}
+		}
+	}
+	paths, _ := storeDesktopBotFiles(botID, []DesktopBotFile{{Name: name, MIME: mime, Data: data}})
+	if len(paths) == 0 {
+		return "", fmt.Errorf("文件没有写入本机")
+	}
+	botFilesRemember(ref, paths[0])
+	rememberNewDelivery(botID, name, paths[0])
+	return paths[0], nil
+}
+
+// saveInlineMailFile writes bytes Hub already stored on a mail note.
+// SaveDesktopBotDeliveredFile re-applies the chat-attachment cap
+// (FileDeliverBase64Max, 700_000 base64 characters). A mail file is allowed
+// up to desktopMailFileMax, so that cap rejects it after a successful fetch
+// and the preview never gets a path. The bytes stay in this process and are
+// written once, under the note id, which is a safe directory name.
+func saveInlineMailFile(noteID, name string, raw []byte) (string, error) {
+	name = strings.TrimSpace(name)
+	if !desktopDeliverNameWithin(name, desktopMailFileNameMax) {
+		return "", fmt.Errorf("文件名无效")
+	}
+	if len(raw) == 0 || len(raw) > desktopMailFileMax {
+		return "", fmt.Errorf("文件内容无效")
+	}
+	id := safeDesktopBotDir(noteID)
+	if id == "" {
+		return "", fmt.Errorf("文件没有写入本机")
+	}
+	dir := filepath.Join(corelib.MaclawDataDir(), "bot-files", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("文件没有写入本机")
+	}
+	dest := filepath.Join(dir, name)
+	if info, statErr := os.Stat(dest); statErr == nil && info.Mode().IsRegular() && info.Size() == int64(len(raw)) {
+		if existing, readErr := os.ReadFile(dest); readErr == nil && bytes.Equal(existing, raw) {
+			if abs, absErr := filepath.Abs(dest); absErr == nil {
+				return abs, nil
+			}
+			return dest, nil
+		}
+	}
+	tmp := dest + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return "", fmt.Errorf("文件没有写入本机")
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		// Windows refuses to rename onto a file that is already there.
+		_ = os.Remove(dest)
+		if err2 := os.Rename(tmp, dest); err2 != nil {
+			_ = os.Remove(tmp)
+			return "", fmt.Errorf("文件没有写入本机")
+		}
+	}
+	if abs, absErr := filepath.Abs(dest); absErr == nil {
+		return abs, nil
+	}
+	return dest, nil
+}
+
+// DesktopBotArtifactSizes is the byte size of each path. 0 means the path was
+// checked and is missing or not a regular file. -1 means it was past the stat
+// cap and was not checked, so the 产出物 table can ask again later.
+func (a *App) DesktopBotArtifactSizes(paths []string) []int64 {
+	// One result per path, in the same order. A shorter slice would make the
+	// table assign a later file's size to an earlier row.
+	out := make([]int64, len(paths))
+	n := len(paths)
+	if n > 500 {
+		n = 500
+	}
+	for i := n; i < len(out); i++ {
+		out[i] = -1
+	}
+	for i := 0; i < n; i++ {
+		raw := paths[i]
+		p := strings.TrimSpace(raw)
+		if p == "" || len(p) > 1024 || strings.ContainsRune(p, 0) {
+			continue
+		}
+		info, err := os.Stat(p)
+		if err != nil || !info.Mode().IsRegular() || info.Size() < 0 {
+			continue
+		}
+		out[i] = info.Size()
+	}
+	return out
 }
 
 func safeDesktopBotDir(botID string) string {
@@ -3066,13 +3542,27 @@ func (a *App) watchDesktopBot(ctx context.Context, botID string) (string, bool, 
 	return a.absoluteHubPath(out.NovncURL), out.UserControl, strings.TrimSpace(out.AttentionReason), nil
 }
 
+// desktopMailFileMax is Hub's raw mail-file cap (botmgmt.mailFileMax).
+const desktopMailFileMax = 8 << 20
+
+// desktopMailFileResponseLimit fits one inlined Hub mail file.
+// The reply is JSON with those bytes base64-encoded (4/3 of the raw size)
+// plus a small envelope. The shared 1 MiB cap cuts that JSON, so the file
+// never opens.
+const desktopMailFileResponseLimit = 12 << 20
+
 // desktopBotResponseLimit matches Hub. A message reply carries one desktop
 // screenshot of at most 1_200_000 base64 characters, plus the text. A shorter
 // read cuts the JSON in half and the bubble loses both.
 func desktopBotResponseLimit(path string) int64 {
+	if strings.Contains(path, "/inbox/") && strings.Contains(path, "/files/") {
+		return desktopMailFileResponseLimit
+	}
 	// An admitted run is read from /runs and can carry the same screenshot.
 	if strings.Contains(path, "/messages") || strings.Contains(path, "/runs/") || strings.Contains(path, "/pending") {
-		return 1<<20 + 1_200_000
+		// One screenshot plus several delivered files. A shorter read cuts
+		// the JSON and the bubble loses both.
+		return 1<<20 + 1_200_000 + int64(desktop.FileDeliverBase64Max)*4
 	}
 	return 1 << 20
 }
@@ -3165,10 +3655,10 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 			req.Header.Set("X-Machine-ID", machineID)
 		}
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := desktopBotDo(callCtx, req)
 	if err != nil {
 		a.logDesktopBotCall(botID, method, path, botlog.Host(hubURL), 0, time.Since(started), err)
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "没有在时限内") {
 			return 0, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
 		}
 		if desktopDialFailed(err) {
@@ -3177,21 +3667,13 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 		return 0, fmt.Errorf("MaClawSrv 不可达")
 	}
 	defer resp.Body.Close()
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, desktopBotResponseLimit(path)))
+	payload, readErr := readDesktopBotBody(callCtx, resp.Body, desktopBotResponseLimit(path))
+	if readErr != nil && strings.Contains(readErr.Error(), "没有在时限内") {
+		a.logDesktopBotCall(botID, method, path, botlog.Host(hubURL), 0, time.Since(started), readErr)
+		return 0, readErr
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var failure struct {
-			Message string `json:"message"`
-		}
-		jsonErr := json.Unmarshal(payload, &failure)
-		callErr := fmt.Errorf("MaClawSrv 不可达")
-		if jsonErr != nil && desktopGatewayStatus(resp.StatusCode) {
-			// A proxy in front of Hub answered for it (a restarting Hub):
-			// Hub never wrote this body.
-			callErr = desktopHubNotReachedError{}
-		}
-		if strings.TrimSpace(failure.Message) != "" {
-			callErr = fmt.Errorf("%s", strings.TrimSpace(failure.Message))
-		}
+		callErr := desktopHubStatusError(resp.StatusCode, payload)
 		// The failure body is still decoded into dest when it carries the
 		// per-turn key echo. Hub names the key it received even on a 502,
 		// and that echo is the only proof this Hub forwards the key to
@@ -3213,6 +3695,69 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 		return resp.StatusCode, fmt.Errorf("MaClawSrv 没有返回结果")
 	}
 	return resp.StatusCode, nil
+}
+
+// desktopBotDo runs the request and returns when the context ends, even if
+// the transport is still waiting on the connection. A stalled poll must not
+// hold the turn, because that turn is what carries the screenshot and files.
+func desktopBotDo(ctx context.Context, req *http.Request) (*http.Response, error) {
+	done := make(chan struct{})
+	var resp *http.Response
+	var err error
+	go func() {
+		resp, err = http.DefaultClient.Do(req)
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		go func() {
+			<-done
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}()
+		return nil, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
+	case <-done:
+		if err == nil && resp != nil {
+			return resp, nil
+		}
+		if ctx.Err() != nil {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			return nil, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
+		}
+		return resp, err
+	}
+}
+
+// readDesktopBotBody reads the reply and stops when the context ends. Closing
+// the body unblocks a read that the request context itself did not.
+func readDesktopBotBody(ctx context.Context, body io.ReadCloser, limit int64) ([]byte, error) {
+	done := make(chan struct{})
+	var payload []byte
+	var err error
+	go func() {
+		// One byte past the cap tells a cut from a reply that filled it.
+		payload, err = io.ReadAll(io.LimitReader(body, limit+1))
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		_ = body.Close()
+		return nil, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
+	case <-done:
+		if err == nil && int64(len(payload)) > limit {
+			return nil, fmt.Errorf("MaClawSrv 的回复超出了可读取的大小")
+		}
+		if err == nil && len(payload) > 0 {
+			return payload, nil
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
+		}
+		return payload, err
+	}
 }
 
 // logDesktopBotCall records the Hub call the chat would otherwise collapse
@@ -3271,6 +3816,8 @@ func desktopBotInfo(bot hubBot) DesktopBotInfo {
 		Primary:     bot.Primary,
 		Color:       strings.TrimSpace(bot.Color),
 		Shape:       strings.TrimSpace(bot.Shape),
+		DesktopMode: strings.TrimSpace(bot.DesktopMode),
+		NodeID:      strings.TrimSpace(bot.NodeID),
 	}
 }
 

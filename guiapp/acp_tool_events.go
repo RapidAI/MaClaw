@@ -67,10 +67,17 @@ func (r *acpToolSinkRegistry) emit(requestID string, ev ACPToolEvent) {
 var globalACPToolSinks acpToolSinkRegistry
 
 func emitACPToolEventForRequest(requestID string, ev ACPToolEvent) {
-	if !isACPProgrammingRequestID(requestID) {
+	// MCP programming turns use mcp- request ids. They are not ACP turns:
+	// isACPProgrammingRequestID stays acp- only so light profile and ACP
+	// gates do not treat an MCP turn as Mode B.
+	if !isACPProgrammingRequestID(requestID) && !isMCPProgrammingRequestID(requestID) {
 		return
 	}
 	globalACPToolSinks.emit(requestID, ev)
+}
+
+func isMCPProgrammingRequestID(requestID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(requestID), "mcp-")
 }
 
 func acpToolKind(name string) string {

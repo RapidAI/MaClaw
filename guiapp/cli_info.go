@@ -18,6 +18,7 @@ Commands and flags:
   tui | ui         Start the terminal UI
   init             First-run / init mode
   autostart        Launched from OS login autostart
+  mcp              MCP stdio proxy for the running GUI (专业功能 → 工具 → MCP服务器)
 
 Linux AppImage: pick the Ubuntu ABI that matches the host.
   Ubuntu 22.04           -> *-u2204.AppImage (WebKit 4.0)

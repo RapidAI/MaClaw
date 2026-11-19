@@ -178,6 +178,24 @@ func (a *ArchiveStore) RemoveIDsDurable(ids []string) ([]Entry, error) {
 	return removed, nil
 }
 
+// ReplaceEntriesDurable replaces the complete archive and persists it in one transaction.
+func (a *ArchiveStore) ReplaceEntriesDurable(entries []Entry) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	previous := a.entries
+	a.entries = append([]Entry(nil), entries...)
+	a.rewriteAll = true
+	a.dirty = true
+	if err := a.flushLocked(); err != nil {
+		a.entries = previous
+		a.rewriteAll = true
+		a.dirty = true
+		_ = a.flushLocked()
+		return err
+	}
+	return nil
+}
+
 func (a *ArchiveStore) removeIDsLocked(ids []string) []Entry {
 	requested := make(map[string]int, len(ids))
 	ordered := make([]string, 0, len(ids))

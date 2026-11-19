@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { emptyViewerState, reduceViewerEvent, type ViewerReduceState } from '../ai/reduceViewerEvent';
 
 export type RemoteAssistantTranscriptMessage = {
     role: string;
@@ -11,6 +12,10 @@ export type RemoteAssistantTranscriptMessage = {
     remoteLive?: boolean;
     /** The live row's thinking is still open on the controlled machine. */
     liveThinking?: boolean;
+    fields?: Array<{ label: string; value: string }>;
+    confirmation?: { id: string; summary?: string };
+    actions?: Array<{ label: string; command: string }>;
+    cardExpired?: boolean;
 };
 
 /** One ordered piece of a mirrored round; identical to remoteStreamPart in guiapp. */
@@ -19,6 +24,7 @@ export type RemoteLivePart = {
     seq: number;
     text: string;
     done?: boolean;
+    coding?: { phase?: string; task_id?: string; taskId?: string; title?: string; run_id?: string; runId?: string };
 };
 
 /** The in-flight round mirrored from the controlled machine over remote_control.stream. */
@@ -101,6 +107,8 @@ export type RemoteAssistantSession = {
     activity?: RemoteAssistantActivity;
     /** The in-flight round mirrored live; absent when nothing streams. */
     live?: RemoteLiveRound | null;
+    /** A cursor hole is open. The bubble stays; the status says output is catching up. */
+    syncing?: boolean;
     /** Coding workbench checklist mirrored over workbench_steps events. */
     workbench?: RemoteWorkbenchState | null;
     messages: RemoteAssistantTranscriptMessage[];
@@ -151,11 +159,22 @@ function markKey(session: RemoteAssistantSession | null) {
 // The controlled desktop relays its assistant stream events while a task is
 // watched. This store folds them into one RemoteLiveRound per session, and
 // withEchoes projects the round onto the transcript as a synthetic assistant
-// row: streamed text plus the finished thinking blocks. Reasoning deltas are
-// never held live — the controlled side ships a thinking block only when it
-// closes, so the 思考 box appears first and fills in afterwards.
+// row: streamed text plus the thinking blocks. Reasoning rides live "delta"
+// events into the open block so the 思考 box grows with the controlled
+// desktop's, and the closing "done" event still carries the full text.
 
 const liveRounds = new Map<string, RemoteLiveRound>();
+const viewerStates = new Map<string, ViewerReduceState>();
+// Highest cursor reduced while this key's hole was open, and one follow-up
+// credit for the watch that rising edge started. A reply covers the hole
+// only when its watermark reaches that cursor. Clearing the gap latch when
+// the watermark merely moves (so the next hole can rise) would otherwise
+// treat frames already dropped during that watch as covered.
+const gapSeenCursor = new Map<string, number>();
+const gapFollowCredit = new Map<string, number>();
+// Progress parts kept per round — twice the backend snapshot cap so a watcher
+// that joined mid-turn keeps a margin of older lines.
+const REMOTE_PROGRESS_PARTS_KEPT = 80;
 // Session-level workbench checklist, keyed like liveRounds. Outlives a round:
 // the plan list belongs to the session, not to one request.
 const workbenchByKey = new Map<string, RemoteWorkbenchState>();
@@ -207,12 +226,104 @@ type RemoteStreamPayload = {
 };
 
 /** Folds one remote_control.stream event into the session's live round. */
+function liveStamp(round: RemoteLiveRound | null | undefined): string {
+    if (!round) return '';
+    let weight = 0;
+    for (const part of round.parts) weight += part.text.length + (part.done ? 1 : 0) + part.seq;
+    const tail = round.parts[round.parts.length - 1];
+    return [
+        round.requestId,
+        round.parts.length,
+        weight,
+        tail ? `${tail.kind}:${tail.done ? 1 : 0}` : '',
+        round.responded ? 'r' : '',
+        round.streamDone ? 'd' : '',
+    ].join(':');
+}
+
+// body is the draft (a late joiner only has the snapshot's newest slice).
+// visible is the terminal. Show the terminal when it is longer and the draft
+// is its prefix or its suffix. A shorter terminal leaves the draft in place.
+function shownAnswer(draft: string, terminal: string): string {
+    if (!draft) return terminal;
+    if (!terminal || terminal.length <= draft.length) return draft;
+    if (terminal.startsWith(draft) || terminal.endsWith(draft)) return terminal;
+    return draft;
+}
+
+function projectReducedRound(key: string, state: ViewerReduceState, eventName: string, workbench: RemoteWorkbenchState | null): void {
+    if (eventName === 'workbench_steps') {
+        if (workbench) workbenchByKey.set(key, workbench);
+        else workbenchByKey.delete(key);
+        emit();
+        return;
+    }
+    if (!state.requestId) {
+        // A heartbeat before round_started refreshes an existing round's
+        // liveness only — it must not fabricate an empty one.
+        if (eventName === 'heartbeat') {
+            const round = liveRounds.get(key);
+            if (round) {
+                round.lastEventAt = Date.now();
+                emit();
+            }
+        }
+        return;
+    }
+    const round = ensureLiveRound(key, state.requestId);
+    round.displayText = state.displayText;
+    round.responded = state.responded;
+    round.streamDone = state.responded;
+    const parts: RemoteLivePart[] = [];
+    state.thinking.forEach((block, index) => {
+        parts.push({ kind: 'thinking', seq: index + 1, text: block.text, done: block.done });
+    });
+    const shown = shownAnswer(state.body, state.visible);
+    if (shown) parts.push({ kind: 'text', seq: parts.length + 1, text: shown });
+    for (const row of state.timeline) {
+        const label = row.text || `Coding Agent: ${row.phase} ${row.taskId} - ${row.title}`.trim();
+        parts.push({ kind: 'progress', seq: parts.length + 1, text: label });
+    }
+    round.parts = parts;
+    round.lastEventAt = Date.now();
+    emit();
+}
+
 export function applyRemoteStreamPayload(payload: unknown) {
     const parsed = typeof payload === 'string' ? (() => { try { return JSON.parse(payload); } catch { return null; } })() : payload;
     const p = (parsed && typeof parsed === 'object' ? parsed : {}) as RemoteStreamPayload;
     const key = liveKey(String(p.grant_id || '').trim(), String(p.project_path || '').trim());
     const eventName = String(p.event || '');
     if (!key || !eventName) return;
+    const record = p as unknown as Record<string, unknown>;
+    const cursor = typeof record.cursor === 'number' ? record.cursor : 0;
+    if (cursor > 0 || Object.prototype.hasOwnProperty.call(record, 'cursor_from')) {
+        const prev = viewerStates.get(key) || emptyViewerState();
+        const next = reduceViewerEvent(prev, record);
+        if (next === prev) return;
+        viewerStates.set(key, next);
+        // A rising hole means this controller missed a cursor. The account
+        // broker's resync frame has no live body, and a dropped WebSocket
+        // frame never arrives. The turn is only on the controlled desktop.
+        // Later frames of the same hole do not ask again; they only raise
+        // the cursor the reply still has to cover.
+        if (next.gap) {
+            if (cursor > (gapSeenCursor.get(key) || 0)) gapSeenCursor.set(key, cursor);
+            if (!prev.gap) {
+                gapFollowCredit.set(key, 1);
+                requestRemoteStreamRecovery(String(p.grant_id || '').trim(), String(p.project_path || '').trim());
+            }
+        }
+        if (next.gap && next.last === prev.last && next.body === prev.body) {
+            // Keep the text already on screen. The status still has to flip
+            // to "catching up", or a hole looks like the other computer stopped.
+            emit();
+            return;
+        }
+        const workbench = record.workbench && typeof record.workbench === 'object' ? record.workbench as RemoteWorkbenchState : null;
+        projectReducedRound(key, next, eventName, workbench);
+        return;
+    }
     const requestId = String(p.request_id || '');
     const seq = typeof p.seq === 'number' ? p.seq : 0;
     let round: RemoteLiveRound | undefined;
@@ -224,7 +335,24 @@ export function applyRemoteStreamPayload(payload: unknown) {
         }
         case 'token': {
             round = ensureLiveRound(key, requestId);
-            const text = String(p.text || '');
+            const pieces = Array.isArray((p as { pieces?: unknown }).pieces)
+                ? ((p as { pieces?: unknown[] }).pieces || []).map(piece => String(piece ?? ''))
+                : [];
+            const text = pieces.length > 0 ? '' : String(p.text || '');
+            if (pieces.length > 0) {
+                for (const piece of pieces) {
+                    if (piece === '\x02' || piece.startsWith('\x02')) {
+                        while (round.parts.length && round.parts[round.parts.length - 1].kind === 'text') round.parts.pop();
+                        const body = piece.slice(1);
+                        if (body) round.parts.push({ kind: 'text', seq, text: body });
+                    } else if (piece) {
+                        const tail = round.parts[round.parts.length - 1];
+                        if (tail && tail.kind === 'text') tail.text += piece;
+                        else round.parts.push({ kind: 'text', seq, text: piece });
+                    }
+                }
+                break;
+            }
             if (text.startsWith('\x02')) {
                 // Rejected-round reset: drop the trailing draft text run, keep
                 // whatever follows the marker as the fresh content.
@@ -286,7 +414,19 @@ export function applyRemoteStreamPayload(payload: unknown) {
         case 'progress': {
             round = ensureLiveRound(key, requestId);
             const text = String(p.text || '');
-            if (text) round.parts.push({ kind: 'progress', seq, text });
+            if (text) {
+                round.parts.push({ kind: 'progress', seq, text });
+                // The trail is a tail view — bound it like the backend's
+                // snapshot cap so a long tool run cannot grow parts (and the
+                // sessionKey stringify over them) without limit.
+                let progressCount = 0;
+                for (const part of round.parts) if (part.kind === 'progress') progressCount++;
+                const overflow = progressCount - REMOTE_PROGRESS_PARTS_KEPT;
+                if (overflow > 0) {
+                    let dropped = 0;
+                    round.parts = round.parts.filter(part => part.kind !== 'progress' || ++dropped > overflow);
+                }
+            }
             break;
         }
         case 'new_round': {
@@ -301,6 +441,10 @@ export function applyRemoteStreamPayload(payload: unknown) {
             break;
         }
         case 'response': {
+            // A terminal event for a different request than the live round is
+            // a straggler: folding it would replace the newer round's parts.
+            round = liveRounds.get(key);
+            if (round && requestId && round.requestId && round.requestId !== requestId) return;
             round = ensureLiveRound(key, requestId);
             closeLiveThinking(round);
             round.streamDone = true;
@@ -328,18 +472,87 @@ type RemoteWatchSnapshot = {
     stream_done?: boolean;
     responded?: boolean;
     started_at?: number;
+    cursor?: number;
 };
 
+/**
+ * Seeds the proto-2 reduce state from a watch reply. Without this, a
+ * controller joining mid-turn drops every envelope after the snapshot as a
+ * cursor gap — the mirror stays frozen until a new round or a resync frame.
+ * The seeded projection also mirrors what the snapshot installed, so the
+ * first accepted frame does not blank the pre-watch content.
+ */
+function seedViewerState(key: string, live: RemoteWatchSnapshot | null, cursor: number): ViewerReduceState | null {
+    if (!key) return null;
+    const liveCursor = live && typeof live.cursor === 'number' && live.cursor > 0 ? live.cursor : 0;
+    const at = liveCursor || (cursor > 0 ? cursor : 0);
+    if (!live || !String(live.request_id || '')) {
+        const prev = viewerStates.get(key) || emptyViewerState();
+        if (at > prev.last) {
+            // Drop the reducer latch when the watermark moves, so the next
+            // dropped frame is a new hole. Cursors already seen above this
+            // watermark are not covered; the watch reply asks once more.
+            viewerStates.set(key, { ...prev, last: at, gap: false });
+        }
+        return null;
+    }
+    if (at <= 0) return null;
+    // Same fold as a resync snapshot. A cursor the reducer already passed
+    // comes back unchanged, so a late reply cannot rewind the round.
+    const prev = viewerStates.get(key) || emptyViewerState();
+    const next = reduceViewerEvent(prev, {
+        event: 'snapshot',
+        resync: true,
+        cursor: at,
+        live,
+    });
+    if (next !== prev) viewerStates.set(key, next);
+    return next;
+}
+
 /** Installs the in-flight turn and workbench snapshot a watch_task reply carried (mid-turn catch-up). */
-export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, live: unknown, workbench?: unknown) {
-    const key = liveKey(grantId, String(projectPath || '').trim());
+export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, live: unknown, workbench?: unknown, cursor?: number) {
+    const p = (live && typeof live === 'object' ? live : null) as RemoteWatchSnapshot | null;
+    // The live snapshot's path is the backend's canonical spelling — the same
+    // one stream envelopes carry — so it stays the key when present. The
+    // watch path covers workbench-only replies where live is nil.
+    const key = liveKey(grantId, String((p && p.project_path) || projectPath || '').trim());
     if (!key) return;
     if (workbench && typeof workbench === 'object') {
         workbenchByKey.set(key, workbench as RemoteWorkbenchState);
     }
-    const p = (live && typeof live === 'object' ? live : null) as RemoteWatchSnapshot | null;
     if (!p || !String(p.request_id || '')) {
+        const before = viewerStates.get(key)?.last || 0;
+        seedViewerState(key, null, typeof cursor === 'number' ? cursor : 0);
+        settleWatchedGap(key, grantId, projectPath, before);
         emit();
+        return;
+    }
+    // The reply rides a different ws write than queued stream events, so an
+    // older snapshot can land after newer ones. A cursorless or already-passed
+    // snapshot of another request must not replace the round. A higher cursor
+    // is the turn this controller missed; the reducer still refuses to rewind.
+    const current = liveRounds.get(key);
+    if (current && current.requestId && current.requestId !== String(p.request_id)) {
+        const liveCursor = typeof p.cursor === 'number' && p.cursor > 0 ? p.cursor : 0;
+        const at = liveCursor || (typeof cursor === 'number' && cursor > 0 ? cursor : 0);
+        const last = viewerStates.get(key)?.last || 0;
+        if (at <= last) {
+            emit();
+            return;
+        }
+    }
+    const before = viewerStates.get(key)?.last || 0;
+    const seeded = seedViewerState(key, p, typeof cursor === 'number' ? cursor : 0);
+    settleWatchedGap(key, grantId, projectPath, before);
+    if (seeded && seeded.last > 0) {
+        projectReducedRound(key, seeded, 'snapshot', null);
+        const round = liveRounds.get(key);
+        if (round) {
+            if (typeof p.started_at === 'number' && p.started_at > 0) round.startedAt = p.started_at;
+            round.streamDone = seeded.responded || !!p.stream_done;
+            if (raw && round.baseline < 0) round.baseline = raw.messages.length;
+        }
         return;
     }
     liveRounds.set(key, {
@@ -355,19 +568,94 @@ export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, l
     emit();
 }
 
+// get_task keeps the first 4000 runes and appends "…" (trimRemoteControlText).
+// That prefix is not the answer the stream already showed.
+const remoteHistoryTextCap = 4000;
+
+function trimmedHistoryPrefix(history: string): string | null {
+    const h = history.trim();
+    if (!h.endsWith('…') || h.length < remoteHistoryTextCap + 1) return null;
+    return h.slice(0, -1);
+}
+
+function historyIsCappedPrefix(history: string, live: string): boolean {
+    const prefix = trimmedHistoryPrefix(history);
+    const l = live.trim();
+    return !!prefix && l.length > prefix.length && l.startsWith(prefix);
+}
+
+// The 4000-rune row is the opening. It already shows a shorter live copy.
+// Anything else — the full stream, or a snapshot of the ending — is still
+// only on this round. get_task will not grow that row past the cut.
+function transcriptMissesRound(history: string, live: string): boolean {
+    const prefix = trimmedHistoryPrefix(history);
+    const l = live.trim();
+    if (!prefix || !l) return false;
+    return !prefix.startsWith(l);
+}
+
+// A shared run shorter than a clause is punctuation, not the same sentence.
+const answerSliceOverlapMin = 16;
+
+// Longest prefix of tail that is a suffix of prefix. The snapshot keeps the
+// newest slice, so that run is where the opening and the ending meet.
+function sharedEdge(prefix: string, tail: string): number {
+    if (!prefix || !tail) return 0;
+    const s = `${tail}\0${prefix}`;
+    const pi = new Array<number>(s.length);
+    pi[0] = 0;
+    let k = 0;
+    for (let i = 1; i < s.length; i++) {
+        while (k > 0 && s.charCodeAt(i) !== s.charCodeAt(k)) k = pi[k - 1];
+        if (s.charCodeAt(i) === s.charCodeAt(k)) k += 1;
+        pi[i] = k;
+    }
+    const n = pi[s.length - 1] || 0;
+    return n >= answerSliceOverlapMin ? n : 0;
+}
+
+function joinedAnswerSlices(prefix: string, tail: string): string {
+    const overlap = sharedEdge(prefix, tail);
+    if (overlap > 0) return prefix + tail.slice(overlap);
+    return `${prefix}\n\n…\n\n${tail}`;
+}
+
+// The trimmed row belongs to this round when its prompt is the round's
+// prompt, or when the row arrived after the round was first seen.
+function roundOwnsTrimmedTail(messages: RemoteAssistantTranscriptMessage[], index: number, round: RemoteLiveRound): boolean {
+    const prompt = stripRemoteOriginMarker(round.displayText);
+    if (prompt) {
+        for (let i = index - 1; i >= 0; i--) {
+            const row = messages[i];
+            if (row.role !== 'user') continue;
+            return row.content.trim() === prompt;
+        }
+        return false;
+    }
+    return round.baseline >= 0 && index >= round.baseline;
+}
+
 // Settles the live round against the polled transcript. The response having
 // landed plus a fresh non-user tail means the transcript now owns the turn.
-// The timeout path covers answers the transcript never grows for (stopped or
-// unwritten turns), so a mirrored draft cannot outlive its round forever.
+// A quiet round stays while the polled row is only the opening and this
+// round still holds the rest. The timeout drops a round the transcript
+// already shows, and a draft the transcript never grows for.
 function settleLiveRounds() {
     if (!raw) {
         liveRounds.clear();
+        viewerStates.clear();
         workbenchByKey.clear();
+        gapSeenCursor.clear();
+        gapFollowCredit.clear();
         return;
     }
     const key = markKey(raw);
     for (const roundKey of [...liveRounds.keys()]) {
-        if (roundKey !== key) liveRounds.delete(roundKey);
+        if (roundKey !== key) {
+            liveRounds.delete(roundKey);
+            viewerStates.delete(roundKey);
+            forgetGapTracking(roundKey);
+        }
     }
     for (const wbKey of [...workbenchByKey.keys()]) {
         if (wbKey !== key) workbenchByKey.delete(wbKey);
@@ -375,26 +663,67 @@ function settleLiveRounds() {
     const round = liveRounds.get(key);
     if (!round) return;
     if (round.baseline < 0) round.baseline = raw.messages.length;
+    const tail = raw.messages[raw.messages.length - 1];
+    const roundText = (round.responseText || round.parts.filter(part => part.kind === 'text').map(part => part.text).join('')).trim();
+    const tailText = tail && tail.role !== 'user' ? (tail.content || '').trim() : '';
+    if (transcriptMissesRound(tailText, roundText)) return;
     const staleMs = round.responded ? 90_000 : 180_000;
     if (Date.now() - (round.lastEventAt || 0) > staleMs) {
         liveRounds.delete(key);
+        viewerStates.delete(key);
+        forgetGapTracking(key);
         return;
     }
     if (!round.responded) return;
-    const tail = raw.messages[raw.messages.length - 1];
     if (!tail || tail.role === 'user') return;
     // The transcript owns the turn once it grows past the round's baseline,
     // or when its tail already carries this answer — a response can land
     // between polls and baseline counts whatever was fetched, not what the
     // round saw, so the content check is the real arbiter.
-    const roundText = (round.responseText || round.parts.filter(part => part.kind === 'text').map(part => part.text).join('')).trim();
-    const tailText = (tail.content || '').trim();
     const covered = raw.messages.length > round.baseline
         || (roundText !== '' && tailText !== '' && tailText.startsWith(roundText.slice(0, Math.min(60, roundText.length))));
-    if (covered) liveRounds.delete(key);
+    if (covered) {
+        liveRounds.delete(key);
+        viewerStates.delete(key);
+        forgetGapTracking(key);
+    }
+}
+
+function forgetGapTracking(key: string) {
+    gapSeenCursor.delete(key);
+    gapFollowCredit.delete(key);
+}
+
+// A watch reply that moved the watermark but stopped short of a cursor this
+// controller already reduced is not coverage: those frames were dropped and
+// will not be replayed. Ask once. A reply that does not move the watermark
+// does not ask, or a hollow read would spin. The credit is spent by that
+// single follow-up; the next rising edge is the next ask.
+function settleWatchedGap(key: string, grantId: string, projectPath: string, before: number) {
+    const after = viewerStates.get(key)?.last || 0;
+    const seen = gapSeenCursor.get(key) || 0;
+    if (seen === 0 || after >= seen) {
+        forgetGapTracking(key);
+        return;
+    }
+    if ((gapFollowCredit.get(key) || 0) > 0 && after > before) {
+        gapFollowCredit.set(key, 0);
+        requestRemoteStreamRecovery(grantId, projectPath);
+    }
 }
 
 let remoteStreamBound = false;
+let streamRecovery: ((grantId: string, projectPath: string) => void) | null = null;
+
+/** The open controller re-reads watch_task after one proto-2 cursor hole. A short reply asks once more. */
+export function bindRemoteStreamRecovery(fn: ((grantId: string, projectPath: string) => void) | null) {
+    streamRecovery = fn;
+}
+
+function requestRemoteStreamRecovery(grantId: string, projectPath: string) {
+    if (!grantId || !projectPath || !streamRecovery) return;
+    streamRecovery(grantId, projectPath);
+}
 
 /** Starts forwarding remote-control:stream Wails events into the live store. */
 export function bindRemoteStreamEvents() {
@@ -442,10 +771,59 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
             .map(part => part.text)
             .join('');
         const liveThinking = round.parts.some(part => part.kind === 'thinking' && !part.done);
-        if (content || thinking || liveThinking) {
-            merged.push({ role: 'assistant', content, reasoning: thinking || undefined, remoteLive: true, liveThinking });
+        // One answer. The polled row is its opening. Drop that row and keep
+        // its files on the live row. A shared run is stitched once. Otherwise
+        // the opening, a gap, and the ending stay in that order.
+        let carriedFiles: string[] | undefined;
+        let shown = content;
+        if (content.trim()) {
+            for (let i = merged.length - 1; i >= 0; i--) {
+                const row = merged[i];
+                if (row.role !== 'assistant' || row.remoteLive) continue;
+                const live = content.trim();
+                const prefix = trimmedHistoryPrefix(row.content);
+                if (historyIsCappedPrefix(row.content, live)) {
+                    carriedFiles = row.localFilePaths;
+                    merged.splice(i, 1);
+                } else if (prefix && !prefix.startsWith(live) && !live.startsWith(prefix) && roundOwnsTrimmedTail(merged, i, round)) {
+                    carriedFiles = row.localFilePaths;
+                    shown = joinedAnswerSlices(prefix, live);
+                    merged.splice(i, 1);
+                }
+                break;
+            }
         }
-        return { ...session, messages: merged, live: round, workbench: workbenchByKey.get(key) || null };
+        const reduced = viewerStates.get(key);
+        const fields: Array<{ label: string; value: string }> = [];
+        if (reduced?.trialStatus) fields.push({ label: 'Recovery', value: reduced.trialStatus });
+        if (reduced && reduced.trialFailures > 0) fields.push({ label: 'Failures', value: String(reduced.trialFailures) });
+        if (shown || thinking || liveThinking || fields.length) {
+            merged.push({
+                role: 'assistant',
+                content: shown,
+                reasoning: thinking || undefined,
+                remoteLive: true,
+                liveThinking,
+                localFilePaths: carriedFiles,
+                fields: fields.length ? fields : undefined,
+            });
+        }
+        if (reduced) {
+            for (const card of reduced.cards) {
+                if (card.kind !== 'confirmation' && !card.text) continue;
+                merged.push({
+                    role: 'assistant',
+                    content: card.text || '',
+                    confirmation: card.confirmationId ? { id: card.confirmationId, summary: card.text } : undefined,
+                    actions: card.expired ? undefined : card.actions,
+                    cardExpired: card.expired,
+                });
+            }
+            for (const note of reduced.notices) {
+                merged.push({ role: note.asError ? 'error' : 'assistant', content: note.text });
+            }
+        }
+        return { ...session, messages: merged, live: round, workbench: workbenchByKey.get(key) || null, syncing: !!reduced?.gap };
     }
     const workbench = workbenchByKey.get(key) || null;
     if (merged || workbench) return { ...session, messages: merged || session.messages, workbench };
@@ -465,16 +843,21 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.taskName,
         session.error,
         session.activity ? JSON.stringify(session.activity) : '',
-        session.live ? JSON.stringify(session.live.parts) + (session.live.responded ? 'r' : '') : '',
+        liveStamp(session.live),
+        session.syncing ? 'sync' : '',
         session.workbench ? JSON.stringify(session.workbench) : '',
-        session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}`).join('\n--\n'),
+        session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}\n${message.cardExpired ? 'expired' : ''}\n${message.confirmation?.id || ''}`).join('\n--\n'),
     ].join('\n');
 }
 
+let currentSessionKey = '';
+
 function emit() {
     const next = withEchoes(raw);
-    if (sessionKey(next) === sessionKey(current)) return;
+    const nextSessionKey = sessionKey(next);
+    if (nextSessionKey === currentSessionKey) return;
     current = next;
+    currentSessionKey = nextSessionKey;
     listeners.forEach(listener => listener());
 }
 

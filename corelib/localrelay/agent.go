@@ -88,6 +88,8 @@ type Agent struct {
 	// RefreshLink returns a new signed path for a stored file whose link
 	// expired; may be nil.
 	RefreshLink func(ctx context.Context, ref string) (string, error)
+	// MCP runs one stdio MCP tool configured on this computer. Nil refuses.
+	MCP func(ctx context.Context, serverID, toolName, argsJSON string) (string, error)
 
 	mu     sync.Mutex
 	grants map[string]time.Time
@@ -138,8 +140,14 @@ func (a *Agent) granted(key string, s Settings) bool {
 }
 
 // approve asks once per bot and class. Concurrent requests of the same
-// class wait for the first answer instead of stacking questions.
+// class wait for the first answer instead of stacking questions. Full
+// access skips the question. A switch to full access is read again after
+// the wait, so a question already on screen and the request queued behind
+// it are allowed too, without storing a per-path grant.
 func (a *Agent) approve(ctx context.Context, s Settings, botID, class string, p Prompt) error {
+	if s.FullAccess() {
+		return nil
+	}
 	key := strings.TrimSpace(botID) + "|" + class
 	if a.granted(key, s) {
 		return nil
@@ -147,17 +155,21 @@ func (a *Agent) approve(ctx context.Context, s Settings, botID, class string, p 
 	l := a.keyLock(key)
 	l.Lock()
 	defer l.Unlock()
-	if a.granted(key, a.settings()) {
+	fresh := a.settings()
+	if fresh.FullAccess() || a.granted(key, fresh) {
 		return nil
 	}
 	if a.Ask == nil {
 		return &Err{Code: CodeDenied, Message: "this computer cannot show the question, so the request was refused"}
 	}
 	p.ID = newID()
-	p.Seconds = s.ConfirmSeconds
-	askCtx, cancel := context.WithTimeout(ctx, time.Duration(s.ConfirmSeconds)*time.Second)
+	p.Seconds = fresh.ConfirmSeconds
+	askCtx, cancel := context.WithTimeout(ctx, time.Duration(fresh.ConfirmSeconds)*time.Second)
 	defer cancel()
 	answer := a.Ask(askCtx, p)
+	if a.settings().FullAccess() {
+		return nil
+	}
 	switch answer {
 	case AnswerOnce, AnswerAlways:
 		a.mu.Lock()
@@ -174,7 +186,7 @@ func (a *Agent) approve(ctx context.Context, s Settings, botID, class string, p 
 		return nil
 	}
 	if askCtx.Err() != nil && ctx.Err() == nil {
-		return &Err{Code: CodeTimeout, Message: fmt.Sprintf("nobody answered the question on the computer within %d seconds, so it was not allowed", s.ConfirmSeconds)}
+		return &Err{Code: CodeTimeout, Message: fmt.Sprintf("nobody answered the question on the computer within %d seconds, so it was not allowed", fresh.ConfirmSeconds)}
 	}
 	if ctx.Err() != nil {
 		return &Err{Code: CodeTimeout, Message: "the request was cancelled before the person answered"}
@@ -264,12 +276,28 @@ func (a *Agent) handle(ctx context.Context, stream net.Conn, req Request) error 
 			return errNetOff
 		}
 		return a.dial(ctx, stream, s, req)
+	case OpMCP:
+		return a.mcp(ctx, stream, req)
 	}
 	return &Err{Code: CodeInvalid, Message: "unknown request " + req.Op}
 }
 
+func (a *Agent) mcp(ctx context.Context, stream net.Conn, req Request) error {
+	if a == nil || a.MCP == nil {
+		return &Err{Code: CodeFailed, Message: "this computer cannot run MCP tools"}
+	}
+	text, err := a.MCP(ctx, strings.TrimSpace(req.Server), strings.TrimSpace(req.Tool), req.Args)
+	if err != nil {
+		return err
+	}
+	if len(text) > 200000 {
+		text = text[:200000] + "\n…truncated"
+	}
+	return WriteLine(stream, Response{OK: true, Text: text})
+}
+
 func (a *Agent) summary(s Settings, req Request) *Summary {
-	out := &Summary{FilesEnabled: s.FilesEnabled, NetworkEnabled: s.NetworkEnabled, MaxTransferMB: s.MaxTransferMB, OS: runtime.GOOS, TunnelIdleMinutes: s.TunnelIdleMinutes}
+	out := &Summary{FilesEnabled: s.FilesEnabled, NetworkEnabled: s.NetworkEnabled, MaxTransferMB: s.MaxTransferMB, OS: runtime.GOOS, TunnelIdleMinutes: s.TunnelIdleMinutes, Permission: s.Permission}
 	if s.FilesEnabled {
 		for _, r := range s.Roots {
 			out.Roots = append(out.Roots, Entry{Name: r.Path, Dir: true, Write: r.Write})

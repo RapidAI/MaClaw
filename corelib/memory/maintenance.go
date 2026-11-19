@@ -193,8 +193,7 @@ func (m *Maintenance) SetMaxBackups(n int) error {
 	if err != nil {
 		return err
 	}
-	compressor.SetMaxBackups(n)
-	return nil
+	return compressor.SetMaxBackups(n)
 }
 
 // CompressorStatus returns the current compressor status.

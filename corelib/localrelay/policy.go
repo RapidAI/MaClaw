@@ -28,12 +28,16 @@ type Settings struct {
 	MaxTransferMB  int  `json:"max_transfer_mb"`
 	NetworkEnabled bool `json:"network_enabled"`
 	// NetAllow are targets the person pre-approved: "192.168.1.0/24",
-	// "10.0.0.5:22", "gpu.lab:22,8888", "*.lan". Anything else asks first.
+	// "10.0.0.5:22", "gpu.lab:22,8888", "*.lan". With ask permission,
+	// anything else asks first. Full access does not ask.
 	NetAllow []string `json:"net_allow"`
 	// TunnelIdleMinutes closes a tunnel nobody used for this long.
 	TunnelIdleMinutes int `json:"tunnel_idle_minutes"`
 	// ConfirmSeconds is how long a question waits for the person.
 	ConfirmSeconds int `json:"confirm_seconds"`
+	// Permission is ask (the default: confirm each new folder or host) or
+	// full (write files and reach local resources without asking).
+	Permission string `json:"permission"`
 	// Approved are "always allow" answers: "<bot id>|<class>".
 	Approved []string `json:"approved"`
 }
@@ -45,11 +49,15 @@ const (
 	DefaultConfirmSeconds    = 120
 	// BaseFolder is the folder under the home directory where bots write.
 	BaseFolder = "MaClaw"
+	// PermissionAsk confirms each new folder or host. PermissionFull lets a
+	// bot write files and reach local resources without a question.
+	PermissionAsk  = "ask"
+	PermissionFull = "full"
 )
 
 // DefaultSettings: bots may write only in ~/MaClaw (each bot gets its own
-// subfolder) and read Downloads, Desktop and Documents. The network relay is
-// on, but every target asks the person first until they pre-approve it.
+// subfolder) and read Downloads, Desktop and Documents. Permission is ask, so
+// every new folder or host asks the person first. The network relay is on.
 func DefaultSettings(home string) Settings {
 	s := Settings{
 		FilesEnabled:      true,
@@ -57,6 +65,7 @@ func DefaultSettings(home string) Settings {
 		NetworkEnabled:    true,
 		TunnelIdleMinutes: DefaultTunnelIdleMinutes,
 		ConfirmSeconds:    DefaultConfirmSeconds,
+		Permission:        PermissionAsk,
 	}
 	if strings.TrimSpace(home) != "" {
 		s.Roots = []Root{
@@ -85,6 +94,12 @@ func (s Settings) Normalize() Settings {
 	}
 	if s.ConfirmSeconds > 600 {
 		s.ConfirmSeconds = 600
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Permission)) {
+	case PermissionFull:
+		s.Permission = PermissionFull
+	default:
+		s.Permission = PermissionAsk
 	}
 	seen := map[string]int{}
 	var roots []Root
@@ -120,6 +135,12 @@ func cleanList(in []string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+// FullAccess reports whether bots may write files and reach local resources
+// without a question. Anything else, including an empty value, asks.
+func (s Settings) FullAccess() bool {
+	return strings.EqualFold(strings.TrimSpace(s.Permission), PermissionFull)
 }
 
 // MaxBytes is the per-file cap in bytes.

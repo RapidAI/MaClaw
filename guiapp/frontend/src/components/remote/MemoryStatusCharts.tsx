@@ -55,13 +55,29 @@ export function PieChart({ data, size = 160, centerLabel, ariaLabel }: { data: A
         const x2i = cx + innerR * Math.cos(toRad(startAngle));
         const y2i = cy + innerR * Math.sin(toRad(startAngle));
 
-        const path = [
+        let path = [
             `M ${x1o} ${y1o}`,
             `A ${outerR} ${outerR} 0 ${largeArc} 1 ${x2o} ${y2o}`,
             `L ${x1i} ${y1i}`,
             `A ${innerR} ${innerR} 0 ${largeArc} 0 ${x2i} ${y2i}`,
             "Z",
         ].join(" ");
+        if (sweep >= 359.999) {
+            const midAngle = startAngle + 180;
+            const xmo = cx + outerR * Math.cos(toRad(midAngle));
+            const ymo = cy + outerR * Math.sin(toRad(midAngle));
+            const xmi = cx + innerR * Math.cos(toRad(midAngle));
+            const ymi = cy + innerR * Math.sin(toRad(midAngle));
+            path = [
+                `M ${x1o} ${y1o}`,
+                `A ${outerR} ${outerR} 0 0 1 ${xmo} ${ymo}`,
+                `A ${outerR} ${outerR} 0 0 1 ${x1o} ${y1o}`,
+                `L ${x2i} ${y2i}`,
+                `A ${innerR} ${innerR} 0 0 0 ${xmi} ${ymi}`,
+                `A ${innerR} ${innerR} 0 0 0 ${x2i} ${y2i}`,
+                "Z",
+            ].join(" ");
+        }
 
         arcs.push({ path, color: PIE_COLORS[i % PIE_COLORS.length], label: data[i].label, pct });
         startAngle = endAngle;

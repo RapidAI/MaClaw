@@ -217,7 +217,7 @@ func DesktopMCPHandler(pool *desktoppool.Pool, tokens *desktopMCPTokenStore, ide
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Accel-Buffering", "no")
-		server.ServeHTTP(w, r)
+		server.ServeHTTP(w, r.WithContext(withEdgeOrigin(r.Context(), r)))
 	})
 }
 
@@ -254,7 +254,11 @@ func (b desktopPoolMCP) Session(ctx context.Context, id desktopmcp.Identity) (ma
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"display": s.Display, "cdp_url": s.CDP}, nil
+	cdp, err := cdpURLForSession(ctx, id.TenantID, id.UserID, s)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"display": s.Display, "cdp_url": cdp}, nil
 }
 
 type desktopMCPTokenInput struct {

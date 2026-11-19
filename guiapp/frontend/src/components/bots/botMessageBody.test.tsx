@@ -271,4 +271,33 @@ describe('BotMessageBody', () => {
         expect(list?.textContent).not.toContain('结论');
         expect(view.container.textContent).toContain('结论在列表外。');
     });
+
+    it('renders a markdown link as a clickable external anchor', () => {
+        expect(botMessageIsStructured('见 [文档](https://example.com/guide) 即可')).toBe(true);
+        const view = render(<BotMessageBody text={'见 [文档](https://example.com/guide) 即可'} />);
+        const link = view.container.querySelector('a[href="https://example.com/guide"]');
+        expect(link?.textContent).toBe('文档');
+        expect(view.container.textContent).not.toContain('](');
+    });
+
+    it('renders a bare url and trims its trailing sentence punctuation', () => {
+        const view = render(<BotMessageBody text={'地址是 https://example.com/a?b=1，打开看。'} />);
+        const link = view.container.querySelector('a');
+        expect(link?.getAttribute('href')).toBe('https://example.com/a?b=1');
+        expect(link?.textContent).toBe('example.com/a?b=1');
+        expect(view.container.textContent).toContain('，打开看。');
+    });
+
+    it('renders italics and strikethrough inline', () => {
+        const view = render(<BotMessageBody text={'这是*斜体*和~~删除~~文字'} />);
+        expect(view.container.querySelector('em')?.textContent).toBe('斜体');
+        expect(view.container.querySelector('del')?.textContent).toBe('删除');
+        expect(view.container.textContent).not.toContain('~~');
+    });
+
+    it('keeps a non-http link target literal', () => {
+        const view = render(<BotMessageBody text={'见 [本地](file:///etc/passwd) 吧'} />);
+        expect(view.container.querySelector('a[href]')).toBeNull();
+        expect(view.container.textContent).toContain('[本地](file:///etc/passwd)');
+    });
 });

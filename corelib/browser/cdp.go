@@ -156,7 +156,10 @@ func cdpSocketOnEndpoint(cdpHTTP, wsURL string) string {
 		if !strings.HasPrefix(parsed.Path, "/") {
 			parsed.Path = "/" + parsed.Path
 		}
-		parsed.Path = strings.TrimRight(basePath, "/") + parsed.Path
+		prefix := strings.TrimRight(basePath, "/")
+		if parsed.Path != prefix && !strings.HasPrefix(parsed.Path, prefix+"/") {
+			parsed.Path = prefix + parsed.Path
+		}
 		parsed.RawPath = ""
 	}
 	return parsed.String()
@@ -230,10 +233,11 @@ func cdpChromeHost(endpoint string) string {
 	if err != nil || parsed.Hostname() == "" || cdpHostIsLocal(parsed.Hostname()) {
 		return ""
 	}
-	// The next hop is nginx and desktopd, not Chromium. Rewriting Host to
-	// 127.0.0.1 here would miss the public vhost. The tunnel sets an IP Host
-	// on the hop that actually reaches Chrome.
-	if strings.Contains(parsed.EscapedPath(), "/v1/desktops/tunnel/") {
+	// The next hop is nginx, desktopd, or Hub's ticket relay, not Chromium.
+	// Rewriting Host to 127.0.0.1 would miss that vhost. The tunnel sets an
+	// IP Host on the hop that actually reaches Chrome.
+	path := parsed.EscapedPath()
+	if strings.Contains(path, "/v1/desktops/tunnel/") || strings.Contains(path, "/api/v1/desktop-cdp/") {
 		return ""
 	}
 	port := parsed.Port()

@@ -51,17 +51,25 @@ type FailureEventLogFilter struct {
 }
 
 type HubInstance struct {
-	ID                                    string     `json:"id"`
-	InstallationID                        string     `json:"installation_id,omitempty"`
-	HubOrigin                             string     `json:"hub_origin"`
-	DefaultSignupScope                    string     `json:"default_signup_scope"`
-	OwnerEmail                            string     `json:"owner_email"`
-	Name                                  string     `json:"name"`
-	Description                           string     `json:"description"`
-	BaseURL                               string     `json:"base_url"`
-	Host                                  string     `json:"host"`
-	Port                                  int        `json:"port"`
-	Visibility                            string     `json:"visibility"`
+	ID                 string `json:"id"`
+	InstallationID     string `json:"installation_id,omitempty"`
+	HubOrigin          string `json:"hub_origin"`
+	DefaultSignupScope string `json:"default_signup_scope"`
+	OwnerEmail         string `json:"owner_email"`
+	Name               string `json:"name"`
+	Description        string `json:"description"`
+	BaseURL            string `json:"base_url"`
+	Host               string `json:"host"`
+	Port               int    `json:"port"`
+	Visibility         string `json:"visibility"`
+	// VisibilityLocked marks visibility as admin-managed: hub-reported
+	// (registration/heartbeat) values stop overwriting it until the hub
+	// reports the same value, at which point the lock converges away.
+	VisibilityLocked bool `json:"visibility_locked"`
+	// VisibilityLockedBy records which Hub Center administrator set the
+	// locked value. It is reported back to the hub (heartbeat response) so
+	// the hub can show who manages the override, and clears with the lock.
+	VisibilityLockedBy                    string     `json:"visibility_locked_by,omitempty"`
 	EnrollmentMode                        string     `json:"enrollment_mode"`
 	CorporateEmailDomain                  string     `json:"corporate_email_domain"`
 	AcceptPublicSignup                    bool       `json:"accept_public_signup"`
@@ -314,7 +322,7 @@ type HubRepository interface {
 	ListByEmail(ctx context.Context, email string) ([]*HubInstance, error)
 	ListAll(ctx context.Context) ([]*HubInstance, error)
 	UpdateName(ctx context.Context, hubID string, name string, updatedAt time.Time) error
-	UpdateVisibility(ctx context.Context, hubID string, visibility string, updatedAt time.Time) error
+	UpdateVisibility(ctx context.Context, hubID string, visibility string, lockedBy string, updatedAt time.Time) error
 	SetDisabled(ctx context.Context, hubID string, disabled bool, reason string, updatedAt time.Time) error
 	UpdateRegistration(ctx context.Context, hub *HubInstance) error
 	UpdateInvitationCodeRequired(ctx context.Context, hubID string, required bool, updatedAt time.Time) error

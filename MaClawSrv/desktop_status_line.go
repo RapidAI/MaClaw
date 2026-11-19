@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
 // desktopRunStatusLine is the live status of a run for the bot's status area
@@ -34,6 +36,9 @@ func desktopRunStatusLine(runID string) string {
 	}
 	if note := desktopSupplementStatusPhrase(runID); note != "" {
 		parts = append(parts, note)
+	}
+	if note := strings.TrimSpace(agentservice.RunRuntimeStatus(runID)); note != "" {
+		parts = append(parts, desktopRuneHead(note, 120))
 	}
 	if j := desktopLongJobForRun(runID); j != nil {
 		parts = append(parts, desktopLongJobStatusPhrase(j, desktopLongJobNow()))

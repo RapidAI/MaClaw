@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -50,7 +51,7 @@ type TaskOrchestrator2 struct {
 	mu             sync.RWMutex
 	persistPath    string // optional: path to persist plans on disk
 	db             *sql.DB
-	closed         bool   // Close has run; never fall back to rewriting the legacy JSON file
+	closed         bool // Close has run; never fall back to rewriting the legacy JSON file
 }
 
 // NewTaskOrchestrator2 creates a new task orchestrator.
@@ -113,23 +114,13 @@ func configureTaskOrchestratorDB(db *sql.DB) error {
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA synchronous=NORMAL",
+		"PRAGMA foreign_keys=ON",
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			return err
 		}
 	}
-	_, err := db.Exec(`
-CREATE TABLE IF NOT EXISTS task_plans (
-    id TEXT PRIMARY KEY,
-    payload_json TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS task_plans_meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-`)
-	return err
+	return configureTaskPlanSchema(db)
 }
 
 // importLegacyPlans copies task_plans.json once. A later empty database must
@@ -177,13 +168,13 @@ func (o *TaskOrchestrator2) importLegacyPlans() {
 	}
 	now := time.Now().UnixNano()
 	for id, plan := range plans {
-		payload, err := json.Marshal(plan)
-		if err != nil {
-			_ = tx.Rollback()
-			log.Printf("[task-orchestrator] import failed path=%q err=%v", o.persistPath, err)
-			return
+		if plan == nil {
+			continue
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO task_plans(id, payload_json, updated_at) VALUES(?,?,?)`, id, string(payload), now); err != nil {
+		if plan.ID == "" {
+			plan.ID = id
+		}
+		if err := writeTaskPlanTx(tx, plan, now); err != nil {
 			_ = tx.Rollback()
 			log.Printf("[task-orchestrator] import failed path=%q err=%v", o.persistPath, err)
 			return
@@ -225,12 +216,14 @@ func (o *TaskOrchestrator2) ReconcileRuntimeJobs(ctx context.Context) error {
 	return agentruntime.RecoverAndReconcileOpenJobs(ctx, o.runtimeJobs, o.runtimeEffects, "orchestrator.plan", o, nil)
 }
 
+var taskPlanIDSequence atomic.Uint64
+
 // CreatePlan creates a new execution plan.
 func (o *TaskOrchestrator2) CreatePlan(description string, subTasks []PlanSubTask) (*TaskPlan, error) {
 	if len(subTasks) == 0 {
 		return nil, fmt.Errorf("至少需要一个子任务")
 	}
-	planID := fmt.Sprintf("plan_%d", time.Now().UnixNano())
+	planID := fmt.Sprintf("plan_%d_%d", time.Now().UnixNano(), taskPlanIDSequence.Add(1))
 	for i := range subTasks {
 		if subTasks[i].ID == "" {
 			subTasks[i].ID = fmt.Sprintf("task_%d", i+1)
@@ -491,36 +484,50 @@ func (o *TaskOrchestrator2) savePlansLocked() error {
 	if o.db != nil {
 		return o.savePlansToDBLocked()
 	}
-	dir := filepath.Dir(o.persistPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("task_orchestrator: create dir: %w", err)
-	}
-	data, err := json.MarshalIndent(o.plans, "", "  ")
-	if err != nil {
-		return fmt.Errorf("task_orchestrator: marshal: %w", err)
-	}
-	return os.WriteFile(o.persistPath, data, 0o644)
+	return fmt.Errorf("task_orchestrator: plan database is unavailable")
 }
 
-// savePlansToDBLocked syncs the full plan snapshot in one transaction, keeping
-// the historical "store = complete snapshot" semantics while writing only the
-// rows that changed.
+// savePlansToDBLocked syncs the full plan snapshot in one transaction. Only
+// plans whose signatures changed rewrite their rows and dependencies.
 func (o *TaskOrchestrator2) savePlansToDBLocked() error {
 	tx, err := o.db.Begin()
 	if err != nil {
 		return fmt.Errorf("task_orchestrator: begin: %w", err)
 	}
 	now := time.Now().UnixNano()
+	existingSignatures := map[string]string{}
+	signatureRows, err := tx.Query(`SELECT id, signature FROM task_plans`)
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("task_orchestrator: signatures: %w", err)
+	}
+	for signatureRows.Next() {
+		var id, signature string
+		if err := signatureRows.Scan(&id, &signature); err != nil {
+			_ = signatureRows.Close()
+			_ = tx.Rollback()
+			return err
+		}
+		existingSignatures[id] = signature
+	}
+	if err := signatureRows.Err(); err != nil {
+		_ = signatureRows.Close()
+		_ = tx.Rollback()
+		return err
+	}
+	_ = signatureRows.Close()
 	kept := make(map[string]struct{}, len(o.plans))
 	for id, plan := range o.plans {
-		payload, err := json.Marshal(plan)
+		signature, err := taskPlanSignature(plan)
 		if err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("task_orchestrator: marshal: %w", err)
+			return err
 		}
 		kept[id] = struct{}{}
-		if _, err := tx.Exec(`INSERT INTO task_plans(id, payload_json, updated_at) VALUES(?,?,?)
-			ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at`, id, string(payload), now); err != nil {
+		if existingSignatures[id] == signature {
+			continue
+		}
+		if err := writeTaskPlanTx(tx, plan, now); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("task_orchestrator: upsert: %w", err)
 		}
@@ -649,27 +656,9 @@ func (o *TaskOrchestrator2) loadPlans() error {
 		return nil
 	}
 	if o.db != nil {
-		rows, err := o.db.Query(`SELECT payload_json FROM task_plans`)
+		plans, err := loadTaskPlanRows(o.db)
 		if err != nil {
-			return fmt.Errorf("task_orchestrator: query: %w", err)
-		}
-		defer rows.Close()
-		plans := make(map[string]*TaskPlan)
-		for rows.Next() {
-			var payload string
-			if err := rows.Scan(&payload); err != nil {
-				return fmt.Errorf("task_orchestrator: scan: %w", err)
-			}
-			var plan TaskPlan
-			if err := json.Unmarshal([]byte(payload), &plan); err != nil {
-				return fmt.Errorf("task_orchestrator: unmarshal: %w", err)
-			}
-			if plan.ID != "" {
-				plans[plan.ID] = &plan
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("task_orchestrator: rows: %w", err)
+			return err
 		}
 		o.plans = plans
 		return nil

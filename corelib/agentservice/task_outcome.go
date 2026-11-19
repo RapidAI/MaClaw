@@ -1,6 +1,9 @@
 package agentservice
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
 
 // Task outcome: what a finished run's task really reached, as measured by
 // the host (e.g. the desktop runtime's goal ledger), independent of the run
@@ -15,12 +18,18 @@ import "strings"
 const (
 	TaskOutcomeKey       = "task_outcome"
 	TaskOutcomeNoticeKey = "task_outcome_notice"
+	// ReceiptPendingKey marks a terminal run whose finish hook has not
+	// committed the reconciled receipt yet. ReceiptFinalKey replaces it
+	// when that write succeeds.
+	ReceiptPendingKey = "receipt_pending"
+	ReceiptFinalKey   = "receipt_final"
 
 	TaskOutcomeDone         = "done"
 	TaskOutcomePartial      = "partial"
 	TaskOutcomeBlocked      = "blocked"
 	TaskOutcomeNotSubmitted = "not_submitted"
 	TaskOutcomeUnconfirmed  = "unconfirmed"
+	TaskOutcomeUnverified   = "unverified"
 	TaskOutcomeAwaitingUser = "awaiting_user"
 	TaskOutcomeRunning      = "running"
 )
@@ -28,7 +37,7 @@ const (
 // ValidTaskOutcome reports whether s is one of the defined outcomes.
 func ValidTaskOutcome(s string) bool {
 	switch s {
-	case TaskOutcomeDone, TaskOutcomePartial, TaskOutcomeBlocked, TaskOutcomeNotSubmitted, TaskOutcomeUnconfirmed, TaskOutcomeAwaitingUser, TaskOutcomeRunning:
+	case TaskOutcomeDone, TaskOutcomePartial, TaskOutcomeBlocked, TaskOutcomeNotSubmitted, TaskOutcomeUnconfirmed, TaskOutcomeUnverified, TaskOutcomeAwaitingUser, TaskOutcomeRunning:
 		return true
 	}
 	return false
@@ -98,6 +107,74 @@ func applyTaskOutcome(run *Run, msg *Message) string {
 		}
 	}
 	return outcome
+}
+
+// PersistRunReceipt writes the receipt decided after the first save.
+// The run metadata and the assistant message stay the same record a
+// later read, a reconnect, or a restarted process returns.
+func (s *Service) PersistRunReceipt(run *Run, msg *Message) error {
+	if s == nil || s.store == nil || run == nil || msg == nil {
+		return nil
+	}
+	if run.Metadata == nil {
+		run.Metadata = map[string]string{}
+	}
+	outcome := ""
+	if msg.Metadata != nil {
+		outcome = strings.TrimSpace(msg.Metadata[TaskOutcomeKey])
+	}
+	if ValidTaskOutcome(outcome) {
+		run.Metadata[TaskOutcomeKey] = outcome
+		if TaskOutcomeNeedsUser(outcome) {
+			run.WaitingForUser = true
+		}
+	} else {
+		delete(run.Metadata, TaskOutcomeKey)
+	}
+	finalMeta := make(map[string]string, len(run.Metadata)+1)
+	for key, value := range run.Metadata {
+		if key == ReceiptPendingKey {
+			continue
+		}
+		finalMeta[key] = value
+	}
+	finalMeta[ReceiptFinalKey] = "1"
+	run.Metadata = finalMeta
+	if both, ok := s.store.(interface {
+		ReviseRunReceipt(Message, Run) error
+	}); ok {
+		return both.ReviseRunReceipt(*msg, *run)
+	}
+	if rev, ok := s.store.(interface{ ReviseMessage(Message) error }); ok {
+		if err := rev.ReviseMessage(*msg); err != nil {
+			return err
+		}
+	}
+	return s.store.SaveRun(*run)
+}
+
+var runReceiptInFlight sync.Map
+
+// MarkRunReceiptInFlight records that a finish hook still has to reconcile
+// this run. The completion save sees the mark and stores ReceiptPendingKey
+// before the terminal row is readable.
+func MarkRunReceiptInFlight(runID string) {
+	if strings.TrimSpace(runID) == "" {
+		return
+	}
+	runReceiptInFlight.Store(runID, struct{}{})
+}
+
+// RunReceiptInFlight reports whether this process still owes the run a receipt.
+func RunReceiptInFlight(runID string) bool {
+	_, ok := runReceiptInFlight.Load(strings.TrimSpace(runID))
+	return ok
+}
+
+// ClearRunReceiptInFlight drops the in-process mark. The durable pending
+// flag stays until the receipt write clears it.
+func ClearRunReceiptInFlight(runID string) {
+	runReceiptInFlight.Delete(strings.TrimSpace(runID))
 }
 
 func runTaskOutcome(run Run, msg *Message) string {

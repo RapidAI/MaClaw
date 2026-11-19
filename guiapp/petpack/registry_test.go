@@ -23,8 +23,8 @@ func TestRegistryBundledScanAndFrameResolve(t *testing.T) {
 			t.Fatalf("missing official id %s in allowlist", id)
 		}
 	}
-	// figurative default yields a pack frame for clawmate
-	frame, resolved, err := reg.ResolveAndLoad("clawmate", VariantDefault, StateIdle, 88, NewFrameCache())
+	// figurative default yields a pack frame for the official ragdoll
+	frame, resolved, err := reg.ResolveAndLoad(DefaultPackID, VariantDefault, StateIdle, 88, NewFrameCache())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,13 +32,13 @@ func TestRegistryBundledScanAndFrameResolve(t *testing.T) {
 		t.Fatal("resolved nil")
 	}
 	if frame == nil {
-		t.Fatal("expected non-nil native frame for figurative clawmate idle")
+		t.Fatal("expected non-nil native frame for figurative ragdoll idle")
 	}
 	if frame.Bounds().Dx() != 88 || frame.Bounds().Dy() != 88 {
 		t.Fatalf("frame size %v", frame.Bounds())
 	}
 	// classic may still load native if present; procedural path is caller's fallback when they choose classic + ignore frames
-	if !reg.HasNativeFrame("clawmate", VariantDefault, StateSpeaking) {
+	if !reg.HasNativeFrame(DefaultPackID, VariantDefault, StateSpeaking) {
 		t.Fatal("expected speaking native frame")
 	}
 }
@@ -65,13 +65,13 @@ func TestClawMateBundledV3PerformanceRigIsReady(t *testing.T) {
 	}
 	manifest, ok := reg.Get(DefaultPackID)
 	if !ok || manifest == nil {
-		t.Fatal("missing bundled clawmate")
+		t.Fatal("missing bundled ragdoll")
 	}
 	if manifest.SchemaVersion != 3 || manifest.Renderer != RendererCharacter || !manifest.Capabilities.PetPerformanceV3 {
-		t.Fatalf("ClawMate must be a v3 performance pack, got schema=%d renderer=%q caps=%+v", manifest.SchemaVersion, manifest.Renderer, manifest.Capabilities)
+		t.Fatalf("ragdoll must be a v3 performance pack, got schema=%d renderer=%q caps=%+v", manifest.SchemaVersion, manifest.Renderer, manifest.Capabilities)
 	}
 	if manifest.Status != StatusOK {
-		t.Fatalf("ClawMate v3 pack invalid: %s", manifest.Error)
+		t.Fatalf("ragdoll v3 pack invalid: %s", manifest.Error)
 	}
 	resolved, err := reg.Resolve(DefaultPackID, VariantDefault)
 	if err != nil {
@@ -82,10 +82,10 @@ func TestClawMateBundledV3PerformanceRigIsReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	if frame := renderer.RenderState(StateThinking, 450, 88); frame == nil || frame.Bounds().Dx() != 88 {
-		t.Fatal("expected rendered ClawMate performance frame")
+		t.Fatal("expected rendered ragdoll performance frame")
 	}
 	if !renderer.TriggerEvent("task_done", 5000) {
-		t.Fatal("expected ClawMate task_done reaction")
+		t.Fatal("expected ragdoll task_done reaction")
 	}
 }
 
@@ -103,7 +103,7 @@ func TestSanitizeSkinAllowlistAndNotReady(t *testing.T) {
 		t.Fatalf("installed third-party wiped: %q", got)
 	}
 	if got := SanitizeSkinID("unknown-skin", true, allow); got != DefaultPackID {
-		t.Fatalf("unknown should → clawmate, got %q", got)
+		t.Fatalf("unknown should → ragdoll, got %q", got)
 	}
 }
 

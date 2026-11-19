@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -162,12 +163,249 @@ func TestSaveDeliveredUsesBotFolder(t *testing.T) {
 	srv := httptest.NewServer(&flakyStore{data: data})
 	defer srv.Close()
 	home := t.TempDir()
-	a := &Agent{Home: home, Load: func() Settings { return DefaultSettings(home) }, Fetch: HTTPFetcher(srv.Client(), srv.URL, nil)}
+	var events atomic.Int32
+	a := &Agent{Home: home, Load: func() Settings { return DefaultSettings(home) }, Fetch: HTTPFetcher(srv.Client(), srv.URL, nil), Notify: func(TransferEvent) { events.Add(1) }}
 	path, err := a.SaveDelivered(context.Background(), "b1", "Writer", "", FetchSpec{URL: "/f", Ref: "bf_6", Name: "r.pdf", Size: int64(len(data)), SHA256: shaHex(data)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if path != filepath.Join(home, BaseFolder, "Writer", "r.pdf") {
 		t.Fatalf("path %s", path)
+	}
+	if events.Load() != 0 {
+		t.Fatalf("a chat delivery reported %d transfers", events.Load())
+	}
+	if _, err := a.SaveDelivered(context.Background(), "b1", "Writer", "", FetchSpec{URL: "/f", Ref: "bf_bad", Name: "bad.pdf", Size: int64(len(data)), SHA256: strings.Repeat("0", 64)}); err == nil {
+		t.Fatal("a mismatched chat file was kept")
+	}
+	if events.Load() != 0 {
+		t.Fatalf("a failed chat delivery reported %d transfers", events.Load())
+	}
+}
+
+// Two saves of one chat file must share the download. A second copy, or a
+// transfer event, is the extra download chip under the composer.
+func TestSaveDeliveredSharesOneDownload(t *testing.T) {
+	data := []byte("shared-bytes-0123456789")
+	var calls atomic.Int32
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+	home := t.TempDir()
+	var events atomic.Int32
+	a := &Agent{Home: home, Load: func() Settings { return DefaultSettings(home) }, Fetch: HTTPFetcher(srv.Client(), srv.URL, nil), Notify: func(TransferEvent) { events.Add(1) }}
+	spec := FetchSpec{URL: "/f", Ref: "bf_share", Name: "r.pdf", Size: int64(len(data)), SHA256: shaHex(data)}
+	var path1, path2 string
+	var err1, err2 error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		path1, err1 = a.SaveDelivered(context.Background(), "b1", "Writer", "", spec)
+	}()
+	<-entered
+	other := &Agent{Home: home, Load: a.Load, Fetch: a.Fetch, Notify: a.Notify}
+	renamed := spec
+	renamed.Name = "other.pdf"
+	go func() {
+		defer wg.Done()
+		path2, err2 = other.SaveDelivered(context.Background(), "b1", "Writer", "", renamed)
+	}()
+	key := fetchFlightKey(a.settings().BotFolder("Writer", "b1"), spec)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		fetchFlights.Lock()
+		flight := fetchFlights.m[key]
+		waiting := flight != nil && flight.waiters > 0
+		fetchFlights.Unlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second save did not join the download")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("downloads started: %d", calls.Load())
+	}
+	close(release)
+	wg.Wait()
+	if err1 != nil || err2 != nil {
+		t.Fatal(err1, err2)
+	}
+	if path1 == "" || path1 != path2 {
+		t.Fatalf("paths %q %q", path1, path2)
+	}
+	if calls.Load() != 1 || events.Load() != 0 {
+		t.Fatalf("calls %d events %d", calls.Load(), events.Load())
+	}
+	again, err := a.SaveDelivered(context.Background(), "b1", "Writer", "", spec)
+	if err != nil || again != path1 || calls.Load() != 1 || events.Load() != 0 {
+		t.Fatalf("again %q err %v calls %d events %d", again, err, calls.Load(), events.Load())
+	}
+	folder := a.settings().BotFolder("Writer", "b1")
+	shown, err := other.fetchInto(context.Background(), folder, "b1", "Writer", "run", "remote.pdf", spec, fetchShown)
+	if err != nil || shown != path1 || calls.Load() != 1 || events.Load() != 0 {
+		t.Fatalf("shown reuse %q err %v calls %d events %d", shown, err, calls.Load(), events.Load())
+	}
+	bad := spec
+	bad.SHA256 = strings.Repeat("ab", 32)
+	if _, err := other.SaveDelivered(context.Background(), "b1", "Writer", "", bad); err == nil || calls.Load() != 1 {
+		t.Fatalf("bad checksum err=%v calls=%d", err, calls.Load())
+	}
+	if _, err := os.Stat(path1); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path1))
+	if len(entries) != 1 {
+		t.Fatalf("files: %v", entries)
+	}
+}
+
+func TestReuseKeepsFileWhenAskedSizeDiffers(t *testing.T) {
+	data := []byte("size-locked-bytes")
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+	home := t.TempDir()
+	a := &Agent{Home: home, Load: func() Settings { return DefaultSettings(home) }, Fetch: HTTPFetcher(srv.Client(), srv.URL, nil)}
+	spec := FetchSpec{URL: "/f", Ref: "bf_size", Name: "r.pdf", Size: int64(len(data)), SHA256: shaHex(data)}
+	path, err := a.SaveDelivered(context.Background(), "b1", "Writer", "", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := spec
+	wrong.Size = int64(len(data) + 10)
+	if _, err := a.SaveDelivered(context.Background(), "b1", "Writer", "", wrong); err == nil {
+		t.Fatal("a different size reused the saved file")
+	}
+	again, err := a.SaveDelivered(context.Background(), "b1", "Writer", "", spec)
+	if err != nil || again != path || calls.Load() != 1 {
+		t.Fatalf("again %q err %v calls %d", again, err, calls.Load())
+	}
+}
+
+func TestMissingSizeLeavesPartialDownload(t *testing.T) {
+	data := []byte("partial-bytes-0123456789")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+	home := t.TempDir()
+	a := &Agent{Home: home, Load: func() Settings { return DefaultSettings(home) }, Fetch: HTTPFetcher(srv.Client(), srv.URL, nil)}
+	folder := a.settings().BotFolder("Writer", "b1")
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := FetchSpec{URL: "/f", Ref: "bf_part", Name: "a.pdf", Size: int64(len(data))}
+	part := filepath.Join(folder, partName(spec))
+	if err := os.WriteFile(part, data[:8], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.SaveDelivered(context.Background(), "b1", "Writer", "", FetchSpec{URL: spec.URL, Ref: spec.Ref, Name: spec.Name}); err == nil {
+		t.Fatal("a sized file was saved without a size")
+	}
+	got, err := os.ReadFile(part)
+	if err != nil || string(got) != string(data[:8]) {
+		t.Fatalf("partial = %q err %v", got, err)
+	}
+}
+
+func TestMissingSizeDoesNotSaveEmptyFile(t *testing.T) {
+	data := []byte("not-empty")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+	home := t.TempDir()
+	a := &Agent{Home: home, Load: func() Settings { return DefaultSettings(home) }, Fetch: HTTPFetcher(srv.Client(), srv.URL, nil)}
+	if _, err := a.SaveDelivered(context.Background(), "b1", "Writer", "", FetchSpec{URL: "/f", Ref: "bf_nosize", Name: "a.pdf"}); err == nil {
+		t.Fatal("a sized file was saved without a size")
+	}
+	folder := a.settings().BotFolder("Writer", "b1")
+	entries, _ := os.ReadDir(folder)
+	if len(entries) != 0 {
+		t.Fatalf("left files: %v", entries)
+	}
+	path, err := a.SaveDelivered(context.Background(), "b1", "Writer", "", FetchSpec{URL: "/f", Ref: "bf_nosize", Name: "a.pdf", Size: int64(len(data)), SHA256: shaHex(data)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != string(data) {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestWaiterResumesWhenLeaderStops(t *testing.T) {
+	data := []byte("resumed-bytes")
+	var calls atomic.Int32
+	entered := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+	home := t.TempDir()
+	a := &Agent{Home: home, Load: func() Settings { return DefaultSettings(home) }, Fetch: HTTPFetcher(srv.Client(), srv.URL, nil)}
+	spec := FetchSpec{URL: "/f", Ref: "bf_resume", Name: "r.pdf", Size: int64(len(data)), SHA256: shaHex(data)}
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = a.SaveDelivered(leaderCtx, "b1", "Writer", "", spec) }()
+	<-entered
+	var path string
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		path, err = a.SaveDelivered(context.Background(), "b1", "Writer", "", spec)
+	}()
+	key := fetchFlightKey(a.settings().BotFolder("Writer", "b1"), spec)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		fetchFlights.Lock()
+		flight := fetchFlights.m[key]
+		waiting := flight != nil && flight.waiters > 0
+		fetchFlights.Unlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second save did not join")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiter did not finish")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != string(data) || calls.Load() < 2 {
+		t.Fatalf("path bytes %q calls %d", got, calls.Load())
 	}
 }

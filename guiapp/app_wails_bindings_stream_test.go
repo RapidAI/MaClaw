@@ -101,6 +101,17 @@ func TestAIAssistantStreamDeltaNormalizerPassesRejectedContentMarker(t *testing.
 	if got := normalizer.Normalize(rejectedRoundContentToken); got != rejectedRoundContentToken {
 		t.Fatalf("reject marker = %q", got)
 	}
+	if normalizer.content != "" {
+		t.Fatalf("content after reject = %q", normalizer.content)
+	}
+	// A suffix glued to the marker is still the reset. Treating only the
+	// exact token as special would append the suffix as the next answer.
+	if got := normalizer.Normalize(rejectedRoundContentToken + "kept"); got != rejectedRoundContentToken+"kept" || normalizer.content != "" {
+		t.Fatalf("prefixed reject = %q content=%q", got, normalizer.content)
+	}
+	if got := normalizer.Normalize(rejectedRoundContentToken + "ke\x01pt"); got != rejectedRoundContentToken+"kept" || normalizer.content != "" {
+		t.Fatalf("reject suffix = %q content=%q", got, normalizer.content)
+	}
 	next := "真正的回答"
 	if got := normalizer.Normalize(next); got != next {
 		t.Fatalf("text after reject = %q, want a fresh delta", got)

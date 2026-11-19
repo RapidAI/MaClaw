@@ -107,7 +107,7 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(pending) == 1 && pending[0].Reply.Text == "我点了下载，文件在下载目录。" && pending[0].Reply.SendToUser == "报表已下载" {
+		if len(pending) == 1 && pending[0].Reply.Text == "我点了下载，文件在下载目录。" && strings.Contains(pending[0].Reply.SendToUser, "报表已下载") && pending[0].Reply.TaskOutcome == "unverified" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -123,17 +123,17 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pending) != 1 || pending[0].RunID != admission.RunID || pending[0].Reply.Text != "我点了下载，文件在下载目录。" || pending[0].Reply.SendToUser != "报表已下载" {
+	if len(pending) != 1 || pending[0].RunID != admission.RunID || pending[0].Reply.Text != "我点了下载，文件在下载目录。" || !strings.Contains(pending[0].Reply.SendToUser, "报表已下载") || pending[0].Reply.TaskOutcome != "unverified" {
 		t.Fatalf("restarted pending = %#v", pending)
 	}
 	shown, shownItems, err := restarted.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "下载报表", "zh-Hans")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(shown, "已经做完") || !strings.Contains(shown, "报表已下载") || strings.Contains(shown, "没有找到") || strings.Contains(shown, "下载目录") {
+	if !strings.Contains(shown, "还不能确认已经完成") || !strings.Contains(shown, "报表已下载") || strings.Contains(shown, "没有找到") || strings.Contains(shown, "下载目录") || strings.Contains(shown, "已经做完") {
 		t.Fatalf("finished sentence = %q", shown)
 	}
-	if len(shownItems) != 1 || shownItems[0].Text != "报表已下载" {
+	if len(shownItems) != 1 || !strings.Contains(shownItems[0].Text, "报表已下载") || shownItems[0].TaskOutcome != "unverified" {
 		t.Fatalf("status item = %#v", shownItems)
 	}
 	miss, _, err := restarted.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "另一个完全无关的名字", "zh-Hans")
@@ -334,7 +334,7 @@ func TestDesktopTaskQueryStripsLeadAndSpeaksEachLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(done, "已经做完") || !strings.Contains(done, "装好了") || strings.Contains(done, "在做。这件是") || strings.Contains(done, "安装过程") {
+	if !strings.Contains(done, "还不能确认已经完成") || !strings.Contains(done, "装好了") || strings.Contains(done, "在做。这件是") || strings.Contains(done, "安装过程") || strings.Contains(done, "已经做完") {
 		t.Fatalf("done = %q", done)
 	}
 	if len(doneItems) != 1 || doneItems[0].Text != "装好了" {
@@ -345,7 +345,7 @@ func TestDesktopTaskQueryStripsLeadAndSpeaksEachLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(proseOnly, "已经做完") || strings.Contains(proseOnly, "安装过程") || strings.Contains(proseOnly, "装好了") {
+	if !strings.Contains(proseOnly, "还不能确认已经完成") || strings.Contains(proseOnly, "安装过程") || strings.Contains(proseOnly, "装好了") || strings.Contains(proseOnly, "已经做完") {
 		t.Fatalf("prose leaked = %q", proseOnly)
 	}
 	if len(proseItems) != 1 || proseItems[0].Text != "" {
@@ -356,7 +356,7 @@ func TestDesktopTaskQueryStripsLeadAndSpeaksEachLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(asked, "已经做完") || !strings.Contains(asked, "下一步？") || strings.Contains(asked, "安装过程") {
+	if !strings.Contains(asked, "还不能确认已经完成") || !strings.Contains(asked, "下一步？") || strings.Contains(asked, "安装过程") || strings.Contains(asked, "已经做完") {
 		t.Fatalf("asked = %q", asked)
 	}
 	if len(askedItems) != 1 || askedItems[0].Text != "下一步？" {
@@ -375,7 +375,7 @@ func TestDesktopTaskQueryStripsLeadAndSpeaksEachLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(choiceAsk, "已经做完") || !strings.Contains(choiceAsk, "继续") || !strings.Contains(choiceAsk, "停下") || strings.Contains(choiceAsk, "无变化") || strings.Contains(choiceAsk, "安装过程") {
+	if !strings.Contains(choiceAsk, "还不能确认已经完成") || !strings.Contains(choiceAsk, "继续") || !strings.Contains(choiceAsk, "停下") || strings.Contains(choiceAsk, "无变化") || strings.Contains(choiceAsk, "安装过程") || strings.Contains(choiceAsk, "已经做完") {
 		t.Fatalf("choice ask = %q", choiceAsk)
 	}
 	if len(choiceItems) != 1 || choiceItems[0].Text != "继续\n停下" {
@@ -394,7 +394,7 @@ func TestDesktopTaskQueryStripsLeadAndSpeaksEachLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(secretAsk, "已经做完") || !strings.Contains(secretAsk, "SITE_PASSWORD") || strings.Contains(secretAsk, "无变化") || strings.Contains(secretAsk, "安装过程") {
+	if !strings.Contains(secretAsk, "还不能确认已经完成") || !strings.Contains(secretAsk, "SITE_PASSWORD") || strings.Contains(secretAsk, "无变化") || strings.Contains(secretAsk, "安装过程") || strings.Contains(secretAsk, "已经做完") {
 		t.Fatalf("secret ask = %q", secretAsk)
 	}
 	if len(secretItems) != 1 || secretItems[0].Text != "SITE_PASSWORD" {
@@ -616,7 +616,7 @@ func TestDesktopTaskSendToUserSurvivesRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(pending) == 1 && pending[0].Reply.Text == "无变化" && pending[0].Reply.SendToUser == "首页没打开。" {
+		if len(pending) == 1 && pending[0].Reply.Text == "无变化" && strings.Contains(pending[0].Reply.SendToUser, "首页没打开。") && pending[0].Reply.TaskOutcome == "unverified" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -630,7 +630,7 @@ func TestDesktopTaskSendToUserSurvivesRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(saved, `"send_to_user":"首页没打开。"`) {
+		if strings.Contains(saved, "首页没打开。") && strings.Contains(saved, desktopUnverifiedSentence) {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -649,7 +649,7 @@ func TestDesktopTaskSendToUserSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pending) != 1 || pending[0].Reply.Text != "无变化" || pending[0].Reply.SendToUser != "首页没打开。" {
+	if len(pending) != 1 || pending[0].Reply.Text != "无变化" || !strings.Contains(pending[0].Reply.SendToUser, "首页没打开。") || pending[0].Reply.TaskOutcome != "unverified" {
 		t.Fatalf("restarted pending = %#v", pending)
 	}
 }

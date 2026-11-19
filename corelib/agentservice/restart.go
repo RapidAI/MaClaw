@@ -52,6 +52,71 @@ func loadRestartTrajectory(raw string) (restartTrajectory, bool) {
 // after the service process comes back.
 const restartNoticeContinue = "服务刚重启，这项任务接着做。"
 
+// clipTaskRequest keeps a resumed turn's original ask short enough for
+// message metadata. A long article often puts "发到知乎、CSDN和小红书" at
+// the end; cutting only the head would drop the sites.
+func clipTaskRequest(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || text == restartNoticeContinue {
+		return ""
+	}
+	r := []rune(text)
+	const limit = 2000
+	if len(r) <= limit {
+		return text
+	}
+	const tail = 700
+	head := limit - tail - 1
+	return string(r[:head]) + "\n" + string(r[len(r)-tail:])
+}
+
+// restartPersonAsk is the message the person sent, so a resumed turn still
+// knows they asked for a screenshot or a file. The restart notice is not
+// that message. The stored user message wins; the checkpoint's user rows
+// cover a run whose message row was not kept.
+func restartPersonAsk(s *Service, run Run) string {
+	if s != nil && s.store != nil {
+		if id := strings.TrimSpace(run.UserMessageID); id != "" && strings.TrimSpace(run.SessionID) != "" {
+			if msgs, err := s.store.ListMessages(run.SessionID); err == nil {
+				for _, m := range msgs {
+					if m.ID == id {
+						if text := strings.TrimSpace(m.Content); text != "" {
+							return text
+						}
+					}
+				}
+			}
+		}
+	}
+	raw := ""
+	if run.Metadata != nil {
+		raw = run.Metadata[metaRestartTrajectory]
+	}
+	traj, ok := loadRestartTrajectory(raw)
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	for _, entry := range traj.Entries {
+		if entry.HostContinuation || entry.Role != "user" {
+			continue
+		}
+		text, _ := entry.Content.(string)
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(text)
+		if b.Len() > 4000 {
+			break
+		}
+	}
+	return b.String()
+}
+
 // restartNoticeStopped is the sentence when that task cannot be continued.
 const restartNoticeStopped = "这项任务被服务重启打断了，没法接着做。"
 
@@ -397,13 +462,48 @@ func (s *Service) resumeOne(ctx context.Context, p Principal, inst Instance, run
 	_ = inst
 	s.sayRestart(p, cp.InstanceID, cp.SessionID, restartNoticeContinue)
 	meta := map[string]string{"restart_resume": "1", "restart_from": run.ID}
+	// A timer firing is its own recovery task. Dropping bot_origin here made
+	// the continuation look like the long-lived chat, so the 90-minute span
+	// of the first weather PDF refused the resumed one.
+	for _, key := range []string{"bot_id", "bot_phase", "bot_origin", "bot_desktop", "computer_helper", "bot_task", "schedule_task"} {
+		if v := strings.TrimSpace(run.Metadata[key]); v != "" {
+			meta[key] = v
+		}
+	}
+	if strings.TrimSpace(instLive.Metadata["hub_bot_desktop"]) == "none" {
+		meta["bot_desktop"] = "none"
+		delete(meta, "computer_helper")
+	}
+	if text := clipTaskRequest(restartPersonAsk(s, run)); text != "" {
+		meta["task_request"] = text
+	}
 	continuing := run
-	_, err = s.PostMessageAsync(ctx, p, cp.InstanceID, cp.SessionID, PostMessageInput{
+	in := PostMessageInput{
 		Content:   restartNoticeContinue,
 		Metadata:  meta,
 		resumeRun: &continuing,
-	})
+	}
+	if s.ResumeExecutionHooks != nil {
+		in.PrepareExecution, in.FinishExecution = s.ResumeExecutionHooks(p, instLive, restartPersonAsk(s, run))
+	}
+	var release func()
+	if s.ResumeHold != nil {
+		release = s.ResumeHold(run)
+	}
+	if release != nil {
+		prev := in.FinishExecution
+		in.FinishExecution = func(ctx context.Context, finished *Run, msg *Message, err error) {
+			if prev != nil {
+				prev(ctx, finished, msg, err)
+			}
+			release()
+		}
+	}
+	_, err = s.PostMessageAsync(ctx, p, cp.InstanceID, cp.SessionID, in)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		log.Printf("[agentservice] resume run %s: %v", run.ID, err)
 		s.endInterrupted(p, run, restartNoticeStopped)
 		return false

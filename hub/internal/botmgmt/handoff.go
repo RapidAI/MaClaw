@@ -157,13 +157,30 @@ func (s *Service) ProxyDesktopHandoff(w http.ResponseWriter, r *http.Request, to
 	if view.base != "" {
 		upstreamPath = strings.TrimRight(view.base, "/") + "/" + rest
 	}
+	var transport http.RoundTripper
+	viaNode := strings.HasSuffix(strings.ToLower(target.Hostname()), ".node.invalid")
+	if viaNode {
+		if s.NodeTransport != nil {
+			transport = s.NodeTransport(target.Host)
+		}
+		if transport == nil {
+			http.Error(w, "desktop handoff unavailable", http.StatusBadGateway)
+			return
+		}
+	}
 	proxy := &httputil.ReverseProxy{
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.URL.Path = upstreamPath
 			pr.Out.URL.RawPath = ""
 			pr.Out.URL.RawQuery = r.URL.RawQuery
 			pr.Out.Host = target.Host
+			if viaNode {
+				// The node runs on someone else's machine. Hub cookies
+				// are the viewer's Hub session, not the desktop's.
+				pr.Out.Header.Del("Cookie")
+			}
 			// The published noVNC port requires the Docker-side gate token.
 			// The person's browser cannot present it; Hub carries it here.
 			if view.bearer != "" {

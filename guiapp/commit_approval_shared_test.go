@@ -248,6 +248,139 @@ func TestSharedCommitAskStaysOnTheCardForIMTurns(t *testing.T) {
 	})
 }
 
+// A goal continuation is the same desktop task tab. 完全控制 on that tab must
+// let the paused send_file run. Leaving the tier on the platform string made
+// the continuation ask again, and the resumed model turn never repeated the call.
+func TestDesktopGoalCommitFullControlRunsSendFileWithoutACard(t *testing.T) {
+	for _, platform := range []string{"goal-continuation", sessionRoundContinuationPlatform} {
+		t.Run(platform, func(t *testing.T) {
+			app := testAppForCommitApproval(t)
+			handler := &IMMessageHandler{app: app}
+			userID := "desktop-user:" + t.TempDir()
+			handler.setStickyCodingSessionPermissionMode(userID, "full", "", "")
+			t.Cleanup(func() { handler.clearStickyCodingWorkbenchMemory(userID) })
+
+			loopCtx := &LoopContext{CancelC: make(chan struct{})}
+			t.Cleanup(func() { closeLoopCtx(loopCtx) })
+			cb := &sharedAgentLoopCallbacks{
+				handler:  handler,
+				loopCtx:  loopCtx,
+				userID:   userID,
+				platform: platform,
+			}
+			t.Cleanup(func() { forgetCommitLedger(cb.CommitTaskKey()) })
+
+			if !cb.CommitFullControlGranted() {
+				t.Fatal("continuation did not read the task tab's 完全控制 tier")
+			}
+			res, blocked := agent.ApplyCommitGate(cb, "send_file", `{"path":"C:\\tasks\\beijing_weather.pdf"}`)
+			if blocked || res.Result != "" {
+				t.Fatalf("full-control send_file result=%+v blocked=%v", res, blocked)
+			}
+		})
+	}
+}
+
+// Without 完全控制 the continuation still resolves the call in place. The
+// allow runs send_file with the arguments already supplied, and the same
+// shape in this turn does not open a second dialog.
+func TestDesktopGoalCommitAskRunsTheCallThroughTheDesktopDialog(t *testing.T) {
+	for _, platform := range []string{"goal-continuation", sessionRoundContinuationPlatform} {
+		t.Run(platform, func(t *testing.T) {
+			app := testAppForCommitApproval(t)
+			handler := &IMMessageHandler{app: app}
+			previous := desktopApprovalDialogAvailable
+			desktopApprovalDialogAvailable = func(*App) bool { return true }
+			t.Cleanup(func() { desktopApprovalDialogAvailable = previous })
+
+			loopCtx := &LoopContext{CancelC: make(chan struct{})}
+			t.Cleanup(func() { closeLoopCtx(loopCtx) })
+			cb := &sharedAgentLoopCallbacks{
+				handler:  handler,
+				loopCtx:  loopCtx,
+				userID:   "desktop-user:" + t.TempDir(),
+				platform: platform,
+			}
+			t.Cleanup(func() { forgetCommitLedger(cb.CommitTaskKey()) })
+			t.Cleanup(func() {
+				pendingScopeApprovals.Range(func(key, value any) bool {
+					if pending, ok := value.(*pendingScopeApproval); ok && pending.Request.Kind == commitShapeApprovalKind {
+						pendingScopeApprovals.Delete(key)
+					}
+					return true
+				})
+			})
+
+			first := make(chan commitGateResult, 1)
+			go func() {
+				res, blocked := agent.ApplyCommitGate(cb, "send_file", `{"path":"C:\\tasks\\beijing_weather.pdf"}`)
+				first <- commitGateResult{res, blocked}
+			}()
+			ResolveScopeApproval(waitCommitShapePending(t, cb.CommitWorkspaceRoot()), "本任务内允许")
+			if got := <-first; got.blocked || got.res.Result != "" {
+				t.Fatalf("approved send_file result=%+v blocked=%v", got.res, got.blocked)
+			}
+			if again, blocked := agent.ApplyCommitGate(cb, "send_file", `{"path":"C:\\tasks\\other.pdf"}`); blocked {
+				t.Fatalf("same shape asked again: %+v", again)
+			}
+		})
+	}
+}
+
+// An IM user's goal wave must not inherit the desktop dialog or the global
+// full-access switch. The person answers on that channel's card.
+func TestDesktopGoalCommitOfAnIMUserStaysOnTheCard(t *testing.T) {
+	app := testAppForCommitApproval(t)
+	handler := &IMMessageHandler{app: app}
+	userID := "weixin-user"
+	handler.setStickyCodingSessionPermissionMode(userID, "full", "", "")
+	t.Cleanup(func() { handler.clearStickyCodingWorkbenchMemory(userID) })
+	previous := desktopApprovalDialogAvailable
+	desktopApprovalDialogAvailable = func(*App) bool { return true }
+	t.Cleanup(func() { desktopApprovalDialogAvailable = previous })
+
+	loopCtx := &LoopContext{CancelC: make(chan struct{})}
+	t.Cleanup(func() { closeLoopCtx(loopCtx) })
+	cb := &sharedAgentLoopCallbacks{
+		handler:  handler,
+		loopCtx:  loopCtx,
+		userID:   userID,
+		platform: "goal-continuation",
+	}
+	t.Cleanup(func() { forgetCommitLedger(cb.CommitTaskKey()) })
+	t.Cleanup(func() {
+		pendingScopeApprovals.Range(func(key, value any) bool {
+			if pending, ok := value.(*pendingScopeApproval); ok && pending.Request.Kind == commitShapeApprovalKind {
+				pendingScopeApprovals.Delete(key)
+			}
+			return true
+		})
+	})
+
+	if cb.CommitFullControlGranted() {
+		t.Fatal("IM goal continuation inherited 完全控制")
+	}
+	done := make(chan commitGateResult, 1)
+	go func() {
+		res, blocked := agent.ApplyCommitGate(cb, "send_file", `{"path":"C:\\tasks\\beijing_weather.pdf"}`)
+		done <- commitGateResult{res, blocked}
+	}()
+	select {
+	case got := <-done:
+		if !got.blocked || !agent.IsAskUserResult(got.res.Result) {
+			t.Fatalf("IM goal ask result=%+v blocked=%v", got.res, got.blocked)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("IM goal continuation blocked on the desktop dialog")
+	}
+	pendingScopeApprovals.Range(func(key, value any) bool {
+		if pending, ok := value.(*pendingScopeApproval); ok && pending.Request.Kind == commitShapeApprovalKind {
+			t.Fatalf("IM goal continuation opened a desktop dialog: %+v", pending.Request)
+		}
+		return true
+	})
+}
+
 // A reloaded panel adopts whatever is still waiting. The list is FIFO, reports
 // the human-call shape without a countdown, and drops an answered request.
 func TestListPendingScopeApprovalsReportsOutstandingRequests(t *testing.T) {

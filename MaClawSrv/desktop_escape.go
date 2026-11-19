@@ -27,7 +27,7 @@ import (
 // listed here. A restart must not run those again without a state check.
 var desktopObserveActions = map[string]bool{
 	"screenshot": true, "probe": true, "file_read": true, "file_list": true,
-	"skill_list": true, "check_inbox": true, "wait": true, "speculate": true,
+	"skill_list": true, "cap_list": true, "cap_skill": true, "check_inbox": true, "wait": true, "speculate": true,
 	"app_list": true, "job_status": true, "job_list": true, "app_probe": true,
 	"clipboard_get": true, "window_list": true, "screen_info": true,
 	"list_assignments": true, "shop_readback": true, "shop_compare_offers": true,

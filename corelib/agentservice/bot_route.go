@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 // Server-side routing of a new message to one of a bot's conversations.
@@ -21,6 +23,9 @@ type BotRouteInput struct {
 	// StickySession is the conversation Hub's sticky window holds, if any.
 	// It wins over content; this call then only names it.
 	StickySession string `json:"sticky_session,omitempty"`
+	// NoDesktop marks a bot created with desktop_mode=none, so the routing
+	// prompt does not describe a desktop assistant the bot is not.
+	NoDesktop bool `json:"no_desktop,omitempty"`
 }
 
 // BotRoute is the decision. Session "" or the bot id means main.
@@ -49,14 +54,28 @@ const botRouteSystem = `You route a user's new message for a desktop AI assistan
 Choose a task only when the message clearly refers to that task's subject or result. Greetings, general questions and new jobs are "new". If two tasks fit or you are unsure, answer "new".
 Return JSON only: {"task": <task number, or 0 for new>, "confidence": <0..1>, "reason": "<short>"}`
 
+// botRouteNoDesktopClause names the real surface where the shared prompt
+// says "a desktop AI assistant".
+const botRouteNoDesktopClause = "\n\nThis assistant has no computer and no desktop. Wherever this prompt says \"a desktop AI assistant\", it means a chat assistant that answers, searches, fetches pages, uses ssh, knowledge, mailbox, and timers."
+
+func botRouteSystemFor(noDesktop bool) string {
+	if !noDesktop {
+		return botRouteSystem
+	}
+	return botRouteSystem + botRouteNoDesktopClause
+}
+
 // RouteBotMessage decides which of the bot's conversations a message with
 // no explicit hint belongs to.
 func (s *Service) RouteBotMessage(ctx context.Context, p Principal, instanceID string, in BotRouteInput, classify BotRouteClassifier) (BotRoute, error) {
 	bot := strings.TrimSpace(in.BotID)
 	main := BotRoute{Session: bot, Via: "main"}
-	if _, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID); err != nil {
+	inst, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID)
+	if err != nil {
 		return BotRoute{}, err
 	}
+	noDesktop := in.NoDesktop ||
+		strings.TrimSpace(inst.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
 	if bot == "" || botOfClientSessionKey(bot) != bot {
 		return BotRoute{}, ErrBotThreadsBadBot
 	}
@@ -95,7 +114,7 @@ func (s *Service) RouteBotMessage(ctx context.Context, p Principal, instanceID s
 	}
 	done := make(chan answer, 1)
 	go func() {
-		raw, err := classify(cctx, botRouteSystem, user)
+		raw, err := classify(cctx, botRouteSystemFor(noDesktop), user)
 		done <- answer{raw, err}
 	}()
 	var got answer

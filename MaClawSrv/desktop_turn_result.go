@@ -16,11 +16,12 @@ import (
 // handoff cannot ride on that response. A later read of the run returns them.
 // The picture stays in memory: the stored message is text only.
 type desktopTurnResult struct {
-	Ready     bool
-	Handoff   bool
-	Attention string
-	Message   *agentservice.Message
-	StoredAt  time.Time
+	Ready      bool
+	Handoff    bool
+	Attention  string
+	PersistErr string
+	Message    *agentservice.Message
+	StoredAt   time.Time
 }
 
 const desktopTurnResultTTL = 6 * time.Hour
@@ -82,13 +83,32 @@ func cleanupDesktopTurnResults(now time.Time) {
 	})
 }
 
-func loadDesktopTurnResult(runID string) (desktopTurnResult, bool) {
+func loadDesktopTurnAttempt(runID string) (desktopTurnResult, bool) {
 	value, ok := desktopTurnResults.Load(runID)
 	if !ok {
 		return desktopTurnResult{}, false
 	}
 	item, _ := value.(desktopTurnResult)
-	return item, item.Ready
+	return item, true
+}
+
+func loadDesktopTurnResult(runID string) (desktopTurnResult, bool) {
+	item, ok := loadDesktopTurnAttempt(runID)
+	if !ok || !item.Ready {
+		return desktopTurnResult{}, false
+	}
+	return item, true
+}
+
+func storeDesktopTurnFailure(run *agentservice.Run, err error) {
+	if run == nil || run.ID == "" || err == nil {
+		return
+	}
+	desktopTurnResults.Store(run.ID, desktopTurnResult{
+		Ready:      false,
+		PersistErr: err.Error(),
+		StoredAt:   time.Now(),
+	})
 }
 
 // desktopRunAPI is a run plus the desktop reply captured after admission.
@@ -108,6 +128,7 @@ type desktopRunAPI struct {
 	// StatusLine is the live status for the bot's status area: run id,
 	// step, latest progress, background job and its next check.
 	StatusLine    string   `json:"status_line,omitempty"`
+	ReceiptError  string   `json:"receipt_error,omitempty"`
 	Process       []string `json:"process,omitempty"`
 	ProgressWhere string   `json:"progress_where,omitempty"`
 	ProgressNext  string   `json:"progress_next,omitempty"`
@@ -119,6 +140,9 @@ func desktopRunAPIBody(dataRoot string, run *agentservice.Run, stored *agentserv
 	sanitized := sanitizeRunPtrForAPI(dataRoot, run)
 	if run == nil {
 		return sanitized
+	}
+	if pending, found := loadDesktopTurnAttempt(run.ID); found && !pending.Ready {
+		return desktopRunAPI{Run: sanitized, DesktopReady: false, ReceiptError: pending.PersistErr}
 	}
 	activity := loadDesktopActivity(run.ID)
 	queue := desktopScreenQueue(run.ID)
@@ -142,7 +166,7 @@ func desktopRunAPIBody(dataRoot string, run *agentservice.Run, stored *agentserv
 			}
 		}
 	}
-	if !ok && stored != nil && desktopTerminalRun(run.Status) {
+	if !ok && stored != nil && desktopTerminalRun(run.Status) && receiptOutcomesAgree(run, stored) {
 		body := desktopRunAPI{Run: sanitized, Activity: activity, ScreenQueue: queue, StatusLine: status, DesktopReady: true, Message: stored}
 		if hasProgress {
 			body.ProgressWhere = where
@@ -165,11 +189,32 @@ func desktopRunAPIBody(dataRoot string, run *agentservice.Run, stored *agentserv
 	if !ok {
 		return body
 	}
+	if !receiptOutcomesAgree(run, result.Message) {
+		return body
+	}
 	body.DesktopReady = true
 	body.DesktopHandoff = result.Handoff
 	body.AttentionReason = result.Attention
 	body.Message = result.Message
 	return body
+}
+
+// receiptOutcomesAgree reports whether the run row and the reply name the
+// same task outcome. A read that crosses the receipt write must not publish
+// one new half beside the other old half.
+func receiptOutcomesAgree(run *agentservice.Run, msg *agentservice.Message) bool {
+	if run == nil || msg == nil {
+		return false
+	}
+	runOutcome := ""
+	if run.Metadata != nil {
+		runOutcome = strings.TrimSpace(run.Metadata[agentservice.TaskOutcomeKey])
+	}
+	msgOutcome := ""
+	if msg.Metadata != nil {
+		msgOutcome = strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey])
+	}
+	return runOutcome == msgOutcome
 }
 
 func restartNoticeOf(run *agentservice.Run) string {
@@ -189,8 +234,9 @@ func desktopTerminalRun(status agentservice.RunStatus) bool {
 }
 
 // desktopStoredTerminalMessage is the assistant reply already stored for a
-// finished run. The in-memory turn result does not survive a process
-// restart, and Hub delivers a sentence only when the run read carries one.
+// finished run. A receipt still being written in this process is not
+// served. A pending receipt whose writer is gone (a restart) is finalized
+// as unverified instead of being treated as the pre-receipt outcome.
 func desktopStoredTerminalMessage(ctx context.Context, svc *agentservice.Service, p agentservice.Principal, run *agentservice.Run) *agentservice.Message {
 	if svc == nil || run == nil || strings.TrimSpace(run.AssistantMessageID) == "" {
 		return nil
@@ -198,11 +244,55 @@ func desktopStoredTerminalMessage(ctx context.Context, svc *agentservice.Service
 	if _, ok := loadDesktopTurnResult(run.ID); ok {
 		return nil
 	}
+	if pending, found := loadDesktopTurnAttempt(run.ID); found && !pending.Ready {
+		return nil
+	}
 	if !desktopTerminalRun(run.Status) {
 		return nil
 	}
+	if agentservice.RunReceiptInFlight(run.ID) {
+		return nil
+	}
+	if run.Metadata != nil && strings.TrimSpace(run.Metadata[agentservice.ReceiptPendingKey]) == "1" {
+		return desktopAbandonPendingReceipt(ctx, svc, p, run)
+	}
 	msg, err := svc.GetMessage(ctx, p, run.InstanceID, run.SessionID, run.AssistantMessageID)
 	if err != nil {
+		return nil
+	}
+	return msg
+}
+
+// desktopAbandonPendingReceipt finalizes a receipt whose writer is gone.
+// A pre-receipt "done" becomes unverified. An outcome that was already
+// not done is kept. The pending flag is cleared with that write.
+func desktopAbandonPendingReceipt(ctx context.Context, svc *agentservice.Service, p agentservice.Principal, run *agentservice.Run) *agentservice.Message {
+	msg, err := svc.GetMessage(ctx, p, run.InstanceID, run.SessionID, run.AssistantMessageID)
+	if err != nil || msg == nil {
+		return nil
+	}
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	outcome := strings.TrimSpace(msg.Metadata[agentservice.TaskOutcomeKey])
+	switch outcome {
+	case agentservice.TaskOutcomePartial, agentservice.TaskOutcomeBlocked, agentservice.TaskOutcomeNotSubmitted, agentservice.TaskOutcomeUnconfirmed, agentservice.TaskOutcomeUnverified, agentservice.TaskOutcomeAwaitingUser, agentservice.TaskOutcomeRunning:
+	default:
+		outcome = agentservice.TaskOutcomeUnverified
+		msg.Metadata[agentservice.TaskOutcomeKey] = outcome
+		if !strings.Contains(msg.Content, desktopUnverifiedSentence) {
+			if strings.TrimSpace(msg.Content) == "" {
+				msg.Content = desktopUnverifiedSentence
+			} else {
+				msg.Content = desktopUnverifiedSentence + "\n" + msg.Content
+			}
+		}
+		if !strings.Contains(msg.Metadata["send_to_user"], desktopUnverifiedSentence) {
+			msg.Metadata["send_to_user"] = strings.TrimSpace(msg.Content)
+			msg.Metadata["send_to_user_kind"] = "report"
+		}
+	}
+	if err := svc.PersistRunReceipt(run, msg); err != nil {
 		return nil
 	}
 	return msg

@@ -3,6 +3,7 @@ package guiapp
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -17,6 +18,8 @@ type BotMemoryEntry struct {
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
 	AccessCount int      `json:"access_count"`
+	Status      string   `json:"status"`
+	InvalidAt   string   `json:"invalid_at,omitempty"`
 }
 
 func normalizeBotMemoryCategory(category string) memory.Category {
@@ -28,6 +31,10 @@ func normalizeBotMemoryCategory(category string) memory.Category {
 }
 
 func projectBotMemory(botID string, entry memory.Entry) BotMemoryEntry {
+	invalidAt := ""
+	if entry.InvalidAt != nil {
+		invalidAt = entry.InvalidAt.Format(time.RFC3339Nano)
+	}
 	return BotMemoryEntry{
 		ID:          entry.ID,
 		BotID:       botID,
@@ -37,6 +44,8 @@ func projectBotMemory(botID string, entry memory.Entry) BotMemoryEntry {
 		CreatedAt:   entry.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:   entry.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		AccessCount: entry.AccessCount,
+		Status:      string(entry.Status),
+		InvalidAt:   invalidAt,
 	}
 }
 
@@ -93,6 +102,36 @@ func (a *App) UpdateBotMemory(botID, id, content, category string, tags []string
 	}
 	if err := runtime.Store.UpdateBotMemory(desktopUserID, strings.TrimSpace(botID), id, content, string(normalizeBotMemoryCategory(category)), tags); err != nil {
 		return err
+	}
+	return nil
+}
+
+// UpdateBotMemoryWithVersion applies a bot edit only when the opened version is still current.
+func (a *App) UpdateBotMemoryWithVersion(botID, id, content, category string, tags []string, expectedUpdatedAt string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "bot_id": botID, "id": id, "category": category, "tags": tags}); err != nil {
+		return err
+	}
+	expectedAt, err := time.Parse(time.RFC3339Nano, expectedUpdatedAt)
+	if err != nil {
+		return fmt.Errorf("invalid memory version: %w", err)
+	}
+	a.ensureInteractionInfra()
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	botID = strings.TrimSpace(botID)
+	previous := memoryEntriesByIDsForStore(runtime.Store, id)
+	if len(previous) != 1 || !previous[0].UpdatedAt.Equal(expectedAt) {
+		return fmt.Errorf("memory changed since it was opened; reload and retry")
+	}
+	applied, err := runtime.Store.UpdateBotMemoryIfUnchanged(desktopUserID, botID, id, content, string(normalizeBotMemoryCategory(category)), tags, previous[0])
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("memory changed during save; reload and retry")
 	}
 	return nil
 }

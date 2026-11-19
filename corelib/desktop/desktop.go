@@ -795,8 +795,10 @@ func ValidGateToken(token string) bool {
 }
 
 var (
-	imagePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}$`)
-	memoryPattern    = regexp.MustCompile(`(?i)^[1-9][0-9]{0,6}([kmg]i?b?)?$`)
+	imagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,200}$`)
+	// The unit is required. A bare number is bytes to Docker, so "4" would be a
+	// 4-byte container rather than 4G.
+	memoryPattern    = regexp.MustCompile(`(?i)^[1-9][0-9]{0,6}[kmg]i?b?$`)
 	userPattern      = regexp.MustCompile(`^[A-Za-z0-9_.:@+-]{1,200}$`)
 	userKeyPattern   = regexp.MustCompile(`^[0-9a-f]{16}$`)
 	gateTokenPattern = regexp.MustCompile(`^[0-9a-f]{16,64}$`)

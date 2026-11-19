@@ -708,3 +708,20 @@ button{white-space:nowrap}
 
 /* Toast: frosted white so it reads above any panel. */
 .toast{background:rgba(255,255,255,.96);backdrop-filter:saturate(160%) blur(10px)}
+
+.tenant-merge-flow{display:grid;gap:8px;margin-bottom:12px}
+.tenant-merge-node{display:grid;gap:4px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#f8fafc}
+.tenant-merge-node>span{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:#64748b}
+.tenant-merge-node b{font-size:14px;color:#243244}
+.tenant-merge-node code{font-size:12px;color:#667386}
+.tenant-merge-node select{height:38px}
+.tenant-merge-arrow{text-align:center;font-size:18px;color:#94a3b8;line-height:1}
+.tenant-merge-warn{padding:8px 10px;border:1px solid #fecaca;border-radius:8px;background:#fef2f2;color:#b91c1c;font-size:12px;margin-bottom:12px;line-height:1.5}
+.tenant-merge-result{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px;background:#fbfcfe}
+.tenant-merge-result-title{font-size:12px;font-weight:800;color:#4f5969;margin-bottom:8px}
+.tenant-merge-stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.tenant-merge-table{width:100%;border-collapse:collapse;font-size:12px}
+.tenant-merge-table th{text-align:left;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#64748b;padding:4px 6px;border-bottom:1px solid var(--line)}
+.tenant-merge-table td{padding:4px 6px;border-bottom:1px solid #eef2f7;color:#243244}
+.tenant-merge-table td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.tenant-merge-warnings{margin-top:8px;font-size:12px;color:#b45309;line-height:1.5}

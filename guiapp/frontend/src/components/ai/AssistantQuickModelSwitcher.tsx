@@ -36,6 +36,8 @@ export type AssistantQuickModelSwitcherProps = {
     providerSelectionPending?: boolean;
     profileSavePending?: boolean;
     onOpenLLMSettings?: () => void;
+    /** Trailing action in the provider list; opens LLM provider management. */
+    onAddCustomModel?: () => void;
     chipTestId?: string;
 };
 
@@ -57,6 +59,7 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
     providerSelectionPending = false,
     profileSavePending = false,
     onOpenLLMSettings,
+    onAddCustomModel,
     chipTestId = "qs-model-chip",
 }: AssistantQuickModelSwitcherProps) {
     const tr = useCallback(
@@ -167,6 +170,15 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
         onSwitchModel?.(next);
     }, [closeModelMenu, currentModel, onSwitchModel, profileSavePending]);
 
+    // Not a selection: the menu closes and the host navigates away (LLM
+    // settings → provider management), so any staged provider draft is dropped
+    // exactly like the unmount cleanup would.
+    const handleAddCustomModel = useCallback(() => {
+        if (profileSavePending) return;
+        closeModelMenu();
+        onAddCustomModel?.();
+    }, [closeModelMenu, onAddCustomModel, profileSavePending]);
+
     const modelChipStyle = useMemo((): CSSProperties => ({
         display: "inline-flex",
         alignItems: "center",
@@ -241,6 +253,10 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
                     lang={lang}
                     currentModel={currentModel}
                     modelsLoading={modelsLoading}
+                    addCustomModelLabel={tr("Add custom model", "添加自定义模型", "新增自訂模型")}
+                    // Hosts without a deep link must see no entry at all, so the
+                    // wrapper handler is forwarded only when one exists.
+                    onAddCustomModel={onAddCustomModel ? handleAddCustomModel : undefined}
                     onSelectProvider={handleSelectProvider}
                     onSelectModel={handleSelectModel}
                     onClose={closeModelMenu}

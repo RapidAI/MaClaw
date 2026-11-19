@@ -1,9 +1,12 @@
 package desktopd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,6 +24,7 @@ import (
 // the same file-backed sources the forward proxy and the desktop service use.
 func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, egress *EgressSource) http.Handler {
 	token = strings.TrimSpace(token)
+	LoadPanelResources(stateDir)
 	admin := newAdminServer(svc, token, stateDir, adminPage, proxyKeys, egress)
 	// /v1/* accepts the primary DESKTOPD_TOKEN and every key issued through
 	// the admin panel.
@@ -38,6 +42,10 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy": SnapshotProxyMetrics()})
 	})
+	if svc != nil && svc.HubLink != nil {
+		svc.HubLink.Keys = admin
+		registerHubLinkRoutes(mux, svc.HubLink, authOK)
+	}
 	mux.HandleFunc("POST /v1/desktops/memory", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -146,6 +154,27 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			return
 		}
 		writeJSON(w, http.StatusOK, session)
+	})
+	// POST /v1/desktops/nudge turns a running screen's picture back on.
+	// It does not start a stopped screen. A stopped screen stays a /view
+	// miss so the caller can offer 唤醒.
+	mux.HandleFunc("POST /v1/desktops/nudge", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+		}
+		if !decodeBody(w, r, &in) {
+			return
+		}
+		if err := svc.NudgeSession(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID}); err != nil {
+			writeServiceErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 	// POST /v1/desktops/proxy-mode switches one user's desktop egress mode.
 	// It takes effect on the next connection; open tunnels of that desktop
@@ -554,13 +583,70 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 	// Dispatch before the mux: ServeMux redirects a ".." path to its cleaned
 	// form, which would turn a climb into some other user's tunnel.
 	tunnel := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL != nil && strings.HasPrefix(r.URL.Path, viewerPrefix) {
+			svc.serveViewer(w, r)
+			return
+		}
+		if r.URL != nil && strings.HasPrefix(r.URL.Path, localPrefix) {
+			svc.serveLocal(w, r)
+			return
+		}
 		if r.URL != nil && strings.HasPrefix(r.URL.Path, tunnelPrefix) {
 			svc.serveTunnel(w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
 	})
-	return withBotID(tunnel)
+	return withBotID(guardDesktopTenant(svc, tunnel))
+}
+
+// guardDesktopTenant is the local check from the node design: once this
+// desktop has enrolled, a /v1 request that names a different tenant is
+// refused. A request that does not name a tenant, and a desktop that has
+// not enrolled, keep the previous behaviour.
+func guardDesktopTenant(svc *Service, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bound := ""
+		if svc != nil && svc.HubLink != nil {
+			bound = svc.HubLink.BoundTenant()
+		}
+		if bound == "" || r.URL == nil || !strings.HasPrefix(r.URL.Path, "/v1/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		query, body := requestTenantIDs(r)
+		if (query != "" && query != bound) || (body != "" && body != bound) {
+			log.Printf("[desktopd] rejected foreign tenant path=%s bound=%s query=%s body_tenant=%s", r.URL.Path, bound, query, body)
+			writeErr(w, http.StatusForbidden, "this desktop is registered to another tenant")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestTenantIDs(r *http.Request) (query, body string) {
+	if r == nil || r.URL == nil {
+		return "", ""
+	}
+	query = strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if r.Body == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return query, ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if r.Body != nil {
+		_ = r.Body.Close()
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	if err != nil || len(raw) == 0 {
+		return query, ""
+	}
+	var peek struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if json.Unmarshal(raw, &peek) != nil {
+		return query, ""
+	}
+	return query, strings.TrimSpace(peek.TenantID)
 }
 
 // decodeBody caps request bodies: the desktop API only ever carries small
@@ -664,7 +750,7 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 }
 
 // shotOptionsFromQuery reads screenshot options from GET parameters:
-// max_width, max_height, format, quality, cursor, marks, and region=x,y,w,h.
+// max_width, max_height, format, quality, cursor, marks, window, and region=x,y,w,h.
 func shotOptionsFromQuery(query url.Values) (desktop.ShotOptions, error) {
 	var opts desktop.ShotOptions
 	number := func(key string) (int, error) {
@@ -689,6 +775,7 @@ func shotOptionsFromQuery(query url.Values) (desktop.ShotOptions, error) {
 		return opts, err
 	}
 	opts.Format = query.Get("format")
+	opts.Window = query.Get("window")
 	opts.Cursor = query.Get("cursor") == "1" || query.Get("cursor") == "true"
 	opts.Marks = query.Get("marks") == "1" || query.Get("marks") == "true"
 	if raw := strings.TrimSpace(query.Get("region")); raw != "" {

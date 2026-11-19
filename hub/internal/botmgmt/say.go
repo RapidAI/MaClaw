@@ -133,6 +133,10 @@ func (s *Service) sayWith(ctx context.Context, tenantID, userID, from, room, tex
 	if !botOwned(rec.Bots, userID, from) {
 		return BotCrossNote{}, ErrNotFound
 	}
+	// A deleted id is not a speaker. Drop its lines before the repeat check
+	// and the cap, so a new bot that reused the display name is not told
+	// "already said" and an older live note is not evicted to make room.
+	rec.CrossNotes = dropOrphanSays(rec.CrossNotes, rec, userID)
 	target := "human"
 	if room == "" {
 		if a := openWorkerAssignment(rec.CrossNotes, userID, from, s.now()); a != nil {
@@ -186,12 +190,52 @@ func (s *Service) sayWith(ctx context.Context, tenantID, userID, from, room, tex
 		answered = RoomAnsweredBy(rec.CrossNotes, userID, target)
 	}
 	rec.CrossNotes = append(rec.CrossNotes, note)
-	rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+	rec.CrossNotes = capCrossNotes(rec.CrossNotes, rec, userID)
 	if err := s.save(ctx, tenantID, rec); err != nil {
 		return BotCrossNote{}, err
 	}
 	note.AnsweredBy = answered
 	return note, nil
+}
+
+// noteLeftByGoneBot is a note that names a bot id this person no longer has.
+// A say belongs to its speaker. A delegate or result belongs to the bot it
+// was sent to. Reports and the person's room messages stay.
+func noteLeftByGoneBot(rec record, userID string, n BotCrossNote) bool {
+	if n.Owner != userID {
+		return false
+	}
+	switch n.Kind {
+	case "say":
+		return strings.TrimSpace(n.From) != "human" && !participantOwned(rec, userID, n.From)
+	case "delegate", "result":
+		target := strings.TrimSpace(n.Target)
+		return target != "" && !participantOwned(rec, userID, target)
+	default:
+		return false
+	}
+}
+
+// dropOrphanSays removes notes left by a bot id that is gone. "Bot 1" is a
+// display name; identity is the id. The same slice is returned when nothing changes.
+func dropOrphanSays(notes []BotCrossNote, rec record, userID string) []BotCrossNote {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || len(notes) == 0 {
+		return notes
+	}
+	dropped := false
+	out := make([]BotCrossNote, 0, len(notes))
+	for _, n := range notes {
+		if noteLeftByGoneBot(rec, userID, n) {
+			dropped = true
+			continue
+		}
+		out = append(out, n)
+	}
+	if !dropped {
+		return notes
+	}
+	return out
 }
 
 // ListSaid returns what bots told the person (room empty) or said in a
@@ -217,9 +261,16 @@ func (s *Service) ListSaid(ctx context.Context, tenantID, userID, room string) (
 	}
 	out := []BotCrossNote{}
 	for _, n := range pruneCrossNotes(rec.CrossNotes, s.now()) {
-		if n.Owner == userID && n.Target == target && (n.Kind == "say" || n.Kind == "room") {
-			out = append(out, n)
+		if n.Owner != userID || n.Target != target || (n.Kind != "say" && n.Kind != "room") {
+			continue
 		}
+		// A say belongs to the speaker's bot id. "Bot 1" is only the name the
+		// person sees; a new bot that reuses that name has a new id and does
+		// not inherit a deleted id's lines (2026-11-14).
+		if n.Kind == "say" && n.From != "human" && !participantOwned(rec, userID, n.From) {
+			continue
+		}
+		out = append(out, n)
 	}
 	return out, nil
 }

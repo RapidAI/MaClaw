@@ -19,18 +19,51 @@ func desktopReplyWithLink(runID, content string) string {
 		pend := desktopTaskSitesPending(runID)
 		recs := desktopPublishRunTake(runID)
 		if len(recs) == 0 {
-			return content
+			return desktopReplyKeep(content)
 		}
 		return desktopReplyMulti(base, recs, pend, content)
 	}
 	rec, ok := desktopPublishRecordTake(runID)
 	if !ok {
-		return content
+		return desktopReplyKeep(content)
 	}
 	if r := desktopReplyTemplate(rec); r != "" {
 		return r
 	}
-	return content
+	if rec.State == browser.PublishDraftOnly {
+		// The page was still the editor. The model's own "已发布" plus that
+		// URL is how CSDN's editor homepage was reported as the article.
+		return "还在编辑器里，没有发布成功页，这篇还没发出去"
+	}
+	return desktopReplyKeep(content)
+}
+
+// desktopReplyKeep leaves an ordinary explanation alone. A reply that calls
+// a creator-console or editor URL published is not sent on: that page is
+// not an article, and there may be no publish record to replace the text.
+func desktopReplyKeep(content string) string {
+	if !desktopClaimsFalseLink(content) {
+		return content
+	}
+	if cleaned := desktopStripConsoleURL(content); cleaned != "" {
+		return cleaned
+	}
+	return "还在编辑器里，没有发布成功页，这篇还没发出去"
+}
+
+// desktopClaimsFalseLink is the false report "已发布" plus an editor or
+// creator-console URL. A login line that merely contains 链接 and a
+// passport address is not one: stripping it hid the sign-in page.
+func desktopClaimsFalseLink(content string) bool {
+	if !strings.Contains(content, "已发布") {
+		return false
+	}
+	for _, u := range desktopURLRe.FindAllString(content, -1) {
+		if browser.PublicPostURL(u) == "" || browser.PublishURLIsBareOrigin(u) {
+			return true
+		}
+	}
+	return false
 }
 
 // desktopReplyMulti is the reply of a run asked to post to several sites:
@@ -53,6 +86,10 @@ func desktopReplyMulti(base desktopTaskSpec, recs []desktopPublishRecord, pend [
 		line := ""
 		if ok {
 			line = desktopReplyTemplate(r)
+			if line == "" && r.State == browser.PublishDraftOnly {
+				failed = true
+				line = "还在编辑器里，没有发布成功页，这篇还没发出去"
+			}
 			if line == "" && r.Notice != "" {
 				line = "没发出去，页面提示：" + r.Notice
 			}
@@ -65,11 +102,44 @@ func desktopReplyMulti(base desktopTaskSpec, recs []desktopPublishRecord, pend [
 	}
 	out := strings.Join(lines, "\n")
 	if failed || len(open) > 0 {
-		if c := strings.TrimSpace(content); c != "" {
+		if c := desktopStripConsoleURL(content); c != "" {
 			out += "\n\n" + c
 		}
 	}
 	return out
+}
+
+// desktopStripConsoleURL drops creator-console and editor URLs from a reply.
+// A line that was only "已发布" plus that URL is dropped with them, so a
+// three-site answer cannot repeat https://editor.csdn.net/md/ under 没发出去.
+func desktopStripConsoleURL(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	var lines []string
+	for _, line := range strings.Split(content, "\n") {
+		// Only a line that claims the post is up can lose a console URL.
+		// The rest of the explanation, including a login address, stays.
+		if !strings.Contains(line, "已发布") && !strings.HasPrefix(strings.TrimSpace(line), "链接") {
+			lines = append(lines, line)
+			continue
+		}
+		line = desktopURLRe.ReplaceAllStringFunc(line, func(u string) string {
+			if browser.PublicPostURL(u) == "" || browser.PublishURLIsBareOrigin(u) {
+				return ""
+			}
+			return u
+		})
+		line = strings.TrimSpace(line)
+		line = strings.TrimRight(line, "：: ")
+		line = strings.TrimSpace(line)
+		if line == "" || line == "已发布" || line == "链接" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // desktopUnconfirmedReply opens the reply of a submit with no proof.
@@ -82,6 +152,20 @@ func desktopReplyTemplate(r desktopPublishRecord) string {
 	}
 	if i := strings.IndexAny(r.URL, "?#"); i > 0 {
 		r.URL = r.URL[:i]
+	}
+	// An editor or creator-console URL is not the article. Printing it as
+	// 链接 made CSDN's https://editor.csdn.net/md/ look published, and the
+	// run then stopped before Zhihu and Xiaohongshu.
+	if r.URL != "" {
+		pub := browser.PublicPostURL(r.URL)
+		if pub == "" || browser.PublishURLIsBareOrigin(pub) {
+			if r.PostID == "" && (r.State == browser.PublishLive || r.State == browser.PublishLiveIncomplete) {
+				return ""
+			}
+			r.URL = ""
+		} else {
+			r.URL = pub
+		}
 	}
 	earlier := ""
 	if r.Earlier {

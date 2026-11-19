@@ -178,12 +178,15 @@ func desktopHealTake(runID string) bool {
 	return true
 }
 
-// Whether this run's browser route currently works: the time of the last
-// step that reached the browser and of the last transport failure.
+// Whether this run's browser route currently works: the order of the last
+// step that reached the browser and of the last transport failure. A
+// monotonic sequence, not a clock: a failure and a success inside the same
+// coarse timer tick compare equal as times and would stay latched as down.
 var (
 	desktopRouteMu     sync.Mutex
-	desktopRouteOK     = map[string]time.Time{}
-	desktopRouteFailed = map[string]time.Time{}
+	desktopRouteSeq    int64
+	desktopRouteOK     = map[string]int64{}
+	desktopRouteFailed = map[string]int64{}
 )
 
 func desktopNoteRoute(runID, action string, err error) {
@@ -194,13 +197,14 @@ func desktopNoteRoute(runID, action string, err error) {
 	desktopRouteMu.Lock()
 	defer desktopRouteMu.Unlock()
 	if len(desktopRouteOK)+len(desktopRouteFailed) > 8192 {
-		desktopRouteOK, desktopRouteFailed = map[string]time.Time{}, map[string]time.Time{}
+		desktopRouteOK, desktopRouteFailed = map[string]int64{}, map[string]int64{}
 	}
+	desktopRouteSeq++
 	switch {
 	case err == nil && desktopReachesBrowser(action):
-		desktopRouteOK[runID] = time.Now()
+		desktopRouteOK[runID] = desktopRouteSeq
 	case desktopTransportFailure(err):
-		desktopRouteFailed[runID] = time.Now()
+		desktopRouteFailed[runID] = desktopRouteSeq
 	}
 }
 
@@ -210,7 +214,7 @@ func desktopRouteDown(runID string) bool {
 	desktopRouteMu.Lock()
 	defer desktopRouteMu.Unlock()
 	failed, f := desktopRouteFailed[strings.TrimSpace(runID)]
-	return f && !desktopRouteOK[strings.TrimSpace(runID)].After(failed)
+	return f && desktopRouteOK[strings.TrimSpace(runID)] <= failed
 }
 
 // desktopRouteDownNote replaces "the page holds content you entered" when

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,6 +30,60 @@ func botFileInlineMax() int {
 		return n << 10
 	}
 	return 1 << 20
+}
+
+// inboxBodyMax is the most bytes every GUI reads from one inbox file
+// response. A larger body is cut off, and the other machine reports that
+// MaClawSrv returned nothing.
+const inboxBodyMax = 1 << 20
+
+// inboxFileBodyLen is the size of the JSON Hub writes for an inline file:
+// name, mime, size, sha256 and base64 data, plus the trailing newline
+// json.Encoder adds. The sha256 is 64 hex characters.
+func inboxFileBodyLen(name, mime string, n int) int {
+	stub, err := json.Marshal(struct {
+		Name string `json:"name"`
+		MIME string `json:"mime"`
+		Size int    `json:"size"`
+		SHA  string `json:"sha256"`
+		Data string `json:"data"`
+	}{name, mime, n, strings.Repeat("0", 64), ""})
+	if err != nil {
+		return inboxBodyMax + 1
+	}
+	// The empty data value is two quotes. The base64 sits between them.
+	return len(stub) + base64.StdEncoding.EncodedLen(n) + 1
+}
+
+// saidFileFitsInbox reports whether this file's inline inbox response fits
+// in the body every GUI reads.
+func saidFileFitsInbox(name, mime string, n int) bool {
+	if n < 0 || n > botFileInlineMax() {
+		return false
+	}
+	return inboxFileBodyLen(name, mime, n) <= inboxBodyMax
+}
+
+// saidInlineRawMax is the largest raw file of this name and type whose
+// inline inbox response still fits. Anything larger is a store reference.
+func saidInlineRawMax(name, mime string) int {
+	limit := botFileInlineMax()
+	if limit < 1 || !saidFileFitsInbox(name, mime, 1) {
+		return 0
+	}
+	if saidFileFitsInbox(name, mime, limit) {
+		return limit
+	}
+	lo, hi := 0, limit
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if saidFileFitsInbox(name, mime, mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return lo
 }
 
 type botFileCreated struct {
@@ -108,30 +163,40 @@ func botFileUploadBytes(ctx context.Context, scope agentruntime.Scope, name, mim
 		return created.ID, nil
 	}
 	var offset int64
-	for attempt := 0; offset < int64(len(raw)); attempt++ {
-		if attempt > 6 {
+	fails := 0
+	for offset < int64(len(raw)) {
+		if fails > 6 {
 			return "", fmt.Errorf("the upload to Hub kept failing at %d of %d bytes", offset, len(raw))
 		}
 		payload, status, err := botFileHub(ctx, http.MethodPut, "/api/v1/desktop-services/files/"+created.ID+"/data?offset="+strconv.FormatInt(offset, 10),
 			map[string]string{"X-Upload-Token": created.UploadToken, "Content-Type": "application/octet-stream"}, bytes.NewReader(raw[offset:]), int64(len(raw))-offset)
 		if err != nil {
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			fails++
+			time.Sleep(time.Duration(fails) * time.Second)
 			continue
 		}
 		var out botFileCreated
 		_ = json.Unmarshal(payload, &out)
-		if status == http.StatusConflict || status == http.StatusOK {
+		if (status == http.StatusConflict || status == http.StatusOK) && out.Received > offset {
 			offset = out.Received
+			fails = 0
 			if out.Complete {
 				return created.ID, nil
 			}
 			continue
 		}
-		if _, err := botFileDecode(payload, status); err != nil {
-			return "", err
+		if status == http.StatusOK && out.Complete {
+			return created.ID, nil
 		}
+		if status != http.StatusConflict && status != http.StatusOK {
+			if _, err := botFileDecode(payload, status); err != nil {
+				return "", err
+			}
+		}
+		fails++
+		time.Sleep(time.Duration(fails) * time.Second)
 	}
-	return created.ID, nil
+	return "", fmt.Errorf("the upload to Hub did not finish (%d of %d bytes)", offset, len(raw))
 }
 
 var botFileIDRe = regexp.MustCompile(`^bf_[0-9a-f]{23}$`)
@@ -208,7 +273,7 @@ func desktopSayFileRef(ctx context.Context, scope agentruntime.Scope, name, ref 
 		"files":       []map[string]string{{"name": name, "ref": ref}},
 	}
 	if err := desktopDeliverLargeSay(ctx, body); err != nil && !strings.Contains(err.Error(), "ALREADY_SAID") && !strings.Contains(err.Error(), "409") {
-		return "", fmt.Errorf("desktop document (%s) was uploaded but its message could not be sent: %v. Tell the person its path on the computer in your final reply", desktopHumanSize(int(size)), err)
+		return "", fmt.Errorf("desktop document (%s) was uploaded but its message could not be sent: %v. Do not give the cloud path as the file to open", desktopHumanSize(int(size)), err)
 	}
 	return fmt.Sprintf("Delivered %s (%s) as its own chat message: the person's MaClaw app downloads it from the server and saves it in this bot's folder on their computer. Say in your final reply that the file was sent as a separate message. Do not shrink, re-render or deliver it again.", name, desktopHumanSize(int(size))), nil
 }
@@ -218,7 +283,7 @@ func desktopSayFileRef(ctx context.Context, scope agentruntime.Scope, name, ref 
 func deliverDesktopViaStore(ctx context.Context, scope agentruntime.Scope, resolved, name string) (string, error) {
 	ref, size, err := botFileStoreFromDesktop(ctx, scope, resolved, name, 20*time.Minute)
 	if err != nil {
-		return "", fmt.Errorf("desktop document could not be sent: %v. Do not shrink it: tell the person its path on the computer in your final reply", err)
+		return "", fmt.Errorf("desktop document could not be sent: %v. Do not shrink it. Do not give the cloud path as the file to open", err)
 	}
 	return desktopSayFileRef(ctx, scope, name, ref, size)
 }

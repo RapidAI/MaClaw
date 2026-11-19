@@ -23,7 +23,7 @@ Hub 在线规范（与本文应对齐）：`/pet-pack-help`（如 `https://hub.m
 | 基础连续动作 | `native-skeleton` + schema 2 | rig JSON + 贴图 + idle 回退 |
 | **桌面可动角色（推荐）** | **`native-character` + schema 3** | performer + multi-part rig + 全身静态回退 |
 
-**强烈建议**：可动角色使用 **分件（body + 表情头）**，并画/生成 **全身**，不要半身头像。
+**强烈建议**：可动角色使用分件全身，不要半身头像。换头包用布局 A 或 B。官方默认布偶娘用布局 C（多肢纸娃娃），见第 4.6 节。
 
 ---
 
@@ -124,6 +124,8 @@ fallback:
 
 ## 4. 分件形象规范（实战）
 
+第 4.1–4.5 节是布局 A（`body` + `head_*`）。长发换头用布局 B（`body` + 固定 `hair` + `face_*`），规则见 Hub `/pet-pack-help`。官方默认包不走这两套换头，见第 4.6 节。
+
 ### 4.1 必须
 
 1. **全身**：站立或坐姿完整，四周透明边距；禁止半身证件照当唯一资源。  
@@ -179,17 +181,29 @@ Clip：身体先动，头延迟 80–280ms；表情只改 head 的 alpha。设�
 - [ ] default 变体 native 表列齐七态  
 - [ ] 56 / 88 / 120 px 仍可辨认  
 
+### 4.6 布局 C：多肢纸娃娃（官方布偶娘）
+
+官方默认包 `ragdoll` 用这一布局。不要把它改成七张头图，也不要为它打开 Join v1。ClawMate 式多肢包同样不自动启用 Join v1。
+
+- 贴图分开：躯干、头、眼、嘴、左右臂、左右腿、尾巴。辫子是头下的次级骨骼（辫身 + 辫尖），单独贴图，不画进 `head.png`。
+- 每张贴图的关节在位图几何中心。slot 名等于骨骼名。右臂、右腿、右辫是左件镜像。头画在辫子前面。
+- 表情是眼、嘴 clip，不是七张 `head_*.png`。注视 clip 的名字由包自定，至少 4 个互不相同。宿主不另发视线目标，也不读取屏幕。
+- 头转过至少 6° 时，辫子反向跟随，辫尖再多让一点。次级摆动仍走 `secondary` 层，和这条跟随相加。
+- 身体先动，头和视线晚 100–300ms 再跟上。收势时头比身体晚回到中立。循环的首尾姿态相同，`at_ms` 严格递增，最后一帧落在 `duration_ms`。
+- 闲置候选至少包含：呼吸、自然眨眼、观察、重心调整、短暂走神、伸展、整理姿态、休息、恢复注意、环境回应。走、跑、跳、弯腰、唱可以另加。这五类原地完成，`travel_x` 为 0。呼吸、走、跑仍然可以带 `travel_x`。环境回应不要写 `notice` 音效，那个名字会和点击、悬停的提示音撞车。
+- 进入循环是硬切，没有交叉淡化。`enter` 的最后一帧必须等于 `loop` 的第一帧，`exit` 的第一帧必须等于这个循环姿态。停留到期后在这一圈的接缝进入 `exit`；接缝被跳过时最多再等一个循环。表情、注视和次级层各自计时，不因身体换段回到第一帧。动作开始前 100–300ms 要有反向预备。
+
 ---
 
 ## 5. performer.json（摘要）
 
 `version: 1`，包含：`moods`、`layers`、`behaviors`、`states`、`events`、`reactions`、`rules`。
 
-- 状态：`idle` / `listening` / `thinking` / `speaking` / `done` / `alert` / `quiet`  
-- 事件：`click` / `hover` / `drag_start` / `drag_end` / `task_started` / `task_done` / `task_failed` / `long_idle`  
-- 至少 10 idle 行为、12 反应、6 表情 clip、4 注视 clip  
-- `no_repeat_last ≥ 3`，idle 池条目数 > `no_repeat_last`  
-- 完整字段与枚举见 Hub `/pet-pack-help`
+- 状态闭集：`idle` / `listening` / `thinking` / `speaking` / `done` / `alert` / `quiet`。每个包都要写全。不要另加 working、blocked、waiting。`speaking` 是说话，不是“正在做事”的姿势。
+- 事件闭集：`click` / `hover` / `drag_start` / `drag_end` / `task_started` / `task_needs_you` / `task_done` / `task_failed` / `long_idle`。运行时只发这些。包不得再加事件。未知事件忽略。
+- 至少 10 个 idle 行为、12 个反应、6 个表情 clip、4 个注视 clip。闲置候选至少覆盖第 4.6 节的十类。
+- `no_repeat_last` 为 3–10。idle 池条目数必须大于它，并且至少有一个 `calm` 或不限情绪的行为。
+- 完整字段与枚举见 Hub `/pet-pack-help`。本文与该页对齐。仓库里没有单独的 `PRODUCTION-STANDARDS.md`。
 
 ---
 
@@ -200,7 +214,7 @@ Clip：身体先动，头延迟 80–280ms；表情只改 head 的 alpha。设�
 | 骨骼 | 24 |
 | slot / 贴图 | 32 |
 | 单轨关键帧 | 240 |
-| 全 rig 关键帧 | 1,200 |
+| 全 rig 关键帧 | 4,800 |
 | 单图 | 512 KiB，1024×1024 |
 | 贴图像素合计 | 4,194,304 |
 | ZIP 文件 | 3 MiB |
@@ -209,6 +223,55 @@ Clip：身体先动，头延迟 80–280ms；表情只改 head 的 alpha。设�
 
 可动画：`x` `y` `rotate` `scale_x` `scale_y`，slot 可 `alpha`。  
 缓动：`linear` / `ease-out` / `ease-in-out`。`at_ms` 严格递增。
+
+大幅度动作（走、跑、跳、弯腰、唱）使用同一套关键帧，不另加运行时。把角色放在画布中下部，给头顶留空。
+
+| 字段 | 含义 |
+| --- | --- |
+| `travel_x` | 整段 clip 的横向设计像素，±256。正值向右。宿主缩放、夹在工作区并在边缘转身。拖拽时不走。 |
+| `cue` | 内置音效名，含 `step` `run` `jump` `land` `bend` `sing` 等。 |
+| `sound` | 1–4 个 `{hz, ms}`，写出后覆盖 cue，总长 ≤ 420ms。 |
+| `sound_loop` | 循环 clip 每一圈重播，用于脚步。 |
+
+listening 不要出声。speaking 期间宿主只播放 `sing`。安静模式和减少动效无声且静止。不要在包里放 wav/mp3。DeepSeek Harness、Live2D 和视频宠物不能直接安装。Hub `/pet-pack-help` 与本节一致。官方默认包是 `ragdoll`（布局 C），不再提供螃蟹皮肤。Codex 兼容的精灵图集（目录内的 pet.json 加 spritesheet.webp 或 png）可用 dshconvert 转成用户宠物包后再安装。Live2D、视频、GIF 播放和 JS 宠物仍然不能直接安装。
+
+---
+
+## 6.1 养成阶段与挂件
+
+可选 `rearing.stages` 按这只宠物被加载的时间换装。`schema_version` 仍是 3。不新增 JS、Live2D 或第二种运行时。宿主决定何时进入阶段，包决定阶段长什么样。
+
+| 字段 | 规则 |
+| --- | --- |
+| `after_ms` | 至少 60000，并且严格递增。当前阶段是已达到的最后一档。 |
+| `scale` | 省略或 0 表示 1。写出时为 0.5–1.5。用户保存的尺寸不改。 |
+| `variant` | 指向 `selectable: false` 的造型，做整身变装。省略则保持用户当前造型。 |
+| `cue` | 只能是空、`notice`、`focus`、`celebrate`、`concern`。只在阶段真正跨过时响一次。 |
+| `adornments` | 这一档穿戴的完整清单。后一档要留住前一档的物件，必须把 id 再写一遍。没到第一档时全部隐藏。 |
+
+挂件写在包级 `adornments` 里。每一项有 id，并列出 1–4 个已有 rig slot。id 用变体 id 的写法：小写字母和连字符。slot 名用骨骼名的写法，可以有下划线。手上的物件挂在手臂骨骼靠近手的位置，脚上的物件挂在腿骨骼靠近脚的位置，身旁的小宠物是挂在 `root` 上的新骨骼。它们仍是 slot，不是第五个表演层。一个 slot 只能属于一个挂件。静态回退图和 Linux 静止帧不合成挂件。
+
+```yaml
+adornments:
+  - id: mouse-charm
+    slots: [mouse_charm]
+  - id: slippers
+    slots: [slipper_l, slipper_r]
+rearing:
+  stages:
+    - id: familiar
+      after_ms: 7200000
+      scale: 1.04
+      cue: notice
+      adornments: [mouse-charm]
+    - id: grown
+      after_ms: 86400000
+      scale: 1.1
+      cue: celebrate
+      adornments: [mouse-charm, slippers]
+```
+
+Hub `/pet-pack-help` 与本节一致。
 
 ---
 

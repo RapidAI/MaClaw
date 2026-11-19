@@ -392,6 +392,22 @@ func (m *LocalMCPManager) GetAllTools() []LocalMCPToolSet {
 	return result
 }
 
+// ListTools starts the server if needed and returns its tool names.
+func (m *LocalMCPManager) ListTools(serverID string) ([]MCPToolView, error) {
+	serverID = strings.TrimSpace(serverID)
+	m.mu.RLock()
+	client, ok := m.clients[serverID]
+	m.mu.RUnlock()
+	if !ok || !client.IsRunning() {
+		started, err := m.startSharedClient(serverID)
+		if err != nil {
+			return nil, err
+		}
+		client = started
+	}
+	return client.DiscoverToolsContext(context.Background())
+}
+
 // CallTool dispatches a tool call to the appropriate local MCP client.
 func (m *LocalMCPManager) CallTool(serverID, toolName string, args map[string]interface{}) (string, error) {
 	return m.CallToolForOwner("", serverID, toolName, args)

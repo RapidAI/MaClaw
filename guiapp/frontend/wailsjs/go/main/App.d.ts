@@ -741,6 +741,8 @@ export function SetFileCompanionDefaultFolder(arg1:string):Promise<{rev:number, 
 
 export function FileCompanionFolderForPath(arg1:string):Promise<string>;
 
+export function FileCompanionTakeLibraryView():Promise<boolean>;
+
 export function FileCompanionTakePlaces():Promise<Array<string>>;
 
 export function ShareFileCompanionDocument(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<Record<string, any>>;
@@ -829,7 +831,7 @@ export function FetchCodeGenModels():Promise<Array<main.CodeGenModelItem>>;
 
 export function FetchNews():Promise<Array<main.NewsArticle>>;
 
-export function FetchProviderModels(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Array<main.CodeGenModelItem>>;
+export function FetchProviderModels(arg1:string,arg2:string,arg3:string,arg4:string,arg5?:string):Promise<Array<main.CodeGenModelItem>>;
 
 export function FetchMaclawLLMProfileModels(arg1:string):Promise<Array<main.CodeGenModelItem>>;
 
@@ -850,6 +852,14 @@ export function GenerateIOSPWAShell(arg1:main.IOSPWAShellRequest):Promise<main.I
 export function GenerateMobilePWAShell(arg1:main.MobilePWAShellRequest):Promise<main.MobilePWAShellResult>;
 
 export function GetACPHostStatus():Promise<Record<string, any>>;
+
+export function GetMCPHostStatus():Promise<Record<string, any>>;
+
+export function GenerateMCPHostAPIKey():Promise<Record<string, any>>;
+
+export function GetMCPAccessLog():Promise<Array<Record<string, any>>>;
+
+export function ClearMCPAccessLog():Promise<void>;
 
 export function GetAIAssistantInitStatus():Promise<string>;
 
@@ -884,6 +894,8 @@ export function GetBrowserSessionTrace(arg1:string):Promise<main.AIAssistantTrac
 export function GetBrowserSessions():Promise<main.BrowserAgentManager>;
 
 export function GetCapabilityGapDetector():Promise<main.CapabilityGapDetector>;
+
+export function GetChatBubblesEnabled():Promise<boolean>;
 
 export function GetChatFontFamily():Promise<string>;
 
@@ -1133,6 +1145,8 @@ export function GetCreditsAssetAccount():Promise<Record<string, any>>;
 export function GetCreditsAssetTransactions(arg1:number):Promise<Record<string, any>>;
 
 export function GetPetStoreCreatorReport(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function GetPetStoreInstalledPackDetails(arg1:Array<string>):Promise<Record<string, Record<string, any>>>;
 
 export function GetPetStoreRankings():Promise<Record<string, any>>;
 
@@ -1454,7 +1468,9 @@ export function ImportExpertPackageFromFile(arg1:string):Promise<main.ExpertPack
 
 export function GetExpertMarketAccount():Promise<Record<string, any>>;
 
-export function InstallExpertMarketListing(arg1:string):Promise<main.ExpertPackageImportResult>;
+export function InstallExpertMarketListing(arg1:string,arg2:string):Promise<main.ExpertPackageImportResult>;
+
+export function ListExpertMarketCategories():Promise<Array<string>>;
 
 export function UninstallExpertMarketListing(arg1:string):Promise<void>;
 
@@ -1462,11 +1478,11 @@ export function ListExpertMarketListings(arg1:string,arg2:string,arg3:number,arg
 
 export function PurchaseExpertMarketListing(arg1:string):Promise<Record<string, any>>;
 
-export function SubmitExpertMarketListing(arg1:string,arg2:string,arg3:number,arg4:string):Promise<Record<string, any>>;
+export function SubmitExpertMarketListing(arg1:string,arg2:string,arg3:number,arg4:string,arg5:string):Promise<Record<string, any>>;
 
-export function SubmitExpertMarketListingWithDistribution(arg1:string,arg2:string,arg3:number,arg4:string,arg5:boolean):Promise<Record<string, any>>;
+export function SubmitExpertMarketListingWithDistribution(arg1:string,arg2:string,arg3:number,arg4:string,arg5:boolean,arg6:string):Promise<Record<string, any>>;
 
-export function SubmitExpertMarketListingToUsers(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+export function SubmitExpertMarketListingToUsers(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
 export function PublishExpertMarketListing(arg1:string):Promise<Record<string, any>>;
 
@@ -1528,6 +1544,8 @@ export function ListSkillSuites():Promise<Array<Record<string, any>>>;
 
 export function InstallPetPackZip(arg1:string):Promise<string>;
 
+export function ImportDSHPetFolder(arg1:string):Promise<{id:string, warnings:string[], dropped:number}>;
+
 export function InstallPetStorePack(arg1:string):Promise<string>;
 
 export function InstallSelectedMaclawAppPackageFromHub(arg1:string,arg2:Array<string>):Promise<Record<string, any>>;
@@ -1569,8 +1587,6 @@ export function IsSkillSourceAllowed(arg1:string):Promise<boolean>;
 export function IsToolBeingInstalled(arg1:string):Promise<boolean>;
 
 export function IsVirtualRepositoryBackgroundSyncPending():Promise<boolean>;
-
-export function IsWindowsTerminalAvailable():Promise<boolean>;
 
 export function KeepMainCodingWorkbenchConflict(arg1:string,arg2:string,arg3:string):Promise<string>;
 
@@ -1818,6 +1834,8 @@ export function ChooseFileCompanionFiles():Promise<Array<string>>;
 
 export function ShowFileCompanion():Promise<void>;
 
+export function ShowFileCompanionLibrary():Promise<void>;
+
 export function UnregisterFileCompanionLinuxDesktop():Promise<void>;
 
 export function LaunchInstallerAndExit(arg1:string,arg2:string):Promise<void>;
@@ -1899,9 +1917,10 @@ export function ListMemories(arg1:string,arg2:string):Promise<Array<memory.Entry
 export function ListBotCatalog(arg1:string,arg2:string):Promise<Array<{id:string,kind:string,name:string,description?:string,source?:string,tags?:Array<string>,installed:boolean}>>;
 export function InstallBotCatalogItem(arg1:string,arg2:string,arg3:string):Promise<void>;
 export function UninstallBotCatalogItem(arg1:string,arg2:string,arg3:string):Promise<void>;
-export function ListBotMemories(arg1:string,arg2:string,arg3:string):Promise<Array<{id:string,bot_id:string,content:string,category:string,tags:Array<string>,created_at:string,updated_at:string,access_count:number}>>;
-export function SaveBotMemory(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<{id:string,bot_id:string,content:string,category:string,tags:Array<string>,created_at:string,updated_at:string,access_count:number}>;
+export function ListBotMemories(arg1:string,arg2:string,arg3:string):Promise<Array<{id:string,bot_id:string,content:string,category:string,tags:Array<string>,created_at:string,updated_at:string,access_count:number,status:string,invalid_at?:string}>>;
+export function SaveBotMemory(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<{id:string,bot_id:string,content:string,category:string,tags:Array<string>,created_at:string,updated_at:string,access_count:number,status:string,invalid_at?:string}>;
 export function UpdateBotMemory(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>):Promise<void>;
+export function UpdateBotMemoryWithVersion(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:string):Promise<void>;
 export function DeleteBotMemory(arg1:string,arg2:string):Promise<void>;
 
 
@@ -2603,7 +2622,9 @@ export function DeleteDesktopBotSchedule(arg1:string,arg2:string):Promise<void>;
 
 export function DesktopBotAccess():Promise<{enabled:boolean,message?:string}>;
 
-export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>>;
+export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string,node_id?:string}>>;
+
+export function GetDesktopBotQuota():Promise<{limit?:number | null,used:number,cloud_desktop?:boolean | null}>;
 
 export function SetDesktopBotPrimary(arg1:string):Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>>;
 
@@ -2621,7 +2642,9 @@ export function ClaimDesktopBotCrossStart(arg1:string,arg2:string):Promise<{clai
 
 export function ArmDesktopBotCrossRun(arg1:string,arg2:string):Promise<void>;
 
-export function CreateDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
+export function CreateDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string,node_id?:string}>;
+
+export function CreateDesktopBotWithComputer(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string,desktop_mode?:string,node_id?:string}>;
 
 export function RenameDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
 
@@ -2641,21 +2664,53 @@ export function DeleteDesktopBot(arg1:string):Promise<void>;
 
 export function GetDesktopBotCredits():Promise<{ applies: boolean; unlimited: boolean; limit: number; used: number; remaining: number }>;
 
-export function GetDesktopComputer():Promise<{ restart_allowed: boolean; reset_allowed: boolean; active_runs: number }>;
+export function GetDesktopComputer():Promise<{ restart_allowed: boolean; reset_allowed: boolean; active_runs: number; intranet?: boolean }>;
+
+export function ListDesktopNodes():Promise<{ enabled: boolean; hub_error?: string; nodes: Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; message?: string; node_id?: string; desktopd_url?: string; desktopd_port?: number; desktopd_addr?: string; with_srv?: boolean; srv_token_set?: boolean; last_kind?: string; last_result?: string; last_at?: string; registered: boolean; online: boolean; active: boolean; memory?: string; cpus?: string }> }>;
+
+export function ListLocalDesktopJobs():Promise<Array<{ id: string; title: string; status: string; started_at: string }>>;
+
+export function UpgradeDesktopNode(arg1:string, arg2:string):Promise<{ id: string; status: string; message?: string }>;
+
+export function DeployDesktopNode(arg1:{ name?: string; host: string; port?: number; user: string; password: string; with_srv?: boolean }):Promise<{ id: string; status: string; message?: string }>;
+
+export function DeployHub(arg1:{ host: string; port?: number; user: string; password: string; email: string }):Promise<{ id: string; host: string; port: number; user: string; email: string; public_url: string; admin_user: string; admin_password?: string; hub_id?: string; pending?: boolean; status: string; message?: string }>;
+
+export function DeployBotNode(arg1:{ name?: string; host: string; port?: number; user: string; password: string; can_sudo?: boolean; with_srv?: boolean; enroll_code: string }):Promise<{ id: string; name: string; host: string; port: number; user: string; can_sudo?: boolean; with_srv?: boolean; hub_url?: string; node_id?: string; status: string; message?: string }>;
+
+export function RegisterBotNode(arg1:{ id: string; password: string; enroll_code: string }):Promise<{ id: string; name: string; host: string; port: number; user: string; can_sudo?: boolean; with_srv?: boolean; hub_url?: string; node_id?: string; status: string; message?: string }>;
+
+export function ListBotNodes():Promise<Array<{ id: string; name: string; host: string; port: number; user: string; can_sudo?: boolean; with_srv?: boolean; hub_url?: string; node_id?: string; status: string; message?: string }>>;
+
+export function ClearBotNodeResult(arg1:string):Promise<void>;
+
+export function ListHubDeploys():Promise<Array<{ id: string; host: string; port: number; user: string; email: string; public_url: string; admin_user: string; admin_password?: string; hub_id?: string; pending?: boolean; status: string; message?: string }>>;
+
+export function ClearHubDeployResult(arg1:string):Promise<void>;
+
+export function ConfigureDesktopNodeToken(arg1:string, arg2:string):Promise<{ id: string; status: string; message?: string; with_srv?: boolean; srv_token_set?: boolean }>;
+
+export function RedeployDesktopNode(arg1:string, arg2:string, arg3:boolean):Promise<{ id: string; status: string; message?: string; with_srv?: boolean }>;
+
+export function ClearDesktopNodeResult(arg1:string):Promise<void>;
+
+export function ActivateDesktopNode(arg1:string):Promise<void>;
+
+export function UseCloudDesktop():Promise<void>;
 
 export function RestartDesktopComputer(arg1:boolean):Promise<{ ok: boolean; busy: boolean; action?: string; status?: string; backup?: string; message?: string }>;
 
 export function ResetDesktopComputer(arg1:boolean):Promise<{ ok: boolean; busy: boolean; action?: string; status?: string; backup?: string; message?: string }>;
 
-export function GetDesktopProxyMode():Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string }>;
+export function GetDesktopProxyMode():Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string; intranet?: boolean }>;
 
-export function SaveDesktopProxyMode(arg1:string):Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string }>;
+export function SaveDesktopProxyMode(arg1:string):Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string; intranet?: boolean }>;
 
-export function GetDesktopBotLLM():Promise<{ mode: string; choice?: string; stored?: boolean; needs_role_save?: boolean; name?: string; url?: string; model?: string; key_set: boolean; warning?: string; roles?: { foreground: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; background: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; computer_use: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; grounder: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean } } }>;
+export function GetDesktopBotLLM():Promise<{ local_roles?: { foreground: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; background: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; computer_use: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; grounder: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean } }; mode: string; choice?: string; stored?: boolean; needs_role_save?: boolean; name?: string; url?: string; model?: string; key_set: boolean; warning?: string; roles?: { foreground: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; background: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; computer_use: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; grounder: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean } } }>;
 
-export function SyncDesktopBotLLM():Promise<{ mode: string; choice?: string; stored?: boolean; needs_role_save?: boolean; name?: string; url?: string; model?: string; key_set: boolean; warning?: string; roles?: { foreground: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; background: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; computer_use: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; grounder: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean } } }>;
+export function SyncDesktopBotLLM():Promise<{ local_roles?: { foreground: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; background: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; computer_use: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; grounder: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean } }; mode: string; choice?: string; stored?: boolean; needs_role_save?: boolean; name?: string; url?: string; model?: string; key_set: boolean; warning?: string; roles?: { foreground: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; background: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; computer_use: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; grounder: { unused?: boolean; official?: boolean; inherit?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean } } }>;
 
-export function SaveDesktopBotLLM(arg1:{ mode?: string; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string; roles?: { foreground: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }; background: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }; computer_use: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }; grounder: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string } } }):Promise<{ mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string; roles?: { foreground: { unused?: boolean; official?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; background: { unused?: boolean; official?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; computer_use: { unused?: boolean; official?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; grounder: { unused?: boolean; official?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean } } }>;
+export function SaveDesktopBotLLM(arg1:{ local_roles?: { foreground: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }; background: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }; computer_use: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }; grounder: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string } }; mode?: string; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string; roles?: { foreground: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }; background: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }; computer_use: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }; grounder: { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string } } }):Promise<{ mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string; roles?: { foreground: { unused?: boolean; official?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; background: { unused?: boolean; official?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; computer_use: { unused?: boolean; official?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean }; grounder: { unused?: boolean; official?: boolean; name?: string; url?: string; model?: string; protocol?: string; wire_api?: string; key_set?: boolean } } }>;
 
 export function SendMessageForTab(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 
@@ -2686,6 +2741,8 @@ export function SetAuthRequestSoundConfig(arg1:string,arg2:boolean):Promise<void
 export function SetAutoCompress(arg1:boolean):Promise<void>;
 
 export function SetBugReportEnabled(arg1:boolean):Promise<corelib.AppConfig>;
+
+export function SetChatBubblesEnabled(arg1:boolean):Promise<void>;
 
 export function SetChatFontFamily(arg1:string):Promise<void>;
 
@@ -2827,6 +2884,8 @@ export function ShowMessage(arg1:string,arg2:string):Promise<void>;
 
 export function ShowToast(arg1:string,arg2:string):Promise<void>;
 
+export function SpeakDesktopBotReply(arg1:string):Promise<void>;
+
 export function SpeakPlainText(arg1:string):Promise<void>;
 
 export function SpeakText(arg1:string):Promise<void>;
@@ -2844,6 +2903,8 @@ export function StartCodeGenProxy(arg1:string,arg2:string,arg3:Array<string>):Pr
 export function StartCodeGenSSO():Promise<main.CodeGenSSOInfo>;
 
 export function StartCodeGenSSOEmbedded():Promise<main.CodeGenSSOEmbeddedResult>;
+
+export function StartCodeGenProviderSSOEmbedded():Promise<main.CodeGenSSOEmbeddedResult>;
 
 export function StartKimiCodeOAuth():Promise<{user_code:string; verification_uri:string; verification_uri_complete:string; browser_opened:boolean}>;
 
@@ -2865,6 +2926,16 @@ export function DisconnectGitHub():Promise<void>;
 export function GitHubAPIRequest(arg1:string,arg2:string):Promise<string>;
 
 export function GitHubCloneRepository(arg1:string,arg2:string):Promise<main.GitHubCloneResult>;
+
+export function ListGitHubRepoMaintRules():Promise<Array<main.GitHubRepoMaintRule>>;
+
+export function SaveGitHubRepoMaintRule(arg1:main.GitHubRepoMaintRule):Promise<main.GitHubRepoMaintRule>;
+
+export function DeleteGitHubRepoMaintRule(arg1:string):Promise<void>;
+
+export function SetGitHubRepoMaintEnabled(arg1:string,arg2:boolean,arg3:string):Promise<void>;
+
+export function ReplayGitHubRepoMaint(arg1:string):Promise<void>;
 
 export function StartMaclawAppApprovalWorkflow(arg1:main.MaclawAppApprovalWorkflowStartInput):Promise<Record<string, any>>;
 
@@ -3028,6 +3099,8 @@ export function UpdateMaclawAppPackageSubmissionStatus(arg1:string,arg2:main.mac
 
 export function UpdateMemory(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
 
+export function UpdateMemoryWithVersion(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<void>;
+
 export function UpdateNLSkill(arg1:corelib.NLSkillEntry):Promise<void>;
 
 export function UpdateRemoteCodingTaskMeta(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<void>;
@@ -3146,12 +3219,13 @@ export function TokenBankPreviewGiftLink(arg1:string):Promise<Record<string, any
 export function TokenBankClaimGiftLink(arg1:string):Promise<Record<string, any>>;
 export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
 
-export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
-export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
+export function SetDesktopBotControl(arg1:string,arg2:boolean):Promise<{input_granted:boolean}>;
+export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,input_granted?:boolean,attention_reason?:string,desktop_mode?:string}>;
+export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
 
-export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
+export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
 
-export function HandBackDesktopBot(arg1:string):Promise<{handed_back:boolean,accepted?:boolean,run_id?:string,status?:string,client_message_id?:string}>;
+export function HandBackDesktopBot(arg1:string):Promise<{handed_back:boolean,accepted?:boolean,run_id?:string,status?:string,client_message_id?:string,joined?:boolean,reply?:{text:string,send_to_user?:string}}>;
 
 export function SetDesktopBotDesktopMode(arg1:string,arg2:string):Promise<string>;
 
@@ -3248,6 +3322,12 @@ export function ActivateBotCatalogAssignments(arg1:string):Promise<void>;
 export function SyncSharedPageToHub(arg1:string,arg2:string):Promise<void>;
 
 export function GetBotLocalAccess():Promise<any>;
+
+export function GetDesktopBotCapabilityPage():Promise<any>;
+
+export function UpdateDesktopBotCapabilities(arg1:any):Promise<any>;
+
+export function ImportDesktopBotMCP(arg1:string):Promise<any>;
 
 export function SaveBotLocalAccess(arg1:any):Promise<any>;
 

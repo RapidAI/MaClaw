@@ -199,6 +199,26 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
                     <input type="checkbox" checked={effectiveConfig?.survey_enabled !== false} onChange={(e) => saveConfigPatch({ survey_enabled: e.target.checked })} />
                     <span>{textForLang(lang, 'Survey IM intercept', '\u95ee\u5377 IM \u62e6\u622a', '\u554f\u5377 IM \u62e6\u622a')}</span>
                 </label>
+                <label
+                    className="general-settings-field general-settings-field--recent-count"
+                    title={textForLang(lang, 'Rows shown in the sidebar Recent section; 0 hides it', '\u4fa7\u680f\u201c\u6700\u8fd1\u4efb\u52a1\u201d\u663e\u793a\u7684\u6761\u6570\uff0c0 \u4e3a\u9690\u85cf', '\u5074\u6b04\u300c\u6700\u8fd1\u4efb\u52d9\u300d\u986f\u793a\u7684\u689d\u6578\uff0c0 \u70ba\u96b1\u85cf')}
+                >
+                    <span>{textForLang(lang, 'Recent tasks', '\u6700\u8fd1\u4efb\u52a1\u6570', '\u6700\u8fd1\u4efb\u52d9\u6578')}</span>
+                    <input
+                        type="number"
+                        min={0}
+                        max={50}
+                        className="form-input"
+                        style={{ width: '4.5rem' }}
+                        aria-label={textForLang(lang, 'Recent tasks count', '\u6700\u8fd1\u4efb\u52a1\u6570', '\u6700\u8fd1\u4efb\u52d9\u6578')}
+                        value={effectiveConfig?.recent_task_count ?? 5}
+                        onChange={(e) => {
+                            const raw = Number.parseInt(e.target.value, 10);
+                            if (!Number.isFinite(raw)) return;
+                            saveConfigPatch({ recent_task_count: Math.max(0, Math.min(50, raw)) });
+                        }}
+                    />
+                </label>
             </div>
         </section>
 

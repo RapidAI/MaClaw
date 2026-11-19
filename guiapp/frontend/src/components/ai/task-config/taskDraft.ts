@@ -45,6 +45,8 @@ export interface MachineTarget {
     grantId: string;
     /** 被控机器名（仅展示用）。 */
     machineName: string;
+    /** 对方电脑上的工作目录；空/未设置 = 对方电脑默认工作目录。 */
+    workDir?: string;
 }
 
 /** 新建任务的运行时段。立即为默认；定时才写入计划任务。 */
@@ -164,13 +166,20 @@ export function isDraftDefault(draft: TaskDraft): boolean {
 
 /**
  * 选择任务执行位置：null = 本机；否则在远控被控机器上创建并执行。
- * 远控 create_task 不支持专家/工作流/工作空间/定时——全部归约为默认。
+ * 远控 create_task 不支持专家/工作流/云端与 SSH 工作空间/定时——全部归约为默认；
+ * 工作目录仍可经 machine.workDir 指定（list_dirs 浏览对方电脑目录）。
  */
 export function withMachine(draft: TaskDraft, machine: MachineTarget | null): TaskDraft {
     if (!machine || !machine.grantId) return { ...draft, machine: null };
+    const target = { ...machine };
+    // Re-picking the same machine (位置弹层里再点一次) must not drop the
+    // workDir already chosen for it; a different machine never inherits it.
+    if (!target.workDir && draft.machine?.grantId === target.grantId) {
+        target.workDir = draft.machine.workDir;
+    }
     return {
         ...draft,
-        machine,
+        machine: target,
         expertId: null,
         expertName: null,
         workflowTemplateId: null,
@@ -180,6 +189,13 @@ export function withMachine(draft: TaskDraft, machine: MachineTarget | null): Ta
         workspace: { kind: 'local' },
         runWindow: immediateRunWindow(),
     };
+}
+
+/** 设置远控被控机器上的工作目录；空 = 对方电脑默认工作目录。无机器目标时是空操作。 */
+export function withMachineWorkDir(draft: TaskDraft, workDir: string): TaskDraft {
+    if (!draft.machine?.grantId) return draft;
+    const dir = workDir.trim();
+    return { ...draft, machine: { ...draft.machine, workDir: dir || undefined } };
 }
 
 /** 指定专家（id = null 表示回到通用专家）；指定专家把工作流回到「无」，
@@ -307,7 +323,8 @@ export function needsLocalPath(draft: TaskDraft): boolean {
 
 /**
  * 创建/定时编程任务前的目录硬校验：本地目录必须显式选择——不选会落到默认
- * home 目录。远控机器目标（draft.machine）在本机没有目录概念，豁免。
+ * home 目录。远控机器目标（draft.machine）可选 machine.workDir，不选则用
+ * 对方电脑自己的默认工作目录，同样豁免。
  */
 export function codingDirectoryRequired(draft: TaskDraft): boolean {
     return needsLocalPath(draft) && !draft.machine?.grantId;

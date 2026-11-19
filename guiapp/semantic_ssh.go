@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -34,6 +35,10 @@ const (
 	// and using it here sent Ctrl+C into apt and into a sleep that was
 	// only waiting to read a log.
 	semanticTrustedSSHCommandTimeout = semanticTrustedShellMaxTimeout
+	// trustedSSHReconnectSettle is how long a re-dialed shell gets to draw
+	// its login banner before the command baseline is taken, so the banner
+	// does not land inside the command output.
+	trustedSSHReconnectSettle = 2 * time.Second
 )
 
 // semanticSSHPublicationMode is the one catalog mode for this principal.
@@ -623,39 +628,179 @@ func (h *IMMessageHandler) executeTrustedSSH(principalID, command string, timeou
 	}
 	session := trustedSSHSingleBoundSession(h, principalID)
 	if session == nil {
+		// A session this principal opened that has since died is still its
+		// only binding: re-dialing it is how a dropped session recovers.
+		session = trustedSSHRecoverableBoundSession(h, principalID)
+	}
+	if session == nil {
 		return "", effectNotStarted(fmt.Errorf("trusted_ssh_session_unavailable"))
 	}
 	return executeTrustedBoundSSH(h.sshMgr, session, command, timeout)
+}
+
+// trustedSSHRecoverableBoundSession is the single session this principal
+// opened when no live bound session exists. A dead PTY is still the
+// principal's binding; the exec path re-dials it instead of refusing.
+func trustedSSHRecoverableBoundSession(h *IMMessageHandler, principalID string) *remote.SSHManagedSession {
+	if h == nil || h.sshMgr == nil {
+		return nil
+	}
+	sessions := sshSessionsBoundToPrincipal(h.sshMgr.List(), principalID, func(*remote.SSHManagedSession) bool { return true })
+	if len(sessions) != 1 || guiRuntimeSSHSessionAlive(sessions[0]) {
+		return nil
+	}
+	return sessions[0]
+}
+
+// trustedSSHSessionWritable positively confirms the bound session can take a
+// command right now: locally open and its transport answers a keepalive
+// inside the probe window. guiRuntimeSSHSessionAlive is optimistic — an
+// unanswered in-flight probe still counts as bound — but a caller about to
+// commit a command to the connection needs a yes, not the absence of a no.
+func trustedSSHSessionWritable(session *remote.SSHManagedSession) bool {
+	if !sshSessionLocallyOpen(session) {
+		return false
+	}
+	h := session.PTY()
+	return h != nil && h.TransportLive()
 }
 
 func executeTrustedBoundSSH(mgr *remote.SSHSessionManager, session *remote.SSHManagedSession, command string, timeout time.Duration) (string, error) {
 	if mgr == nil || session == nil {
 		return "", effectNotStarted(fmt.Errorf("trusted_ssh_session_unavailable"))
 	}
-	if !guiRuntimeSSHSessionAlive(session) {
-		return "", effectNotStarted(fmt.Errorf("trusted_ssh_session_disconnected"))
-	}
 	if timeout <= 0 {
 		timeout = semanticTrustedSSHCommandTimeout
 	}
+	// The command has not been written, so a dead session is re-dialed
+	// instead of refused. A dropped transport would otherwise stall the
+	// turn on a rejection the exec surface cannot repair.
+	if !trustedSSHSessionWritable(session) {
+		recErr := mgr.ReconnectByID(session.ID)
+		if recErr != nil {
+			return "", effectNotStarted(fmt.Errorf("trusted_ssh_session_disconnected: %v", recErr))
+		}
+		if !trustedSSHSessionWritable(session) {
+			return "", effectNotStarted(fmt.Errorf("trusted_ssh_session_disconnected"))
+		}
+		time.Sleep(trustedSSHReconnectSettle)
+	}
+	handleBefore := session.PTY()
 	before := session.LineCount()
-	if err := mgr.WriteInput(session.ID, command); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "disconnect") || strings.Contains(strings.ToLower(err.Error()), "not found") {
+	_, err := mgr.WriteInputChecked(session.ID, command)
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "disconnect") || strings.Contains(msg, "not found") || strings.Contains(msg, "no handle") || strings.Contains(err.Error(), "重连") {
 			return "", fmt.Errorf("trusted_ssh_session_disconnected")
 		}
 		return "", err
+	}
+	// Any reconnect — WriteInputChecked's own or a concurrent one — swaps
+	// the PTY and clears the preview buffer, so a different handle means the
+	// absolute line numbers restarted. The old baseline would then hide the
+	// reply; baseline 0 keeps the banner rather than losing output.
+	if session.PTY() != handleBefore {
+		before = 0
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	lines, status := mgr.WaitForOutputContext(ctx, session.ID, before, timeout)
 	output, err := trustedSSHWaitResult(lines, status, ctx.Err(), command)
 	if err != nil {
+		if strings.Contains(err.Error(), "outcome_unobserved") {
+			return "", trustedSSHUnobservedError(mgr, session, lines)
+		}
 		return "", err
 	}
 	// The PTY echoes the command before its output. A long echo sits in front
 	// of uptime/disk/memory and is what the preview keeps when the capture
 	// exceeds the terminal budget.
 	return stripLeadingCommandEcho(output, command), nil
+}
+
+// trustedSSHUnobservedError reports a command whose wait ended without an
+// observable outcome, and tries to leave a usable shell behind. The tail
+// captured before the loss is evidence for the next call, not a result.
+func trustedSSHUnobservedError(mgr *remote.SSHSessionManager, session *remote.SSHManagedSession, lines []string) error {
+	if mgr != nil && session != nil {
+		mgr.RecordExecFailure(session.ID)
+	}
+	var b strings.Builder
+	b.WriteString("trusted_ssh_outcome_unobserved")
+	if tail := trustedSSHPreDisconnectTail(lines); tail != "" {
+		b.WriteString("\n--- 断线前观察到的输出（不完整，不代表命令成功或失败）---\n")
+		b.WriteString(tail)
+	}
+	if recoverTrustedSSHSession(mgr, session) {
+		b.WriteString("\n[system] 远端会话已自动重连。上一条命令可能已执行、部分执行或被中断；请先用只读命令核对远端状态，再决定是否重试，不要直接重发同一条命令。")
+	} else {
+		// The binding cannot be repaired; drop it so the next call plans a
+		// fresh connect instead of blocking again on the same dead session.
+		if mgr != nil && session != nil {
+			mgr.RemoveSession(session.ID)
+		}
+		b.WriteString("\n[system] 远端会话自动重连失败，会话已释放；请通过 ssh_connect 新建会话后重试。")
+	}
+	return errors.New(b.String())
+}
+
+// trustedSSHPreDisconnectTail keeps the last lines observed before the
+// session was lost, bounded so the evidence cannot crowd out the error.
+func trustedSSHPreDisconnectTail(lines []string) string {
+	const maxLines = 40
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	text := compactSSHPtyOutput(strings.Join(lines, "\n"))
+	const maxBytes = 4000
+	if len(text) > maxBytes {
+		text = text[len(text)-maxBytes:]
+		// The byte cut may land inside a multi-byte rune; drop leading
+		// continuation bytes so the tail stays valid UTF-8.
+		for len(text) > 0 {
+			r, size := utf8.DecodeRuneInString(text)
+			if r != utf8.RuneError || size > 1 {
+				break
+			}
+			text = text[size:]
+		}
+	}
+	return strings.TrimSpace(text)
+}
+
+// recoverTrustedSSHSession restores a session whose last command ended
+// unobserved. A dead PTY is re-dialed outright. A live PTY whose shell
+// ignored Ctrl+C is closed first — a plain reconnect keeps a live shell —
+// so the channel drop HUPs the wedged command and the reconnect opens a
+// fresh shell on the pooled connection. When the transport cannot answer,
+// the signal itself would only park behind the stuck request: the client
+// is closed first so every queued write, including the close, returns.
+func recoverTrustedSSHSession(mgr *remote.SSHSessionManager, session *remote.SSHManagedSession) bool {
+	if mgr == nil || session == nil {
+		return false
+	}
+	if sshSessionLocallyOpen(session) {
+		if handle := session.PTY(); handle != nil {
+			if handle.TransportLive() {
+				// Kill the captured wedged handle, not whatever the session
+				// points at now — a concurrent reconnect may have swapped it.
+				_ = handle.Kill()
+			} else if !handle.ClientTransportLive() {
+				// A dead channel must not condemn a healthy pooled
+				// connection; the client dies only when the transport
+				// itself cannot answer. Closing it first unblocks every
+				// queued write, including the close below.
+				if client := handle.SSHClient(); client != nil {
+					_ = client.Close()
+				}
+			}
+			_ = handle.Close()
+		}
+	}
+	if err := mgr.ReconnectByID(session.ID); err != nil {
+		return false
+	}
+	return trustedSSHSessionWritable(session)
 }
 
 // trustedSSHWaitResult classifies a finished wait. A deadline alone is not a

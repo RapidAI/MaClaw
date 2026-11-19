@@ -251,6 +251,13 @@ func desktopRecHash(s string) string {
 // desktopRecConversation is the authoritative conversation of a turn (the
 // session the person writes in); a run without one is its own conversation.
 func desktopRecConversation(request agentruntime.TurnRequest, scope agentruntime.Scope) string {
+	// A timer fires into the bot's long-lived session. Recovery lineage follows
+	// the conversation, so every later weather PDF shared the first firing's
+	// goal. After 90 minutes the span was spent and bash was refused even
+	// though this occurrence had just started. Each firing is its own task.
+	if desktopTurnOrigin(request) == "schedule" && strings.TrimSpace(scope.RunID) != "" {
+		return "sched:" + strings.TrimSpace(scope.RunID)
+	}
 	switch in := request.Input.(type) {
 	case agentservice.ExecuteRequest:
 		if in.Session.ID != "" {
@@ -262,6 +269,18 @@ func desktopRecConversation(request agentruntime.TurnRequest, scope agentruntime
 		}
 	}
 	return "r:" + scope.RunID
+}
+
+func desktopTurnOrigin(request agentruntime.TurnRequest) string {
+	switch in := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		return strings.TrimSpace(in.Message.Metadata["bot_origin"])
+	case *agentservice.ExecuteRequest:
+		if in != nil {
+			return strings.TrimSpace(in.Message.Metadata["bot_origin"])
+		}
+	}
+	return ""
 }
 
 // desktopRecLineage is the logical task this run works on: one per
@@ -318,7 +337,7 @@ type desktopRecAttempt struct {
 	stop     chan struct{}
 }
 
-var desktopRecMutating = map[string]bool{"bash": true, "file_write": true, "file_edit": true, "script": true, "click": true, "type": true, "press": true, "computer": true, "app_run": true, "task_run": true, "upload": true, "rich_fill": true, "skill_run": true}
+var desktopRecMutating = map[string]bool{"bash": true, "file_write": true, "file_edit": true, "script": true, "click": true, "type": true, "press": true, "computer": true, "app_run": true, "task_run": true, "upload": true, "rich_fill": true, "skill_run": true, "cap_mcp": true}
 
 // desktopRecReopens: steps that can change a checked result file.
 var desktopRecReopens = map[string]bool{"bash": true, "file_write": true, "file_edit": true, "app_run": true, "task_run": true, "skill_run": true, "script": true}
@@ -447,7 +466,11 @@ func desktopRecoveryBefore(request agentruntime.TurnRequest, scope agentruntime.
 	if action != "publish" && !desktopRecMutating[action] {
 		return nil, nil
 	}
-	if action == "publish" && desktopArgBool(args, "explore") {
+	// explore and check_posted only read. A goal stopped by an unconfirmed
+	// submit tells the model to observe the real state; gating the post-list
+	// read as another publish makes that observation impossible (Bot 5,
+	// run_c3904ef9: check_posted was refused and CSDN stayed unconfirmed).
+	if action == "publish" && (desktopArgBool(args, "explore") || desktopArgBool(args, "check_posted")) {
 		return nil, nil
 	}
 	eng := desktopRecovery()

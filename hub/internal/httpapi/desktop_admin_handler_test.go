@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -141,6 +142,55 @@ func TestDesktopStopAdminHandlerForgetsNovncView(t *testing.T) {
 	}
 	if bots.DesktopViewURL("tenant-a", "alice") != "" {
 		t.Fatalf("view survived the stop: %q", bots.DesktopViewURL("tenant-a", "alice"))
+	}
+}
+
+func TestDesktopStopAdminHandlerKeepsIsolatedBotView(t *testing.T) {
+	docker, stops := dockerDesktopFake(t, "http://dockerd.example:6080/vnc.html?autoconnect=1")
+	pool := desktopPoolFake(t, newDesktopSettingsMem(), docker.URL)
+	bots := botmgmt.NewService(&botSettingsMem{})
+	user := "alice::desk::bot_2"
+	bots.NoteDesktopView("tenant-a", user, "http://dockerd.example:6080/vnc.html?autoconnect=1")
+	pool.NoteBotGUIUse("tenant-a", user, "http://dockerd.example:6080/vnc.html?autoconnect=1")
+
+	rec := httptest.NewRecorder()
+	PostDesktopStopAdminHandler(pool, bots).ServeHTTP(rec, adminRequest(http.MethodPost, "/api/admin/desktop-services/desktops/stop", `{"user_id":"alice::desk::bot_2"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"idle"`) {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+	if bots.DesktopViewURL("tenant-a", user) == "" {
+		t.Fatal("admin stop hid an isolated bot display that stays up")
+	}
+	if at, _ := pool.BotGUIUse("tenant-a", user); at.IsZero() {
+		t.Fatal("admin stop cleared the bot screen record")
+	}
+	if got := atomic.LoadInt32(stops); got != 0 {
+		t.Fatalf("docker stops=%d, a bot display is not stopped here", got)
+	}
+}
+
+func TestPostDesktopStopReportsIsolatedDisplayIdle(t *testing.T) {
+	t.Setenv("MACLAW_DESKTOP_API_TOKEN", "desktop-api-token")
+	pool := desktoppool.New(newDesktopSettingsMem(), nil)
+	bots := botmgmt.NewService(&botSettingsMem{})
+	call := func(user string) string {
+		req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"tenant_id":"tenant-a","user_id":"`+user+`","instance_id":"inst"}`))
+		req.Header.Set("Authorization", "Bearer desktop-api-token")
+		rec := httptest.NewRecorder()
+		PostDesktopStopHandler(pool, bots).ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("user %s status=%d body=%s", user, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+	if body := call("alice::desk::bot_2"); !strings.Contains(body, `"status":"idle"`) {
+		t.Fatalf("isolated stop body=%s", body)
+	}
+	if body := call("alice"); !strings.Contains(body, `"status":"stopped"`) {
+		t.Fatalf("owner stop body=%s", body)
 	}
 }
 
@@ -431,7 +481,11 @@ func TestDesktopServicesViewEmptyWhenBotScopeIsOff(t *testing.T) {
 	}
 	system := newDesktopSettingsMem()
 	pool := desktopUserPool(t, system, []desktoppool.Assignment{{Scope: desktoppool.ScopeGlobal}})
+	// A grant for someone else puts the scope into restricted mode.
 	bots := botmgmt.NewService(system)
+	if _, err := bots.CreateGrant(context.Background(), "tenant-a", botmgmt.Grant{Scope: botmgmt.ScopeUser, TargetID: "zoe"}); err != nil {
+		t.Fatal(err)
+	}
 	rec := httptest.NewRecorder()
 	GetDesktopServicesAdminHandler(pool, desktopTestUsers{items: tenantUsers}, bots).ServeHTTP(rec, adminRequest(http.MethodGet, "/api/admin/desktop-services", ""))
 	if rec.Code != http.StatusOK {
@@ -511,6 +565,80 @@ func (d tenantScopedDir) ParentID(ctx context.Context, groupID string) (string, 
 		return "", nil
 	}
 	return "", nil
+}
+
+// pinSetSettings stores the srv link, then refuses the pin write.
+type pinSetSettings struct {
+	values map[string]string
+	sets   int
+}
+
+func (m *pinSetSettings) Get(_ context.Context, key string) (string, error) {
+	value, ok := m.values[key]
+	if !ok {
+		return "", context.Canceled
+	}
+	return value, nil
+}
+
+func (m *pinSetSettings) Set(_ context.Context, key, valueJSON string) error {
+	m.sets++
+	if m.sets > 1 {
+		return errors.New("store down")
+	}
+	if m.values == nil {
+		m.values = map[string]string{}
+	}
+	m.values[key] = valueJSON
+	return nil
+}
+
+func TestUserAssignmentRollsBackWhenTheNodePinIsNotStored(t *testing.T) {
+	poolSettings := newDesktopSettingsMem()
+	pool := desktoppool.New(poolSettings, nil)
+	ctx := context.Background()
+	server, err := pool.CreateServer(ctx, store.DefaultTenantID, desktoppool.Server{
+		Name: "lab", BaseURL: desktoppool.NodeBaseURL("dn_lab"), AccessToken: "tok", NodeID: "dn_lab",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bots := botmgmt.NewService(&pinSetSettings{})
+	if err := bots.AttachNodeSrv(ctx, store.DefaultTenantID, "dn_lab", "http://srv.dn_lab.node.invalid", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"scope":"user","target_id":"alice","server_id":"` + server.ID + `"}`
+	rec := httptest.NewRecorder()
+	PostDesktopAssignmentAdminHandler(pool, bots).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/admin/desktop-services/assignments", strings.NewReader(body)))
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "NODE_PIN") {
+		t.Fatalf("assign %d %s", rec.Code, rec.Body.String())
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil || len(view.Assignments) != 0 {
+		t.Fatalf("assignments = %+v err %v", view.Assignments, err)
+	}
+}
+
+func TestUserAssignmentToADesktopWithoutSrvStays(t *testing.T) {
+	pool := desktoppool.New(newDesktopSettingsMem(), nil)
+	ctx := context.Background()
+	server, err := pool.CreateServer(ctx, store.DefaultTenantID, desktoppool.Server{
+		Name: "lab", BaseURL: desktoppool.NodeBaseURL("dn_lab"), AccessToken: "tok", NodeID: "dn_lab",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bots := botmgmt.NewService(newDesktopSettingsMem())
+	body := `{"scope":"user","target_id":"alice","server_id":"` + server.ID + `"}`
+	rec := httptest.NewRecorder()
+	PostDesktopAssignmentAdminHandler(pool, bots).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/admin/desktop-services/assignments", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("assign %d %s", rec.Code, rec.Body.String())
+	}
+	view, err := pool.View(ctx, store.DefaultTenantID)
+	if err != nil || len(view.Assignments) != 1 {
+		t.Fatalf("assignments = %+v err %v", view.Assignments, err)
+	}
 }
 
 func mustJSONOrNil(v any) string {

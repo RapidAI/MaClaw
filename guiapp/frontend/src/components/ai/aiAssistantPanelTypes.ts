@@ -189,6 +189,8 @@ export interface AIAssistantPanelProps {
     codingInheritsAssistant?: boolean;
     providerSelectionPending?: boolean;
     onOpenLLMSettings?: () => void;
+    /** Model menu trailing action: open LLM settings → provider management. */
+    onAddCustomModel?: () => void;
     /** Published from the active task's explicit execution metadata. */
     onActiveExecutionProfileChange?: (profile: AIExecutionProfile) => void;
     onLanguageChange?: (lang: string) => void;

@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/guiapp/petpack"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -662,6 +663,28 @@ func monitorInfoForRect(r workAreaRect) (workAreaMonitorInfo, bool) {
 	return mi, true
 }
 
+// petMonitorWorkArea is the work area of the monitor under the pet. Roaming
+// uses it so a pet on a display left of the primary is not pulled to the origin.
+func petMonitorWorkArea(x, y, sz int) (petpack.WindowRect, bool) {
+	if sz < 1 {
+		sz = 1
+	}
+	info, ok := monitorInfoForRect(rectFromOrigin(x, y, sz, sz))
+	if !ok {
+		return petpack.WindowRect{}, false
+	}
+	area := info.RcWork
+	if area.Right <= area.Left || area.Bottom <= area.Top {
+		return petpack.WindowRect{}, false
+	}
+	return petpack.WindowRect{
+		Left:   int(area.Left),
+		Top:    int(area.Top),
+		Right:  int(area.Right),
+		Bottom: int(area.Bottom),
+	}, true
+}
+
 func rectFromOrigin(x, y, width, height int) workAreaRect {
 	return workAreaRect{
 		Left: int32(x), Top: int32(y),
@@ -724,6 +747,107 @@ func invalidateMainHWNDCache(hwnd uintptr) {
 		mainHWNDCache = 0
 	}
 	mainHWNDCacheMu.Unlock()
+}
+
+// petPatrolMissHold is how long a failed main-window search stays failed.
+// The pet paints at 20 FPS. Searching again on every frame enumerates every
+// top-level window for as long as the main window is hidden.
+const petPatrolMissHold = 500 * time.Millisecond
+
+// petPatrolLookup remembers the main window between paints. A miss is not
+// retried until petPatrolMissHold elapses. The hwnd is kept across that miss:
+// showing the same window passes hwndStillUsable on the next frame, instead
+// of waiting out the hold and then jumping onto the border. A visible window
+// is not cached as a miss, so leaving fullscreen is seen on the next frame.
+var petPatrolLookup struct {
+	mu        sync.Mutex
+	hwnd      uintptr
+	missUntil time.Time
+}
+
+// findPetMainWindow is the search a patrol miss runs. Tests replace it.
+var findPetMainWindow = findMainWindowHWND
+
+func petPatrolHWND(petHWND uintptr, now time.Time) uintptr {
+	petPatrolLookup.mu.Lock()
+	cached := petPatrolLookup.hwnd
+	missUntil := petPatrolLookup.missUntil
+	petPatrolLookup.mu.Unlock()
+	if cached != 0 && cached != petHWND && hwndStillUsable(cached) {
+		return cached
+	}
+	if !missUntil.IsZero() && now.Before(missUntil) {
+		return 0
+	}
+	found := findPetMainWindow()
+	petPatrolLookup.mu.Lock()
+	defer petPatrolLookup.mu.Unlock()
+	if found == 0 || found == petHWND {
+		if petPatrolLookup.hwnd == petHWND {
+			petPatrolLookup.hwnd = 0
+		}
+		petPatrolLookup.missUntil = now.Add(petPatrolMissHold)
+		return 0
+	}
+	petPatrolLookup.hwnd = found
+	petPatrolLookup.missUntil = time.Time{}
+	return found
+}
+
+// mainWindowPatrolRect is the outer screen rectangle of the visible main
+// window, plus the work area of the monitor that window is on. A hidden,
+// minimized, or missing window, and a window whose rectangle covers its
+// monitor, return false so the pet keeps roaming. Maximized is not
+// fullscreen: that rectangle stops at the work area. petHWND is skipped so
+// the pet never patrols her own window.
+func mainWindowPatrolRect(petHWND uintptr) (petpack.WindowRect, petpack.WindowRect, bool) {
+	hwnd := petPatrolHWND(petHWND, time.Now())
+	if hwnd == 0 {
+		return petpack.WindowRect{}, petpack.WindowRect{}, false
+	}
+	var cur workAreaRect
+	if ok, _, _ := procGetWindowRectWA.Call(hwnd, uintptr(unsafe.Pointer(&cur))); ok == 0 {
+		return petpack.WindowRect{}, petpack.WindowRect{}, false
+	}
+	if cur.Right <= cur.Left || cur.Bottom <= cur.Top {
+		return petpack.WindowRect{}, petpack.WindowRect{}, false
+	}
+	if windowCoversItsMonitor(hwnd, cur) {
+		return petpack.WindowRect{}, petpack.WindowRect{}, false
+	}
+	win := petpack.WindowRect{
+		Left:   int(cur.Left),
+		Top:    int(cur.Top),
+		Right:  int(cur.Right),
+		Bottom: int(cur.Bottom),
+	}
+	var work petpack.WindowRect
+	if area, found := monitorWorkAreaForHWND(hwnd); found {
+		work = petpack.WindowRect{
+			Left:   int(area.Left),
+			Top:    int(area.Top),
+			Right:  int(area.Right),
+			Bottom: int(area.Bottom),
+		}
+	}
+	return win, work, true
+}
+
+// windowCoversItsMonitor matches the desktop fullscreen check: the window
+// rectangle equals the monitor, including the taskbar strip. A maximized
+// window matches the work area instead, so it still has an edge to walk.
+func windowCoversItsMonitor(hwnd uintptr, rect workAreaRect) bool {
+	hmon, _, _ := procMonitorFromWindowWA.Call(hwnd, monitorDefaultToNearest)
+	if hmon == 0 {
+		return false
+	}
+	var mi workAreaMonitorInfo
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	if r, _, _ := procGetMonitorInfoWWA.Call(hmon, uintptr(unsafe.Pointer(&mi))); r == 0 {
+		return false
+	}
+	mon := mi.RcMonitor
+	return rect.Left == mon.Left && rect.Top == mon.Top && rect.Right == mon.Right && rect.Bottom == mon.Bottom
 }
 
 func findMainWindowHWND() uintptr {

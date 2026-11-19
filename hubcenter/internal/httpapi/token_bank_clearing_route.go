@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // Routing money operations to one node.
@@ -151,11 +153,10 @@ func (h *SkillMarketHandlers) tokenBankProxyToPeer(w http.ResponseWriter, r *htt
 		req.Header.Set(tokenBankPeerSecretHeader, secret)
 	}
 
-	client := &http.Client{
-		Timeout: tokenBankClearingProxyTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	client := remote.NewHubHTTPClient()
+	client.Timeout = tokenBankClearingProxyTimeout
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	resp, err := client.Do(req)
 	if err != nil {

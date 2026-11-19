@@ -849,6 +849,9 @@ type pendingScopeApproval struct {
 	Request    ScopeApprovalRequest
 	ResponseCh chan ScopeApprovalDecision
 	CreatedAt  time.Time
+	// app is the desktop that showed the dialog. A decision from MCP has to
+	// close that dialog; the panel only drops it when this process emits.
+	app *App
 }
 
 var (
@@ -858,11 +861,16 @@ var (
 
 func storePendingScopeApproval(handler *IMMessageHandler, req ScopeApprovalRequest, ch chan ScopeApprovalDecision) string {
 	id := fmt.Sprintf("scope_%d", atomic.AddUint64(&scopeApprovalIDCounter, 1))
+	var app *App
+	if handler != nil {
+		app = handler.app
+	}
 	pendingScopeApprovals.Store(id, &pendingScopeApproval{
 		ID:         id,
 		Request:    req,
 		ResponseCh: ch,
 		CreatedAt:  time.Now(),
+		app:        app,
 	})
 	return id
 }
@@ -936,29 +944,42 @@ func (a *App) ListPendingScopeApprovals() []ScopeApprovalView {
 // ResolveScopeApproval is called by the frontend when the user responds to
 // a scope approval prompt. This is exposed as a Wails binding.
 func ResolveScopeApproval(approvalID string, decision string) {
+	deliverScopeApproval(approvalID, decision)
+}
+
+// deliverScopeApproval hands the decision to the waiting tool. False means
+// the approval was already taken or the tool is no longer receiving, so the
+// caller must not tell the user the decision was applied.
+func deliverScopeApproval(approvalID, decision string) bool {
 	val, ok := pendingScopeApprovals.LoadAndDelete(approvalID)
 	if !ok {
-		return
+		return false
 	}
-	pending := val.(*pendingScopeApproval)
+	pending, ok := val.(*pendingScopeApproval)
+	if !ok || pending == nil || pending.ResponseCh == nil {
+		return false
+	}
+	select {
+	case pending.ResponseCh <- scopeApprovalDecisionFromText(decision):
+		emitScopeApprovalResolvedEvent(pending.app, approvalID)
+		return true
+	default:
+		return false
+	}
+}
 
-	var d ScopeApprovalDecision
+func scopeApprovalDecisionFromText(decision string) ScopeApprovalDecision {
 	switch strings.ToLower(strings.TrimSpace(decision)) {
 	case "allow_once", "allowonce", "allow once", "仅这一次":
-		d = ScopeApprovalAllowOnce
+		return ScopeApprovalAllowOnce
 	case "allow_task", "allowtask", "allow task", "本任务内允许":
-		d = ScopeApprovalAllowTask
+		return ScopeApprovalAllowTask
 	case "allow_dir", "allowdir", "allow dir", "allow directory":
-		d = ScopeApprovalAllowDir
+		return ScopeApprovalAllowDir
 	case "full_access", "fullaccess", "full access":
-		d = ScopeApprovalFullAccess
+		return ScopeApprovalFullAccess
 	default:
-		d = ScopeApprovalDeny
-	}
-
-	select {
-	case pending.ResponseCh <- d:
-	default:
+		return ScopeApprovalDeny
 	}
 }
 

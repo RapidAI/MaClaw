@@ -130,9 +130,21 @@ func TestParkedMessageStartsWhenASlotFrees(t *testing.T) {
 	if !strings.Contains(got[1], "再开一个") {
 		t.Fatalf("slot did not start the parked message: %v", got)
 	}
-	view := svc.DesktopQueueStatus("tenant-a", "alice", "bot_alice", "turn-b")
-	if (view.State != "running" && view.State != "done") || view.RunID == "" {
-		t.Fatalf("after start view = %+v", view)
+	// The post lands before the queue record shows the new run: poll the
+	// view instead of catching the start mid-flight.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		view := svc.DesktopQueueStatus("tenant-a", "alice", "bot_alice", "turn-b")
+		if (view.State == "running" || view.State == "done") && view.RunID != "" {
+			break
+		}
+		if view.State == "missing" {
+			t.Fatalf("started message vanished from the queue view")
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after start view = %+v", view)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -902,18 +902,15 @@ func (mc *Compressor) runOnce(ctx context.Context) {
 	mc.mu.Unlock()
 
 	result, err := mc.Compress(ctx)
+	mc.recordRun(result, err)
 	mc.mu.Lock()
-	mc.lastRun = time.Now()
-	mc.lastResult = result
 	if err != nil {
-		mc.lastError = err.Error()
 		mc.consecutiveFailures++
 		if mc.consecutiveFailures >= maxConsecutiveCompressFailures {
 			mc.circuitBreakerTripped = true
 			log.Printf("[memory_compress] circuit breaker tripped after %d consecutive failures", mc.consecutiveFailures)
 		}
 	} else {
-		mc.lastError = ""
 		mc.consecutiveFailures = 0
 		mc.circuitBreakerTripped = false
 	}
@@ -921,6 +918,17 @@ func (mc *Compressor) runOnce(ctx context.Context) {
 
 	if mc.emitter != nil {
 		mc.emitter.Emit("memory:compressed", result)
+	}
+}
+
+func (mc *Compressor) recordRun(result *CompressResult, err error) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	mc.lastRun = time.Now()
+	mc.lastResult = result
+	mc.lastError = ""
+	if err != nil {
+		mc.lastError = err.Error()
 	}
 }
 
@@ -1134,6 +1142,23 @@ func (mc *Compressor) createBackup() (string, error) {
 	return mc.createBackupLocked()
 }
 
+type memoryBackupSnapshot struct {
+	Entries []Entry `json:"entries"`
+	Archive []Entry `json:"archive"`
+}
+
+func decodeMemoryBackup(data []byte) (memoryBackupSnapshot, error) {
+	var snapshot memoryBackupSnapshot
+	if err := json.Unmarshal(data, &snapshot); err == nil && snapshot.Entries != nil {
+		return snapshot, nil
+	}
+	var entries []Entry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return memoryBackupSnapshot{}, err
+	}
+	return memoryBackupSnapshot{Entries: entries, Archive: []Entry{}}, nil
+}
+
 func (mc *Compressor) createBackupLocked() (string, error) {
 	dir := mc.backupDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1143,8 +1168,12 @@ func (mc *Compressor) createBackupLocked() (string, error) {
 		return "", fmt.Errorf("flush before backup: %w", err)
 	}
 	mc.store.mu.RLock()
-	data, err := json.MarshalIndent(mc.store.entries, "", "  ")
+	snapshot := memoryBackupSnapshot{Entries: append([]Entry{}, mc.store.entries...), Archive: []Entry{}}
+	if mc.store.archive != nil {
+		snapshot.Archive = mc.store.archive.List("", "")
+	}
 	mc.store.mu.RUnlock()
+	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal memory snapshot: %w", err)
 	}
@@ -1157,8 +1186,10 @@ func (mc *Compressor) createBackupLocked() (string, error) {
 	// Prune old backups beyond the retention limit immediately after creation,
 	// so the backup directory never grows beyond limit+1 files regardless of
 	// whether the user opens the backup list UI.
-	// Error is best-effort — backup was already created successfully.
-	mc.pruneOldBackups() //nolint:errcheck
+	// The backup itself succeeded; retention errors are logged and surfaced by status calls.
+	if _, err := mc.pruneOldBackups(); err != nil {
+		log.Printf("[memory_compact] prune backups: %v", err)
+	}
 
 	return name, nil
 }
@@ -1191,14 +1222,21 @@ func (mc *Compressor) pruneOldBackups() ([]backupFileInfo, error) {
 		return files[i].modTime.After(files[j].modTime)
 	})
 	limit := mc.getMaxBackups()
-	if len(files) > limit {
-		for _, old := range files[limit:] {
-			_ = os.Remove(filepath.Join(dir, old.name))
-		}
-		files = files[:limit]
+	if len(files) <= limit {
+		return files, nil
 	}
-	return files, nil
+	kept := append([]backupFileInfo(nil), files[:limit]...)
+	var errs []error
+	for _, old := range files[limit:] {
+		if err := removeBackupFile(filepath.Join(dir, old.name)); err != nil {
+			kept = append(kept, old)
+			errs = append(errs, fmt.Errorf("remove %s: %w", old.name, err))
+		}
+	}
+	return kept, errors.Join(errs...)
 }
+
+var removeBackupFile = os.Remove
 
 // backupFileInfo holds the metadata from a single ReadDir + Info call,
 // shared between pruneOldBackups and ListBackups to avoid double scanning.
@@ -1254,7 +1292,7 @@ func (mc *Compressor) getMaxBackups() int {
 
 // SetMaxBackups updates the backup retention limit and immediately prunes
 // any excess backup files.
-func (mc *Compressor) SetMaxBackups(n int) {
+func (mc *Compressor) SetMaxBackups(n int) error {
 	if n < MinBackups {
 		n = MinBackups
 	}
@@ -1266,7 +1304,8 @@ func (mc *Compressor) SetMaxBackups(n int) {
 	mc.mu.Lock()
 	mc.maxBackups = n
 	mc.mu.Unlock()
-	mc.pruneOldBackups() //nolint:errcheck
+	_, err := mc.pruneOldBackups()
+	return err
 }
 
 // RestoreBackup restores a backup by name.
@@ -1286,15 +1325,37 @@ func (mc *Compressor) RestoreBackup(backupName string) error {
 		}
 		return fmt.Errorf("read backup: %w", err)
 	}
-	var restored []Entry
-	if err := json.Unmarshal(data, &restored); err != nil {
+	snapshot, err := decodeMemoryBackup(data)
+	if err != nil {
 		return fmt.Errorf("parse backup: %w", err)
+	}
+	if err := validateRestoredSnapshot(snapshot.Entries); err != nil {
+		return err
+	}
+	if err := validateRestoredSnapshot(snapshot.Archive); err != nil {
+		return err
 	}
 	if _, err := mc.createBackupLocked(); err != nil {
 		return fmt.Errorf("create safety backup: %w", err)
 	}
-	if err := mc.store.RestoreEntriesSnapshot(restored); err != nil {
+	previousActive := mc.store.List("", "")
+	if err := mc.store.RestoreEntriesSnapshot(snapshot.Entries); err != nil {
 		return fmt.Errorf("restore memory snapshot: %w", err)
+	}
+	if mc.store.archive != nil {
+		if err := mc.store.archive.ReplaceEntriesDurable(snapshot.Archive); err != nil {
+			rollbackErr := mc.store.RestoreEntriesSnapshot(previousActive)
+			if rollbackErr != nil {
+				return fmt.Errorf("restore archive snapshot: %v; rollback active memory: %v", err, rollbackErr)
+			}
+			return fmt.Errorf("restore archive snapshot: %w", err)
+		}
+	} else if len(snapshot.Archive) > 0 {
+		rollbackErr := mc.store.RestoreEntriesSnapshot(previousActive)
+		if rollbackErr != nil {
+			return fmt.Errorf("archive is unavailable; rollback active memory: %v", rollbackErr)
+		}
+		return fmt.Errorf("memory archive not initialized")
 	}
 	return nil
 }
@@ -1318,11 +1379,11 @@ func (mc *Compressor) countEntriesInFile(path string) int {
 	if err != nil {
 		return -1
 	}
-	var entries []Entry
-	if err := json.Unmarshal(data, &entries); err != nil {
+	snapshot, err := decodeMemoryBackup(data)
+	if err != nil {
 		return -1
 	}
-	return len(entries)
+	return len(snapshot.Entries)
 }
 
 func truncStr(s string, maxLen int) string {

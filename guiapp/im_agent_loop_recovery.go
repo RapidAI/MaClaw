@@ -81,6 +81,14 @@ func (h *IMMessageHandler) applyAgentLoopRecoverPrompt(
 	phase.RecoverPrompt = ""
 	phase.RecoverReason = agentRecoverNone
 	phase.Stage = agentStageConverge
+	if ctx != nil {
+		// A skill-failed recover just discharged the search contract
+		// (FallbackAllowed + RemoteSearchExhausted). Republish the contract
+		// now so a held grant that just became landable is not still
+		// reported held. The surface itself is published by the round-prep
+		// caller after floor-unlock, orchestrator, and guided reseal run.
+		ctx.noteSurfaceGrantContract(surfaceGrantContractForPhase(ctx, *phase))
+	}
 	return result
 }
 

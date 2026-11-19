@@ -582,6 +582,56 @@ func (a *App) speakPlainTextAsync(input string) {
 	a.emitEvent("tts:audio", base64EncodeWAV(wav))
 }
 
+// SpeakDesktopBotReply reads a settled desktop-bot reply aloud when voice
+// readback is enabled (bot_voice_readback_enabled + tts_enabled). Long replies
+// are chunked like toolTTSLocal so Kokoro does not truncate mid-sentence.
+// Fire-and-forget, matching SpeakPlainText.
+func (a *App) SpeakDesktopBotReply(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	go a.speakDesktopBotReplyAsync(text)
+}
+
+func (a *App) speakDesktopBotReplyAsync(text string) {
+	if !ttsSpeakMu.TryLock() {
+		return
+	}
+	defer ttsSpeakMu.Unlock()
+
+	cfg, err := a.LoadConfig()
+	if err != nil || !cfg.TTSEnabled || !cfg.BotVoiceReadback {
+		return
+	}
+	if err := a.ensureTTSAssetsForUse(cfg.RemoteHubURL, false); err != nil {
+		fmt.Printf("[tts] bot readback asset preparation failed: %v\n", err)
+		return
+	}
+	manager := a.ensureTTSManagerForSynthesis()
+	if manager == nil {
+		fmt.Println("[tts] bot readback: manager unavailable after asset preparation")
+		return
+	}
+
+	chunks := tts.PrepareSpeechChunks(text, tts.MaxLongFormSpeechRunes, 0)
+	for i, part := range chunks {
+		// Re-check per chunk: turning TTS or readback off mid-reply stops the
+		// remaining chunks instead of talking through a disabled switch.
+		if live, liveErr := a.LoadConfig(); liveErr != nil || !live.TTSEnabled || !live.BotVoiceReadback {
+			return
+		}
+		wav, synthErr := manager.SynthesizeText(part)
+		if synthErr != nil {
+			fmt.Printf("[tts] bot readback synthesis error chunk %d/%d: %v\n", i+1, len(chunks), synthErr)
+			continue
+		}
+		if len(wav) > 0 && a.ctx != nil {
+			a.emitEvent("tts:audio", base64EncodeWAV(wav))
+		}
+	}
+}
+
 // SynthesizeTTSPreview generates a bounded WAV for settings-quality checks.
 // It uses the currently selected voice, including the native English voice.
 func (a *App) SynthesizeTTSPreview(text string) (string, error) {

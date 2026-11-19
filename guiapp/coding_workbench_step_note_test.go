@@ -187,7 +187,7 @@ func TestUpdateStickyCodingStepStatusStoresANoteNotTheReport(t *testing.T) {
 	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
 	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{{Index: 4, Title: "剖析单线程路径", Status: codingStepRunning}})
 
-	h.updateStickyCodingStepStatus(userID, 4, codingStepPassed, codingStepNoteReportFixture)
+	h.updateStickyCodingStepStatus(userID, 4, codingStepPassed, codingStepNoteReportFixture, "")
 
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	if len(mem.StepStatuses) != 1 {

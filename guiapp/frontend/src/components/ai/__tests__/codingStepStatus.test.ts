@@ -249,6 +249,12 @@ describe("codingChecklistAllDone", () => {
             { index: 1, status: "failed" },
             { index: 2, status: "skipped" },
         ])).toBe(false);
+        expect(codingPlanAwaitingStart([
+            { index: 1, status: "waiting_review" },
+        ])).toBe(false);
+        expect(codingChecklistAllDone([
+            { index: 1, status: "waiting_review" },
+        ])).toBe(false);
     });
 
     it("does not treat an empty list as finished", () => {

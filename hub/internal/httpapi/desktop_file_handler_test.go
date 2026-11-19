@@ -2,11 +2,14 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 )
 
 func TestDesktopFileBashAndHTTPStayInTheContainer(t *testing.T) {
@@ -72,5 +75,22 @@ func TestDesktopFileBashAndHTTPStayInTheContainer(t *testing.T) {
 	page := call(PostDesktopHTTPHandler(pool), `{"tenant_id":"tenant-a","user_id":"alice","url":"https://example.com/a"}`)
 	if page.Code != http.StatusOK || gotURL != "https://example.com/a" || !strings.Contains(page.Body.String(), `"status":200`) {
 		t.Fatalf("http status=%d url=%q body=%s", page.Code, gotURL, page.Body.String())
+	}
+}
+
+func TestDesktopErrorNamesAnOfflineNode(t *testing.T) {
+	offline := httptest.NewRecorder()
+	writeDesktopError(offline, fmt.Errorf("%w: node is offline", desktoppool.ErrService))
+	if offline.Code != http.StatusBadGateway ||
+		!strings.Contains(offline.Body.String(), "NODE_OFFLINE") ||
+		!strings.Contains(offline.Body.String(), "这台内网电脑暂时连不上") {
+		t.Fatalf("offline status=%d body=%s", offline.Code, offline.Body.String())
+	}
+	public := httptest.NewRecorder()
+	writeDesktopError(public, fmt.Errorf("%w: connection refused", desktoppool.ErrService))
+	if public.Code != http.StatusBadGateway ||
+		strings.Contains(public.Body.String(), "NODE_OFFLINE") ||
+		!strings.Contains(public.Body.String(), "connection refused") {
+		t.Fatalf("public status=%d body=%s", public.Code, public.Body.String())
 	}
 }

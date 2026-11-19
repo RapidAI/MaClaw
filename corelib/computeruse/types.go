@@ -40,6 +40,9 @@ type MarkedElement struct {
 	// Window is the title of the top-level window owning this element's center
 	// ("" when unknown). Policy metadata — kept out of TextForModel.
 	Window string `json:"window,omitempty"`
+	// WindowID is that window's stable id (Windows HWND). 0 means unknown.
+	// A title change does not move the control to another window.
+	WindowID uint64 `json:"-"`
 }
 
 // ScreenMeta describes the coordinate space of the last capture.

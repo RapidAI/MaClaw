@@ -235,6 +235,28 @@ func TestPreserveBackendOwnedFieldsKeepsSkillMarketSessionIssuer(t *testing.T) {
 	}
 }
 
+func TestPreserveBackendOwnedFieldsKeepsPetPositionLock(t *testing.T) {
+	ondisk := corelib.AppConfig{PetPositionLocked: true}
+	incoming := corelib.AppConfig{}
+
+	preserveBackendOwnedFields(&incoming, &ondisk)
+
+	if !incoming.PetPositionLocked {
+		t.Fatal("settings save cleared the pet position lock")
+	}
+}
+
+func TestPreserveBackendOwnedFieldsKeepsPetScreenOrigin(t *testing.T) {
+	ondisk := corelib.AppConfig{FloatingBtnX: -500, FloatingBtnY: 80, FloatingBtnPositionSet: true}
+	incoming := corelib.AppConfig{FloatingBtnX: 100, FloatingBtnY: 100}
+
+	preserveBackendOwnedFields(&incoming, &ondisk)
+
+	if incoming.FloatingBtnX != -500 || incoming.FloatingBtnY != 80 || !incoming.FloatingBtnPositionSet {
+		t.Fatalf("settings save moved the pet origin: (%d,%d) set=%v", incoming.FloatingBtnX, incoming.FloatingBtnY, incoming.FloatingBtnPositionSet)
+	}
+}
+
 func TestPreserveBackendOwnedFieldsKeepsPersistedHubCenterCandidates(t *testing.T) {
 	// Once the backend has a persisted list, stale frontend snapshots must not
 	// overwrite failover state maintained by discovery/selection workers.
@@ -1138,7 +1160,7 @@ func TestGetSettingsTabConfigFiltersByTab(t *testing.T) {
 	if pet["pet_enabled"] != true {
 		t.Fatalf("pet_enabled = %#v", pet["pet_enabled"])
 	}
-	if pet["pet_skin"] != "clawmate" {
+	if pet["pet_skin"] != "ragdoll" {
 		t.Fatalf("pet_skin = %#v", pet["pet_skin"])
 	}
 	if _, hasWeatherCity := pet["pet_ambient_city"]; hasWeatherCity {
@@ -1257,6 +1279,47 @@ func TestGetSettingsTabConfigIncludesZeroValues(t *testing.T) {
 	}
 }
 
+func TestChatBubblesEnabledDefaultsOn(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.Language = "zh-Hans"
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	if on, err := app.GetChatBubblesEnabled(); err != nil || !on {
+		t.Fatalf("absent chat bubbles should stay on, got on=%v err=%v", on, err)
+	}
+
+	if err := app.SetChatBubblesEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if on, err := app.GetChatBubblesEnabled(); err != nil || on {
+		t.Fatalf("chat bubbles stayed on after turning them off, got on=%v err=%v", on, err)
+	}
+	ui, err := app.GetSettingsTabConfig("ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := ui["chat_bubbles_enabled"]; !ok || v != false {
+		t.Fatalf("chat_bubbles_enabled want false present, got ok=%v v=%#v", ok, v)
+	}
+
+	reloaded := &App{testHomeDir: tmpHome}
+	if on, err := reloaded.GetChatBubblesEnabled(); err != nil || on {
+		t.Fatalf("turned-off chat bubbles did not survive reload, got on=%v err=%v", on, err)
+	}
+	if err := reloaded.SetChatBubblesEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if on, err := reloaded.GetChatBubblesEnabled(); err != nil || !on {
+		t.Fatalf("chat bubbles stayed off after turning them on, got on=%v err=%v", on, err)
+	}
+}
+
 func TestChatAndCodingFontFamily(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1362,6 +1425,9 @@ func TestChatFontGettersRejectUnreadableConfig(t *testing.T) {
 	}
 	if id, err := app.GetCodingFontFamily(); err == nil {
 		t.Fatalf("GetCodingFontFamily() = %q, nil; want load error", id)
+	}
+	if on, err := app.GetChatBubblesEnabled(); err == nil {
+		t.Fatalf("GetChatBubblesEnabled() = %v, nil; want load error", on)
 	}
 }
 
@@ -2635,9 +2701,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 			map[string]interface{}{"id": "p1", "name": "One", "path": "D:/one", "yolo_mode": false},
 			map[string]interface{}{"id": "p2", "name": "Two", "path": "D:/two", "yolo_mode": true},
 		},
-		"use_windows_terminal":       false,
-		"show_ai_trace_entry":        true,
-		"show_app_entry":             true,
+		"show_ai_trace_entry": true, "show_app_entry": true,
 		"survey_enabled":             false,
 		"show_coding_tool_entry":     true,
 		"show_codex":                 false,
@@ -2666,7 +2730,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchConfigFields() error = %v", err)
 	}
-	if !patched.PauseEnvCheck || !patched.EnvCheckDone || patched.UseWindowsTerminal || !patched.ShowAITraceEntry || !patched.IsShowAppEntryEnabled() || patched.SurveyEnabled == nil || *patched.SurveyEnabled || !patched.ShowCodingToolEntry || patched.ShowCodex {
+	if !patched.PauseEnvCheck || !patched.EnvCheckDone || !patched.ShowAITraceEntry || !patched.IsShowAppEntryEnabled() || patched.SurveyEnabled == nil || *patched.SurveyEnabled || !patched.ShowCodingToolEntry || patched.ShowCodex {
 		t.Fatalf("boolean patch fields not applied: %#v", patched)
 	}
 	if patched.Language != "zh-Hans" || patched.ActiveTool != "codex" || patched.CurrentProject != "p2" || len(patched.Projects) != 2 || len(patched.FavoriteEmployees) != 2 || patched.FavoriteEmployeeNames["ve1"] != "Reviewer" {
@@ -2699,7 +2763,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if patched.UIZoomFactor != 2.0 || patched.ChatFontSize != 24 || patched.EnvCheckInterval != 14 || patched.LastEnvCheckTime != "2026-06-05T12:00:00Z" || patched.VectorSearchEnabled || patched.ScreenParsingEnabled == nil || *patched.ScreenParsingEnabled || patched.ASREnabled || patched.TTSEnabled || patched.TTSVoiceID != "zm_yunxi" || patched.MaclawAgentMaxIterations != 30 || patched.SubAgentConcurrency != corelib.MaxSubAgentConcurrency || !patched.TrialReflectEnabled {
 		t.Fatalf("ui/vector/agent fields not applied with normalization: %#v", patched)
 	}
-	if !patched.PetEnabled || patched.PetSkin != "clawmate" || patched.PetSize != 92 || patched.PetMotionEnabled == nil || !*patched.PetMotionEnabled || patched.PetMotionSound == nil || *patched.PetMotionSound || patched.PetMotionSoundPreset != "soft" || patched.PetTextInteraction == nil || !*patched.PetTextInteraction || !patched.PetVoiceInput || !patched.PetVoiceReadback || patched.PetFileDropEnabled == nil || *patched.PetFileDropEnabled || patched.PetInteractionMode != "active" || patched.PetConversationMode != "continuous" || patched.PetReadbackMode != "summary" || !patched.PetAutoRetryOnNoHear || patched.PetContinuousTimeout != 45 || !patched.PetQuietMode {
+	if !patched.PetEnabled || patched.PetSkin != "ragdoll" || patched.PetSize != 92 || patched.PetMotionEnabled == nil || !*patched.PetMotionEnabled || patched.PetMotionSound == nil || *patched.PetMotionSound || patched.PetMotionSoundPreset != "soft" || patched.PetTextInteraction == nil || !*patched.PetTextInteraction || !patched.PetVoiceInput || !patched.PetVoiceReadback || patched.PetFileDropEnabled == nil || *patched.PetFileDropEnabled || patched.PetInteractionMode != "active" || patched.PetConversationMode != "continuous" || patched.PetReadbackMode != "summary" || !patched.PetAutoRetryOnNoHear || patched.PetContinuousTimeout != 45 || !patched.PetQuietMode {
 		t.Fatalf("pet fields not applied: %#v", patched)
 	}
 	if patched.ScreenDimTimeoutMin != 9 || patched.RemoteHeartbeatSec != 5 || patched.AgentResponseTimeoutSec != 300 || patched.SkillRunnerTimeoutSec != 3600 || patched.MaclawLLMTimeoutSec != 480 {
@@ -3908,11 +3972,11 @@ func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() reload error = %v", err)
 	}
-	if reloaded.PetSkin != "clawmate" {
-		t.Fatalf("PetSkin = %q, want clawmate", reloaded.PetSkin)
+	if reloaded.PetSkin != "ragdoll" {
+		t.Fatalf("PetSkin = %q, want ragdoll", reloaded.PetSkin)
 	}
-	if reloaded.PetSize != 120 {
-		t.Fatalf("PetSize = %d, want 120", reloaded.PetSize)
+	if reloaded.PetSize != maxPetSize {
+		t.Fatalf("PetSize = %d, want %d", reloaded.PetSize, maxPetSize)
 	}
 	if reloaded.PetInteractionMode != "balanced" {
 		t.Fatalf("PetInteractionMode = %q, want balanced", reloaded.PetInteractionMode)
@@ -4015,6 +4079,18 @@ func TestFloatingAppearanceChangedIncludesPetRuntimeSettings(t *testing.T) {
 	}
 	if !floatingMotionChanged(base, withQuiet) {
 		t.Fatal("expected quiet mode toggle to use the live motion update path")
+	}
+
+	withPin := base
+	withPin.PetPositionLocked = true
+	if floatingAppearanceChanged(base, withPin) {
+		t.Fatal("position lock should hot-update without recreating the floating window")
+	}
+	if floatingMotionChanged(base, withPin) || floatingSoundChanged(base, withPin) {
+		t.Fatal("position lock is not a motion or sound change")
+	}
+	if !floatingPositionLockChanged(base, withPin) {
+		t.Fatal("expected position lock to use the live position update path")
 	}
 
 	withMode := base
@@ -5109,5 +5185,32 @@ func TestListSkillEvolutionAuditIncludesStatusAndVia(t *testing.T) {
 	}
 	if _, ok := legacy["via"]; ok {
 		t.Fatalf("legacy row should have no via key: %#v", legacy)
+	}
+}
+
+func TestSaveAndCloseUserModelPersistsPendingUpdates(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	model, err := user.NewModel(app.userModelPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.userModel = model
+	if err := model.UpdateDimension("preferred_languages", "Go", user.Evidence{
+		Observation: "uses Go", Timestamp: time.Now(), Source: "pattern",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.saveAndCloseUserModel("test")
+	if app.userModel != nil {
+		t.Fatal("user model was not released")
+	}
+	reloaded, err := user.NewModel(app.userModelPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	profile := reloaded.GetProfile()
+	if profile.PreferredLanguages.Value != "Go" || len(profile.PreferredLanguages.Evidence) != 1 || profile.PreferredLanguages.Evidence[0].Observation != "uses Go" {
+		t.Fatalf("pending user model update was not persisted: %#v", profile.PreferredLanguages)
 	}
 }

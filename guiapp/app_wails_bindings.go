@@ -28,6 +28,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/session"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -1383,6 +1384,38 @@ func (a *App) UpdateMemory(id, content, category string, tags []string) error {
 	return nil
 }
 
+// UpdateMemoryWithVersion applies a desktop edit only when the opened version is still current.
+func (a *App) UpdateMemoryWithVersion(id, content, category string, tags []string, expectedUpdatedAt string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "id": id, "category": category, "tags": tags}); err != nil {
+		return err
+	}
+	expectedAt, err := time.Parse(time.RFC3339Nano, expectedUpdatedAt)
+	if err != nil {
+		return fmt.Errorf("invalid memory version: %w", err)
+	}
+	a.ensureInteractionInfra()
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	previous := memoryEntriesByIDsForStore(runtime.Store, id)
+	if !desktopMemoryMutationsAllowed(previous, []string{id}) {
+		return fmt.Errorf("memory not found in desktop scope")
+	}
+	if !previous[0].UpdatedAt.Equal(expectedAt) {
+		return fmt.Errorf("memory changed since it was opened; reload and retry")
+	}
+	applied, err := runtime.Store.UpdateManualMemoryIfUnchanged(id, content, memory.Category(category), tags, previous[0])
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("memory changed during save; reload and retry")
+	}
+	return nil
+}
+
 // DeleteMemory removes the memory entry with the given ID (Wails binding).
 func (a *App) DeleteMemory(id string) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "delete", "id": id}); err != nil {
@@ -1539,11 +1572,6 @@ func (a *App) SetAutoCompress(enabled bool) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "set_auto_compress", "enabled": enabled}); err != nil {
 		return err
 	}
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.MemoryAutoCompress = enabled
-	}); err != nil {
-		return err
-	}
 	a.ensureInteractionInfra()
 	runtime, release := a.acquireSharedMemoryRuntime()
 	defer release()
@@ -1554,10 +1582,29 @@ func (a *App) SetAutoCompress(enabled bool) error {
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
-	if pipeline := maintenance.Pipeline(); pipeline != nil {
-		pipeline.SetAutoCompressEnabled(enabled)
+	pipeline := maintenance.Pipeline()
+	if pipeline == nil {
+		return fmt.Errorf("memory pipeline not initialized")
 	}
-	return nil
+	previous := pipeline.AutoCompressEnabled()
+	previousConfig := previous
+	if cfg, err := a.LoadConfig(); err == nil {
+		previousConfig = cfg.MemoryAutoCompress
+	}
+	return runMemorySettingTransaction(
+		func() error { pipeline.SetAutoCompressEnabled(enabled); return nil },
+		func() error {
+			return a.PatchConfig(func(cfg *corelib.AppConfig) {
+				cfg.MemoryAutoCompress = enabled
+			})
+		},
+		func() error {
+			pipeline.SetAutoCompressEnabled(previous)
+			return a.PatchConfig(func(cfg *corelib.AppConfig) {
+				cfg.MemoryAutoCompress = previousConfig
+			})
+		},
+	)
 }
 
 // GetAutoCompressStatus returns the current state of the auto-compression service (Wails binding).
@@ -1743,11 +1790,8 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 	if n > memory.MaxBackups {
 		n = memory.MaxBackups
 	}
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.MemoryMaxBackups = n
-	}); err != nil {
-		return err
-	}
+	previous := a.GetMemoryMaxBackups()
+	a.ensureInteractionInfra()
 	runtime, release := a.acquireSharedMemoryRuntime()
 	defer release()
 	if runtime == nil {
@@ -1757,7 +1801,39 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
-	return maintenance.SetMaxBackups(n)
+	return runMemorySettingTransaction(
+		func() error { return maintenance.SetMaxBackups(n) },
+		func() error {
+			return a.PatchConfig(func(cfg *corelib.AppConfig) {
+				cfg.MemoryMaxBackups = n
+			})
+		},
+		func() error {
+			if err := maintenance.SetMaxBackups(previous); err != nil {
+				return err
+			}
+			return a.PatchConfig(func(cfg *corelib.AppConfig) {
+				cfg.MemoryMaxBackups = previous
+			})
+		},
+	)
+}
+
+func runMemorySettingTransaction(apply, persist, rollback func() error) error {
+	if err := apply(); err != nil {
+		return memorySettingRollbackError(err, rollback())
+	}
+	if err := persist(); err != nil {
+		return memorySettingRollbackError(err, rollback())
+	}
+	return nil
+}
+
+func memorySettingRollbackError(err, rollbackErr error) error {
+	if rollbackErr != nil {
+		return fmt.Errorf("%w; rollback memory setting: %v", err, rollbackErr)
+	}
+	return err
 }
 
 // ListArchiveMemories returns archived (cold storage) entries filtered by category and keyword (Wails binding).
@@ -1824,60 +1900,100 @@ func (a *App) UnpinMemory(id string) error {
 
 // ensureSessionStore lazily initializes the session search store.
 func (a *App) ensureSessionStore() {
-	a.sessionStoreMu.Do(func() {
-		dbPath := a.sessionSearchDBPath()
-		store, err := session.NewStore(dbPath)
-		if err != nil {
-			log.Printf("[session_history] failed to open store: %v", err)
-			return
-		}
-		a.sessionSearchStore = store
-	})
+	if a == nil {
+		return
+	}
+	a.sessionSearchStoreMu.Lock()
+	defer a.sessionSearchStoreMu.Unlock()
+	if a.sessionSearchStore != nil {
+		return
+	}
+	store, err := session.NewStore(a.sessionSearchDBPath())
+	if err != nil {
+		log.Printf("[session_history] failed to open store: %v", err)
+		return
+	}
+	a.sessionSearchStore = store
+}
+
+func (a *App) acquireSessionStore() (*session.Store, func()) {
+	if a == nil {
+		return nil, func() {}
+	}
+	a.sessionSearchStoreMu.RLock()
+	if a.sessionSearchStore != nil {
+		return a.sessionSearchStore, a.sessionSearchStoreMu.RUnlock
+	}
+	a.sessionSearchStoreMu.RUnlock()
+	a.ensureSessionStore()
+	a.sessionSearchStoreMu.RLock()
+	if a.sessionSearchStore == nil {
+		a.sessionSearchStoreMu.RUnlock()
+		return nil, func() {}
+	}
+	return a.sessionSearchStore, a.sessionSearchStoreMu.RUnlock
+}
+
+func (a *App) closeSessionStore() {
+	if a == nil {
+		return
+	}
+	a.sessionSearchStoreMu.Lock()
+	defer a.sessionSearchStoreMu.Unlock()
+	if a.sessionSearchStore != nil {
+		_ = a.sessionSearchStore.Close()
+		a.sessionSearchStore = nil
+	}
 }
 
 // ListSessionHistory returns the most recent session summaries (Wails binding).
 func (a *App) ListSessionHistory(limit int) ([]session.SessionSummary, error) {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return nil, fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.ListRecent(limit)
+	return store.ListRecent(limit)
 }
 
 // SearchSessionHistory performs FTS5 full-text search across session transcripts (Wails binding).
 func (a *App) SearchSessionHistory(query string, maxResults int) ([]session.SearchResult, error) {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return nil, fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.Search(query, maxResults)
+	return store.Search(query, maxResults)
 }
 
 // GetSessionFullText returns the full transcript for a session ID (Wails binding).
 func (a *App) GetSessionFullText(sessionID string) (string, error) {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return "", fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.GetFullText(sessionID)
+	return store.GetFullText(sessionID)
 }
 
 // DeleteSession removes a session from the history (Wails binding).
 func (a *App) DeleteSession(sessionID string) error {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.Delete(sessionID)
+	return store.Delete(sessionID)
 }
 
 // GetSessionCount returns the total number of stored sessions (Wails binding).
 func (a *App) GetSessionCount() (int, error) {
-	a.ensureSessionStore()
-	if a.sessionSearchStore == nil {
+	store, release := a.acquireSessionStore()
+	defer release()
+	if store == nil {
 		return 0, fmt.Errorf("session store not initialized")
 	}
-	return a.sessionSearchStore.Count()
+	return store.Count()
 }
 
 // getOrCreateMemoryMaintenance returns the singleton corelib memory maintenance facade,
@@ -1989,13 +2105,26 @@ func (a *App) UpdateConfigBinding(section, key, value string) (string, error) {
 // Scheduled task Wails bindings
 // ---------------------------------------------------------------------------
 
-// ListScheduledTasks returns all scheduled tasks (Wails binding).
+// ListScheduledTasks returns this computer's own scheduled tasks.
+// A desktop bot's timer lives on the server clock. Rows left here by an
+// older build are not plan tasks, so they stay out of this list.
 func (a *App) ListScheduledTasks() []scheduler.ScheduledTask {
 	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return nil
 	}
-	return a.scheduledTaskManager.List()
+	return localPlanTasks(a.scheduledTaskManager.List())
+}
+
+func localPlanTasks(tasks []scheduler.ScheduledTask) []scheduler.ScheduledTask {
+	out := make([]scheduler.ScheduledTask, 0, len(tasks))
+	for _, task := range tasks {
+		if strings.TrimSpace(task.DesktopBotID) != "" {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
 }
 
 // CreateScheduledTask creates a new scheduled task (Wails binding).
@@ -2174,6 +2303,24 @@ type AIAssistantSendRequest struct {
 	// The message must run as that task, not as a local slash command or an
 	// open task-panel action.
 	RemoteControl bool `json:"-"`
+	// PromptProfile selects which host adapter is calling the shared assistant.
+	// Empty keeps the ACP programming path. "mcp" is the inbound MCP host.
+	PromptProfile string `json:"-"`
+	// TaskMode is the inbound MCP task mode. Explicit "chat" stays on the
+	// shared assistant path. Empty keeps the workspace-mutation heuristic.
+	TaskMode string `json:"-"`
+	// HostRawText keeps an MCP follow-up or button command as typed. The
+	// workspace preamble would hide slash commands and confirmation actions.
+	HostRawText bool `json:"-"`
+	// BackendDisplayText marks a turn the backend started for a GUI feature
+	// (for example a desktopd deploy). The round is announced with this user
+	// row text, since the panel never sent the request.
+	BackendDisplayText string `json:"-"`
+	// OnDone runs once with the final response of this turn.
+	OnDone func(*IMAgentResponse) `json:"-"`
+	// GitHubRepoMaint marks the automatic start of a repository maintenance
+	// task. Follow-up answers in that task leave it false.
+	GitHubRepoMaint bool `json:"-"`
 }
 
 type AIAssistantContextMessage struct {
@@ -2378,11 +2525,15 @@ func coalesceAssistantTokenDeltas(deltas []string) []coalescedAssistantToken {
 			out = append(out, coalescedAssistantToken{Text: delta})
 			continue
 		}
+		marker, body := textutil.SplitVisibleStreamDelta(delta)
+		if body == "" {
+			continue
+		}
 		next := "content"
-		body := delta
-		if strings.HasPrefix(delta, "\x01") {
+		piece := body
+		if marker == "\x01" {
 			next = "reasoning"
-			body = strings.TrimPrefix(delta, "\x01")
+			piece = "\x01" + body
 		}
 		if lane != "" && lane != next {
 			flush()
@@ -2391,7 +2542,7 @@ func coalesceAssistantTokenDeltas(deltas []string) []coalescedAssistantToken {
 			b.WriteString("\x01")
 		}
 		b.WriteString(body)
-		pieces = append(pieces, delta)
+		pieces = append(pieces, piece)
 		lane = next
 	}
 	flush()
@@ -2531,13 +2682,24 @@ func (n *aiAssistantStreamDeltaNormalizer) Normalize(delta string) string {
 	if delta == "" {
 		return ""
 	}
-	if delta == rejectedRoundContentToken {
+	// Any leading U+0002 is the rejected-round reset, including a suffix glued
+	// to the marker. Splitting it would append that suffix as the next answer
+	// and leave the forecast in the bubble.
+	if strings.HasPrefix(delta, rejectedRoundContentToken) {
 		n.content = ""
 		n.contentSnapshotMode = false
-		return delta
+		body := textutil.SanitizeVisibleChatText(strings.TrimPrefix(delta, rejectedRoundContentToken))
+		if body == "" {
+			return rejectedRoundContentToken
+		}
+		return rejectedRoundContentToken + body
 	}
-	if strings.HasPrefix(delta, "\x01") {
-		next, snapshotMode := normalizeAIAssistantStreamDelta(n.reasoning, strings.TrimPrefix(delta, "\x01"), n.reasoningSnapshotMode)
+	marker, body := textutil.SplitVisibleStreamDelta(delta)
+	if marker == "\x01" {
+		if body == "" {
+			return ""
+		}
+		next, snapshotMode := normalizeAIAssistantStreamDelta(n.reasoning, body, n.reasoningSnapshotMode)
 		if next == "" {
 			return ""
 		}
@@ -2545,7 +2707,10 @@ func (n *aiAssistantStreamDeltaNormalizer) Normalize(delta string) string {
 		n.reasoningSnapshotMode = n.reasoningSnapshotMode || snapshotMode
 		return "\x01" + next
 	}
-	next, snapshotMode := normalizeAIAssistantStreamDelta(n.content, delta, n.contentSnapshotMode)
+	if body == "" {
+		return ""
+	}
+	next, snapshotMode := normalizeAIAssistantStreamDelta(n.content, body, n.contentSnapshotMode)
 	if next == "" {
 		return ""
 	}
@@ -2588,7 +2753,9 @@ func normalizeAIAssistantStreamDelta(existing, incoming string, snapshotMode boo
 
 // SendAIAssistantMessage handles a desktop AI assistant message (Wails binding).
 func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentResponse, error) {
-	a.ensureInteractionInfra()
+	if !repoMaintTestTurnActive(req) {
+		a.ensureInteractionInfra()
+	}
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
 		return nil, fmt.Errorf("message text is required")
@@ -2601,7 +2768,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	// It must run through the normal task loop, not be consumed by a desktop
 	// control/passthrough command handler.
 	isStartMenuLaunch := strings.TrimSpace(req.IMPlatform) != "" && strings.TrimSpace(req.IMTargetUID) != ""
-	if !isStartMenuLaunch && !req.RemoteControl {
+	if !isStartMenuLaunch && !req.RemoteControl && !req.GitHubRepoMaint {
 		if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
 			normalizeArtifactResponseSource(resp)
 			return resp, err
@@ -2660,40 +2827,33 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		}
 	}
 	if projectPath != "" {
-		// Resolve the execution directory the same way the other project-task
-		// consumers do (im_tools_local.go, recentTaskExecutionProjectPath): a
-		// tab-bound override wins, then the task's persistent workingDir tag /
-		// managed workspace subdirectory, then the global default. Using only
-		// EffectiveWorkingDirForOwner here skipped the task's own workingDir,
-		// so a "continue" on a task with a configured worktree never created
-		// or entered that directory.
-		executionProjectPath := a.BoundWorkingDirForOwner(userID)
-		// A stored process default is not a directory the user chose for this
-		// expert. Prefer the task record so the folder is created there; the
-		// bind below points the session at the same place.
-		if strings.TrimSpace(req.ExpertID) != "" && isProcessDefaultWorkspacePath(executionProjectPath) {
-			executionProjectPath = ""
-		}
-		if executionProjectPath == "" {
-			executionProjectPath = a.recentTaskExecutionProjectPath(projectPath)
-		}
-		if executionProjectPath == "" {
-			executionProjectPath = a.EffectiveWorkingDirForOwner(userID)
-		} else {
-			executionProjectPath = a.exclusiveWorkRoot(projectPath, executionProjectPath)
-		}
-		if executionProjectPath != projectPath {
-			log.Printf("[AI assistant] route tab to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
-			if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
-				log.Printf("[AI assistant] reject tab working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
-				return nil, err
+		if maintDir, maintActive, maintErr := a.repoMaintSendWorkspace(userID, projectPath, req.GitHubRepoMaint); maintActive || maintErr != nil {
+			if maintErr != nil {
+				return nil, maintErr
 			}
-		}
-		// Expert sessions are keyed by expert id, so the block above only
-		// creates the workspace. Tools still inherit the desktop directory
-		// unless this session is pointed at the same directory the preview reads.
-		if strings.TrimSpace(req.ExpertID) != "" {
-			a.bindExpertTaskWorkspace(userID, strings.TrimSpace(req.EventScopeID), projectPath)
+			if maintDir != "" && maintDir != projectPath {
+				if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, maintDir); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			// The task record names a coding task's directory. The session cache
+			// is a copy, so a stale desktop bind must not become the directory
+			// this turn prepares. Chat and expert turns still prefer the cache.
+			executionProjectPath := a.projectTurnExecutionDir(userID, projectPath, req.ExpertID)
+			if executionProjectPath != projectPath {
+				log.Printf("[AI assistant] route tab to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
+				if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
+					log.Printf("[AI assistant] reject tab working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
+					return nil, err
+				}
+			}
+			// Expert sessions are keyed by expert id, so the block above only
+			// creates the workspace. Tools still inherit the desktop directory
+			// unless this session is pointed at the same directory the preview reads.
+			if strings.TrimSpace(req.ExpertID) != "" {
+				a.bindExpertTaskWorkspace(userID, strings.TrimSpace(req.EventScopeID), projectPath)
+			}
 		}
 	}
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
@@ -2707,6 +2867,21 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	// events emitted during the goroutine's execution carry the correct scope.
 	if scopeID := strings.TrimSpace(req.EventScopeID); scopeID != "" {
 		a.sessionEventScopeIDs.Store(userID, scopeID)
+	}
+
+	if req.GitHubRepoMaint || a.repoMaintOwnerActive(userID) {
+		prev := req.OnDone
+		auto := req.GitHubRepoMaint
+		req.OnDone = func(resp *IMAgentResponse) {
+			if prev != nil {
+				prev(resp)
+			}
+			a.finishRepoMaintTurn(userID, auto, resp)
+		}
+	}
+	if repoMaintTestTurnActive(req) {
+		a.runAIAssistantMessageAsyncForUser(req, nil, requestID, text, userID)
+		return &IMAgentResponse{RequestID: requestID, Deferred: true}, nil
 	}
 
 	hubClient := a.ensureHubClient()
@@ -3027,6 +3202,11 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		}
 		resp.SessionKey = userID
 		responseEmitted = a.emitAIAssistantResponse(requestID, resp)
+		if req.OnDone != nil {
+			done := req.OnDone
+			req.OnDone = nil
+			done(resp)
+		}
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -3107,10 +3287,14 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	if msgLang == "" {
 		msgLang = a.CurrentLanguage
 	}
+	platform := desktopPlatform
+	if req.GitHubRepoMaint {
+		platform = githubRepoMaintPlatform
+	}
 	msg := IMUserMessage{
 		RequestID:                   requestID,
 		UserID:                      userID,
-		Platform:                    desktopPlatform,
+		Platform:                    platform,
 		Text:                        text,
 		Lang:                        msgLang,
 		ResumeSlotID:                strings.TrimSpace(req.ResumeSlotID),
@@ -3139,8 +3323,20 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	// request, so it has no in-flight round for the request_id. Announce the
 	// round first (same protocol as session-round/goal continuation and ACP
 	// Mode B) or every token/progress below is dropped as unmatched.
+	if repoMaintTestShortCircuit(req) {
+		var turned *IMAgentResponse
+		if repoMaintTestTurn != nil {
+			turned = repoMaintTestTurn(req)
+		} else {
+			turned = &IMAgentResponse{Error: "repo maint test turn"}
+		}
+		emitFinalResponse(turned)
+		return
+	}
 	if req.RemoteControl {
 		a.emitAIAssistantForegroundRoundStarted(requestID, userID, text, remoteControlTurnDisplayText(text))
+	} else if display := strings.TrimSpace(req.BackendDisplayText); display != "" {
+		a.emitAIAssistantForegroundRoundStarted(requestID, userID, text, display)
 	}
 	streamEvents = newAIAssistantStreamEventEmitter(a, requestID, userID)
 	emitEvent := func(name, value string) {
@@ -3421,7 +3617,14 @@ func (a *App) emitStreamingToken(requestID, sessionKey, text string) {
 // events. The panel routes each payload to a task tab by session_key and to
 // a live round by request_id.
 func (a *App) emitAIAssistantStreamEvent(name string, event AIAssistantStreamEvent) {
-	if a == nil || a.ctx == nil {
+	if a == nil {
+		return
+	}
+	// Remote-control mirror goes over the Hub, not the Wails bus, so it must
+	// not be gated on the local ctx — a watched turn relays even when the
+	// panel surface is not up yet.
+	a.relayRemoteStreamEvent(name, event)
+	if a.ctx == nil {
 		return
 	}
 	payload, err := json.Marshal(event)
@@ -3430,8 +3633,6 @@ func (a *App) emitAIAssistantStreamEvent(name string, event AIAssistantStreamEve
 		return
 	}
 	a.emitEvent(name, string(payload))
-	// Remote-control mirror: watchers get the same event over the Hub.
-	a.relayRemoteStreamEvent(name, event)
 }
 
 // emitAIAssistantForegroundRoundStarted announces a backend-initiated turn so
@@ -3486,6 +3687,9 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 		log.Printf("[emitAIAssistantResponse] marshal failed: %v", err)
 		return false
 	}
+	// The remote mirror goes over the Hub, not the Wails bus, so it must run
+	// even without a local ctx — same rule as emitAIAssistantStreamEvent.
+	a.relayRemoteAssistantResponse(requestID, resp)
 	if a == nil || a.ctx == nil {
 		log.Printf("[emitAIAssistantResponse] skip emit without Wails context request_id=%s session_key=%q", requestID, strings.TrimSpace(resp.SessionKey))
 		return false
@@ -3500,7 +3704,6 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 		}
 	}()
 	a.emitEvent("ai-assistant-response", string(payload))
-	a.relayRemoteAssistantResponse(requestID, resp)
 	return true
 }
 
@@ -3537,7 +3740,13 @@ func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, er
 		emitEvent("ai-btw-progress", text)
 	}
 	onToken := func(delta string) {
-		emitEvent("ai-btw-token", delta)
+		// /btw paints one content bubble. Drop the reasoning-lane marker
+		// before the pieces are joined, or each token starts with a square.
+		_, body := textutil.SplitVisibleStreamDelta(delta)
+		if body == "" {
+			return
+		}
+		emitEvent("ai-btw-token", body)
 	}
 
 	msg := IMUserMessage{

@@ -14,6 +14,23 @@ import (
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
+type testLockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *testLockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *testLockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestBridgeInitializeAndSessionPrompt(t *testing.T) {
 	var (
 		mu       sync.Mutex
@@ -87,7 +104,7 @@ func TestBridgeInitializeAndSessionPrompt(t *testing.T) {
 	}
 
 	pr, pw := io.Pipe()
-	var out bytes.Buffer
+	var out testLockedBuffer
 	done := make(chan error, 1)
 	go func() {
 		done <- bridge.ServeStdio(pr, &out)
@@ -150,7 +167,7 @@ func TestBridgeInitializeAndSessionPrompt(t *testing.T) {
 	}
 }
 
-func waitForSessionID(t *testing.T, out *bytes.Buffer, timeout time.Duration) string {
+func waitForSessionID(t *testing.T, out interface{ String() string }, timeout time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -177,7 +194,7 @@ func waitForSessionID(t *testing.T, out *bytes.Buffer, timeout time.Duration) st
 	return ""
 }
 
-func waitForPromptDone(t *testing.T, out *bytes.Buffer, timeout time.Duration) (stopReason string, sawUpdate bool) {
+func waitForPromptDone(t *testing.T, out interface{ String() string }, timeout time.Duration) (stopReason string, sawUpdate bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

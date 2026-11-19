@@ -9,7 +9,7 @@ func desktopTaskOutcomeOf(v ...string) string {
 		return ""
 	}
 	switch o := strings.TrimSpace(v[0]); o {
-	case "done", "partial", "blocked", "not_submitted", "unconfirmed", "awaiting_user", "running":
+	case "done", "partial", "blocked", "not_submitted", "unconfirmed", "unverified", "awaiting_user", "running":
 		return o
 	}
 	return ""
@@ -25,5 +25,5 @@ func desktopTaskOutcomeNotDone(outcome string) bool {
 // not a handed-off job the watcher still owns.
 func desktopTaskOutcomeNeedsReport(outcome string) bool {
 	o := desktopTaskOutcomeOf(outcome)
-	return o != "" && o != "done" && o != "running"
+	return o != "done" && o != "running"
 }

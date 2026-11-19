@@ -32,8 +32,8 @@ export interface DesktopBotAckContext {
     // What is left of the first reply's end-to-end budget (see
     // DESKTOP_BOT_FIRST_ACK_BUDGET_MS); the Go writer stops there too.
     budget_ms?: number;
-    // late: this line upgrades a stock receipt already on screen, so the
-    // backend gives it a longer budget than a first reply.
+    // late: wait the long budget for the model's own sentence. The neutral
+    // line is returned only when that wait produces nothing.
     late?: boolean;
 }
 
@@ -49,16 +49,14 @@ export function desktopBotNeutralAck(ctx: Pick<DesktopBotAckContext, 'kind' | 'l
     return files ? '收到。' : '好，我先做着。';
 }
 
-// DESKTOP_BOT_FIRST_ACK_BUDGET_MS is how long, from the moment a command
-// arrives, the person may wait for a first reply. The reading that the work
-// needs anyway usually brings the model's own understanding inside it (no
-// extra call). When it does not, one neutral receipt goes out at this mark
-// so the person hears back at once; a later understanding line still
-// replaces that receipt in place.
+// DESKTOP_BOT_FIRST_ACK_BUDGET_MS is how long a fast first reply is worth.
+// The chat does not post a stock line at this mark: the status row carries
+// the wait, and the model's own sentence is the first thing in the thread.
 export const DESKTOP_BOT_FIRST_ACK_BUDGET_MS = 4000;
 
-// A late line that replaces the stock receipt may take this long: the person
-// already heard back, and a slow model could not fit the first 4 s.
+// How long to wait for that sentence before the one neutral line is allowed
+// into the chat. A slow model (papers 2026-11-12: 11–40s) still answers
+// inside this; the neutral line is used only when the wait ends with nothing.
 export const DESKTOP_BOT_LATE_ACK_BUDGET_MS = 45000;
 
 // desktopBotUnderstandingLabel is the status-row phrase shown while the

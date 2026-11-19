@@ -9,6 +9,7 @@ import * as AppAPI from '../../../wailsjs/go/main/App';
 vi.mock('../../../wailsjs/go/main/App', () => ({
     ListPetPacks: vi.fn().mockResolvedValue([]),
     InstallPetPackZip: vi.fn().mockResolvedValue('cool-pet'),
+    ImportDSHPetFolder: vi.fn().mockResolvedValue({ id: '', warnings: [], dropped: 0 }),
     SelectPetPackZip: vi.fn().mockResolvedValue(''),
     UninstallPetPack: vi.fn().mockResolvedValue(undefined),
     GetPetPackPreviewDataURL: vi.fn().mockResolvedValue(''),
@@ -70,6 +71,7 @@ describe('PetSettingsPanel localization', () => {
         vi.mocked(AppAPI.OpenPetPacksDir).mockResolvedValue(undefined);
         mockListPetPacks([]);
         vi.mocked(AppAPI.InstallPetPackZip).mockResolvedValue('cool-pet');
+        vi.mocked(AppAPI.ImportDSHPetFolder).mockResolvedValue({ id: '', warnings: [], dropped: 0 });
         vi.mocked(AppAPI.SelectPetPackZip).mockResolvedValue('');
         vi.mocked(AppAPI.UninstallPetPack).mockResolvedValue(undefined);
         vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({ uploads: [] });
@@ -433,7 +435,7 @@ describe('PetSettingsPanel localization', () => {
         expect(await screen.findByRole('dialog', { name: 'Uninstall pet pack' })).toBeTruthy();
     });
 
-    it('shows unlist instead of share after the created pack is published', async () => {
+    it('offers update-listing and unlist after the created pack is published', async () => {
         mockListPetPacks([{
             id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', scope: 'user', source: 'created', can_uninstall: true,
         }]);
@@ -443,9 +445,37 @@ describe('PetSettingsPanel localization', () => {
         await waitFor(() => expect(AppAPI.GetPetStoreAccount).toHaveBeenCalled());
         const skin = screen.getByRole('button', { name: /Creator pet/i });
         await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        expect(screen.getByRole('menuitem', { name: 'Update listing…' })).toBeTruthy();
         expect(screen.getByRole('menuitem', { name: 'Unlist' })).toBeTruthy();
         expect(screen.queryByRole('menuitem', { name: 'Share…' })).toBeNull();
         expect(screen.getByRole('menuitem', { name: 'Uninstall' })).toBeTruthy();
+    });
+
+    it('updates the online listing in place from the share dialog', async () => {
+        mockListPetPacks([{
+            id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', version: '1.3.0', scope: 'user', source: 'created', can_uninstall: true,
+        }]);
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({ uploads: [{ id: 'pet_listing', source_pack_id: 'creator-pet', status: 'active', name: 'Market title', version: '2.0.0', price: 25 }] });
+        vi.mocked(AppAPI.SubmitPetStorePack).mockResolvedValue({ id: 'pet_listing', updated: true });
+        await act(async () => { renderPetSettings('en', { pet_skin: 'creator-pet' }); });
+        const skin = await screen.findByRole('button', { name: /Creator pet/i });
+        await waitFor(() => expect(AppAPI.GetPetStoreAccount).toHaveBeenCalled());
+        await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        await act(async () => { fireEvent.click(screen.getByRole('menuitem', { name: 'Update listing…' })); });
+
+        const dialog = await screen.findByRole('dialog', { name: 'Update pet pack listing' });
+        expect(dialog.textContent).toContain('updates the online package to the new version');
+        // The update dialog keeps the listing's own market name, price, and version.
+        // The local yaml version must not prefill a downgrade.
+        expect(screen.getByRole('textbox', { name: 'Name' })).toHaveProperty('value', 'Market title');
+        expect(screen.getByRole('textbox', { name: 'Price (Credits)' })).toHaveProperty('value', '25');
+        expect(screen.getByRole('textbox', { name: 'Version' })).toHaveProperty('value', '2.0.0');
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Update listing' })); });
+
+        await waitFor(() => expect(AppAPI.SubmitPetStorePack).toHaveBeenCalledWith(
+            'C:/tmp/creator-pet.zip', 'Market title', 'Creator pet', '2.0.0', 25, 'creator-pet',
+        ));
+        await waitFor(() => expect(screen.getByText('Pet pack updated. The existing market listing now serves the new version.').getAttribute('role')).toBe('status'));
     });
 
     it('does not offer a paused listing for re-sharing', async () => {
@@ -518,6 +548,56 @@ describe('PetSettingsPanel localization', () => {
         expect(screen.queryByRole('alert')).toBeNull();
     });
 
+    it('rejects a version older than the published listing', async () => {
+        mockListPetPacks([{
+            id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', version: '1.3.0', scope: 'user', source: 'created', can_uninstall: true,
+        }]);
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({ uploads: [{ id: 'pet_listing', source_pack_id: 'creator-pet', status: 'active', name: 'Market title', version: '2.0.0', price: 25 }] });
+        await act(async () => { renderPetSettings('en', { pet_skin: 'creator-pet' }); });
+        const skin = await screen.findByRole('button', { name: /Creator pet/i });
+        await waitFor(() => expect(AppAPI.GetPetStoreAccount).toHaveBeenCalled());
+        await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        await act(async () => { fireEvent.click(screen.getByRole('menuitem', { name: 'Update listing…' })); });
+        await screen.findByRole('dialog', { name: 'Update pet pack listing' });
+        await act(async () => { fireEvent.change(screen.getByRole('textbox', { name: 'Version' }), { target: { value: '1.0.0' } }); });
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Update listing' })); });
+        expect(screen.getByRole('alert').textContent).toContain('cannot be older than the published version');
+        expect(AppAPI.SubmitPetStorePack).not.toHaveBeenCalled();
+    });
+
+    it('shows the server message when a published version is already newer', async () => {
+        mockListPetPacks([{
+            id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', scope: 'user', source: 'created', can_uninstall: true,
+        }]);
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({ uploads: [{ id: 'pet_listing', source_pack_id: 'creator-pet', status: 'active', name: 'Market title', version: '1.0.0', price: 0 }] });
+        vi.mocked(AppAPI.SubmitPetStorePack).mockRejectedValue(new Error('Pet Store request failed: version is older than the published version'));
+        await act(async () => { renderPetSettings('en', { pet_skin: 'creator-pet' }); });
+        const skin = await screen.findByRole('button', { name: /Creator pet/i });
+        await waitFor(() => expect(AppAPI.GetPetStoreAccount).toHaveBeenCalled());
+        await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        await act(async () => { fireEvent.click(screen.getByRole('menuitem', { name: 'Update listing…' })); });
+        await screen.findByRole('dialog', { name: 'Update pet pack listing' });
+        await act(async () => { fireEvent.change(screen.getByRole('textbox', { name: 'Version' }), { target: { value: '2.0.0' } }); });
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Update listing' })); });
+        await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('cannot be older than the published version'));
+    });
+
+    it('requires a version number before publishing', async () => {
+        mockListPetPacks([{
+            id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', scope: 'user', source: 'created', can_uninstall: true,
+        }]);
+        await act(async () => { renderPetSettings('en', { pet_skin: 'creator-pet' }); });
+        const skin = await screen.findByRole('button', { name: /Creator pet/i });
+        await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        await act(async () => { fireEvent.click(screen.getByRole('menuitem', { name: 'Share…' })); });
+        await screen.findByRole('dialog', { name: 'Share pet pack' });
+        const version = screen.getByRole('textbox', { name: 'Version' });
+        await act(async () => { fireEvent.change(version, { target: { value: '' } }); });
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Publish pet pack' })); });
+        expect(screen.getByRole('alert').textContent).toContain('Enter a version number');
+        expect(AppAPI.SubmitPetStorePack).not.toHaveBeenCalled();
+    });
+
     it('publishes when Enter is pressed in the share form', async () => {
         mockListPetPacks([{
             id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', scope: 'user', source: 'created', can_uninstall: true,
@@ -558,5 +638,30 @@ describe('PetSettingsPanel localization', () => {
         expect(screen.queryByRole('menuitem', { name: 'Share…' })).toBeNull();
         expect(screen.queryByRole('menuitem', { name: 'Unlist' })).toBeNull();
         expect(screen.getByRole('menuitem', { name: 'Uninstall' })).toBeTruthy();
+    });
+
+    it('imports a DeepSeek sprite folder from the install row', async () => {
+        vi.mocked(AppAPI.ImportDSHPetFolder).mockResolvedValue({
+            id: 'dsh-whale',
+            warnings: ['no_locomotion: 没有可识别的跑或走，角色会以待机为主。'],
+            dropped: 2,
+        });
+        await act(async () => { renderPetSettings('zh-Hans'); });
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: '导入 DeepSeek 精灵图' }));
+        });
+        await waitFor(() => expect(AppAPI.ImportDSHPetFolder).toHaveBeenCalledWith(''));
+        const notice = document.querySelector('.pet-install-notice');
+        expect(notice?.textContent).toContain('dsh-whale');
+        expect(notice?.textContent).toContain('2');
+
+        cleanup();
+        vi.mocked(AppAPI.ImportDSHPetFolder).mockResolvedValue({ id: '', warnings: [], dropped: 0 });
+        await act(async () => { renderPetSettings('en'); });
+        expect(screen.getByRole('button', { name: 'Import DeepSeek sprite folder' })).toBeTruthy();
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Import DeepSeek sprite folder' }));
+        });
+        expect(document.querySelector('.pet-install-notice')).toBeNull();
     });
 });

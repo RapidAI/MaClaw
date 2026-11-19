@@ -137,6 +137,94 @@ export function goalChecklistDoneCount(steps: GoalChecklistStep[]): number {
     return steps.reduce((done, step) => (step.mark === "done" ? done + 1 : done), 0);
 }
 
+// At or below this length the remaining text is the stage name, commas
+// included ("编译、运行与测试验证"). A following sentence is removed first,
+// so a short "名称。合同" does not survive on length alone.
+const GOAL_STAGE_NAME_KEEP = 24;
+const GOAL_STAGE_NAME_CAP = 48;
+// A comma tail of this many runes or fewer stays in the name
+// ("……文件清单，不写代码"). A longer tail is the contract.
+const GOAL_STAGE_CLAUSE_TAIL = 8;
+const GOAL_STAGE_ABBREV = new Set(["dr", "mr", "mrs", "ms", "st", "vs", "jr", "sr", "eg", "ie"]);
+
+function goalStageSpace(ch: string | undefined): boolean {
+    return ch === " " || ch === "\t" || ch === "\u3000";
+}
+
+/** True when rune `index` ends a sentence. "test.js", "v1.2", "Dr.", "e.g." and "!=" do not. */
+function goalStageSentenceEnd(runes: string[], index: number): boolean {
+    if (index < 2) return false;
+    const ch = runes[index];
+    if ("。！？；".includes(ch)) return true;
+    if (ch !== "." && ch !== "!" && ch !== "?") return false;
+    const next = runes[index + 1];
+    if (next && !goalStageSpace(next)) return false;
+    if (ch !== ".") return true;
+    if (/\d/.test(runes[index - 1] || "")) return false;
+    // "e.g." / "U.S.": the period before the space follows a single letter and another period.
+    if (runes[index - 2] === "." && /[A-Za-z]/.test(runes[index - 1] || "")) return false;
+    let start = index;
+    while (start > 0 && /[A-Za-z]/.test(runes[start - 1])) start--;
+    const word = runes.slice(start, index).join("").toLowerCase();
+    return word.length > 0 && !GOAL_STAGE_ABBREV.has(word);
+}
+
+/** Index of the first sentence end that still has text after it. -1 keeps the line. */
+function goalStageContractCut(runes: string[]): number {
+    for (let i = 0; i < runes.length; i++) {
+        if (!goalStageSentenceEnd(runes, i)) continue;
+        for (let j = i + 1; j < runes.length; j++) {
+            if (!goalStageSpace(runes[j])) return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Stage name for one checklist row. The stored title is unchanged.
+ * A following sentence is dropped first, so a comma inside that contract
+ * cannot become the cut. A long first sentence then keeps the clause before
+ * its comma when the tail is itself a contract.
+ */
+export function goalChecklistStageName(title: string): string {
+    const line = String(title || "").split(/\r?\n/).map((part) => part.trim()).find(Boolean) || "";
+    if (!line) return "";
+    let runes = Array.from(line);
+    const contractAt = goalStageContractCut(runes);
+    if (contractAt > 0) runes = runes.slice(0, contractAt);
+    if (runes.length > GOAL_STAGE_NAME_KEEP) {
+        const limit = Math.min(runes.length, GOAL_STAGE_NAME_CAP);
+        for (let i = 4; i < limit; i++) {
+            if (runes[i] !== "，" && runes[i] !== ",") continue;
+            if (runes.length - (i + 1) <= GOAL_STAGE_CLAUSE_TAIL) break;
+            runes = runes.slice(0, i);
+            break;
+        }
+    }
+    if (runes.length > GOAL_STAGE_NAME_CAP) {
+        const capped = runes.slice(0, GOAL_STAGE_NAME_CAP).join("").trim().replace(/[，,、：:\s]+$/u, "");
+        return `${capped}…`;
+    }
+    return stripGoalStagePunct(runes);
+}
+
+function stripGoalStagePunct(runes: string[]): string {
+    let end = runes.length;
+    while (end > 0) {
+        const last = runes[end - 1];
+        if ("。；！!？?".includes(last)) {
+            end--;
+            continue;
+        }
+        if (last === "." && (end < 2 || !/\d/.test(runes[end - 2]))) {
+            end--;
+            continue;
+        }
+        break;
+    }
+    return runes.slice(0, end).join("").trim();
+}
+
 /** Codex-style compact stroke glyphs; the row color carries the state. */
 function GoalStepIcon({ mark }: { mark: GoalStepMark }) {
     if (mark === "done") {
@@ -264,18 +352,21 @@ export function GoalChecklistCard({ lang, body, headEnd, onHeadPointerDown }: {
             ) : null}
             {body.steps.length > 0 ? (
                 <ol className="gkc-steps">
-                    {body.steps.map((step) => (
-                        <li
-                            key={`${step.index}-${step.title}`}
-                            className="gkc-step"
-                            data-mark={step.mark}
-                            aria-current={step.mark === "progress" ? "step" : undefined}
-                        >
-                            <span className="gkc-glyph" aria-hidden="true"><GoalStepIcon mark={step.mark} /></span>
-                            <span className="gkc-step-idx">{step.index}.</span>
-                            <span className="gkc-step-title">{step.title}</span>
-                        </li>
-                    ))}
+                    {body.steps.map((step) => {
+                        const stageName = goalChecklistStageName(step.title);
+                        return (
+                            <li
+                                key={`${step.index}-${step.title}`}
+                                className="gkc-step"
+                                data-mark={step.mark}
+                                aria-current={step.mark === "progress" ? "step" : undefined}
+                            >
+                                <span className="gkc-glyph" aria-hidden="true"><GoalStepIcon mark={step.mark} /></span>
+                                <span className="gkc-step-idx">{step.index}.</span>
+                                <span className="gkc-step-title">{stageName}</span>
+                            </li>
+                        );
+                    })}
                 </ol>
             ) : null}
             {body.statusReason && body.status !== "complete" ? (

@@ -312,6 +312,13 @@ func TestSemanticUserTextDeclaresSSHRequiresToken(t *testing.T) {
 	if declared, rejected := semanticUserTextSSHDirectives("识别 SSH 配置后用ssh访问"); !declared || rejected {
 		t.Fatalf("ordinary wording was misread as a prohibition: declared=%v rejected=%v", declared, rejected)
 	}
+	deploy := "调用 ssh 工具连接远程主机。不要修改 SSH 配置、防火墙对外规则。"
+	if semanticUserTextBansSSH(deploy) {
+		t.Fatal("a constraint about SSH config must not ban the ssh tool the same request asks for")
+	}
+	if !semanticUserTextBansSSH("请继续使用 database 工具，不要改用 ssh。") {
+		t.Fatal("an ssh-only prohibition must still ban the tool")
+	}
 	for _, text := range []string{
 		"请继续使用 database 工具，不要改用 ssh。",
 		"keep using the database tool, do not fall back to ssh or bash mysql",

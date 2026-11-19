@@ -34,6 +34,27 @@ func TestEditorReadyRequiresRemotePicturesAndNoUpload(t *testing.T) {
 	}
 }
 
+func TestURLConfirmsSubmitIgnoresTheEditor(t *testing.T) {
+	if URLConfirmsSubmit("https://editor.csdn.net/md/") || URLConfirmsSubmit("https://zhuanlan.zhihu.com/write") {
+		t.Fatal("editor counted as a confirmed submit")
+	}
+	if !URLConfirmsSubmit("https://creator.xiaohongshu.com/publish/publish?published=true") {
+		t.Fatal("published=true was not a confirmed submit")
+	}
+}
+
+func TestLocalPreviewSubmitsFromTheEditorOnly(t *testing.T) {
+	if !localPreviewMaySubmit("editor", 0) {
+		t.Fatal("editor preview with no upload should be the file the submit sends")
+	}
+	if localPreviewMaySubmit("published page", 0) {
+		t.Fatal("a local picture on the published page is missing from the post")
+	}
+	if localPreviewMaySubmit("editor", 1) {
+		t.Fatal("an upload that left the picture local is not ready")
+	}
+}
+
 func TestSubmitOutcomeIsIdempotent(t *testing.T) {
 	if got := submitOutcome(submitFacts{WritesOpen: 1}); got != submitPending {
 		t.Fatalf("open write: %s", got)

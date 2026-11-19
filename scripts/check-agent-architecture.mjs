@@ -253,7 +253,6 @@ requireText('corelib/agentservice/reviewed_dynamic_capabilities.go', 'MaxInvocat
 requireText('corelib/agentservice/intent_capability_rules_test.go', 'func TestIMAndReviewedIntentRulesShareRepeatBudgets', 'IM vs reviewed MaxInvocations stay aligned');
 requireText('guiapp/semantic_behavior_snapshot_test.go', 'func TestGUIAndSrvSemanticBehaviorSnapshot', 'GUI host IM catalog vs reviewed required-identity snapshot');
 requireText('guiapp/semantic_behavior_snapshot_test.go', 'managed drifted', 'GUI need-family snapshot compares overlapping Managed flags');
-requireText('.github/workflows/agent-architecture.yml', "go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)'", 'PR architecture job runs GUI/srv behavior snapshot');
 requireText('.github/workflows/main.yml', "go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)'", 'release architecture job runs GUI/srv behavior snapshot');
 requireText('MaClawSrv/http_routes_user.go', 'runtime-capabilities', 'shared runtime capability endpoint');
 requireText('MaClawSrv/http.go', 's.jobs.close()', 'async job shutdown ownership');

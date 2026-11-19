@@ -1525,6 +1525,36 @@ func RunMigrations(db *sql.DB) error {
 		`ALTER TABLE remote_control_grants ADD COLUMN federation_secret TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE remote_control_grants ADD COLUMN target_machine_id TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_rc_grant_target_machine ON remote_control_grants(target_machine_id, status)`,
+		`CREATE TABLE IF NOT EXISTS github_repo_maint_rules (
+    rule_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    hook_token TEXT NOT NULL UNIQUE,
+    hook_secret TEXT NOT NULL,
+    github_hook_id INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    push_branch TEXT NOT NULL DEFAULT '',
+    event_kinds TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS github_repo_maint_rules_machine
+    ON github_repo_maint_rules(machine_id, enabled)`,
+		`CREATE TABLE IF NOT EXISTS github_repo_maint_deliveries (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    github_delivery TEXT NOT NULL UNIQUE,
+    event_kind TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS github_repo_maint_deliveries_machine
+    ON github_repo_maint_deliveries(machine_id, status, created_at)`,
 	)
 
 	for _, stmt := range alterStmts {

@@ -28,6 +28,8 @@ export type ShareActions = {
     /** Clears both errors; called when the panel switches notices or closes. */
     resetShareErrors: () => void;
     openSharedDocument: (token: string) => Promise<void>;
+    /** Opens the companion's 文档管理 for a group join digest's 确认. */
+    openCompanionLibrary: () => Promise<void>;
     handleHostTransfer: (token: string, decision: "accept" | "decline") => Promise<void>;
 };
 
@@ -73,6 +75,28 @@ export function useShareActions(lang: string, dismissNotice: () => void): ShareA
         }
     }, [dismissNotice, lang]);
 
+    const openCompanionLibrary = useCallback(async () => {
+        if (shareOpenBusyRef.current) return;
+        shareOpenBusyRef.current = true;
+        setShareOpenBusy(true);
+        setShareOpenError("");
+        try {
+            const binding = appBinding("ShowFileCompanionLibrary");
+            if (!binding) throw new Error(staleBindingErrorText(lang, "share"));
+            // The Go method takes no arguments; the helper's typed signature
+            // is shared with the one-arg bindings, so call through a cast.
+            await (binding as unknown as () => Promise<unknown>)();
+            // The companion's 文档管理 is in front now; the panel must not
+            // sit over it in the main window.
+            dismissNotice();
+        } catch (err) {
+            setShareOpenError(companionShareOpenErrorText(err, lang));
+        } finally {
+            shareOpenBusyRef.current = false;
+            setShareOpenBusy(false);
+        }
+    }, [dismissNotice, lang]);
+
     const handleHostTransfer = useCallback(async (token: string, decision: "accept" | "decline") => {
         if (!token || hostTransferBusyRef.current) return;
         hostTransferBusyRef.current = true;
@@ -99,6 +123,7 @@ export function useShareActions(lang: string, dismissNotice: () => void): ShareA
         hostTransferError,
         resetShareErrors,
         openSharedDocument,
+        openCompanionLibrary,
         handleHostTransfer,
     };
 }

@@ -5,7 +5,10 @@
 #import <Cocoa/Cocoa.h>
 #include "floating_darwin.h"
 #import <math.h>
+#include <pthread.h>
 #include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
 
 // Desktop pet window. The previous build painted the app icon inside a
 // circular badge and ignored the mouse, so the pet could not be seen or
@@ -16,6 +19,11 @@
 static NSWindow *floatingWin = nil;
 static NSView *petView = nil;
 static NSImage *petImage = nil;
+static NSBitmapImageRep *petRep = nil;
+static int petRepW = 0;
+static int petRepH = 0;
+static int petRepPointW = 0;
+static int petRepPointH = 0;
 
 static void darwinSync(void (^block)(void)) {
 	if (block == nil) return;
@@ -48,6 +56,10 @@ static CGFloat cachedFrameH = 0;
 static atomic_int cachedScreenW = 0;
 static atomic_int cachedScreenH = 0;
 static atomic_int cachedScale = 0;
+static atomic_int petDragActive = 0;
+static atomic_uint acceptedPaintGen = 0;
+static BOOL petFaceLeft = NO;
+static void dropPendingPetMove(void);
 static BOOL cachedFrameValid = NO;
 
 static void rememberScreen(NSScreen *screen) {
@@ -157,7 +169,13 @@ static NSImage *imageFromPNG(const void *pngData, int pngLen) {
 
 static void replacePetImage(NSImage *next) {
 	if (next == nil) return;
-	// ARC owns the strong global; assigning releases the previous image.
+	// The PNG path owns this image. Drop the reused animation rep so the
+	// next frame builds a new one instead of writing into a detached buffer.
+	petRep = nil;
+	petRepW = 0;
+	petRepH = 0;
+	petRepPointW = 0;
+	petRepPointH = 0;
 	petImage = next;
 	if (petView == nil) return;
 	[petView setNeedsDisplay:YES];
@@ -197,18 +215,34 @@ static void replacePetImage(NSImage *next) {
 // NSImage draws the pack still upright.
 - (void)drawRect:(NSRect)dirtyRect {
 	(void)dirtyRect;
+	[NSGraphicsContext saveGraphicsState];
 	[[NSColor clearColor] set];
 	NSRectFillUsingOperation(self.bounds, NSCompositingOperationClear);
 	if (petImage != nil) {
+		if (petFaceLeft) {
+			NSAffineTransform *flip = [NSAffineTransform transform];
+			[flip translateXBy:NSMaxX(self.bounds) yBy:0];
+			[flip scaleXBy:-1 yBy:1];
+			[flip concat];
+		}
 		[petImage drawInRect:self.bounds
 					fromRect:NSZeroRect
 				   operation:NSCompositingOperationSourceOver
 					fraction:1.0];
 	}
+	[NSGraphicsContext restoreGraphicsState];
 }
 
 - (void)showContextMenu:(NSEvent *)event {
 	NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+	NSMenuItem *pin = [[NSMenuItem alloc] initWithTitle:@"定住"
+												 action:@selector(maclawMenuAction:)
+										  keyEquivalent:@""];
+	pin.target = self;
+	pin.tag = 6;
+	pin.state = maclawDarwinPetPositionLocked() ? NSControlStateValueOn : NSControlStateValueOff;
+	[menu addItem:pin];
+	[menu addItem:[NSMenuItem separatorItem]];
 	struct { const char *title; NSInteger tag; } items[] = {
 		{"打开主窗口", 4},
 		{"打开宠物对话", 5},
@@ -273,7 +307,10 @@ static void replacePetImage(NSImage *next) {
 			NSPoint now = [NSEvent mouseLocation];
 			CGFloat dx = now.x - anchorMouse.x;
 			CGFloat dy = now.y - anchorMouse.y;
-			if (!moved && (fabs(dx) > 5.0 || fabs(dy) > 5.0)) moved = YES;
+			if (!moved && (fabs(dx) > 5.0 || fabs(dy) > 5.0)) {
+				moved = YES;
+				atomic_store(&petDragActive, 1);
+			}
 			if (floatingWin == nil) break;
 			if (!moved) continue;
 			NSPoint origin = NSMakePoint(anchorOrigin.x + dx, anchorOrigin.y + dy);
@@ -288,15 +325,23 @@ static void replacePetImage(NSImage *next) {
 			clampOriginToVisible(&origin, dragScreen);
 			[floatingWin setFrameOrigin:origin];
 		}
-		if (floatingWin != nil && !moved) {
-			darwinPerformAfterTracking(^{
-				maclawDarwinPetClicked();
-			});
-		} else if (floatingWin != nil) {
+		if (floatingWin == nil || !moved) {
+			atomic_store(&petDragActive, 0);
+			if (floatingWin != nil) {
+				darwinPerformAfterTracking(^{
+					maclawDarwinPetClicked();
+				});
+			}
+		} else {
 			NSScreen *landed = screenForWindow();
 			if (landed != nil) rememberScreen(landed);
 			int x = 0, y = 0;
 			darwinReadTopLeft(&x, &y);
+			// The main queue did not run during tracking, so a walk move from
+			// before the drag threshold is still pending. Drop it before Go
+			// stores this origin, or it lands first and yanks the pet back.
+			// petDragActive stays set until that store finishes.
+			dropPendingPetMove();
 			darwinPerformAfterTracking(^{
 				maclawDarwinPetDragged(x, y);
 			});
@@ -347,7 +392,11 @@ int createFloatingWindowDarwin(int x, int y, int w, int h, const void *pngData, 
 		[panel setMovable:NO];
 		[panel setMovableByWindowBackground:NO];
 		[panel setHidesOnDeactivate:NO];
-		[panel setReleasedWhenClosed:YES];
+		// ARC owns this panel. releasedWhenClosed:YES makes close send an
+		// extra release, so the following nil (and any later skin switch)
+		// frees the window twice and crashes the process.
+		[panel setReleasedWhenClosed:NO];
+		petFaceLeft = NO;
 		[floatingWin setCollectionBehavior:
 			NSWindowCollectionBehaviorCanJoinAllSpaces |
 			NSWindowCollectionBehaviorStationary |
@@ -363,40 +412,338 @@ int createFloatingWindowDarwin(int x, int y, int w, int h, const void *pngData, 
 	return ok;
 }
 
+static void showFloatingWindowNow(void) {
+	if (floatingWin == nil) return;
+	[floatingWin orderFrontRegardless];
+	if (petView != nil) [petView displayIfNeeded];
+}
+
+static void hideFloatingWindowNow(void) {
+	if (floatingWin != nil) [floatingWin orderOut:nil];
+}
+
 void showFloatingWindowDarwin(void) {
-	darwinSync(^{
-		if (floatingWin != nil) {
-			[floatingWin orderFrontRegardless];
-			if (petView != nil) [petView displayIfNeeded];
-		}
+	// A background caller must not wait on the main queue. Pet switches run
+	// while the manager lock is held, and the main thread may be inside the
+	// drag tracking loop, which does not drain that queue.
+	if ([NSThread isMainThread]) {
+		showFloatingWindowNow();
+		return;
+	}
+	dispatch_async(dispatch_get_main_queue(), ^{
+		showFloatingWindowNow();
 	});
 }
 
 void hideFloatingWindowDarwin(void) {
-	darwinSync(^{
-		if (floatingWin != nil) {
-			[floatingWin orderOut:nil];
-		}
+	if ([NSThread isMainThread]) {
+		hideFloatingWindowNow();
+		return;
+	}
+	dispatch_async(dispatch_get_main_queue(), ^{
+		hideFloatingWindowNow();
 	});
 }
 
 void destroyFloatingWindowDarwin(void) {
 	darwinSync(^{
-		// ARC releases on assignment; clearing the strong globals is enough.
-		petImage = nil;
+		// Drop the globals before close. With releasedWhenClosed left at NO,
+		// the local strong reference is the last owner and releases once.
+		NSWindow *win = floatingWin;
+		floatingWin = nil;
 		petView = nil;
-		if (floatingWin != nil) {
-			[floatingWin orderOut:nil];
-			[floatingWin close];
-			floatingWin = nil;
+		petImage = nil;
+		petRep = nil;
+		petRepW = 0;
+		petRepH = 0;
+		petRepPointW = 0;
+		petRepPointH = 0;
+		atomic_store(&petDragActive, 0);
+		petFaceLeft = NO;
+		if (win != nil) {
+			[win setReleasedWhenClosed:NO];
+			[win orderOut:nil];
+			[win close];
 		}
 	});
 }
 
-void moveFloatingWindowDarwin(int x, int y) {
-	darwinSync(^{
-		movePetTopLeft(x, y);
-	});
+// Latest pose, facing, and position. The animator thread copies pixels and
+// returns; the main queue applies only the newest update. A paint generation
+// keeps a frame that was queued before destroy from landing on the next pet.
+typedef struct {
+	uint8_t *px;
+	int w, h, stride;
+	int pointW, pointH;
+	int faceLeft;
+	int moveX, moveY;
+	int resizeW, resizeH;
+	unsigned gen;
+	int hasPixels;
+	int hasFace;
+	int hasMove;
+	int hasResize;
+} MaclawPetUpdate;
+
+static MaclawPetUpdate petPending;
+static pthread_mutex_t petPendingMu = PTHREAD_MUTEX_INITIALIZER;
+static atomic_int petUpdateQueued = 0;
+
+// Go hands over straight RGBA. SourceOver on this clear window treats the
+// bitmap as premultiplied, so a straight copy leaves a dark fringe and can
+// fail to build a rep at all. Premultiply once, off the main thread.
+static uint8_t *copyPremulRGBA(const uint8_t *src, int w, int h, int stride) {
+	size_t row = (size_t)w * 4u;
+	uint8_t *dst = (uint8_t *)malloc(row * (size_t)h);
+	if (dst == NULL || src == NULL) {
+		free(dst);
+		return NULL;
+	}
+	for (int y = 0; y < h; y++) {
+		const uint8_t *s = src + (size_t)y * (size_t)stride;
+		uint8_t *d = dst + (size_t)y * row;
+		for (int x = 0; x < w; x++) {
+			unsigned a = s[3];
+			d[0] = (uint8_t)((s[0] * a + 127u) / 255u);
+			d[1] = (uint8_t)((s[1] * a + 127u) / 255u);
+			d[2] = (uint8_t)((s[2] * a + 127u) / 255u);
+			d[3] = (uint8_t)a;
+			s += 4;
+			d += 4;
+		}
+	}
+	return dst;
+}
+
+static void ensurePetRep(int w, int h, int pointW, int pointH) {
+	if (pointW < 1) pointW = w;
+	if (pointH < 1) pointH = h;
+	if (petRep != nil && petRepW == w && petRepH == h &&
+		petRepPointW == pointW && petRepPointH == pointH && petImage != nil) {
+		return;
+	}
+	// Default format is premultiplied RGBA. The little-endian flag would
+	// swap channels. The rep's point size must match the window or a 2x
+	// bitmap draws as if it were twice as wide and gets clipped.
+	NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+		initWithBitmapDataPlanes:NULL
+		pixelsWide:w
+		pixelsHigh:h
+		bitsPerSample:8
+		samplesPerPixel:4
+		hasAlpha:YES
+		isPlanar:NO
+		colorSpaceName:NSDeviceRGBColorSpace
+		bitmapFormat:0
+		bytesPerRow:w * 4
+		bitsPerPixel:32];
+	if (rep == nil || [rep bitmapData] == NULL) return;
+	[rep setSize:NSMakeSize(pointW, pointH)];
+	NSImage *img = [[NSImage alloc] initWithSize:NSMakeSize(pointW, pointH)];
+	[img addRepresentation:rep];
+	petRep = rep;
+	petRepW = w;
+	petRepH = h;
+	petRepPointW = pointW;
+	petRepPointH = pointH;
+	petImage = img;
+}
+
+static BOOL blitPetPixels(const uint8_t *px, int w, int h, int pointW, int pointH) {
+	ensurePetRep(w, h, pointW, pointH);
+	if (petRep == nil || petRepW != w || petRepH != h || [petRep bitmapData] == NULL) return NO;
+	uint8_t *dst = [petRep bitmapData];
+	NSInteger rowBytes = [petRep bytesPerRow];
+	size_t srcRow = (size_t)w * 4u;
+	if (rowBytes < (NSInteger)srcRow) return NO;
+	if (rowBytes == (NSInteger)srcRow) {
+		memcpy(dst, px, srcRow * (size_t)h);
+	} else {
+		for (int y = 0; y < h; y++) {
+			memcpy(dst + (size_t)y * (size_t)rowBytes, px + (size_t)y * srcRow, srcRow);
+		}
+	}
+	[petImage recache];
+	return YES;
+}
+
+static void resizePetNow(int w, int h) {
+	if (floatingWin == nil) return;
+	if (w < 1) w = 1;
+	if (h < 1) h = 1;
+	NSRect frame = floatingWin.frame;
+	CGFloat top = NSMaxY(frame);
+	frame.size.width = w;
+	frame.size.height = h;
+	frame.origin.y = top - h;
+	[floatingWin setFrame:frame display:NO];
+	if (petView != nil) {
+		[petView setFrame:NSMakeRect(0, 0, w, h)];
+		[petView setNeedsDisplay:YES];
+	}
+}
+
+static void dropPendingPetMove(void) {
+	pthread_mutex_lock(&petPendingMu);
+	petPending.hasMove = 0;
+	pthread_mutex_unlock(&petPendingMu);
+}
+
+static void applyPetUpdate(MaclawPetUpdate update) {
+	if (update.gen != atomic_load(&acceptedPaintGen) || floatingWin == nil) return;
+	// Move before the flush. Drawing first composites this pose at the old
+	// origin, then the window jumps.
+	if (update.hasResize) resizePetNow(update.resizeW, update.resizeH);
+	if (update.hasMove) movePetTopLeft(update.moveX, update.moveY);
+	if (update.hasFace) petFaceLeft = update.faceLeft ? YES : NO;
+	BOOL drew = NO;
+	if (update.hasPixels && update.px != NULL) {
+		drew = blitPetPixels(update.px, update.w, update.h, update.pointW, update.pointH);
+	}
+	// A clear borderless panel often ignores a dirty mark until something
+	// else dirties the screen. Draw now when the pet is on screen so a
+	// pose change is visible without waiting for the next click.
+	if ((drew || update.hasFace || update.hasResize) && petView != nil) {
+		[petView setNeedsDisplay:YES];
+		if (floatingWin != nil && [floatingWin isVisible]) {
+			[petView displayIfNeeded];
+		}
+	}
+}
+
+static void drainPetUpdates(void) {
+	for (;;) {
+		pthread_mutex_lock(&petPendingMu);
+		MaclawPetUpdate update = petPending;
+		memset(&petPending, 0, sizeof(petPending));
+		if (!update.hasPixels && !update.hasFace && !update.hasMove && !update.hasResize) {
+			atomic_store(&petUpdateQueued, 0);
+			int raced = petPending.hasPixels || petPending.hasFace || petPending.hasMove || petPending.hasResize;
+			if (raced) atomic_store(&petUpdateQueued, 1);
+			pthread_mutex_unlock(&petPendingMu);
+			if (!raced) return;
+			continue;
+		}
+		pthread_mutex_unlock(&petPendingMu);
+		applyPetUpdate(update);
+		free(update.px);
+	}
+}
+
+static void enqueuePetUpdate(MaclawPetUpdate next) {
+	if (next.gen != atomic_load(&acceptedPaintGen)) {
+		free(next.px);
+		return;
+	}
+	pthread_mutex_lock(&petPendingMu);
+	if (next.gen != atomic_load(&acceptedPaintGen)) {
+		pthread_mutex_unlock(&petPendingMu);
+		free(next.px);
+		return;
+	}
+	if (next.hasPixels) {
+		free(petPending.px);
+		petPending.px = next.px;
+		petPending.w = next.w;
+		petPending.h = next.h;
+		petPending.stride = next.stride;
+		petPending.pointW = next.pointW;
+		petPending.pointH = next.pointH;
+		petPending.hasPixels = 1;
+		next.px = NULL;
+	}
+	if (next.hasFace) {
+		petPending.faceLeft = next.faceLeft;
+		petPending.hasFace = 1;
+	}
+	if (next.hasMove) {
+		petPending.moveX = next.moveX;
+		petPending.moveY = next.moveY;
+		petPending.hasMove = 1;
+	}
+	if (next.hasResize) {
+		petPending.resizeW = next.resizeW;
+		petPending.resizeH = next.resizeH;
+		petPending.hasResize = 1;
+	}
+	petPending.gen = next.gen;
+	int queued = atomic_exchange(&petUpdateQueued, 1);
+	pthread_mutex_unlock(&petPendingMu);
+	free(next.px);
+	if (!queued) {
+		dispatch_async(dispatch_get_main_queue(), ^{
+			drainPetUpdates();
+		});
+	}
+}
+
+void darwinSetPaintGen(unsigned gen) {
+	// Atomic only: callers may hold the Go window lock. Do not hop to main.
+	atomic_store(&acceptedPaintGen, gen);
+	pthread_mutex_lock(&petPendingMu);
+	free(petPending.px);
+	memset(&petPending, 0, sizeof(petPending));
+	pthread_mutex_unlock(&petPendingMu);
+}
+
+void darwinPetDragClear(void) {
+	atomic_store(&petDragActive, 0);
+}
+
+void setPetPixelsDarwin(const void *pixels, int w, int h, int stride, int pointW, int pointH, int faceLeft, unsigned gen) {
+	if (pixels == NULL || w < 1 || h < 1 || w > 4096 || h > 4096 || stride < w * 4) return;
+	if (gen != atomic_load(&acceptedPaintGen)) return;
+	uint8_t *copy = copyPremulRGBA((const uint8_t *)pixels, w, h, stride);
+	if (copy == NULL) return;
+	MaclawPetUpdate update;
+	memset(&update, 0, sizeof(update));
+	update.px = copy;
+	update.w = w;
+	update.h = h;
+	update.stride = w * 4;
+	update.pointW = pointW;
+	update.pointH = pointH;
+	update.faceLeft = faceLeft ? 1 : 0;
+	update.gen = gen;
+	update.hasPixels = 1;
+	update.hasFace = 1;
+	enqueuePetUpdate(update);
+}
+
+void setPetFaceDarwin(int faceLeft, unsigned gen) {
+	MaclawPetUpdate update;
+	memset(&update, 0, sizeof(update));
+	update.faceLeft = faceLeft ? 1 : 0;
+	update.gen = gen;
+	update.hasFace = 1;
+	enqueuePetUpdate(update);
+}
+
+void moveFloatingWindowDarwin(int x, int y, unsigned gen) {
+	if (gen != atomic_load(&acceptedPaintGen)) return;
+	MaclawPetUpdate update;
+	memset(&update, 0, sizeof(update));
+	update.moveX = x;
+	update.moveY = y;
+	update.gen = gen;
+	update.hasMove = 1;
+	enqueuePetUpdate(update);
+}
+
+void resizeFloatingWindowDarwin(int w, int h, unsigned gen) {
+	if (w < 1) w = 1;
+	if (h < 1) h = 1;
+	MaclawPetUpdate update;
+	memset(&update, 0, sizeof(update));
+	update.resizeW = w;
+	update.resizeH = h;
+	update.gen = gen;
+	update.hasResize = 1;
+	enqueuePetUpdate(update);
+}
+
+int darwinPetDragActive(void) {
+	return atomic_load(&petDragActive);
 }
 
 void setPetImageDarwin(const void *pngData, int pngLen) {

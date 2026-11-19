@@ -294,15 +294,20 @@ func (a *App) stopBuddyServiceWithin(limit time.Duration) {
 	}
 }
 
-// pushBuddyWeatherFromAmbient reuses the GUI weather pipeline when available.
+// pushBuddyWeatherFromAmbient feeds the just-attached board from the ambient
+// pipeline. A still-fresh snapshot is replayed as-is: plugging the device in
+// is not a reason to spend another weather/search/LLM resolve.
 func (a *App) pushBuddyWeatherFromAmbient() {
 	ctx := a.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	// Same budget as the settings refresh: the search + LLM fallback alone
+	// can exceed 25s, and a shorter cap would cancel a resolve that was
+	// about to succeed, leaving the board blank until the next loop tick.
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	weather, err := a.resolveDeviceAmbientWeather(ctx)
+	weather, err := a.deviceAmbientWeatherFresh(ctx)
 	if err != nil {
 		log.Printf("[buddy] weather resolve failed: %v", err)
 		return
@@ -556,7 +561,12 @@ func (a *App) BuddyPushSnapshot(payload string) error {
 // BuddyPushWeather lets the settings panel or a manual refresh update the
 // device without waiting for the ambient loop.
 func (a *App) BuddyPushWeather(summary, location string, temperatureC int) error {
-	a.setBuddyWeather(strings.TrimSpace(summary), strings.TrimSpace(location), temperatureC)
+	summary = strings.TrimSpace(summary)
+	location = strings.TrimSpace(location)
+	a.setBuddyWeather(summary, location, temperatureC)
+	if summary != "" {
+		a.storeAmbientWeather(deviceAmbientWeather{Summary: summary, Location: location, TemperatureC: temperatureC})
+	}
 	return nil
 }
 
@@ -566,9 +576,9 @@ func (a *App) BuddyRefreshWeather() (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	weather, err := a.resolveDeviceAmbientWeather(ctx)
+	weather, err := a.resolveAndCacheDeviceAmbientWeather(ctx)
 	if err != nil {
 		return "", err
 	}

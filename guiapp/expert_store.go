@@ -51,7 +51,12 @@ type ExpertDefinition struct {
 	OptimizedFromID string `json:"optimized_from_id,omitempty"`
 	// About is free-form "关于" text (author, copyright, notes) shown from the
 	// expert card's About button.
-	About     string `json:"about,omitempty"`
+	About string `json:"about,omitempty"`
+	// Category is the market taxonomy name chosen when the expert was shared
+	// (or installed from a categorized listing). It drives the AI expert
+	// library's top-level filter chips; a name outside the HubCenter taxonomy
+	// renders as the catch-all 其它, so a stale name never hides the card.
+	Category  string `json:"category,omitempty"`
 	CreatedAt string `json:"created_at"` // RFC3339
 	UpdatedAt string `json:"updated_at"` // RFC3339, last-writer-wins key
 }

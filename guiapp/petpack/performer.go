@@ -95,10 +95,27 @@ type PerformanceDirector struct {
 	lastBehaviors []string
 	cooldowns     map[string]int64
 	currentMood   string
+	// pinnedMood is a host hold, not a new state. While it is set, idle
+	// prefers behaviors authored for that mood. A pack that did not author
+	// any falls back to the state's own mood so the idle pool cannot stall.
+	pinnedMood string
 }
 
 func NewPerformanceDirector(performer *Performer, rig *Rig, seed uint64) *PerformanceDirector {
 	return &PerformanceDirector{performer: performer, rig: rig, seed: seed, cooldowns: make(map[string]int64), currentMood: "calm"}
+}
+
+// SetPinnedMood holds an allowed mood across later idle selections. An empty
+// or unknown mood clears the hold. The state's own mood is used when the
+// pack has no behavior for the pin.
+func (d *PerformanceDirector) SetPinnedMood(mood string) {
+	if d == nil {
+		return
+	}
+	if mood != "" && !allowedPerformerMoods[mood] {
+		mood = ""
+	}
+	d.pinnedMood = mood
 }
 
 // SelectState returns entry/loop playback for a semantic runtime state.
@@ -110,19 +127,45 @@ func (d *PerformanceDirector) SelectState(state PetRuntimeState, nowMS int64) Pe
 	if !ok {
 		s = d.performer.States["idle"]
 	}
-	if s.Mood != "" {
-		d.currentMood = s.Mood
-	} else if state == StateIdle {
+	stateMood := s.Mood
+	if stateMood == "" && state == StateIdle {
 		// Idle is the stable home state. Do not retain a transient reaction or
 		// task mood indefinitely when the pack deliberately leaves its idle mood
 		// implicit.
-		d.currentMood = "calm"
+		stateMood = "calm"
 	}
-	if len(s.BehaviorPool) > 0 {
-		return d.selectBehavior(s.BehaviorPool, nowMS, s.Expression, s.Gaze, s.Secondary)
+	d.currentMood = stateMood
+	if d.pinnedMood != "" {
+		d.currentMood = d.pinnedMood
 	}
-	entry := firstNonEmpty(s.Enter, s.Loop)
-	return PerformanceStep{Body: entry, Loop: s.Loop, Exit: s.Exit, Expression: s.Expression, Gaze: s.Gaze, Secondary: s.Secondary, EntryMS: clipDuration(d.rig, entry), DurationMS: clipDuration(d.rig, entry), CrossfadeMS: d.performer.Rules.CrossfadeMS, Mood: d.currentMood}
+	if len(s.BehaviorPool) == 0 {
+		entry := firstNonEmpty(s.Enter, s.Loop)
+		return PerformanceStep{Body: entry, Loop: s.Loop, Exit: s.Exit, Expression: s.Expression, Gaze: s.Gaze, Secondary: s.Secondary, EntryMS: clipDuration(d.rig, entry), DurationMS: clipDuration(d.rig, entry), CrossfadeMS: d.performer.Rules.CrossfadeMS, Mood: d.currentMood}
+	}
+	step := d.selectBehavior(s.BehaviorPool, nowMS, s.Expression, s.Gaze, s.Secondary)
+	if step.isZero() && d.pinnedMood != "" && d.currentMood != stateMood {
+		d.currentMood = stateMood
+		step = d.selectBehavior(s.BehaviorPool, nowMS, s.Expression, s.Gaze, s.Secondary)
+	}
+	return step
+}
+
+// EventCue reports the body clip cue bound to a host event. bound is false
+// when the pack did not declare that event. An empty cue with bound true
+// means the author chose a silent reaction.
+func (d *PerformanceDirector) EventCue(event string) (cue string, bound bool) {
+	if d == nil || d.performer == nil || d.rig == nil || !allowedPerformerEvents[event] {
+		return "", false
+	}
+	e, ok := d.performer.Events[event]
+	if !ok || e.Play == "" {
+		return "", false
+	}
+	clip, ok := d.rig.Clips[e.Play]
+	if !ok {
+		return "", true
+	}
+	return clip.Cue, true
 }
 
 // SelectEvent returns a short reaction. An unknown/cooling-down event returns
@@ -278,7 +321,8 @@ var allowedPerformerStates = map[string]bool{
 	"idle": true, "listening": true, "thinking": true, "speaking": true, "done": true, "alert": true, "quiet": true,
 }
 var allowedPerformerEvents = map[string]bool{
-	"click": true, "hover": true, "drag_start": true, "drag_end": true, "task_started": true, "task_done": true, "task_failed": true, "long_idle": true,
+	"click": true, "hover": true, "drag_start": true, "drag_end": true,
+	"task_started": true, "task_needs_you": true, "task_done": true, "task_failed": true, "long_idle": true,
 }
 
 // IsAllowedPerformerEvent reports whether a host event is part of the fixed

@@ -177,6 +177,8 @@ export interface TaskConfigSendBindings {
         name: string;
         mode: string;
         text: string;
+        /** 对方电脑上的工作目录；空 = 对方电脑默认工作目录。 */
+        workDir?: string;
     }) => Promise<{ projectPath: string; warning?: string }>;
     /** 打开对方电脑上刚创建的任务（展示远程会话）。 */
     openRemoteMachineTask?: (args: { grantId: string; projectPath: string }) => void;
@@ -250,6 +252,7 @@ export async function runTaskConfigSend(args: {
                 name: opts.name,
                 mode: draft.taskType === "coding" ? "coding_dev" : "chat",
                 text: initialMessage,
+                workDir: (machine.workDir || "").trim() || undefined,
             });
             const remotePath = (created.projectPath || "").trim();
             if (!remotePath) {

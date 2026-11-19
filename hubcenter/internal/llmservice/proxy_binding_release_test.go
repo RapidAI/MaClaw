@@ -53,12 +53,42 @@ func TestProxyBindingReleaseWithoutBindingSupport(t *testing.T) {
 	}
 }
 
+func TestProxyBindingReleaseRejectsUnauthenticatedHub(t *testing.T) {
+	called := false
+	cfg := &ProxyConfig{
+		ReleaseBinding: func(_ context.Context, _, _ string) (int, error) {
+			called = true
+			return 1, nil
+		},
+		VerifyHubSecret: func(_ context.Context, _, _ string) error {
+			return context.Canceled
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/binding/release", strings.NewReader(`{"node_id":"hc-1"}`))
+	req.Header.Set("X-Hub-ID", "hub-1")
+	req.Header.Set("Authorization", "Bearer wrong-secret")
+	rec := httptest.NewRecorder()
+	ProxyBindingReleaseHandler(cfg).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if called {
+		t.Fatal("unauthenticated request reached ReleaseBinding")
+	}
+}
+
 func TestProxyBindingReleaseReturnsCount(t *testing.T) {
 	var gotHubID, gotNodeID string
 	cfg := &ProxyConfig{
 		ReleaseBinding: func(_ context.Context, hubID, nodeID string) (int, error) {
 			gotHubID, gotNodeID = hubID, nodeID
 			return 2, nil
+		},
+		VerifyHubSecret: func(_ context.Context, hubID, rawSecret string) error {
+			if hubID != "hub-1" || rawSecret != "hub-secret" {
+				return context.Canceled
+			}
+			return nil
 		},
 	}
 	srv := httptest.NewServer(ProxyBindingReleaseHandler(cfg))
@@ -69,6 +99,7 @@ func TestProxyBindingReleaseReturnsCount(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("X-Hub-ID", "hub-1")
+	req.Header.Set("Authorization", "Bearer hub-secret")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)

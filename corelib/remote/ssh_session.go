@@ -233,6 +233,38 @@ func (s *SSHPTYSession) ObservedTransportFailure() bool {
 	return false
 }
 
+// TransportLive reports the transport positively answered a keepalive
+// within sshProbeWait. Unlike IsAlive, an unanswered request still in
+// flight is not optimism: a caller about to signal or close the channel
+// would otherwise park on the write mutex behind that stuck request.
+func (s *SSHPTYSession) TransportLive() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	if !s.started || s.closed || s.client == nil || s.transportDead {
+		s.mu.Unlock()
+		return false
+	}
+	client := s.client
+	s.mu.Unlock()
+	return sshClientTransportLive(client)
+}
+
+// ClientTransportLive probes the pooled transport directly, ignoring this
+// handle's own lifecycle. A dead channel on a healthy connection must not
+// condemn the connection — callers deciding whether to kill the client
+// need the transport's verdict, not the PTY's.
+func (s *SSHPTYSession) ClientTransportLive() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	return client != nil && sshClientTransportLive(client)
+}
+
 // RememberTransportVerdict stores the latest catalog read on this handle.
 // The verdict dies with the handle, so a closed PTY is not kept alive by a
 // process-wide cache. ttl is applied by TransportVerdict.

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 type HubClient struct {
@@ -47,10 +49,17 @@ func NewHubClient(baseURL string, opts ...HubClientOption) (*HubClient, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("hub URL is required")
 	}
-	if _, err := url.ParseRequestURI(baseURL); err != nil {
+	parsed, err := url.ParseRequestURI(baseURL)
+	if err != nil {
 		return nil, fmt.Errorf("invalid hub URL: %w", err)
 	}
-	c := &HubClient{baseURL: baseURL, httpClient: &http.Client{Timeout: 30 * time.Second}}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return nil, fmt.Errorf("hub URL must be an absolute HTTP(S) URL without user info")
+	}
+	if err := remote.ValidateHubURL(baseURL); err != nil {
+		return nil, err
+	}
+	c := &HubClient{baseURL: baseURL, httpClient: remote.NewHubHTTPClient()}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(c)
@@ -502,7 +511,15 @@ func (c *HubClient) doJSON(ctx context.Context, method, path string, in any, out
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	const maxHubResponseBodyBytes = 32 << 20
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxHubResponseBodyBytes+1))
+	if err != nil {
+		return fmt.Errorf("read hub response: %w", err)
+	}
+	if len(responseBody) > maxHubResponseBodyBytes {
+		return fmt.Errorf("hub response exceeds %d bytes", maxHubResponseBodyBytes)
+	}
+	if err := json.Unmarshal(responseBody, out); err != nil {
 		return fmt.Errorf("decode hub response: %w", err)
 	}
 	return nil

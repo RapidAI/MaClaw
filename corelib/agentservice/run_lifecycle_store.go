@@ -208,9 +208,9 @@ func (s *MemoryStore) SaveRunAdmissionWithEvents(message Message, run Run, event
 	if err := s.ensureUniqueClientMessageLocked(message); err != nil {
 		return err
 	}
-	s.messages[message.SessionID] = append(s.messages[message.SessionID], message)
+	s.messages[message.SessionID] = append(s.messages[message.SessionID], freezeMessage(message))
 	s.touchMessagesAppend(message.SessionID)
-	s.runs[run.ID] = run
+	s.runs[run.ID] = freezeRun(run)
 	s.touch(collRuns, run.ID)
 	for _, event := range events {
 		if _, err := s.appendRunEventLocked(event); err != nil {
@@ -238,9 +238,9 @@ func (s *MemoryStore) SaveRunCompletionWithEvents(message Message, run Run, even
 	if err := s.ensureUniqueClientMessageLocked(message); err != nil {
 		return err
 	}
-	s.messages[message.SessionID] = append(s.messages[message.SessionID], message)
+	s.messages[message.SessionID] = append(s.messages[message.SessionID], freezeMessage(message))
 	s.touchMessagesAppend(message.SessionID)
-	s.runs[run.ID] = run
+	s.runs[run.ID] = freezeRun(run)
 	s.touch(collRuns, run.ID)
 	for _, event := range events {
 		if _, err := s.appendRunEventLocked(event); err != nil {
@@ -261,7 +261,7 @@ func (s *MemoryStore) SaveRunTerminalWithEvents(run Run, events []RunEvent) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	before := s.snapshotLocked()
-	s.runs[run.ID] = run
+	s.runs[run.ID] = freezeRun(run)
 	s.touch(collRuns, run.ID)
 	for _, event := range events {
 		if _, err := s.appendRunEventLocked(event); err != nil {

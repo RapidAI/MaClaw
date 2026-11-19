@@ -45,9 +45,11 @@ func (s *Service) NoteDesktopCtl(tenantID, desktopUser string, request map[strin
 	if op, _ := request["op"].(string); strings.TrimSpace(op) != desktop.CtlTakeoverBegin {
 		return
 	}
-	if _, bot := desktop.SplitDesktopUser(desktopUser); bot == "" {
+	_, bot := desktop.SplitDesktopUser(desktopUser)
+	if bot == "" {
 		return
 	}
+	s.openDesktopTakeover(tenantID, desktopUser, bot)
 	s.WatchDesktopTakeover(tenantID, desktopUser)
 }
 
@@ -136,7 +138,7 @@ func (s *Service) resumeAfterHandBack(tenantID, desktopUser, key string, resume 
 	defer cancel()
 	// A memory park of this resume has no chat poll. The give-up has to be
 	// listed as something the person still needs to do.
-	ctx = withQueueSurface(ctx, desktopQueueSurfaceNeedsUser)
+	ctx = WithDesktopContinuation(withQueueSurface(ctx, desktopQueueSurfaceNeedsUser))
 	err := desktopResumeAdmit(s, ctx, tenantID, owner, botID, message, "execute", "handback-"+botID+"-"+since)
 	log.Printf("[bot-desktop] auto hand back (%s) resumed bot %s: err=%v", trigger, botID, err)
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -13,9 +14,10 @@ import (
 // srvScheduleCaller is the agent instance that is managing tasks. An empty
 // InstanceID is the legacy unscoped caller used by tests and admin tools.
 type srvScheduleCaller struct {
-	InstanceID string
-	TenantID   string
-	UserID     string
+	InstanceID   string
+	TenantID     string
+	UserID       string
+	DesktopBotID string
 }
 
 // newSrvManageScheduleHandler builds manage_schedule for CoreAgentExecutor.
@@ -31,10 +33,17 @@ func newSrvManageScheduleHandlerForCaller(svc *agentservice.Service, mgr *schedu
 		if mgr == nil {
 			return "定时任务管理器未初始化"
 		}
+		call := caller
 		if args != nil {
 			delete(args, "instance_id")
 			delete(args, "owner_tenant_id")
 			delete(args, "owner_user_id")
+			// The turn stamps its own bot. An omitted field must not clear a
+			// caller that already named one.
+			if id := stringArg(args, "desktop_bot_id"); id != "" {
+				call.DesktopBotID = id
+			}
+			delete(args, "desktop_bot_id")
 		}
 		actionText := stringArg(args, "action")
 		if ta := stringArg(args, "task_action"); ta != "" {
@@ -46,18 +55,27 @@ func newSrvManageScheduleHandlerForCaller(svc *agentservice.Service, mgr *schedu
 		}
 		switch normalizeSrvScheduleAction(actionText) {
 		case "create":
-			return srvToolCreateScheduledTask(svc, mgr, caller, args)
+			return srvToolCreateScheduledTask(svc, mgr, call, args)
 		case "list":
-			return srvToolListScheduledTasks(mgr, caller)
+			return srvToolListScheduledTasks(mgr, call)
 		case "delete":
-			return srvToolDeleteScheduledTask(mgr, caller, args)
+			return srvToolDeleteScheduledTask(mgr, call, args)
 		case "update":
-			return srvToolUpdateScheduledTask(svc, mgr, caller, args)
+			return srvToolUpdateScheduledTask(svc, mgr, call, args)
 		case "list_targets":
 			return srvToolListScheduleDeliveryTargets(svc, args)
 		default:
 			return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/delete/update/list_targets）", actionText)
 		}
+	}
+}
+
+func srvScheduleVerb(s string) bool {
+	switch normalizeSrvScheduleAction(s) {
+	case "create", "list", "delete", "update", "list_targets":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -281,6 +299,15 @@ func srvToolCreateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manage
 			}
 		}
 	}
+	// A desktop bot already has this name. The call is an edit of that row:
+	// a missing clock or a missing instruction stays as stored. Rejecting it
+	// here is what made the model delete the running timer and create another.
+	if strings.TrimSpace(caller.DesktopBotID) != "" && name != "" {
+		claimUntaggedTimerByName(mgr, caller.InstanceID, caller.DesktopBotID, caller.UserID, name)
+		if existing := srvDesktopBotTimerByName(mgr, caller, name); existing != nil {
+			return srvUpdateDesktopBotTimer(svc, mgr, existing, taskAction, args)
+		}
+	}
 	if name == "" || taskAction == "" {
 		return "缺少 name 或 task_action 参数（task_action 为到点要执行的内容）"
 	}
@@ -313,8 +340,35 @@ func srvToolCreateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manage
 		InstanceID:      caller.InstanceID,
 		OwnerTenantID:   caller.TenantID,
 		OwnerUserID:     caller.UserID,
+		DesktopBotID:    strings.TrimSpace(caller.DesktopBotID),
+		DesktopBotOwner: strings.TrimSpace(caller.UserID),
 	}
-	if d, err := parseAndResolveSrvDelivery(svc, args); err != nil {
+	openNote := ""
+	if t.DesktopBotID != "" {
+		// A process row catches up a slot missed while the process was down.
+		// A bot timer must not do that, whatever task_type the call sent.
+		t.TaskType = scheduler.TaskTypeReminder
+		// start/end and a day of the month are a host one-shot. On a bot
+		// timer they are not in the reply, then the row vanishes on that date.
+		if t.StartDate != "" || t.EndDate != "" || t.DayOfMonth > 0 {
+			openNote = "\n" + desktopBotTimerStaysOpen()
+		}
+		t.StartDate = ""
+		t.EndDate = ""
+		t.DayOfMonth = -1
+	}
+	if t.DesktopBotID == "" {
+		t.DesktopBotOwner = ""
+	}
+	deliveryNote := ""
+	if t.DesktopBotID != "" {
+		// This row fires as the bot. A channel push is not a second output,
+		// and rejecting the call here makes the model build a host task instead.
+		if scheduler.ArgsTouchDelivery(args) {
+			deliveryNote = "\n" + desktopBotTimerRunsItself()
+		}
+		deliveryNote += openNote
+	} else if d, err := parseAndResolveSrvDelivery(svc, args); err != nil {
 		return err.Error()
 	} else if d != nil {
 		t.Delivery = d
@@ -330,57 +384,172 @@ func srvToolCreateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manage
 			extra = "\n推送: " + s
 		}
 		if task.NextRunAt != nil {
-			return fmt.Sprintf("定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s%s",
-				id, name, taskAction, task.NextRunAt.Format("2006-01-02 15:04"), extra)
+			return fmt.Sprintf("定时任务已创建\nID: %s\n名称: %s\n操作: %s\n%s\n下次执行: %s%s%s",
+				id, name, taskAction, desktopBotScheduleWhen(*task), scheduleClockText(task.NextRunAt), extra, deliveryNote)
 		}
-		return fmt.Sprintf("定时任务已创建（ID: %s）%s", id, extra)
+		return fmt.Sprintf("定时任务已创建（ID: %s）%s%s", id, extra, deliveryNote)
 	}
-	return fmt.Sprintf("定时任务已创建（ID: %s）", id)
+	return fmt.Sprintf("定时任务已创建（ID: %s）%s", id, deliveryNote)
 }
 
-func srvScheduleTasksForCaller(tasks []scheduler.ScheduledTask, instanceID string) []scheduler.ScheduledTask {
-	instanceID = strings.TrimSpace(instanceID)
-	if instanceID == "" {
+// srvDesktopBotTimerByName is this bot's row for name. claimUntaggedTimerByName
+// has already given it a same-name row that was stored without a bot.
+func srvDesktopBotTimerByName(mgr *scheduler.Manager, caller srvScheduleCaller, name string) *scheduler.ScheduledTask {
+	name = strings.TrimSpace(name)
+	botID := strings.TrimSpace(caller.DesktopBotID)
+	if mgr == nil || botID == "" || name == "" {
+		return nil
+	}
+	for _, task := range mgr.List() {
+		if task.Name != name || task.InstanceID != strings.TrimSpace(caller.InstanceID) || task.DesktopBotID != botID {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(task.Name), desktopLongJobTaskPrefix) {
+			continue
+		}
+		cp := task
+		return &cp
+	}
+	return nil
+}
+
+// srvUpdateDesktopBotTimer writes the same row. A second create for this
+// name is not a new timer, and it does not stop the occurrence already running.
+func srvUpdateDesktopBotTimer(_ *agentservice.Service, mgr *scheduler.Manager, existing *scheduler.ScheduledTask, taskAction string, args map[string]interface{}) string {
+	fields := map[string]interface{}{}
+	if taskAction != "" {
+		fields["action"] = taskAction
+	}
+	if _, ok := args["interval_minutes"]; ok {
+		if n := srvScheduleIntArg(args, "interval_minutes", 0); n > 0 {
+			fields["interval_minutes"] = n
+		}
+	}
+	if _, hourOK := args["hour"]; hourOK {
+		if _, minuteOK := args["minute"]; minuteOK {
+			fields["hour"] = srvScheduleIntArg(args, "hour", 0)
+			fields["minute"] = srvScheduleIntArg(args, "minute", 0)
+		}
+	}
+	if _, ok := args["day_of_week"]; ok {
+		fields["day_of_week"] = srvScheduleIntArg(args, "day_of_week", -1)
+	}
+	staysOpen := false
+	if existing.StartDate != "" || stringArg(args, "start_date") != "" {
+		fields["start_date"] = ""
+		staysOpen = true
+	}
+	if existing.EndDate != "" || stringArg(args, "end_date") != "" {
+		fields["end_date"] = ""
+		staysOpen = true
+	}
+	if existing.DayOfMonth > 0 {
+		fields["day_of_month"] = -1
+		staysOpen = true
+	} else if _, ok := args["day_of_month"]; ok && srvScheduleIntArg(args, "day_of_month", -1) > 0 {
+		fields["day_of_month"] = -1
+		staysOpen = true
+	}
+	if v := stringArg(args, "name"); v != "" {
+		fields["name"] = v
+	}
+	runsItself := existing.Delivery != nil || scheduler.ArgsTouchDelivery(args)
+	if runsItself {
+		fields["delivery"] = nil
+	}
+	if err := mgr.Update(existing.ID, fields); err != nil {
+		return fmt.Sprintf("创建定时任务失败: %s", err.Error())
+	}
+	task := mgr.Get(existing.ID)
+	if task == nil {
+		return "定时任务已更新\nID: " + existing.ID
+	}
+	text := srvScheduleUpdatedText(task)
+	if runsItself {
+		text += "\n" + desktopBotTimerRunsItself()
+	}
+	if staysOpen {
+		text += "\n" + desktopBotTimerStaysOpen()
+	}
+	return text
+}
+
+// scheduleClockText is the next fire on this machine's clock. The stored
+// instant is UTC. Printing that wall time with no zone made a 22:31 run
+// look like 14:31, and the model rewrote the timer to correct it.
+func scheduleClockText(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return "-"
+	}
+	local := t.In(time.Local)
+	return local.Format("2006-01-02 15:04 -07:00")
+}
+
+func srvScheduleUpdatedText(task *scheduler.ScheduledTask) string {
+	next := scheduleClockText(task.NextRunAt)
+	extra := ""
+	if s := scheduler.SummarizeDelivery(task.Delivery); s != "" {
+		extra = "\n推送: " + s
+	}
+	return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n%s\n下次执行: %s%s",
+		task.ID, task.Name, task.Action, desktopBotScheduleWhen(*task), next, extra)
+}
+
+func srvScheduleTasksForCaller(tasks []scheduler.ScheduledTask, caller srvScheduleCaller) []scheduler.ScheduledTask {
+	instanceID := strings.TrimSpace(caller.InstanceID)
+	botID := strings.TrimSpace(caller.DesktopBotID)
+	if instanceID == "" && botID == "" {
 		return tasks
 	}
 	out := make([]scheduler.ScheduledTask, 0, len(tasks))
 	for _, task := range tasks {
-		if task.InstanceID == instanceID {
-			out = append(out, task)
+		if instanceID != "" && task.InstanceID != instanceID {
+			continue
 		}
+		if botID != "" && task.DesktopBotID != botID {
+			continue
+		}
+		if botID != "" && strings.HasPrefix(strings.TrimSpace(task.Name), desktopLongJobTaskPrefix) {
+			continue
+		}
+		out = append(out, task)
 	}
 	return out
 }
 
-func srvScheduleTaskVisible(task *scheduler.ScheduledTask, instanceID string) bool {
+func srvScheduleTaskVisible(task *scheduler.ScheduledTask, caller srvScheduleCaller) bool {
 	if task == nil {
 		return false
 	}
-	instanceID = strings.TrimSpace(instanceID)
-	if instanceID == "" {
-		return true
+	instanceID := strings.TrimSpace(caller.InstanceID)
+	if instanceID != "" && task.InstanceID != instanceID {
+		return false
 	}
-	return task.InstanceID == instanceID
+	botID := strings.TrimSpace(caller.DesktopBotID)
+	if botID != "" && task.DesktopBotID != botID {
+		return false
+	}
+	return true
 }
 
 func srvToolListScheduledTasks(mgr *scheduler.Manager, caller srvScheduleCaller) string {
-	tasks := srvScheduleTasksForCaller(mgr.List(), caller.InstanceID)
+	if strings.TrimSpace(caller.DesktopBotID) != "" {
+		dropDesktopBotScheduleDelivery(mgr)
+	}
+	tasks := srvScheduleTasksForCaller(mgr.List(), caller)
 	if len(tasks) == 0 {
 		return "当前没有定时任务"
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("定时任务列表（共 %d 个）：\n\n", len(tasks)))
 	for i, t := range tasks {
-		next := "-"
-		if t.NextRunAt != nil {
-			next = t.NextRunAt.Format("2006-01-02 15:04")
-		}
-		b.WriteString(fmt.Sprintf("%d. [%s] %s\n   ID: %s\n   操作: %s\n   下次执行: %s\n   已执行: %d 次",
-			i+1, t.Status, t.Name, t.ID, scheduler.TruncateStr(t.Action, 80), next, t.RunCount))
+		next := scheduleClockText(t.NextRunAt)
+		b.WriteString(fmt.Sprintf("%d. [%s] %s\n   ID: %s\n   操作: %s\n   时间: %s\n   下次执行: %s\n   已执行: %d 次",
+			i+1, t.Status, t.Name, t.ID, scheduler.TruncateStr(t.Action, 80), desktopBotScheduleWhen(t), next, t.RunCount))
 		if s := scheduler.SummarizeDelivery(t.Delivery); s != "" {
 			b.WriteString("\n   推送: " + s)
 		}
-		if scheduler.HasDeliveryWarning(t.LastResult) {
+		if strings.TrimSpace(caller.DesktopBotID) == "" && scheduler.HasDeliveryWarning(t.LastResult) {
 			b.WriteString("\n   投递: 警告")
 		}
 		b.WriteString("\n\n")
@@ -396,26 +565,47 @@ func srvToolDeleteScheduledTask(mgr *scheduler.Manager, caller srvScheduleCaller
 	}
 	var err error
 	if id != "" {
-		if !srvScheduleTaskVisible(mgr.Get(id), caller.InstanceID) {
+		task := mgr.Get(id)
+		if !srvScheduleTaskVisible(task, caller) {
 			return "删除失败: scheduler: task not found"
+		}
+		if held := srvDesktopBotLeaveRunning(mgr, caller, task); held != "" {
+			return held
 		}
 		err = mgr.Delete(id)
 	} else {
-		err = srvDeleteScheduledTaskByName(mgr, name, caller.InstanceID)
+		err = srvDeleteScheduledTaskByName(mgr, name, caller)
 	}
 	if err != nil {
+		if strings.Contains(err.Error(), "没有取消") {
+			return err.Error()
+		}
 		return fmt.Sprintf("删除失败: %s", err.Error())
 	}
 	return "定时任务已删除"
 }
 
-func srvDeleteScheduledTaskByName(mgr *scheduler.Manager, name, instanceID string) error {
+func srvDeleteScheduledTaskByName(mgr *scheduler.Manager, name string, caller srvScheduleCaller) error {
 	for _, task := range mgr.List() {
-		if task.Name == name && srvScheduleTaskVisible(&task, instanceID) {
-			return mgr.Delete(task.ID)
+		if task.Name != name || !srvScheduleTaskVisible(&task, caller) {
+			continue
 		}
+		if held := srvDesktopBotLeaveRunning(mgr, caller, &task); held != "" {
+			return fmt.Errorf("%s", held)
+		}
+		return mgr.Delete(task.ID)
 	}
 	return fmt.Errorf("scheduler: task named %q not found", name)
+}
+
+// srvDesktopBotLeaveRunning refuses to stop a desktop bot timer that is
+// already firing. Manager.Delete cancels that run and still returns an error,
+// which is how a replace attempt dropped the weather timer mid-occurrence.
+func srvDesktopBotLeaveRunning(mgr *scheduler.Manager, caller srvScheduleCaller, task *scheduler.ScheduledTask) string {
+	if strings.TrimSpace(caller.DesktopBotID) == "" || task == nil || mgr == nil || !mgr.Running(task.ID) {
+		return ""
+	}
+	return desktopBotTimerLeftRunning()
 }
 
 func srvToolUpdateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manager, caller srvScheduleCaller, args map[string]interface{}) string {
@@ -423,12 +613,24 @@ func srvToolUpdateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manage
 	if id == "" {
 		return "缺少 id 参数"
 	}
-	if !srvScheduleTaskVisible(mgr.Get(id), caller.InstanceID) {
+	task := mgr.Get(id)
+	if !srvScheduleTaskVisible(task, caller) {
 		return "更新失败: scheduler: task not found"
+	}
+	if strings.TrimSpace(caller.DesktopBotID) != "" {
+		taskAction := stringArg(args, "task_action")
+		if taskAction == "" {
+			if a := stringArg(args, "action"); a != "" && !srvScheduleVerb(a) {
+				taskAction = a
+			}
+		}
+		return srvUpdateDesktopBotTimer(svc, mgr, task, taskAction, args)
 	}
 	if ta := stringArg(args, "task_action"); ta != "" {
 		args["action"] = ta
-	} else if a := stringArg(args, "action"); a != "" && normalizeSrvScheduleAction(a) != a {
+	} else if srvScheduleVerb(stringArg(args, "action")) {
+		// action=update is the tool verb. Leaving it in the patch stores the
+		// word "update" as the order for the next run.
 		delete(args, "action")
 	}
 	// Full replace or partial patch (fail_on_error) without wiping delivery.
@@ -439,16 +641,13 @@ func srvToolUpdateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manage
 		return fmt.Sprintf("更新失败: %s", err.Error())
 	}
 	if t := mgr.Get(id); t != nil {
-		next := "-"
-		if t.NextRunAt != nil {
-			next = t.NextRunAt.Format("2006-01-02 15:04")
-		}
+		next := scheduleClockText(t.NextRunAt)
 		extra := ""
 		if s := scheduler.SummarizeDelivery(t.Delivery); s != "" {
 			extra = "\n推送: " + s
 		}
-		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s%s",
-			t.ID, t.Name, t.Action, t.Hour, t.Minute, next, extra)
+		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n%s\n下次执行: %s%s",
+			t.ID, t.Name, t.Action, desktopBotScheduleWhen(*t), next, extra)
 	}
 	return "定时任务已更新"
 }

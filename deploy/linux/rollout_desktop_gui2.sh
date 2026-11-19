@@ -114,7 +114,11 @@ step_build() {
   if wants desktopd; then
     mkdir -p "$stage/desktopd/bin" "$stage/desktopd/image"
     GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "$GO" build -ldflags "-s -w" -o "$stage/desktopd/bin/desktopd" ./desktopd/cmd/desktopd
-    cp desktopd/image/{desktop_supervisor.py,Dockerfile,Dockerfile.v2,close_range_shim.c,fcitx5-profile} "$stage/desktopd/image/"
+    # The build context is the whole desktopd/image dir (see Dockerfile.v2's
+    # header). A hand-kept file list drifts when the image gains files —
+    # theme/ was once left out this way and the host build failed at COPY.
+    cp -R desktopd/image/. "$stage/desktopd/image/"
+    find "$stage/desktopd/image" -type d -name __pycache__ -exec rm -rf {} +
     tar -czf "$out/desktopd-deploy.tar.gz" -C "$stage/desktopd" bin image
   fi
   if wants hub; then

@@ -530,13 +530,19 @@ func (m *RemoteSessionManager) CreateUserSession(spec LaunchSpec) (*RemoteSessio
 	// SDK sessions get a dedicated output loop that handles structured messages.
 	// iFlow/OpenCode/Kilo emit pre-formatted text on Output(), so the generic
 	// runOutputLoop (which reads from Output() and feeds the pipeline) works.
-	if _, isSDK := session.Exec.(*SDKExecutionHandle); isSDK {
-		go m.runSDKOutputLoop(session)
-	} else if _, isCodex := session.Exec.(*CodexSDKExecutionHandle); isCodex {
-		go m.runCodexSDKOutputLoop(session)
-	} else {
-		go m.runOutputLoop(session)
-	}
+	// One done signal covers whichever loop runs, including an SDK fallback
+	// into runOutputLoop. The exit loop waits on it before session.closed.
+	session.outputDone = make(chan struct{})
+	go func() {
+		defer close(session.outputDone)
+		if _, isSDK := session.Exec.(*SDKExecutionHandle); isSDK {
+			m.runSDKOutputLoop(session)
+		} else if _, isCodex := session.Exec.(*CodexSDKExecutionHandle); isCodex {
+			m.runCodexSDKOutputLoop(session)
+		} else {
+			m.runOutputLoop(session)
+		}
+	}()
 	go m.runExitLoop(session)
 
 	elapsed := time.Since(now)
@@ -1177,7 +1183,10 @@ func (m *RemoteSessionManager) KillAllActive() []string {
 func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 	defer func() {
 		if r := recover(); r != nil {
-			m.app.log(fmt.Sprintf("[remote-output-panic] session=%s recovered: %v", s.ID, r))
+			log.Printf("[remote-output-panic] session=%s recovered: %v", s.ID, r)
+			if m.app != nil {
+				m.app.log(fmt.Sprintf("[remote-output-panic] session=%s recovered: %v", s.ID, r))
+			}
 		}
 	}()
 	pipeline := m.pipelineFactory()
@@ -2109,9 +2118,19 @@ func buildResumeContext(s *RemoteSession, reason string) *SessionResumeContext {
 }
 
 func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
+	// publishClose stays set after the output tail has been waited for, until
+	// session.closed is handed to the hub client. A recovered panic used to
+	// return before that write and leave viewers on an open session.
+	publishClose := false
 	defer func() {
 		if r := recover(); r != nil {
-			m.app.log(fmt.Sprintf("[remote-exit-panic] session=%s recovered: %v", s.ID, r))
+			log.Printf("[remote-exit-panic] session=%s recovered: %v", s.ID, r)
+			if m.app != nil {
+				m.app.log(fmt.Sprintf("[remote-exit-panic] session=%s recovered: %v", s.ID, r))
+			}
+		}
+		if publishClose && m.hubClient != nil {
+			_ = m.hubClient.SendSessionClosed(s)
 		}
 	}()
 	// Ensure config cleanup runs even if the exit channel is nil or closed
@@ -2138,6 +2157,11 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	if !ok {
 		return
 	}
+	// The process exit is not the end of the reader. The last chunks can still
+	// be moving through the output loop; publish the close only after that
+	// loop has pushed them into the preview buffer.
+	m.waitForSessionOutput(s)
+	publishClose = true
 	now := time.Now()
 	sessionDuration := now.Sub(s.CreatedAt)
 
@@ -2288,6 +2312,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	if m.hubClient != nil {
 		_ = m.hubClient.SendSessionSummary(summarySnap)
 		_ = m.hubClient.SendImportantEvent(closedEvent)
+		publishClose = false
 		_ = m.hubClient.SendSessionClosed(s)
 	}
 
@@ -2399,6 +2424,24 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 
 	m.app.refreshPowerOptimizationState()
 	m.app.emitRemoteStateChanged()
+}
+
+// sessionOutputDrainTimeout bounds the wait for a tail that is still in the
+// reader after the process has exited. A stuck read must not hold the close
+// forever.
+var sessionOutputDrainTimeout = 5 * time.Second
+
+func (m *RemoteSessionManager) waitForSessionOutput(s *RemoteSession) {
+	if s == nil || s.outputDone == nil {
+		return
+	}
+	timer := time.NewTimer(sessionOutputDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-s.outputDone:
+	case <-timer.C:
+		log.Printf("[session-lifecycle] session %s output drain timed out after %s", s.ID, sessionOutputDrainTimeout)
+	}
 }
 
 func shouldCreatePendingResumeSlot(s *RemoteSession) bool {

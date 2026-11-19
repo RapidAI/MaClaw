@@ -4,6 +4,7 @@ import { corelib, main } from '../../wailsjs/go/models';
 import {
     ListPetPacks,
     InstallPetPackZip,
+    ImportDSHPetFolder,
     SelectPetPackZip,
     UninstallPetPack,
     GetPetPackPreviewDataURL,
@@ -20,6 +21,7 @@ import {
 import { buildHubPetPackHelpURL } from '../utils/hubCredits';
 import {
     defaultPetSize,
+    defaultPetSkinId,
     getPetSkinOption,
     packInfoToSkinOption,
     petSkinOptions,
@@ -32,7 +34,18 @@ import { normalizeLang } from '../i18n/langSelect';
 import { petMn } from '../i18n/mnPet';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
-type PetStoreListing = { id: string; status: string };
+type PetStoreListing = { id: string; status: string; name: string; version: string; price: number };
+
+function compareDottedPackVersions(a: string, b: string): number {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+        const diff = (pa[i] || 0) - (pb[i] || 0);
+        if (diff !== 0) return diff;
+    }
+    return 0;
+}
 
 function orderPackOptions(packs: unknown[], lang: Lang): PetSkinOption[] {
     const options = packs.map((p) => packInfoToSkinOption(p as Record<string, unknown>, lang));
@@ -296,17 +309,17 @@ function skinToneLabel(lang: Lang, tone: string): string {
 
 function skinDescription(lang: Lang, id: string): string {
     switch (id) {
-        case 'clawmate':
+        case 'ragdoll':
         default:
-            return text(lang, '带耳朵、爪子和信号标记的默认助手', '帶耳朵、爪子和訊號標記的預設助手', 'Default helper with ears, paws, and a signal tag');
+            return text(lang, '会走动、奔跑、跳跃、弯腰和唱歌的布偶猫', '會走動、奔跑、跳躍、彎腰和唱歌的布偶貓', 'A ragdoll cat-girl who walks, runs, jumps, bows, and sings');
     }
 }
 
 function skinPreviewLine(lang: Lang, id: string): string {
     switch (id) {
-        case 'clawmate':
+        case 'ragdoll':
         default:
-            return text(lang, '抓住问题，把有效信号拎出来。', '抓住問題，把有效訊號拎出來。', 'Catches the problem and pulls out the signal.');
+            return text(lang, '在桌面上走来走去，高兴时会跳起来唱歌。', '在桌面上走來走去，高興時會跳起來唱歌。', 'Walks the desktop, and jumps or sings when she is pleased.');
     }
 }
 
@@ -330,7 +343,7 @@ function rendererCapabilityLabel(lang: Lang, renderer: string): string {
 
 function clampPetSize(value: number): number {
     if (!Number.isFinite(value)) return defaultPetSize;
-    return Math.min(120, Math.max(56, Math.round(value)));
+    return Math.min(240, Math.max(56, Math.round(value)));
 }
 
 function cloneAppConfig(config: corelib.AppConfig, patch: Record<string, unknown> = {}): corelib.AppConfig {
@@ -375,7 +388,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
     const saveSeqRef = useRef(0);
     const pendingPatchRef = useRef<Record<string, unknown>>({});
     const petSize = clampPetSize(config.pet_size || defaultPetSize);
-    const selectedSkin = config.pet_skin || 'clawmate';
+    const selectedSkin = config.pet_skin || defaultPetSkinId;
     // The live preview uses the configured variant. Legacy 'classic' has no
     // raster frames (see GetPetPackStateFrameDataURL), so it resolves to the
     // default variant, which every pack ships.
@@ -627,7 +640,11 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             const next: Record<string, PetStoreListing> = {};
             uploads.forEach((entry: Record<string, unknown>) => {
                 const sourcePackID = String(entry.source_pack_id || '');
-                if (sourcePackID) next[sourcePackID] = { id: String(entry.id || ''), status: String(entry.status || '') };
+                // The uploads list is sorted newest-first and can contain both
+                // a withdrawn listing and its re-published replacement for the
+                // same source ID. Keep the newest row so a live listing is
+                // never masked by its older withdrawn predecessor.
+                if (sourcePackID && !next[sourcePackID]) next[sourcePackID] = { id: String(entry.id || ''), status: String(entry.status || ''), name: String(entry.name || ''), version: String(entry.version || ''), price: Number(entry.price) || 0 };
             });
             setPetStoreListings(next);
         } catch {
@@ -643,11 +660,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         shareSetupInvokerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setShareError('');
         setShareSuccess('');
-        setSharePrice('0');
-        setShareName(packToShare.label);
-        setShareVersion(packToShare.version || '1.0.0');
+        // Updating a listed pack keeps the listing's own fields as defaults so
+        // a version bump cannot silently reset its market name, price, or version.
+        const listing = activeStoreListing(packToShare);
+        setSharePrice(listing ? String(Math.max(0, Math.trunc(listing.price))) : '0');
+        setShareName(listing?.name || packToShare.label);
+        setShareVersion(listing?.version || packToShare.version || '1.0.0');
         setShareSetupPack(packToShare);
-    }, [selectedSkinOption]);
+    }, [selectedSkinOption, petStoreListings]);
 
     const dismissShareSetup = useCallback((restoreFocus = true) => {
         if (shareSubmittingRef.current) return;
@@ -707,13 +727,20 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                 ));
                 return false;
             }
-            await SubmitPetStorePack(zipPath, name.trim(), description.trim(), version.trim() || '1.0.0', price, packToShare.id);
-            setShareSuccess(text(
-                lang,
-                '宠物包已发布到市场。你可以在“我的上传”中管理它。',
-                '寵物包已發佈到市場。你可以在「我的上傳」中管理它。',
-                'Pet pack published. Manage it in My Uploads.'
-            ));
+            const result = await SubmitPetStorePack(zipPath, name.trim(), description.trim(), version.trim(), price, packToShare.id);
+            setShareSuccess(result && result.updated === true
+                ? text(
+                    lang,
+                    '宠物包已更新为新版本。市场发布保持不变，已获取用户仍可下载。',
+                    '寵物包已更新為新版本。市場發佈保持不變，已取得使用者仍可下載。',
+                    'Pet pack updated. The existing market listing now serves the new version.'
+                )
+                : text(
+                    lang,
+                    '宠物包已发布到市场。你可以在“我的上传”中管理它。',
+                    '寵物包已發佈到市場。你可以在「我的上傳」中管理它。',
+                    'Pet pack published. Manage it in My Uploads.'
+                ));
             await refreshPetStoreListings();
             return true;
         } catch (err) {
@@ -725,6 +752,27 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     '该宠物包已有上架或暂停的发布记录。请先在“我的上传”中下架或恢复该记录。',
                     '該寵物包已有上架或暫停的發佈記錄。請先在「我的上傳」中下架或恢復該記錄。',
                     'This pet pack already has an active or paused listing. Manage that listing in My Uploads first.'
+                ));
+            } else if (normalized.includes('version is required')) {
+                setShareError(text(
+                    lang,
+                    '请填写版本号，例如 1.0.0。',
+                    '請填寫版本號，例如 1.0.0。',
+                    'Enter a version number, for example 1.0.0.'
+                ));
+            } else if (normalized.includes('version is older than the published version')) {
+                setShareError(text(
+                    lang,
+                    '版本号不能低于已发布的版本。',
+                    '版本號不能低於已發佈的版本。',
+                    'The version cannot be older than the published version.'
+                ));
+            } else if (normalized.includes('does not match pet-pack.yaml') && normalized.includes('version')) {
+                setShareError(text(
+                    lang,
+                    '版本号必须与 pet-pack.yaml 里的 version 一致。',
+                    '版本號必須與 pet-pack.yaml 裡的 version 一致。',
+                    'The version must match version in pet-pack.yaml.'
                 ));
             } else if (normalized.includes('already published by another creator') || normalized.includes('source pack id claimed')) {
                 setShareError(text(
@@ -831,6 +879,16 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             setShareError(text(lang, '请填写宠物包名称。', '請填寫寵物包名稱。', 'Enter a pet-pack name.'));
             return;
         }
+        const version = shareVersion.trim().replace(/^v/i, '');
+        if (!/^\d{1,9}(?:\.\d{1,9}){0,3}$/.test(version)) {
+            setShareError(text(lang, '请填写版本号，例如 1.0.0。', '請填寫版本號，例如 1.0.0。', 'Enter a version number, for example 1.0.0.'));
+            return;
+        }
+        const published = String(activeStoreListing(shareSetupPack)?.version || '').trim().replace(/^v/i, '');
+        if (/^\d{1,9}(?:\.\d{1,9}){0,3}$/.test(published) && compareDottedPackVersions(version, published) < 0) {
+            setShareError(text(lang, '版本号不能低于已发布的版本。', '版本號不能低於已發佈的版本。', 'The version cannot be older than the published version.'));
+            return;
+        }
         if (!Number.isInteger(price) || price < 0 || price > 999999) {
             setShareError(text(lang, '价格必须是 0 到 999999 之间的整数 Credits。', '價格必須是 0 到 999999 之間的整數 Credits。', 'Price must be a whole number from 0 to 999999 Credits.'));
             return;
@@ -841,12 +899,12 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         // The card may show a localized description, but a listing must retain
         // the package author's manifest description rather than a UI-language
         // projection of it.
-        void shareSelectedPetPack(pack, shareName, pack.manifestDescription || pack.desc, shareVersion, price)
+        void shareSelectedPetPack(pack, shareName, pack.manifestDescription || pack.desc, version, price)
             .finally(() => {
                 shareSubmittingRef.current = false;
                 setShareSubmitting(false);
             });
-    }, [lang, shareName, sharePrice, shareSelectedPetPack, shareSetupPack, shareSuccess, shareVersion]);
+    }, [lang, petStoreListings, shareName, sharePrice, shareSelectedPetPack, shareSetupPack, shareSuccess, shareVersion]);
 
     const submitShareSetup = useCallback((event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -870,7 +928,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         } catch (err) {
             setInstallError(formatUnknownError(err));
         }
-    }, [lang, refreshPetStoreListings, showConfirm]);
+    }, [lang, petStoreListings, refreshPetStoreListings, showConfirm]);
 
     const installBusyRef = useRef(false);
 
@@ -904,7 +962,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             // pending debounced patch that still references the removed skin.
             if (latestConfigRef.current.pet_skin === skin) {
                 const next = cloneAppConfig(latestConfigRef.current, {
-                    pet_skin: 'clawmate',
+                    pet_skin: defaultPetSkinId,
                     pet_variant: 'default',
                 });
                 latestConfigRef.current = next;
@@ -913,7 +971,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             if (pendingPatchRef.current.pet_skin === skin) {
                 pendingPatchRef.current = {
                     ...pendingPatchRef.current,
-                    pet_skin: 'clawmate',
+                    pet_skin: defaultPetSkinId,
                     pet_variant: 'default',
                 };
             }
@@ -997,6 +1055,51 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         }
     }, [refreshPackOptions, lang, updatePetConfig]);
 
+    const importDSHPetFromDialog = useCallback(async () => {
+        if (installBusyRef.current) return;
+        installBusyRef.current = true;
+        setInstallError('');
+        setInstallNotice('');
+        if (installNoticeTimerRef.current) {
+            window.clearTimeout(installNoticeTimerRef.current);
+            installNoticeTimerRef.current = undefined;
+        }
+        setInstallBusy(true);
+        try {
+            const imported = await ImportDSHPetFolder('');
+            if (!imported?.id) {
+                return;
+            }
+            await refreshPackOptions();
+            updatePetConfig({
+                pet_skin: imported.id,
+                pet_variant: 'default',
+            });
+            const warnings = (imported.warnings ?? []).join(' ');
+            const dropped = imported.dropped ?? 0;
+            const detail = warnings ? ` ${warnings}` : '';
+            setInstallNotice(
+                text(
+                    lang,
+                    `已导入并选用：${imported.id}，丢掉 ${dropped} 帧。${detail}`,
+                    `已匯入並選用：${imported.id}，丟掉 ${dropped} 幀。${detail}`,
+                    `Imported and selected: ${imported.id}. Dropped ${dropped} frames.${detail}`,
+                )
+            );
+            installNoticeTimerRef.current = window.setTimeout(() => {
+                if (mountedRef.current) setInstallNotice('');
+                installNoticeTimerRef.current = undefined;
+            }, 4000);
+        } catch (err) {
+            const message = formatUnknownError(err);
+            console.error('[PetSettingsPanel] ImportDSHPetFolder failed:', err);
+            setInstallError(message);
+        } finally {
+            installBusyRef.current = false;
+            setInstallBusy(false);
+        }
+    }, [refreshPackOptions, lang, updatePetConfig]);
+
     return (
         <div className="pet-settings-panel">
             {petStoreOpen ? <PetStoreDialog lang={lang} onClose={() => { setPetStoreOpen(false); void refreshPetStoreListings(); }} /> : null}
@@ -1005,15 +1108,17 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     <form ref={shareSetupRef} className="pet-share-setup" role="dialog" aria-modal="true" aria-labelledby="pet-share-setup-title" onKeyDown={onShareSetupKeyDown} onSubmit={submitShareSetup}>
                         <header>
                             <div>
-                                <h4 id="pet-share-setup-title">{text(lang, '分享宠物包', '分享寵物包', 'Share pet pack')}</h4>
-                                <p>{text(lang, '选择免费发布，或设置一次性买断的 Credits 价格。不会创建订阅或自动续费。', '選擇免費發佈，或設定一次性買斷的 Credits 價格。不會建立訂閱或自動續費。', 'Choose free publishing or set a one-time Credits price. No subscription or renewal is created.')}</p>
+                                <h4 id="pet-share-setup-title">{activeStoreListing(shareSetupPack) ? text(lang, '更新宠物包发布', '更新寵物包發佈', 'Update pet pack listing') : text(lang, '分享宠物包', '分享寵物包', 'Share pet pack')}</h4>
+                                <p>{activeStoreListing(shareSetupPack)
+                                    ? text(lang, '该宠物包已在市场上架；本次发布会将在线分享包更新为新版本，发布 ID、下载和购买记录保持不变。', '該寵物包已在市場上架；本次發佈會將線上分享包更新為新版本，發佈 ID、下載和購買記錄保持不變。', 'This pack is already listed; publishing updates the online package to the new version while keeping its listing ID, downloads, and purchases.')
+                                    : text(lang, '选择免费发布，或设置一次性买断的 Credits 价格。不会创建订阅或自动续费。', '選擇免費發佈，或設定一次性買斷的 Credits 價格。不會建立訂閱或自動續費。', 'Choose free publishing or set a one-time Credits price. No subscription or renewal is created.')}</p>
                             </div>
                             <button ref={shareSetupCloseRef} type="button" className="pet-share-setup-close" disabled={shareSubmitting} onClick={() => dismissShareSetup()} aria-label={text(lang, '关闭对话框', '關閉對話框', 'Close dialog')}>×</button>
                         </header>
                         <div className="pet-share-setup-pack"><strong>{shareSetupPack.label}</strong><span>{shareSetupPack.id}</span></div>
                         <label className="pet-share-setup-field">{text(lang, '名称', '名稱', 'Name')}<input value={shareName} maxLength={60} disabled={shareSubmitting || !!shareSuccess} onChange={(event) => { setShareName(event.target.value); setShareError(''); }} /></label>
                         <div className="pet-share-setup-description"><span>{text(lang, '说明', '說明', 'Description')}</span><p>{shareSetupPack.desc || text(lang, '该宠物包未提供说明。', '該寵物包未提供說明。', 'This pet pack has no description.')}</p></div>
-                        <label className="pet-share-setup-field">{text(lang, '版本', '版本', 'Version')}<input value={shareVersion} maxLength={80} disabled={shareSubmitting || !!shareSuccess} onChange={(event) => { setShareVersion(event.target.value); setShareError(''); }} /></label>
+                        <label className="pet-share-setup-field">{text(lang, '版本', '版本', 'Version')}<input value={shareVersion} maxLength={40} inputMode="decimal" disabled={shareSubmitting || !!shareSuccess} onChange={(event) => { setShareVersion(event.target.value); setShareError(''); }} /></label>
                         <fieldset>
                             <legend>{text(lang, '发布方式', '發佈方式', 'Listing type')}</legend>
                             <label><input type="radio" name="pet-share-price" checked={sharePrice === '0'} disabled={shareSubmitting || !!shareSuccess} onChange={() => { setSharePrice('0'); setShareError(''); }} /> {text(lang, '免费', '免費', 'Free')}</label>
@@ -1022,7 +1127,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         {sharePrice !== '0' ? <label className="pet-share-setup-price">{text(lang, '价格（Credits）', '價格（Credits）', 'Price (Credits)')}<input autoFocus inputMode="numeric" disabled={shareSubmitting || !!shareSuccess} value={sharePrice} onChange={(event) => { setSharePrice(event.target.value); setShareError(''); }} /></label> : null}
                         {shareError ? <p className="pet-share-setup-feedback" data-tone="error" role="alert">{shareError}</p> : null}
                         {shareSuccess ? <p className="pet-share-setup-feedback" data-tone="success" role="status">{shareSuccess}</p> : null}
-                        <footer><button type="button" className="btn-secondary" disabled={shareSubmitting} onClick={() => dismissShareSetup()}>{shareSuccess ? text(lang, '关闭', '關閉', 'Close') : text(lang, '取消', '取消', 'Cancel')}</button>{!shareSuccess ? <button type="submit" className="btn-primary" disabled={shareSubmitting}>{shareSubmitting ? text(lang, '发布中…', '發佈中…', 'Publishing…') : text(lang, '发布宠物包', '發佈寵物包', 'Publish pet pack')}</button> : null}</footer>
+                        <footer><button type="button" className="btn-secondary" disabled={shareSubmitting} onClick={() => dismissShareSetup()}>{shareSuccess ? text(lang, '关闭', '關閉', 'Close') : text(lang, '取消', '取消', 'Cancel')}</button>{!shareSuccess ? <button type="submit" className="btn-primary" disabled={shareSubmitting}>{shareSubmitting ? text(lang, '发布中…', '發佈中…', 'Publishing…') : activeStoreListing(shareSetupPack) ? text(lang, '更新发布', '更新發佈', 'Update listing') : text(lang, '发布宠物包', '發佈寵物包', 'Publish pet pack')}</button> : null}</footer>
                     </form>
                 </div>
             ) : null}
@@ -1183,7 +1288,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
 					<div className="pet-form-section">
                         <div className="pet-section-heading">
                             <strong>{text(lang, '\u5f62\u8c61', '\u5f62\u8c61', 'Skin')}</strong>
-                            <span>{text(lang, '默认小螃蟹是官方动作打样；其他形象由你安装或创建的宠物包提供。', '預設小螃蟹是官方動作打樣；其他形象由你安裝或建立的寵物包提供。', 'The default crab is the official motion reference; add other characters through installed or created packs.')}</span>
+                            <span>{text(lang, '默认是会走、跑、跳、弯腰和唱歌的布偶猫；其他形象由你安装或创建的宠物包提供。', '預設是會走、跑、跳、彎腰和唱歌的布偶貓；其他形象由你安裝或建立的寵物包提供。', 'The default is a ragdoll cat-girl who walks, runs, jumps, bows, and sings; add other characters through installed or created packs.')}</span>
                         </div>
                         <div className="pet-skin-grid">
                             {packOptions.map((skin) => {
@@ -1234,9 +1339,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         {petContextMenu ? (
                             <div className="pet-pack-context-menu" style={{ left: petContextMenu.x, top: petContextMenu.y }} role="menu" aria-label={text(lang, '宠物包菜单', '寵物包選單', 'Pet pack menu')}>
                                 {isShareableLocalPack(petContextMenu.pack) ? (activeStoreListing(petContextMenu.pack) ? (
-                                    <button type="button" role="menuitem" onClick={() => { const pack = petContextMenu.pack; setPetContextMenu(null); void withdrawSharedPetPack(pack); }}>
-                                        {text(lang, '下架', '下架', 'Unlist')}
-                                    </button>
+                                    <>
+                                        <button type="button" role="menuitem" onClick={() => { const pack = petContextMenu.pack; setPetContextMenu(null); sharePetPack(pack); }}>
+                                            {text(lang, '更新分享…', '更新分享…', 'Update listing…')}
+                                        </button>
+                                        <button type="button" role="menuitem" onClick={() => { const pack = petContextMenu.pack; setPetContextMenu(null); void withdrawSharedPetPack(pack); }}>
+                                            {text(lang, '下架', '下架', 'Unlist')}
+                                        </button>
+                                    </>
                                 ) : pausedStoreListing(petContextMenu.pack) ? (
                                     <button type="button" role="menuitem" disabled title={text(lang, '该宠物包已被管理员暂停发布，恢复发布前不能修改或重新上传。', '該寵物包已被管理員暫停發布，恢復發布前不能修改或重新上傳。', 'This pet pack is paused by an administrator and cannot be changed or re-uploaded until it is restored.')}>
                                         {text(lang, '已暂停发布', '已暫停發布', 'Publishing paused')}
@@ -1269,6 +1379,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             </button>
                             <button
                                 type="button"
+                                className="pet-install-button"
+                                disabled={installBusy}
+                                onClick={() => { void importDSHPetFromDialog(); }}
+                            >
+                                {text(lang, '导入 DeepSeek 精灵图', '匯入 DeepSeek 精靈圖', 'Import DeepSeek sprite folder')}
+                            </button>
+                            <button
+                                type="button"
                                 className="pet-help-button pet-help-button--inline"
                                 onClick={() => { void openPetPacksFolder(); }}
                                 title={packsDirLabel || text(lang, '打开用户宠物包目录', '開啟使用者寵物包目錄', 'Open user pet packs folder')}
@@ -1289,9 +1407,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         {selectedSkinOption.canUninstall ? (
                             <div className="pet-pack-context-row" role="group" aria-label={text(lang, '当前宠物包操作', '目前寵物包操作', 'Current pet pack actions')}>
                                 {isShareableLocalPack(selectedSkinOption) ? (activeStoreListing(selectedSkinOption) ? (
-                                    <button type="button" className="pet-context-button" onClick={() => void withdrawSharedPetPack(selectedSkinOption)}>
-                                        {text(lang, '下架', '下架', 'Unlist')}
-                                    </button>
+                                    <>
+                                        <button type="button" className="pet-context-button" onClick={() => openShareSetup()}>
+                                            {text(lang, '更新分享…', '更新分享…', 'Update listing…')}
+                                        </button>
+                                        <button type="button" className="pet-context-button" onClick={() => void withdrawSharedPetPack(selectedSkinOption)}>
+                                            {text(lang, '下架', '下架', 'Unlist')}
+                                        </button>
+                                    </>
                                 ) : pausedStoreListing(selectedSkinOption) ? (
                                     <button type="button" className="pet-context-button" disabled title={text(lang, '该宠物包已被管理员暂停发布，恢复发布前不能修改或重新上传。', '該寵物包已被管理員暫停發布，恢復發布前不能修改或重新上傳。', 'This pet pack is paused by an administrator and cannot be changed or re-uploaded until it is restored.')}>
                                         {text(lang, '已暂停发布', '已暫停發布', 'Publishing paused')}
@@ -1331,14 +1454,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     <div className="pet-form-section">
                         <div className="pet-section-heading pet-section-heading--inline">
                             <label className="form-label" htmlFor="pet-size-range">{text(lang, '\u5c3a\u5bf8', '\u5c3a\u5bf8', 'Size')}</label>
-                            <span>{text(lang, '建议 72-96px，兼顾存在感与遮挡。', '建議 72-96px，兼顧存在感與遮擋。', '72-96px is a comfortable desktop range.')}</span>
+                            <span>{text(lang, '建议 200-240px，站着的人才看得清。', '建議 200-240px，站著的人才看得清。', '200-240px is enough to see her as a person.')}</span>
                         </div>
                         <div className="pet-range-row">
                             <input
                                 id="pet-size-range"
                                 type="range"
                                 min={56}
-                                max={120}
+                                max={240}
                                 step={4}
                                 value={petSize}
                                 aria-valuetext={`${petSize}px`}

@@ -940,6 +940,50 @@ func TestBackupDeviceCredentialsRejectsOversizedSnapshotBeforeRequest(t *testing
 	}
 }
 
+func TestStartBackgroundSyncPersistsConfigErrors(t *testing.T) {
+	t.Run("missing center url", func(t *testing.T) {
+		cfg := config.Default()
+		cfg.Center.Enabled = true
+		cfg.Center.BaseURL = ""
+		cfg.Center.BaseURLs = nil
+		cfg.Center.RegisterOnStartup = true
+		cfg.Center.OwnerEmail = "owner@example.com"
+		settings := newFakeSettingsRepo()
+		NewService(cfg, settings).StartBackgroundSync()
+		assertRegistrationLastError(t, settings, "hub center base url is required")
+	})
+
+	t.Run("missing owner email", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Errorf("register was called: %s", r.URL.Path)
+		}))
+		defer server.Close()
+		cfg := config.Default()
+		cfg.Center.Enabled = true
+		cfg.Center.BaseURL = server.URL
+		cfg.Center.RegisterOnStartup = true
+		cfg.Center.OwnerEmail = ""
+		settings := newFakeSettingsRepo()
+		NewService(cfg, settings).StartBackgroundSync()
+		assertRegistrationLastError(t, settings, "admin email is required for hub registration")
+	})
+}
+
+func assertRegistrationLastError(t *testing.T, settings *fakeSettingsRepo, want string) {
+	t.Helper()
+	raw, err := settings.Get(context.Background(), systemKeyCenterRegistration)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	var record registrationRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if record.LastError != want || record.HubID != "" || record.Registered || record.PendingConfirmation {
+		t.Fatalf("registration record = %+v, want last_error %q and no hub id", record, want)
+	}
+}
+
 func TestStartBackgroundSyncAutoRegistersWhenConfigured(t *testing.T) {
 	var (
 		registerCalls  int

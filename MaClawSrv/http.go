@@ -79,25 +79,28 @@ type HTTPServer struct {
 	databaseApprovalIssuer   databaseApprovalIssuer
 	// databaseAdminIdemMu serializes idempotency check-and-store for profile
 	// writes so concurrent retries of the same key cannot both commit.
-	databaseAdminIdemMu  sync.Mutex
-	launchTokens         *launchTokenStore
-	weixinQRTokens       *weixinQRTokenStore
-	qqbotQRTokens        *weixinQRTokenStore
-	qqbotQR              *qqbot.QRClient
-	weixinRuntime        *srvWeixinGatewayManager
-	imRuntime            *srvIMGatewayManager
-	thirdPartyIM         *srvThirdPartyGatewayManager
-	hardwareBindings     *srvDeviceAgentBindingStore
-	devicePairings       *srvDevicePairingStore
-	devicePairLimit      *authLimiter
-	deviceUpdateBindings *srvDeviceUpdateBindingStore
-	deviceUpdateCatalog  *srvDeviceUpdateCatalog
-	githubReleaseCatalog *srvGitHubReleaseCatalog
-	jobs                 *asyncJobManager
-	knowledgeMgr         *knowledgeStoreManager
-	enterpriseSync       *enterpriseSyncCoordinator
-	skillSourceSvc       *cskill.SourceControlService
-	aiModels             *srvAIModelManager
+	databaseAdminIdemMu   sync.Mutex
+	launchTokens          *launchTokenStore
+	weixinQRTokens        *weixinQRTokenStore
+	qqbotQRTokens         *weixinQRTokenStore
+	qqbotQR               *qqbot.QRClient
+	weixinRuntime         *srvWeixinGatewayManager
+	imRuntime             *srvIMGatewayManager
+	thirdPartyIM          *srvThirdPartyGatewayManager
+	thirdPartyAuthMu      sync.RWMutex
+	thirdPartyAuthCache   map[[32]byte]srvThirdPartyPrincipal
+	thirdPartyAuthVersion uint64
+	hardwareBindings      *srvDeviceAgentBindingStore
+	devicePairings        *srvDevicePairingStore
+	devicePairLimit       *authLimiter
+	deviceUpdateBindings  *srvDeviceUpdateBindingStore
+	deviceUpdateCatalog   *srvDeviceUpdateCatalog
+	githubReleaseCatalog  *srvGitHubReleaseCatalog
+	jobs                  *asyncJobManager
+	knowledgeMgr          *knowledgeStoreManager
+	enterpriseSync        *enterpriseSyncCoordinator
+	skillSourceSvc        *cskill.SourceControlService
+	aiModels              *srvAIModelManager
 	// dynamicCapabilityPublisher is held only by this authenticated admin
 	// control-plane host. It is never exposed to request execution or ordinary
 	// user-facing Skill/MCP lifecycle APIs.
@@ -212,6 +215,7 @@ func (s *HTTPServer) Close() {
 		return
 	}
 	s.closeOnce.Do(func() {
+		s.invalidateThirdPartyAuthCache()
 		if s.jobs != nil {
 			s.jobs.close()
 		}

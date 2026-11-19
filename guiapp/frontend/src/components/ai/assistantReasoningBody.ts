@@ -217,8 +217,10 @@ export function visibleAssistantReplyForMessage(
     reasoning: string,
     opts?: { live?: boolean; coding?: boolean; toolCalls?: boolean },
 ): { content: string; reasoning: string } {
-    content = omitGoalContinuationHeader(content || "");
-    reasoning = omitGoalContinuationHeader(reasoning || "");
+    // Stored bubbles can still carry a U+0001 between tokens. Strip it before
+    // the monologue check, or "The user wants" never matches and the squares paint.
+    content = omitGoalContinuationHeader(sanitizeVisibleChatText(content || ""));
+    reasoning = omitGoalContinuationHeader(sanitizeVisibleChatText(reasoning || ""));
     if (opts?.coding) return separateReasoningFromBody(content, reasoning);
     if (opts?.toolCalls) return { content: content || "", reasoning: (reasoning || "").trim() };
     return resolveVisibleAssistantReply(content, reasoning, { live: opts?.live });

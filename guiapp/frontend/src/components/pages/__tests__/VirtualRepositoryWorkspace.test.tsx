@@ -187,14 +187,14 @@ describe('Virtual repository utility', () => {
 		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH handshake www.driverdevelop.com:22: ssh: handshake failed: SSH host key is not trusted' }));
 		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
 		expect(await screen.findByRole('dialog', { name: 'Repair remote connection' })).toBeTruthy();
-		expect(screen.getByText('This dialog only verifies and repairs the SSH connection. After it succeeds, close it and click Sync now.')).toBeTruthy();
+		expect(screen.getByText('Click "Test & repair" below: it verifies the SSH connection, saves a newly entered password on success, and resumes syncing automatically.')).toBeTruthy();
 		expect(screen.getByLabelText('Server')).toHaveProperty('readOnly', true);
 		expect(screen.getByLabelText('SSH password')).toHaveProperty('readOnly', false);
 		expect((screen.getByLabelText('Server') as HTMLInputElement).value).toBe('www.driverdevelop.com');
 		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
 		backend.RepairRemoteVirtualRepositoryConnection.mockResolvedValue(JSON.stringify({ connected: true, host_key_trusted: true, root_exists: true }));
 		fireEvent.change(screen.getByLabelText('SSH password'), { target: { value: 'repaired-secret' } });
-		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Test & repair' }));
 		await screen.findByText(/Connected/);
 		expect(backend.RepairRemoteVirtualRepositoryConnection).toHaveBeenCalledWith(expect.stringContaining('"password":"repaired-secret"'));
 		expect(backend.TestRemoteVirtualRepositoryConnection).not.toHaveBeenCalled();
@@ -210,13 +210,13 @@ describe('Virtual repository utility', () => {
 		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
 		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH handshake failed' }));
 		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
-		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Test & repair' }));
 		await waitFor(() => expect(backend.RepairRemoteVirtualRepositoryConnection).toHaveBeenCalled());
 		expect(screen.queryByRole('button', { name: 'Create remote root' })).toBeNull();
 		expect(backend.CreateRemoteVirtualRepositoryRoot).not.toHaveBeenCalled();
 	});
 
-	it('keeps the repair banner until the next sync confirms recovery', async () => {
+	it('resumes syncing automatically after a successful connection repair', async () => {
 		const backend = (window as any).go.main.App;
 		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/srv/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
 		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
@@ -226,11 +226,12 @@ describe('Virtual repository utility', () => {
 		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
 		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH host key is not trusted' }));
 		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
-		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
-		await screen.findByText(/Connected/);
-		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
-		expect(backend.SaveRemoteVirtualRepository).not.toHaveBeenCalled();
-		expect(screen.getByRole('button', { name: 'Repair remote connection' })).toBeTruthy();
+		fireEvent.click(screen.getByRole('button', { name: 'Test & repair' }));
+		expect(await screen.findByText(/Repair succeeded/)).toBeTruthy();
+		await waitFor(() => expect(backend.SyncVirtualRepositories).toHaveBeenCalled());
+		expect(await screen.findByText(/Synced/)).toBeTruthy();
+		expect(screen.queryByRole('button', { name: 'Repair remote connection' })).toBeNull();
+		expect(screen.getByRole('dialog', { name: 'Repair remote connection' })).toBeTruthy();
 	});
 
 	it('repairs a remote connection without saving an index-only draft that lacks the remote revision', async () => {
@@ -243,7 +244,7 @@ describe('Virtual repository utility', () => {
 		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
 		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH handshake failed' }));
 		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
-		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Test & repair' }));
 		await screen.findByText(/Connected/);
 		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
 		expect(backend.SaveRemoteVirtualRepository).not.toHaveBeenCalled();
@@ -2799,5 +2800,131 @@ describe('Virtual repository utility', () => {
 		expect(devButton.querySelector('.vrepo-button-spinner')).toBeTruthy();
 		expect(localButton.querySelector('.vrepo-button-spinner')).toBeNull();
 		await act(async () => resolveLaunch({ project_path: 'D:\\tasks\\remote_1', task_title: 'Product workspace', agent_mode: 'remote_coding_dev' }));
+	});
+
+	it('offers folder creation and node operations on the tree context menu', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace',
+			nodes: [{ id: 'bin', name: 'bin', order: 10 }],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const bin = await screen.findByRole('treeitem', { name: /^bin$/i });
+		fireEvent.contextMenu(bin, { clientX: 40, clientY: 40 });
+		const menu = screen.getByRole('menu', { name: 'bin' });
+		expect(within(menu).getByText('bin')).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'New virtual folder' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Add mapping' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Edit' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Remove' })).toBeTruthy();
+		// The menu action pre-targets the right-clicked folder as the parent.
+		fireEvent.click(within(menu).getByRole('menuitem', { name: 'New virtual folder' }));
+		const dialog = await screen.findByRole('dialog', { name: 'New virtual folder' });
+		expect((within(dialog).getByLabelText('Parent folder') as HTMLSelectElement).value).toBe('bin');
+		fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'libs' } });
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(backend.SaveVirtualRepository).toHaveBeenCalled());
+		const saved = JSON.parse(backend.SaveVirtualRepository.mock.calls.at(-1)![0]);
+		const libs = saved.nodes.find((node: any) => node.name === 'libs');
+		expect(libs.parent_id).toBe('bin');
+		expect(libs.repository).toBeUndefined();
+	});
+
+	it('offers checkout for an unchecked-out mapping through the tree context menu', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace',
+			nodes: [{ id: 'source', name: 'Source', order: 10, repository: { kind: 'git', relative_path: 'Source', remote_url: 'https://example.com/source.git', enabled: true } }],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.InspectVirtualRepository.mockResolvedValue(JSON.stringify([{ node_id: 'source', kind: 'git', exists: false, is_repository: false, clean: true, error_code: 'not_checked_out' }]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const source = await screen.findByRole('treeitem', { name: /Source.*git/i });
+		fireEvent.contextMenu(source, { clientX: 40, clientY: 40 });
+		const menu = screen.getByRole('menu', { name: 'Source' });
+		expect(within(menu).getByRole('menuitem', { name: 'Edit' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Checkout repository' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Remove' })).toBeTruthy();
+		fireEvent.click(within(menu).getByRole('menuitem', { name: 'Checkout repository' }));
+		await waitFor(() => expect(backend.CheckoutVirtualRepositoryNode).toHaveBeenCalledWith('vrepo_1', 'source', ''));
+	});
+
+	it('offers repository-level actions on the tree root context menu without remove', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const root = await screen.findByRole('treeitem', { name: 'Workspace' });
+		fireEvent.contextMenu(root, { clientX: 40, clientY: 40 });
+		const menu = screen.getByRole('menu', { name: 'Workspace' });
+		expect(within(menu).getByRole('menuitem', { name: 'New virtual folder' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Add mapping' })).toBeTruthy();
+		expect(within(menu).getByRole('menuitem', { name: 'Refresh status' })).toBeTruthy();
+		// The repository root cannot be removed from the virtual tree.
+		expect(within(menu).queryByRole('menuitem', { name: 'Remove' })).toBeNull();
+		fireEvent.click(within(menu).getByRole('menuitem', { name: 'Refresh status' }));
+		await waitFor(() => expect(backend.InspectVirtualRepository).toHaveBeenCalledWith('D:\\workspace'));
+	});
+
+	it('opens and dismisses the tree context menu with the keyboard', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace',
+			nodes: [{ id: 'bin', name: 'bin', order: 10 }],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const bin = await screen.findByRole('treeitem', { name: /^bin$/i });
+		fireEvent.click(bin);
+		fireEvent.keyDown(bin, { key: 'ContextMenu' });
+		const menu = screen.getByRole('menu', { name: 'bin' });
+		const first = within(menu).getByRole('menuitem', { name: 'New virtual folder' });
+		await waitFor(() => expect(document.activeElement).toBe(first));
+		fireEvent.keyDown(first, { key: 'ArrowDown' });
+		const second = within(menu).getByRole('menuitem', { name: 'Add mapping' });
+		expect(document.activeElement).toBe(second);
+		fireEvent.keyDown(second, { key: 'Escape' });
+		await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+		await waitFor(() => expect(document.activeElement).toBe(bin));
+	});
+
+	it('creates a mapping under a selected folder instead of overwriting it', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace',
+			nodes: [{ id: 'bin', name: 'bin', order: 10 }],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByRole('treeitem', { name: /^bin$/i }));
+		fireEvent.click(screen.getByLabelText('Add mapping'));
+		const dialog = await screen.findByRole('dialog', { name: 'Add mapping' });
+		expect((within(dialog).getByLabelText('Parent folder') as HTMLSelectElement).value).toBe('bin');
+		fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'source2' } });
+		fireEvent.change(within(dialog).getByLabelText('Repository URL'), { target: { value: 'https://example.com/s2.git' } });
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(backend.SaveVirtualRepository).toHaveBeenCalled());
+		const saved = JSON.parse(backend.SaveVirtualRepository.mock.calls.at(-1)![0]);
+		const folder = saved.nodes.find((node: any) => node.id === 'bin');
+		expect(folder.repository).toBeUndefined();
+		const mapping = saved.nodes.find((node: any) => node.name === 'source2');
+		expect(mapping.parent_id).toBe('bin');
+		expect(mapping.id).not.toBe('bin');
 	});
 });

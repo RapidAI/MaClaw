@@ -18,7 +18,7 @@ func (h *IMMessageHandler) noteInboundUserMessageForGoal(msg IMUserMessage, trim
 	if h == nil || h.app == nil || h.app.goalContinuation == nil {
 		return
 	}
-	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform {
+	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform || msg.Platform == githubRepoMaintPlatform {
 		return
 	}
 	if classifyImmediateIMCommand(trimmed) == imCommandGoal {
@@ -35,7 +35,7 @@ func (h *IMMessageHandler) preemptQueuedGoalTurn(msg IMUserMessage) {
 	if h == nil || h.app == nil || h.app.goalContinuation == nil {
 		return
 	}
-	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform {
+	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform || msg.Platform == githubRepoMaintPlatform {
 		return
 	}
 	// Drop the row's timer and a timer left under the other spelling.
@@ -113,7 +113,7 @@ func (h *IMMessageHandler) beginQueuedGoalTurnHold(msg IMUserMessage) func(keep 
 	if h == nil || h.app == nil || h.app.goalContinuation == nil {
 		return func(bool) {}
 	}
-	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform {
+	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform || msg.Platform == githubRepoMaintPlatform {
 		return func(bool) {}
 	}
 	engine := h.app.goalContinuation

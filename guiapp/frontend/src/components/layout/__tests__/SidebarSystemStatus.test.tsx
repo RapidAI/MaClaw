@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { isLansengerChannelEnabled, SidebarSystemStatus } from '../SidebarSystemStatus';
 import { publishSharedUnreadCount } from '../../ai/useNotifications';
+import { CreateMobileAuthDesktopQRSession, LoadConfigForUI, PatchConfigFields } from '../../../../wailsjs/go/main/App';
 import type { SidebarHubCredits } from '../../../types/appShell';
+
+vi.mock('../../../../wailsjs/go/main/App', () => ({
+    CreateMobileAuthDesktopQRSession: vi.fn().mockResolvedValue({ status: 'ok', session_id: 'qr-1', expires_at: '2030-01-01T00:00:00Z', qr_payload: 'maclaw://mobile-auth/test' }),
+    LoadConfigForUI: vi.fn().mockResolvedValue({}),
+    PatchConfigFields: vi.fn().mockResolvedValue({}),
+}));
 
 const baseCredits: SidebarHubCredits = {
     authorized: true,
@@ -1699,5 +1706,86 @@ describe('SidebarSystemStatus collapsed account line', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+describe('SidebarSystemStatus devices popover', () => {
+    it('renders the devices entry after the notification bell', () => {
+        renderStatus(baseCredits);
+        expect(screen.getByTestId('workbench-status-devices')).toBeTruthy();
+    });
+
+    it('opens the mobile QR + remote-connect popover on hover and hides the status card', async () => {
+        renderStatus(baseCredits);
+        fireEvent.mouseEnter(screen.getByTestId('workbench-status-devices'));
+
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="workbench-status-devices-popover"]')?.getAttribute('data-open')).toBe('true');
+        });
+        expect(screen.getByTestId('workbench-status-remote-connect-switch')).toBeTruthy();
+        // The two popovers never stack.
+        expect(document.querySelector('[data-testid="workbench-status-popover"]')?.getAttribute('data-open')).toBe('false');
+        await waitFor(() => {
+            expect(vi.mocked(CreateMobileAuthDesktopQRSession)).toHaveBeenCalled();
+        });
+    });
+
+    it('persists the remote-connect switch through PatchConfigFields', async () => {
+        renderStatus(baseCredits);
+        fireEvent.mouseEnter(screen.getByTestId('workbench-status-devices'));
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="workbench-status-devices-popover"]')?.getAttribute('data-open')).toBe('true');
+        });
+
+        const toggle = screen.getByTestId('workbench-status-remote-connect-switch') as HTMLInputElement;
+        expect(toggle.checked).toBe(true);
+        fireEvent.click(toggle);
+
+        await waitFor(() => {
+            expect(vi.mocked(PatchConfigFields)).toHaveBeenCalledWith({ remote_device_connect_enabled: false });
+        });
+    });
+
+    it('flags a disabled remote connect on the icon once config reports it', async () => {
+        vi.mocked(LoadConfigForUI).mockResolvedValueOnce({ remote_device_connect_enabled: false } as any);
+        renderStatus(baseCredits);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('workbench-status-devices').getAttribute('data-remote-connect')).toBe('blocked');
+        });
+    });
+
+    it('refreshes the mobile QR when the refresh button is clicked', async () => {
+        vi.mocked(CreateMobileAuthDesktopQRSession).mockClear();
+        renderStatus(baseCredits);
+        fireEvent.mouseEnter(screen.getByTestId('workbench-status-devices'));
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="workbench-status-devices-popover"]')?.getAttribute('data-open')).toBe('true');
+        });
+        await waitFor(() => {
+            expect(vi.mocked(CreateMobileAuthDesktopQRSession)).toHaveBeenCalledTimes(1);
+        });
+
+        fireEvent.click(screen.getByTestId('workbench-status-qr-refresh'));
+
+        await waitFor(() => {
+            expect(vi.mocked(CreateMobileAuthDesktopQRSession)).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    it('dismisses the devices popover with Escape and refocuses the icon', async () => {
+        renderStatus(baseCredits);
+        const icon = screen.getByTestId('workbench-status-devices');
+        fireEvent.mouseEnter(icon);
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="workbench-status-devices-popover"]')?.getAttribute('data-open')).toBe('true');
+        });
+
+        fireEvent.keyDown(document, { key: 'Escape' });
+
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="workbench-status-devices-popover"]')?.getAttribute('data-open')).toBe('false');
+        });
+        expect(document.activeElement).toBe(icon);
     });
 });

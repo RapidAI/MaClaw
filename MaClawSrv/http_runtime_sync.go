@@ -233,6 +233,7 @@ func (s *HTTPServer) stopIMRuntimeForPrincipal(p agentservice.Principal) {
 }
 
 func (s *HTTPServer) stopThirdPartyIMForPrincipal(p agentservice.Principal) {
+	s.invalidateThirdPartyAuthCache()
 	if s == nil || s.thirdPartyIM == nil {
 		return
 	}
@@ -291,6 +292,7 @@ func (s *HTTPServer) stopIMRuntimesForTenant(ctx context.Context, tenantID strin
 }
 
 func (s *HTTPServer) stopThirdPartyIMForTenant(tenantID string) {
+	s.invalidateThirdPartyAuthCache()
 	if s == nil || s.thirdPartyIM == nil {
 		return
 	}

@@ -545,6 +545,32 @@ func (s *Service) admitReadyWait() time.Duration {
 	return 3 * time.Second
 }
 
+// admitReceiptWait is how long a terminal run may stay unreadied while
+// MaClawSrv still has receipt_pending set. The server waits up to
+// desktopContractWait (5s, MaClawSrv/desktop_watchdog.go) for an extraction
+// that already started, then writes the receipt. This bound is longer than
+// that wait, and it is still a bound: a receipt that never becomes ready
+// is settled as not done.
+const admitReceiptWait = 8 * time.Second
+
+// admitUnreadyWait is the grace for one terminal read that is not
+// desktop_ready yet. A receipt_pending mark means the finish hook is still
+// writing the outcome, so the short grace would settle a pre-receipt body.
+func (s *Service) admitUnreadyWait(view desktopRunView) time.Duration {
+	wait := s.admitReadyWait()
+	if strings.TrimSpace(view.Metadata["receipt_pending"]) != "1" {
+		return wait
+	}
+	long := admitReceiptWait
+	if s != nil && s.admitReceiptGrace > 0 {
+		long = s.admitReceiptGrace
+	}
+	if long > wait {
+		return long
+	}
+	return wait
+}
+
 func desktopRunTerminal(status string) bool {
 	switch strings.TrimSpace(status) {
 	case "succeeded", "failed", "cancelled":
@@ -748,7 +774,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			if firstTerminal.IsZero() {
 				firstTerminal = time.Now()
 			}
-			if time.Since(firstTerminal) < s.admitReadyWait() {
+			if time.Since(firstTerminal) < s.admitUnreadyWait(view) {
 				writePoll("waiting", nil,
 					"instance", job.InstanceID,
 					"run", job.RunID,
@@ -792,6 +818,21 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			Waiting:     strings.TrimSpace(job.ClientMessageID) != "",
 			Turn:        desktopTurnOf(job.ClientMessageID, job.RunID),
 		}
+		// The run is terminal and the receipt is still pending. The body Hub
+		// can see is the pre-receipt save: task_outcome may already say done,
+		// and the message may be absent. That is not a finished task and not
+		// a quiet success.
+		if !view.DesktopReady && strings.TrimSpace(view.Metadata["receipt_pending"]) == "1" {
+			if body.Metadata == nil {
+				body.Metadata = map[string]string{}
+			}
+			if o := desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey]); o == "" || o == "done" {
+				body.Metadata[desktopTaskOutcomeKey] = "unverified"
+			}
+			if strings.TrimSpace(body.Text) == "" && len(body.Attachments) == 0 {
+				body.Waiting = true
+			}
+		}
 		if view.DesktopHandoff && !job.Isolated && !job.Opened && strings.TrimSpace(job.Novnc) == "" {
 			if url, did, openErr := s.openDesktop(context.Background(), job.TenantID, job.UserID, job.InstanceID, job.BotID); openErr == nil {
 				job.Novnc, job.Opened = url, did
@@ -812,6 +853,12 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		runStatus := state.status
 		session := state.session
 		state.mu.Unlock()
+		if settleErr != nil {
+			// The client acks this result and the admit record is deleted.
+			// The continuation mark has to remember the failure itself, or
+			// the next 继续 is told the handoff already finished.
+			s.noteDesktopContinueFailed(job.TenantID, job.UserID, job.BotID, job.ClientMessageID)
+		}
 		s.noteDesktopAskOwner(job.TenantID, job.UserID, job.BotID, session, reply)
 		s.persistDesktopTasks(job.TenantID)
 		s.reportDelegateRunEnd(job.TenantID, job.UserID, job.BotID, job.RunID, runStatus, reply, settleErr)
@@ -975,7 +1022,7 @@ func (s *Service) DesktopRunActivity(tenantID, userID, botID, runID string) stri
 func (s *Service) readAdmittedDesktopRun(job admittedDesktopFollow, path string) (desktopRunView, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, job.TenantID, job.UserID)
+	fresh, token, err := s.tokenForBot(ctx, job.TenantID, job.UserID, job.BotID)
 	if err != nil {
 		return desktopRunView{}, err
 	}
@@ -1028,7 +1075,7 @@ func (s *Service) SupplementDesktopRun(ctx context.Context, tenantID, userID, bo
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return SupplementResult{}, err
 	}
@@ -1083,7 +1130,7 @@ func (s *Service) DesktopRunSupplements(ctx context.Context, tenantID, userID, b
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -1130,7 +1177,7 @@ func (s *Service) CancelDesktopRun(ctx context.Context, tenantID, userID, botID,
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return err
 	}
@@ -1177,7 +1224,7 @@ func (s *Service) SaveBotPreference(ctx context.Context, tenantID, userID, botID
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return err
 	}
@@ -1216,7 +1263,7 @@ func (s *Service) WithdrawBotPreference(ctx context.Context, tenantID, userID, b
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return err
 	}
@@ -1292,10 +1339,25 @@ func (s *Service) DesktopRunResult(ctx context.Context, tenantID, userID, botID,
 		return s.readmitDesktopRun(ctx, tenantID, userID, botID, instanceID, runID)
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
 	if !state.done {
+		state.mu.Unlock()
 		return Reply{}, false, nil
 	}
+	// A reply restored from the text pin keeps no media bytes; MaClawSrv
+	// still holds them until the run is reaped. Refill on demand, the same
+	// read the pending-delivery path performs — a journal line that only
+	// carried attachment ids relies on this fetch.
+	if !state.mediaFetched && state.instanceID != "" &&
+		len(state.reply.Images) == 0 && len(state.reply.Files) == 0 &&
+		desktopMediaDue(state.mediaNext, s.now()) {
+		instanceID := state.instanceID
+		state.mu.Unlock()
+		if s.refillDesktopRunMedia(ctx, tenantID, userID, state, instanceID, runID) {
+			s.persistDesktopTasks(tenantID)
+		}
+		state.mu.Lock()
+	}
+	defer state.mu.Unlock()
 	return state.reply, true, state.err
 }
 
@@ -1305,7 +1367,7 @@ func (s *Service) DesktopRunResult(ctx context.Context, tenantID, userID, botID,
 // it. An unreachable MaClawSrv is reported as the error it is — the run may
 // still be going, and the caller's poll already treats that as "ask again".
 func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID, instanceID, runID string) (Reply, bool, error) {
-	view, err := s.readDesktopRunFromSrv(ctx, tenantID, userID, instanceID, runID)
+	view, err := s.readDesktopRunFromSrv(ctx, tenantID, userID, botID, instanceID, runID)
 	if err != nil {
 		if errors.Is(err, ErrSrvNotFound) {
 			return Reply{}, false, ErrNotFound
@@ -1380,10 +1442,10 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 
 // readDesktopRunFromSrv reads one run straight from MaClawSrv, the way the
 // watcher does, for a run this Hub never admitted.
-func (s *Service) readDesktopRunFromSrv(ctx context.Context, tenantID, userID, instanceID, runID string) (desktopRunView, error) {
+func (s *Service) readDesktopRunFromSrv(ctx context.Context, tenantID, userID, botID, instanceID, runID string) (desktopRunView, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.tokenForBot(ctx, tenantID, userID, botID)
 	if err != nil {
 		return desktopRunView{}, err
 	}
@@ -1422,6 +1484,12 @@ func (s *Service) botDesktopUsers(tenantID, userID string) func(string) string {
 	bots := map[string]string{}
 	if rec, err := s.load(context.Background(), tenantID); err == nil {
 		for _, b := range rec.Bots {
+			if botNone(b) {
+				// A bot with no desktop must not share the owner's admit
+				// lock, and nothing here is sent to desktopd.
+				bots[b.ID] = "none\x00" + b.ID
+				continue
+			}
 			bots[b.ID] = desktopUserForBot(userID, b)
 		}
 	}

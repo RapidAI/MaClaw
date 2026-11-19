@@ -26,7 +26,7 @@ import (
 
 var (
 	desktopRoundResultRe = regexp.MustCompile(`(?im)^.*(?:\b(?:test|testing|final|eval|evaluation|holdout|benchmark)\b|测试|评估|最终).{0,80}?(?:\b(?:acc|accuracy|f1|macro_f1|micro_f1|precision|recall|auc|roc_auc|map|bleu|rouge[a-z0-9_]*|wer|cer|mae|rmse|mse|exact_match)\b|准确率|召回率|精确率|F1)["']?\s*[:=：]\s*-?[0-9]*\.?[0-9]+.*$`)
-	desktopRoundMetricRe = regexp.MustCompile(`(?i)["']?\b((?:test_|eval_|val_|dev_)?(?:accuracy|acc|macro_f1|micro_f1|f1|precision|recall|roc_auc|auc|loss|wer|cer|mae|rmse|mse|bleu|exact_match))["']?\s*[:=]\s*(-?[0-9]*\.?[0-9]+)`)
+	desktopRoundMetricRe = regexp.MustCompile(`(?i)["']?\b((?:test_|eval_|val_|dev_)?(?:accuracy|acc|macro_f1|micro_f1|f1|precision|recall|roc_auc|auc|loss|wer|cer|mae|rmse|mse|bleu|exact_match))["']?\s*[:=]\s*["']?(-?[0-9]*\.?[0-9]+)`)
 	desktopRoundTrainRe  = regexp.MustCompile(`(?i)(^|[^\w])(train|training|finetune|fine-?tune|torchrun|deepspeed|accelerate\s+launch|训练|微调)([^\w]|$)`)
 )
 

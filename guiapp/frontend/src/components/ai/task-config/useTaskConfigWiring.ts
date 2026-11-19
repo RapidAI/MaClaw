@@ -57,6 +57,7 @@ function sameLatexTemplateList(left: LatexTemplate[], right: LatexTemplate[]): b
     return true;
 }
 import type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
+import type { RemoteDirListing } from "./RemoteDirPickerPopover";
 import type { ExpertOption, RemoteMachineOption, WorkflowOption } from "./TaskConfigBar";
 import { tailText } from "../../../i18n/mnTail"
 
@@ -186,6 +187,8 @@ export interface TaskConfigPanelModel {
     defaultExpanded: boolean;
     /** 远控被控机器候选；非空时配置条显示「位置」chip。 */
     remoteMachines?: RemoteMachineOption[];
+    /** 浏览对方电脑上的目录（remote_control list_dirs）；缺省 = 远控未就绪。 */
+    onListRemoteDirs?: (grantId: string, path: string) => Promise<RemoteDirListing>;
 }
 
 export interface TaskConfigWiring {
@@ -504,6 +507,25 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         }
     }, [lang]);
 
+    // 浏览对方电脑目录：remote_control list_dirs，供工作空间 chip 的远程目录弹层使用。
+    const handleListRemoteDirs = useCallback(async (grantId: string, path: string): Promise<RemoteDirListing> => {
+        const fn = remoteControlOpBinding();
+        if (!fn) throw new Error(tailText(lang ?? "", "Remote control is not ready", "远程控制尚未就绪"));
+        const raw = await fn(grantId, 'list_dirs', JSON.stringify({ path: (path || "").trim() }));
+        try {
+            const listing = (JSON.parse(raw || '{}') || {}) as RemoteDirListing;
+            // The controlled side always fills path on success; an empty
+            // reply means a stale build answered — fail loud, not "no subfolders".
+            if (!listing.path) throw new Error("empty listing");
+            // A malformed reply must not reach .map at render — clamp to arrays.
+            if (!Array.isArray(listing.dirs)) listing.dirs = [];
+            if (!Array.isArray(listing.roots)) listing.roots = [];
+            return listing;
+        } catch {
+            throw new Error(tailText(lang ?? "", "Failed to read that folder", "目录读取失败"));
+        }
+    }, [lang]);
+
     const retireLocalWizardFlag = useCallback(() => {
         const localTab = getTabs().find(tab => tab.type === "local");
         if (localTab && getTabState(localTab.id)?.newTaskWizard) {
@@ -656,10 +678,10 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                             nav.projectPath,
                         );
                     },
-                    createRemoteMachineTask: async ({ grantId, name, mode, text }) => {
+                    createRemoteMachineTask: async ({ grantId, name, mode, text, workDir }) => {
                         const fn = remoteControlOpBinding();
                         if (!fn) throw new Error(tailText(lang ?? "", "Remote control is not ready", "远程控制尚未就绪"));
-                        const raw = await fn(grantId, 'create_task', JSON.stringify({ name, mode }));
+                        const raw = await fn(grantId, 'create_task', JSON.stringify({ name, mode, work_dir: (workDir || "").trim() }));
                         let projectPath = '';
                         try {
                             projectPath = String(JSON.parse(raw || '{}')?.task?.project_path || '').trim();
@@ -1183,9 +1205,10 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             online: m.online,
             operate: m.operate,
         })),
+        onListRemoteDirs: handleListRemoteDirs,
     }), [
         taskConfigDraft, taskConfigExperts, taskConfigWorkflows, taskConfigLatexTemplates, loadTaskConfigLatexTemplates, taskConfigCloudWorkspaces, taskConfigRecentPaths,
-        handleTaskConfigBrowseLocal, handleTaskConfigCreateCloud, handleTaskConfigRenameCloud, inputLocked, wizardOverlay, taskConfigSending, taskConfigError,
+        handleTaskConfigBrowseLocal, handleTaskConfigCreateCloud, handleTaskConfigRenameCloud, handleListRemoteDirs, inputLocked, wizardOverlay, taskConfigSending, taskConfigError,
         isNewTaskWizardTabActive, machineTarget.machines,
     ]);
 

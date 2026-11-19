@@ -298,6 +298,9 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 	if skillDir != "" {
 		command = bindHostProcedureShellCommand(command, skillDir, hostShellForBashTool())
 	}
+	if err := repoMaintRejectShell(h, ownerID, stringVal(args, "working_dir"), command); err != nil {
+		return err.Error()
+	}
 	background, _ := args["background"].(bool)
 
 	if rejection, rejected := coretool.RejectRawSSHCommand(command); rejected {
@@ -505,6 +508,9 @@ func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (st
 		}
 		return resolved, nil
 	}
+	if err := repoMaintRejectOutside(h, ownerID, path); err != nil {
+		return "", err
+	}
 	resolved, err := resolveFileToolPathWithBase(path, func() string {
 		if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {
 			return dir
@@ -527,7 +533,9 @@ func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (st
 	// An absolute path inside a directory another live session holds is that
 	// session's tree. Read and list it from this task's checkout instead.
 	if task := projectPathFromUserID(ownerID); task != "" && h != nil && h.app != nil {
-		resolved = h.app.exclusiveWorkRoot(task, resolved)
+		if _, active, _ := h.app.repoMaintGuardForOwner(ownerID); !active {
+			resolved = h.app.exclusiveWorkRoot(task, resolved)
+		}
 	}
 	return resolved, nil
 }
@@ -582,6 +590,14 @@ func trustedPrincipalBoundWorkspace(h *IMMessageHandler, principalID string) str
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
 		return ""
+	}
+	if h != nil && h.app != nil {
+		if dir, active, blocked := h.app.repoMaintGuardForOwner(principalID); active {
+			if blocked {
+				return ""
+			}
+			return dir
+		}
 	}
 	if binding := assistantBindingForUserID(principalID); binding != nil {
 		if dir := strings.TrimSpace(binding.WorkingDirectory); dir != "" {
@@ -640,6 +656,14 @@ func trustedOwnerWorkspaceDirName(principalID string) string {
 }
 
 func (h *IMMessageHandler) executionProjectPathForOwner(ownerID string) string {
+	if h != nil && h.app != nil {
+		if dir, active, blocked := h.app.repoMaintGuardForOwner(ownerID); active {
+			if blocked {
+				return ""
+			}
+			return dir
+		}
+	}
 	// Only project-tab owners have an execution project path. Local sessions
 	// return "" here so callers do not confuse desktop workspace with a project.
 	if projectPathFromUserID(ownerID) == "" {
@@ -659,6 +683,14 @@ func (h *IMMessageHandler) projectTabWorkDir() string {
 }
 
 func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
+	if h != nil && h.app != nil {
+		if dir, active, blocked := h.app.repoMaintGuardForOwner(ownerID); active {
+			if blocked {
+				return ""
+			}
+			return dir
+		}
+	}
 	if isACPAssistantSessionUserID(ownerID) {
 		if h != nil && h.app != nil {
 			if dir := strings.TrimSpace(h.app.EffectiveWorkingDirForOwner(ownerID)); dir != "" {
@@ -773,6 +805,9 @@ func (h *IMMessageHandler) resolveToolWorkDir(workingDir string) string {
 }
 
 func (h *IMMessageHandler) resolveToolWorkDirForOwner(workingDir, ownerID string) string {
+	if dir, active := repoMaintToolDir(h, ownerID, workingDir); active {
+		return dir
+	}
 	if binding := assistantBindingForUserID(ownerID); binding != nil && strings.TrimSpace(binding.WorkingDirectory) != "" {
 		// A configured bot directory is an isolation boundary. An explicit path
 		// is still resolved relative to that directory; the group permission

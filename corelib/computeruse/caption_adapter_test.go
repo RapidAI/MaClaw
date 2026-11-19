@@ -19,6 +19,12 @@ func TestInferElementTypeFromRoleAndGeometry(t *testing.T) {
 	if got := InferElementType(taskengine.UIElement{Type: "interactable"}, "Save"); got != "button" {
 		t.Fatalf("named: %s", got)
 	}
+	if got := InferElementType(taskengine.UIElement{Type: "interactable"}, "支付密码"); got != "edit" {
+		t.Fatalf("password: %s", got)
+	}
+	if got := InferElementType(taskengine.UIElement{Type: "interactable"}, "获取验证码"); got != "button" {
+		t.Fatalf("get code: %s", got)
+	}
 }
 
 func TestMatchAdapterFamilies(t *testing.T) {

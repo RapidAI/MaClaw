@@ -189,7 +189,7 @@ func desktopNotifyDeliverHere(ctx context.Context, scope agentruntime.Scope, art
 	var done []string
 	var failed []string
 	for _, p := range artifacts {
-		out, err := desktopNotifyDeliverPath(ctx, scope, p, "")
+		out, err := desktopNotifyDeliverPath(ctx, scope, p, "", "")
 		if err != nil {
 			failed = append(failed, p+": "+err.Error())
 			continue

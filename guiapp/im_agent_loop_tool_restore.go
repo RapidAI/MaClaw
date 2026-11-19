@@ -47,6 +47,13 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *Loo
 	// host catalog. An ordinary recover already holds its surface: narrow it,
 	// do not pull a second copy of the host catalog.
 	if executionSurfaceIsFull(executionProfileFromLoop(ctx)) && !operationalExecutionProfile(executionProfileFromLoop(ctx)) {
+		// The baseline pin above evicts the tail to make room — a discover
+		// grant is that tail. Restore it before the seal, which re-runs the
+		// workflow, skill, group, and direct-mode fences and gets final say,
+		// matching the request-boundary and injection paths.
+		if grants := discoveryGrantNamesForPhase(ctx, phase); len(grants) > 0 {
+			tools = ensureNamedToolsPresent(tools, lookupCatalog, protectBudgetNames(grants, tools, nil))
+		}
 		var bound []map[string]interface{}
 		if !loopContextHasClassifierTimeoutLookup(ctx) {
 			bound = boundFloorCatalog(tools)

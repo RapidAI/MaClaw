@@ -214,9 +214,14 @@ func (h *IMMessageHandler) writeTrustedFile(principalID, path, content, mode str
 	if h.semanticTrustedFileWrite != nil {
 		return h.semanticTrustedFileWrite(principalID, path, content, mode)
 	}
+	if err := repoMaintRejectOutside(h, principalID, path); err != nil {
+		return "", fileWriteBeforeEffect(err)
+	}
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	if task := projectPathFromUserID(principalID); task != "" && h.app != nil && filepath.IsAbs(path) {
-		path = h.app.exclusiveWorkRoot(task, path)
+		if _, active, _ := h.app.repoMaintGuardForOwner(principalID); !active {
+			path = h.app.exclusiveWorkRoot(task, path)
+		}
 	}
 	absPath, err := trustedFileWriteResolvePath(workspace, path)
 	if err != nil {
@@ -279,9 +284,14 @@ func (h *IMMessageHandler) editTrustedFile(principalID, path, oldString, newStri
 	if h.semanticTrustedFileEdit != nil {
 		return h.semanticTrustedFileEdit(principalID, path, oldString, newString)
 	}
+	if err := repoMaintRejectOutside(h, principalID, path); err != nil {
+		return "", fileWriteBeforeEffect(err)
+	}
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	if task := projectPathFromUserID(principalID); task != "" && h.app != nil && filepath.IsAbs(path) {
-		path = h.app.exclusiveWorkRoot(task, path)
+		if _, active, _ := h.app.repoMaintGuardForOwner(principalID); !active {
+			path = h.app.exclusiveWorkRoot(task, path)
+		}
 	}
 	absPath, err := trustedFileWriteResolvePath(workspace, path)
 	if err != nil {
