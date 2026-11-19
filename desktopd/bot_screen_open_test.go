@@ -86,6 +86,35 @@ func TestBashFailureThatIsNotXIsNotScreenRequired(t *testing.T) {
 	}
 }
 
+func TestOpenDisplayIsNotReplacedByTheSentinel(t *testing.T) {
+	bot := desktop.BotDesktopUser("alice", "bot_a")
+	var shells [][]string
+	svc := &Service{
+		Run: func(_ context.Context, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, " sentinel ") {
+				t.Fatal("a command on an open display consulted the sentinel")
+			}
+			if strings.Contains(joined, " display ") {
+				return `{"display":":21","running":true}`, nil
+			}
+			return "", nil
+		},
+		RunCommand: func(_ context.Context, _ io.Reader, args ...string) (string, int, error) {
+			shells = append(shells, append([]string(nil), args...))
+			return "ok\n", 0, nil
+		},
+	}
+	text, err := svc.bash(context.Background(), "tenant", bot, "xdg-open /tmp/a.pdf", false)
+	if err != nil || text != "ok" || len(shells) != 1 {
+		t.Fatalf("text=%q err=%v shells=%d", text, err, len(shells))
+	}
+	req := commandPayload(t, shells[0])
+	if req.Display != ":21" || req.Sentinel != "" {
+		t.Fatalf("display=%q sentinel=%q", req.Display, req.Sentinel)
+	}
+}
+
 func TestNeedsScreenOpensAndSetsDisplay(t *testing.T) {
 	bot := desktop.BotDesktopUser("alice", "bot_a")
 	var mu sync.Mutex

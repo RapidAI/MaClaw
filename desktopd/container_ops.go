@@ -322,6 +322,9 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 	// and stay headless when none is up.
 	display := ""
 	if spec.BotID != "" && needsScreen {
+		if err := s.ensureBotScreen(ctx, spec); err != nil {
+			return "", err
+		}
 		got, openErr := s.specDisplay(ctx, spec, "")
 		if openErr != nil {
 			return "", openErr
@@ -332,8 +335,11 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 			display = got
 		}
 	}
+	// A real display is the command's DISPLAY. The sentinel is only for a
+	// headless shell, so it cannot replace a screen that is already open
+	// and a command on that screen is not screen_required.
 	sentinel := ""
-	if spec.BotID != "" && !needsScreen {
+	if spec.BotID != "" && !needsScreen && display == "" {
 		sentinel = newSentinelToken()
 	}
 	shell := commandRequest{

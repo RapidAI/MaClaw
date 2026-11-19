@@ -62,10 +62,14 @@ var desktopLongJobTalk = desktopLongJobTalkDefault
 var desktopLongJobExec func(context.Context, agentruntime.Scope, string) (string, error)
 
 func desktopLongJobRun(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
+	return desktopLongJobRunScreen(ctx, scope, command, false)
+}
+
+func desktopLongJobRunScreen(ctx context.Context, scope agentruntime.Scope, command string, needsScreen bool) (string, error) {
 	if fn := desktopLongJobExec; fn != nil {
 		return fn(ctx, scope, command)
 	}
-	return desktopLongJobExecDefault(ctx, scope, command)
+	return desktopLongJobExecWithScreen(ctx, scope, command, needsScreen)
 }
 
 type desktopLongJobInternalCtxKey struct{}
@@ -124,6 +128,9 @@ type desktopLongJob struct {
 	// KeepRunning is the bot's declaration (keep_running=true) that this
 	// process is the deliverable, not pending work. See desktopLongJobKeepsRunning.
 	KeepRunning bool `json:"keep_running,omitempty"`
+	// NeedsScreen is the typed needs_screen of the bash that started the
+	// job. The wrapper and a later resume of that shell use it. Polls do not.
+	NeedsScreen bool `json:"needs_screen,omitempty"`
 	// PrincipalTenant/User own the bot's runs on this server. TenantID and
 	// UserID above are the desktop (Hub) account, which is not a principal
 	// here: a resume posted with it found no instance (papers 2026-11-11).
@@ -598,6 +605,7 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 		Lineage:     lineage,
 		Round:       round,
 		KeepRunning: desktopArgBool(args, "keep_running"),
+		NeedsScreen: desktopBashNeedsScreen(args),
 	}
 	if _, bot := desktop.SplitDesktopUser(scope.UserID); bot != "" {
 		j.BotID = bot
@@ -610,7 +618,7 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 	j.ReportedStatus = "running"
 	desktopLongJobSetCheck(j, args, j.Started)
 	script := desktopLongJobStartScript(j.ID, cmd, dir, j.LogFile, j.PidFile, j.ExitFile)
-	out, err := desktopLongJobRun(ctx, scope, script)
+	out, err := desktopLongJobRunScreen(ctx, scope, script, j.NeedsScreen)
 	if err != nil {
 		return "", fmt.Errorf("could not start the background job: %w", err)
 	}
@@ -1445,7 +1453,14 @@ func desktopLongJobWatchPrompt(j *desktopLongJob, dec desktopLongJobDecision) st
 }
 
 func desktopLongJobExecDefault(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
+	return desktopLongJobExecWithScreen(ctx, scope, command, false)
+}
+
+func desktopLongJobExecWithScreen(ctx context.Context, scope agentruntime.Scope, command string, needsScreen bool) (string, error) {
 	args := map[string]any{"action": "bash", "command": command}
+	if needsScreen {
+		args["needs_screen"] = true
+	}
 	return operateDesktopBody(desktopLongJobInternalCall(ctx), scope, args)
 }
 

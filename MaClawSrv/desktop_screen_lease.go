@@ -81,7 +81,8 @@ var desktopScreenLeaseNonScreen = map[string]bool{
 }
 
 // desktopScreenLeaseNeeded reports a step that uses the screen or browser.
-// A bash that starts a GUI program draws on the screen too.
+// Bash uses the screen only when needs_screen is true. The command text
+// does not.
 func desktopScreenLeaseNeeded(action string, args map[string]any) bool {
 	action = strings.ToLower(strings.TrimSpace(action))
 	if action == "" {

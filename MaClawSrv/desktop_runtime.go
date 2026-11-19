@@ -947,12 +947,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		}
 		return out, err
 	}
-	if action == "bash" && (desktopBashNeedsScreen(args) || desktopBashLaunchesGUI(desktopArg(args, "command"))) {
-		if !desktopBashNeedsScreen(args) {
-			if err := desktopBotMustOpenScreen(scope, action, args); err != nil {
-				return "", err
-			}
-		}
+	if action == "bash" && desktopBashNeedsScreen(args) {
 		return operateDesktopBashGUI(ctx, scope, args)
 	}
 	if action == "proxy_mode" {

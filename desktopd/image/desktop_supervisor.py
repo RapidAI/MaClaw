@@ -2244,7 +2244,9 @@ def run_command(argv):
     child.update(plan["env"])
     sentinel = None
     token = plan.get("sentinel") or ""
-    if token:
+    # An explicit display is the screen the caller opened. The sentinel
+    # replaces DISPLAY only when the shell has none.
+    if token and not child.get("DISPLAY"):
         sentinel = SentinelDisplay()
         if sentinel.display:
             child["DISPLAY"] = sentinel.display
