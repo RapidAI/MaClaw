@@ -338,6 +338,16 @@ func (a *App) relayRemoteStreamEvent(name string, event AIAssistantStreamEvent) 
 		return
 	}
 	for _, ev := range viewerEventsFromStream(name, event) {
+		// A repeated progress delivery (same step republished while it runs)
+		// collapses here, before cursor allocation: consumers render one row
+		// per delivery, and older phone builds have no reducer-side dedup.
+		// Heartbeats and control lanes pass through untouched.
+		if ev.Event == "progress" && ev.Text != "" && ev.SessionKey != "" {
+			if tail, ok := viewerProgressTail.Load(ev.SessionKey); ok && tail.(string) == ev.Text {
+				continue
+			}
+			viewerProgressTail.Store(ev.SessionKey, ev.Text)
+		}
 		ev.CursorFrom = ev.Cursor
 		a.publishViewerEvent(ev)
 	}

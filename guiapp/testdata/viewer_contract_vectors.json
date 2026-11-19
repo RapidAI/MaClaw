@@ -31,6 +31,39 @@
       "expect": {"timeline": [{"phase": "running", "taskId": "T9", "title": "解析", "runId": "run-汉字"}]}
     },
     {
+      "name": "progress-sticky-row",
+      "events": [
+        {"event": "progress", "cursor": 1, "text": "Coding Agent: running T2 - edit parser"},
+        {"event": "progress", "cursor": 2, "text": "Coding Agent: running T2 - edit parser"},
+        {"event": "progress", "cursor": 3, "text": "Coding Agent: running T2 - edit parser", "coding": {"phase": "running", "task_id": "T2", "title": "edit parser", "run_id": "run-2"}},
+        {"event": "progress", "cursor": 4, "text": "Coding Agent: done T2 - edit parser", "coding": {"phase": "done", "task_id": "T2", "title": "edit parser"}},
+        {"event": "progress", "cursor": 5, "text": "Coding Agent: running T3 - ship", "coding": {"phase": "running", "task_id": "T3", "title": "ship"}}
+      ],
+      "expect": {
+        "last": 5,
+        "timeline": [
+          {"phase": "running", "taskId": "T2", "title": "edit parser"},
+          {"phase": "done", "taskId": "T2", "title": "edit parser"},
+          {"phase": "running", "taskId": "T3", "title": "ship"}
+        ]
+      }
+    },
+    {
+      "name": "progress-sticky-row-taskless",
+      "events": [
+        {"event": "progress", "cursor": 1, "text": "Coding Agent: running - scan files"},
+        {"event": "progress", "cursor": 2, "text": "Coding Agent: running - scan files"},
+        {"event": "progress", "cursor": 3, "text": "Coding Agent: completed - scan files"}
+      ],
+      "expect": {
+        "last": 3,
+        "timeline": [
+          {"phase": "running", "taskId": "", "title": "scan files"},
+          {"phase": "completed", "taskId": "", "title": "scan files"}
+        ]
+      }
+    },
+    {
       "name": "terminal-confirmation",
       "events": [
         {"event": "response", "cursor": 1, "request_id": "r1", "terminal": {"text": "完成", "confirmation": {"id": "c1"}}}

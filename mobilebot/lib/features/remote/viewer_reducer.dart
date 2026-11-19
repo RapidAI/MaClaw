@@ -325,6 +325,33 @@ ViewerTimelineRow? _rowFromText(String raw) {
   );
 }
 
+/// 桌面聊天端对同一步骤的重复进度发布只保留一行（appendProgressText /
+/// appendCodingProgressToRound 的粘性尾行去重）；viewer 流会原样重放每一次
+/// 发布，这里必须同样兜住——否则同一个 running 步骤每次发布都铺一行。
+/// 编码行按 phase+task+title 认同（即 compat 文本键，run_id 与桌面一致地
+/// 不参与）；无法解析的纯文本行按原文认同。
+void _appendTimelineRow(ViewerReduceState state, ViewerTimelineRow row) {
+  if (state.timeline.isNotEmpty) {
+    final tail = state.timeline.last;
+    final same = (tail.taskId.isNotEmpty || row.taskId.isNotEmpty)
+        ? (tail.phase == row.phase &&
+              tail.taskId == row.taskId &&
+              tail.title == row.title)
+        : tail.text == row.text;
+    if (same) return;
+  }
+  state.timeline.add(row);
+  _capTimeline(state);
+}
+
+/// 桌面 reducer 的 VIEWER_TIMELINE_KEPT：轨迹是尾视图，长任务不能无界增长。
+void _capTimeline(ViewerReduceState state) {
+  const kept = 160;
+  if (state.timeline.length > kept) {
+    state.timeline.removeRange(0, state.timeline.length - kept);
+  }
+}
+
 String _taskOf(Map coding) {
   final raw = coding['task_id'];
   if (raw is String && raw.isNotEmpty) return raw;
@@ -397,7 +424,8 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
       final raw = _text(event['text']);
       final coding = event['coding'];
       if (coding is Map) {
-        state.timeline.add(
+        _appendTimelineRow(
+          state,
           ViewerTimelineRow(
             phase: _text(coding['phase']),
             taskId: _taskOf(coding),
@@ -411,7 +439,7 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
       final row = raw.isEmpty ? null : _rowFromText(raw);
       if (row != null) {
         row.seq = _stamp(state);
-        state.timeline.add(row);
+        _appendTimelineRow(state, row);
       }
       return;
     case 'new_round':
@@ -525,7 +553,8 @@ void _applyLiveParts(ViewerReduceState state, List parts) {
     } else if (kind == 'progress') {
       final coding = item['coding'];
       if (coding is Map) {
-        state.timeline.add(
+        _appendTimelineRow(
+          state,
           ViewerTimelineRow(
             phase: _text(coding['phase']),
             taskId: _taskOf(coding),
@@ -540,7 +569,7 @@ void _applyLiveParts(ViewerReduceState state, List parts) {
         final row = raw.isEmpty ? null : _rowFromText(raw);
         if (row != null) {
           row.seq = seq;
-          state.timeline.add(row);
+          _appendTimelineRow(state, row);
         }
       }
     }

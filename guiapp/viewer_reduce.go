@@ -61,6 +61,35 @@ func emptyViewerReduceState() viewerReduceState {
 	}
 }
 
+// viewerTimelineKept mirrors the frontend's VIEWER_TIMELINE_KEPT: the trail
+// is a tail view and must not grow without bound across a long turn.
+const viewerTimelineKept = 160
+
+// pushViewerTimelineRow keeps ONE row per identical progress publish — the
+// desktop chat's sticky tail row (appendProgressText /
+// appendCodingProgressToRound). Coding rows identify by phase+task+title
+// (the compat text key, run_id excluded the same way the chat's content
+// equality is); taskless rows by their exact text. Locked to the same
+// vectors as the frontend and Dart reducers.
+func pushViewerTimelineRow(state *viewerReduceState, row viewerTimelineRow) {
+	if n := len(state.Timeline); n > 0 {
+		tail := state.Timeline[n-1]
+		var same bool
+		if tail.TaskID != "" || row.TaskID != "" {
+			same = tail.Phase == row.Phase && tail.TaskID == row.TaskID && tail.Title == row.Title
+		} else {
+			same = tail.Text == row.Text
+		}
+		if same {
+			return
+		}
+	}
+	state.Timeline = append(state.Timeline, row)
+	if n := len(state.Timeline); n > viewerTimelineKept {
+		state.Timeline = append(state.Timeline[:0], state.Timeline[n-viewerTimelineKept:]...)
+	}
+}
+
 func viewerEventName(event map[string]any) string {
 	name, _ := event["event"].(string)
 	return name
@@ -280,14 +309,14 @@ func applyViewerPayload(state *viewerReduceState, event map[string]any) {
 	case "progress":
 		raw := viewerText(event["text"])
 		if coding := viewerMap(event["coding"]); coding != nil {
-			state.Timeline = append(state.Timeline, rowFromCodingMap(coding))
+			pushViewerTimelineRow(state, rowFromCodingMap(coding))
 			return
 		}
 		if raw == "" {
 			return
 		}
 		if row, ok := rowFromProgressText(raw); ok {
-			state.Timeline = append(state.Timeline, row)
+			pushViewerTimelineRow(state, row)
 		}
 	case "heartbeat":
 	case "new_round", "stream_done":
@@ -382,11 +411,11 @@ func applyViewerLiveParts(state *viewerReduceState, raw []any) {
 			})
 		case "progress":
 			if coding := viewerMap(part["coding"]); coding != nil {
-				state.Timeline = append(state.Timeline, rowFromCodingMap(coding))
+				pushViewerTimelineRow(state, rowFromCodingMap(coding))
 				continue
 			}
 			if row, ok := rowFromProgressText(viewerText(part["text"])); ok {
-				state.Timeline = append(state.Timeline, row)
+				pushViewerTimelineRow(state, row)
 			}
 		}
 	}

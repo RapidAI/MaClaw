@@ -269,6 +269,12 @@ func viewerStreamAllowed(name string) bool {
 var (
 	viewerThinkOpen sync.Map // session -> bool
 	viewerThinkText sync.Map // session -> string
+	// viewerProgressTail keeps each session's last relayed progress text.
+	// The viewer feed replays every publish and consumers render one row per
+	// delivery, so the relay collapses a repeated delivery the same way the
+	// desktop chat's sticky tail row does. A skipped event never reaches
+	// publishViewerEvent, so no cursor is consumed and consumers never gap.
+	viewerProgressTail sync.Map // session -> string
 )
 
 func viewerEventsFromStream(name string, event AIAssistantStreamEvent) []viewerEvent {

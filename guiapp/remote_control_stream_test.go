@@ -67,6 +67,7 @@ func streamSessionKey() string {
 	// one key, so a previous case's open thought would seal the next token.
 	viewerThinkOpen.Delete(key)
 	viewerThinkText.Delete(key)
+	viewerProgressTail.Delete(key)
 	return key
 }
 
@@ -167,6 +168,68 @@ func TestRemoteStreamHeartbeatKeepsThinkingOpen(t *testing.T) {
 	snap := reg.liveSnapshot(session)
 	if snap == nil || len(snap.Parts) != 1 || snap.Parts[0].Kind != "thinking" || snap.Parts[0].Done {
 		t.Fatalf("snapshot = %+v", snap)
+	}
+}
+
+// The relay collapses a repeated progress delivery (same step republished
+// while it runs) before cursor allocation: one wire frame per distinct
+// text, the frames around it keep contiguous cursors, a heartbeat does not
+// reset the tail, and the live turn folds one progress part — not one per
+// publish. Older phone builds render one row per delivery, so this relay
+// dedup is what keeps them from stacking "running · <step>" rows.
+func TestRemoteStreamDuplicateProgressRelayedOnce(t *testing.T) {
+	app := &App{}
+	reg := app.ensureRemoteWatchRegistry()
+	cap := &remoteStreamCapture{}
+	reg.sink = cap.sink
+	session := streamSessionKey()
+	reg.watchWithProto("g1", session, 2)
+
+	const step = "Coding Agent: running T2 - edit parser"
+	relay := func(text string, seq uint64) {
+		app.relayRemoteStreamEvent("ai-assistant-progress", AIAssistantStreamEvent{
+			SessionKey: session, RequestID: "r1", Text: text, Sequence: seq,
+		})
+	}
+	relay(step, 1)
+	relay(step, 2)
+	relay(imHeartbeatMsg, 3)
+	relay(step, 4)
+	relay("Coding Agent: running T3 - ship", 5)
+
+	got := cap.waitN(3, 2*time.Second)
+	events := cap.events()
+	want := []string{"progress", "heartbeat", "progress"}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events = %v, want %v", events, want)
+		}
+	}
+	// Every delivered frame allocates exactly one cursor; a collapsed
+	// delivery allocates none. The heartbeat between the two progress frames
+	// legitimately takes one, so the pair steps by two — a dedup-induced
+	// hole would show up as a larger jump.
+	first, beat, second := viewerNum(got[0]["cursor"]), viewerNum(got[1]["cursor"]), viewerNum(got[2]["cursor"])
+	if first == 0 || beat != first+1 || second != first+2 {
+		t.Fatalf("cursors = %d,%d,%d; collapsed frames must not open a hole", first, beat, second)
+	}
+	snap := reg.liveSnapshot(session)
+	if snap == nil {
+		t.Fatal("live snapshot missing")
+	}
+	parts := 0
+	for _, part := range snap.Parts {
+		if part.Kind == "progress" {
+			parts++
+		}
+	}
+	// T2 and T3 are distinct steps — the fold keeps one part per distinct
+	// text; the collapsed duplicates never reach the turn.
+	if parts != 2 {
+		t.Fatalf("live turn kept %d progress parts, want 2", parts)
 	}
 }
 

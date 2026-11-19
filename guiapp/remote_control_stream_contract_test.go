@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -334,8 +335,10 @@ func TestRemoteStreamQueueOverflowSetsResyncAndDoesNotBlockEmit(t *testing.T) {
 		SessionKey: sessionB, RequestID: "b", DisplayText: "乙", Sequence: 1,
 	})
 	for i := 0; i < remoteStreamQueueCap-1; i++ {
+		// Distinct texts: the relay collapses consecutive identical progress
+		// deliveries, so the overflow fill must not rely on repeats.
 		app.relayRemoteStreamEvent("ai-assistant-progress", AIAssistantStreamEvent{
-			SessionKey: sessionA, RequestID: "a", Text: "步", Sequence: uint64(i + 2),
+			SessionKey: sessionA, RequestID: "a", Text: fmt.Sprintf("步-%d", i), Sequence: uint64(i + 2),
 		})
 	}
 	start := time.Now()

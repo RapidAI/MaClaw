@@ -126,6 +126,24 @@ function rowFromCoding(coding: Record<string, unknown>, fallback: string): Viewe
     };
 }
 
+/** The desktop chat keeps ONE row per identical progress publish (the sticky
+ * tail row in appendProgressText / appendCodingProgressToRound); the viewer
+ * feed replays every publish, so the same guard lives here — a repeated
+ * delivery of the same running step must not stack rows. Coding rows
+ * identify by phase+task+title (the compat text key, run_id excluded the
+ * same way the chat's content equality is); unparseable plain rows by their
+ * exact text. */
+function pushTimelineRow(state: ViewerReduceState, row: ViewerTimelineRow): void {
+    const tail = state.timeline[state.timeline.length - 1];
+    if (tail) {
+        const same = tail.taskId || row.taskId
+            ? tail.phase === row.phase && tail.taskId === row.taskId && tail.title === row.title
+            : tail.text === row.text;
+        if (same) return;
+    }
+    state.timeline.push(row);
+}
+
 function rowFromProgressText(raw: string): ViewerTimelineRow | null {
     const parsed = parseCodingAgentProgress(raw);
     if (!parsed) return null;
@@ -206,10 +224,10 @@ function applyPayload(state: ViewerReduceState, event: ViewerEvent): void {
             const coding = event.coding && typeof event.coding === 'object' ? event.coding as Record<string, unknown> : null;
             const raw = text(event.text);
             if (coding) {
-                state.timeline.push(rowFromCoding(coding, shortCodingLine(rowFromCoding(coding, raw))));
+                pushTimelineRow(state, rowFromCoding(coding, shortCodingLine(rowFromCoding(coding, raw))));
             } else {
                 const row = raw ? rowFromProgressText(raw) : null;
-                if (row) state.timeline.push(row);
+                if (row) pushTimelineRow(state, row);
             }
             // The trail is a tail view — bound it like the backend snapshot
             // cap so a long tool run cannot grow parts (or the per-event
@@ -312,12 +330,12 @@ function applyLiveParts(state: ViewerReduceState, parts: unknown[]): void {
             if (coding) {
                 const row = rowFromCoding(coding, text(part.text));
                 if (!row.text) row.text = shortCodingLine(row);
-                state.timeline.push(row);
+                pushTimelineRow(state, row);
                 continue;
             }
             const raw = text(part.text);
             const row = raw ? rowFromProgressText(raw) : null;
-            if (row) state.timeline.push(row);
+            if (row) pushTimelineRow(state, row);
         }
     }
     if (state.timeline.length > VIEWER_TIMELINE_KEPT) {
