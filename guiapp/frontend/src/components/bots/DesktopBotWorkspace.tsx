@@ -7494,7 +7494,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             data-testid="desktop-bot-log"
                             onScroll={onLogScroll}
                         >
-                            <BotChipContext.Provider value={{ ...botChipHandlers, openLink: botChipOpenLink, openPath: (event, path) => { void openBotFile(event, path, selected.id); }, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => classifyBotPath(path) }}>
+                            <BotChipContext.Provider value={{ openLink: botChipOpenLink, openPath: (event, path) => { void openBotFile(event, path, selected.id); }, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => classifyBotPath(path) }}>
                             <div ref={logBodyRef} className="desktop-bot-chat__log-body">
                             {messages.length === 0 ? (
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>
@@ -7520,7 +7520,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     </div>
                                 );
                                 return (
-                                <BotChipContext.Provider key={message.id} value={{ ...botChipHandlers, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => botPathKind(path, message) }}>
+                                <BotChipContext.Provider key={message.id} value={{ openLink: botChipOpenLink, openPath: (event, path) => { void openBotFile(event, path, selected.id); }, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => botPathKind(path, message) }}>
                                 <Fragment>
                                 {beats.slice(0, -1).map((beat, beatIndex) => (
                                     <div key={`${message.id}:beat${beatIndex}`} className="desktop-bot-chat__entry desktop-bot-chat__entry--assistant" data-message-role="assistant" data-testid="desktop-bot-beat">
