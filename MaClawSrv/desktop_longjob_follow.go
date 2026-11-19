@@ -41,7 +41,22 @@ var desktopLongJobRunGetter = func(ctx context.Context, p agentservice.Principal
 	if err != nil || msg == nil {
 		return run.Status, "", err
 	}
-	return run.Status, msg.Content, nil
+	// The person's result is the structured finish when one exists. The
+	// model's raw reply stays out of the chat, including a process log.
+	return run.Status, desktopLongJobDeliveredOutcome(runID, *msg), nil
+}
+
+// desktopLongJobDeliveredOutcome is what a finished watcher turn says.
+// desktopComposeRunFinish is the same summary the run records at completion.
+// When it is present, that sentence replaces the model's reply.
+func desktopLongJobDeliveredOutcome(runID string, msg agentservice.Message) string {
+	outcome, why := desktopRunOutcome(runID, &msg)
+	if fin, ok := desktopComposeRunFinish(runID, msg, outcome, why); ok {
+		if sentence := strings.TrimSpace(fin.Sentence()); sentence != "" {
+			return sentence
+		}
+	}
+	return msg.Content
 }
 
 // desktopLongJobRunSaid: the turn already spoke with action=say.

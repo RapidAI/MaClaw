@@ -193,3 +193,68 @@ func TestLongJobOutcomeAsksInsteadOfContinuing(t *testing.T) {
 		}
 	}
 }
+
+func TestWatchFollowSaysTheStructuredSummaryNotTheLog(t *testing.T) {
+	d100Env(t)
+	prevSleep := desktopLongJobSleep
+	desktopLongJobSleep = func(context.Context, time.Duration) bool { return true }
+	t.Cleanup(func() { desktopLongJobSleep = prevSleep })
+	runID := "run_struct_follow"
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[runID] = true
+	desktopRecStateMu.Unlock()
+	t.Cleanup(func() {
+		desktopRecStateMu.Lock()
+		delete(desktopRecRunSteps, runID)
+		desktopRecStateMu.Unlock()
+	})
+	metric := 0.91
+	if err := desktopLongJobSave(&desktopLongJob{
+		ID: "job_struct", SourceRun: runID, Status: "done",
+		RoundMetric: &metric, RoundMetricName: "F1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw := "下面是最后的输出\nBEST_VAL_METRICS {\"f1\": 0.1}\n" + strings.Repeat("epoch log\n", 20)
+	got := desktopLongJobDeliveredOutcome(runID, agentservice.Message{Content: raw})
+	for _, bad := range []string{"BEST_VAL", "下面是最后的输出", "epoch log"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("process log became the result %q in %q", bad, got)
+		}
+	}
+	if !strings.Contains(got, "做成了") || !strings.Contains(got, "F1") {
+		t.Fatalf("summary %q", got)
+	}
+	plain := "训练变慢，会超过时限。"
+	if kept := desktopLongJobDeliveredOutcome("run_no_steps_follow", agentservice.Message{Content: plain}); kept != plain {
+		t.Fatalf("a reply with no structured finish was replaced: %q", kept)
+	}
+
+	var sent []map[string]any
+	oldSay, oldGet := desktopLongJobSayFunc, desktopLongJobRunGetter
+	t.Cleanup(func() { desktopLongJobSayFunc, desktopLongJobRunGetter = oldSay, oldGet })
+	desktopLongJobSayFunc = func(_ context.Context, body map[string]any) error {
+		sent = append(sent, body)
+		return nil
+	}
+	desktopLongJobRunGetter = func(context.Context, agentservice.Principal, string, string, string) (agentservice.RunStatus, string, error) {
+		return agentservice.RunStatusSucceeded, desktopLongJobDeliveredOutcome(runID, agentservice.Message{Content: raw}), nil
+	}
+	watch := &desktopLongJob{ID: "job_wstruct", InstanceID: "inst_s", SessionID: "sess", UserID: "u", TenantID: "t"}
+	desktopLongJobFollowRun(context.Background(), agentservice.Principal{}, watch, runID, longJobResume)
+	if len(sent) != 1 {
+		t.Fatalf("sent %v", sent)
+	}
+	text, _ := sent[0]["text"].(string)
+	if sent[0]["message_kind"] != desktopMsgOutcome {
+		t.Fatalf("kind %v", sent[0]["message_kind"])
+	}
+	for _, bad := range []string{"BEST_VAL", "下面是最后的输出", "epoch log"} {
+		if strings.Contains(text, bad) {
+			t.Fatalf("follow posted the process log %q in %q", bad, text)
+		}
+	}
+	if !strings.Contains(text, "做成了") {
+		t.Fatalf("follow text %q", text)
+	}
+}
