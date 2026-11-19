@@ -2454,6 +2454,36 @@ func TestSynthesizeOpenAIStreamChunkAcceptsGoStyleReasoningContent(t *testing.T)
 	}
 }
 
+func TestSynthesizeOpenAIStreamChunkKeepsThoughtSignature(t *testing.T) {
+	chunk, _, err := synthesizeOpenAIStreamChunk([]byte(`{
+		"id":"json-upstream",
+		"choices":[{
+			"message":{"role":"assistant","content":"noted","reasoning_content":"Count the tables.","thought_signature":"sig-sse"},
+			"finish_reason":"tool_calls"
+		}]
+	}`), "deepseek/deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("synthesizeOpenAIStreamChunk: %v", err)
+	}
+	body := string(chunk)
+	if !strings.Contains(body, `"thought_signature":"sig-sse"`) {
+		t.Fatalf("synthesized chunk missing thought_signature: %s", body)
+	}
+	if !strings.Contains(body, `"reasoning_content":"Count the tables."`) {
+		t.Fatalf("synthesized chunk missing reasoning_content: %s", body)
+	}
+
+	empty, _, err := synthesizeOpenAIStreamChunk([]byte(`{
+		"choices":[{"message":{"role":"assistant","content":"noted","thought_signature":""},"finish_reason":"stop"}]
+	}`), "deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("synthesize empty signature: %v", err)
+	}
+	if strings.Contains(string(empty), "thought_signature") {
+		t.Fatalf("empty signature was forwarded: %s", empty)
+	}
+}
+
 func TestLLMV1ChatCompletionsHandlerReturnsOpenAIErrorWhenStreamUpstream503Empty(t *testing.T) {
 	globalProviderResilience.reset()
 	defer globalProviderResilience.reset()

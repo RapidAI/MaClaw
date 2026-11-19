@@ -1,43 +1,43 @@
 {
   "@@locale": "mn",
   "tabBots": "Bot",
-  "tabRemote": "远控",
-  "tabAssistant": "助手",
-  "tabStatus": "工作状态",
-  "tabMe": "我的",
-  "errorBotNotFound": "找不到这个 Bot",
-  "backToBots": "返回列表",
-  "errorRoomNotFound": "找不到这个房间",
-  "backToRooms": "返回房间列表",
-  "errorTaskNotFound": "找不到这个远程任务",
-  "backToRemote": "返回远程控制",
-  "settingsLanguage": "语言 / Language",
-  "languageSystem": "跟随系统",
-  "composerAttach": "传送文件",
-  "composerSend": "发送",
-  "composerMicStart": "语音输入",
-  "composerMicStop": "停止语音输入",
-  "composerSupplement": "给当前任务补充说明",
-  "composerStop": "停止当前任务",
-  "addAccountTitle": "添加账号",
-  "reloginTitle": "重新登录",
-  "loginTagline": "随时随地管理和指挥你的桌面 Bot",
-  "loginTabEmail": "邮箱登录",
-  "loginTabPhone": "手机登录",
-  "identityHintEmail": "邮箱地址",
-  "identityHintPhone": "手机号",
-  "identityLabelEmail": "邮箱",
-  "identityLabelPhone": "手机号",
-  "identityRequiredEmail": "请输入邮箱",
-  "identityRequiredPhone": "请输入手机号",
-  "codeLabel": "验证码",
-  "codeRequired": "请输入验证码",
-  "codeSentEmail": "验证码已发送，请查收邮箱",
-  "codeSentSms": "验证码已发送，请查收短信",
-  "codeExpiryEmail": "验证码 5 分钟内有效",
-  "codeExpirySms": "验证码 60 秒内有效",
-  "getCode": "获取验证码",
-  "resendCode": "重新发送",
+  "tabRemote": "Удирдлага",
+  "tabAssistant": "Туслах",
+  "tabStatus": "Ажлын байдал",
+  "tabMe": "Миний",
+  "errorBotNotFound": "Ийм Bot олдсонгүй",
+  "backToBots": "Жагсаалт руу буцах",
+  "errorRoomNotFound": "Ийм өрөө олдсонгүй",
+  "backToRooms": "Өрөөнүүд рүү буцах",
+  "errorTaskNotFound": "Ийм алсын даалгавар олдсонгүй",
+  "backToRemote": "Алсын удирдлага руу буцах",
+  "settingsLanguage": "Хэл / Language",
+  "languageSystem": "Системийг дагах",
+  "composerAttach": "Файл илгээх",
+  "composerSend": "Илгээх",
+  "composerMicStart": "Дуугаар бичих",
+  "composerMicStop": "Дуут бичилтийг зогсоох",
+  "composerSupplement": "Одоогийн даалгаварт нэмэлт тайлбар өгөх",
+  "composerStop": "Одоогийн даалгаврыг зогсоох",
+  "addAccountTitle": "Данс нэмэх",
+  "reloginTitle": "Дахин нэвтрэх",
+  "loginTagline": "Хаанаас ч, хэзээ ч Desktop Bot-оо удирдан зааварлаарай",
+  "loginTabEmail": "Имэйлээр нэвтрэх",
+  "loginTabPhone": "Утсаар нэвтрэх",
+  "identityHintEmail": "Имэйл хаяг",
+  "identityHintPhone": "Утасны дугаар",
+  "identityLabelEmail": "Имэйл",
+  "identityLabelPhone": "Утасны дугаар",
+  "identityRequiredEmail": "Имэйл хаягаа оруулна уу",
+  "identityRequiredPhone": "Утасны дугаараа оруулна уу",
+  "codeLabel": "Баталгаажуулах код",
+  "codeRequired": "Баталгаажуулах кодыг оруулна уу",
+  "codeSentEmail": "Код илгээгдлээ — имэйлээ шалгана уу",
+  "codeSentSms": "Код илгээгдлээ — мессежээ шалгана уу",
+  "codeExpiryEmail": "Код 5 минутын хүчинтэй",
+  "codeExpirySms": "Код 60 секундын хүчинтэй",
+  "getCode": "Код авах",
+  "resendCode": "Дахин илгээх",
   "resendIn": "{seconds}s",
   "@resendIn": {
     "placeholders": {
@@ -46,29 +46,29 @@
       }
     }
   },
-  "signIn": "登录",
-  "signingIn": "登录中",
-  "confirmSignIn": "确认登录",
-  "scanToSignIn": "扫码登录",
-  "sessionExpired": "登录已过期，请重新验证身份",
-  "loginFooter": "登录即表示同意使用该账号下的桌面 Bot 服务。\n未注册的联系方式会自动创建账号。",
-  "pendingApproval": "注册已提交，等待管理员审批后即可使用",
-  "verifyCodeInvalid": "验证码错误或已过期",
-  "phoneFormatInvalid": "手机号格式不正确",
-  "phoneAlreadyRegistered": "该手机号已绑定其他账号",
-  "phoneRegistrationDisabled": "当前 Hub 未开启手机注册，请改用邮箱登录",
-  "ipBlocked": "请求被拦截，请稍后再试",
-  "invalidEmail": "请输入有效的邮箱地址",
-  "invalidPhone": "请输入有效的手机号",
-  "opFailedRetry": "操作失败，请重试",
-  "qrScanTitle": "扫描桌面端的「移动认证二维码」",
-  "qrScanHint": "在电脑端 MaClaw「关于 → Hub 身份 → 移动认证二维码」打开二维码，5 分钟内扫描即可登录同一账号。",
-  "qrPasteLabel": "或粘贴二维码内容",
-  "qrInvalid": "二维码无效、已使用或已过期，请在电脑端重新生成",
-  "qrOwnerUnavailable": "生成该二维码的账号不可用",
-  "qrPhoneRequired": "该账号未绑定手机号，无法使用扫码登录",
-  "qrHubTooOld": "当前 Hub 版本不支持扫码登录，请更新 Hub 或改用验证码登录",
-  "botStatusTitle": "{bot} · 任务状态",
+  "signIn": "Нэвтрэх",
+  "signingIn": "Нэвтэрч байна",
+  "confirmSignIn": "Нэвтрэлтийг баталгаажуулах",
+  "scanToSignIn": "QR кодоор нэвтрэх",
+  "sessionExpired": "Нэвтрэлт хүчингүй болсон — танилтаа дахин хийнэ үү",
+  "loginFooter": "Нэвтрэх нь энэ дансны Desktop Bot үйлчилгээг ашиглахыг зөвшөөрч байгааг илэрхийлнэ.\nБүртгэгдээгүй холбоо барих мэдээллээр данс автоматаар үүсгэгдэнэ.",
+  "pendingApproval": "Бүртгэл илгээгдлээ — админ зөвшөөрсний дараа ашиглах боломжтой болно",
+  "verifyCodeInvalid": "Код буруу эсвэл хүчингүй болсон",
+  "phoneFormatInvalid": "Утасны дугаарын формат буруу байна",
+  "phoneAlreadyRegistered": "Энэ утасны дугаар өөр данстай холбогдсон байна",
+  "phoneRegistrationDisabled": "Энэ Hub дээр утсаар бүртгэх нь идэвхгүй — имэйлээр нэвтэрнэ үү",
+  "ipBlocked": "Хүсэлт хаагдлаа — бага зэрэг хүлээгээд дахин оролдоно уу",
+  "invalidEmail": "Зөв имэйл хаяг оруулна уу",
+  "invalidPhone": "Зөв утасны дугаар оруулна уу",
+  "opFailedRetry": "Үйлдэл амжилтгүй боллоо — дахин оролдоно уу",
+  "qrScanTitle": "Десктоп апп дээрх «Мобайл танилтын QR код»-ыг уншуулна уу",
+  "qrScanHint": "Компьютер дээрх MaClaw апп-аас «About → Hub танилтын мэдээлэл → Мобайл танилтын QR код»-ыг нээгээд 5 минутын дотор уншуулвал ижил дансанд нэвтэрнэ.",
+  "qrPasteLabel": "Эсвэл QR кодын агуулгыг буулгана уу",
+  "qrInvalid": "QR код буруу, аль хэдийн ашиглагдсан эсвэл хүчингүй — компьютер дээр дахин үүсгэнэ үү",
+  "qrOwnerUnavailable": "Энэ QR кодыг үүсгэсэн данс ашиглах боломжгүй байна",
+  "qrPhoneRequired": "Энэ дансанд утасны дугаар холбогдоогүй тул QR кодоор нэвтэрч чадахгүй",
+  "qrHubTooOld": "Энэ Hub хувилбар QR кодоор нэвтрэхийг дэмждэггүй — Hub-аа шинэчлэх эсвэл баталгаажуулах кодоор нэвтэрнэ үү",
+  "botStatusTitle": "{bot} · Даалгаврын байдал",
   "@botStatusTitle": {
     "placeholders": {
       "bot": {
@@ -76,14 +76,14 @@
       }
     }
   },
-  "notSignedIn": "未登录",
-  "retry": "重试",
-  "cancel": "取消",
-  "resume": "继续",
-  "pause": "暂停",
-  "stop": "停止",
-  "start": "启动",
-  "stRunningCount": "进行中（{count}）",
+  "notSignedIn": "Нэвтрээгүй",
+  "retry": "Дахин оролдох",
+  "cancel": "Цуцлах",
+  "resume": "Үргэлжлүүлэх",
+  "pause": "Түр зогсоох",
+  "stop": "Зогсоох",
+  "start": "Эхлүүлэх",
+  "stRunningCount": "Явагдаж байна ({count})",
   "@stRunningCount": {
     "placeholders": {
       "count": {
@@ -91,8 +91,8 @@
       }
     }
   },
-  "stNoRunningTasks": "没有正在运行的任务",
-  "stRecentCount": "最近任务（{count}）",
+  "stNoRunningTasks": "Явагдаж байгаа даалгавар байхгүй",
+  "stRecentCount": "Сүүлийн даалгаврууд ({count})",
   "@stRecentCount": {
     "placeholders": {
       "count": {
@@ -100,9 +100,9 @@
       }
     }
   },
-  "stNoTaskHistory": "暂无任务记录",
-  "stPaused": "已暂停",
-  "stCurrent": "当前：{step}",
+  "stNoTaskHistory": "Даалгаврын түүх одоогоор байхгүй",
+  "stPaused": "Түр зогсоосон",
+  "stCurrent": "Одоо: {step}",
   "@stCurrent": {
     "placeholders": {
       "step": {
@@ -110,7 +110,7 @@
       }
     }
   },
-  "stNext": "下一步：{step}",
+  "stNext": "Дараагийн: {step}",
   "@stNext": {
     "placeholders": {
       "step": {
@@ -118,7 +118,7 @@
       }
     }
   },
-  "stStartedAt": "开始于 {time}",
+  "stStartedAt": "{time}-д эхэлсэн",
   "@stStartedAt": {
     "placeholders": {
       "time": {
@@ -126,9 +126,9 @@
       }
     }
   },
-  "stWaitingForYou": "等待你的操作",
-  "stStopRunTitle": "停止这个任务？",
-  "stStopRunBody": "「{name}」将被终止，进行中的工作会中断。",
+  "stWaitingForYou": "Таны үйлдлийг хүлээж байна",
+  "stStopRunTitle": "Энэ даалгаврыг зогсоох уу?",
+  "stStopRunBody": "«{name}» зогсоогдож, явагдаж байсан ажил тасалдана.",
   "@stStopRunBody": {
     "placeholders": {
       "name": {
@@ -136,7 +136,7 @@
       }
     }
   },
-  "stProgress": "进展：{text}",
+  "stProgress": "Явц: {text}",
   "@stProgress": {
     "placeholders": {
       "text": {
@@ -144,7 +144,7 @@
       }
     }
   },
-  "stError": "错误：{text}",
+  "stError": "Алдаа: {text}",
   "@stError": {
     "placeholders": {
       "text": {
@@ -152,7 +152,7 @@
       }
     }
   },
-  "stLeftover": "遗留：{text}",
+  "stLeftover": "Үлдсэн: {text}",
   "@stLeftover": {
     "placeholders": {
       "text": {
@@ -160,11 +160,11 @@
       }
     }
   },
-  "stTitle": "工作状态",
-  "stBotRooms": "Bot 房间",
-  "stSegmentTasks": "任务",
-  "stSegmentFeed": "动态",
-  "stDownloadFailed": "下载附件失败：{reason}",
+  "stTitle": "Ажлын байдал",
+  "stBotRooms": "Bot-ын өрөөнүүд",
+  "stSegmentTasks": "Даалгаврууд",
+  "stSegmentFeed": "Үйл явдал",
+  "stDownloadFailed": "Хавсралтыг татах амжилтгүй: {reason}",
   "@stDownloadFailed": {
     "placeholders": {
       "reason": {
@@ -172,28 +172,28 @@
       }
     }
   },
-  "stSystemName": "系统",
-  "stEmptyFeed": "还没有 Bot 之间的动态",
-  "stSaidHeader": "Bot 对你说",
-  "stCollabHeader": "协作任务",
-  "stKindDelegate": "委托",
-  "stKindDone": "完成",
-  "stKindBlocked": "受阻",
-  "stKindProgress": "进展",
-  "stKindQuestion": "提问",
-  "stKindArtifact": "产物",
-  "stKindReply": "回复",
-  "stKindDefault": "动态",
-  "stStateQueued": "排队中",
-  "stStateRunning": "进行中",
-  "stStateHeld": "已挂起",
-  "stStateWaitingHuman": "等待人工",
-  "stStateBlocked": "受阻",
-  "stStateCompleted": "已完成",
-  "stStateFailed": "失败",
-  "stStateAccepted": "已验收",
-  "stStateReturned": "已退回",
-  "stQuestion": "问题：{text}",
+  "stSystemName": "Систем",
+  "stEmptyFeed": "Bot хоорондын үйл явдал одоогоор байхгүй",
+  "stSaidHeader": "Bot-ууд танд хэлсэн",
+  "stCollabHeader": "Хамтарсан даалгаврууд",
+  "stKindDelegate": "Даалгасан",
+  "stKindDone": "Дууссан",
+  "stKindBlocked": "Түгжигдсэн",
+  "stKindProgress": "Явц",
+  "stKindQuestion": "Асуулт",
+  "stKindArtifact": "Бүтээл",
+  "stKindReply": "Хариулт",
+  "stKindDefault": "Үйл явдал",
+  "stStateQueued": "Дараалалд",
+  "stStateRunning": "Ажиллаж байна",
+  "stStateHeld": "Хүлээлгэнд",
+  "stStateWaitingHuman": "Хүний оролцоог хүлээж байна",
+  "stStateBlocked": "Түгжигдсэн",
+  "stStateCompleted": "Дууссан",
+  "stStateFailed": "Амжилтгүй",
+  "stStateAccepted": "Хүлээн авсан",
+  "stStateReturned": "Буцаагдсан",
+  "stQuestion": "Асуулт: {text}",
   "@stQuestion": {
     "placeholders": {
       "text": {
@@ -201,8 +201,8 @@
       }
     }
   },
-  "stAllQuiet": "一切安静，没有进行中的任务",
-  "stDeliveriesCount": "待查看结果（{count}）",
+  "stAllQuiet": "Бүх зүйл тайван — явагдаж байгаа даалгавар байхгүй",
+  "stDeliveriesCount": "Хянах үр дүн ({count})",
   "@stDeliveriesCount": {
     "placeholders": {
       "count": {
@@ -210,33 +210,33 @@
       }
     }
   },
-  "botsTitle": "我的 Bot",
-  "botsCreate": "新建 Bot",
-  "botsCreateAction": "创建",
-  "botsAccessDisabled": "当前账号未开通 Bot 功能",
-  "botsRetry": "重试",
-  "botsEmptyTitle": "还没有 Bot",
-  "botsEmptyHint": "点击右下角创建一个",
-  "botsPrimaryMark": "主",
-  "botsDesktopTooltip": "电脑画面",
-  "botsNameLabel": "名称",
-  "botsNameHint": "给 Bot 起个名字",
-  "botsDescLabel": "简介（可选）",
-  "botsDescHint": "这个 Bot 帮你做什么",
-  "botsNeedsComputer": "这个 bot 需要电脑",
-  "botsNoComputerQuota": "这个账号还没有分配电脑：只能创建无电脑的 Bot",
-  "botsNameTaken": "已经有一个叫这个名字的 Bot 了，换个名字吧",
-  "botsNameRequired": "请输入名称",
-  "shapeBlob": "团子",
-  "shapeCloud": "云朵",
-  "shapeLeaf": "叶子",
-  "shapeSquare": "方块",
-  "shapePill": "胶囊",
-  "shapeCircle": "圆形",
-  "desktopMarkNone": "无电脑",
-  "desktopMarkIsolated": "电脑·独立",
-  "desktopMarkShared": "电脑·共用",
-  "quotaUsed": "已用 {used}",
+  "botsTitle": "Миний Bot-ууд",
+  "botsCreate": "Шинэ Bot",
+  "botsCreateAction": "Үүсгэх",
+  "botsAccessDisabled": "Энэ дансанд Bot-ын функц идэвхжээгүй байна",
+  "botsRetry": "Дахин оролдох",
+  "botsEmptyTitle": "Bot одоогоор байхгүй",
+  "botsEmptyHint": "Баруун доод булангын товчийг дараад үүсгээрэй",
+  "botsPrimaryMark": "Үндсэн",
+  "botsDesktopTooltip": "Компьютерийн дэлгэц",
+  "botsNameLabel": "Нэр",
+  "botsNameHint": "Bot-д нэр өгнө үү",
+  "botsDescLabel": "Танилцуулга (заавал биш)",
+  "botsDescHint": "Энэ Bot танд юу хийж өгөх вэ",
+  "botsNeedsComputer": "Энэ Bot компьютертэй ажиллах ёстой",
+  "botsNoComputerQuota": "Энэ дансанд хуваарилсан компьютер байхгүй: компьютер байхгүй Bot-ыг л үүсгэх боломжтой",
+  "botsNameTaken": "Ийм нэртэй Bot аль хэдийн байна — өөр нэр сонгоно уу",
+  "botsNameRequired": "Нэр оруулна уу",
+  "shapeBlob": "Бөлөг",
+  "shapeCloud": "Үүл",
+  "shapeLeaf": "Навч",
+  "shapeSquare": "Дөрвөлжин",
+  "shapePill": "Капсул",
+  "shapeCircle": "Тойрог",
+  "desktopMarkNone": "Компьютергүй",
+  "desktopMarkIsolated": "Компьютер · тусгай",
+  "desktopMarkShared": "Компьютер · хамтарсан",
+  "quotaUsed": "Ашигласан {used}",
   "@quotaUsed": {
     "placeholders": {
       "used": {
@@ -244,7 +244,7 @@
       }
     }
   },
-  "quotaUsedOf": "已用 {used} / {limit}",
+  "quotaUsedOf": "Ашигласан {used} / {limit}",
   "@quotaUsedOf": {
     "placeholders": {
       "used": {
@@ -255,13 +255,13 @@
       }
     }
   },
-  "workStateIdle": "空闲",
-  "workStateRunning": "运行中",
-  "workStateWaitingUser": "待接管",
-  "workStateAwaitingAnswer": "待回答",
-  "workStateFailed": "失败",
-  "fallbackFileName": "文件",
-  "scheduleEveryMinutes": "每 {minutes} 分钟",
+  "workStateIdle": "Идэвхгүй",
+  "workStateRunning": "Ажиллаж байна",
+  "workStateWaitingUser": "Хяналтыг хүлээж байна",
+  "workStateAwaitingAnswer": "Хариулт хүлээж байна",
+  "workStateFailed": "Амжилтгүй",
+  "fallbackFileName": "Файл",
+  "scheduleEveryMinutes": "{minutes} минут тутамд",
   "@scheduleEveryMinutes": {
     "placeholders": {
       "minutes": {
@@ -269,21 +269,21 @@
       }
     }
   },
-  "scheduleEveryDay": "每天",
-  "scheduleDowSun": "周日",
-  "scheduleDowMon": "周一",
-  "scheduleDowTue": "周二",
-  "scheduleDowWed": "周三",
-  "scheduleDowThu": "周四",
-  "scheduleDowFri": "周五",
-  "scheduleDowSat": "周六",
-  "acCurrentModel": "当前模型",
-  "acCurrentModelHint": "各阶段生效的模型配置",
-  "voiceTitle": "语音引擎",
-  "acVoiceEngineHint": "朗读音色与识别方式 · 本地下载模型",
-  "checkUpdate": "检查更新",
-  "acCheckUpdateHint": "从 GitHub / Cloudflare R2 获取新版本",
-  "acAccountsCount": "账号（{count}）",
+  "scheduleEveryDay": "Өдөр бүр",
+  "scheduleDowSun": "Ням",
+  "scheduleDowMon": "Даваа",
+  "scheduleDowTue": "Мягмар",
+  "scheduleDowWed": "Лхагва",
+  "scheduleDowThu": "Пүрэв",
+  "scheduleDowFri": "Баасан",
+  "scheduleDowSat": "Бямба",
+  "acCurrentModel": "Одоогийн модель",
+  "acCurrentModelHint": "Үе шат тус бүрт хэрэгжих моделийн тохиргоо",
+  "voiceTitle": "Дуу хоолойн хөдөлгүүр",
+  "acVoiceEngineHint": "Уншлагын дуу хоолой, танилтын арга · Модель локалд татагдана",
+  "checkUpdate": "Шинэчлэл шалгах",
+  "acCheckUpdateHint": "GitHub / Cloudflare R2-оос шинэ хувилбар авна",
+  "acAccountsCount": "Данснууд ({count})",
   "@acAccountsCount": {
     "placeholders": {
       "count": {
@@ -291,10 +291,10 @@
       }
     }
   },
-  "acSignOut": "退出当前账号",
-  "acSignOutConfirm": "退出当前账号？",
-  "acSignOutAction": "退出",
-  "acRemoveBody": "将移除本机上「{account}」的登录信息。",
+  "acSignOut": "Одоогийн дансаас гарах",
+  "acSignOutConfirm": "Одоогийн дансаас гарах уу?",
+  "acSignOutAction": "Гарах",
+  "acRemoveBody": "«{account}» дансны нэвтрэх мэдээллийг энэ төхөөрөмжөөс хасна.",
   "@acRemoveBody": {
     "placeholders": {
       "account": {
@@ -302,9 +302,9 @@
       }
     }
   },
-  "acFooter": "MaclawGo · 桌面 Bot 的移动工作台",
-  "acCredits": "Bot 额度",
-  "acCreditsUsedRemain": "已用 {used} / {total}，剩余 {remain}",
+  "acFooter": "MaclawGo · Desktop Bot-ын мобайл ажлын станц",
+  "acCredits": "Bot-ын кредит",
+  "acCreditsUsedRemain": "Ашигласан {used} / {total}, үлдсэн {remain}",
   "@acCreditsUsedRemain": {
     "placeholders": {
       "used": {
@@ -318,8 +318,8 @@
       }
     }
   },
-  "acCreditsUnlimited": "不限量",
-  "acCreditsUsed": "已用 {used}",
+  "acCreditsUnlimited": "Хязгааргүй",
+  "acCreditsUsed": "Ашигласан {used}",
   "@acCreditsUsed": {
     "placeholders": {
       "used": {
@@ -327,12 +327,12 @@
       }
     }
   },
-  "acCurrent": "当前",
-  "acRemoveAccount": "移除账号",
-  "acRemoveConfirm": "移除账号？",
-  "acRemove": "移除",
-  "updCantReachServer": "无法连接更新服务器",
-  "updUpToDateVersion": "当前已是最新版本（{version}）",
+  "acCurrent": "Одоогийн",
+  "acRemoveAccount": "Данс хасах",
+  "acRemoveConfirm": "Дансыг хасах уу?",
+  "acRemove": "Хасах",
+  "updCantReachServer": "Шинэчлэлийн серверт холбогдохгүй байна",
+  "updUpToDateVersion": "Аль хэдийн хамгийн шинэ хувилбар байна ({version})",
   "@updUpToDateVersion": {
     "placeholders": {
       "version": {
@@ -340,10 +340,10 @@
       }
     }
   },
-  "updUpToDate": "当前已是最新版本",
-  "updSignatureMismatch": "更新包与当前安装版本签名不一致，系统不允许覆盖安装。\n请先卸载当前版本（账号数据保存在云端，重新登录即可恢复），再到官网下载页安装新版本。",
-  "updCantOpenInstaller": "无法打开安装器",
-  "updCurrentVersion": "当前版本 {version}",
+  "updUpToDate": "Аль хэдийн хамгийн шинэ хувилбар байна",
+  "updSignatureMismatch": "Шинэчлэлийн багц нь одоо суулгасан апптай өөр түлхүүрээр гарын үсэг зурсан тул систем нь дээр нь суулгахыг зөвшөөрөхгүй.\nЭхлээд одоогийн хувилбарыг устгана (дансны өгөгдөл cloud дээр хадгалагдсан, дахин нэвтэрвэл сэргэнэ), дараа нь албан ёсны татан авалтын хуудсаас шинэ хувилбарыг суулгана уу.",
+  "updCantOpenInstaller": "Суулгагч программыг нээж чадсангүй",
+  "updCurrentVersion": "Одоогийн хувилбар {version}",
   "@updCurrentVersion": {
     "placeholders": {
       "version": {
@@ -351,7 +351,7 @@
       }
     }
   },
-  "updNewVersion": "发现新版本 {version}",
+  "updNewVersion": "Шинэ хувилбар олдлоо: {version}",
   "@updNewVersion": {
     "placeholders": {
       "version": {
@@ -359,7 +359,7 @@
       }
     }
   },
-  "updInstallHint": "将从 GitHub / Cloudflare R2 下载 {name}，校验后由系统安装器完成安装。",
+  "updInstallHint": "{name}-г GitHub / Cloudflare R2-оос татаж, шалгасны дараа системийн суулгагч суулгана.",
   "@updInstallHint": {
     "placeholders": {
       "name": {
@@ -367,9 +367,9 @@
       }
     }
   },
-  "updDownloadInstall": "下载并安装",
-  "updViewInBrowser": "在浏览器中查看",
-  "updDownloading": "下载中 {percent}%",
+  "updDownloadInstall": "Татаж суулгах",
+  "updViewInBrowser": "Хөтөч дээр харах",
+  "updDownloading": "Татаж байна {percent}%",
   "@updDownloading": {
     "placeholders": {
       "percent": {
@@ -377,37 +377,37 @@
       }
     }
   },
-  "updOpeningInstaller": "已下载，正在打开安装器…",
-  "updCheckFailed": "检查更新失败",
-  "updOpenDownloadPage": "在浏览器中打开下载页",
-  "vsTts": "朗读（TTS）",
-  "vsTtsSystem": "系统音色",
-  "vsDownloadKokoro": "下载 Kokoro 模型与音色包",
-  "vsVoices": "音色",
-  "vsAsr": "语音识别（ASR）",
-  "vsAsrSystem": "系统识别",
-  "vsAsrLocal": "本地 SenseVoice",
-  "vsDownloadSenseVoice": "下载 SenseVoice 识别模型",
-  "vsSenseVoiceReady": "模型已就绪——系统识别不可用时自动用它",
-  "vsLocalNote": "本地模型与桌面端 MaClaw 相同（Kokoro-82M / SenseVoice-small），下载后完全离线可用。",
-  "rcTitle": "远程控制",
-  "rcManageDevices": "设备与授权",
-  "rcInviteOthers": "邀请他人",
-  "refresh": "刷新",
-  "rcSectionInvites": "邀请我",
-  "rcSectionMachines": "远程机",
-  "rcNoMachines": "还没有可控制的机器。\n在下面的「我的设备」里挑一台配对，或让别的账号邀请你。",
-  "rcControlledByOthers": "正在远控我的电脑",
-  "rcPendingOutgoing": "等待对方处理",
-  "rcICanControl": "我可以控制",
-  "rcMyDevices": "我的设备",
-  "rcNoRecords": "暂无设备与授权记录",
-  "rcNoBindableMachine": "没有可绑定的电脑，请在桌面端接受",
-  "rcPickMachineTitle": "让哪台电脑接受这次远控？",
-  "rcOffline": "离线",
-  "rcOnline": "在线",
-  "rcCounterparty": "对方",
-  "rcWantsToControl": "{who} 想远控你的电脑（{permission}）",
+  "updOpeningInstaller": "Татагдлаа — суулгагчийг нээж байна…",
+  "updCheckFailed": "Шинэчлэл шалгах амжилтгүй боллоо",
+  "updOpenDownloadPage": "Татах хуудсыг хөтөч дээр нээх",
+  "vsTts": "Дуут уншлага (TTS)",
+  "vsTtsSystem": "Системийн дуу хоолой",
+  "vsDownloadKokoro": "Kokoro модель, дуу хоолойн багц татах",
+  "vsVoices": "Дуу хоолой",
+  "vsAsr": "Дуун танилт (ASR)",
+  "vsAsrSystem": "Системийн танилт",
+  "vsAsrLocal": "Локал SenseVoice",
+  "vsDownloadSenseVoice": "SenseVoice танилтын модель татах",
+  "vsSenseVoiceReady": "Модель бэлэн боллоо — системийн танилт боломжгүй үед автоматаар ашиглагдана",
+  "vsLocalNote": "Локал модель нь десктоп MaClaw-ынхтай ижил (Kokoro-82M / SenseVoice-small) тул татсаны дараа бүрэн офлайн ажиллана.",
+  "rcTitle": "Алсын удирдлага",
+  "rcManageDevices": "Төхөөрөмж, зөвшөөрөл",
+  "rcInviteOthers": "Бусдыг урих",
+  "refresh": "Шинэчлэх",
+  "rcSectionInvites": "Над руу ирсэн урилга",
+  "rcSectionMachines": "Алсын компьютер",
+  "rcNoMachines": "Удирдах боломжтой компьютер одоогоор байхгүй.\nДоорх «Миний төхөөрөмжүүд» хэсэгт нэгийг хослуулах эсвэл өөр дансаас урилга хүлээнэ үү.",
+  "rcControlledByOthers": "Миний компьютерийг бусад алсаас удирдаж байна",
+  "rcPendingOutgoing": "Нөгөө талыг хүлээж байна",
+  "rcICanControl": "Би удирдаж чадах",
+  "rcMyDevices": "Миний төхөөрөмжүүд",
+  "rcNoRecords": "Төхөөрөмж, зөвшөөрлийн бичилт одоогоор байхгүй",
+  "rcNoBindableMachine": "Холбох компьютер байхгүй — эхлээд десктоп дээр хүлээн авна уу",
+  "rcPickMachineTitle": "Аль компьютер энэ алсын удирдлагыг хүлээн авах вэ?",
+  "rcOffline": "Оффлайн",
+  "rcOnline": "Онлайн",
+  "rcCounterparty": "Нөгөө тал",
+  "rcWantsToControl": "{who} таны компьютерийг алсаас удирдахыг хүсэж байна ({permission})",
   "@rcWantsToControl": {
     "placeholders": {
       "who": {
@@ -418,11 +418,11 @@
       }
     }
   },
-  "rcAccept": "接受",
-  "rcReject": "拒绝",
-  "rcIgnore": "忽略",
-  "rcEnd": "结束",
-  "rcPendingPermission": "等待对方处理 · {permission}",
+  "rcAccept": "Хүлээн авах",
+  "rcReject": "Татгалзах",
+  "rcIgnore": "Үл хайх",
+  "rcEnd": "Дуусгах",
+  "rcPendingPermission": "Нөгөө талыг хүлээж байна · {permission}",
   "@rcPendingPermission": {
     "placeholders": {
       "permission": {
@@ -430,7 +430,7 @@
       }
     }
   },
-  "rcControlling": "正在远控 {machine}",
+  "rcControlling": "{machine}-г алсаас удирдаж байна",
   "@rcControlling": {
     "placeholders": {
       "machine": {
@@ -438,10 +438,10 @@
       }
     }
   },
-  "rcMyMachine": "我的电脑",
-  "rcSameAccount": "同账号",
-  "rcRevoke": "取消授权",
-  "rcPairTitle": "配对 {machine}",
+  "rcMyMachine": "Миний компьютер",
+  "rcSameAccount": "Ижил данс",
+  "rcRevoke": "Зөвшөөрөл цуцлах",
+  "rcPairTitle": "{machine}-г хослуулах",
   "@rcPairTitle": {
     "placeholders": {
       "machine": {
@@ -449,24 +449,24 @@
       }
     }
   },
-  "rcPairHint": "配对后这台机器会出现在「远程机」里。",
-  "rcViewOnly": "仅查看",
-  "rcOperate": "可操作",
-  "rcPair": "配对",
-  "rcIdentityRequired": "请输入对方帐号（邮箱或手机号）",
-  "rcIdentityLabel": "对方帐号（邮箱或手机号）",
-  "rcSendInvite": "发送邀请",
-  "rcNewTask": "新建任务",
-  "rcViewOnlyTooltip": "当前是「仅查看」授权，不能新建任务",
-  "rcNoTasks": "这台机器还没有任务",
-  "rcNewFirstTask": "新建第一个任务",
-  "rcStateRunning": "运行中",
-  "rcStateCancelled": "已取消",
-  "rcStateInterrupted": "已中断",
-  "rcStateNotStarted": "待开始",
-  "rcPendingReview": "待查看",
-  "rcNameRequired": "请输入任务名称",
-  "rcCreateTaskOn": "在 {machine} 上新建任务",
+  "rcPairHint": "Хослосны дараа энэ компьютер «Алсын компьютер» хэсэгт харагдана.",
+  "rcViewOnly": "Зөвхөн үзэх",
+  "rcOperate": "Удирдах боломжтой",
+  "rcPair": "Хослуулах",
+  "rcIdentityRequired": "Нөгөө талын дансыг оруулна уу (имэйл эсвэл утасны дугаар)",
+  "rcIdentityLabel": "Нөгөө талын данс (имэйл эсвэл утасны дугаар)",
+  "rcSendInvite": "Урилга илгээх",
+  "rcNewTask": "Шинэ даалгавар",
+  "rcViewOnlyTooltip": "Одоо «Зөвхөн үзэх» зөвшөөрөлтэй тул шинэ даалгавар үүсгэх боломжгүй",
+  "rcNoTasks": "Энэ компьютерт даалгавар одоогоор байхгүй",
+  "rcNewFirstTask": "Эхний даалгаврыг үүсгэх",
+  "rcStateRunning": "Ажиллаж байна",
+  "rcStateCancelled": "Цуцлагдсан",
+  "rcStateInterrupted": "Тасалдсан",
+  "rcStateNotStarted": "Эхлээгүй",
+  "rcPendingReview": "Хянах",
+  "rcNameRequired": "Даалгаврын нэр оруулна уу",
+  "rcCreateTaskOn": "{machine} дээр шинэ даалгавар үүсгэх",
   "@rcCreateTaskOn": {
     "placeholders": {
       "machine": {
@@ -474,26 +474,26 @@
       }
     }
   },
-  "rcTaskNameLabel": "任务名称",
-  "rcModeChat": "对话",
-  "rcModeCoding": "编程",
-  "rcWorkDirLabel": "工作目录（可选）",
-  "rcWorkDirHint": "留空用对方默认目录",
-  "rcBrowseTheirDir": "浏览对方目录",
-  "rcBrowseDir": "浏览目录",
-  "rcPickThis": "选这个",
-  "rcHomeDir": "主目录",
-  "rcParent": "上一级",
-  "rcJumpDefault": "跳到默认目录",
-  "rcTooManyDirs": "子目录太多，只显示了前一部分",
-  "rcNoSubdirs": "这个目录没有子文件夹",
-  "save": "保存",
-  "rtLocalCmdRejected": "远控只能发送任务消息，不能运行本机命令",
-  "rtRename": "重命名",
-  "rtStopTaskTitle": "停止任务",
-  "rtStopTaskBody": "确定要停止这台机器上正在运行的任务吗？",
-  "rtNoFileContent": "远端没有返回文件内容",
-  "rtDownloadFailed": "下载失败：{reason}",
+  "rcTaskNameLabel": "Даалгаврын нэр",
+  "rcModeChat": "Чат",
+  "rcModeCoding": "Код бичих",
+  "rcWorkDirLabel": "Ажлын хавтас (заавал биш)",
+  "rcWorkDirHint": "Хоосон орхивол нөгөө талын өгөгдмөл хавтас ашиглагдана",
+  "rcBrowseTheirDir": "Нөгөө талын хавтсуудыг харах",
+  "rcBrowseDir": "Хавтас харах",
+  "rcPickThis": "Үүнийг сонгох",
+  "rcHomeDir": "Үндсэн хавтас",
+  "rcParent": "Нэг түвшин дээш",
+  "rcJumpDefault": "Өгөгдмөл хавтас руу шилжих",
+  "rcTooManyDirs": "Дэд хавтас хэт олон тул эхний хэсгийг нь л харуулж байна",
+  "rcNoSubdirs": "Энэ хавтаст дэд хавтас байхгүй",
+  "save": "Хадгалах",
+  "rtLocalCmdRejected": "Алсын удирдлага зөвхөн даалгаврын мессеж илгээх боломжтой — энэ төхөөрөмжийн командыг ажиллуулж болохгүй",
+  "rtRename": "Нэр солих",
+  "rtStopTaskTitle": "Даалгаврыг зогсоох",
+  "rtStopTaskBody": "Энэ компьютерт ажиллаж байгаа даалгаврыг зогсоохдоо итгэлтэй байна уу?",
+  "rtNoFileContent": "Нөгөө талаас файлын агуулга ирээгүй",
+  "rtDownloadFailed": "Татах амжилтгүй: {reason}",
   "@rtDownloadFailed": {
     "placeholders": {
       "reason": {
@@ -501,11 +501,11 @@
       }
     }
   },
-  "rtNoAppToOpen": "没有可打开此文件的应用",
-  "rtDefaultTaskName": "远程任务",
-  "rtUnpin": "取消置顶",
-  "rtPin": "置顶",
-  "rtRunningWith": "运行中 · {phase}",
+  "rtNoAppToOpen": "Энэ файлыг нээх апп байхгүй",
+  "rtDefaultTaskName": "Алсын даалгавар",
+  "rtUnpin": "Бэхлэлт цуцлах",
+  "rtPin": "Бэхлэх",
+  "rtRunningWith": "Ажиллаж байна · {phase}",
   "@rtRunningWith": {
     "placeholders": {
       "phase": {
@@ -513,12 +513,12 @@
       }
     }
   },
-  "rtTimelineDegraded": "时间线已降级",
-  "rtNoTranscript": "还没有对话记录",
-  "rtComposerHint": "给这台机器的任务发消息…",
-  "rtConfirmInvalid": "确认已失效",
-  "rtConfirmRequired": "需要确认",
-  "rtFailures": "失败 {count}",
+  "rtTimelineDegraded": "Үйл явдлын цаглар хязгаарлагдсан",
+  "rtNoTranscript": "Харилцах түүх одоогоор байхгүй",
+  "rtComposerHint": "Энэ компьютерийн даалгаварт мессеж бичих…",
+  "rtConfirmInvalid": "Баталгаажуулалт хүчингүй болсон",
+  "rtConfirmRequired": "Баталгаажуулалт шаардлагатай",
+  "rtFailures": "{count} удаа амжилтгүй",
   "@rtFailures": {
     "placeholders": {
       "count": {
@@ -526,32 +526,32 @@
       }
     }
   },
-  "rtResuming": "正在补齐中断的输出",
-  "rtArtifacts": "产出物",
+  "rtResuming": "Тасалдсан гаралтыг нөхөж байна",
+  "rtArtifacts": "Бүтээлүүд",
   "rtDownload": "Татах",
-  "rtReasoning": "思考过程",
+  "rtReasoning": "Бодолтын явц",
   "rtThinkingStreaming": "Бодож байна",
-  "rtOpen": "打开",
-  "rcInviteHint": "对方在其中一台电脑上接受后，你就可以远控那台电脑。",
-  "rcTasksTitle": "任务",
-  "chatVoiceInitFailed": "语音朗读初始化失败",
-  "chatVoiceAssistantOn": "语音助手",
-  "chatVoiceAssistantOff": "关闭语音助手",
-  "chatVoiceAssistantStarted": "语音助手已开启：说话自动发送，回复自动朗读",
-  "chatMicPermissionDenied": "没有麦克风权限",
-  "chatMicOpenFailed": "无法打开麦克风录音",
-  "chatAsrUnavailableDownloading": "语音识别不可用，正在后台下载本地模型，稍后再试",
-  "chatNotHeard": "没听清，请再试",
-  "chatAsrFailed": "语音识别失败，请重试",
-  "chatSupplementHint": "例如：只要前 5 条结果",
-  "chatSupplementAppend": "追加",
-  "chatSupplementFailed": "追加失败",
-  "chatSupplementAccepted": "已补充到当前任务",
-  "chatSupplementRejected": "任务已结束，补充未送达",
-  "chatAttachCamera": "拍照",
-  "chatAttachGallery": "相册",
-  "chatAttachFile": "文件",
-  "chatMaterialSent": "素材已传送到 {path}",
+  "rtOpen": "Нээх",
+  "rcInviteHint": "Нөгөө тал өөрийн аль нэг компьютер дээр хүлээн авсны дараа та тухайн компьютерийг алсаас удирдаж болно.",
+  "rcTasksTitle": "Даалгаврууд",
+  "chatVoiceInitFailed": "Дуут уншлагыг эхлүүлэх амжилтгүй боллоо",
+  "chatVoiceAssistantOn": "Дуут туслах",
+  "chatVoiceAssistantOff": "Дуут туслахыг унтраах",
+  "chatVoiceAssistantStarted": "Дуут туслах идэвхжлээ: ярьвал автоматаар илгээнэ, хариултыг автоматаар уншина",
+  "chatMicPermissionDenied": "Микрофоны зөвшөөрөл байхгүй",
+  "chatMicOpenFailed": "Микрофоноор бичилт хийж эхлэх боломжгүй",
+  "chatAsrUnavailableDownloading": "Дуун танилт одоогоор боломжгүй — локал моделийг ард талаас нь татаж байна, бага зэрэг хүлээгээд дахин оролдоно уу",
+  "chatNotHeard": "Сонсож чадсангүй — дахин хэлнэ үү",
+  "chatAsrFailed": "Дуун танилт амжилтгүй боллоо — дахин оролдоно уу",
+  "chatSupplementHint": "Жишээ нь: зөвхөн эхний 5 үр дүн авах",
+  "chatSupplementAppend": "Нэмэх",
+  "chatSupplementFailed": "Нэмж чадсангүй",
+  "chatSupplementAccepted": "Одоогийн даалгаварт нэмж орууллаа",
+  "chatSupplementRejected": "Даалгавар аль хэдийн дууссан тул нэмэлт хүргэгдсэнгүй",
+  "chatAttachCamera": "Зураг авах",
+  "chatAttachGallery": "Зураг цомог",
+  "chatAttachFile": "Файл",
+  "chatMaterialSent": "Материал {path} руу илгээгдлээ",
   "@chatMaterialSent": {
     "placeholders": {
       "path": {
@@ -559,7 +559,7 @@
       }
     }
   },
-  "chatUploadFailed": "{name} 上传失败：{error}",
+  "chatUploadFailed": "{name}-г байршуулж чадсангүй: {error}",
   "@chatUploadFailed": {
     "placeholders": {
       "name": {
@@ -570,14 +570,14 @@
       }
     }
   },
-  "chatVoiceSpeaking": "语音播报中…",
-  "chatVoiceListening": "聆听中…",
-  "chatProcessing": "正在处理…",
-  "chatOnline": "在线",
-  "chatStatusTooltip": "任务状态",
-  "chatSettingsTooltip": "设置",
-  "chatAcknowledge": "知道了",
-  "chatUploading": "上传 {name}…",
+  "chatVoiceSpeaking": "Дуугаар уншиж байна…",
+  "chatVoiceListening": "Сонсоод байна…",
+  "chatProcessing": "Боловсруулж байна…",
+  "chatOnline": "Онлайн",
+  "chatStatusTooltip": "Ажлын байдал",
+  "chatSettingsTooltip": "Тохиргоо",
+  "chatAcknowledge": "Ойлгов",
+  "chatUploading": "{name}-г байршуулж байна…",
   "@chatUploading": {
     "placeholders": {
       "name": {
@@ -585,10 +585,10 @@
       }
     }
   },
-  "chatContinueThreadHint": "下一条消息将继续该任务线程",
-  "chatComposerHint": "给 Bot 下达任务…",
-  "chatAttachTooltip": "传送文件到 Bot 的电脑",
-  "chatEmptyGreeting": "和 {bot} 说点什么开始吧",
+  "chatContinueThreadHint": "Дараагийн мессеж энэ даалгаврын урсгалыг үргэлжлүүлнэ",
+  "chatComposerHint": "Bot-д даалгавар өгөх…",
+  "chatAttachTooltip": "Файлыг Bot-ын компьютер руу илгээх",
+  "chatEmptyGreeting": "{bot}-тай юм хэлж эхэлээрэй",
   "@chatEmptyGreeting": {
     "placeholders": {
       "bot": {
@@ -596,13 +596,13 @@
       }
     }
   },
-  "chatSending": "发送中…",
-  "chatSendFailed": "发送失败",
-  "chatResend": "重发",
-  "chatRunPlan": "按这个安排执行",
-  "chatContinueTask": "继续这个任务",
-  "chatFileParseFailed": "文件解析失败",
-  "chatSecretRequired": "需要输入 {name}",
+  "chatSending": "Илгээж байна…",
+  "chatSendFailed": "Илгээж чадсангүй",
+  "chatResend": "Дахин илгээх",
+  "chatRunPlan": "Энэ төлөвлөгөөгөөр гүйцэтгэх",
+  "chatContinueTask": "Энэ даалгаврыг үргэлжлүүлэх",
+  "chatFileParseFailed": "Файлыг задлан шинжлэх амжилтгүй боллоо",
+  "chatSecretRequired": "{name} оруулах шаардлагатай",
   "@chatSecretRequired": {
     "placeholders": {
       "name": {
@@ -610,21 +610,21 @@
       }
     }
   },
-  "chatAnswerRequired": "需要你的回答",
-  "chatSecretHint": "输入密钥（不会显示在聊天中）",
-  "chatAnswerHint": "输入回答",
-  "chatSubmit": "提交",
-  "chatHandoffDefault": "Bot 把电脑交给你了",
-  "chatHandoffView": "去查看",
-  "chatTakeover": "接管",
-  "chatAttentionLoginWall": "需要你登录",
-  "chatAttentionCaptcha": "需要人机验证",
-  "chatAttentionMfa": "需要两步验证",
-  "chatAttentionQr": "需要扫码登录",
-  "chatAttentionPayment": "需要确认支付",
-  "chatAttentionTakeover": "需要你接管电脑",
-  "chatQueueHeld": "已暂存（电脑正被你接管中）",
-  "chatQueuedPosition": "排队中 · 第 {position} 位",
+  "chatAnswerRequired": "Таны хариулт шаардлагатай",
+  "chatSecretHint": "Нууц түлхүүр оруулах (чатад хэзээ ч харагдахгүй)",
+  "chatAnswerHint": "Хариултаа оруулах",
+  "chatSubmit": "Илгээх",
+  "chatHandoffDefault": "Bot компьютерийг танд шилжүүллээ",
+  "chatHandoffView": "Харж үзэх",
+  "chatTakeover": "Хяналт авах",
+  "chatAttentionLoginWall": "Та нэвтрэх шаардлагатай",
+  "chatAttentionCaptcha": "Капча баталгаажуулалт шаардлагатай",
+  "chatAttentionMfa": "Хоёр шаттай баталгаажуулалт шаардлагатай",
+  "chatAttentionQr": "QR код уншуулж нэвтрэх шаардлагатай",
+  "chatAttentionPayment": "Төлбөрийг баталгаажуулах шаардлагатай",
+  "chatAttentionTakeover": "Компьютерийг таны хяналтанд авах шаардлагатай",
+  "chatQueueHeld": "Хүлээлгэнд байна (компьютерийг та одоо хяналтандаа авч байна)",
+  "chatQueuedPosition": "Дараалалд · {position} дахь",
   "@chatQueuedPosition": {
     "placeholders": {
       "position": {
@@ -632,18 +632,18 @@
       }
     }
   },
-  "chatQueuedBusy": "排队中，Bot 忙完后处理",
-  "dtWakeTimeout": "等了一分钟电脑仍没有起来，请稍后再试",
-  "dtBusyOther": "另一台设备正在操作这台电脑",
-  "dtHandedOver": "控制权已交给另一台设备",
-  "dtProxyAlways": "始终代理",
-  "dtProxyDirect": "直连",
-  "dtProxySmart": "智能（自动选择）",
-  "dtSavedNextOpen": "已保存，下次打开画面时生效",
-  "dtResetWarning": "重置会把电脑恢复到初始镜像，未保存的数据将丢失。",
-  "dtRestartWarning": "重启会中断电脑上正在进行的工作。",
-  "dtForceSkip": "强制（跳过优雅停止）",
-  "dtActionDone": "{title}完成",
+  "chatQueuedBusy": "Дараалалд байна — Bot ажлаа дууссаны дараа гүйцэтгэгдэнэ",
+  "dtWakeTimeout": "Минут хүлээсэн ч компьютер асангүй — бага зэрэг хүлээгээд дахин оролдоно уу",
+  "dtBusyOther": "Өөр төхөөрөмж энэ компьютерийг удирдаж байна",
+  "dtHandedOver": "Хяналт өөр төхөөрөмж рүү шилжсэн",
+  "dtProxyAlways": "Үргэлж прокси",
+  "dtProxyDirect": "Шууд холболт",
+  "dtProxySmart": "Ухаалаг (автоматаар сонгоно)",
+  "dtSavedNextOpen": "Хадгалагдлаа — дараагийн удаа дэлгэц нээгдэхэд хэрэгжинэ",
+  "dtResetWarning": "Дахин тохируулалт компьютерийг анхны дүрс рүү нь буцаана — хадгалаагүй өгөгдөл алга болно.",
+  "dtRestartWarning": "Дахин асаалт компьютерт явагдаж байгаа ажлыг тасалдуулна.",
+  "dtForceSkip": "Хүчээр (зөөлөн зогсолтыг алгасана)",
+  "dtActionDone": "{title} дууслаа",
   "@dtActionDone": {
     "placeholders": {
       "title": {
@@ -651,9 +651,9 @@
       }
     }
   },
-  "dtProxyMode": "代理模式",
-  "dtProxyLocked": "管理员已锁定代理模式，当前为租户默认。",
-  "dtProxyFollowTenant": "跟随租户默认（{label}）",
+  "dtProxyMode": "Прокси горим",
+  "dtProxyLocked": "Админ прокси горимыг түгжсэн тул одоо түрээсийн өгөгдмөл хэрэгжжээ.",
+  "dtProxyFollowTenant": "Түрээсийн өгөгдмөлийг дагана ({label})",
   "@dtProxyFollowTenant": {
     "placeholders": {
       "label": {
@@ -661,11 +661,11 @@
       }
     }
   },
-  "dtMaintenance": "维护",
-  "dtRestart": "重启电脑",
-  "dtReset": "重置电脑",
-  "dtMaintenanceUnavailable": "当前租户未开放电脑维护操作。",
-  "dtTitle": "{bot} 的电脑",
+  "dtMaintenance": "Засвар үйлчилгээ",
+  "dtRestart": "Компьютерийг дахин асаах",
+  "dtReset": "Компьютерийг дахин тохируулах",
+  "dtMaintenanceUnavailable": "Энэ түрээсэгч компьютерын засвар үйлчилгээний үйлдлийг нээгээгүй байна.",
+  "dtTitle": "{bot}-ын компьютер",
   "@dtTitle": {
     "placeholders": {
       "bot": {
@@ -673,19 +673,19 @@
       }
     }
   },
-  "dtNoComputer": "这个 bot 没有电脑",
-  "dtBack": "返回",
-  "dtHandedBack": "已把电脑交还给 Bot",
-  "dtSwitchToVnc": "切换到 noVNC 画面",
-  "dtSwitchToH264": "切换到 H.264 画面",
-  "dtHandback": "交还电脑",
-  "dtComputerMaintenance": "电脑维护…",
-  "dtControlling": "接管中：可以操作这台电脑",
-  "dtWatching": "观看模式（不操作电脑）",
-  "dtWaking": "正在唤醒电脑…",
-  "dtNoPicture": "电脑还没有画面",
-  "dtWake": "唤醒电脑",
-  "dtLoadFailed": "画面加载失败（{code}）",
+  "dtNoComputer": "Энэ Bot-д компьютер байхгүй",
+  "dtBack": "Буцах",
+  "dtHandedBack": "Компьютерийг Bot-д нь буцааж өглөө",
+  "dtSwitchToVnc": "noVNC дэлгэц рүү шилжих",
+  "dtSwitchToH264": "H.264 дэлгэц рүү шилжих",
+  "dtHandback": "Компьютерийг буцааж өгөх",
+  "dtComputerMaintenance": "Компьютерийн засвар үйлчилгээ…",
+  "dtControlling": "Хяналт авсан — энэ компьютерийг удирдаж болно",
+  "dtWatching": "Үзэх горим (компьютерийг удирдахгүй)",
+  "dtWaking": "Компьютерийг сэрээж байна…",
+  "dtNoPicture": "Компьютерийн дүрс одоогоор байхгүй",
+  "dtWake": "Компьютерийг сэрээх",
+  "dtLoadFailed": "Дэлгэцийг ачих амжилтгүй боллоо ({code})",
   "@dtLoadFailed": {
     "placeholders": {
       "code": {
@@ -693,10 +693,10 @@
       }
     }
   },
-  "dtReload": "重新加载",
-  "delete": "删除",
-  "stDeleteScheduleTitle": "删除定时任务",
-  "stDeleteScheduleBody": "确定删除定时任务「{name}」？",
+  "dtReload": "Дахин ачих",
+  "delete": "Устгах",
+  "stDeleteScheduleTitle": "Хуваарийг устгах",
+  "stDeleteScheduleBody": "«{name}» хуваарийг устгахдаа итгэлтэй байна уу?",
   "@stDeleteScheduleBody": {
     "placeholders": {
       "name": {
@@ -704,22 +704,22 @@
       }
     }
   },
-  "stNameEmpty": "名称不能为空",
-  "stNameTaken": "已经有一个叫这个名字的 Bot 了，换个名字吧",
-  "stSaved": "已保存",
-  "stSetPrimaryDone": "已设为主 Bot",
-  "stLongTermPrefs": "长期偏好",
-  "stPrefsHint": "写下的偏好会长期生效，之后的每个任务都会遵循（例如「结果用表格呈现」「截图带上关键步骤」）。",
-  "stPrefsFieldHint": "记录一条偏好…",
-  "stWithdrawPrefsTitle": "撤回全部偏好？",
-  "stWithdrawPrefsBody": "将移除这个 Bot 已记录的全部长期偏好，不可恢复。",
-  "stWithdraw": "撤回",
-  "stWithdrawDone": "已撤回全部偏好",
-  "stWithdrawAll": "撤回全部偏好",
-  "stPrefRecorded": "偏好已记录",
-  "stRecord": "记录",
-  "stDeleteBotTitle": "删除 Bot？",
-  "stDeleteBotBody": "将删除「{bot}」及其会话记录，此操作不可撤销。",
+  "stNameEmpty": "Нэр хоосон байж болохгүй",
+  "stNameTaken": "Ийм нэртэй Bot аль хэдийн байна — өөр нэр сонгоно уу",
+  "stSaved": "Хадгалагдлаа",
+  "stSetPrimaryDone": "Үндсэн Bot болголоо",
+  "stLongTermPrefs": "Урт хугацааны хүсэл сонголт",
+  "stPrefsHint": "Энд бичсэн хүсэл сонголт урт хугацаанд хэрэгжинэ — дараагийн даалгавар бүр дагаж мөрдөнө (жишээ нь «Үр дүнг хүснэгтээр гаргах», «Гол алхмуудын дэлгэцийн зургийг хавсаргах»).",
+  "stPrefsFieldHint": "Хүсэл сонголт бичих…",
+  "stWithdrawPrefsTitle": "Бүх хүсэл сонголтыг буцаан татах уу?",
+  "stWithdrawPrefsBody": "Энэ Bot-д бичигдсэн бүх урт хугацааны хүсэл сонголт хасагдах болно — сэргээх боломжгүй.",
+  "stWithdraw": "Буцаан татах",
+  "stWithdrawDone": "Бүх хүсэл сонголтыг буцаан татлаа",
+  "stWithdrawAll": "Бүх хүсэл сонголтыг буцаан татах",
+  "stPrefRecorded": "Хүсэл сонголт бичигдлээ",
+  "stRecord": "Бичих",
+  "stDeleteBotTitle": "Энэ Bot-ыг устгах уу?",
+  "stDeleteBotBody": "«{bot}» болон түүний харилцан ярилцсан түүх устгагдана — энэ үйлдлийг буцаах боломжгүй.",
   "@stDeleteBotBody": {
     "placeholders": {
       "bot": {
@@ -727,30 +727,30 @@
       }
     }
   },
-  "stScreenTitle": "Bot 设置",
-  "stNameLabel": "名称",
-  "stDescLabel": "简介",
-  "stScheduleTitle": "定时任务",
-  "stNoSchedule": "还没有定时任务。",
-  "stAppearance": "外观",
-  "stComputerSection": "电脑",
-  "stModeShared": "共用",
-  "stModeIsolated": "独立",
-  "stModeNone": "无电脑",
-  "stModeNoneHint": "这个 Bot 不使用电脑",
-  "stModeIsolatedHint": "Bot 使用自己的独立电脑画面",
-  "stModeSharedHint": "Bot 使用你账号下的共享电脑画面",
-  "stPersonaMemory": "人格与记忆",
-  "stPersonaMemoryHint": "自定义 Bot 的性格、语气和长期记忆",
-  "stLongTermPrefsHint": "记录 Bot 在每个任务里都要遵循的偏好",
-  "stDemoRecord": "演示录制",
-  "stDemoRecordHint": "录一段操作过程，提炼成 Bot 的技能（需独立电脑）",
-  "stPrimaryTitle": "主 Bot",
-  "stIsPrimaryHint": "已是主 Bot，其他 Bot 的委托由它派发",
-  "stMakePrimaryHint": "设为主 Bot 后，它可以给团队里其他 Bot 派任务",
-  "stMakePrimary": "设为主 Bot",
-  "stDeleteBot": "删除这个 Bot",
-  "stRolledBack": "已回滚到版本 {version}",
+  "stScreenTitle": "Bot-ын тохиргоо",
+  "stNameLabel": "Нэр",
+  "stDescLabel": "Танилцуулга",
+  "stScheduleTitle": "Хуваарь",
+  "stNoSchedule": "Хуваарь одоогоор байхгүй.",
+  "stAppearance": "Харагдац",
+  "stComputerSection": "Компьютер",
+  "stModeShared": "Хамтарсан",
+  "stModeIsolated": "Тусгай",
+  "stModeNone": "Компьютергүй",
+  "stModeNoneHint": "Энэ Bot компьютер ашигладаггүй",
+  "stModeIsolatedHint": "Bot өөрт нь зориулсан тусгай компьютерийн дэлгэцийг ашиглана",
+  "stModeSharedHint": "Bot таны дансан дахь хамтарсан компьютерийн дэлгэцийг ашиглана",
+  "stPersonaMemory": "Зан чанар, сан",
+  "stPersonaMemoryHint": "Bot-ын зан чанар, ярианы маяг, урт хугацааны санг өөрчилж тохируулах",
+  "stLongTermPrefsHint": "Даалгавар бүр дагаж мөрдөх хүсэл сонголтыг бичих",
+  "stDemoRecord": "Жишээ бичлэг",
+  "stDemoRecordHint": "Ажиллагааг бичээд Bot-ын чадвар болгон ялгах (тусгай компьютер шаардана)",
+  "stPrimaryTitle": "Үндсэн Bot",
+  "stIsPrimaryHint": "Аль хэдийн Үндсэн Bot байна — бусад Bot-ын даалгаврыг үүгээр тараана",
+  "stMakePrimaryHint": "Үндсэн Bot болсноор багийн бусад Bot-д даалгавар өгч чадна",
+  "stMakePrimary": "Үндсэн Bot болгох",
+  "stDeleteBot": "Энэ Bot-ыг устгах",
+  "stRolledBack": "{version} хувилбар руу буцаалаа",
   "@stRolledBack": {
     "placeholders": {
       "version": {
@@ -758,13 +758,13 @@
       }
     }
   },
-  "stPersonaDisabled": "当前 Hub 未开启人格设置",
-  "stPersonaLabel": "人格",
-  "stPersonaFieldHint": "这个 Bot 是谁，怎么说话",
-  "stMemoryLabel": "长期记忆",
-  "stMemoryFieldHint": "Bot 应记住的事（偏好、约定、背景）",
-  "stHistoryTitle": "历史版本",
-  "stVersion": "版本 {version}",
+  "stPersonaDisabled": "Энэ Hub дээр зан чанарын тохиргоо идэвхгүй байна",
+  "stPersonaLabel": "Зан чанар",
+  "stPersonaFieldHint": "Энэ Bot хэн бэ, яаж ярьдаг вэ",
+  "stMemoryLabel": "Урт хугацааны сан",
+  "stMemoryFieldHint": "Bot санах ёстой зүйлс (хүсэл сонголт, тохиролцоо, дэвсгэр мэдээлэл)",
+  "stHistoryTitle": "Хувилбарын түүх",
+  "stVersion": "Хувилбар {version}",
   "@stVersion": {
     "placeholders": {
       "version": {
@@ -772,19 +772,19 @@
       }
     }
   },
-  "stRollback": "回滚",
-  "llmCustom": "自定义模型服务",
-  "llmPlatformDefault": "平台默认模型",
-  "llmStages": "各阶段生效",
-  "llmForeground": "前台对话",
-  "llmBackground": "后台任务",
-  "llmComputerUse": "电脑操作",
-  "llmGrounder": "界面定位",
-  "llmNoConfig": "暂无生效配置",
-  "llmNotEnabled": "未启用",
-  "llmOfficialModel": "官方模型",
-  "demoMicDenied": "没有麦克风权限，请在系统设置中授权后重试",
-  "demoTitle": "{bot} · 演示录制",
+  "stRollback": "Буцаах",
+  "llmCustom": "Өөрийн тохируулсан моделийн үйлчилгээ",
+  "llmPlatformDefault": "Платформын өгөгдмөл модель",
+  "llmStages": "Үе шат тус бүрээр хэрэгжих",
+  "llmForeground": "Урд талын чат",
+  "llmBackground": "Ард талын даалгавар",
+  "llmComputerUse": "Компьютерийн удирдлага",
+  "llmGrounder": "Дэлгэцийн элемент олох",
+  "llmNoConfig": "Хэрэгжих тохиргоо одоогоор байхгүй",
+  "llmNotEnabled": "Идэвхжээгүй",
+  "llmOfficialModel": "Албан ёсны модель",
+  "demoMicDenied": "Микрофоны зөвшөөрөл байхгүй — системийн тохиргоонд зөвшөөрч өгөөд дахин оролдоно уу",
+  "demoTitle": "{bot} · Жишээ бичлэг",
   "@demoTitle": {
     "placeholders": {
       "bot": {
@@ -792,7 +792,7 @@
       }
     }
   },
-  "demoIntro": "录一段在 {bot} 电脑上的操作过程，加上旁白说明，结束后可以提炼成它能反复使用的技能。\n\n需要这个 Bot 使用独立电脑（desktop_mode=isolated）。",
+  "demoIntro": "{bot}-ын компьютер дээрх ажиллагааг тайлбартай хамт бичээрэй; дууссаны дараа түүнийг дахин дахин ашиглах Bot-ын чадвар болгон ялгаж болно.\n\nЭнэ Bot тусгай компьютер ашиглах шаардлагатай (desktop_mode=isolated).",
   "@demoIntro": {
     "placeholders": {
       "bot": {
@@ -800,10 +800,10 @@
       }
     }
   },
-  "demoTitleLabel": "演示标题",
-  "demoTitleHint": "如：在 Excel 里生成周报",
-  "demoStart": "开始录制",
-  "demoRecording": "录制中 — 去 {bot} 的电脑上操作",
+  "demoTitleLabel": "Жишээний нэр",
+  "demoTitleHint": "Жишээ нь: Excel дээр долоо хоногийн тайлан үүсгэх",
+  "demoStart": "Бичлэг эхлүүлэх",
+  "demoRecording": "Бичиж байна — {bot}-ын компьютер дээр ажиллана уу",
   "@demoRecording": {
     "placeholders": {
       "bot": {
@@ -811,13 +811,13 @@
       }
     }
   },
-  "demoWatch": "看画面",
-  "demoNarration": "旁白",
-  "demoNarrationHint": "这一步在做什么…",
-  "demoStopRecord": "停止录音",
-  "demoVoiceNarration": "语音旁白",
-  "demoFinish": "结束录制",
-  "demoDone": "录制完成 · {count} 个事件",
+  "demoWatch": "Дэлгэцийг харах",
+  "demoNarration": "Тайлбар",
+  "demoNarrationHint": "Энэ алхам юу хийж байна вэ…",
+  "demoStopRecord": "Бичилтийг зогсоох",
+  "demoVoiceNarration": "Дуут тайлбар",
+  "demoFinish": "Бичлэгийг дуусгах",
+  "demoDone": "Бичлэг дууслаа · {count} үйл явдал",
   "@demoDone": {
     "placeholders": {
       "count": {
@@ -825,11 +825,11 @@
       }
     }
   },
-  "demoExtraLabel": "补充说明（可选）",
-  "demoExtraHint": "给提炼模型的额外提示，如注意事项",
-  "demoDistill": "提炼为技能",
-  "demoSkillReady": "技能已提炼",
-  "demoStepCount": "{count} 个步骤",
+  "demoExtraLabel": "Нэмэлт тайлбар (заавал биш)",
+  "demoExtraHint": "Ялгах модельд өгөх нэмэлт заавар, жишээ нь анхаарах зүйлс",
+  "demoDistill": "Чадвар болгон ялгах",
+  "demoSkillReady": "Чадвар болгон ялгалаа",
+  "demoStepCount": "{count} алхам",
   "@demoStepCount": {
     "placeholders": {
       "count": {
@@ -837,10 +837,10 @@
       }
     }
   },
-  "demoRecordAgain": "再录一段",
-  "asstAnswerFailed": "回答失败，请重试",
-  "asstAnswerTimeout": "回答超时，请重试",
-  "asstAttached": "已附加：{name}",
+  "demoRecordAgain": "Дахин бичих",
+  "asstAnswerFailed": "Хариулах амжилтгүй боллоо — дахин оролдоно уу",
+  "asstAnswerTimeout": "Хариулт хугацаанаас хэтэрсэн — дахин оролдоно уу",
+  "asstAttached": "Хавсаргасан: {name}",
   "@asstAttached": {
     "placeholders": {
       "name": {
@@ -848,9 +848,9 @@
       }
     }
   },
-  "asstAttachFailed": "附件处理失败",
-  "asstAttachTimeout": "附件处理超时，请重试",
-  "asstAttachUploadFailed": "附件上传失败：{error}",
+  "asstAttachFailed": "Хавсралтыг боловсруулж чадсангүй",
+  "asstAttachTimeout": "Хавсралт боловсруулах хугацаа хэтэрсэн — дахин оролдоно уу",
+  "asstAttachUploadFailed": "Хавсралтыг байршуулах амжилтгүй боллоо: {error}",
   "@asstAttachUploadFailed": {
     "placeholders": {
       "error": {
@@ -858,25 +858,25 @@
       }
     }
   },
-  "asstReadOutDisable": "关闭语音播报",
-  "asstReadOutEnable": "开启语音播报",
-  "asstNewChat": "新对话",
-  "asstComposerHint": "问点什么…",
-  "asstAttachTooltip": "添加图片或文件",
-  "asstEmptyTitle": "直接提问，无需创建 Bot",
-  "asstEmptyHint": "支持文字、图片、文档与语音",
-  "asstSuggestWeekly": "帮我写一份周报提纲",
-  "asstSuggestExplain": "解释一个技术概念",
-  "asstSuggestSummarize": "总结我发的文档",
-  "roomNew": "新建房间",
-  "roomEdit": "编辑房间",
-  "roomEmptyTitle": "还没有房间",
-  "roomEmptyHint": "建一个让你和几个 Bot 群聊",
-  "roomInitial": "房",
-  "roomUnnamed": "未命名房间",
-  "roomNoMembers": "还没有成员",
-  "roomDeleteTitle": "删除房间？",
-  "roomDeleteBody": "「{name}」及其成员注意力设置将被移除。",
+  "asstReadOutDisable": "Дуут уншлагыг унтраах",
+  "asstReadOutEnable": "Дуут уншлагыг асаах",
+  "asstNewChat": "Шинэ чат",
+  "asstComposerHint": "Юм асуугаарай…",
+  "asstAttachTooltip": "Зураг эсвэл файл нэмэх",
+  "asstEmptyTitle": "Шууд асуугаарай — Bot үүсгэх шаардлагагүй",
+  "asstEmptyHint": "Текст, зураг, баримт бичиг, дууг дэмждэг",
+  "asstSuggestWeekly": "Долоо хоногийн тайлангийн төлөвлөгөө бичиж өгөөч",
+  "asstSuggestExplain": "Нэг техникийн ойлголтыг тайлбарлаж өгөөч",
+  "asstSuggestSummarize": "Илгээсэн баримт бичгийг нэгтгэж өгөөч",
+  "roomNew": "Шинэ өрөө",
+  "roomEdit": "Өрөөг засварлах",
+  "roomEmptyTitle": "Өрөө одоогоор байхгүй",
+  "roomEmptyHint": "Хэд хэдэн Bot-той бүлгийн яриа хөтлөх өрөө үүсгээрэй",
+  "roomInitial": "Ө",
+  "roomUnnamed": "Нэргүй өрөө",
+  "roomNoMembers": "Гишүүд одоогоор байхгүй",
+  "roomDeleteTitle": "Энэ өрөөг устгах уу?",
+  "roomDeleteBody": "«{name}» болон гишүүдийн анхаарлын тохиргоо хасагдана.",
   "@roomDeleteBody": {
     "placeholders": {
       "name": {
@@ -884,15 +884,15 @@
       }
     }
   },
-  "roomDelete": "删除",
-  "roomNameLabel": "房间名",
-  "roomMembers": "成员",
-  "roomAttnAll": "全部",
-  "roomAttnMentions": "仅@提及",
-  "roomAttnOff": "不听",
-  "roomDefaultName": "房间",
-  "roomComposerHint": "在房间里说话，@Bot名 可点名",
-  "roomWoken": "已唤醒：{names}",
+  "roomDelete": "Устгах",
+  "roomNameLabel": "Өрөөний нэр",
+  "roomMembers": "Гишүүд",
+  "roomAttnAll": "Бүгд",
+  "roomAttnMentions": "Зөвхөн @-аар дурдсаныг",
+  "roomAttnOff": "Сонсохгүй",
+  "roomDefaultName": "Өрөө",
+  "roomComposerHint": "Өрөөнд ярьж байгаад @Bot нэрээр нь дуудаж болно",
+  "roomWoken": "Сэрээлээ: {names}",
   "@roomWoken": {
     "placeholders": {
       "names": {
@@ -900,6 +900,76 @@
       }
     }
   },
-  "roomEmptyTranscript": "在房间里说点什么，Bot 们会听到",
-  "rcCreate": "创建"
+  "roomEmptyTranscript": "Өрөөнд юм хэлээрэй — Bot-ууд сонсох болно",
+  "rcCreate": "Үүсгэх",
+  "voiceStageDownloadKokoro": "Kokoro моделийг татаж байна",
+  "voiceStageDownloadVoices": "Дуу хоолойн багцыг татаж байна",
+  "voiceStageUnpackVoices": "Дуу хоолойн багцыг задлаж байна",
+  "voiceStageReady": "Бэлэн",
+  "voiceStageDownloadSenseVoice": "SenseVoice моделийг татаж байна",
+  "voiceStageDownloadFailedRetry": "Татах амжилтгүй — дуу хоолойн хөдөлгүүрт дараа дахин оролдоно уу: {error}",
+  "@voiceStageDownloadFailedRetry": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "wakeNodeOffline": "Энэ дотоод сүлжээний компьютер одоогоор холбогдохгүй байна",
+  "wakeNoFreeDisplay": "Сул дэлгэц одоогоор байхгүй — бага зэрэг хүлээгээд дахин оролдоно уу",
+  "wakeTimeout": "Минут хүлээсэн ч компьютер асангүй",
+  "wakeNotOpenYet": "Компьютер асаагүй байна",
+  "wakeServiceUnreachable": "Компьютерийн үйлчилгээ одоогоор холбогдохгүй байна",
+  "netTimeout": "Сүлжээний хугацаа хэтэрсэн — бага зэрэг хүлээгээд дахин оролдоно уу",
+  "netConnectionError": "Серверт холбогдохгүй байна — сүлжээгээ шалгана уу",
+  "netBadCertificate": "Серверийн сертификат итгэмжлэгдээгүй байна",
+  "netServerError": "Серверийн алдаа — бага зэрэг хүлээгээд дахин оролдоно уу",
+  "netRequestFailed": "Хүсэлт амжилтгүй — бага зэрэг хүлээгээд дахин оролдоно уу",
+  "pendingApprovalHint": "Бүртгэл илгээгдлээ — зөвшөөрөгдсөний дараа дахин нэвтэрнэ үү",
+  "hubNotFoundForAccount": "Энэ дансанд ашиглах боломжтой Hub олдсонгүй",
+  "hubCenterUnreachable": "HubCenter руу холбогдохгүй байна",
+  "chatRoutedTo": "«{target}» руу шилжүүллээ",
+  "@chatRoutedTo": {
+    "placeholders": {
+      "target": {
+        "type": "String"
+      }
+    }
+  },
+  "chatRoutedWithText": "{text} («{target}» руу шилжүүллээ)",
+  "@chatRoutedWithText": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      },
+      "target": {
+        "type": "String"
+      }
+    }
+  },
+  "chatReplyTimedOut": "Хариултыг хүлээх хугацаа хэтэрсэн — Bot ажиллаж байж болно, даалгаврын байдлыг дараа харна уу",
+  "chatDoneNoReply": "(Дууссан — текст хариултгүй)",
+  "speechCodeOnScreen": ", кодыг дэлгэцээс харах, ",
+  "speechReplyTooLong": "…Хариулт урт тул бүрэн агуулгыг дэлгэцээс харна уу",
+  "updateDownloadFailed": "Шинэчлэлийн багцийг татах амжилтгүй: {error}",
+  "@updateDownloadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "requestFailedShort": "Хүсэлт амжилтгүй",
+  "assistantAttachQuery": "Энэ хавсралтыг уншаад товч тайлбарлаж өгөөч.",
+  "chatMaterialFallbackPath": "~/материал/{bot}/{name}",
+  "@chatMaterialFallbackPath": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      },
+      "name": {
+        "type": "String"
+      }
+    }
+  }
 }

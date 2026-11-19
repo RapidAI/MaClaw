@@ -101,7 +101,45 @@ func refCompactScore(ref BrowserElementRef) int {
 	if ref.BackendNodeID != 0 {
 		score += 1
 	}
+	// Off-screen password fields and pay buttons otherwise lose to the first
+	// eighty unlabeled buttons. The pay check is IsCheckoutControl.
+	if RefIsSecretControl(ref) || RefIsPayControl(ref) {
+		score += 32
+	}
 	return score
+}
+
+// RefIsSecretControl reports a password or code field. A button named
+// 获取验证码 is not one: the host fills secrets, it does not click that button.
+func RefIsSecretControl(ref BrowserElementRef) bool {
+	if strings.EqualFold(strings.TrimSpace(ref.InputType), "password") {
+		return true
+	}
+	role := strings.ToLower(strings.TrimSpace(ref.Role))
+	tag := strings.ToLower(strings.TrimSpace(ref.Tag))
+	if role == "button" || tag == "button" || tag == "a" {
+		return false
+	}
+	name := strings.ToLower(ref.Name + " " + ref.Text)
+	if strings.Contains(name, "密码") || strings.Contains(name, "验证码") || strings.Contains(name, "password") || strings.Contains(name, "passcode") {
+		return true
+	}
+	return containsASCIIToken(name, "otp")
+}
+
+// RefIsPayControl reports a commit control. A payment-method row, a
+// pending-payment link, and a code button are not commit controls.
+func RefIsPayControl(ref BrowserElementRef) bool {
+	if IsCheckoutControl(ref.Name, ref.Selector) {
+		return true
+	}
+	return strings.TrimSpace(ref.Text) != "" && IsCheckoutControl(ref.Text, "")
+}
+
+// ModelRefs is the ranked list a model should read. Past the cap, visible
+// named controls stay and the rest are marked truncated.
+func ModelRefs(refs []BrowserElementRef) (kept []BrowserElementRef, truncated bool) {
+	return truncateRefs(refs, compactRefLimit)
 }
 
 func truncateRefs(refs []BrowserElementRef, limit int) ([]BrowserElementRef, bool) {

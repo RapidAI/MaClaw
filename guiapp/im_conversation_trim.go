@@ -687,48 +687,26 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 		for k, v := range mm {
 			cp[k] = v
 		}
-		// DeepSeek thinking mode reasoning_content preservation:
-		//
-		// When the conversation has tool calls (conversationHasToolCalls),
-		// ALL assistant messages must retain reasoning_content. The field
-		// must exist (even as empty string ""); missing field → HTTP 400.
-		//
-		// When the conversation has NO tool calls, reasoning_content on
-		// non-tool-call messages is ignored by the API and can be deleted
-		// to reclaim token budget.
-		//
-		// Verified empirically:
-		//   Full reasoning_content      → 200 		//   Truncated reasoning_content → 200 		//   Empty string ""             → 200 		//   Field missing entirely      → 400 (when tools present)
-		if conversationHasToolCalls {
-			// Conversation has tool calls: reasoning_content field must exist.
-			// Truncate long reasoning to reclaim token budget (API accepts
-			// truncated values), but never delete the field entirely.
-			if rc, _ := cp["reasoning_content"].(string); len([]rune(rc)) > 200 {
-				runes := []rune(rc)
-				cp["reasoning_content"] = string(runes[:100]) + "…(truncated)…" + string(runes[len(runes)-50:])
+		// Tool turns must replay the original reasoning_content. DeepSeek
+		// thinking mode returns 400 when that chain is missing, and a
+		// shortened chain is not the content it asked to pass back. A trace
+		// that still exceeds the budget is dropped with its group by the
+		// caller. Turns without tools ignore the field, so it can be removed.
+		changed := false
+		if !conversationHasToolCalls {
+			if _, ok := cp["reasoning_content"]; ok {
+				delete(cp, "reasoning_content")
+				changed = true
 			}
-		} else {
-			// No tool calls in conversation: API ignores reasoning_content.
-			// Delete it entirely to reclaim token budget.
-			delete(cp, "reasoning_content")
 		}
 		content, _ := cp["content"].(string)
-		if len(content) <= 200 {
-			result[i] = cp
-			newToks := estimateSingleMsgTokens(cp)
-			currentTotal += newToks - msgToks[i]
-			msgToks[i] = newToks
+		if runes := []rune(content); len(runes) > 200 {
+			cp["content"] = string(runes[:100]) + "\n…(截断)…\n" + string(runes[len(runes)-50:])
+			changed = true
+		}
+		if !changed {
 			continue
 		}
-		runes := []rune(content)
-		if len(runes) <= 200 {
-			result[i] = cp
-			newToks := estimateSingleMsgTokens(cp)
-			currentTotal += newToks - msgToks[i]
-			msgToks[i] = newToks
-			continue
-		}
-		cp["content"] = string(runes[:100]) + "\n…(截断)…\n" + string(runes[len(runes)-50:])
 		result[i] = cp
 		newToks := estimateSingleMsgTokens(cp)
 		currentTotal += newToks - msgToks[i]

@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' show LocaleName;
 
+import 'locale.dart';
 import 'native_voice.dart';
 import 'voice_assets.dart';
 
@@ -127,7 +128,10 @@ class VoiceEngine {
         onProgress: (s, p) => downloadProgress.value = (stage: s, progress: p),
       );
     } on Object catch (e) {
-      downloadProgress.value = (stage: '下载失败，稍后在语音引擎里重试：$e', progress: -1);
+      downloadProgress.value = (
+        stage: sharedL10n.voiceStageDownloadFailedRetry('$e'),
+        progress: -1,
+      );
       return;
     }
     downloadProgress.value = null;

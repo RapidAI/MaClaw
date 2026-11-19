@@ -309,6 +309,274 @@ func TestStructuredPreview_ToolsSearchKeepsCallUnderALongSkillBody(t *testing.T)
 	}
 }
 
+func TestStructuredPreview_BrowserObservationKeepsShipToAndPayable(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算\nrefs:\n")
+	for i := 0; i < 80; i++ {
+		fmt.Fprintf(&b, "@e%d link %q\n", i+1, strings.Repeat("导航按钮", 8))
+	}
+	b.WriteString("page_text:\n")
+	b.WriteString("管理收货地址")
+	b.WriteString(strings.Repeat("甲", 700))
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString(strings.Repeat("乙", 700))
+	b.WriteString("应付总额 ¥9.98 含运费")
+	b.WriteString(strings.Repeat("丙", 400))
+	b.WriteString("\n付款前调用 browser(action=\"confirm_order\", item, shop, address, amount)。不要自己点击支付。")
+	raw := b.String()
+	if len(raw) <= 4096 {
+		t.Fatalf("fixture must exceed the preview cap, len=%d", len(raw))
+	}
+	preview := StructuredPreview("browser", raw, 4096)
+	for _, want := range []string{"收货地址北京市海淀区上地十街10号", "应付总额 ¥9.98", "confirm_order", "@e1"} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("preview missing %q:\n%s", want, preview)
+		}
+	}
+	streetAt := strings.Index(preview, "上地十街10号")
+	headerAt := strings.Index(preview, "管理收货地址")
+	if streetAt < 0 || (headerAt >= 0 && headerAt < streetAt) {
+		t.Fatalf("header precedes the ship-to line:\n%s", preview)
+	}
+	if len(preview) > 4096 {
+		t.Fatalf("preview is %d bytes", len(preview))
+	}
+}
+
+func TestStructuredPreview_BrowserHotlineDoesNotReplaceTheStreet(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算\nrefs:\n")
+	for i := 0; i < 80; i++ {
+		fmt.Fprintf(&b, "@e%d link %q\n", i+1, strings.Repeat("导航按钮", 8))
+	}
+	b.WriteString("page_text:\n")
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString(strings.Repeat("甲", 200))
+	b.WriteString("送至4006065500")
+	b.WriteString(strings.Repeat("乙", 2500))
+	b.WriteString("应付总额 ¥9.98 含运费")
+	raw := b.String()
+	if len(raw) <= 4096 {
+		t.Fatalf("fixture must exceed the preview cap, len=%d", len(raw))
+	}
+	preview := StructuredPreview("browser", raw, 4096)
+	if !strings.Contains(preview, "上地十街10号") || !strings.Contains(preview, "应付总额 ¥9.98") {
+		t.Fatalf("street or total dropped:\n%s", preview)
+	}
+	streetAt := strings.Index(preview, "上地十街10号")
+	phoneAt := strings.Index(preview, "4006065500")
+	if streetAt < 0 || (phoneAt >= 0 && phoneAt < streetAt) {
+		t.Fatalf("hotline precedes the ship-to line:\n%s", preview)
+	}
+	if len(preview) > 4096 {
+		t.Fatalf("preview is %d bytes", len(preview))
+	}
+}
+
+func TestStructuredPreview_BrowserKeepsTheProductInThePrefix(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算\nrefs:\n")
+	for i := 0; i < 80; i++ {
+		fmt.Fprintf(&b, "@e%d link %q\n", i+1, strings.Repeat("导航按钮", 8))
+	}
+	b.WriteString("page_text:\n")
+	b.WriteString("管理收货地址")
+	b.WriteString(strings.Repeat("甲", 400))
+	b.WriteString("雪碧500ml")
+	b.WriteString(strings.Repeat("甲", 400))
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString(strings.Repeat("乙", 2500))
+	b.WriteString("应付总额 ¥9.98 含运费")
+	b.WriteString(strings.Repeat("丙", 2000))
+	b.WriteString("页脚版权")
+	raw := b.String()
+	if len(raw) <= 4096 {
+		t.Fatalf("fixture must exceed the preview cap, len=%d", len(raw))
+	}
+	preview := StructuredPreview("browser", raw, 4096)
+	for _, want := range []string{"雪碧500ml", "上地十街10号", "应付总额 ¥9.98", "@e1"} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("preview missing %q:\n%s", want, preview)
+		}
+	}
+	if strings.Contains(preview, "页脚版权") {
+		t.Fatalf("footer replaced the product:\n%s", preview)
+	}
+	streetAt := strings.Index(preview, "上地十街10号")
+	headerAt := strings.Index(preview, "管理收货地址")
+	if streetAt < 0 || (headerAt >= 0 && headerAt < streetAt) {
+		t.Fatalf("header precedes the ship-to line:\n%s", preview)
+	}
+	if len(preview) > 4096 {
+		t.Fatalf("preview is %d bytes", len(preview))
+	}
+}
+
+func TestStructuredPreview_BrowserFittingPageKeepsItsTail(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算\nrefs:\n@e1 button 确认支付\n")
+	b.WriteString("page_text:\n")
+	b.WriteString(strings.Repeat("甲", 400))
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString(strings.Repeat("乙", 40))
+	b.WriteString("应付总额 ¥9.98")
+	b.WriteString("TAILTOKEN")
+	raw := b.String()
+	preview := StructuredPreview("browser", raw, len(raw))
+	if preview != raw {
+		t.Fatalf("a page that already fits was rewritten to %d bytes", len(preview))
+	}
+	if !strings.Contains(preview, "TAILTOKEN") || !strings.Contains(preview, "上地十街10号") || !strings.Contains(preview, "应付总额 ¥9.98") {
+		t.Fatalf("fitting page lost a checkout fact:\n%s", preview)
+	}
+}
+
+func TestStructuredPreview_BrowserFactsLeadWhenTheReshapeFits(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算\nrefs:\n@e1 button 确认支付\n")
+	b.WriteString("page_text:\n")
+	b.WriteString("LEADTOKEN")
+	b.WriteString(strings.Repeat("甲", 80))
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString("应付总额 ¥9.98")
+	b.WriteString("TAILTOKEN")
+	raw := b.String()
+	preview := StructuredPreview("browser", raw, 1<<20)
+	body := preview
+	if parts := strings.SplitN(preview, "page_text:\n", 2); len(parts) == 2 {
+		body = parts[1]
+	}
+	streetAt := strings.Index(body, "上地十街10号")
+	leadAt := strings.Index(body, "LEADTOKEN")
+	if streetAt < 0 || leadAt < 0 || streetAt > leadAt {
+		t.Fatalf("facts should lead a reshape that still fits:\n%s", preview)
+	}
+	if !strings.Contains(preview, "TAILTOKEN") || !strings.Contains(preview, "应付总额 ¥9.98") {
+		t.Fatalf("reshape dropped the page:\n%s", preview)
+	}
+	// The street is moved, not copied in front of the same page.
+	if len(preview) > len(raw)+80 {
+		t.Fatalf("ship-to line was copied: raw=%d preview=%d", len(raw), len(preview))
+	}
+}
+
+func TestStructuredPreview_BrowserOverlappingWindowsKeepTheAmount(t *testing.T) {
+	// The address neighborhood ends 160 runes after 收货地址. Place the payable
+	// amount so it straddles that edge. Moving only the address window splits ¥9.98.
+	const street = "收货地址北京市海淀区上地十街10号"
+	payableAt := 154
+	pad := payableAt - len([]rune(street))
+	if pad < 0 {
+		t.Fatalf("pad %d", pad)
+	}
+	var page strings.Builder
+	page.WriteString("LEADTOKEN")
+	page.WriteString(strings.Repeat("甲", 80))
+	page.WriteString(street)
+	page.WriteString(strings.Repeat("乙", pad))
+	page.WriteString("应付总额 ¥9.98")
+	page.WriteString("TAILTOKEN")
+	raw := "probed page 结算\nrefs:\n@e1 button 确认支付\npage_text:\n" + page.String()
+	preview := StructuredPreview("browser", raw, 1<<20)
+	if !strings.Contains(preview, "¥9.98") {
+		t.Fatalf("payable amount was split:\n%s", preview)
+	}
+	body := preview
+	if parts := strings.SplitN(preview, "page_text:\n", 2); len(parts) == 2 {
+		body = parts[1]
+	}
+	streetAt := strings.Index(body, "上地十街10号")
+	leadAt := strings.Index(body, "LEADTOKEN")
+	if streetAt < 0 || leadAt < 0 || streetAt > leadAt {
+		t.Fatalf("street should lead:\n%s", preview)
+	}
+	if !strings.Contains(preview, "TAILTOKEN") || !strings.Contains(preview, "@e1") {
+		t.Fatalf("reshape dropped the page:\n%s", preview)
+	}
+	if len(preview) > len(raw)+80 {
+		t.Fatalf("windows were copied: raw=%d preview=%d", len(raw), len(preview))
+	}
+}
+
+func TestStructuredPreview_BrowserPayRefLeadsThePage(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算\nrefs:\n")
+	b.WriteString("@e1 button \"确认支付\"\n")
+	b.WriteString("@e2 link \"首页\"\n")
+	b.WriteString("page_text:\n")
+	b.WriteString("LEADTOKEN")
+	b.WriteString(strings.Repeat("甲", 80))
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString("应付总额 ¥9.98")
+	b.WriteString("雪碧500ml")
+	preview := StructuredPreview("browser", b.String(), 1<<20)
+	payAt := strings.Index(preview, "@e1")
+	pageAt := strings.Index(preview, "page_text:\n")
+	streetAt := strings.Index(preview, "上地十街10号")
+	otherAt := strings.Index(preview, "@e2")
+	if payAt < 0 || pageAt < 0 || streetAt < 0 || otherAt < 0 || !strings.Contains(preview, "雪碧500ml") {
+		t.Fatalf("missing part:\n%s", preview)
+	}
+	if payAt > pageAt || pageAt > streetAt || streetAt > otherAt {
+		t.Fatalf("pay ref %d page %d street %d other ref %d\n%s", payAt, pageAt, streetAt, otherAt, preview)
+	}
+}
+
+func TestStructuredPreview_BrowserCommitRefsAndHintLeadTheNavList(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算\nrefs:\n")
+	b.WriteString("@e1 textbox input=password commit=secret \"密码\"\n")
+	b.WriteString("@e2 button commit=pay \"确认支付\"\n")
+	b.WriteString("@e3 link \"首页\"\n")
+	b.WriteString("page_text:\n")
+	b.WriteString(strings.Repeat("甲", 40))
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString("应付总额 ¥9.98")
+	b.WriteString("\n付款前调用 browser(action=\"confirm_order\", item, shop, address, amount)。")
+	preview := StructuredPreview("browser", b.String(), 1<<20)
+	secretAt := strings.Index(preview, "@e1")
+	payAt := strings.Index(preview, "@e2")
+	pageAt := strings.Index(preview, "page_text:\n")
+	streetAt := strings.Index(preview, "上地十街10号")
+	hintAt := strings.Index(preview, "confirm_order")
+	navAt := strings.Index(preview, "@e3")
+	if secretAt < 0 || payAt < 0 || pageAt < 0 || streetAt < 0 || hintAt < 0 || navAt < 0 {
+		t.Fatalf("missing part:\n%s", preview)
+	}
+	if secretAt > pageAt || payAt > pageAt || pageAt > streetAt || streetAt > hintAt || hintAt > navAt {
+		t.Fatalf("secret %d pay %d page %d street %d hint %d nav %d\n%s", secretAt, payAt, pageAt, streetAt, hintAt, navAt, preview)
+	}
+}
+
+func TestStructuredPreview_BrowserKeepsTheRefsTruncatedNote(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算, interactive elements: 90\nrefs:\n")
+	b.WriteString("@e1 button \"确认支付\"\n")
+	b.WriteString("refs truncated; probe again with query\n")
+	b.WriteString("page_text:\n")
+	b.WriteString(strings.Repeat("甲", 80))
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString("应付总额 ¥9.98")
+	preview := StructuredPreview("browser", b.String(), 1<<20)
+	if !strings.Contains(preview, "refs truncated; probe again with query") {
+		t.Fatalf("truncated ref list was dropped:\n%s", preview)
+	}
+	if !strings.Contains(preview, "上地十街10号") || !strings.Contains(preview, "@e1") {
+		t.Fatalf("street or pay ref dropped:\n%s", preview)
+	}
+}
+
+func TestStructuredPreview_BrowserActionStaysHeadTail(t *testing.T) {
+	raw := "clicked @e1\n" + strings.Repeat("x", 5000) + "\n先 probe，再继续。"
+	preview := StructuredPreview("browser", raw, 4096)
+	if !strings.Contains(preview, "clicked @e1") || !strings.Contains(preview, "先 probe") {
+		t.Fatalf("action preview dropped an end: %s", preview)
+	}
+	if len(preview) > 4096 {
+		t.Fatalf("preview is %d bytes", len(preview))
+	}
+}
+
 func TestStructuredPreview_ComputerObserveKeepsRefsWhenOverLimit(t *testing.T) {
 	raw := "mode=text_primary screen=100x100 scale=1.00 screen_index=0\nwindows:\n  - Word\nelements (80):\n"
 	for i := 0; i < 80; i++ {

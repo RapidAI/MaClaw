@@ -46,8 +46,8 @@ func (c *codingSubAgentCallbacks) executeLocalCodeSearch(args map[string]interfa
 	searchArgs := c.withDefaultProjectPath(args)
 	p, _ := searchArgs["path"].(string)
 	if strings.TrimSpace(p) != "" {
-		if msg := c.requireProjectReadScope(p, codeSearchToolName); msg != "" {
-			return codingToolExecutionResult{Text: c.rejectToolCall(codeSearchToolName, searchArgs, msg), Outcome: codingToolOutcomeBlocked}
+		if reply := c.requireProjectReadScope(p, codeSearchToolName); reply.rejected() {
+			return c.rejectProjectScope(codeSearchToolName, searchArgs, reply)
 		}
 	}
 	// A relative path joined onto the project can name a directory that is not

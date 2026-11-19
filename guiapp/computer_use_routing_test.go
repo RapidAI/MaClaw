@@ -210,8 +210,11 @@ func TestComputerUsePlaybookSection(t *testing.T) {
 		t.Fatal("inactive empty")
 	}
 	s := computerUsePlaybookSection(true)
-	if s == "" || !strings.Contains(s, "Computer Use") || !strings.Contains(s, "computer_observe") {
+	if s == "" || !strings.Contains(s, "Computer Use") || !strings.Contains(s, "computer_use") || !strings.Contains(s, "action=observe") {
 		t.Fatalf("playbook section incomplete: %q", s)
+	}
+	if strings.Contains(s, "computer_observe") || strings.Contains(s, "computer_click") {
+		t.Fatalf("managed playbook still names an unpublished tool: %q", s)
 	}
 	_ = computeruse.Playbook()
 }

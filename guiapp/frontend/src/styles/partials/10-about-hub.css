@@ -701,6 +701,7 @@
     outline-offset: 2px;
 }
 
+.gui-bug-report-dialog .problem-report-dialog__message { margin-top: 10px; }
 .problem-report-dialog__intro {
     max-width: 58ch;
     margin-bottom: 18px;

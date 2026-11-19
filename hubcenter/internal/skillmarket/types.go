@@ -36,10 +36,16 @@ type ProblemReport struct {
 	ScreenshotPaths []string `json:"screenshot_paths,omitempty"`
 	// OriginURL is the HubCenter that owns the attachment files. HA peers sync
 	// this metadata but never copy diagnostics or screenshots.
-	OriginURL  string    `json:"origin_url,omitempty"`
-	ArchivedAt time.Time `json:"archived_at,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	OriginURL string `json:"origin_url,omitempty"`
+	// PublicDownloadToken is the unguessable capability for the diagnostics ZIP.
+	// The admin card shows the URL and clears this field before the response.
+	PublicDownloadToken string `json:"public_download_token,omitempty"`
+	// DiagnosticsURL is the public, unauthenticated ZIP address. It is computed
+	// for the admin list and is not stored.
+	DiagnosticsURL string    `json:"diagnostics_url,omitempty"`
+	ArchivedAt     time.Time `json:"archived_at,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // ── Credits Transaction ─────────────────────────────────────────────────

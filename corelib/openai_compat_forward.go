@@ -428,10 +428,12 @@ func forwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 
 func sanitizeOpenAICompatForwardBody(cfg MaclawLLMConfig, body map[string]interface{}) {
 	sanitizeOpenAICompatForwardBodyWithOptions(cfg, body, true, false)
+	normalizeForwardedAssistantReasoning(cfg, body)
 }
 
 func sanitizeOpenAICompatForwardBodyForResponses(cfg MaclawLLMConfig, body map[string]interface{}) {
 	sanitizeOpenAICompatForwardBodyWithOptions(cfg, body, true, true)
+	normalizeForwardedAssistantReasoning(cfg, body)
 }
 
 func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[string]interface{}, dropOrphanedToolHistory bool, preserveStandaloneToolResults bool) {
@@ -473,7 +475,7 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 		normalizeOpenAICompatForwardTools(body)
 	}
 	if isGLMCodingPlan || isDeepSeekFlash {
-		normalizeOpenAICompatForwardTextOnlyMessages(body, isGLMCodingPlan)
+		normalizeOpenAICompatForwardTextOnlyMessages(body, isGLMCodingPlan, isDeepSeekFlash)
 	}
 	if isDeepSeekFlash {
 		ensureDeepSeekFlashForwardJSONResponseInstruction(body)
@@ -669,6 +671,136 @@ func openAICompatForwardToolCallIDs(raw interface{}) []string {
 	return out
 }
 
+// deepSeekOpenAIKeepsReasoning reports that this OpenAI-compatible forward
+// must keep assistant reasoning_content. DeepSeek thinking mode rejects a
+// replay that drops the field. Other providers, and an explicit off switch,
+// must not see it.
+func deepSeekOpenAIKeepsReasoning(cfg MaclawLLMConfig, body map[string]interface{}) bool {
+	if !IsDeepSeekThinking(cfg) || IsMistralAIAPIEndpoint(cfg) {
+		return false
+	}
+	if normalizeReasoningMode(cfg.ThinkingMode) == "disabled" || thinkingTypeDisabled(body) {
+		return false
+	}
+	return true
+}
+
+// normalizeForwardedAssistantReasoning finishes an OpenAI-shaped body.
+// Thinking blocks are Anthropic content. On the OpenAI wire they fold into
+// reasoning_content for DeepSeek and are removed for everyone else.
+func normalizeForwardedAssistantReasoning(cfg MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil {
+		return
+	}
+	keep := deepSeekOpenAIKeepsReasoning(cfg, body)
+	messages := openAICompatForwardMessageSlice(body["messages"])
+	if len(messages) == 0 {
+		return
+	}
+	changed := false
+	for i, item := range messages {
+		msg := mapFromAny(item)
+		if msg == nil || !strings.EqualFold(strings.TrimSpace(fmt.Sprint(msg["role"])), "assistant") {
+			continue
+		}
+		thinking, rest, split := splitAssistantThinkingContent(msg["content"])
+		mutated := false
+		if keep {
+			reasoning, isString := msg["reasoning_content"].(string)
+			if len(thinking) > 0 {
+				text := thinkingBlocksText(thinking)
+				// An empty string is the loop's placeholder for a missing
+				// trace. A thinking block beside it is the real chain.
+				if !isString || (reasoning == "" && text != "") {
+					msg["reasoning_content"] = text
+					mutated = true
+				}
+			}
+		} else if _, ok := msg["reasoning_content"]; ok {
+			delete(msg, "reasoning_content")
+			mutated = true
+		}
+		if split {
+			msg["content"] = rest
+			mutated = true
+		}
+		// thought_signature is only an input to the Anthropic converter.
+		// OpenAI-compatible forwards keep the previous wire shape.
+		if _, ok := msg["thought_signature"]; ok {
+			delete(msg, "thought_signature")
+			mutated = true
+		}
+		if mutated {
+			messages[i] = msg
+			changed = true
+		}
+	}
+	if changed {
+		body["messages"] = messages
+	}
+}
+
+// splitAssistantThinkingContent pulls Anthropic thinking blocks out of an
+// assistant content array. split is false when content had no thinking block,
+// so the caller leaves the original value alone.
+func splitAssistantThinkingContent(raw interface{}) (thinking []interface{}, rest interface{}, split bool) {
+	blocks := openAICompatForwardSlice(raw)
+	if len(blocks) == 0 {
+		return nil, raw, false
+	}
+	kept := make([]interface{}, 0, len(blocks))
+	for _, block := range blocks {
+		m := mapFromAny(block)
+		if m == nil {
+			kept = append(kept, block)
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(m["type"])), "thinking") {
+			thinking = append(thinking, cloneThinkingBlock(m))
+			split = true
+			continue
+		}
+		kept = append(kept, block)
+	}
+	if !split {
+		return nil, raw, false
+	}
+	if len(kept) == 0 {
+		return thinking, "", true
+	}
+	return thinking, kept, true
+}
+
+func cloneThinkingBlock(m map[string]interface{}) map[string]interface{} {
+	block := map[string]interface{}{"type": "thinking"}
+	if thinking, ok := m["thinking"].(string); ok {
+		block["thinking"] = thinking
+	} else if text, ok := m["text"].(string); ok {
+		block["thinking"] = text
+	} else {
+		block["thinking"] = ""
+	}
+	if sig := strings.TrimSpace(fmt.Sprint(m["signature"])); sig != "" && sig != "<nil>" {
+		block["signature"] = sig
+	}
+	return block
+}
+
+func thinkingBlocksText(blocks []interface{}) string {
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		m := mapFromAny(block)
+		if m == nil {
+			continue
+		}
+		text, _ := m["thinking"].(string)
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
 func sanitizeOpenAICompatForwardMessagesForSDK(raw interface{}) []interface{} {
 	items := openAICompatForwardMessageSlice(raw)
 	if len(items) == 0 {
@@ -703,7 +835,15 @@ func sanitizeOpenAICompatForwardMessagesForSDK(raw interface{}) []interface{} {
 		case "assistant":
 			clean := map[string]interface{}{"role": role}
 			if _, ok := m["content"]; ok {
-				clean["content"] = sanitizeOpenAICompatForwardMessageContent(m["content"], true)
+				// Keep thinking blocks. The Anthropic converter turns them into
+				// content[].thinking. The OpenAI wire strips them again below.
+				clean["content"] = sanitizeOpenAICompatForwardMessageContentMode(m["content"], true, true)
+			}
+			if reasoning, ok := m["reasoning_content"].(string); ok {
+				clean["reasoning_content"] = reasoning
+			}
+			if sig := strings.TrimSpace(fmt.Sprint(m["thought_signature"])); sig != "" && sig != "<nil>" {
+				clean["thought_signature"] = sig
 			}
 			if toolCalls := sanitizeOpenAICompatForwardToolCallsForSDK(m["tool_calls"]); len(toolCalls) > 0 {
 				clean["tool_calls"] = toolCalls
@@ -746,6 +886,10 @@ func sanitizeOpenAICompatForwardMessagesForSDK(raw interface{}) []interface{} {
 }
 
 func sanitizeOpenAICompatForwardMessageContent(raw interface{}, allowBlocks bool) interface{} {
+	return sanitizeOpenAICompatForwardMessageContentMode(raw, allowBlocks, false)
+}
+
+func sanitizeOpenAICompatForwardMessageContentMode(raw interface{}, allowBlocks, keepThinking bool) interface{} {
 	switch v := raw.(type) {
 	case nil:
 		return ""
@@ -771,6 +915,24 @@ func sanitizeOpenAICompatForwardMessageContent(raw interface{}, allowBlocks bool
 			if text != "" && text != "<nil>" {
 				out = append(out, map[string]interface{}{"type": "text", "text": text})
 			}
+		case "thinking":
+			if !keepThinking {
+				continue
+			}
+			block := map[string]interface{}{"type": "thinking"}
+			if thinking, ok := m["thinking"].(string); ok {
+				block["thinking"] = thinking
+			} else if text, ok := m["text"].(string); ok {
+				block["thinking"] = text
+			} else {
+				// DeepSeek rejects a thinking block that omits this field,
+				// including when the text is empty.
+				block["thinking"] = ""
+			}
+			if sig := strings.TrimSpace(fmt.Sprint(m["signature"])); sig != "" && sig != "<nil>" {
+				block["signature"] = sig
+			}
+			out = append(out, block)
 		case "image_url":
 			if imageURL := mapFromAny(m["image_url"]); imageURL != nil {
 				clean := map[string]interface{}{}
@@ -1321,7 +1483,7 @@ func prependOrMergeOpenAICompatForwardSystemMessage(messages []interface{}, cont
 	return out
 }
 
-func normalizeOpenAICompatForwardTextOnlyMessages(body map[string]interface{}, fillEmptyUser bool) {
+func normalizeOpenAICompatForwardTextOnlyMessages(body map[string]interface{}, fillEmptyUser, foldThinking bool) {
 	raw := openAICompatForwardMessageSlice(body["messages"])
 	if len(raw) == 0 {
 		return
@@ -1337,8 +1499,20 @@ func normalizeOpenAICompatForwardTextOnlyMessages(body map[string]interface{}, f
 		for k, v := range m {
 			cp[k] = v
 		}
-		if role, _ := cp["role"].(string); role == "developer" {
-			cp["role"] = "system"
+		role, _ := cp["role"].(string)
+		if role == "developer" {
+			role = "system"
+			cp["role"] = role
+		}
+		if foldThinking && role == "assistant" {
+			reasoning, isString := cp["reasoning_content"].(string)
+			if !isString || reasoning == "" {
+				if thinking, _, _ := splitAssistantThinkingContent(cp["content"]); len(thinking) > 0 {
+					if text := thinkingBlocksText(thinking); text != "" {
+						cp["reasoning_content"] = text
+					}
+				}
+			}
 		}
 		cp["content"] = openAICompatForwardTextContent(cp["content"])
 		if fillEmptyUser {

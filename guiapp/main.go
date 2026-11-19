@@ -52,6 +52,11 @@ func Main(v string) {
 	if isMCPStdioCommand(args) {
 		os.Exit(runMCPStdioProxy(os.Stdin, os.Stdout))
 	}
+	// console-buffer attaches to a client console. It must return before
+	// NewApp and ensureHiddenHostConsole, or AttachConsole fails.
+	if isConsoleBufferCommand(args) {
+		os.Exit(runConsoleBufferCommand(args))
+	}
 	isTUI := isTUISubcommand(args)
 
 	// --- Log to file: ~/.maclaw/logs/maclaw.log ---

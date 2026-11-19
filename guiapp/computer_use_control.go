@@ -67,13 +67,19 @@ func (a *App) ComputerUseStop() error {
 		sess.Stop()
 		n++
 	})
-	if n == 0 {
-		sess := cuSession()
-		if sess == nil {
-			a.emitComputerUseControl("stop")
-			return fmt.Errorf("computer use session not ready")
+	if n == 0 && !computerUseHasSession() {
+		// cuSession() allocates a session, so it cannot answer "none".
+		// Acceptance has no computeruse.Session; stop it here and do not
+		// fall through into CancelAIAssistantSession.
+		a.emitComputerUseControl("stop")
+		if acceptanceDriving.Load() {
+			acceptanceStopCancel(a)
+			return nil
 		}
-		sess.Stop()
+		return fmt.Errorf("computer use session not ready")
+	}
+	if n == 0 {
+		cuSession().Stop()
 	}
 	a.emitComputerUseControl("stop")
 	// Best-effort: cancel current assistant generation so the loop exits.
@@ -97,8 +103,29 @@ func (a *App) ComputerUseReset() error {
 	return nil
 }
 
+// computerUseExistingSession returns a session that already exists.
+// cuSession allocates one, so control events and Stop must not use it
+// to decide whether a drive is in progress.
+func computerUseExistingSession() *computeruse.Session {
+	globalComputerUse.mu.Lock()
+	defer globalComputerUse.mu.Unlock()
+	if globalComputerUse.session != nil {
+		return globalComputerUse.session
+	}
+	for _, sess := range globalComputerUse.sessions {
+		if sess != nil {
+			return sess
+		}
+	}
+	return nil
+}
+
+func computerUseHasSession() bool {
+	return computerUseExistingSession() != nil
+}
+
 func (a *App) emitComputerUseControl(action string) {
-	sess := cuSession()
+	sess := computerUseExistingSession()
 	paused, stopped := false, false
 	steps := 0
 	if sess != nil {

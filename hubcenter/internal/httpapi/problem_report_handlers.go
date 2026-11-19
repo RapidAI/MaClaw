@@ -13,6 +13,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -29,6 +30,7 @@ import (
 )
 
 var problemReportScreenshotNamePattern = regexp.MustCompile(`^screenshot-[0-9]{2}\.(png|jpg|webp)$`)
+var problemReportDownloadTokenPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var (
 	problemReportOriginHTTPClient30s = &http.Client{Timeout: 30 * time.Second}
@@ -313,7 +315,13 @@ func (h *ProblemReportHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		smError(w, http.StatusServiceUnavailable, "a valid HubCenter public base URL is required before submitting a problem report")
 		return
 	}
-	report := &skillmarket.ProblemReport{ID: id, ReporterUserID: user.ID, ReporterContact: user.Email, OSVersion: osVersion, GUIVersion: guiVersion, Description: description, Status: "pending", DiagnosticsPath: "diagnostics.zip", ScreenshotPaths: screenshots, OriginURL: originURL, CreatedAt: now, UpdatedAt: now}
+	downloadToken, err := skillmarket.NewProblemReportDownloadToken()
+	if err != nil {
+		_ = os.RemoveAll(root)
+		smError(w, http.StatusInternalServerError, "create report download link: "+err.Error())
+		return
+	}
+	report := &skillmarket.ProblemReport{ID: id, ReporterUserID: user.ID, ReporterContact: user.Email, OSVersion: osVersion, GUIVersion: guiVersion, Description: description, Status: "pending", DiagnosticsPath: "diagnostics.zip", ScreenshotPaths: screenshots, OriginURL: originURL, PublicDownloadToken: downloadToken, CreatedAt: now, UpdatedAt: now}
 	if err := h.store.CreateProblemReport(r.Context(), report); err != nil {
 		_ = os.RemoveAll(root)
 		smError(w, http.StatusInternalServerError, "save report: "+err.Error())
@@ -451,6 +459,8 @@ func (h *ProblemReportHandlers) ListMine(w http.ResponseWriter, r *http.Request)
 		items[i].ReporterContact = ""
 		items[i].DiagnosticsPath = ""
 		items[i].ScreenshotPaths = nil
+		items[i].PublicDownloadToken = ""
+		items[i].DiagnosticsURL = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total})
 }
@@ -473,7 +483,79 @@ func (h *ProblemReportHandlers) AdminList(w http.ResponseWriter, r *http.Request
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	for i := range items {
+		token := strings.TrimSpace(items[i].PublicDownloadToken)
+		// Only the node that stored the ZIP may mint the token. A peer that
+		// invents one would publish a URL the origin cannot serve.
+		if token == "" && !h.isRemoteOrigin(&items[i]) && strings.TrimSpace(items[i].DiagnosticsPath) != "" {
+			ensured, ensureErr := h.store.EnsureProblemReportDownloadToken(r.Context(), items[i].ID)
+			if ensureErr != nil {
+				// The list is already loaded. One row that cannot grow a
+				// public link must not hide every other report.
+				if r.Context().Err() != nil {
+					return
+				}
+				log.Printf("[problem-report] download token for %s: %v", items[i].ID, ensureErr)
+			} else {
+				items[i].PublicDownloadToken = ensured
+			}
+		}
+		items[i].DiagnosticsURL = h.diagnosticsPublicURL(&items[i])
+		items[i].PublicDownloadToken = ""
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total})
+}
+
+// PublicDiagnosticsDownload serves diagnostics.zip with no session. The token
+// in the path is the only credential, so an agent can fetch the link copied
+// from the admin card.
+func (h *ProblemReportHandlers) PublicDiagnosticsDownload(w http.ResponseWriter, r *http.Request) {
+	token := strings.ToLower(strings.TrimSpace(r.PathValue("token")))
+	if !problemReportDownloadTokenPattern.MatchString(token) {
+		smError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
+	report, err := h.store.GetProblemReportByDownloadToken(r.Context(), token)
+	if err != nil || report == nil {
+		smError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
+	if h.isRemoteOrigin(report) {
+		location := h.diagnosticsPublicURL(report)
+		if location == "" || problemReportRequestIsURL(r, location) {
+			smError(w, http.StatusNotFound, "attachment not found")
+			return
+		}
+		http.Redirect(w, r, location, http.StatusFound)
+		return
+	}
+	h.serveProblemReportAttachment(w, r, report.ID, "diagnostics.zip")
+}
+
+func (h *ProblemReportHandlers) diagnosticsPublicURL(report *skillmarket.ProblemReport) string {
+	if report == nil {
+		return ""
+	}
+	token := strings.ToLower(strings.TrimSpace(report.PublicDownloadToken))
+	if !problemReportDownloadTokenPattern.MatchString(token) {
+		return ""
+	}
+	origin := normalizeProblemReportOriginURL(report.OriginURL)
+	if origin == "" {
+		origin = h.originURL(context.Background())
+	}
+	if origin == "" {
+		return ""
+	}
+	return origin + "/api/v1/problem-reports/d/" + token + "/diagnostics.zip"
+}
+
+func problemReportRequestIsURL(r *http.Request, location string) bool {
+	target, err := url.Parse(location)
+	if err != nil || r == nil || r.URL == nil {
+		return false
+	}
+	return strings.EqualFold(r.Host, target.Host) && r.URL.EscapedPath() == target.EscapedPath()
 }
 
 func (h *ProblemReportHandlers) AdminUpdate(w http.ResponseWriter, r *http.Request) {

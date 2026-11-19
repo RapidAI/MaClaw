@@ -604,10 +604,10 @@ func computerUsePlaybookSectionFor(active bool, owner string) string {
 	var b strings.Builder
 	if computerUseLLMSupportsVision() {
 		b.WriteString("\n## Computer Use（桌面操控 · 视觉模型看截图）\n")
-		b.WriteString(computeruse.PlaybookVision())
+		b.WriteString(managedComputerUsePlaybook(true))
 	} else {
 		b.WriteString("\n## Computer Use（桌面操控 · 文本模型优先）\n")
-		b.WriteString(computeruse.Playbook())
+		b.WriteString(managedComputerUsePlaybook(false))
 	}
 	b.WriteString("\n")
 	if extra := computerUseContractPlaybookExtra(owner); extra != "" {
@@ -615,6 +615,24 @@ func computerUsePlaybookSectionFor(active bool, owner string) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// managedComputerUsePlaybook names computer_use, the tool a managed desktop
+// turn can call. The legacy playbook names computer_observe and computer_click,
+// which are not in that catalog.
+func managedComputerUsePlaybook(vision bool) string {
+	see := "You may be a text-only model. computer_use action=observe returns windows and eN refs. Screenshots are not sent."
+	if vision {
+		see = "The current model can see the screenshot from computer_use action=observe. The image has numbered marks. Click a mark with action=click ref=eN. Do not pass raw x,y."
+	}
+	return see + `
+- The tool name is computer_use. action is observe, click, type, key, or done.
+- observe first. click and type use ref from that observe. type writes text. key presses enter, space, or a shortcut such as ctrl+c. done finishes.
+- After click, type, or key, call computer_use action=observe again. Refs go stale.
+- Web pages use the browser tool. This tool is for native desktop windows.
+- Do not click a pay or place-order control, and do not press Enter or Space to activate one. On the web, browser action=confirm_order, then one browser click after the person confirms. On the desktop, the person clicks the pay button. The tool waits.
+- Do not type a password, payment password, or verification code, and do not pass the secret. The person types it on the screen. Then observe again.
+`
 }
 
 func browserPlaybookSection(active bool) string {

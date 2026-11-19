@@ -3876,6 +3876,12 @@ func synthesizeOpenAIStreamChunk(body []byte, externalModel string) ([]byte, cor
 	if reasoning := firstStringField(message, "reasoning_content", "ReasoningContent"); reasoning != "" {
 		delta["reasoning_content"] = reasoning
 	}
+	// DeepSeek's Anthropic thinking block carries a signature that the next
+	// tool turn must pass back with the thinking text. The JSON message has
+	// it; the synthesized OpenAI delta is what the desktop client stores.
+	if sig := firstStringField(message, "thought_signature", "ThoughtSignature"); sig != "" {
+		delta["thought_signature"] = sig
+	}
 	if content, ok := message["content"].(string); ok {
 		delta["content"] = content
 	}

@@ -27,6 +27,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -179,6 +180,13 @@ type CodingSubAgent struct {
 	// the read-only compatibility surface burns a full investigation and then
 	// fails it for producing no files.
 	writableSurfaceDenied string
+
+	// turnCtx is the context ExecuteTask is already running under. It is set
+	// only when loopCtx is non-nil, immediately before ExecuteTask. Acceptance
+	// times out on it so Stop cancels the drive. A nil context does not start.
+	turnCtx context.Context
+	// acceptanceTurnStart bounds the executable mtime scan to this turn.
+	acceptanceTurnStart time.Time
 
 	// horizonPosture freezes a LongHorizon CLI episode: no knowledge recall,
 	// no MCP/skills/spawn, and ExecuteTool is limited to horizonToolSurface.
@@ -405,6 +413,10 @@ type CodingSubAgentResult struct {
 	// It is nil for non-debugging work and for legacy callers that did not need
 	// the bug-localization workflow.
 	Localization *CodingSubAgentLocalizationEvidence
+
+	// CodingInteractiveAcceptance is the host console check after the model
+	// loop. It does not change Status.
+	CodingInteractiveAcceptance CodingInteractiveAcceptance
 }
 
 // CodingSubAgentCommandResult is a compact audit record for a bash command.
@@ -686,6 +698,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		return failedCodingSubAgentStartResult(denied)
 	}
 
+	s.acceptanceTurnStart = time.Now()
 	taskTitle := compactSubAgentTaskTitle(task.Title)
 	log.Printf("[coding-subagent] starting task T%d: %s (project=%s)", taskDisplayNumber(task), taskTitle, s.projectPath)
 
@@ -1065,6 +1078,8 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	}
 	log.Printf("[coding-subagent] task T%d finished: status=%s iterations=%d tools=%d err=%q",
 		taskDisplayNumber(task), status, result.Iterations, result.ToolCalls, errMsg)
+	var interactiveAcceptance CodingInteractiveAcceptance
+	summary, interactiveAcceptance = s.finishCodingInteractiveAcceptance(task, summary, cb, userID, inquiry, goalTurn)
 	if s.onProgress != nil && !(status == TaskExecFailed && codingLoopIterationExhausted(errMsg)) {
 		event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, task, taskTitle, "")
 		event.Detail = string(status)
@@ -1073,41 +1088,42 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 
 	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
 	return &CodingSubAgentResult{
-		Status:                 status,
-		Summary:                summary,
-		Error:                  errMsg,
-		Iterations:             result.Iterations,
-		ToolCalls:              result.ToolCalls,
-		InputTokens:            inTok,
-		OutputTokens:           outTok,
-		EstCostRMB:             cost,
-		RouteModel:             result.Route.Model,
-		RouteSource:            result.Route.Source,
-		RouteTask:              result.Route.TaskType,
-		RouteReason:            result.Route.Reason,
-		FilesModified:          filesModified,
-		FilesCreated:           filesCreated,
-		FilesRead:              filesRead,
-		FilesDriftedAfterWrite: audit.FilesDriftedAfterWrite,
-		FilesDriftedReadOnly:   audit.FilesDriftedReadOnly,
-		GitDiffChecked:         diffChecked,
-		GitDiffSummary:         diffSummary,
-		DiffStat:               cb.getDiffStat(),
-		CommandsRun:            commandsRun,
-		SearchesRun:            searchesRun,
-		GuardrailViolations:    guardrailViolations,
-		DynamicToolsRun:        dynamicToolsRun,
-		ExplorationStatus:      explorationStatus,
-		ExplorationSummary:     explorationSummary,
-		VerificationStatus:     verificationStatus,
-		VerificationSummary:    verificationSummary,
-		QualityStatus:          qualityStatus,
-		QualitySummary:         qualitySummary,
-		QualityIssueCount:      qualityIssueCount,
-		qualityGateDisabled:    !qualityGateEnabled && status == TaskExecPassed,
-		Localization:           cb.localization.snapshot(),
-		HorizonOwned:           s.horizonPosture,
-		RecalledExperienceIDs:  cb.snapshotRecalledExperienceIDs(),
+		Status:                      status,
+		Summary:                     summary,
+		Error:                       errMsg,
+		Iterations:                  result.Iterations,
+		ToolCalls:                   result.ToolCalls,
+		InputTokens:                 inTok,
+		OutputTokens:                outTok,
+		EstCostRMB:                  cost,
+		RouteModel:                  result.Route.Model,
+		RouteSource:                 result.Route.Source,
+		RouteTask:                   result.Route.TaskType,
+		RouteReason:                 result.Route.Reason,
+		FilesModified:               filesModified,
+		FilesCreated:                filesCreated,
+		FilesRead:                   filesRead,
+		FilesDriftedAfterWrite:      audit.FilesDriftedAfterWrite,
+		FilesDriftedReadOnly:        audit.FilesDriftedReadOnly,
+		GitDiffChecked:              diffChecked,
+		GitDiffSummary:              diffSummary,
+		DiffStat:                    cb.getDiffStat(),
+		CommandsRun:                 commandsRun,
+		SearchesRun:                 searchesRun,
+		GuardrailViolations:         guardrailViolations,
+		DynamicToolsRun:             dynamicToolsRun,
+		ExplorationStatus:           explorationStatus,
+		ExplorationSummary:          explorationSummary,
+		VerificationStatus:          verificationStatus,
+		VerificationSummary:         verificationSummary,
+		QualityStatus:               qualityStatus,
+		QualitySummary:              qualitySummary,
+		QualityIssueCount:           qualityIssueCount,
+		qualityGateDisabled:         !qualityGateEnabled && status == TaskExecPassed,
+		Localization:                cb.localization.snapshot(),
+		HorizonOwned:                s.horizonPosture,
+		RecalledExperienceIDs:       cb.snapshotRecalledExperienceIDs(),
+		CodingInteractiveAcceptance: interactiveAcceptance,
 	}
 }
 
@@ -1210,6 +1226,9 @@ type codingSubAgentCallbacks struct {
 	reqCtx      string
 	designCtx   string
 	prevOutputs []string
+	// acceptanceBrief is the record-only script from submit_interactive_acceptance.
+	// Nil means the model did not submit one. A console target still uses the default keys.
+	acceptanceBrief *codingAcceptanceBrief
 	// visualPreview holds the page or deck written by the current tool call.
 	visualPreview *visualPreviewState
 
@@ -2124,6 +2143,7 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	if c.subagent.memoryStore != nil {
 		tools = append(tools, memorySearchToolDef())
 	}
+	tools = append(tools, buildCodingAcceptanceBriefToolDefinition())
 	if c.task != nil && taskIsGoalPlanPhase(c.task, c.reqCtx) {
 		tools = filterGoalPlanPhaseTools(tools)
 		tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
@@ -2804,8 +2824,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
 				return codingToolExecutionResult{Text: c.rejectToolCall("Glob", searchArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
 			}
-			if msg := c.requireProjectReadScope(p, "Glob"); msg != "" {
-				return codingToolExecutionResult{Text: c.rejectToolCall("Glob", searchArgs, msg), Outcome: codingToolOutcomeBlocked}
+			if reply := c.requireProjectReadScope(p, "Glob"); reply.rejected() {
+				return c.rejectProjectScope("Glob", searchArgs, reply)
 			}
 		}
 		ctx, cancel := c.toolContext()
@@ -2819,8 +2839,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
 				return codingToolExecutionResult{Text: c.rejectToolCall("ripgrep", searchArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
 			}
-			if msg := c.requireProjectReadScope(p, "ripgrep"); msg != "" {
-				return codingToolExecutionResult{Text: c.rejectToolCall("ripgrep", searchArgs, msg), Outcome: codingToolOutcomeBlocked}
+			if reply := c.requireProjectReadScope(p, "ripgrep"); reply.rejected() {
+				return c.rejectProjectScope("ripgrep", searchArgs, reply)
 			}
 		}
 		ctx, cancel := c.toolContext()
@@ -2845,8 +2865,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
 				return codingToolExecutionResult{Text: c.rejectToolCall("read_file", fileArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
 			}
-			if msg := c.requireProjectReadScope(p, "read_file"); msg != "" {
-				return codingToolExecutionResult{Text: c.rejectToolCall("read_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
+			if reply := c.requireProjectReadScope(p, "read_file"); reply.rejected() {
+				return c.rejectProjectScope("read_file", fileArgs, reply)
 			}
 			if strings.EqualFold(filepath.Ext(p), ".pptx") {
 				abs := codingVisualPreviewAbs(p, c.projectPath())
@@ -2893,8 +2913,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if msg := c.requireLocalizationBeforeExistingBugEdit(p, !codingFileExists(p)); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
-			if msg := c.requireProjectWriteScope(p); msg != "" {
-				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
+			if reply := c.requireProjectWriteScope(p); reply.rejected() {
+				return c.rejectProjectScope("write_file", fileArgs, reply)
 			}
 			created := !codingFileExists(p)
 			if msg := c.requireReadBeforeWriteExisting(p, fileArgs); msg != "" {
@@ -2930,8 +2950,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if msg := c.requireLocalizationBeforeExistingBugEdit(p, false); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
-			if msg := c.requireProjectWriteScope(p); msg != "" {
-				return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
+			if reply := c.requireProjectWriteScope(p); reply.rejected() {
+				return c.rejectProjectScope("edit_file", fileArgs, reply)
 			}
 			if msg := c.requireReadBeforeModify(p, "edit_file"); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
@@ -2958,8 +2978,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if msg := c.requireLocalizationBeforeExistingBugEdit(p, false); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
-			if msg := c.requireProjectWriteScope(p); msg != "" {
-				return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
+			if reply := c.requireProjectWriteScope(p); reply.rejected() {
+				return c.rejectProjectScope("edit_lines", fileArgs, reply)
 			}
 			if msg := c.requireReadBeforeModify(p, "edit_lines"); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
@@ -3001,9 +3021,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			}
 		}
 		if wd, _ := bashArgs["working_dir"].(string); wd != "" {
-			if msg := c.requireProjectWorkingDirScope(wd); msg != "" {
-				c.trackCommandResult(bashArgs, msg, false)
-				return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
+			if reply := c.requireProjectWorkingDirScope(wd); reply.rejected() {
+				c.trackCommandResult(bashArgs, reply.String(), false)
+				return c.rejectProjectScope("bash", bashArgs, reply)
 			}
 		}
 		// Avoid raw bash heartbeat rows in chat; tool_started/tool_finished events
@@ -3024,8 +3044,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
 				return codingToolExecutionResult{Text: c.rejectToolCall("list_directory", listArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
 			}
-			if msg := c.requireProjectReadScope(p, "list_directory"); msg != "" {
-				return codingToolExecutionResult{Text: c.rejectToolCall("list_directory", listArgs, msg), Outcome: codingToolOutcomeBlocked}
+			if reply := c.requireProjectReadScope(p, "list_directory"); reply.rejected() {
+				return c.rejectProjectScope("list_directory", listArgs, reply)
 			}
 		}
 		result := executeCodingListDirectory(listArgs)
@@ -3044,8 +3064,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if err := repoMaintRejectOutside(h, c.subagent.taskPermissionOwnerID(), p); err != nil {
 				return codingToolExecutionResult{Text: c.rejectToolCall("git_diff", diffArgs, err.Error()), Outcome: codingToolOutcomeBlocked}
 			}
-			if msg := c.requireProjectDiffScope(p); msg != "" {
-				return codingToolExecutionResult{Text: c.rejectToolCall("git_diff", diffArgs, msg), Outcome: codingToolOutcomeBlocked}
+			if reply := c.requireProjectDiffScope(p); reply.rejected() {
+				return c.rejectProjectScope("git_diff", diffArgs, reply)
 			}
 		}
 		result := c.toolGitDiffResult(diffArgs)
@@ -3093,8 +3113,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		return codingToolExecutionResult{Text: text, Outcome: codingOutcomeFromSuccess(succeeded)}
 	case "ssh":
 		c.bindCodingSSHLocalPath(args)
-		if msg := c.guardCodingSSHArgs(args); msg != "" {
-			return codingToolExecutionResult{Text: c.rejectToolCall("ssh", args, msg), Outcome: codingToolOutcomeBlocked}
+		if reply := c.guardCodingSSHArgs(args); reply.rejected() {
+			return c.rejectProjectScope("ssh", args, reply)
 		}
 		if h == nil {
 			return codingToolExecutionResult{Text: "ssh unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
@@ -3120,6 +3140,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		return c.executeSpawnCodingAgent(args)
 	case codingAgentTodoToolName:
 		return c.executeTodoWrite(argsJSON)
+	case codingAcceptanceBriefToolName:
+		return c.executeSubmitInteractiveAcceptance(argsJSON)
 	default:
 		return codingToolExecutionResult{Text: fmt.Sprintf("unknown tool: %s", name), Outcome: codingToolOutcomeFailed}
 	}
@@ -6041,6 +6063,17 @@ func (c *codingSubAgentCallbacks) rejectToolCall(toolName string, args map[strin
 	return result
 }
 
+// rejectProjectScope records a scope breach and returns it as a blocked tool
+// result. A requested path that stops on a file is an argument the model can
+// correct. Recording that argument failed the step and skipped the rest of
+// the plan.
+func (c *codingSubAgentCallbacks) rejectProjectScope(toolName string, args map[string]interface{}, reply codingScopeReply) codingToolExecutionResult {
+	if reply.argument {
+		return codingToolExecutionResult{Text: reply.text, Outcome: codingToolOutcomeFailed}
+	}
+	return codingToolExecutionResult{Text: c.rejectToolCall(toolName, args, reply.text), Outcome: codingToolOutcomeBlocked}
+}
+
 func (c *codingSubAgentCallbacks) trackGuardrailViolation(toolName string, args map[string]interface{}, result string) {
 	path, _ := args["path"].(string)
 	if path == "" {
@@ -6419,57 +6452,80 @@ func (c *codingSubAgentCallbacks) rememberFileLineDelta(path string, added, remo
 	}
 }
 
-func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) string {
+func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) codingScopeReply {
 	return c.decideProjectScope(path, "write_file", func(err error) string {
 		return fmt.Sprintf("无法确认写入路径是否位于项目目录内：%s", err.Error())
 	})
 }
 
-func (c *codingSubAgentCallbacks) requireProjectReadScope(path, toolName string) string {
+func (c *codingSubAgentCallbacks) requireProjectReadScope(path, toolName string) codingScopeReply {
 	return c.decideProjectScope(path, toolName, func(err error) string {
 		return fmt.Sprintf("无法确认 %s 路径是否位于项目目录内：%s", toolName, err.Error())
 	})
 }
 
-func (c *codingSubAgentCallbacks) requireProjectWorkingDirScope(path string) string {
+func (c *codingSubAgentCallbacks) requireProjectWorkingDirScope(path string) codingScopeReply {
 	if strings.TrimSpace(path) == "" {
-		return ""
+		return codingScopeReply{}
 	}
 	return c.decideProjectScope(path, "bash", func(err error) string {
 		return fmt.Sprintf("无法确认命令 working_dir 是否位于项目目录内：%s", err.Error())
 	})
 }
 
-func (c *codingSubAgentCallbacks) requireProjectDiffScope(path string) string {
+func (c *codingSubAgentCallbacks) requireProjectDiffScope(path string) codingScopeReply {
 	return c.decideProjectScope(path, "git_diff", func(err error) string {
 		return fmt.Sprintf("无法确认 git_diff 路径是否位于项目目录内：%s", err.Error())
 	})
 }
+
+// codingScopeReply is the project-scope gate's answer. Empty text means the
+// path is allowed. argument is a requested path that cannot be traversed. It
+// is not a containment failure, so it must not be recorded as a guardrail.
+type codingScopeReply struct {
+	text     string
+	argument bool
+}
+
+func (r codingScopeReply) String() string { return r.text }
+
+func (r codingScopeReply) rejected() bool { return r.text != "" }
 
 // decideProjectScope allows a path inside the project. A path outside it,
 // including one on another Windows volume, is allowed under 完全控制 and
 // otherwise asked. Any other failure to prove containment stays a hard
 // rejection: prompting there would ask about files inside a project directory
 // that could not be resolved.
-func (c *codingSubAgentCallbacks) decideProjectScope(path, toolName string, uncertain func(error) string) string {
+func (c *codingSubAgentCallbacks) decideProjectScope(path, toolName string, uncertain func(error) string) codingScopeReply {
 	projectPath := c.projectPath()
 	if projectPath == "" {
-		return ""
+		return codingScopeReply{}
 	}
 	ok, err := isPathWithinDir(path, projectPath)
 	if err != nil {
-		if uncertain == nil {
-			return err.Error()
-		}
-		return uncertain(err)
+		return codingScopeWalkReply(toolName, err, uncertain)
 	}
 	if ok {
-		return ""
+		return codingScopeReply{}
 	}
 	if c.subagent != nil && c.subagent.scopeApproval != nil {
-		return c.subagent.scopeApproval.check(toolName, path, projectPath)
+		return codingScopeReply{text: c.subagent.scopeApproval.check(toolName, path, projectPath)}
 	}
-	return formatScopeRejection(toolName, path, projectPath)
+	return codingScopeReply{text: formatScopeRejection(toolName, path, projectPath)}
+}
+
+// codingScopeWalkReply classifies a failed containment walk. Only a
+// not-directory stop on the requested path is an argument. The same stop
+// while resolving the project directory stays fail-closed.
+func codingScopeWalkReply(toolName string, err error, uncertain func(error) string) codingScopeReply {
+	var arg codingPathArgumentError
+	if errors.As(err, &arg) {
+		return codingScopeReply{text: codingNonDirectoryPathMessage(toolName, arg.Component), argument: true}
+	}
+	if uncertain == nil {
+		return codingScopeReply{text: err.Error()}
+	}
+	return codingScopeReply{text: uncertain(err)}
 }
 
 func (c *codingSubAgentCallbacks) requireReadBeforeModify(path, toolName string) string {
@@ -6727,6 +6783,12 @@ func isPathWithinDir(path, dir string) (bool, error) {
 	}
 	realPath, err := evalCodingScopePath(absPath)
 	if err != nil {
+		// The project directory resolved. A file in the requested path is an
+		// argument, not an unresolved project.
+		var stopped codingNotDirectoryError
+		if errors.As(err, &stopped) {
+			return false, codingPathArgumentError{Component: stopped.Component}
+		}
 		return false, err
 	}
 	return pathWithinCleanDir(realPath, realDir)
@@ -6801,8 +6863,81 @@ func codingScopeDirExists(dir string) error {
 	if err != nil {
 		return err
 	}
-	_, err = os.Stat(abs)
-	return err
+	info, err := os.Stat(abs)
+	if err != nil {
+		return err
+	}
+	// Stat succeeds for a file. A project path that names a file is not a
+	// resolved directory and must stay fail-closed. A path that only walks
+	// through a file fails Stat above and stays fail-closed as that error.
+	if !info.IsDir() {
+		return codingNotDirectoryError{Component: abs}
+	}
+	return nil
+}
+
+// codingNotDirectoryError is an intermediate component that exists and is not
+// a directory. It names that component. A stop on the project directory stays
+// this type. isPathWithinDir wraps a stop on the requested path as
+// codingPathArgumentError.
+type codingNotDirectoryError struct {
+	Component string
+}
+
+func (e codingNotDirectoryError) Error() string {
+	return "not a directory: " + e.Component
+}
+
+// codingPathArgumentError is a not-directory stop on the requested path after
+// the project directory itself resolved.
+type codingPathArgumentError struct {
+	Component string
+}
+
+func (e codingPathArgumentError) Error() string {
+	return codingNotDirectoryError{Component: e.Component}.Error()
+}
+
+// codingDirectoryFinalPathOS resolves a directory the process can open when
+// filepath.EvalSymlinks cannot. Windows sets it to GetFinalPathNameByHandle.
+var codingDirectoryFinalPathOS func(path string) (string, bool)
+
+// codingOpenedDirectory reports whether path opens as a directory and, when
+// it can, the final path after reparse points. isDir with an empty final
+// means the directory could not be resolved and must stay fail-closed.
+func codingOpenedDirectory(path string) (final string, isDir bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	if codingDirectoryFinalPathOS != nil {
+		if got, ok := codingDirectoryFinalPathOS(path); ok && strings.TrimSpace(got) != "" {
+			return filepath.Clean(got), true
+		}
+	}
+	if got, err := filepath.EvalSymlinks(path); err == nil && strings.TrimSpace(got) != "" {
+		if abs, absErr := filepath.Abs(got); absErr == nil {
+			return filepath.Clean(abs), true
+		}
+	}
+	return "", true
+}
+
+func codingScopePathsEqual(a, b string) bool {
+	a = filepath.Clean(codingStripExtendedPath(a))
+	b = filepath.Clean(codingStripExtendedPath(b))
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func codingNonDirectoryPathMessage(toolName, component string) string {
+	name := strings.TrimSpace(toolName)
+	if name == "" {
+		name = "路径"
+	}
+	return fmt.Sprintf("%s 路径中的 %s 不是目录，不能继续访问其下级。请改到一个目录下，或先创建该目录。", name, component)
 }
 
 // evalCodingScopePath resolves path the way os.Open does.
@@ -6824,10 +6959,13 @@ func evalCodingScopePath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return codingFollowReparse(filepath.Clean(abs), 0)
+	return codingFollowReparse(filepath.Clean(abs), 0, nil)
 }
 
-func codingFollowReparse(absClean string, depth int) (string, error) {
+func codingFollowReparse(absClean string, depth int, open func(string) (string, bool)) (string, error) {
+	if open == nil {
+		open = codingOpenedDirectory
+	}
 	if depth > 255 {
 		return "", fmt.Errorf("too many links in %s", absClean)
 	}
@@ -6867,7 +7005,7 @@ func codingFollowReparse(absClean string, depth int) (string, error) {
 				if rest := components[i+1:]; len(rest) > 0 {
 					resolved = filepath.Join(append([]string{resolved}, rest...)...)
 				}
-				return codingFollowReparse(resolved, depth+1)
+				return codingFollowReparse(resolved, depth+1, open)
 			}
 			if info.Mode()&os.ModeSymlink != 0 {
 				if rerr != nil {
@@ -6876,8 +7014,28 @@ func codingFollowReparse(absClean string, depth int) (string, error) {
 				return "", fmt.Errorf("empty link target %s", next)
 			}
 		}
+		// Go 1.23+ clears ModeDir on name-surrogate reparse points. Symlinks
+		// and junctions are followed above. A directory the OS can still open
+		// (an LX symlink, or a junction Readlink could not decode) must be
+		// resolved to its final path. Calling it "not a directory" blocked an
+		// in-project SSH download and failed the coding step.
 		if !info.IsDir() && i != len(components)-1 {
-			return "", fmt.Errorf("not a directory: %s", next)
+			final, isDir := open(next)
+			if isDir {
+				if final == "" {
+					return "", fmt.Errorf("unresolved directory link: %s", next)
+				}
+				if codingScopePathsEqual(final, next) {
+					dest = next
+					continue
+				}
+				resolved := final
+				if rest := components[i+1:]; len(rest) > 0 {
+					resolved = filepath.Join(append([]string{final}, rest...)...)
+				}
+				return codingFollowReparse(filepath.Clean(resolved), depth+1, open)
+			}
+			return "", codingNotDirectoryError{Component: next}
 		}
 		dest = next
 	}
@@ -17521,7 +17679,8 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabl
 	} else {
 		b.WriteString("1. If you changed code, run a matching test or build when it helps. Pipes, redirection, and combined commands are fine. Do not hide a failure with || true or || echo.\n")
 	}
-	b.WriteString("2. Write the final answer as an engineer: lead with the result, name real files and verification commands in prose, and mention remaining risk only when it is real. Do not emit audit headings.\n\n")
+	b.WriteString("2. Write the final answer as an engineer: lead with the result, name real files and verification commands in prose, and mention remaining risk only when it is real. Do not emit audit headings.\n")
+	b.WriteString("3. Do not use bash to inject keys into a blocking GUI or game. The host runs interactive acceptance after the turn. The final summary must not claim the environment cannot inject keys.\n\n")
 }
 
 func appendCodingSubAgentOperationalChecklist(b *strings.Builder, acceptance codingOperationalAcceptance, qualityGateEnabled bool) {
@@ -17538,9 +17697,9 @@ func appendCodingSubAgentOperationalChecklist(b *strings.Builder, acceptance cod
 	b.WriteString("1. 先在项目目录定位可执行文件/脚本/构建产物（list_directory / glob / read 少量文件即可）。\n")
 	b.WriteString("2. 必须用 bash 实际执行启动/构建/演示命令；禁止只文字回复「已运行」。\n")
 	if qualityGateEnabled {
-		b.WriteString("3. GUI/游戏若是阻塞进程：用合适 timeout 启动并回报是否成功拉起；不要为「通过质量门禁」去改代码或造测试。\n")
+		b.WriteString("3. 阻塞的 GUI/游戏不要用 bash 注入按键；回合结束后由宿主做交互验收。最终摘要不要写环境无法注入按键。不要为「通过质量门禁」去改代码或造测试。\n")
 	} else {
-		b.WriteString("3. GUI/游戏若是阻塞进程：用合适 timeout 启动并回报是否成功拉起；不要为了凑检查去改代码或造测试。\n")
+		b.WriteString("3. 阻塞的 GUI/游戏不要用 bash 注入按键；回合结束后由宿主做交互验收。最终摘要不要写环境无法注入按键。不要为了凑检查去改代码或造测试。\n")
 	}
 	b.WriteString("4. 最终摘要写清：执行了什么命令、退出码/关键输出、是否成功。\n\n")
 }
@@ -18729,7 +18888,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 ## 目标
 - 在项目目录内找到可执行文件、脚本或构建命令，用 bash 真正执行。
 - 不要修改源码、不要写测试、不要重构、不要调用 git_diff 来「凑」质量门禁。
-- GUI/游戏可能阻塞：设置合理 timeout 启动并回报是否成功；把命令输出与退出码写进最终摘要。
+- 阻塞的 GUI/游戏不要用 bash 注入按键。回合结束后宿主会做交互验收。最终摘要不要写环境无法注入按键。把命令输出与退出码写进最终摘要。
 
 ## 允许
 - list_directory / glob / read_file / bash（以及只读搜索）定位并启动程序。
@@ -19075,21 +19234,22 @@ var (
 // produce a controlled rejection; BuildTools never exposes them and model
 // callbacks reject them before this allowlist is reached.
 var codingSubAgentDynamicToolNames = map[string]bool{
-	"coding_knowledge_search":   true,
-	"knowledge_search":          true,
-	"knowledge_image_search":    true,
-	"memory_search":             true,
-	"web_search":                true,
-	"web_fetch":                 true,
-	"ssh":                       true,
-	"download_file":             true,
-	"current_datetime":          true,
-	"goal":                      true,
-	codingSubAgentSpawnToolName: true,
-	codingAgentTodoToolName:     true,
-	codeNavigationToolName:      true,
-	codeSearchToolName:          true,
-	reportLocalizationToolName:  true,
+	"coding_knowledge_search":     true,
+	"knowledge_search":            true,
+	"knowledge_image_search":      true,
+	"memory_search":               true,
+	"web_search":                  true,
+	"web_fetch":                   true,
+	"ssh":                         true,
+	"download_file":               true,
+	"current_datetime":            true,
+	"goal":                        true,
+	codingSubAgentSpawnToolName:   true,
+	codingAgentTodoToolName:       true,
+	codingAcceptanceBriefToolName: true,
+	codeNavigationToolName:        true,
+	codeSearchToolName:            true,
+	reportLocalizationToolName:    true,
 }
 
 func makeCodingSubAgentToolNameSet(names []string) map[string]bool {
@@ -19258,29 +19418,29 @@ func buildCodingLocalSSHToolDefinition() map[string]interface{} {
 // same high-risk approval as local bash. Upload reads a local file and
 // download writes one, so those paths stay inside the project unless the
 // user approves the scope.
-func (c *codingSubAgentCallbacks) guardCodingSSHArgs(args map[string]interface{}) string {
+func (c *codingSubAgentCallbacks) guardCodingSSHArgs(args map[string]interface{}) codingScopeReply {
 	if c == nil {
-		return "coding subagent is unavailable"
+		return codingScopeReply{text: "coding subagent is unavailable"}
 	}
 	switch classifySSHToolAction(sshStringArg(args, "action")) {
 	case sshToolActionConnect:
 		if command := strings.TrimSpace(sshStringArg(args, "initial_command")); command != "" {
 			if msg := c.guardCodingRemoteShellCommand(command); msg != "" {
-				return msg
+				return codingScopeReply{text: msg}
 			}
 		}
 	case sshToolActionExec, sshToolActionExecBackground:
 		if msg := c.guardCodingRemoteShellCommand(sshStringArg(args, "command")); msg != "" {
-			return msg
+			return codingScopeReply{text: msg}
 		}
 	case sshToolActionUpload, sshToolActionDownload:
 		if path := strings.TrimSpace(sshStringArg(args, "local_path")); path != "" {
-			if msg := c.requireCodingSSHLocalPath(path); msg != "" {
-				return msg
+			if reply := c.requireCodingSSHLocalPath(path); reply.rejected() {
+				return reply
 			}
 		}
 	}
-	return ""
+	return codingScopeReply{}
 }
 
 // bindCodingSSHLocalPath resolves a relative upload/download path against the
@@ -19325,10 +19485,10 @@ func expandCodingSSHHomePath(path string) string {
 	return filepath.Join(home, path[2:])
 }
 
-func (c *codingSubAgentCallbacks) requireCodingSSHLocalPath(path string) string {
+func (c *codingSubAgentCallbacks) requireCodingSSHLocalPath(path string) codingScopeReply {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return ""
+		return codingScopeReply{}
 	}
 	return c.decideProjectScope(path, "ssh", func(err error) string {
 		return fmt.Sprintf("无法确认 ssh 本地路径是否位于项目目录内：%s", err.Error())
@@ -20087,6 +20247,9 @@ func runTaskWithSubAgentRuntimeOptions(
 			})
 		}
 	}, runtimeOptions, func() *CodingSubAgentResult {
+		if loopCtx != nil {
+			sa.turnCtx = ctx
+		}
 		return sa.ExecuteTask(task, reqCtx, designCtx, prevOutputs)
 	})
 	if unregisterRuntimeCancellation != nil {

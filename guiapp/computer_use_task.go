@@ -259,7 +259,7 @@ func computerUseContractPlaybookExtra(owner string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Host acceptance (do not call computer_done until every line is visible in the latest computer_observe OCR/elements/text):\n")
+	b.WriteString("Host acceptance (do not call computer_use action=done until every line is visible in the latest computer_use action=observe result):\n")
 	for _, item := range st.Acceptance {
 		b.WriteString("- ")
 		b.WriteString(item)

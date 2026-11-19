@@ -536,6 +536,12 @@ func CheckoutCardFromPage(text, pageURL string) CheckoutCard {
 }
 
 func payableAmount(text string) string {
+	_, amount := payableSpan(text)
+	return amount
+}
+
+func payableSpan(text string) (byteAt int, amount string) {
+	bestAt := -1
 	best := ""
 	bestRank := len(payableMarkers)
 	for rank, marker := range payableMarkers {
@@ -551,14 +557,30 @@ func payableAmount(text string) string {
 		if m == nil {
 			continue
 		}
-		amount := canonicalAmount(m[1], m[2])
-		if amount == "0.00" {
+		parsed := canonicalAmount(m[1], m[2])
+		if parsed == "0.00" {
 			continue
 		}
-		best = amount
+		best = parsed
+		bestAt = idx
 		bestRank = rank
 	}
-	return best
+	return bestAt, best
+}
+
+// PayableMarkerIndex is the byte offset of the payable total payableAmount
+// reads. A later 应付总额 wins over an earlier 合计. It is -1 when the page
+// has no payable marker.
+func PayableMarkerIndex(text string) int {
+	if at, amount := payableSpan(text); amount != "" {
+		return at
+	}
+	for _, marker := range payableMarkers {
+		if at := strings.Index(text, marker); at >= 0 {
+			return at
+		}
+	}
+	return -1
 }
 
 func labeledLine(text string, markers []string) string {

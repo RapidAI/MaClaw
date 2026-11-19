@@ -826,6 +826,7 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 	r.normalizeUserFacingTaskOutcome(out)
 	if out != nil {
 		out.Summary = appendCodingAgentTodoTurnNote(out.Summary, cb.todos.snapshot())
+		out.Summary, _ = applyRemoteInteractiveAcceptance(out.Summary)
 	}
 	return out
 }

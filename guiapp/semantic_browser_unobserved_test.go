@@ -182,6 +182,10 @@ func TestTrustedBrowserNamesTheLostSessionByWhetherAnEffectCouldRemain(t *testin
 	if snapshot == nil || snapshot.Error() != "trusted_browser_session_disconnected" {
 		t.Fatalf("lost snapshot = %v, want the never-carried name", snapshot)
 	}
+	probe := trustedBrowserLostSessionError("probe", vanished)
+	if probe == nil || probe.Error() != "trusted_browser_session_disconnected" {
+		t.Fatalf("lost probe = %v, want the never-carried name", probe)
+	}
 	if navigate.Error() == snapshot.Error() {
 		t.Fatalf("both actions named the same fact: %v", navigate)
 	}

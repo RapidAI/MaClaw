@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseAnthropicResponseBodyCapturesThinking(t *testing.T) {
-	body := []byte("{\"content\":[{\"type\":\"thinking\",\"thinking\":\"Check the request first.\"},{\"type\":\"text\",\"text\":\"Done.\"}],\"stop_reason\":\"end_turn\"}")
+	body := []byte("{\"content\":[{\"type\":\"thinking\",\"thinking\":\"Check the request first.\",\"signature\":\"sig-parse\"},{\"type\":\"text\",\"text\":\"Done.\"}],\"stop_reason\":\"end_turn\"}")
 	resp, err := parseAnthropicResponseBody(body)
 	if err != nil {
 		t.Fatalf("parseAnthropicResponseBody: %v", err)
@@ -19,6 +19,9 @@ func TestParseAnthropicResponseBodyCapturesThinking(t *testing.T) {
 	if got, want := resp.Choices[0].Message.Content, "Done."; got != want {
 		t.Fatalf("content = %q, want %q", got, want)
 	}
+	if got, want := resp.Choices[0].Message.ThoughtSignature, "sig-parse"; got != want {
+		t.Fatalf("signature = %q, want %q", got, want)
+	}
 }
 
 func TestParseAnthropicSSEStreamForwardsThinkingDelta(t *testing.T) {
@@ -26,6 +29,7 @@ func TestParseAnthropicSSEStreamForwardsThinkingDelta(t *testing.T) {
 		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check inputs. "}}`,
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Then answer."}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-stream"}}`,
 		`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
 		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Done."}}`,
 		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
@@ -52,6 +56,9 @@ func TestParseAnthropicSSEStreamForwardsThinkingDelta(t *testing.T) {
 	}
 	if got, want := resp.Choices[0].Message.Content, "Done."; got != want {
 		t.Fatalf("content = %q, want %q", got, want)
+	}
+	if got, want := resp.Choices[0].Message.ThoughtSignature, "sig-stream"; got != want {
+		t.Fatalf("signature = %q, want %q", got, want)
 	}
 }
 
