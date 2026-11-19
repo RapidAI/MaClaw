@@ -559,7 +559,7 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 		if msg != nil && run != nil {
 			msg.Content = desktopReplyAfterDelegation(shotID, run.ID, run.SessionID, msg.Content)
 		}
-		images, files := publishDesktopReply(msg, shot)
+		images, files := publishDesktopReplyIn(shotCtx, agentruntime.Scope{TenantID: desktopTenantID, UserID: desktopUserID, InstanceID: shotID, RunID: run.ID}, msg, shot)
 		desktopPictureNote(shot, msg, images, files)
 	} else if err == nil && msg != nil {
 		attachDesktopFile(msg, shot)
@@ -672,7 +672,11 @@ func desktopAsyncHooks(svc *agentservice.Service, tenantID, userID, instanceID, 
 			if len(request) > 0 {
 				dropUnaskedDesktopShot(shot, request[0], msg)
 			}
-			images, files = publishDesktopReply(msg, shot)
+			runID := ""
+			if run != nil {
+				runID = run.ID
+			}
+			images, files = publishDesktopReplyIn(context.Background(), agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID, RunID: runID}, msg, shot)
 			desktopPictureNote(shot, msg, images, files)
 		} else if err == nil && msg != nil {
 			files = attachDesktopFile(msg, shot)

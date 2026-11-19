@@ -176,8 +176,9 @@ func TestPullDesktopBotDeliveryUsesSendToUserWhenTheRunFailed(t *testing.T) {
 func TestPullDesktopBotDeliveryKeepsAScreenshotWithoutCaption(t *testing.T) {
 	base := t.TempDir()
 	prev := corelib.MaclawBaseDir()
-	corelib.SetMaclawBaseDir(base)
+	corelib.SetMaclawBaseDir(filepath.Join(base, ".maclaw"))
 	t.Cleanup(func() { corelib.SetMaclawBaseDir(prev) })
+	app := &App{testHomeDir: base}
 	var payloads []string
 	shot := base64.StdEncoding.EncodeToString([]byte("png-bytes"))
 	desktopBotReportSink = func(raw string) { payloads = append(payloads, raw) }
@@ -207,7 +208,7 @@ func TestPullDesktopBotDeliveryKeepsAScreenshotWithoutCaption(t *testing.T) {
 		delete(ackedDesktopRuns, desktopRunKey("bot_test_shot", "run_shot"))
 		activeDesktopRunsMu.Unlock()
 	})
-	if err := (&App{}).PullDesktopBotDeliveries(); err != nil {
+	if err := app.PullDesktopBotDeliveries(); err != nil {
 		t.Fatal(err)
 	}
 	if len(payloads) != 1 || strings.Contains(payloads[0], `"send_to_user":"截个图`) || strings.Contains(payloads[0], `"error"`) || strings.Contains(payloads[0], `"send_to_user"`) || strings.Contains(payloads[0], `"text"`) {
@@ -226,8 +227,9 @@ func TestPullDesktopBotDeliveryKeepsAScreenshotWithoutCaption(t *testing.T) {
 func TestPullDesktopBotDeliveryKeepsFileAndScreenshotWithTheSentence(t *testing.T) {
 	base := t.TempDir()
 	prev := corelib.MaclawBaseDir()
-	corelib.SetMaclawBaseDir(base)
+	corelib.SetMaclawBaseDir(filepath.Join(base, ".maclaw"))
 	t.Cleanup(func() { corelib.SetMaclawBaseDir(prev) })
+	app := &App{testHomeDir: base}
 	var payloads []string
 	shot := base64.StdEncoding.EncodeToString([]byte("png-bytes"))
 	doc := base64.StdEncoding.EncodeToString([]byte("doc-bytes"))
@@ -260,7 +262,7 @@ func TestPullDesktopBotDeliveryKeepsFileAndScreenshotWithTheSentence(t *testing.
 		delete(ackedDesktopRuns, desktopRunKey("bot_test_both", "run_both"))
 		activeDesktopRunsMu.Unlock()
 	})
-	if err := (&App{}).PullDesktopBotDeliveries(); err != nil {
+	if err := app.PullDesktopBotDeliveries(); err != nil {
 		t.Fatal(err)
 	}
 	if len(payloads) != 1 {
