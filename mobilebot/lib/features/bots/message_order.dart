@@ -44,3 +44,30 @@ bool pendingReplyIsStale({
   final started = messageOrderMs(id: id, at: at);
   return started > 0 && nowMs - started > botPendingReplyWaitMs;
 }
+
+/// True when a `delivery-{runId}` pull would re-show a reply the transcript
+/// already has. `_drainPendingDeliveries` used to dedupe only on the
+/// `delivery-{runId}` id, so a settle that already landed the same run as an
+/// `m-…` bubble (or a journal echo carrying the run/request id) was added a
+/// second time — the duplicate reply, attachments included.
+///
+/// Twin rule mirrors `_mergeEntries`: a shown assistant bubble covers the
+/// delivery when it carries the same run id, or the GUI's
+/// `desktop-bot-deliver-{runId}` request id.
+bool botDeliveryAlreadyShown({
+  required Iterable<String> shownRunIds,
+  required Iterable<String> shownRequestIds,
+  required String runId,
+}) {
+  final run = runId.trim();
+  if (run.isEmpty) return false;
+  final deliverKey = 'desktop-bot-deliver-$run';
+  for (final r in shownRunIds) {
+    if (r.trim() == run) return true;
+  }
+  for (final r in shownRequestIds) {
+    final req = r.trim();
+    if (req == run || req == deliverKey) return true;
+  }
+  return false;
+}

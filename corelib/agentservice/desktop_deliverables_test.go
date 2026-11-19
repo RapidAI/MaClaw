@@ -1,10 +1,17 @@
 package agentservice
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestDesktopDeliverablesNoteShownOnceWhenReady(t *testing.T) {
@@ -70,5 +77,72 @@ func TestDesktopDeliverablesOnlyForExecuteDesktopTurns(t *testing.T) {
 	wake := &coreAgentCallbacks{messageMetadata: map[string]string{"bot_phase": "execute", "bot_wake": "1"}, userText: "继续"}
 	if !wake.desktopDeliverablesApply() {
 		t.Fatal("execute wake skipped the checklist")
+	}
+}
+
+// runDeliverableExtraction drives startDesktopDeliverables with a stubbed
+// model and returns what RecordDesktopDeliverableExtraction stored.
+func runDeliverableExtraction(t *testing.T, runID string, complete func(context.Context, corelib.MaclawLLMConfig, *http.Client, []interface{}) (*llm.Response, error)) (items []agent.DesktopDeliverable, failed bool, cause string) {
+	t.Helper()
+	prevComplete := agent.CompleteDesktopOutcome
+	agent.CompleteDesktopOutcome = complete
+	t.Cleanup(func() { agent.CompleteDesktopOutcome = prevComplete })
+
+	prev := RememberDesktopOutputContract
+	RememberDesktopOutputContract = func(r string, it []agent.DesktopDeliverable, f bool, c string) {
+		if r == runID {
+			items, failed, cause = it, f, c
+		}
+	}
+	t.Cleanup(func() { RememberDesktopOutputContract = prev })
+
+	c := &coreAgentCallbacks{
+		runID:           runID,
+		messageMetadata: map[string]string{"bot_phase": "execute"},
+		userText:        "生成报告发给我",
+	}
+	c.startDesktopDeliverables()
+	// The goroutine owns st.done; wait on the checklist channel directly.
+	select {
+	case <-c.deliverables.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("extraction never finished")
+	}
+	return items, failed, cause
+}
+
+func TestDeliverableExtractionRetriesOnceThenSucceeds(t *testing.T) {
+	var calls int32
+	items, failed, cause := runDeliverableExtraction(t, "run-retry-ok", func(context.Context, corelib.MaclawLLMConfig, *http.Client, []interface{}) (*llm.Response, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return nil, errors.New("transient model read error")
+		}
+		return &llm.Response{Choices: []llm.Choice{{Message: llm.Message{Content: `{"items":[{"kind":"file","text":"报告"}]}`}}}}, nil
+	})
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("extraction attempts = %d, want 2 (one bounded retry)", got)
+	}
+	if failed {
+		t.Fatalf("retry recovered but recorded failed; cause=%q", cause)
+	}
+	if len(items) != 1 || items[0].Kind != "file" {
+		t.Fatalf("items = %#v", items)
+	}
+}
+
+func TestDeliverableExtractionStillFailedKeepsConcreteCause(t *testing.T) {
+	var calls int32
+	_, failed, cause := runDeliverableExtraction(t, "run-retry-fail", func(context.Context, corelib.MaclawLLMConfig, *http.Client, []interface{}) (*llm.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, errors.New("deliverables extraction was not json")
+	})
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("extraction attempts = %d, want 2 (bounded retry)", got)
+	}
+	if !failed {
+		t.Fatal("still-failed extraction must stay failed, not succeed")
+	}
+	if !strings.Contains(cause, "not json") {
+		t.Fatalf("concrete cause lost: %q", cause)
 	}
 }

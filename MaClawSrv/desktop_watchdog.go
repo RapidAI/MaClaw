@@ -755,6 +755,11 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	complete, incomplete, other := desktopPostEvidence(run.ID)
 	contract, resolved := desktopWaitForContract(run.ID)
 	if resolved && contract.failed {
+		// Extraction failure is a read failure, not a business failure: the
+		// run stays unverified with the concrete cause, never an empty-done.
+		if contract.failWhy != "" {
+			return agentservice.TaskOutcomeUnverified, "deliverable extraction failed: " + contract.failWhy
+		}
 		return agentservice.TaskOutcomeUnverified, "deliverable extraction failed"
 	}
 	if resolved && contract.typed {
@@ -824,6 +829,7 @@ type desktopOutputContract struct {
 	slots    []string
 	parsed   []agent.DesktopDeliverable
 	failed   bool
+	failWhy  string
 	typed    bool
 	resolved bool
 }
@@ -855,7 +861,7 @@ func noteDesktopOutputPlan(runID string, items, slots []string) {
 	})
 }
 
-func noteParsedDeliverableContract(runID string, items []agent.DesktopDeliverable, failed bool) {
+func noteParsedDeliverableContract(runID string, items []agent.DesktopDeliverable, failed bool, cause string) {
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
 		return
@@ -874,6 +880,7 @@ func noteParsedDeliverableContract(runID string, items []agent.DesktopDeliverabl
 		items:    texts,
 		parsed:   append([]agent.DesktopDeliverable(nil), items...),
 		failed:   failed,
+		failWhy:  strings.TrimSpace(cause),
 		typed:    typed && !failed,
 		resolved: true,
 	})

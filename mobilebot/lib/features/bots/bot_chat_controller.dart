@@ -506,7 +506,21 @@ class BotChatController extends Notifier<ChatState> {
           requestId: 'desktop-bot-deliver-${delivery.runId}',
           at: DateTime.now(),
         );
-        if (messages.any((m) => m.id == message.id)) continue;
+        // Dedupe on the run, not just the `delivery-{runId}` id: a settle
+        // may already have landed this reply as an `m-…` bubble (or the
+        // journal echo may carry its run/request id), and adding the
+        // delivery again showed the same reply — attachments too — twice.
+        // Assistant-only, mirroring _mergeEntries: a runId must collapse
+        // assistant-to-assistant copies, never a person's line of the turn.
+        final shown = messages.where((m) => m.role == 'assistant');
+        final alreadyShown =
+            messages.any((m) => m.id == message.id) ||
+            botDeliveryAlreadyShown(
+              shownRunIds: shown.map((m) => m.runId),
+              shownRequestIds: shown.map((m) => m.requestId),
+              runId: delivery.runId,
+            );
+        if (alreadyShown) continue;
         messages.add(message);
         final projection = message.syncProjection;
         if (projection != null) {

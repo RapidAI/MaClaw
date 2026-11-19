@@ -159,6 +159,23 @@ func TestEnsureReceiptDoesNotClaimSuccessWithoutDelivery(t *testing.T) {
 	if shotMarkedRun == nil || shotMarkedRun.Metadata["task_outcome"] == agentservice.TaskOutcomeDone {
 		t.Fatalf("a shot mark completed the task: %+v", shotMarkedRun)
 	}
+	failedScope := agentruntime.Scope{TenantID: "t", UserID: "u1"}
+	noteParsedDeliverableContract("run_extract_fail", nil, true, "deliverables extraction was not json")
+	failMsg := &agentservice.Message{Content: "报告已经发出去了。"}
+	failRun := desktopEnsureReceipt(failedScope, &agentservice.Run{ID: "run_extract_fail", Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}}, failMsg, nil, false, true)
+	if failRun == nil || failRun.Metadata["task_outcome"] != agentservice.TaskOutcomeUnverified {
+		t.Fatalf("failed extraction was not unverified: %+v", failRun)
+	}
+	if !strings.Contains(failRun.Content, "not json") {
+		t.Fatalf("concrete extraction cause lost from reply: %q", failRun.Content)
+	}
+	blankScope := agentruntime.Scope{TenantID: "t", UserID: "u1"}
+	noteParsedDeliverableContract("run_extract_blank", nil, true, "")
+	blankMsg := &agentservice.Message{Content: "报告已经发出去了。"}
+	blankExtraction := desktopEnsureReceipt(blankScope, &agentservice.Run{ID: "run_extract_blank", Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}}, blankMsg, nil, false, true)
+	if blankExtraction == nil || blankExtraction.Metadata["task_outcome"] != agentservice.TaskOutcomeUnverified {
+		t.Fatalf("failed extraction (no cause) was not unverified: %+v", blankExtraction)
+	}
 	asked := &agentservice.Message{Attachments: []agent.MessageAttachment{{Type: "file", FileName: "screen.png", MimeType: "image/png", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryFile}}}
 	askedRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_asked", Status: agentservice.RunStatusSucceeded}, asked, nil, false, false)
 	if askedRun == nil || askedRun.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || !strings.Contains(askedRun.Metadata["send_to_user"], "screen.png") {

@@ -29,17 +29,23 @@ type desktopDeliverablesState struct {
 var desktopDeliverablesWait = 20 * time.Second
 
 // RememberDesktopOutputContract records the parsed checklist. failed means
-// the model response could not be read; that is not an empty checklist.
-// MaClawSrv installs it.
-var RememberDesktopOutputContract func(runID string, items []agent.DesktopDeliverable, failed bool)
+// the model response could not be read; that is not an empty checklist. cause
+// is the concrete extraction error so the receipt stays unverified with a
+// specific reason instead of a bare "failed". MaClawSrv installs it.
+var RememberDesktopOutputContract func(runID string, items []agent.DesktopDeliverable, failed bool, cause string)
 
 // RecordDesktopDeliverableExtraction stores one extraction result. A parse
-// or model error is recorded as failed so the receipt stays unverified.
+// or model error is recorded as failed so the receipt stays unverified; its
+// message is carried through so the unverified outcome keeps a concrete cause.
 func RecordDesktopDeliverableExtraction(runID string, items []agent.DesktopDeliverable, extractErr error) {
 	if RememberDesktopOutputContract == nil {
 		return
 	}
-	RememberDesktopOutputContract(runID, items, extractErr != nil)
+	cause := ""
+	if extractErr != nil {
+		cause = strings.TrimSpace(extractErr.Error())
+	}
+	RememberDesktopOutputContract(runID, items, extractErr != nil, cause)
 }
 
 // MACLAW_DESKTOP_DELIVERABLES=0 turns the checklist off.
@@ -116,7 +122,13 @@ func (c *coreAgentCallbacks) startDesktopDeliverables() {
 	cfg, client, text := c.llmCfg, c.httpClient, desktopDeliverableRequestText(c)
 	go func() {
 		defer close(st.done)
+		// A transient model/parse blip must not permanently strand the run
+		// as unverified, but a still-failed retry is recorded failed — the
+		// retry can repair the read, it cannot invent a checklist.
 		items, err := agent.ExtractDesktopDeliverableContract(context.Background(), cfg, client, text)
+		if err != nil {
+			items, err = agent.ExtractDesktopDeliverableContract(context.Background(), cfg, client, text)
+		}
 		RecordDesktopDeliverableExtraction(c.runID, items, err)
 		if err != nil {
 			log.Printf("[desktop-deliverables] extract_err=%v", err)
